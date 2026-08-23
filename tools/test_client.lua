@@ -9311,17 +9311,38 @@ do
         gate.last, gate.kind = v, type(v)
     end
 
-    function SetPlayerInvincible(_, v) invincible = v end
+    local invincibleWrites = 0
+    function SetPlayerInvincible(_, v)
+        invincible = v
+        invincibleWrites = invincibleWrites + 1
+    end
+
+    -- ── THE WANTED LEVEL, MODELLED RATHER THAN SWALLOWED ────────────────────
+    --
+    -- A noop2 stub cannot tell "the rule is enforced" from "the rule was
+    -- deleted", and the change these back is a change to WHEN the rule is
+    -- enforced -- so the stub has to behave like the engine does: hold a level,
+    -- let the suite raise it, and let the writes bring it down.
+    --
+    -- `flushes` is the number that mattered for the hitch: it counts
+    -- SET_PLAYER_WANTED_LEVEL_NOW, the call that pushes a pending level through
+    -- the dispatch machinery, and the whole point is that it stops happening
+    -- sixty times a second while still happening whenever it must.
+    local wanted = { level = 0, flushes = 0, caps = 0 }
+    function GetPlayerWantedLevel() return wanted.level end
+    function SetPlayerWantedLevel(_, lvl) wanted.level = lvl end
+    function SetPlayerWantedLevelNow() wanted.flushes = wanted.flushes + 1 end
+    function SetMaxWantedLevel() wanted.caps = wanted.caps + 1 end
+
+    local copFlags = 0
+    local function countCops() copFlags = copFlags + 1 end
 
     local function noop2() end
     SetCanAttackFriendly = noop2
     SetPedRelationshipGroupHash = noop2
-    SetMaxWantedLevel = noop2
-    SetPlayerWantedLevel = noop2
-    SetPlayerWantedLevelNow = noop2
-    SetCreateRandomCops = noop2
-    SetCreateRandomCopsNotOnScenarios = noop2
-    SetCreateRandomCopsOnScenarios = noop2
+    SetCreateRandomCops = countCops
+    SetCreateRandomCopsNotOnScenarios = countCops
+    SetCreateRandomCopsOnScenarios = countCops
     SetEntityVisible = noop2
     FreezeEntityPosition = noop2
     DisplayRadar = noop2
@@ -9470,6 +9491,7 @@ do
     if type(N.teamFor) ~= 'function' then N.teamFor = function() return -999, false end end
     if type(N.SOLO_TEAM) ~= 'number' then N.SOLO_TEAM = -998 end
     if type(N.forgetTeam) ~= 'function' then N.forgetTeam = function() end end
+    if type(N.forgetRules) ~= 'function' then N.forgetRules = function() end end
 
     -- ------------------------------------------------------------ the world ---
 
@@ -9719,7 +9741,13 @@ do
     local function reset()
         team.writes, team.last = {}, nil
         gate.writes, gate.last, gate.kind = {}, nil, nil
+        wanted.level, wanted.flushes, wanted.caps = 0, 0, 0
+        copFlags, invincibleWrites = 0, 0
         N.forgetTeam()
+        -- The rule latch is a memo like the team's, and for the same reason;
+        -- a suite that forgot one and not the other would be measuring a
+        -- belief left over from the previous case.
+        N.forgetRules()
     end
 
     reset()
@@ -9786,6 +9814,127 @@ do
         'including for a solo, whose gate is open the whole time',
         ('invincible %s, gate %s')
             :format(tostring(invincible), tostring(gate.last)))
+
+    -- ==================================================================== --
+    -- 7b. THE LATCHING RULES COME OFF THE FRAME PATH, AND STILL HOLD
+    -- ==================================================================== --
+    --
+    -- THE FAULT THIS IS ABOUT. The owner has been hitching in vehicles,
+    -- reproducible on an empty warmup pad, and the FiveM script profiler saw
+    -- nothing at all: worst frame 29.7ms, all scripting 5.1% of wall time,
+    -- worst single scripted call 1.7ms. A `/brloop off` bisect named
+    -- gamerules.apply. Both readings are true together only if the cost is
+    -- what we ask the ENGINE to do rather than what the asking costs us --
+    -- and applyGameRules was asking for 28 natives sixty times a second.
+    --
+    -- SET_PLAYER_WANTED_LEVEL_NOW is the one this started from: its whole
+    -- documented job is to force a PENDING wanted level to be applied
+    -- immediately, and it was being issued sixty times a second to reach a
+    -- number the player was already at.
+    --
+    -- WHAT THESE CASES DO NOT CLAIM. There is no evidence anywhere -- docs,
+    -- nativedb, decompiled scripts, cfx.re -- that this native is expensive.
+    -- The engine-cost story is a hypothesis and /brhitch is what tests it. So
+    -- nothing below asserts a cost; they assert that the redundant asking is
+    -- gone and that the RULE it was asking for still holds. That is true
+    -- whether or not the hypothesis survives.
+    --
+    -- WHAT THESE CASES ARE FOR. Moving a rule off the frame path is only safe
+    -- if the rule still holds, and "it still holds" is exactly the thing a
+    -- cadence can silently stop doing. So each case below asserts the RULE,
+    -- not the call: the player is never wanted, the cap is on, the cops are
+    -- off, and the frame path stops paying for saying so.
+
+    -- ── THE COST IS GONE ────────────────────────────────────────────────────
+    reset()
+    rules(1, twoSquads)
+    local firstFlushes = wanted.flushes
+    for _ = 1, 120 do rules(1, twoSquads) end
+    ok(wanted.flushes == firstFlushes,
+        'A SETTLED FRAME FLUSHES THE WANTED LEVEL ZERO TIMES -- 120 frames at '
+        .. 'a wanted level of 0 ask the dispatch system for nothing',
+        ('%d flush(es) over 120 frames after the first')
+            :format(wanted.flushes - firstFlushes))
+
+    ok(wanted.caps == 1 and copFlags == 3,
+        'and the cap and the three cop flags are written once, not once a '
+        .. 'frame -- they are latching engine settings',
+        ('%d cap write(s), %d cop-flag write(s)'):format(wanted.caps, copFlags))
+
+    -- ── THE RULE STILL HOLDS, AND HOLDS FASTER THAN A CADENCE WOULD ─────────
+    --
+    -- THIS IS THE CASE THAT MAKES THE CHANGE SAFE. The old code wrote zero
+    -- every frame without ever asking; this asks and writes when the answer is
+    -- wrong. So a star raised by anything at all -- another resource, a
+    -- scripted event, the engine -- is cleared on the VERY NEXT FRAME, with no
+    -- wait for a heartbeat. A cadence alone could not promise that, which is
+    -- why the read is there rather than a timer.
+    wanted.level = 3
+    rules(1, twoSquads)
+    ok(wanted.level == 0,
+        'RAISE THE WANTED LEVEL AND THE NEXT FRAME TAKES IT STRAIGHT BACK '
+        .. 'DOWN -- the rule is closed-loop now, not open-loop',
+        ('wanted level after one frame: %s'):format(tostring(wanted.level)))
+    ok(wanted.flushes == firstFlushes + 1,
+        'and it costs exactly one flush to do it, on the frame that needed one',
+        ('%d flush(es)'):format(wanted.flushes - firstFlushes))
+
+    -- ── AND IT IS RE-ASSERTED ON EVERYTHING THAT COULD CLEAR IT ─────────────
+    --
+    -- A memo is a belief about the engine's state, and the engine resets a
+    -- good deal on a respawn and at a match boundary. These are the events the
+    -- old per-frame comments named as the reason for writing every frame; each
+    -- one has to put the writes back by itself.
+    reset()
+    rules(1, twoSquads)
+    local afterSettle = wanted.caps
+    for _ = 1, 30 do rules(1, twoSquads) end
+    ok(wanted.caps == afterSettle, 'a settled frame writes no cap...')
+
+    rules(1, twoSquads, BR.PlayerState.DBNO)
+    ok(wanted.caps == afterSettle + 1,
+        '...A CHANGE OF PLAYER STATE PUTS THE WHOLE RULE SET BACK, immediately '
+        .. 'and not at the next heartbeat',
+        ('%d cap write(s)'):format(wanted.caps - afterSettle))
+
+    local afterState = wanted.caps
+    for _ = 1, 30 do rules(1, twoSquads, BR.PlayerState.DBNO) end
+    ok(wanted.caps == afterState, 'and settles again straight afterwards')
+
+    fakeTime = fakeTime + 5000
+    rules(1, twoSquads, BR.PlayerState.DBNO)
+    ok(wanted.caps == afterState + 1,
+        'AND THE HEARTBEAT STILL FIRES with nothing changing at all, because a '
+        .. 'memo is only a belief and something else may have written since',
+        ('%d cap write(s)'):format(wanted.caps - afterState))
+
+    -- ── INVINCIBILITY IS KEYED ON ITS ANSWER, BECAUSE ITS ANSWER HAS A CLOCK ─
+    --
+    -- THE TRAP THIS PINS. The invincibility expression ends in
+    -- `GetGameTimer() < dropGraceUntil` -- so it flips from true to false at a
+    -- moment when the player state, the match state and the ped handle have
+    -- all stayed the same. Key that write on the state triggers alone and a
+    -- player who has landed stays invincible until the heartbeat catches up,
+    -- which is a player who cannot be shot for up to a second after touchdown.
+    --
+    -- Comparing the ANSWER catches it on the same frame the old unconditional
+    -- write did. Nothing else in this file would have noticed.
+    reset()
+    BR.State.dropGraceUntil = fakeTime + 500
+    rules(1, twoSquads, BR.PlayerState.ALIVE)
+    ok(invincible == true,
+        'inside the landing grace an ALIVE player is still invincible',
+        ('SetPlayerInvincible(%s)'):format(tostring(invincible)))
+
+    fakeTime = fakeTime + 600            -- the grace expires; nothing else moves
+    local before = invincibleWrites
+    rules(1, twoSquads, BR.PlayerState.ALIVE)
+    ok(invincible == false and invincibleWrites == before + 1,
+        'AND THE FRAME THE GRACE RUNS OUT TAKES IT AWAY -- no state changed, '
+        .. 'so only comparing the answer could have caught this',
+        ('invincible %s after %d write(s)')
+            :format(tostring(invincible), invincibleWrites - before))
+    BR.State.dropGraceUntil = 0
 
     -- ==================================================================== --
     -- 8. THE ONE-LINE WAY BACK

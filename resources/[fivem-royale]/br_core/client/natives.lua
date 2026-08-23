@@ -975,17 +975,207 @@ end
 
 -- --------------------------------------------------------------- game rules ---
 
+-- ===========================================================================
+-- TWO KINDS OF RULE LIVE IN THIS FUNCTION, AND ONLY ONE OF THEM IS PER-FRAME.
+-- ===========================================================================
+--
+-- THE MEASUREMENT THAT FORCED THIS. The owner has been hitching in vehicles,
+-- reproducible on the empty Cayo warmup pad, and a FiveM script profiler
+-- capture found NOTHING: 150 frames, worst frame 29.7ms, all scripting 5.1% of
+-- wall time, worst single scripted call 1.7ms. A bisect with `/brloop off`
+-- then named `gamerules.apply` as one of the two biggest wins. The LEADING
+-- READING of those two together is that the cost is not in the script but in
+-- what the script asks the ENGINE to do -- work performed later in the
+-- engine's own update, where a script profiler cannot attribute it. That
+-- reading is a HYPOTHESIS. It has not been confirmed, and the per-native
+-- evidence hunted for below does not confirm it either.
+--
+-- WHICH IS WHY THIS CHANGE DOES NOT DEPEND ON IT. Every native moved below is
+-- one whose value was IDENTICAL on the previous frame; the writes removed are
+-- redundant whatever they cost, and the ones kept are kept because their
+-- documented contract is per-frame. If the hitch survives this, the hypothesis
+-- was wrong and nothing here has to be argued about again -- the frame path is
+-- simply honest now. /brhitch is what settles it.
+--
+-- So the natives were sorted, and the sort is the whole change:
+--
+--   PER-FRAME BY CONTRACT -- the `*ThisFrame` family (six HideHudComponent,
+--   ThefeedHide, the five density multipliers, DisableFrontend) and
+--   DisableControlAction. These are DECLARED to last one frame; the engine
+--   re-raises the thing they suppress on every frame it wants to draw it, so
+--   a cadence here would be a flicker. NOT ONE OF THEM IS TOUCHED.
+--
+--   LATCHING -- everything else. A wanted-level cap, a population flag, a
+--   relationship group, an invincibility bit: set once and the engine holds
+--   them. Re-asserting them sixty times a second buys nothing and costs
+--   whatever the engine does on each write.
+--
+-- WHAT REPLACES "EVERY FRAME" FOR THE LATCHING HALF, because "set it at
+-- resource start" is NOT the answer and the old comments say why: the ped
+-- handle changes on respawn and takes its relationship group with it, and the
+-- engine resets a good deal at a match boundary. So the latch re-asserts on
+-- ANY OF:
+--
+--   * the ped handle changing        -- a respawn, which is the case the old
+--                                       per-frame comment was actually about
+--   * the player state changing      -- warmup -> bus -> alive -> dbno -> dead
+--   * the match state changing       -- a match boundary
+--   * a value it writes changing     -- the gate, invincibility, visibility
+--   * and a one-second heartbeat     -- because a memo is only a belief about
+--                                       the engine's state, and something else
+--                                       may have written it since
+--
+-- That is the same shape as applyTeam's memo above, for the same reason, and
+-- it means no rule is ever more than a second stale WITHOUT any of the events
+-- that could plausibly clear it having happened. Across every event that
+-- could, it is not stale at all.
+--
+-- WHAT IS DELIBERATELY LEFT PER-FRAME EVEN THOUGH IT LATCHES, so the list is
+-- reviewable rather than merely short:
+--
+--   DisplayRadar   -- client/screen.lua ALSO writes it on a scope change, and
+--                     the comment on that call says in as many words that this
+--                     line must overwrite it "within a millisecond". A memo
+--                     here believes its own last write and would stop
+--                     correcting somebody else's. It is a HUD flag; it is not
+--                     what is costing frames.
+--   FreezeEntityPosition (LOBBY) -- client/spawn.lua holds its own temporary
+--                     freezes while collision loads, and this call exists to
+--                     re-freeze after anything releases one. A memo would
+--                     leave a ped free to walk out of a locked shot for up to
+--                     a second. It only runs in the LOBBY, which is not where
+--                     the hitch is.
+--
+-- WHAT THIS COSTS ON A SETTLED FRAME, MEASURED RATHER THAN ESTIMATED. Counted
+-- by wrapping every native this function writes and running sixty settled
+-- frames through it in tools/test_client.lua's harness:
+--
+--   before   29 engine writes per frame
+--   after    14 engine writes per frame, and all fourteen are the per-frame
+--            family -- six HideHudComponentThisFrame, ThefeedHideThisFrame,
+--            the five density multipliers, DisplayRadar, DisableControlAction
+--
+-- ── AND /brbench CANNOT SEE THIS, WHICH IS WORTH KNOWING BEFORE YOU TRY ─────
+--
+-- BR.Loop.bench runs the callback N times back to back inside one frame. Game
+-- time does not advance across that loop, so `due` fires on the first
+-- iteration and NEVER AGAIN -- /brbench gamerules.apply will report a number
+-- near zero and it will be measuring the settled path only, not the cost this
+-- change was about. That is the same blind spot every internally-throttled job
+-- has in that command.
+--
+-- /brhitch is the one that answers. It measures the gap between successive
+-- FRAME passes -- our callbacks, every other resource, AND the engine's own
+-- update -- so engine work this function provokes lands in its histogram
+-- whether or not a script profiler could attribute it.
+local LATCH_REFRESH_MS = 1000
+
+--- What the latch believes the engine already has. `at` is when the heartbeat
+--- last fired; the rest are the values last written.
+local latch = {
+    at = 0, ped = nil, state = nil, match = nil,
+    shield = nil, invincible = nil, visible = nil, clockSec = nil,
+}
+
+--- Forget every belief about the engine's rule state, so the next
+--- applyGameRules writes all of it again.
+---
+--- Used by the test suite, and by anything that knows the engine has been
+--- reset underneath us. Same contract as BR.Native.forgetTeam above.
+function BR.Native.forgetRules()
+    latch.at, latch.ped, latch.state, latch.match = 0, nil, nil, nil
+    latch.shield, latch.invincible = nil, nil
+    latch.visible, latch.clockSec = nil, nil
+end
+
 --- Strip the vanilla systems that make no sense in a battle royale. Called from
---- the frame loop because several of these reset themselves every tick.
+--- the frame loop because the `*ThisFrame` half genuinely resets every tick;
+--- see the long note above for what the other half does instead.
 function BR.Native.applyGameRules()
     local pid = PlayerId()
+    local ped = PlayerPedId()
+    local st  = BR.State.me.state
+    local mst = BR.State.match.state
+    local now = GetGameTimer()
 
-    SetMaxWantedLevel(0)
-    SetPlayerWantedLevel(pid, 0, false)
-    SetPlayerWantedLevelNow(pid, false)
-    SetCreateRandomCops(false)
-    SetCreateRandomCopsNotOnScenarios(false)
-    SetCreateRandomCopsOnScenarios(false)
+    -- The five triggers, read BEFORE anything updates them.
+    local due = (ped ~= latch.ped)
+             or (st  ~= latch.state)
+             or (mst ~= latch.match)
+             or ((now - latch.at) >= LATCH_REFRESH_MS)
+    if due then
+        latch.at, latch.ped, latch.state, latch.match = now, ped, st, mst
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE WANTED LEVEL, WHICH IS THE ONE THIS INVESTIGATION WAS ABOUT
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- SET_PLAYER_WANTED_LEVEL_NOW is not a setter. Its documentation is one
+    -- sentence -- "Forces any pending wanted level to be applied to the
+    -- specified player immediately" -- so it is a COMMAND, and this was
+    -- issuing it sixty times a second to reach a number the player was
+    -- already at.
+    --
+    -- WHAT IS NOT KNOWN, STATED PLAINLY, BECAUSE THE NEXT PERSON WILL WANT TO
+    -- KNOW WHETHER THIS FIXED THE HITCH. It is TEMPTING to write that this
+    -- forces a dispatch/police recalculation and that the police system is
+    -- vehicle-coupled, which would explain the symptom exactly. There is NO
+    -- EVIDENCE FOR THAT. A search of the native docs, the nativedb comments,
+    -- decompiled R* scripts and the cfx.re forums turns up no benchmark, no
+    -- bug report and no maintainer statement that this native is expensive --
+    -- the strongest thing that exists is one forum opinion calling a
+    -- wanted-clearing Wait(0) loop "hella inefficient", which is about the
+    -- loop and not about the native.
+    --
+    -- What IS verifiable is that wanted level is OneSync-replicated state:
+    -- CPlayerWantedAndLOSDataNode carries wantedLevel, a pendingWantedLevel
+    -- bit, isWanted, the wanted position and the pursuit start time. So the
+    -- pending-versus-applied distinction is real at the network layer. Whether
+    -- a redundant call with the same value dirties that node is UNKNOWN;
+    -- engines normally dirty on change.
+    --
+    -- So this change is justified as REMOVING WORK THAT BUYS NOTHING, which is
+    -- true whatever the work costs -- not as a diagnosis. /brhitch is what
+    -- settles whether it was the hitch.
+    --
+    -- THE RULE IS NOT DROPPED, IT IS CLOSED-LOOP INSTEAD OF OPEN-LOOP. The
+    -- rule is "the player is never wanted". The old code asserted that by
+    -- writing zero every frame without ever asking. This ASKS -- a plain int
+    -- read off CWanted -- and writes only when the answer is not already zero.
+    --
+    -- So the rule now holds MORE tightly than a cadence would: anything that
+    -- raises the wanted level is cleared on the very next frame, not at the
+    -- next heartbeat. In the steady state the player is at zero and this costs
+    -- one comparison.
+    --
+    -- AND SET_MAX_WANTED_LEVEL(0) IS NOT TRUSTED AS THE ONLY MECHANISM, which
+    -- is why the read above is there rather than a bare cap. It caps stars and
+    -- is reported not to clear a level already granted; and the community
+    -- record on it is CONTRADICTORY -- one cfx.re thread has it permanently
+    -- disabling the wanted level, an older one has an author reporting "just
+    -- tried it out, it doesn't work". Its own doc body is empty. So it is kept,
+    -- because a cap that works costs nothing and stops the problem at source,
+    -- and the closed loop above covers the build where it does not.
+    --
+    -- The heartbeat is ORed into the flush for the same reason pointed the
+    -- other way: on a build where the READ is unavailable or lies, the old
+    -- unconditional flush still happens, once a second instead of sixty times.
+    --
+    -- `> 0` and not a BOOL test: GET_PLAYER_WANTED_LEVEL returns the number of
+    -- stars, an int. There is nothing here for the 1-versus-true confusion to
+    -- bite, and tonumber() keeps it that way if a build ever answers a string.
+    if due then
+        SetMaxWantedLevel(0)
+        SetCreateRandomCops(false)
+        SetCreateRandomCopsNotOnScenarios(false)
+        SetCreateRandomCopsOnScenarios(false)
+    end
+
+    if due or (tonumber(GetPlayerWantedLevel(pid)) or 0) > 0 then
+        SetPlayerWantedLevel(pid, 0, false)
+        SetPlayerWantedLevelNow(pid, false)
+    end
 
     -- PvP, with two carve-outs, both enforced on the SHOOTER's client where
     -- GTA computes bullet damage:
@@ -1038,8 +1228,6 @@ function BR.Native.applyGameRules()
     -- all. BR.Config.Match.engineTeams = false reverts the whole thing to the
     -- e1f9f98 behaviour in one line, without a code change, because this has
     -- had eight rounds and the ninth should be cheap to undo.
-    local ped = PlayerPedId()
-
     local mcfg = BR.Config and BR.Config.Match
     local team, shield = BR.Native.SOLO_TEAM, false
     if not mcfg or mcfg.engineTeams ~= false then
@@ -1051,9 +1239,26 @@ function BR.Native.applyGameRules()
     -- codebase has been bitten four times by 1/0 versus true/false. The value
     -- handed to the engine is a real Lua boolean, and test_client.lua asserts
     -- its TYPE as well as its value.
-    NetworkSetFriendlyFireOption(not shield)
-    SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
-    SetCanAttackFriendly(ped, false, false)
+    --
+    -- ON CHANGE, NOT ON A CADENCE. The gate is a latching engine option and
+    -- `shield` is a decision about the roster, not about this frame -- it
+    -- changes about twice a match, when a squadmate joins or dies. Writing it
+    -- the instant it differs is strictly tighter than a heartbeat, and `due`
+    -- carries the respawn/boundary/heartbeat cases on top.
+    if due or shield ~= latch.shield then
+        latch.shield = shield
+        NetworkSetFriendlyFireOption(not shield)
+    end
+
+    -- THE RELATIONSHIP GROUP DIES WITH THE PED HANDLE, which is precisely why
+    -- the old comment said "per-frame like the rest" -- and a respawn is the
+    -- only thing that changes the handle. `due` is true on exactly that frame,
+    -- so the group is re-applied on the first frame of the new ped rather than
+    -- on all sixty of every second the old one was alive.
+    if due then
+        SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
+        SetCanAttackFriendly(ped, false, false)
+    end
 
     -- Peace while nobody can meaningfully fight back: the warmup pad, the
     -- bus ride, THE WHOLE DESCENT, and half a second after touchdown. The
@@ -1085,17 +1290,33 @@ function BR.Native.applyGameRules()
     -- burns to death under their own VICTORY ROYALE would be a spectacular way
     -- to reintroduce the bug from the other end. Nothing may kill you after the
     -- result is in; the placement is already awarded and published.
-    local st = BR.State.me.state
-    SetPlayerInvincible(pid,
+    -- ═══ KEYED ON THE ANSWER, AND IT HAS TO BE ═══
+    --
+    -- THE LAST TERM IS A CLOCK. `dropGraceUntil` makes this expression flip
+    -- from true to false at a moment when the player state, the match state
+    -- and the ped handle have all stayed exactly the same -- so `due` is FALSE
+    -- on the frame the grace runs out, and keying the write on `due` alone
+    -- would leave a landed player invincible until the next heartbeat.
+    --
+    -- Comparing the ANSWER catches it on the exact frame, which is the same
+    -- frame the old unconditional write caught it on. The expression itself is
+    -- pure Lua over values already in hand -- no native -- so evaluating it
+    -- every frame and writing only on a change costs a comparison.
+    local wantInvincible =
         st == BR.PlayerState.WARMUP
         or st == BR.PlayerState.BUS
         or st == BR.PlayerState.LOBBY
         or st == BR.PlayerState.FREEFALL
         or st == BR.PlayerState.GLIDE
         or st == BR.PlayerState.DBNO
-        or BR.State.match.state == BR.MatchState.ENDED
-        or BR.State.match.state == BR.MatchState.CLEANUP
-        or GetGameTimer() < (BR.State.dropGraceUntil or 0))
+        or mst == BR.MatchState.ENDED
+        or mst == BR.MatchState.CLEANUP
+        or now < (BR.State.dropGraceUntil or 0)
+
+    if due or wantInvincible ~= latch.invincible then
+        latch.invincible = wantInvincible
+        SetPlayerInvincible(pid, wantInvincible)
+    end
 
     -- YOUR PED IS THE LOBBY NOW, so it is no longer hidden there.
     --
@@ -1116,7 +1337,17 @@ function BR.Native.applyGameRules()
     --
     -- Nothing about visibility is negotiated between clients any more, which
     -- is the point: there is no property for two machines to disagree about.
-    SetEntityVisible(ped, st ~= BR.PlayerState.BUS, false)
+    --
+    -- Written on change, and `due` already covers the two things that could
+    -- undo it underneath us: the handle changing (a new ped is visible by
+    -- default, and the write that matters is the one hiding a BUS rider) and
+    -- the state changing, which is what this value is derived from anyway.
+    local wantVisible = st ~= BR.PlayerState.BUS
+    if due or wantVisible ~= latch.visible then
+        latch.visible = wantVisible
+        SetEntityVisible(ped, wantVisible, false)
+    end
+
     if st == BR.PlayerState.LOBBY then
         -- The lobby freeze: the ped must not walk, fall or ragdoll out of a
         -- locked shot. It deliberately never RELEASES here -- spawn placement
@@ -1317,12 +1548,37 @@ function BR.Native.applyGameRules()
     -- already gamemode-owned; the clock joins it. The SECONDS still spin
     -- (invisible at sun-angle scale) so any engine system that steps on
     -- clock deltas -- wetness decay is a suspect -- keeps stepping.
-    NetworkOverrideClockTime(12, 0, math.floor(GetGameTimer() / 1000) % 60)
+    --
+    -- ONCE A SECOND, WHICH IS EVERY TIME THE ARGUMENT CHANGES. The third
+    -- argument is whole seconds, so at 60fps this native was being handed the
+    -- IDENTICAL (12, 0, s) triple about sixty times per distinct value -- and
+    -- overriding the network clock is not a free write. Comparing the second
+    -- first makes the call happen exactly when the number it carries is new.
+    --
+    -- The seconds still spin at exactly the rate they did, which is the whole
+    -- of the note above: this drops fifty-nine redundant writes per second and
+    -- changes nothing about the sequence of values the engine sees.
+    local clockSec = math.floor(now / 1000) % 60
+    if clockSec ~= latch.clockSec then
+        latch.clockSec = clockSec
+        NetworkOverrideClockTime(12, 0, clockSec)
+    end
 
     -- Never let the engine's own death/respawn flow run; the gamemode owns it.
-    PauseDeathArrestRestart(true)
-    SetFadeOutAfterDeath(false)
-    IgnoreNextRestart(true)
+    --
+    -- LATCHING, AND RE-ARMED ON EVERY STATE CHANGE, which matters most for the
+    -- third one. PauseDeathArrestRestart and SetFadeOutAfterDeath are settings
+    -- the engine holds; IgnoreNextRestart is a one-shot the engine CONSUMES,
+    -- so the thing that must not happen is it being spent and left unarmed.
+    -- Dying is a player-state change, so `due` is true on that frame and all
+    -- three are re-asserted before the engine's restart path could run -- and
+    -- PauseDeathArrestRestart(true) has that path stopped regardless, which is
+    -- why this is a second line of defence rather than the only one.
+    if due then
+        PauseDeathArrestRestart(true)
+        SetFadeOutAfterDeath(false)
+        IgnoreNextRestart(true)
+    end
 end
 
 --- One-time world setup at resource start.
