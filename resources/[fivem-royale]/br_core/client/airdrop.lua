@@ -1,5 +1,5 @@
 -- Aerial supply drops, client half: the plane, the crate, its canopy, its two
--- flares, and the blip.
+-- flares, and its two blips (one per map surface -- see addBlip).
 --
 -- PRESENTATION ONLY. Nothing here decides anything: the server publishes the
 -- record (AIRDROP_SYNC) and this file solves the crate's position from it
@@ -100,8 +100,12 @@ local function isTrue(v)
     return v ~= nil and v ~= false and v ~= 0
 end
 
---- [n] = { rec, obj, chute, flares, plane, pilot, blip, gz, gzAt, spawning,
----         flying, warned, audio }
+--- [n] = { rec, obj, chute, flares, plane, pilot, blip, blipMini, gz, gzAt,
+---         spawning, flying, warned, audio }
+---
+--- `blip` AND `blipMini` ARE TWO REAL BLIPS FOR ONE DROP, restricted to the big
+--- map and to the minimap respectively so each can carry its own scale (owner,
+--- 2026-08-23). See addBlip.
 ---
 --- `flares` IS A BR.Flare SITE NOW, NOT AN ARRAY OF PROPS, and that is the
 --- shape change the third attempt needed. A site is "something that wants
@@ -144,7 +148,15 @@ local function removeDrop(n)
     if not d then return end
     dropPlane(d)
     dropProps(d)
+    -- BOTH SURFACES, IN ONE PLACE. The minimap half is a second real blip with
+    -- its own handle (see addBlip); missing it here would leave the radar
+    -- marking a crate that no longer exists, for the rest of the match, with
+    -- nothing left holding the handle.
     if d.blip and isTrue(DoesBlipExist(d.blip)) then RemoveBlip(d.blip) end
+    if d.blipMini and isTrue(DoesBlipExist(d.blipMini)) then
+        RemoveBlip(d.blipMini)
+    end
+    d.blip, d.blipMini = nil, nil
     -- THE RECORD IS THE SPAWN THREAD'S PERMISSION SLIP. A model stream takes
     -- frames, and a match can end inside them -- so the thread re-checks
     -- `d.rec` before it builds anything, and clearing it here is what turns
@@ -164,13 +176,56 @@ end
 -- The blip
 -- ---------------------------------------------------------------------------
 
---- Put this drop's marker on the map, if it is not already there.
+--- ═══ A DROP PUTS UP TWO BLIPS, ONE PER SURFACE (owner, 2026-08-23) ═══
+---
+--- "specifically the blip on the MINIMAP should show much smaller... The big map
+--- blip is perfect size"
+---
+--- THERE IS NO PER-SURFACE SCALE, which is the whole reason this is two objects
+--- and not one call. SET_BLIP_SCALE sets a single size that both the pause map
+--- and the minimap draw at, so "2.4 there, small here" is not reachable from one
+--- blip. What IS per-surface is DISPLAY, so each blip is restricted to one
+--- surface and carries its own scale. See br_lib/config/airdrop.lua for the
+--- SET_BLIP_DISPLAY enum and where it was read from.
+---
+--- BOTH ARE THE SAME DROP AND HAVE THE SAME LIFETIME. They go up together, are
+--- re-asserted together, and are removed together in removeDrop -- a second blip
+--- that outlived the first would be a marker for a crate that is not there.
+---
+--- @param d table
+--- @param key string     'blip' (big map) or 'blipMini' (minimap)
+--- @param display number
+--- @param scale number
+local function ensureBlip(d, key, display, scale)
+    -- INDEPENDENTLY, PER SURFACE. Sharing one existence check would mean
+    -- whichever blip a stray sweep took stayed gone for as long as the other one
+    -- survived, which is the failure this re-assertion exists to prevent.
+    if d[key] and isTrue(DoesBlipExist(d[key])) then return end
+
+    -- At the POI's nominal height -- the pause map only cares about x/y, and the
+    -- ground probe has almost certainly not run yet for a point kilometres away.
+    local b = AddBlipForCoord(d.rec.x, d.rec.y, d.rec.gz or 0.0)
+    SetBlipSprite(b, A.blipSprite or 161)
+    SetBlipColour(b, A.blipColour or 5)
+    SetBlipScale(b, scale)
+    SetBlipDisplay(b, display)
+    -- NOT short range: the whole point is that everyone in the match can see
+    -- where it is coming down, from wherever they are standing. On the minimap
+    -- half this is what keeps it pinned to the edge of the radar when the drop
+    -- is off-screen, rather than simply not being drawn.
+    SetBlipAsShortRange(b, false)
+    BR.Native.blipName(b, A.blipName or 'Airdrop')
+    d[key] = b
+end
+
+--- Put this drop's markers on the map, if they are not already there.
 ---
 --- IDEMPOTENT, AND CALLED FROM TWO PLACES ON PURPOSE. The record's arrival puts
---- it up immediately, and the render loop re-asserts it every frame the window
---- is open -- so a blip lost to anything at all (another resource sweeping
---- blips, a handle that went bad, a teardown that raced an arrival) comes back
---- on the next frame instead of leaving the match's one airdrop unfindable.
+--- them up immediately, and the render loop re-asserts them every frame the
+--- window is open -- so a blip lost to anything at all (another resource
+--- sweeping blips, a handle that went bad, a teardown that raced an arrival)
+--- comes back on the next frame instead of leaving the match's one airdrop
+--- unfindable.
 ---
 --- 161 IS A REGULAR SPRITE AND A COORD BLIP IS THE RIGHT CARRIER FOR IT.
 --- Checked against the Cfx blip reference after a playtest reported no marker:
@@ -183,19 +238,9 @@ end
 --- @param d table
 local function addBlip(d)
     if not d.rec then return end
-    if d.blip and isTrue(DoesBlipExist(d.blip)) then return end
-
-    -- At the POI's nominal height -- the pause map only cares about x/y, and the
-    -- ground probe has almost certainly not run yet for a point kilometres away.
-    local b = AddBlipForCoord(d.rec.x, d.rec.y, d.rec.gz or 0.0)
-    SetBlipSprite(b, A.blipSprite or 161)
-    SetBlipColour(b, A.blipColour or 5)
-    SetBlipScale(b, A.blipScale or 1.2)
-    -- NOT short range: the whole point is that everyone in the match can see
-    -- where it is coming down, from wherever they are standing.
-    SetBlipAsShortRange(b, false)
-    BR.Native.blipName(b, A.blipName or 'Airdrop')
-    d.blip = b
+    ensureBlip(d, 'blip',     A.blipDisplay or 3, A.blipScale or 1.2)
+    ensureBlip(d, 'blipMini', A.blipMinimapDisplay or 5,
+               A.blipMinimapScale or 0.8)
 end
 
 -- ---------------------------------------------------------------------------
@@ -830,9 +875,18 @@ RegisterCommand('brairdrop', function(_, args)
                                     .. ', falling to the authored height')
                                or ''))
         end
-        print(('    blip handle %s, exists %s, sprite %d')
+        -- BOTH SURFACES, SEPARATELY. "The blip is missing" is now two different
+        -- reports depending on which map they were looking at, and the sizes
+        -- are the owner's two tuning knobs -- so the line names the handle, the
+        -- display id and the scale of each rather than one blip's.
+        print(('    big-map blip %s exists %s (display %d, scale %.2f), '
+               .. 'minimap blip %s exists %s (display %d, scale %.2f), sprite %d')
             :format(tostring(d.blip),
                     tostring(d.blip and isTrue(DoesBlipExist(d.blip))),
+                    A.blipDisplay or 3, A.blipScale or 1.2,
+                    tostring(d.blipMini),
+                    tostring(d.blipMini and isTrue(DoesBlipExist(d.blipMini))),
+                    A.blipMinimapDisplay or 5, A.blipMinimapScale or 0.8,
                     A.blipSprite or 161))
         print(('    plane %s, pilot %s, crate %s (x%.1f), canopy %s (x%.1f)')
             :format(tostring(d.plane), tostring(d.pilot), tostring(d.obj),
@@ -864,16 +918,27 @@ RegisterCommand('brairdrop', function(_, args)
     -- counter is the only evidence that exists. A count that stays at zero
     -- while a drop is falling is a real answer; so is a count that climbs while
     -- the sky stays dark, and they are different bugs.
-    local st = BR.Flare.landedStatus()
+    local st = BR.Flare.status()
     print(('  flares: route %s, lit this session %d (failed %d)')
-        :format(tostring(st.route), BR.Flare.fired or 0, BR.Flare.failed or 0))
-    local fl = {}
-    for i, f in ipairs(st.flares) do
-        fl[#fl + 1] = ('%d:%s%s'):format(i, tostring(f.fx),
-            f.live and ' live' or ' DEAD')
+        :format(tostring(st.route), st.fired, st.failed))
+    -- ═══ AND THEY ONLY EXIST WHILE SOMETHING IS FALLING (owner, 2026-08-23) ═══
+    --
+    -- This used to print a third line about the pair standing on the landed
+    -- box. There is no such pair any more: the owner watched the husk collect
+    -- flares forever and asked for that half to go, keeping only the column the
+    -- descent leaves behind. So a count that climbs while a crate is in the air
+    -- and then STOPS is the correct reading, and a count still climbing after
+    -- touchdown is the bug this line would catch.
+    local live = {}
+    for n, d in pairs(drops) do
+        for i, f in ipairs((d.flares or {}).flares or {}) do
+            live[#live + 1] = ('drop %d #%d obj %s fx %s%s'):format(n, i,
+                tostring(f.obj), tostring(f.fx),
+                BR.Flare.live(f.fx) and ' live' or ' DEAD')
+        end
     end
-    print(('    on the landed box: %s, %d prop flare(s)%s')
-        :format(st.box and ('entity ' .. tostring(st.box)) or 'no box here',
-                #st.flares,
-                #fl > 0 and (' -- ' .. table.concat(fl, ', ')) or ''))
+    print(('    object-route props on the falling crate: %d%s')
+        :format(#live,
+                #live > 0 and (' -- ' .. table.concat(live, ', '))
+                          or ' (none, which is what the projectile route holds)'))
 end, false)

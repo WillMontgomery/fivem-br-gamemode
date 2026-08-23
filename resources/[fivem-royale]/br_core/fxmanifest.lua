@@ -136,12 +136,14 @@ client_scripts {
     -- loop registry; it is here because the mirror is what it reads.
     'client/driveby.lua',
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
-    -- The airdrop's flares: how one is lit, and where they go while the crate
-    -- falls and after it has landed. AFTER client/loot.lua for a READER rather
-    -- than for the loader -- its landed pass asks BR.Loot.airdropBox() where the
-    -- box is, at call time and nil-guarded, so the file that answers is declared
-    -- above the file that asks. It needs client/main.lua for the loop registry
-    -- and BR.Native (natives.lua) for the prop scale on the object route.
+    -- The airdrop's flares: how one is lit, and where they go WHILE THE CRATE
+    -- FALLS. It needs client/main.lua for the loop registry and BR.Native
+    -- (natives.lua) for the prop scale on the object route, and that is now the
+    -- whole of what it needs -- it used to be placed after client/loot.lua as
+    -- well, because a second pass in it asked BR.Loot.airdropBox() where the
+    -- landed box was. The owner asked for that pass to go (2026-08-23); nothing
+    -- here reads br_core/client/loot.lua any more, and this line stays where it
+    -- is only because these two files are a pair.
     --
     -- BEFORE client/airdrop.lua for the same reason in the other direction:
     -- that file hands this one two world positions per frame and holds a

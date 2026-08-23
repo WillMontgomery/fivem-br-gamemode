@@ -556,13 +556,53 @@ end)
 
 -- ---------------------------------------------------------------- admin ---
 
+--- The next drop number nobody in this match is using.
+---
+--- ═══ THE MANUAL VERBS CAN OUTNUMBER `perMatch`, SO `sent` IS NOT ENOUGH ═══
+---
+--- A drop number keys the client's `drops` table, `m.airdrop.landed`, and the
+--- `airdrop` field on the loot entry that carries an open back to this file. Two
+--- drops sharing one is not a cosmetic collision: the client's AIRDROP_SYNC
+--- handler treats a record whose `n` it already holds as a REPLACEMENT and tears
+--- the first drop down, so the second manual drop would silently delete the
+--- first one's blip and crate mid-flight.
+---
+--- `sent` ALONE WOULD DO EXACTLY THAT. It counts announcements, and a drop still
+--- sitting in `pending` has a number and has not been announced -- so with the
+--- scheduled drop 1 still pending, `sent + 1` is 1, which is already taken. This
+--- walks every stage instead. (The `<poiId>` verb used `sent + 1` and had the
+--- same latent collision; it comes through here now too.)
+--- @param st table
+--- @return integer
+local function nextDropNumber(st)
+    local n = st.sent or 0
+    for _, p in ipairs(st.pending or {}) do
+        if (p.n or 0) > n then n = p.n end
+    end
+    for _, list in ipairs({ st.waiting or {}, st.live or {} }) do
+        for _, w in ipairs(list) do
+            local k = w.rec and w.rec.n or 0
+            if k > n then n = k end
+        end
+    end
+    for k in pairs(st.landed or {}) do
+        if k > n then n = k end
+    end
+    return n + 1
+end
+
 --- Inspect or force a drop.
 ---
 ---   brairdrop              what this match's schedule is doing
----   brairdrop now          site the next pending drop immediately, under the
----                          real siting rules (so "no POI qualifies" is
----                          reproducible rather than theoretical). It still has
----                          to wait for somebody to come within armWithin.
+---   brairdrop now          site a drop immediately, under the real siting rules
+---                          (so "no POI qualifies" is reproducible rather than
+---                          theoretical). It still has to wait for somebody to
+---                          come within armWithin.
+---
+---                          AND IT IGNORES `perMatch` (owner, 2026-08-23:
+---                          "`brairdrop now` should be allowed multiple times
+---                          per match as it's a manual command and should
+---                          override our match limit"). See the verb below.
 ---   brairdrop arm          open the 200m gate by hand, for testing the descent
 ---                          without walking there
 ---   brairdrop <poiId>      site a drop on a named POI, bypassing the storm
@@ -644,17 +684,57 @@ RegisterCommand('brairdrop', function(_, args)
         return
     end
 
+    -- ═══ `now` IS NOT CAPPED BY `perMatch`, AND THE AUTOMATIC PATH STILL IS ═══
+    --
+    -- Owner, 2026-08-23: "`brairdrop now` should be allowed multiple times per
+    -- match as it's a manual command and should override our match limit."
+    --
+    -- WHERE THE CAP ACTUALLY LIVES, because that is what makes this two lines
+    -- rather than a flag: `perMatch` is read in exactly one place,
+    -- BR.Airdrop.begin, where it decides HOW MANY ENTRIES GO INTO `pending`. The
+    -- tick sites out of `pending` and nowhere else, so the automatic path is
+    -- capped by construction and stays capped -- nothing below touches
+    -- BR.Airdrop.begin, `perMatch`, or the tick.
+    --
+    -- This verb used to hold the same cap only by accident: it sited
+    -- `pending[1]`, and once the match's one scheduled drop had been sited there
+    -- was no pending[1] left, so it answered "nothing pending" for the rest of
+    -- the match. It now MANUFACTURES an entry when the queue is empty. A pending
+    -- entry is `{ n, dueAt, checkedAt }` and nothing more, so a manual drop is
+    -- not a special kind of drop -- it is an ordinary one that was never
+    -- scheduled, and every stage after this treats it identically.
+    --
+    -- ─── A SECOND `now` WHILE THE FIRST IS STILL WAITING TO ARM ───
+    --
+    -- Nothing is overwritten and nothing is cancelled: the new drop takes the
+    -- next free number (see nextDropNumber -- this is what that guards), so both
+    -- records live side by side in `st.waiting`, each with its own POI, payout,
+    -- blip and 200m gate, and the tick arms whichever one a player reaches
+    -- first. That is the honest reading of "allowed multiple times per match",
+    -- and it is also the only one that cannot corrupt state -- reusing the
+    -- number would make the client tear the first drop down, and refusing the
+    -- second would re-impose the cap the owner just asked to remove.
+    --
+    -- IT LEAVES `wait` PENDING, exactly as a scheduled entry would. If no POI
+    -- qualifies right now the manufactured entry stays in the queue and the tick
+    -- retries it on `retryEveryMs`, so a manual request that could not be
+    -- honoured this second is not silently thrown away.
     if arg == 'now' then
         local p = st.pending[1]
+        local forced = false
         if not p then
-            print('  nothing pending')
-            return
+            p = { n = nextDropNumber(st), dueAt = now, checkedAt = 0 }
+            table.insert(st.pending, 1, p)
+            forced = true
         end
         p.checkedAt = 0
         p.dueAt = now
         local outcome = trySite(m, p, now)
         if outcome ~= 'wait' then table.remove(st.pending, 1) end
-        print(('  %s'):format(outcome))
+        print(('  %s (drop %d, %s)'):format(outcome, p.n,
+            forced and ('manual -- perMatch is %d and this ignores it')
+                        :format(math.tointeger(A.perMatch or 1) or 1)
+                   or 'the drop this match already had scheduled'))
         return
     end
 
@@ -685,13 +765,23 @@ RegisterCommand('brairdrop', function(_, args)
     -- SITED, NOT ARMED. It goes through the same gate everything else does --
     -- forcing the POI bypasses the circle, not the owner's rule that somebody
     -- has to be there to watch. `brairdrop arm` is the second half.
-    local n = (st.sent or 0) + 1
+    --
+    -- THE NUMBER COMES FROM nextDropNumber, NOT FROM `sent`. This read
+    -- `sent + 1`, which collides with a scheduled drop still sitting in
+    -- `pending` -- and a collision here is the client tearing down whichever
+    -- drop held the number first. Same rule as `now`, one function.
+    local n = nextDropNumber(st)
     local rec = BR.BuildAirdropSite(n, poi, A.altitude or 260.0,
         now, st.rng:float() * 360.0)
     st.waiting[#st.waiting + 1] = {
         rec = rec, items = BR.AirdropPayout(st.rng, A), closest = math.huge,
     }
-    st.sent = n
+    -- COUNTED, NOT ASSIGNED. `sent` is how many drops this match has ANNOUNCED
+    -- -- that is what trySite does to it and what the status line reads it as --
+    -- and now that drop numbers can skip (nextDropNumber walks the stages rather
+    -- than counting), `sent = n` would quietly turn a counter into a high-water
+    -- mark and overstate the total.
+    st.sent = (st.sent or 0) + 1
     BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
     BR.Server.notify(BR.Server.audience(m), A.notifyText, 'info')
     print(('  sited drop %d on %s (%.0f, %.0f) -- it waits for a player within '

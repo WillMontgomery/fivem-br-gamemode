@@ -1,19 +1,37 @@
 -- The airdrop's flares: one place that knows how to light one, and where they
--- go while the crate falls and after it has landed.
+-- go WHILE THE CRATE FALLS. There is no other place.
 --
--- ═══ WHY THIS IS ITS OWN FILE, ON THE THIRD ATTEMPT ═══
+-- ═══ THE LANDED PASS IS GONE, AND IT IS NOT COMING BACK ═══
 --
--- The flares now have to exist in TWO places that have nothing to do with each
--- other. While the crate falls they hang off client/airdrop.lua's solver, a
--- pure function of the published record and the synced clock. Once it has
--- landed the box is an ordinary loot registry entry owned by client/loot.lua,
--- streamed in and out with every other crate on the map and re-skinned in place
--- when somebody opens it (owner, 2026-08-22: "there should be flares on the
--- husk too").
+-- Owner, 2026-08-22: "there should be flares on the husk too fwiw."
+-- Owner, 2026-08-23, having played it: "Seems the husk keeps getting more and
+-- more flares indefinitely though. The way you have it coded there are also
+-- free-falling flares which I did not expect but I LOVE it! If we drop the husk
+-- flares and keep the free-falling ones I'd be happy with that."
 --
--- Two copies of "light a flare" is how the two ends come to disagree about
--- which route, which weapon and which particle -- on a feature whose entire
--- history is that nobody could tell which of those was wrong.
+-- THEY SAW IT AND CHANGED THEIR MIND. This is a reversal of their own earlier
+-- request, not an oversight, and it is written down here because the earlier
+-- sentence is still quotable and will read like an unimplemented feature to
+-- whoever finds it next. DO NOT RE-ADD FLARES TO THE LANDED BOX OR ITS HUSK.
+--
+-- WHAT THE OWNER LOVES IS AN EMERGENT PROPERTY OF THE DESCENT, and it must not
+-- be "fixed" either. A projectile flare is lit AT A COORDINATE and stays where
+-- it was lit; the crate keeps falling away from it, so the cadence leaves a
+-- column of flares hanging in the air down the descent path. That is the
+-- "free-falling flares" in their message. It is what the code below already
+-- does and the whole of why it is allowed to look like that.
+--
+-- The landed box, by contrast, does not move -- so the same cadence stacked a
+-- new pair on it every 45 seconds for the rest of the match and never stopped,
+-- which is the "more and more flares indefinitely" they saw.
+--
+-- ═══ WHY THIS IS STILL ITS OWN FILE ═══
+--
+-- It was split out when the flares had to exist in two places at once. One of
+-- those places is gone, but "how to light a flare" is still three routes' worth
+-- of streaming, sentinel handling and native argument lists that client/
+-- airdrop.lua has no business carrying -- and the object route below still
+-- holds entities with a real teardown order.
 --
 -- ═══ THE FLARE IS A PROJECTILE. THAT IS THE WHOLE OF THE THIRD ATTEMPT. ═══
 --
@@ -398,10 +416,11 @@ end
 -- Sites
 -- ---------------------------------------------------------------------------
 --
--- A SITE IS "SOMETHING THAT WANTS FLARES AT MOVING POSITIONS", and there are
--- exactly two: the falling crate and the landed box. They differ in what they
--- ask for and in nothing else, so the route logic lives here once rather than
--- in client/airdrop.lua and in the landed pass separately.
+-- A SITE IS "SOMETHING THAT WANTS FLARES AT MOVING POSITIONS", and there is now
+-- exactly ONE: the falling crate. The abstraction outlived the second caller
+-- (see the landed-pass reversal at the top of this file) and is kept because it
+-- is what holds the route difference in one place -- client/airdrop.lua hands
+-- it positions and never learns which route is in force.
 --
 --   projectile  fire at each position when the refire clock is due, and hold
 --               nothing. The engine owns what it made.
@@ -496,79 +515,34 @@ function BR.Flare.positionsAround(x, y, z, heading)
 end
 
 -- ---------------------------------------------------------------------------
--- The pair on the landed box
+-- THERE IS NO PASS ON THE LANDED BOX (owner, 2026-08-23)
 -- ---------------------------------------------------------------------------
+--
+-- A `BR.Loop.TICK` job called 'flares.landed' lived here for a day. It asked
+-- BR.Loot.airdropBox() where the crate was and re-fired a pair of flares onto
+-- it every `flareRefireMs`, so the husk stayed lit for the rest of the match.
+--
+-- IT WORKED, THE OWNER PLAYED IT, AND THEY ASKED FOR IT TO GO -- see the
+-- reversal quoted at the top of this file. A landed box does not move, so the
+-- cadence that draws a burning column behind a FALLING crate just piles flares
+-- on a stationary one forever.
+--
+-- WHAT IT TOOK WITH IT: `flareOnLanded` and `flareRefireMs` in
+-- br_lib/config/airdrop.lua, and BR.Loot.airdropBox() in client/loot.lua, which
+-- existed for this one caller and had no other. Anything that wants flares on
+-- the ground again has to bring all four back, and should read the owner's
+-- 2026-08-23 message first.
 
---- The site standing on whatever the airdrop's box currently is.
+--- What the flares are doing, for /brflare and /brairdrop.
 ---
---- `box` is the ENTITY HANDLE it was last placed against, and it is the whole
---- of the carry-over: when a sealed crate becomes its husk the handle changes
---- and nothing in this site is rebuilt, because nothing in it is attached.
-local landed = { site = nil, box = nil }
-
-local function dropLanded()
-    BR.Flare.clearSite(landed.site)
-    landed.site, landed.box = nil, nil
-end
-
---- Keep flares on the airdrop's landed crate, and then on its husk.
----
---- 10Hz RATHER THAN PER FRAME. A landed box only moves when a car hits it, and
---- client/loot.lua's drag pass -- the thing that answers that -- is already on
---- this band.
----
---- COSTS ONE TABLE LOOKUP WHEN THERE IS NO AIRDROP ON THE GROUND, which is most
---- of every match: BR.Loot.airdropBox() reads a cached id rather than walking
---- the registry.
-BR.Loop.register(BR.Loop.TICK, 'flares.landed', function()
-    local A = cfg()
-    if A.flareOnLanded ~= true then
-        if landed.site then dropLanded() end
-        return
-    end
-
-    -- REACHED AT CALL TIME AND NIL-GUARDED. client/loot.lua owns the registry
-    -- and is loaded above this file, but a rig that stands this file up alone
-    -- must not need it.
-    local box = BR.Loot and BR.Loot.airdropBox and BR.Loot.airdropBox() or nil
-    if not box or not isTrue(DoesEntityExist(box)) then
-        -- THE BOX'S PROP IS STREAMED, AND THIS IS THE WHOLE LIFETIME RULE.
-        -- client/loot.lua despawns it past propDistance + propHysteresis and
-        -- rebuilds it on the way back; forgetAll() drops it at the end of the
-        -- match. Either way the accessor answers nil and the flares go with it,
-        -- so there is no second lifetime here that can outlive its box.
-        if landed.site then dropLanded() end
-        return
-    end
-
-    local c = GetEntityCoords(box)
-    if not c then return end
-    local h = GetEntityHeading(box)
-
-    landed.site = landed.site or BR.Flare.newSite()
-    -- ═══ THE BOX CAN CHANGE UNDERNEATH IT, AND THAT IS THE POINT ═══
-    --
-    -- A sealed crate becoming its husk is a NEW entity handle for the SAME
-    -- registry entry. Nothing above rebuilds on that, because nothing here is
-    -- attached to the handle -- the flares are written to the new box's
-    -- coordinates on the next pass and never notice. `landed.box` is recorded
-    -- for the diagnostic and read by nothing else.
-    landed.box = box
-
-    BR.Flare.updateSite(landed.site, GetGameTimer(),
-        A.flareRefireMs or 45000,
-        BR.Flare.positionsAround(c.x, c.y, c.z, h))
-end)
-
---- What the landed pair is doing, for /brflare and /brairdrop.
+--- ROUTE, AND TWO COUNTERS, AND THAT IS GENUINELY ALL THERE IS on the default
+--- route: a fired projectile has no handle, so `fired` and `failed` are the
+--- only evidence anywhere that the call was made. The falling site's own
+--- object-route handles are held by client/airdrop.lua, which prints them.
 --- @return table
-function BR.Flare.landedStatus()
-    local out = { box = landed.box, route = route(),
-                  lit = landed.site and landed.site.lit or 0, flares = {} }
-    for i, f in ipairs((landed.site or {}).flares or {}) do
-        out.flares[i] = { obj = f.obj, fx = f.fx, live = BR.Flare.live(f.fx) }
-    end
-    return out
+function BR.Flare.status()
+    return { route = route(), fired = BR.Flare.fired or 0,
+             failed = BR.Flare.failed or 0 }
 end
 
 -- ---------------------------------------------------------------------------
@@ -740,7 +714,6 @@ end, false)
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
     clearBench()
-    dropLanded()
     BR.Flare.forget()
     BR.Flare.fired, BR.Flare.failed = 0, 0
 end)

@@ -79,6 +79,18 @@ BR.Config.Airdrop = {
     -- one at all -- which the owner asked for explicitly. At 1.0 the roll
     -- always passes and the match always gets exactly `perMatch`, subject to
     -- the siting rule below.
+    --
+    -- ═══ IT CAPS THE AUTOMATIC PATH ONLY (owner, 2026-08-23) ═══
+    --
+    -- "`brairdrop now` should be allowed multiple times per match as it's a
+    -- manual command and should override our match limit."
+    --
+    -- This number is read in exactly one place -- BR.Airdrop.begin, which fills
+    -- `pending` with it -- and the scheduler sites out of `pending` and nowhere
+    -- else, so the automatic cap is structural. The console verbs (`now` and
+    -- `<poiId>`) manufacture their own entries and are deliberately not counted
+    -- against it. DO NOT RAISE THIS NUMBER TO GET MORE MANUAL DROPS: every one
+    -- added here is one more drop every match gets on its own.
     perMatch = 1,
     chance   = 1.0,
 
@@ -132,10 +144,12 @@ BR.Config.Airdrop = {
     --
     -- `planeAltAbove` is measured from the ground at the DROP POINT, not from
     -- the ground under the aircraft, and the run-in is planeSpeed * planeLeadMs
-    -- = about 1080m long. A ridge more than ~195m above the drop point within
-    -- that kilometre is now something the Cargobob flies through rather than
-    -- over. It has collision off (client/airdrop.lua), so that is a cosmetic
-    -- clip and never a crash -- but it was not reachable at 300m and it is now.
+    -- = about 540m long since the 2026-08-23 halving (it was 1080m). A ridge
+    -- more than ~195m above the drop point within that half-kilometre is
+    -- something the Cargobob flies through rather than over. It has collision
+    -- off (client/airdrop.lua), so that is a cosmetic clip and never a crash --
+    -- but it was not reachable at 300m and it is now. The shorter run-in halves
+    -- the stretch of map this can happen over; see `planeSpeed`.
     descentMs = 30000,
     altitude  = 170.0,
 
@@ -216,9 +230,39 @@ BR.Config.Airdrop = {
     -- no audio native fixes that.
     planeModel = 'cargobob',
     planePilot = 's_m_m_pilot_01',
-    -- Metres a second. 90 is about 175 knots -- a cargo run rather than a strike
-    -- package, and slow enough to be readable from the ground at 195m.
-    planeSpeed = 90.0,
+
+    -- ═══ HALVED, 2026-08-23, AND IT IS THE HONEST NUMBER RATHER THAN A TASTE
+    --     SETTING ═══
+    --
+    -- Owner, after the playtest: cut the Cargobob's speed by 50%.
+    --
+    -- 90 m/s is 201 mph. The note above records that a Cargobob does 99.5 mph,
+    -- which is the reason the model was chosen over the Titan -- so the aircraft
+    -- was flying at TWICE its own top speed and reading as a jet with rotors.
+    -- 45 m/s is 100.7 mph: the Cargobob's actual maximum, and the first value
+    -- here that the airframe could really hold.
+    --
+    -- ─── WHAT THIS DOES NOT CHANGE: THE LENGTH OF THE APPROACH ───
+    --
+    -- The run-in lasts `planeLeadMs` -- twelve seconds -- WHATEVER THIS NUMBER
+    -- IS. BR.AirdropPlaneVisible turns the aircraft on at tArm and the release
+    -- is planeLeadMs later; speed decides where it starts, not when. So
+    -- `planeLeadMs` is deliberately NOT compensated: doubling it to hold the old
+    -- run-in distance would add twelve seconds between the arm and the release,
+    -- delaying a crate whose arrival the owner has already confirmed as right
+    -- ("the airdrop arrived perfectly"), and buying nothing anybody can see.
+    --
+    -- ─── WHAT IT DOES CHANGE: WHERE THE RUN-IN BEGINS ───
+    --
+    -- planeSpeed * planeLeadMs was 1080m and is 540m. That is FURTHER INSIDE
+    -- normal vehicle draw distance rather than outside it, so if anything the
+    -- aircraft is visible for more of its approach than it was; and the terrain
+    -- clip the `altitude` note warns about now has half the corridor to go
+    -- wrong in. Both moves are in the right direction, which is why nothing else
+    -- here is adjusted to compensate.
+    --
+    -- Metres a second.
+    planeSpeed = 45.0,
     -- Metres ABOVE THE CRATE's release altitude, never an absolute z. Same rule
     -- as `altitude` above and for the same reason: only a client can ground-probe.
     --
@@ -729,24 +773,32 @@ BR.Config.Airdrop = {
     -- Negative, as every resource that does this passes it.
     flareSpeed   = -1.0,
 
-    -- ═══ HOW OFTEN A FLARE IS RE-FIRED, AND WHY THERE ARE TWO NUMBERS ═══
+    -- ═══ HOW OFTEN A FLARE IS RE-FIRED. ONE NUMBER, AND ONLY DURING THE FALL ═══
     --
     -- A FIRED FLARE BURNS OUT. AMMO_FLARE's LifeTime is 62.5s and its
     -- LifeTimeAfterExplosion is 60s, so a flare lit at the release is gone about
-    -- a minute later whatever we do -- which is fine for a 30s descent and is
-    -- NOT fine for a husk the owner wants marked for the rest of the match.
+    -- a minute later whatever we do -- which is fine for a 30s descent.
     --
-    --   `flareFallRefireMs` -- during the DESCENT. A flare fired in place stays
-    --      in place while the crate falls away from it, so the only way a
-    --      falling crate has flares beside it is to light a new one as it goes.
-    --      What that leaves behind is a burning column down the descent path,
-    --      which is the "smoke trails as it falls" the owner asked for on
-    --      2026-08-21, drawn by the engine instead of by us. At 3000ms a 30s
-    --      descent lights ten a side; they expire on their own about a minute
-    --      later and WE NEVER DELETE THEM -- see below.
+    -- A flare fired in place STAYS in place while the crate falls away from it,
+    -- so the only way a falling crate has flares beside it is to light a new one
+    -- as it goes. What that leaves behind is a burning column down the descent
+    -- path -- the "smoke trails as it falls" the owner asked for on 2026-08-21,
+    -- drawn by the engine instead of by us. At 3000ms a 30s descent lights ten a
+    -- side; they expire on their own about a minute later and WE NEVER DELETE
+    -- THEM -- see below.
     --
-    --   `flareRefireMs` -- on the LANDED crate and its husk. Just under the
-    --      vanilla burn time, so there is always one lit and rarely two.
+    -- ─── AND THE OWNER NAMED THAT COLUMN THE BEST PART (2026-08-23) ───
+    --
+    -- "there are also free-falling flares which I did not expect but I LOVE it!"
+    -- The flares hanging in the air behind the crate are not a bug and are not
+    -- a placeholder: they are what this cadence IS. Do not "fix" them into a
+    -- pair that tracks the box down.
+    --
+    -- THERE WAS A SECOND NUMBER HERE, `flareRefireMs`, for the landed crate and
+    -- its husk. It is gone with the pass that read it -- same message, same day:
+    -- "Seems the husk keeps getting more and more flares indefinitely though...
+    -- If we drop the husk flares and keep the free-falling ones I'd be happy
+    -- with that." See client/flares.lua.
     --
     -- ═══ WE DO NOT CLEAN THESE UP, AND THAT IS DELIBERATE ═══
     --
@@ -758,7 +810,6 @@ BR.Config.Airdrop = {
     -- answer is to let it: nothing here creates an object it cannot delete,
     -- because nothing here creates one at all.
     flareFallRefireMs = 3000,
-    flareRefireMs     = 45000,
 
     -- ------------------------------------------------------------------
     -- THE OBJECT ROUTE (the fallback, and the only observable one)
@@ -803,39 +854,36 @@ BR.Config.Airdrop = {
     flareOffset = { x = 1.1, y = 0.0, z = 0.0 },
 
     -- ------------------------------------------------------------------
-    -- ...AND THEY STAY ON THE BOX AFTER IT LANDS, THROUGH THE OPEN
+    -- ...AND THEY STOP AT TOUCHDOWN. THERE IS NO `flareOnLanded`.
     -- ------------------------------------------------------------------
     --
-    -- Owner, 2026-08-22: "there should be flares on the husk too fwiw."
+    -- ═══ THE OWNER ASKED FOR LANDED FLARES, SAW THEM, AND ASKED FOR THEM BACK
+    --     OUT. BOTH SENTENCES ARE HERE ON PURPOSE. ═══
     --
-    -- THE HUSK IS NOT A SECOND OBJECT, it is the same registry entry re-skinned
-    -- in place (server/loot.lua's openCrate: kind 'chest' -> 'husk', item
-    -- 'airdrop' -> 'airdrophusk', prop -> huskProp). client/loot.lua answers a
-    -- re-skin by DELETING the crate's prop and building the husk's, so anything
-    -- that lived on the crate's OBJECT would die with it -- which is exactly
-    -- what "the flares were torn down with the sealed crate" would mean.
+    -- 2026-08-22: "there should be flares on the husk too fwiw."
+    -- 2026-08-23: "Seems the husk keeps getting more and more flares
+    --   indefinitely though. The way you have it coded there are also
+    --   free-falling flares which I did not expect but I LOVE it! If we drop the
+    --   husk flares and keep the free-falling ones I'd be happy with that."
     --
-    -- SO THE LANDED FLARES ARE ATTACHED TO NOTHING. client/flares.lua asks
-    -- BR.Loot.airdropBox() where the box is and puts flares there; on the
-    -- projectile route it re-fires on `flareRefireMs`, on the object route it
-    -- keeps one pair alive and writes their coordinates. Either way the sealed
-    -- crate becoming its husk swaps the box UNDERNEATH the flares. On the object
-    -- route the two flare entities are never touched at all, which is a literal
-    -- carry-over rather than a rebuild that happens to look like one.
+    -- WHY IT LOOKED LIKE THAT, because the reason is the whole argument against
+    -- putting it back. A projectile flare is lit AT A COORDINATE and burns where
+    -- it was lit; we hold no handle and never delete one. Against a FALLING
+    -- crate the cadence therefore paints a column down the descent path and each
+    -- flare expires ~60s later -- self-limiting, and the part the owner loves.
+    -- Against a box that has stopped moving, the same cadence stacks a new pair
+    -- on the same spot every 45s until the match ends. Same code, same numbers;
+    -- the only difference is whether the target moves.
     --
-    -- THEY DIE WITH THE PROP AND COME BACK WITH IT. The box's prop is streamed:
-    -- client/loot.lua despawns it past `propDistance + propHysteresis` and
-    -- rebuilds it on the way back, and the accessor answers nil in between, so
-    -- the flares stop being placed and (on the object route) are deleted. At the
-    -- end of the match forgetAll() drops every entry and the same nil tears them
-    -- down for good. There is no second lifetime here to get wrong, and nothing
-    -- survives the match it belonged to -- except a projectile already in the
-    -- air, which the engine expires on its own within a minute.
+    -- A "fix" that capped the count, or deleted the old pair, would mean this
+    -- file creating flares it then has to find again -- and the only way to find
+    -- one is GetClosestObjectOfType with a radius, which on this map would just
+    -- as happily delete a flare somebody else lit. The owner's answer is
+    -- cheaper and better: there are no landed flares.
     --
-    -- 10Hz, NOT PER FRAME. A landed box only moves when a car hits it, and the
-    -- pass that answers that (client/loot.lua's `loot.crates` drag) is already
-    -- at 10Hz.
-    flareOnLanded = true,
+    -- SO DO NOT RE-ADD `flareOnLanded`, `flareRefireMs`, a landed pass in
+    -- client/flares.lua, or BR.Loot.airdropBox(). All four went together and all
+    -- four would have to come back.
 
     -- HOW FAR THE CRATE TURNS OVER THE WHOLE DESCENT, in degrees. A crate under
     -- a canopy that never turns reads as a prop sliding down an invisible rail.
@@ -869,11 +917,66 @@ BR.Config.Airdrop = {
     blipColour = 5,      -- the same yellow the loot blips use
     -- TWICE THE SIZE (owner, 2026-08-22: "The blip needs to be 2x larger
     -- please."). 1.2 was the value they saw; this is that, doubled.
+    --
+    -- THIS IS THE BIG MAP'S SIZE AND ONLY THE BIG MAP'S (owner, 2026-08-23:
+    -- "The big map blip is perfect size"). Do not retune it to fix the minimap
+    -- -- that is `blipMinimapScale` below.
     blipScale  = 2.4,
     -- Named, or GTA names the sprite after whatever mission it was drawn for
     -- and the pause-menu legend reads as something from a heist -- the lesson
     -- client/loot.lua's courtesy blips already paid for.
     blipName   = 'Airdrop',
+
+    -- ------------------------------------------------------------------
+    -- ...AND IT IS TWO BLIPS, ONE PER SURFACE
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-23: "specifically the blip on the MINIMAP should show much
+    -- smaller. I believe there's a bliptype we can use that only shows on the
+    -- big map and one that only shows on the minimap. The big map blip is
+    -- perfect size"
+    --
+    -- ═══ THEY ARE RIGHT, AND SET_BLIP_SCALE IS THE REASON IT TAKES TWO ═══
+    --
+    -- There is no per-surface scale. SET_BLIP_SCALE sets ONE size and both
+    -- surfaces draw at it, so a single blip cannot be 2.4 on the pause map and
+    -- small on the minimap however it is configured. What CAN be restricted per
+    -- surface is DISPLAY -- SET_BLIP_DISPLAY (0x9029B2F3DA924928) -- so the
+    -- drop puts up two blips at the same coordinate, each shown on one surface
+    -- only and each carrying its own scale. client/airdrop.lua builds,
+    -- re-asserts and tears down both together.
+    --
+    -- ═══ THE ENUM, CHECKED RATHER THAN REMEMBERED ═══
+    --
+    -- Read off citizenfx/natives HUD/SetBlipDisplay.md -- the file
+    -- docs.fivem.net renders -- because the blog-level sources disagree with it
+    -- and with each other (one widely-copied post has 8 as "minimap only"; it is
+    -- not, it is BOTH surfaces, not selectable). The documented table:
+    --
+    --   0, 1, 7  nowhere at all
+    --   2, 6     both surfaces, selectable on the map
+    --   3, 4     MAIN MAP ONLY, selectable
+    --   5, 9     MINIMAP ONLY
+    --   8, 10+   both surfaces, not selectable
+    --
+    -- 3 AND 5 ARE ALSO THE TWO ROCKSTAR ACTUALLY SHIPS. That same file records
+    -- that the decompiled scripts only ever use 0, 2, 3, 4, 5 and 8 -- so of the
+    -- pairs that would work (3/4 and 5/9) these are the halves with vanilla
+    -- mileage behind them, which is the difference between a documented value
+    -- and an exercised one.
+    --
+    -- AND THEY ARE CONFIG VALUES, NOT LITERALS, for exactly that reason: this
+    -- repo has been bitten by a documented enum being wrong before (the audio
+    -- priority above, where MAX is 2 and HIGH is 3). If the split comes out
+    -- backwards in-game, these two numbers swap and nothing else moves.
+    blipDisplay        = 3,     -- big map only
+    blipMinimapDisplay = 5,     -- minimap only
+    -- "MUCH smaller" against a big map blip staying at 2.4. A third of it, and
+    -- below GTA's own default of 1.0 -- the minimap is a corner of the screen
+    -- and the drop is one point on it, where the pause map is the whole screen
+    -- and the ripple is meant to read as an area. This is the number to turn if
+    -- it is still wrong; `blipScale` is not.
+    blipMinimapScale   = 0.8,
 
     -- ------------------------------------------------------------------
     -- HOW LONG THE BLIP LIVES, WHICH IS NOW A DIFFERENT QUESTION

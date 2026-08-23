@@ -191,21 +191,33 @@ do
     ok((A.flareEpsilon or 1.0) < 0.01,
         'and a tiny one, or the flare flies off instead of standing still')
 
-    -- ═══ THE TWO CADENCES, AGAINST THE ONE NUMBER THAT BOUNDS THEM BOTH ═══
+    -- ═══ ONE CADENCE, AND IT ONLY APPLIES WHILE SOMETHING IS FALLING ═══
     --
-    -- AMMO_FLARE's LifeTime is 62.5s. A landed flare re-lit less often than
-    -- that leaves the husk dark between flares, which is the owner's request
-    -- ("there should be flares on the husk too") quietly not happening.
-    ok((A.flareRefireMs or 0) > 0 and (A.flareRefireMs or 0) < 62500,
-        'the landed cadence re-lights before the vanilla 62.5s burn ends, so '
-        .. 'the husk is never dark')
-    -- And the descent has to light more than one, or a "trail" is one flare
-    -- hanging at the release altitude while the crate falls away from it.
+    -- The descent has to light more than one, or a "trail" is one flare hanging
+    -- at the release altitude while the crate falls away from it.
     ok((A.flareFallRefireMs or 0) > 0
        and (A.flareFallRefireMs or 0) * 2 <= (A.descentMs or 0),
-        'and the descent cadence fires at least twice on the way down, which is '
+        'the descent cadence fires at least twice on the way down, which is '
         .. 'what makes a trail rather than a dot')
-    eq(A.flareOnLanded, true, 'and the landed box gets flares at all')
+
+    -- ═══ AND THE LANDED KNOBS ARE GONE, WHICH IS THE ASSERTION ═══
+    --
+    -- Owner, 2026-08-23: "Seems the husk keeps getting more and more flares
+    -- indefinitely though... If we drop the husk flares and keep the
+    -- free-falling ones I'd be happy with that."
+    --
+    -- A LANDED BOX DOES NOT MOVE, so the cadence that paints a column behind a
+    -- falling crate just stacks pairs on a stationary one until the match ends.
+    -- These two keys are what drove that pass; asserting they are ABSENT is what
+    -- stops somebody restoring the config half of the feature and wondering why
+    -- nothing reads it. The behavioural half is pinned in 'client: a landed box
+    -- never gets flares' below.
+    eq(A.flareOnLanded, nil,
+        'flareOnLanded is gone -- the owner watched the husk collect flares '
+        .. 'forever and asked for that half back out')
+    eq(A.flareRefireMs, nil,
+        'and the landed cadence with it, because nothing re-lights a box that '
+        .. 'has stopped moving')
 
     -- The object route is the fallback and its numbers still have to be sane,
     -- because it is one console command away and it is what gets reached for
@@ -262,6 +274,34 @@ do
     ok(mps > 4.0 and mps < 7.5,
         ('the crate falls at %.1f m/s, which is still a canopy rather than a '
          .. 'feather or a rock'):format(mps))
+
+    -- ═══ AND IT SLOWED DOWN, 2026-08-23, BY HALF ═══
+    --
+    -- Owner, after the playtest: cut the Cargobob's speed by 50%. A literal,
+    -- because the number it replaced was not a taste setting that drifted -- 90
+    -- m/s is 201 mph and a Cargobob does 99.5, so the aircraft was flying at
+    -- twice the top speed of the airframe the model was chosen FOR.
+    eq(A.planeSpeed, 45.0, 'the Cargobob flies at half what it did')
+    local mph = A.planeSpeed * 2.23694
+    ok(mph > 90.0 and mph < 110.0,
+        ('%.0f mph, which is what the airframe can actually hold -- the 201 mph '
+         .. 'it was doing is not a Cargobob'):format(mph))
+
+    -- ═══ AND `planeLeadMs` IS DELIBERATELY NOT COMPENSATED ═══
+    --
+    -- The run-in lasts planeLeadMs whatever the speed is -- the aircraft is
+    -- switched on at tArm and the release is planeLeadMs later -- so halving the
+    -- speed shortens the run-in in METRES and not in seconds. Doubling the lead
+    -- to hold 1080m would put twelve extra seconds between the arm and the
+    -- release, on an arrival the owner has already confirmed as right. This line
+    -- is what fails if somebody "restores" the old distance.
+    eq(A.planeLeadMs, 12000,
+        'and the approach is still twelve seconds long, because that is the '
+        .. 'half a slower aircraft does not change')
+    local runIn = A.planeSpeed * (A.planeLeadMs / 1000.0)
+    ok(near(runIn, 540.0),
+        ('so the run-in starts %.0fm out rather than 1080m -- further INSIDE '
+         .. 'vehicle draw distance, not outside it'):format(runIn))
 
     -- ═══ MAX IS 2. HIGH IS 3. THE ENUM IS NOT IN ASCENDING ORDER. ═══
     --
@@ -1467,6 +1507,94 @@ do
     A.perMatch = real
 end
 
+describe('server: `brairdrop now` overrides perMatch, and only it does')
+do
+    -- ═══ THE OWNER'S 2026-08-23 REQUEST, AND ITS OTHER HALF ═══
+    --
+    -- "`brairdrop now` should be allowed multiple times per match as it's a
+    -- manual command and should override our match limit."
+    --
+    -- The cap it is overriding is `perMatch`, which is read in ONE place --
+    -- BR.Airdrop.begin, filling `pending` -- and the tick sites out of `pending`
+    -- and nowhere else. So this block has to prove two things at once: the verb
+    -- ignores the cap, AND the cap still binds everything that is not the verb.
+    reset()
+    eq(A.perMatch, 1, 'the match limit is still one, and is not raised to fix '
+                      .. 'this -- that would give every match more drops')
+
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    eq(#m.airdrop.pending, 1, 'so the schedule holds exactly one drop')
+
+    -- THE FIRST `now` SPENDS THE SCHEDULED ONE. Nothing new yet: this is the
+    -- verb doing what it always did.
+    commands['brairdrop'](0, { 'now' }, '')
+    eq(#m.airdrop.pending, 0, 'the first `now` spends the scheduled drop')
+    eq(#m.airdrop.waiting, 1, 'which is sited and waiting for a player')
+    local first = m.airdrop.waiting[1].rec
+    eq(first.n, 1, 'as drop 1')
+
+    -- ═══ AND THE SECOND ONE IS THE WHOLE FEATURE ═══
+    --
+    -- This printed 'nothing pending' and did nothing at all before today: the
+    -- queue was empty, and an empty queue was the cap.
+    commands['brairdrop'](0, { 'now' }, '')
+    eq(#m.airdrop.waiting, 2, 'a second `now` sites another drop anyway')
+    local second = m.airdrop.waiting[2].rec
+    ok(second.n ~= first.n,
+        'on a number of its own, not the first one\'s',
+        ('%s vs %s'):format(tostring(first.n), tostring(second.n)))
+
+    -- ═══ A SECOND MANUAL DROP DOES NOT CORRUPT THE FIRST, WHICH IS STILL
+    --     UN-ARMED ═══
+    --
+    -- THE DROP NUMBER IS WHY THIS IS AN ASSERTION AND NOT AN ASSUMPTION. The
+    -- client's AIRDROP_SYNC handler treats a record carrying an `n` it already
+    -- holds as a REPLACEMENT and tears the first drop down -- so a colliding
+    -- number would mean the second /brairdrop now silently deleted the first
+    -- drop's blip and crate. `sent + 1` collides exactly like that while a
+    -- scheduled entry is still pending, which is why there is a nextDropNumber.
+    ok(m.airdrop.waiting[1].rec == first,
+        'the first drop is still the first entry, untouched')
+    eq(#m.airdrop.live, 0, 'and neither is armed -- both are still waiting')
+    ok(m.airdrop.waiting[1].items ~= m.airdrop.waiting[2].items,
+        'each carries its own payout rather than sharing one')
+
+    -- Both were announced to the match, as two records.
+    local ns = {}
+    for _, p in ipairs(published) do
+        if p.event == BR.Net.AIRDROP_SYNC then ns[p.payload.n] = true end
+    end
+    ok(ns[first.n] and ns[second.n], 'and both records went out over the wire')
+
+    -- ═══ THE GATE IS PER DROP, SO ARMING ONE LEAVES THE OTHER WAITING ═══
+    --
+    -- The one thing a second concurrent drop could plausibly break: a player
+    -- walking to one of them must not dispatch the aircraft for both.
+    standAt(m.id * 100 + 1, second.x, second.y, 0.0)
+    tick()
+    eq(#m.airdrop.live, 1, 'a player reaching one drop arms exactly one')
+    eq(m.airdrop.live[1].rec.n, second.n, 'the one they walked to')
+    eq(#m.airdrop.waiting, 1, 'and the other is still waiting for somebody')
+
+    -- ...and it keeps working. "Multiple times" is not "twice".
+    clearRoster()
+    commands['brairdrop'](0, { 'now' }, '')
+    commands['brairdrop'](0, { 'now' }, '')
+    eq(#m.airdrop.waiting, 3, 'a third and fourth are no different from the second')
+
+    -- ═══ AND NOW THE HALF THAT MUST NOT HAVE MOVED ═══
+    --
+    -- The AUTOMATIC path is `perMatch` entries in `pending` and a tick that
+    -- sites out of `pending`. A fresh match must still get exactly one, however
+    -- many times the console was used on the last one.
+    local auto = newMatch(2)
+    BR.Airdrop.begin(auto)
+    eq(#auto.airdrop.pending, 1,
+        'a new match still schedules exactly perMatch drops on its own')
+    eq(auto.airdrop.sent or 0, 0, 'having announced none of them yet')
+end
+
 describe('server: enabled')
 do
     reset()
@@ -2191,10 +2319,11 @@ function IsModelValid(m)
 end
 function PlayerPedId() return 1 end
 --- WHERE AN ENTITY IS, and it has to be per-entity rather than always the
---- player: client/flares.lua asks the LANDED BOX where it is, and a rig that
---- answered the player's position for every handle would place the husk's
---- flares wherever the player happened to be standing and still pass every
---- distance check.
+--- player: the crate, the canopy, the aircraft and the object route's flare
+--- props are all separate handles at separate places, and a rig that answered
+--- the player's position for every one of them would put every part of a drop
+--- wherever the player happened to be standing and still pass every distance
+--- check.
 function GetEntityCoords(e)
     local t = ents[e] or vehicles[e] or peds[e]
     if t then return t end
@@ -2309,6 +2438,12 @@ function SetBlipSprite(b, s) if blips[b] then blips[b].sprite = s end end
 function SetBlipColour(b, c) if blips[b] then blips[b].colour = c end end
 function SetBlipScale(b, s) if blips[b] then blips[b].scale = s end end
 function SetBlipAsShortRange(b, v) if blips[b] then blips[b].shortRange = v end end
+--- WHICH SURFACE THIS BLIP IS DRAWN ON. A drop puts up two blips at the same
+--- coordinate -- one restricted to the big map, one to the minimap -- because
+--- SetBlipScale is per BLIP and not per surface, and the owner wants two
+--- different sizes (2026-08-23). Recorded rather than nooped: which display id
+--- landed on which blip IS the feature.
+function SetBlipDisplay(b, d) if blips[b] then blips[b].display = d end end
 
 Citizen = {
     -- Synchronous, so the model-load thread finishes inside the call that
@@ -2383,18 +2518,24 @@ function SetAudioVehiclePriority(veh, pri)
     audioCalls[#audioCalls + 1] = { veh = veh, pri = pri }
 end
 
---- The landed airdrop box client/flares.lua asks about, stubbed rather than
---- standing up the whole of client/loot.lua. THE HANDLE IS THE POINT: a sealed
---- crate becoming its husk is a NEW entity handle for the SAME registry entry,
---- and the carry-over test below changes exactly this number and asserts that
---- the flares do not notice.
-local lootBox = nil
-BR.Loot = { airdropBox = function() return lootBox end }
+--- ═══ A BAITED ACCESSOR, KEPT ON PURPOSE AFTER ITS CALLER WAS DELETED ═══
+---
+--- BR.Loot.airdropBox() was the landed box's whereabouts, and client/flares.lua
+--- asked it ten times a second so it could stand a pair of flares there. The
+--- owner asked for that back out on 2026-08-23 and the real accessor is gone
+--- from br_core/client/loot.lua with it.
+---
+--- THE STUB STAYS, AND IT COUNTS. "No flares appear on the husk" can be
+--- satisfied by a landed pass that runs and quietly fails -- a model that will
+--- not load, a route that returns early. Counting the calls asserts the
+--- stronger and simpler thing: NOBODY IS ASKING WHERE THE BOX IS. It is also
+--- what fails loudly if the accessor is ever reintroduced upstream.
+local lootBox, boxAsked = nil, 0
+BR.Loot = { airdropBox = function() boxAsked = boxAsked + 1 return lootBox end }
 
 loadAll({ 'br_core/client/flares.lua', 'br_core/client/airdrop.lua' })
 
 local render = loops['airdrop.render']
-local landedPass = loops['flares.landed']
 
 local function clientReset()
     -- onResourceStop is also what drops the cached flare model and weapon
@@ -2493,6 +2634,29 @@ local function oneBlip()
     return nil
 end
 
+--- How many blips exist at all.
+local function blipCount()
+    local n = 0
+    for _ in pairs(blips) do n = n + 1 end
+    return n
+end
+
+--- A drop puts up TWO blips at the same coordinate, restricted to one map
+--- surface each, because SetBlipScale is per blip and not per surface and the
+--- owner wants two different sizes (2026-08-23). These pick them apart by the
+--- only thing that distinguishes them.
+--- @param display number
+--- @return table|nil
+local function blipOn(display)
+    for _, b in pairs(blips) do
+        if b.display == display then return b end
+    end
+    return nil
+end
+
+local function mapBlip()  return blipOn(A.blipDisplay) end
+local function miniBlip() return blipOn(A.blipMinimapDisplay) end
+
 local function oneEnt()
     local first = nil
     for h in pairs(ents) do
@@ -2516,28 +2680,83 @@ local function crateMove()
     return nil
 end
 
-describe('client: the blip')
+describe('client: the blip, which is two blips')
 do
+    -- ═══ ONE DROP, TWO MARKERS, ONE PER MAP SURFACE (owner, 2026-08-23) ═══
+    --
+    -- "specifically the blip on the MINIMAP should show much smaller... The big
+    -- map blip is perfect size"
+    --
+    -- THERE IS NO PER-SURFACE SCALE, which is the entire reason this is two
+    -- objects. SetBlipScale sets ONE size that both the pause map and the
+    -- minimap draw at, so no single blip can be 2.4 on one and small on the
+    -- other. What is per-surface is DISPLAY (SET_BLIP_DISPLAY), so the drop puts
+    -- up two blips at the same coordinate and restricts each to one surface.
     clientReset()
     announce()
 
-    local b = oneBlip()
-    ok(b ~= nil, 'a blip goes up the moment the drop is announced')
-    eq(b.sprite, A.blipSprite, 'with the sprite the owner asked for')
-    eq(b.colour, A.blipColour, 'and the configured colour')
-    -- THE SIZE IS THE OWNER'S TOO (2026-08-22: "The blip needs to be 2x larger
-    -- please."), and it is drawn from the config rather than a literal here so
-    -- the number has one home.
-    eq(b.scale, A.blipScale, 'and the configured scale, which is now 2x')
-    ok(b.shortRange == false,
-        'and it is NOT short range -- everyone in the match must see it')
-    eq(b.name, A.blipName, 'and it is named, so the legend is not a heist')
+    eq(blipCount(), 2, 'a drop puts up two blips, not one')
 
-    -- A re-send replaces rather than stacking a second blip on the same drop.
+    ok(mapBlip()  ~= nil, 'one restricted to the big map')
+    ok(miniBlip() ~= nil, 'and one restricted to the minimap')
+    -- EMPTY RATHER THAN nil FROM HERE DOWN. If the split regresses to one blip
+    -- the two lines above are the diagnosis, and the twenty below should report
+    -- what else broke rather than indexing nil and taking the whole suite with
+    -- them.
+    local big  = mapBlip()  or {}
+    local mini = miniBlip() or {}
+
+    -- ═══ THE ENUM, PINNED AS LITERALS ═══
+    --
+    -- These are the two numbers the whole feature rests on and the ONE part of
+    -- it that cannot be checked from inside Lua -- SET_BLIP_DISPLAY returns
+    -- void and nothing reads a blip's display back. They are pinned as literals
+    -- rather than against the config so that a config edit which breaks the
+    -- split fails here, and they are checked against citizenfx/natives
+    -- HUD/SetBlipDisplay.md: 3 and 4 are main map only, 5 and 9 are minimap
+    -- only, 2/6 are both-selectable and 8/10 are both-not-selectable. The
+    -- blog-level sources disagree with that table and with each other -- one
+    -- widely-copied post calls 8 "minimap only", which it is not -- so the value
+    -- and its provenance are written down together.
+    eq(A.blipDisplay, 3,
+        'the big map blip is display 3, which is main-map-only in the Cfx table')
+    eq(A.blipMinimapDisplay, 5,
+        'and the minimap one is 5, which is minimap-only -- and both are values '
+        .. 'Rockstar\'s own scripts use, unlike 4 and 9')
+    ok(A.blipDisplay ~= A.blipMinimapDisplay,
+        'and they differ, or both blips land on the same surface at two sizes')
+
+    -- ═══ THE SIZES, WHICH ARE THE POINT OF THE SPLIT ═══
+    eq(big.scale, A.blipScale,
+        'the big map keeps the size the owner called perfect')
+    eq(A.blipScale, 2.4, 'which is still the 2x they asked for on 2026-08-22')
+    eq(mini.scale, A.blipMinimapScale, 'and the minimap gets its own')
+    ok(A.blipMinimapScale < A.blipScale,
+        'which is smaller -- the whole request',
+        ('%.2f vs %.2f'):format(A.blipMinimapScale, A.blipScale))
+    -- "MUCH smaller", not a nudge. A 10% trim would satisfy the line above and
+    -- would not be what was asked for.
+    ok(A.blipMinimapScale <= A.blipScale * 0.5,
+        'and MUCH smaller -- at most half, rather than a nudge')
+
+    -- ═══ AND EVERYTHING ELSE IS IDENTICAL ON BOTH ═══
+    --
+    -- They are two renderings of one drop. A sprite or colour that drifted
+    -- between them would read as two different things on two different maps.
+    for _, b in ipairs({ big, mini }) do
+        eq(b.sprite, A.blipSprite, 'with the sprite the owner asked for')
+        eq(b.colour, A.blipColour, 'and the configured colour')
+        ok(b.shortRange == false,
+            'and it is NOT short range -- everyone in the match must see it, '
+            .. 'and on the minimap that is what pins it to the edge')
+        eq(b.name, A.blipName, 'and it is named, so the legend is not a heist')
+        ok(b.x ~= nil and near(b.x, 100.0) and near(b.y, 200.0),
+            'and both stand at the drop point')
+    end
+
+    -- A re-send replaces rather than stacking another pair on the same drop.
     announce()
-    local n = 0
-    for _ in pairs(blips) do n = n + 1 end
-    eq(n, 1, 'a re-sent record replaces rather than duplicating')
+    eq(blipCount(), 2, 'a re-sent record replaces rather than duplicating')
 end
 
 describe('client: the plane flies, then leaves')
@@ -2645,20 +2864,31 @@ do
     announce(260.0, 30000)
     render()
 
-    local before = oneBlip()
-    ok(before ~= nil, 'there is a blip')
+    eq(blipCount(), 2, 'there are two blips')
     for h in pairs(blips) do RemoveBlip(h) end
-    eq(oneBlip(), nil, 'something took it away')
+    eq(oneBlip(), nil, 'something took them away')
 
     render()
-    ok(oneBlip() ~= nil, 'and the next frame puts it back')
+    eq(blipCount(), 2, 'and the next frame puts both back')
+
+    -- ═══ AND EACH SURFACE COMES BACK ON ITS OWN ═══
+    --
+    -- The two blips have separate handles, so a sweep can take one and leave
+    -- the other. Sharing one existence check would mean whichever half survived
+    -- kept the other half missing for as long as it lived -- the exact failure
+    -- this re-assertion exists to prevent, reintroduced by the fix for it.
+    local mini = miniBlip()
+    for h, b in pairs(blips) do if b == mini then RemoveBlip(h) end end
+    eq(miniBlip(), nil, 'the minimap half alone is taken')
+    ok(mapBlip() ~= nil, 'while the big map half survives')
+    render()
+    ok(miniBlip() ~= nil, 'and the minimap half comes back on its own')
+    eq(blipCount(), 2, 'without a second big-map blip appearing beside it')
 
     -- ONCE, THOUGH. Re-asserting has to be idempotent or a frame loop makes a
     -- blip per frame and the pause map fills with sixty copies a second.
     render(); render(); render()
-    local n = 0
-    for _ in pairs(blips) do n = n + 1 end
-    eq(n, 1, 'and exactly one, however many frames pass')
+    eq(blipCount(), 2, 'and exactly two, however many frames pass')
 
     -- BUT NOT AFTER THE WINDOW CLOSES. A blip that reappeared forever would be
     -- worse than one that vanished early.
@@ -2696,8 +2926,16 @@ do
     local joined = table.concat(said, '\n')
     ok(joined:find('clock', 1, true) ~= nil,
         'it reports the clock, which is the number that broke this')
-    ok(joined:find('blip handle', 1, true) ~= nil,
-        'and whether a blip actually exists')
+    -- ═══ BOTH BLIPS, SEPARATELY, BECAUSE "THE BLIP IS MISSING" IS NOW TWO
+    --     DIFFERENT REPORTS ═══
+    --
+    -- Which surface the owner was looking at decides which half is broken, and
+    -- a diagnostic that printed one handle would answer the wrong question half
+    -- the time.
+    ok(joined:find('big-map blip', 1, true) ~= nil,
+        'and whether the big map blip actually exists')
+    ok(joined:find('minimap blip', 1, true) ~= nil,
+        'and the minimap one, which is a separate blip with its own handle')
     ok(joined:find('flares', 1, true) ~= nil, 'and what was built')
 end
 
@@ -2997,129 +3235,94 @@ do
         'and it is still not stored, because the effect is not running')
 end
 
-describe('client: the flares survive the crate becoming its husk')
+describe('client: a landed box never gets flares, however long anybody waits')
 do
-    -- ═══ THE OWNER'S SECOND REQUEST, AND THE ONE STRUCTURAL CLAIM IN IT ═══
+    -- ═══ THE OWNER ASKED FOR LANDED FLARES, PLAYED THEM, AND ASKED FOR THEM
+    --     BACK OUT. THIS BLOCK IS THE SECOND HALF. ═══
     --
-    -- Owner, 2026-08-22: "there should be flares on the husk too fwiw."
+    -- 2026-08-22: "there should be flares on the husk too fwiw."
+    -- 2026-08-23: "Seems the husk keeps getting more and more flares
+    --   indefinitely though... If we drop the husk flares and keep the
+    --   free-falling ones I'd be happy with that."
     --
-    -- A husk is the SAME registry entry re-skinned in place, and client/loot.lua
-    -- answers a re-skin by DELETING the crate's prop and building the husk's.
-    -- So anything parented to that object would die with it -- which is exactly
-    -- what "torn down with the sealed crate" would mean.
+    -- WHY IT ACCUMULATED, because that is what this is really pinning. A
+    -- projectile flare is lit AT A COORDINATE and burns where it was lit, and we
+    -- hold no handle to delete one. Against a FALLING crate the cadence paints a
+    -- column down the descent path and each flare expires on its own -- the part
+    -- the owner loves, pinned in 'client: the falling crate lights real flares'.
+    -- Against a box that has STOPPED, the same cadence stacked a new pair on the
+    -- same spot every 45 seconds until the match ended.
     --
-    -- The flares are parented to nothing. They follow whatever
-    -- BR.Loot.airdropBox() names, so changing the handle underneath them is the
-    -- open, and this block is that change.
+    -- THE ONLY HONEST TEST OF "IT NEVER HAPPENS" IS A CLOCK THAT RUNS. Asserting
+    -- zero on one pass would also pass with the landed job merely not due yet,
+    -- which is the state the bug spent its first 45 seconds in.
     clientReset()
-    A.flareRoute = 'object'
 
-    -- No box on the ground: no flares.
-    lootBox = nil
-    landedPass()
-    eq(#entsOfModel(flareProp()), 0, 'no box on the ground, no flares')
+    -- The registry job that did this is gone, and its name going with it is
+    -- part of the removal: a re-registered 'flares.landed' is how this comes
+    -- back without anybody meaning it to.
+    eq(loops['flares.landed'], nil,
+        'there is no landed-flare job in the loop registry at all')
+    eq(BR.Flare.landedStatus, nil,
+        'and nothing left exporting what it was doing')
 
-    -- The sealed crate lands and streams in.
-    lootBox = 4001
-    ents[4001] = { model = A.huskProp, x = 5.0, y = 6.0, z = 7.0 }
-    landedPass()
-    local sealedFlares = entsOfModel(flareProp())
-    eq(#sealedFlares, 2, 'the landed crate gets a flare on each side')
-
-    -- ═══ THE OPEN. A NEW HANDLE FOR THE SAME ENTRY. ═══
-    ents[4001] = nil
-    lootBox = 4002
-    ents[4002] = { model = A.huskProp, x = 5.0, y = 6.0, z = 7.0 }
-    landedPass()
-
-    local huskFlares = entsOfModel(flareProp())
-    eq(#huskFlares, 2, 'the husk has flares too')
-    -- AND THEY ARE THE SAME TWO ENTITIES. This is the whole assertion: not
-    -- "there are two flares afterwards" (a rebuild satisfies that) but "they
-    -- were never torn down". A tear-down-and-rebuild would answer with fresh
-    -- handles, because the rig hands out a new one every CreateObjectNoOffset.
-    eq(huskFlares[1], sealedFlares[1],
-        'and they are the SAME entities -- carried over, not rebuilt')
-    eq(huskFlares[2], sealedFlares[2], 'both of them')
-
-    -- ...and they moved to the husk. The husk is at the same place here, so
-    -- assert on the offset rather than on a jump: each flare is one offset from
-    -- the box it is now following.
-    for _, h in ipairs(huskFlares) do
-        ok(near(BR.Dist(ents[h].x, ents[h].y, 5.0, 6.0),
-                A.flareOffset.x, 0.001),
-            'placed one offset from the husk')
-    end
-
-    -- ═══ AND ON OPPOSITE SIDES OF IT, WHICH THE LINE ABOVE DOES NOT SAY ═══
-    --
-    -- Both flares stacked on the same side of the husk is one offset from it
-    -- for each of them, and passes every check above. A mutation pass proved
-    -- exactly that -- flipping the sign in BR.Flare.positionsAround survived --
-    -- which is the same escape the DESCENT flares had in an earlier round and
-    -- the same fix. Left and right is the owner's whole instruction, and the
-    -- landed pair has to honour it as much as the falling one.
-    ok(near(BR.Dist(ents[huskFlares[1]].x, ents[huskFlares[1]].y,
-                    ents[huskFlares[2]].x, ents[huskFlares[2]].y),
-            A.flareOffset.x * 2.0, 0.001),
-        'and a full diameter apart -- one offset, two signs',
-        ('%.3f apart'):format(BR.Dist(
-            ents[huskFlares[1]].x, ents[huskFlares[1]].y,
-            ents[huskFlares[2]].x, ents[huskFlares[2]].y)))
-
-    -- The heading rotates them, so a box turned 90 degrees has its flares on
-    -- the other axis. Pinned because BR.Flare.positionsAround builds the right
-    -- vector by hand, and (cos, sin) written as (sin, cos) is the convention
-    -- error br_lib/shared/airdrop_solve.lua warns about in as many words.
-    ents[4002].heading = 90.0
-    landedPass()
-    ok(near(ents[huskFlares[1]].y - 6.0, A.flareOffset.x, 0.001)
-       or near(ents[huskFlares[2]].y - 6.0, A.flareOffset.x, 0.001),
-        'a box turned 90 degrees puts its flares on the other axis')
-    ents[4002].heading = 0.0
-    landedPass()
-
-    -- ═══ AND THEY GO WHEN THE BOX DOES ═══
-    --
-    -- The box's prop is streamed: client/loot.lua despawns it out of range and
-    -- forgetAll() drops it at the end of the match. Either way the accessor
-    -- answers nil, and that nil is the flares' ENTIRE lifetime rule -- there is
-    -- no second clock here that can outlive its box.
-    local stoppedBefore = #fxStopped
-    lootBox = nil
-    landedPass()
-    eq(#entsOfModel(flareProp()), 0, 'the box goes, and the flares go with it')
-    eq(#fxStopped - stoppedBefore, 2,
-        'with both emitters stopped before their props were deleted')
-
-    -- ...and they come back when it streams back in.
-    lootBox = 4003
-    ents[4003] = { model = A.huskProp, x = 5.0, y = 6.0, z = 7.0 }
-    landedPass()
-    eq(#entsOfModel(flareProp()), 2, 'and rebuilt when the box streams back in')
-end
-
-describe('client: the landed box gets fired flares on the default route')
-do
-    clientReset()
+    -- A crate on the ground, streamed in, exactly as client/loot.lua would have
+    -- presented it -- and now with nothing that asks about it.
     lootBox = 4101
     ents[4101] = { model = A.huskProp, x = 5.0, y = 6.0, z = 7.0 }
 
-    landedPass()
-    eq(#shots, 2, 'the husk is lit by two real flares')
-    eq(entCount(), 1, 'and no flare object of ours exists -- only the box')
+    local shotsBefore = #shots
+    local entsBefore  = entCount()
+    boxAsked = 0
 
-    landedPass()
-    eq(#shots, 2, 'a second pass inside the cadence lights nothing new')
+    -- TEN MINUTES OF A MATCH, at the cadence that used to fire. The old pass ran
+    -- at 10Hz off BR.Loop.TICK and re-fired every 45s, so this window is about
+    -- thirteen pairs it would have produced.
+    for _ = 1, 20 do
+        gameMs = gameMs + 45000
+        for _, fn in pairs(loops) do fn() end
+    end
 
-    -- ═══ THE CADENCE IS WHAT KEEPS THE HUSK LIT ═══
+    eq(#shots - shotsBefore, 0,
+        'ten minutes pass over a landed crate and not one flare is fired at it')
+    eq(entCount() - entsBefore, 0,
+        'and no flare prop is built either -- the box is still the only entity')
+    -- THE STRONGER FORM OF THE SAME CLAIM. Zero flares is also what a landed
+    -- pass that ran and failed would produce; zero QUESTIONS is only what a
+    -- landed pass that does not exist produces.
+    eq(boxAsked, 0,
+        'because nothing asked where the box was -- the accessor has no callers')
+
+    -- ═══ AND NOT ON THE OBJECT ROUTE EITHER ═══
     --
-    -- AMMO_FLARE burns for 62.5s. A husk the owner wants marked for the rest of
-    -- the match needs a new flare before the last one dies, which is the only
-    -- thing `flareRefireMs` is for.
-    gameMs = gameMs + (A.flareRefireMs or 45000)
-    landedPass()
-    eq(#shots, 4, 'and the husk is re-lit before the last flare burns out')
+    -- The object route is one console command away and is what gets reached for
+    -- when the projectile route shows nothing, so "no landed flares" has to be
+    -- true on both or the feature comes back the moment somebody debugs it.
+    A.flareRoute = 'object'
+    for _ = 1, 20 do
+        gameMs = gameMs + 45000
+        for _, fn in pairs(loops) do fn() end
+    end
+    eq(#entsOfModel(flareProp()), 0,
+        'and the object route builds none on it either')
+    A.flareRoute = 'projectile'
+
+    -- ═══ THE HUSK IS THE CASE THE OWNER NAMED, SO IT IS NAMED HERE ═══
+    --
+    -- A sealed crate becoming its husk is a NEW entity handle for the SAME
+    -- registry entry. That handle change was the trigger the old pass followed;
+    -- nothing follows it now.
+    ents[4101] = nil
+    lootBox = 4102
+    ents[4102] = { model = A.huskProp, x = 5.0, y = 6.0, z = 7.0 }
+    for _ = 1, 20 do
+        gameMs = gameMs + 45000
+        for _, fn in pairs(loops) do fn() end
+    end
+    eq(#shots - shotsBefore, 0,
+        'and the husk it becomes collects none, which is the exact sentence '
+        .. 'the owner reversed')
+    eq(boxAsked, 0, 'and the handle change was never even looked at')
 end
 
 describe('client: the audio priority receipt is honest about what it knows')
