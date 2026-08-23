@@ -77,6 +77,112 @@ function BR.BuildAirdropRecord(n, poi, alt, tStart, tLand, heading, tRelease)
     }
 end
 
+--- A record for a drop that has been SITED and ANNOUNCED but is not falling.
+---
+--- ═══ THE ANNOUNCEMENT AND THE DESCENT ARE TWO EVENTS NOW ═══
+---
+--- Owner, 2026-08-22: "the drop should never happen until a player is within
+--- 200m of the drop location. That way they get to see the drop happen."
+---
+--- A gate on "is somebody near the drop" is circular unless they have already
+--- been told where it is. So the server sites the POI and announces it at
+--- schedule time -- blip up, notification out, a place named -- and this is the
+--- record that carries that. It has a `tStart` and NO `tRelease` and NO `tLand`,
+--- because nothing is in the air: those two are the descent, and the descent is
+--- what waits.
+---
+--- EVERY PREDICATE BELOW ANSWERS "NO" TO AN UNARMED RECORD -- released, landed,
+--- plane visible, progress. The blip is the only thing a record in this state
+--- draws, which is exactly what it is for.
+--- @param n integer
+--- @param poi table
+--- @param alt number
+--- @param tStart number
+--- @param heading number|nil
+--- @return table
+function BR.BuildAirdropSite(n, poi, alt, tStart, heading)
+    return {
+        n       = n,
+        poi     = poi.id,
+        x       = poi.x + 0.0,
+        y       = poi.y + 0.0,
+        gz      = (poi.z or 0.0) + 0.0,
+        alt     = alt + 0.0,
+        heading = (heading or 0.0) + 0.0,
+        tStart  = tStart + 0.0,
+        -- tArm, tRelease and tLand are absent until somebody turns up.
+    }
+end
+
+--- Somebody came. Start the descent.
+---
+--- MUTATES THE RECORD IN PLACE AND THE SERVER RE-BROADCASTS IT. The client's
+--- AIRDROP_SYNC handler has always treated a record arriving with an `n` it
+--- already holds as a replacement, so the second send is the whole mechanism --
+--- the same one the open uses to stamp `tOpen`.
+---
+--- `tArm` IS NOT DECORATION AND IS NOT tRelease. It is when the WAIT ENDED, and
+--- it is what the blip's four-minute ceiling is measured from once a drop has
+--- armed. Measuring that ceiling from `tStart` would mean a drop that waited
+--- three minutes for somebody has its blip expire twelve seconds after the crate
+--- touches down -- and, worse, the client's teardown fires on the same
+--- predicate, so the whole drop would be destroyed mid-descent.
+--- @param rec table
+--- @param now number
+--- @param cfg table|nil  BR.Config.Airdrop
+--- @return table rec
+function BR.ArmAirdropRecord(rec, now, cfg)
+    if not rec then return rec end
+    cfg = cfg or {}
+    rec.tArm     = now + 0.0
+    rec.tRelease = now + (cfg.planeLeadMs or 0)
+    rec.tLand    = rec.tRelease + (cfg.descentMs or 30000)
+    return rec
+end
+
+--- Is this drop actually falling -- or has it merely been announced?
+---
+--- ONE FIELD ANSWERS IT, and it is `tLand` rather than a flag: a record either
+--- has a landing time or it does not, and a separate boolean would be a second
+--- thing to keep in step with it.
+--- @param rec table|nil
+--- @return boolean
+function BR.AirdropArmed(rec)
+    return rec ~= nil and rec.tLand ~= nil
+end
+
+--- How far the CLOSEST of these players is from (x, y), on the ground.
+---
+--- ═══ GROUND LEVEL TO GROUND LEVEL, AND THAT IS THE POINT ═══
+---
+--- Owner, 2026-08-22: "measured by the distance between the drop (at ground
+--- level) and the closest player". So z is not in it at all: a crate 260m up is
+--- 260m from somebody standing directly underneath it, and a gate that counted
+--- the altitude would be gating on how high the plane flies rather than on how
+--- far anybody has to walk.
+---
+--- PURE, so the gate can be tested outside the game -- which matters more here
+--- than usual, because the alternative is proving it by getting 48 people to
+--- stand in the right places.
+---
+--- `players` is an array of { x = , y = }; anything without both is skipped
+--- rather than counted as being at the origin, which is a real position on this
+--- map and would open the gate for a drop near Vespucci.
+--- @param players table[]
+--- @param x number
+--- @param y number
+--- @return number   metres; math.huge when nobody qualifies
+function BR.AirdropClosest(players, x, y)
+    local best = math.huge
+    for _, p in ipairs(players or {}) do
+        if p and type(p.x) == 'number' and type(p.y) == 'number' then
+            local d = BR.Dist(p.x, p.y, x, y)
+            if d < best then best = d end
+        end
+    end
+    return best
+end
+
 -- ---------------------------------------------------------------------------
 -- Siting
 -- ---------------------------------------------------------------------------
@@ -279,7 +385,12 @@ end
 --- @param now number  server time
 --- @return number
 function BR.AirdropProgress(rec, now)
-    if not rec then return 1.0 end
+    -- AN UNARMED RECORD HAS NOT STARTED, NOT FINISHED. A drop that has been
+    -- announced and is waiting for somebody to come within 200m has no tLand at
+    -- all, and the old arithmetic would have read that missing number as zero
+    -- and reported the crate fully descended -- which is the wrong end of the
+    -- fall and the same shape as the 2026-08-22 teardown bug.
+    if not BR.AirdropArmed(rec) then return 0.0 end
     local from = rec.tRelease or rec.tStart or 0.0
     local span = (rec.tLand or 0.0) - from
     if span <= 0.0 then return 1.0 end
@@ -295,7 +406,11 @@ end
 --- @param now number
 --- @return boolean
 function BR.AirdropReleased(rec, now)
-    if not rec then return false end
+    -- NOTHING IS RELEASED FROM AN AIRCRAFT THAT HAS NOT BEEN SENT. A sited drop
+    -- carries a tStart and no tRelease, and falling back to tStart here would
+    -- put a crate in the sky the instant the blip appeared -- which is the whole
+    -- of what the 200m gate exists to prevent.
+    if not BR.AirdropArmed(rec) then return false end
     return now >= (rec.tRelease or rec.tStart or 0.0)
 end
 
@@ -324,9 +439,15 @@ end
 --- @param cfg table|nil  BR.Config.Airdrop
 --- @return boolean
 function BR.AirdropPlaneVisible(rec, now, cfg)
-    if not rec then return false end
+    -- NO AIRCRAFT UNTIL THE DROP IS ARMED. It used to arrive with the
+    -- announcement; the announcement now happens minutes earlier, while the
+    -- drop waits for somebody to come within 200m, and a Titan circling for
+    -- those minutes is exactly the empty-sky flyover the gate was added to stop.
+    if not BR.AirdropArmed(rec) then return false end
     cfg = cfg or {}
-    if now < (rec.tStart or 0.0) then return false end
+    -- FROM THE ARM, NOT FROM tStart. `tArm` is when the wait ended and the
+    -- aircraft was dispatched; tStart is when the blip went up.
+    if now < (rec.tArm or rec.tStart or 0.0) then return false end
     return now <= (rec.tRelease or rec.tStart or 0.0)
                 + (cfg.planeTrailMs or 15000)
 end
@@ -436,7 +557,10 @@ end
 --- @param now number
 --- @return boolean
 function BR.AirdropLanded(rec, now)
-    if not rec then return false end
+    -- A drop that is still waiting to be sent has not landed, and asking it
+    -- would have indexed a nil tLand. The server's own tick reads this to decide
+    -- when to put the crate on the ground.
+    if not BR.AirdropArmed(rec) then return false end
     return now >= rec.tLand
 end
 
@@ -454,13 +578,37 @@ end
 --- crate is opened, or no longer than 4 minutes if unopened, which would also
 --- be the case if nobody got to the location in time"):
 ---
----   opened at rec.tOpen  ->  rec.tOpen  + afterOpenMs
----   never opened         ->  rec.tStart + maxMs
+---   opened at rec.tOpen  ->  rec.tOpen           + afterOpenMs
+---   never opened         ->  (rec.tArm or tStart) + maxMs
+---
+--- CONFIRMED VERBATIM (owner, 2026-08-22): "The blip should be 4 minutes. If
+--- nobody opens it. If someone opens it, the blip should remain for 1 minute
+--- after opening. That's what I meant, which I guess could total to 5."
 ---
 --- MEASURED FROM tStart AND NOT FROM tLand, which is a change of origin as well
 --- as of number. The old window was "a minute after it lands"; the ceiling now
 --- covers the announcement, the plane's run-in, the fall AND the search, because
 --- that whole span is time the owner spent not knowing where to go.
+---
+--- ═══ AND FROM tArm ONCE THERE IS ONE, WHICH IS THE 200m GATE'S DOING ═══
+---
+--- The ceiling now has two jobs, and they are the same instant seen from two
+--- sides. Before the drop arms it is the DEADLINE FOR SOMEBODY TO TURN UP --
+--- "the allotted time" in the owner's sentence about no drop happening -- and
+--- the server abandons the drop at exactly the moment the blip goes out, so the
+--- two cannot disagree. After it arms it is the ordinary unopened-blip life.
+---
+--- SO THE CLOCK RESTARTS AT THE ARM, and it has to. A drop that waited three
+--- minutes for somebody would otherwise have its blip expire twelve seconds
+--- after the crate touched down -- and far worse, the client's teardown fires on
+--- this same boundary, so the entire drop would be destroyed mid-descent with a
+--- crate visibly in the air. One clock for two jobs only works if it is reset
+--- when the job changes.
+---
+--- IN PRACTICE THE POST-ARM CEILING IS ALMOST NEVER REACHED, because the gate
+--- guarantees somebody was within 200m at the moment it armed: they open it, and
+--- `tOpen + afterOpenMs` governs. It is a backstop for the player who died on
+--- the way or thought better of it.
 ---
 --- OPENING IT MAKES THE WINDOW SHORTER IN THE ORDINARY CASE and that is the
 --- intent, not an oversight: a drop opened forty seconds after it lands has one
@@ -480,7 +628,7 @@ function BR.AirdropBlipEndsAt(rec, cfg)
     if rec.tOpen then
         return rec.tOpen + (cfg.blipAfterOpenMs or 60000)
     end
-    return (rec.tStart or 0.0) + (cfg.blipMaxMs or 240000)
+    return (rec.tArm or rec.tStart or 0.0) + (cfg.blipMaxMs or 240000)
 end
 
 --- Should the map blip be up?

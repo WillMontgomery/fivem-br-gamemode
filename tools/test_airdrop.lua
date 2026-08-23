@@ -913,6 +913,48 @@ do
         'no record, no position')
 end
 
+describe('the 200m gate: how far the closest player is')
+do
+    -- Owner, 2026-08-22: "measured by the distance between the drop (at ground
+    -- level) and the closest player".
+    --
+    -- ═══ GROUND LEVEL TO GROUND LEVEL, WHICH IS WHY z IS NOT IN IT ═══
+    --
+    -- A crate 260m up is 260m from somebody standing directly underneath it, so
+    -- a gate that counted the altitude would be gating on how high the plane
+    -- flies rather than on how far anybody has to walk -- and at the committed
+    -- 260m altitude and 200m threshold it would never open at all.
+    eq(BR.AirdropClosest({ { x = 100.0, y = 0.0 } }, 0.0, 0.0), 100.0,
+        'one player, one distance')
+    eq(BR.AirdropClosest({
+        { x = 900.0, y = 0.0 }, { x = 40.0, y = 0.0 }, { x = 300.0, y = 0.0 },
+    }, 0.0, 0.0), 40.0, 'the CLOSEST of several, not the first or the last')
+
+    local far = BR.AirdropClosest({ { x = 0.0, y = 0.0, z = 5000.0 } }, 0.0, 0.0)
+    eq(far, 0.0, 'a player 5km STRAIGHT UP is zero metres away on the ground')
+
+    -- NOBODY IS NOT ZERO. An empty list has to be "infinitely far", because a
+    -- zero would open the gate for a match with no players in it -- which is
+    -- precisely the case the whole feature exists to refuse.
+    eq(BR.AirdropClosest({}, 0.0, 0.0), math.huge, 'nobody is infinitely far')
+    eq(BR.AirdropClosest(nil, 0.0, 0.0), math.huge, 'and so is no list at all')
+
+    -- A MALFORMED ENTRY IS SKIPPED, NOT COUNTED AS THE ORIGIN. (0, 0) is a real
+    -- place on this map -- it is in the ocean south-west of Los Santos, but a
+    -- POI near it would have its gate opened by a player with no position.
+    eq(BR.AirdropClosest({ { x = nil, y = nil }, { x = 10.0, y = 0.0 } },
+        0.0, 0.0), 10.0, 'a player with no position is skipped, not placed at 0,0')
+    eq(BR.AirdropClosest({ {} }, 0.0, 0.0), math.huge,
+        'and a list of nothing but those is still nobody')
+
+    -- The threshold itself is the owner's number and is pinned so a retune has
+    -- to be deliberate.
+    eq(A.armWithin, 200.0, 'the gate is the owner\'s 200 metres')
+    ok(A.planeViewRadius == nil,
+        'and the client-side view radius it replaced is GONE rather than left '
+        .. 'as a second gate on an answered question')
+end
+
 describe('descent: the blip window')
 do
     -- ═══ THE OWNER'S NEW RULE, WHICH HAS TWO BRANCHES AND A CHANGE OF ORIGIN ═══
@@ -1149,6 +1191,38 @@ BR.Server = {
     latestMatch = function() return matches[#matches] end,
 }
 
+--- WHERE THE MATCH'S PLAYERS ARE, for the 200m gate (owner, 2026-08-22: "the
+--- drop should never happen until a player is within 200m of the drop
+--- location"). Keyed by server id, exactly as the real roster is.
+---
+--- EMPTY BY DEFAULT, and that is the interesting default rather than a lazy
+--- one: a match nobody is standing in is the case where the drop must NOT
+--- happen, and it is the one every existing test in this file was written
+--- against without knowing it.
+local roster = {}
+BR.Roster = {
+    get = function(src) return roster[src] end,
+}
+
+--- Put a player `dist` metres from a point, so the gate can be opened or held
+--- open at will.
+--- @param src integer
+--- @param x number
+--- @param y number
+--- @param dist number   metres east of (x, y)
+--- @param state string|nil  defaults to ALIVE
+local function standAt(src, x, y, dist, state)
+    roster[src] = {
+        pos = { x = x + dist, y = y, z = 0.0 },
+        state = state or BR.PlayerState.ALIVE,
+    }
+end
+
+--- Nobody anywhere near anything.
+local function clearRoster()
+    roster = {}
+end
+
 BR.Broadcast = {
     toMatch = function(m, event, payload)
         published[#published + 1] = { m = m, event = event, payload = payload }
@@ -1190,10 +1264,27 @@ end
 local function reset()
     matches = {}
     published, notices, spawned, logs = {}, {}, {}, {}
+    clearRoster()
     gameMs = gameMs + 10000000
 end
 
 local function tick() jobs['airdrop.tick']() end
+
+--- Put a player on top of the drop that has just been sited, so the 200m gate
+--- opens on the next tick.
+---
+--- MOST BLOCKS BELOW WANT THIS IMMEDIATELY AFTER THE SITING, because they are
+--- about the descent, the payout or the landing and not about the gate -- and
+--- before 2026-08-22 the descent started on its own. The blocks that ARE about
+--- the gate call standAt directly.
+--- @param m table
+--- @return table|nil rec
+local function somebodyTurnsUp(m)
+    local w = m.airdrop and m.airdrop.waiting[1]
+    if not w then return nil end
+    standAt(m.id * 100 + 1, w.rec.x, w.rec.y, 0.0)
+    return w.rec
+end
 
 --- ANNOUNCEMENT TO TOUCHDOWN, which is the plane's run-in PLUS the fall.
 --- Every block below that wants "wind the clock forward until it lands" wants
@@ -1273,7 +1364,7 @@ do
     A.enabled = true
 end
 
-describe('server: committing a drop')
+describe('server: siting a drop, and then arming it')
 do
     reset()
     local m = newMatch(1)
@@ -1281,29 +1372,77 @@ do
     m.airdrop.pending[1].dueAt = gameMs
     tick()
 
-    eq(#published, 1, 'one record goes out')
+    -- ═══ THE ANNOUNCEMENT COMES FIRST, AND NOTHING IS FLYING ═══
+    --
+    -- Owner, 2026-08-22: "the drop should never happen until a player is within
+    -- 200m of the drop location." A gate on that is CIRCULAR unless the match
+    -- has already been told where to go -- nobody would ever be within 200m
+    -- except by accident. So the siting still announces, and only the descent
+    -- waits.
+    eq(#published, 1, 'one record goes out at schedule time')
     eq(published[1].event, BR.Net.AIRDROP_SYNC, 'on the airdrop channel')
-    eq(#m.airdrop.live, 1, 'and the drop is in flight')
+    eq(#m.airdrop.waiting, 1, 'and the drop is waiting for somebody to turn up')
+    eq(#m.airdrop.live, 0, 'with nothing whatsoever in the air')
     eq(#m.airdrop.pending, 0, 'and no longer pending')
 
-    local rec = published[1].payload
-    -- THREE TIMESTAMPS, AND THE MIDDLE ONE IS THE PLANE'S RUN-IN. Announced at
-    -- tStart, released at tStart + planeLeadMs, on the ground descentMs after
-    -- that. A record that collapsed the first two would be a crate appearing in
-    -- the sky the instant the notification fires, with a plane already leaving.
-    ok(rec.tRelease - rec.tStart == A.planeLeadMs,
-        'the plane gets planeLeadMs between the announcement and the release',
-        ('%s'):format(tostring(rec.tRelease - rec.tStart)))
+    local sited = published[1].payload
+    ok(sited.poi ~= nil, 'the record names the POI it is landing on')
+    ok(sited.x ~= nil and sited.y ~= nil, 'and where that is, so a blip can go up')
+    -- NO LANDING TIME. This is what tells every predicate that nothing has been
+    -- released -- BR.AirdropArmed reads exactly this field.
+    eq(sited.tLand, nil, 'but it carries NO landing time...')
+    eq(sited.tRelease, nil, '...and no release time...')
+    eq(sited.tArm, nil, '...and no arm time')
+    ok(not BR.AirdropArmed(sited), 'so it is not armed')
+
+    -- And everyone was told anyway, which is the entire point of the ordering.
+    eq(#notices, 1, 'the match is told at the ANNOUNCEMENT, not at the arm')
+
+    -- NOBODY IS ANYWHERE NEAR IT, so ticking changes nothing at all.
+    for _ = 1, 5 do
+        gameMs = gameMs + 1000
+        tick()
+    end
+    eq(#m.airdrop.live, 0, 'ticking with an empty map arms nothing')
+    eq(#published, 1, 'and re-announces nothing')
+
+    -- ...and being CLOSE IS NOT CLOSE ENOUGH.
+    standAt(101, sited.x, sited.y, (A.armWithin or 200.0) + 1.0)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 0, 'a player one metre outside the radius does not arm it')
+
+    -- ═══ AND THEN SOMEBODY ARRIVES ═══
+    standAt(101, sited.x, sited.y, A.armWithin or 200.0)
+    gameMs = gameMs + 1000
+    local armedAt = gameMs
+    tick()
+    eq(#m.airdrop.waiting, 0, 'standing exactly on the radius arms it')
+    eq(#m.airdrop.live, 1, 'and the drop is in flight')
+    eq(#published, 2, 'and the record is re-sent')
+
+    local rec = published[2].payload
+    ok(rec == sited, 'the SAME record, mutated and re-broadcast -- a re-send '
+        .. 'replaces, so there is no new message')
+    ok(BR.AirdropArmed(rec), 'and now it is armed')
+    eq(rec.tArm, armedAt, 'stamped with the moment the wait ended')
+
+    -- THREE TIMESTAMPS, AND THE MIDDLE ONE IS THE PLANE'S RUN-IN. Released at
+    -- tArm + planeLeadMs, on the ground descentMs after that. A record that
+    -- collapsed the first two would be a crate appearing in the sky the instant
+    -- the gate opened, with a plane already leaving.
+    ok(rec.tRelease - rec.tArm == A.planeLeadMs,
+        'the plane gets planeLeadMs between the arm and the release',
+        ('%s'):format(tostring(rec.tRelease - rec.tArm)))
     ok(rec.tLand - rec.tRelease == A.descentMs,
         'and the descent is descentMs long, measured from the RELEASE',
         ('%s'):format(tostring(rec.tLand - rec.tRelease)))
-    ok(rec.poi ~= nil, 'the record names the POI it is landing on')
 
     -- THE CONTENTS DO NOT TRAVEL, the same rule a chest's contents follow: a
     -- client that knew what was inside would only run for the good ones.
     ok(rec.items == nil, 'the published record carries no contents')
-    ok(#m.airdrop.live[1].items == #A.payout,
-        'while the server is holding all twelve of them')
+    ok(#m.airdrop.live[1].items >= A.minItems,
+        'while the server is holding all of them')
 
     -- The landing point obeys the rule the owner set, checked against the
     -- circle solved for the ARRIVAL time rather than for now.
@@ -1472,7 +1611,11 @@ do
     BR.Airdrop.begin(m)
     m.airdrop.pending[1].dueAt = gameMs
     tick()
-    local rec = published[1].payload
+    -- Somebody is standing on it, so the 200m gate opens on the next tick and
+    -- this block is about the LANDING rather than about the gate.
+    local rec = somebodyTurnsUp(m)
+    gameMs = gameMs + 1000
+    tick()
 
     eq(#spawned, 0, 'nothing is on the ground while it is still falling')
 
@@ -1560,6 +1703,188 @@ do
     eq(#m.airdrop.pending, 0, 'the schedule is spent')
 end
 
+describe('server: nobody comes, so the match gets no airdrop')
+do
+    -- ═══ THE OWNER'S DECISION, 2026-08-22 ═══
+    --
+    --   "Correct - if nobody goes to the area where the drop is ready to happen
+    --    within the allotted time, then no drop should happen."
+    --
+    -- So the gate does not expire into an unwatched drop, and it does not retry
+    -- somewhere else. The blip runs out and the match gets nothing.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    m.airdrop.pending[1].dueAt = gameMs
+    tick()
+    local rec = published[1].payload
+    eq(#m.airdrop.waiting, 1, 'the drop is sited and waiting')
+
+    -- Somebody is in the match, but on the far side of the map the whole time.
+    standAt(101, rec.x, rec.y, 4000.0)
+
+    -- ═══ "THE ALLOTTED TIME" IS THE BLIP'S OWN CEILING, AND THE TWO SHARE ONE
+    --     CLOCK ═══
+    --
+    -- BR.AirdropExpired is the single question, so the instant the blip goes out
+    -- is the instant the drop is abandoned. Two separate timers here would be
+    -- two things that could disagree, and the disagreement would be a blip
+    -- marking a crate that was never coming.
+    gameMs = gameMs + A.blipMaxMs
+    tick()
+    eq(#m.airdrop.waiting, 1, 'still waiting at exactly the ceiling')
+
+    gameMs = gameMs + 1
+    tick()
+    eq(#m.airdrop.waiting, 0, 'and abandoned a millisecond past it')
+    eq(#m.airdrop.live, 0, 'nothing ever flew')
+    eq(#spawned, 0, 'and nothing is on the ground')
+
+    -- ═══ SPENT, NOT RETRIED ═══
+    --
+    -- The match was already TOLD an airdrop was coming; announcing a second one
+    -- somewhere else would read as two airdrops in a match the owner asked to
+    -- have exactly one. `sent` was counted at the announcement for this reason.
+    eq(#m.airdrop.pending, 0, 'the schedule is spent, not returned to pending')
+    eq(m.airdrop.sent, 1, 'and the drop counts as this match\'s one airdrop')
+
+    for _ = 1, 20 do
+        gameMs = gameMs + (A.retryEveryMs or 5000)
+        tick()
+    end
+    eq(#published, 1, 'nothing is ever announced again')
+    eq(#spawned, 0, 'and no crate arrives late')
+
+    -- NOTHING IS SENT TO THE CLIENTS EITHER. Their blip expires off the same
+    -- record and the same clock at the same instant, which is the whole reason
+    -- this needs no message.
+    eq(#published, 1, 'and no teardown message was needed')
+
+    -- ═══ AND IT SAYS SO, WITH THE NUMBER THAT RETUNES THE THRESHOLD ═══
+    --
+    -- A match that showed a blip and produced nothing reads as a bug from a
+    -- chair. The closest approach anybody actually made is both the proof it
+    -- was working and the number that says whether 200m is right.
+    ok(m.airdrop.outcome ~= nil, 'the match records WHY it got no airdrop')
+    -- A REAL NUMBER, NOT math.huge. The closest approach is the whole value of
+    -- this line -- it is how `armWithin` gets retuned from a playtest -- and an
+    -- untracked one would still read as ">= 4000" against a lazy assertion
+    -- while telling the owner nothing. A mutation pass proved exactly that.
+    local closest = m.airdrop.outcome and m.airdrop.outcome.closest
+    ok(closest ~= nil and closest < math.huge,
+        'with a MEASURED closest approach rather than "nobody was ever seen"',
+        tostring(closest))
+    ok(closest and near(closest, 4000.0, 1.0),
+        'and it is the distance that player actually kept', tostring(closest))
+
+    logs = {}
+    commands['brairdrop'](0, {}, '')
+    local said = false
+    for _, line in ipairs(logs) do
+        if line:find('NO DROP', 1, true) then said = true end
+    end
+    ok(said, 'and brairdrop says it plainly rather than showing an empty schedule')
+end
+
+describe('server: the gate is a one-way latch')
+do
+    -- WHAT IF THE ONLY NEARBY PLAYER DIES BEFORE THE PLANE ARRIVES? Nothing.
+    -- Once armed, the record carries a tRelease and a tLand and the descent is a
+    -- pure function of the published record and the synced clock, exactly as it
+    -- always was. There is no path back.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    m.airdrop.pending[1].dueAt = gameMs
+    tick()
+    local rec = somebodyTurnsUp(m)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 1, 'somebody turned up and it armed')
+    local tLand = rec.tLand
+
+    -- They die, and then everybody leaves.
+    clearRoster()
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 1, 'an empty map does not un-arm it')
+    eq(rec.tLand, tLand, 'and does not move the landing time')
+
+    gameMs = gameMs + FLIGHT
+    tick()
+    eq(#spawned, 1, 'the crate arrives regardless -- it had already left')
+end
+
+describe('server: a DBNO player still counts, a lobby one does not')
+do
+    -- ALIVE OR DOWNED IS "IN THE MATCH". A downed player is about to be revived
+    -- or finished off right next to the crate, which is exactly the fight this
+    -- feature is for. Somebody watching from the lobby is not.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    m.airdrop.pending[1].dueAt = gameMs
+    tick()
+    local rec = published[1].payload
+
+    standAt(101, rec.x, rec.y, 0.0, BR.PlayerState.LOBBY)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 0, 'a lobby player standing on it arms nothing')
+
+    standAt(101, rec.x, rec.y, 0.0, BR.PlayerState.DBNO)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 1, 'a downed one does')
+end
+
+describe('server: a roster entry with no position is not at the origin')
+do
+    -- THE ROSTER SAMPLES AT 4Hz AND A PLAYER WHO HAS JUST CONNECTED HAS NO
+    -- POSITION YET. Reading that as (0, 0) would put them in the ocean
+    -- south-west of Los Santos -- a real place, with real POIs within 200m of
+    -- it -- and open the gate for somebody who is nowhere.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    m.airdrop.pending[1].dueAt = gameMs
+    tick()
+    eq(#m.airdrop.waiting, 1, 'sited and waiting')
+
+    -- In the match, alive, and the server has never had a position for them.
+    roster[101] = { state = BR.PlayerState.ALIVE }
+    for _ = 1, 3 do
+        gameMs = gameMs + 1000
+        tick()
+    end
+    eq(#m.airdrop.live, 0, 'a player with no sampled position arms nothing')
+    eq(#m.airdrop.waiting, 1, 'and the drop is still waiting')
+end
+
+describe('server: the storm cap is re-checked while the drop waits')
+do
+    -- THE PHASE CAP IS NOT SELF-CORRECTING AND THE MARGIN IS. A point that falls
+    -- outside the circle is a point nobody is near, so the gate never opens on
+    -- its own -- but players are very much inside the circle at stage 5, and
+    -- would happily open a gate the owner's own rule says is shut.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    m.airdrop.pending[1].dueAt = gameMs
+    tick()
+    local rec = published[1].payload
+    eq(#m.airdrop.waiting, 1, 'sited while the storm was early enough')
+
+    m.storm.phase = (A.maxPhase or 4) + 1
+    standAt(101, rec.x, rec.y, 0.0)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 0, 'a player on the spot cannot arm it past the cap')
+    eq(#m.airdrop.waiting, 0, 'the drop is abandoned instead')
+    eq(#spawned, 0, 'and nothing lands')
+    ok(m.airdrop.outcome ~= nil, 'and the match records why')
+end
+
 describe('server: the tick is inert outside PLAYING')
 do
     reset()
@@ -1599,13 +1924,28 @@ do
     eq(#published, 1, 'a record goes out')
     ok(near(published[1].payload.x, poi.x, 0.001), 'at the POI that was named')
     ok(near(published[1].payload.y, poi.y, 0.001), 'exactly')
-    eq(#m.airdrop.live, 1, 'and the drop is in flight')
     eq(#notices, 1, 'and the match is told, in the same words')
+
+    -- FORCING THE POI BYPASSES THE CIRCLE, NOT THE OWNER'S RULE. The dev verb
+    -- exists so a drop can be put somewhere specific without waiting for the
+    -- storm to cooperate; it is not a way to make one happen with nobody
+    -- watching, because that is the thing the 200m gate was added to prevent.
+    eq(#m.airdrop.waiting, 1, 'and it is SITED, waiting for somebody to turn up')
+    eq(#m.airdrop.live, 0, 'not in flight')
+
+    -- ...and `brairdrop arm` is the second half, because walking a character to
+    -- within 200m of wherever the circle put a POI is minutes per attempt.
+    commands['brairdrop'](0, { 'arm' }, '')
+    eq(#m.airdrop.live, 1, 'which the arm verb starts by hand')
+    eq(#published, 2, 're-announcing the same record')
 
     gameMs = gameMs + FLIGHT
     tick()
     eq(#spawned, 1, 'and it lands sealed on arrival like any other')
     eq(spawned[1].stack.kind, 'chest', 'as a container')
+
+    -- Arming when there is nothing waiting is not an error.
+    commands['brairdrop'](0, { 'arm' }, '')
 
     -- A NAME THAT IS NOT A POI CHANGES NOTHING.
     reset()
@@ -1896,6 +2236,26 @@ local function announce(alt, span)
     return rec
 end
 
+--- Announce a drop that has been SITED but NOT ARMED -- the state every drop
+--- now starts in, while the server holds it waiting for somebody to come within
+--- `armWithin` (owner, 2026-08-22).
+---
+--- Its record has a tStart and no tRelease, no tLand and no tArm. A blip and
+--- nothing else.
+local function announceSited()
+    local rec = BR.BuildAirdropSite(1,
+        { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 }, 260.0, gameMs, 90.0)
+    fire(BR.Net.AIRDROP_SYNC, rec)
+    return rec
+end
+
+--- ...and then the server arms it and re-sends the SAME record.
+local function armSited(rec)
+    BR.ArmAirdropRecord(rec, gameMs, A)
+    fire(BR.Net.AIRDROP_SYNC, rec)
+    return rec
+end
+
 local function oneBlip()
     for _, b in pairs(blips) do return b end
     return nil
@@ -2118,6 +2478,23 @@ do
     fire(BR.Net.AIRDROP_SYNC, { x = 1.0, y = 2.0 })              -- no times
     fire(BR.Net.AIRDROP_SYNC, { tStart = 0, tLand = 1 })         -- no position
     eq(oneBlip(), nil, 'nothing is drawn for a record that is not one')
+
+    -- ═══ tLand IS OPTIONAL NOW, WHICH IS NOT THE SAME AS UNCHECKED ═══
+    --
+    -- A sited drop legitimately carries no landing time, so the handler cannot
+    -- simply demand a number. Relaxing that into "anything goes" would let a
+    -- non-number through into arithmetic on the render loop's hot path, which is
+    -- how a bad record takes the whole airdrop down instead of being dropped.
+    fire(BR.Net.AIRDROP_SYNC,
+        { x = 1.0, y = 2.0, tStart = 0, tLand = 'banana' })
+    eq(oneBlip(), nil, 'a tLand that is not a number is still refused')
+
+    fire(BR.Net.AIRDROP_SYNC, { x = 1.0, y = 2.0, tStart = 0, tLand = {} })
+    eq(oneBlip(), nil, 'and so is one that is a table')
+
+    -- ...and the legitimate shape IS accepted, which is the other half.
+    fire(BR.Net.AIRDROP_SYNC, { n = 1, x = 1.0, y = 2.0, tStart = gameMs })
+    ok(oneBlip() ~= nil, 'while a sited record with no tLand at all gets a blip')
 end
 
 describe('client: every part is local and non-networked')
@@ -2520,65 +2897,105 @@ do
     eq(A.voltsScale, 5.0, 'the Volts pile is five times')
 end
 
-describe('client: the plane is not built for an empty sky')
+describe('client: a sited drop is a blip and NOTHING ELSE')
 do
-    -- Owner, 2026-08-22: "We should make it so the plane doesn't spawn until a
-    -- player is within a reasonable radius to be able to see the event happen."
+    -- ═══ THE STATE EVERY DROP NOW STARTS IN ═══
     --
-    -- A PER-CLIENT PRESENTATION DECISION. The drop still happens on the
-    -- server's clock; a client too far away simply does not build a Titan it
-    -- could not see.
+    -- Owner, 2026-08-22: "the drop should never happen until a player is within
+    -- 200m of the drop location. That way they get to see the drop happen."
+    --
+    -- The server sites and ANNOUNCES at schedule time -- otherwise the gate is
+    -- circular, because nobody can walk towards a drop they have not been told
+    -- about -- and holds the descent. So the first record a client ever sees has
+    -- a tStart and no landing time, and everything it draws except the blip must
+    -- stay switched off.
     clientReset()
-    me.x, me.y = 100.0 + A.planeViewRadius + 50.0, 200.0
-    announce()
-    render()
-    eq(onePlane(), nil, 'too far away: no plane is built')
+    local rec = announceSited()
+
+    ok(not BR.AirdropArmed(rec), 'the record is not armed')
+    ok(oneBlip() ~= nil, 'the blip is up the moment it is announced')
+
+    -- Wind well past where the crate WOULD have been released and landed, had
+    -- this been an old-style record. Nothing may appear.
+    for _ = 1, 5 do
+        gameMs = gameMs + A.planeLeadMs + A.descentMs
+        render()
+    end
+    eq(onePlane(), nil, 'no aircraft, however long it waits')
     eq(onePed(), nil, 'and no pilot')
+    eq(entCount(), 0, 'and no crate, no canopy and no flares')
+    ok(oneBlip() ~= nil, 'but the blip is still there, doing its job')
 
-    -- ═══ AND THE CRATE IS NOT GATED, WHICH IS THE HALF THAT WOULD BREAK
-    --     JOINING LATE ═══
+    -- ═══ AND THE MOMENT THE SERVER ARMS IT, EVERYTHING STARTS ═══
     --
-    -- The descent is a pure function of the record and the clock. A client that
-    -- walks into view twenty seconds into the fall must see the box exactly
-    -- where the clock says the box is -- so the crate is built at the release
-    -- for everyone holding the record, wherever they are standing.
-    gameMs = gameMs + 1000
+    -- The same record, mutated and re-sent. The client's handler has always
+    -- treated a re-send as a replacement, which is the whole mechanism.
+    armSited(rec)
+    ok(BR.AirdropArmed(rec), 'the re-sent record is armed')
     render()
-    ok(oneEnt() ~= nil, 'but the crate falls for a distant client all the same')
-    ok(oneBlip() ~= nil, 'and the blip is on their map')
+    ok(onePlane() ~= nil, 'and the aircraft is built')
 
-    -- RE-ASKED EVERY FRAME, NOT ONCE AT THE ANNOUNCEMENT. Someone who was two
-    -- kilometres out when the notification landed and has driven into range
-    -- gets the plane, built wherever the clock says it is by then. Gating this
-    -- once at tStart would punish exactly the players who ran towards it.
-    me.x, me.y = 100.0, 200.0
+    gameMs = gameMs + A.planeLeadMs
     render()
-    ok(onePlane() ~= nil, 'driving into range builds it mid-approach')
+    ok(entCount() > 0, 'and the crate is released on the new clock')
+end
 
-    -- ...AND IT IS NEVER TORN DOWN FOR DISTANCE. Deleting an aircraft somebody
-    -- is watching because they crossed a config line is a worse artefact than
-    -- the one this fixes.
-    me.x, me.y = 100.0 + A.planeViewRadius + 500.0, 200.0
-    render()
-    ok(onePlane() ~= nil, 'and driving back out again does not delete it')
+describe('client: an unarmed record answers no to every descent question')
+do
+    -- The predicates guard themselves rather than relying on the render loop to
+    -- guard them, because they are read from the diagnostic command and the
+    -- server tick as well. Before the gate, tLand was always present and
+    -- `(rec.tLand or 0.0)` would have read a missing one as zero -- reporting a
+    -- waiting drop as fully descended, which is the wrong end of the fall.
+    local sited = BR.BuildAirdropSite(1,
+        { id = 'x', x = 0.0, y = 0.0, z = 0.0 }, 260.0, 1000.0, 0.0)
 
-    -- Standing exactly on the line is inside it.
-    clientReset()
-    me.x, me.y = 100.0 + A.planeViewRadius, 200.0
-    announce()
-    render()
-    ok(onePlane() ~= nil, 'exactly at the radius counts as within it')
+    ok(not BR.AirdropArmed(sited), 'it is not armed')
+    ok(not BR.AirdropArmed(nil), 'and neither is nothing')
+    ok(not BR.AirdropReleased(sited, 1e9), 'nothing is released from it, ever')
+    ok(not BR.AirdropLanded(sited, 1e9), 'it never lands')
+    ok(not BR.AirdropPlaneVisible(sited, 1e9, A), 'no aircraft is ever visible')
+    ok(near(BR.AirdropProgress(sited, 1e9), 0.0),
+        'and it is at the START of the fall, not the end',
+        ('%.3f'):format(BR.AirdropProgress(sited, 1e9)))
+    ok(near(BR.AirdropHeightAt(sited, 1e9), 260.0),
+        'so it is still at full altitude, aboard an aircraft that has not flown')
 
-    -- NO RADIUS IS THE OLD BEHAVIOUR -- EVERYBODY GETS A PLANE -- rather than
-    -- nobody. A missing number must not delete a feature.
-    clientReset()
-    local keep = A.planeViewRadius
-    A.planeViewRadius = nil
-    me.x, me.y = 999999.0, 999999.0
-    announce()
-    render()
-    ok(onePlane() ~= nil, 'no radius configured means no gate at all')
-    A.planeViewRadius = keep
+    -- THE BLIP IS THE ONE THING THAT DOES WORK, and its ceiling is the deadline
+    -- for somebody to turn up -- the server abandons the drop at exactly the
+    -- instant this goes false, so the two cannot disagree.
+    ok(BR.AirdropBlipVisible(sited, 1000.0, A), 'the blip is up at tStart')
+    eq(BR.AirdropBlipEndsAt(sited, A), 1000.0 + A.blipMaxMs,
+        'and runs the full ceiling from the announcement')
+
+    -- ...AND ARMING RESTARTS THAT CEILING, which it has to: a drop that waited
+    -- three minutes would otherwise have its blip expire twelve seconds after
+    -- the crate touched down -- and the client's teardown fires on the same
+    -- boundary, so the whole drop would be destroyed mid-descent.
+    local armed = BR.BuildAirdropSite(1,
+        { id = 'x', x = 0.0, y = 0.0, z = 0.0 }, 260.0, 1000.0, 0.0)
+    BR.ArmAirdropRecord(armed, 181000.0, A)   -- three minutes of waiting
+    eq(armed.tArm, 181000.0, 'the arm is stamped')
+    eq(armed.tRelease, 181000.0 + A.planeLeadMs, 'the release follows it')
+    eq(armed.tLand, 181000.0 + A.planeLeadMs + A.descentMs, 'and the landing')
+    eq(BR.AirdropBlipEndsAt(armed, A), 181000.0 + A.blipMaxMs,
+        'and the ceiling now runs from the ARM, not from the announcement')
+    ok(not BR.AirdropExpired(armed, armed.tLand, A),
+        'so the drop is emphatically not torn down while the crate is landing')
+
+    -- ═══ AND NO AIRCRAFT EXISTS DURING THE WAIT, EVEN THOUGH THE RECORD IS NOW
+    --     ARMED ═══
+    --
+    -- The plane's window used to open at tStart. With a three-minute wait
+    -- between the announcement and the arm, measuring from tStart would put a
+    -- Titan over the drop point for the whole wait -- the empty-sky flyover the
+    -- gate was added to stop, wearing the gate's own record.
+    ok(not BR.AirdropPlaneVisible(armed, 1000.0, A),
+        'no aircraft at the announcement...')
+    ok(not BR.AirdropPlaneVisible(armed, 180999.0, A),
+        '...nor a millisecond before the arm')
+    ok(BR.AirdropPlaneVisible(armed, 181000.0, A),
+        'and one exactly at it')
 end
 
 describe('client: a rooftop probe falls to the authored height instead')

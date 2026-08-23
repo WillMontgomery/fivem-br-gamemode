@@ -1,12 +1,37 @@
 -- Aerial supply drops, client half: the plane, the crate, its canopy, its two
 -- flares, and the blip.
 --
--- PRESENTATION ONLY. Nothing here decides anything: the server publishes one
--- record when the drop is committed (AIRDROP_SYNC) and this file solves the
--- crate's position from it against the synced clock, exactly as client/storm.lua
--- solves the wall and client/bus.lua flies the ghost plane. Deleting the prop
--- locally does not stop the drop; the loot that appears when it lands comes from
--- the server's registry through the ordinary LOOT_ADD path.
+-- PRESENTATION ONLY. Nothing here decides anything: the server publishes the
+-- record (AIRDROP_SYNC) and this file solves the crate's position from it
+-- against the synced clock, exactly as client/storm.lua solves the wall and
+-- client/bus.lua flies the ghost plane. Deleting the prop locally does not stop
+-- the drop; the loot that appears when it lands comes from the server's registry
+-- through the ordinary LOOT_ADD path.
+--
+-- ═══ THE RECORD ARRIVES TWICE NOW, AND THE FIRST ONE IS A BLIP AND NOTHING
+--     ELSE ═══
+--
+-- Owner, 2026-08-22: "the drop should never happen until a player is within 200m
+-- of the drop location. That way they get to see the drop happen."
+--
+-- So the server SITES and ANNOUNCES a drop at schedule time -- which it has to,
+-- because a gate on "is somebody near the drop" is circular unless they have
+-- been told where it is -- and holds the descent until somebody comes. The first
+-- record therefore has a tStart and NO tRelease, tLand or tArm: this file draws
+-- its blip and builds absolutely nothing else. BR.AirdropArmed is the question,
+-- and every descent predicate in the solver answers "no" to a record that fails
+-- it.
+--
+-- WHICH ALSO MEANS A DROP MAY NEVER HAPPEN. If nobody comes before the blip's
+-- ceiling, the server abandons it and the match gets no airdrop -- and this file
+-- needs no message to find that out, because its own teardown fires on the same
+-- BR.AirdropExpired boundary off the same record and the same clock.
+--
+-- AND THERE IS NO CLIENT-SIDE VIEW RADIUS ANY MORE. There was one for a day: a
+-- 1000m check each client applied to itself before building the aircraft, back
+-- when the drop happened whether or not anybody was near. The server holds the
+-- drop instead now, so by the time a record carries a tRelease at all, somebody
+-- is already standing at the landing point.
 --
 -- THE CRATE IS LOCAL AND NON-NETWORKED, like every other object this gamemode
 -- creates -- CreateObjectNoOffset with isNetwork = false. That is not merely
@@ -86,14 +111,14 @@ end
 --- BOTH TESTS, IN THE ORDER CFX DOES THEM. DoesParticleFxLoopedExist is guarded
 --- because a build without it must degrade to the handle test rather than
 --- error, and because the test rig does not stub every native in the engine.
---- @param fx any
---- @return boolean
 --- BOTH SENTINELS ARE REFUSED, and 0 stays refused deliberately. Cfx's looped
 --- wrapper compares against -1 while its NON-looped one compares `> 0`, so the
 --- two halves of their own code disagree about which number means failure. When
 --- the engine's own bindings cannot agree, treating either as a handle is a
 --- guess with a known cost -- we have already paid it once -- and refusing both
 --- costs at most one improbable legitimate zero.
+--- @param fx any
+--- @return boolean
 local function fxLive(fx)
     if fx == nil or fx == false then return false end
     if fx == -1 or fx == 0 then return false end
@@ -211,7 +236,13 @@ RegisterNetEvent(BR.Net.AIRDROP_SYNC)
 AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     if type(rec) ~= 'table' then return end
     if type(rec.x) ~= 'number' or type(rec.y) ~= 'number' then return end
-    if type(rec.tStart) ~= 'number' or type(rec.tLand) ~= 'number' then return end
+    -- tLand IS OPTIONAL NOW, AND REFUSING A RECORD WITHOUT ONE WOULD THROW AWAY
+    -- EVERY ANNOUNCEMENT. Since the 200m gate (owner, 2026-08-22) a drop is
+    -- SITED and announced first and only starts falling when somebody comes
+    -- near, so the first record a client ever sees has a tStart and no landing
+    -- time at all. It is a blip and nothing else until the second send arrives.
+    if type(rec.tStart) ~= 'number' then return end
+    if rec.tLand ~= nil and type(rec.tLand) ~= 'number' then return end
 
     local n = math.tointeger(rec.n) or 1
     removeDrop(n)   -- a re-send replaces
@@ -372,52 +403,6 @@ local function makePart(model, x, y, z, scale)
     -- read the warning attached to it: nothing has confirmed this renders.
     BR.Native.propScale(obj, scale)
     return obj
-end
-
---- How far this client is from the drop point, right now, in metres.
----
---- Its own ped, never a roster position: this is a question about where THIS
---- screen is, and it is asked once a frame while a plane might be worth
---- building.
---- @param d table
---- @return number
-local function distanceToDrop(d)
-    if not d.rec then return math.huge end
-    local ped = PlayerPedId()
-    if not ped or ped == 0 then return math.huge end
-    local p = GetEntityCoords(ped)
-    if not p then return math.huge end
-    return BR.Dist(p.x, p.y, d.rec.x, d.rec.y)
-end
-
---- Is this client close enough for a delivery plane to be worth existing?
----
---- ═══ A PRESENTATION DECISION, MADE PER CLIENT, THAT CHANGES NO SCHEDULE ═══
----
---- Owner, 2026-08-22: "We should make it so the plane doesn't spawn until a
---- player is within a reasonable radius to be able to see the event happen",
---- because "if nobody is nearby, they don't get to see the cool drop, they just
---- arrive and the thing is there."
----
---- The plane is LOCAL and solved from the published record against the synced
---- clock, so this is a question each client answers about ITSELF: the drop
---- happens on the server's clock whether anyone watches, and a client that
---- answers no simply does not build a Titan and a pilot it could not see. There
---- is no message, no vote and nothing the server needs to know.
----
---- AND IT NEVER GATES THE CRATE, which is the half that would break joining
---- late. The descent is a pure function of the record and has to stay one: a
---- client that walks into view twenty seconds into the fall must see the box
---- exactly where the clock says the box is, so the crate is built at the
---- release for everyone holding the record, wherever they are standing.
---- @param d table
---- @return boolean
-local function planeWorthBuilding(d)
-    local r = A.planeViewRadius
-    -- No radius configured is the old behaviour -- everybody gets a plane --
-    -- rather than nobody, because a missing number must not delete a feature.
-    if not r or r <= 0.0 then return true end
-    return distanceToDrop(d) <= r
 end
 
 --- Build the delivery plane and the pilot who keeps its engine turning.
@@ -757,29 +742,25 @@ BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
                 addBlip(d)
             end
 
-            -- THE PLANE, WHICH LIVES ON ITS OWN CLOCK. It arrives with the
-            -- announcement, is overhead at the release, and leaves -- so it is
-            -- gone long before the crate is, and it is torn down where it is
-            -- decided rather than where the crate is.
+            -- THE PLANE, WHICH LIVES ON ITS OWN CLOCK. It arrives with the ARM,
+            -- is overhead at the release, and leaves -- so it is gone long
+            -- before the crate is, and it is torn down where it is decided
+            -- rather than where the crate is.
+            --
+            -- ═══ THE CLIENT-SIDE VIEW RADIUS IS GONE, AND SO IS THE PROBLEM IT
+            --     SOLVED ═══
+            --
+            -- It used to ask "am I close enough for this Titan to be worth
+            -- building" and skip it otherwise, because the drop happened whether
+            -- or not anybody was near. The drop no longer does: the SERVER holds
+            -- it until a player is within `armWithin` of the landing point
+            -- (owner, 2026-08-22), so by the time a record carries a tRelease at
+            -- all, somebody is already standing there. A second radius here
+            -- would be a second gate on a question that has been answered, and
+            -- the one thing it could still do is hide the aircraft from a
+            -- squadmate watching from a ridge a kilometre away.
             if BR.AirdropPlaneVisible(d.rec, now, A) then
-                -- ...AND ONLY FOR SOMEBODY WHO COULD SEE IT (owner, 2026-08-22:
-                -- "the plane doesn't spawn until a player is within a
-                -- reasonable radius to be able to see the event happen").
-                --
-                -- ASKED HERE RATHER THAN AT THE ANNOUNCEMENT, so a player who
-                -- was two kilometres out when the notification landed and has
-                -- driven into range since gets the plane built wherever the
-                -- clock says it is by then. The route is a pure function of the
-                -- record, so a plane created mid-approach is in exactly the
-                -- right place -- gating this once at tStart would have punished
-                -- the players who ran towards it.
-                --
-                -- IT GATES THE SPAWN AND NOTHING ELSE. A plane already in the
-                -- air is never torn down for distance: it is a hundred metres
-                -- from where it was last frame, and deleting an aircraft
-                -- somebody is watching because they crossed a config line
-                -- would be a worse artefact than the one this fixes.
-                if not d.plane and not d.flying and planeWorthBuilding(d) then
+                if not d.plane and not d.flying then
                     groundOf(d)
                     spawnPlane(d)
                 end
@@ -857,11 +838,28 @@ RegisterCommand('brairdrop', function()
             print(('  drop %d at %s (%.0f, %.0f), gz %.1f, alt %.0f')
                 :format(n, tostring(rec.poi), rec.x, rec.y, rec.gz or 0.0,
                         rec.alt or 0.0))
-            print(('    tStart %+.1fs, tRelease %+.1fs, tLand %+.1fs, blip goes %+.1fs')
-                :format((rec.tStart - now) / 1000,
-                        ((rec.tRelease or rec.tStart) - now) / 1000,
-                        (rec.tLand - now) / 1000,
-                        (BR.AirdropBlipEndsAt(rec, A) - now) / 1000))
+            -- tArm, tRelease AND tLand ARE ALL ABSENT ON A WAITING DROP, so they
+            -- print as '--' rather than crashing the one command anybody runs
+            -- when this breaks.
+            local function at(t)
+                if type(t) ~= 'number' then return '--' end
+                return ('%+.1fs'):format((t - now) / 1000)
+            end
+            print(('    tStart %s, tArm %s, tRelease %s, tLand %s, blip goes %s')
+                :format(at(rec.tStart), at(rec.tArm), at(rec.tRelease),
+                        at(rec.tLand), at(BR.AirdropBlipEndsAt(rec, A))))
+            -- ═══ ARMED OR STILL WAITING, WHICH IS THE FIRST THING TO ASK NOW ═══
+            --
+            -- A blip with no plane and no crate is a legitimate state since the
+            -- 200m gate (owner, 2026-08-22) and it is exactly what a broken drop
+            -- looks like. This line is the difference between "the server is
+            -- holding it until somebody gets near" and "something is wrong".
+            print(('    %s')
+                :format(BR.AirdropArmed(rec)
+                    and ('ARMED -- the aircraft is on its way')
+                    or  ('WAITING for a player within %.0fm of the landing '
+                         .. 'point; nothing flies until then')
+                            :format(A.armWithin or 200.0)))
             -- WHICH OF THE OWNER'S TWO RULES IS DECIDING THE BLIP. "1 minute
             -- after the crate is opened" and "no longer than 4 minutes if
             -- unopened" produce the same kind of number and the wrong one is
@@ -871,21 +869,17 @@ RegisterCommand('brairdrop', function()
                                    or 'no',
                         rec.tOpen
                             and ('open + %.0fs'):format((A.blipAfterOpenMs or 60000) / 1000)
-                            or  ('announce + %.0fs (cap)'):format((A.blipMaxMs or 240000) / 1000)))
+                            or  ('%s + %.0fs (cap)'):format(
+                                    rec.tArm and 'arm' or 'announce',
+                                    (A.blipMaxMs or 240000) / 1000)))
             print(('    released %s, landed %s, blip should be up %s, expired %s')
                 :format(tostring(BR.AirdropReleased(rec, now)),
                         tostring(BR.AirdropLanded(rec, now)),
                         tostring(BR.AirdropBlipVisible(rec, now, A)),
                         tostring(BR.AirdropExpired(rec, now, A))))
             local px, py = BR.AirdropPlaneAt(rec, now, A)
-            -- THE RADIUS GATE, PRINTED AS BOTH HALVES. "no plane" is now a
-            -- legitimate outcome as well as a bug, and the only way to tell
-            -- those apart from a chair is to see the distance next to the
-            -- threshold that rejected it.
-            print(('    plane should be up %s, at (%.0f, %.0f); I am %.0fm away, radius %.0fm -> %s')
-                :format(tostring(BR.AirdropPlaneVisible(rec, now, A)), px, py,
-                        distanceToDrop(d), A.planeViewRadius or 0.0,
-                        planeWorthBuilding(d) and 'build it' or 'too far, no plane'))
+            print(('    plane should be up %s, at (%.0f, %.0f)')
+                :format(tostring(BR.AirdropPlaneVisible(rec, now, A)), px, py))
             -- THE ROOFTOP VERDICT for the point the crate is falling to. `roof`
             -- is set by groundOf when the navmesh refuses the probed ground.
             print(('    ground %.1f (POI authored %.1f)%s')

@@ -168,43 +168,67 @@ BR.Config.Airdrop = {
     planeTrailMs = 15000,
 
     -- ------------------------------------------------------------------
-    -- WHO GETS A PLANE AT ALL
+    -- THE DROP WAITS UNTIL SOMEBODY CAN SEE IT
     -- ------------------------------------------------------------------
     --
-    -- Owner, 2026-08-22: "We should make it so the plane doesn't spawn until a
-    -- player is within a reasonable radius to be able to see the event happen",
-    -- because "if nobody is nearby, they don't get to see the cool drop, they
-    -- just arrive and the thing is there."
+    -- Owner, 2026-08-22: "The plane radius should instead be measured by the
+    -- distance between the drop (at ground level) and the closest player.
+    -- Ideally the drop should never happen until a player is within 200m of the
+    -- drop location. That way they get to see the drop happen".
     --
-    -- ═══ THIS IS A PRESENTATION DECISION AND CHANGES NO SCHEDULE ═══
+    -- ═══ THIS REPLACED A CLIENT-SIDE PRESENTATION RADIUS, AND IT IS NOT ONE ═══
     --
-    -- The plane is LOCAL to each client and solved from the published record
-    -- against the synced clock, so "does the plane spawn" is a question each
-    -- client answers about ITSELF and nothing else. The drop still happens on
-    -- the server's clock whether anybody watches; a client too far away simply
-    -- does not build a Titan and a pilot it could not see. Forty clients that
-    -- cannot see it stop paying for it, which is the only cost this removes.
+    -- The first answer to "the plane flies to an empty sky" was a 1000m radius
+    -- each CLIENT applied to itself: the drop happened on the server's clock
+    -- whether anybody watched, and a distant client simply did not build a Titan
+    -- it could not see. That is gone, and so is the sentence that justified it.
+    -- This is a gate on the DROP, decided once, on the server, from the roster's
+    -- own sampled positions -- so a drop nobody is near does not happen at all
+    -- rather than happening unseen.
     --
-    -- IT IS RE-ASKED EVERY FRAME, NOT ONCE. A player who is 2km away at the
-    -- announcement and inside the radius eight seconds later gets the plane
-    -- built at wherever the clock says it is by then -- mid-approach, which is
-    -- correct, because the route is a pure function of the record. Gating it
-    -- once at tStart would punish exactly the players who ran towards it.
+    -- MEASURED GROUND-LEVEL TO GROUND-LEVEL. From the landing point's (x, y) to
+    -- the player's (x, y), never from the plane and never from the release
+    -- altitude -- a crate 260m up is 260m away from somebody standing directly
+    -- underneath it, and gating on that would be gating on the altitude rather
+    -- than on the walk.
     --
-    -- AND IT NEVER GATES THE CRATE. The descent is the part that has to join
-    -- late correctly and it still does: every client builds the crate at the
-    -- release regardless of where it is standing, because a client that walks
-    -- into view twenty seconds into the fall must see the box where the clock
-    -- says the box is.
+    -- ═══ AND THE ANNOUNCEMENT NOW COMES FIRST, WHICH IS THE WHOLE OF WHY THIS
+    --     WORKS ═══
     --
-    -- 1000m IS A GUESS AND IS DELIBERATELY GENEROUS. Nothing outside a running
-    -- client can say at what range a Titan at ~300m altitude stops drawing --
-    -- that is an engine LOD question, not an arithmetic one. Erring large is
-    -- the cheap direction: a radius that is too big costs a plane nobody can
-    -- see, which is exactly today's behaviour, while one that is too small
-    -- costs the owner the thing they asked for AND is invisible from a chair.
-    -- /brairdrop on the client prints the distance and whether it passed.
-    planeViewRadius = 1000.0,
+    -- A gate on "is somebody near the drop" is circular unless they have been
+    -- told where the drop is: nobody would ever be within 200m except by
+    -- accident, and the match would essentially never get an airdrop. So the
+    -- drop is SITED and ANNOUNCED at schedule time -- the blip goes up and the
+    -- notification goes out, naming a place -- and only the DESCENT waits. See
+    -- br_core/server/airdrop.lua, which is two phases now rather than one.
+    --
+    -- ═══ AND IF NOBODY COMES, THE MATCH GETS NO AIRDROP ═══
+    --
+    -- Owner, 2026-08-22: "Correct - if nobody goes to the area where the drop is
+    -- ready to happen within the allotted time, then no drop should happen."
+    --
+    -- "The allotted time" is the blip's own ceiling (`blipMaxMs` below), and the
+    -- two share ONE clock deliberately: BR.AirdropExpired is the single
+    -- question, so the blip going out and the drop being abandoned are the same
+    -- instant rather than two timers that can disagree. The drop is counted as
+    -- SPENT rather than retried -- the match has already been told one is
+    -- coming, and a second announcement naming a second place would read as two
+    -- airdrops when the owner asked for exactly one.
+    --
+    -- WHY THE 250m MARGIN IS NOT RE-CHECKED WHEN THE WAIT ENDS. It is solved
+    -- once, at siting, against the earliest landing the drop could have. A wait
+    -- of minutes lets the circle shrink under it, so in principle the point can
+    -- end up on or outside the rim -- and re-checking would abandon a drop for a
+    -- player who did exactly what this feature asked of them, which is worse
+    -- than the thing it would prevent. It is also self-correcting: if the point
+    -- falls outside the circle, players are not near it, the gate never opens
+    -- and the drop expires on its own. The residual case is a player who walks
+    -- out to the rim deliberately, and they have chosen that.
+    --
+    -- 200m IS THE OWNER'S NUMBER. /brairdrop prints the CLOSEST APPROACH any
+    -- player actually made, which is how this gets retuned from a playtest
+    -- rather than from a guess.
+    armWithin = 200.0,
 
     -- ------------------------------------------------------------------
     -- WHERE IT LANDS, AND THE TWO RULES THAT CAN CONTRADICT EACH OTHER
@@ -695,15 +719,27 @@ BR.Config.Airdrop = {
     -- happen. Without the ceiling an uncontested drop would mark the map for
     -- the rest of the match.
     --
-    -- ═══ FLAGGED FOR THE OWNER: 4 MINUTES OR 5? ═══
+    -- ═══ CONFIRMED BY THE OWNER, 2026-08-22 ═══
     --
-    -- Their last sentence says "5 minutes should be plenty of time to get
-    -- there", one sentence after naming 4. Read here as justifying the 4-minute
-    -- ceiling rather than naming a second number -- 4 is what is implemented.
-    -- If it was meant as the ceiling, this line is the only edit:
-    -- blipMaxMs = 300000.
+    -- This was flagged here as an ambiguity -- their "5 minutes should be
+    -- plenty" one sentence after naming 4 -- and it was read as justifying the
+    -- 4-minute ceiling rather than naming a second number. That reading was
+    -- right and they have said so:
+    --
+    --   "The blip should be 4 minutes. If nobody opens it. If someone opens it,
+    --    the blip should remain for 1 minute after opening. That's what I meant,
+    --    which I guess could total to 5."
+    --
+    -- So the two numbers below ARE the rule, and the "could total to 5" is the
+    -- 4-minute ceiling plus the minute an open buys. Do not collapse them into
+    -- one number.
+    --
+    -- WHAT THE CEILING IS MEASURED FROM MOVED ON THE SAME DAY, and that is the
+    -- one thing here that is not the owner's sentence: see `armWithin` above.
+    -- A drop now WAITS for somebody to come near before it falls, so the clock
+    -- restarts when it stops waiting. `tArm`, not `tStart`.
     blipAfterOpenMs = 60000,    -- 1m00 after the crate is opened
-    blipMaxMs       = 240000,   -- 4m00 from the announcement, opened or not
+    blipMaxMs       = 240000,   -- 4m00 from the announcement, then from the arm
 
     -- Verbatim, and it must stay verbatim (owner, 2026-08-21). Written here
     -- rather than inline so there is one copy to be wrong.

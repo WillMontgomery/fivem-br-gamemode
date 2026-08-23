@@ -6,13 +6,36 @@
 --
 -- WHAT CROSSES THE WIRE, AND WHAT DOES NOT.
 --
--- The record (BR.BuildAirdropRecord) goes out ONCE, when the drop is
--- committed. Everything the clients draw -- where the crate is this frame, how
--- long the blip has left -- is solved locally from it against the synced clock,
--- so there is no per-frame traffic and no property two machines can disagree
--- about. The CONTENTS never travel: they are rolled here and only become
--- visible as ordinary loot entries at the moment the crate bursts open, which
--- is the same rule BR.Loot's wireEntry already enforces for crates.
+-- The record goes out ONCE PER STATE CHANGE and never per frame. Everything the
+-- clients draw -- where the crate is this frame, how long the blip has left --
+-- is solved locally from it against the synced clock, so there is no per-frame
+-- traffic and no property two machines can disagree about. The CONTENTS never
+-- travel: they are rolled here and only become visible as ordinary loot entries
+-- at the moment a PLAYER opens the crate, which is the same rule BR.Loot's
+-- wireEntry already enforces for every crate on the map.
+--
+-- ═══ A DROP HAPPENS IN TWO PHASES, AND THE ORDER IS THE FEATURE ═══
+--
+-- Owner, 2026-08-22: "the drop should never happen until a player is within 200m
+-- of the drop location. That way they get to see the drop happen."
+--
+--   SITE   at schedule time. A POI is chosen, the record is published and the
+--          match is notified. The blip goes up and NOTHING FLIES.
+--   ARM    when the closest living player is within `armWithin` of the landing
+--          point. tArm, tRelease and tLand are written onto the SAME record and
+--          it is re-broadcast; the descent from there is what it always was.
+--
+-- THE ANNOUNCEMENT CANNOT MOVE TO THE SECOND PHASE. A gate on "is somebody near
+-- the drop" is circular unless they have been told where the drop is -- nobody
+-- would ever be within 200m except by accident, and a match would essentially
+-- never get an airdrop.
+--
+-- AND IF NOBODY COMES, THE MATCH GETS NONE (owner, 2026-08-22: "if nobody goes
+-- to the area where the drop is ready to happen within the allotted time, then
+-- no drop should happen"). "The allotted time" is the blip's own ceiling, and
+-- the drop is abandoned at exactly the instant the blip goes out -- one clock,
+-- one question (BR.AirdropExpired), so a blip marking a crate that is never
+-- coming is not a state this can reach. It counts as SPENT rather than retried.
 --
 -- WHY THE CRATE IS A LOOT REGISTRY ENTRY RATHER THAN A NEW OBJECT.
 --
@@ -154,11 +177,26 @@ end
 -- Committing
 -- ---------------------------------------------------------------------------
 
---- Try to turn a pending schedule entry into a real drop.
+--- Try to SITE a pending schedule entry and announce it.
+---
+--- ═══ THIS USED TO BE THE WHOLE DROP AND IS NOW HALF OF IT ═══
+---
+--- It sited the POI, published the record, sent the notification AND started
+--- the descent, all in one call. Owner, 2026-08-22: "the drop should never
+--- happen until a player is within 200m of the drop location" -- so the descent
+--- moved out, into tryArm below.
+---
+--- THE ORDER IS THE POINT AND IT WAS NOT ALREADY RIGHT. A gate on "is somebody
+--- near the drop" is circular unless they have been told where the drop IS:
+--- gating this function would mean nobody was ever within 200m except by
+--- accident and the match would essentially never get an airdrop. So the
+--- announcement stays here, at schedule time, ahead of the gate -- the blip goes
+--- up, the notification goes out, and the place is named. Only the aircraft and
+--- the crate wait.
 ---
 --- THREE OUTCOMES, and the middle one is the whole of #88's hard part:
 ---
----   'sent'   -- sited, published, announced.
+---   'sited'  -- published and announced. The blip is up; nothing is flying.
 ---   'wait'   -- nothing qualifies YET. The caller leaves it pending and asks
 ---               again in retryEveryMs. A circle mid-shrink is a genuinely
 ---               different question a few seconds later, so this terminates on
@@ -174,7 +212,7 @@ end
 --- @param p table   the pending entry { n, dueAt, checkedAt }
 --- @param now number
 --- @return string outcome
-local function tryCommit(m, p, now)
+local function trySite(m, p, now)
     if not BR.AirdropStormOk(m.storm, A.maxPhase) then
         print(('[br_core] airdrop: match %d gets none -- storm is past stage %d')
             :format(m.id, A.maxPhase or 4))
@@ -190,6 +228,20 @@ local function tryCommit(m, p, now)
     -- here for the same reason `descentMs` does: the 250m margin is a promise
     -- about where the crate will be when it TOUCHES DOWN, and solving it against
     -- a time twelve seconds early would quietly shave the margin on every shrink.
+    --
+    -- ═══ AND IT IS THE EARLIEST ARRIVAL NOW, NOT THE ONLY ONE ═══
+    --
+    -- Since the 200m gate, the crate may not leave for minutes after this. So
+    -- this solves the margin against the SOONEST landing the drop could have --
+    -- the case where somebody is already standing there -- and the real landing
+    -- can be later, under a circle that has shrunk further.
+    --
+    -- THE MARGIN IS DELIBERATELY NOT RE-CHECKED AT THE ARM, and the reason is
+    -- that the gate does the job instead: a point that ends up outside the
+    -- circle is a point nobody is near, so nobody opens the gate and the drop
+    -- expires on its own. Re-checking would abandon a drop for a player who
+    -- walked to it exactly as asked, which is worse than what it would prevent.
+    -- See config/airdrop.lua.
     local tRelease = now + (A.planeLeadMs or 0)
     local tLand    = tRelease + (A.descentMs or 30000)
     local cx, cy, r = BR.StormAt(m.storm, tLand)
@@ -201,11 +253,29 @@ local function tryCommit(m, p, now)
         return 'wait'
     end
 
-    local rec = BR.BuildAirdropRecord(p.n, poi, A.altitude or 260.0,
-        now, tLand, m.airdrop.rng:float() * 360.0, tRelease)
+    -- NO tRelease AND NO tLand. Nothing is in the air yet -- this record says
+    -- "a drop is coming, and it is coming HERE". BR.ArmAirdropRecord fills those
+    -- two in when somebody turns up, and the same record is re-broadcast.
+    local rec = BR.BuildAirdropSite(p.n, poi, A.altitude or 260.0,
+        now, m.airdrop.rng:float() * 360.0)
+
+    -- ROLLED NOW, NOT AT THE ARM. The draw order is unchanged from when this
+    -- was one function -- heading, then payout -- so a seed still produces the
+    -- payout it always did, and the number of rng calls does not depend on how
+    -- long anybody took to walk there. A payout rolled at the arm would make
+    -- the contents a function of player movement.
     local items = BR.AirdropPayout(m.airdrop.rng, A)
 
-    m.airdrop.live[#m.airdrop.live + 1] = { rec = rec, items = items }
+    -- SPENT AT THE ANNOUNCEMENT, not at the landing. The match has now been told
+    -- an airdrop is coming; if nobody comes and it expires, that WAS this
+    -- match's airdrop. A retry would announce a second one somewhere else, which
+    -- reads as two airdrops in a match the owner asked to have exactly one.
+    m.airdrop.waiting[#m.airdrop.waiting + 1] = {
+        rec = rec, items = items,
+        -- The nearest anybody has actually got, for the diagnostic. This is the
+        -- number that retunes `armWithin` from a playtest instead of a guess.
+        closest = math.huge,
+    }
     m.airdrop.sent = (m.airdrop.sent or 0) + 1
 
     BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
@@ -216,11 +286,110 @@ local function tryCommit(m, p, now)
     -- one's drop.
     BR.Server.notify(BR.Server.audience(m), A.notifyText, 'info')
 
-    print(('[br_core] airdrop: match %d drop %d -> %s (%.0f, %.0f), released in %.0fs and lands in %.0fs, %d POI(s) qualified (circle r %.0f, margin %.0f)')
+    print(('[br_core] airdrop: match %d drop %d SITED at %s (%.0f, %.0f) -- waiting for a player within %.0fm, %d POI(s) qualified (circle r %.0f, margin %.0f), expires in %.0fs')
         :format(m.id, rec.n, tostring(poi.id), poi.x, poi.y,
-                (A.planeLeadMs or 0) / 1000,
-                (tLand - now) / 1000, seen, r, A.insideBy or 250.0))
-    return 'sent'
+                A.armWithin or 200.0, seen, r, A.insideBy or 250.0,
+                (BR.AirdropBlipEndsAt(rec, A) - now) / 1000))
+    return 'sited'
+end
+
+--- Where every living player in this match is, for the gate.
+---
+--- ═══ THE ROSTER'S OWN SAMPLED POSITIONS, WHICH IS THE ONLY HONEST SOURCE ═══
+---
+--- The server has no map and cannot see anybody; what it has is the position
+--- each client reports, sampled at 4Hz and already the basis for every range
+--- check in the loot claim path (docs/security.md). Using it here means the gate
+--- is exactly as trustworthy as the pickup range check, and no more -- and a
+--- client that lies about being near the drop has bought itself an airdrop
+--- arriving where it already was, which is a strictly worse outcome for them
+--- than walking there.
+---
+--- ALIVE OR DOWNED, NOT MERELY CONNECTED. A player watching from the lobby, or
+--- one who has left, is not somebody who "gets to see the drop happen". DBNO is
+--- included deliberately: they are still in the match, still have a position,
+--- and are about to be revived or finished off right next to the crate.
+--- @param m table
+--- @return table[]  array of { x, y }
+local function watchers(m)
+    local out = {}
+    for _, src in ipairs(BR.Server.audience(m)) do
+        local e = BR.Roster.get(src)
+        if e and e.pos
+           and (e.state == BR.PlayerState.ALIVE or e.state == BR.PlayerState.DBNO)
+        then
+            out[#out + 1] = { x = e.pos.x, y = e.pos.y }
+        end
+    end
+    return out
+end
+
+--- Has somebody come close enough to send the aircraft?
+---
+--- ═══ A ONE-WAY LATCH, AND THAT ANSWERS "WHAT IF THEY DIE?" ═══
+---
+--- Once this returns 'armed' the record carries a tRelease and a tLand and the
+--- descent is a pure function of the published record and the synced clock --
+--- exactly as it always was. Nothing can un-arm it. So a player who opens the
+--- gate and is then killed before the crate lands does not cancel the drop: the
+--- box has left the aircraft, and their killer is standing where it is coming
+--- down, which is the fight this whole feature is for.
+---
+--- THREE OUTCOMES:
+---
+---   'armed'   -- somebody is within armWithin. tArm, tRelease and tLand are
+---                written onto the record and it is re-broadcast.
+---   'waiting' -- nobody yet. Ask again next tick.
+---   'expired' -- the blip's own ceiling passed with nobody having come. The
+---                match gets no airdrop (owner, 2026-08-22: "if nobody goes to
+---                the area where the drop is ready to happen within the allotted
+---                time, then no drop should happen").
+---
+--- THE EXPIRY IS THE BLIP'S, DELIBERATELY. BR.AirdropExpired is the single
+--- question, so the moment the blip goes out and the moment the drop is
+--- abandoned are the same instant rather than two timers that can disagree --
+--- and because the client tears its own blip down off the same record and the
+--- same clock, this needs no message at all.
+---
+--- THE STORM PHASE IS RE-CHECKED, unlike the 250m margin. The margin is
+--- self-correcting -- a point that falls outside the circle is a point nobody is
+--- near, so the gate simply never opens -- but the phase cap is not: players are
+--- inside the circle at stage 5 and would happily open a gate the owner's own
+--- rule says is closed.
+--- @param m table
+--- @param w table   the waiting entry { rec, items, closest }
+--- @param now number
+--- @return string outcome
+local function tryArm(m, w, now)
+    local rec = w.rec
+
+    if BR.AirdropExpired(rec, now, A) then
+        print(('[br_core] airdrop: match %d drop %d EXPIRED at %s -- nobody came within %.0fm (closest was %s). This match gets no airdrop.')
+            :format(m.id, rec.n, tostring(rec.poi), A.armWithin or 200.0,
+                    w.closest < math.huge and ('%.0fm'):format(w.closest)
+                                           or 'nobody in the match'))
+        return 'expired'
+    end
+
+    if not BR.AirdropStormOk(m.storm, A.maxPhase) then
+        print(('[br_core] airdrop: match %d drop %d abandoned -- storm went past stage %d while it waited (closest was %s)')
+            :format(m.id, rec.n, A.maxPhase or 4,
+                    w.closest < math.huge and ('%.0fm'):format(w.closest)
+                                           or 'nobody in the match'))
+        return 'expired'
+    end
+
+    local d = BR.AirdropClosest(watchers(m), rec.x, rec.y)
+    if d < w.closest then w.closest = d end
+    if d > (A.armWithin or 200.0) then return 'waiting' end
+
+    BR.ArmAirdropRecord(rec, now, A)
+    BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
+
+    print(('[br_core] airdrop: match %d drop %d ARMED -- a player is %.0fm away, released in %.0fs and lands in %.0fs')
+        :format(m.id, rec.n, d, (A.planeLeadMs or 0) / 1000,
+                (rec.tLand - now) / 1000))
+    return 'armed'
 end
 
 -- ---------------------------------------------------------------------------
@@ -243,11 +412,29 @@ function BR.Airdrop.begin(m)
     if count <= 0 then return end
 
     local now = GetGameTimer()
+    -- ═══ FOUR STAGES NOW, BECAUSE THE ANNOUNCEMENT AND THE DESCENT SPLIT ═══
+    --
+    --   pending  scheduled, not yet sited. No POI, nothing on any screen.
+    --   waiting  SITED AND ANNOUNCED. The blip is up and the match has been
+    --            told -- but nothing is flying, because the drop is waiting for
+    --            somebody to come within `armWithin` of it (owner, 2026-08-22).
+    --   live     armed. The aircraft is inbound and the crate is falling on a
+    --            published curve, exactly as it always did.
+    --   landed   on the ground, sealed, keyed by drop number so an open can find
+    --            the record and stamp `tOpen` on it.
+    --
+    -- `outcome` IS WHY THERE IS NO CRATE, when there is no crate. A match that
+    -- showed a blip and produced nothing reads as a bug in a playtest, and
+    -- /brairdrop has to be able to say "nobody came within 200m; the closest
+    -- anybody got was 340m" rather than shrugging.
     local st = {
         rng     = BR.Rng(now + m.id * 1299709),
         pending = {},
+        waiting = {},
         live    = {},
+        landed  = {},
         sent    = 0,
+        outcome = nil,
     }
 
     local lo = A.minDelayMs or 210000
@@ -301,7 +488,7 @@ BR.Sched.every(1000, 'airdrop.tick', function()
         if not st then return end
         if m.state ~= BR.MatchState.PLAYING then return end
 
-        -- Arrivals first, so a drop committed and landed inside one tick (only
+        -- Arrivals first, so a drop armed and landed inside one tick (only
         -- reachable with a zero descentMs, which the dev command allows) still
         -- happens in the right order.
         for i = #st.live, 1, -1 do
@@ -312,13 +499,55 @@ BR.Sched.every(1000, 'airdrop.tick', function()
             end
         end
 
+        -- ─── THE GATE ─── every second, for every drop that has been announced
+        -- and is waiting for somebody to come and watch it.
+        --
+        -- AT 1Hz, WHICH IS FINE AND IS THE SAME RATE EVERYTHING ELSE HERE RUNS
+        -- AT. The roster's positions are sampled at 4Hz and a sprinting player
+        -- covers about seven metres a second, so the worst this costs is a
+        -- second of delay on a 200m threshold.
+        for i = #st.waiting, 1, -1 do
+            local w = st.waiting[i]
+            local outcome = tryArm(m, w, now)
+            if outcome == 'armed' then
+                table.remove(st.waiting, i)
+                st.live[#st.live + 1] = w
+            elseif outcome == 'expired' then
+                -- NO CRATE, EVER, FOR THIS MATCH (owner, 2026-08-22: "if nobody
+                -- goes to the area where the drop is ready to happen within the
+                -- allotted time, then no drop should happen"). The entry is
+                -- dropped and NOT returned to `pending`: `sent` was already
+                -- counted at the announcement, so the one-per-match rule reads
+                -- this as spent rather than retrying somewhere else.
+                --
+                -- NOTHING IS SENT TO THE CLIENTS. Their blip expires off the
+                -- same record and the same clock at the same instant -- see
+                -- BR.AirdropExpired, which is the one question both sides ask.
+                table.remove(st.waiting, i)
+                st.outcome = {
+                    n = w.rec.n, poi = w.rec.poi,
+                    why = 'nobody came within range before the blip expired',
+                    closest = w.closest,
+                }
+            end
+        end
+
         for i = #st.pending, 1, -1 do
             local p = st.pending[i]
             if now >= p.dueAt
                and (now - p.checkedAt) >= (A.retryEveryMs or 5000) then
                 p.checkedAt = now
-                if tryCommit(m, p, now) ~= 'wait' then
+                local outcome = trySite(m, p, now)
+                if outcome ~= 'wait' then
                     table.remove(st.pending, i)
+                    if outcome == 'phase' then
+                        st.outcome = {
+                            n = p.n,
+                            why = 'the storm was past the phase cap before a '
+                               .. 'POI ever qualified',
+                            closest = math.huge,
+                        }
+                    end
                 end
             end
         end
@@ -330,13 +559,27 @@ end)
 --- Inspect or force a drop.
 ---
 ---   brairdrop              what this match's schedule is doing
----   brairdrop now          commit the next pending drop immediately, under
----                          the real siting rules (so "no POI qualifies" is
----                          reproducible rather than theoretical)
----   brairdrop <poiId>      drop on a named POI, bypassing the storm phase cap
----                          and the 250m margin -- the only way to see one land
----                          somewhere specific without waiting for the circle
----                          to cooperate
+---   brairdrop now          site the next pending drop immediately, under the
+---                          real siting rules (so "no POI qualifies" is
+---                          reproducible rather than theoretical). It still has
+---                          to wait for somebody to come within armWithin.
+---   brairdrop arm          open the 200m gate by hand, for testing the descent
+---                          without walking there
+---   brairdrop <poiId>      site a drop on a named POI, bypassing the storm
+---                          phase cap and the 250m margin -- the only way to see
+---                          one land somewhere specific without waiting for the
+---                          circle to cooperate
+---
+--- ═══ IT HAS TO BE ABLE TO SAY WHY THERE IS NO CRATE ═══
+---
+--- A match that showed a blip and produced nothing is now a legitimate outcome
+--- (owner, 2026-08-22: "if nobody goes to the area where the drop is ready to
+--- happen within the allotted time, then no drop should happen") -- and it is
+--- indistinguishable from a bug from a chair. So a drop that ended without
+--- landing leaves an `outcome` behind, carrying the CLOSEST ANYBODY ACTUALLY
+--- GOT. That number is also how `armWithin` gets retuned from a playtest rather
+--- than from a guess: if the log says the closest approach was 210m, the
+--- threshold is the problem and not the players.
 RegisterCommand('brairdrop', function(_, args)
     local m = BR.Server.latestMatch()
     if not m then
@@ -359,16 +602,45 @@ RegisterCommand('brairdrop', function(_, args)
 
     if not arg then
         print(('=== airdrop: match %d ==='):format(m.id))
-        print(('  sent %d, in flight %d, pending %d')
-            :format(st.sent or 0, #st.live, #st.pending))
+        print(('  sent %d, pending %d, waiting for a player %d, in flight %d')
+            :format(st.sent or 0, #st.pending, #st.waiting, #st.live))
         for _, p in ipairs(st.pending) do
             print(('    drop %d due in %.0fs'):format(p.n, (p.dueAt - now) / 1000))
         end
+
+        -- THE GATE, WITH BOTH NUMBERS. "Waiting" on its own cannot be told from
+        -- "stuck"; the closest approach and the time left are what make it a
+        -- readable state.
+        local live = watchers(m)
+        for _, w in ipairs(st.waiting) do
+            local d = BR.AirdropClosest(live, w.rec.x, w.rec.y)
+            print(('    drop %d SITED at %s (%.0f, %.0f) -- closest player %s '
+                   .. '(need %.0fm), closest ever %s, expires in %.0fs')
+                :format(w.rec.n, tostring(w.rec.poi), w.rec.x, w.rec.y,
+                        d < math.huge and ('%.0fm'):format(d) or 'nobody alive',
+                        A.armWithin or 200.0,
+                        w.closest < math.huge and ('%.0fm'):format(w.closest)
+                                               or 'never measured',
+                        (BR.AirdropBlipEndsAt(w.rec, A) - now) / 1000))
+        end
+
         for _, d in ipairs(st.live) do
             print(('    drop %d at %s lands in %.0fs')
                 :format(d.rec.n, tostring(d.rec.poi), (d.rec.tLand - now) / 1000))
         end
-        print('  usage: brairdrop [now|<poiId>]')
+
+        -- WHY THERE IS NO CRATE. The line that stops a deliberate zero reading
+        -- as a bug in the next playtest.
+        if st.outcome then
+            print(('  NO DROP: drop %d %s%s -- closest anybody got: %s')
+                :format(st.outcome.n, st.outcome.why,
+                        st.outcome.poi and (' at ' .. tostring(st.outcome.poi))
+                                        or '',
+                        st.outcome.closest < math.huge
+                            and ('%.0fm'):format(st.outcome.closest)
+                            or 'nobody was ever measured'))
+        end
+        print('  usage: brairdrop [now|arm|<poiId>]')
         return
     end
 
@@ -380,9 +652,27 @@ RegisterCommand('brairdrop', function(_, args)
         end
         p.checkedAt = 0
         p.dueAt = now
-        local outcome = tryCommit(m, p, now)
+        local outcome = trySite(m, p, now)
         if outcome ~= 'wait' then table.remove(st.pending, 1) end
         print(('  %s'):format(outcome))
+        return
+    end
+
+    -- OPEN THE GATE BY HAND. Testing the descent otherwise means physically
+    -- walking a character to within 200m of wherever the circle put the POI,
+    -- which is several minutes per attempt.
+    if arg == 'arm' then
+        local w = st.waiting[1]
+        if not w then
+            print('  nothing is waiting for a player')
+            return
+        end
+        table.remove(st.waiting, 1)
+        BR.ArmAirdropRecord(w.rec, now, A)
+        BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, w.rec)
+        st.live[#st.live + 1] = w
+        print(('  forced drop %d to arm; it lands in %.0fs')
+            :format(w.rec.n, (w.rec.tLand - now) / 1000))
         return
     end
 
@@ -392,14 +682,19 @@ RegisterCommand('brairdrop', function(_, args)
         return
     end
 
+    -- SITED, NOT ARMED. It goes through the same gate everything else does --
+    -- forcing the POI bypasses the circle, not the owner's rule that somebody
+    -- has to be there to watch. `brairdrop arm` is the second half.
     local n = (st.sent or 0) + 1
-    local tRelease = now + (A.planeLeadMs or 0)
-    local rec = BR.BuildAirdropRecord(n, poi, A.altitude or 260.0,
-        now, tRelease + (A.descentMs or 30000), st.rng:float() * 360.0,
-        tRelease)
-    st.live[#st.live + 1] = { rec = rec, items = BR.AirdropPayout(st.rng, A) }
+    local rec = BR.BuildAirdropSite(n, poi, A.altitude or 260.0,
+        now, st.rng:float() * 360.0)
+    st.waiting[#st.waiting + 1] = {
+        rec = rec, items = BR.AirdropPayout(st.rng, A), closest = math.huge,
+    }
     st.sent = n
     BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
     BR.Server.notify(BR.Server.audience(m), A.notifyText, 'info')
-    print(('  forced drop %d on %s (%.0f, %.0f)'):format(n, poi.id, poi.x, poi.y))
+    print(('  sited drop %d on %s (%.0f, %.0f) -- it waits for a player within '
+           .. '%.0fm, or /brairdrop arm')
+        :format(n, poi.id, poi.x, poi.y, A.armWithin or 200.0))
 end, true)
