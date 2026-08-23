@@ -3111,8 +3111,14 @@ do
     ok(#W.S.corroborations == 2,
         'a different reason does not, even half a second later',
         #W.S.corroborations)
-    ok(W.S.corroborations[2].reason == V.FLIES,
-        'and it is the vehicle that got through', W.S.corroborations[2].reason)
+    -- GUARDED, LIKE EVERY OTHER INDEX IN THIS FILE. A bare
+    -- `W.S.corroborations[2].reason` aborts the whole suite the moment the row
+    -- it is asserting the existence of is missing -- which is exactly the state
+    -- a broken throttle produces, so the run that most needs the rest of these
+    -- cases is the one that would never reach them.
+    local got = W.S.corroborations[2]
+    ok(got and got.reason == V.FLIES,
+        'and it is the vehicle that got through', got and got.reason)
 
     -- AND THE SECOND KIND FOLDS ON ITS OWN TERMS. The same vehicle rule again is
     -- a repeat like any other.
@@ -3211,9 +3217,10 @@ do
     -- the offence that was waiting when this one arrived and superseded it. The
     -- number that goes out is always the newest, which is what makes a held note
     -- costless.
-    ok(W.S.corroborations[2].count == 5,
+    local reopened = W.S.corroborations[2]
+    ok(reopened and reopened.count == 5,
         'carrying the count as it stands at that moment, not as it stood at the first row',
-        tostring(W.S.corroborations[2].count))
+        reopened and tostring(reopened.count))
 end
 
 describe('corroboration.a-quiet-case-releases-nothing')
