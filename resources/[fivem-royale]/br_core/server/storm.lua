@@ -34,6 +34,58 @@ local function publish(m)
     BR.Broadcast.toMatch(m, BR.Net.STORM_SYNC, m.storm)
 end
 
+-- ═══ THE SOUND THE WALL MAKES WHEN IT STARTS MOVING ═══
+--
+--   "We also need a sound for when the storm starts moving"
+--                                          -- owner, 2026-08-22
+--
+-- WHICH MOMENT THAT IS. A phase has two halves. `enterPhase` is when the next
+-- circle is DRAWN and the wall STOPS -- the hold. The wall starts moving at the
+-- other end of that hold, when BR.StormAt stops answering HOLDING and starts
+-- answering SHRINKING. That edge is what this cues, and it is cued eight times
+-- a match rather than once.
+--
+-- ═══ WHY THE SERVER OWNS THE EDGE AND NOT THE CLIENT ═══
+--
+-- Every client already solves the wall for itself -- that is the whole design,
+-- and it means every client COULD notice this boundary on its own. It must not:
+-- that is eight latches in eight frame loops, each drifting by a frame, each
+-- needing its own "have I already played this" state, and each getting it wrong
+-- for a player who joined or respawned mid-phase. The server runs one 1 Hz job
+-- that is already looking at exactly this record, so the edge is detected once,
+-- in one place, and ADDRESSED to the match. "Everyone hears it once" then
+-- follows from the fan-out rather than from eight clients agreeing.
+--
+-- UP TO ONE SECOND LATE, AND THAT IS FINE. The job ticks at 1 Hz, so the cue
+-- can trail the true boundary by up to a second. A shrink runs 40 to 360
+-- seconds and the wall is a kilometre wide; nobody can perceive the offset, and
+-- paying for exactness would mean putting this in a frame loop.
+local MOVE_CUE = 'storm.move'
+
+--- Tell a whole match the wall has begun to move -- at most once per phase.
+---
+--- THE LATCH IS ON THE MATCH, NOT ON THE PHASE NUMBER, and that difference is
+--- real: `brphase` and `brstormfreeze off` both RE-ENTER a phase from wherever
+--- the wall is standing, which gives it a fresh hold and a fresh sweep. Keyed on
+--- the number, a thaw would hold its peace while the wall visibly set off again.
+--- `enterPhase` clears it, so every entry -- first, forced or thawed -- arms it.
+---
+--- FINISHED COUNTS AS MOVED. The state to watch is SHRINKING, but a scheduler
+--- stall long enough to skip every tick of a sweep would step straight from
+--- HOLDING to FINISHED and the cue would be lost with nothing to say so. A wall
+--- that has finished moving has moved, so the latch trips either way.
+--- @param m table
+local function cueMovementOnce(m, st)
+    if m.stormMoveCued then return end
+    if st ~= BR.StormPhase.SHRINKING and st ~= BR.StormPhase.FINISHED then return end
+    m.stormMoveCued = true
+    -- A CUE KEY, NEVER A SOUND NAME. The wire carries `storm.move` and the
+    -- client resolves it against its own BR.Config.Audio.cues, which is what
+    -- lets the owner re-point it with /brsfx bind without a line of this file
+    -- changing. See br_lib/shared/protocol.lua's SFX_CUE.
+    BR.Broadcast.toMatch(m, BR.Net.SFX_CUE, { c = MOVE_CUE })
+end
+
 --- Build and publish the record that shrinks toward phases[phase], starting
 --- from the given circle. The next centre is drawn HERE, at phase entry, so
 --- players see where to rotate for the whole hold.
@@ -103,6 +155,12 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     m.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
         now, (waitSec or p.wait) * 1000 * timeScale,
         shrinkSec * 1000 * timeScale, p.dps)
+
+    -- ARMED FOR THIS PHASE'S SWEEP. Every route into a phase comes through
+    -- here -- the first one, the next one, `brphase`, and the thaw -- so this
+    -- one line is what makes "once per hold-to-shrink transition" true for all
+    -- four of them rather than for the ordinary one only.
+    m.stormMoveCued = false
 
     print(('[br_core] storm: match %d phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs (furthest %.0fm), %.1f dps')
         :format(m.id, phase, r0, p.radius,
@@ -252,6 +310,12 @@ BR.Sched.every(1000, 'storm.phase', function()
 
         local rec = m.storm
         local _, _, _, st = BR.StormAt(rec, GetGameTimer())
+
+        -- BEFORE the advance, not after. The advance replaces `m.storm` with a
+        -- record that is HOLDING again, so a cue evaluated afterwards would be
+        -- reading the NEXT phase's hold and would never fire at all.
+        cueMovementOnce(m, st)
+
         if st == BR.StormPhase.FINISHED and rec.phase < #cfg.phases then
             enterPhase(m, rec.phase + 1, rec.cx1, rec.cy1, rec.r1, GetGameTimer())
         end

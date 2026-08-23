@@ -595,7 +595,13 @@ do
 
     local cues = BR.Config.Audio and BR.Config.Audio.cues or {}
 
-    for _, name in ipairs({ 'fuel.start', 'fuel.done' }) do
+    -- storm.move RIDES THIS BLOCK RATHER THAN GETTING ITS OWN, and it is here
+    -- rather than in a storm suite on purpose: what is being checked is not the
+    -- storm, it is the CUE TABLE -- that every cue any subsystem asks for by key
+    -- exists, carries both fields, and sounds like nothing else. That is one
+    -- property over one table, and splitting it per subsystem is how the
+    -- collision check below ends up comparing half the cues with the other half.
+    for _, name in ipairs({ 'fuel.start', 'fuel.done', 'storm.move' }) do
         local def = cues[name]
         ok(type(def) == 'table', ('the %s cue exists'):format(name))
         if type(def) == 'table' then
@@ -621,6 +627,29 @@ do
         end
     end
     ok(clash == nil, 'no two cues share a sound', clash)
+
+    -- ═══ EVERY CUE'S SET IS ONE GTA'S OWN SCRIPTS PLAY ═══
+    --
+    -- The single failure mode this whole file's header is about: a wrong sound
+    -- SET is SILENT, and silent is indistinguishable from a sound somebody
+    -- disliked. The catalogue is the 84 base-game sets taken from the calls
+    -- Rockstar's scripts actually make, with every DLC bank filtered out -- so a
+    -- cue whose set is not in it is a cue nobody has any reason to believe will
+    -- play. This is the check that would have caught Pit_Stop_Complete.
+    --
+    -- ASSERTED OVER THE WHOLE TABLE rather than per cue, because the next cue
+    -- added is the one nobody will write a test for.
+    local catSets = {}
+    for _, entry in ipairs(BR.Config.Audio.catalogue or {}) do catSets[entry.set] = true end
+    local stray = nil
+    for cue, def in pairs(cues) do
+        if type(def) == 'table' and def.set and not catSets[def.set] then
+            stray = ('%s uses %s, which is in no catalogue set'):format(cue, def.set)
+        end
+    end
+    ok(stray == nil,
+       'every cue plays out of a set GTA\'s own scripts call -- no DLC audio '
+           .. 'bank, which would be silent rather than wrong', stray)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1821,15 +1850,33 @@ do
     ok(done.name ~= 'CHALLENGE_UNLOCKED',
        'the sound the owner heard as a warning is gone', tostring(done.name))
 
-    -- THE SET DID NOT MOVE, AND THAT IS THE SAFETY PROPERTY RATHER THAN A
-    -- PREFERENCE. A wrong sound SET plays nothing, silently, exactly like a
-    -- misspelled name -- so the only empirical evidence that a set is audible on
-    -- the shipping build is that somebody has heard something out of it. The
-    -- owner's complaint IS that evidence for HUD_AWARDS. Staying inside it makes
-    -- this change name-only; hopping to a DLC bank would reopen the question.
-    ok(done.set == 'HUD_AWARDS',
-       'and the replacement stays in the set the owner has demonstrably heard '
-           .. 'sounds from -- the complaint itself is the proof it loads',
+    -- ═══ THIS ASSERTION USED TO READ `done.set == 'HUD_AWARDS'` AND WAS
+    --     DELIBERATELY LOOSENED, 2026-08-22 ═══
+    --
+    -- It was right while the fix was "change the NAME inside the one set the
+    -- owner had demonstrably heard". It became wrong the moment the owner was
+    -- handed /brsfx and told to go and choose: the third pick is theirs, it may
+    -- legitimately land in HUD_MINI_GAME_SOUNDSET or anywhere else, and a test
+    -- that reddened the build for the owner exercising the tool built for them
+    -- would simply be deleted by whoever landed their choice. A gate people
+    -- route around protects nothing.
+    --
+    -- WHAT REPLACES IT IS THE PROPERTY THAT ACTUALLY MATTERED ALL ALONG, and it
+    -- is stronger in the direction that has cost real rounds: the set must be
+    -- one of the 84 in BR.Config.Audio.catalogue. Those are the sets GTA's own
+    -- scripts call, with every DLC_*/dlc_* bank filtered out -- which is exactly
+    -- the check that would have rejected Pit_Stop_Complete (a real name, in a
+    -- real set, in a script audio bank this gamemode never requests, and
+    -- therefore silent). A wrong SET is the failure mode here; a name inside a
+    -- loaded set is at worst a sound somebody dislikes.
+    local inCatalogue = false
+    for _, entry in ipairs(BR.Config.Audio.catalogue or {}) do
+        if entry.set == done.set then inCatalogue = true end
+    end
+    ok(inCatalogue,
+       'and whatever it is, its SET is one GTA\'s own scripts play -- so the '
+           .. 'third pick can be any sound the owner likes, but not a DLC bank '
+           .. 'that would be silent',
        tostring(done.set))
 
     -- THE START SOUND IS OWNER-CONFIRMED AND IS NOT TO BE TOUCHED.
@@ -1846,9 +1893,25 @@ do
     local fh = io.open(ROOT .. 'br_core/client/sfx.lua', 'r')
     if fh then
         local sfx = fh:read('a'); fh:close()
-        ok(sfx:find('BR.Config.Audio.cues[args[1]]', 1, true) ~= nil,
+        -- THE SPELLING MOVED WHEN /brsfx GREW SUBCOMMANDS -- `args[1]` is read
+        -- into `verb` first, because the first word now decides between a cue
+        -- key, a sound set and a subcommand. Both halves are pinned so the
+        -- lookup cannot quietly stop being driven by what was typed.
+        ok(sfx:find('local verb = args[1]', 1, true) ~= nil,
+           '/brsfx still reads its first word from the command line')
+        ok(sfx:find('BR.Config.Audio.cues[verb]', 1, true) ~= nil,
            "/brsfx still resolves any cue by key, so `/brsfx fuel.done` "
                .. 'auditions whatever this table says')
+
+        -- ═══ AND THE OWNER CAN NOW CHANGE IT WITHOUT A CODE EDIT ═══
+        --
+        -- The third fuel sound is theirs to pick by ear, and picking by ear
+        -- means hearing it AT A PUMP rather than in a menu. `bind` re-points a
+        -- cue for the session so the next tank plays the candidate. It writes
+        -- nothing, which is the honest half and is why the command says so.
+        ok(sfx:find("BR.Config.Audio.cues[cue] = { set = set, name = name }", 1, true) ~= nil,
+           'and `brsfx bind <cue> <SET> <NAME>` re-points a cue live, so the '
+               .. 'candidate can be judged where it actually fires')
     end
 end
 

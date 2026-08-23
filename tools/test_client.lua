@@ -12470,6 +12470,265 @@ do
     onFoot()
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('sfx.audition')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "Can you make me something which plays GTA sounds with a console command
+--    so I can pick which one sounds good?"      -- owner, 2026-08-22
+--
+-- ═══ WHY THE AUDITION COMMAND IS DRIVEN HERE AND NOT LEFT TO A GREP ═══
+--
+-- tools/test_shared.lua proves the SEARCH returns the right rows and
+-- tools/verify.sh proves the command still exists and still probes. Neither one
+-- runs it. Two things can only be seen by running it, and both are the kind of
+-- mistake that produces SILENCE rather than an error -- which is the exact
+-- failure mode this whole feature exists to make visible:
+--
+--   1. THE ARGUMENT ORDER. PLAY_SOUND_FRONTEND is
+--      (soundId, audioName, audioRef) -- the NAME comes before the SET, which
+--      is the opposite of how everything in this codebase talks about a cue
+--      ("HUD_AWARDS / PROPERTY_PURCHASE", set first). Swap them and every
+--      single sound in the game goes quiet, with no error anywhere and a
+--      config file that still reads perfectly.
+--
+--   2. WHAT THE PROBE MAKES OF EACH SHAPE THE BOOL CAN ARRIVE IN.
+--      HAS_SOUND_FINISHED is declared BOOL and this project has shipped the
+--      number-not-boolean bug SIX times. `0` IS TRUTHY IN LUA, so a build that
+--      answers 0 for "not finished yet" would make a bare truth test report
+--      every pair as silent -- the probe firing constantly on working sounds,
+--      which is worse than no probe because it would be believed at first.
+--      Every shape is driven: true, 1, false, 0 and nil.
+do
+    loadAll({ 'br_lib/config/audio.lua', 'br_core/client/sfx.lua' })
+
+    -- ---------------------------------------------------------- the engine ---
+    local plays, released = {}, {}
+    local savedPlay = PlaySoundFrontend
+    PlaySoundFrontend = function(id, name, set, p3)
+        plays[#plays + 1] = { id = id, name = name, set = set, p3 = p3 }
+    end
+    GetSoundId       = function() return 7 end
+    ReleaseSoundId   = function(id) released[#released + 1] = id end
+
+    -- WHAT THE ENGINE SAYS WHEN ASKED WHETHER THE SOUND IS OVER. Driven per
+    -- case; `true` is the "it never started" answer the probe exists to catch.
+    local finished = true
+    HasSoundFinished = function() return finished end
+
+    -- THREADS RUN INLINE, AND `Wait` MOVES THE CLOCK. The suite's default
+    -- Citizen.Wait is a no-op and GetGameTimer answers a frozen fakeTime -- and
+    -- the probe measures its window with GetGameTimer, so a Wait that did not
+    -- advance it would spin forever. A Wait that does not advance time is also
+    -- not a faithful model of one: in the game every Wait(0) is a frame.
+    local savedCitizen = Citizen
+    Citizen = {
+        CreateThread = function(f) f() end,
+        Wait = function(ms) fakeTime = fakeTime + math.max(tonumber(ms) or 0, 16) end,
+        SetTimeout = function() end,
+    }
+
+    --- Run /brsfx and hand back everything it printed.
+    local function brsfx(...)
+        local from = #logged + 1
+        plays, released = {}, {}
+        commands['brsfx'](0, { ... }, 'brsfx')
+        return table.concat(logged, '\n', from, #logged)
+    end
+
+    ok(commands['brsfx'] ~= nil, '/brsfx is registered')
+
+    -- ═══ THE ARGUMENT ORDER ═══
+    local out = brsfx('play', 'HUD_AWARDS', 'COLLECTED')
+    ok(#plays == 1, 'brsfx play makes exactly one sound call', ('%d'):format(#plays))
+    ok(plays[1] and plays[1].name == 'COLLECTED' and plays[1].set == 'HUD_AWARDS',
+       'and passes the NAME third-from-left and the SET after it, which is '
+           .. 'PLAY_SOUND_FRONTEND(soundId, audioName, audioRef) and is the '
+           .. 'reverse of how a cue is written down',
+       plays[1] and ('name=%s set=%s'):format(tostring(plays[1].name),
+                                              tostring(plays[1].set)) or 'nothing')
+
+    -- THROUGH A REAL SOUND ID, WHICH IS THE WHOLE PROBE. Fire-and-forget -1
+    -- cannot be asked whether it ever started, and a version of this command
+    -- that quietly went back to -1 would still play sounds and would still look
+    -- like it was working.
+    ok(plays[1] and plays[1].id == 7,
+       'through a real GET_SOUND_ID rather than fire-and-forget -1, so there '
+           .. 'is something to ask HAS_SOUND_FINISHED about',
+       plays[1] and tostring(plays[1].id) or 'nothing')
+    ok(released[1] == 7, 'and the id is released afterwards rather than leaked',
+       tostring(released[1]))
+
+    -- ═══ EVERY SHAPE A BOOL NATIVE MAY ARRIVE IN ═══
+    --
+    -- The pair is the same every time; only the engine's answer changes. What
+    -- is asserted is the VERDICT the owner reads, because that is the whole
+    -- output of the feature.
+    local SHAPES = {
+        { v = true,  silent = true,  why = 'a strict true means finished, so it never started' },
+        { v = 1,     silent = true,  why = 'and 1 is the same answer from a build that returns numbers' },
+        { v = false, silent = false, why = 'a strict false means it is still playing' },
+        { v = 0,     silent = false, why = '...AND SO IS 0, which is TRUTHY in Lua -- the shape that '
+                                           .. 'punishes a bare `if finished then` and would report '
+                                           .. 'every working sound as silent' },
+        { v = nil,   silent = false, why = 'and nil is not "finished" either' },
+    }
+    for _, s in ipairs(SHAPES) do
+        finished = s.v
+        local o = brsfx('play', 'HUD_AWARDS', 'COLLECTED')
+        local sawSilent = o:find('[silent?]', 1, true) ~= nil
+        ok(sawSilent == s.silent, s.why,
+           ('HasSoundFinished -> %s, reported %s'):format(
+               tostring(s.v), sawSilent and 'silent' or 'played'))
+    end
+    finished = false
+
+    -- ═══ THE HONEST THIRD ANSWER: THE PROBE DECLINING ═══
+    --
+    -- `[silent?]` and `[unprobed]` must not be confusable. The first is
+    -- evidence about the sound; the second is an admission about the probe, on
+    -- a build where there was no sound id to watch or where the native would
+    -- not answer. A tool that reported "silent" when it simply could not tell
+    -- would send the owner hunting a set name that was fine -- which is the
+    -- same wasted round, with the blame moved.
+    local savedGet = GetSoundId
+    GetSoundId = function() return -1 end
+    out = brsfx('play', 'HUD_AWARDS', 'COLLECTED')
+    ok(out:find('[unprobed]', 1, true) ~= nil,
+       'a build with no sound id to spare reports that it could not tell, not '
+           .. 'that the sound was silent', out)
+    ok(#plays == 1 and plays[1].id == -1,
+       'and the sound is still played, fire-and-forget, rather than skipped -- '
+           .. 'the ear is the primary instrument and the probe is the aid',
+       plays[1] and tostring(plays[1].id) or 'nothing')
+    GetSoundId = savedGet
+
+    HasSoundFinished = function() error('this native does not exist here') end
+    out = brsfx('play', 'HUD_AWARDS', 'COLLECTED')
+    ok(out:find('[unprobed]', 1, true) ~= nil,
+       'and a build whose HAS_SOUND_FINISHED does not bind says the same thing '
+           .. 'rather than taking the whole command down', out)
+    ok(#plays == 1, 'while still playing the sound')
+    HasSoundFinished = function() return finished end
+
+    -- ═══ A CUE BY KEY, WHICH IS WHAT MAKES THE CONFIG AUDITIONABLE ═══
+    local done = BR.Config.Audio.cues['fuel.done']
+    brsfx('fuel.done')
+    ok(#plays == 1 and plays[1].name == done.name and plays[1].set == done.set,
+       '/brsfx <cue> plays whatever the cue table currently says',
+       plays[1] and (tostring(plays[1].set) .. '/' .. tostring(plays[1].name)) or 'nothing')
+
+    -- AND THE OLDER TWO-WORD FORM STILL WORKS. config/audio.lua's own comments
+    -- tell the reader to type `/brsfx HUD_AWARDS PROPERTY_PURCHASE`, and a
+    -- command that broke its documented spelling to make room for subcommands
+    -- would have traded one discovery problem for another.
+    brsfx('HUD_AWARDS', 'MEDAL_BRONZE')
+    ok(#plays == 1 and plays[1].set == 'HUD_AWARDS' and plays[1].name == 'MEDAL_BRONZE',
+       'and the documented two-word form still plays a raw pair',
+       plays[1] and (tostring(plays[1].set) .. '/' .. tostring(plays[1].name)) or 'nothing')
+
+    -- A SUBCOMMAND IS NOT MISTAKEN FOR A SOUND SET. `sets` and `find` take a
+    -- second word too, and reading `brsfx find GO` as the set `find` would be a
+    -- silent sound and a search that never ran.
+    brsfx('find', 'GO')
+    ok(#plays == 0, 'a subcommand with an argument is not read as a set/name pair',
+       ('%d play(s)'):format(#plays))
+
+    -- ═══ SEARCH OUTPUT ═══
+    out = brsfx('find', 'GO', 'MINI')
+    ok(out:find('GO_NON_RACE', 1, true) ~= nil,
+       'brsfx find prints the pairs it matched', out)
+    ok(out:find('HUD_AWARDS', 1, true) == nil,
+       'and nothing from a set the second word excluded')
+
+    out = brsfx('sets', 'AWARDS')
+    ok(out:find('HUD_AWARDS', 1, true) ~= nil, 'brsfx sets lists a matching set')
+
+    out = brsfx('find', 'nothing_is_called_this')
+    ok(out:find(': 0 ', 1, true) ~= nil, 'and an empty search says so', out)
+
+    -- ═══ AUDITIONING A WHOLE SET, IN ORDER ═══
+    --
+    -- The comparative case, which is the one that actually settles a choice:
+    -- play, wait, play the next, printing each name.
+    local names = BR.Config.Audio.namesIn('HUD_AWARDS')
+    out = brsfx('audition', 'HUD_AWARDS')
+    ok(#plays == #names, 'brsfx audition plays every name in the set',
+       ('%d of %d'):format(#plays, #names))
+    local sameOrder = true
+    for i, n in ipairs(names) do
+        if not plays[i] or plays[i].name ~= n then sameOrder = false end
+    end
+    ok(sameOrder, 'in the catalogue order, so the printed list and the sounds '
+                      .. 'heard line up one for one')
+    ok(out:find(names[1], 1, true) ~= nil and out:find(names[#names], 1, true) ~= nil,
+       'and every name is printed as it plays, not just at the end')
+
+    -- AND THE SILENT ONES ARE COUNTED. This is the line that turns "one of
+    -- these was wrong" into "this one was wrong".
+    finished = true
+    out = brsfx('audition', 'HUD_AWARDS')
+    ok(out:find(('%d of %d never started'):format(#names, #names), 1, true) ~= nil,
+       'a set where nothing plays reports the count rather than looking like a '
+           .. 'set of sounds somebody disliked', out:sub(-260))
+    finished = false
+
+    -- ═══ bind: THE THIRD FUEL SOUND IS THE OWNER'S, AND THIS IS HOW THEY TRY IT ═══
+    local wasSet, wasName = done.set, done.name
+    brsfx('bind', 'fuel.done', 'HUD_MINI_GAME_SOUNDSET', 'MEDAL_UP')
+    ok(BR.Config.Audio.cues['fuel.done'].set == 'HUD_MINI_GAME_SOUNDSET'
+       and BR.Config.Audio.cues['fuel.done'].name == 'MEDAL_UP',
+       'brsfx bind re-points a cue in the live table')
+    brsfx('fuel.done')
+    ok(plays[1] and plays[1].name == 'MEDAL_UP',
+       'and the cue really plays the new pair afterwards -- which is what lets '
+           .. 'a candidate be judged at a pump instead of in a menu')
+
+    -- IT REFUSES A KEY THAT IS NOT A CUE, rather than inventing one. A typo
+    -- that silently created `fuel.donne` would leave the owner auditioning a
+    -- cue nothing fires.
+    brsfx('bind', 'fuel.donne', 'HUD_AWARDS', 'WIN')
+    ok(BR.Config.Audio.cues['fuel.donne'] == nil,
+       'and a misspelled cue key is refused rather than quietly created')
+
+    BR.Config.Audio.cues['fuel.done'] = { set = wasSet, name = wasName }
+
+    -- ═══ THE MATCH-WIDE CUE ARRIVING FROM THE SERVER ═══
+    --
+    -- The storm's. Everything about the payload is treated as untrusted even
+    -- though the server is the sender, because the cost of doing so is one
+    -- type check and the cost of not doing so is a client error mid-match.
+    local move = BR.Config.Audio.cues['storm.move']
+    plays = {}
+    fire(BR.Net.SFX_CUE, { c = 'storm.move' })
+    ok(#plays == 1 and plays[1].set == move.set and plays[1].name == move.name,
+       'a storm.move cue off the wire plays the configured pair',
+       plays[1] and (tostring(plays[1].set) .. '/' .. tostring(plays[1].name)) or 'nothing')
+
+    for _, junk in ipairs({ { c = 'no such cue' }, { c = 42 }, { }, 'not a table', 7 }) do
+        plays = {}
+        local safe = pcall(fire, BR.Net.SFX_CUE, junk)
+        ok(safe and #plays == 0,
+           'a malformed cue message plays nothing and does not throw',
+           ('%s -> %d play(s), ok=%s'):format(type(junk), #plays, tostring(safe)))
+    end
+    plays = {}
+    local safeNil = pcall(fire, BR.Net.SFX_CUE, nil)
+    ok(safeNil and #plays == 0, 'and neither does no payload at all')
+
+    -- THE MUTE SWITCH COVERS IT TOO. A player who muted our cues must not be
+    -- given a sound by the server just because it arrived over the wire.
+    BR.Sfx.setMuted(true)
+    plays = {}
+    fire(BR.Net.SFX_CUE, { c = 'storm.move' })
+    ok(#plays == 0, 'and /brmute silences the server-addressed cue as well',
+       ('%d'):format(#plays))
+    BR.Sfx.setMuted(false)
+
+    PlaySoundFrontend = savedPlay
+    Citizen = savedCitizen
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

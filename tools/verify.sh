@@ -1221,10 +1221,131 @@ if [ -f "$dmgfile_" ]; then
     done
 fi
 
+# THE THIRD DIRECTION: WHAT CAN MAKE THIS CLIENT PLAY A SOUND.
+#
+# Lighter than the two above and gated for the same reason they are -- the
+# capability is small, and the thing that goes wrong is that it QUIETLY GROWS a
+# second copy of itself.
+#
+# ═══ WHY A SOUND NEEDS A GATE AT ALL ═══
+#
+# Because a wrong sound fails SILENTLY, and this project has now paid for that
+# three separate times: WIN and LOSER were silent in the wrong set; the fuel
+# completion cue has been rejected twice by ear, with "I dislike this" and "this
+# never played" indistinguishable from the driver's seat. The defence is that
+# every sound comes out of ONE table -- br_lib/config/audio.lua -- reached BY
+# KEY, so that /brsfx can audition it and one edit changes it everywhere.
+#
+# A PAIR INLINED AT A CALL SITE DEFEATS ALL OF THAT AT ONCE. It cannot be
+# auditioned (nothing knows the key), it cannot be re-pointed with `brsfx bind`,
+# and when it turns out to be silent the search for it starts with a grep. That
+# is not hypothetical: `brsound` in client/debug.lua was a whole second audition
+# command, invisible to the duplicate-command gate below because that one
+# buckets by NAME and these were two names for one question.
+#
+# SO THE CALLERS ARE AN ALLOWLIST, exactly like DropPlayer above.
+#
+#   client/sfx.lua        owns the cue table, the throttle and /brsfx. The only
+#                         file that is SUPPOSED to name a native audio call.
+#   client/loot.lua       )  config/loot.lua's own openSound/pickupSound, which
+#   client/inventory.lua  )  predate the cue table. NOT MOVED -- the pickup sound
+#                            is one the owner heard and kept -- but pinned here
+#                            so the list is two files rather than "wherever".
+#
+# Adding a fourth is a decision, not an accident; if it is the right one, this
+# list is what gets updated.
+# COMMENT LINES ARE STRIPPED FIRST, and that is not tidiness. This subject is
+# the most heavily commented in the tree -- client/sfx.lua, client/fuel.lua,
+# server/fuel.lua and config/audio.lua all discuss `PlaySoundFrontend(...)` by
+# name in prose, because the whole point of those comments is that the native
+# fails silently. A gate that counted prose would fail on a paragraph explaining
+# why the rule exists, which is the fastest possible route to it being deleted.
+sfxfiles_=$(
+    for f in "resources/[fivem-royale]"/*/client/*.lua; do
+        [ -f "$f" ] || continue
+        if grep -v '^[[:space:]]*--' "$f" \
+           | grep -qE '(^|[^_[:alnum:]])PlaySound(Frontend|FromEntity)[[:space:]]*\('; then
+            echo "$f" | sed 's|.*/client/|client/|'
+        fi
+    done | sort -u | tr '\n' ' '
+)
+if [ -n "$sfxfiles_" ] \
+   && [ "$sfxfiles_" != "client/inventory.lua client/loot.lua client/sfx.lua " ]; then
+    echo "${RED}FAIL${RST} native sound calls live in '${sfxfiles_}'"
+    echo "     expected 'client/inventory.lua client/loot.lua client/sfx.lua '"
+    echo "     A set/name pair written at a call site cannot be auditioned with"
+    echo "     /brsfx, cannot be re-pointed with 'brsfx bind', and fails SILENTLY"
+    echo "     when the set is wrong. Add a cue to br_lib/config/audio.lua and"
+    echo "     play it by key. If a fourth file really must, update THIS gate."
+    boundary=1
+fi
+
+# AND THE AUDITION COMMAND IS WHERE THE TABLE IS. /brsfx has to be registered in
+# the file that owns the cue table: a version of it anywhere else would be
+# reading that table across files and would be the first half of growing a
+# second one.
+sfxfile_="resources/[fivem-royale]/br_core/client/sfx.lua"
+if [ -f "$sfxfile_" ]; then
+    if ! grep -q "RegisterCommand('brsfx'" "$sfxfile_"; then
+        echo "${RED}FAIL${RST} brsfx is not registered in $sfxfile_"
+        echo "     The audition command belongs in the file that owns the cue"
+        echo "     table. If it moved, move this gate with it."
+        boundary=1
+    fi
+    # THE PROBE IS THE POINT OF THE COMMAND, so it is pinned rather than
+    # trusted. Without a real GET_SOUND_ID there is nothing to ask
+    # HAS_SOUND_FINISHED about, and /brsfx silently goes back to being what it
+    # was before the owner asked for this: a command that plays something and
+    # cannot tell you whether anything came out.
+    #
+    # MATCHED AS A CALL, NOT AS A SUBSTRING, AND MUTATION TESTING IS WHY. The
+    # first draft of this line was `grep -q 'HasSoundFinished'`, and a mutant
+    # that renamed every occurrence to `HasSoundFinishedX` -- which is a probe
+    # that calls a native that does not exist, i.e. no probe at all -- SURVIVED
+    # it, because the old name is a prefix of the new one. The gate reported
+    # green over a /brsfx that could no longer answer the only question it was
+    # built to answer.
+    if ! grep -qE 'HasSoundFinished[[:space:]]*[,)]' "$sfxfile_"; then
+        echo "${RED}FAIL${RST} /brsfx has lost its silence probe"
+        echo "     Expected HasSoundFinished in $sfxfile_. A wrong sound SET"
+        echo "     plays nothing and reports nothing, which is indistinguishable"
+        echo "     from a sound somebody disliked -- and that ambiguity has cost"
+        echo "     this project two rounds of picking a fuel cue."
+        boundary=1
+    fi
+    # AND IT READS THE ANSWER THROUGH THE 1-OR-true IDIOM. HAS_SOUND_FINISHED is
+    # declared BOOL and a FiveM BOOL native may hand Lua a number; `0` IS TRUTHY
+    # IN LUA, so a bare `if fin then` reports every pair as playing and the probe
+    # becomes a decoration that always says yes. Six times in this codebase.
+    if ! grep -qE 'v == 1 or v == true' "$sfxfile_"; then
+        echo "${RED}FAIL${RST} /brsfx reads a BOOL native without the 1-or-true idiom"
+        echo "     Expected 'v == 1 or v == true' in $sfxfile_."
+        echo "     0 is truthy in Lua and a BOOL native may return 1, so a bare"
+        echo "     truth test would make the silence probe answer 'played' for"
+        echo "     every pair, including the silent ones it exists to catch."
+        boundary=1
+    fi
+fi
+
+# `brsound` IS GONE AND STAYS GONE. It was the second raw-pair audition command
+# and it played through the fire-and-forget sound id -1, which cannot be asked
+# whether it ever started -- so reaching for it instead of /brsfx lost exactly
+# the answer the owner is trying to get. Two commands for one question is #137's
+# lesson, and the duplicate-command gate cannot see this shape because the two
+# had different names.
+if grep -rq "RegisterCommand('brsound'" "resources/[fivem-royale]" 2>/dev/null; then
+    echo "${RED}FAIL${RST} brsound is back"
+    echo "     It is a second answer to the question /brsfx answers, without the"
+    echo "     silence probe. Whoever reached for the wrong one would lose the"
+    echo "     one piece of information they were after. Use 'brsfx play'."
+    boundary=1
+fi
+
 if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
     echo "${GRN}ok${RST}   brcar is console-only and CreateVehicle is scoped to the file that holds the allowlist"
     echo "${GRN}ok${RST}   brshots/brtestfire are console-only, dev-gated and cannot file a manufactured incident"
+    echo "${GRN}ok${RST}   native sound comes from 3 known files, and /brsfx keeps its silence probe"
 else
     rc=1
 fi

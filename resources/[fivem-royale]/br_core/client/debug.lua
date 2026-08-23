@@ -310,22 +310,25 @@ RegisterCommand('brloop', function(_, args)
     end
 end, false)
 
---- Audition a frontend sound pair, so the loot sounds can be chosen by ear
---- rather than by guessing at soundset names.
----   /brsound HUD_MINI_GAME_SOUNDSET CHECKPOINT_PERFECT
-RegisterCommand('brsound', function(_, args)
-    local set, name = args[1], args[2]
-    if not set or not name then
-        print('  usage: brsound <soundSet> <soundName>')
-        print(('  loot open:   %s / %s'):format(
-            BR.Config.Loot.openSound.set, BR.Config.Loot.openSound.name))
-        print(('  loot pickup: %s / %s'):format(
-            BR.Config.Loot.pickupSound.set, BR.Config.Loot.pickupSound.name))
-        return
-    end
-    PlaySoundFrontend(-1, name, set, true)
-    print(('[br_core] played %s / %s'):format(set, name))
-end, false)
+-- `brsound` IS GONE. IT LIVES IN client/sfx.lua AS `brsfx play`.
+--
+-- It was a second raw-pair audition command, registered under a different name
+-- to /brsfx's identical two-argument form -- so the duplicate-command gate in
+-- verify.sh could not see it (that gate buckets by NAME, and these were two
+-- names for one question). #137's lesson was written about exactly this shape:
+-- "two commands for one question is how the collision happened".
+--
+-- IT MATTERED MORE THAN A TIDY-UP, because the two were not equivalent. This
+-- one played through the fire-and-forget sound id -1, which cannot be asked
+-- whether it ever started; /brsfx now plays through a real GET_SOUND_ID and
+-- reports `[silent?]` when the engine says the sound was over before it could
+-- be heard. Somebody choosing a sound and reaching for the wrong one of these
+-- two would have lost precisely the answer they were looking for -- and a
+-- wrong-set silence being indistinguishable from a bad sound is what has
+-- already cost this project two rounds of fuel-cue picks.
+--
+-- Its one extra readout -- the loot pair out of config/loot.lua, which is not
+-- in the cue table -- moved to `brsfx`'s own usage rather than being dropped.
 
 RegisterCommand('brnativecheck', function()
     print('==============================================================')

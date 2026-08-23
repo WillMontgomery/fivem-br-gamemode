@@ -395,6 +395,13 @@ for _, f in ipairs({
     -- same thing beside the same line.
     'br_lib/config/vehicles.lua',
     'br_lib/config/loot.lua',
+    -- THE CUE TABLE. Loaded for ONE assertion in `match.storm.movecue` below --
+    -- that the cue key server/storm.lua puts on the wire is a key this table
+    -- actually holds. The server never reads it (it sends a key and the client
+    -- resolves it, which is the whole design), so nothing here needs it at
+    -- runtime; what it buys is that a rename on EITHER side reddens the build
+    -- instead of producing a storm cue that is silently ignored by every client.
+    'br_lib/config/audio.lua',
     -- AFTER config/loot.lua and config/weapons.lua, exactly as br_core's
     -- fxmanifest orders it. Loaded here for ONE number -- the size of the Volts
     -- pile an airdrop lays -- so the claim block below asserts against the value
@@ -3335,6 +3342,187 @@ do
         ('tShrink %.0fms'):format(mstorm().tShrink))
 
     BR.Config.Storm.edgeBiasMax = savedBias
+end
+
+describe('match.storm.movecue')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "We also need a sound for when the storm starts moving"
+    --                                          -- owner, 2026-08-22
+    --
+    -- ═══ THE MOMENT IS THE HOLD ENDING, NOT THE PHASE STARTING ═══
+    --
+    -- A phase begins by DRAWING the next circle and STOPPING -- `enterPhase`
+    -- publishes a record whose first tWait milliseconds are HOLDING. The wall
+    -- starts moving at the far end of that hold. Cueing on phase entry would
+    -- fire the sound one to three minutes before anything moved, which is a bug
+    -- that sounds exactly like a working feature and would never be reported as
+    -- anything but "the sound feels wrong".
+    --
+    -- ═══ WHAT MAKES THIS TESTABLE AT ALL ═══
+    --
+    -- Nothing about the moving wall is on the wire -- both sides SOLVE it from
+    -- one record against the clock. So "the storm started moving" is not an
+    -- event anybody sends; it is a boundary in a pure function. Putting the
+    -- edge detector on the server means it becomes an event, and an event is
+    -- something this suite can count. That is the argument for the design as
+    -- much as the once-per-transition rule is.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local rec = mstorm()
+    ok(rec ~= nil, 'storm up')
+
+    --- Every SFX_CUE sent since the last `sent = {}`.
+    local function cues() return eventsOf(BR.Net.SFX_CUE) end
+
+    -- ------------------------------------------ nothing during the hold ---
+    --
+    -- The load-bearing negative. A cue that fires on phase entry passes every
+    -- "does it fire" assertion there is; only the silence during the hold tells
+    -- the two designs apart.
+    sent = {}
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 0, 'the wall is holding, and nothing has been cued',
+        ('%d cue(s)'):format(#cues()))
+
+    -- Right up to the last tick before the sweep.
+    --
+    -- 1500ms SHORT OF THE BOUNDARY RATHER THAN 1ms, AND THAT IS THE HARNESS
+    -- RATHER THAN THE FEATURE. `storm.phase` is a 1 Hz job and BR.Sched.step
+    -- only runs a job once its interval has elapsed since its last run -- so
+    -- two steps a millisecond apart run it ONCE, and the second assertion would
+    -- pass without the code under test having executed at all. Every pair of
+    -- steps in this block is therefore more than a second apart. (docs/testing.md:
+    -- "Always advance fakeTime past the job interval before stepping, or the
+    -- test is vacuous".)
+    fakeTime = rec.tStart + rec.tWait - 1500
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 0, 'still nothing a second and a half before the wall moves',
+        ('%d cue(s)'):format(#cues()))
+
+    -- ------------------------------------------- exactly once, on the edge ---
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + 10
+    BR.Sched.step(fakeTime)
+    -- `onEdge`, not `fired` -- there is an outer `fired` in this suite holding
+    -- server-side TriggerEvent traffic, and shadowing it here would make this
+    -- block read as if it were asserting on that.
+    local onEdge = cues()
+    ok(#onEdge == 2, 'the moment the wall sets off, both players are cued',
+        ('%d cue(s)'):format(#onEdge))
+
+    local payload = onEdge[1] and onEdge[1].args and onEdge[1].args[1]
+    ok(type(payload) == 'table' and payload.c == 'storm.move',
+       'and the payload is a cue KEY, not a GTA sound name',
+       tostring(payload and payload.c))
+
+    -- THE KEY RESOLVES. The server sends a string and never looks it up -- the
+    -- client does. So the one thing that can go wrong silently is the two
+    -- spellings drifting apart, and this is the only place both halves are in
+    -- the same Lua state at the same time.
+    ok(payload and BR.Config.Audio.cues[payload.c] ~= nil,
+       'and that key is one br_lib/config/audio.lua actually defines -- a '
+           .. 'rename on either side reddens this rather than going quiet')
+
+    -- AND THE WIRE CARRIES NOTHING ELSE. A payload that also carried the set
+    -- and name would make the cue table a suggestion rather than the one place
+    -- a sound is chosen -- and would put a GTA sound-set name on the wire, which
+    -- is the property protocol.lua's SFX_CUE comment promises it does not.
+    local extra = nil
+    for k in pairs(payload or {}) do if k ~= 'c' then extra = tostring(k) end end
+    ok(extra == nil, 'and the message carries the key and nothing else', extra)
+
+    -- EVERY PLAYER IN THE MATCH, ONE EACH. `toMatch` is the scoping primitive,
+    -- so this also pins that the cue is not broadcast to the whole server.
+    local who = {}
+    for _, s in ipairs(onEdge) do who[s.target] = (who[s.target] or 0) + 1 end
+    ok(who[1] == 1 and who[2] == 1,
+       'one cue each, to exactly the players in this match',
+       ('p1 %s, p2 %s'):format(tostring(who[1]), tostring(who[2])))
+
+    -- ---------------------------------------- and NOT once per tick after ---
+    --
+    -- The failure this latch exists for. The job runs at 1 Hz for the whole
+    -- sweep -- 40 to 360 seconds -- so an unlatched check is a sound every
+    -- second for six minutes, per player.
+    sent = {}
+    for _ = 1, 20 do
+        fakeTime = fakeTime + 1000
+        BR.Sched.step(fakeTime)
+    end
+    ok(#cues() == 0, 'and twenty more ticks of the same sweep cue nothing',
+        ('%d cue(s)'):format(#cues()))
+
+    -- ------------------------------------------------ the NEXT phase re-arms ---
+    --
+    -- Eight phases, eight sweeps, eight cues. Latching per MATCH and never
+    -- clearing it would give the owner one sound at the start of the match and
+    -- silence for the other seven -- which reads as "it only worked once", and
+    -- is the shape of bug that gets diagnosed as a flaky sound.
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + rec.tShrink + 10
+    BR.Sched.step(fakeTime)      -- phase 1 FINISHED -> enterPhase(2)
+    local rec2 = mstorm()
+    ok(rec2 ~= nil and rec2.phase == 2, 'the storm advances to phase 2',
+        rec2 and tostring(rec2.phase) or 'nil')
+
+    sent = {}
+    fakeTime = rec2.tStart + rec2.tWait - 1500
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 0, "phase 2's hold is silent too")
+
+    sent = {}
+    fakeTime = rec2.tStart + rec2.tWait + 10
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 2, 'and phase 2 cues its own sweep', ('%d'):format(#cues()))
+
+    -- ------------------------------------------------- a re-entered phase ---
+    --
+    -- `brphase` and `brstormfreeze off` both re-enter a phase from wherever the
+    -- wall is standing, which gives it a fresh hold and a fresh sweep -- the
+    -- wall visibly sets off again, so it must sound again. This is why the latch
+    -- is cleared in `enterPhase` rather than keyed on the phase NUMBER, which
+    -- would have made a thaw silent.
+    sent = {}
+    BR.Server.devMode = true
+    runCommand('brphase', '2')
+    local rec3 = mstorm()
+    ok(rec3 ~= nil and rec3.phase == 2, 're-entering phase 2 is still phase 2')
+    sent = {}
+    fakeTime = rec3.tStart + rec3.tWait - 1500
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 0, 'and its fresh hold is silent')
+    sent = {}
+    fakeTime = rec3.tStart + rec3.tWait + 10
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 2,
+       'and the re-entered phase cues again rather than remembering it '
+           .. 'already had a turn', ('%d'):format(#cues()))
+
+    -- ------------------------------------ a skipped sweep still gets its cue ---
+    --
+    -- If the scheduler stalls for longer than a whole sweep, the state steps
+    -- from HOLDING straight to FINISHED and a check that only watched for
+    -- SHRINKING would drop the cue entirely, with nothing anywhere to say so.
+    -- A wall that has finished moving has moved.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+    local rec4 = mstorm()
+    sent = {}
+    fakeTime = rec4.tStart + rec4.tWait + rec4.tShrink + 10
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.SFX_CUE) == 2,
+       'a stall that skips the entire sweep still cues it, late, rather than '
+           .. 'losing it', ('%d'):format(#eventsOf(BR.Net.SFX_CUE)))
 end
 
 describe('match.storm.cleanup')

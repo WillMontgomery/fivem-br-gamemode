@@ -26,6 +26,12 @@ for _, f in ipairs({
     -- hash-keyed lookup, and loading it earlier would key every row on nil.
     'config/vehicles.lua',
     'config/loot.lua',
+    -- The cue table and the sound catalogue /brsfx browses. Pure data plus three
+    -- pure lookups, which is exactly this suite's remit -- and the lookups are
+    -- the half of the audition tool that CAN be tested outside the game. What
+    -- a sound actually sounds like is a client's business and an ear's; which
+    -- rows the search hands the owner to listen to is arithmetic.
+    'config/audio.lua',
     -- AFTER config/loot.lua AND config/weapons.lua, as the manifest orders it:
     -- it resolves its payout pools out of their rarity buckets and id lookups
     -- at LOAD time. Here for 'loot.rooftop', which asserts the airdrop crate's
@@ -8971,6 +8977,260 @@ do
         ok(S ~= nil and not S.ran and S.why == 'not run yet',
            'the readout answers before the first pass instead of erroring')
     end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('audio.catalogue')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "Can you make me something which plays GTA sounds with a console command
+--    so I can pick which one sounds good?"      -- owner, 2026-08-22
+--
+-- ═══ WHAT A TEST CAN REACH HERE, AND WHAT IT CANNOT ═══
+--
+-- IT CANNOT PROVE A SOUND PLAYS, and no test ever will: a wrong sound SET is
+-- silent rather than erroneous, which is the whole reason /brsfx exists and the
+-- whole reason two fuel-cue picks have now been rejected. Only a client with a
+-- person attached settles that.
+--
+-- WHAT IT DOES REACH is the half that decides what the person is ever shown. If
+-- the search hands back the wrong rows, the owner auditions the wrong sounds
+-- and the tool has failed at the only job it has -- and unlike the audio, that
+-- is arithmetic. So the filters are tested hard here and the sounds are not
+-- tested at all.
+do
+    local A = BR.Config.Audio
+
+    ok(type(A.catalogue) == 'table' and #A.catalogue > 0,
+       'the catalogue exists and is a non-empty ARRAY',
+       tostring(type(A.catalogue)) .. ' / ' .. tostring(#(A.catalogue or {})))
+
+    -- ------------------------------------------------------------ shape ---
+    local badShape, totalPairs, dupName = nil, 0, nil
+    local seenSet = {}
+    for _, entry in ipairs(A.catalogue) do
+        if type(entry.set) ~= 'string' or entry.set == '' then
+            badShape = 'a set with no name'
+        elseif type(entry.names) ~= 'table' or #entry.names == 0 then
+            badShape = entry.set .. ' has no names'
+        end
+        if seenSet[entry.set] then badShape = entry.set .. ' appears twice' end
+        seenSet[entry.set] = true
+
+        local seenName = {}
+        for _, n in ipairs(entry.names or {}) do
+            if type(n) ~= 'string' or n == '' then
+                badShape = entry.set .. ' has an empty name'
+            end
+            if seenName[n] then dupName = entry.set .. ' lists ' .. n .. ' twice' end
+            seenName[n] = true
+            totalPairs = totalPairs + 1
+        end
+    end
+    ok(badShape == nil, 'every row is a set name and a non-empty list of names', badShape)
+    ok(dupName == nil, 'and no set lists the same sound twice', dupName)
+
+    -- ═══ NO DLC BANKS, AND THIS IS THE ASSERTION WITH TEETH ═══
+    --
+    -- Pit_Stop_Complete was the on-theme candidate for fuel.done and was
+    -- rejected because it lives in DLC_H3_Circuit_Racing_Sounds -- a script
+    -- audio bank this gamemode never requests, so it would have played nothing
+    -- while looking perfectly correct in the config. Every DLC_*/dlc_* set was
+    -- filtered out of this catalogue for that reason. A catalogue that let one
+    -- back in would be a browsing tool that offers the owner sounds which
+    -- cannot play, which is worse than no tool: it manufactures exactly the
+    -- ambiguity the [silent?] marker exists to resolve.
+    local dlc = nil
+    for _, entry in ipairs(A.catalogue) do
+        if string.lower(entry.set):sub(1, 4) == 'dlc_' then dlc = entry.set end
+    end
+    ok(dlc == nil,
+       'no DLC audio bank is offered for browsing -- those are silent unless '
+           .. 'something requests them, and nothing here does', dlc)
+
+    -- ═══ THE ORDER IS FIXED IN THE SOURCE, NOT LEFT TO pairs() ═══
+    --
+    -- This list is something a person reads down, hears, and comes back to. Lua
+    -- does not specify `pairs()` order and it genuinely varies between runs, so
+    -- an unordered catalogue would reshuffle under the owner between two
+    -- invocations of the same command. The three sets at the top are the three
+    -- this codebase has HEARD -- a silence in one of those is a wrong NAME
+    -- rather than an absent bank, which is a different and much cheaper bug.
+    ok(A.catalogue[1].set == 'HUD_FRONTEND_DEFAULT_SOUNDSET'
+       and A.catalogue[2].set == 'HUD_AWARDS'
+       and A.catalogue[3].set == 'HUD_MINI_GAME_SOUNDSET',
+       'the three sets this codebase has actually heard sort first, in order',
+       A.catalogue[1].set .. ', ' .. A.catalogue[2].set .. ', ' .. A.catalogue[3].set)
+
+    local outOfOrder = nil
+    for i = 5, #A.catalogue do
+        local prev, cur = A.catalogue[i - 1].set:lower(), A.catalogue[i].set:lower()
+        if prev > cur then outOfOrder = prev .. ' before ' .. cur end
+    end
+    ok(outOfOrder == nil,
+       'and everything after them is alphabetical, so the same command twice '
+           .. 'prints the same list twice', outOfOrder)
+
+    -- ---------------------------------------------------------- sets() ---
+    ok(#A.sets() == #A.catalogue, 'sets() with no query is every set',
+       ('%d vs %d'):format(#A.sets(), #A.catalogue))
+    ok(#A.sets('') == #A.catalogue, 'and an empty query is the same as none')
+
+    local hud = A.sets('HUD')
+    ok(#hud > 0 and #hud < #A.catalogue, 'sets("HUD") narrows without emptying',
+       ('%d of %d'):format(#hud, #A.catalogue))
+    local notHud = nil
+    for _, s in ipairs(hud) do
+        if not s.set:find('HUD', 1, true) then notHud = s.set end
+    end
+    ok(notHud == nil, 'and every row it returns really contains the query', notHud)
+
+    -- CASE-INSENSITIVE, and asserted by EQUALITY of the two result sets rather
+    -- than by "lowercase finds something". A query typed the way the owner
+    -- reads it off the screen -- SHOUTING, because GTA's set names are -- must
+    -- find the same rows as one typed in a hurry.
+    ok(#A.sets('hud') == #A.sets('HUD') and #A.sets('hUd') == #A.sets('HUD'),
+       'sets() is case-insensitive in both directions',
+       ('%d / %d / %d'):format(#A.sets('hud'), #A.sets('HUD'), #A.sets('hUd')))
+
+    local awards = A.sets('HUD_AWARDS')
+    ok(#awards == 1 and awards[1].n == #A.namesIn('HUD_AWARDS'),
+       'and the count it reports is the real number of names in that set',
+       #awards == 1 and tostring(awards[1].n) or ('%d rows'):format(#awards))
+
+    ok(#A.sets('no such set anywhere') == 0, 'a query that matches nothing is empty')
+
+    -- ---------------------------------------------------------- find() ---
+    ok(#A.find() == totalPairs, 'find() with no query is every pair',
+       ('%d vs %d'):format(#A.find(), totalPairs))
+
+    local sel = A.find('SELECT')
+    ok(#sel > 0, 'find() by name returns something')
+    local wrongName = nil
+    for _, r in ipairs(sel) do
+        if not r.name:upper():find('SELECT', 1, true) then wrongName = r.name end
+    end
+    ok(wrongName == nil, 'and every row really matches the name query', wrongName)
+    ok(#A.find('select') == #A.find('SELECT'), 'find() is case-insensitive too',
+       ('%d vs %d'):format(#A.find('select'), #A.find('SELECT')))
+
+    -- ═══ THE TWO FILTERS ARE ANDed, NOT ORed ═══
+    --
+    -- "narrow it by set, by substring, or both" was the ask, and BOTH is the
+    -- case that matters: `find complete HUD` is how somebody looks for a
+    -- confirmation chime inside the sets this codebase has heard, which is the
+    -- search that would have settled fuel.done two rounds ago. An OR here would
+    -- return every HUD sound plus every "complete" sound -- a longer list that
+    -- looks like it is working.
+    local both = A.find('SELECT', 'HUD_AWARDS')
+    ok(#both == 0,
+       'find("SELECT", "HUD_AWARDS") is empty -- HUD_AWARDS has no SELECT, and '
+           .. 'an ORed implementation would have returned dozens of rows',
+       ('%d'):format(#both))
+
+    local go = A.find('GO', 'MINI')
+    ok(#go > 0 and #go < #A.find('GO'),
+       'and a set filter really cuts a name search down',
+       ('%d of %d'):format(#go, #A.find('GO')))
+    local outsideSet = nil
+    for _, r in ipairs(go) do
+        if not r.set:upper():find('MINI', 1, true) then outsideSet = r.set end
+    end
+    ok(outsideSet == nil, 'with nothing from outside the named set', outsideSet)
+
+    ok(#A.find(nil, 'HUD_AWARDS') == #A.namesIn('HUD_AWARDS'),
+       'find(nil, set) is the whole of one set',
+       ('%d vs %d'):format(#A.find(nil, 'HUD_AWARDS'), #A.namesIn('HUD_AWARDS')))
+
+    -- ═══ THE QUERY IS TEXT, NOT A LUA PATTERN ═══
+    --
+    -- Every sound name in this catalogue contains an underscore and the owner
+    -- will be typing them, so the search runs through string.find's PLAIN mode.
+    -- Without it `%` and `(` throw ("malformed pattern") and `.` matches
+    -- everything -- a search box that errors on a punctuation character, in a
+    -- tool whose entire job is to be typed into quickly.
+    local okPct, resPct = pcall(A.find, '%')
+    ok(okPct, 'a query containing % does not throw', not okPct and tostring(resPct) or nil)
+    ok(okPct and #resPct == 0, 'and finds nothing, because no name contains one')
+
+    local okParen = pcall(A.find, '(')
+    ok(okParen, 'nor does one containing an unclosed bracket')
+
+    -- `.` IS THE ONE THAT WOULD PASS QUIETLY. A pattern-mode `.` matches any
+    -- character, so it would return all the rows and look like a working
+    -- wildcard rather than a bug -- until somebody searched for `10_SEC` and
+    -- got a list that ignored the underscore.
+    ok(#A.find('.') == 0,
+       'and a lone dot matches nothing rather than everything -- it is a '
+           .. 'character to look for, not a wildcard', ('%d'):format(#A.find('.')))
+    ok(#A.find('_') > 0, 'while a real underscore matches the many names with one')
+
+    -- -------------------------------------------------------- namesIn() ---
+    --
+    -- EXACT, and deliberately not a substring match. This is what the
+    -- sequential audition walks, and a substring that matched two sets would
+    -- play through both -- leaving the owner with a sound they liked and no way
+    -- to know which set to write down, which is the one fact they need.
+    ok(A.namesIn('HUD_AWARDS') ~= nil, 'namesIn() finds a set by its exact name')
+    ok(A.namesIn('HUD_AWARD') == nil,
+       'and a near-miss returns nil rather than the set it nearly named')
+    ok(A.namesIn('hud_awards') == nil,
+       'and it is case-SENSITIVE, unlike the searches -- this one is an '
+           .. 'identifier being resolved, not a query being matched')
+    ok(A.namesIn('') == nil, 'an empty name resolves to no set')
+
+    -- --------------------------------------------------- the cues agree ---
+    --
+    -- The catalogue is what the tool offers; the cue table is what the game
+    -- plays. They are two tables in one file and nothing but this makes them
+    -- agree.
+    -- ═══ EVERY CUE IS A PAIR, AND THE WHOLE PAIR IS IN THE CATALOGUE ═══
+    --
+    -- Set-level would be the softer rule and it is not enough: the two failures
+    -- this project has actually had were WIN and LOSER, which are perfectly good
+    -- names in a set that does not contain them. A pair-level check is the only
+    -- one that would have caught that, and every cue in the table today passes
+    -- it -- these are all calls GTA's own scripts make.
+    --
+    -- IF THE OWNER'S THIRD FUEL PICK IS NOT IN THE CATALOGUE, THIS FAILS, AND
+    -- THAT IS THE INTENDED WORKFLOW RATHER THAN AN OBSTACLE. Everything /brsfx
+    -- can browse is in here, so a sound chosen with the tool passes on the way
+    -- in. A pair from anywhere else is one nobody has evidence for, and the fix
+    -- is one line: add it to the catalogue, having HEARD it. The failure message
+    -- says so rather than leaving somebody to guess.
+    local strayCue = nil
+    local byPair = {}
+    for _, entry in ipairs(A.catalogue) do
+        for _, n in ipairs(entry.names) do byPair[entry.set .. '/' .. n] = true end
+    end
+    for cue, def in pairs(A.cues) do
+        if not byPair[tostring(def.set) .. '/' .. tostring(def.name)] then
+            strayCue = ('%s plays %s / %s, which the catalogue does not list -- '
+                .. 'if you have HEARD it, add it there'):format(cue, def.set, def.name)
+        end
+    end
+    ok(strayCue == nil,
+       'every configured cue is a pair GTA\'s own scripts play, so it can be '
+           .. 're-chosen with the same tool that found it', strayCue)
+    ok(seenSet['HUD_AWARDS'] == true,
+       'and the catalogue really is what that was checked against',
+       tostring(seenSet['HUD_AWARDS']))
+
+    -- AND storm.move IS ONE OF THEM. The cue the wall's first movement plays;
+    -- server/storm.lua sends this exact key and never looks it up.
+    local move = A.cues['storm.move']
+    ok(type(move) == 'table' and type(move.set) == 'string'
+       and type(move.name) == 'string',
+       'the storm-movement cue exists and names both halves of a sound',
+       move and (tostring(move.set) .. '/' .. tostring(move.name)) or 'nil')
+    local moveListed = false
+    for _, n in ipairs(A.namesIn(move.set) or {}) do
+        if n == move.name then moveListed = true end
+    end
+    ok(moveListed,
+       'and the exact pair it names is one the catalogue lists -- so it is a '
+           .. 'call GTA\'s own scripts make, not a name off a wiki',
+       move.set .. ' / ' .. move.name)
 end
 
 -- ----------------------------------------------------------------- result ---

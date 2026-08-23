@@ -80,6 +80,31 @@ BR.Net = {
     STORM_SYNC      = 'br:storm:sync',       -- S->C  full storm record (also mirrored to GlobalState)
     STORM_DAMAGE    = 'br:storm:damage',     -- S->C  { amount, targetHp }
 
+    -- S->C  { c = cue } -- "play this interface cue, in your own head".
+    --
+    -- ═══ WHY A MATCH-WIDE CUE NEEDS A MESSAGE AT ALL ═══
+    --
+    -- Every other cue in this gamemode is played by the client that has the
+    -- reason to play it -- a hitmarker knows it hit. A cue for something that
+    -- happens to the WHOLE MATCH at one instant has no such client: the storm
+    -- record is solved locally by everybody, so eight clients crossing the
+    -- HOLDING->SHRINKING boundary in their own frame loops would each have to
+    -- edge-detect it themselves. That is a per-client latch, per tick, drifting
+    -- by a frame each, and a client that rejoined mid-phase would latch at the
+    -- wrong moment. The server already runs the phase job; it owns the edge.
+    --
+    -- WHY NOT REUSE FUEL_SFX. That one carries a NETWORK ID and plays from an
+    -- entity -- it exists because the occupants of one car had to hear
+    -- something positioned on that car. This is the frontend case: no entity,
+    -- no position, the whole match at once. Same cue table, same throttle,
+    -- different native at the far end. See br_core/client/sfx.lua.
+    --
+    -- THE CUE IS A KEY, NOT A SOUND NAME, exactly as FUEL_SFX's is. The wire
+    -- never carries a GTA sound-set name, so the set of sounds this event can
+    -- possibly produce is the client's own BR.Config.Audio.cues and nothing
+    -- else -- an unknown key is ignored with one console line.
+    SFX_CUE         = 'br:sfx:cue',
+
     -- Aerial supply drops. ONE MESSAGE PER DROP, at the moment it is
     -- committed: { n, poi, x, y, gz, alt, heading, tStart, tLand }. Both the
     -- descent and the blip's lifetime are solved from it locally against the
