@@ -223,6 +223,67 @@ do
                  .. 'padding would overlap the line above')
         end
 
+        -- ═══ THE CAP IS A CAP, NOT A LOZENGE (owner, 2026-08-22) ═══
+        --
+        -- "the glyphs work, but they draw way too wide and the font is too
+        -- small to see what key is inside the glyph."
+        --
+        -- BOTH HALVES WERE ONE ROOT CAUSE AND IT WAS THE UNIT. The box was
+        -- `minWidth: '2.6rem'` with `0.15rem` padding -- rem is the ROOT size,
+        -- which has nothing to do with the cap's own type and, crucially, is
+        -- not touched by --text-scale. So the plate was a CONSTANT 28.59px
+        -- wide at every text scale while the letter inside it grew, and the
+        -- letter was 8.8px because index.css clamps :root to 11px at 720p.
+        -- Measured at 1280x720 the single-letter cap was 1.75 / 1.63 / 1.47
+        -- times as wide as it was tall across the three scales.
+        --
+        -- In `em` the floor tracks the label, so the cap is the same square at
+        -- every scale and at every size a caller asks for -- measured 0.99 /
+        -- 1.00 / 1.01. THAT is what this assertion protects: put either value
+        -- back into rem and the box stops following the type.
+        do
+            local mw = cap:match('minWidth:%s*\'([^\']+)\'')
+            if not mw then
+                fail('KeyCap declares no minWidth',
+                     'Anton is condensed -- an unpadded `I` is a few pixels '
+                     .. 'wide, and without a floor the cap collapses to it')
+            elseif mw:find('rem') then
+                fail(('KeyCap\'s minWidth is %q -- rem, not em'):format(mw),
+                     'rem is the root size and --text-scale never touches it, '
+                     .. 'so the box stays constant while the label grows and '
+                     .. 'the cap is a different shape at every text scale')
+            end
+            local pad = cap:match('padding:%s*\'([^\']+)\'')
+            if pad and pad:find('rem') then
+                fail(('KeyCap\'s padding is %q -- rem, not em'):format(pad),
+                     'same reason as minWidth: padding that does not follow '
+                     .. 'the label unbalances the cap at the outer text scales')
+            end
+        end
+
+        -- AND THE LABEL IS BIG ENOUGH TO READ. Every size that reaches the cap
+        -- is a `--fs` in rem, and rem is 11px at the reference resolution --
+        -- so 0.7rem, which is what the settings screen passed, was 7.7px of
+        -- Anton and its capital measured SEVEN PIXELS. The floor below is the
+        -- smallest that clears ~9px of cap height at text scale 0.90.
+        --
+        -- THE DEFAULT AND THE CALL SITES ARE CHECKED TOGETHER, because the
+        -- default was never the problem -- both prose callers OVERRODE it
+        -- downward, and each was individually defensible next to prose that
+        -- was smaller still. A floor is the only thing that catches that.
+        local MIN_FS = 0.85
+        do
+            local def = cap:match('fs%s*=%s*\'([%d%.]+)rem\'')
+            if not def then
+                fail('KeyCap no longer declares a default --fs in rem')
+            elseif tonumber(def) < MIN_FS then
+                fail(('KeyCap\'s default label size is %srem, below the %.2frem '
+                      .. 'floor'):format(def, MIN_FS),
+                     'at 1280x720 one rem is 11px, so this is under 9.4px of '
+                     .. 'Anton and the key inside the cap cannot be read')
+            end
+        end
+
         -- AND IT DOES NOT ANIMATE. `.plate` transitions border-color for its
         -- focus bevel, and MEASURED in the harness: with that transition live,
         -- changing --edgec on a mounted element does not repaint the border at
@@ -318,6 +379,32 @@ do
         fail('the settings screen renders voiceDetail without KeyText',
              'that paragraph names the push-to-talk key and sits on the very '
              .. 'screen the player rebinds it from')
+    end
+
+    -- ═══ AND NO CALLER SHRINKS THE CAP BACK DOWN ═══
+    --
+    -- THIS IS WHERE THE OWNER'S COMPLAINT ACTUALLY LIVED. KeyCap's default was
+    -- 0.8rem and both prose callers passed LESS -- Notices 0.75rem into
+    -- 0.8125rem prose, Settings 0.7rem into 0.76rem prose -- so on the two
+    -- surfaces that carry a whole sentence about a key, the key was drawn
+    -- SMALLER than the words describing it. A control set smaller than its own
+    -- caption reads as a footnote.
+    --
+    -- Checked at every call site rather than only on the component, because a
+    -- floor on the default is worth nothing against a caller that overrides it.
+    for _, rel in ipairs({ 'hud/Notices.tsx', 'screens/Settings.tsx' }) do
+        local src = readUi(rel)
+        if src then
+            for fs in src:gmatch('<KeyText[^>]-fs="([%d%.]+)rem"') do
+                if tonumber(fs) < 0.85 then
+                    fail(('%s passes fs="%srem" to KeyText, below the 0.85rem '
+                          .. 'floor'):format(rel, fs),
+                         'one rem is 11px at 1280x720, so this draws under '
+                         .. '9.4px of Anton inside the cap -- and it is the '
+                         .. 'exact shape of the bug reported on 2026-08-22')
+                end
+            end
+        end
     end
 end
 

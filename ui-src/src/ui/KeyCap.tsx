@@ -52,11 +52,14 @@ import { useUi } from '../store'
  * push. A glyph is therefore honest about knowing nothing rather than guessing,
  * and it fills itself in the moment the push lands.
  */
-export function KeyCap({ command, fs = '0.8rem' }: {
+export function KeyCap({ command, fs = '1.15rem' }: {
   /** The RegisterCommand name, e.g. 'brptt'. Never a key label. */
   command: string
   /**
-   * The plate's own size. Scales with the player's text slider from there.
+   * The plate's own size, and THE ONLY DIMENSION A CALLER SETS. Everything
+   * else about the cap -- its floor width, its padding -- is expressed in `em`
+   * below and therefore derives from this one number, so a caller picks a size
+   * and gets the same SHAPE at every one of them.
    *
    * `.ts` WITH AN EXPLICIT --fs, NEVER BARE `.tscale`: this element declares
    * its own size and `.tscale` multiplies 1em -- the PARENT's -- throwing the
@@ -65,8 +68,17 @@ export function KeyCap({ command, fs = '0.8rem' }: {
    * AND IT DOES SCALE, which is the one place this differs from the HUD's
    * numerals. A numeral in a pill is a fixed plate because the pill cannot
    * grow; a key inside a sentence has to grow WITH the sentence or the
-   * player's largest text setting leaves a tiny cap stranded mid-line. The
-   * spectate hint's badge has always scaled, and this is that badge.
+   * player's largest text setting leaves a tiny cap stranded mid-line.
+   *
+   * ═══ SIZED ABOVE THE PROSE IT SITS IN, NEVER BELOW ═══
+   *
+   * The default is 1.15rem and both prose callers pass MORE than the sentence
+   * around them (Notices 0.95rem into 0.8125rem prose, Settings 0.9rem into
+   * 0.76rem). Until 2026-08-22 they passed LESS -- 0.75 into 0.8125, 0.7 into
+   * 0.76 -- so a key you press was drawn smaller than the words describing it,
+   * which is a footnote rather than a control. Measured at 1280x720, that put
+   * 7.4-9.5px of type inside the notice cap. Raise the prose, raise these with
+   * it; the cap must never be the smaller of the two.
    */
   fs?: string
 }) {
@@ -86,8 +98,42 @@ export function KeyCap({ command, fs = '0.8rem' }: {
         ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
         ['--cut-max' as string]: '0.3rem',
         color: key ? '#ffffff' : 'rgba(255,255,255,0.3)',
-        minWidth: '2.6rem',
-        padding: '0.15rem 0.5rem',
+        // ═══ THE CAP IS SQUARE, AND IT IS SQUARE IN `em` ═══
+        //
+        // Owner, 2026-08-22: "the glyphs work, but they draw way too wide and
+        // the font is too small to see what key is inside the glyph."
+        //
+        // BOTH HALVES OF THAT ARE ONE ROOT CAUSE, and it is the unit. These
+        // three numbers were `2.6rem` and `0.15rem 0.5rem` -- REM, which is the
+        // ROOT size and has nothing to do with the cap's own type. So the box
+        // was a constant while the letter inside it scaled, and the letter was
+        // set from a size chosen for a different component.
+        //
+        // AND REM IS SMALLER HERE THAN ANYONE COMPUTING AT A DESK EXPECTS.
+        // index.css sets `:root { font-size: clamp(11px, 1.481vh * --ui-scale,
+        // 28px) }`, and at 720px tall that is 10.66px -- UNDER the floor, so
+        // 1rem is exactly 11px at the reference resolution, not 16. `0.8rem`
+        // was therefore 8.8px of Anton, whose capital measured EIGHT PIXELS
+        // TALL. That is the whole of "too small to see", and it was invisible
+        // in review because 0.8rem reads like 12.8px.
+        //
+        // MEASURED AT 1280x720, text scales 0.90 / 1.00 / 1.15, single letter:
+        //
+        //   before   28.59 x 16.36 / 17.59 / 19.45  -- ratio 1.75 / 1.63 / 1.47
+        //   after    19.92 x 20.19 / 22.13 x 22.22 / 25.45 x 25.27
+        //                                           -- ratio 0.99 / 1.00 / 1.01
+        //
+        // The width floor was CONSTANT at 28.59px across all three scales
+        // because rem does not see --text-scale. In `em` it tracks the label,
+        // so the cap is the same square at every scale AND at every --fs a
+        // caller passes -- one shape, three sizes.
+        //
+        // THE FLOOR IS WHAT KEEPS A NARROW LETTER FROM COLLAPSING. Anton is
+        // condensed: an unpadded `I` is a few pixels wide. 1.75em is the
+        // smallest floor that still reads as a cap rather than a bar, measured
+        // against `I`, `1` and `'`.
+        minWidth: '1.75em',
+        padding: '0.1em 0.32em',
         lineHeight: 1.4,
         // ═══ THE THREE PROPERTIES THAT MAKE IT WORK INSIDE A SENTENCE ═══
         //
@@ -105,8 +151,26 @@ export function KeyCap({ command, fs = '0.8rem' }: {
         verticalAlign: 'middle',
         // A LONG LABEL WIDENS, IT NEVER WRAPS. `Page Down`, `Backspace` and
         // `Num 5` all reach here from BR.Keys.vkName, and a cap broken across
-        // two lines is not a key. The plate grows past its 2.6rem floor and the
+        // two lines is not a key. The plate grows past its 1.75em floor and the
         // sentence reflows around it, which is what a wide key should do.
+        //
+        // TIGHTENING THE FLOOR DID NOT PUT A CEILING ON IT, and that was the
+        // risk worth measuring rather than asserting. Every label vkName can
+        // return was rendered at all three text scales -- the letters and
+        // digits, the four arrows, Shift/Ctrl/Alt/Caps/Space/Enter/Tab/Esc,
+        // Home/End/Insert/Delete/PrtSc/ScrLk/Pause, Page Up, Page Down,
+        // Backspace, F1-F12, Num 0-9, the punctuation, the `#160` numeric
+        // fallback and the unbound `--`. NONE clips (scrollWidth never exceeds
+        // the border box) and none wraps. Backspace is the widest at 59.17 /
+        // 65.55 / 75.02px, up from 47.72 / 51.58 / 57.36 -- wider, because the
+        // type is bigger, which is the trade the owner asked for.
+        //
+        // AND IT STILL CLEARS ITS NEIGHBOURS. The spectate hint is the tightest
+        // caller: two caps and two words centred at the bottom, which must not
+        // reach the inventory bar's left edge at 893.3px. Worst case measured
+        // -- both actions on Backspace at text scale 1.15 -- is 228.88px wide
+        // against a 506.6px budget. 277.7px of margin, so the tighter cap costs
+        // nothing there even though a wide label now draws wider.
         whiteSpace: 'nowrap',
         // ═══ NO TRANSITION, AND IT IS A CORRECTNESS FIX RATHER THAN TASTE ═══
         //

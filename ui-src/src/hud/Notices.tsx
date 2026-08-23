@@ -94,7 +94,12 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
               contains no token, is returned untouched by KeyText, and renders
               exactly as it did. */}
           <span className="min-w-0 break-words">
-            <KeyText text={n.text} fs="0.75rem" />
+            {/* ABOVE THE ROW'S OWN PROSE (0.8125rem), not below it. It was
+                0.75rem, so the key was drawn smaller than the sentence naming
+                it -- 8.25px of Anton at 1280x720. The cap is a control, and a
+                control set smaller than the words around it reads as a
+                footnote. Costs 1.4-2.6px of line height, measured. */}
+            <KeyText text={n.text} fs="0.95rem" />
           </span>
           {/* COALESCED REPEATS. Four ammo pickups is one line reading x4, not
               four lines shoving each other off the stack. */}

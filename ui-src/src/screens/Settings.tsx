@@ -740,7 +740,12 @@ export default function Settings({
                         : undefined,
                     }}
                   >
-                    <KeyText text={voiceDetail} fs="0.7rem" />
+                    {/* ABOVE this paragraph's own 0.76rem, not below it. It
+                        was 0.7rem -- 7.7px of Anton at 1280x720, on the very
+                        screen the player rebinds the key FROM. Same argument
+                        as the notice stack's: the cap is the control, and it
+                        cannot be the smallest thing on the line. */}
+                    <KeyText text={voiceDetail} fs="0.9rem" />
                   </div>
                 )}
               </div>

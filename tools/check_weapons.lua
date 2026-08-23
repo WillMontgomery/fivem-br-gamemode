@@ -251,6 +251,151 @@ if BR.Config.Fists and BR.Config.Fists.driveby ~= nil then
          .. 'there is nothing to switch to')
 end
 
+-- ---------------------------------------------------------------- icons ----
+--
+-- EVERY WEAPON MUST HAVE A PICTURE THAT SOMEBODY CHOSE, AND DEFAULTING IS NOT
+-- CHOOSING.
+--
+-- Owner, 2026-08-22: "Please double check that we have images for all of our
+-- weapons in the inventory slots - railgun and grenade launcher do not have
+-- images."
+--
+-- THE SAME ARGUMENT AS `driveby` ABOVE, and it failed the same silent way. The
+-- airdrop shelf -- rpg, grenadelauncher, railgun, minigun -- shipped with no
+-- artwork and no category, and NOTHING ERRORED, because ui-src/src/hud/
+-- ItemIcon.tsx degrades twice on the way down:
+--
+--   1. `items/<id>.png` 404s, and the <img> onError swaps in a drawn icon --
+--      by design, so the set can be filled a few at a time;
+--   2. the drawn icon is picked by `WEAPON_CATEGORY[slot.id] ?? 'rifle'`, and
+--      an id that is not in that map takes the DEFAULT.
+--
+-- So a railgun drew an assault rifle. Not a broken image, not an empty square,
+-- not a console warning -- a confident picture of the wrong gun. Fallback (1)
+-- is a feature and stays; fallback (2) is the one that must never be what
+-- covers a real weapon, because it cannot be told apart from a correct answer
+-- by looking at the screen. It took a playtest to find, which is exactly what
+-- this gate is for.
+--
+-- ONLY `kind = 'weapon'` ITEMS ARE CHECKED, and that is ItemIcon's own routing
+-- rather than a simplification: a throwable resolves to the 'throwable' icon
+-- from its KIND and never consults the map, consumables have their own map,
+-- ammo is deliberately artless, and fists are drawn by FistIcon. The three
+-- lists below are the ones that reach `WEAPON_CATEGORY[...] ?? 'rifle'`.
+--
+-- A PNG IS NOT REQUIRED, A DECISION IS. Melee and the airdrop shelf are drawn
+-- rather than photographed, so requiring a file would fail honest work. What
+-- is required is that the id appears in the map, so that whoever adds the next
+-- weapon has to answer "what does this look like" instead of inheriting a
+-- rifle by silence.
+local UI_ICON = 'ui-src/src/hud/ItemIcon.tsx'
+
+--- The file with its comments stripped.
+---
+--- NOT OPTIONAL: the note above `rpg:` in that file names every id this gate
+--- searches for, so a raw read would find the essay describing the bug and
+--- report the bug as fixed. check_key_glyphs.lua learned this first.
+local function tsCode(s)
+    s = s:gsub('/%*.-%*/', ' ')
+    s = s:gsub('//[^\n]*', '')
+    return s
+end
+
+--- The `key: 'value'` pairs of a top-level `const NAME ... = { ... }` block.
+local function objectKeys(src, name)
+    local body = src:match('const%s+' .. name .. '[^=]*=%s*{(.-)\n}')
+    if not body then return nil end
+    local keys = {}
+    for k in body:gmatch("([%a][%w_]*)%s*:%s*'") do keys[k] = true end
+    return keys
+end
+
+do
+    local fh = io.open(UI_ICON, 'r')
+    if not fh then
+        fail('%s is missing, so no weapon has a resolvable icon', UI_ICON)
+    else
+        local src = tsCode(fh:read('a'))
+        fh:close()
+
+        local cats  = objectKeys(src, 'WEAPON_CATEGORY')
+        local paths = objectKeys(src, 'PATHS')
+
+        if not cats then
+            fail('%s no longer declares WEAPON_CATEGORY', UI_ICON)
+        elseif not paths then
+            fail('%s no longer declares PATHS', UI_ICON)
+        else
+            -- Every weapon that can sit in a slot names its own picture.
+            for _, spec in ipairs({
+                { BR.Config.Weapons,        'weapon' },
+                { BR.Config.AirdropWeapons, 'airdrop weapon' },
+                { BR.Config.Melee,          'melee weapon' },
+            }) do
+                for _, w in ipairs(spec[1] or {}) do
+                    local id = tostring(w.id)
+                    if not cats[id] then
+                        fail('%s %q has no entry in WEAPON_CATEGORY (%s), so it '
+                             .. 'falls through to the `?? \'rifle\'` default and '
+                             .. 'draws a picture of a different gun',
+                             spec[2], id, UI_ICON)
+                    end
+                end
+            end
+
+            -- And every category names a shape that exists. A map pointing at a
+            -- missing path renders an empty <path d=undefined> -- a blank slot,
+            -- with no error.
+            local body = src:match('const%s+WEAPON_CATEGORY[^=]*=%s*{(.-)\n}') or ''
+            for k, v in body:gmatch("([%a][%w_]*)%s*:%s*'([%a][%w_]*)'") do
+                if not paths[v] then
+                    fail('WEAPON_CATEGORY.%s names category %q, which has no '
+                         .. 'entry in PATHS -- the slot would draw nothing', k, v)
+                end
+            end
+        end
+    end
+end
+
+-- ART SHIPS OR IT DOES NOT EXIST.
+--
+-- ui-src/public/ is the SOURCE and br_ui/ui/ is what FXServer actually serves;
+-- vite copies one to the other on `npm run build`. A PNG committed to only one
+-- of them is either art the game cannot see, or art whose source is gone at the
+-- next build -- and tools/pre-commit's rebuild guard keys on `^ui-src/src/`, so
+-- it does not cover public/ at all. Checked per id rather than by listing the
+-- directories, because Lua cannot list one without io.popen and this repo is
+-- developed on Windows (see tools/test_config.lua on why the directory walks
+-- live in bash).
+local SRC_ITEMS   = 'ui-src/public/items/'
+local BUILT_ITEMS = 'resources/[fivem-royale]/br_ui/ui/items/'
+
+local function exists(path)
+    local fh = io.open(path, 'rb')
+    if fh then fh:close() return true end
+    return false
+end
+
+local paired = 0
+for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons,
+                        BR.Config.Melee, BR.Config.Throwables }) do
+    for _, w in ipairs(list or {}) do
+        local id = tostring(w.id)
+        local inSrc, inBuilt = exists(SRC_ITEMS .. id .. '.png'),
+                               exists(BUILT_ITEMS .. id .. '.png')
+        if inSrc and inBuilt then
+            paired = paired + 1
+        elseif inSrc then
+            fail('%q has artwork in %s but not in %s -- the game serves the '
+                 .. 'built copy, so this art does not exist in game. Run: '
+                 .. 'cd ui-src && npm run build', id, SRC_ITEMS, BUILT_ITEMS)
+        elseif inBuilt then
+            fail('%q has artwork in %s but not in %s -- the source is gone and '
+                 .. 'the next build will delete it', id, BUILT_ITEMS, SRC_ITEMS)
+        end
+    end
+end
+
 -- THE SIGNED-HASH TRAP, pinned.
 --
 -- The engine returns hashes as SIGNED 32-bit ints, so a hash with the top bit
@@ -307,8 +452,9 @@ if fails == 0 then
     end
     io.write(('\27[32mok\27[0m   %d weapon hashes match their names; %d resolve from '
         .. 'both signed and unsigned (%d have the top bit set); %d are claimed '
-        .. 'usable from a car seat\n')
-        :format(checked, signedChecked, topBit, db))
+        .. 'usable from a car seat; every slot weapon names its own icon and '
+        .. '%d have artwork in both the source and the built bundle\n')
+        :format(checked, signedChecked, topBit, db, paired))
 else
     io.write(('\27[31m%d weapon table problem(s)\27[0m\n'):format(fails))
 end
