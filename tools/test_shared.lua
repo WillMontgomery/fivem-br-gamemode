@@ -7302,7 +7302,8 @@ do
     --- be told there is a roof at a given point, and a synchronous spawn worker.
     local function newProbeClient()
         local env = newSandbox()
-        local C = { now = 5000, sent = {}, objects = {}, scaled = {} }
+        local C = { now = 5000, sent = {}, objects = {}, scaled = {},
+                    scaleAsks = {} }
 
         --- ['x,y'] = the height the probe answers there. Absent means clean
         --- ground at 30.
@@ -7341,8 +7342,52 @@ do
         -- hand back 1 or 0 rather than true or false, and 0 IS TRUTHY IN LUA --
         -- five shipped bugs on this project. Driven, so both shapes are walked.
         C.probeOk = true
+
+        -- ═══ THE COLLISION STREAM, WHICH IS WHAT A CRATE FALLS THROUGH ═══
+        --
+        -- Owner, 2026-08-23: an airdrop on a building "falls through the top of
+        -- the building as if it doesn't have collisions", and the crate then
+        -- "spawn[s] at ground level inside a building".
+        --
+        -- MODELLED RATHER THAN ASSERTED ABOUT, because the two halves of that
+        -- bug are one sequence: map collision arrives LATE, and until it does
+        -- the ground probe answers off the terrain that arrived first -- a
+        -- perfectly confident answer about the street under the building. So
+        -- `collisionAfter` says how many checks the building takes to stream in,
+        -- and `lateGroundAt` is a surface that does not exist until it has.
+        --
+        -- THE 1/0 SHAPE IS THE DEFAULT AND NOT AN EDGE CASE. A FiveM native
+        -- declared BOOL hands back 1 and 0, and 0 IS TRUTHY IN LUA -- six
+        -- shipped bugs. A rig that answered `true`/`false` here would pass a
+        -- wait that never waits.
+        C.collisionAsked   = {}
+        C.collisionChecks  = 0
+        C.collisionAfter   = nil     -- nil: already streamed, as it usually is
+        C.collisionLoaded  = 1
+        C.lateGroundAt     = {}
+        local function collisionIn()
+            return C.collisionAfter == nil
+                or C.collisionChecks > C.collisionAfter
+        end
+        C.collisionIn = collisionIn
+        env.RequestCollisionAtCoord = function(x, y, z)
+            C.collisionAsked[#C.collisionAsked + 1] = { x = x, y = y, z = z }
+        end
+        env.HasCollisionLoadedAroundEntity = function()
+            C.collisionChecks = C.collisionChecks + 1
+            if not collisionIn() then return 0 end
+            return C.collisionLoaded
+        end
+
         env.GetGroundZFor_3dCoord = function(x, y)
-            return C.probeOk, C.groundAt[key(x, y)] or 30.0
+            local k = key(x, y)
+            -- A ROOF IS NOT THERE UNTIL ITS COLLISION IS. Before that the probe
+            -- finds the terrain and says so, which is exactly how a crate comes
+            -- to be created at street level inside a building.
+            if C.lateGroundAt[k] and collisionIn() then
+                return C.probeOk, C.lateGroundAt[k]
+            end
+            return C.probeOk, C.groundAt[k] or 30.0
         end
         env.GetWaterHeight = function() return false, 0.0 end
 
@@ -7372,6 +7417,51 @@ do
             'AddBlipForCoord', 'RemoveBlip', 'SetBlipSprite', 'SetBlipScale',
             'SetBlipColour', 'SetBlipAsShortRange', 'N_0x2c2b3493fbf51c71',
         }) do env[n] = function() end end
+
+        -- ═══ THE HANDOVER TO PHYSICS, IN ORDER ═══
+        --
+        -- "Collision was requested" and "collision was requested BEFORE the box
+        -- was let go" are different claims and only the second one is the fix,
+        -- so these four are recorded in sequence rather than counted. A crate
+        -- released to gravity above a roof that has not streamed is a crate on
+        -- the street inside the building, and the ordering is the whole of what
+        -- stops it.
+        C.calls = {}
+        local function note(name)
+            return function(...) C.calls[#C.calls + 1] = { name, ... } end
+        end
+        env.FreezeEntityPosition = note('freeze')
+        env.SetEntityDynamic     = note('dynamic')
+        env.ActivatePhysics      = note('physics')
+        local noteAsk = env.RequestCollisionAtCoord
+        env.RequestCollisionAtCoord = function(x, y, z)
+            C.calls[#C.calls + 1] = { 'collision', x, y, z }
+            noteAsk(x, y, z)
+        end
+        -- WHERE THE PROP ACTUALLY ENDED UP. The re-seat after the collision
+        -- arrives is the half that stops a crate being BUILT inside a building
+        -- rather than falling into one, and it is invisible unless the rig moves
+        -- the recorded object with it.
+        env.SetEntityCoordsNoOffset = function(e, x, y, z)
+            C.calls[#C.calls + 1] = { 'move', e, x, y, z }
+            local o = C.objects[e]
+            if o then o.x, o.y, o.z = x, y, z end
+        end
+        --- Every recorded call of one name, in order.
+        function C.only(name)
+            local out = {}
+            for _, c in ipairs(C.calls) do
+                if c[1] == name then out[#out + 1] = c end
+            end
+            return out
+        end
+        --- The index of the first call of `name`, or nil.
+        function C.firstAt(name)
+            for i, c in ipairs(C.calls) do
+                if c[1] == name then return i end
+            end
+        end
+
         env.GetEntityVelocity = function() return vec(0.0, 0.0, 0.0) end
         env.GetEntityRotation = function() return vec(0.0, 0.0, 0.0) end
         env.DoesBlipExist = function() return false end
@@ -7408,7 +7498,13 @@ do
             keyLabelForCommand = function() return 'E' end,
             blipName = function() end,
             setDisplayHealth = function() end,
+            -- `scaled` MIRRORS THE REAL NATIVE: 1.0 is the absence of a scale,
+            -- not a scale of one, and BR.Native.propScale writes no matrix for
+            -- it. `scaleAsks` counts the CALL regardless, which is the only way
+            -- to tell "the crate is at authored size" apart from "the pass that
+            -- would have scaled it stopped running".
             propScale = function(obj, k)
+                if obj then C.scaleAsks[obj] = (C.scaleAsks[obj] or 0) + 1 end
                 if obj and k and k ~= 1.0 then C.scaled[obj] = k end
             end,
             -- THE ROOFTOP ORACLE. The real one is a navmesh query; here a test
@@ -7583,25 +7679,45 @@ do
             .. 'height it handed back looks fine')
     end
 
-    -- 7. THE AIRDROP CRATE AND ITS HUSK ARE DRAWN AT THE OWNER'S SIZE, and the
-    --    scale is re-asserted on the 10Hz crate pass -- a container is a
-    --    PHYSICS object and physics owns the transform matrix, so a scale
-    --    applied once at spawn is a scale the next simulation step may throw
-    --    away. The hover pass that re-asserts it for loose items skips
-    --    containers by design.
+    -- 7. ═══ THE AIRDROP CRATE IS DRAWN AT AUTHORED SIZE, AND THAT IS THE FIX
+    --        (owner, 2026-08-23) ═══
+    --
+    -- "we need to tweak how the prop scaling works for the crate as it currently
+    -- clips. We may need to drop scaling altogether."
+    --
+    -- A matrix scale grows a model about its ORIGIN. A landed crate is a DYNAMIC
+    -- physics object whose height comes from resting on the ground with a 1x
+    -- collider, so at 2x the bottom half of the box is drawn underneath the
+    -- floor it is standing on -- and the obvious repair, lifting it by the extra
+    -- half-height, is undone by gravity on the next simulation step. There is no
+    -- number that fixes it; only a different MODEL would.
+    --
+    -- 1.0 IS THE ABSENCE OF A SCALE AND NOT A SCALE OF ONE, in the real
+    -- BR.Native.propScale and in the stub above alike: neither writes a matrix
+    -- for it. So the assertion is that nothing was applied.
     do
         local C = newProbeClient()
         C.add(crateAt(5.0, 5.0))
         C.slow(1000)
         local obj = next(C.objects)
-        ok(C.scaled[obj] == A.crateScale,
-            'the crate is drawn at crateScale', tostring(C.scaled[obj]))
+        ok(A.crateScale == 1.0, 'crateScale is 1.0', tostring(A.crateScale))
+        ok(C.scaled[obj] == nil,
+            'so no matrix scale is written to the crate at all',
+            tostring(C.scaled[obj]))
 
-        C.scaled = {}
+        -- AND THE 10Hz RE-ASSERTION IS STILL WIRED UP, which is a different
+        -- claim from "the crate is at authored size" and has to be checked
+        -- separately: /brpropscale can put a scale back on a live crate, and it
+        -- is the ruler the owner is asked to use. A container is a physics
+        -- object and physics owns the transform matrix, so a scale applied once
+        -- at spawn is one the next simulation step may throw away; the hover
+        -- pass that re-asserts it for loose items skips containers by design.
+        C.scaleAsks = {}
         C.env.BR.Loop.step(C.env.BR.Loop.TICK)
-        ok(C.scaled[obj] == A.crateScale,
-            'and re-asserted on the crate pass, which physics would otherwise '
-            .. 'undo', tostring(C.scaled[obj]))
+        ok((C.scaleAsks[obj] or 0) > 0,
+            'and the crate pass still asks for the size on every container, so '
+            .. 'putting a scale back is one config line',
+            tostring(C.scaleAsks[obj]))
     end
 
     -- 8. AND SO IS THE VOLTS PILE, which is a loose item and therefore rides
@@ -7615,6 +7731,112 @@ do
         local obj = next(C.objects)
         ok(C.scaled[obj] == A.voltsScale,
             'the Volts pile is drawn at voltsScale', tostring(C.scaled[obj]))
+    end
+
+    -- 9. ═══ NO CRATE IS HANDED TO PHYSICS BEFORE THE GROUND UNDER IT EXISTS
+    --        (owner, 2026-08-23) ═══
+    --
+    -- "when it lands on top of a building the loot crate falls through the top
+    -- of the building as if it doesn't have collisions. This leads to (when the
+    -- chute is removed) the actual crate prop spawning at ground level inside a
+    -- building."
+    --
+    -- A container is the ONE prop this file gives to the simulation: created
+    -- dynamic, unfrozen, gravity-bound, ActivatePhysics'd, because "drive into
+    -- one and it moves" (user, 2026-08-05). Map collision streams
+    -- asynchronously, so a crate released above a roof that has not arrived
+    -- falls through it and settles on the terrain -- and stays, because the 10Hz
+    -- pass then records that sunken pose and the husk inherits it.
+    --
+    -- ORDER, NOT PRESENCE. "RequestCollisionAtCoord was called" is satisfied by
+    -- calling it after the box has already been let go.
+    do
+        local C = newProbeClient()
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+
+        local asked = C.only('collision')
+        ok(#asked > 0, 'a crate asks for the collision under it', #asked)
+        if asked[1] then
+            ok(asked[1][2] == 5.0 and asked[1][3] == 5.0,
+                'at its own point, not the player\'s',
+                ('%.1f, %.1f'):format(asked[1][2], asked[1][3]))
+        end
+
+        local firstAsk = C.firstAt('collision')
+        local physics  = C.firstAt('physics')
+        ok(firstAsk and physics and firstAsk < physics,
+            'and it is asked for BEFORE gravity is switched on',
+            ('collision at %s, physics at %s'):format(tostring(firstAsk),
+                                                      tostring(physics)))
+        -- FROZEN ACROSS THE WAIT. The wait yields, which is the only place in
+        -- the spawn worker where the simulation gets a step before the prop is
+        -- configured -- so a crate that fell through the roof DURING its own
+        -- collision wait would be a very funny bug to have written.
+        local freezes = C.only('freeze')
+        ok(#freezes >= 2 and freezes[1][3] == true,
+            'the crate is frozen before the wait', #freezes)
+        ok(freezes[#freezes][3] == false,
+            'and released after it')
+    end
+
+    -- 10. ═══ AND THE PROBE IS TAKEN AGAIN AFTERWARDS, WHICH IS THE OTHER HALF
+    --         ═══
+    --
+    -- Before the building's collision arrives the ground probe is not wrong so
+    -- much as answering a different question: it finds the terrain, confidently,
+    -- and a crate placed on that is BUILT at street level inside the building
+    -- rather than falling into it. Waiting for collision without re-probing
+    -- fixes the fall and leaves the spawn.
+    do
+        local C = newProbeClient()
+        C.collisionAfter = 3                       -- the roof streams in late
+        C.lateGroundAt[C.key(5.0, 5.0)] = 64.0     -- ...and it is 34m up
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+
+        local obj = next(C.objects)
+        ok(obj ~= nil, 'the crate is built')
+        if obj then
+            ok(C.objects[obj].z > 60.0,
+                'and ends up on the roof that streamed in, not on the terrain '
+                .. 'the first probe found',
+                ('%.1f'):format(C.objects[obj].z))
+        end
+        ok(#C.only('move') > 0,
+            'because the re-probe moved it once the collision was really there')
+    end
+
+    -- 11. THE WAIT IS BOUNDED, AND A NATIVE THAT NEVER SAYS YES DOES NOT COST
+    --     THE MATCH ITS LOOT. Worst case is the behaviour that shipped before
+    --     any of this: a crate released exactly as it always was.
+    do
+        local C = newProbeClient()
+        C.collisionLoaded = 0                      -- never, in the 1/0 shape
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(C.props() > 0, 'the crate is still built')
+        ok(C.firstAt('physics') ~= nil,
+            'and still handed to physics when the budget runs out')
+        local freezes = C.only('freeze')
+        ok(freezes[#freezes] and freezes[#freezes][3] == false,
+            'and not left frozen in mid-air for the rest of the match')
+    end
+
+    -- 12. A LOOSE ITEM PAYS NONE OF IT. Rifles and bandages are frozen and
+    --     cannot fall through anything, and 3,200 of them each opening a
+    --     streaming request would be a real cost for no gain.
+    do
+        local C = newProbeClient()
+        C.add({ id = 4, kind = 'consumable', item = 'bandage',
+                prop = 'prop_ld_health_pack',
+                x = 5.0, y = 5.0, z = 30.0, rarity = BR.Rarity.COMMON,
+                count = 1 })
+        C.slow(1000)
+        ok(C.props() > 0, 'the item is built')
+        ok(#C.only('collision') == 0,
+            'and nothing asked for a collision stream on its behalf',
+            #C.only('collision'))
     end
 end
 

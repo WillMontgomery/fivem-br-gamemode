@@ -571,12 +571,17 @@ BR.Config.Airdrop = {
     huskProp  = 'prop_box_wood05b',
 
     -- ------------------------------------------------------------------
-    -- PROP SIZE, AND THE ONE REASON IT MIGHT DO NOTHING
+    -- PROP SIZE -- AND WHY THE BOX IS BACK AT 1.0 AND THE CANOPY IS NOT
     -- ------------------------------------------------------------------
     --
     -- Owner, 2026-08-22: "The parachute and crate props (including husk) should
     -- be 2x larger and the parachute should be 2.5x larger please." and "The
     -- volts prop is perfect but should be 5x the size."
+    --
+    -- Owner, 2026-08-23, having played it: "we need to tweak how the prop
+    -- scaling works for the crate as it currently clips. We may need to drop
+    -- scaling altogether." And, in the same breath: "the parachute scaling works
+    -- great - let's keep that."
     --
     -- THERE IS NO SetEntityScale IN GTA V. #166 established that and settled on
     -- the transform matrix instead -- an entity's three axis vectors are unit
@@ -587,29 +592,71 @@ BR.Config.Airdrop = {
     --
     --   ═══ NOBODY HAS CONFIRMED THE MATRIX SCALE RENDERS ON THIS BUILD ═══
     --
-    -- It is written, it is idempotent, it is tested outside the game, and no
-    -- playtest has yet reported a shield that looks half-size. So these five
-    -- numbers may be five numbers that do nothing, and that has to be said out
-    -- loud rather than discovered by the owner: /brpropscale prints what every
-    -- scaled prop is set to and rebuilds them live, and /brairdrop on the client
-    -- prints the scale each falling part was built with. If nothing changes size
-    -- at any value the matrix route does not work here and the answer is a
-    -- different MODEL, not a different number.
+    -- ...except that the owner has now confirmed it, from the other end: a crate
+    -- that CLIPS is a crate that grew. The matrix route renders. That is the one
+    -- genuinely good piece of news in this block, and it retires a warning three
+    -- config files have been carrying since #166.
+    --
+    -- ═══ WHY THE CANOPY IS FINE AND THE BOX IS NOT, WHICH IS GEOMETRY AND NOT
+    --     A NUMBER ═══
+    --
+    -- A matrix scale grows the model about its ORIGIN. The canopy is frozen, has
+    -- collision switched off, is positioned by arithmetic and hangs in open air
+    -- with nothing beneath it to intersect -- so growing it about its origin
+    -- costs nothing and it reads exactly as asked. Every part of "the parachute
+    -- scaling works great" is a consequence of it never touching anything.
+    --
+    -- THE LANDED CRATE IS THE OPPOSITE OF ALL FOUR. It is a DYNAMIC physics
+    -- object (client/loot.lua: SetEntityDynamic, SetEntityHasGravity,
+    -- ActivatePhysics, unfrozen -- "drive into one and it moves", user
+    -- 2026-08-05), it keeps its collision, and its height comes from resting on
+    -- the ground. So at k the render reaches k times as far BELOW the origin
+    -- while the collider that decides where the origin rests is still 1x: the
+    -- bottom half of the box is drawn underneath the surface it is standing on.
+    -- That is the clip, and it is not a tuning error -- 1.5 buries half as much
+    -- of a bigger box and 1.1 buries a tenth of one.
+    --
+    -- ═══ AND IT CANNOT BE OFFSET AWAY, WHICH IS WHY "TWEAK IT" HAS NO ANSWER
+    --     ═══
+    --
+    -- The obvious repair is to lift the prop by the extra half-height, and it
+    -- works for a FROZEN prop. It cannot work here: gravity puts a dynamic
+    -- object back on its 1x collider on the next simulation step, so the lift is
+    -- undone before anybody sees it. Freezing the crate to keep the lift would
+    -- take back the physics the owner asked for by name. There is no third
+    -- option on this engine.
+    --
+    -- ═══ SO THE BOX GOES BACK TO AUTHORED SIZE, AND THE PRICE IS NAMED ═══
+    --
+    -- At 1.0 the airdrop crate is the same model at the same size as the ~1300
+    -- ordinary ones (crateProp below is BR.Config.Loot.chestProp). What still
+    -- tells it apart: two map blips of its own, the LEGENDARY glow, the flare
+    -- column burnt down its descent path, and a 2.5x cargo canopy overhead the
+    -- whole way down. What is LOST is the one cue that worked at a glance across
+    -- a car park with the crate already on the ground.
+    --
+    -- IF THAT LOSS IS TOO MUCH, THE LEVER IS A MODEL AND NOT A NUMBER -- change
+    -- crateProp/huskProp together, above. A genuinely larger crate model brings
+    -- its own collision box with it and clips nothing, which is precisely what a
+    -- matrix scale can never do.
     --
     -- A FALLING PART AND A LANDED ONE ARE SCALED IN TWO DIFFERENT FILES, because
     -- they are two different objects: the crate under the canopy is a local prop
     -- br_core/client/airdrop.lua builds, and the crate on the ground is an
     -- ordinary loot registry entry br_core/client/loot.lua builds. Both read
-    -- these numbers, so the box does not change size when it touches down.
+    -- these numbers, so the box does not change size when it touches down --
+    -- which is also why both had to move, and why moving only the landed one
+    -- would have produced a crate that shrank on impact.
     --
-    -- THE LANDED CRATE AND HUSK ARE PHYSICS OBJECTS, which is the one place this
-    -- is genuinely at risk: a dynamic object's matrix is written by the physics
-    -- simulation, so a scale applied once at spawn can be overwritten on the
-    -- next simulation step. The 10Hz crate pass in client/loot.lua re-asserts it
-    -- for exactly the entries that carry a scale, which is the same answer the
-    -- hover pass already uses for loose items.
-    crateScale = 2.0,
-    huskScale  = 2.0,
+    -- /brpropscale IS STILL THE RULER, and it is how the owner checks this
+    -- without a deploy: `brpropscale airdrop 2` puts the clip back on a live
+    -- crate and `brpropscale airdrop 1` takes it away again, rebuilding the prop
+    -- each time. The husk answers to `brpropscale airdrophusk`.
+    crateScale = 1.0,
+    huskScale  = 1.0,
+    -- KEPT EXACTLY AS IT IS (owner, 2026-08-23: "the parachute scaling works
+    -- great - let's keep that"). It is also the only one of the three that CAN
+    -- stay: see the geometry above.
     chuteScale = 2.5,
 
     -- THE CARGO CANOPY, which is a different asset from the player's.

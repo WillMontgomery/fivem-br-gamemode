@@ -3616,17 +3616,29 @@ do
     -- Owner, 2026-08-22: "The parachute and crate props (including husk) should
     -- be 2x larger and the parachute should be 2.5x larger please."
     --
+    -- Owner, 2026-08-23, having played it: "we need to tweak how the prop
+    -- scaling works for the crate as it currently clips. We may need to drop
+    -- scaling altogether." and "the parachute scaling works great - let's keep
+    -- that."
+    --
     -- THERE IS NO SetEntityScale IN GTA V (#166), so this is the transform
-    -- matrix and it MAY SIMPLY NOT RENDER on this build -- see
-    -- BR.Native.propScale. What a test can prove is that every part is asked
-    -- for the right size, and keeps being asked.
+    -- matrix -- which the owner has now confirmed renders, from the other end: a
+    -- crate that CLIPS is a crate that grew. What a test can prove is that every
+    -- part is asked for the size the config carries, and keeps being asked.
     clientReset()
     announce()
     render()
 
     local crate = entsOfModel(A.crateProp)[1]
     local chute = entsOfModel(A.chuteModel)[1]
-    eq(scaled[crate], A.crateScale, 'the crate is built at crateScale')
+    -- THE CRATE IS AT AUTHORED SIZE NOW, and `scaled` is written by a stub that
+    -- mirrors the real BR.Native.propScale: 1.0 is not a scale, it is the
+    -- absence of one, and neither the stub nor the native writes a matrix for
+    -- it. So the assertion is that NOTHING was applied -- which is the whole of
+    -- the fix, because a matrix scale is exactly what cannot be applied to a
+    -- box resting on the ground without burying half of it.
+    eq(A.crateScale, 1.0, 'the crate is at authored size')
+    eq(scaled[crate], nil, 'so no matrix scale is written to it at all')
     eq(scaled[chute], A.chuteScale, 'the canopy at chuteScale')
 
     -- The flare props only exist on the object route now, so the scale is
@@ -3659,17 +3671,24 @@ do
     scaled = {}
     gameMs = gameMs + 5000
     render()
-    eq(scaled[crate], A.crateScale, 'the crate is re-scaled after the frame\'s '
+    eq(scaled[chute], A.chuteScale, 'the canopy is re-scaled after the frame\'s '
         .. 'heading write')
-    eq(scaled[chute], A.chuteScale, 'and so is the canopy')
 
-    -- The three numbers are the owner's, and they are the reason any of this
-    -- exists. Pinned here as well as in the config block so a retune has to be
-    -- deliberate on both sides.
-    eq(A.crateScale, 2.0, 'the crate is twice authored size')
-    eq(A.huskScale, 2.0, 'the husk matches it, so the box does not shrink when '
-        .. 'it is opened')
-    eq(A.chuteScale, 2.5, 'and the canopy is two and a half times')
+    -- ═══ THE FOUR NUMBERS, PINNED, BECAUSE THREE OF THEM ARE A REVERSAL ═══
+    --
+    -- The crate and its husk went back to authored size on 2026-08-23 and the
+    -- canopy did not, and that split is the whole finding: a matrix scale grows
+    -- a model about its ORIGIN, so it is free for a frozen collision-off canopy
+    -- hanging in open air and it is a clip for a dynamic physics box whose
+    -- height comes from resting on the ground with a 1x collider. It cannot be
+    -- offset away either -- gravity puts a dynamic object back on that collider
+    -- on the next step. See the PROP SIZE block in br_lib/config/airdrop.lua.
+    eq(A.crateScale, 1.0, 'the crate is at authored size, because a scaled one '
+        .. 'draws its bottom half underneath the floor it stands on')
+    eq(A.huskScale, 1.0, 'the husk matches it, so the box does not change size '
+        .. 'when it is opened')
+    eq(A.chuteScale, 2.5, 'and the canopy keeps its 2.5, which the owner asked '
+        .. 'for by name')
     eq(A.voltsScale, 5.0, 'the Volts pile is five times')
 end
 
@@ -3774,20 +3793,30 @@ do
         'and one exactly at it')
 end
 
-describe('client: a rooftop probe falls to the authored height instead')
+describe('client: a rooftop crate lands ON the roof, not through it')
 do
+    -- ═══ THE REVERSAL, AND THE OWNER SAW IT IN ONE MATCH ═══
+    --
     -- Owner, 2026-08-22: "Somehow these airdrops can happen on top of buildings
-    -- where peds otherwise cannot access."
+    -- where peds otherwise cannot access." The answer written that day was to
+    -- take the POI's authored street-level z whenever the navmesh refused the
+    -- probed surface, and to draw the crate falling to THAT.
     --
-    -- THE PROBE IS WHAT PUTS IT THERE. GetGroundZFor_3dCoord starts hundreds of
-    -- metres up and returns the highest surface DIRECTLY BENEATH -- which over a
-    -- building is the roof, every time, exactly as documented. The POI itself is
-    -- a hand-walked street-level landmark, so when the navmesh refuses the
-    -- probed height the AUTHORED one is the better answer.
+    -- Owner, 2026-08-23, having played it: "when it lands on top of a building
+    -- the loot crate falls through the top of the building as if it doesn't
+    -- have collisions. This leads to (when the chute is removed) the actual
+    -- crate prop spawning at ground level inside a building."
     --
-    -- This is presentation only: it decides where the box is DRAWN on the way
-    -- down. What actually relocates the loot is client/loot.lua's repair
-    -- round-trip, under the server's own 30m bound.
+    -- IT DOES NOT HAVE COLLISION -- makePart switches it off on purpose -- so
+    -- aiming it below the surface it is over does not land it there, it sinks it
+    -- through the roof in full view. A crate on a roof needs a way up. A crate
+    -- inside a sealed building is loot nobody can ever have.
+    --
+    -- So the probed surface is used, roof or not, and the reachability verdict
+    -- is kept as a DIAGNOSTIC. What relocates unreachable loot is
+    -- client/loot.lua's repair round-trip, which moves an entry LATERALLY under
+    -- the server's own 30m bound -- the only shape of correction that cannot
+    -- bury a crate.
     clientReset()
     ground.z = 84.0              -- a roof, 54m above the POI's authored 30m
     reachable, reachWhy = false, 'snapped 54.0m in z'
@@ -3796,13 +3825,29 @@ do
     local crate = oneEnt()
     ok(crate ~= nil, 'the crate exists')
     -- At the release it is `alt` above the ground it is falling to.
-    ok(near(crate.z, rec.gz + rec.alt, 0.001),
-        'and it is falling to the POI\'s authored height, not to the roof',
-        ('%.1f, authored %.1f, roof %.1f'):format(crate.z, rec.gz, 84.0))
+    ok(near(crate.z, 84.0 + rec.alt, 0.001),
+        'and it is falling to the ROOF the probe found, not to the authored '
+        .. 'street below it',
+        ('%.1f, roof %.1f, authored %.1f'):format(crate.z, 84.0, rec.gz))
+    ok(not near(crate.z, rec.gz + rec.alt, 0.001),
+        'which is the height that used to sink it into the building')
 
-    -- AND WHEN THE NAVMESH IS HAPPY, THE PROBE WINS. It is a better answer than
-    -- an authored guess everywhere that is not a roof, which is almost
-    -- everywhere.
+    -- AND THE VERDICT IS STILL TAKEN, because /brairdrop prints it and "it came
+    -- down on the Maze Bank" has to be legible from a log. It just no longer
+    -- moves anything.
+    local printed = {}
+    local realPrintFn = print
+    print = function(s) printed[#printed + 1] = tostring(s) end
+    commands['brairdrop'](0, {}, '')
+    print = realPrintFn
+    local joined = table.concat(printed, '\n')
+    ok(joined:find('unreachable', 1, true) ~= nil
+       and joined:find('snapped 54.0m in z', 1, true) ~= nil,
+        'and the rooftop verdict is still reported by /brairdrop')
+
+    -- AND WHEN THE NAVMESH IS HAPPY, NOTHING CHANGES AT ALL. Same height, same
+    -- probe, no verdict -- which is the case that proves the two paths have
+    -- converged rather than merely both existing.
     clientReset()
     ground.z = 84.0
     reachable, reachWhy = true, 'ok'

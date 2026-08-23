@@ -633,6 +633,29 @@ BR.Config.Loot = {
     -- that again (user, 2026-08-06). Heavy enough that a car shunts it and a
     -- shoulder does not.
     crateMass       = 4800.0,
+
+    -- HOW LONG A CRATE IS HELD FROZEN WAITING FOR THE GROUND TO EXIST.
+    --
+    -- Owner, 2026-08-23: an airdrop that lands on a building "falls through the
+    -- top of the building as if it doesn't have collisions", and the crate then
+    -- "spawn[s] at ground level inside a building".
+    --
+    -- A container is the one prop this gamemode hands to the physics
+    -- simulation, and map collision streams asynchronously: hand it over before
+    -- the roof underneath it has arrived and gravity takes it to the terrain,
+    -- where it stays. So client/loot.lua freezes it, calls
+    -- RequestCollisionAtCoord, and waits here for
+    -- HasCollisionLoadedAroundEntity before letting go.
+    --
+    -- 1500ms IS A CEILING AND NOT A COST. The wait ends the moment the collision
+    -- reports in, which for the ordinary ~1300 crates -- built well inside a
+    -- world the player is standing in -- is the first check. Only a prop built
+    -- at the edge of what has streamed pays anything at all.
+    --
+    -- WHEN IT EXPIRES, THE CRATE IS RELEASED ANYWAY. A box that behaves exactly
+    -- as it did before this existed beats a box frozen in mid-air for the rest
+    -- of the match because a streaming request never completed.
+    collisionWaitMs = 1500,
     labelDistance   = 8.0,   -- 3D text draw range
 
     -- Containers are a commitment in the open: you stand still for a second and

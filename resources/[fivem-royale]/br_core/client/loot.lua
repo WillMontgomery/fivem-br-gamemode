@@ -32,6 +32,32 @@ BR.Loot.openedCount = 0
 --- drag is not strong enough", which cost a round of guessing to tell apart.
 BR.Loot.dragTicks = 0
 
+--- THE COLLISION WAIT, COUNTED, for the reason every other counter in this file
+--- exists: a crate that came down inside a building is one symptom with three
+--- possible causes, and from a chair they are identical.
+---
+--- Owner, 2026-08-23: the airdrop "falls through the top of the building as if
+--- it doesn't have collisions" and the crate then "spawn[s] at ground level
+--- inside a building".
+---
+---   waits 0            the wait never ran -- containers are not reaching it
+---   waits n, loaded 0  the collision never arrives, and every crate is
+---                      released on the budget exactly as it was before
+---   reseated 0         collision arrives, but the ground never changes with it,
+---                      so the roof was never the probe's answer either
+---
+--- Three different bugs, one picture, and this line is what chooses between them
+--- without another match. Read by /brloot.
+BR.Loot.settle = {
+    waits    = 0,    -- containers held frozen while collision streamed
+    loaded   = 0,    -- ...that got it inside the budget
+    timedOut = 0,    -- ...that did not, and were released anyway
+    reseated = 0,    -- ...whose ground moved once the collision was really there
+    lastMs   = 0,    -- how long the last wait took
+    maxMs    = 0,    -- the worst one this session
+    lastLift = 0.0,  -- metres the last re-seat moved a crate, signed
+}
+
 --- THE ARRIVAL ARC, COUNTED AT EVERY LINK IN ITS OWN CHAIN.
 ---
 --- The arc "from the crate's mouth to where it lands" was written, shipped, and
@@ -678,6 +704,98 @@ local function labelOf(e)
     return name
 end
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. Six shipped bugs on this project, and solidGround below carries
+--- the write-up of the sixth. Written out inline there rather than routed
+--- through here, deliberately -- the comment on that line is the record of what
+--- it cost, and it is worth more than the deduplication.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
+--- Hold a solid prop still until the map's collision underneath it exists.
+---
+--- ═══ WHY A CRATE ENDS UP INSIDE A BUILDING ═══
+---
+--- Owner, 2026-08-23: "when it lands on top of a building the loot crate falls
+--- through the top of the building as if it doesn't have collisions. This leads
+--- to (when the chute is removed) the actual crate prop spawning at ground level
+--- inside a building."
+---
+--- A CONTAINER IS THE ONLY PROP THIS FILE HANDS TO PHYSICS. Loose items are
+--- frozen; a crate is created dynamic, unfrozen, gravity-bound and then
+--- ActivatePhysics'd, because "drive into one and it moves" (user, 2026-08-05).
+--- An unfrozen object with gravity falls until it hits COLLISION THAT HAS
+--- STREAMED IN -- and map collision streams asynchronously and separately from
+--- everything else. Create a crate a third of a metre above a roof whose
+--- collision has not arrived yet and it falls straight through it, comes to rest
+--- on the terrain, and stays there: the 10Hz crate pass records that sunken pose
+--- into `poses`, and the husk inherits it when somebody opens the box. Nothing
+--- puts it back afterwards, because by then it is simply where it is.
+---
+--- THE FIX IS THE ONE THE TELEPORT PATH ALREADY USES. client/debug.lua's
+--- br:debug:teleport calls RequestCollisionAtCoord before it moves a player,
+--- with a comment saying that skipping it "drops the player through the map into
+--- the water". Same native, same failure, same answer -- a crate is just a
+--- player that cannot swim.
+---
+--- FROZEN FIRST, BECAUSE THIS YIELDS. Everything else in the spawn worker
+--- happens inside one frame, so an object created dynamic never gets a
+--- simulation step before it is configured. This function waits, which means the
+--- physics DOES get to step -- and a crate that fell through the roof during its
+--- own collision wait would be a very funny bug to have written here.
+---
+--- BOUNDED, AND THE WORST CASE IS TODAY'S BEHAVIOUR. When the budget runs out
+--- the caller unfreezes anyway: a crate that behaves exactly as it did before
+--- this function existed beats a crate frozen in mid-air forever because a
+--- streaming request never completed.
+---
+--- HasCollisionLoadedAroundEntity IS ABOUT THE ENTITY, WHICH IS WHY THE OBJECT
+--- IS CREATED FIRST. There is no coord-taking form of that question, and polling
+--- GetGroundZFor_3dCoord instead cannot answer it: terrain streams first and
+--- answers `true` on its own, so the probe says yes about the street while the
+--- building is still missing -- which is the exact state this guards against.
+--- @param obj integer
+--- @param x number
+--- @param y number
+--- @param z number
+--- @return boolean loaded
+--- @return number waited  milliseconds spent
+local function awaitCollision(obj, x, y, z)
+    FreezeEntityPosition(obj, true)
+    RequestCollisionAtCoord(x, y, z)
+
+    local budget = L.collisionWaitMs or 1500
+    local waited = 0
+    local S = BR.Loot.settle
+    S.waits = S.waits + 1
+    -- RECORDED ON EVERY EXIT, INCLUDING THE EARLY ONES. A receipt that is only
+    -- written on the happy path is a receipt that says nothing about the case
+    -- anybody would be reading it for.
+    local function done(loaded)
+        S.lastMs = waited
+        if waited > S.maxMs then S.maxMs = waited end
+        if loaded then S.loaded = S.loaded + 1
+        else S.timedOut = S.timedOut + 1 end
+        return loaded, waited
+    end
+    -- 0 IS TRUTHY IN LUA AND THIS NATIVE IS DECLARED BOOL. `if
+    -- HasCollisionLoadedAroundEntity(e) then` is TRUE for a native that said no
+    -- with a zero, which would make the whole wait a no-op that looks like it
+    -- ran.
+    while not isTrue(HasCollisionLoadedAroundEntity(obj)) do
+        if waited >= budget then return done(false) end
+        Citizen.Wait(50)
+        waited = waited + 50
+        -- The entry can be claimed, or stream out, while we wait.
+        if not DoesEntityExist(obj) then return done(false) end
+        RequestCollisionAtCoord(x, y, z)
+    end
+    return done(true)
+end
+
 --- Is a point dry land with something solid under it?
 ---
 --- DECLARED BEFORE groundZ ON PURPOSE. A `local function` referenced above its
@@ -1051,6 +1169,49 @@ local function drain()
                                 -- they are close enough to target by proximity.
                                 local solid = isContainer(e) or isHusk(e)
                                 SetEntityCollision(obj, solid, solid)
+
+                                -- ═══ COLLISION FIRST, PHYSICS SECOND (owner,
+                                --     2026-08-23) ═══
+                                --
+                                -- A crate is the only thing this file hands to
+                                -- the physics simulation, and it is handed over
+                                -- a few lines below. Do that before the map's
+                                -- collision has streamed in underneath it and
+                                -- gravity walks it through the roof it was
+                                -- standing on and leaves it at street level --
+                                -- inside the building, where nobody in the match
+                                -- can ever reach it. See awaitCollision.
+                                --
+                                -- AND THEN RE-PROBE, WHICH IS THE OTHER HALF.
+                                -- The ground height above was read before this
+                                -- wait, so it is a reading of whatever HAD
+                                -- streamed -- the terrain -- and a crate placed
+                                -- on it starts inside the building rather than
+                                -- falling into it. Once the collision is really
+                                -- there the probe returns the surface the crate
+                                -- is actually over, and the box is moved onto
+                                -- it. Skipped when there is a POSE, because a
+                                -- husk inherits exactly where its sealed crate
+                                -- came to rest and re-grounding it would undo a
+                                -- fix from 2026-08-06.
+                                if solid then
+                                    awaitCollision(obj, sx, sy, sz)
+                                    if not pose then
+                                        local ok2, gz2 = solidGround(sx, sy,
+                                            math.max((e.z or 0.0) + 50.0, 300.0))
+                                        if ok2 and math.abs(gz2 - gz) > 0.05 then
+                                            local S = BR.Loot.settle
+                                            S.reseated = S.reseated + 1
+                                            S.lastLift = gz2 - gz
+                                            gz, e.gz = gz2, gz2
+                                            e.gzAt = GetGameTimer()
+                                            sz = gz2 + (L.restLift or 0.35)
+                                            SetEntityCoordsNoOffset(obj, sx, sy,
+                                                sz, false, false, false)
+                                        end
+                                    end
+                                end
+
                                 if pose then
                                     -- Order 2 is the same convention
                                     -- GetEntityRotation was read with, so the
@@ -1145,8 +1306,25 @@ local function drain()
                                 e.propScale = propScaleOf(e)
                                 applyPropScale(obj, e.propScale)
 
-                                e.obj = obj
-                                byObject[obj] = id
+                                -- ═══ AND THE ENTRY HAS TO STILL BE THE ENTRY
+                                --     ═══
+                                --
+                                -- The collision wait above is the first thing in
+                                -- this block that YIELDS after an object exists,
+                                -- and up to a second and a half of frames is
+                                -- plenty for the entry to be claimed, replaced by
+                                -- its husk, or streamed out. Handing the prop to
+                                -- a table that is no longer in `entries` is a box
+                                -- in the world that nothing owns and nothing will
+                                -- ever delete -- so it is checked, and the
+                                -- orphan is destroyed rather than adopted.
+                                if entries[id] == e and not e.obj then
+                                    e.obj = obj
+                                    byObject[obj] = id
+                                elseif DoesEntityExist(obj) then
+                                    DeleteEntity(obj)
+                                    obj = nil
+                                end
 
                                 -- THE ARRIVAL CLOCK STARTS HERE, AND THAT IS
                                 -- THE FIX (owner, 2026-08-23: "the loot doesn't
@@ -2755,6 +2933,17 @@ RegisterCommand('brloot', function()
         end
     end
     print(('  crate props live: %d sealed, %d husk'):format(nSealed, nHusk))
+
+    -- PROOF THE COLLISION WAIT IS RUNNING, and which of its three failures is
+    -- the one in front of you (owner, 2026-08-23: a crate "spawning at ground
+    -- level inside a building"). See BR.Loot.settle.
+    local s = BR.Loot.settle
+    print(('  collision wait: %d held (%d loaded, %d timed out), last %dms, '
+           .. 'worst %dms, budget %dms')
+        :format(s.waits, s.loaded, s.timedOut, s.lastMs, s.maxMs,
+                L.collisionWaitMs or 0))
+    print(('    re-seated after the stream: %d (last moved %+.1fm)')
+        :format(s.reseated, s.lastLift))
 
     -- PROOF THE ARC IS RUNNING, for exactly the reason the drag line above
     -- exists. `born 12, flew 0` is the shape the missing arc had for as long as

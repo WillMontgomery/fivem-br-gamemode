@@ -549,7 +549,8 @@ end
 --- than an absolute z. The probe is also documented to fail beyond render
 --- distance, and the drop is announced while everyone is kilometres away, so
 --- the POI's authored height stands in until the probe starts answering.
---- ═══ AND IT IS WHY AIRDROPS LAND ON ROOFS ═══
+--- ═══ AIRDROPS LAND ON ROOFS, AND FOR ONE DAY THIS FUNCTION ANSWERED THAT BY
+---     DROPPING THE CRATE THROUGH THEM ═══
 ---
 --- Owner, 2026-08-22: "Somehow these airdrops can happen on top of buildings
 --- where peds otherwise cannot access."
@@ -560,19 +561,40 @@ end
 --- documentation describes as "the highest ground Z directly beneath" the start
 --- point. Over a building that is the ROOF, every time, exactly as designed.
 ---
---- SO WHEN THE ANSWER IS A ROOF, THE AUTHORED HEIGHT IS THE BETTER ONE. A POI's
---- `z` is a hand-walked street-level number (config/map.lua), and the crate has
---- collision switched off, so it simply falls past the roof to the ground the
---- POI was authored at. That is a LOCAL, PRESENTATION-ONLY correction with no
---- lateral movement -- the record is untouched, nothing crosses the wire, and
---- every client that can answer the question at all answers it the same way,
---- so the "no two machines can disagree" property this whole file rests on is
---- unchanged.
+--- THE ANSWER WRITTEN THAT DAY WAS: when the navmesh calls the probed surface
+--- unreachable, fall to the POI's authored street-level `z` instead. It is a
+--- local presentation-only correction, it cannot desync, and it is WRONG, which
+--- the next playtest said in one sentence:
 ---
---- WHAT ACTUALLY MOVES THE LOOT IS SOMEWHERE ELSE, and deliberately: the sealed
---- crate that lands is an ordinary registry entry, and client/loot.lua's repair
---- round-trip walks it to reachable ground under the server's own 30m bound.
---- This function only decides where the box is DRAWN on the way down.
+---   Owner, 2026-08-23: "when it lands on top of a building the loot crate
+---   falls through the top of the building as if it doesn't have collisions.
+---   This leads to (when the chute is removed) the actual crate prop spawning
+---   at ground level inside a building."
+---
+--- IT DOES NOT HAVE COLLISION -- makePart switches it off, deliberately, so
+--- nothing can shove a crate whose position is arithmetic. So aiming it at a
+--- height BELOW the surface it is over does not make it land there; it makes it
+--- sink through the roof in full view and finish inside the building. A crate
+--- standing on a roof is a crate somebody has to find a way up to. A crate
+--- inside a sealed building is loot nobody in the match can ever have, and it is
+--- the strictly worse of the two.
+---
+--- ═══ SO THE PROBED SURFACE IS USED, ROOF OR NOT ═══
+---
+--- The crate is drawn coming to rest on whatever is actually underneath it. The
+--- reachability verdict is still taken -- it is worth having on screen, and
+--- /brairdrop prints it -- but it is now a DIAGNOSTIC and never a height. This
+--- function's one job is that the box on the way down and the box on the ground
+--- are in the same place.
+---
+--- WHAT MOVES UNREACHABLE LOOT IS SOMEWHERE ELSE, and that has always been the
+--- design: the sealed crate that lands is an ordinary registry entry, and
+--- client/loot.lua's repair round-trip walks it to reachable ground under the
+--- server's own 30m bound. That correction is LATERAL -- it looks for somewhere
+--- better nearby and leaves the height to the probe there -- which is the only
+--- shape of correction that cannot bury a crate. Nothing in this file may lower
+--- a z on a reachability opinion, and that is the rule the 2026-08-22 version
+--- broke.
 --- @param d table
 --- @return number
 local function groundOf(d)
@@ -583,14 +605,13 @@ local function groundOf(d)
     local ok, gz = GetGroundZFor_3dCoord(d.rec.x, d.rec.y,
         (d.rec.gz or 0.0) + (d.rec.alt or 0.0), false)
     if isTrue(ok) then
+        -- THE VERDICT IS RECORDED AND NOT ACTED ON. `d.roof` is what /brairdrop
+        -- prints and what makes "it came down on the Maze Bank" legible from a
+        -- log; the crate still descends to `gz`, because `gz` is where the
+        -- world is.
         local reach, why = BR.Native.pedReachable(d.rec.x, d.rec.y, gz)
-        if reach then
-            d.gz, d.roof = gz, nil
-        else
-            -- The authored height, not the last one we had: a stale `d.gz` from
-            -- an earlier frame is just as likely to be the roof.
-            d.gz, d.roof = d.rec.gz or 0.0, why
-        end
+        d.gz   = gz
+        d.roof = (not isTrue(reach)) and why or nil
     else
         d.gz = d.gz or d.rec.gz or 0.0
     end
@@ -867,12 +888,18 @@ RegisterCommand('brairdrop', function(_, args)
             print(('    plane should be up %s, at (%.0f, %.0f)')
                 :format(tostring(BR.AirdropPlaneVisible(rec, now, A)), px, py))
             -- THE ROOFTOP VERDICT for the point the crate is falling to. `roof`
-            -- is set by groundOf when the navmesh refuses the probed ground.
+            -- is set by groundOf when the navmesh refuses the probed ground --
+            -- and since 2026-08-23 that is ALL it is. The crate comes down onto
+            -- the probed surface either way; a verdict that moved the height is
+            -- how a crate came to sink through a roof and finish inside the
+            -- building. Anything unreachable is walked somewhere better by
+            -- client/loot.lua's repair round-trip, laterally, once it lands.
             print(('    ground %.1f (POI authored %.1f)%s')
                 :format(d.gz or 0.0, rec.gz or 0.0,
-                        d.roof and (' -- probe rejected as unreachable: '
+                        d.roof and (' -- navmesh calls this unreachable: '
                                     .. tostring(d.roof)
-                                    .. ', falling to the authored height')
+                                    .. '; the crate still lands on it, and the '
+                                    .. 'LOOT_FIX round-trip moves the entry')
                                or ''))
         end
         -- BOTH SURFACES, SEPARATELY. "The blip is missing" is now two different
