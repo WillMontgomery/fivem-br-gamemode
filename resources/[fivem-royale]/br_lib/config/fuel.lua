@@ -299,7 +299,7 @@ BR.Config.Fuel = {
     --- LIVE SERVER, exactly as `promptRadius` was. `/brfuel` on the client now
     --- prints the live vehicle-to-station-centre distance beside this radius, so
     --- the next value is measured at the worst station rather than guessed.
-    refuelRadius = 5.0,
+    refuelRadius = 20.0,
 
     --- How far a player may be from a vehicle and still ask what it holds.
     ---
@@ -431,7 +431,7 @@ BR.Config.Fuel = {
     --- `refuelRadius`, and client/fuel.lua sends nothing while the plate is
     --- down. Draw and fill are one condition. See `refuelRadius` for the half of
     --- that fix which survives a modified client, and for what one still gains.
-    promptRadius = 3.0,
+    promptRadius = 6.0,
     promptLift   = 1.4,
     promptScale  = 1.6,
 

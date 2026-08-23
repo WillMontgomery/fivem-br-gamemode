@@ -492,10 +492,23 @@ do
     local P = BR.Config.Fuel.promptRadius
     local S = BR.Config.Fuel.stationRadius
 
-    -- TEN FEET IS 3.048m, AND THE OWNER SAID "OR LESS". Anything above that is
-    -- not the number they asked for.
-    ok(P > 0 and P <= 3.048,
-       'the prompt radius is ten feet or less', P)
+    -- ═══ THE OWNER MOVED THIS NUMBER TWICE, AND THE SECOND TIME REVERSED THE
+    --     FIRST ═══
+    --
+    -- 2026-08-22, first: "We need to be like 10ft from the pumps or less" --
+    -- which is 3.048m, and this assertion pinned it at or under that.
+    --
+    -- Later the same day, having played it: "Let's double the fuel + DUI radius
+    -- again. I was wrong." So the ten-foot rule is retired by the person who set
+    -- it, and pinning it now would be pinning a sentence they took back.
+    --
+    -- WHAT IS STILL WORTH ASSERTING is the RELATIONSHIP, not the figure. The
+    -- plate must sit inside the radius the server will actually honour, because
+    -- the client draws it only when BOTH tests pass -- that is what closed the
+    -- gap where a hold silently filled the tank with nothing on screen. A prompt
+    -- radius wider than the server's would reopen it.
+    ok(P > 0 and P <= (BR.Config.Fuel.refuelRadius or S),
+       'the prompt sits inside the radius the server will honour', P)
 
     -- THE TWO RADII ARE ORDERED, AND THE ORDER IS WHAT MAKES THE SMALLER ONE
     -- MEAN ANYTHING. The prompt gate sits INSIDE the station gate in
