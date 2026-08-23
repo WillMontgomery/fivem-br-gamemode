@@ -162,13 +162,24 @@ function BR.SpectateSolve.playerTargets(view)
     -- The squad is gone (or there never was one). Widening is a product
     -- decision and #192 leaves it open -- "refusing it costs little" -- so it is
     -- a config value read by the caller and passed in, not a constant here.
-    if not view.free then
-        -- ...AND THE ONE PERSON A SOLO MAY WATCH WITHOUT IT IS THE ONE WHO KILLED
-        -- THEM. A list of exactly one: the arrows cannot walk off it, so this
-        -- admits a killer-cam and not the lobby. The header carries the argument.
-        if killer then
-            return { killer }, 'killer'
-        end
+    --
+    -- ═══ EXCEPT FOR SOLOS, WHO ARE ALWAYS WIDENED ═══
+    --
+    -- An earlier version of this branch returned `{ killer }` and nothing else
+    -- for a solo when `free` was off, reasoning that the shipped config would
+    -- otherwise leave the owner's "default target is the killer" inert. The
+    -- owner rejected it (2026-08-22): "I'm not asking for their killer to be the
+    -- sole spectate option, just the first one they see. If there are other
+    -- players in the match available to spectate, they should still be able to
+    -- select between those."
+    --
+    -- So a solo gets the WHOLE list with the killer at the front of it, which is
+    -- what "default" meant all along -- a starting position in a wheel, not a
+    -- wheel with one spoke. `free` still governs the case it was written for: a
+    -- SQUAD player whose squad has been wiped, where #192's ghosting argument
+    -- applies because they still have living teammates' opponents to inform.
+    -- A solo has no ally, which is why the flag never described them well.
+    if not view.free and view.squadId ~= nil then
         return {}, 'none'
     end
 

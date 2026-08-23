@@ -13981,9 +13981,12 @@ end
 describe('spectate.killerInSolos')
 do
     -- THE HEADLINE, ON THE SHIPPED CONFIGURATION. freeAfterSquadOut is false in
-    -- config/match.lua and reset() restores it, so this is the world the owner
-    -- actually plays -- the one in which a dead solo used to have no targets at
-    -- all and the request would otherwise be inert.
+    -- config/match.lua and reset() restores it -- and it no longer reaches a
+    -- solo at all. The owner corrected an earlier version that made the killer
+    -- the whole list (2026-08-22): "I'm not asking for their killer to be the
+    -- sole spectate option, just the first one they see. If there are other
+    -- players in the match available to spectate, they should still be able to
+    -- select between those."
     soloMatch()
     BR.Combat.eliminate(1, 'headshot', 2)
     sent = {}
@@ -13991,42 +13994,49 @@ do
     ok(watching(1) == 2, 'a dead solo opens on the player who killed them',
         tostring(watching(1)))
 
-    -- AND ON NOBODY ELSE. A list of one is what keeps this a killer-cam rather
-    -- than the free spectate #192 refuses; the bystander must be unreachable
-    -- with the arrows in both directions.
+    -- AND THE ARROWS REACH EVERYONE ELSE, which is the correction. The earlier
+    -- list of one could not be walked off in either direction; this asserts that
+    -- it can, and that the killer is a starting POSITION rather than the set.
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
-    ok(watching(1) == 2, 'and next does not reach the other survivor',
+    ok(watching(1) ~= nil and watching(1) ~= 2,
+        'and next walks off the killer onto the other survivor',
         tostring(watching(1)))
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = -1 })
-    ok(watching(1) == 2, 'nor does previous', tostring(watching(1)))
+    ok(watching(1) == 2, 'and previous comes back to them',
+        tostring(watching(1)))
 
-    -- NO KILLER IS THE OLD ANSWER, AND IT IS THE COMMON ONE. The storm, a fall,
-    -- a car with nobody in it (#194) all arrive at eliminate() with nil, and nil
-    -- must not open anything.
+    -- NO KILLER IS NO LONGER NO TARGETS. The storm, a fall, a car with nobody in
+    -- it (#194) all arrive at eliminate() with nil -- and a solo who died that
+    -- way still gets the lobby, just with nobody promoted to the front.
     soloMatch()
     BR.Combat.eliminate(1, 'storm', nil)
     sent = {}
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
-    ok(watching(1) == nil, 'a solo killed by the storm still has nobody to watch',
+    ok(watching(1) ~= nil,
+        'a solo killed by the storm still has somebody to watch',
         tostring(watching(1)))
 
     -- NOBODY IS THEIR OWN KILLER. eliminate() writes the licence inside the
-    -- `killerSrc ~= src` guard, so a self-credited death records nothing.
+    -- `killerSrc ~= src` guard, so a self-credited death records nothing -- and
+    -- the player is still never handed their own camera, which is the half that
+    -- must survive the widening.
     soloMatch()
     BR.Combat.eliminate(1, 'explosion', 1)
     sent = {}
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
-    ok(watching(1) == nil, 'and a player is never given their own corpse to watch',
+    ok(watching(1) ~= nil and watching(1) ~= 1,
+        'and a player is never given their own corpse to watch',
         tostring(watching(1)))
 end
 
 describe('spectate.theKillerIsLostAgain')
 do
-    -- THE TWO WAYS THE ONE TARGET GOES AWAY, both through the retarget paths
-    -- that already existed rather than through anything new.
+    -- THE TWO WAYS THE PROMOTED TARGET GOES AWAY. Both go through the retarget
+    -- paths that already existed -- and now that a solo holds a full list, the
+    -- session SURVIVES both, which is the behaviour the correction bought.
 
-    -- 1. THE KILLER DIES. The feed re-resolves every push, the list empties, and
-    --    the session ends the way an empty list has always ended it.
+    -- 1. THE KILLER DIES. The feed re-resolves every push. The list loses one
+    --    row and keeps the rest, so the camera moves rather than stopping.
     soloMatch()
     BR.Combat.eliminate(1, 'headshot', 2)
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
@@ -14036,12 +14046,14 @@ do
     BR.Combat.eliminate(2, 'storm', nil)
     fakeTime = fakeTime + BR.Config.Spectate.feedMs
     BR.Sched.step(fakeTime)
-    ok(stopped(1), 'the killer dying ends the session rather than erroring',
+    ok(not stopped(1),
+        'the killer dying moves the camera on rather than ending the session',
         tostring(watching(1)))
-    ok(stopReason(1) == 'no-targets', 'saying why', tostring(stopReason(1)))
+    ok(watching(1) ~= nil and watching(1) ~= 2,
+        'onto somebody still standing', tostring(watching(1)))
 
-    -- 2. THE KILLER LEAVES. playerDropped re-resolves the watchers; there is
-    --    nobody left to move to, so it stops -- and does not throw on the way.
+    -- 2. THE KILLER LEAVES. playerDropped re-resolves the watchers; there IS
+    --    somebody left to move to now, so it retargets instead of stopping.
     soloMatch()
     BR.Combat.eliminate(1, 'headshot', 2)
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
@@ -14049,19 +14061,10 @@ do
 
     sent = {}
     leave(2)
-    ok(stopped(1), 'the killer disconnecting stops the camera')
-
-    -- 'no-targets', NOT 'target-left', AND THAT IS THE EXISTING PATH RATHER THAN
-    -- ANYTHING THIS CHANGE ADDED. playerDropped re-resolves a player session
-    -- first -- `if not resolve(src, 1) then stop('target-left') end` -- and a
-    -- resolve that finds an empty list stops with its own reason on the way out,
-    -- so the outer call lands on a session that is already gone. Any player
-    -- whose departing target was their LAST candidate has always seen this,
-    -- squad or solo. Asserted as it is rather than as it reads, because a test
-    -- that pinned the reason it "should" be would be pinning a bug report.
-    ok(stopReason(1) == 'no-targets',
-        'reporting the empty list the re-resolve actually found',
-        tostring(stopReason(1)))
+    ok(not stopped(1), 'the killer disconnecting does not stop the camera',
+        tostring(watching(1)))
+    ok(watching(1) ~= nil and watching(1) ~= 2,
+        'it lands on whoever is left', tostring(watching(1)))
 end
 
 describe('spectate.theKillerIsALicence')

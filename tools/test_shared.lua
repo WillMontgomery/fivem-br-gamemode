@@ -7212,42 +7212,58 @@ do
         }
     end
 
-    -- 1. THE SHIPPED CONFIGURATION. freeAfterSquadOut is false in
-    --    config/match.lua, and under it a dead solo used to have no targets at
-    --    all. The killer is the whole list -- not the first of four.
+    -- ═══ 1. THE SHIPPED CONFIGURATION, AND SOLOS ARE NOT SUBJECT TO IT ═══
+    --
+    -- An earlier version made the killer the WHOLE list when free spectate was
+    -- off. The owner rejected that (2026-08-22): "I'm not asking for their
+    -- killer to be the sole spectate option, just the first one they see. If
+    -- there are other players in the match available to spectate, they should
+    -- still be able to select between those."
+    --
+    -- So `free` no longer reaches a solo at all. It governs the case it was
+    -- written for -- a SQUAD player whose squad has been wiped -- and case 9
+    -- below is the leak test for that.
     local t, policy = S.playerTargets(solos(4, false))
-    ok(#t == 1 and t[1].src == 4, 'with free spectate off a solo watches their killer',
+    ok(#t == 3, 'a dead solo is offered every living player, free spectate or not',
         names(t))
-    ok(policy == 'killer', 'and the policy names the branch that admitted them',
+    ok(t[1].src == 4, 'with the one who killed them first', names(t))
+    ok(t[2].src == 2 and t[3].src == 3,
+        'and the rest in src order behind them', names(t))
+    ok(policy == 'free',
+        'the policy says free, because a widened set is what they got',
         policy)
 
-    -- 2. AND NOBODY ELSE. The arrows cannot walk off a list of one, which is the
-    --    property that keeps this a killer-cam rather than a way into the lobby.
-    ok(S.step(t, 4, 1).src == 4 and S.step(t, 4, -1).src == 4,
-        'and cycling from a one-target list does not reach the other players')
+    -- 2. AND CYCLING REACHES THE OTHERS, which is the whole of the correction:
+    --    the earlier list of one could not be walked off.
+    ok(S.step(t, 4, 1).src == 2 and S.step(t, 4, -1).src == 3,
+        'and the arrows walk off the killer onto the rest of the lobby')
 
-    -- 3. NO KILLER IS THE OLD ANSWER, UNCHANGED. The storm, a fall, a car with
-    --    nobody in it (#194) -- all of them arrive here as nil, and nil must not
-    --    quietly widen anything.
+    -- 3. NO KILLER IS NOT NO TARGETS ANY MORE. The storm, a fall, a car with
+    --    nobody in it (#194) all arrive as nil -- and a solo who died to the
+    --    storm still gets the lobby, just in plain src order.
     t, policy = S.playerTargets(solos(nil, false))
-    ok(#t == 0 and policy == 'none',
-        'a solo killed by the storm has no targets, exactly as before', policy)
+    ok(#t == 3 and policy == 'free',
+        'a solo killed by the storm still watches somebody', policy)
+    ok(t[1].src == 2, 'in src order, with nobody promoted', names(t))
 
-    -- 4. A KILLER WHO HAS SINCE DIED IS NOT A TARGET. Same `living` test every
+    -- 4. A KILLER WHO HAS SINCE DIED IS NOT PROMOTED. Same `living` test every
     --    other candidate passes -- the killer is the front of a set, not an
-    --    exception to what may be in one.
+    --    exception to what may be in one. The set itself is unaffected.
     local view = solos(4, false)
     view.players[4].living = false
     t, policy = S.playerTargets(view)
-    ok(#t == 0 and policy == 'none', 'a dead killer is nobody to watch', policy)
+    ok(#t == 2 and t[1].src == 2,
+        'a dead killer is not promoted, and the living rest remain', names(t))
 
     -- 5. A KILLER WHO HAS LEFT. The server resolves a licence to a live id and
     --    gets nothing, so the solver is handed an id that is on no row.
     t, policy = S.playerTargets(solos(99, false))
-    ok(#t == 0 and policy == 'none', 'a killer who is gone is not invented', policy)
+    ok(#t == 3 and t[1].src == 2,
+        'a killer who is gone is not invented, and promotes nobody', names(t))
 
-    -- 6. WITH FREE SPECTATE ON IT IS ORDER ONLY. The set is still every living
-    --    player -- nothing is removed to make room -- and the killer is at 1.
+    -- 6. WITH FREE SPECTATE ON, NOTHING ABOUT A SOLO CHANGES. It used to be the
+    --    branch that widened them; now they were never narrowed, so the flag is
+    --    inert here and this asserts that rather than assuming it.
     t, policy = S.playerTargets(solos(4, true))
     ok(#t == 3, 'free spectate still offers everyone', names(t))
     ok(t[1].src == 4, 'with the killer first', names(t))
@@ -7322,8 +7338,8 @@ do
             { src = 0, living = true,  name = 'Zero' },
             { src = 1, living = false, name = 'Me' },
         } })
-    ok(#t == 1 and t[1].src == 0 and policy == 'killer',
-        'a killer holding server id 0 is still the killer', policy)
+    ok(#t == 1 and t[1].src == 0 and policy == 'free',
+        'a killer holding server id 0 is still promoted to the front', policy)
 
     -- 14. AND AN ABSENT killerSrc IS NOT A KILLER AT ALL -- the view every
     --     existing caller built before this field existed.
