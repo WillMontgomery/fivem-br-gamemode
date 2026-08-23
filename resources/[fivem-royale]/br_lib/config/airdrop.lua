@@ -150,12 +150,36 @@ BR.Config.Airdrop = {
     -- the box land pointing the way the plane was going -- and is over the drop
     -- point exactly at tRelease.
     --
-    -- THE SAME MODEL AS THE BATTLE BUS, deliberately. It is already proven to
-    -- load and fly on this build, its engine simulation is already understood
-    -- (a seated ped is what keeps the props turning -- see bus.lua), and a
-    -- supply drop arriving on the same airframe the match arrived on is a
-    -- coherent world rather than a second aircraft to source.
-    planeModel = 'titan',
+    -- ═══ A CARGOBOB, BECAUSE THE OWNER WANTED TO HEAR A HELICOPTER ═══
+    --
+    -- "instead of a faked prop that moves (our bus/plane) we should spawn the
+    -- cargobob in motion, give it a pilot, then have the pilot fly it across the
+    -- finish line. This will give players the actual sound of a helicopter
+    -- running rather than a prop that slides across the sky" -- 2026-08-22.
+    --
+    -- THE MODEL IS THE HALF OF THAT REQUEST WORTH TAKING, AND IT IS THIS LINE.
+    -- The Titan is a fixed-wing turboprop: there is no helicopter sound in it at
+    -- any audio setting, under any flight method, so the sound they asked for
+    -- was never reachable by changing how it flies. A Cargobob is also ~34%
+    -- slower (99.5 vs 133.3 mph), which serves a drop meant to be watched.
+    --
+    -- THE OTHER HALF -- AN AI PILOT FLYING IT -- WAS DECLINED, and the reasoning
+    -- is worth keeping because it will be proposed again. TaskHeliMission is
+    -- widely reported not to arrive reliably, and both open-source airdrop
+    -- resources re-issue it in a loop rather than trust it, which is itself the
+    -- evidence. It would trade the one property this whole design rests on --
+    -- every client solving the same descent from the record and the synced
+    -- clock -- for an audio improvement nobody could confirm exists.
+    --
+    -- AND THE PREMISE IS STILL UNVERIFIED. Two research sweeps found NO report
+    -- that teleporting a vehicle degrades its engine audio. If it does sound
+    -- wrong, the documented cause is audio LOD -- SET_AUDIO_VEHICLE_PRIORITY's
+    -- own text says the game drops a vehicle by distance, view frustum "and what
+    -- it is currently doing" -- and a cheap experiment settles it: park it with
+    -- the engine on, not teleporting, and stand under it. Sounding right
+    -- stationary means the complaint is kinematic (no banking, no doppler) and
+    -- no audio native fixes that.
+    planeModel = 'cargobob',
     planePilot = 's_m_m_pilot_01',
     -- Metres a second. 90 is about 175 knots -- a cargo run rather than a strike
     -- package, and slow enough to be readable from the ground at 300m.
