@@ -199,6 +199,145 @@ function BR.Incident.stats()
 end
 
 -- ---------------------------------------------------------------------------
+-- How often one case is allowed to repeat itself
+-- ---------------------------------------------------------------------------
+--
+-- THE OWNER, 2026-08-22, WITH A SCREENSHOT OF ONE CASE'S TIMELINE: "it seems to
+-- be filing a corroboration every few seconds". Nine notes in nine seconds,
+-- every one of them differing from the row above it in a single digit:
+--
+--   Note -- 3 refusals this match - last: weapon is not one this gamemode issues
+--   Note -- 4 refusals this match - last: weapon is not one this gamemode issues
+--   ...                                                            ... up to 11.
+--
+-- WHAT WAS ACTUALLY FIRING ONCE A SECOND, BECAUSE IT IS NOT WHAT IT LOOKS LIKE.
+-- The ped is stripped TEN times a second -- client/inventory.lua's TICK band is
+-- 10Hz and a re-granting trainer re-arms on every one of them -- and that is
+-- already collapsed twice before it reaches this file: the client reports at
+-- most one a second (STRIP_REPORT_MS), and server/strip.lua counts at most one
+-- per 900ms (MIN_INTERVAL_MS). So by the time an offence gets here it really is
+-- arriving about once a second, and each one produced exactly one note.
+--
+-- WHICH MEANS NOTHING ON THIS PATH RATE-LIMITED ANYTHING. The three throttles
+-- this subsystem has all live in the detectors and all bound the same thing:
+-- how fast an offence may be COUNTED. Not one of them bounds how often the
+-- RECORD REPEATS what it already said, and this file -- the only one that can
+-- tell a corroboration from a filing -- had no opinion on it at all.
+--
+-- SO THE FIX IS HERE AND NOT IN THE DETECTORS OR IN THE CONSOLE. Here it covers
+-- all three producers at once, it is expressible ("throttle a corroboration,
+-- never a filing") only where the two are told apart, and it bounds the wire as
+-- well as the page: today one offender can put a message a second on a 512-deep
+-- drop-oldest outbox that the rest of the server shares, and an UpdateItem a
+-- second on the console's table. Collapsing the rows console-side would have
+-- fixed the reading and left both of those exactly as they are.
+--
+-- ═══ WHY DROPPING A NOTE LOSES NOTHING, WHICH IS THE WHOLE ARGUMENT ═══
+--
+--   `count` AND `seq` ARE RUNNING TOTALS, NOT INCREMENTS. Every producer sends
+--   the cumulative number, so one note says everything the notes it replaced
+--   said: "11 refusals this match" is the same sentence whether it arrives once
+--   or nine times. A suppressed note costs nothing. Suppressing the LAST one
+--   would cost the count outright, which is what `flushHeld` exists to stop.
+--
+--   THE PER-OFFENCE TIMING IS ALREADY WRITTEN DOWN ELSEWHERE. Every counted
+--   strip is a `weapon_strip` row on the case's own match timeline, appended by
+--   the close (MAX_TIMELINE_STRIPS, sixty, oldest dropped). "When did each one
+--   happen" survives this in full. What does not survive is a second, lossier
+--   copy of it, interleaved with the first.
+--
+-- A CHANGE OF FINDING IS NEVER HELD, and that is the half that keeps this from
+-- being a mute button. A different `reason` or a different `severity` is not a
+-- repeat -- it is a refused vehicle after a run of strips, or a worse tier than
+-- the case was opened at -- and it is the row an admin is scrolling for. Only a
+-- note that would read identically to the last one waits.
+--
+-- THIS FILE STILL HAS NO TIMER, which its header promises. A held note goes out
+-- on the next corroboration that crosses the window, or on the match teardown
+-- below; both were already arriving.
+local CORROBORATE_MIN_INTERVAL_MS = 30000
+
+--- What each case last said, and any newer version of it waiting behind.
+---
+--- [matchKey] = { [incidentId] = { at, reason, severity, held } }
+---
+--- KEYED BY MATCH FOR THE REASON `filed` IS. `priorFor` is match-scoped, so every
+--- incidentId that reaches here was filed in the match it is keyed under, and one
+--- teardown can drop both maps. The `nomatch` bucket is not dropped, exactly as
+--- `filed`'s is not: it holds one small record per case filed outside a match --
+--- a `brrefuse` from the console -- and `onResourceStart` is what empties it.
+local lastSaid = {}
+
+--- Send a corroboration, unless it would only repeat the one before it.
+---
+--- THE ONE CALLER SHAPE: every corroboration this file raises goes through here,
+--- so the rule cannot be true of two producers and forgotten by the third. The
+--- corroborations server/players.lua raises deliberately do NOT come through
+--- this -- a person pressing a key is not a loop, it is already capped at
+--- BR.Config.Report.maxPerMatch, and folding two humans' reports into one row
+--- would be destroying evidence rather than tidying it.
+---
+--- @param ev table  the `br:ringmaster:corroborate` payload
+local function corroborate(ev)
+    local k = key(ev.matchId)
+    local m = lastSaid[k]
+    if not m then
+        m = {}
+        lastSaid[k] = m
+    end
+
+    local rec = m[ev.incidentId]
+    local now = GetGameTimer()
+
+    -- SAY IT NOW when there is nothing to repeat, when the finding changed, or
+    -- when the window has passed.
+    --
+    -- `rec == nil` IS THE FIRST CORROBORATION ON THIS CASE AND MUST NEVER WAIT.
+    -- It is the one that tells an admin reading the queue that the case is not
+    -- historical -- "it is still happening, and nobody has acted" -- and it is
+    -- also the one a short burst may produce the only copy of.
+    if rec == nil
+        or rec.reason ~= ev.reason
+        or rec.severity ~= ev.severity
+        or now - rec.at >= CORROBORATE_MIN_INTERVAL_MS
+    then
+        m[ev.incidentId] = { at = now, reason = ev.reason, severity = ev.severity }
+        TriggerEvent('br:ringmaster:corroborate', ev)
+        return
+    end
+
+    -- OTHERWISE THE NEWEST WAITS, AND IT REPLACES WHATEVER WAS WAITING. Keeping
+    -- the older one would be keeping the smaller count, which is the one thing
+    -- this must not do.
+    rec.held = ev
+end
+
+--- Send whatever a match's cases were still holding.
+---
+--- WHY THIS IS NOT OPTIONAL. A throttle that only fires on arrival drops the
+--- tail: an offender who strips twenty times in twenty seconds and then stops
+--- has nineteen of those folded into a note that is waiting for a twenty-first
+--- which never comes, and the record would close saying `3`. This is the line
+--- that makes "the count is never lost" true rather than nearly true.
+---
+--- THE TEARDOWN IS THE RIGHT MOMENT AND NOT MERELY A CONVENIENT ONE. It is the
+--- last instant anything will ask, it is already an event so no timer is added,
+--- and the note it releases carries the final total for the match -- which is
+--- the number an admin opening the case tomorrow is actually looking for.
+--- @param matchId any
+local function flushHeld(matchId)
+    local m = lastSaid[key(matchId)]
+    if not m then return end
+    for _, rec in pairs(m) do
+        local held = rec.held
+        if held then
+            rec.held = nil
+            TriggerEvent('br:ringmaster:corroborate', held)
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- The anticheat path
 -- ---------------------------------------------------------------------------
 
@@ -235,9 +374,15 @@ AddEventHandler('br:ringmaster:refusal', function(ev)
     -- corroboration is by definition redundant. Losing one costs a number; losing
     -- the case loses the record. `seq` travels with it so the console can tell 1,
     -- 2, 4 with a gap from a genuinely quiet match.
+    --
+    -- AND WHY IT GOES THROUGH `corroborate` RATHER THAN STRAIGHT ONTO THE EVENT.
+    -- This producer self-attenuates -- the doublings are seconds apart and then
+    -- minutes -- so it is the one least likely to be held, and it is routed
+    -- through the same door anyway so that "a corroboration is throttled" is a
+    -- property of this file rather than of two of its three handlers.
     local prior = BR.Incident.priorFor(ev.matchId, ev.license)
     if #prior > 0 then
-        TriggerEvent('br:ringmaster:corroborate', {
+        corroborate({
             incidentId = prior[#prior],
             matchId    = ev.matchId,
             license    = ev.license,
@@ -326,7 +471,15 @@ AddEventHandler('br:core:stripped', function(ev)
         -- is already durable, so "it is still happening" may ride the lossy
         -- event channel, and `seq` travels so the console can tell a dropped
         -- corroboration from a quiet match.
-        TriggerEvent('br:ringmaster:corroborate', {
+        --
+        -- THIS IS THE PRODUCER THE OWNER'S 2026-08-22 SCREENSHOT WAS OF, and the
+        -- one the throttle above was written for: `reason` and `severity` are
+        -- both constants here, so a run of strips is a run of notes that differ
+        -- in nothing but a counter, arriving at whatever rate MIN_INTERVAL_MS
+        -- lets a strip be counted at. Every one of them still reaches the case
+        -- -- `count` is cumulative and the timeline gets each strip in full --
+        -- but they no longer each get a row of their own.
+        corroborate({
             incidentId = prior[#prior],
             matchId    = ev.matchId,
             license    = ev.license,
@@ -392,7 +545,14 @@ AddEventHandler('br:core:vehicle', function(ev)
         -- durable, so "it is still happening" may ride the lossy event channel,
         -- and `seq` travels so the console can tell a dropped corroboration from
         -- a quiet match.
-        TriggerEvent('br:ringmaster:corroborate', {
+        --
+        -- AND THE THROTTLE ABOVE BARELY TOUCHES THIS ONE, which is a property of
+        -- `ev.why` rather than a special case written for it: the two halves of
+        -- the owner's vehicle rule are different strings, so a jet after a tank
+        -- is a change of finding and goes out at once. Only a player repeatedly
+        -- climbing into the SAME kind of refused vehicle folds -- which is the
+        -- one case where the rows really would have been identical.
+        corroborate({
             incidentId = prior[#prior],
             matchId    = ev.matchId,
             license    = ev.license,
@@ -730,6 +890,12 @@ end)
 -- no prompt. See OPEN_MAX for what bounds it instead.
 AddEventHandler('br:match:destroyed', function(ev)
     if not ev or ev.matchId == nil then return end
+    -- BEFORE THE MAP GOES, AND THE ORDER IS THE WHOLE POINT. `flushHeld` reads
+    -- the record this next line deletes, and the note it releases is the one
+    -- carrying the match's final offence count -- see the throttle's header for
+    -- why that note is the only one whose loss would cost anything.
+    flushHeld(ev.matchId)
+    lastSaid[key(ev.matchId)] = nil
     filed[ev.matchId] = nil
 end)
 
@@ -737,6 +903,9 @@ AddEventHandler('onResourceStart', function(name)
     if name == GetCurrentResourceName() then
         filed = {}
         openBy = {}
+        -- INCLUDING THE `nomatch` BUCKET, which nothing else empties. See
+        -- `lastSaid`: it is the only bucket a teardown never reaches.
+        lastSaid = {}
     end
 end)
 

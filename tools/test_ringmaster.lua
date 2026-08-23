@@ -2865,34 +2865,53 @@ do
 
     ok(#W.S.incidents == 1, 'five more strips file no second case', #W.S.incidents)
 
-    -- ONE CORROBORATION EACH, WHICH IS THE HALF THE OWNER CHANGED. Under the old
-    -- doubling rule these five produced two (at counts 4 and 8 -- and only
-    -- eventually); the instruction is that "each subsequent should show as
-    -- corroboration", so five offences are five.
-    ok(#W.S.corroborations == 5,
-        'and every single one of them corroborates -- five, not two',
+    -- ═══ ONE ROW, NOT FIVE (the owner, 2026-08-22) ═══
+    --
+    -- This case used to assert five, one per offence, and the owner read the
+    -- result: "it seems to be filing a corroboration every few seconds", with a
+    -- screenshot of nine notes in nine seconds differing only in a counter. Five
+    -- identical rows are the same bug in miniature.
+    --
+    -- WHAT DID NOT CHANGE IS THAT ALL FIVE OFFENCES STILL REACH THE CASE. The
+    -- assertions below are what makes that a claim rather than a hope: the note
+    -- that goes out carries a CUMULATIVE count, and the four that folded into it
+    -- are on the timeline the close appends, individually and with their own
+    -- timestamps. The rows went; the evidence did not.
+    ok(#W.S.corroborations == 1,
+        'and they say so ONCE rather than once each -- one row, not five',
         #W.S.corroborations)
+
+    -- THE FIRST ONE IS NEVER HELD. It is what tells an admin reading the queue
+    -- that the case is live rather than historical.
+    local first = W.S.corroborations[1]
+    ok(first and first.seq == 2 and first.count == 3,
+        'the first repeat goes out at once, at announcement 2 and offence 3',
+        first and (tostring(first.seq) .. '/' .. tostring(first.count)))
+
+    -- ═══ AND THE COUNT IS NOT LOST WITH THE ROWS ═══
+    --
+    -- The four that folded were superseded, not discarded: `count` is a running
+    -- total, so the note released at teardown says everything they would have.
+    -- A throttle without this line would close this case reading `3` when seven
+    -- offences had happened, which is a false statement about a person.
+    W.at(20000)
+    W.endMatch(7)
+
+    ok(#W.S.corroborations == 2,
+        'the match ending releases the one that was still waiting',
+        #W.S.corroborations)
+    local last = W.S.corroborations[2]
+    ok(last and last.count == 7,
+        'and it carries the TRUE final count, not the one the first row had',
+        last and tostring(last.count))
+    ok(last and last.seq == 6,
+        'with the announcement number that produced it', last and tostring(last.seq))
+
     local allSame = true
     for _, c in ipairs(W.S.corroborations) do
         if c.incidentId ~= 'inc-1' then allSame = false end
     end
     ok(allSame, 'every one against the case the write came back with')
-
-    -- THE TWO WIRE COUNTERS, PINNED TOGETHER. `count` is offences and now climbs
-    -- by one; `seq` is announcements and starts at 2 for the first
-    -- corroboration, because announcement 1 opened the case. A gap in either now
-    -- means a LOST message rather than quiet offences in between, and that is
-    -- the meaning change this cadence carries onto the wire.
-    local seqs, counts = {}, {}
-    for i, c in ipairs(W.S.corroborations) do
-        seqs[i] = tostring(c.seq)
-        counts[i] = tostring(c.count)
-    end
-    ok(table.concat(seqs, ',') == '2,3,4,5,6',
-        'seq counts the announcements, from 2', table.concat(seqs, ','))
-    ok(table.concat(counts, ',') == '3,4,5,6,7',
-        'and count counts the offences, one at a time',
-        table.concat(counts, ','))
 
     -- ATTRIBUTION IS THE EXISTING ONE AND NOT A SECOND SPELLING. The game sends
     -- a fact with no actor on it; br_ringmaster forwards a fixed field set; and
@@ -2910,9 +2929,13 @@ do
     -- ...AND EVERY ONE OF THEM REACHES THE TIMELINE, which is the half the
     -- corroboration channel cannot do: corroborations land in the console's own
     -- `events` list, and the owner asked for the incident's timeline.
-    W.at(20000)
-    W.endMatch(7)
-
+    --
+    -- IT IS ALSO WHAT MAKES THE THROTTLE ABOVE SAFE, and this is the assertion
+    -- that says so rather than the comment. The thing a folded note genuinely
+    -- drops is WHEN each offence happened -- and here are all five of those,
+    -- individually, with their own timestamps, on the record the admin opens.
+    -- Were this list ever to stop being complete, the throttle would start
+    -- costing something and this case would fail first.
     local c = W.lastClose()
     ok(c ~= nil, 'the match ending closes that one case')
     ok(c and c.incidentId == 'inc-1', 'the same one, not a new row')
@@ -2952,9 +2975,30 @@ do
     --
     -- THE HALF THAT DID NOT CHANGE is that the timeline still gets every one of
     -- them, which was always the distinction this case existed to draw.
+    --
+    -- ═══ AND THE LAYER THIS CASE IS ABOUT IS THE DETECTOR, NOT THE RECORD ═══
+    --
+    -- 2026-08-22 put a throttle on the CORROBORATION, in server/incident.lua, so
+    -- fourteen announcements no longer make fourteen rows. That is a different
+    -- layer and it did not restore the doubling rule -- so this case now asserts
+    -- both halves apart, because a reader who saw only the row count would
+    -- reasonably conclude the thing this case exists to prevent had happened.
+    --
+    -- WHAT SEPARATES THE THROTTLE FROM THE RULE IT MUST NOT BECOME. Under the
+    -- doubling rule a cheater who stopped at fifteen left a record saying EIGHT:
+    -- the next announcement was the one that would have corrected it and it
+    -- never came. The throttle cannot do that -- the tail is released at
+    -- teardown -- so the final number is always the true one, however few rows
+    -- carried it. That property is asserted at the bottom.
     local W = newTimelineWorld()
     W.startMatch(7, 1000)
     W.join(1, 7, 'license:cheat', 'Cheater')
+
+    -- EVERY ANNOUNCEMENT THE DETECTOR MAKES, counted at the door it makes them
+    -- through. This is the owner's 2026-08-20 rule and it is untouched;
+    -- registering the listener before the strips is what makes it observable.
+    local announced = 0
+    W.env.AddEventHandler('br:core:stripped', function() announced = announced + 1 end)
 
     W.at(4000); W.strip(1, CONJURED)   -- 1: recorded, silent
     W.at(5000); W.strip(1, CONJURED)   -- 2: opens the case
@@ -2966,23 +3010,248 @@ do
     end
 
     ok(#W.S.incidents == 1, 'sixteen strips are still ONE case', #W.S.incidents)
-    ok(#W.S.corroborations == 14,
-        'sixteen strips produce FOURTEEN corroborations, not four',
-        #W.S.corroborations)
 
-    -- NO GAPS, which is what makes a gap mean something on the wire now.
-    local gapless = true
-    for i, c in ipairs(W.S.corroborations) do
-        if c.seq ~= i + 1 or c.count ~= i + 2 then gapless = false end
-    end
-    ok(gapless, 'numbered 2..15 by announcement and 3..16 by offence, with no gap',
-        W.S.corroborations[14] and tostring(W.S.corroborations[14].count))
+    -- THE ASSERTION THIS CASE HAS ALWAYS BEEN FOR, now read off the detector.
+    -- Fifteen: one per offence from the second, which is "each subsequent should
+    -- show as corroboration from system" exactly as the owner wrote it. Four
+    -- would mean the doubling rule was back.
+    ok(announced == 15,
+        'the detector still announces every offence from the second -- fifteen, not four',
+        announced)
+
+    -- AND THE RECORD DOES NOT PRINT ONE ROW PER ANNOUNCEMENT. Fourteen rows a
+    -- second apart is what the owner photographed on 2026-08-22.
+    ok(#W.S.corroborations == 1,
+        'while the record carries one row rather than fourteen',
+        #W.S.corroborations)
 
     W.at(30000)
     W.endMatch(7)
 
+    -- ═══ THE PROPERTY THE DOUBLING RULE DID NOT HAVE ═══
+    local last = W.S.corroborations[#W.S.corroborations]
+    ok(last and last.count == 16,
+        'and the last thing it says is 16 -- the true total, not a stale doubling',
+        last and tostring(last.count))
+
     local strips = ofKind(W.lastClose() and W.lastClose().matchTimeline, 'weapon_strip')
     ok(#strips == 14, 'while all fourteen later strips are on the timeline', #strips)
+end
+
+describe('corroboration.nine-seconds-of-cheating-is-not-nine-rows')
+do
+    -- ═══ THE REPORT, REPRODUCED (the owner, 2026-08-22) ═══
+    --
+    -- "For the record it seems to be filing a corroboration every few seconds
+    -- (see attached)". The screenshot was one `Weapon strip` and then a Note
+    -- every single second for nine seconds:
+    --
+    --   Note -- 3 refusals this match - last: weapon is not one this gamemode issues
+    --   Note -- 4 refusals this match - ...                            ... up to 11.
+    --
+    -- THE CADENCE IS NOT A GUESS. Nine consecutive counts, one a second, is what
+    -- server/strip.lua's MIN_INTERVAL_MS (900ms) and client/inventory.lua's
+    -- STRIP_REPORT_MS (1000ms) allow through, and it is the shape no other
+    -- producer has: server/damage.lua announces at doublings, so its counts jump
+    -- 2, 4, 8. This drives the same eleven strips the owner drew.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)   -- 1: silent
+    W.at(5000); W.strip(1, CONJURED)   -- 2: opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    -- Nine more, one a second: offences 3 through 11.
+    for i = 1, 9 do
+        W.at(5000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    ok(#W.S.corroborations == 1,
+        'nine seconds of it is ONE row, not nine', #W.S.corroborations)
+
+    -- ═══ AND ROW 11 IS STILL AVAILABLE TO BE READ ═══
+    --
+    -- "11 refusals this match" is real information; the nine rows carrying it
+    -- were not. This is the half a plain drop-throttle would have lost.
+    W.at(60000)
+    W.endMatch(7)
+
+    local last = W.S.corroborations[#W.S.corroborations]
+    ok(last and last.count == 11,
+        'and the record still says eleven', last and tostring(last.count))
+end
+
+describe('corroboration.a-changed-finding-never-waits')
+do
+    -- THE THROTTLE IS NOT A MUTE BUTTON, and this is the line between the two.
+    -- Rows 3 through 11 of the owner's screenshot were suppressible because they
+    -- said what row 2 said. A row that says something NEW -- a different reason,
+    -- a worse tier -- is the row an admin is scrolling for, and it goes out on
+    -- arrival however recently the last one did.
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)   -- opens a STRIP case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    -- Two strips one second apart: the second says nothing new and waits.
+    W.at(6000); W.strip(1, CONJURED)
+    W.at(7000); W.strip(1, CONJURED)
+    ok(#W.S.corroborations == 1, 'a repeat waits', #W.S.corroborations)
+
+    -- A REFUSED VEHICLE IN THE SAME SECOND. Same case -- `priorFor` crosses
+    -- kinds -- but `reason` is now config/vehicles.lua's own prose rather than
+    -- the shot taxonomy's sentence, so it is a different finding.
+    W.at(7500); W.vehicle(1, 7, 'license:cheat', 'Cheater', 2, 1, V.FLIES)
+    ok(#W.S.corroborations == 2,
+        'a different reason does not, even half a second later',
+        #W.S.corroborations)
+    ok(W.S.corroborations[2].reason == V.FLIES,
+        'and it is the vehicle that got through', W.S.corroborations[2].reason)
+
+    -- AND THE SECOND KIND FOLDS ON ITS OWN TERMS. The same vehicle rule again is
+    -- a repeat like any other.
+    W.at(8000); W.vehicle(1, 7, 'license:cheat', 'Cheater', 3, 2, V.FLIES)
+    ok(#W.S.corroborations == 2, 'while a repeat of THAT waits too',
+        #W.S.corroborations)
+end
+
+describe('corroboration.a-worse-tier-never-waits')
+do
+    -- SEVERITY IS THE OTHER HALF OF "SOMETHING NEW", and it is asserted apart
+    -- from `reason` because they are two fields and a throttle that checked only
+    -- one would read, in every other case in this file, exactly like a throttle
+    -- that checked both. A case producing `high` where it had been producing
+    -- `normal` has changed in the one field an admin triages on.
+    --
+    -- DRIVEN THROUGH THE REFUSAL PATH, which is the only producer whose severity
+    -- varies: server/damage.lua carries the tier of the refusal that tripped and
+    -- BR.ShotTier grades them differently. The strip and vehicle handlers both
+    -- read one constant, so neither could ever exercise this.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    local function refusal(at, count, seq, severity)
+        W.at(at)
+        W.env.TriggerEvent('br:ringmaster:refusal', {
+            matchId = 7, license = 'license:cheat', name = 'Cheater',
+            count = count, windowMs = 4000,
+            reason  = W.BR.ShotRefusal.NO_WEAPON,
+            reasons = { [W.BR.ShotRefusal.NO_WEAPON] = count },
+            severity = severity, seq = seq, at = at,
+        })
+    end
+
+    refusal(5000, 16, 2, 'normal')
+    refusal(6000, 32, 3, 'normal')
+    ok(#W.S.corroborations == 1, 'the same tier twice is one row',
+        #W.S.corroborations)
+
+    refusal(7000, 64, 4, 'high')
+    ok(#W.S.corroborations == 2,
+        'and a worse tier a second later is a row of its own',
+        #W.S.corroborations)
+    ok(W.S.corroborations[2] and W.S.corroborations[2].severity == 'high',
+        'the one that got through is the worse one',
+        W.S.corroborations[2] and W.S.corroborations[2].severity)
+end
+
+describe('corroboration.the-window-is-inclusive')
+do
+    -- EXACTLY ONE WINDOW LATER COUNTS AS PAST IT, asserted rather than left to
+    -- whichever comparison somebody types next. `>` where this file has `>=` is
+    -- a one-character change that every other case here would sail through,
+    -- because none of them lands on the boundary to the millisecond.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)   -- opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+    W.at(6000); W.strip(1, CONJURED)   -- the first repeat, sent at once
+
+    -- 6000 + CORROBORATE_MIN_INTERVAL_MS, to the millisecond.
+    W.at(36000); W.strip(1, CONJURED)
+    ok(#W.S.corroborations == 2,
+        'a repeat exactly one window later goes out', #W.S.corroborations)
+end
+
+describe('corroboration.the-window-reopens')
+do
+    -- A CASE STILL SAYS "IT IS STILL HAPPENING", just not every second. Once the
+    -- window has passed the next repeat goes out on its own -- no teardown, no
+    -- change of finding -- which is what keeps a long match's record breathing
+    -- rather than silent from the first row to the last.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)   -- opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    W.at(6000);  W.strip(1, CONJURED)  -- the first repeat, sent at once
+    W.at(35000); W.strip(1, CONJURED)  -- inside the window still: held
+    ok(#W.S.corroborations == 1, 'inside the window it holds', #W.S.corroborations)
+
+    W.at(37000); W.strip(1, CONJURED)  -- past 6000 + 30s: the window reopened
+    ok(#W.S.corroborations == 2,
+        'and past it the next one goes out with no teardown needed',
+        #W.S.corroborations)
+    -- FIVE, NOT THREE AND NOT FOUR. Three is what the first row said; four is
+    -- the offence that was waiting when this one arrived and superseded it. The
+    -- number that goes out is always the newest, which is what makes a held note
+    -- costless.
+    ok(W.S.corroborations[2].count == 5,
+        'carrying the count as it stands at that moment, not as it stood at the first row',
+        tostring(W.S.corroborations[2].count))
+end
+
+describe('corroboration.a-quiet-case-releases-nothing')
+do
+    -- NOTHING HELD MEANS NOTHING SENT. The teardown flush must not invent a row
+    -- for a case whose repeats all went out already -- a duplicate note is a
+    -- second claim about a person, and this is the cheapest place to catch one.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)   -- opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+    W.at(6000); W.strip(1, CONJURED)   -- one repeat, sent at once, nothing behind it
+
+    ok(#W.S.corroborations == 1, 'one repeat, one row', #W.S.corroborations)
+
+    W.at(40000)
+    W.endMatch(7)
+    ok(#W.S.corroborations == 1,
+        'and the teardown adds nothing, because nothing was waiting',
+        #W.S.corroborations)
+
+    -- AND THE MATCH AFTER IT STARTS CLEAN. The teardown drops the per-match
+    -- record, so the next round's first repeat is a FIRST repeat -- it must not
+    -- inherit a window from a match that is over.
+    W.startMatch(8, 100000)
+    W.join(1, 8, 'license:cheat', 'Cheater')
+    W.at(101000); W.strip(1, CONJURED)
+    W.at(102000); W.strip(1, CONJURED)   -- opens a case in the NEW match
+    W.ack(8, 'license:cheat', 'inc-2')
+    W.at(103000); W.strip(1, CONJURED)
+
+    local c = W.S.corroborations[#W.S.corroborations]
+    ok(#W.S.corroborations == 2 and c and c.incidentId == 'inc-2',
+        'and a new match corroborates at once rather than inheriting a window',
+        #W.S.corroborations)
 end
 
 describe('strip.nobody-is-exempt')
