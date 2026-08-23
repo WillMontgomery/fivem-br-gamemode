@@ -333,6 +333,28 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     if killer and killerSrc ~= src then
         killer.kills = (killer.kills or 0) + 1
         BR.Broadcast.delta({ op = 'update', src = killerSrc, e = { kills = killer.kills } })
+
+        -- WHO TO POINT THE VICTIM'S CAMERA AT, IN SOLOS. "If in solos, the
+        -- default spectate target should be the killer (if there was one)" --
+        -- the owner, 2026-08-22. server/spectate.lua reads this; nothing else
+        -- does, and nothing on the client is ever told it.
+        --
+        -- A LICENCE, NOT `killerSrc`. FiveM recycles server ids within the
+        -- minute and this outlives the moment it is written by design -- the
+        -- victim watches this person for the rest of their round. Storing the id
+        -- would eventually point a dead player's camera at whoever inherited it,
+        -- which is the exact bug server/spectate.lua's own feed re-checks a
+        -- licence every 250ms to avoid. It is resolved back to a live id at the
+        -- moment of use and never before.
+        --
+        -- WRITTEN INSIDE THE `killer and killerSrc ~= src` GUARD, so it inherits
+        -- both of that guard's facts for free: there is a real roster entry, and
+        -- nobody is ever recorded as their own killer. `attributedKiller` has
+        -- already refused a stale hit and a killer who has left; a death with no
+        -- killer reaches this line with `killerSrc` nil and simply does not run
+        -- it -- the storm, a fall, a car with nobody in it (#194) -- so "no
+        -- killer" stays nil here, the same representation the kill feed uses.
+        entry.killedByLicense = BR.Roster.licenseOf(killerSrc)
     end
 
     local feed = {

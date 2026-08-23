@@ -405,6 +405,11 @@ local OUR_SCREEN = {
 --     held death really does put the roster through DEAD (server/combat.lua
 --     says so in as many words), so the word genuinely goes up for a player who
 --     is about to be stood back up.
+--   * THE CAMERA MOVES ON TO SOMEBODY ELSE -- a spectate session opening. This
+--     is the one the owner found on 2026-08-22 ("The verdict text still shows
+--     while spectating for some reason") and it is NOT a match exit, which is
+--     why the first four did not cover it: starting to spectate is the opposite
+--     of leaving. See the handler below for why the word is nonetheless done.
 --   * br_core STARTING -- THE PAGE OUTLIVES THIS RESOURCE, and see the note on
 --     `force` below for why that one is not like the others.
 --
@@ -467,6 +472,88 @@ local function dismissMatchSurfaces(force)
             :format(table.concat(said, ', ')))
     end
 end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ...AND THE CAMERA MOVING ON IS AN EDGE TOO, THOUGH IT IS NOT AN EXIT
+--
+-- "The verdict text still shows while spectating for some reason." -- the owner,
+-- 2026-08-22.
+--
+-- ═══ WHAT THE WORD'S LIFETIME ACTUALLY IS ═══
+--
+-- Not "ten seconds". The config that carries the number says so in the owner's
+-- own sentence -- "the verdict text ONLY should be shown for ~10 seconds THEN
+-- the text can immediately disappear AS WE SNAP INTO SPECTATING" -- and
+-- BR.DeathVerdictUp below already names the pair: the word and the camera are
+-- ONE SEQUENCE, not two timers that happen to be the same length. The real
+-- lifetime is "from my death until the camera moves on, and no longer than
+-- deathVerdictMs". deathVerdictMs is the CEILING on that, not the definition.
+--
+-- ═══ WHY IT LEAKED, GIVEN client/spectate.lua ALREADY HOLDS THE CAMERA ═══
+--
+-- The hold is real and it is not enough. spectate.lua's SLOW `spectate.open`
+-- loop waits on BR.DeathVerdictUp() before it asks for a target -- so the
+-- AUTOMATIC snap cannot outrun the word. But that loop is not the only way a
+-- session starts: `ask(dir)` refuses ALIVE, DBNO, BUS, FREEFALL, GLIDE and
+-- WARMUP and admits DEAD, so the arrow keys work the instant a player dies --
+-- and the hint that tells them the arrows exist is on screen by then. A dead
+-- player who presses Left or Right inside the window gets a camera on somebody
+-- else with their own verdict still written across it. That is the report.
+--
+-- ═══ WHY THE EDGE IS HERE AND NOT KEYED ON PlayerState.SPECTATING ═══
+--
+-- Because nothing ever writes that state. `BR.PlayerState.SPECTATING` is read in
+-- six places across this client and the server and ASSIGNED IN NONE -- grep it.
+-- A rule hung on it would be a rule that never fires, tested green by a suite
+-- that sets the state by hand and dead in the game. The fact that actually
+-- changes is the session, and the session arrives on this wire.
+--
+-- ═══ ONLY THE OPENING EDGE, AND NOT FOR AN ADMIN ═══
+--
+-- SPECTATE_SET is the 4 Hz position feed as well as the start message, so `on`
+-- latches and only the transition into a session calls the registry. Dismissal
+-- is idempotent by contract, so this is tidiness rather than correctness today
+-- -- but the next surface to register need not be, and a rule that fired four
+-- times a second for the rest of a match would be the thing that found out.
+--
+-- AND AN ADMIN SPECTATOR IS NOT OUT OF A MATCH. The console's Spectate button
+-- requires only that the admin be in game; they may be alive, mid-fight, with
+-- every surface a live match raises legitimately on screen. `admin` is the
+-- server's own flag on this envelope and it is the discriminator client/
+-- spectate.lua already trusts for the same distinction one file over.
+--
+-- ═══ AND IT DOES NOT TOUCH THE VERDICT'S NORMAL APPEARANCE ═══
+--
+-- On the ordinary path the word is already down when this fires: the SLOW loop
+-- holds until BR.DeathVerdictUp() goes false, THEN asks, and the reply comes
+-- back after that. clearDeathVerdict returns on its first line when the word is
+-- down, so a player who dies and never presses anything sees exactly what they
+-- see today, for exactly as long. A player who never spectates at all never
+-- reaches this handler.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- Is a spectate session running, as far as this file is concerned?
+local spectatingNow = false
+
+RegisterNetEvent(BR.Net.SPECTATE_SET)
+AddEventHandler(BR.Net.SPECTATE_SET, function(d)
+    if type(d) ~= 'table' then return end
+
+    -- READ EXACTLY AS client/spectate.lua READS IT, deliberately. Two handlers
+    -- on one message that disagreed about what a stop is would be a latch that
+    -- says "spectating" while the camera is down, and the disagreement would be
+    -- invisible until the next death.
+    if d.stop then
+        spectatingNow = false
+        return
+    end
+
+    if d.admin == true then return end
+    if spectatingNow then return end
+    spectatingNow = true
+
+    dismissMatchSurfaces()
+end)
 
 local function noteMyState()
     local st = S.me.state
@@ -844,6 +931,23 @@ BR.MatchSurface('death verdict', clearDeathVerdict)
 function BR.NoteDeath()
     local ms = (BR.Config.Spectate and BR.Config.Spectate.deathVerdictMs) or 10000
     if ms <= 0 then return end
+
+    -- A NEW DEATH IS A NEW SEQUENCE, so the spectate latch is armed here rather
+    -- than only by a stop message.
+    --
+    -- The latch upstairs exists to keep the 4 Hz feed from calling the registry
+    -- four times a second, and the message that lowers it is the server's
+    -- `stop`. That message is reliable -- the feed re-resolves every tick and a
+    -- player with no match gets stopped -- but it is still a message, and the
+    -- failure if one is ever missed is silent and lasts the rest of the session:
+    -- the latch stays up, and the NEXT death's word has no edge to take it down.
+    -- Clearing it on the death costs one assignment and makes the latch describe
+    -- one death rather than one Lua state.
+    --
+    -- Nobody spectating is alive to reach this line, so there is no session
+    -- being forgotten here -- except an ADMIN's, and an admin's push never sets
+    -- the latch in the first place.
+    spectatingNow = false
 
     deathVerdictUntil = GetGameTimer() + ms
     pushDeath(true)

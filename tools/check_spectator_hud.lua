@@ -378,6 +378,79 @@ do
                  '`tscale` multiplies the PARENT font size and discards --fs; '
                  .. '`.ts` is the pairing that works')
         end
+
+        -- ═══ AND IT IS AT LEAST TWICE THE SIZE IT SHIPPED AT ═══
+        --
+        -- "The 'spectating X' text should be at least 2x larger." -- the owner,
+        -- 2026-08-22. It was 0.95rem, so the floor is 1.9.
+        --
+        -- A FLOOR AND NOT A LITERAL, because the request has no ceiling: a later
+        -- change that makes it bigger still is the owner getting more of what
+        -- they asked for and must not fail. What must fail is drifting back down
+        -- -- and nothing else in this project would notice, because the element
+        -- keeps rendering, keeps saying the right words and keeps scaling.
+        --
+        -- READ OUT OF THE SPECTATING SPAN SPECIFICALLY. There are three --fs
+        -- declarations in this component and the other two are the key cap and
+        -- its label; `tracking-[0.14em]` appears on exactly one element and it
+        -- is this one, so the segment after it is the right place to look.
+        local seg = code:match('tracking%-%[0%.14em%].-\n%s*>')
+        if not seg then
+            fail('the SPECTATING line could not be located to measure it',
+                 'this gate keys on tracking-[0.14em], which is unique to it')
+        else
+            local fs = tonumber(seg:match("%-%-fs' as string%]: '([%d%.]+)rem'"))
+            if not fs then
+                fail('the SPECTATING line declares no --fs in rem',
+                     'its size cannot be checked, and #159 needs the pairing')
+            elseif fs < 1.9 then
+                fail(('the SPECTATING line is %srem, under the 1.9rem floor')
+                        :format(tostring(fs)),
+                     'the owner asked for at least twice the old 0.95rem')
+            end
+
+            -- ═══ AND IT STILL CANNOT REACH THE INVENTORY BAR ═══
+            --
+            -- The cap's job is stated in the component and it is not a number:
+            -- "it truncates rather than pushing the row wide enough to reach the
+            -- inventory bar". Doubling the text is what made the old 46vw stop
+            -- doing that job -- measured in the dev harness at 1280x720, the
+            -- bar's left edge is 893.3px (69.79vw), and a CENTRED line clears it
+            -- only while half its width stays under 19.79vw. So the cap has to
+            -- be under ~39.6vw, and 38 is what is there.
+            --
+            -- PINNED AS A CEILING for the same reason the size is pinned as a
+            -- floor: narrower is always safe, wider is the collision.
+            local cap = tonumber(seg:match('max%-w%-%[(%d+)vw%]'))
+            if not cap then
+                fail('the SPECTATING line has no max-width cap',
+                     'a long name would run under the inventory bar and, at the '
+                     .. 'large text setting, out toward the edge of the screen')
+            elseif cap > 38 then
+                fail(('the SPECTATING line may grow to %dvw'):format(cap),
+                     'centred, anything over ~39.6vw reaches the inventory bar '
+                     .. 'at 1280x720 -- which is the collision the cap exists '
+                     .. 'to prevent, and it is reachable now that the text is 2x')
+            end
+
+            -- AND THE BUNDLE CARRIES THE SAME SIZE. The source assertions above
+            -- all pass against a tree whose bundle was never rebuilt, and the
+            -- bundle is what the game loads -- the existing SPECTATING check
+            -- below cannot see this, because the word was already in there.
+            local bf = io.open(ROOT .. 'br_ui/ui/assets/index.js', 'r')
+            if bf then
+                local js = bf:read('a')
+                bf:close()
+                if fs and not js:find(('"--fs":"%srem"'):format(tostring(fs)), 1, true) then
+                    fail('the built bundle does not carry the SPECTATING size',
+                         'the bundle is stale. Run: cd ui-src && npm run build')
+                end
+                if cap and not js:find(('max-w-[%dvw]'):format(cap), 1, true) then
+                    fail('the built bundle does not carry the SPECTATING width cap',
+                         'the bundle is stale. Run: cd ui-src && npm run build')
+                end
+            end
+        end
     end
 end
 

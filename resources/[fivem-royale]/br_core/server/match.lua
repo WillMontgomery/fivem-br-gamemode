@@ -800,6 +800,14 @@ function BR.Match.resetPlayer(src, e)
     e.downedBy, e.reviverSrc, e.reviveFrom = nil, nil, nil
     e.reviveBeat, e.reviveTickAt = nil, nil
 
+    -- WHO KILLED THEM LAST ROUND IS NOT WHO KILLED THEM THIS ROUND. Cleared
+    -- here with the rest of the per-match record, and it has to be cleared
+    -- somewhere: server/spectate.lua points a dead solo's camera at it, so a
+    -- value carried into the next match would open a session on a player this
+    -- one has never fought -- and a licence, unlike downedBy, does not go stale
+    -- on its own. `downedBy` two lines up is the same field for the same reason.
+    e.killedByLicense = nil
+
     -- A HELD DEATH BELONGS TO THE MATCH IT HAPPENED IN (#144). Normally
     -- the flag is cleared by the revive at PLAYING, but a match that
     -- never reaches PLAYING -- brforce ended, everyone else leaving --

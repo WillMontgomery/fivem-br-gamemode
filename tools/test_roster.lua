@@ -13956,6 +13956,203 @@ do
         tostring(now))
 end
 
+-- ---------------------------------------------------- the killer, in solos ---
+--
+-- "If in solos, the default spectate target should be the killer (if there was
+-- one)." -- the owner, 2026-08-22.
+--
+-- br_lib's spectate_solve tests pin the ORDERING RULE against a hand-built view.
+-- These pin the half that a pure function cannot see: that the server records a
+-- killer at all, records it as a LICENCE, hands the solver a live server id, and
+-- that a death with no killer travels all the way through as nil.
+
+--- A solo match: three players, no squadIds, everybody alive.
+local function soloMatch()
+    reset()
+    join(1, 'Me'); join(2, 'Killer'); join(3, 'Bystander')
+    local m = fakeMatch(BR.Mode.SOLO.key)
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+    end
+    sent = {}
+    return m
+end
+
+describe('spectate.killerInSolos')
+do
+    -- THE HEADLINE, ON THE SHIPPED CONFIGURATION. freeAfterSquadOut is false in
+    -- config/match.lua and reset() restores it, so this is the world the owner
+    -- actually plays -- the one in which a dead solo used to have no targets at
+    -- all and the request would otherwise be inert.
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'a dead solo opens on the player who killed them',
+        tostring(watching(1)))
+
+    -- AND ON NOBODY ELSE. A list of one is what keeps this a killer-cam rather
+    -- than the free spectate #192 refuses; the bystander must be unreachable
+    -- with the arrows in both directions.
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) == 2, 'and next does not reach the other survivor',
+        tostring(watching(1)))
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = -1 })
+    ok(watching(1) == 2, 'nor does previous', tostring(watching(1)))
+
+    -- NO KILLER IS THE OLD ANSWER, AND IT IS THE COMMON ONE. The storm, a fall,
+    -- a car with nobody in it (#194) all arrive at eliminate() with nil, and nil
+    -- must not open anything.
+    soloMatch()
+    BR.Combat.eliminate(1, 'storm', nil)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil, 'a solo killed by the storm still has nobody to watch',
+        tostring(watching(1)))
+
+    -- NOBODY IS THEIR OWN KILLER. eliminate() writes the licence inside the
+    -- `killerSrc ~= src` guard, so a self-credited death records nothing.
+    soloMatch()
+    BR.Combat.eliminate(1, 'explosion', 1)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil, 'and a player is never given their own corpse to watch',
+        tostring(watching(1)))
+end
+
+describe('spectate.theKillerIsLostAgain')
+do
+    -- THE TWO WAYS THE ONE TARGET GOES AWAY, both through the retarget paths
+    -- that already existed rather than through anything new.
+
+    -- 1. THE KILLER DIES. The feed re-resolves every push, the list empties, and
+    --    the session ends the way an empty list has always ended it.
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'precondition: watching the killer')
+
+    sent = {}
+    BR.Combat.eliminate(2, 'storm', nil)
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(stopped(1), 'the killer dying ends the session rather than erroring',
+        tostring(watching(1)))
+    ok(stopReason(1) == 'no-targets', 'saying why', tostring(stopReason(1)))
+
+    -- 2. THE KILLER LEAVES. playerDropped re-resolves the watchers; there is
+    --    nobody left to move to, so it stops -- and does not throw on the way.
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'precondition: watching the killer')
+
+    sent = {}
+    leave(2)
+    ok(stopped(1), 'the killer disconnecting stops the camera')
+
+    -- 'no-targets', NOT 'target-left', AND THAT IS THE EXISTING PATH RATHER THAN
+    -- ANYTHING THIS CHANGE ADDED. playerDropped re-resolves a player session
+    -- first -- `if not resolve(src, 1) then stop('target-left') end` -- and a
+    -- resolve that finds an empty list stops with its own reason on the way out,
+    -- so the outer call lands on a session that is already gone. Any player
+    -- whose departing target was their LAST candidate has always seen this,
+    -- squad or solo. Asserted as it is rather than as it reads, because a test
+    -- that pinned the reason it "should" be would be pinning a bug report.
+    ok(stopReason(1) == 'no-targets',
+        'reporting the empty list the re-resolve actually found',
+        tostring(stopReason(1)))
+end
+
+describe('spectate.theKillerIsALicence')
+do
+    -- FIVEM RECYCLES SERVER IDS WITHIN THE MINUTE, and this record outlives the
+    -- moment it is written by design -- the victim watches this person for the
+    -- rest of their round. Storing `killerSrc` would eventually point a dead
+    -- player's camera at whoever inherited the slot, which is a different human.
+    --
+    -- Reproduced the way spectate.recycledServerId reproduces it: the entry goes
+    -- and comes back under a new licence with no drop event at all, so nothing
+    -- but the licence comparison can catch it.
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'precondition: watching the killer on server id 2')
+
+    BR.Roster.remove(2)
+    licenseOf[2] = 'somebodyelse'
+    BR.Roster.add(2)
+    BR.Roster.setMatch(2, BR.Roster.get(1).matchId)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    sent = {}
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(stopped(1), 'a stranger who inherits the killer\'s id is not the killer',
+        tostring(watching(1)))
+end
+
+describe('spectate.killerIsOrderOnlyWhenFreeIsOn')
+do
+    -- WITH THE WIDENING ALLOWED, NOTHING IS REMOVED TO MAKE ROOM. The set is
+    -- still every living player; the killer is merely where the camera starts,
+    -- and the arrows walk off them normally.
+    soloMatch()
+    BR.Config.Spectate.freeAfterSquadOut = true
+    BR.Combat.eliminate(1, 'headshot', 3)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 3, 'the camera opens on the killer even though 2 sorts first',
+        tostring(watching(1)))
+
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) == 2, 'and the other survivor is still reachable',
+        tostring(watching(1)))
+end
+
+describe('spectate.squadsAreUnchanged')
+do
+    -- THE OWNER SAID SOLOS. A squad player killed by an enemy, squad wiped,
+    -- widening ON -- every knob turned toward the new behaviour at once -- must
+    -- still get the set they got before this change, chosen the old way.
+    squadMatch()
+    BR.Config.Spectate.freeAfterSquadOut = true
+    BR.Combat.eliminate(1, 'headshot', 4)
+    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 3,
+       'a wiped SQUAD still opens on the lowest src, not on their killer',
+       tostring(watching(1)))
+
+    -- ...AND WITH THE WIDENING OFF THEY STILL GET NOTHING, rather than picking
+    -- up a killer-cam through the solos branch.
+    squadMatch()
+    BR.Combat.eliminate(1, 'headshot', 4)
+    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil,
+       'and free-off leaves a wiped squad with nobody to watch',
+       tostring(watching(1)))
+end
+
+describe('spectate.theKillerRecordIsPerMatch')
+do
+    -- A LICENCE DOES NOT GO STALE ON ITS OWN, unlike lastHitBy, which the
+    -- assist window retires after ten seconds. So it has to be cleared, and
+    -- BR.Match.resetPlayer is where the rest of the per-match record is.
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    ok(BR.Roster.get(1).killedByLicense ~= nil, 'precondition: it was recorded')
+
+    BR.Match.resetPlayer(1, BR.Roster.get(1))
+    ok(BR.Roster.get(1).killedByLicense == nil,
+       'a new match forgets who killed them in the last one',
+       tostring(BR.Roster.get(1).killedByLicense))
+end
+
 describe('spectate.whoMayAsk')
 do
     squadMatch()

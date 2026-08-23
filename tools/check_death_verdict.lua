@@ -148,6 +148,39 @@ if state then
              .. 'one call that could correct a stale page does nothing')
     end
 
+    -- AND SO DOES STARTING TO SPECTATE, which is the edge that was missing.
+    --
+    -- "The verdict text still shows while spectating for some reason." -- the
+    -- owner, 2026-08-22. Every other edge above is a way OUT of a match, and
+    -- starting to spectate is not one -- which is exactly why the rule as
+    -- written did not reach it. client/spectate.lua's own hold is not enough on
+    -- its own: `ask()` admits DEAD, so the arrow keys open a session inside the
+    -- window and the automatic snap is not the only way in.
+    --
+    -- MATCHED ON THE HANDLER, so a file that kept a comment about spectating and
+    -- dropped the wiring fails. The `admin` guard is pinned with it, because
+    -- without it a MODERATOR who is alive and mid-fight tears down every surface
+    -- their own live match raised the moment they open a camera -- a worse bug
+    -- than the one being fixed, and one nobody would connect to this change.
+    local specAt = state:find('BR%.Net%.SPECTATE_SET, function')
+    if not specAt then
+        fail('client/state.lua does not watch for a spectate session starting',
+             'the death word has no edge to come down on while the player '
+             .. 'watches somebody else, which is the 2026-08-22 report')
+    else
+        local body = state:sub(specAt, specAt + 600)
+        if not body:find('dismissMatchSurfaces%(%)') then
+            fail('a spectate session starting dismisses nothing',
+                 'the handler is there but the word is not taken down')
+        end
+        if not body:find('d%.admin == true') then
+            fail('the spectate edge does not exempt an ADMIN session',
+                 'an admin spectator may be ALIVE and mid-match; treating '
+                 .. 'their camera as "the match is over for me" tears down '
+                 .. 'surfaces underneath a living player')
+        end
+    end
+
     -- AND A REVIVE TAKES IT WITH IT. #144's held death puts the roster through
     -- DEAD for real, so the word goes up for somebody who is about to be stood
     -- back up -- and the revive lands on the transition into PLAYING, which is

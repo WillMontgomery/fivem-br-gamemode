@@ -7177,6 +7177,166 @@ do
     ok(#S.playerTargets({}) == 0, 'and neither is an empty view')
 end
 
+-- ------------------------------------------------------- spectate: killer ---
+--
+-- "If in solos, the default spectate target should be the killer (if there was
+-- one)." -- the owner, 2026-08-22.
+--
+-- The claims worth pinning are not "the killer appears somewhere". They are:
+-- SOLOS ONLY, FIRST rather than merely present, a NO-KILLER path that is the old
+-- answer unchanged, and -- the one that would actually leak -- that this cannot
+-- reach past the squad rule.
+
+describe('spectate.killerFirst')
+do
+    local S = BR.SpectateSolve
+
+    local function names(list)
+        local out = {}
+        for _, p in ipairs(list) do out[#out + 1] = p.name end
+        return table.concat(out, ',')
+    end
+
+    -- A solo world: me (dead), and three living strangers. src order is 2,3,4,
+    -- so `bySrc` alone would always answer 2 -- which is what makes 4 the
+    -- interesting killer to name.
+    local function solos(killerSrc, free)
+        return {
+            mySrc = 1, squadId = nil, free = free, killerSrc = killerSrc,
+            players = {
+                { src = 1, living = false, name = 'Me' },
+                { src = 2, living = true,  name = 'Alpha' },
+                { src = 3, living = true,  name = 'Bravo' },
+                { src = 4, living = true,  name = 'Killer' },
+            },
+        }
+    end
+
+    -- 1. THE SHIPPED CONFIGURATION. freeAfterSquadOut is false in
+    --    config/match.lua, and under it a dead solo used to have no targets at
+    --    all. The killer is the whole list -- not the first of four.
+    local t, policy = S.playerTargets(solos(4, false))
+    ok(#t == 1 and t[1].src == 4, 'with free spectate off a solo watches their killer',
+        names(t))
+    ok(policy == 'killer', 'and the policy names the branch that admitted them',
+        policy)
+
+    -- 2. AND NOBODY ELSE. The arrows cannot walk off a list of one, which is the
+    --    property that keeps this a killer-cam rather than a way into the lobby.
+    ok(S.step(t, 4, 1).src == 4 and S.step(t, 4, -1).src == 4,
+        'and cycling from a one-target list does not reach the other players')
+
+    -- 3. NO KILLER IS THE OLD ANSWER, UNCHANGED. The storm, a fall, a car with
+    --    nobody in it (#194) -- all of them arrive here as nil, and nil must not
+    --    quietly widen anything.
+    t, policy = S.playerTargets(solos(nil, false))
+    ok(#t == 0 and policy == 'none',
+        'a solo killed by the storm has no targets, exactly as before', policy)
+
+    -- 4. A KILLER WHO HAS SINCE DIED IS NOT A TARGET. Same `living` test every
+    --    other candidate passes -- the killer is the front of a set, not an
+    --    exception to what may be in one.
+    local view = solos(4, false)
+    view.players[4].living = false
+    t, policy = S.playerTargets(view)
+    ok(#t == 0 and policy == 'none', 'a dead killer is nobody to watch', policy)
+
+    -- 5. A KILLER WHO HAS LEFT. The server resolves a licence to a live id and
+    --    gets nothing, so the solver is handed an id that is on no row.
+    t, policy = S.playerTargets(solos(99, false))
+    ok(#t == 0 and policy == 'none', 'a killer who is gone is not invented', policy)
+
+    -- 6. WITH FREE SPECTATE ON IT IS ORDER ONLY. The set is still every living
+    --    player -- nothing is removed to make room -- and the killer is at 1.
+    t, policy = S.playerTargets(solos(4, true))
+    ok(#t == 3, 'free spectate still offers everyone', names(t))
+    ok(t[1].src == 4, 'with the killer first', names(t))
+    ok(t[2].src == 2 and t[3].src == 3,
+        'and the rest still in src order behind them', names(t))
+    ok(policy == 'free',
+        'the policy still says free, because free is what admitted the list',
+        policy)
+
+    -- 7. FIRST IS WHAT "DEFAULT" MEANS. step() with no current target returns
+    --    list[1], so this is the assertion that the owner's word is satisfied
+    --    rather than the list merely being ordered.
+    ok(S.step(t, nil, 0).src == 4, 'so opening a session lands on the killer')
+
+    -- 8. AND CYCLING STILL WORKS off that front position.
+    ok(S.step(t, 4, 1).src == 2, 'next steps off the killer normally')
+
+    -- 9. THE SQUAD RULE IS NOT REACHABLE FROM HERE, WHICH IS THE LEAK TEST.
+    --    A squad player killed by an enemy, one mate still standing, free ON --
+    --    every knob turned the wrong way at once. The answer must still be the
+    --    mate and only the mate.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true, killerSrc = 4,
+        players = {
+            { src = 1, squadId = 'sq1', living = false, name = 'Me' },
+            { src = 2, squadId = 'sq1', living = true,  name = 'Mate' },
+            { src = 4, squadId = 'sq2', living = true,  name = 'Killer' },
+        },
+    })
+    ok(#t == 1 and t[1].src == 2 and policy == 'squad',
+        'a killer cannot be spectated past a living squadmate', names(t))
+
+    -- 10. SQUAD BEHAVIOUR IS UNCHANGED EVEN WHEN THE SQUAD IS WIPED. The owner
+    --     said solos; a squad player whose squad is gone gets the set they got
+    --     yesterday, in the order they got it, killer or no killer.
+    local base = {
+        { src = 1, squadId = 'sq1', living = false, name = 'Me' },
+        { src = 2, squadId = 'sq1', living = false, name = 'Mate' },
+        { src = 3, squadId = 'sq2', living = true,  name = 'Other' },
+        { src = 4, squadId = 'sq2', living = true,  name = 'Killer' },
+    }
+    local withKiller = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true, killerSrc = 4, players = base })
+    local without = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true, players = base })
+    ok(names(withKiller) == names(without) and names(without) == 'Other,Killer',
+        'a wiped SQUAD is not reordered by who killed them', names(withKiller))
+
+    -- 11. ...AND A WIPED SQUAD WITH FREE OFF STILL GETS NOTHING, rather than
+    --     picking up a killer-cam through the solos branch.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = false, killerSrc = 4, players = base })
+    ok(#t == 0 and policy == 'none',
+        'and free-off keeps a wiped squad with nobody to watch', policy)
+
+    -- 12. NEVER MYSELF, even if something upstream managed to name me. The
+    --     server guards it twice already (attributedKiller refuses a self-hit
+    --     and eliminate writes the licence only when killerSrc ~= src); this is
+    --     the third place it cannot happen.
+    t = S.playerTargets({
+        mySrc = 1, squadId = nil, free = false, killerSrc = 1,
+        players = { { src = 1, living = true, name = 'Me' } } })
+    ok(#t == 0, 'a player is never handed their own camera as a killer-cam')
+
+    -- 13. SERVER ID 0 IS A REAL ID AND `nil` IS THE ONLY "NO KILLER". In Lua 0
+    --     is truthy, so a `if view.killerSrc then` would behave identically here
+    --     -- but the same expression written as a truth test elsewhere is how
+    --     this repo has shipped that bug four times. Pinned from both ends.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = nil, free = false, killerSrc = 0,
+        players = {
+            { src = 0, living = true,  name = 'Zero' },
+            { src = 1, living = false, name = 'Me' },
+        } })
+    ok(#t == 1 and t[1].src == 0 and policy == 'killer',
+        'a killer holding server id 0 is still the killer', policy)
+
+    -- 14. AND AN ABSENT killerSrc IS NOT A KILLER AT ALL -- the view every
+    --     existing caller built before this field existed.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = nil, free = true,
+        players = {
+            { src = 2, living = true,  name = 'Alpha' },
+            { src = 1, living = false, name = 'Me' },
+        } })
+    ok(#t == 1 and t[1].src == 2 and policy == 'free',
+        'a view with no killerSrc behaves exactly as it did before', policy)
+end
+
 describe('spectate.adminPolicy')
 do
     local S = BR.SpectateSolve

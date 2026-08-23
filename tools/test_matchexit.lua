@@ -517,6 +517,176 @@ do
        d and d.show)
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE CAMERA MOVING ON IS AN EDGE TOO
+--
+-- "The verdict text still shows while spectating for some reason." -- the
+-- owner, 2026-08-22. Every edge above is a way OUT of a match; this one is not,
+-- which is exactly why the registry did not already cover it.
+--
+-- The failure is reachable in the game because client/spectate.lua's `ask()`
+-- admits DEAD -- so the arrow keys open a session the moment a player dies,
+-- inside the window, without waiting for the hold the SLOW loop applies. This
+-- suite does not load spectate.lua; it fires the wire message that a session
+-- starting produces, which is the fact state.lua actually keys on.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- A spectate push, as server/spectate.lua shapes one.
+local function spectatePush(t)
+    fire(BR.Net.SPECTATE_SET, t)
+end
+
+describe('spectating takes the death word down')
+do
+    inMatch()
+    deltas(meState(BR.PlayerState.DEAD))
+    ok(BR.DeathVerdictUp() == true, 'precondition: the word is up')
+
+    local m = mark()
+    spectatePush({ targetSrc = 7, name = 'Kestrel', x = 1.0, y = 2.0, z = 3.0 })
+    local d = lastDeath(m)
+    ok(d ~= nil and d.show == false,
+       'a spectate session starting takes the word with it', d and d.show)
+    ok(BR.DeathVerdictUp() == false,
+       'and this client stops believing the word is up')
+
+    -- AND THE MATCH IS STILL RUNNING AND I AM STILL DEAD, which is the whole
+    -- difference from every other edge in this file: nothing about my match
+    -- state changed, so nothing else would have fired.
+    ok(BR.State.me.state == BR.PlayerState.DEAD,
+       'without my own state having moved', BR.State.me.state)
+end
+
+describe('...but the ordinary death is untouched')
+do
+    -- THE HALF THAT MUST NOT REGRESS. "A player who dies and does not spectate
+    -- must still see it exactly as now."
+    inMatch()
+    local m = mark()
+    deltas(meState(BR.PlayerState.DEAD))
+    local d = lastDeath(m)
+    ok(d ~= nil and d.show == true, 'the word still goes up on death', d and d.show)
+
+    -- Most of the window with no session at all: still up, and nothing further
+    -- has been sent.
+    advance(WINDOW - 1)
+    ok(BR.DeathVerdictUp() == true,
+       'and stays up for its whole window when nobody spectates')
+    ok(#envelopes(BR.Nui.DEATH, m) == 1,
+       'with exactly one envelope -- the raise, and no correction after it',
+       #envelopes(BR.Nui.DEATH, m))
+
+    -- And it still comes down on its own clock.
+    advance(2)
+    ok(BR.DeathVerdictUp() == false, 'and comes down on its own deadline')
+    local last = lastDeath(m)
+    ok(last ~= nil and last.show == false, 'saying so', last and last.show)
+end
+
+describe('the ORDINARY spectate hand-off sends no correction')
+do
+    -- The real sequence: client/spectate.lua holds until BR.DeathVerdictUp() is
+    -- false, THEN asks, so the push arrives after the word is already down. The
+    -- new edge must be a no-op there rather than a second `show = false` chasing
+    -- the first one down the wire.
+    inMatch()
+    deltas(meState(BR.PlayerState.DEAD))
+    advance(WINDOW + 1)
+    ok(BR.DeathVerdictUp() == false, 'precondition: the window has expired')
+
+    local m = mark()
+    spectatePush({ targetSrc = 7, name = 'Kestrel' })
+    ok(#envelopes(BR.Nui.DEATH, m) == 0,
+       'a session opening after the word expired says nothing at all',
+       #envelopes(BR.Nui.DEATH, m))
+end
+
+describe('an ADMIN session is not a match ending')
+do
+    -- The console's Spectate button requires only that the admin be in game.
+    -- They may be ALIVE and mid-fight, and a rule that read their camera as
+    -- "the match is over for me" would tear down surfaces underneath a living
+    -- player. `admin` is the server's flag and it is the discriminator.
+    inMatch()
+    deltas(meState(BR.PlayerState.DEAD))
+    ok(BR.DeathVerdictUp() == true, 'precondition: the word is up')
+
+    local m = mark()
+    spectatePush({ targetSrc = 7, name = 'Suspect', admin = true })
+    ok(#envelopes(BR.Nui.DEATH, m) == 0,
+       'an admin starting to spectate dismisses nothing',
+       #envelopes(BR.Nui.DEATH, m))
+    ok(BR.DeathVerdictUp() == true, 'and the word is still up')
+end
+
+describe('the 4 Hz feed fires the edge once, not four times a second')
+do
+    -- SPECTATE_SET is the position feed as well as the start message. Dismissal
+    -- is idempotent today, so this is about the next surface to register rather
+    -- than about the word -- which is why it is asserted through the REGISTRY
+    -- and not by counting death envelopes.
+    local hits = 0
+    BR.MatchSurface('feed counter', function() hits = hits + 1 end)
+
+    inMatch()
+    deltas(meState(BR.PlayerState.DEAD))
+
+    local before = hits
+    spectatePush({ targetSrc = 7, name = 'Kestrel' })
+    ok(hits == before + 1, 'the first push dismisses', hits - before)
+
+    for _ = 1, 8 do
+        spectatePush({ targetSrc = 7, name = 'Kestrel', x = 1.0, y = 2.0, z = 3.0 })
+    end
+    ok(hits == before + 1, 'and eight more position pushes dismiss nothing',
+       hits - before)
+
+    -- A CHANGE OF TARGET IS STILL THE SAME SESSION. Cycling with the arrows is
+    -- not a new reason to tear surfaces down.
+    spectatePush({ targetSrc = 9, name = 'Vandal' })
+    ok(hits == before + 1, 'and neither does cycling to another target',
+       hits - before)
+
+    -- ...BUT A NEW SESSION AFTER A STOP DOES, AND THE STOP IS WHAT LOWERS THE
+    -- LATCH -- not the next death.
+    --
+    -- NO DEATH IN BETWEEN, DELIBERATELY. There are two things that lower this
+    -- latch, the stop message and BR.NoteDeath, and they overlap: a version of
+    -- this assertion that went stop -> ALIVE -> DEAD -> push proved only that
+    -- ONE of them worked, and mutation-testing it showed exactly that -- deleting
+    -- the stop-path reset left every assertion in this file green. So the stop is
+    -- exercised on its own, which is the only way to see it.
+    spectatePush({ stop = true, reason = 'no-targets' })
+    local afterStop = hits
+    spectatePush({ targetSrc = 9, name = 'Vandal' })
+    ok(hits == afterStop + 1,
+       'a session opened after a stop dismisses again, with no death between',
+       hits - afterStop)
+
+    -- AND THE OTHER RESET, ON ITS OWN. Same argument from the other end: a
+    -- session that is still open when a new death arrives must not swallow the
+    -- new word. No stop message here.
+    local before2 = hits
+    spectatePush({ targetSrc = 9, name = 'Vandal' })
+    ok(hits == before2, 'precondition: the latch is up and holding')
+    deltas(meState(BR.PlayerState.ALIVE))
+    deltas(meState(BR.PlayerState.DEAD))
+    local afterDeath = hits
+    spectatePush({ targetSrc = 9, name = 'Vandal' })
+    ok(hits == afterDeath + 1,
+       'and a new death re-arms it without any stop message', hits - afterDeath)
+end
+
+describe('a malformed spectate push is not a crash')
+do
+    inMatch()
+    deltas(meState(BR.PlayerState.DEAD))
+    spectatePush(nil)
+    spectatePush('nonsense')
+    spectatePush(42)
+    ok(true, 'a push that is not a table is ignored rather than thrown')
+end
+
 describe('#204 -- the rule is a registry, not a line in one handler')
 do
     -- The mechanism itself, because the whole point of the change is that the

@@ -94,9 +94,46 @@ export default function SpectateHint() {
           a candidate list -- and it truncates rather than pushing the row wide
           enough to reach the inventory bar. */}
       <span
-        className="ts font-display tracking-[0.14em] truncate max-w-[46vw]"
+        className="ts font-display tracking-[0.14em] truncate max-w-[38vw]"
         style={{
-          ['--fs' as string]: '0.95rem',
+          // TWICE WHAT IT WAS. "The 'spectating X' text should be at least 2x
+          // larger" -- the owner, 2026-08-22. 0.95 -> 1.9rem, which is exactly
+          // double rather than "about double": the request has a floor and no
+          // ceiling, and the smallest number that clears the floor is the one
+          // that disturbs the least.
+          //
+          // THE COLUMN GROWS UPWARD AND NOTHING BELOW MOVES. Hud.tsx anchors
+          // this stack on `bottom`, so the extra line height is spent on empty
+          // sky: measured at 1280x720, the line goes from 14.63px tall to 29.26
+          // and everything in the column rises by that much, while the talking
+          // line underneath it does not move a pixel at any of the three text
+          // scales. Nothing was shrunk to make room.
+          //
+          // AND THE WIDTH CAP MOVED WITH IT: 46vw -> 38vw, ABOVE.
+          //
+          // That is a deliberate second change and it is not tidying. The cap's
+          // job is stated one comment down and it is not "be 46vw" -- it is "it
+          // truncates rather than pushing the row wide enough to reach the
+          // inventory bar". At 0.95rem that was true of 46vw for any name a
+          // player can have (gamertags cap at 20 characters, br_lib's
+          // BR.ValidateName). At 1.9rem it stops being true: measured at
+          // 1280x720, the inventory bar's left edge is 893.3px, and a centred
+          // line reaches it at 16 characters at text scale 1.00 and at 13 at
+          // 1.15. The cap was still 46vw and it was no longer doing its job.
+          //
+          // 38vw IS THE ARITHMETIC, NOT A GUESS. The line is centred, so it
+          // clears the bar while half its width stays under 69.79vw - 50vw =
+          // 19.79vw; 38vw leaves about 10px of margin at 1280x720 and still
+          // clears the radar on the left (whose right edge is 23vw) by a wide
+          // margin. Re-derive it if either neighbour moves.
+          //
+          // THE COST, SAID PLAINLY: a long name truncates sooner than it used
+          // to. At text scale 1.15 a 20-character name loses roughly its last
+          // three characters to an ellipsis. Truncating is what this element
+          // already did with names it could not fit, and it is the cheaper of
+          // the two mistakes -- the alternative is a name drawn over the
+          // inventory bar, which is the collision the cap exists to prevent.
+          ['--fs' as string]: '1.9rem',
           lineHeight: 1.4,
           color: 'var(--color-royale-accent)',
           textShadow: 'var(--shadow-text)',

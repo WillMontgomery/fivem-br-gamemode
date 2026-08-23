@@ -252,10 +252,33 @@ end
 --- it is the structure of the function and can be tested without a server. This
 --- only projects the roster into the view that function takes.
 local function playerView(src, entry)
+    -- WHO KILLED ME, TURNED BACK INTO A SERVER ID -- and only in solos, because
+    -- that is the only place the solver looks at it.
+    --
+    -- SERVER-SIDE ATTRIBUTION, END TO END. `killedByLicense` is written by
+    -- BR.Combat.eliminate from the killer the validated damage ledger produced;
+    -- no client is asked and none is believed. GetPedSourceOfDeath was
+    -- considered for exactly this shape of question and rejected (#194,
+    -- server/vehicles.lua), and server/combat.lua notes that M6 cancels the
+    -- engine's damage anyway, so the client honestly has nothing to report.
+    --
+    -- THE LOOKUP IS THE POINT OF STORING A LICENCE. The id is resolved HERE,
+    -- from the roster as it stands this instant, so a recycled server id cannot
+    -- be inherited: the licence either still names somebody in this match or it
+    -- names nobody and the killer is simply gone. Done in the walk that is
+    -- already happening rather than in a second pass over the same table.
+    local wantLicense = nil
+    if entry.squadId == nil then wantLicense = entry.killedByLicense end
+    local killerSrc = nil
+
     local players = {}
     BR.Roster.each(
         function(e) return e.matchId == entry.matchId end,
         function(psrc, e)
+            if wantLicense ~= nil and killerSrc == nil
+               and BR.Roster.licenseOf(psrc) == wantLicense then
+                killerSrc = psrc
+            end
             players[#players + 1] = {
                 src     = psrc,
                 squadId = e.squadId,
@@ -270,10 +293,11 @@ local function playerView(src, entry)
         end)
 
     return {
-        mySrc   = src,
-        squadId = entry.squadId,
-        free    = BR.Config.Spectate.freeAfterSquadOut == true,
-        players = players,
+        mySrc     = src,
+        squadId   = entry.squadId,
+        free      = BR.Config.Spectate.freeAfterSquadOut == true,
+        killerSrc = killerSrc,
+        players   = players,
     }
 end
 
