@@ -166,7 +166,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # the suite's central assertion is that two hundred passes leave the numbers
     # where one pass did.
 
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua; do
+    # test_icons.lua is the odd one out in a new way: it tests a GATE rather
+    # than a shipped module. tools/check_weapons.lua can only ever read the one
+    # real ItemIcon.tsx, so it proves that file is clean and cannot prove it
+    # would notice a dirty one. The rules live in tools/icon_rules.lua as pure
+    # functions and this suite feeds them deliberately broken sources -- which
+    # is the only way a detector gets shown to still detect.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
