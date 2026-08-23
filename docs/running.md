@@ -172,6 +172,8 @@ Install the pre-commit hook with `./tools/install-hooks.sh`.
 | `brring` | server | Ringmaster link: whether it is configured, and what it would send |
 | `brddb` | server | Probe DynamoDB — reachability, credentials, table access |
 | `brwhy <id>` | server | Why a given player is in the state they're in |
+| `brshots [n\|reason]` | server console only | The last N shot adjudications with the arithmetic that decided each one: the measured distance beside the weapon's reach, this shot's interval beside its cadence floor, the magazine the **server** believed, and whether it watched a throw. The starred pair is the comparison that refused the row. Console-only rather than restricted, and that is #93 rather than caution: nobody is exempt from incidents, so an admin can be the *subject* of these rows, and a `br.admin` readout would hand that person the exact bound to stay under |
+| `brtestfire <mode>` | server console only, dev mode | Bend one anticheat bound so a refusal can be fired deliberately from a real shot — `far` (range becomes 2% of the weapon's), `fast` (cadence floor becomes 60×), `thrown` (throw credit expires at once), `noammo <id>` (empty that player's magazine and pool in the server's model only), `off`, `status`. It never edits `BR.Config.Combat`; it swaps in a copy, so `off` restores exactly. Refusals it causes file **no** incident and are stamped `FORCED`. Announced by a banner, then a heartbeat every 15s while armed, and cleared at match teardown and on resource stop |
 | `brscatter` | server | Spread everyone 3 km apart to test OneSync scoping |
 | `brforce <state>`, `brskip`, `brkill <id>` | server | Drive the match by hand |
 | `brloot [matchId]` | server | World loot: counts by kind and rarity, cells, who is subscribed |

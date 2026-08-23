@@ -1149,9 +1149,82 @@ if [ -f "$vehfile_" ]; then
     fi
 fi
 
+# THE ANTICHEAT'S OWN READOUT AND ITS TEST LEVER, narrowed the same way and for
+# a sharper reason than brcar's (#93).
+#
+# #93's property is that an OFFENDER IS SHOWN NOTHING AT ALL -- no message, no
+# refusal feedback, no hint. `brshots` prints, per refused shot, the exact bound
+# that refused it. RESTRICTED is not the right boundary for that: it admits the
+# server console OR any live client holding `br.admin`, and the owner's standing
+# rule is that nobody is exempt from incidents, admins included. So an admin can
+# be the SUBJECT of the rows brshots prints, and a restricted readout would hand
+# that person a live oracle for exactly which limit to stay under -- which is
+# worse than telling them they were refused, because it tells them by how much.
+#
+# `brtestfire` bends the bounds the anticheat judges by, for every player at
+# once. It carries the console gate AND the dev gate, and the dev gate is the
+# one that keeps it off the public box entirely.
+#
+# AND `0` IS TRUTHY IN LUA, which is why both are matched as an EQUALITY rather
+# than by looking for the word `src`: `if src then` admits every player and
+# `if not src then` admits nobody. Both compile, both look right, both are wrong
+# in opposite directions. Same trap the brcar gate above spells out.
+dmgfile_="resources/[fivem-royale]/br_core/server/damage.lua"
+if [ -f "$dmgfile_" ]; then
+    for verb_ in brshots brtestfire; do
+        if ! grep -q "RegisterCommand('$verb_'" "$dmgfile_"; then
+            echo "${RED}FAIL${RST} $verb_ is not registered in $dmgfile_"
+            echo "     If it moved, move this gate with it -- the verb and the"
+            echo "     adjudication ring it reads belong on one screen."
+            boundary=1
+        fi
+    done
+
+    # One equality per verb. Counted rather than merely found, so deleting the
+    # narrowing from ONE of the two cannot pass on the other one's line.
+    gates_=$(grep -cE 'tonumber\(src\) ~= 0' "$dmgfile_" || true)
+    if [ "$gates_" -lt 2 ]; then
+        echo "${RED}FAIL${RST} brshots/brtestfire have lost a server-console gate"
+        echo "     Expected 'tonumber(src) ~= 0' twice in $dmgfile_, found ${gates_}."
+        echo "     RESTRICTED is not that gate: it also admits any live client"
+        echo "     holding br.admin, and #93's rule is that an offender learns"
+        echo "     NOTHING -- an admin can be the subject of these rows."
+        echo "     It must stay an equality -- 0 is truthy in Lua."
+        boundary=1
+    fi
+
+    # The dev gate on the lever, and the refusal-to-file guard that stops a
+    # manufactured refusal becoming a real case against a playtester.
+    if ! grep -q 'BR.Server.devMode' "$dmgfile_"; then
+        echo "${RED}FAIL${RST} brtestfire has lost its dev-mode gate"
+        echo "     Bending the validator's bounds must not be armable on the"
+        echo "     public box, where a bent bound would stop real refusals"
+        echo "     filing and no one would be told."
+        boundary=1
+    fi
+    if ! grep -qE 'if forced then' "$dmgfile_"; then
+        echo "${RED}FAIL${RST} damage.lua no longer guards noteRefusal on the test lever"
+        echo "     A refusal manufactured by brtestfire must never open an"
+        echo "     incident: it would file a case about a playtest, against the"
+        echo "     person running it, with screenshots attached."
+        boundary=1
+    fi
+
+    # ...and it must clear itself. Both lifecycle hooks, because the guarantee
+    # the owner was given is "reset on match end or resource restart".
+    for hook_ in 'br:match:destroyed' 'onResourceStop'; do
+        if ! grep -q "AddEventHandler('$hook_'" "$dmgfile_"; then
+            echo "${RED}FAIL${RST} damage.lua does not clear the test lever on $hook_"
+            echo "     brtestfire is guaranteed to be impossible to leave armed."
+            boundary=1
+        fi
+    done
+fi
+
 if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
     echo "${GRN}ok${RST}   brcar is console-only and CreateVehicle is scoped to the file that holds the allowlist"
+    echo "${GRN}ok${RST}   brshots/brtestfire are console-only, dev-gated and cannot file a manufactured incident"
 else
     rc=1
 fi

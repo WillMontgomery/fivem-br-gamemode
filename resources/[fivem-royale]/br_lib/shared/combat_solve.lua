@@ -161,6 +161,47 @@ function BR.ShotTallyVerdict(tally, bar)
     return crossed, worst, worstReason
 end
 
+--- The furthest a hit from this weapon can be and still be honest.
+---
+--- ONE DEFINITION, TWO READERS, AND THAT IS THE WHOLE REASON IT IS A FUNCTION.
+--- BR.ValidateShot refuses on this number and `/brshots` prints it beside the
+--- distance that was measured. A second copy of the arithmetic in the readout
+--- would let the printed limit drift away from the enforced one -- and a
+--- readout that lies about the bound is worse than no readout, because it
+--- turns a wrong limit into a limit that looks right.
+---
+--- EXPLOSIVES GET A DIFFERENT BOUND, not a bigger slack. The victim may be a
+--- whole blast radius further from the thrower than the thing ever travelled,
+--- so the sum is throw PLUS blast -- see the note in BR.ValidateShot.
+--- @param w table|nil  a BR.Config.Weapon* row
+--- @param cfg table|nil BR.Config.Combat
+--- @return number|nil  nil when the weapon has no range to exceed
+function BR.ShotRangeLimit(w, cfg)
+    if not w then return nil end
+    cfg = cfg or {}
+    if w.explosive then
+        return (w.maxRange or 0.0) * (cfg.rangeSlack or 1.35)
+             + (w.blastRadius or 0.0)
+             + (cfg.rangeSlackM or 12.0)
+    end
+    if not w.maxRange then return nil end
+    return w.maxRange * (cfg.rangeSlack or 1.35) + (cfg.rangeSlackM or 12.0)
+end
+
+--- The shortest gap between two shots this weapon can honestly produce.
+---
+--- NIL FOR AN EXPLOSIVE, deliberately, and it is the same fact the validator
+--- states by returning before the rate check: a detonation is not a trigger
+--- pull, and a cluster of stickies going off together is several legitimate
+--- events in one millisecond.
+--- @param w table|nil
+--- @param cfg table|nil
+--- @return number|nil  nil when nothing about cadence can be refused
+function BR.ShotIntervalFloor(w, cfg)
+    if not w or w.explosive or not w.minInterval then return nil end
+    return w.minInterval * ((cfg or {}).intervalSlack or 0.6)
+end
+
 --- Is this shot physically possible, given what the SERVER believes?
 ---
 --- Everything here is checked against the server's own model -- the roster's
@@ -245,10 +286,7 @@ function BR.ValidateShot(shot, ctx, cfg)
         if ctx.heldItem ~= w.id and not ctx.threwRecently then
             return false, BR.ShotRefusal.NOT_THROWN
         end
-        local reach = (w.maxRange or 0.0) * (cfg.rangeSlack or 1.35)
-                    + (w.blastRadius or 0.0)
-                    + (cfg.rangeSlackM or 12.0)
-        if (shot.dist or 0.0) > reach then
+        if (shot.dist or 0.0) > BR.ShotRangeLimit(w, cfg) then
             return false, BR.ShotRefusal.TOO_FAR
         end
         return true, nil
@@ -276,22 +314,18 @@ function BR.ValidateShot(shot, ctx, cfg)
         return false, BR.ShotRefusal.NO_AMMO
     end
 
-    -- Range, with slack for stale positions at both ends.
-    if w.maxRange then
-        local limit = w.maxRange * (cfg.rangeSlack or 1.35)
-                    + (cfg.rangeSlackM or 12.0)
-        if (shot.dist or 0.0) > limit then
-            return false, BR.ShotRefusal.TOO_FAR
-        end
+    -- Range, with slack for stale positions at both ends. Nil limit means the
+    -- weapon has no authored range, which is not the same as a range of zero.
+    local limit = BR.ShotRangeLimit(w, cfg)
+    if limit and (shot.dist or 0.0) > limit then
+        return false, BR.ShotRefusal.TOO_FAR
     end
 
     -- Rate of fire. A weapon cannot cycle faster than its own action, and a
     -- macro or a modified weapons.meta is exactly what this catches.
-    if w.minInterval and shot.sinceLastMs then
-        local floor = w.minInterval * (cfg.intervalSlack or 0.6)
-        if shot.sinceLastMs < floor then
-            return false, BR.ShotRefusal.TOO_FAST
-        end
+    local floor = BR.ShotIntervalFloor(w, cfg)
+    if floor and shot.sinceLastMs and shot.sinceLastMs < floor then
+        return false, BR.ShotRefusal.TOO_FAST
     end
 
     return true, nil

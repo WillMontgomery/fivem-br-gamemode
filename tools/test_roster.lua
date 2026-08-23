@@ -6745,6 +6745,593 @@ do
         'but doing it over and over is refused and counted')
 end
 
+describe('damage.brshots')
+do
+    -- #93 CANNOT CLOSE ON brrefuse ALONE, and this block is the difference.
+    --
+    -- brrefuse INJECTS a refusal by name, which proves the reporting half
+    -- handles the reason. It proves nothing about whether BR.ValidateShot can
+    -- ever RETURN that reason from a real shot -- a reason the validator cannot
+    -- produce would pass brrefuse and be dead in the game. So every assertion
+    -- below drives the real weaponDamageEvent handler and reads the verdict out
+    -- of /brshots, which is the only window onto what was actually decided.
+    local PISTOL = 0x1B06D571
+
+    local function twoAlive()
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        -- Different squads, or SAME_SQUAD refuses before anything interesting.
+        BR.Roster.get(1).squadId = 11
+        BR.Roster.get(2).squadId = 22
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.of(1).active = 1
+    end
+
+    --- Put them this far apart, in the roster the validator actually reads.
+    local function apart(m)
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = m,   y = 0.0, z = 30.0 }
+    end
+
+    local function shoot(weapon)
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = weapon or PISTOL, hitComponent = 3,
+            weaponDamage = 26, hitGlobalIds = { 1002 },
+        })
+    end
+
+    -- THE CONSOLE GATE, asserted to PRINT and not merely to decline. A refusal
+    -- nobody can read is the same as no refusal to the person typing.
+    twoAlive()
+    printed = {}
+    runCommandAs(1, 'brshots')
+    ok(printedSaying('server-console only') ~= nil,
+        'brshots tells a live admin it is console-only')
+    ok(printedSaying('age') == nil,
+        'and prints no adjudications to them at all')
+
+    -- ...AND THAT IS THE #93 PROPERTY, not a style choice. RESTRICTED would
+    -- admit any holder of br.admin, and nobody is exempt from incidents -- so
+    -- an admin can be the SUBJECT of these rows. A restricted readout would
+    -- hand them the bound to stay under.
+    printed = {}
+    runCommandAs(99, 'brshots')
+    ok(printedSaying('server-console only') ~= nil,
+        'every non-zero source is refused, not just players in a match')
+
+    -- AN ALLOWED SHOT IS RECORDED TOO. A limit that is wrong in the GENEROUS
+    -- direction never refuses anything, so it prints no refusal line -- the
+    -- only place it can be seen is the margin on a row that passed.
+    apart(10.0)
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'a shot that passed is in the ring, not only the refusals')
+    ok(printedSaying('pistol') ~= nil, 'named by the weapon the server resolved')
+    -- 120m authored x1.35 +12 = 174m, and they are 10m apart.
+    ok(printedSaying('dist 10.0/174.0m') ~= nil,
+        'with the measured distance beside the limit it was judged against',
+        printedSaying('dist ') or 'no dist line')
+
+    -- THE NUMBERS ARE THE VALIDATOR'S OWN, not a second copy. If the readout
+    -- recomputed them it could print a bound nobody is enforcing -- so the
+    -- printed limit is asserted against BR.ShotRangeLimit directly.
+    local pistol = BR.Config.WeaponById['pistol']
+    ok(BR.ShotRangeLimit(pistol, BR.Config.Combat) == 174.0,
+        'BR.ShotRangeLimit is the one definition of the range bound',
+        tostring(BR.ShotRangeLimit(pistol, BR.Config.Combat)))
+    ok(math.abs(BR.ShotIntervalFloor(pistol, BR.Config.Combat) - 84.0) < 0.01,
+        'and BR.ShotIntervalFloor of the cadence bound',
+        tostring(BR.ShotIntervalFloor(pistol, BR.Config.Combat)))
+    -- An explosive has no cadence to refuse: the validator returns before ever
+    -- reaching the rate check.
+    --
+    -- THE RPG IS THE DISCRIMINATING CASE AND THE GRENADE IS NOT -- mutation
+    -- testing caught this. A grenade carries no minInterval at all, so it
+    -- answers nil even if the `w.explosive` test is deleted; the launchers are
+    -- explosive AND carry a real cadence, so they are the only rows that can
+    -- tell the two spellings apart.
+    ok(BR.Config.WeaponById['rpg'].minInterval == 1000,
+        'the RPG has a cadence of its own to be ignored')
+    ok(BR.ShotIntervalFloor(BR.Config.WeaponById['rpg'],
+                            BR.Config.Combat) == nil,
+        'and an explosive with a real cadence still has no floor to refuse on',
+        tostring(BR.ShotIntervalFloor(BR.Config.WeaponById['rpg'],
+                                      BR.Config.Combat)))
+
+    -- THE RANGE BOUND IS INCLUSIVE, which is the whole difference between `>`
+    -- and `>=` and is invisible to any test that does not stand on it. Slack
+    -- exists to stop an honest shot being refused, so a shot landing EXACTLY on
+    -- the limit must pass -- `>=` would refuse the one shot the slack was
+    -- calculated to allow.
+    local edge = BR.ShotRangeLimit(pistol, BR.Config.Combat)
+    local ctxOK = { sameMatch = true, shooterLive = true, victimLive = true,
+                    heldItem = 'pistol', clip = 12 }
+    ok(BR.ValidateShot({ weapon = PISTOL, dist = edge, sinceLastMs = 100000 },
+                       ctxOK, BR.Config.Combat) == true,
+        'a shot exactly on the range limit is allowed')
+    ok(BR.ValidateShot({ weapon = PISTOL, dist = edge + 0.01,
+                         sinceLastMs = 100000 }, ctxOK, BR.Config.Combat) == false,
+        'and a hair beyond it is refused')
+
+    -- The same edge on cadence: `<` not `<=`.
+    local cad = BR.ShotIntervalFloor(pistol, BR.Config.Combat)
+    ok(BR.ValidateShot({ weapon = PISTOL, dist = 5.0, sinceLastMs = cad },
+                       ctxOK, BR.Config.Combat) == true,
+        'a shot exactly on the cadence floor is allowed')
+    ok(BR.ValidateShot({ weapon = PISTOL, dist = 5.0, sinceLastMs = cad - 1 },
+                       ctxOK, BR.Config.Combat) == false,
+        'and one millisecond faster is refused')
+
+    -- 0 IS TRUTHY IN LUA and a FiveM BOOL may arrive as 1. Pinned directly,
+    -- because both of isTrue's callers hand it a real boolean -- so nothing
+    -- else in the suite can tell a correct normaliser from `if v then`.
+    ok(BR.Damage.isTrue(0) == false, 'isTrue(0) is false -- 0 is truthy in Lua')
+    ok(BR.Damage.isTrue(1) == true, 'isTrue(1) is true -- a BOOL native may say 1')
+    ok(BR.Damage.isTrue(true) == true, 'isTrue(true) is true')
+    ok(BR.Damage.isTrue(false) == false, 'isTrue(false) is false')
+    ok(BR.Damage.isTrue(nil) == false, 'isTrue(nil) is false')
+    -- Throw PLUS blast, which is a different bound and not a bigger slack.
+    local gren = BR.Config.WeaponById['grenade']
+    ok(math.abs(BR.ShotRangeLimit(gren, BR.Config.Combat)
+                - (45.0 * 1.35 + 10.0 + 12.0)) < 0.01,
+        'and an explosive reaches its throw plus its blast',
+        tostring(BR.ShotRangeLimit(gren, BR.Config.Combat)))
+
+    -- A REAL TOO_FAR, FROM A REAL SHOT, WITH BOTH NUMBERS ON THE ROW.
+    apart(400.0)
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots')
+    ok(printedSaying('TOO_FAR') ~= nil,
+        'BR.ValidateShot genuinely returns TOO_FAR from a weaponDamageEvent')
+    ok(printedSaying('*dist 400.0/174.0m') ~= nil,
+        'and the row shows the distance and the limit side by side, starred',
+        printedSaying('dist ') or 'no dist line')
+
+    -- THE STAR IS ON THE DECIDING COMPARISON, which is the entire readable
+    -- claim of the table. Starring the wrong column would make a wrong limit
+    -- look like a wrong cadence.
+    ok(printedSaying('*dist') ~= nil and printedSaying('*gap') == nil,
+        'the star marks range and not cadence when range decided it')
+
+    -- FILTERING BY REASON, so a long ring can be read for one thing.
+    printed = {}
+    runCommand('brshots', 'TOO_FAR')
+    ok(printedSaying('TOO_FAR') ~= nil, 'brshots <reason> keeps matching rows')
+    ok(printedSaying('ALLOWED') == nil, 'and drops the rest')
+
+    -- AN EMPTY RING EXPLAINS ITSELF rather than looking broken. A solo test
+    -- that shoots scenery produces no adjudications at all, and "(none)" with
+    -- no reason reads as a fault in the verb.
+    printed = {}
+    runCommand('brshots', 'NOT_A_REASON')
+    ok(printedSaying('(none)') ~= nil, 'no matching rows says so')
+    ok(printedSaying('HITS A PLAYER') ~= nil,
+        'and says why a table can legitimately be empty')
+end
+
+describe('damage.brtestfire')
+do
+    -- THE LEVER THAT MAKES THE OTHER THREE REASONS FIREABLE ON PURPOSE, and
+    -- the four independent guarantees that it cannot be left on.
+    local PISTOL  = 0x1B06D571
+    local GRENADE = 0x93E220BD
+
+    local function twoAlive()
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        BR.Roster.get(1).squadId = 11
+        BR.Roster.get(2).squadId = 22
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 10.0, y = 0.0, z = 30.0 }
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.of(1).active = 1
+    end
+
+    local function shoot(weapon)
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = weapon or PISTOL, hitComponent = 3,
+            weaponDamage = 26, hitGlobalIds = { 1002 },
+        })
+    end
+
+    local devWas = BR.Server.devMode
+
+    -- BOTH GATES, ASSERTED TO PRINT. Console-only AND dev-only, because this
+    -- one changes what the anticheat believes for every player at once.
+    twoAlive()
+    BR.Server.devMode = true
+    printed = {}
+    runCommandAs(1, 'brtestfire', 'far')
+    ok(printedSaying('server-console only') ~= nil,
+        'brtestfire refuses a live admin')
+
+    BR.Server.devMode = false
+    printed = {}
+    runCommand('brtestfire', 'far')
+    ok(printedSaying('dev-mode only') ~= nil, 'and refuses a non-dev box')
+    ok(printedSaying('public box') ~= nil,
+        'saying why, since bending the anticheat live is the risk')
+    BR.Server.devMode = true
+
+    -- THE SHIPPED CONSTANTS ARE NEVER TOUCHED. This is the difference between
+    -- a lever and an edit: `off` has to restore exactly, and it can only do
+    -- that if it never wrote over the original in the first place.
+    local shippedSlack = BR.Config.Combat.rangeSlack
+    local shippedGrace = BR.Config.Combat.explosiveGraceMs
+    printed = {}
+    runCommand('brtestfire', 'far')
+    ok(printedSaying('TEST FIRE ARMED') ~= nil, 'arming says so, loudly')
+    ok(printedSaying('FAR') ~= nil, 'and names the mode')
+    ok(BR.Config.Combat.rangeSlack == shippedSlack,
+        'and BR.Config.Combat is left exactly as shipped',
+        tostring(BR.Config.Combat.rangeSlack))
+
+    -- TOO_FAR, NOW AT TEN METRES INSTEAD OF A HUNDRED AND SEVENTY-FOUR.
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('TOO_FAR') ~= nil,
+        'with far armed, an ordinary ten-metre shot is out of range')
+    ok(printedSaying('*dist 10.0/2.4m') ~= nil,
+        'and the row shows the bent limit, so the bend is visible not implied',
+        printedSaying('dist ') or 'no dist line')
+    -- The BRACKET is part of the assertion: the trailer prose also contains the
+    -- word FORCED, and matching that instead would make this pass with no stamp
+    -- on any row at all.
+    ok(printedSaying('[FORCED far]') ~= nil,
+        'the row is stamped FORCED, so it can never be read as evidence')
+
+    -- A MANUFACTURED REFUSAL FILES NOTHING. Filing would open an incident
+    -- about a playtest, against the person running it, with screenshots.
+    local filed = 0
+    local realNote = BR.Damage.noteRefusal
+    BR.Damage.noteRefusal = function(...) filed = filed + 1; return realNote(...) end
+    fakeTime = fakeTime + 5000
+    shoot()
+    ok(filed == 0, 'a forced refusal never reaches noteRefusal', tostring(filed))
+
+    -- ...AND THE UNFORCED PATH STILL DOES, which is the half that would rot
+    -- silently if the guard were written as "never file" by accident.
+    runCommand('brtestfire', 'off')
+    BR.Roster.get(2).pos = { x = 400.0, y = 0.0, z = 30.0 }
+    fakeTime = fakeTime + 5000
+    shoot()
+    ok(filed == 1, 'a real refusal still files normally once disarmed',
+        tostring(filed))
+    BR.Damage.noteRefusal = realNote
+
+    -- OFF RESTORES THE SHIPPED BOUND, exactly.
+    ok(BR.Config.Combat.rangeSlack == shippedSlack,
+        'off leaves the shipped range slack in place')
+    twoAlive()
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'and a ten-metre shot is ordinary again')
+    ok(printedSaying('[FORCED') == nil, 'with no FORCED stamp on it')
+
+    -- TOO_FAST. The cadence floor, not the refusal bar -- two different
+    -- numbers that both describe "too many too quickly" and mean nothing
+    -- alike: this one is the weapon's action, and it refuses ONE shot.
+    twoAlive()
+    runCommand('brtestfire', 'fast')
+    fakeTime = fakeTime + 60000
+    shoot()                      -- the first has no predecessor to be fast for
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'the first shot of a burst is never too fast')
+    fakeTime = fakeTime + 100    -- 100ms, against a bent floor of 140*60
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('TOO_FAST') ~= nil,
+        'BR.ValidateShot genuinely returns TOO_FAST from a real second shot')
+    ok(printedSaying('*gap 100/8400ms') ~= nil,
+        'and the row shows the interval against the floor it missed',
+        printedSaying('gap ') or 'no gap line')
+    runCommand('brtestfire', 'off')
+
+    -- NOT_THROWN, AND THE GRACE WINDOW MUST BE THE THING THAT DECIDES IT.
+    --
+    -- MUTATION TESTING FOUND THIS. The first version of this block put a pistol
+    -- in the hand and no throw on the record, so `heldItem ~= w.id` refused it
+    -- on its own and the grace window was never consulted -- making the whole
+    -- `thrown` lever untested. Reverting liveCfg() to cfg inside threwRecently
+    -- left the suite green.
+    --
+    -- So the setup below is deliberately one where the HELD test alone is not
+    -- enough: the hand has moved on to the pistol AND the server watched the
+    -- throw. Under the shipped 30s grace that is an ordinary "throw it, switch,
+    -- it lands" and must pass. Under the lever the credit is gone and the same
+    -- blast is refused. Only the grace window differs between the two.
+    twoAlive()
+    BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                     rarity = 3, count = 3 })          -- slot 2
+    BR.Inv.of(1).active = 1                            -- pistol still in hand
+    BR.Damage.noteThrow(1, 'grenade')                  -- the server saw it leave
+    fakeTime = fakeTime + 1500
+    shoot(GRENADE)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'a grenade landing after a weapon swap is credited by the 30s grace')
+    ok(printedSaying('thrown yes') ~= nil,
+        'because the server watched the throw',
+        printedSaying('thrown ') or 'no thrown line')
+
+    -- The victim is stood back up between blasts: a grenade takes 90 off and a
+    -- second would kill them, at which point the refusal would be NOT_LIVE and
+    -- this block would assert nothing about explosives at all.
+    BR.Roster.get(2).hp = 100.0
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    runCommand('brtestfire', 'thrown')
+    ok(BR.Config.Combat.explosiveGraceMs == shippedGrace,
+        'arming thrown does not edit the shipped grace window')
+    fakeTime = fakeTime + 1500
+    shoot(GRENADE)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NOT_THROWN') ~= nil,
+        'BR.ValidateShot genuinely returns NOT_THROWN from a real blast')
+    ok(printedSaying('*held pistol') ~= nil,
+        'and the row names the slot the server actually had, starred',
+        printedSaying('held ') or 'no held line')
+    ok(printedSaying('thrown no') ~= nil,
+        'beside a throw credit that has expired')
+    runCommand('brtestfire', 'off')
+
+    -- NO_AMMO. Not a bent bound at all: the server is made to believe an empty
+    -- magazine, which is the real check. Draining the POOL too is load-bearing
+    -- -- spendRound refills from it the instant the clip reaches zero.
+    twoAlive()
+    printed = {}
+    runCommand('brtestfire', 'noammo', '1')
+    ok(printedSaying('EMPTY in the server') ~= nil,
+        'noammo says whose magazine it emptied')
+    ok(BR.Inv.of(1).slots[1].clip == 0, 'and the slot really is empty')
+    local pool = BR.Config.WeaponById['pistol'].ammo
+    ok((BR.Inv.of(1).ammo[pool] or 0) == 0,
+        'and so is the pool it would otherwise reload from',
+        tostring(BR.Inv.of(1).ammo[pool]))
+
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NO_AMMO') ~= nil,
+        'BR.ValidateShot genuinely returns NO_AMMO from a real shot')
+    ok(printedSaying('*clip 0') ~= nil,
+        'and the row shows the magazine the server believed, starred',
+        printedSaying('clip ') or 'no clip line')
+
+    -- NO_AMMO IS NOT FORCED and must file normally: nothing was bent, the
+    -- server simply believes what it was told.
+    ok(printedSaying('[FORCED') == nil,
+        'a noammo refusal carries no FORCED stamp -- no bound was bent')
+
+    -- noammo REFUSES A HAND WITH NO MAGAZINE IN IT rather than silently doing
+    -- nothing. Fists cannot produce NO_AMMO at all.
+    twoAlive()
+    BR.Inv.reset(1)
+    printed = {}
+    runCommand('brtestfire', 'noammo', '1')
+    ok(printedSaying('not holding a weapon') ~= nil,
+        'noammo on empty hands says fists have no magazine')
+
+    -- THE HEARTBEAT, which is the guarantee that a lever left armed keeps
+    -- saying so rather than going quiet after the banner scrolls away.
+    twoAlive()
+    runCommand('brtestfire', 'far')
+    printed = {}
+    fakeTime = fakeTime + 16000
+    BR.Sched.step(fakeTime)
+    ok(printedSaying('STILL ARMED') ~= nil,
+        'an armed lever announces itself again fifteen seconds later')
+    ok(printedSaying('brtestfire off') ~= nil,
+        'and names the command that turns it off')
+
+    runCommand('brtestfire', 'off')
+    printed = {}
+    fakeTime = fakeTime + 16000
+    BR.Sched.step(fakeTime)
+    ok(printedSaying('STILL ARMED') == nil,
+        'and a disarmed one goes quiet -- the job is not a leaked loop')
+
+    -- THE MATCH ENDING CLEARS IT. One of the four guarantees, and the one a
+    -- playtester actually relies on.
+    twoAlive()
+    runCommand('brtestfire', 'far')
+    printed = {}
+    fire('br:match:destroyed', nil, { matchId = 1 })
+    ok(printedSaying('DISARMED by the match ending') ~= nil,
+        'a match ending disarms the lever and says so')
+    printed = {}
+    runCommand('brtestfire', 'status')
+    ok(printedSaying('nothing armed') ~= nil, 'and status agrees')
+
+    -- ...AND SO DOES THE RESOURCE STOPPING.
+    runCommand('brtestfire', 'far')
+    printed = {}
+    fire('onResourceStop', nil, 'br_core')
+    ok(printedSaying('DISARMED by br_core stopping') ~= nil,
+        'stopping br_core disarms it too')
+
+    -- ...but not somebody ELSE's resource stopping.
+    runCommand('brtestfire', 'far')
+    printed = {}
+    fire('onResourceStop', nil, 'some_other_resource')
+    ok(printedSaying('DISARMED') == nil,
+        'another resource stopping leaves it alone')
+    runCommand('brtestfire', 'off')
+
+    -- STATUS AND UNKNOWN MODES BOTH NAME THE MODE LIST, so a typo is a
+    -- correction rather than a silent no-op.
+    printed = {}
+    runCommand('brtestfire', 'sideways')
+    ok(printedSaying('unknown mode') ~= nil, 'an unknown mode says so')
+    ok(printedSaying('noammo') ~= nil, 'and lists the ones that work')
+
+    printed = {}
+    runCommand('brtestfire', 'off')
+    ok(printedSaying('nothing was armed') ~= nil,
+        'off with nothing armed is a statement, not a silent success')
+
+    BR.Server.devMode = devWas
+end
+
+describe('damage.notThrownIsReachable')
+do
+    -- IS NOT_THROWN REACHABLE FROM AN HONEST CLIENT AT ALL? (#93)
+    --
+    -- The owner had low confidence in this reason and asked whether it should
+    -- be tested or deleted. The answer is neither: it is reachable, it needs NO
+    -- bent bound to reach, and BOTH ways of reaching it are an honest player
+    -- doing an ordinary thing. Every assertion here runs against the SHIPPED
+    -- BR.Config.Combat -- nothing is armed, nothing is bent.
+    --
+    -- WHY IT HAPPENS. `ctx.threwRecently` is fed by BR.Damage.noteThrow, and
+    -- noteThrow is called from exactly one place: the THROWABLE branch of
+    -- inventory.lua's INV_AMMO handler. So for anything that is not
+    -- ItemKind.THROWABLE the throw credit is never written and is permanently
+    -- false -- which leaves `ctx.heldItem == w.id` as the entire test. That is
+    -- what weapons.lua's own note says it intends ("the held check still
+    -- applies and is the whole security story"). What it misses is that the
+    -- held check is evaluated when the BLAST lands, not when the trigger is
+    -- pulled, and those are seconds apart for a projectile.
+    --
+    -- The consequence is not cosmetic: NOT_THROWN is `high` in BR.ShotTier and
+    -- carries no BR.ShotBarOverride, so refusalBar.high = 1 -- ONE of these
+    -- opens an incident, with screenshots, against an honest player.
+    local RPG    = 0xB1CA77B1
+    local STICKY = 0x2C3731D9
+
+    local function pair2()
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        BR.Roster.get(1).squadId = 11
+        BR.Roster.get(2).squadId = 22
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 10.0, y = 0.0, z = 30.0 }
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+    end
+
+    local function blast(hash)
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = hash, hitComponent = 0,
+            weaponDamage = 120, hitGlobalIds = { 1002 },
+        })
+    end
+
+    -- The launchers are ItemKind.WEAPON, so nothing ever writes a throw credit
+    -- for them. This is the fact the whole finding rests on.
+    ok(BR.Config.WeaponById['rpg'].explosive == true,
+        'the RPG takes the explosive path through the validator')
+    BR.Damage.forget(1)
+    ok(BR.Damage.threwRecently(1, 'rpg') == false,
+        'and the server can never have watched anyone "throw" one')
+
+    -- 1. FIRE A ROCKET, SWAP TO YOUR RIFLE, ROCKET LANDS.
+    pair2()
+    BR.Inv.give(1, { item = 'rpg', kind = BR.ItemKind.WEAPON,
+                     rarity = 5, count = 1, clip = 1 })
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 12 })
+    BR.Inv.of(1).active = 1
+    fakeTime = fakeTime + 5000
+    -- Still holding it when the rocket lands: the honest case that passes.
+    blast(RPG)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'a rocket that lands while you still hold the launcher is fine')
+
+    pair2()
+    BR.Inv.give(1, { item = 'rpg', kind = BR.ItemKind.WEAPON,
+                     rarity = 5, count = 1, clip = 1 })
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 12 })
+    BR.Inv.of(1).active = 2        -- swapped to the pistol mid-flight
+    fakeTime = fakeTime + 5000
+    blast(RPG)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NOT_THROWN') ~= nil,
+        'but swapping weapons before it lands refuses it -- shipped config, '
+        .. 'no lever armed')
+    ok(printedSaying('[FORCED') == nil,
+        'and nothing was forced: this is the validator on its own numbers')
+
+    -- ...and it is a `high` refusal with a bar of one, so it opens a case on
+    -- the first occurrence. That is what makes this worth reporting rather
+    -- than noting.
+    local bar, tier = BR.ShotBarFor(BR.ShotRefusal.NOT_THROWN,
+                                    BR.Config.Combat.refusalBar)
+    ok(tier == 'high' and bar == 1,
+        'one NOT_THROWN opens an incident, so a weapon swap is enough',
+        ('tier=%s bar=%s'):format(tostring(tier), tostring(bar)))
+
+    -- 2. A STICKY BOMB DETONATED AFTER THE GRACE WINDOW.
+    --
+    -- A sticky is remote-detonated: sticking one to a wall and waiting is the
+    -- entire tactic. explosiveGraceMs is 30s, so any trap held longer than
+    -- that has lost its credit by the time it goes off.
+    pair2()
+    BR.Inv.give(1, { item = 'sticky', kind = BR.ItemKind.THROWABLE,
+                     rarity = 4, count = 3 })
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 12 })
+    BR.Inv.of(1).active = 1
+    BR.Damage.noteThrow(1, 'sticky')
+    fakeTime = fakeTime + 2000
+    ok(BR.Damage.threwRecently(1, 'sticky') == true,
+        'a sticky thrown two seconds ago is still credited')
+    fakeTime = fakeTime + (BR.Config.Combat.explosiveGraceMs + 1000)
+    ok(BR.Damage.threwRecently(1, 'sticky') == false,
+        'and one thrown before the grace window is not')
+
+    BR.Inv.of(1).active = 2        -- pistol out while waiting for the ambush
+    blast(STICKY)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NOT_THROWN') ~= nil,
+        'a sticky trap sprung after the grace window is refused too')
+end
+
 describe('inv.throwables')
 do
     -- UNLIMITED GRENADES, for one commit.
