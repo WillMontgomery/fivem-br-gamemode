@@ -2331,6 +2331,70 @@ do
     logged = {}
     ok(pcall(commands['brloot'], nil, {}, ''), '/brloot does not throw')
     ok(pcall(commands['brkeys'], nil, {}, ''), '/brkeys does not throw')
+    ok(pcall(commands['brarc'], nil, {}, ''), '/brarc does not throw')
+end
+
+describe('an item born from a container is given a body NOW, not on the 1Hz pass')
+do
+    -- THE ARRIVAL ARC'S FIRST BROKEN LINK (owner, 2026-08-23: "The loot doesn't
+    -- animate out of the crate like it should").
+    --
+    -- animate() cannot move a prop that does not exist -- its first line returns
+    -- on `not e.obj` -- and the ONLY thing that ever asked for a prop was the
+    -- loot.props pass, registered on the SLOW band at once per SECOND. The
+    -- arrival window is 520ms. So an item bursting out of a crate two metres
+    -- away waited up to twice its own animation for a body, and by the time it
+    -- had one the window had shut. The branch was not broken; it was
+    -- unreachable, for every container, since it was written.
+    --
+    -- THIS IS PROVABLE HERE PRECISELY BECAUSE THE SLOW BAND IS NEVER STEPPED IN
+    -- THIS FILE. Nothing else in the harness can put an id in that queue, so a
+    -- queue that grows on the LOOT_ADD alone is the queue-jump and nothing else.
+    bootOn(true, true)
+    clearWorld()
+
+    local ITEM = BR.Config.Consumables[1].id
+
+    --- What /brloot says is waiting for a model.
+    local function queuedNow()
+        local line = lootLine('queued%s+%d+')
+        return line and tonumber(line:match('queued%s+(%d+)'))
+    end
+
+    local bornBefore = BR.Loot.arc.born
+
+    -- The generated layout was always just there. No origin, no hurry: it can
+    -- wait for the trickle like the other hundred entries in the cell.
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9001, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 2.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+    } })
+    ok(queuedNow() == 0, 'an entry with no origin waits for the 1Hz pass',
+        tostring(queuedNow()))
+
+    -- One that has this instant come out of a container cannot.
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9002, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 2.0, y = 1.5, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+        fx = 0.5, fy = 0.5, fl = 0.6,
+    } })
+    ok(queuedNow() == 1, 'one born with an origin jumps the queue',
+        tostring(queuedNow()))
+    ok(BR.Loot.arc.born == bornBefore + 1,
+        'and is counted, so /brarc can say whether any of this ran',
+        ('%d -> %d'):format(bornBefore, BR.Loot.arc.born))
+
+    -- ...BUT ONLY IF IT IS CLOSE ENOUGH TO BE WORTH A BODY. drain() builds
+    -- whatever it is handed and never asks how far away it is, so without this
+    -- gate a container opened at the far edge of the 768m subscription would
+    -- build props nobody can see, for the next pass to tear straight back down.
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9003, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 900.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+        fx = 898.0, fy = 0.0, fl = 0.6,
+    } })
+    ok(queuedNow() == 1, 'a container opened beyond prop range still does not',
+        tostring(queuedNow()))
 end
 
 -- ------------------------------------------------------------------- voice ---

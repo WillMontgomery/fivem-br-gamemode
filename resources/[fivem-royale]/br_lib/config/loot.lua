@@ -480,6 +480,22 @@ BR.Config.Loot = {
     arriveMs        = 520,
     arriveArc       = 0.55,   -- extra metres at the top of the parabola
 
+    -- HOW STALE AN ORIGIN MAY BE AND STILL FLY (and this number is the whole of
+    -- why the arc never played, from the other end).
+    --
+    -- The arrival is animated by moving a PROP, and the prop does not exist when
+    -- the message arrives: it is built by the spawn worker, which streams a
+    -- model in. Measuring the 520ms window from the moment the message landed
+    -- meant the window was always shut by the time there was anything to move
+    -- (owner, 2026-08-23: the arc never played, for any crate).
+    --
+    -- So the clock now starts when the PROP is built, and this is the guard on
+    -- that: an entry whose birth was longer ago than this appears at rest, no
+    -- ceremony. It has to be longer than a model stream (RequestModel waits up
+    -- to 3s) and short enough that walking 180m to a crate somebody opened a
+    -- minute ago does not replay the burst.
+    arriveGraceMs   = 3000,
+
     -- HOW HIGH A PROP IS DROPPED FROM BEFORE IT IS SETTLED. Not its resting
     -- height: PlaceObjectOnGroundProperly decides that, from the model's
     -- bounding box and the slope, and the answer is read back and remembered.
@@ -662,6 +678,13 @@ BR.Config.Loot = {
     -- the last thing anyone wants to do (user call, 2026-08-05). ~15 feet.
     deathScatterRadius = 4.6,
     deathBoxSpread     = 0.8,   -- still used by chest contents
+
+    -- HOW CLOSE TO THE BOX AN ITEM MAY LAND. The contents no longer sit on an
+    -- even ring (see scatter() in server/loot.lua) and the inner band of that
+    -- spill is well inside a crate's own footprint for a two-item chest -- an
+    -- item inside the prop is an item that can be neither seen nor targeted,
+    -- which is indistinguishable from loot that failed to spawn.
+    scatterClearance   = 0.7,
 
     -- Inventory. Five is the number the keybinds (slot1..slot5), the UI's
     -- emptyInv and the HUD bar all already assume; changing it means changing

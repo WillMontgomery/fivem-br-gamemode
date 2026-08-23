@@ -45,8 +45,9 @@ local CAN_TAKE = BR.Config.LootTakeStates
 --- is in a chest is the reason to open it, and a client that knew would only
 --- open the good ones.
 --- @param e table
+--- @param born boolean|nil  true only on the message that ANNOUNCES A BIRTH.
 --- @return table
-local function wireEntry(e)
+local function wireEntry(e, born)
     return {
         id      = e.id,
         kind    = e.kind,
@@ -72,8 +73,18 @@ local function wireEntry(e)
         -- is inside crates it has not opened, which is a wallhack for three
         -- floats' worth of latency we do not actually need: the origin
         -- travels in the same message as the item.
-        fx      = e.fx,
-        fy      = e.fy,
+        --
+        -- AND ONLY IN THAT MESSAGE. An origin is a BIRTH EVENT, not a property
+        -- of the entry, and this is the distinction that makes the arc safe to
+        -- run at all. These fields used to be on every wire copy -- the cell
+        -- subscription, the reconnect snapshot, the repair re-announce -- so a
+        -- player who walked into the cell five minutes after a crate was opened
+        -- was handed the same three floats as the player who opened it. The
+        -- client stamps the arrival clock when the message arrives, because it
+        -- has no other clock to stamp it from, so that player's loot would have
+        -- flown out of a box somebody emptied while they were elsewhere.
+        fx      = born and e.fx or nil,
+        fy      = born and e.fy or nil,
         -- HEIGHT ABOVE THE GROUND, NOT AN ABSOLUTE Z, and that distinction is
         -- a bug fix. The server's z for any entry is a first-pass hint -- only
         -- the client has a ground probe, which is why groundZ() exists there
@@ -84,7 +95,7 @@ local function wireEntry(e)
         -- A lift is unambiguous: the client adds it to the ground height it
         -- resolved itself, so the arc starts at the crate's mouth or the
         -- player's hands wherever the terrain actually is.
-        fl      = e.flift,
+        fl      = born and e.flift or nil,
     }
 end
 
@@ -121,10 +132,16 @@ local function subscribersOf(m, key)
 end
 
 --- Announce a new entry to everyone already looking at its cell.
+---
+--- `born` is what separates "this thing has just come into existence" from the
+--- two RE-announces that ride the same message: a container becoming its husk,
+--- and an entry whose position the repair round-trip corrected. Only the first
+--- is allowed to carry an origin -- see wireEntry.
 --- @param m table
 --- @param e table
-local function announce(m, e)
-    local payload = { wireEntry(e) }
+--- @param born boolean|nil
+local function announce(m, e, born)
+    local payload = { wireEntry(e, born) }
     for _, src in ipairs(subscribersOf(m, e.cell)) do
         TriggerClientEvent(BR.Net.LOOT_ADD, src, payload)
     end
@@ -194,7 +211,7 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from)
         airdrop = stack.airdrop,
     }
     index(m.loot, e)
-    announce(m, e)
+    announce(m, e, true)
     return e
 end
 
@@ -586,6 +603,81 @@ local function rateOk(e)
     return e.lootClaims <= (L.pickupRateLimit or 4)
 end
 
+--- Where a container's contents land, relative to it.
+---
+--- SPILLED, NOT ARRANGED (owner, 2026-08-23: "the loot doesn't need to be
+--- spread equidistant from the crate"). What was here was `(i / n) * 2pi` at
+--- one fixed radius: every item on an even ring at an identical distance, which
+--- reads as an inventory laid out for inspection rather than as a box that
+--- burst.
+---
+--- THE OLD CONSTRAINTS SURVIVE INTACT, because they are the reason the ring was
+--- a ring in the first place:
+---
+---   VISIBLE AND REACHABLE. Nothing is ever thrown FURTHER than the ring it
+---     replaces -- the radius factors are all <= 1.0 -- and nothing lands
+---     closer to the box than `scatterClearance`, which is what stops an item
+---     ending up inside the container prop where it can be neither seen nor
+---     targeted.
+---
+---     AND THAT BOUND IS WHY THIS CANNOT DISTURB THE GROUND PLACEMENT (owner,
+---     2026-08-23: "We have loot properly landing on the ground today. Nothing
+---     should change there"). Every position this produces is strictly INSIDE
+---     the disc the old ring's items already sat on -- the ring sat exactly on
+---     its rim -- so no item is offered a patch of terrain the old layout was
+---     not already willing to put one on. Nothing here touches z at all: the
+---     caller still passes the container's own, and only the CLIENT resolves a
+---     real ground height (groundZ, then PlaceObjectOnGroundProperly), with the
+---     LOOT_FIX round-trip unchanged behind it. A container on a roof spills
+---     onto that roof, which is the answer the ring gave too.
+---
+---   EVERYONE SEES THE SAME ARRANGEMENT. Not by luck: the offsets come out of
+---     BR.Rng seeded from the match's own layout seed and the CONTAINER'S ID,
+---     both fixed for the life of the entry. math.random would have been just
+---     as identical across clients (this runs on the server, once, and the
+---     positions are what travel) and still wrong -- the layout has to replay
+---     from a seed for /brlootseed to mean anything, and an unseeded roll would
+---     make the same pinned seed lay out differently on the second run.
+---
+--- NOTHING STACKS INSIDE ANYTHING ELSE, which was the ring's other quiet job
+--- and the whole reason the airdrop had to name a wider spread. Each item keeps
+--- its own angular wedge and wanders only inside it, and the radius alternates
+--- between an inner and an outer band by index, so two neighbours are never
+--- both pushed in. Swept over 50,000 seeds at every size a container can hold,
+--- the closest any pair lands is 1.07m (a 3-item crate) and 1.44m at the
+--- airdrop's fourteen -- an ammo box is about a third of a metre across.
+---
+--- The numbers below were measured rather than guessed, and the ANGULAR one is
+--- the sensitive one: at +/- 0.28 of a wedge that worst pair fell to 0.90m,
+--- because a wide swing is a small chord once an item is also on the inner
+--- band. Widen it again and re-measure before believing otherwise.
+--- @param seed integer
+--- @param n integer
+--- @param radius number   the old ring's radius: the OUTER bound, not a target
+--- @return table[]        n entries of { dx, dy }
+local function spill(seed, n, radius)
+    local rng = BR.Rng(seed)
+    local clearance = L.scatterClearance or 0.7
+    local wedge = (math.pi * 2.0) / n
+    local out = {}
+    for i = 1, n do
+        -- The wedge this item owns, and how far inside it it may wander:
+        -- +/- 0.22 of a wedge, which leaves 56% of the gap between any two
+        -- neighbours untouched.
+        local a = (i - 0.5) * wedge + (rng:float() - 0.5) * (wedge * 0.44)
+        -- Two bands by index, so adjacent items are never on the same one.
+        -- Floored rather than rescaled, because the alternative -- mapping both
+        -- bands into the annulus above the clearance -- lets an item sit
+        -- exactly ON the clearance, and two of those at a shallow angle are the
+        -- closest pair the whole scheme can produce.
+        local lo, hi = 0.82, 1.0
+        if i % 2 == 0 then lo, hi = 0.52, 0.70 end
+        local r = math.max(clearance, radius * (lo + (hi - lo) * rng:float()))
+        out[i] = { dx = math.cos(a) * r, dy = math.sin(a) * r }
+    end
+    return out
+end
+
 --- Scatter a container's contents on the ground around it.
 --- @param m table
 --- @param container table
@@ -594,13 +686,12 @@ local function scatter(m, container)
     local n = #contents
     if n == 0 then return end
 
-    -- A ring, not a random spray: everything lands visible and reachable, and
-    -- two players opening the same chest see the same arrangement.
-    --
     -- THE CONTAINER MAY NAME ITS OWN SPREAD, and only the airdrop does: fourteen
     -- items on a crate's ring stack inside each other, which is what
     -- BR.Config.Airdrop.scatterSpread exists to widen. Unset everywhere else, so
-    -- every ordinary crate and death box uses the number it always has.
+    -- every ordinary crate and death box uses the number it always has -- and
+    -- the spill above still treats whatever comes out as its OUTER bound, so a
+    -- wider airdrop stays exactly as wide as it was.
     local spread = container.spread or L.deathBoxSpread or 0.8
     local radius = math.max(spread, 0.55 * n * spread)
     -- Everything comes OUT OF THE BOX, a little above its base, so the client
@@ -609,11 +700,14 @@ local function scatter(m, container)
         x = container.x, y = container.y,
         lift = L.crateMouthHeight or 0.6,
     }
-    for i, stack in ipairs(contents) do
-        local a = (i / n) * math.pi * 2.0
-        BR.Loot.spawnStack(m, stack,
-            container.x + math.cos(a) * radius,
-            container.y + math.sin(a) * radius,
+    -- The match layout's seed folded with the container's id and a prime of its
+    -- own -- the same shape BR.Loot.begin uses -- so two containers opened in
+    -- one match do not spill identically.
+    local seed = (m.loot.seed or 0) + (container.id or 0) * 2654435761
+    for i, o in ipairs(spill(seed, n, radius)) do
+        BR.Loot.spawnStack(m, contents[i],
+            container.x + o.dx,
+            container.y + o.dy,
             container.z, from)
     end
 end

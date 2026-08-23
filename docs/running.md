@@ -162,6 +162,7 @@ Install the pre-commit hook with `./tools/install-hooks.sh`.
 | `brfocus` | client | The NUI focus stack — why you do or don't have a cursor |
 | `brbus`, `brdropdbg` | client | Bus ride and skydive state, live |
 | `brloot` | client | What this client can see: entries, live props, nearest item |
+| `brarc` | client | Whether loot actually arcs out of a container. Drops one item with a known origin and reports, link by link, how far it got — origin received, prop built, arc armed, frames flown — plus the same tally for real crates opened in play |
 | `brvoice` | both | Proximity voice state — mode, channel, who this client hears. The server's first line says whether pma-voice is even installed |
 | `brdbno` | both | The downed/revive interaction, counted as it happens: asks, stops, refusals with their reason, progress ticks, and frames where a live hold found no body. Exists because "I hold the button, the ring fills, nothing happens" describes three different faults that look identical on screen |
 | `brcrawl` | client | The crawl: which clip the build actually resolved, and whether this client is emitting anything network-visible while lying still |

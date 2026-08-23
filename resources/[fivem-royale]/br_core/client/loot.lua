@@ -32,6 +32,30 @@ BR.Loot.openedCount = 0
 --- drag is not strong enough", which cost a round of guessing to tell apart.
 BR.Loot.dragTicks = 0
 
+--- THE ARRIVAL ARC, COUNTED AT EVERY LINK IN ITS OWN CHAIN.
+---
+--- The arc "from the crate's mouth to where it lands" was written, shipped, and
+--- never once played -- for every container, all the way back to when it was
+--- written -- and nothing anywhere said so. It is four things in a row (the
+--- server sends an origin, the client keeps it, a prop gets built while the
+--- window is still open, the animation moves it), any one of which failing
+--- produces the exact same symptom: an item that pops into existence. That is
+--- the shape of failure /brloot's drag counter was added for, and it has the
+--- same answer -- count each link separately, so "it never ran" and "it ran and
+--- looked wrong" cannot be confused, and so neither needs a playtest to settle.
+---
+--- Read by /brarc and summarised by /brloot.
+BR.Loot.arc = {
+    born    = 0,     -- entries that arrived carrying an origin
+    armed   = 0,     -- ...whose prop was built while the window was still open
+    late    = 0,     -- ...whose prop was built too late to fly (the old bug)
+    flights = 0,     -- arcs that drew at least one frame
+    frames  = 0,     -- arrival frames drawn, all arcs
+    lastBuildMs = nil,  -- announce -> prop, last arrival seen
+    lastFrames  = 0,    -- frames the last arc drew
+    lastPeak    = 0.0,  -- metres above its resting height the last arc reached
+}
+
 local L = BR.Config.Loot
 
 local entries   = {}      -- [id] = entry, with prop bookkeeping attached
@@ -811,6 +835,12 @@ local function despawn(e)
     -- The settled height belongs to THAT object handle and that pose. A prop
     -- rebuilt after streaming out has to be measured again.
     e.restZ, e.settled = nil, false
+    -- AND THE FLIGHT DIES WITH THE BODY. `arriveAt` is what keeps the render
+    -- pass animating this entry from outside the glow radius, so leaving it set
+    -- on an entry with no prop buys a per-frame callback that returns on its
+    -- first line for the rest of the match. A rebuild re-arms it if the entry
+    -- is still young enough to be worth flying (see drain).
+    e.arriveAt, e.arcSeen = nil, nil
     if e.obj then
         byObject[e.obj] = nil
         if DoesEntityExist(e.obj) then DeleteEntity(e.obj) end
@@ -1117,6 +1147,37 @@ local function drain()
 
                                 e.obj = obj
                                 byObject[obj] = id
+
+                                -- THE ARRIVAL CLOCK STARTS HERE, AND THAT IS
+                                -- THE FIX (owner, 2026-08-23: "the loot doesn't
+                                -- animate out of the crate like it should").
+                                --
+                                -- It used to start when the LOOT_ADD message
+                                -- was handled, and animate() cannot move a prop
+                                -- that does not exist -- its first line returns
+                                -- on `not e.obj`. Between those two moments sit
+                                -- the 1Hz spawn pass and a model stream, so the
+                                -- 520ms window had ALWAYS closed before there
+                                -- was anything to animate. The branch was not
+                                -- broken; it was unreachable.
+                                --
+                                -- Everything above has just placed this object
+                                -- at its RESTING height and measured restZ off
+                                -- it, which is why the arm is here rather than
+                                -- earlier: the arc has to know where it is
+                                -- landing before it can leave. animate() picks
+                                -- it up on the next frame.
+                                local age = GetGameTimer() - (e.bornAt or 0)
+                                e.arriveAt = nil
+                                if e.fx and e.fy and e.bornAt then
+                                    BR.Loot.arc.lastBuildMs = age
+                                    if age < (L.arriveGraceMs or 3000) then
+                                        e.arriveAt = GetGameTimer()
+                                        BR.Loot.arc.armed = BR.Loot.arc.armed + 1
+                                    else
+                                        BR.Loot.arc.late = BR.Loot.arc.late + 1
+                                    end
+                                end
                             end
                         end
                         -- The two crate models stay resident. They are the
@@ -1141,6 +1202,11 @@ end
 -- --------------------------------------------------------------------------
 
 local function addEntries(list)
+    -- Read once, and only if something in this batch was actually born just
+    -- now. The common caller is a cell subscription of 50-150 entries that were
+    -- always there, and none of them needs to know where anybody is standing.
+    local px, py = nil, nil
+
     for _, d in ipairs(list or {}) do
         if d.id then
             local have = entries[d.id]
@@ -1204,6 +1270,37 @@ local function addEntries(list)
                     bornAt = d.fx and GetGameTimer() or nil,
                     lift = 0.0,
                 }
+
+                -- BORN JUST NOW MEANS BUILT JUST NOW, and this is the other
+                -- half of why the arc never played.
+                --
+                -- Nothing here used to ask for a prop at all: the ONLY thing
+                -- that queues a new entry is the loot.props pass, which is
+                -- registered on the SLOW band -- once per SECOND. An item that
+                -- has this instant burst out of a crate two metres away
+                -- therefore waited up to a full second for a body, and the
+                -- arrival window is half that. This is the same queue-jump a
+                -- crate becoming its husk already gets, for the same reason:
+                -- something the player is watching cannot wait for the trickle.
+                --
+                -- Gated on the prop radius because drain() does NOT check
+                -- distance -- it builds whatever it is handed -- and a crate
+                -- opened at the far edge of the 768m subscription would
+                -- otherwise build props nobody can see, for the next pass to
+                -- tear straight back down.
+                if d.fx then
+                    if not px then
+                        local p = GetEntityCoords(PlayerPedId())
+                        px, py = p.x, p.y
+                    end
+                    local near = L.propDistance
+                    if BR.Dist2(px, py, d.x or 0.0, d.y or 0.0) <= near * near then
+                        BR.Loot.arc.born = BR.Loot.arc.born + 1
+                        queued[d.id] = true
+                        table.insert(queue, 1, d.id)
+                        drain()
+                    end
+                end
             end
         end
     end
@@ -1555,9 +1652,11 @@ end
 --- Three things stack, in order:
 ---
 ---   ARRIVAL  an item born from a crate or a drop flies an arc from where it
----            came from to where it lands. Runs once, from the entry's own
----            birth stamp, so it looks the same for a player who was already
----            standing there and one who walked up mid-flight.
+---            came from to where it lands. Runs once, from the moment its PROP
+---            was built -- see the arming block in drain(). It used to run off
+---            the entry's birth stamp, which is when the MESSAGE arrived, and
+---            that is why it never ran at all: there is no prop to move for the
+---            first second of an entry's life, and the whole window is 520ms.
 ---   HOVER    inside prompt range it rises to about waist height. Eased both
 ---            ways: a snap reads as a bug, a rise reads as "take me".
 ---   BOB+SPIN a slow turn and a shallow breath, scaled by how lifted it is --
@@ -1596,9 +1695,14 @@ local function animate(e, d2, dt, now)
 
     -- ARRIVAL. A parabola, not a straight line: the extra height is what
     -- makes it read as thrown rather than slid.
+    --
+    -- DRIVEN OFF `arriveAt`, WHICH IS STAMPED WHEN THE PROP IS BUILT, not off
+    -- the moment the message arrived. See the arming block in drain(): the prop
+    -- is what flies, and for the whole life of this animation the prop did not
+    -- exist until long after the window had shut.
     local arriveMs = L.arriveMs or 520
-    if e.fx and e.bornAt and (now - e.bornAt) < arriveMs then
-        local t = (now - e.bornAt) / arriveMs
+    if e.arriveAt and (now - e.arriveAt) < arriveMs and e.fx and e.fy then
+        local t = (now - e.arriveAt) / arriveMs
         local k = ease(t)
         -- THE ORIGIN'S HEIGHT IS A LIFT ABOVE OUR OWN GROUND, never a z off
         -- the wire. The server's z is a first-pass hint with no ground probe
@@ -1617,8 +1721,29 @@ local function animate(e, d2, dt, now)
         applyPropScale(e.obj, e.propScale)
         e.lift = 0.0
         e.settled = false
+
+        -- PROOF, AND THE ONLY PROOF THERE IS FROM A CHAIR. See BR.Loot.arc: an
+        -- arc that never runs and an arc that runs badly look identical from
+        -- the outside, and this frame counter is what tells them apart without
+        -- a playtest. /brarc reads it.
+        local a = BR.Loot.arc
+        if not e.arcSeen then
+            e.arcSeen = true
+            a.flights, a.lastFrames, a.lastPeak = a.flights + 1, 0, 0.0
+        end
+        a.frames, a.lastFrames = a.frames + 1, a.lastFrames + 1
+        if z - rest > a.lastPeak then a.lastPeak = z - rest end
         return
     end
+
+    -- THE FLIGHT IS OVER. Cleared rather than left to expire on its own clock,
+    -- because `arriveAt` is also what tells the render pass to keep animating
+    -- this entry from outside the glow radius -- an arc that never clears is a
+    -- prop that keeps paying for a frame callback for the rest of the match.
+    -- The hover below then settles it back onto `rest`, which is the height
+    -- the spawn measured, so the flight leaves the ground placement exactly as
+    -- it found it.
+    if e.arriveAt then e.arriveAt, e.arcSeen = nil, nil end
 
     -- HOVER, toward 1 when the player is close enough to be offered it.
     local pr = L.promptDistance or 2.5
@@ -1898,6 +2023,17 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         -- gzOk gates the DRAWING too, not just the prop: an entry rejected for
         -- standing in the sea still had its rarity disc painted on the waves
         -- (user, 2026-08-06).
+        -- AN ARC OUTRANGES THE DRAWING, and it has to. The glow radius is the
+        -- right gate for the hover -- nothing 30m away is being offered to
+        -- anybody -- but a prop already in the air has to be flown all the way
+        -- down whatever happens next. Gated on the same radius, it would be
+        -- stranded mid-flight by a player who drove out of range during the
+        -- half-second the landing takes, and a frozen object hanging over a
+        -- road is forever: nothing else ever moves it.
+        if e.arriveAt and d2 > glow2 and not isHusk(e) and e.gzOk then
+            animate(e, d2, dt, frameNow)
+        end
+
         if d2 <= glow2 and not isHusk(e) and e.gzOk then
             animate(e, d2, dt, frameNow)
             local gz = groundZ(e)
@@ -2619,6 +2755,14 @@ RegisterCommand('brloot', function()
         end
     end
     print(('  crate props live: %d sealed, %d husk'):format(nSealed, nHusk))
+
+    -- PROOF THE ARC IS RUNNING, for exactly the reason the drag line above
+    -- exists. `born 12, flew 0` is the shape the missing arc had for as long as
+    -- it has existed, with nothing anywhere to say so; /brarc is the full
+    -- readout and the live test.
+    local arc = BR.Loot.arc
+    print(('  arrival arc: %d born, %d armed, %d too late, %d flew  (/brarc)')
+        :format(arc.born, arc.armed, arc.late, arc.flights))
     print(('  crate mass: %.0f kg  (glow off after %d opened; %d opened)')
         :format(L.crateMass or 0.0, L.shineOpenLimit or 0, BR.Loot.openedCount or 0))
 
@@ -3015,5 +3159,115 @@ RegisterCommand('brpromptcheck', function()
         BR.Native.help(('CUSTOM: press %s to pick up'):format(custom))
         Citizen.Wait(6000)
         BR.Native.help('VANILLA: press ~INPUT_CONTEXT~ to pick up')
+    end)
+end, false)
+
+--- DOES THE ARRIVAL ARC ACTUALLY RUN?
+---
+--- Owner, 2026-08-23: "The loot doesn't animate out of the crate like it
+--- should. This is a more common issue than just airdrops."
+---
+--- It did not, anywhere, ever -- and the reason that went unnoticed for so long
+--- is that there was no way to ask. An item that pops into existence and an item
+--- whose arc ran for two frames at a quarter of a metre look identical from a
+--- chair, and both look identical to an origin the server never sent. So this
+--- drops one item with a KNOWN origin and reports, link by link, how far down
+--- the chain it got:
+---
+---   origin   the entry arrived carrying fx/fy/fl at all
+---   prop     a body was built for it, and how long that took
+---   armed    ...while the arrival window was still open. THIS is the link that
+---            was broken: the prop always arrived after it had shut.
+---   flew     the arrival branch in animate() actually drew frames, and how far
+---            off its resting height it got
+---
+--- The counters above the test are the same links tallied for REAL containers
+--- opened in play since this resource started, so "the test drop arcs" and "a
+--- crate bursting arcs" stay two readings rather than one hopeful inference.
+---
+--- The test entry is client-local with a NEGATIVE id -- every server id is
+--- positive and the server has never heard of this one -- and it removes itself
+--- once the verdict is printed.
+local arcTestId = 0
+
+RegisterCommand('brarc', function()
+    local a = BR.Loot.arc
+    print('=== arrival arc ===')
+    print(('  window %dms, grace %dms, height %.2fm')
+        :format(L.arriveMs or 520, L.arriveGraceMs or 3000, L.arriveArc or 0.55))
+    print(('  in play: %d born with an origin, %d armed, %d too late, %d flew')
+        :format(a.born, a.armed, a.late, a.flights))
+    if a.lastBuildMs then
+        print(('  last arrival: prop built %dms after the announce, %d frame(s), peak %.2fm')
+            :format(a.lastBuildMs, a.lastFrames, a.lastPeak))
+    end
+
+    if not canSee() then
+        print('  the test needs loot to be visible: stand on the warmup pad or in a match')
+        return
+    end
+
+    -- WHERE A CRATE WOULD BE, AND WHERE ITS CONTENTS LAND. Two metres ahead and
+    -- a couple to the side, which is roughly the geometry scatter() produces for
+    -- a real chest. A test that dropped the item onto its own origin would prove
+    -- nothing: a zero-length arc looks exactly like no arc.
+    local ped = PlayerPedId()
+    local p   = GetEntityCoords(ped)
+    local f   = GetEntityForwardVector(ped)
+    local ox, oy = p.x + f.x * 2.0, p.y + f.y * 2.0
+    local tx, ty = ox + f.y * 1.6, oy - f.x * 1.6
+
+    local item = BR.Config.Consumables[1]
+    if not item then
+        print('  no consumable in the config to drop')
+        return
+    end
+
+    arcTestId = arcTestId - 1
+    local id = arcTestId
+    local before = { armed = a.armed, late = a.late, flights = a.flights }
+
+    -- THROUGH THE REAL EVENT, not by calling the handler directly. The handler
+    -- is what is under test; the registration in front of it is one more link
+    -- that can be wrong, and including it costs nothing.
+    TriggerEvent(BR.Net.LOOT_ADD, { {
+        id = id, kind = BR.ItemKind.CONSUMABLE, item = item.id,
+        rarity = BR.Rarity.COMMON, count = 1,
+        x = tx, y = ty, z = p.z,
+        fx = ox, fy = oy, fl = L.crateMouthHeight or 0.6,
+    } })
+
+    print(('  test: one %s, origin %.1fm from where it lands')
+        :format(item.id, BR.Dist(ox, oy, tx, ty)))
+
+    Citizen.CreateThread(function()
+        -- Long enough for the spawn worker to stream a model in (it waits up to
+        -- 3s) plus the whole flight, so a "no prop" below means no prop rather
+        -- than not yet.
+        Citizen.Wait(3500 + (L.arriveMs or 520))
+
+        local e = entries[id]
+        local origin = e ~= nil and e.fx ~= nil
+        local built  = e ~= nil and e.obj ~= nil and e.obj ~= 0
+        local armed  = a.armed > before.armed
+        local flew   = a.flights > before.flights
+
+        print('=== arrival arc: verdict ===')
+        print(('  origin   %s'):format(origin and 'yes'
+            or 'NO -- the entry arrived with no fx/fy on it'))
+        print(('  prop     %s'):format(built
+            and ('yes, %dms after the announce'):format(a.lastBuildMs or -1)
+            or  'NO -- nothing was built for the arc to move'))
+        print(('  armed    %s'):format(armed and 'yes'
+            or 'NO -- the prop arrived after the window had shut'))
+        print(('  flew     %s'):format(flew
+            and ('yes, %d frame(s), peak %.2fm above rest')
+                :format(a.lastFrames, a.lastPeak)
+            or  'NO -- animate() never took the arrival branch'))
+        print(('  %s'):format((origin and built and armed and flew)
+            and 'PASS: loot arcs out of the crate.'
+            or  'FAIL: it pops into existence. The first NO above is where it stops.'))
+
+        forget(id)
     end)
 end, false)

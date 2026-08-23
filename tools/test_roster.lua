@@ -6812,6 +6812,39 @@ do
         ok(scattered > 0,
             'and a crate\'s contents come out of the crate, not out of nowhere',
             tostring(scattered))
+
+        -- AN ORIGIN IS A BIRTH EVENT, NOT A PROPERTY OF THE ENTRY.
+        --
+        -- The client has no clock but its own: it stamps the arrival the moment
+        -- the message lands, because there is nothing else to stamp it from. So
+        -- the origin may only ride the message that announces the birth. On
+        -- every other wire copy -- a cell subscription, a reconnect snapshot,
+        -- the repair re-announce -- it has to be absent, or a player walking
+        -- into the cell five minutes later watches loot fly out of a box that
+        -- was emptied while they were somewhere else.
+        BR.Roster.get(2).pos = { x = crate.x, y = crate.y, z = crate.z }
+        sent = {}
+        fire(BR.Net.LOOT_CELL, 2, { cx = ccx, cy = ccy })
+        local late, lateWithOrigin = 0, 0
+        for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+            for _, entry in ipairs(s.args[1]) do
+                late = late + 1
+                if entry.fx or entry.fy or entry.fl then
+                    lateWithOrigin = lateWithOrigin + 1
+                end
+            end
+        end
+        ok(late > 0 and lateWithOrigin == 0,
+            'but a player who subscribes afterwards is told no origin at all',
+            ('%d of %d entries carried one'):format(lateWithOrigin, late))
+
+        -- Same rule for the snapshot a reconnect is handed.
+        local snapOrigin = 0
+        for _, entry in ipairs(BR.Loot.viewFor(2) or {}) do
+            if entry.fx or entry.fy or entry.fl then snapOrigin = snapOrigin + 1 end
+        end
+        ok(snapOrigin == 0, 'nor does the reconnect snapshot carry one',
+            tostring(snapOrigin))
     else
         ok(false, 'no chest with contents in the layout to test against')
     end
@@ -12457,6 +12490,147 @@ do
     ok(m.loot.nextId == beforeHusk, 'and produces nothing')
 end
 
+describe('loot.scatter')
+do
+    -- WHERE A CONTAINER'S CONTENTS LAND (owner, 2026-08-23: "the loot doesn't
+    -- need to be spread equidistant from the crate").
+    --
+    -- The ring this replaced was `(i / n) * 2pi` at one fixed radius, and it was
+    -- a ring for reasons that have to survive the change: everything must land
+    -- visible and reachable, nothing may stack inside anything else (which is
+    -- what the airdrop's own wider `spread` exists for), and two players opening
+    -- the same chest must see the same arrangement. The last one is the one
+    -- worth a test, because it is the one a later edit can break silently -- an
+    -- unseeded roll would look perfectly good in play and make the same pinned
+    -- seed lay out differently on the second run.
+
+    --- Open the first crate holding three or more items in a match built from
+    --- `seed`, and hand back the crate and what came out of it.
+    local function burst(seed)
+        commands['brlootseed'](nil, { tostring(seed) }, '')
+        local mm = lootMatch()
+        local crate
+        for id = 1, mm.loot.nextId do
+            local e = mm.loot.items[id]
+            -- THREE OR MORE, because two items cannot look like a ring however
+            -- they are placed -- and the guarantees below are stated for the
+            -- case where the arrangement is legible as one.
+            if e and e.kind == 'chest' and e.contents and #e.contents >= 3 then
+                crate = e break
+            end
+        end
+        if not crate then return nil, nil end
+
+        local ccx, ccy = BR.LootCellOf(crate.x, crate.y)
+        local at = { x = crate.x, y = crate.y, z = crate.z }
+        standOn(1, crate)
+        fire(BR.Net.LOOT_CELL, 1, { cx = ccx, cy = ccy })
+
+        local first = mm.loot.nextId + 1
+        fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
+
+        local out = {}
+        for id = first, mm.loot.nextId do
+            local e = mm.loot.items[id]
+            if e then
+                out[#out + 1] =
+                    { dx = e.x - at.x, dy = e.y - at.y, dz = e.z - at.z }
+            end
+        end
+        return at, out
+    end
+
+    local SEED = 424242
+    local at1, a = burst(SEED)
+    local _,   b = burst(SEED)
+    commands['brlootseed'](nil, { 'off' }, '')
+
+    ok(at1 ~= nil and a ~= nil and #a >= 3,
+        'a crate with three or more items opens', a and tostring(#a) or 'none')
+
+    -- SAME CONTAINER, SAME LAYOUT, TWICE. Compared as exact floats on purpose:
+    -- these come out of BR.Rng, which is integer arithmetic all the way down, so
+    -- anything but an exact match means a source of entropy got in.
+    local same = a ~= nil and b ~= nil and #a == #b
+    if same then
+        for i = 1, #a do
+            if a[i].dx ~= b[i].dx or a[i].dy ~= b[i].dy then same = false end
+        end
+    end
+    ok(same, 'the same crate in the same match spills identically twice')
+
+    -- ...AND NOT ONTO A RING. Both halves of "equidistant", because the old
+    -- version was regular in both: every radius identical to six decimal places,
+    -- and every angular gap exactly 2pi/n.
+    local rs, angs, minR, maxR = {}, {}, math.huge, 0.0
+    for i, o in ipairs(a or {}) do
+        rs[i] = math.sqrt(o.dx * o.dx + o.dy * o.dy)
+        angs[i] = math.atan(o.dy, o.dx)
+        minR, maxR = math.min(minR, rs[i]), math.max(maxR, rs[i])
+    end
+    ok(#rs >= 3 and (maxR - minR) > 0.1,
+        'and it is not a ring -- the items sit at different distances',
+        ('%.2fm to %.2fm'):format(minR, maxR))
+
+    table.sort(angs)
+    local minGap, maxGap = math.huge, 0.0
+    for i = 1, #angs do
+        local nx = (i == #angs) and (angs[1] + math.pi * 2.0) or angs[i + 1]
+        local gap = nx - angs[i]
+        minGap, maxGap = math.min(minGap, gap), math.max(maxGap, gap)
+    end
+    ok(#angs >= 3 and (maxGap - minGap) > 0.05,
+        'nor evenly spaced around it',
+        ('gaps %.2f..%.2f rad'):format(minGap, maxGap))
+
+    -- VISIBLE AND REACHABLE, which is the constraint the ring existed to meet --
+    -- and, since 2026-08-23, the one that also protects the ground placement.
+    -- Every spilled position has to sit INSIDE the disc the old ring sat on the
+    -- rim of, so the spill can never offer an item a patch of terrain the ring
+    -- was not already willing to use.
+    local L = BR.Config.Loot
+    local spread = L.deathBoxSpread or 0.8
+    local bound  = math.max(spread, 0.55 * #rs * spread)
+    local far = false
+    for _, r in ipairs(rs) do if r > bound + 0.001 then far = true end end
+    ok(not far, 'nothing lands further out than the ring it replaces',
+        ('bound %.2fm'):format(bound))
+
+    -- ...nor inside the box, where it could be neither seen nor targeted.
+    local buried = false
+    for _, r in ipairs(rs) do
+        if r < (L.scatterClearance or 0.7) - 0.001 then buried = true end
+    end
+    ok(not buried, 'nor close enough to the box to end up inside it',
+        ('clearance %.2fm'):format(L.scatterClearance or 0.7))
+
+    -- AND THE SPILL HAS NO OPINION ABOUT HEIGHT AT ALL (owner, 2026-08-23: "We
+    -- have loot properly landing on the ground today. Nothing should change
+    -- there"). The server has no ground probe -- the natives are client-side --
+    -- so every z it hands out is the container's own hint, and the client is
+    -- what resolves the real one. A z that drifted here would be this function
+    -- inventing terrain it cannot see.
+    local moved = false
+    for _, o in ipairs(a or {}) do
+        if math.abs(o.dz) > 0.0001 then moved = true end
+    end
+    ok(not moved, 'and every item keeps the container\'s own z, untouched')
+
+    -- NOTHING STACKS INSIDE ANYTHING ELSE, the ring's other quiet job and the
+    -- whole reason the airdrop names a wider spread. 1.0m is the floor WITH
+    -- margin rather than the measured one: swept over 50,000 seeds the worst
+    -- pair is 1.07m for a 3-item crate and 1.44m at the airdrop's fourteen.
+    local closest = math.huge
+    for i = 1, #a do
+        for j = i + 1, #a do
+            local dx, dy = a[i].dx - a[j].dx, a[i].dy - a[j].dy
+            closest = math.min(closest, math.sqrt(dx * dx + dy * dy))
+        end
+    end
+    ok(closest > 1.0, 'and no two items land on top of each other',
+        ('closest pair %.2fm'):format(closest))
+end
+
 -- ------------------------------------ the airdrop crate opens by hand (#88) ---
 --
 -- Owner, 2026-08-22: "Also we don't need to auto-open the crate. I changed my
@@ -12860,6 +13034,46 @@ do
         fire(BR.Net.LOOT_FIX, 2, { id = far.id, x = fx + 5.0, y = far.y, z = 1.0 })
         ok(math.abs(m.loot.items[far.id].x - fx) < 0.01,
             'and only for cells they are actually subscribed to')
+    end
+
+    -- A REPAIR IS NOT A BIRTH. It re-announces an entry the client already
+    -- holds, under the same id, so that the position moves -- and the entry it
+    -- moves may well be one that WAS born with an origin, because a dropped
+    -- item is exactly the kind that lands somewhere the client then rejects.
+    -- Re-sending the origin on that message would fly the item out of the
+    -- dropper's hands a second time, from wherever they are standing now.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local dropped
+    sent = {}
+    fire(BR.Net.INV_DROP, 1, { slot = 1 })
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.item == 'pistol' and e.fx then dropped = e end
+    end
+    if dropped then
+        local dcx, dcy = BR.LootCellOf(dropped.x, dropped.y)
+        fire(BR.Net.LOOT_CELL, 1, { cx = dcx, cy = dcy })
+        sent = {}
+        fire(BR.Net.LOOT_FIX, 1,
+            { id = dropped.id, x = dropped.x + 6.0, y = dropped.y, z = 44.0 })
+        local reannounced, withOrigin = 0, 0
+        for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+            for _, entry in ipairs(s.args[1]) do
+                if entry.id == dropped.id then
+                    reannounced = reannounced + 1
+                    if entry.fx or entry.fy or entry.fl then
+                        withOrigin = withOrigin + 1
+                    end
+                end
+            end
+        end
+        ok(reannounced > 0 and withOrigin == 0,
+            'a repaired entry is re-announced without its birth origin',
+            ('%d of %d carried one'):format(withOrigin, reannounced))
+    else
+        ok(false, 'no dropped item to repair')
     end
 end
 
