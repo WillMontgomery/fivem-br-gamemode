@@ -3038,6 +3038,48 @@ do
     ok(#strips == 14, 'while all fourteen later strips are on the timeline', #strips)
 end
 
+-- ======================================================================== --
+-- How often one case is allowed to repeat itself  (the owner, 2026-08-22)
+-- ======================================================================== --
+--
+-- WHAT THESE COVER THAT NOTHING ELSE DOES. server/incident.lua's corroboration
+-- path had no rate limit of any kind, and no case anywhere asserted that it
+-- should -- the two strip cases above actively asserted the opposite, one row
+-- per offence, which is what the owner photographed. The throttle that replaced
+-- it is the sort of code that reads correct while being wrong in one direction
+-- only: too eager and the record is unreadable again, too keen and the final
+-- count never arrives. Both directions are asserted below.
+--
+-- MUTATION TESTED. Fifteen mutants applied to the real file, thirteen caught,
+-- two survived. The counts are what was observed rather than what was hoped for:
+--
+--   the throttle removed entirely                     16 cases
+--   the record is never looked up (same effect)       16 cases
+--   the strip handler goes round the throttle         13 cases
+--   the window becomes zero                           16 cases
+--   the teardown stops flushing the held note          5 cases
+--   the oldest waiting note is kept, not the newest    4 cases
+--   `reason` is no longer compared                     8 cases
+--   `severity` is no longer compared                   2 cases
+--   the refusal handler goes round the throttle        3 cases
+--   the vehicle handler goes round the throttle        1 case
+--   the record is never refreshed after a send         1 case
+--   the window boundary becomes exclusive (`>`)        1 case
+--   the window is ten times longer                     3 cases
+--
+-- THE TWO SURVIVORS WERE THE SAME SURVIVOR TWICE and one of them was closed by
+-- changing the code rather than by adding a case: `flushHeld` cleared each note
+-- after sending it while the caller dropped the whole record on the next line,
+-- so deleting either was unobservable. They are now one function.
+--
+-- WHAT STILL SURVIVES, STATED RATHER THAN QUIETLY LEFT: deleting the
+-- `lastSaid[k] = nil` inside `flushAndForget`. It leaks -- one small record per
+-- case, for the life of the process -- and a leak has no behavioural signal to
+-- assert on. `filed`'s equivalent drop IS caught, but only because deleting it
+-- changes which cases get OPENED in the next match; this map is read by nothing
+-- after its match ends. Pinning it would mean exposing the map for a test to
+-- count, and BR.Incident.stats() already has no reader.
+
 describe('corroboration.nine-seconds-of-cheating-is-not-nine-rows')
 do
     -- ═══ THE REPORT, REPRODUCED (the owner, 2026-08-22) ═══
