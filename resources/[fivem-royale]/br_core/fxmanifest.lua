@@ -163,6 +163,18 @@ client_scripts {
     -- after client/fuel.lua, for a reader: fuel.lua is the file that draws the
     -- condition bar this one makes move, and the file that puts the health back.
     'client/vehdamage.lua',
+    -- Refusing an aircraft, a tank or an armed vehicle at the door (#215): eject,
+    -- one sentence, lock it behind them. NEEDS client/main.lua for the loop
+    -- registry and NOTHING ELSE AT LOAD TIME -- BR.Notify (client/state.lua) and
+    -- BR.State are both reached at call time, and the ruling comes from
+    -- BR.Config.VehicleRefusalFor, a shared config already loaded above.
+    --
+    -- Declared HERE, immediately after client/vehdamage.lua, for a reader: these
+    -- two are the pair that act on the vehicle a player is climbing into, they
+    -- ride the same `GetVehiclePedIsEntering` window, and they are the only two
+    -- files that do. It is ADVISORY -- see its header; the enforcement is
+    -- server/vehicles.lua and always was.
+    'client/vehrefuse.lua',
     -- The spectator camera. Needs BR.Keys (keybinds.lua) for the arrows and
     -- BR.Native (natives.lua) for the scoped ped lookup; client/lobbycam.lua
     -- reads BR.Spectate.active() at call time, so load order between the two

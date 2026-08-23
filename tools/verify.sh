@@ -172,7 +172,17 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # would notice a dirty one. The rules live in tools/icon_rules.lua as pure
     # functions and this suite feeds them deliberately broken sources -- which
     # is the only way a detector gets shown to still detect.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua; do
+    #
+    # test_vehrefuse.lua is the fourth suite to load a CLIENT file, and its
+    # fixture is an argument too. #215 rejects a refused vehicle AT THE DOOR --
+    # during the entry animation, before the seat is taken -- and falls back to
+    # ejecting a player who got there anyway. Those two paths are one line apart
+    # in the file and indistinguishable in a screenshot: the slow one still ends
+    # with the player standing next to the helicopter. So `entering` and `myVeh`
+    # are two variables in that fixture and are NEVER both set, which is what
+    # makes a file that only ever checks the seat fail rather than pass a second
+    # late.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

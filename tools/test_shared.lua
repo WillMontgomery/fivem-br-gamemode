@@ -7785,16 +7785,20 @@ do
         'a model nobody wrote down is allowed')
 
     local allowed, why = BR.Config.IsAllowedVehicle(0x2EA68690)   -- rhino
-    ok(allowed == false and why == V.ARMED,
-        'a tank is refused, on the weapons half of the rule')
+    ok(allowed == false and why == V.TANK,
+        'a tank is refused, and #215 gave tanks their own half of the rule')
+
+    local _, ay = BR.Config.IsAllowedVehicle(0xB5EF4C33)          -- vigilante
+    ok(ay == V.ARMED, 'an armed car is refused on the weapons half')
 
     local _, hy = BR.Config.IsAllowedVehicle(0x39D6E83F)          -- hydra
     ok(hy == V.FLIES, 'a jet is refused, on the flight half')
 
     -- THE SIGNED-HASH TRAP, AND IT IS THE BUG THIS PROJECT HAS SHIPPED FOUR
-    -- TIMES. GetEntityModel reports signed; the table authors positive. Forty-
-    -- five of the ninety-four rows have the top bit set, so unnormalised this
-    -- whole feature would refuse nothing that matters and look fine doing it.
+    -- TIMES. GetEntityModel reports signed; the table authors positive. Sixty-
+    -- five of the hundred and thirty-two rows have the top bit set, so
+    -- unnormalised this whole feature would refuse nothing that matters and look
+    -- fine doing it.
     ok(BR.Config.IsAllowedVehicle(0x2EA68690 - 0x100000000) == false,
         'a tank is still refused when the hash arrives signed')
     ok(BR.Config.IsAllowedVehicle(0xB39B0AE6 - 0x100000000) == false,
@@ -7839,6 +7843,166 @@ do
     -- function and not a bare lookup.
     ok(BR.Config.IsFlyingVehicleType(nil) == false, 'no type does not fly')
     ok(BR.Config.IsFlyingVehicleType(42) == false, 'and neither does a number')
+end
+
+-- ------------------------------------------------- vehicles: #215's widening --
+
+describe('vehicles.widening')
+do
+    local V = BR.Config.VehicleRefusal
+
+    -- THE THREE TANKS, BY NAME, BECAUSE "GTA HAS THREE" IS THE CLAIM THE TABLE
+    -- MAKES AND A DELETED ROW WOULD NOT OTHERWISE SHOW UP: every other assertion
+    -- about this table is about ROWS THAT ARE THERE.
+    local tanks = { [0x2EA68690] = 'rhino', [0xAA6F980A] = 'khanjali',
+                    [0xB53C6C52] = 'minitank' }
+    local missing = {}
+    for h, n in pairs(tanks) do
+        local a, w = BR.Config.IsAllowedVehicle(h)
+        if a or w ~= V.TANK then missing[#missing + 1] = n end
+    end
+    ok(#missing == 0, 'all three tanks are refused as tanks',
+        table.concat(missing, ', '))
+
+    -- ARENA WAR. Three spot checks rather than thirty-six, chosen for the three
+    -- ways the block can be got wrong: a stem whose base name IS the contender,
+    -- a stem whose base name is a road car, and the last variant of a stem --
+    -- the one a list truncated at "2" would drop.
+    ok(select(1, BR.Config.IsAllowedVehicle(0x20314B42)) == false,
+        'zr380 is refused -- a stem whose base name is itself a contender')
+    ok(select(1, BR.Config.IsAllowedVehicle(0x669EB40A)) == false,
+        'monster3 is refused -- the arena variant of a road-car stem')
+    ok(select(1, BR.Config.IsAllowedVehicle(0xA7DCC35C)) == false,
+        'zr3803 is refused -- the Nightmare variant, which a short list drops')
+
+    -- AND THE OTHER HALF OF THE ARENA WAR DLC IS STILL ALLOWED. The owner's rule
+    -- is about weapons, not about which box a car came in; refusing an Itali GTO
+    -- would be this file inventing a rule. This is the assertion that fails if
+    -- somebody ever pastes "the Arena War vehicle list" in wholesale.
+    ok(BR.Config.IsAllowedVehicle(0xEC3E3404) == true,
+        'italigto -- an ordinary Arena War road car -- is allowed')
+    ok(BR.Config.IsAllowedVehicle(0xEEF345EC) == true,
+        'and so is the rcbandito')
+    ok(BR.Config.IsAllowedVehicle(0x83070B62) == true,
+        'and so is the plain impaler, whose stem the contenders share')
+
+    -- The plain insurgent's rule, restated for the five class-19 exemptions:
+    -- armoured is not armed.
+    ok(BR.Config.IsAllowedVehicle(0xCEEA3F4B) == true,
+        'a barracks is not in the refused table')
+
+    -- Every exemption row resolves, in both hash forms. The gate proves this
+    -- too; asserting it here means a broken exemption fails the suite as well.
+    local exBad, exRows = 0, 0
+    for _, v in ipairs(BR.Config.ClassNetExempt) do
+        exRows = exRows + 1
+        local signed = (v.hash & 0x80000000) ~= 0 and (v.hash - 0x100000000) or v.hash
+        if BR.Config.ClassNetExemptByHash[BR.NormHash(v.hash)] == nil
+           or BR.Config.ClassNetExemptByHash[BR.NormHash(signed)] == nil then
+            exBad = exBad + 1
+        end
+    end
+    ok(exRows > 0 and exBad == 0,
+        'every class-net exemption resolves from both hash forms',
+        ('%d of %d did not'):format(exBad, exRows))
+end
+
+-- --------------------------------------------- vehicles: the single asker ----
+
+describe('vehicles.refusalFor')
+do
+    local V = BR.Config.VehicleRefusal
+    local R = BR.Config.VehicleRefusalFor
+
+    local function sig(t, c, seen)
+        return {
+            typeOf  = t ~= false and function() if seen then seen.type = true end return t end or nil,
+            classOf = c ~= false and function() if seen then seen.class = true end return c end or nil,
+        }
+    end
+
+    -- THE MODEL TABLE IS FIRST AND ITS ANSWER IS THE ANSWER. A Rhino is a tank
+    -- and not merely "class 19 military", and that distinction is the whole
+    -- reason the table runs before the nets.
+    local why, signal = R(0x2EA68690, sig('automobile', 19))
+    ok(why == V.TANK and signal == 'model',
+        'the model table rules first, and says which half', tostring(signal))
+
+    -- AND IT IS ASKED WITH THE HASH THE ENGINE ACTUALLY REPORTS.
+    ok(select(1, R(0x2EA68690 - 0x100000000, sig(nil, nil))) == V.TANK,
+        'and it answers the same from a signed hash')
+
+    -- THE NETS ARE NOT PAID FOR WHEN THE TABLE HAS ALREADY REFUSED. This is the
+    -- reason the signals arrive as functions rather than values, and the only
+    -- way to see it is to watch whether they were called.
+    local seen = {}
+    R(0x2EA68690, sig('heli', 19, seen))
+    ok(not seen.type and not seen.class,
+        'a model the table names costs no native reads at all')
+
+    -- THE TYPE NET, for an aircraft nobody wrote down.
+    local w2, s2 = R(0x00000001, sig('heli', 0))
+    ok(w2 == V.FLIES and s2 == 'type', 'an unlisted heli is caught by its type')
+
+    -- ...and the class net only when the type net had nothing to say.
+    local seen2 = {}
+    R(0x00000001, sig('heli', 19, seen2))
+    ok(seen2.type and not seen2.class,
+        'the class read is skipped once the type has already refused')
+
+    -- THE CLASS NET, which is the only signal that reaches the WEAPONS half.
+    local w3, s3 = R(0x00000001, sig('automobile', 19))
+    ok(w3 == V.ARMED and s3 == 'class',
+        'unlisted military hardware is caught by its class')
+    ok(select(2, R(0x00000001, sig('automobile', 15))) == 'class',
+        'and class 15 is an aircraft even when the type says otherwise')
+
+    -- AN ORDINARY CAR, WHICH IS EVERY CAR IN EVERY MATCH.
+    local w4, s4 = R(0x00000001, sig('automobile', 4))
+    ok(w4 == nil and s4 == nil, 'an ordinary car is allowed by all three')
+
+    -- CLASS 0 IS COMPACTS AND `0` IS TRUTHY IN LUA. An implementation that wrote
+    -- `if c then` would agree with this test; one that wrote `if not c then
+    -- return end` would refuse nothing in a Compact and nobody would notice.
+    -- What is asserted is the pair: 0 is read, and 0 is allowed.
+    ok(R(0x00000001, sig('automobile', 0)) == nil, 'class 0 is Compacts, allowed')
+
+    -- THE EXEMPTIONS. A Barracks IS class 19 and the class net must not take it.
+    ok(R(0xCEEA3F4B, sig('automobile', 19)) == nil,
+        'a barracks is class 19 and is still allowed')
+    ok(R(0x780FFBD2 - 0x100000000, sig('automobile', 19)) == nil,
+        'and from the signed hash the engine reports')
+    -- ...and the exemption is checked BEFORE the class, so it costs no read.
+    local seen3 = {}
+    R(0xCEEA3F4B, sig('automobile', 19, seen3))
+    ok(not seen3.class, 'and it costs no class read to find that out')
+
+    -- THE EXEMPTION IS FOR THE CLASS NET ONLY. If somebody ever adds a refused
+    -- model to it hoping to un-ban it, the model table still wins.
+    ok(select(1, R(0x2EA68690, sig(nil, nil))) == V.TANK,
+        'an exemption could not un-ban a table row even if one were added')
+
+    -- NO SIGNALS AT ALL is the shape a caller that could not read the natives
+    -- passes, and it must be "no opinion" rather than "refused".
+    ok(R(0x00000001, nil) == nil, 'no signals means no opinion')
+    ok(R(0x00000001, {}) == nil, 'and neither does an empty signal table')
+    ok(R(nil, sig('heli', 19)) == V.FLIES,
+        'a model the engine could not report still gets the nets')
+
+    -- A PROVIDER THAT ANSWERED NOTHING. pcall'd natives return nil on a stale
+    -- handle, and a nil KEY is an error in Lua rather than a miss -- which is
+    -- the whole reason this is a guarded lookup and not a bare index.
+    ok(R(0x00000001, sig(nil, nil)) == nil, 'providers that answer nil refuse nothing')
+    ok(R(0x00000001, sig(false, nil)) == nil, 'nor a missing type provider')
+    -- '19' AND NOT 'nineteen', AND THAT IS THE WHOLE TEST. `math.tointeger('19')`
+    -- IS 19 in Lua 5.4 -- numeric strings coerce -- so a guard written as
+    -- `if c ~= nil` would believe a native that answered a string and would
+    -- refuse a vehicle on a value that was never a class. 'nineteen' passes
+    -- either way and proves nothing; mutation testing said so.
+    ok(R(0x00000001, sig(nil, '19')) == nil,
+        'nor a class that came back as the STRING "19"')
+    ok(R(0x00000001, sig(nil, 'nineteen')) == nil,
+        'nor one that came back as prose')
 end
 
 -- ---------------------------------------------------------------------------
@@ -8227,7 +8391,7 @@ do
         local f = S.filed[1]
         ok(f.count == 2 and f.seq == 1, 'carrying the offence count and the first seq')
         ok(f.license == 'license:p1' and f.matchId == 1, 'and the subject and match')
-        ok(f.why == BR.Config.VehicleRefusal.ARMED, 'and which half of the rule it tripped')
+        ok(f.why == BR.Config.VehicleRefusal.TANK, 'and which half of the rule it tripped')
         ok(f.model == RHINO, 'and the model, normalised, for the server log')
 
         -- EVERY ONE AFTER IT ANNOUNCES, climbing by one, so a gap means a lost
@@ -8290,7 +8454,7 @@ do
         S.create(10, scripted(RHINO, 1, 'plane'))
         S.now = S.now + 1000
         S.create(11, scripted(RHINO, 1, 'plane'))
-        ok(S.filed[1].why == BR.Config.VehicleRefusal.ARMED,
+        ok(S.filed[1].why == BR.Config.VehicleRefusal.TANK,
             'a named model keeps its authored reason even when the class disagrees')
     end
 

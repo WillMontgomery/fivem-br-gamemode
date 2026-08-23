@@ -84,6 +84,16 @@ local function signed32(h)
     return (h & 0x80000000) ~= 0 and (h - 0x100000000) or h
 end
 
+--- Every value BR.Config.VehicleRefusal defines, as a set.
+---
+--- Built from the enum so a new reason needs no edit here, and so a reason that
+--- is NOT in the enum -- the actual failure -- still fails.
+local reasons = {}
+for _, w in pairs(BR.Config.VehicleRefusal or {}) do reasons[w] = true end
+if next(reasons) == nil then
+    fail('BR.Config.VehicleRefusal defines no reasons at all')
+end
+
 local seenName, seenHash = {}, {}
 local checked, topBit, signedChecked = 0, 0, 0
 
@@ -120,9 +130,15 @@ for _, v in ipairs(BR.Config.RefusedVehicles or {}) do
     -- The reason reaches a moderation record via vehicleSummaryOf, so a row
     -- with no reason -- or with a reason nobody defined -- would put an empty
     -- sentence, or the word "nil", on a case about a player.
-    if v.why ~= BR.Config.VehicleRefusal.FLIES
-       and v.why ~= BR.Config.VehicleRefusal.ARMED then
-        fail('%s: `why` is %q, which is neither refusal reason',
+    --
+    -- CHECKED AGAINST THE ENUM RATHER THAN AGAINST A LIST SPELLED OUT HERE. It
+    -- used to name FLIES and ARMED literally, and #215's third reason therefore
+    -- failed three correct rows -- a gate that has to be edited every time the
+    -- thing it guards grows is a gate that gets edited carelessly. What it is
+    -- actually for is unchanged and still caught: a row whose `why` is nil, or
+    -- misspelled, or a bare string nobody defined.
+    if reasons[v.why] == nil then
+        fail('%s: `why` is %q, which is not a BR.Config.VehicleRefusal value',
              v.name, tostring(v.why))
     end
 
@@ -155,6 +171,82 @@ end
 if checked == 0 then
     fail('the refused-vehicle table is empty -- every aircraft and every armed '
          .. 'vehicle in the game would read as allowed')
+end
+
+-- ----------------------------------------------------------- the class net --
+--
+-- #215's third signal, and it needs the same proof for a sharper reason.
+--
+-- BR.Config.ClassNetExempt is the ONE allow-shaped list in config/vehicles.lua,
+-- so a wrong hash there fails in the direction the rest of this gate exists to
+-- prevent: the exemption misses, the class net refuses a Barracks, and a player
+-- is pulled out of a troop truck the owner's rule permits. There is no in-game
+-- symptom that says "the hash was wrong" -- it just looks like the rule being
+-- stricter than it reads.
+--
+-- And a model in BOTH lists is a contradiction rather than a preference. The
+-- model table wins by running first, so the exemption row would be dead code
+-- that reads like a permission.
+local exempt = 0
+for _, v in ipairs(BR.Config.ClassNetExempt or {}) do
+    exempt = exempt + 1
+
+    if type(v.name) ~= 'string' or v.name == '' then
+        fail('a class-net exemption row has no name to hash')
+        goto nextExempt
+    end
+
+    do
+        local want = joaat(v.name)
+        if v.hash ~= want then
+            fail('class-net exemption %s: hash is 0x%08X, should be 0x%08X',
+                 v.name, v.hash or 0, want)
+        end
+    end
+
+    if seenName[v.name] then
+        fail('%q is in BOTH the refused table and the class-net exemptions. '
+             .. 'The model table runs first, so the exemption never fires -- it '
+             .. 'reads like a permission and is dead.', v.name)
+    end
+
+    -- Asked the way the engine will ask it, both hash forms, exactly as the
+    -- refused rows above are. Signed is the form GetEntityModel reports.
+    if v.hash then
+        if BR.Config.ClassNetExemptByHash[BR.NormHash(v.hash)] == nil then
+            fail('class-net exemption %s does not resolve from its own hash',
+                 v.name)
+        end
+        if BR.Config.ClassNetExemptByHash[BR.NormHash(signed32(v.hash))] == nil then
+            fail('class-net exemption %s does not resolve from its SIGNED hash '
+                 .. '0x%08X -- this is the form the engine reports', v.name,
+                 v.hash)
+        end
+    end
+
+    ::nextExempt::
+end
+
+-- A class net with no classes in it is the whole third signal switched off, and
+-- switched off silently: every ruling would still come out of the model table
+-- and every test of the model table would still pass.
+do
+    local classes = 0
+    for k, w in pairs(BR.Config.RefusedVehicleClasses or {}) do
+        classes = classes + 1
+        if math.type(k) ~= 'integer' or k < 0 or k > 22 then
+            fail('refused vehicle class %s is not one of GTA V\'s 0-22',
+                 tostring(k))
+        end
+        if reasons[w] == nil then
+            fail('refused vehicle class %s maps to %q, which is not a '
+                 .. 'BR.Config.VehicleRefusal value', tostring(k), tostring(w))
+        end
+    end
+    if classes == 0 then
+        fail('BR.Config.RefusedVehicleClasses is empty -- the class net is off, '
+             .. 'and nothing else in the tree would say so')
+    end
 end
 
 -- THE BATTLE BUS MUST BE REFUSED, and asserting it here is not a formality.
@@ -204,8 +296,9 @@ end
 
 if fails == 0 then
     io.write(('\27[32mok\27[0m   %d refused vehicle hashes match their names; %d '
-        .. 'resolve from both signed and unsigned (%d have the top bit set)\n')
-        :format(checked, signedChecked, topBit))
+        .. 'resolve from both signed and unsigned (%d have the top bit set); '
+        .. '%d class-net exemptions\n')
+        :format(checked, signedChecked, topBit, exempt))
 else
     io.write(('\27[31m%d refused-vehicle table problem(s)\27[0m\n'):format(fails))
 end

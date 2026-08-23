@@ -354,26 +354,42 @@ end
 --- rotting into uniform permission: it is a DENY-list, so an aircraft nobody
 --- wrote down is allowed by construction, forever, silently.
 ---
+--- ═══ THE RULING MOVED TO br_lib AND THIS IS NOW A NATIVE-READING SHELL ═══
+---
+--- #215 put a THIRD asker in the tree -- br_core/client/vehrefuse.lua, which
+--- ejects a player rather than filing a case. The sentence in the occupancy
+--- header below ("the question is asked in exactly one place for both
+--- detectors") only survives a third caller if the three of them share the
+--- ruling, so the ordering and the reasons live in
+--- BR.Config.VehicleRefusalFor and this function supplies the signals it can
+--- read. The behaviour is unchanged, term for term.
+---
+--- NO `classOf` IS PASSED, AND THAT IS NOT AN OVERSIGHT. `GetVehicleClass` --
+--- the 0-22 enum -- is CLIENT-ONLY; there is no server handler for it. The
+--- server's two signals are exactly what they were. The client's third is why
+--- the armed half of the owner's rule finally has a net under it, and it can
+--- only ever hold on the client, which is advisory. See that file's header.
+---
 --- @param entity integer
 --- @return string|nil why    a BR.Config.VehicleRefusal value; nil when allowed
 --- @return integer|nil model  the hash, for the caller's payload and log line
 local function refusalFor(entity)
     local model = modelOf(entity)
-    local allowed, why = BR.Config.IsAllowedVehicle(model)
 
-    if allowed then
-        local t = vehicleType(entity)
-        if BR.Config.IsFlyingVehicleType(t) then
-            allowed, why = false, BR.Config.VehicleRefusal.FLIES
-            -- COUNTED FROM WHICHEVER ROUTE FOUND IT. The number means "the
-            -- model table missed an aircraft that is in this game build", which
-            -- is a fact about config/vehicles.lua rather than about how the
-            -- vehicle was reached.
-            stat.byType = stat.byType + 1
-        end
-    end
+    -- A FUNCTION, NOT `vehicleType(entity)` EVALUATED HERE. The native is only
+    -- read when the model table has already said "allowed", which is the case
+    -- for every ordinary car -- and `entityCreating` sees one of those per
+    -- spawn under a flood. Passing the value would pay for the pcall'd native
+    -- unconditionally and lose the ordering this comment is about.
+    local why, signal = BR.Config.VehicleRefusalFor(model, {
+        typeOf = function() return vehicleType(entity) end,
+    })
 
-    if allowed then return nil, model end
+    -- COUNTED FROM WHICHEVER ROUTE FOUND IT. The number means "the model table
+    -- missed an aircraft that is in this game build", which is a fact about
+    -- config/vehicles.lua rather than about how the vehicle was reached.
+    if signal == 'type' then stat.byType = stat.byType + 1 end
+
     return why, model
 end
 
@@ -680,20 +696,39 @@ end)
 -- occupancy and counts again, which is correct: it is a fresh act, and
 -- MIN_INTERVAL_MS still bounds how fast anybody can repeat it.
 --
--- ═══ NOBODY IS TOLD AND NOBODY IS STOPPED ═══
+-- ═══ NOTHING ON THIS SIDE TELLS ANYBODY ANYTHING, AND #215 DID NOT CHANGE THAT
+--     ═══
 --
--- The owner considered blocking and rejected it. Nothing here removes anybody
--- from a seat, warns them, or changes what they can do -- the same rule the
--- creation detector obeys, and #93's: an offender who learns they are under
--- suspicion changes behaviour, which costs the case the evidence it was going
--- to be made of.
+-- The owner reversed the blocking decision on 2026-08-22 -- "detect the vehicle
+-- they're trying to get in as they try, then reject the action client-side" --
+-- and br_core/client/vehrefuse.lua is that rejection. IT IS A SEPARATE FILE ON
+-- A SEPARATE MACHINE AND IT DOES NOT TALK TO THIS ONE.
+--
+-- SO THIS DETECTOR IS UNCHANGED AND MUST STAY UNCHANGED. Nothing here removes
+-- anybody from a seat, warns them, or changes what they can do; nothing here
+-- learns whether the client ejected them. That is #93's rule -- an offender who
+-- learns they are under suspicion changes behaviour, and the case loses the
+-- evidence it was going to be made of -- and it is also the reason the client
+-- layer is safe to have: the notification it shows is shown to EVERYONE who
+-- touches a Buzzard, says the same words every time, and does not vary for a
+-- player with two prior refusals. It discloses a game rule, not a case.
+--
+-- ═══ AND THE CLIENT LAYER IS WHY THIS ONE MATTERS MORE, NOT LESS ═══
+--
+-- A client file is advisory. A modified client does not run it. Everything that
+-- gets through the ejection arrives here exactly as it did before, which is the
+-- owner's own framing: "if they do manage through some hoops we should still get
+-- incidents". The ONLY enforcement in this feature is on this side of the wire.
 --
 -- ═══ WHAT THIS DELIBERATELY DOES NOT DO ═══
 --
 -- IT BUILDS NONE OF #191's AMBULANCE MACHINERY, and it does not need to: the
--- question "is this model refused" is asked in exactly one place for both
--- detectors, so the day a rescue vehicle needs an exemption there is one
--- function to put it in and no second copy to find.
+-- question "is this model refused" is asked in exactly one place for all three
+-- askers -- this detector, the creation detector, and #215's client-side
+-- ejection -- so the day a rescue vehicle needs an exemption there is one
+-- function to put it in and no second copy to find. That function is
+-- BR.Config.VehicleRefusalFor. It stayed one place when the third caller
+-- arrived, which is the only test that claim has ever had.
 --
 -- IT SAMPLES ALIVE PLAYERS IN A MATCH ONLY, which is narrower than the creation
 -- detector's LIVE (alive OR warmup), and that is a stated limit rather than an

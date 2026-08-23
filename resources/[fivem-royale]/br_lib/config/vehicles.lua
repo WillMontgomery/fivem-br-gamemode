@@ -96,9 +96,17 @@ BR.Config = BR.Config or {}
 --- Why a model is refused. These strings reach a moderation record -- they are
 --- the sentence BR.IncidentBuild.vehicleSummaryOf builds its queue row from --
 --- so they are prose the way BR.ShotRefusal's values are, not symbols.
+--- TANK IS A THIRD REASON RATHER THAN A SUBSET OF ARMED, on the owner's own
+--- enumeration (2026-08-22, #215): "planes, helicopters, tanks, and anything
+--- else that has weapons on the vehicle". A tank does have built-in weapons, so
+--- the second string would have been true of it -- but the owner named it as its
+--- own category and the sentence an admin reads on a case is better for saying
+--- which one it was. Moving `rhino` and `khanjali` out of ARMED changed the
+--- `why` on those two rows and nothing else; the ruling is identical.
 BR.Config.VehicleRefusal = {
     FLIES = 'vehicle flies',
     ARMED = 'vehicle has built-in weapons',
+    TANK  = 'vehicle is a tank',
 }
 
 --- Every model this gamemode will not tolerate, and which half of the rule it
@@ -116,6 +124,7 @@ BR.Config.VehicleRefusal = {
 --- should be able to see each half whole.
 local F = BR.Config.VehicleRefusal.FLIES
 local A = BR.Config.VehicleRefusal.ARMED
+local T = BR.Config.VehicleRefusal.TANK
 
 BR.Config.RefusedVehicles = {
     -- Fixed-wing. `titan` is the Battle Bus -- see the header.
@@ -210,14 +219,20 @@ BR.Config.RefusedVehicles = {
     { name = 'apc',           why = A, hash = 0x2189D250 },
     { name = 'barrage',       why = A, hash = 0xF34DFB25 },
     { name = 'chernobog',     why = A, hash = 0xD6BC7523 },
+    -- The Dune FAV, and the only row here whose gun is a WORKSHOP FITTING rather
+    -- than part of the stock model -- machine gun, 40mm grenade launcher or
+    -- 7.62mm minigun, one of the three. `insurgent2` is already here on the same
+    -- footing, and the Arena War block below is thirty-six more of it: on a
+    -- FiveM server the mod slot is one `SetVehicleMod` away, so "can be armed"
+    -- and "is armed" are the same fact. The plain `dune`, `dune2` (Space Docker)
+    -- and the Ramp Buggies have no such slot and are not here.
+    { name = 'dune3',         why = A, hash = 0x711D4738 },
     { name = 'halftrack',     why = A, hash = 0xFE141DA6 },
     { name = 'ignus2',        why = A, hash = 0x39085F47 },
     { name = 'insurgent2',    why = A, hash = 0x7B7E56F0 },
     { name = 'insurgent3',    why = A, hash = 0x8D4B7A8A },
-    { name = 'khanjali',      why = A, hash = 0xAA6F980A },
     { name = 'kosatka',       why = A, hash = 0x4FAF0D70 },
     { name = 'patrolboat',    why = A, hash = 0xEF813606 },
-    { name = 'rhino',         why = A, hash = 0x2EA68690 },
     { name = 'ruiner2',       why = A, hash = 0x381E10BD },
     { name = 'scramjet',      why = A, hash = 0xD9F0503D },
     { name = 'stromberg',     why = A, hash = 0x34DBA661 },
@@ -228,6 +243,94 @@ BR.Config.RefusedVehicles = {
     { name = 'toreador',      why = A, hash = 0x56C8A5EF },
     { name = 'trailersmall2', why = A, hash = 0x8FD54EBB },
     { name = 'vigilante',     why = A, hash = 0xB5EF4C33 },
+
+    -- ═══ ARENA WAR, AND WHY IT IS ALL THIRTY-SIX AND NOTHING ELSE ═══
+    --
+    -- The owner named the DLC by name (2026-08-22, #215): "anything else that
+    -- has weapons on the vehicle (such as Arena Wars DLC vehicles)".
+    --
+    -- Arena War shipped TWO KINDS of vehicle and only one of them is in scope.
+    -- The ARENA CONTENDERS -- twelve of them, each in an Apocalypse, a Future
+    -- Shock and a Nightmare body, thirty-six models -- take Arena Workshop
+    -- weapon fittings: machine guns, turrets, spike traps, rocket boosters. The
+    -- rest of the DLC is ordinary road cars (`clique`, `deveste`, `deviant`,
+    -- `italigto`, `rcbandito`, `schlagen`, `toros`, `tulip`, `vamos`), and they
+    -- are DELIBERATELY ABSENT for the reason `insurgent` is: the owner's rule is
+    -- about weapons, not about which DLC a car came in, and refusing an Itali
+    -- GTO because of the badge on its box would ban a car somebody was driving.
+    --
+    -- IN STOCK GTA ONLINE THE CONTENDER GUNS ONLY FIRE INSIDE THE ARENA. That is
+    -- a fact about Rockstar's freemode script, not about the model, and it does
+    -- not survive here: on a FiveM server the mod slots are ordinary mod slots.
+    -- Refused, therefore, on capability -- the same footing as `dune3` above.
+    --
+    -- ONLY THE VARIANTS THAT ARE CONTENDERS. `impaler` (plain), `dominator`,
+    -- `dominator2`, `dominator3`, `issi2`, `issi3`, `monster`, `slamvan`,
+    -- `slamvan2` and `slamvan3` are road cars with the same stem and are NOT
+    -- here. `imperator`, `bruiser`, `brutus`, `cerberus`, `deathbike`, `scarab`
+    -- and `zr380` have no plain version at all -- the base name IS the Apocalypse
+    -- contender -- which is why those seven stems start at 1 and the other five
+    -- start at 2 or 4. Getting that boundary wrong in either direction is the
+    -- single most likely error in this block.
+    --
+    -- HOW THE NAMES WERE ESTABLISHED, because a wrong name is the one failure
+    -- tools/check_vehicles.lua cannot see: every one of the thirty-six was
+    -- cross-checked by hashing it here and comparing against an independently
+    -- published hash for that name. A misremembered name cannot collide with a
+    -- real published hash, so a match corroborates the NAME -- which is the half
+    -- the gate is blind to. All thirty-six matched.
+    { name = 'bruiser',       why = A, hash = 0x27D79225 },
+    { name = 'bruiser2',      why = A, hash = 0x9B065C9E },
+    { name = 'bruiser3',      why = A, hash = 0x8644331A },
+    { name = 'brutus',        why = A, hash = 0x7F81A829 },
+    { name = 'brutus2',       why = A, hash = 0x8F49AE28 },
+    { name = 'brutus3',       why = A, hash = 0x798682A2 },
+    { name = 'cerberus',      why = A, hash = 0xD039510B },
+    { name = 'cerberus2',     why = A, hash = 0x287FA449 },
+    { name = 'cerberus3',     why = A, hash = 0x71D3B6F0 },
+    { name = 'deathbike',     why = A, hash = 0xFE5F0722 },
+    { name = 'deathbike2',    why = A, hash = 0x93F09558 },
+    { name = 'deathbike3',    why = A, hash = 0xAE12C99C },
+    { name = 'dominator4',    why = A, hash = 0xD6FB0F30 },
+    { name = 'dominator5',    why = A, hash = 0xAE0A3D4F },
+    { name = 'dominator6',    why = A, hash = 0xB2E046FB },
+    { name = 'impaler2',      why = A, hash = 0x3C26BD0C },
+    { name = 'impaler3',      why = A, hash = 0x8D45DF49 },
+    { name = 'impaler4',      why = A, hash = 0x9804F4C7 },
+    { name = 'imperator',     why = A, hash = 0x1A861243 },
+    { name = 'imperator2',    why = A, hash = 0x619C1B82 },
+    { name = 'imperator3',    why = A, hash = 0xD2F77E37 },
+    { name = 'issi4',         why = A, hash = 0x256E92BA },
+    { name = 'issi5',         why = A, hash = 0x5BA0FF1E },
+    { name = 'issi6',         why = A, hash = 0x49E25BA1 },
+    { name = 'monster3',      why = A, hash = 0x669EB40A },
+    { name = 'monster4',      why = A, hash = 0x32174AFC },
+    { name = 'monster5',      why = A, hash = 0xD556917C },
+    { name = 'scarab',        why = A, hash = 0xBBA2A2F7 },
+    { name = 'scarab2',       why = A, hash = 0x5BEB3CE0 },
+    { name = 'scarab3',       why = A, hash = 0xDD71BFEB },
+    { name = 'slamvan4',      why = A, hash = 0x8526E2F5 },
+    { name = 'slamvan5',      why = A, hash = 0x163F8520 },
+    { name = 'slamvan6',      why = A, hash = 0x67D52852 },
+    { name = 'zr380',         why = A, hash = 0x20314B42 },
+    { name = 'zr3802',        why = A, hash = 0xBE11EFC6 },
+    { name = 'zr3803',        why = A, hash = 0xA7DCC35C },
+
+    -- ═══ TANKS ═══
+    --
+    -- Three models, and the list is short because GTA V has three. `rhino` and
+    -- `khanjali` were already refused as ARMED and are unchanged in effect --
+    -- only the sentence on the case is new. `minitank` (Invade and Persuade) is
+    -- the addition: a remote-control toy in fiction, a cannon on the map.
+    --
+    -- The other things people call tanks are already above and stay there: the
+    -- `apc` is an APC, `barrage` and `chernobog` are gun platforms, `halftrack`
+    -- is a half-track, and the Arena War `scarab` family is a tracked arena
+    -- vehicle rather than a tank. None of them changes ruling by being sorted
+    -- differently; the group exists because the owner named it.
+    { name = 'khanjali',      why = T, hash = 0xAA6F980A },
+    { name = 'minitank',      why = T, hash = 0xB53C6C52 },
+    { name = 'rhino',         why = T, hash = 0x2EA68690 },
 }
 
 --- Refused models keyed by NORMALISED hash.
@@ -235,7 +338,7 @@ BR.Config.RefusedVehicles = {
 --- NORMALISED ON THE WAY IN, and this is not pedantry -- it is the bug this
 --- project has shipped four times, described at length in BR.NormHash. The
 --- engine reports model hashes SIGNED; the table above authors them positive.
---- Forty of the models above have the top bit set, and unnormalised every one of
+--- Sixty-five of the models above have the top bit set, and unnormalised each of
 --- them would fail to match the value `GetEntityModel` actually returns -- so a
 --- Hydra would read as an ordinary car and file nothing.
 BR.Config.RefusedVehicleByHash = {}
@@ -332,6 +435,153 @@ function BR.Config.IsAllowedVehicle(hash)
     local v = BR.Config.RefusedVehicleByHash[BR.NormHash(hash)]
     if v == nil then return true, nil end
     return false, v.why
+end
+
+-- ---------------------------------------------------------------------------
+-- The class net: the third signal, and the first one that reaches WEAPONS
+-- ---------------------------------------------------------------------------
+--
+-- `GetVehicleClass` IS CLIENT-ONLY, which is why this arrived with #215 and not
+-- with #193. The paragraph above FlyingVehicleTypes says it plainly: there is no
+-- server handler for the 0-22 class enum at all, so the server has exactly two
+-- signals and one of them (`GetVehicleType`) only ever answers the FLIGHT half
+-- of the owner's rule. The armed half has been the model table alone, and the
+-- model table is a deny-list.
+--
+-- The client has the class. So the client -- and only the client -- can hold a
+-- net under the armed half as well.
+--
+--   15 Helicopters  }  the flight half, and these two are not a proxy for it:
+--   16 Planes       }  the class IS the fact. No false positive is possible.
+--   19 Military     -- a proxy for "military hardware", and NOT the same thing
+--                      as "has a weapon". See the exemptions below.
+--
+-- ═══ WHAT THIS CATCHES THAT THE TABLE MISSES, AND THE OTHER WAY ROUND ═══
+--
+-- The class net catches an aircraft or a piece of military hardware NOBODY WROTE
+-- DOWN -- including one added to the game after this file was last edited, which
+-- is the failure the deny-list header says it cannot prevent.
+--
+-- The model table catches everything the class net structurally cannot:
+--
+--   * THE ARENA WAR ROSTER. Thirty-four of the thirty-six are ordinary road
+--     classes -- Muscle, Sports, Off-road, Motorcycles. Only `scarab`,
+--     `scarab2` and `scarab3` are class 19. The other thirty-three are invisible
+--     to every class the net names, and the table is their only refusal.
+--   * THE THINGS THAT FLY WITHOUT BEING AIRCRAFT. `deluxo` is Sports Classics,
+--     `oppressor` is Motorcycles, `oppressor2` is Motorcycles, `stromberg` is
+--     Sports. They hover, and no class or type says so.
+--   * THE ARMED CARS. `vigilante`, `toreador`, `scramjet`, `ruiner2`,
+--     `technical`, `tampa3` -- all ordinary classes with guns bolted on.
+--
+-- Neither is redundant and neither is sufficient. Same argument the type table
+-- makes above, one signal further along.
+--
+-- ═══ CLASS 19 OVER-REACHES, AND THE FIVE MODELS IT OVER-REACHES ON ARE NAMED
+--     ═══
+--
+-- "Military" in vehicles.meta means "belongs to the army", not "has a gun". Five
+-- models sit in class 19 with no weapon on them at all, and the owner's rule --
+-- the same rule that keeps the plain `insurgent` out of the table above,
+-- armoured and unarmed -- permits every one of them.
+--
+-- They are listed rather than tolerated because the alternative is a player
+-- being pulled out of a troop truck and told it is not allowed, which is a
+-- statement this gamemode would be making up.
+--
+-- THE POLARITY OF THIS LIST IS THE OPPOSITE OF THE TABLE'S and it is the ONLY
+-- allow-shaped thing in this file, so: a model here is exempt FROM THE CLASS NET
+-- ONLY. It does not exempt anything from the model table, and nothing here is in
+-- the model table. Adding a row here to "un-ban" a refused vehicle does nothing.
+BR.Config.RefusedVehicleClasses = {
+    [15] = BR.Config.VehicleRefusal.FLIES,
+    [16] = BR.Config.VehicleRefusal.FLIES,
+    [19] = BR.Config.VehicleRefusal.ARMED,
+}
+
+--- Class-19 models that carry no weapon. Exempt from the class net, nothing else.
+BR.Config.ClassNetExempt = {
+    { name = 'barracks',  hash = 0xCEEA3F4B },  -- troop transport
+    { name = 'barracks2', hash = 0x4008EABB },  -- troop transport, hard top
+    { name = 'barracks3', hash = 0x2592B5CF },  -- Barracks Semi
+    { name = 'crusader',  hash = 0x132D5A1A },  -- army jeep
+    { name = 'vetir',     hash = 0x780FFBD2 },  -- 8x8 transport
+}
+
+--- The exemptions keyed by NORMALISED hash, for BR.NormHash's stated reason.
+BR.Config.ClassNetExemptByHash = {}
+for _, v in ipairs(BR.Config.ClassNetExempt) do
+    BR.Config.ClassNetExemptByHash[BR.NormHash(v.hash)] = v
+end
+
+--- The whole ruling on one vehicle, from whatever signals the caller can get.
+---
+--- ═══ THE ONE PLACE THE QUESTION IS ASKED, AND THAT IS LOAD-BEARING ═══
+---
+--- server/vehicles.lua said it before this function existed: "the question 'is
+--- this model refused' is asked in exactly one place for both detectors, so the
+--- day a rescue vehicle needs an exemption there is one function to put it in
+--- and no second copy to find". #215 added a THIRD asker -- the client, which
+--- ejects rather than files -- and the promise only survives if the three of
+--- them share the ruling instead of each composing their own. So this is it.
+--- #191's ambulance goes in here (or in the model table); nowhere else.
+---
+--- THE SIGNALS ARRIVE AS FUNCTIONS, NOT VALUES, and that is not decoration.
+--- Both are native reads that cost something and THROW on a stale handle, and
+--- the second and third are only worth paying for when the first has already
+--- said "allowed" -- which it does for every ordinary car in every match. A
+--- caller passing values would pay for `GetVehicleType` on every vehicle
+--- `entityCreating` sees, which under a spawn flood is the whole point of the
+--- ordering. Callers pcall inside their own provider; a provider that cannot
+--- answer returns nil and this reads that as "no opinion", never as "refused".
+---
+--- ORDER: MODEL, THEN TYPE, THEN CLASS. The model table is first because it is
+--- one lookup and because it is the only signal that knows WHICH reason applies
+--- -- flight, weapons or tank. The two nets can only say "flies" or "armed", and
+--- only for things the table has never heard of.
+---
+--- @param model integer|nil   a model hash, signed or not
+--- @param signals table|nil   { typeOf = fun():string|nil, classOf = fun():integer|nil }
+--- @return string|nil why     a BR.Config.VehicleRefusal value; nil when allowed
+--- @return string|nil signal  which signal refused it: 'model', 'type', 'class'
+function BR.Config.VehicleRefusalFor(model, signals)
+    local allowed, why = BR.Config.IsAllowedVehicle(model)
+    if not allowed then return why, 'model' end
+
+    signals = signals or {}
+
+    if signals.typeOf then
+        if BR.Config.IsFlyingVehicleType(signals.typeOf()) then
+            return BR.Config.VehicleRefusal.FLIES, 'type'
+        end
+    end
+
+    if signals.classOf then
+        -- THE EXEMPTION IS CHECKED BEFORE THE CLASS, not after, so a Barracks
+        -- costs one table lookup and never reaches the class read at all.
+        if model == nil
+            or BR.Config.ClassNetExemptByHash[BR.NormHash(model)] == nil then
+            local c = signals.classOf()
+            -- A TYPE TEST AND NOT `if c then`, FOR TWO SEPARATE REASONS.
+            --
+            --   `0` IS A REAL CLASS (Compacts) and `0` is TRUTHY in Lua, so a
+            --   truthiness test would be right here by accident and wrong the
+            --   next time somebody copied it.
+            --
+            --   `math.tointeger` COERCES NUMERIC STRINGS -- math.tointeger('19')
+            --   is 19, checked on this interpreter. So without this line a
+            --   native or a stub that answered the STRING '19' would be believed
+            --   and would refuse, which is a refusal invented out of a value
+            --   that was never a class. Anything that is not actually a number
+            --   is "no opinion".
+            if math.type(c) == 'integer' or math.type(c) == 'float' then
+                local w = BR.Config.RefusedVehicleClasses[math.tointeger(c) or -1]
+                if w ~= nil then return w, 'class' end
+            end
+        end
+    end
+
+    return nil, nil
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
