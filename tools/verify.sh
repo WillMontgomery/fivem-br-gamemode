@@ -1696,30 +1696,46 @@ bash tools/check_secrets.sh || rc=1
 # "my change did nothing" with nothing wrong in any log. Same failure the NUI
 # bundle guard exists to prevent, so it gets the same treatment.
 #
-# SKIPPED RATHER THAN FAILED WITHOUT NODE. verify.sh is required to run on a
-# box with no Node install (that is why check_secrets.sh is bash), and the ban
-# rule's own tests run in the same breath when Node is present.
+# A FINGERPRINT, NOT A REBUILD, SINCE #218. This section used to run esbuild
+# and diff the result against the committed bundle. That is the stronger check
+# and it never once executed: it needed js-src/br_ddb/node_modules, so it
+# printed `skip` on every machine for months, and installing the deps turned it
+# RED rather than green -- on a package-exports failure inside the AWS SDK's own
+# dependency tree under Node 24, which no rebuild of ours fixes. A gate that
+# fails for somebody else's reason is worse than one that never ran, because the
+# two are indistinguishable from here.
+#
+# What runs instead is a sha256 over the source tree, recorded beside the bundle
+# in dist/fingerprint.json. No node, no npm, no install -- so it runs on every
+# machine, starting today. tools/br_ddb_fingerprint.sh carries the scheme and,
+# more usefully, the list of what it does NOT prove: it catches "somebody edited
+# the source and forgot to rebuild", it does not prove the bundle is correct,
+# and it is not a tamper check -- the manifest is as editable as the bundle
+# beside it.
+#
+# THE BAN RULE CASES NEEDED NO node_modules EITHER. They import only src/, which
+# is pure arithmetic on data, and they were sitting behind the same dead guard:
+# 193 cases that ran on no machine that had not done an install. They run now
+# whenever Node is present, which is the only thing they ever needed.
 
 echo "${DIM}== br_ddb bundle ==${RST}"
 if [ ! -d js-src/br_ddb ]; then
     echo "     no br_ddb source, skipping"
-elif ! command -v node >/dev/null 2>&1; then
-    echo "${YEL}skip${RST} node not installed -- cannot verify the bundle matches its source"
-elif [ ! -d js-src/br_ddb/node_modules ]; then
-    echo "${YEL}skip${RST} js-src/br_ddb/node_modules absent (run: cd js-src/br_ddb && npm install)"
 else
-    if node js-src/br_ddb/scripts/build.mjs --check >/dev/null 2>&1; then
-        echo "${GRN}ok${RST}   br_ddb bundle matches its source"
+    if fp=$(bash tools/br_ddb_fingerprint.sh --check 2>&1); then
+        echo "${GRN}ok${RST}   br_ddb bundle matches the source fingerprint ($fp)"
     else
         echo "${RED}FAIL${RST} br_ddb bundle does not match js-src/br_ddb"
-        echo "     Fix:  cd js-src/br_ddb && npm run build"
+        echo "$fp" | sed 's/^/     /'
         rc=1
     fi
 
-    if node js-src/br_ddb/scripts/test.mjs >/dev/null 2>&1; then
+    if ! command -v node >/dev/null 2>&1; then
+        echo "${YEL}skip${RST} node not installed -- ban rule cases not run"
+    elif node js-src/br_ddb/scripts/test.mjs >/dev/null 2>&1; then
         echo "${GRN}ok${RST}   br_ddb ban rule passes its cases"
     else
-        echo "${RED}FAIL${RST} br_ddb ban rule failed -- run: cd js-src/br_ddb && npm test"
+        echo "${RED}FAIL${RST} br_ddb ban rule failed -- run: node js-src/br_ddb/scripts/test.mjs"
         rc=1
     fi
 fi

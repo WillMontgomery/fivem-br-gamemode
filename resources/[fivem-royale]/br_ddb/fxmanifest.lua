@@ -19,7 +19,9 @@ version '0.1.0'
 node_version '22'
 
 -- THE BUNDLE, NOT THE SOURCE. dist/server.js is generated -- edit js-src/br_ddb
--- and run `npm run build`, which tools/pre-commit and verify.sh both enforce.
+-- and run `npm run build`. tools/pre-commit refuses a source-only commit, and
+-- verify.sh compares the source against the fingerprint recorded in
+-- dist/fingerprint.json, which server/fingerprint.lua republishes at boot.
 --
 -- THERE IS DELIBERATELY NO package.json IN THIS RESOURCE. FXServer's own build
 -- toolchain (Node 16, yarn) tries to build any resource that has one, which
@@ -28,6 +30,7 @@ node_version '22'
 server_scripts {
     'dist/server.js',
     'server/debug.lua',
+    'server/fingerprint.lua',
 }
 
 -- No dependency on br_core or br_ringmaster in either direction. This resource

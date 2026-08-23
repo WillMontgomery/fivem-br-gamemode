@@ -123,7 +123,7 @@ non-zero on any failure:
 | `incident notice surface` | one announcer of the report notice, one `br:incident:filed`, one incident writer; corroboration is none of them |
 | `timeline entry kinds` | every match-timeline kind Lua writes is one `close.js` stores |
 | `secrets` | scans the whole repo, not just `resources/` |
-| `br_ddb bundle` | the committed bundle matches `js-src/br_ddb` |
+| `br_ddb bundle` | the committed bundle is the one recorded against the current `js-src/br_ddb` |
 | `duplicate console commands` | one name, one registration |
 
 > **This table said 17 gates and "~3,100 assertions across 8 suites".** Neither
