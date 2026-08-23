@@ -1278,6 +1278,17 @@ local function secs(ms)
     return ('%.1fs'):format(ms / 1000)
 end
 
+--- How long ago, for the age column.
+---
+--- `now` RATHER THAN `-` AT ZERO, which is why this is not just secs(). A row
+--- adjudicated in this same millisecond is the most interesting one in the
+--- table -- it is the shot you just fired to see what it would say -- and
+--- printing it as a dash reads as missing data, which is exactly backwards.
+local function age(ms)
+    if not ms or ms <= 0 then return 'now' end
+    return ('%.1fs'):format(ms / 1000)
+end
+
 --- BR.ShotRefusal values are SENTENCES ("beyond the weapon's range"), which is
 --- what makes a log line read. A table wants the KEY, so this inverts the enum
 --- once rather than per row.
@@ -1474,7 +1485,7 @@ RegisterCommand('brshots', function(src, args)
         local sh = r.reason == BR.ShotRefusal.NOT_THROWN and '*' or ' '
 
         print(('  %-6s %-25s %-13s %s%s'):format(
-            secs(now - (r.at or 0)),
+            age(now - (r.at or 0)),
             ('%s > %s'):format(who(r.shooterName, r.shooter),
                                who(r.victimName, r.victim)),
             r.weapon,

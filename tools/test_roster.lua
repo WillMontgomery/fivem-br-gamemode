@@ -6921,6 +6921,20 @@ do
     ok(printedSaying('(none)') ~= nil, 'no matching rows says so')
     ok(printedSaying('HITS A PLAYER') ~= nil,
         'and says why a table can legitimately be empty')
+
+    -- THE ROW YOU JUST CAUSED READS `now`, NOT `-`. The age column shares its
+    -- shape with debug.lua's secs(), which renders zero as a dash because a
+    -- duration of zero there means "never happened". Here zero means "this
+    -- millisecond" -- the shot the owner fired to see what it would say -- and
+    -- a dash on that row reads as missing data.
+    apart(10.0)
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying(' now  ') ~= nil,
+        'the shot just adjudicated is aged `now` rather than `-`',
+        printedSaying('pistol') or 'no row')
 end
 
 describe('damage.brtestfire')
