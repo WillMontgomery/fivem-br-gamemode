@@ -21,10 +21,28 @@
 BR = BR or {}
 BR.State = BR.State or {}
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. Every native this file waits on is declared BOOL, and every one
+--- of them was read raw -- so on a build that answers with numbers this whole
+--- file was a sequence of waits that did not wait. lobbyPedPending below
+--- already carried the `== true or == 1` form inline for DoesEntityExist; this
+--- is that same test, once, for the four questions that gate the reveal.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
 -- Initial value by cheap observation: a fresh join still has the loadscreen
 -- up (world genuinely not ready); a br_core restart mid-session does not,
 -- and must not replay the boot choreography over a world already there.
-BR.State.worldReady = not GetIsLoadingScreenActive()
+--
+-- AND THE OBSERVATION IS THE WRONG WAY ROUND WITHOUT isTrue. `not
+-- GetIsLoadingScreenActive()` is FALSE for a 0 -- the answer that MEANS the
+-- loadscreen is already gone -- so a mid-session br_core restart would read
+-- worldReady = false and replay the entire boot choreography over a live world,
+-- which is the one case the line exists to avoid.
+BR.State.worldReady = not isTrue(GetIsLoadingScreenActive())
 
 -- The interface's ready handshake. THE REVEAL MUST WAIT FOR IT: the page
 -- learns worldReady=false via the screen publish that fires on this very
@@ -91,12 +109,12 @@ local PED_WAIT_MS = 8000
 local function lobbyPedPending()
     local ped = PlayerPedId()
 
-    -- BOTH SHAPES, because `not DoesEntityExist(ped)` cannot be written here: a
-    -- FiveM native declared BOOL may hand Lua a NUMBER, and 0 is TRUTHY in Lua,
-    -- so the obvious spelling reads a missing ped as present. spawn.lua's
-    -- /brblack footer carries the same `== true or == 1` for the same scar.
-    local exists = DoesEntityExist(ped)
-    if exists ~= true and exists ~= 1 then return 'no ped yet' end
+    -- `not DoesEntityExist(ped)` cannot be written here -- see isTrue at the top
+    -- of this file. This test was the first place in this file to carry the
+    -- scar, spelled out inline; it goes through the helper now that the helper
+    -- exists, because one file with two spellings of one rule is how the next
+    -- person picks the wrong one.
+    if not isTrue(DoesEntityExist(ped)) then return 'no ped yet' end
 
     -- The locker is the only thing that decides WHICH character this is, so it
     -- is the only honest source for what we are waiting to see.
@@ -151,7 +169,7 @@ Citizen.CreateThread(function()
     local deadline = GetGameTimer() + 30000
     while GetGameTimer() < deadline do
         if uiReady and BR.State.me and BR.State.me.src
-           and NetworkIsSessionStarted() then break end
+           and isTrue(NetworkIsSessionStarted()) then break end
         Citizen.Wait(100)
     end
 
@@ -160,7 +178,11 @@ Citizen.CreateThread(function()
     -- alt-tabbed through the load must still get their lobby eventually.
     local wDeadline = GetGameTimer() + 60000
     while GetGameTimer() < wDeadline do
-        if HasCollisionLoadedAroundEntity(PlayerPedId()) then break end
+        -- isTrue, NOT the bare call. `if HasCollisionLoadedAroundEntity(p) then`
+        -- breaks on the 0 that means "no collision here", so the gag reel that
+        -- exists to cover the stream-in would be dropped on the first poll --
+        -- 250ms into a cold load, over an island that is not there yet.
+        if isTrue(HasCollisionLoadedAroundEntity(PlayerPedId())) then break end
         Citizen.Wait(250)
     end
 
@@ -236,7 +258,7 @@ Citizen.CreateThread(function()
     -- behind the backdrop for step 4 to reveal.
     ShutdownLoadingScreenNui()
     ShutdownLoadingScreen()
-    if IsScreenFadedOut() then DoScreenFadeIn(400) end
+    if isTrue(IsScreenFadedOut()) then DoScreenFadeIn(400) end
     print('[br_core] loading: screen released to the lobby')
 
     -- One beat on pure purple, then the double fade: menu in, world in.

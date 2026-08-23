@@ -24,6 +24,30 @@ BR.Spawn = {}
 local spawned = false
 local placing = false
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. Seven shipped bugs on this project now, and THIS FILE IS THE
+--- SEVENTH -- every screen and collision question below was read raw.
+---
+--- BOTH DIRECTIONS ARE WRONG AND THEY ARE WRONG DIFFERENTLY, which is why the
+--- fix is a helper rather than a habit:
+---
+---   `if HasCollisionLoadedAroundEntity(ped) then`  is TRUE for a native that
+---   answered 0, so the wait for the ground ends on the first poll and the
+---   teleport lands on geometry that has not streamed. That is the fall
+---   through the map.
+---
+---   `while not HasCollisionLoadedAroundEntity(ped) do` is FALSE for the same
+---   0, so the loop exits immediately -- it stops waiting at exactly the moment
+---   there is nothing to stand on.
+---
+--- Either spelling stops waiting precisely when it should wait, so neither
+--- spelling may be written bare. tools/check_bool_natives.lua enforces that.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
 -- --------------------------------------------------------------------------
 -- The cover handshake
 -- --------------------------------------------------------------------------
@@ -153,9 +177,16 @@ function BR.Spawn.placeAt(x, y, z, heading, cb)
         for _ = 1, 40 do
             Citizen.Wait(100)
             RequestCollisionAtCoord(x, y, z)
-            if HasCollisionLoadedAroundEntity(ped) then
+            if isTrue(HasCollisionLoadedAroundEntity(ped)) then
+                -- THE GROUND PROBE'S FIRST RETURN IS A BOOL TOO, and it is the
+                -- one that actually moves the body: a raw `if found then` is
+                -- true for the 0 that means "no ground here", and the gz beside
+                -- a 0 is 0.0 -- so the placement below would put the player at
+                -- z = 1.0, which off the Cayo coast is the sea and under Los
+                -- Santos is bedrock. The wait above protects the same thing and
+                -- the whole wait is wasted if this line believes a zero.
                 local found, gz = GetGroundZFor_3dCoord(x, y, z + 50.0, false)
-                if found then groundZ = gz + 1.0 end
+                if isTrue(found) then groundZ = gz + 1.0 end
                 break
             end
         end
@@ -207,14 +238,22 @@ function BR.Spawn.reveal()
     -- is a no-op, so this is safe to call repeatedly. holdBlack is the one
     -- legitimate dark screen: the end-of-match sequence owns the fade until
     -- WAITING, and this reveal racing it was the rough lobby transition.
+    --
+    -- AND BOTH READS GO THROUGH isTrue, which is the difference between this
+    -- function working and this function being decorative. `not
+    -- IsScreenFadedIn()` is FALSE for a native answering 0 -- a screen that is
+    -- NOT faded in, which is the entire condition -- so on such a build the one
+    -- place that undoes every dark screen would never have called DoScreenFadeIn
+    -- at all, and the watchdog at the bottom of this file that calls in here
+    -- would have been recovering nothing.
     if not BR.Spawn.holdBlack
-       and not IsScreenFadedIn() and not IsScreenFadingIn() then
+       and not isTrue(IsScreenFadedIn()) and not isTrue(IsScreenFadingIn()) then
         DoScreenFadeIn(500)
     end
 
     -- GTA can leave a joining player mid-switch, which renders black no matter
     -- what the fade state says.
-    if IsPlayerSwitchInProgress() then
+    if isTrue(IsPlayerSwitchInProgress()) then
         SwitchInPlayer(PlayerPedId())
     end
 
@@ -240,6 +279,16 @@ function BR.Spawn.diagnose()
         return fallback == nil and 'error' or fallback
     end
 
+    -- THE PROBES BELOW ARE DELIBERATELY NOT NORMALISED, and this is the one
+    -- place in the file where a raw BOOL native is the right answer. Every
+    -- value here is tostring'd into a print and read by a person: a reading of
+    -- `0` says the engine answered with a number, which on the day this matters
+    -- is the most useful thing the readout can tell you. Normalising them here
+    -- would erase that and make the `== true or == 1` in /brblack's footer --
+    -- which exists precisely because these arrive raw -- dead code that still
+    -- looks alive. Nothing branches on this table; grep `diagnose()`.
+    -- scriptCam is the exception because it is COMPUTED rather than reported.
+
     return {
         fadedIn      = safe(function() return IsScreenFadedIn() end),
         fadedOut     = safe(function() return IsScreenFadedOut() end),
@@ -254,7 +303,7 @@ function BR.Spawn.diagnose()
         collision    = safe(function() return HasCollisionLoadedAroundEntity(ped) end),
         scriptCam    = safe(function()
             local c = GetRenderingCam()
-            return c and c ~= -1 and IsCamRendering(c) or false
+            return c ~= nil and c ~= -1 and isTrue(IsCamRendering(c))
         end, false),
         placing      = placing,
         spawned      = spawned,
@@ -467,7 +516,7 @@ function BR.Spawn.toLobby(holdBlack)
 
         DoScreenFadeOut(400)
         local t0 = GetGameTimer()
-        while not IsScreenFadedOut() and GetGameTimer() - t0 < 1000 do
+        while not isTrue(IsScreenFadedOut()) and GetGameTimer() - t0 < 1000 do
             Citizen.Wait(50)
         end
 
@@ -479,7 +528,7 @@ function BR.Spawn.toLobby(holdBlack)
         RequestCollisionAtCoord(p.x, p.y, p.z)
         local deadline = GetGameTimer() + 8000
         while GetGameTimer() < deadline
-              and not HasCollisionLoadedAroundEntity(PlayerPedId()) do
+              and not isTrue(HasCollisionLoadedAroundEntity(PlayerPedId())) do
             Citizen.Wait(100)
         end
         Citizen.Wait(300)   -- one breath for textures behind the collision
@@ -569,7 +618,7 @@ function BR.Spawn.toWarmupPad()
         --    underneath the curtain if it is ever less than fully opaque.
         DoScreenFadeOut(300)
         local t0 = GetGameTimer()
-        while not IsScreenFadedOut() and GetGameTimer() - t0 < 1200 do
+        while not isTrue(IsScreenFadedOut()) and GetGameTimer() - t0 < 1200 do
             Citizen.Wait(50)
         end
 
@@ -716,7 +765,7 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
             local c = GetEntityCoords(ped)
             if GetGameTimer() >= minUntil
                and BR.Dist(c.x, c.y, p.x, p.y) < 200.0
-               and HasCollisionLoadedAroundEntity(ped) then
+               and isTrue(HasCollisionLoadedAroundEntity(ped)) then
                 break
             end
             Citizen.Wait(200)
@@ -887,7 +936,12 @@ Citizen.CreateThread(function()
     -- The one thread outside the loop registry: it runs once at startup and
     -- then never again, so a permanently-registered callback would cost more
     -- than it saves.
-    while not NetworkIsSessionStarted() do
+    -- isTrue for the same reason as everything else here, and this is the
+    -- earliest one: `not NetworkIsSessionStarted()` is FALSE for a 0, so on a
+    -- build that answers with numbers this loop never runs a single iteration
+    -- and the boot proceeds -- reveal, then initialSpawn -- with no session
+    -- underneath it.
+    while not isTrue(NetworkIsSessionStarted()) do
         Citizen.Wait(100)
     end
 
@@ -946,7 +1000,12 @@ BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
         return
     end
 
-    if IsScreenFadedIn() or IsScreenFadingIn() then
+    -- AND THE WATCHDOG'S OWN READ IS GUARDED, which is the one that decided
+    -- whether any of the rest of it ever ran: a raw `if IsScreenFadedIn()` is
+    -- TRUE for the 0 that means "not faded in", so on such a build this returned
+    -- on every tick and the anti-black watchdog -- the thing standing between a
+    -- player and an unrecoverable black screen -- was inert.
+    if isTrue(IsScreenFadedIn()) or isTrue(IsScreenFadingIn()) then
         darkTicks = 0
         return
     end
@@ -1033,7 +1092,7 @@ RegisterCommand('brunstuck', function()
     DestroyAllCams(true)
     ClearFocus()
 
-    if IsPlayerSwitchInProgress() then
+    if isTrue(IsPlayerSwitchInProgress()) then
         SwitchInPlayer(ped)
     end
 

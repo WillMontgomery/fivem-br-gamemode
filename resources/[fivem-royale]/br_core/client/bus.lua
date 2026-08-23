@@ -43,6 +43,18 @@ local islandCut = false -- this flight has already released the lobby island
 -- whole view with it: the "world snaps and rotates back" report.
 local smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. This file is the front half of the drop, and every model wait in
+--- it was read raw: `while not HasModelLoaded(m) do` is FALSE for the 0 that
+--- means "not loaded", so the wait ends immediately and CreateVehicle is handed
+--- a model that is not in memory. What comes back is nil, and the flight -- and
+--- with it everybody's jump -- is over before it started.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
 local function angDiff(a, b)
     return ((a - b + 540.0) % 360.0) - 180.0
 end
@@ -55,11 +67,11 @@ local function cleanup()
         cam = nil
     end
     if pilot then
-        if DoesEntityExist(pilot) then DeleteEntity(pilot) end
+        if isTrue(DoesEntityExist(pilot)) then DeleteEntity(pilot) end
         pilot = nil
     end
     if bus then
-        if DoesEntityExist(bus) then DeleteEntity(bus) end
+        if isTrue(DoesEntityExist(bus)) then DeleteEntity(bus) end
         bus = nil
     end
     lastX, lastY, lastZ, lastT = nil, nil, nil, nil
@@ -177,10 +189,10 @@ local function board()
         local model = GetHashKey(BR.Config.Bus.model)
         RequestModel(model)
         local deadline = GetGameTimer() + 10000
-        while not HasModelLoaded(model) and GetGameTimer() < deadline do
+        while not isTrue(HasModelLoaded(model)) and GetGameTimer() < deadline do
             Citizen.Wait(50)
         end
-        if not HasModelLoaded(model) then
+        if not isTrue(HasModelLoaded(model)) then
             print('[br_core] bus: model never loaded; riding blind (camera only)')
         end
         -- STALE-BOARDING GUARD. Model streaming takes real time (longest
@@ -210,10 +222,10 @@ local function board()
         local pilotModel = GetHashKey('s_m_m_pilot_01')
         RequestModel(pilotModel)
         local pDeadline = GetGameTimer() + 5000
-        while not HasModelLoaded(pilotModel) and GetGameTimer() < pDeadline do
+        while not isTrue(HasModelLoaded(pilotModel)) and GetGameTimer() < pDeadline do
             Citizen.Wait(50)
         end
-        if HasModelLoaded(pilotModel) then
+        if isTrue(HasModelLoaded(pilotModel)) then
             pilot = CreatePed(4, pilotModel, route.sx, route.sy, route.alt, heading,
                               false, false)
             SetModelAsNoLongerNeeded(pilotModel)
@@ -803,8 +815,8 @@ local ghosts = {}   -- [matchId] = { route, plane, pilot, hdg, spawning }
 local function removeGhost(id)
     local g = ghosts[id]
     if not g then return end
-    if g.pilot and DoesEntityExist(g.pilot) then DeleteEntity(g.pilot) end
-    if g.plane and DoesEntityExist(g.plane) then DeleteEntity(g.plane) end
+    if g.pilot and isTrue(DoesEntityExist(g.pilot)) then DeleteEntity(g.pilot) end
+    if g.plane and isTrue(DoesEntityExist(g.plane)) then DeleteEntity(g.plane) end
     ghosts[id] = nil
 end
 
@@ -818,10 +830,10 @@ local function spawnGhost(g)
         local model = GetHashKey(BR.Config.Bus.model)
         RequestModel(model)
         local deadline = GetGameTimer() + 10000
-        while not HasModelLoaded(model) and GetGameTimer() < deadline do
+        while not isTrue(HasModelLoaded(model)) and GetGameTimer() < deadline do
             Citizen.Wait(50)
         end
-        if not HasModelLoaded(model) or not g.route then
+        if not isTrue(HasModelLoaded(model)) or not g.route then
             g.spawning = false
             return
         end
@@ -836,10 +848,10 @@ local function spawnGhost(g)
         local pilotModel = GetHashKey('s_m_m_pilot_01')
         RequestModel(pilotModel)
         local pDeadline = GetGameTimer() + 5000
-        while not HasModelLoaded(pilotModel) and GetGameTimer() < pDeadline do
+        while not isTrue(HasModelLoaded(pilotModel)) and GetGameTimer() < pDeadline do
             Citizen.Wait(50)
         end
-        if HasModelLoaded(pilotModel) and DoesEntityExist(g.plane) then
+        if isTrue(HasModelLoaded(pilotModel)) and isTrue(DoesEntityExist(g.plane)) then
             g.pilot = CreatePed(4, pilotModel, p0.x, p0.y, p0.z,
                                 g.route.heading or 0.0, false, false)
             SetModelAsNoLongerNeeded(pilotModel)
@@ -899,7 +911,7 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.ghosts', function()
             removeGhost(id)
         else
             if not g.plane and not g.spawning then spawnGhost(g) end
-            if g.plane and DoesEntityExist(g.plane) then
+            if g.plane and isTrue(DoesEntityExist(g.plane)) then
                 local x, y, z = BR.PathPosAt(r.points, t)
                 SetEntityCoordsNoOffset(g.plane, x, y, z, false, false, false)
 
@@ -967,11 +979,11 @@ RegisterCommand('brbus', function()
                 (route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
     local x, y, z = BR.PathPosAt(route.points, now)
     print(('  route pos now   %.0f, %.0f, %.0f'):format(x, y, z))
-    if bus and DoesEntityExist(bus) then
+    if bus and isTrue(DoesEntityExist(bus)) then
         local c = GetEntityCoords(bus)
         print(('  bus entity pos  %.0f, %.0f, %.0f'):format(c.x, c.y, c.z))
         Citizen.SetTimeout(1000, function()
-            if bus and DoesEntityExist(bus) then
+            if bus and isTrue(DoesEntityExist(bus)) then
                 local c2 = GetEntityCoords(bus)
                 print(('  bus 1s later    %.0f, %.0f  (moved %.0fm)')
                     :format(c2.x, c2.y, BR.Dist(c.x, c.y, c2.x, c2.y)))

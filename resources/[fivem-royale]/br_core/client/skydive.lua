@@ -14,6 +14,24 @@ BR = BR or {}
 
 local CHUTE = GetHashKey('GADGET_PARACHUTE')   -- 0xFBAB5776, verified
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. This is the back half of the drop and it asked five BOOL natives
+--- raw, in the two places where being wrong is fatal rather than untidy:
+---
+---   `if HasPedGotWeapon(ped, CHUTE, false) then break end` -- the give-verify
+---   loop -- breaks on the 0 that means the ped has NO chute, so the retry that
+---   exists because the give "quietly fails for a player mid-teleport" would
+---   never run once. That is the chuteless fall this file opens by describing.
+---
+---   `if IsPedFalling(ped) then return true end` in airborneNow returns airborne
+---   for a ped standing still, so the landing branch never fires and the drop
+---   machine never stands down.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
 local dropping = false
 
 --- Has this drop already ended on the ground?
@@ -47,8 +65,8 @@ local landedThisDrop = false
 --- @param ped integer
 --- @return boolean
 local function airborneNow(ped)
-    if IsPedFalling(ped) then return true end
-    if IsEntityInWater(ped) then return false end
+    if isTrue(IsPedFalling(ped)) then return true end
+    if isTrue(IsEntityInWater(ped)) then return false end
     return GetEntityHeightAboveGround(ped) > 5.0
 end
 
@@ -257,7 +275,7 @@ end
 --- @param ped integer
 --- @return boolean
 local function hasChute(ped)
-    return HasPedGotWeapon(ped, CHUTE, false)
+    return isTrue(HasPedGotWeapon(ped, CHUTE, false))
         or GetAmmoInPedWeapon(ped, CHUTE) > 0
 end
 
@@ -306,9 +324,9 @@ AddEventHandler('br:drop:begin', function(d)
         -- the engine treats as a RESERVE parachute -- the "handed another
         -- parachute after pulling the first" report (2026-08-04).
         for attempt = 1, 10 do
-            if HasPedGotWeapon(ped, CHUTE, false) then break end
+            if isTrue(HasPedGotWeapon(ped, CHUTE, false)) then break end
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
-            if HasPedGotWeapon(ped, CHUTE, false) then break end
+            if isTrue(HasPedGotWeapon(ped, CHUTE, false)) then break end
             if attempt == 10 then
                 print('[br_core] drop: GADGET_PARACHUTE refused 10 times -- deploy will not work')
             end
@@ -591,7 +609,7 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
     -- TICK landing branch disarms, flashing "open the glider" at a player
     -- standing on the ground -- is covered by the freefall/falling pair
     -- below, both false for a ped with feet on anything.
-    if (IsPedInParachuteFreeFall(ped) or IsPedFalling(ped))
+    if (isTrue(IsPedInParachuteFreeFall(ped)) or isTrue(IsPedFalling(ped)))
        and (cs == BR.Native.ChuteState.ON_BACK
             or cs == BR.Native.ChuteState.FREEFALL) then
         kind = 'glider'
@@ -767,7 +785,7 @@ end)
 BR.Keys.on('deploy', function(pressed)
     if not pressed or not dropping then return end
     local ped = PlayerPedId()
-    if IsPedInAnyVehicle(ped, true) then return end
+    if isTrue(IsPedInAnyVehicle(ped, true)) then return end
     local cs = GetPedParachuteState(ped)
     -- ON_BACK is the state a HEALTHY drop spends its whole freefall in (the
     -- chute was given, so the engine never reports 3/falling-to-doom). The
@@ -777,10 +795,10 @@ BR.Keys.on('deploy', function(pressed)
        or cs == BR.Native.ChuteState.ON_BACK then
         ForcePedToOpenParachute(ped)
     elseif cs == BR.Native.ChuteState.NONE
-       and not IsPedOnFoot(ped) and not IsEntityInWater(ped) then
+       and not isTrue(IsPedOnFoot(ped)) and not isTrue(IsEntityInWater(ped)) then
         -- State NONE means the TASK is lost, not necessarily the weapon --
         -- re-giving one the ped still holds stacks a reserve chute.
-        if not HasPedGotWeapon(ped, CHUTE, false) then
+        if not isTrue(HasPedGotWeapon(ped, CHUTE, false)) then
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
         end
         SetPedAmmo(ped, CHUTE, 1)   -- exactly one; never a reserve
@@ -831,7 +849,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- pull, immediately ejected"). If the machine was somehow still armed
     -- when the player got in, entering a vehicle IS proof of being landed:
     -- finish the drop and stand down.
-    if IsPedInAnyVehicle(ped, true) then
+    if isTrue(IsPedInAnyVehicle(ped, true)) then
         if dropping then
             dropping = false
             landedThisDrop = true
@@ -891,7 +909,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- expected, and players fell past a floor made of preconditions. The
     -- descent is invincible as the last net, but the chute is the fix.
     local agl = GetEntityHeightAboveGround(ped)
-    local airborne = not IsPedOnFoot(ped) and not IsEntityInWater(ped)
+    local airborne = not isTrue(IsPedOnFoot(ped)) and not isTrue(IsEntityInWater(ped))
     if airborne and agl > 3.0 then airborneSeen = true end
     -- The floor's band has a BOTTOM as well as a top: below ~3m a chute
     -- can do nothing, and firing there is pure harm -- the vehicle-entry
@@ -904,7 +922,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
        and cs ~= BR.Native.ChuteState.OPEN
        and agl > 3.0
        and agl < BR.Config.Drop.autoDeployAGL then
-        if not HasPedGotWeapon(ped, CHUTE, false) then
+        if not isTrue(HasPedGotWeapon(ped, CHUTE, false)) then
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
         end
         -- Ammo is re-asserted here even when the weapon was already held: the
@@ -941,14 +959,14 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- "press F, nothing; enter a vehicle, given a chute"). A ped standing
     -- still at ground level with the canopy out has landed, whatever the
     -- task claims.
-    local grounded = IsPedOnFoot(ped) or IsEntityInWater(ped)
+    local grounded = isTrue(IsPedOnFoot(ped)) or isTrue(IsEntityInWater(ped))
     if not grounded and cs == BR.Native.ChuteState.OPEN
        and agl < 2.0 and GetEntitySpeed(ped) < 2.0 then
         grounded = true
     end
     if airborneSeen
        and cs ~= BR.Native.ChuteState.OPENING
-       and not IsPedFalling(ped)
+       and not isTrue(IsPedFalling(ped))
        and grounded then
         dropping = false
         -- ONCE PER DROP. Everything below this line is a one-shot -- a disarm
@@ -1043,11 +1061,11 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.disarm', function()
     -- skipped them entirely -- which is the worst possible place to leave
     -- someone armed with a parachute, because the engine's next expected
     -- action is a deploy they cannot perform (user, 2026-08-05).
-    local inWater = IsEntityInWater(ped)
+    local inWater = isTrue(IsEntityInWater(ped))
     if not inWater then
         -- Never yank one out of the air: if this player is somehow genuinely
         -- falling, the floor above is the system that owns them.
-        if IsPedFalling(ped) or GetEntityHeightAboveGround(ped) > 5.0 then
+        if isTrue(IsPedFalling(ped)) or GetEntityHeightAboveGround(ped) > 5.0 then
             sweeps = 0
             return
         end

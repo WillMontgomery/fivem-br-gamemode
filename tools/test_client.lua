@@ -8613,7 +8613,14 @@ do
     function ShutdownLoadingScreen()    shut.screen = shut.screen + 1 end
     function DoScreenFadeIn()           shut.fadeIn = shut.fadeIn + 1 end
     function IsScreenFadedOut()         return world.fadedOut end
-    function GetIsLoadingScreenActive() return true end
+    -- SETTABLE, because the answer decides whether this file does ANYTHING.
+    -- `BR.State.worldReady = not isTrue(GetIsLoadingScreenActive())` is the
+    -- first line of loading.lua and the only thing separating a fresh join from
+    -- a mid-session br_core restart.
+    function GetIsLoadingScreenActive()
+        if world.loadscreen == nil then return true end
+        return world.loadscreen
+    end
     function NetworkIsSessionStarted()  return world.session end
     function HasCollisionLoadedAroundEntity() return world.collision end
     function SendLoadingScreenMessage() return true end
@@ -8873,6 +8880,66 @@ do
                    :format(shape.name),
                ('shutdowns=%d'):format(shut.screen))
         end
+    end
+
+    describe('every wait in this file survives a native that answers 1/0')
+    do
+        -- THE SEVENTH INSTANCE, AND WHY IT IS TESTED HERE RATHER THAN ARGUED.
+        -- The DoesEntityExist cases above cover the `if not X()` direction. The
+        -- three below are the OTHER direction and the one that is easy to miss
+        -- reading a diff: these are WAITS, and a wait that stops waiting still
+        -- looks exactly like a wait. Every assertion is that the loading screen
+        -- is STILL UP -- which is the only observable difference between a file
+        -- that waited and a file that ran straight through.
+
+        -- 1. THE GROUND. `if HasCollisionLoadedAroundEntity(p) then break end`
+        --    breaks on a 0, so the gag reel that exists to cover the stream-in
+        --    would be dropped 250ms into a cold load, over an island that is
+        --    not there. The false/true pair of this is asserted further up; the
+        --    number pair is the one that shipped.
+        join(function() world.collision = 0 end)
+        pump(20000)
+        ok(shut.screen == 0,
+           'collision answering 0 is not collision, however truthy 0 is in Lua',
+           ('shutdowns=%d after 20s'):format(shut.screen))
+
+        world.collision = 1
+        pump(2000)
+        ok(shut.screen == 1, 'and 1 from the same native releases it',
+           ('shutdowns=%d'):format(shut.screen))
+
+        -- 2. THE SESSION. The first gate holds the screen for up to 30s waiting
+        --    for the interface AND a started session; `not NetworkIsSessionStarted()`
+        --    is FALSE for a 0, so on such a build it never ran one iteration.
+        join(function() world.session = 0 end)
+        pump(4000)
+        ok(shut.screen == 0,
+           'a session reported 0 does not satisfy the wait for a session',
+           ('shutdowns=%d'):format(shut.screen))
+
+        world.session = 1
+        pump(2000)
+        ok(shut.screen == 1, 'and 1 does',
+           ('shutdowns=%d'):format(shut.screen))
+
+        -- 3. THE RESTART, which is the inverted one and the reason a helper is
+        --    better than a habit. `not GetIsLoadingScreenActive()` is FALSE for
+        --    the 0 that MEANS the loadscreen is already gone -- so a br_core
+        --    restart mid-session read worldReady = false and replayed the whole
+        --    boot choreography, gag reel and all, over a live world. That is the
+        --    one case the line exists to prevent, defeated by the line itself.
+        join(function() world.loadscreen = 0 end)
+        pump(4000)
+        ok(BR.State.worldReady == true and shut.screen == 0,
+           'a mid-session restart with no loadscreen up replays nothing',
+           ('worldReady=%s shutdowns=%d'):format(
+               tostring(BR.State.worldReady), shut.screen))
+
+        join(function() world.loadscreen = 1 end)
+        pump(4000)
+        ok(shut.screen == 1,
+           'and a fresh join reported as 1 still gets the whole sequence',
+           ('shutdowns=%d'):format(shut.screen))
     end
 
     -- ------------------------------------------------------------ teardown ---

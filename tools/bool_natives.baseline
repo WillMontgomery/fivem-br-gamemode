@@ -1,0 +1,61 @@
+# Bare truth tests on BOOL-shaped FiveM natives, per file and per
+# native. Written by tools/check_bool_natives.lua -- see the top of
+# that file for what a line means and why a number may only go
+# down. Regenerate with --write-baseline after a deliberate change.
+#
+# count	file	native
+1	resources/[fivem-royale]/br_core/client/chat.lua	IsPauseMenuActive
+2	resources/[fivem-royale]/br_core/client/dbno.lua	DoesAnimDictExist
+2	resources/[fivem-royale]/br_core/client/dbno.lua	DoesCamExist
+2	resources/[fivem-royale]/br_core/client/dbno.lua	HasAnimDictLoaded
+1	resources/[fivem-royale]/br_core/client/dbno.lua	IsEntityDead
+2	resources/[fivem-royale]/br_core/client/dbno.lua	IsPedFatallyInjured
+1	resources/[fivem-royale]/br_core/client/debug.lua	HasPedGotWeapon
+1	resources/[fivem-royale]/br_core/client/dui.lua	DoesEntityExist
+1	resources/[fivem-royale]/br_core/client/fuel.lua	GetVehiclePedIsEntering
+1	resources/[fivem-royale]/br_core/client/fuel.lua	GetVehiclePedIsIn
+2	resources/[fivem-royale]/br_core/client/gamerules.lua	DoesEntityExist
+1	resources/[fivem-royale]/br_core/client/gamerules.lua	DoesPickupExist
+1	resources/[fivem-royale]/br_core/client/gamerules.lua	HasEntityBeenDamagedByEntity
+1	resources/[fivem-royale]/br_core/client/gamerules.lua	IsPedDeadOrDying
+1	resources/[fivem-royale]/br_core/client/gamerules.lua	IsPedFatallyInjured
+1	resources/[fivem-royale]/br_core/client/inventory.lua	HasPedGotWeapon
+5	resources/[fivem-royale]/br_core/client/inventory.lua	IsDisabledControlJustPressed
+2	resources/[fivem-royale]/br_core/client/inventory.lua	IsPauseMenuActive
+2	resources/[fivem-royale]/br_core/client/inventory.lua	IsPedReloading
+3	resources/[fivem-royale]/br_core/client/lobbycam.lua	DoesCamExist
+2	resources/[fivem-royale]/br_core/client/locker.lua	HasModelLoaded
+1	resources/[fivem-royale]/br_core/client/locker.lua	IsModelAPed
+2	resources/[fivem-royale]/br_core/client/locker.lua	IsModelInCdimage
+1	resources/[fivem-royale]/br_core/client/locker.lua	IsModelValid
+5	resources/[fivem-royale]/br_core/client/loot.lua	DoesBlipExist
+13	resources/[fivem-royale]/br_core/client/loot.lua	DoesEntityExist
+3	resources/[fivem-royale]/br_core/client/loot.lua	HasModelLoaded
+1	resources/[fivem-royale]/br_core/client/loot.lua	IsModelValid
+1	resources/[fivem-royale]/br_core/client/loot.lua	IsPedInAnyVehicle
+3	resources/[fivem-royale]/br_core/client/markers.lua	DoesBlipExist
+2	resources/[fivem-royale]/br_core/client/markers.lua	IsWaypointActive
+1	resources/[fivem-royale]/br_core/client/natives.lua	BusyspinnerIsOn
+2	resources/[fivem-royale]/br_core/client/natives.lua	DoesBlipExist
+1	resources/[fivem-royale]/br_core/client/natives.lua	DoesEntityExist
+1	resources/[fivem-royale]/br_core/client/natives.lua	IsEntityDead
+1	resources/[fivem-royale]/br_core/client/natives.lua	IsPauseMenuActive
+1	resources/[fivem-royale]/br_core/client/natives.lua	NetworkIsInSpectatorMode
+1	resources/[fivem-royale]/br_core/client/probe.lua	DoesEntityExist
+2	resources/[fivem-royale]/br_core/client/probe.lua	HasModelLoaded
+1	resources/[fivem-royale]/br_core/client/screen.lua	HasScaleformMovieLoaded
+1	resources/[fivem-royale]/br_core/client/screen.lua	IsPlayerFreeAiming
+2	resources/[fivem-royale]/br_core/client/spectate.lua	DoesCamExist
+2	resources/[fivem-royale]/br_core/client/squadmates.lua	DoesBlipExist
+3	resources/[fivem-royale]/br_core/client/squadmates.lua	DoesEntityExist
+1	resources/[fivem-royale]/br_core/client/squadmates.lua	HasEntityBeenDamagedByEntity
+1	resources/[fivem-royale]/br_core/client/squadmates.lua	IsSphereVisible
+4	resources/[fivem-royale]/br_core/client/state.lua	DoesEntityExist
+4	resources/[fivem-royale]/br_core/client/state.lua	IsEntityDead
+1	resources/[fivem-royale]/br_core/client/state.lua	IsPauseMenuActive
+2	resources/[fivem-royale]/br_core/client/state.lua	NetworkDoesNetworkIdExist
+1	resources/[fivem-royale]/br_core/client/storm.lua	DoesBlipExist
+1	resources/[fivem-royale]/br_core/client/vehdamage.lua	GetVehiclePedIsEntering
+1	resources/[fivem-royale]/br_core/client/vehrefuse.lua	GetVehiclePedIsEntering
+1	resources/[fivem-royale]/br_core/client/vehrefuse.lua	GetVehiclePedIsIn
+1	resources/[fivem-royale]/br_environment/client/ipl.lua	IsScreenFadedOut

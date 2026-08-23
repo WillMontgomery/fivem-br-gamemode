@@ -24,6 +24,11 @@
 #
 #   3b/3c/3d   -- weapon table, POI siting, and forward-declared locals.
 #
+#   3e. BOOLS   -- a FiveM native declared BOOL read as a Lua truth value. 0 is
+#                 truthy in Lua, so both spellings of that test are wrong and
+#                 they are wrong in opposite directions. Seven shipped instances
+#                 and counting; a ratchet against tools/bool_natives.baseline.
+#
 #   4. MANIFEST -- every .lua is declared somewhere, so nothing loads silently
 #                 into nothing.
 #
@@ -166,6 +171,16 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # the suite's central assertion is that two hundred passes leave the numbers
     # where one pass did.
 
+    # test_bool_natives.lua tests a GATE rather than a shipped module, for the
+    # same reason test_icons.lua does and against the defect this project has
+    # shipped most. tools/check_bool_natives.lua reads the real tree against a
+    # recorded baseline, so on a clean checkout it proves the tree has not got
+    # worse and cannot prove it would notice if it had. The rules are pure
+    # functions in tools/bool_native_rules.lua and this suite feeds them
+    # deliberately broken sources -- and, just as importantly, every spelling of
+    # the FIX, because a gate that flags correct code is a gate that gets an
+    # exception and then gets deleted.
+    #
     # test_icons.lua is the odd one out in a new way: it tests a GATE rather
     # than a shipped module. tools/check_weapons.lua can only ever read the one
     # real ItemIcon.tsx, so it proves that file is clean and cannot prove it
@@ -182,7 +197,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # are two variables in that fixture and are NEVER both set, which is what
     # makes a file that only ever checks the seat fail rather than pass a second
     # late.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua; do
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
@@ -355,6 +370,53 @@ echo "${DIM}== forward locals ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     # shellcheck disable=SC2046
     "$LUA" tools/check_forward_locals.lua $(find resources -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# --- 3e. a BOOL native read as a Lua truth value ------------------------------
+#
+# THE MOST-SHIPPED DEFECT IN THIS REPOSITORY. Seven instances, and the seventh
+# was the entire spawn/drop path -- forty-eight raw reads across spawn.lua,
+# loading.lua, bus.lua and skydive.lua, every one of them in a wait.
+#
+# In Lua the number 0 is TRUTHY, and a FiveM native declared BOOL may answer
+# 1/0. So `if HasCollisionLoadedAroundEntity(ped) then` is TRUE for a native
+# that said no, and `while not HasCollisionLoadedAroundEntity(ped) do` is FALSE
+# for the same no -- one proceeds without waiting, the other stops waiting.
+# Either way the code carries on at exactly the moment it should hold, and in
+# the placement path that means putting a player on ground that has not
+# streamed.
+#
+# SIX RECURRENCES SAY REVIEW DOES NOT CATCH IT. Every one of them was found by a
+# playtest, months later, wearing a symptom that looked like something else --
+# a crate inside a building, a watchdog that never fired, sixty TaskPlayAnims a
+# second. It is invisible in a diff because the wrong spelling is the natural
+# one and the right spelling looks like paranoia.
+#
+# IT IS A RATCHET, NOT A WALL. There were 104 of these left when the gate landed
+# and failing the build on all of them would have got the gate deleted, so the
+# debt is recorded per file and per native in tools/bool_natives.baseline and
+# the count may only go down. A new one -- or one more in a file that already
+# had some -- is a red build; so is fixing one without lowering the number,
+# because the room left behind is where instance eight goes. See the top of
+# tools/check_bool_natives.lua for what the checker can and cannot see.
+#
+# VENDORED RESOURCES ARE EXCLUDED, on the same argument gate 4 makes: pma-voice
+# is upstream's code, it is not edited here, and its baseline would churn on
+# every version bump for faults that are not ours to fix.
+echo "${DIM}== bool natives ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    boolfiles=$(find resources -name '*.lua' | while IFS= read -r f; do
+        d=$(dirname "$f"); keep=1
+        while [ "$d" != "." ] && [ "$d" != "/" ]; do
+            [ -f "$d/VENDOR.json" ] && { keep=0; break; }
+            d=$(dirname "$d")
+        done
+        [ "$keep" -eq 1 ] && echo "$f"
+    done | sort)
+    # shellcheck disable=SC2086
+    "$LUA" tools/check_bool_natives.lua $boolfiles || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
