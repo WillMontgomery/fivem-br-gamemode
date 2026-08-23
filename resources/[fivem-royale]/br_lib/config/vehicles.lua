@@ -464,10 +464,10 @@ end
 --
 -- The model table catches everything the class net structurally cannot:
 --
---   * THE ARENA WAR ROSTER. Thirty-four of the thirty-six are ordinary road
---     classes -- Muscle, Sports, Off-road, Motorcycles. Only `scarab`,
---     `scarab2` and `scarab3` are class 19. The other thirty-three are invisible
---     to every class the net names, and the table is their only refusal.
+--   * THE ARENA WAR ROSTER. Only `scarab`, `scarab2` and `scarab3` are class 19.
+--     The other THIRTY-THREE are ordinary road classes -- Muscle, Sports,
+--     Off-road, Motorcycles -- invisible to every class the net names, and the
+--     model table is their only refusal.
 --   * THE THINGS THAT FLY WITHOUT BEING AIRCRAFT. `deluxo` is Sports Classics,
 --     `oppressor` is Motorcycles, `oppressor2` is Motorcycles, `stromberg` is
 --     Sports. They hover, and no class or type says so.
