@@ -612,3 +612,77 @@ function BR.Config.Audio.namesIn(set)
     end
     return nil
 end
+
+--- Work out which ONE set a person meant by what they typed.
+---
+--- ═══ WHY THIS IS NOT JUST namesIn() BEING MADE CASE-INSENSITIVE ═══
+---
+--- namesIn() resolves an IDENTIFIER and stays exact on purpose: it is what the
+--- sequential audition walks, and a loose match that covered two sets would
+--- play through both, leaving the owner with a sound they liked and no idea
+--- which set to write down. This resolves a TYPED QUERY, which is a different
+--- job and is allowed to be forgiving -- because it hands back the catalogue's
+--- OWN spelling and every caller prints it, so a near miss is announced rather
+--- than acted on quietly.
+---
+--- THREE ATTEMPTS, IN DECREASING CONFIDENCE:
+---
+---   1. exact                  HUD_AWARDS
+---   2. exact but for case     hud_awards -- GTA's set names SHOUT, and
+---                             HUD_FRONTEND_WEAPONS_PICKUPS_SOUNDSET is 37
+---                             characters nobody types in caps twice
+---   3. ONE substring match    awards -- an answer only when it is the only
+---                             one. `HUD` matches thirteen sets, and picking
+---                             the first of those would be this tool guessing
+---                             about the exact thing it exists to stop people
+---                             guessing about.
+---
+--- SO THE SECOND RETURN IS THE POINT WHEN THE FIRST IS NIL. "no such set" and
+--- "you might have meant any of these thirteen" are different answers, and only
+--- one of them lets somebody get on with it.
+---
+--- @param q string|nil
+--- @return string|nil   the catalogue's spelling, when exactly one set is meant
+--- @return table        the sets it could have meant, in catalogue order
+function BR.Config.Audio.resolveSet(q)
+    -- A NON-STRING IS A CALLER BUG AND IS ANSWERED RATHER THAN THROWN, because
+    -- this is reached from a console command whose arguments may be missing.
+    -- The empty string is excluded separately: contains() treats '' as "match
+    -- everything", so without this line sets('') would return all 84 and a
+    -- bare `brsfx sounds` would resolve to whichever one sorted first.
+    if type(q) ~= 'string' or q == '' then return nil, {} end
+
+    local lowered = string.lower(q)
+    local byCase
+    for _, entry in ipairs(BR.Config.Audio.catalogue) do
+        -- ═══ THE EXACT ARM IS SUBSUMED BY THE CASE-BLIND ONE TODAY, AND
+        --     MUTATION TESTING SAYS SO OUT LOUD ═══
+        --
+        -- A mutant that deletes this line SURVIVES the suite, correctly:
+        -- anything equal to `q` is also equal to `q` ignoring case, so the
+        -- `byCase` arm below catches every query this one does. The two differ
+        -- in exactly one situation -- two catalogue sets whose names differ
+        -- ONLY in case, where `byCase` would answer with whichever appears
+        -- first and this answers with the one that was actually typed. No such
+        -- pair exists in the catalogue (checked, not assumed), so today this is
+        -- a no-op that also happens to return sooner.
+        --
+        -- IT STAYS BECAUSE THE COST OF IT BEING WRONG IS SILENCE. The catalogue
+        -- is a list somebody adds to, and the day a `Foo`/`FOO` pair lands, the
+        -- failure without this line is `brsfx sounds FOO` listing the OTHER
+        -- set's names -- names that are then played out of the set the reader
+        -- believes they came from, and heard as nothing.
+        if entry.set == q then return entry.set, { entry.set } end
+        -- REMEMBERED, NOT RETURNED, so that an exact match later in the list
+        -- still wins over a case-blind one found earlier.
+        if byCase == nil and string.lower(entry.set) == lowered then
+            byCase = entry.set
+        end
+    end
+    if byCase then return byCase, { byCase } end
+
+    local near = {}
+    for _, s in ipairs(BR.Config.Audio.sets(q)) do near[#near + 1] = s.set end
+    if #near == 1 then return near[1], near end
+    return nil, near
+end

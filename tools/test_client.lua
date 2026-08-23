@@ -12647,6 +12647,133 @@ do
     out = brsfx('find', 'nothing_is_called_this')
     ok(out:find(': 0 ', 1, true) ~= nil, 'and an empty search says so', out)
 
+    -- ═══ STEP 2: LISTING ONE SET WITHOUT PLAYING IT ═══
+    --
+    --   "It seems I have no way to list all sfx within a given set."
+    --                                             -- owner, 2026-08-23
+    --
+    -- The verb that was missing, and the property that makes it the missing one
+    -- rather than a synonym for `audition`: IT MAKES NO SOUND. `audition` was
+    -- the only way to see a whole set and it costs twelve seconds of playback
+    -- to do it; a list you read in silence is what lets somebody decide what is
+    -- worth auditioning.
+    local awardNames = BR.Config.Audio.namesIn('HUD_AWARDS')
+    out = brsfx('sounds', 'HUD_AWARDS')
+    ok(#plays == 0,
+       'brsfx sounds plays NOTHING -- it is the silent half of browsing, and a '
+           .. 'version that played would just be `audition` with a longer name',
+       ('%d sound calls'):format(#plays))
+
+    local missing = nil
+    for _, n in ipairs(awardNames) do
+        if out:find(n, 1, true) == nil then missing = n end
+    end
+    ok(missing == nil, 'and prints every name in the set, not a sample', missing)
+    ok(out:find(('%d sounds'):format(#awardNames), 1, true) ~= nil,
+       'with the count in the header', out:sub(1, 80))
+
+    -- EACH STEP NAMES THE NEXT ONE. This is what makes the three-step flow
+    -- findable without reading the help, which is the actual complaint: the
+    -- verbs all existed, and none of them pointed anywhere.
+    ok(brsfx('sets', 'AWARDS'):find('brsfx sounds', 1, true) ~= nil,
+       'step 1 ends by naming step 2')
+    ok(out:find('brsfx play HUD_AWARDS ', 1, true) ~= nil,
+       'and step 2 ends by naming step 3, with a real NAME filled in rather '
+           .. 'than a placeholder to be decoded', out:sub(-300))
+
+    -- AND THE `[silent?]` TEACHING SURVIVES THE NEW ROUTE IN. Being listed here
+    -- proves GTA's own scripts play the pair; it does not prove this build has
+    -- the bank. "Listed it, played it, heard nothing" must not read as "that
+    -- sound is bad" -- that exact confusion cost two rounds of fuel cue.
+    ok(out:find('[silent?]', 1, true) ~= nil
+       and out:find('not a sound you disliked', 1, true) ~= nil,
+       'and a set listing still explains what silence will mean', out:sub(-200))
+
+    -- ═══ FORGIVING ABOUT WHAT WAS TYPED, LOUD ABOUT WHAT IT DECIDED ═══
+    out = brsfx('sounds', 'hud_awards')
+    ok(out:find(awardNames[1], 1, true) ~= nil,
+       'a set name in the wrong case still lists the set -- GTA\'s names SHOUT '
+           .. 'and nobody types 37 characters of caps twice')
+    ok(out:find('reading "hud_awards" as HUD_AWARDS', 1, true) ~= nil,
+       'and the command says which set it decided on, because step 3 needs the '
+           .. 'catalogue\'s spelling and would otherwise be typed wrong', out:sub(1, 120))
+
+    out = brsfx('sounds', 'awards')
+    ok(out:find('reading "awards" as HUD_AWARDS', 1, true) ~= nil
+       and out:find(awardNames[1], 1, true) ~= nil,
+       'a partial name that can only mean one set resolves to it, and says so',
+       out:sub(1, 120))
+
+    -- A NEAR MISS IS ANSWERED WITH THE CANDIDATES, NOT WITH A REFUSAL. `HUD`
+    -- means thirteen sets; picking one would be guessing, and printing nothing
+    -- would leave somebody who is two characters from the answer with no route
+    -- to it.
+    out = brsfx('sounds', 'HUD')
+    ok(out:find('could mean', 1, true) ~= nil
+       and out:find('HUD_AWARDS', 1, true) ~= nil
+       and out:find('HUD_FREEMODE_SOUNDSET', 1, true) ~= nil,
+       'an ambiguous set name lists the sets it could have meant', out:sub(1, 200))
+    ok(#plays == 0, 'and still plays nothing')
+
+    out = brsfx('sounds', 'nothing_is_called_this')
+    ok(out:find('no sound set matches', 1, true) ~= nil
+       and out:find('brsfx sets', 1, true) ~= nil,
+       'a set name matching nothing at all says so and points back at step 1',
+       out)
+
+    out = brsfx('sounds')
+    ok(out:find('usage: brsfx sounds', 1, true) ~= nil,
+       'and the verb with no set at all prints its usage', out)
+
+    -- ═══ PAGING, DRIVEN THROUGH AN INJECTED SET BECAUSE NO REAL ONE IS BIG
+    --     ENOUGH ═══
+    --
+    -- The biggest set in the catalogue is 27 names, well under the 60-row cap,
+    -- so every real `brsfx sounds` fits on one page and the paging arm is
+    -- unreachable through the shipped data. It is tested anyway: the catalogue
+    -- is a list somebody ADDS to, and the failure this guards is a console that
+    -- drops the tail of a list WITHOUT SAYING SO -- which in a tool whose whole
+    -- subject is "the thing you cannot see is the thing that is wrong" would be
+    -- the worst possible bug to have.
+    local big = {}
+    for i = 1, 145 do big[i] = ('ZZ_PAGE_%03d'):format(i) end
+    table.insert(BR.Config.Audio.catalogue, { set = 'ZZ_PAGING_SET', names = big })
+
+    out = brsfx('sounds', 'ZZ_PAGING_SET')
+    ok(out:find('page 1 of 3', 1, true) ~= nil,
+       'a set longer than the cap is paged rather than dumped', out:sub(1, 90))
+    ok(out:find('ZZ_PAGE_001', 1, true) ~= nil
+       and out:find('ZZ_PAGE_060', 1, true) ~= nil
+       and out:find('ZZ_PAGE_061', 1, true) == nil,
+       'with exactly the first page of names on it')
+    ok(out:find('85 more not shown', 1, true) ~= nil,
+       'and it says HOW MANY it held back -- silent truncation in a browsing '
+           .. 'tool is worse than no tool', out:sub(-220))
+    ok(out:find('brsfx sounds ZZ_PAGING_SET 2', 1, true) ~= nil,
+       'and the exact words that fetch them')
+
+    out = brsfx('sounds', 'ZZ_PAGING_SET', '3')
+    ok(out:find('page 3 of 3', 1, true) ~= nil
+       and out:find('ZZ_PAGE_145', 1, true) ~= nil
+       and out:find('more not shown', 1, true) == nil,
+       'the last page holds the tail and claims nothing is missing', out:sub(1, 90))
+    ok(out:find('brsfx sounds ZZ_PAGING_SET 1', 1, true) ~= nil,
+       'and offers the way back to the top')
+
+    -- A PAGE NUMBER PAST THE END, OR NOT A NUMBER AT ALL, IS CLAMPED RATHER
+    -- THAN REFUSED. Somebody typing a page number is trying to see a list; an
+    -- error message instead of a list is how they go back to guessing.
+    ok(brsfx('sounds', 'ZZ_PAGING_SET', '99'):find('page 3 of 3', 1, true) ~= nil,
+       'a page past the end clamps to the last one')
+    ok(brsfx('sounds', 'ZZ_PAGING_SET', 'banana'):find('page 1 of 3', 1, true) ~= nil,
+       'and a page that is not a number is page one')
+    ok(brsfx('sounds', 'ZZ_PAGING_SET', '-4'):find('page 1 of 3', 1, true) ~= nil,
+       'as is a negative one')
+
+    table.remove(BR.Config.Audio.catalogue)
+    ok(BR.Config.Audio.namesIn('ZZ_PAGING_SET') == nil,
+       'and the injected set is gone again')
+
     -- ═══ AUDITIONING A WHOLE SET, IN ORDER ═══
     --
     -- The comparative case, which is the one that actually settles a choice:

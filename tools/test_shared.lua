@@ -9179,6 +9179,142 @@ do
            .. 'identifier being resolved, not a query being matched')
     ok(A.namesIn('') == nil, 'an empty name resolves to no set')
 
+    -- ------------------------------------------------------ resolveSet() ---
+    --
+    --   "It seems I have no way to list all sfx within a given set."
+    --                                             -- owner, 2026-08-23
+    --
+    -- What `brsfx sounds <SET>` resolves its argument with, and the reason it
+    -- can be forgiving where namesIn() must not be: this hands back the
+    -- CATALOGUE'S OWN SPELLING and the command prints it, so a loose match is
+    -- announced rather than acted on quietly. namesIn() has no such channel --
+    -- it returns names, and an audition that quietly walked the wrong set would
+    -- leave somebody with a sound they liked and no idea what to write down.
+    local r, near = A.resolveSet('HUD_AWARDS')
+    ok(r == 'HUD_AWARDS', 'resolveSet() takes an exact set name', tostring(r))
+    ok(#near == 1, 'and offers exactly itself as the candidate list',
+       ('%d'):format(#near))
+
+    -- CASE-BLIND, WHICH IS THE HALF namesIn() REFUSES. GTA's set names SHOUT
+    -- and HUD_FRONTEND_WEAPONS_PICKUPS_SOUNDSET is 37 characters; requiring
+    -- them in caps is requiring a copy-paste from a list the owner is reading
+    -- off a console.
+    ok(A.resolveSet('hud_awards') == 'HUD_AWARDS',
+       'and the same name in lower case, unlike namesIn()',
+       tostring(A.resolveSet('hud_awards')))
+    ok(A.resolveSet('Hud_AwArDs') == 'HUD_AWARDS', 'in any mixture of cases')
+
+    -- ═══ A SUBSTRING RESOLVES ONLY WHEN IT IS UNAMBIGUOUS ═══
+    --
+    -- This is the whole design of the thing. `awards` means one set, so it is
+    -- an answer. `HUD` means thirteen, and picking the first would be this tool
+    -- GUESSING -- about the exact question it exists to stop people guessing
+    -- about, in a command whose failure mode is silence.
+    ok(A.resolveSet('awards') == 'HUD_AWARDS',
+       'a substring matching ONE set resolves to that set, spelled the '
+           .. 'catalogue\'s way so it can be pasted into `brsfx play`',
+       tostring(A.resolveSet('awards')))
+
+    local amb, hudNear = A.resolveSet('HUD')
+    ok(amb == nil, 'a substring matching several sets resolves to nothing',
+       tostring(amb))
+    ok(#hudNear > 1, 'and hands back every set it could have meant instead, '
+           .. 'because "no such set" and "which of these thirteen" are '
+           .. 'different answers and only one of them is useful',
+       ('%d'):format(#hudNear))
+    local strayNear = nil
+    for _, s in ipairs(hudNear) do
+        if not s:upper():find('HUD', 1, true) then strayNear = s end
+    end
+    ok(strayNear == nil, 'with nothing in it that does not contain the query',
+       strayNear)
+
+    -- ═══ EXACT BEATS CASE-BLIND BEATS SUBSTRING, AND THE FIXTURE FOR THAT HAS
+    --     TO BE INJECTED ═══
+    --
+    -- NO SET NAME IN TODAY'S CATALOGUE IS A SUBSTRING OF ANOTHER -- checked,
+    -- not assumed -- so every real query that matches exactly also matches
+    -- exactly one substring, and the three passes agree on every one of the 84.
+    -- That makes the ORDER of the passes untested by the real data: an
+    -- implementation that ran the substring pass first would be green on all 84
+    -- sets and wrong the day somebody adds `HUD_AWARDS_EXTRA`, at which point
+    -- typing the perfectly correct `HUD_AWARDS` would come back "could mean 2
+    -- sets". So the collision is built here and torn down after.
+    table.insert(A.catalogue, { set = 'ZZ_ORDER_TEST', names = { 'A' } })
+    table.insert(A.catalogue, { set = 'ZZ_ORDER_TEST_LONGER', names = { 'B' } })
+
+    ok(A.resolveSet('ZZ_ORDER_TEST') == 'ZZ_ORDER_TEST',
+       'a name typed EXACTLY resolves to itself even when it is also a '
+           .. 'substring of another set -- or a perfectly correct name starts '
+           .. 'being answered with "did you mean"',
+       tostring(A.resolveSet('ZZ_ORDER_TEST')))
+    -- THIS IS THE ASSERTION THAT PINS THE ORDER, and the one above is not.
+    -- A mutant that deletes the exact pass survives, because equality implies
+    -- case-blind equality -- see the comment on resolveSet, which says so. A
+    -- mutant that deletes the CASE-BLIND pass dies here: `zz_order_test`
+    -- matches two sets as a substring, so without it a name typed correctly
+    -- but in lower case comes back ambiguous.
+    ok(A.resolveSet('zz_order_test') == 'ZZ_ORDER_TEST',
+       'and a name typed correctly in the wrong CASE beats the substring pass '
+           .. 'too, rather than coming back as a "did you mean" over the two '
+           .. 'sets it is a substring of',
+       tostring(A.resolveSet('zz_order_test')))
+    local twoWay, twoNear = A.resolveSet('ZZ_ORDER')
+    ok(twoWay == nil and #twoNear == 2,
+       'while a substring of BOTH of them is still ambiguous, so the pass '
+           .. 'order is a precedence and not a short-circuit that ate the '
+           .. 'ambiguity check', ('%s / %d'):format(tostring(twoWay), #twoNear))
+
+    table.remove(A.catalogue)
+    table.remove(A.catalogue)
+    ok(A.resolveSet('ZZ_ORDER_TEST') == nil,
+       'and the injected sets are gone again, so nothing below sees them')
+
+    local no, noNear = A.resolveSet('nothing_is_called_this')
+    ok(no == nil and #noNear == 0,
+       'a query matching nothing resolves to nothing, with an EMPTY candidate '
+           .. 'list -- which is what lets the command tell the two cases apart')
+
+    -- ═══ THE EMPTY STRING IS THE ONE THAT WOULD PASS QUIETLY ═══
+    --
+    -- contains() treats '' as "matches everything" -- deliberately, so that
+    -- `sets()` and `sets('')` agree -- so a resolveSet that just forwarded to
+    -- sets() would answer all 84 for an empty argument, and `#near == 1` being
+    -- false would make that read as "ambiguous" rather than "you typed
+    -- nothing". Harmless-looking, and it is how `brsfx sounds ''` would come
+    -- back with a wall of set names instead of the usage line.
+    local blank, blankNear = A.resolveSet('')
+    ok(blank == nil and #blankNear == 0,
+       'an empty query resolves to nothing and offers NO candidates, rather '
+           .. 'than inheriting contains()\'s "empty matches everything"',
+       ('%s / %d'):format(tostring(blank), #blankNear))
+
+    local nilR, nilNear = A.resolveSet(nil)
+    ok(nilR == nil and #nilNear == 0, 'and so does a missing argument')
+    local okNum, numR = pcall(A.resolveSet, 42)
+    ok(okNum and numR == nil, 'and a non-string answers rather than throwing, '
+           .. 'because this is reached straight off a console command line',
+       not okNum and tostring(numR) or nil)
+
+    -- PLAIN TEXT, NOT A LUA PATTERN, for the same reason find() is: every set
+    -- name in here has underscores in it and the owner is typing them.
+    local okPat, patR = pcall(A.resolveSet, 'HUD_%')
+    ok(okPat and patR == nil, 'a query containing % does not throw',
+       not okPat and tostring(patR) or nil)
+
+    -- AND EVERY SET IN THE CATALOGUE RESOLVES TO ITSELF. The listing verb is
+    -- reached from `brsfx sets`, so anything that command can print must be
+    -- something this one accepts -- otherwise step 1 of the three-step flow
+    -- offers a name step 2 rejects.
+    local unresolvable = nil
+    for _, entry in ipairs(A.catalogue) do
+        if A.resolveSet(entry.set) ~= entry.set then unresolvable = entry.set end
+    end
+    ok(unresolvable == nil,
+       'every set `brsfx sets` prints is one `brsfx sounds` accepts, so step 1 '
+           .. 'of the browse flow cannot offer a name step 2 refuses',
+       unresolvable)
+
     -- --------------------------------------------------- the cues agree ---
     --
     -- The catalogue is what the tool offers; the cue table is what the game

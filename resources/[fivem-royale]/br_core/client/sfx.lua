@@ -175,10 +175,35 @@ end)
 -- sound you cannot find, and you cannot judge one you cannot hear next to its
 -- neighbours. So this file now answers four questions instead of one:
 --
---   what is there            `sets` and `find`, over BR.Config.Audio.catalogue
+--   what is there            `sets`, `sounds` and `find`, over the catalogue
 --   what does it sound like  `play`, and `audition` for a whole set in a row
 --   did it play at all       the probe below -- the one that cost two rounds
 --   is it any good in situ   `bind`, which re-points a cue for this session
+--
+-- ═══ AND WHY IT GREW `sounds` A DAY LATER ═══
+--
+--   "Guess I'm not sure how to use brsfx - what I expect is a way to list all
+--    sets, then type a command containing a specific set name to view all sfx
+--    in the set, then play a specific sfx within that set with another
+--    command. It seems I have no way to list all sfx within a given set."
+--                                                     -- owner, 2026-08-23
+--
+-- HE WAS RIGHT, AND THE GAP WAS EXACTLY WHERE HE SAID. Seven verbs and not one
+-- of them would simply SHOW you a set: `find` demands a search substring, so
+-- you had to already suspect what you were looking for, and `audition` PLAYS a
+-- set rather than listing it -- seventeen sounds and twelve seconds before you
+-- know what is in it. Both are answers to "which sound", asked by somebody who
+-- already knows roughly what they want. Neither answers "what is in here".
+--
+-- SO THE BROWSE PATH IS THREE PLAIN STEPS AND EACH ONE NAMES THE NEXT, which is
+-- what makes it findable without reading this comment or the help:
+--
+--   1. brsfx sets            2. brsfx sounds <SET>    3. brsfx play <SET> <NAME>
+--
+-- The other verbs are still here and still shortcuts for somebody who knows the
+-- name they are hunting. They are listed BELOW the three steps in `usage()` for
+-- the same reason the steps are numbered: the owner has said he is not great
+-- with software, and a flat list of eight equals is a list you read as none.
 --
 -- ═══ THE PROBE, AND WHY IT IS PHRASED AS A SUSPICION ═══
 --
@@ -208,13 +233,14 @@ end)
 -- section worse than not having it.
 --
 --   /brsfx                                   what this does
+--   /brsfx sets [substr]                  1. list the catalogue's sound sets
+--   /brsfx sounds <SET> [page]            2. list every sound in ONE set
+--   /brsfx play <SET> <NAME>              3. play one pair, catalogue or not
+--   /brsfx HUD_AWARDS COLLECTED              step 3 without the word `play`
 --   /brsfx cues                              play every configured cue in order
 --   /brsfx fuel.done                         play one configured cue
---   /brsfx sets [substr]                     list the catalogue's sound sets
 --   /brsfx find <substr> [setSubstr]         search names, optionally in one set
 --   /brsfx audition <SET> [substr]           play a whole set, one after another
---   /brsfx play <SET> <NAME>                 play any pair, catalogue or not
---   /brsfx HUD_AWARDS COLLECTED              the same, without the word `play`
 --   /brsfx bind <cue> <SET> <NAME>           re-point a cue for THIS SESSION
 --   /brsfx stop                              cut a running audition short
 
@@ -223,7 +249,18 @@ local function yes(v) return v == 1 or v == true end
 
 local GAP_MS      = 700   -- between two sounds in a sequence
 local PROBE_MS    = 140   -- how long the probe watches before giving up on it
-local LIST_CAP    = 60    -- rows printed before a search says "and N more"
+-- ROWS PRINTED BEFORE A LIST SAYS "AND N MORE". Also the page size for
+-- `sounds`, so the two lists that can run long are cut at the same place.
+--
+-- NO SET IN TODAY'S CATALOGUE REACHES IT -- the biggest is
+-- HUD_FRONTEND_DEFAULT_SOUNDSET at 27 -- so `sounds` fits every real set on
+-- page one and the paging arm is unreachable as things stand. It is written and
+-- tested anyway because the catalogue is a list somebody ADDS to (the comment
+-- above it says so out loud: heard a pair, put it in), and the failure mode
+-- when it is one day exceeded is a console that silently drops the tail. The
+-- test drives it through an injected oversized set rather than waiting for
+-- that day.
+local LIST_CAP    = 60
 
 -- One audition at a time. Two threads walking two sets interleave their sounds
 -- and their printing, which produces a list nobody can map back to what they
@@ -376,21 +413,39 @@ end
 --- SET, which is what keeps `/brsfx HUD_AWARDS COLLECTED` working exactly as it
 --- did before this command grew subcommands. No GTA sound set is named `find`;
 --- `play` exists as the unambiguous long form for the day one is.
+--
+-- `sounds` IS LISTED HERE AND ITS ENTRY CHANGES NOTHING TODAY, AND MUTATION
+-- TESTING SAYS SO OUT LOUD: a mutant that removes it survives, because the
+-- `sounds` arm below RETURNS before control ever reaches the `not VERBS[verb]`
+-- guard -- which is the same reason the guard itself is unreachable, spelled
+-- out where it is used. The table is kept COMPLETE rather than trimmed to what
+-- is load-bearing, because the guard's whole job is to catch the verb whose
+-- handler was forgotten, and a VERBS that only lists verbs with handlers is a
+-- guard that can never fire.
 local VERBS = {
-    cues = true, sets = true, find = true, audition = true,
+    cues = true, sets = true, sounds = true, find = true, audition = true,
     play = true, bind = true, stop = true, help = true,
 }
 
 local function usage()
     print('--- brsfx: pick a GTA sound by ear ---')
-    print('  brsfx cues                        play every configured cue')
-    print('  brsfx <cue>                       play one configured cue')
-    print('  brsfx sets [substr]               list the catalogue sound sets')
-    print('  brsfx find <substr> [setSubstr]   search sound names')
-    print('  brsfx audition <SET> [substr]     play a whole set, back to back')
-    print('  brsfx play <SET> <NAME>           play any pair, listed or not')
-    print('  brsfx bind <cue> <SET> <NAME>     re-point a cue for this session')
-    print('  brsfx stop                        cut a running audition short')
+    -- THE THREE STEPS ARE NUMBERED AND COME FIRST, and that ordering is the
+    -- whole fix. The previous version listed eight verbs flat and alphabetical-
+    -- ish, which reads as eight equally likely things to try; the owner tried
+    -- none of them and asked how the command works. A numbered sequence at the
+    -- top says "start here, then here" without anybody having to infer it.
+    print('  THREE STEPS, IN THIS ORDER:')
+    print('    1. brsfx sets                   list every sound set')
+    print('    2. brsfx sounds <SET>           list every sound in that set')
+    print('    3. brsfx play <SET> <NAME>      play one of them')
+    print('  the rest, for when you know the name you are hunting:')
+    print('    brsfx sets <substr>             step 1, narrowed to matching sets')
+    print('    brsfx find <substr> [setSubstr] search sound NAMES across all sets')
+    print('    brsfx audition <SET> [substr]   play a whole set, back to back')
+    print('    brsfx cues                      play every configured cue')
+    print('    brsfx <cue>                     play one configured cue')
+    print('    brsfx bind <cue> <SET> <NAME>   re-point a cue for this session')
+    print('    brsfx stop                      cut a running audition short')
     print(('  catalogue: %d sets, %d pairs -- GTA\'s own script calls, DLC banks removed')
         :format(#BR.Config.Audio.catalogue, #BR.Config.Audio.find()))
     print('  configured cues:')
@@ -441,7 +496,95 @@ RegisterCommand('brsfx', function(_, args)
         end
         print('  The first three are the sets this codebase has HEARD -- a silence')
         print('  in one of those is a wrong name rather than an absent bank.')
-        print('  Next: brsfx audition <SET>')
+        -- POINTS AT STEP 2, NOT AT `audition`, WHICH IS WHAT IT USED TO SAY.
+        -- Sending somebody straight from a list of 84 sets into twelve seconds
+        -- of unlabelled playback skipped the step they actually wanted, and is
+        -- how the browse path came to have a hole in the middle of it.
+        print('  Next: brsfx sounds <SET>')
+        return
+    end
+
+    -- ------------------------------------------------ step 2: ONE set, listed ---
+    --
+    -- The verb the owner asked for. It PRINTS and plays nothing, which is the
+    -- point: a list you can read down in silence is how you choose what to
+    -- spend twelve seconds auditioning.
+    if verb == 'sounds' then
+        local typed = args[2]
+        if not typed then
+            print('  usage: brsfx sounds <SET>   -- every sound in one set')
+            print('  Next: brsfx sets            -- for the set names')
+            return
+        end
+
+        -- FORGIVING ABOUT WHAT WAS TYPED, LOUD ABOUT WHAT IT DECIDED. resolveSet
+        -- takes exact, then case-blind, then a substring that matches ONE set;
+        -- anything vaguer comes back as a list of candidates rather than a pick.
+        local set, near = BR.Config.Audio.resolveSet(typed)
+        if not set then
+            if #near == 0 then
+                print(('--- no sound set matches "%s" ---'):format(typed))
+                print(('  %-34s all %d of them')
+                    :format('brsfx sets', #BR.Config.Audio.catalogue))
+                print(('  %-34s search sound NAMES instead of set names')
+                    :format(('brsfx find %s'):format(typed)))
+                return
+            end
+            print(('--- "%s" could mean %d sets ---'):format(typed, #near))
+            for i, s in ipairs(near) do
+                if i > LIST_CAP then
+                    print(('  ...and %d more -- narrow it: brsfx sets %s')
+                        :format(#near - LIST_CAP, typed))
+                    break
+                end
+                print('  ' .. s)
+            end
+            print('  Next: brsfx sounds <one of those>')
+            return
+        end
+
+        local names = BR.Config.Audio.namesIn(set) or {}
+        local pages = math.max(1, math.ceil(#names / LIST_CAP))
+        -- A PAGE THAT IS NOT A NUMBER IS PAGE ONE, and one past the end is the
+        -- last page. Neither is worth an error message: the reader is trying to
+        -- see a list, and refusing to show them one over an argument they can
+        -- see the effect of is the sort of thing that sends people back to
+        -- guessing.
+        local page = math.floor(tonumber(args[3]) or 1)
+        if page < 1 then page = 1 elseif page > pages then page = pages end
+        local first, last = (page - 1) * LIST_CAP + 1, math.min(#names, page * LIST_CAP)
+
+        -- SAID OUT LOUD WHENEVER THE RESOLVER MOVED, so `brsfx sounds awards`
+        -- never leaves somebody thinking they typed the set name correctly --
+        -- they need the catalogue's spelling for step 3.
+        if set ~= typed then
+            print(('--- reading "%s" as %s ---'):format(typed, set))
+        end
+        print(('--- %s: %d sound%s%s ---'):format(set, #names,
+            #names == 1 and '' or 's',
+            pages > 1 and (', page %d of %d'):format(page, pages) or ''))
+        for i = first, last do print('  ' .. names[i]) end
+
+        -- NOTHING IS WITHHELD SILENTLY. How many are missing and the exact words
+        -- that fetch them, on the same line.
+        if last < #names then
+            print(('  ...%d more not shown -- brsfx sounds %s %d')
+                :format(#names - last, set, page + 1))
+        end
+        if page > 1 then
+            print(('  back to the top -- brsfx sounds %s 1'):format(set))
+        end
+        if names[first] then
+            print(('  Next: brsfx play %s %s'):format(set, names[first]))
+            print('        ...or any other NAME above.')
+        end
+        -- THE `[silent?]` TEACHING, AT THE POINT WHERE IT IS ABOUT TO BE NEEDED.
+        -- Being IN the catalogue proves GTA's own scripts play the pair; it does
+        -- not prove this build has the bank loaded. "I heard nothing" arriving
+        -- three seconds after this list must not read as "that sound is bad" --
+        -- that confusion is what cost two rounds of picking a fuel cue.
+        print('  A NAME above that plays nothing prints [silent?]. That is this SET')
+        print('  not being loaded on this build, not a sound you disliked.')
         return
     end
 
