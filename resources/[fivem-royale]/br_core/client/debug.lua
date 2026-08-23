@@ -399,6 +399,45 @@ RegisterCommand('brtc', function(_, args)
     print(('[br_core] timecycle "%s" at %.2f'):format(name, strength))
 end, false)
 
+--- Where am I, in the two forms POI tuning actually needs.
+---
+--- Owner, 2026-08-23: "Please create a new command: `brcoords` which prints a
+--- players' coords client-side. I'll use this to do more fine-tuning of our
+--- POIs."
+---
+--- THE SECOND LINE IS THE POINT. Reading three floats off the screen and
+--- retyping them into config/map.lua is where a POI edit goes wrong, so the
+--- position is also printed in the exact field order a `BR.Config.Map.POIs`
+--- row is written in. It is meant to be copied, not read.
+---
+--- AND THE NEAREST POI, because the number a tuner is usually after is not the
+--- position at all -- it is whether where they are standing falls inside the
+--- radius they are about to change. `NearestPOI` returns the row and the
+--- planar distance to its centre, so "inside/outside" is answerable here
+--- rather than by arithmetic done by hand at the console.
+---
+--- PLANAR, LIKE EVERY OTHER POI TEST. The distance ignores z because the POI
+--- radius does -- a player on a rooftop is inside the POI they are above, and
+--- a command that disagreed with the code it exists to tune would be worse
+--- than no command.
+RegisterCommand('brcoords', function()
+    local ped = PlayerPedId()
+    local p = GetEntityCoords(ped)
+    local h = GetEntityHeading(ped)
+
+    print(('[br_core] %.2f, %.2f, %.2f   heading %.1f'):format(p.x, p.y, p.z, h))
+    print(('  x = %.1f, y = %.1f, z = %.1f,'):format(p.x, p.y, p.z))
+
+    local poi, d = BR.Config.Map.NearestPOI(p.x, p.y)
+    if poi then
+        print(('  nearest: %s (%s) tier %d -- %.0fm from centre, radius %.0f, %s')
+            :format(poi.name, poi.id, poi.tier, d, poi.radius,
+                    d <= poi.radius and 'INSIDE' or 'outside'))
+    else
+        print('  nearest: no POIs are configured')
+    end
+end, false)
+
 RegisterNetEvent('br:debug:teleport')
 AddEventHandler('br:debug:teleport', function(x, y)
     local ped = PlayerPedId()
