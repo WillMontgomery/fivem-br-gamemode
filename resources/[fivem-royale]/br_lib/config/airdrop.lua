@@ -168,6 +168,45 @@ BR.Config.Airdrop = {
     planeTrailMs = 15000,
 
     -- ------------------------------------------------------------------
+    -- WHO GETS A PLANE AT ALL
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-22: "We should make it so the plane doesn't spawn until a
+    -- player is within a reasonable radius to be able to see the event happen",
+    -- because "if nobody is nearby, they don't get to see the cool drop, they
+    -- just arrive and the thing is there."
+    --
+    -- ═══ THIS IS A PRESENTATION DECISION AND CHANGES NO SCHEDULE ═══
+    --
+    -- The plane is LOCAL to each client and solved from the published record
+    -- against the synced clock, so "does the plane spawn" is a question each
+    -- client answers about ITSELF and nothing else. The drop still happens on
+    -- the server's clock whether anybody watches; a client too far away simply
+    -- does not build a Titan and a pilot it could not see. Forty clients that
+    -- cannot see it stop paying for it, which is the only cost this removes.
+    --
+    -- IT IS RE-ASKED EVERY FRAME, NOT ONCE. A player who is 2km away at the
+    -- announcement and inside the radius eight seconds later gets the plane
+    -- built at wherever the clock says it is by then -- mid-approach, which is
+    -- correct, because the route is a pure function of the record. Gating it
+    -- once at tStart would punish exactly the players who ran towards it.
+    --
+    -- AND IT NEVER GATES THE CRATE. The descent is the part that has to join
+    -- late correctly and it still does: every client builds the crate at the
+    -- release regardless of where it is standing, because a client that walks
+    -- into view twenty seconds into the fall must see the box where the clock
+    -- says the box is.
+    --
+    -- 1000m IS A GUESS AND IS DELIBERATELY GENEROUS. Nothing outside a running
+    -- client can say at what range a Titan at ~300m altitude stops drawing --
+    -- that is an engine LOD question, not an arithmetic one. Erring large is
+    -- the cheap direction: a radius that is too big costs a plane nobody can
+    -- see, which is exactly today's behaviour, while one that is too small
+    -- costs the owner the thing they asked for AND is invisible from a chair.
+    -- /brairdrop on the client prints the distance and whether it passed.
+    planeViewRadius = 1000.0,
+
+    -- ------------------------------------------------------------------
     -- WHERE IT LANDS, AND THE TWO RULES THAT CAN CONTRADICT EACH OTHER
     -- ------------------------------------------------------------------
     --
@@ -209,19 +248,50 @@ BR.Config.Airdrop = {
     -- WHAT IS IN IT
     -- ------------------------------------------------------------------
     --
-    -- One entry per item, so the length of this array IS the item count and
-    -- "up to 12 items" is editable without arithmetic anywhere else. Each entry
-    -- names a pool; each pool is shuffled once per drop and dealt from in
-    -- order, so a twelve-item drop is twelve DIFFERENT things rather than the
-    -- same rifle four times.
+    -- TEN TO FOURTEEN, DRAWN PER DROP (owner, 2026-08-22: "instead of 'up to
+    -- 12' items, let's make it 10-14 items in these airdrops. That should be
+    -- enough for an entire squad."). It was a fixed twelve before.
+    --
+    -- ═══ THE ARRAY IS A PRIORITY ORDER NOW, NOT A MANIFEST ═══
+    --
+    -- `payout` lists FOURTEEN slots and a drop deals the first `n` of them,
+    -- where n is drawn uniformly from [minItems, maxItems] out of the AIRDROP's
+    -- own rng (docs/match-math.md section 1: every subsystem has a prime of its
+    -- own so its draws cannot shift another's -- taking this one from the loot
+    -- stream would move every downstream loot draw on the map).
+    --
+    -- SO THE ORDER IS LOAD-BEARING AND IT IS NOT DECORATIVE. Slots 1-10 are
+    -- what EVERY drop is guaranteed to contain, so the floor has to be a
+    -- complete kit on its own: both exclusives, the Volts, two legendaries, an
+    -- epic, a throwable, a heal and BOTH ammo slots. Ammo is deliberately
+    -- inside the guaranteed ten rather than at the tail -- a minimum roll that
+    -- paid an RPG and no heavy rounds would be the worst drop in the game
+    -- wearing the best loot table.
+    --
+    -- SLOTS 11-14 ARE THE TAIL, and the first two of them restore the third
+    -- legendary and the second epic -- so an n of 12 deals EXACTLY the twelve
+    -- items this shipped with on 2026-08-21. The change adds a spread around
+    -- what the owner already playtested rather than a different drop.
+    --
+    -- `maxItems` may not exceed #payout; tools/test_airdrop.lua pins that,
+    -- because a payout array shorter than the range is a drop that silently
+    -- pays fewer items than the number above it says.
+    minItems = 10,
+    maxItems = 14,
     payout = {
+        -- --- the guaranteed ten ---------------------------------------
         'exclusive', 'exclusive',
         'volts',
-        'legendary', 'legendary', 'legendary',
-        'epic', 'epic',
+        'legendary', 'legendary',
+        'epic',
         'throwable',
         'healing',
         'ammo', 'ammo',
+        -- --- the tail, dealt as the draw allows ------------------------
+        'legendary',   -- 11: back to three legendaries
+        'epic',        -- 12: ...and two epics, which is the 2026-08-21 drop
+        'ammo',        -- 13
+        'legendary',   -- 14
     },
 
     -- The pools the payout draws from.
@@ -295,9 +365,13 @@ BR.Config.Airdrop = {
     -- The prop the pile is drawn as. A vanilla money bundle: this is currency
     -- on the floor and it should read as currency on the floor.
     voltsProp   = 'prop_anim_cash_pile_01',
+    -- FIVE TIMES THE AUTHORED SIZE (owner, 2026-08-22: "The volts prop is
+    -- perfect but should be 5x the size."). See the PROP SIZE block below for
+    -- how a size is applied at all, and for what may stop it.
+    voltsScale  = 5.0,
 
     -- How far out the contents land, per item, when it bursts open. Same
-    -- construction as a crate's scatter ring, one radius wider because twelve
+    -- construction as a crate's scatter ring, one radius wider because a dozen
     -- items in a crate's ring would stack inside each other.
     scatterSpread = 0.8,
 
@@ -316,6 +390,48 @@ BR.Config.Airdrop = {
     -- ordinary ones, both lines move together and nothing else changes.
     crateProp = 'prop_box_wood05a',
     huskProp  = 'prop_box_wood05b',
+
+    -- ------------------------------------------------------------------
+    -- PROP SIZE, AND THE ONE REASON IT MIGHT DO NOTHING
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-22: "The parachute and crate props (including husk) should
+    -- be 2x larger and the parachute should be 2.5x larger please." and "The
+    -- volts prop is perfect but should be 5x the size."
+    --
+    -- THERE IS NO SetEntityScale IN GTA V. #166 established that and settled on
+    -- the transform matrix instead -- an entity's three axis vectors are unit
+    -- length, so renormalising them to k draws the model at k (see
+    -- BR.Native.propScale in br_core/client/natives.lua). That is the only
+    -- lever, it scales the RENDER and never a collision box, and config/loot.lua
+    -- has been carrying the same warning since the small shield went to 0.5:
+    --
+    --   ═══ NOBODY HAS CONFIRMED THE MATRIX SCALE RENDERS ON THIS BUILD ═══
+    --
+    -- It is written, it is idempotent, it is tested outside the game, and no
+    -- playtest has yet reported a shield that looks half-size. So these five
+    -- numbers may be five numbers that do nothing, and that has to be said out
+    -- loud rather than discovered by the owner: /brpropscale prints what every
+    -- scaled prop is set to and rebuilds them live, and /brairdrop on the client
+    -- prints the scale each falling part was built with. If nothing changes size
+    -- at any value the matrix route does not work here and the answer is a
+    -- different MODEL, not a different number.
+    --
+    -- A FALLING PART AND A LANDED ONE ARE SCALED IN TWO DIFFERENT FILES, because
+    -- they are two different objects: the crate under the canopy is a local prop
+    -- br_core/client/airdrop.lua builds, and the crate on the ground is an
+    -- ordinary loot registry entry br_core/client/loot.lua builds. Both read
+    -- these numbers, so the box does not change size when it touches down.
+    --
+    -- THE LANDED CRATE AND HUSK ARE PHYSICS OBJECTS, which is the one place this
+    -- is genuinely at risk: a dynamic object's matrix is written by the physics
+    -- simulation, so a scale applied once at spawn can be overwritten on the
+    -- next simulation step. The 10Hz crate pass in client/loot.lua re-asserts it
+    -- for exactly the entries that carry a scale, which is the same answer the
+    -- hover pass already uses for loose items.
+    crateScale = 2.0,
+    huskScale  = 2.0,
+    chuteScale = 2.5,
 
     -- THE CARGO CANOPY, which is a different asset from the player's.
     -- `p_parachute1_mp_s` (BR.Config.Drop.parachuteModel) is the back-worn
@@ -339,36 +455,178 @@ BR.Config.Airdrop = {
     -- Owner, 2026-08-21: "we need to attach flares to the left and right side of
     -- the crate when it's spawned so the flares leave smoke trails as it falls."
     --
-    -- ONE PROP AND ONE LOOPED PARTICLE PER SIDE. The prop is what you see when
-    -- the particle asset does not stream; the particle is the trail. Both are
-    -- local, non-networked and positioned by the same solver as the crate --
-    -- nothing here is simulated, so every screen draws the flares in the same
-    -- place at the same millisecond for the same reason the crate is.
+    -- ═══════════════════════════════════════════════════════════════════
+    -- SECOND ATTEMPT. THE FIRST ONE RENDERED NOTHING.
+    -- ═══════════════════════════════════════════════════════════════════
     --
-    -- WHY A LOOPED PTFX ANCHORED TO THE FLARE IS THE RIGHT SHAPE, and why the
-    -- lesson client/bus.lua learned does not apply here. That file records two
-    -- rounds of failed tuning on engine smoke for the battle bus: "particles
-    -- detach into world space with no slipstream". That is precisely what a
-    -- flare wants -- the emitter rides the falling prop, the smoke it has
-    -- already made stays where it was made, and the shape that leaves behind IS
-    -- the trail. Exhaust needed particles to keep up with a plane; a trail needs
-    -- them not to.
+    -- Playtest, 2026-08-22: "I didn't see the flares present at all, nor any
+    -- smoke trails. Can we not use the flare weapon props which emit their own
+    -- smoke trails?"
     --
-    -- `core` / `proj_flare_trail` IS GTA'S OWN FLARE TRAIL, from the base-game
-    -- particle asset, so it needs nothing streamed from a DLC pack. UNVERIFIED
-    -- IN GAME -- nothing outside a running client can say how big or how bright
-    -- it reads, which is why the asset, the effect, the scale and the offsets
-    -- are all numbers here rather than literals in the client. Rockstar's own
-    -- air-dropped packages use a `*_package_flare` effect out of the DLC script
-    -- assets (`scr_gr_def`, `scr_ba_bb`); if a playtest wants that instead it is
-    -- these two lines.
-    flareProp      = 'prop_flare_01a',
+    -- ─── THE OWNER'S SUGGESTION IS REAL, AND WE STILL CANNOT USE IT ───
+    --
+    -- It was researched properly rather than waved off, because it is a good
+    -- idea and it very nearly works. GTA's flare is a genuine self-emitting
+    -- PROJECTILE: fire `weapon_flaregun` (NOT `weapon_flare` -- that one is
+    -- GROUP_THROWN with DamageType NONE and will not fire as a bullet) through
+    -- SHOOT_SINGLE_BULLET_BETWEEN_COORDS after REQUEST_WEAPON_ASSET, and the
+    -- trail and the glow come free, emitted by the projectile with no particle
+    -- call at all. Two released open-source resources do exactly this and
+    -- contain no ptfx code whatsoever.
+    --
+    -- THREE THINGS KILL IT HERE, AND EACH ONE IS ON ITS OWN SUFFICIENT:
+    --
+    --   1. A PROJECTILE IS BALLISTIC. It is fired with a speed along a vector
+    --      and it then travels and falls under its own simulation. Our descent
+    --      is a coordinate write from a pure function of the published record
+    --      and the synced clock; a flare that flies its own path is the one
+    --      part of a drop that could disagree between two machines.
+    --
+    --   2. IT REPLICATES, over the START_PROJECTILE_EVENT net game event.
+    --      That is not `sv_entityLockdown`'s business -- a projectile is not in
+    --      FiveM's networked entity type list at all, so lockdown would not
+    --      refuse it -- which makes it WORSE, not better: it would go out, and
+    --      forty-seven other clients would each draw a remote copy on top of
+    --      the local one they built themselves. The whole reason this file is
+    --      built the way it is, is that nothing about a drop crosses the wire
+    --      per frame.
+    --
+    --   3. NOBODY KNOWS WHETHER A TELEPORTED PROJECTILE KEEPS ITS TRAIL. Two
+    --      independent sweeps found no report, in either direction, of anyone
+    --      writing a live projectile's coordinates every frame. Nor is there a
+    --      single published example of a script tracking a FIRED projectile of
+    --      any kind: every working use of the projectile-lookup native is a
+    --      THROWN one -- grenade, molotov, sticky, snowball -- and Rockstar's
+    --      own header calls that native's last argument `needsToBeStationary`,
+    --      which is not a native built for things in flight. The one shipped
+    --      resource that wanted a visual to ride a projectile did not move the
+    --      projectile at all; it flew a separate decoy prop to the projectile's
+    --      coordinates, which is the shape we already have.
+    --
+    --      Building the flares on an evidence vacuum is exactly how the first
+    --      attempt shipped, and this is the second attempt.
+    --
+    -- NOTE THAT (1) AND (2) ARE DISQUALIFYING ON THEIR OWN, INDEPENDENT OF (3).
+    -- Even if a teleported projectile kept a perfect trail, a projectile is
+    -- simulated and it replicates -- and "nothing is simulated, nothing crosses
+    -- the wire per frame" is not a preference here, it is the reason a drop
+    -- cannot desync. So this is not "unverified, try it later": it is
+    -- architecturally incompatible, and the note is here so the third attempt
+    -- does not start by re-researching it.
+    --
+    -- So it stays a prop and a looped particle. What follows is why the first
+    -- one was invisible.
+    --
+    -- ─── `proj_flare_trail` IS REAL. THAT WAS NOT THE BUG. ───
+    --
+    -- The suspicion was that the asset/effect pair had been copied out of a bad
+    -- dump. It had not: `core` / `proj_flare_trail` is verified present in
+    -- DurtyFree's particleEffectsCompact.json -- the dump citizenfx's own native
+    -- reference links to -- and independently in a CodeWalker extraction of the
+    -- game's .ypt files. The name was right.
+    --
+    -- ─── WHAT WAS ACTUALLY WRONG, IN ORDER OF CONFIDENCE ───
+    --
+    --   ═══ A. `prop_flare_01a` IS NOT A MODEL. THAT IS THE WHOLE BUG. ═══
+    --
+    --      It was never verified against an object dump, and it does not exist.
+    --      DurtyFree's ObjectList.ini, 21,631 entries, contains exactly these
+    --      flare-ish objects and no others:
+    --
+    --        prop_flare_01, prop_flare_01b, w_am_flare, w_pi_flaregun,
+    --        w_pi_flaregun_mag1, w_pi_flaregun_shell, v_club_skirtflare,
+    --        m23_1_prop_m31_flarebox_01a, m23_2_prop_m32_flarebox_01a
+    --
+    --      There is a `_01` and a `_01b`. There is no `_01a`.
+    --
+    --      AND A MODEL THAT DOES NOT LOAD TOOK THE PARTICLES WITH IT. The whole
+    --      flare block in br_core/client/airdrop.lua sits behind
+    --      `if loadModel(flareModel)`, so a bad name meant no prop, no emitter,
+    --      no smoke and no error -- which is, word for word, what the owner
+    --      reported: "I didn't see the flares present at all, nor any smoke
+    --      trails." Everything below this line may well have been fine all
+    --      along; there was simply nothing there to look at.
+    --
+    --      SO THE NAME IS A LIST NOW, not a string. Three verified-existing
+    --      candidates in preference order, the client takes the first that
+    --      loads and SAYS WHICH, and it complains loudly if none do. The
+    --      community is not sure which of _01 and _01b is the lit one -- the
+    --      only forum comment on it is "I guess it's the second one, but I
+    --      don't know" -- so this is a question for one look in game rather
+    --      than one more confident guess in a config file.
+    --
+    --   B. THE PROP IS PROBABLY INERT ANYWAY, WHICH IS WHY THE PARTICLE STAYS.
+    --      A flare's glow and trail are not attached to the prop: they are
+    --      weapons.meta data on the PROJECTILE (`AMMO_FLARE` is a
+    --      CAmmoThrownInfo block carrying TrailFx, LightColour, LightIntensity,
+    --      LightRange, CoronaSize and a LightBone of `gun_vfx_projtrail`). A
+    --      plain CreateObject of the model very likely renders a dark plastic
+    --      tube. There is also no flare-named native anywhere in the native DB
+    --      -- the flare is data and projectile behaviour, not an API. So the
+    --      particle is not decoration over the prop; it is the entire visual.
+    --
+    --   C. THE PROP WAS ALSO TOO SMALL. A road flare is about a foot long and
+    --      it was drawn at authored size on a crate starting 260 METRES up.
+    --      Even had the name been right it would have been a pixel. Hence
+    --      `flareScale`.
+    --
+    --   B. THE EFFECT IS A PROJECTILE TRAIL AND WE HAVE NO VELOCITY. A `proj_*`
+    --      trail is the effect a moving projectile drags behind it, and the
+    --      strongest available hypothesis for the missing smoke is that its
+    --      emission is driven by the entity's velocity -- of which a frozen,
+    --      teleported prop has exactly none. The effect would start, report a
+    --      valid handle, sit in the right place and emit nothing.
+    --
+    --      AND WE MAY NOT FIX THAT BY ADDING VELOCITY. Nothing in a drop is
+    --      simulated; SetEntityVelocity here would be the first thing in the
+    --      file that was. So the effect has to be one that emits on its own.
+    --      `weap_smoke_grenade` is that: a self-sustaining plume built to be
+    --      read across a map, verified present in `core`, and it is what a
+    --      smoke trail off a falling crate should look like anyway.
+    --
+    --   C. THE FAILURE HANDLE WAS THE WRONG NUMBER. The client tested the
+    --      returned handle against 0. Cfx's own wrapper says a failed
+    --      START_PARTICLE_FX_LOOPED_ON_ENTITY answers -1, and that a non-(-1)
+    --      handle can STILL be a dead effect -- the official check is
+    --      `handle ~= -1 and DoesParticleFxLoopedExist(handle)`. So a failure
+    --      was being stored as a success and nothing said so.
+    --
+    --   The one thing the first attempt got right and is kept verbatim:
+    --   UseParticleFxAsset is `_SET_PTFX_ASSET_NEXT_CALL` and applies to ONE
+    --   following call, so it is re-asserted immediately before each start.
+    --
+    -- ─── AND IT IS STILL A GUESS, WHICH IS WHY /brflare EXISTS ───
+    --
+    -- Nothing outside a running client can say whether a plume renders, how big
+    -- it reads, or whether B above was the real cause. So the client has a
+    -- command that starts any asset/effect/scale on a test prop in front of the
+    -- player and reports whether the handle is live -- which settles "it never
+    -- started" against "it started and I cannot see it" in one playtest instead
+    -- of another round of reasoning. Verified alternatives to try, all in
+    -- `core`: proj_flare_trail, proj_flare_fuse, exp_grd_flare,
+    -- weap_heist_flare_trail, env_smoke_grenade, proj_grenade_trail,
+    -- ent_amb_smoke_general. Also `wpn_flare` / `proj_heist_flare_trail`.
+    -- IN PREFERENCE ORDER, ALL THREE VERIFIED TO EXIST. The client takes the
+    -- first that loads and prints which; `w_am_flare` is WEAPON_FLARE's own
+    -- world model and is the last resort because a weapon model carried as a
+    -- plain object is the least predictable of the three.
+    flareProps     = { 'prop_flare_01b', 'prop_flare_01', 'w_am_flare' },
+    -- FOUR TIMES AUTHORED SIZE, AND THIS NUMBER IS A GUESS. A road flare has to
+    -- read from the ground while the crate is still hundreds of metres up;
+    -- nothing here can say what size does that. /brpropscale's warning applies
+    -- in full -- if the matrix scale does not render on this build then neither
+    -- does this, and the flares stay invisible for the same reason the crate
+    -- stays small.
+    flareScale     = 4.0,
     flarePtfxAsset = 'core',
-    flarePtfxName  = 'proj_flare_trail',
-    flarePtfxScale = 1.0,
+    flarePtfxName  = 'weap_smoke_grenade',
+    -- Bigger than the 1.0 that showed nothing, and a plume rather than a wisp.
+    flarePtfxScale = 2.0,
     -- In the crate's LOCAL frame, so they stay on the crate's left and right
     -- faces while it yaws. One per side, and the sign is the only difference.
-    flareOffset    = { x = 0.55, y = 0.0, z = 0.0 },
+    -- Wider than they were, because the crate is drawn at 2x now and the old
+    -- 0.55 would put both flares inside it.
+    flareOffset    = { x = 1.1, y = 0.0, z = 0.0 },
 
     -- HOW FAR THE CRATE TURNS OVER THE WHOLE DESCENT, in degrees. A crate under
     -- a canopy that never turns reads as a prop sliding down an invisible rail.
@@ -400,16 +658,52 @@ BR.Config.Airdrop = {
     -- and does not mean this wants a radius blip.
     blipSprite = 161,
     blipColour = 5,      -- the same yellow the loot blips use
-    blipScale  = 1.2,
+    -- TWICE THE SIZE (owner, 2026-08-22: "The blip needs to be 2x larger
+    -- please."). 1.2 was the value they saw; this is that, doubled.
+    blipScale  = 2.4,
     -- Named, or GTA names the sprite after whatever mission it was drawn for
     -- and the pause-menu legend reads as something from a heist -- the lesson
     -- client/loot.lua's courtesy blips already paid for.
     blipName   = 'Airdrop',
 
-    -- THE BLIP OUTLIVES THE LANDING BY A MINUTE (owner: "The blip should only
-    -- appear until 1 minute after the drop hits the ground"). Long enough to
-    -- run to, short enough that the contested window has an end.
-    blipLingerMs = 60000,
+    -- ------------------------------------------------------------------
+    -- HOW LONG THE BLIP LIVES, WHICH IS NOW A DIFFERENT QUESTION
+    -- ------------------------------------------------------------------
+    --
+    -- It used to be "one minute after the drop hits the ground" (owner,
+    -- 2026-08-21) and that was measured from tLand. The 2026-08-22 playtest
+    -- found the hole in it:
+    --
+    --   "if nobody arrives fast enough, the blip goes away and they have no
+    --    idea where the drop is. My proposal is we keep the blip on until 1
+    --    minute after the crate is opened, or no longer than 4 minutes if
+    --    unopened, which would also be the case if nobody got to the location
+    --    in time. But 5 minutes should be plenty of time to get there."
+    --
+    -- SO THE CLOCK NOW RUNS FROM THE OPEN, NOT FROM THE LANDING, and there is a
+    -- ceiling under it for the case where nobody ever opens it.
+    --
+    --   opened at tOpen  ->  the blip goes at tOpen + blipAfterOpenMs
+    --   never opened     ->  the blip goes at tStart + blipMaxMs
+    --
+    -- Opening it SHORTENS the window in the ordinary case, and that is the
+    -- intent: the blip's job is to get somebody there, and once somebody is
+    -- there it has one minute of work left. The ceiling is what makes the
+    -- unopened case safe -- and it is load-bearing now in a way it was not
+    -- yesterday, because the same playtest removed the auto-open (see
+    -- br_core/server/airdrop.lua), so "opened" is a thing that may simply never
+    -- happen. Without the ceiling an uncontested drop would mark the map for
+    -- the rest of the match.
+    --
+    -- ═══ FLAGGED FOR THE OWNER: 4 MINUTES OR 5? ═══
+    --
+    -- Their last sentence says "5 minutes should be plenty of time to get
+    -- there", one sentence after naming 4. Read here as justifying the 4-minute
+    -- ceiling rather than naming a second number -- 4 is what is implemented.
+    -- If it was meant as the ceiling, this line is the only edit:
+    -- blipMaxMs = 300000.
+    blipAfterOpenMs = 60000,    -- 1m00 after the crate is opened
+    blipMaxMs       = 240000,   -- 4m00 from the announcement, opened or not
 
     -- Verbatim, and it must stay verbatim (owner, 2026-08-21). Written here
     -- rather than inline so there is one copy to be wrong.

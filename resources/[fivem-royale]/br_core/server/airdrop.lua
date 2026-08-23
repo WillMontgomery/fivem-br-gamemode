@@ -40,57 +40,114 @@ local A = BR.Config.Airdrop
 -- Landing
 -- ---------------------------------------------------------------------------
 
---- Burst one arrived drop open.
+--- Put one arrived drop on the ground, SEALED.
 ---
---- AUTO-OPENS, and there is no claim on the crate itself (owner, 2026-08-21:
---- "once it lands it should auto-open"). What is left behind is the husk --
---- scenery, unclaimable, refused silently by the claim handler -- and twelve
---- ordinary ground entries arranged in a ring around it.
+--- ═══ THE AUTO-OPEN IS GONE (owner, 2026-08-22: "Also we don't need to
+---     auto-open the crate. I changed my mind on that.") ═══
 ---
---- The ring, the `from` origin and the mouth height are the same ones a crate
---- open already uses, so the arrival reads identically: everything arcs OUT of
---- the box rather than popping into existence beside it.
+--- It used to spawn the husk and all twelve items the instant the crate touched
+--- down. Three things were happening in that one call and only one of them was
+--- "opening":
+---
+---   1. the crate was RETIRED from the flight list -- still has to happen, and
+---      still does, in the tick above;
+---   2. a HUSK appeared, as the thing left behind;
+---   3. the CONTENTS were scattered in a ring around it.
+---
+--- 2 and 3 are what a player open does, and BR.Loot has done exactly that for
+--- every crate on the map since long before airdrops existed: `scatter` then
+--- `toHusk`, off the LOOT_CLAIM handler. So the auto-open is not replaced with
+--- anything -- it is DELETED, and what lands instead is one ordinary sealed
+--- container entry carrying the payout as its `contents`.
+---
+--- WHICH MEANS THE AIRDROP INHERITS THE WHOLE CONTAINER PATH rather than
+--- imitating it: the hold-to-open prompt, the glow, the first-come arbitration,
+--- the range check against the roster's own sampled position, the rate limit,
+--- the "an entry you were never streamed answers exactly like one that is gone"
+--- refusal, the open sound, the sealed-to-husk model swap, and the LOOT_FIX
+--- repair round-trip that moves an entry the client can prove is unreachable.
+--- Every one of those is hardening this file would otherwise have had to
+--- re-earn on the single highest-value target in the match.
+---
+--- `huskProp` AND `huskItem` TRAVEL WITH IT because the airdrop's husk is drawn
+--- at a different SIZE from the 1300 ordinary ones (owner, 2026-08-22: "The
+--- parachute and crate props (including husk) should be 2x larger"), and the
+--- client resolves a scale from the item id. BR.Loot.toHusk reads them; an
+--- entry without them becomes the ordinary husk exactly as before.
 --- @param m table
 --- @param d table   { rec, items }
 local function land(m, d)
     if not m or not m.loot then return end
 
-    local L   = BR.Config.Loot
-    local rec = d.rec
+    local rec   = d.rec
+    local items = d.items or {}
 
-    -- The opened crate. `gz` is the POI's nominal height and therefore a first
-    -- pass, exactly like every generated entry's z -- the client's ground probe
-    -- and the LOOT_FIX round-trip correct it, which is machinery that already
-    -- exists rather than new work.
-    BR.Loot.spawnStack(m, {
-        item    = 'husk',
-        kind    = 'husk',
-        rarity  = BR.Rarity.COMMON,
-        count   = 1,
-        prop    = A.huskProp or L.chestOpenProp,
-        heading = rec.heading,
+    -- `gz` is the POI's nominal height and therefore a first pass, exactly like
+    -- every generated entry's z -- the client's ground probe and the LOOT_FIX
+    -- round-trip correct it, which is machinery that already exists rather than
+    -- new work. That round-trip is also the rooftop answer: see
+    -- BR.Loot.groundOk in br_core/client/loot.lua.
+    local crate = BR.Loot.spawnStack(m, {
+        item     = 'airdrop',
+        kind     = 'chest',
+        rarity   = BR.Rarity.LEGENDARY,
+        count    = 1,
+        prop     = A.crateProp or BR.Config.Loot.chestProp,
+        heading  = rec.heading,
+        contents = items,
+        -- What it becomes when somebody opens it.
+        huskItem = 'airdrophusk',
+        huskProp = A.huskProp or BR.Config.Loot.chestOpenProp,
+        -- WHICH DROP THIS IS, so the open can be reported back to this file and
+        -- turned into the blip's `tOpen`. An id rather than a reference: the
+        -- entry is announced over the wire and a table with a record hanging
+        -- off it would put the whole flight plan in a LOOT_ADD payload.
+        airdrop  = rec.n,
     }, rec.x, rec.y, rec.gz)
 
-    local items = d.items or {}
-    local n = #items
-    if n > 0 then
-        local spread = A.scatterSpread or L.deathBoxSpread or 0.8
-        local radius = math.max(spread, 0.55 * n * spread)
-        local from   = {
-            x = rec.x, y = rec.y,
-            lift = L.crateMouthHeight or 0.6,
-        }
-        for i, stack in ipairs(items) do
-            local a = (i / n) * math.pi * 2.0
-            BR.Loot.spawnStack(m, stack,
-                rec.x + math.cos(a) * radius,
-                rec.y + math.sin(a) * radius,
-                rec.gz, from)
-        end
-    end
+    -- THE RECORD OUTLIVES THE FLIGHT NOW. It used to be dropped on landing
+    -- because nothing could happen to a drop after it burst open; a sealed
+    -- crate can still be opened, and the open has to find the record to stamp
+    -- `tOpen` on it and re-publish. Keyed by drop number, cleared with the
+    -- match.
+    m.airdrop.landed = m.airdrop.landed or {}
+    m.airdrop.landed[rec.n] = rec
 
-    print(('[br_core] airdrop: match %d drop %d landed at %s (%.0f, %.0f) -- %d items')
-        :format(m.id, rec.n, tostring(rec.poi), rec.x, rec.y, n))
+    print(('[br_core] airdrop: match %d drop %d landed SEALED at %s (%.0f, %.0f) -- %d items inside, entry %s')
+        :format(m.id, rec.n, tostring(rec.poi), rec.x, rec.y, #items,
+                tostring(crate and crate.id)))
+end
+
+--- A player just opened this match's airdrop crate.
+---
+--- Called from BR.Loot's claim handler, which is where the open actually
+--- happens -- this file does not own the container path and deliberately does
+--- not duplicate any of it. All it does is stamp the moment onto the published
+--- record and send the record again.
+---
+--- THE RE-SEND IS THE WHOLE MECHANISM AND THERE IS NO NEW MESSAGE. The client's
+--- AIRDROP_SYNC handler has always treated a record arriving with an `n` it
+--- already holds as a REPLACEMENT ("a re-send replaces"), so one extra
+--- broadcast per match is the entire cost of the owner's new blip rule. By the
+--- time this fires the crate, canopy and flares have long since been torn down
+--- at touchdown, so the replacement rebuilds nothing but the blip.
+---
+--- ONCE. A second open cannot happen -- the crate becomes a husk and a husk is
+--- refused -- but `tOpen` is written only if it is unset anyway, so a re-entrant
+--- call cannot push the blip's expiry further out.
+--- @param m table
+--- @param n integer   which drop of this match
+function BR.Airdrop.opened(m, n)
+    if not m or not m.airdrop then return end
+    local rec = (m.airdrop.landed or {})[n]
+    if not rec or rec.tOpen then return end
+
+    rec.tOpen = GetGameTimer()
+    BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)
+
+    print(('[br_core] airdrop: match %d drop %d opened -- blip goes in %.0fs')
+        :format(m.id, n,
+                (BR.AirdropBlipEndsAt(rec, A) - rec.tOpen) / 1000))
 end
 
 -- ---------------------------------------------------------------------------

@@ -174,6 +174,24 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from)
         contents = stack.contents,
         warmup = stack.warmup,
         dropped = true,
+        -- WHAT THIS CONTAINER BECOMES WHEN IT IS OPENED, and how widely its
+        -- contents scatter. Both nil for every crate the generator makes --
+        -- toHusk and scatter fall back to the config exactly as they always
+        -- have -- and set only by the airdrop, whose husk is drawn at a
+        -- different size and whose ring holds more items than a crate's.
+        --
+        -- SERVER-SIDE ONLY. None of these three reach wireEntry: `huskProp` and
+        -- `huskItem` become the entry's own `prop` and `item` the moment it is
+        -- opened, which is a re-announce the client already handles, and
+        -- `spread` has done its work before any of it travels.
+        huskItem = stack.huskItem,
+        huskProp = stack.huskProp,
+        spread   = stack.spread,
+        -- WHICH AIRDROP THIS IS, if it is one. Read once, by the claim handler,
+        -- to tell br_core/server/airdrop.lua that its crate was opened -- which
+        -- is what starts the blip's last minute. A number rather than a
+        -- reference so nothing here holds a flight plan.
+        airdrop = stack.airdrop,
     }
     index(m.loot, e)
     announce(m, e)
@@ -190,12 +208,20 @@ end
 ---
 --- A husk is not loot: it cannot be claimed and it carries no rarity. It is
 --- there so a room you have already swept reads as swept from the doorway.
+---
+--- THE HUSK'S IDENTITY CAN BE THE CRATE'S CHOICE, and for exactly one crate it
+--- is. An airdrop's box is drawn at twice the authored size on both sides of the
+--- open (owner, 2026-08-22), and the client resolves a prop's scale from its
+--- ITEM ID -- so an airdrop husk that called itself 'husk' like the other 1300
+--- would shrink back to normal on the frame it was opened. `huskItem` and
+--- `huskProp` are unset on every generated crate and the fallbacks below are
+--- what those have always used.
 --- @param m table
 --- @param crate table
 local function toHusk(m, crate)
     crate.kind     = 'husk'
-    crate.item     = 'husk'
-    crate.prop     = L.chestOpenProp
+    crate.item     = crate.huskItem or 'husk'
+    crate.prop     = crate.huskProp or L.chestOpenProp
     crate.rarity   = BR.Rarity.COMMON
     crate.contents = nil
     announce(m, crate)
@@ -570,7 +596,12 @@ local function scatter(m, container)
 
     -- A ring, not a random spray: everything lands visible and reachable, and
     -- two players opening the same chest see the same arrangement.
-    local spread = L.deathBoxSpread or 0.8
+    --
+    -- THE CONTAINER MAY NAME ITS OWN SPREAD, and only the airdrop does: fourteen
+    -- items on a crate's ring stack inside each other, which is what
+    -- BR.Config.Airdrop.scatterSpread exists to widen. Unset everywhere else, so
+    -- every ordinary crate and death box uses the number it always has.
+    local spread = container.spread or L.deathBoxSpread or 0.8
     local radius = math.max(spread, 0.55 * n * spread)
     -- Everything comes OUT OF THE BOX, a little above its base, so the client
     -- can arc it rather than popping it into existence at the scatter point.
@@ -911,6 +942,23 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
             -- contents off the entry.
             scatter(m, item)
             toHusk(m, item)
+
+            -- AND IF IT WAS THE AIRDROP, THE BLIP'S LAST MINUTE STARTS HERE.
+            --
+            -- Owner, 2026-08-22: "we keep the blip on until 1 minute after the
+            -- crate is opened". This is the only moment in the codebase that
+            -- knows an airdrop crate was opened, because since the same
+            -- playtest removed the auto-open the airdrop is an ORDINARY
+            -- container and this handler is the whole of the open path.
+            --
+            -- ONE FIELD AND ONE CALL, not a branch on kind. `item.airdrop` is
+            -- nil on all 1300 generated crates, so the ordinary path is
+            -- unchanged and unbranched; the guard on the function is there
+            -- because br_core/server/airdrop.lua is a separate file and a
+            -- deployment that dropped it must not take the loot system with it.
+            if item.airdrop and BR.Airdrop and BR.Airdrop.opened then
+                BR.Airdrop.opened(m, item.airdrop)
+            end
         else
             -- A death box has no husk -- an empty one lying around would
             -- read as a body nobody had looted.

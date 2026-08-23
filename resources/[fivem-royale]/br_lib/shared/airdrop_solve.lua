@@ -30,8 +30,19 @@ BR = BR or {}
 ---     heading,     -- the crate's resting heading, AND the plane's bearing
 ---     tStart,      -- server time the drop was committed and the blip appeared
 ---     tRelease,    -- server time the plane is overhead and the crate leaves it
----     tLand,       -- server time it touches down and bursts open
+---     tLand,       -- server time it touches down and the sealed crate appears
+---     tOpen,       -- server time a PLAYER opened it. ABSENT until then, and
+---                  --   absent forever if nobody does -- which since the
+---                  --   auto-open was removed (owner, 2026-08-22) is a case
+---                  --   that really happens. Set by the server and the record
+---                  --   re-broadcast, so every client's blip window agrees.
 ---   }
+---
+--- FOUR TIMESTAMPS AND ONLY THREE ARE KNOWN AT COMMIT. `tOpen` is the one the
+--- server cannot predict, which is why it is written onto the published record
+--- later and the record re-sent rather than being solved from anything: the
+--- client's AIRDROP_SYNC handler has always treated a re-send with the same `n`
+--- as a replacement, so the second send is the whole mechanism.
 ---
 --- THREE TIMESTAMPS RATHER THAN TWO, and the middle one is what makes a plane
 --- worth having. A record reaches a client AFTER tStart, so a flyover timed to
@@ -165,8 +176,29 @@ end
 --- its slot rather than nothing.
 ---
 --- DETERMINISTIC FOR A GIVEN SEED AND CONFIG. The decks are built in payout
---- order, so the number of draws burned depends only on the config -- never on
---- what came out.
+--- order, so which cards come out depends only on the seed -- never on what
+--- came out before.
+---
+--- ═══ HOW MANY, AND WHY THE COUNT IS DRAWN FIRST ═══
+---
+--- Owner, 2026-08-22: "instead of 'up to 12' items, let's make it 10-14 items in
+--- these airdrops." So the number of slots dealt is itself a draw, taken from
+--- `minItems`..`maxItems` inclusive.
+---
+--- IT IS THE FIRST DRAW THIS FUNCTION MAKES, before any deck is shuffled, and
+--- that ordering is the whole of its determinism: the count cannot depend on the
+--- shuffles and the shuffles cannot depend on the count, so a seed and a config
+--- name one payout and one only.
+---
+--- IT COMES OFF THE AIRDROP'S OWN RNG, which is the rng this function is handed
+--- and never any other. docs/match-math.md section 1 gives every subsystem a
+--- prime of its own precisely so its draws cannot move another's; taking this
+--- one from the loot stream would shift every downstream loot draw and silently
+--- change every layout on the map.
+---
+--- THE ARRAY IS A PRIORITY ORDER, not a manifest -- see config/airdrop.lua. The
+--- first `minItems` slots are what every drop is guaranteed to hold, so a short
+--- roll is a complete kit rather than a kit with the ammo missing.
 ---
 --- @param rng table
 --- @param cfg table|nil  defaults to BR.Config.Airdrop
@@ -174,17 +206,37 @@ end
 function BR.AirdropPayout(rng, cfg)
     cfg = cfg or BR.Config.Airdrop
     local pools = cfg.resolvedPools or {}
+    local slots = cfg.payout or {}
+
+    -- CLAMPED TO THE ARRAY, not trusted to it. `maxItems` above #payout would
+    -- otherwise ask for slots that do not exist and quietly pay fewer items
+    -- than the config says -- the failure a range is most likely to grow into
+    -- the day somebody shortens the array. tools/test_airdrop.lua pins the
+    -- committed pair as well, so this clamp is the second line rather than the
+    -- first.
+    local lo = math.tointeger(cfg.minItems or #slots) or #slots
+    local hi = math.tointeger(cfg.maxItems or #slots) or #slots
+    lo = math.max(0, math.min(lo, #slots))
+    hi = math.max(lo, math.min(hi, #slots))
+
+    -- THE COUNT IS DRAWN BEFORE ANY DECK IS SHUFFLED, so neither can move the
+    -- other. Rng:int burns NO draw when lo == hi, which is deliberate over
+    -- there and worth knowing here: pinning minItems == maxItems consumes
+    -- exactly the rng a fixed-count payout always did, so the old behaviour is
+    -- still reachable byte for byte from one config line.
+    local n = rng:int(lo, hi)
 
     local decks, dealt = {}, {}
     local out = {}
 
-    for _, name in ipairs(cfg.payout or {}) do
+    for i = 1, n do
+        local name = slots[i]
         local src = pools[name]
         if src and #src > 0 then
             local deck = decks[name]
             if not deck then
                 deck = {}
-                for i = 1, #src do deck[i] = src[i] end
+                for j = 1, #src do deck[j] = src[j] end
                 rng:shuffle(deck)
                 decks[name], dealt[name] = deck, 0
             end
@@ -388,20 +440,62 @@ function BR.AirdropLanded(rec, now)
     return now >= rec.tLand
 end
 
+--- The exact server time this drop's blip goes out.
+---
+--- ═══ ONE FUNCTION, BECAUSE THERE ARE TWO PREDICATES OVER IT ═══
+---
+--- BR.AirdropBlipVisible and BR.AirdropExpired both need this instant, they are
+--- read on different frames by different code, and a drop whose blip is drawn
+--- past the moment its record is destroyed (or the other way round) is exactly
+--- the class of bug that cost the owner a round on 2026-08-22. So the boundary
+--- is computed once and both ask for it.
+---
+--- THE RULE (owner, 2026-08-22: "we keep the blip on until 1 minute after the
+--- crate is opened, or no longer than 4 minutes if unopened, which would also
+--- be the case if nobody got to the location in time"):
+---
+---   opened at rec.tOpen  ->  rec.tOpen  + afterOpenMs
+---   never opened         ->  rec.tStart + maxMs
+---
+--- MEASURED FROM tStart AND NOT FROM tLand, which is a change of origin as well
+--- as of number. The old window was "a minute after it lands"; the ceiling now
+--- covers the announcement, the plane's run-in, the fall AND the search, because
+--- that whole span is time the owner spent not knowing where to go.
+---
+--- OPENING IT MAKES THE WINDOW SHORTER IN THE ORDINARY CASE and that is the
+--- intent, not an oversight: a drop opened forty seconds after it lands has one
+--- minute of blip left rather than three. The blip exists to get somebody there.
+---
+--- NO min() WITH THE CEILING, deliberately. A crate opened at 3m55 keeps its
+--- blip to 4m55, five seconds past the nominal ceiling, because the owner's
+--- sentence attaches the 4 minutes to "if unopened". A crate opened LATER than
+--- the ceiling cannot extend anything, because the record is already gone (see
+--- BR.AirdropExpired) and there is nothing left to re-announce it to.
+--- @param rec table|nil
+--- @param cfg table|nil  BR.Config.Airdrop
+--- @return number
+function BR.AirdropBlipEndsAt(rec, cfg)
+    if not rec then return 0.0 end
+    cfg = cfg or {}
+    if rec.tOpen then
+        return rec.tOpen + (cfg.blipAfterOpenMs or 60000)
+    end
+    return (rec.tStart or 0.0) + (cfg.blipMaxMs or 240000)
+end
+
 --- Should the map blip be up?
 ---
---- From the moment the drop is announced until `lingerMs` after it lands
---- (owner: "The blip should only appear until 1 minute after the drop hits the
---- ground"). One expression, so the client's blip and any test of it cannot
---- disagree about the window.
+--- From the moment the drop is announced until BR.AirdropBlipEndsAt. One
+--- expression, so the client's blip and any test of it cannot disagree about the
+--- window.
 --- @param rec table|nil
 --- @param now number
---- @param lingerMs number|nil
+--- @param cfg table|nil  BR.Config.Airdrop
 --- @return boolean
-function BR.AirdropBlipVisible(rec, now, lingerMs)
+function BR.AirdropBlipVisible(rec, now, cfg)
     if not rec then return false end
     if now < rec.tStart then return false end
-    return now <= rec.tLand + (lingerMs or 60000)
+    return now <= BR.AirdropBlipEndsAt(rec, cfg)
 end
 
 --- Is there nothing left of this drop to draw, ever again?
@@ -432,9 +526,9 @@ end
 --- the future is simply not due yet, and waiting for it costs a frame.
 --- @param rec table|nil
 --- @param now number
---- @param lingerMs number|nil
+--- @param cfg table|nil  BR.Config.Airdrop
 --- @return boolean
-function BR.AirdropExpired(rec, now, lingerMs)
+function BR.AirdropExpired(rec, now, cfg)
     if not rec then return true end
-    return now > (rec.tLand or 0.0) + (lingerMs or 60000)
+    return now > BR.AirdropBlipEndsAt(rec, cfg)
 end

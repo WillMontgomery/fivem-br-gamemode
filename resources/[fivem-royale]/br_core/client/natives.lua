@@ -371,6 +371,244 @@ function BR.Native.radiusBlip(existing, x, y, radius, colour, alpha, name)
     return blip
 end
 
+-- -------------------------------------------------------------- prop scale ---
+
+--- One axis vector of a transform matrix, renormalised to length k.
+---
+--- Hoisted rather than nested: BR.Native.propScale runs after every rotation
+--- write in client/loot.lua's hover, which is per frame per item in range, and
+--- a closure built three times a frame per shield is a closure built for
+--- nothing.
+--- @param v table  a vector3 from GetEntityMatrix
+--- @param k number
+--- @return number x
+--- @return number y
+--- @return number z
+local function axisAt(v, k)
+    local len = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+    if len < 0.000001 then return 0.0, 0.0, 0.0 end
+    local s = k / len
+    return v.x * s, v.y * s, v.z * s
+end
+
+--- Draw an entity at a multiple of its authored size (#166).
+---
+--- THERE IS NO SetEntityScale IN GTA V, and that is not a guess -- client/loot's
+--- take animation wanted one, could not find one, and settled for a spin. The
+--- only lever is the transform matrix: an entity's three axis vectors are unit
+--- length, their LENGTH is its scale, so renormalising them to k draws the model
+--- at k.
+---
+--- NORMALISED FIRST, AND THAT IS THE LOAD-BEARING WORD. GetEntityMatrix reads
+--- back whatever is there NOW, so multiplying the vectors as they arrive would
+--- compound -- a half, then a quarter, then an eighth, once per frame, until the
+--- prop disappeared into its own origin. Renormalising makes this IDEMPOTENT,
+--- which it has to be: every caller re-applies it after every matrix write.
+---
+--- WHICH VECTOR IS WHICH DOES NOT MATTER. GetEntityMatrix is declared
+--- forward/right/up/position and is widely reported to hand back right/forward
+--- in the other order; a UNIFORM scale is invariant under that disagreement,
+--- because all three are multiplied by the same k and handed straight back in
+--- the order they arrived. SET_ENTITY_MATRIX takes "the same order as with
+--- GET_ENTITY_MATRIX", so the round trip cannot be wrong about it either.
+---
+--- IT SCALES THE RENDER AND NOT A COLLISION BOX. That is free for loose loot
+--- (spawned with collision off, and both reach tests measure from the REGISTRY
+--- position rather than from the prop) and free for a falling airdrop crate
+--- (collision off, position written by arithmetic). It is NOT free for a landed
+--- crate, which is a physics object -- a 2x crate still has a 1x hitbox, so it
+--- can be walked through at the corners. That is a cosmetic mismatch and it is
+--- the price of there being no scale native; it cannot put anything out of
+--- reach, because reach is measured from the entry.
+---
+--- ═══ AND IT MAY SIMPLY NOT RENDER ON THIS BUILD ═══
+---
+--- Nothing outside a running client can confirm the matrix route works here.
+--- #166 shipped the small shield at 0.5 and no playtest has yet reported a
+--- shield that looks half-size, so "the scale did nothing" is live and
+--- untested. /brpropscale is the ruler: if props do not change size at ANY
+--- value, this is not the lever and the answer is a different MODEL.
+---
+--- GUARDED, so a build without the natives draws the prop at its authored size
+--- instead of erroring sixty times a second in the hottest pass in the client.
+--- @param obj integer|nil
+--- @param k number|nil   nil or 1.0 costs nothing
+function BR.Native.propScale(obj, k)
+    if not k or k == 1.0 then return end
+    if not obj or not DoesEntityExist(obj) then return end
+    if not GetEntityMatrix or not SetEntityMatrix then return end
+
+    local a, b, c, at = GetEntityMatrix(obj)
+    if not a or not b or not c or not at then return end
+
+    local ax, ay, az = axisAt(a, k)
+    local bx, by, bz = axisAt(b, k)
+    local cx, cy, cz = axisAt(c, k)
+    SetEntityMatrix(obj, ax, ay, az, bx, by, bz, cx, cy, cz, at.x, at.y, at.z)
+end
+
+-- --------------------------------------------------------- ped reachability ---
+
+--- GET_SAFE_COORD_FOR_PED flags. Verified against citizenfx/natives'
+--- eSafePositionFlags enum rather than copied off a forum post, because the one
+--- widely-pasted table on the web ("0, 14, 12, 16, 20, 21, 28, use 0 or 16")
+--- is a list of values Rockstar's scripts pass and says nothing about what they
+--- mean.
+---
+---   1  ONLY_PAVEMENT       only polys marked pavement
+---   2  NOT_ISOLATED        no polys marked isolated
+---   4  NOT_INTERIOR        no polys created from interiors
+---   8  NOT_WATER           no polys marked water
+---  16  ONLY_NETWORK_SPAWN  only polys marked as a network spawn candidate
+---  32  USE_FLOOD_FILL      flood-fill from the start rather than scan a volume
+---
+--- ═══ 16 IS WHAT WE ASK FOR, AND IT IS THE FIELD-PROVEN VALUE ═══
+---
+--- The obvious choice is 4|8 -- not an interior, not water -- and it was the
+--- first thing written here. It was changed on the strength of the only Cfx.re
+--- thread anyone has found in which a rooftop complaint was actually RESOLVED
+--- (forum.cfx.re/t/5248185, ambient animals spawning on roofs): the fix was
+--- GetSafeCoordForPed(x, y, z, false, 16), and the reporter's first attempt
+--- failed because they passed `true` for the fourth argument, not because of the
+--- flags. Both halves of that are copied here deliberately.
+---
+--- 16 IS ROCKSTAR'S OWN CURATED SET. "Network spawn candidate" polygons are the
+--- ones their multiplayer spawn code is allowed to put a player on -- so it is
+--- narrower than "a ped could stand here", and narrower in exactly the
+--- direction that matters: a warehouse roof is not a place Rockstar will spawn
+--- an MP player.
+---
+--- NARROWER ALSO MEANS FALSE NEGATIVES, and the caller is built for them. Remote
+--- Blaine County has plenty of legitimate ground with no network-spawn polygon
+--- anywhere near it, so this WILL answer "no" about places that are perfectly
+--- fine. That is survivable only because every caller treats a "no" as a reason
+--- to look for somewhere better and NEVER as a reason to withhold the thing --
+--- see client/loot.lua, where a rejected point still gets its prop built. If
+--- that ever stops being true, this constant has to go back to 4|8 on the same
+--- day.
+---
+--- ONE LINE TO RETUNE. /brairdrop on the client prints the verdict and the snap
+--- distances for the live drop, which is what settles 16 against 4|8 in a single
+--- playtest rather than another round of reasoning.
+BR.Native.SAFE_COORD_FLAGS = 16
+
+--- Could a ped plausibly be standing at (x, y, z)?
+---
+--- ═══ WHY THIS EXISTS: AIRDROPS LAND ON ROOFS ═══
+---
+--- Owner, 2026-08-22: "Somehow these airdrops can happen on top of buildings
+--- where peds otherwise cannot access. Any tips on how to address that?"
+---
+--- THE CAUSE IS NOT MYSTERIOUS AND IT IS NOT THE SITING RULE. The server picks
+--- an authored POI, which is a street-level landmark; the CLIENT then resolves
+--- the height with GetGroundZFor_3dCoord probing DOWN from hundreds of metres
+--- up. That native is documented to return "the highest ground Z directly
+--- beneath" the start point -- so over a building it returns the ROOF, every
+--- time, exactly as designed. The drop is not being mis-sited; it is being
+--- mis-grounded.
+---
+--- ═══ WHAT THIS CAN AND CANNOT ANSWER ═══
+---
+--- GetGroundZFor_3dCoord answers HEIGHT, not REACHABILITY, and no native
+--- answers reachability directly. The closest thing is the PATHFINDING NAVMESH,
+--- which is the graph peds actually walk: GET_SAFE_COORD_FOR_PED is documented
+--- entirely in terms of navmesh polygons, so "is there a ped-walkable polygon
+--- here" is a question it really does answer.
+---
+--- THE SNAP DISTANCE IS THE SIGNAL, NOT THE BOOLEAN. The native searches a
+--- volume around the point (its own USE_FLOOD_FILL flag is documented as the
+--- alternative to "scanning all polygons within the search volume"), so standing
+--- on an un-navmeshed roof it happily finds the STREET thirty metres below and
+--- answers true. Reading the boolean alone would pass every rooftop in Los
+--- Santos. So this compares what came back against what was asked: a coord
+--- displaced further than the tolerances is the navmesh saying "not here, but
+--- there".
+---
+--- ═══ THE THREE THINGS IT MISSES, STATED PLAINLY ═══
+---
+---   * A ROOF THAT HAS NAVMESH PASSES. Plenty do -- roofs with stairs, fire
+---     escapes, car-park decks. That is arguably correct (a ped CAN get up
+---     there) but it means "no airdrop on any building" is NOT what this
+---     delivers, and the owner should expect the occasional accessible roof.
+---   * "A PED CAN STAND HERE" IS NOT "A PED CAN GET HERE". The navmesh is
+---     polygons, and this asks about ONE polygon; it does not walk the graph
+---     back to the street. A walled compound, a fenced yard or an island of
+---     navmesh with no connected route all pass. Answering that properly needs
+---     the polygon adjacency graph, which is not exposed to script at all.
+---   * IT ONLY ANSWERS NEAR THE PLAYER. The navmesh streams like everything
+---     else, and the drop is announced while the whole match is kilometres
+---     away. So this is deliberately FAIL-OPEN: when the navmesh is not loaded
+---     the answer is "yes", because "I cannot see" must never read as "no" --
+---     that would refuse every point on the map to every distant client and
+---     take the loot system with it.
+---   * IT SAYS "NO" ABOUT PLENTY OF GOOD GROUND. See SAFE_COORD_FLAGS: 16 is a
+---     curated set, not a walkability test, and rural POIs will fail it. A
+---     caller may use a "no" to look for somewhere better; no caller may use it
+---     to withhold a crate.
+---
+--- ═══ WHAT WAS CONSIDERED AND REJECTED, so it is not re-tried ═══
+---
+---   * A DOWNWARD RAYCAST FROM ABOVE THE POINT. Several published resources
+---     carry one and it is the first thing anybody writes. It answers the
+---     INVERSE question -- "is this point underneath something" -- and a rooftop
+---     passes it trivially, because there is nothing above a roof.
+---   * THE SURFACE NORMAL (GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD). It rejects
+---     cliffs, not buildings: a flat commercial roof has the same normal as a
+---     flat street.
+---   * THE COLLISION MATERIAL under the point. RoofTile and RoofFelt exist in
+---     the material list and would catch pitched suburban roofs, but Los
+---     Santos' flat commercial roofs are concrete and tarmac -- the same
+---     materials as the street below them.
+---   * THE ENTITY THE SHAPE TEST HIT. Documented as returning only DYNAMIC
+---     entities; static map collision, street and roof alike, is not one.
+---
+--- @param x number
+--- @param y number
+--- @param z number     the resolved ground height at (x, y)
+--- @param hTol number|nil  metres of horizontal snap allowed (default 5)
+--- @param vTol number|nil  metres of vertical snap allowed (default 2.5)
+--- @return boolean reachable
+--- @return string why       for the diagnostic; never shown to a player
+function BR.Native.pedReachable(x, y, z, hTol, vTol)
+    -- FAIL OPEN ON A MISSING NATIVE. A build or a test rig without it must get
+    -- today's behaviour rather than an empty map.
+    if not GetSafeCoordForPed then return true, 'no native' end
+
+    hTol = hTol or 5.0
+    vTol = vTol or 2.5
+
+    -- IS THE GRAPH EVEN HERE? A box around the point, tight in z so a roof's
+    -- box does not simply swallow the street below it and report "loaded"
+    -- about geometry we are not asking about.
+    if IsNavmeshLoadedInArea then
+        local loaded = IsNavmeshLoadedInArea(x - 20.0, y - 20.0, z - vTol,
+                                             x + 20.0, y + 20.0, z + vTol)
+        -- 0 IS TRUTHY IN LUA AND A NATIVE DECLARED BOOL MAY ANSWER 1. Five
+        -- shipped bugs on this project say so.
+        if not (loaded ~= nil and loaded ~= false and loaded ~= 0) then
+            return true, 'navmesh not loaded'
+        end
+    end
+
+    local ok, safe = GetSafeCoordForPed(x, y, z, false,
+        BR.Native.SAFE_COORD_FLAGS)
+    if not (ok ~= nil and ok ~= false and ok ~= 0) then
+        return false, 'no safe coord'
+    end
+    -- A true with nothing in the out-param is not something to reason from.
+    if not safe or not safe.x then return true, 'no coord returned' end
+
+    if math.abs((safe.z or z) - z) > vTol then
+        return false, ('snapped %.1fm in z'):format((safe.z or z) - z)
+    end
+    local dx, dy = (safe.x or x) - x, (safe.y or y) - y
+    if math.sqrt(dx * dx + dy * dy) > hTol then
+        return false, ('snapped %.1fm sideways')
+            :format(math.sqrt(dx * dx + dy * dy))
+    end
+    return true, 'ok'
+end
+
 -- ----------------------------------------------------------------- spectate ---
 
 --- The local ped handle for a spectate target, or 0 when they are not streamed.

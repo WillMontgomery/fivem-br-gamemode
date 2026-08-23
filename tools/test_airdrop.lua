@@ -95,8 +95,42 @@ do
     eq(A.insideBy, 250.0, 'the landing point is 250m inside the circle')
     eq(A.maxPhase, 4, 'no airdrops past storm stage 4')
     eq(A.blipSprite, 161, 'blip type 161')
-    eq(A.blipLingerMs, 60000, 'the blip outlives the landing by one minute')
-    eq(#A.payout, 12, 'up to 12 items')
+    -- TWICE THE SIZE (owner, 2026-08-22: "The blip needs to be 2x larger
+    -- please."). 1.2 is what they saw and asked to double.
+    eq(A.blipScale, 2.4, 'drawn at twice the size the playtest saw')
+    -- THE BLIP'S TWO NUMBERS (owner, 2026-08-22: "we keep the blip on until 1
+    -- minute after the crate is opened, or no longer than 4 minutes if
+    -- unopened"). Pinned as literals because they are the owner's, and because
+    -- the second one is the ONLY thing that bounds a drop nobody ever opens --
+    -- the same playtest deleted the auto-open, so "never opened" is reachable.
+    eq(A.blipAfterOpenMs, 60000, 'the blip lives a minute past the open')
+    eq(A.blipMaxMs, 240000, 'and four minutes past the announcement regardless')
+    ok(A.blipLingerMs == nil,
+        'and the old land-relative linger is GONE rather than left to rot')
+
+    -- 10 TO 14 (owner, 2026-08-22: "let's make it 10-14 items in these
+    -- airdrops"). The array is longer than the maximum would need only if
+    -- somebody added a slot without moving maxItems, which is why both are
+    -- checked against it.
+    eq(A.minItems, 10, 'at least ten items')
+    eq(A.maxItems, 14, 'and at most fourteen')
+    eq(#A.payout, 14, 'and the array is long enough to deal the maximum')
+    ok(A.maxItems <= #A.payout,
+        'maxItems can never ask for a slot that does not exist')
+    ok(A.minItems <= A.maxItems, 'and the range is the right way round')
+
+    -- THE ORDER IS LOAD-BEARING AND THIS IS THE ASSERTION THAT SAYS SO. A
+    -- minimum roll deals the FIRST minItems slots, so a drop that pays an RPG
+    -- and no heavy ammo is one careless reorder away. Ammo is inside the
+    -- guaranteed ten on purpose.
+    local guaranteed = {}
+    for i = 1, A.minItems do guaranteed[A.payout[i]] = (guaranteed[A.payout[i]] or 0) + 1 end
+    eq(guaranteed.exclusive, 2, 'the smallest drop still holds both exclusives')
+    eq(guaranteed.volts, 1, 'and the Volts')
+    eq(guaranteed.ammo, 2, 'and both ammo slots -- never an RPG with no rounds')
+    ok((guaranteed.legendary or 0) >= 2, 'and at least two legendaries')
+    ok((guaranteed.healing or 0) >= 1, 'and something to heal with')
+    ok((guaranteed.throwable or 0) >= 1, 'and something to throw')
 
     -- VERBATIM. The owner gave this sentence character for character
     -- (2026-08-21) and the only way it stays that way is a literal here that
@@ -128,17 +162,46 @@ do
         'the crate canopy is not the player canopy')
     eq(A.chuteModel, 'p_cargo_chute_s', 'it is Rockstar\'s own cargo chute')
 
-    -- The flares (owner, 2026-08-21). Two things have to be true for the smoke
-    -- to exist at all, and both are one config line, so both are worth pinning:
-    -- a prop to hang the emitter on, and an asset the emitter comes out of.
-    ok(type(A.flareProp) == 'string' and A.flareProp ~= '',
-        'the flares have a prop')
+    -- ═══ THE FLARES, AND THE NAME THAT WAS NOT A MODEL ═══
+    --
+    -- The 2026-08-21 flares shipped `prop_flare_01a`, which does not exist in
+    -- GTA V. IsModelValid refused it, loadModel returned false, and the whole
+    -- flare branch -- props AND particles, both behind that one `if` -- never
+    -- ran. The owner reported seeing no flares and no smoke, which is exactly
+    -- what that produces, and nothing in the game or the logs said so.
+    --
+    -- No test outside a running client can prove a model name is real. What it
+    -- CAN do is refuse the one name we know is fake, and require the config to
+    -- offer more than one candidate so a single bad guess cannot delete the
+    -- feature again.
+    ok(type(A.flareProps) == 'table' and #A.flareProps >= 2,
+        'the flares name at least two candidate props, so one bad name is '
+        .. 'survivable')
+    local sawFake = false
+    for _, n in ipairs(A.flareProps or {}) do
+        ok(type(n) == 'string' and n ~= '', 'every flare prop candidate is a name')
+        if n == 'prop_flare_01a' then sawFake = true end
+    end
+    ok(not sawFake,
+        'and prop_flare_01a -- which is not a model, and is the whole of the '
+        .. 'invisible-flare bug -- is not among them')
+
     ok(type(A.flarePtfxAsset) == 'string' and A.flarePtfxAsset ~= '',
-        'and a particle asset to stream')
+        'the flares have a particle asset to stream')
     ok(type(A.flarePtfxName) == 'string' and A.flarePtfxName ~= '',
         'and an effect inside it')
+    ok((A.flarePtfxScale or 0.0) > 0.0,
+        'and a scale above zero -- a zero-scale effect renders nothing and '
+        .. 'reports a perfectly healthy handle')
+    ok((A.flareScale or 0.0) > 1.0,
+        'and the prop is scaled up, because a foot-long flare 260m away is a '
+        .. 'pixel')
     ok(A.flareOffset and (A.flareOffset.x or 0.0) > 0.0,
         'and an offset with a positive x -- the sign is what makes it two sides')
+    -- The crate is drawn at 2x now, so an offset that used to clear it may not.
+    ok((A.flareOffset.x or 0.0) >= (A.crateScale or 1.0) * 0.5,
+        'and the offset clears a crate drawn at crateScale rather than sitting '
+        .. 'inside it')
 end
 
 describe('config: exclusive loot is exclusive')
@@ -452,7 +515,9 @@ end
 describe('payout')
 do
     local items = BR.AirdropPayout(BR.Rng(7), A)
-    eq(#items, #A.payout, 'one item per payout slot')
+    ok(#items >= A.minItems and #items <= A.maxItems,
+        ('a drop holds between %d and %d items'):format(A.minItems, A.maxItems),
+        #items)
 
     local shaped = true
     for _, s in ipairs(items) do
@@ -558,6 +623,153 @@ do
     end
     eq(n, 2, 'two exclusive slots pay two explosives')
     eq(repeats, 0, 'and they are different ones')
+end
+
+describe('payout: 10 to 14, drawn per drop')
+do
+    -- Owner, 2026-08-22: "instead of 'up to 12' items, let's make it 10-14
+    -- items in these airdrops. That should be enough for an entire squad."
+    --
+    -- IT WAS A FIXED TWELVE. The count is a draw now, and these are the three
+    -- things that has to keep being true: it stays inside the range, it is
+    -- deterministic for a seed, and it actually VARIES -- a "range" that always
+    -- pays the same number is the bug this would most plausibly ship with.
+    local counts, lo, hi = {}, math.huge, -math.huge
+    for seed = 1, 400 do
+        local n = #BR.AirdropPayout(BR.Rng(seed), A)
+        counts[n] = (counts[n] or 0) + 1
+        if n < lo then lo = n end
+        if n > hi then hi = n end
+    end
+    eq(lo, A.minItems, 'the smallest drop across 400 seeds is the minimum')
+    eq(hi, A.maxItems, 'and the largest is the maximum')
+
+    -- EVERY VALUE IN THE RANGE IS REACHABLE. An off-by-one in the draw would
+    -- leave one end unvisited and nothing else here would notice.
+    local missing = {}
+    for n = A.minItems, A.maxItems do
+        if not counts[n] then missing[#missing + 1] = n end
+    end
+    eq(#missing, 0, 'and every count in between actually happens',
+        table.concat(missing, ', '))
+
+    -- Deterministic, which is the contract the whole layout has.
+    eq(#BR.AirdropPayout(BR.Rng(77), A), #BR.AirdropPayout(BR.Rng(77), A),
+        'the same seed draws the same count')
+
+    -- ═══ THE COUNT COMES OFF THE AIRDROP'S OWN STREAM ═══
+    --
+    -- docs/match-math.md section 1 gives every subsystem a prime of its own so
+    -- one subsystem's draws cannot shift another's. This function is handed an
+    -- rng and must use THAT one and no other -- a draw taken from the loot
+    -- stream would move every downstream loot draw and silently change every
+    -- layout on the map.
+    --
+    -- Proved by handing it an rng that counts how often it is asked, and
+    -- checking the global generator is untouched.
+    local asks = 0
+    local real = BR.Rng(5)
+    local counting = {
+        int     = function(_, a, b) asks = asks + 1 return real:int(a, b) end,
+        float   = function() asks = asks + 1 return real:float() end,
+        shuffle = function(_, t) asks = asks + 1 return real:shuffle(t) end,
+        pick    = function(_, t) asks = asks + 1 return real:pick(t) end,
+    }
+    local out = BR.AirdropPayout(counting, A)
+    ok(#out >= A.minItems, 'a payout came out of the rng it was given')
+    ok(asks > 0, 'and every draw went through it')
+
+    -- THE COUNT IS DRAWN BEFORE ANY DECK IS SHUFFLED, so neither can move the
+    -- other. The first ask is the count.
+    local firstWasInt = false
+    local probe = {
+        int = function(_, a, b) firstWasInt = true return BR.Rng(9):int(a, b) end,
+        float = function() return 0.0 end,
+        shuffle = function() end,
+        pick = function(_, t) return t[1] end,
+    }
+    BR.AirdropPayout(probe, A)
+    ok(firstWasInt, 'the count is an int draw, taken first')
+
+    -- A CONFIG PINNED TO ONE COUNT BURNS NO DRAW AT ALL (Rng:int returns early
+    -- when hi <= lo), so the old fixed-count behaviour is still reachable byte
+    -- for byte from one config line. Worth pinning: it is the escape hatch if
+    -- the owner wants a fixed number back.
+    local fixed = { payout = A.payout, resolvedPools = A.resolvedPools,
+                    minItems = 12, maxItems = 12 }
+    eq(#BR.AirdropPayout(BR.Rng(31), fixed), 12,
+        'minItems == maxItems pays exactly that many')
+
+    -- CLAMPED TO THE ARRAY. A maxItems above #payout would ask for slots that
+    -- do not exist and quietly pay fewer items than the config claims.
+    local pool = { p = { { item = 'x', kind = 'consumable', rarity = 1, count = 1 },
+                         { item = 'y', kind = 'consumable', rarity = 1, count = 1 } } }
+    local greedy = { payout = { 'p', 'p' }, minItems = 5, maxItems = 9,
+        resolvedPools = pool }
+    eq(#BR.AirdropPayout(BR.Rng(3), greedy), 2,
+        'a range longer than the array is clamped to the array')
+
+    -- ...AND THE CLAMP IS ON THE DRAW, NOT JUST ON THE LOOP. A `for i = 1, n`
+    -- over a short array already stops at the end of it, so an unclamped `hi`
+    -- yields the same ITEMS -- and burns a different rng draw doing it, which
+    -- silently shifts everything the same generator hands out afterwards. The
+    -- only way to see that from outside is to compare against the config the
+    -- clamp is supposed to produce.
+    local clamped = { payout = { 'p', 'p' }, minItems = 2, maxItems = 2,
+        resolvedPools = pool }
+    -- ACROSS MANY SEEDS, because the deck here is two cards: a single seed
+    -- agrees by coin flip about half the time, which is a test that passes for
+    -- the wrong reason half the time it is run.
+    local identical = true
+    for seed = 1, 60 do
+        local g = BR.AirdropPayout(BR.Rng(seed), greedy)
+        local c = BR.AirdropPayout(BR.Rng(seed), clamped)
+        if #g ~= #c then identical = false break end
+        for i = 1, #g do
+            if g[i].item ~= c[i].item then identical = false break end
+        end
+        if not identical then break end
+    end
+    ok(identical,
+        'a clamped range consumes exactly the rng the equivalent config does -- '
+        .. 'an unclamped draw would burn an extra number and deal differently')
+
+    -- ...and a range the wrong way round does not produce a negative count.
+    local backwards = { payout = { 'p', 'p', 'p' }, minItems = 3, maxItems = 1,
+        resolvedPools = greedy.resolvedPools }
+    local n = #BR.AirdropPayout(BR.Rng(3), backwards)
+    ok(n >= 0 and n <= 3, 'a backwards range still pays a sane count', n)
+end
+
+describe('payout: the airdrop count does not move the loot map')
+do
+    -- THE PROPERTY docs/match-math.md SECTION 1 EXISTS FOR, checked rather than
+    -- asserted. Drawing the item count added an rng call to the airdrop stream;
+    -- if it had been taken from the loot stream instead, every layout in the
+    -- game would have shifted the day this shipped -- silently, because a
+    -- different-but-valid layout looks exactly like a correct one.
+    local seed = 20260822
+    local before = BR.BuildLootLayout and BR.BuildLootLayout(seed) or nil
+    if before then
+        -- Burn a whole airdrop payout off a SEPARATE stream, as the server does.
+        BR.AirdropPayout(BR.Rng(seed + 1299709), A)
+        local after = BR.BuildLootLayout(seed)
+        eq(#after, #before, 'the same seed still lays out the same item count')
+        local same = true
+        for i = 1, #before do
+            if before[i].item ~= after[i].item
+               or before[i].x ~= after[i].x or before[i].y ~= after[i].y then
+                same = false
+                break
+            end
+        end
+        ok(same, 'and the same items in the same places')
+    else
+        -- NOT A SILENT SKIP. If the generator ever stops being loaded here this
+        -- fails rather than quietly passing, because a test that can no longer
+        -- see what it guards is not a passing test.
+        ok(false, 'BR.BuildLootLayout is not loaded -- this guard is blind')
+    end
 end
 
 describe('payout: a short pool wraps rather than paying nothing')
@@ -703,18 +915,71 @@ end
 
 describe('descent: the blip window')
 do
+    -- ═══ THE OWNER'S NEW RULE, WHICH HAS TWO BRANCHES AND A CHANGE OF ORIGIN ═══
+    --
+    -- 2026-08-22: "we keep the blip on until 1 minute after the crate is opened,
+    -- or no longer than 4 minutes if unopened, which would also be the case if
+    -- nobody got to the location in time."
+    --
+    -- The old rule was one minute after tLAND. The ceiling is measured from
+    -- tSTART, because the whole span -- announcement, run-in, fall, search -- is
+    -- time the owner spent not knowing where to go.
     local poi = { id = 'x', x = 0.0, y = 0.0, z = 0.0 }
+    -- Announced at 1000, on the ground at 31000. A minute after the open, four
+    -- minutes from the announcement.
+    local cfg = { blipAfterOpenMs = 60000, blipMaxMs = 240000 }
     local rec = BR.BuildAirdropRecord(1, poi, 260.0, 1000.0, 31000.0, 0.0)
 
-    ok(not BR.AirdropBlipVisible(rec, 999.0, 60000),
+    ok(not BR.AirdropBlipVisible(rec, 999.0, cfg),
         'nothing on the map before the drop is announced')
-    ok(BR.AirdropBlipVisible(rec, 1000.0, 60000), 'up the moment it is announced')
-    ok(BR.AirdropBlipVisible(rec, 31000.0, 60000), 'still up as it lands')
-    ok(BR.AirdropBlipVisible(rec, 91000.0, 60000),
-        'still up exactly one minute after landing')
-    ok(not BR.AirdropBlipVisible(rec, 91001.0, 60000),
+    ok(BR.AirdropBlipVisible(rec, 1000.0, cfg), 'up the moment it is announced')
+    ok(BR.AirdropBlipVisible(rec, 31000.0, cfg), 'still up as it lands')
+
+    -- ─── NEVER OPENED: the ceiling, and it is the branch that matters most ───
+    --
+    -- The same playtest deleted the auto-open, so a crate nobody reaches is
+    -- never opened at all and `tOpen` is never set. Without this ceiling the
+    -- blip would mark the map for the rest of the match.
+    ok(BR.AirdropBlipVisible(rec, 91000.0, cfg),
+        'still up a minute after landing, which the OLD rule ended at')
+    ok(BR.AirdropBlipVisible(rec, 241000.0, cfg),
+        'and still up at exactly four minutes from the announcement')
+    ok(not BR.AirdropBlipVisible(rec, 241001.0, cfg),
         'and gone a millisecond later')
-    ok(not BR.AirdropBlipVisible(nil, 5000.0, 60000), 'no record, no blip')
+    eq(BR.AirdropBlipEndsAt(rec, cfg), 241000.0,
+        'the unopened window ends at tStart + blipMaxMs')
+
+    -- ─── OPENED: one minute from the open, and it SHORTENS the window ───
+    local opened = BR.BuildAirdropRecord(1, poi, 260.0, 1000.0, 31000.0, 0.0)
+    opened.tOpen = 41000.0            -- ten seconds after it landed
+    eq(BR.AirdropBlipEndsAt(opened, cfg), 101000.0,
+        'an opened drop ends a minute after the open, not after the landing')
+    ok(BR.AirdropBlipVisible(opened, 101000.0, cfg), 'up to that instant')
+    ok(not BR.AirdropBlipVisible(opened, 101001.0, cfg), 'and not past it')
+    -- THE SHORTENING IS THE INTENT, NOT AN OVERSIGHT. The blip exists to get
+    -- somebody there; once somebody is there it has a minute of work left.
+    ok(BR.AirdropBlipEndsAt(opened, cfg) < BR.AirdropBlipEndsAt(rec, cfg),
+        'so opening it early ends the blip EARLIER than the four-minute cap')
+
+    -- A crate opened at 3m55 keeps its blip five seconds past the nominal
+    -- ceiling, because the owner's sentence attaches the 4 minutes to
+    -- "if unopened". Pinned so nobody "fixes" it into a min().
+    local late = BR.BuildAirdropRecord(1, poi, 260.0, 1000.0, 31000.0, 0.0)
+    late.tOpen = 236000.0
+    eq(BR.AirdropBlipEndsAt(late, cfg), 296000.0,
+        'a late open runs past the cap rather than being clipped by it')
+
+    ok(not BR.AirdropBlipVisible(nil, 5000.0, cfg), 'no record, no blip')
+    eq(BR.AirdropBlipEndsAt(nil, cfg), 0.0, 'and no record ends at zero')
+
+    -- DEFAULTS, because the client passes the whole config table and a config
+    -- missing a key must not silently mean "never expires" or "expires now".
+    local bare = BR.BuildAirdropRecord(1, poi, 260.0, 0.0, 30000.0, 0.0)
+    eq(BR.AirdropBlipEndsAt(bare, nil), 240000.0,
+        'no config falls back to the four-minute ceiling')
+    bare.tOpen = 1000.0
+    eq(BR.AirdropBlipEndsAt(bare, nil), 61000.0,
+        'and to the one-minute post-open window')
 end
 
 describe('the plane')
@@ -803,25 +1068,48 @@ do
     -- so a clock estimate a few tens of milliseconds behind the server's
     -- destroyed the whole airdrop on the frame it arrived.
     local poi = { id = 'x', x = 0.0, y = 0.0, z = 0.0 }
+    local cfg = { blipAfterOpenMs = 60000, blipMaxMs = 240000 }
     local rec = BR.BuildAirdropRecord(1, poi, 260.0, 1000.0, 31000.0, 0.0)
 
-    ok(not BR.AirdropBlipVisible(rec, 900.0, 60000),
+    ok(not BR.AirdropBlipVisible(rec, 900.0, cfg),
         'a record from the future is not visible yet...')
-    ok(not BR.AirdropExpired(rec, 900.0, 60000),
+    ok(not BR.AirdropExpired(rec, 900.0, cfg),
         '...and is emphatically not over -- this is the pair that used to be '
         .. 'one question')
 
-    ok(not BR.AirdropExpired(rec, 1000.0, 60000), 'not over at tStart')
-    ok(not BR.AirdropExpired(rec, 31000.0, 60000), 'not over as it lands')
-    ok(not BR.AirdropExpired(rec, 91000.0, 60000),
-        'not over exactly one minute after landing')
-    ok(BR.AirdropExpired(rec, 91001.0, 60000), 'over a millisecond later')
-    ok(BR.AirdropExpired(nil, 0.0, 60000), 'and no record is nothing to draw')
+    ok(not BR.AirdropExpired(rec, 1000.0, cfg), 'not over at tStart')
+    ok(not BR.AirdropExpired(rec, 31000.0, cfg), 'not over as it lands')
+    ok(not BR.AirdropExpired(rec, 91000.0, cfg),
+        'not over a minute after landing, which the OLD rule ended at')
+    ok(not BR.AirdropExpired(rec, 241000.0, cfg),
+        'not over at the four-minute ceiling')
+    ok(BR.AirdropExpired(rec, 241001.0, cfg), 'over a millisecond later')
+    ok(BR.AirdropExpired(nil, 0.0, cfg), 'and no record is nothing to draw')
+
+    -- THE TWO PREDICATES SHARE ONE BOUNDARY AND CANNOT DRIFT APART. They are
+    -- read on different frames by different code, and a drop drawn past the
+    -- moment its record is destroyed is the same class of bug as the one this
+    -- block is named after.
+    local drift = true
+    for _, r in ipairs({ rec, (function()
+            local o = BR.BuildAirdropRecord(1, poi, 260.0, 1000.0, 31000.0, 0.0)
+            o.tOpen = 41000.0
+            return o
+        end)() }) do
+        local ends = BR.AirdropBlipEndsAt(r, cfg)
+        if BR.AirdropBlipVisible(r, ends, cfg) == BR.AirdropExpired(r, ends, cfg)
+           or BR.AirdropBlipVisible(r, ends + 1, cfg)
+              == BR.AirdropExpired(r, ends + 1, cfg) then
+            drift = false
+        end
+    end
+    ok(drift, 'visible and expired flip at exactly the same millisecond, on '
+        .. 'both branches of the rule')
 
     -- A YEAR EARLY IS STILL NOT OVER. There is no lower bound at all, which is
     -- the whole point: however far behind a client's clock estimate is, the
     -- answer is "wait", never "throw it away".
-    ok(not BR.AirdropExpired(rec, -1e9, 60000),
+    ok(not BR.AirdropExpired(rec, -1e9, cfg),
         'no amount of clock skew in that direction expires a drop')
 end
 
@@ -1168,8 +1456,17 @@ do
     eq(published[1].payload.poi, 'lsia', 'onto that POI')
 end
 
-describe('server: landing auto-opens the crate')
+describe('server: landing leaves a SEALED crate, not an open one')
 do
+    -- ═══ THE AUTO-OPEN IS GONE (owner, 2026-08-22: "Also we don't need to
+    --     auto-open the crate. I changed my mind on that.") ═══
+    --
+    -- It was doing three things and only one of them was "opening": it retired
+    -- the drop from the flight list, it left a husk, and it scattered the
+    -- contents. The first still has to happen here; the other two are what a
+    -- PLAYER open does, and BR.Loot has done exactly that for every crate on the
+    -- map since long before airdrops existed. So what lands now is ONE ordinary
+    -- container entry carrying the payout as its contents.
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
@@ -1183,37 +1480,37 @@ do
     tick()
 
     eq(#m.airdrop.live, 0, 'the drop is no longer in flight')
-    eq(#spawned, #A.payout + 1, 'the husk plus every item is on the ground')
+    eq(#spawned, 1, 'exactly ONE thing lands: the sealed crate')
 
-    -- The husk first, at the landing point, wearing the crate husk we already
-    -- use everywhere else.
-    eq(spawned[1].stack.kind, 'husk', 'the crate is left open')
-    eq(spawned[1].stack.prop, BR.Config.Loot.chestOpenProp,
-        'as the same husk prop the rest of the game uses')
+    local crate = spawned[1].stack
+    eq(crate.kind, 'chest', 'and it is an ordinary container kind...')
+    eq(crate.prop, A.crateProp, '...wearing the sealed crate prop')
     ok(near(spawned[1].x, rec.x, 0.001), 'at the landing point')
     ok(near(spawned[1].y, rec.y, 0.001), 'exactly')
 
-    -- The contents in a ring around it, each carrying the origin that makes the
-    -- client arc it out of the box rather than pop it into existence.
-    local ringed, origined = 0, 0
-    for i = 2, #spawned do
-        local s = spawned[i]
-        if BR.Dist(s.x, s.y, rec.x, rec.y) > 0.5 then ringed = ringed + 1 end
-        if s.from and s.from.lift then origined = origined + 1 end
-    end
-    eq(ringed, #A.payout, 'every item lands clear of the crate')
-    eq(origined, #A.payout, 'and every item bursts out of it')
+    -- ITS OWN ITEM ID, which is not decoration: the client resolves a prop's
+    -- SIZE from the item id, and an airdrop crate calling itself 'chest' like
+    -- the other 1300 would be drawn at their size (owner: crate and husk 2x).
+    eq(crate.item, 'airdrop', 'it has an item id of its own, for the scale')
+    eq(crate.huskItem, 'airdrophusk', 'and names what it becomes when opened')
+    eq(crate.huskProp, A.huskProp, 'wearing the airdrop husk prop')
 
-    -- THE VOLTS PILE IS ONE OF THEM, and it is an ordinary registry entry --
-    -- which is the whole reason it inherits the range check, the rate limit,
-    -- the first-come arbitration and the not-yours-to-see refusal that
-    -- docs/security.md describes. A bespoke pickup would have had to re-earn
-    -- every one of those, on the highest-value entry in the match.
+    -- THE CONTENTS ARE INSIDE IT AND HAVE NOT TRAVELLED. This is the whole
+    -- point of the change, and it is also what keeps the payout secret until
+    -- somebody actually opens the box.
+    ok(type(crate.contents) == 'table', 'the payout is INSIDE the crate')
+    ok(#crate.contents >= A.minItems and #crate.contents <= A.maxItems,
+        ('and it is %d-%d items'):format(A.minItems, A.maxItems),
+        #(crate.contents or {}))
+
+    -- THE VOLTS PILE AND THE EXCLUSIVES ARE IN THERE. They become ordinary
+    -- registry entries when the crate is opened -- which is the whole reason
+    -- they inherit the range check, the rate limit, the first-come arbitration
+    -- and the not-yours-to-see refusal that docs/security.md describes.
     local piles, explosives = 0, 0
     local exclusive = {}
     for _, w in ipairs(BR.Config.AirdropWeapons) do exclusive[w.id] = true end
-    for i = 2, #spawned do
-        local s = spawned[i].stack
+    for _, s in ipairs(crate.contents) do
         if s.kind == 'volts' then
             piles = piles + 1
             eq(s.count, A.voltsAmount, 'the pile is worth the configured amount')
@@ -1222,18 +1519,44 @@ do
         end
         if exclusive[s.item] then explosives = explosives + 1 end
     end
-    eq(piles, 1, 'exactly one Volts pile lands with the drop')
+    eq(piles, 1, 'exactly one Volts pile is in the crate')
     eq(explosives, 2, 'and two of the weapons found nowhere else')
 
-    -- AND NOTHING ELSE HAPPENS. Exactly one airdrop per match, no more --
+    -- THE RECORD OUTLIVES THE FLIGHT NOW, because the open has to find it to
+    -- stamp tOpen on. It used to be dropped at landing.
+    ok(m.airdrop.landed and m.airdrop.landed[rec.n] == rec,
+        'the record is kept, keyed by drop number, for the open to find')
+
+    -- ─── AND THE OPEN, WHICH IS WHAT STARTS THE BLIP'S LAST MINUTE ───
+    eq(rec.tOpen, nil, 'an unopened crate has no open time')
+    local before = #published
+    BR.Airdrop.opened(m, rec.n)
+    eq(rec.tOpen, gameMs, 'opening it stamps the moment onto the record')
+    eq(#published, before + 1, 'and re-publishes the record')
+    eq(published[#published].payload, rec, 'the same record, re-sent')
+    eq(published[#published].event, BR.Net.AIRDROP_SYNC,
+        'over AIRDROP_SYNC -- a re-send replaces, so there is no new message')
+
+    -- ONCE. A second open cannot happen through the claim path (the crate is a
+    -- husk by then and a husk is refused) but the guard is what stops a
+    -- re-entrant call pushing the blip's expiry further out.
+    local at = rec.tOpen
+    gameMs = gameMs + 5000
+    BR.Airdrop.opened(m, rec.n)
+    eq(rec.tOpen, at, 'a second open does not move the blip\'s expiry')
+
+    -- An unknown drop number is not an error.
+    BR.Airdrop.opened(m, 99)
+    BR.Airdrop.opened(nil, 1)
+
+    -- AND NOTHING ELSE LANDS. Exactly one airdrop per match, no more --
     -- including after enough time has passed for another retry to be due,
     -- which is the case a same-tick loop would not reach.
     for _ = 1, 10 do
         gameMs = gameMs + (A.retryEveryMs or 5000)
         tick()
     end
-    eq(#spawned, #A.payout + 1, 'nothing lands twice')
-    eq(#published, 1, 'and no second drop is announced')
+    eq(#spawned, 1, 'nothing lands twice')
     eq(#m.airdrop.pending, 0, 'the schedule is spent')
 end
 
@@ -1281,7 +1604,8 @@ do
 
     gameMs = gameMs + FLIGHT
     tick()
-    eq(#spawned, #A.payout + 1, 'and it opens on arrival like any other')
+    eq(#spawned, 1, 'and it lands sealed on arrival like any other')
+    eq(spawned[1].stack.kind, 'chest', 'as a container')
 
     -- A NAME THAT IS NOT A POI CHANGES NOTHING.
     reset()
@@ -1335,10 +1659,31 @@ local ptfxHandle  = 900  -- what StartParticleFxLoopedOnEntity answers next
 
 local fxStarted, fxStopped, fxAssetUsed = {}, {}, {}
 
+--- WHERE THIS CLIENT'S PED IS. Drives the plane's view-radius gate: the owner
+--- asked for no plane when nobody is near enough to see it (2026-08-22), and
+--- "near enough" is a distance from THIS ped to the drop point.
+local me = { x = 100.0, y = 200.0, z = 12.0, h = 0.0 }
+
+--- WHICH FLARE MODELS THIS "BUILD" HAS. The 2026-08-21 flares named
+--- `prop_flare_01a`, which is not a model in GTA V -- IsModelValid refused it,
+--- loadModel returned false, and the entire flare branch (props AND particles,
+--- both behind one `if`) never ran. So the rig models the thing that actually
+--- broke: a name can be INVALID, and the code has to notice.
+local validModels = nil   -- nil = everything is valid, a table = only these
+
 function GetHashKey(s) return s end
-function IsModelValid() return 1 end
+function IsModelValid(m)
+    if not validModels then return 1 end
+    return validModels[m] and 1 or 0
+end
+function PlayerPedId() return 1 end
+function GetEntityCoords() return me end
+function GetEntityHeading() return me.h end
 function RequestModel() end
-function HasModelLoaded() return modelLoaded end
+function HasModelLoaded(m)
+    if validModels and not validModels[m] then return 0 end
+    return modelLoaded
+end
 function SetModelAsNoLongerNeeded() end
 function RequestAnimDict() end
 function HasAnimDictLoaded() return 1 end
@@ -1348,12 +1693,16 @@ function GetCurrentResourceName() return 'br_core' end
 function RequestNamedPtfxAsset() end
 function HasNamedPtfxAssetLoaded() return ptfxLoaded end
 function UseParticleFxAsset(a) fxAssetUsed[#fxAssetUsed + 1] = a end
+--- WHICH NUMBER A FAILED START ANSWERS WITH. It is -1 per Cfx's own looped
+--- wrapper and 0 per its non-looped one -- the engine's own bindings disagree,
+--- so the rig drives BOTH. Both are truthy in Lua, which is the half that
+--- shipped.
+local ptfxFailValue = -1
 function StartParticleFxLoopedOnEntity(name, ent, ox, oy, oz, _, _, _, scale)
     if ptfxHandle == 0 then
-        -- The failure the engine actually reports: a 0 handle, which is TRUTHY
-        -- in Lua. Driven by a test below.
-        fxStarted[#fxStarted + 1] = { name = name, ent = ent, handle = 0 }
-        return 0
+        fxStarted[#fxStarted + 1] =
+            { name = name, ent = ent, handle = ptfxFailValue }
+        return ptfxFailValue
     end
     ptfxHandle = ptfxHandle + 1
     fxStarted[#fxStarted + 1] = { name = name, ent = ent, handle = ptfxHandle,
@@ -1361,6 +1710,11 @@ function StartParticleFxLoopedOnEntity(name, ent, ox, oy, oz, _, _, _, scale)
     return ptfxHandle
 end
 function StopParticleFxLooped(h) fxStopped[#fxStopped + 1] = h end
+--- The liveness check Cfx's own wrapper uses. Driven by `fxAlive` below so a
+--- handle that came back non-(-1) but DEAD can be tested -- which is one of the
+--- two ways a particle start fails and neither was checked before.
+local fxAlive = true
+function DoesParticleFxLoopedExist() return fxAlive and 1 or 0 end
 
 function CreateObjectNoOffset(model, x, y, z, isNetwork, netMission, dynamic)
     nextEnt = nextEnt + 1
@@ -1451,8 +1805,23 @@ BR.Loop = {
     register = function(_, name, fn) loops[name] = fn end,
 }
 BR.State  = { me = { state = BR.PlayerState.ALIVE } }
+
+--- [entity] = the last scale it was drawn at. There is no SetEntityScale in
+--- GTA V (#166) so the real BR.Native.propScale drives the transform matrix;
+--- what matters here is only that every part gets asked for the RIGHT size and
+--- keeps being asked after every matrix write.
+local scaled = {}
+
+--- What BR.Native.pedReachable answers, and why. The rooftop check.
+local reachable, reachWhy = true, 'ok'
+
 BR.Native = {
     blipName = function(b, n) if blips[b] then blips[b].name = n end end,
+    propScale = function(obj, k)
+        if not obj or not k or k == 1.0 then return end
+        scaled[obj] = k
+    end,
+    pedReachable = function() return reachable, reachWhy end,
 }
 
 loadAll({ 'br_core/client/airdrop.lua' })
@@ -1460,15 +1829,34 @@ loadAll({ 'br_core/client/airdrop.lua' })
 local render = loops['airdrop.render']
 
 local function clientReset()
+    -- onResourceStop is also what drops the cached flare model, so every reset
+    -- re-resolves it against whatever `validModels` says this time round.
     fire('onResourceStop', 'br_core')
     ents, blips, attaches, anims, moves = {}, {}, {}, {}, {}
     vehicles, peds = {}, {}
     fxStarted, fxStopped, fxAssetUsed = {}, {}, {}
+    scaled = {}
     ground.ok, ground.z = 1, 12.0
     modelLoaded, ptfxLoaded = 1, 1
     ptfxHandle = 900
+    fxAlive = true
+    validModels = nil
+    reachable, reachWhy = true, 'ok'
+    -- Standing ON the drop point, so the plane's view radius passes unless a
+    -- test deliberately walks away.
+    me.x, me.y, me.z = 100.0, 200.0, 12.0
     BR.State.me.state = BR.PlayerState.ALIVE
     gameMs = gameMs + 1000000
+end
+
+--- The flare model the client will actually have picked.
+---
+--- A LIST NOW, NOT A NAME, and that is the fix for the invisible flares: the
+--- shipped `prop_flare_01a` is not a model, IsModelValid refused it, and the
+--- whole flare branch never ran. With every candidate valid the client takes
+--- the first; a test that invalidates it gets the second.
+local function flareProp(n)
+    return (A.flareProps or {})[n or 1]
 end
 
 --- Every entity currently alive, by model name.
@@ -1545,6 +1933,10 @@ do
     ok(b ~= nil, 'a blip goes up the moment the drop is announced')
     eq(b.sprite, A.blipSprite, 'with the sprite the owner asked for')
     eq(b.colour, A.blipColour, 'and the configured colour')
+    -- THE SIZE IS THE OWNER'S TOO (2026-08-22: "The blip needs to be 2x larger
+    -- please."), and it is drawn from the config rather than a literal here so
+    -- the number has one home.
+    eq(b.scale, A.blipScale, 'and the configured scale, which is now 2x')
     ok(b.shortRange == false,
         'and it is NOT short range -- everyone in the match must see it')
     eq(b.name, A.blipName, 'and it is named, so the legend is not a heist')
@@ -1678,7 +2070,10 @@ do
 
     -- BUT NOT AFTER THE WINDOW CLOSES. A blip that reappeared forever would be
     -- worse than one that vanished early.
-    gameMs = gameMs + 30000 + A.blipLingerMs + 1
+    -- Past the four-minute ceiling, measured from the announcement -- nobody
+    -- opened this one, which since the auto-open was removed is the ordinary
+    -- case rather than the exotic one.
+    gameMs = gameMs + A.blipMaxMs + 1
     render()
     eq(oneBlip(), nil, 'once the drop expires it stays gone')
 end
@@ -1747,7 +2142,7 @@ do
     eq(networked, 0, 'and none of them is networked')
 
     eq(#entsOfModel(A.chuteModel), 1, 'the canopy exists')
-    eq(#entsOfModel(A.flareProp), 2, 'and a flare on each side')
+    eq(#entsOfModel(flareProp()), 2, 'and a flare on each side')
     ok(#anims >= 1, 'and the canopy deploy anim is played')
 
     -- NOTHING IS ATTACHED TO ANYTHING. The canopy and the flares are positioned
@@ -1764,7 +2159,7 @@ do
     render()
 
     eq(#fxStarted, 2, 'one looped effect, on each flare')
-    local flares = entsOfModel(A.flareProp)
+    local flares = entsOfModel(flareProp())
     local onFlare = 0
     for _, f in ipairs(fxStarted) do
         eq(f.name, A.flarePtfxName, 'the configured effect')
@@ -1788,7 +2183,7 @@ do
     gameMs = gameMs + A.descentMs
     render()
     eq(#fxStopped - n, 2, 'and both are stopped on touchdown')
-    eq(#entsOfModel(A.flareProp), 0, 'with the flares deleted')
+    eq(#entsOfModel(flareProp()), 0, 'with the flares deleted')
 end
 
 describe('client: a particle asset that will not stream costs nothing')
@@ -1801,20 +2196,51 @@ do
     announce()
     render()
     eq(#fxStarted, 0, 'no effect is started')
-    eq(#entsOfModel(A.flareProp), 2, 'but the flares are still there')
+    eq(#entsOfModel(flareProp()), 2, 'but the flares are still there')
     eq(entCount(), 4, 'and so is everything else')
 
-    -- AND A START THAT ANSWERS 0 IS A FAILURE, not a handle. 0 is TRUTHY in
-    -- Lua, so a stored zero would be handed to StopParticleFxLooped at teardown.
+    -- ═══ A FAILED START ANSWERS -1, AND THE OLD CHECK LOOKED FOR 0 ═══
+    --
+    -- Cfx's own ParticleEffect wrapper documents the handle as "-1 when this
+    -- ParticleEffect is not active", and its start path stores the handle only
+    -- if `handle ~= -1 and DoesParticleFxLoopedExist(handle)`. The first flare
+    -- attempt tested against 0 -- the right instinct aimed at the wrong number
+    -- -- so a -1 was stored as a live handle and the diagnostic reported two
+    -- healthy flares over an empty sky.
+    --
+    -- BOTH SENTINELS, because Cfx's looped wrapper says -1 and its non-looped
+    -- one says 0, and when the engine's own bindings disagree the only safe
+    -- answer is to refuse both.
+    for _, failValue in ipairs({ -1, 0 }) do
+        clientReset()
+        ptfxHandle    = 0     -- the rig's "next start fails" switch
+        ptfxFailValue = failValue
+        announce()
+        render()
+        eq(#fxStarted, 2, ('the start was attempted (fails with %d)')
+            :format(failValue))
+        local before = #fxStopped
+        gameMs = gameMs + A.descentMs
+        render()
+        eq(#fxStopped - before, 0,
+            ('and a %d handle is never stored, so never stopped')
+                :format(failValue))
+    end
+    ptfxFailValue = -1
+
+    -- THE OTHER WAY TO FAIL, which nothing checked at all: a handle that is
+    -- neither -1 nor 0 and is still DEAD. Only DoesParticleFxLoopedExist can
+    -- tell, which is why Cfx asks it as well as the sentinel.
     clientReset()
-    ptfxHandle = 0
+    fxAlive = false
     announce()
     render()
-    eq(#fxStarted, 2, 'the start was attempted')
-    local before = #fxStopped
+    eq(#fxStarted, 2, 'a plausible-looking handle came back')
+    local before2 = #fxStopped
     gameMs = gameMs + A.descentMs
     render()
-    eq(#fxStopped - before, 0, 'and a 0 handle is never stopped')
+    eq(#fxStopped - before2, 0,
+        'and it is still not stored, because the effect is not running')
 end
 
 describe('client: the descent')
@@ -1841,7 +2267,7 @@ do
     ok(chute ~= nil and near(ents[chute].z,
         crateZ + (A.chuteOffset.z or 0.1), 0.001),
         'the canopy is directly over it, at its own offset')
-    local flares = entsOfModel(A.flareProp)
+    local flares = entsOfModel(flareProp())
     for _, h in ipairs(flares) do
         ok(near(ents[h].z, crateZ + (A.flareOffset.z or 0.0), 0.001),
             'and each flare is at the crate\'s height')
@@ -1869,13 +2295,24 @@ do
     eq(entCount(), 0, 'and so is every part of it')
     ok(oneBlip() ~= nil, 'but the blip is still up')
 
-    -- ...for exactly one more minute.
-    gameMs = gameMs + A.blipLingerMs
+    -- ...AND IT OUTLIVES THE LANDING BY FAR LONGER THAN IT USED TO. The old
+    -- rule ended the blip a minute after touchdown, which is what the owner ran
+    -- out of on 2026-08-22 ("if nobody arrives fast enough, the blip goes away
+    -- and they have no idea where the drop is"). Nobody has opened this crate,
+    -- so the ceiling is what ends it -- four minutes from the ANNOUNCEMENT.
+    gameMs = gameMs + 60000
     render()
-    ok(oneBlip() ~= nil, 'still up one minute after landing')
-    gameMs = gameMs + 1
+    ok(oneBlip() ~= nil,
+        'still up a minute after landing, where the old rule ended it')
+
+    local rec = nil
+    for _, b in pairs(blips) do rec = b break end
+    ok(rec ~= nil, 'and it is the same blip, not a rebuilt one')
+
+    -- Straight to the ceiling.
+    gameMs = gameMs + A.blipMaxMs
     render()
-    eq(oneBlip(), nil, 'and gone a millisecond later')
+    eq(oneBlip(), nil, 'and gone once four minutes from the announcement pass')
 end
 
 describe('client: BOOL natives, both wrong shapes')
@@ -1992,6 +2429,196 @@ do
     fire('onResourceStop', 'br_core')
     eq(oneEnt(), nil, 'ours is')
     eq(oneBlip(), nil, 'and it takes the blip with it')
+end
+
+describe('client: the flare model is a candidate list, not a promise')
+do
+    -- ═══ THE 2026-08-21 BUG, AS A TEST ═══
+    --
+    -- The config named `prop_flare_01a`. There is no such model in GTA V --
+    -- there is a `prop_flare_01` and a `prop_flare_01b` and no `_01a`. So
+    -- IsModelValid refused it, loadModel returned false, and the whole flare
+    -- branch (props AND particles, both behind one `if`) never ran. The owner
+    -- saw no flares and no smoke, and nothing said why.
+    --
+    -- A test cannot know which names are real. It CAN prove that one bad name
+    -- no longer deletes the feature.
+    clientReset()
+    validModels = { [flareProp(2)] = true, [A.crateProp] = true,
+                    [A.chuteModel] = true, [A.planeModel] = true,
+                    [A.planePilot] = true }
+    announce()
+    render()
+    eq(#entsOfModel(flareProp(1)), 0,
+        'the first candidate is not a model on this build...')
+    eq(#entsOfModel(flareProp(2)), 2,
+        '...so both flares are built from the second instead')
+
+    -- AND WHEN NOTHING LOADS, THE DROP STILL ARRIVES. A missing flare may never
+    -- cost the match its airdrop -- that trade is the whole reason the flares
+    -- are best-effort.
+    clientReset()
+    validModels = { [A.crateProp] = true, [A.chuteModel] = true,
+                    [A.planeModel] = true, [A.planePilot] = true }
+    announce()
+    render()
+    eq(#entsOfModel(flareProp(1)) + #entsOfModel(flareProp(2)), 0,
+        'no flare model loads, so there are no flares')
+    ok(oneEnt() ~= nil, 'but the crate is still falling')
+    eq(#entsOfModel(A.crateProp), 1, 'and it is the crate')
+    eq(#entsOfModel(A.chuteModel), 1, 'under its canopy')
+
+    -- ...and nothing tries to stop a particle that was never started.
+    local before = #fxStopped
+    gameMs = gameMs + A.descentMs
+    render()
+    eq(#fxStopped - before, 0, 'and teardown has no emitter to stop')
+end
+
+describe('client: every falling part is drawn at its configured size')
+do
+    -- Owner, 2026-08-22: "The parachute and crate props (including husk) should
+    -- be 2x larger and the parachute should be 2.5x larger please."
+    --
+    -- THERE IS NO SetEntityScale IN GTA V (#166), so this is the transform
+    -- matrix and it MAY SIMPLY NOT RENDER on this build -- see
+    -- BR.Native.propScale. What a test can prove is that every part is asked
+    -- for the right size, and keeps being asked.
+    clientReset()
+    announce()
+    render()
+
+    local crate = entsOfModel(A.crateProp)[1]
+    local chute = entsOfModel(A.chuteModel)[1]
+    eq(scaled[crate], A.crateScale, 'the crate is built at crateScale')
+    eq(scaled[chute], A.chuteScale, 'the canopy at chuteScale')
+    for _, f in ipairs(entsOfModel(flareProp())) do
+        eq(scaled[f], A.flareScale, 'and each flare at flareScale')
+    end
+
+    -- ═══ AND AGAIN AFTER EVERY HEADING WRITE, WHICH IS THE HALF THAT MATTERS
+    --     ═══
+    --
+    -- SetEntityHeading is a matrix write and a matrix write resets the axis
+    -- vectors to unit length -- which is where the scale lives. place() writes
+    -- a heading every frame, so a scale applied only at spawn is a crate that
+    -- is 2x for one frame and authored size for the other 1800 of the descent.
+    scaled = {}
+    gameMs = gameMs + 5000
+    render()
+    eq(scaled[crate], A.crateScale, 'the crate is re-scaled after the frame\'s '
+        .. 'heading write')
+    eq(scaled[chute], A.chuteScale, 'and so is the canopy')
+
+    -- The three numbers are the owner's, and they are the reason any of this
+    -- exists. Pinned here as well as in the config block so a retune has to be
+    -- deliberate on both sides.
+    eq(A.crateScale, 2.0, 'the crate is twice authored size')
+    eq(A.huskScale, 2.0, 'the husk matches it, so the box does not shrink when '
+        .. 'it is opened')
+    eq(A.chuteScale, 2.5, 'and the canopy is two and a half times')
+    eq(A.voltsScale, 5.0, 'the Volts pile is five times')
+end
+
+describe('client: the plane is not built for an empty sky')
+do
+    -- Owner, 2026-08-22: "We should make it so the plane doesn't spawn until a
+    -- player is within a reasonable radius to be able to see the event happen."
+    --
+    -- A PER-CLIENT PRESENTATION DECISION. The drop still happens on the
+    -- server's clock; a client too far away simply does not build a Titan it
+    -- could not see.
+    clientReset()
+    me.x, me.y = 100.0 + A.planeViewRadius + 50.0, 200.0
+    announce()
+    render()
+    eq(onePlane(), nil, 'too far away: no plane is built')
+    eq(onePed(), nil, 'and no pilot')
+
+    -- ═══ AND THE CRATE IS NOT GATED, WHICH IS THE HALF THAT WOULD BREAK
+    --     JOINING LATE ═══
+    --
+    -- The descent is a pure function of the record and the clock. A client that
+    -- walks into view twenty seconds into the fall must see the box exactly
+    -- where the clock says the box is -- so the crate is built at the release
+    -- for everyone holding the record, wherever they are standing.
+    gameMs = gameMs + 1000
+    render()
+    ok(oneEnt() ~= nil, 'but the crate falls for a distant client all the same')
+    ok(oneBlip() ~= nil, 'and the blip is on their map')
+
+    -- RE-ASKED EVERY FRAME, NOT ONCE AT THE ANNOUNCEMENT. Someone who was two
+    -- kilometres out when the notification landed and has driven into range
+    -- gets the plane, built wherever the clock says it is by then. Gating this
+    -- once at tStart would punish exactly the players who ran towards it.
+    me.x, me.y = 100.0, 200.0
+    render()
+    ok(onePlane() ~= nil, 'driving into range builds it mid-approach')
+
+    -- ...AND IT IS NEVER TORN DOWN FOR DISTANCE. Deleting an aircraft somebody
+    -- is watching because they crossed a config line is a worse artefact than
+    -- the one this fixes.
+    me.x, me.y = 100.0 + A.planeViewRadius + 500.0, 200.0
+    render()
+    ok(onePlane() ~= nil, 'and driving back out again does not delete it')
+
+    -- Standing exactly on the line is inside it.
+    clientReset()
+    me.x, me.y = 100.0 + A.planeViewRadius, 200.0
+    announce()
+    render()
+    ok(onePlane() ~= nil, 'exactly at the radius counts as within it')
+
+    -- NO RADIUS IS THE OLD BEHAVIOUR -- EVERYBODY GETS A PLANE -- rather than
+    -- nobody. A missing number must not delete a feature.
+    clientReset()
+    local keep = A.planeViewRadius
+    A.planeViewRadius = nil
+    me.x, me.y = 999999.0, 999999.0
+    announce()
+    render()
+    ok(onePlane() ~= nil, 'no radius configured means no gate at all')
+    A.planeViewRadius = keep
+end
+
+describe('client: a rooftop probe falls to the authored height instead')
+do
+    -- Owner, 2026-08-22: "Somehow these airdrops can happen on top of buildings
+    -- where peds otherwise cannot access."
+    --
+    -- THE PROBE IS WHAT PUTS IT THERE. GetGroundZFor_3dCoord starts hundreds of
+    -- metres up and returns the highest surface DIRECTLY BENEATH -- which over a
+    -- building is the roof, every time, exactly as documented. The POI itself is
+    -- a hand-walked street-level landmark, so when the navmesh refuses the
+    -- probed height the AUTHORED one is the better answer.
+    --
+    -- This is presentation only: it decides where the box is DRAWN on the way
+    -- down. What actually relocates the loot is client/loot.lua's repair
+    -- round-trip, under the server's own 30m bound.
+    clientReset()
+    ground.z = 84.0              -- a roof, 54m above the POI's authored 30m
+    reachable, reachWhy = false, 'snapped 54.0m in z'
+    local rec = announce()
+    render()
+    local crate = oneEnt()
+    ok(crate ~= nil, 'the crate exists')
+    -- At the release it is `alt` above the ground it is falling to.
+    ok(near(crate.z, rec.gz + rec.alt, 0.001),
+        'and it is falling to the POI\'s authored height, not to the roof',
+        ('%.1f, authored %.1f, roof %.1f'):format(crate.z, rec.gz, 84.0))
+
+    -- AND WHEN THE NAVMESH IS HAPPY, THE PROBE WINS. It is a better answer than
+    -- an authored guess everywhere that is not a roof, which is almost
+    -- everywhere.
+    clientReset()
+    ground.z = 84.0
+    reachable, reachWhy = true, 'ok'
+    local rec2 = announce()
+    render()
+    local crate2 = oneEnt()
+    ok(crate2 ~= nil and near(crate2.z, 84.0 + rec2.alt, 0.001),
+        'a reachable probe is used as-is',
+        crate2 and ('%.1f'):format(crate2.z) or 'no crate')
 end
 
 -- ----------------------------------------------------------------- result ---

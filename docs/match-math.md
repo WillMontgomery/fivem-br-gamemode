@@ -106,6 +106,14 @@ entire downstream loot sequence, and every existing layout would have changed
 the day the airdrop shipped. Independent streams are what make a subsystem
 addable without moving anything already on the map.
 
+That is not a one-off argument, and it was collected on again on 2026-08-22.
+The airdrop's item count went from a fixed twelve to a draw of 10–14, which
+*added an rng call*. Taken from `airdropSeed` it moves nothing; taken from
+`lootSeed` it would have shifted all ~3,200 items on every map in the game —
+silently, because a different-but-valid layout is indistinguishable from a
+correct one. `tools/test_airdrop.lua` generates a whole layout, burns an airdrop
+payout, and generates it again, rather than trusting this paragraph.
+
 Across separate server runs, ids restart from the same base, so identity needs
 the same id to be minted at the same millisecond offset. Treating that offset as
 uniform over a 32-bit range gives **≈ 1 in 4.3 × 10⁹**, and in practice far less
@@ -119,7 +127,7 @@ themselves. One layout alone draws roughly:
 | ~3,200 items × (position, kind, rarity, item) | the loot layout |
 | ~24 | storm centres and breakout rolls |
 | ~10 | route chord, tour choice, anchor |
-| ~20 | airdrop: the probability roll, the delay, the POI, the heading, and one shuffle per pool it deals from |
+| ~20 | airdrop: the probability roll, the delay, the POI, the heading, **how many items this drop holds**, and one shuffle per pool it deals from |
 
 The binding constraint is therefore the seed, not the outcome space — which is
 exactly the right way round. Widening the seed widens everything downstream.

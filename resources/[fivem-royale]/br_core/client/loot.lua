@@ -566,6 +566,26 @@ end
 --- client already has the item id, and br_lib/config/loot.lua is shared -- so
 --- putting it in wireEntry would grow every loot payload on the server to
 --- re-send something both ends already know.
+--- THE THREE AIRDROP SIZES ARE KEYED OFF THE ITEM ID, which is why the airdrop
+--- gives its crate and its husk ids of their own ('airdrop', 'airdrophusk')
+--- rather than reusing 'chest' and 'husk' like the 1300 generated ones. An id
+--- is already on the wire, the client already has the config, and keying off
+--- anything else would mean growing every loot payload to re-send a number both
+--- ends know (owner, 2026-08-22: crate and husk 2x, Volts 5x).
+---
+--- Built once at load rather than branched per call: this runs at spawn for
+--- every entry and, for a scaled one, ten times a second afterwards.
+--- @param item string
+--- @return number|nil
+local function airdropScale(item)
+    local A = BR.Config.Airdrop
+    if not A then return nil end
+    if item == 'volts'       then return A.voltsScale end
+    if item == 'airdrop'     then return A.crateScale end
+    if item == 'airdrophusk' then return A.huskScale end
+    return nil
+end
+
 --- @param e table
 --- @return number|nil
 local function propScaleOf(e)
@@ -573,74 +593,20 @@ local function propScaleOf(e)
         local c = BR.Config.ConsumableById[e.item]
         return c and c.propScale or nil
     end
-    return nil
+    return airdropScale(e.item)
 end
 
---- One axis vector, renormalised to length k.
+--- Draw a prop at a multiple of its authored size (#166).
 ---
---- Hoisted out of applyPropScale rather than nested in it: that function runs
---- after every rotation write in the hover, which is per frame per item in
---- range, and a closure built three times a frame per shield is a closure
---- built for nothing.
---- @param v table  a vector3 from GetEntityMatrix
---- @param k number
---- @return number x
---- @return number y
---- @return number z
-local function axisAt(v, k)
-    local len = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-    if len < 0.000001 then return 0.0, 0.0, 0.0 end
-    local s = k / len
-    return v.x * s, v.y * s, v.z * s
-end
-
---- Draw a prop at a fraction of its authored size (#166).
----
---- THERE IS NO ENTITY-SCALE NATIVE IN GTA V, and that is not a guess -- the
---- take animation further down wanted one, could not find one, and settled for
---- a spin. The only lever is the transform matrix: an entity's three axis
---- vectors are unit length, their LENGTH is its scale, so renormalising them to
---- k draws the model at k.
----
---- NORMALISED FIRST, AND THAT IS THE LOAD-BEARING WORD. GetEntityMatrix reads
---- back whatever is there NOW, so multiplying the vectors as they arrive would
---- compound -- a half, then a quarter, then an eighth, once per frame, until
---- the prop disappeared into its own origin. Renormalising makes this
---- IDEMPOTENT, which it has to be, because the hover rewrites the matrix every
---- frame and this has to run after every one of those writes.
----
---- WHICH VECTOR IS WHICH DOES NOT MATTER. GetEntityMatrix is declared
---- forward/right/up/position and is widely reported to hand back right/forward
---- in the other order; a UNIFORM scale is invariant under that disagreement,
---- because all three are multiplied by the same k and handed straight back in
---- the order they arrived. SET_ENTITY_MATRIX takes "the same order as with
---- GET_ENTITY_MATRIX", so the round trip cannot be wrong about it either.
----
---- IT SCALES THE RENDER AND NOT A COLLISION BOX, which costs nothing HERE and
---- would cost a great deal anywhere else in this file: loose floor items are
---- spawned with collision switched OFF (see `solid` in the spawn worker), and
---- both reach tests measure from the REGISTRY POSITION rather than from the
---- prop (reachOf here, inReach on the server). So there is no hitbox left to
---- disagree with the picture, and shrinking a shield cannot put it out of
---- reach.
----
---- GUARDED, so a build without the natives draws the prop at its authored size
---- instead of erroring sixty times a second in the hottest pass in the client.
---- @param obj integer|nil
---- @param k number|nil
-local function applyPropScale(obj, k)
-    if not k or k == 1.0 then return end
-    if not obj or not DoesEntityExist(obj) then return end
-    if not GetEntityMatrix or not SetEntityMatrix then return end
-
-    local a, b, c, at = GetEntityMatrix(obj)
-    if not a or not b or not c or not at then return end
-
-    local ax, ay, az = axisAt(a, k)
-    local bx, by, bz = axisAt(b, k)
-    local cx, cy, cz = axisAt(c, k)
-    SetEntityMatrix(obj, ax, ay, az, bx, by, bz, cx, cy, cz, at.x, at.y, at.z)
-end
+--- MOVED TO BR.Native.propScale (client/natives.lua) on 2026-08-22, WITHOUT a
+--- copy left behind. The airdrop's falling crate and canopy have to be drawn at
+--- the same size as the landed ones (owner: "The parachute and crate props
+--- (including husk) should be 2x larger") and those are built by
+--- client/airdrop.lua, not here -- so the choice was one shared function or two
+--- matrix routines that agree until the day one of them is edited. Bound to a
+--- local so this file's hot passes still pay one upvalue read, exactly as they
+--- did when the body was here.
+local applyPropScale = BR.Native.propScale
 
 -- --------------------------------------------------------------------------
 -- Models
@@ -700,7 +666,13 @@ end
 --- @return number groundZ
 local function solidGround(x, y, fromZ)
     local ok, gz = GetGroundZFor_3dCoord(x, y, fromZ, false)
-    if not ok then return false, 0.0 end
+    -- IN LUA 0 IS TRUTHY AND A FIVEM BOOL NATIVE MAY ANSWER 1 RATHER THAN true,
+    -- so `not ok` is FALSE for a native that failed with a zero. This project
+    -- has shipped that bug five times and this line was the sixth waiting to
+    -- happen: it has been survivable only because a failed probe also hands
+    -- back z = 0, which the sea-level rule below catches. That is a guard
+    -- working by accident, and the rooftop check now reads `gz` before it.
+    if ok == nil or ok == false or ok == 0 then return false, 0.0 end
 
     -- SEA LEVEL IS ZERO, and that is the check that actually works.
     --
@@ -713,9 +685,39 @@ local function solidGround(x, y, fromZ)
     -- well above zero and which the height rule cannot see.
     if gz <= 0.0 then return false, gz end
 
+    -- Same normalisation, same reason: `okW` is a native BOOL and a zero from
+    -- it must read as "no answer", not as "yes".
     local okW, wz = GetWaterHeight(x, y, gz)
-    if okW and wz and wz > gz + 0.3 then return false, gz end
+    local haveW = okW ~= nil and okW ~= false and okW ~= 0
+    if haveW and wz and wz > gz + 0.3 then return false, gz end
     return true, gz
+end
+
+--- Does this entry have to land somewhere a PED could be, and not merely
+--- somewhere dry?
+---
+--- ═══ EXACTLY ONE ENTRY IN THE MATCH, AND THE NARROWNESS IS THE POINT ═══
+---
+--- The owner's report is about airdrops (2026-08-22: "Somehow these airdrops can
+--- happen on top of buildings where peds otherwise cannot access"), and the
+--- rooftop check behind this is a navmesh query whose behaviour NOTHING outside
+--- a running client has confirmed. Applying it to all ~3200 generated entries
+--- would put every item on the map behind an untested native: if it answers
+--- wrongly at scale the symptom is a map with no loot on it, which is the worst
+--- failure this file has.
+---
+--- So it is asked of the sealed airdrop crate and of nothing else. That still
+--- covers the whole drop, because the 10-14 items scatter FROM the crate at the
+--- moment it is opened -- and by then the crate has been walked to reachable
+--- ground by the repair round-trip below, so the ring is built around the
+--- corrected point rather than the roof.
+---
+--- WIDENING IT IS ONE LINE once a playtest says the check behaves: return true
+--- for isContainer(e), or unconditionally.
+--- @param e table
+--- @return boolean
+local function needsReachable(e)
+    return e.item == 'airdrop'
 end
 
 --- Somewhere dry and solid near an entry that is not.
@@ -734,13 +736,21 @@ end
 --- @return number|nil y
 --- @return number|nil z
 local function dryPointNear(e)
-    local from = math.max((e.z or 0.0) + 50.0, 300.0)
+    local from   = math.max((e.z or 0.0) + 50.0, 300.0)
+    local reach  = needsReachable(e)
     for i = 1, 12 do
         local ang = i * 2.39996323   -- golden angle in radians
         local r   = 4.0 + i * 2.0    -- 6m out to 28m, inside the server's bound
         local x   = e.x + math.cos(ang) * r
         local y   = e.y + math.sin(ang) * r
         local ok, gz = solidGround(x, y, from)
+        -- A CANDIDATE HAS TO CLEAR THE SAME BAR THE ORIGINAL FAILED. Offering a
+        -- rooftop the airdrop crate could move to instead of the rooftop it is
+        -- already on would be a repair that repairs nothing, and it would burn
+        -- the server's cooldown doing it.
+        if ok and reach then
+            ok = BR.Native.pedReachable(x, y, gz)
+        end
         if ok then return x, y, gz end
     end
     return nil
@@ -749,6 +759,25 @@ end
 --- Ground height under an entry, cached. The server has no ground probe (the
 --- native is client-side), so the authored z is only ever a hint -- and for
 --- roadside filler it is not even that.
+---
+--- ═══ `gzOk` AND `reachOk` ARE TWO DIFFERENT ANSWERS AND MERGING THEM WOULD BE
+---     A CATASTROPHE ═══
+---
+--- `gzOk` is "dry and solid", it is what it has always been, and it is the ONLY
+--- one that decides whether a prop gets built. `reachOk` is the new rooftop
+--- question, and all it may ever do is trigger the repair round-trip.
+---
+--- Folding the second into the first is the obvious implementation and it would
+--- mean that a rooftop airdrop with no better point within 28m never gets a
+--- prop at all -- an invisible, unopenable, unfindable crate carrying the best
+--- loot in the match, in the exact scenario the owner reported. The check is
+--- built on a navmesh native NOTHING outside a running client has confirmed,
+--- against a curated flag set that says "no" about perfectly good rural ground
+--- (see BR.Native.SAFE_COORD_FLAGS). A false "no" must therefore cost a wasted
+--- 30m suggestion and nothing else.
+---
+--- SO THE WORST CASE OF THIS WHOLE FEATURE IS TODAY'S BEHAVIOUR: the crate sits
+--- where it landed, exactly as it did before any of this was written.
 --- @param e table
 --- @return number
 local function groundZ(e)
@@ -756,6 +785,21 @@ local function groundZ(e)
     if e.gz and now - (e.gzAt or 0) < 10000 then return e.gz end
     local from = math.max((e.z or 0.0) + 50.0, 300.0)
     local ok, gz = solidGround(e.x, e.y, from)
+
+    e.reachOk = true
+    if ok and needsReachable(e) then
+        local reach, why = BR.Native.pedReachable(e.x, e.y, gz)
+        e.reachOk, e.reachWhy = reach, why
+        if not reach then
+            -- NAMED IN THE LOG, because the whole class of bug this addresses
+            -- is invisible from a chair: an airdrop on a roof and an airdrop
+            -- that moved thirty metres look identical to a player who was not
+            -- watching, and neither says anything today.
+            print(('[br_core] loot: entry %s at (%.0f, %.0f, %.1f) is not ped-reachable (%s) -- suggesting somewhere else')
+                :format(tostring(e.item), e.x, e.y, gz, tostring(why)))
+        end
+    end
+
     e.gzOk = ok
     e.gz   = ok and gz or (e.z or 0.0)
     e.gzAt = now
@@ -881,10 +925,24 @@ local function drain()
                     -- a prop built where nobody can reach it; the server
                     -- re-announces it and the next pass builds it properly.
                     groundZ(e)
-                    if not e.gzOk and not reported[id] then
-                        reported[id] = true
+                    -- TWO REASONS TO SUGGEST A MOVE, ONE REASON TO WITHHOLD THE
+                    -- PROP. `gzOk` false is the sea and the inside of hillsides
+                    -- and it stops the build below; `reachOk` false is the
+                    -- rooftop case and it does NOT -- it asks the server to move
+                    -- the entry and lets the crate exist meanwhile. See
+                    -- groundZ.
+                    if (not e.gzOk or not e.reachOk) and not reported[id] then
                         local fx, fy, fz = dryPointNear(e)
                         if fx then
+                            -- MARKED ONLY ON AN ACTUAL SEND. It used to be
+                            -- marked before the search, which spends the entry's
+                            -- one attempt on a search that found nothing -- and
+                            -- the rooftop case is exactly where that happens,
+                            -- because a client too far out for the navmesh to
+                            -- have streamed rejects all twelve candidates and
+                            -- then never asks again once it is close enough to
+                            -- get a real answer.
+                            reported[id] = true
                             TriggerServerEvent(BR.Net.LOOT_FIX,
                                 { id = id, x = fx, y = fy, z = fz })
                         end
@@ -1681,6 +1739,22 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
                     BR.Loot.dragSealed = (BR.Loot.dragSealed or 0) + 1
                 end
             end
+
+            -- AND THE SIZE, for the one entry in the match that has one.
+            --
+            -- A CONTAINER IS A PHYSICS OBJECT AND PHYSICS OWNS THE MATRIX. The
+            -- hover pass re-asserts the scale after every rotation write it
+            -- makes, but it skips containers by design ("a crate is furniture,
+            -- and furniture does not float") -- so an airdrop crate scaled once
+            -- at spawn is a crate whose size the next simulation step is free
+            -- to throw away. This is the containers' equivalent of that line,
+            -- and it runs at 10Hz rather than 60 because a box that is the
+            -- wrong size for a sixtieth of a second is a box nobody saw.
+            --
+            -- COSTS NOTHING WHEN THERE IS NOTHING TO DO: BR.Native.propScale
+            -- returns immediately on a nil or 1.0, which is every one of the
+            -- ~1300 generated crates.
+            applyPropScale(e.obj, e.propScale)
 
             -- Remember where it ACTUALLY is. This is the only record of the
             -- pose that survives the entry being replaced when the crate
@@ -2814,20 +2888,41 @@ end, false)
 --- MODEL rather than a smaller number.
 ---
 --- Client-local and not persisted: a restart puts the configured value back.
+--- THE AIRDROP'S THREE SIZES ANSWER TO THE SAME RULER, and they had to, because
+--- they are the reason the question "does the matrix scale render at all" is
+--- suddenly worth five numbers rather than one. Their scales live on
+--- BR.Config.Airdrop rather than on a consumable row, so the setter has to know
+--- which table an id belongs to -- this is that lookup, and the field name is
+--- carried so the line printed for pasting names the right key.
+local AIRDROP_SCALES = {
+    volts       = { key = 'voltsScale', prop = 'voltsProp', label = 'Volts pile' },
+    airdrop     = { key = 'crateScale', prop = 'crateProp', label = 'Airdrop crate' },
+    airdrophusk = { key = 'huskScale',  prop = 'huskProp',  label = 'Airdrop husk' },
+}
+
 RegisterCommand('brpropscale', function(_, args)
     local id = args[1] and tostring(args[1]) or nil
     local k  = tonumber(args[2])
 
     if id and k then
-        local c = BR.Config.ConsumableById[id]
-        if not c then
-            print(('[br_core] no such consumable: %s'):format(id))
-            return
-        end
         -- Floored well above zero: a scale of 0 is an invisible item, which is
         -- indistinguishable from loot that failed to spawn -- the exact
         -- confusion this file has burned rounds on.
-        c.propScale = math.max(0.05, k)
+        k = math.max(0.05, k)
+
+        local drop = AIRDROP_SCALES[id]
+        local c    = BR.Config.ConsumableById[id]
+        local where, field
+        if drop and BR.Config.Airdrop then
+            BR.Config.Airdrop[drop.key] = k
+            where, field = 'br_lib/config/airdrop.lua', drop.key
+        elseif c then
+            c.propScale = k
+            where, field = 'br_lib/config/loot.lua', 'propScale'
+        else
+            print(('[br_core] no such scalable item: %s'):format(id))
+            return
+        end
 
         -- REBUILT, NOT RETUNED IN PLACE. The scale is cached on the entry at
         -- spawn, and loot.props re-queues anything in range that has no prop --
@@ -2836,17 +2931,30 @@ RegisterCommand('brpropscale', function(_, args)
         for _, e in pairs(entries) do
             if e.item == id and e.obj then despawn(e) n = n + 1 end
         end
-        print(('[br_core] %s propScale = %.2f  (%d prop(s) rebuilding)')
-            :format(id, c.propScale, n))
-        print('  paste into br_lib/config/loot.lua:')
-        print(('    propScale = %.2f,'):format(c.propScale))
+        print(('[br_core] %s scale = %.2f  (%d prop(s) rebuilding)')
+            :format(id, k, n))
+        print(('  paste into %s:'):format(where))
+        print(('    %s = %.2f,'):format(field, k))
         return
     end
 
-    print('=== consumable prop scale ===')
+    print('=== prop scale ===')
     for _, c in ipairs(BR.Config.Consumables) do
         print(('  %-12s %-16s %s  x%.2f')
             :format(c.id, c.label, tostring(c.prop), c.propScale or 1.0))
+    end
+    local A = BR.Config.Airdrop
+    if A then
+        for _, id in ipairs({ 'volts', 'airdrop', 'airdrophusk' }) do
+            local d = AIRDROP_SCALES[id]
+            print(('  %-12s %-16s %s  x%.2f')
+                :format(id, d.label, tostring(A[d.prop]), A[d.key] or 1.0))
+        end
+        -- The canopy is not a loot entry and has no id to rebuild, so it is
+        -- reported rather than offered: it is built by client/airdrop.lua and
+        -- only exists while something is falling.
+        print(('  %-12s %-16s (falling only)  x%.2f')
+            :format('chute', 'Cargo canopy', A.chuteScale or 1.0))
     end
     print('  usage: brpropscale <itemId> <scale>   (1.0 = as authored)')
 end, false)

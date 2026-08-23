@@ -11640,6 +11640,130 @@ do
     ok(m.loot.nextId == beforeHusk, 'and produces nothing')
 end
 
+-- ------------------------------------ the airdrop crate opens by hand (#88) ---
+--
+-- Owner, 2026-08-22: "Also we don't need to auto-open the crate. I changed my
+-- mind on that."
+--
+-- WHAT THE AUTO-OPEN WAS DOING, AND WHICH PARTS STILL HAVE TO HAPPEN. It left a
+-- husk and it scattered the contents. Both of those are what a PLAYER open does,
+-- and this file has done exactly that for every crate on the map since long
+-- before airdrops existed -- so the auto-open was deleted rather than replaced,
+-- and what lands is one ordinary sealed container.
+--
+-- WHY THIS BLOCK IS HERE RATHER THAN IN tools/test_airdrop.lua. That suite can
+-- prove the crate is laid sealed, and does. It cannot prove the crate OPENS,
+-- because opening is the claim handler, the reach test, the subscription check
+-- and the husk swap -- none of which that suite loads. If the airdrop is going
+-- to inherit the container path instead of imitating it, the inheriting is the
+-- thing worth testing, and this is the only suite that can.
+
+describe('loot.airdrop.open')
+do
+    local m = lootMatch()
+
+    --- Lay a sealed airdrop crate exactly as server/airdrop.lua's land() does.
+    local A = BR.Config.Airdrop
+    local contents = {
+        { item = 'rpg', kind = BR.ItemKind.WEAPON, rarity = BR.Rarity.LEGENDARY,
+          count = 1, clip = 1 },
+        { item = 'volts', kind = 'volts', rarity = BR.Rarity.LEGENDARY,
+          count = A.voltsAmount, prop = A.voltsProp },
+    }
+    local crate = BR.Loot.spawnStack(m, {
+        item     = 'airdrop',
+        kind     = 'chest',
+        rarity   = BR.Rarity.LEGENDARY,
+        count    = 1,
+        prop     = A.crateProp,
+        contents = contents,
+        huskItem = 'airdrophusk',
+        -- ═══ DELIBERATELY NOT A.huskProp ═══
+        --
+        -- The airdrop's husk prop and the ordinary one are the SAME STRING
+        -- today (both `prop_box_wood05b` -- the owner asked for the same
+        -- models, only bigger), so asserting against A.huskProp cannot tell
+        -- "the crate's own husk prop was used" apart from "the config default
+        -- was used". A mutation pass proved exactly that by deleting the
+        -- plumbing and surviving. A distinct value here is what makes the
+        -- assertion below mean anything.
+        huskProp = 'prop_box_wood05b_airdrop_marker',
+        spread   = A.scatterSpread,
+        airdrop  = 1,
+    }, 200.0, 300.0, 25.0)
+
+    ok(crate ~= nil, 'the crate is laid')
+    ok(crate.kind == 'chest', 'as an ordinary container...')
+    ok(crate.contents and #crate.contents == 2, '...holding its payout')
+
+    -- ═══ IT IS SEALED, AND SEALED MEANS THE CONTENTS ARE NOT ON THE WIRE ═══
+    --
+    -- This is what the auto-open gave away for free and what the change buys
+    -- back: until somebody opens it, nobody knows what is in it. The same rule
+    -- wireEntry already enforces for every other crate.
+    local cx, cy = BR.LootCellOf(crate.x, crate.y)
+    standOn(1, crate)
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    local leaked = false
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.id == crate.id and entry.contents ~= nil then
+                leaked = true
+            end
+        end
+    end
+    ok(not leaked, 'and what is inside it never travels until it is opened')
+
+    local before = m.loot.nextId
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
+
+    -- ─── IT OPENS LIKE ANY OTHER CONTAINER ───
+    local husk = m.loot.items[crate.id]
+    ok(husk ~= nil, 'the entry survives the open')
+    ok(husk and husk.kind == 'husk', 'as a husk')
+    ok(m.loot.nextId == before + 2,
+        'and exactly its two items were laid on the ground',
+        ('%d new'):format(m.loot.nextId - before))
+
+    -- ─── WEARING ITS OWN HUSK, WHICH IS NOT DECORATION ───
+    --
+    -- The client resolves a prop's SIZE from its ITEM ID, and the owner asked
+    -- for the airdrop crate and husk at 2x. A husk that called itself 'husk'
+    -- like the other 1300 would snap back to normal size on the frame it was
+    -- opened -- a visible bug with no error anywhere.
+    ok(husk and husk.item == 'airdrophusk',
+        'it keeps an item id of its own, so it keeps its size')
+    ok(husk and husk.prop == 'prop_box_wood05b_airdrop_marker',
+        'and the husk prop the CRATE named, not the config default')
+
+    -- AND AN ORDINARY CRATE IS COMPLETELY UNCHANGED BY ALL OF THIS. The husk
+    -- fields are nil on every generated crate and the fallbacks are what those
+    -- have always used -- so this cannot have moved the other 1300.
+    local plain
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == 'chest' and e.contents and #e.contents > 0
+           and e.item ~= 'airdrop' then
+            plain = e
+            break
+        end
+    end
+    ok(plain ~= nil, 'the layout still has ordinary crates')
+    if plain then
+        standOn(1, plain)
+        local pcx, pcy = BR.LootCellOf(plain.x, plain.y)
+        fire(BR.Net.LOOT_CELL, 1, { cx = pcx, cy = pcy })
+        fire(BR.Net.LOOT_CLAIM, 1, { id = plain.id })
+        local ph = m.loot.items[plain.id]
+        ok(ph and ph.item == 'husk',
+            'and one of those still becomes a plain husk')
+        ok(ph and ph.prop == BR.Config.Loot.chestOpenProp,
+            'wearing the prop it always did')
+    end
+end
+
 -- ------------------------------------------------ the airdrop's Volts (#88) ---
 --
 -- Owner, 2026-08-21: "Yes Volts should be a loot item in the air drops, and they

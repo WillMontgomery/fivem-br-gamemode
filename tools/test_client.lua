@@ -1068,6 +1068,20 @@ BR.State = BR.State or {}
 BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
 BR.State.landed = true
 BR.State.roster = {}
+--- [entity] = the last size it was drawn at. There is no SetEntityScale in GTA V
+--- (#166); the real BR.Native.propScale drives the transform matrix, and what
+--- matters here is only that the right entities are asked for the right size.
+local propScales = {}
+
+--- What BR.Native.pedReachable answers. The rooftop check (owner, 2026-08-22:
+--- "Somehow these airdrops can happen on top of buildings where peds otherwise
+--- cannot access"). Driven per-point so a test can put a roof at one coordinate
+--- and clean ground at another, which is what the repair round-trip needs.
+local unreachable = {}          -- ['x,y'] = why
+local function markUnreachable(x, y, why)
+    unreachable[('%.1f,%.1f'):format(x, y)] = why or 'roof'
+end
+
 BR.Native = {
     aim = function() return false, nil, 0 end,
     keyLabelForCommand = function() return 'E', 'brinteract' end,
@@ -1075,6 +1089,15 @@ BR.Native = {
     inputForCommand = function() return '~INPUT~' end,
     displayHealth = function() return 100 end,
     setDisplayHealth = noop,
+    propScale = function(obj, k)
+        if not obj or not k or k == 1.0 then return end
+        propScales[obj] = k
+    end,
+    pedReachable = function(x, y)
+        local why = unreachable[('%.1f,%.1f'):format(x, y)]
+        if why then return false, why end
+        return true, 'ok'
+    end,
 }
 BR.Dui = {
     page = function() return { id = 'prompt' } end,
@@ -8474,6 +8497,115 @@ do
         'natives.lua exposes the team decision as something testable at all',
         ('teamFor %s, SOLO_TEAM %s')
             :format(type(N.teamFor), tostring(N.SOLO_TEAM)))
+
+    -- ==================================================================== --
+    -- COULD A PED BE STANDING HERE? (#88, the rooftop report)
+    -- ==================================================================== --
+    --
+    -- Owner, 2026-08-22: "Somehow these airdrops can happen on top of buildings
+    -- where peds otherwise cannot access."
+    --
+    -- GetGroundZFor_3dCoord answers HEIGHT, not REACHABILITY, and no native
+    -- answers reachability directly. The nearest thing is the pathfinding
+    -- NAVMESH, which is the graph peds actually walk -- GET_SAFE_COORD_FOR_PED
+    -- is documented entirely in terms of navmesh polygons.
+    --
+    -- ═══ AND THE SNAP DISTANCE IS THE SIGNAL, NOT THE BOOLEAN ═══
+    --
+    -- The native searches a VOLUME around the point (its own USE_FLOOD_FILL
+    -- flag is documented as the alternative to "scanning all polygons within
+    -- the search volume"), so standing on an un-navmeshed roof it happily finds
+    -- the street thirty metres below and answers TRUE. Reading the boolean
+    -- alone would pass every rooftop in Los Santos. These are the cases that
+    -- say so.
+    do
+        describe('natives.pedReachable')
+
+        local safe = { ok = 1, x = 0.0, y = 0.0, z = 0.0 }
+        local navmesh = 1
+        local asked = nil
+        GetSafeCoordForPed = function(x, y, z, onlyOnPavement, flags)
+            asked = { x = x, y = y, z = z,
+                      onlyOnPavement = onlyOnPavement, flags = flags }
+            return safe.ok, { x = safe.x, y = safe.y, z = safe.z }
+        end
+        IsNavmeshLoadedInArea = function() return navmesh end
+
+        local function at(x, y, z)
+            safe.x, safe.y, safe.z = x, y, z
+            return N.pedReachable(0.0, 0.0, 0.0)
+        end
+
+        ok(at(0.0, 0.0, 0.0), 'a point the navmesh returns unchanged is reachable')
+
+        -- THE ROOF. The navmesh has nothing up here, so the search volume finds
+        -- the street below and hands back a coord tens of metres down. The
+        -- boolean said yes; the distance says no.
+        local r, why = at(0.0, 0.0, -34.0)
+        ok(not r, 'a coord snapped 34m downward is a roof, whatever the BOOL said',
+            tostring(why))
+        ok(type(why) == 'string' and why ~= '',
+            'and it says which way it was snapped, for the log')
+
+        -- Sideways, too: a point inside a wall snaps to the corridor outside it.
+        ok(not at(40.0, 0.0, 0.0), 'a coord snapped 40m sideways is not here')
+        -- ...but not so tight that ordinary navmesh jitter rejects good ground.
+        ok(at(0.0, 0.0, 1.0), 'a metre of vertical slack is still reachable')
+        ok(at(2.0, 0.0, 0.0), 'and two metres of horizontal')
+
+        -- A FLAT NO FROM THE NATIVE IS A NO.
+        safe.ok = 0
+        ok(not at(0.0, 0.0, 0.0), 'no safe coord at all is not reachable')
+        safe.ok = 1
+
+        -- ═══ 0 IS TRUTHY IN LUA AND A FIVEM BOOL MAY ANSWER 1 ═══
+        --
+        -- Five shipped bugs on this project. Both natives here are declared
+        -- BOOL, and both are read through the normaliser.
+        safe.ok = false
+        ok(not at(0.0, 0.0, 0.0), 'and neither is a plain false')
+        safe.ok = true
+        ok(at(0.0, 0.0, 0.0), 'a plain true is a yes')
+        safe.ok = 1
+        ok(at(0.0, 0.0, 0.0), 'and so is a 1')
+
+        -- ═══ FAIL OPEN WHEN THE GRAPH IS NOT THERE ═══
+        --
+        -- The navmesh streams like everything else and the drop is announced
+        -- while the whole match is kilometres away. "I cannot see" must never
+        -- read as "no" -- that would refuse every point on the map to every
+        -- distant client and take the loot system with it.
+        navmesh = 0
+        safe.x, safe.y, safe.z = 0.0, 0.0, -500.0   -- a nonsense answer
+        local nr, nwhy = N.pedReachable(0.0, 0.0, 0.0)
+        ok(nr, 'an unloaded navmesh answers YES, not no')
+        ok(nwhy == 'navmesh not loaded', 'and says so rather than pretending',
+            tostring(nwhy))
+        navmesh = 1
+
+        -- THE FOURTH ARGUMENT IS false, AND THAT IS NOT AN ACCIDENT. The one
+        -- forum thread in which a rooftop complaint was actually RESOLVED
+        -- turned on it: the reporter's first attempt passed `true`
+        -- (onlyOnPavement) and got (0,0,0) every time.
+        safe.x, safe.y, safe.z = 0.0, 0.0, 0.0
+        N.pedReachable(1.0, 2.0, 3.0)
+        ok(asked and asked.onlyOnPavement == false,
+            'onlyOnPavement is false -- true is what made the published fix fail')
+        ok(asked and asked.flags == N.SAFE_COORD_FLAGS,
+            'and the flags are the named constant, not a literal',
+            tostring(asked and asked.flags))
+        ok(asked and asked.x == 1.0 and asked.y == 2.0 and asked.z == 3.0,
+            'and it is asked about the point it was given')
+
+        -- A MISSING NATIVE IS TODAY'S BEHAVIOUR, not an empty map.
+        local keep = GetSafeCoordForPed
+        GetSafeCoordForPed = nil
+        ok(N.pedReachable(0.0, 0.0, 0.0),
+            'a build without the native answers yes rather than erroring')
+        GetSafeCoordForPed = keep
+
+        GetSafeCoordForPed, IsNavmeshLoadedInArea = nil, nil
+    end
 
     -- A STAND-IN, SO A MISSING IMPLEMENTATION FAILS RATHER THAN ABORTS. Revert
     -- the production change and every assertion below should report; a suite

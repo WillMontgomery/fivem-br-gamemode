@@ -26,6 +26,11 @@ for _, f in ipairs({
     -- hash-keyed lookup, and loading it earlier would key every row on nil.
     'config/vehicles.lua',
     'config/loot.lua',
+    -- AFTER config/loot.lua AND config/weapons.lua, as the manifest orders it:
+    -- it resolves its payout pools out of their rarity buckets and id lookups
+    -- at LOAD time. Here for 'loot.rooftop', which asserts the airdrop crate's
+    -- and the Volts pile's drawn sizes against the numbers the owner gave.
+    'config/airdrop.lua',
     'shared/storm_solve.lua',
     'shared/loot_gen.lua',
     'shared/combat_solve.lua',
@@ -7061,6 +7066,356 @@ do
             'the match transition ALONE reopens the window -- no player state '
             .. 'was touched between the two offers',
             ('%d toasts'):format(C.toasts()))
+    end
+end
+
+-- ------------------------------------------------ airdrops on roofs (#88) ---
+--
+-- Owner, 2026-08-22: "Somehow these airdrops can happen on top of buildings
+-- where peds otherwise cannot access. Any tips on how to address that?"
+--
+-- ═══ THE CAUSE IS THE GROUND PROBE, NOT THE SITING ═══
+--
+-- The server picks an authored POI, which is a street-level landmark. The
+-- client then resolves the height with GetGroundZFor_3dCoord starting hundreds
+-- of metres up -- and that native is documented to return the highest ground
+-- "directly beneath" the start point, which over a building is the ROOF, every
+-- time, exactly as designed.
+--
+-- ═══ AND THE FIX IS THE MACHINERY THAT ALREADY EXISTS ═══
+--
+-- Since the same playtest removed the auto-open, the airdrop crate IS an
+-- ordinary loot registry entry -- so it inherits the repair round-trip that has
+-- relocated drowned and buried loot since 2026-08-06: the client probes, finds
+-- the point impossible, proposes somewhere better, and the server (which has no
+-- map at all) accepts it under a 30m bound. All that is added is a second
+-- reason to call a point impossible.
+--
+-- THIS BLOCK IS IN test_shared BECAUSE IT NEEDS THE DRAIN WORKER. The full
+-- client suite stubs Citizen.CreateThread to a no-op and CreateObjectNoOffset to
+-- 0, so no prop is ever built there and the probe path is never walked. Here the
+-- thread runs synchronously and objects are real handles, which is the only way
+-- to see what the client actually SENDS.
+
+describe('loot.rooftop')
+do
+    --- One client with the real client/loot.lua in it, a ground probe that can
+    --- be told there is a roof at a given point, and a synchronous spawn worker.
+    local function newProbeClient()
+        local env = newSandbox()
+        local C = { now = 5000, sent = {}, objects = {}, scaled = {} }
+
+        --- ['x,y'] = the height the probe answers there. Absent means clean
+        --- ground at 30.
+        C.groundAt = {}
+        --- ['x,y'] = why a ped could not be there. Absent means they could.
+        C.roofAt = {}
+        local function key(x, y) return ('%.1f,%.1f'):format(x, y) end
+        C.key = key
+
+        env.GetGameTimer = function() return C.now end
+        env.print = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey = function(s) return s end
+        env.PlayerId = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+
+        loadInto(env, SANDBOX_LIB)
+        loadInto(env, { 'br_lib/config/airdrop.lua' })
+
+        local V = {}
+        V.__index = V
+        local function vec(x, y, z) return setmetatable({ x = x, y = y, z = z }, V) end
+
+        env.PlayerPedId       = function() return 1 end
+        env.GetEntityCoords   = function() return vec(0.0, 0.0, 30.0) end
+        env.GetEntityHeading  = function() return 0.0 end
+        env.IsPedInAnyVehicle = function() return false end
+        env.GetFrameTime      = function() return 0.016 end
+        env.RegisterNetEvent  = function() end
+        env.RegisterCommand   = function() end
+
+        -- THE PROBE. Answers a height for any point and a DIFFERENT height for
+        -- a point a test has put a building on -- which is what the real native
+        -- does over a roof.
+        -- WHAT THE PROBE'S BOOL ANSWERS WITH. A FiveM native declared BOOL may
+        -- hand back 1 or 0 rather than true or false, and 0 IS TRUTHY IN LUA --
+        -- five shipped bugs on this project. Driven, so both shapes are walked.
+        C.probeOk = true
+        env.GetGroundZFor_3dCoord = function(x, y)
+            return C.probeOk, C.groundAt[key(x, y)] or 30.0
+        end
+        env.GetWaterHeight = function() return false, 0.0 end
+
+        -- Real handles, so "was a prop built" is answerable. The whole point of
+        -- this rig.
+        local nextObj = 0
+        env.CreateObjectNoOffset = function(model, x, y, z)
+            nextObj = nextObj + 1
+            C.objects[nextObj] = { model = model, x = x, y = y, z = z }
+            return nextObj
+        end
+        env.CreateObject = env.CreateObjectNoOffset
+        env.DoesEntityExist = function(e) return C.objects[e] ~= nil end
+        env.DeleteEntity = function(e) C.objects[e] = nil end
+        env.IsModelValid = function() return true end
+        env.RequestModel = function() end
+        env.HasModelLoaded = function() return true end
+        env.SetModelAsNoLongerNeeded = function() end
+        for _, n in ipairs({
+            'SetEntityCollision', 'FreezeEntityPosition', 'SetEntityHeading',
+            'SetEntityCoords', 'SetEntityCoordsNoOffset', 'SetEntityRotation',
+            'SetEntityDynamic', 'SetEntityHasGravity', 'SetObjectPhysicsParams',
+            'ActivatePhysics', 'SetEntityAsMissionEntity',
+            'PlaceObjectOnGroundProperly', 'SetEntityVelocity',
+            'SetEntityDrawOutline', 'SetEntityDrawOutlineColor',
+            'SetEntityDrawOutlineShader', 'PlaySoundFrontend',
+            'AddBlipForCoord', 'RemoveBlip', 'SetBlipSprite', 'SetBlipScale',
+            'SetBlipColour', 'SetBlipAsShortRange', 'N_0x2c2b3493fbf51c71',
+        }) do env[n] = function() end end
+        env.GetEntityVelocity = function() return vec(0.0, 0.0, 0.0) end
+        env.GetEntityRotation = function() return vec(0.0, 0.0, 0.0) end
+        env.DoesBlipExist = function() return false end
+
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.TriggerEvent = function(n, ...)
+            for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+        end
+        env.TriggerServerEvent = function(n, ...)
+            C.sent[#C.sent + 1] = { name = n, args = { ... } }
+        end
+        -- SYNCHRONOUS, so the spawn worker finishes inside the pass that
+        -- queued it. Nothing here is testing concurrency.
+        env.Citizen = { CreateThread = function(fn) fn() end,
+                        Wait = function() end, SetTimeout = function() end }
+
+        loadInto(env, { 'br_core/client/main.lua' })
+
+        env.BR.State.me = { src = 1, state = env.BR.PlayerState.ALIVE }
+        env.BR.State.roster = {}
+        env.BR.Inv    = { lastGainAt = 0, count = function() return 0 end }
+        env.BR.Sfx    = { play = function() end }
+        env.BR.Keys   = { isHeld = function() return false end, on = function() end }
+        env.BR.Dui    = { page = function(n) return { name = n } end,
+                          send = function() end, drawWorld = function() end,
+                          drawScreen = function() end,
+                          drawOnEntity = function() end,
+                          ready = function() return true end }
+        env.BR.Native = {
+            keyLabelForCommand = function() return 'E' end,
+            blipName = function() end,
+            setDisplayHealth = function() end,
+            propScale = function(obj, k)
+                if obj and k and k ~= 1.0 then C.scaled[obj] = k end
+            end,
+            -- THE ROOFTOP ORACLE. The real one is a navmesh query; here a test
+            -- says where a ped could not be.
+            pedReachable = function(x, y)
+                local why = C.roofAt[key(x, y)]
+                if why then return false, why end
+                return true, 'ok'
+            end,
+        }
+
+        loadInto(env, { 'br_core/client/loot.lua' })
+
+        C.env = env
+        function C.slow(ms)
+            C.now = C.now + (ms or 1000)
+            env.BR.Loop.step(env.BR.Loop.SLOW)
+        end
+        function C.add(e)
+            env.TriggerEvent(env.BR.Net.LOOT_ADD, { e })
+        end
+        --- Every LOOT_FIX this client has proposed.
+        function C.fixes()
+            local out = {}
+            for _, s in ipairs(C.sent) do
+                if s.name == env.BR.Net.LOOT_FIX then out[#out + 1] = s.args[1] end
+            end
+            return out
+        end
+        --- How many props exist right now.
+        function C.props()
+            local n = 0
+            for _ in pairs(C.objects) do n = n + 1 end
+            return n
+        end
+        return C
+    end
+
+    local A = BR.Config.Airdrop
+
+    --- A sealed airdrop crate, exactly as server/airdrop.lua lays one.
+    local function crateAt(x, y)
+        return { id = 1, kind = 'chest', item = 'airdrop', prop = A.crateProp,
+                 x = x, y = y, z = 30.0, rarity = BR.Rarity.LEGENDARY, count = 1 }
+    end
+
+    -- 1. CLEAN GROUND CHANGES NOTHING AT ALL.
+    do
+        local C = newProbeClient()
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(#C.fixes() == 0, 'a reachable crate proposes no move')
+        ok(C.props() > 0, 'and its prop is built')
+    end
+
+    -- 2. A ROOFTOP CRATE ASKS TO BE MOVED.
+    do
+        local C = newProbeClient()
+        C.roofAt[C.key(5.0, 5.0)] = 'snapped 34.0m in z'
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        local f = C.fixes()
+        ok(#f == 1, 'a rooftop crate proposes exactly one move', #f)
+        if f[1] then
+            local d = math.sqrt((f[1].x - 5.0) ^ 2 + (f[1].y - 5.0) ^ 2)
+            ok(d > 0.5, 'somewhere else...', ('%.1fm'):format(d))
+            -- INSIDE THE SERVER'S OWN BOUND. server/loot.lua refuses a repair
+            -- further than FIX_RADIUS, so a suggestion past it is a suggestion
+            -- that is silently dropped -- which looks exactly like no bug.
+            ok(d <= 30.0, '...and inside the server\'s 30m bound',
+                ('%.1fm'):format(d))
+        end
+    end
+
+    -- 3. ═══ AND THE PROP IS STILL BUILT. THIS IS THE ONE THAT MATTERS. ═══
+    --
+    -- `gzOk` (dry and solid) and `reachOk` (a ped could be here) are two
+    -- different answers and only the first may withhold a prop. Folding them
+    -- together is the obvious implementation, and it would mean a rooftop
+    -- airdrop with no better point within 28m gets NO PROP AT ALL -- an
+    -- invisible, unopenable crate holding the best loot in the match, in
+    -- exactly the scenario the owner reported. The check runs on an untested
+    -- navmesh native against a curated flag set that says "no" about plenty of
+    -- good rural ground, so a false negative must cost a wasted suggestion and
+    -- nothing else.
+    do
+        local C = newProbeClient()
+        C.roofAt[C.key(5.0, 5.0)] = 'roof'
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(C.props() > 0,
+            'an unreachable crate is STILL BUILT -- the worst case of this '
+            .. 'feature is the behaviour that shipped without it')
+    end
+
+    -- 4. AND WHEN EVERYWHERE NEARBY IS A ROOF, NOTHING IS PROPOSED AND THE
+    --    CRATE STILL EXISTS. A suggestion that is no better than the original
+    --    would burn the server's cooldown to move a crate from one roof to
+    --    another.
+    do
+        local C = newProbeClient()
+        setmetatable(C.roofAt, { __index = function() return 'roof' end })
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(#C.fixes() == 0, 'no candidate clears the bar, so nothing is sent')
+        ok(C.props() > 0, 'and the crate is still there to be opened')
+    end
+
+    -- 5. ═══ IT IS ASKED OF THE AIRDROP CRATE AND OF NOTHING ELSE ═══
+    --
+    -- The narrowness is deliberate and load-bearing. ~3,200 generated entries
+    -- behind an untested navmesh native is a map with no loot on it if the
+    -- native misbehaves at scale -- the worst failure client/loot.lua has.
+    do
+        local C = newProbeClient()
+        -- ONLY THE CRATE'S OWN POINT IS A ROOF, so there IS somewhere better
+        -- within the search ring. Marking the whole world unreachable would
+        -- make this pass for the wrong reason: the search would find nothing,
+        -- send nothing, and the assertion could not tell that apart from the
+        -- question never being asked. A mutation pass proved exactly that.
+        C.roofAt[C.key(5.0, 5.0)] = 'roof'
+        C.add({ id = 2, kind = 'chest', item = 'chest',
+                prop = BR.Config.Loot.chestProp,
+                x = 5.0, y = 5.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1 })
+        C.slow(1000)
+        ok(#C.fixes() == 0,
+            'an ordinary crate on the same roof is not asked the question, '
+            .. 'even though a reachable point is right there')
+
+        -- ...and the airdrop crate on that identical point IS. Same rig, same
+        -- roof, same neighbours -- the only difference is the item id, which is
+        -- what makes this a statement about the narrowness rather than about
+        -- the rig.
+        local D = newProbeClient()
+        D.roofAt[D.key(5.0, 5.0)] = 'roof'
+        D.add(crateAt(5.0, 5.0))
+        D.slow(1000)
+        ok(#D.fixes() == 1,
+            'and the airdrop crate on that exact point is')
+    end
+
+    -- 6. THE SEA STILL WITHHOLDS THE PROP, which is what gzOk has always meant
+    --    and must keep meaning.
+    do
+        local C = newProbeClient()
+        C.groundAt[C.key(5.0, 5.0)] = -12.0     -- a seabed
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(C.props() == 0, 'a drowned entry builds no prop, as it always did')
+        ok(#C.fixes() == 1, 'and asks to be moved')
+    end
+
+    -- 6b. ═══ 0 IS TRUTHY IN LUA, AND THIS LINE WAS THE SIXTH TIME ═══
+    --
+    -- GetGroundZFor_3dCoord is declared BOOL and a FiveM native may answer 1 or
+    -- 0 rather than true or false. `if not ok then` is FALSE for a native that
+    -- failed with a zero, so the guard never fired -- and it has been survivable
+    -- only because a failed probe ALSO hands back z = 0, which the sea-level
+    -- rule below it catches. A guard working by accident is not a guard, and the
+    -- rooftop check now reads that height before the accident saves it.
+    --
+    -- The case that tells them apart: a failed probe that returns a PLAUSIBLE
+    -- height. Nothing may be built on an answer the native said it did not have.
+    do
+        local C = newProbeClient()
+        C.probeOk = 0                            -- failed, in the 1/0 shape
+        C.groundAt[C.key(5.0, 5.0)] = 42.0       -- ...with a believable height
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(C.props() == 0,
+            'a probe that failed with a ZERO builds nothing, even when the '
+            .. 'height it handed back looks fine')
+    end
+
+    -- 7. THE AIRDROP CRATE AND ITS HUSK ARE DRAWN AT THE OWNER'S SIZE, and the
+    --    scale is re-asserted on the 10Hz crate pass -- a container is a
+    --    PHYSICS object and physics owns the transform matrix, so a scale
+    --    applied once at spawn is a scale the next simulation step may throw
+    --    away. The hover pass that re-asserts it for loose items skips
+    --    containers by design.
+    do
+        local C = newProbeClient()
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        local obj = next(C.objects)
+        ok(C.scaled[obj] == A.crateScale,
+            'the crate is drawn at crateScale', tostring(C.scaled[obj]))
+
+        C.scaled = {}
+        C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+        ok(C.scaled[obj] == A.crateScale,
+            'and re-asserted on the crate pass, which physics would otherwise '
+            .. 'undo', tostring(C.scaled[obj]))
+    end
+
+    -- 8. AND SO IS THE VOLTS PILE, which is a loose item and therefore rides
+    --    the hover pass instead.
+    do
+        local C = newProbeClient()
+        C.add({ id = 3, kind = 'volts', item = 'volts', prop = A.voltsProp,
+                x = 5.0, y = 5.0, z = 30.0, rarity = BR.Rarity.LEGENDARY,
+                count = A.voltsAmount })
+        C.slow(1000)
+        local obj = next(C.objects)
+        ok(C.scaled[obj] == A.voltsScale,
+            'the Volts pile is drawn at voltsScale', tostring(C.scaled[obj]))
     end
 end
 
