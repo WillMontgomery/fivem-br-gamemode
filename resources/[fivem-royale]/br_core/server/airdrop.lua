@@ -698,3 +698,106 @@ RegisterCommand('brairdrop', function(_, args)
            .. '%.0fm, or /brairdrop arm')
         :format(n, poi.id, poi.x, poi.y, A.armWithin or 200.0))
 end, true)
+
+-- ---------------------------------------------------------------------------
+-- THE FLARES' REPLICATION, REFUSED
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THIS IS WHAT MAKES A PROJECTILE FLARE LEGAL IN A GAMEMODE WHERE NOTHING
+--     ABOUT A DROP CROSSES THE WIRE ═══
+--
+-- The flares are real `weapon_flare` projectiles now (owner, 2026-08-22, with a
+-- reference: "None of those models are the ones we need in order to draw the
+-- proper particles"), because no MODEL glows -- every visual a flare has lives
+-- in AMMO_FLARE's CAmmoThrownInfo and is applied by the projectile controller.
+-- See br_lib/config/airdrop.lua for the whole of that argument.
+--
+-- A PROJECTILE REPLICATES, and that was the objection this feature's client
+-- half refused the projectile route over twice. It is not a networked ENTITY --
+-- `sv_entityLockdown` would not refuse it -- which makes it worse rather than
+-- better: every client builds its own pair from the record and the clock, and
+-- would then receive forty-seven remote copies drawn on top of them.
+--
+-- ONE RESEARCH PASS CLAIMED THE TECHNIQUE IS "LOCAL TO THE CALLING CLIENT". IT
+-- IS NOT, and the proof is that FiveM's server carries a full wire parser for
+-- it: `CStartProjectileEvent` in citizen-server-impl/src/state/
+-- ServerGameState.cpp, surfaced to scripts as `startProjectileEvent` and
+-- carrying ownerId, projectileHash and weaponHash. A purely local action does
+-- not get a net game event.
+--
+-- ═══ AND CANCELLING IT SUPPRESSES THE RELAY, WHICH WAS READ RATHER THAN
+--     ASSUMED ═══
+--
+-- Both of the server's packet paths gate the relay on the handler's return
+-- value, and the handler returns TriggerEvent2 -- false when a script has
+-- cancelled. Verbatim, from FiveM's own source:
+--
+--     if (eventHandler())            // false when a script cancelled it
+--     {
+--         RouteEvent(...);           // the ONLY thing that sends it onward
+--     }
+--
+-- packethandlers/NetGameEventPacketHandler.cpp:134 for the V2 packet, and
+-- state/ServerGameState.cpp:8003 for the legacy msgNetGameEvent path. Both were
+-- checked, because a fix that only covers one of two paths is a fix that works
+-- until a client connects on the other.
+--
+-- ═══ FILTERED TO THE FLARE, AND NOTHING ELSE, WHICH IS THE WHOLE RISK HERE ═══
+--
+-- Players throw grenades, stickies and molotovs, and every one of those is a
+-- projectile whose replication the match REQUIRES. Cancelling this event
+-- broadly would make thrown weapons invisible to everyone but the thrower --
+-- a catastrophic bug that would look like a netcode problem rather than like
+-- this line. So the match is made on the weapon hash and refuses everything it
+-- does not positively recognise.
+--
+-- HASHES ARE NORMALISED THROUGH BR.NormHash, for the reason config/vehicles.lua
+-- states at length: GetHashKey answers a SIGNED 32-bit integer in Lua while the
+-- wire carries an unsigned one, so `wire == GetHashKey(name)` is false for the
+-- same weapon and the filter would silently never match. That failure is
+-- invisible -- it looks exactly like the event not firing.
+local flareHashes = nil
+
+--- The set of weapon hashes whose projectiles are ours to suppress.
+---
+--- BOTH NAMES, because either can be configured and both appear in the wild by
+--- this route -- `weapon_flare` is the thrown flare the crate-drop reference
+--- uses and is our default; `weapon_flaregun` is the pistol the owner's
+--- reference fires. A client switched to the other with `/brflare weapon` must
+--- not start leaking flares to the rest of the match.
+---
+--- Built once, lazily, rather than at load: this is the only reader and the
+--- config is settled long before a projectile is ever fired.
+--- @return table
+local function flareHashSet()
+    if flareHashes then return flareHashes end
+    flareHashes = {}
+    for _, name in ipairs({ A.flareWeapon or 'weapon_flare',
+                            'weapon_flare', 'weapon_flaregun' }) do
+        local h = BR.NormHash(GetHashKey(name))
+        if h then flareHashes[h] = true end
+    end
+    return flareHashes
+end
+
+--- How many flare projectiles this server has refused to relay. Printed by
+--- /brairdrop, because a filter that never matches and a filter that matches
+--- everything look identical from a chair -- and one of those two is the
+--- catastrophic one.
+BR.Airdrop.flaresSuppressed = 0
+
+AddEventHandler('startProjectileEvent', function(_, data)
+    if type(data) ~= 'table' then return end
+    -- TYPE-CHECKED BEFORE BR.NormHash, because NormHash is a bitwise AND and
+    -- Lua 5.4 RAISES on a non-integer operand. This handler sees every
+    -- projectile every player throws, so a malformed payload must be dropped
+    -- rather than allowed to throw on the hottest event surface the server has.
+    if type(data.weaponHash) ~= 'number' then return end
+    local h = BR.NormHash(data.weaponHash)
+    if not h or not flareHashSet()[h] then return end
+    BR.Airdrop.flaresSuppressed = (BR.Airdrop.flaresSuppressed or 0) + 1
+    -- The firing client's OWN flare is untouched: it was created locally before
+    -- this event was ever sent, and this cancels only the relay. Every client
+    -- sees exactly one pair -- the one it lit itself.
+    CancelEvent()
+end)

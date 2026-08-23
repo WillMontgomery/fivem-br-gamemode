@@ -93,16 +93,51 @@ BR.Config.Airdrop = {
     -- later, so a re-check is progress rather than a spin.
     retryEveryMs = 5000,
 
-    -- THE DESCENT. Linear, because a canopy descends at terminal velocity --
-    -- 260m over 30s is ~8.7 m/s, which is about right for a cargo chute and
-    -- gives the map roughly half a minute of everyone converging on the blip.
+    -- THE DESCENT. Linear, because a canopy descends at terminal velocity, and
+    -- half a minute long because that is how long the map gets to converge on
+    -- the blip.
     --
     -- `altitude` is metres ABOVE THE GROUND, never an absolute z, and that
     -- distinction is the same one BR.Loot's `flift` makes: only a client can
     -- ground-probe, so an absolute z from the server is a guess. Each client
     -- resolves the ground under (x, y) itself and falls to it.
+    --
+    -- ═══ 260 CAME DOWN TO 170, AND WHAT THAT COSTS IS THE DESCENT RATE ═══
+    --
+    -- Owner, 2026-08-22: "The cargobob seemed to be too high off the ground when
+    -- it came in. I could barely hear it."
+    --
+    -- THE AIRCRAFT'S HEIGHT IS THIS NUMBER PLUS `planeAltAbove`, and almost all
+    -- of it is this one -- the crate leaves the Cargobob, so the Cargobob is
+    -- wherever the crate starts. It was flying at 300m (260 + 40) and it is
+    -- flying at 195m (170 + 25) now, a third lower.
+    --
+    -- ─── THE FALL TIME IS UNCHANGED, WHICH IS THE HALF THAT WAS CONFIRMED ───
+    --
+    -- BR.AirdropHeightAt is `alt * (1 - progress)` and progress is measured
+    -- against `descentMs`, so the descent takes thirty seconds at ANY altitude.
+    -- The owner confirmed the arrival was right ("the airdrop arrived
+    -- perfectly") and thirty seconds is what they were confirming; it is
+    -- deliberately untouched.
+    --
+    -- WHAT MOVED IS THE RATE: 260m/30s was 8.7 m/s and 170m/30s is 5.7 m/s. A
+    -- real cargo canopy comes down at roughly 5-7 m/s, so this is if anything
+    -- the more honest number -- but it IS a change, the crate will read as
+    -- floating a little more than it did, and that is the trade being made. If
+    -- the owner wants the old rate back at the new height, `descentMs` goes to
+    -- 20000 and the map loses ten seconds of converging on the blip; those two
+    -- cannot both be held.
+    --
+    -- ─── AND LOWER IS NOT FREE OVER TERRAIN ───
+    --
+    -- `planeAltAbove` is measured from the ground at the DROP POINT, not from
+    -- the ground under the aircraft, and the run-in is planeSpeed * planeLeadMs
+    -- = about 1080m long. A ridge more than ~195m above the drop point within
+    -- that kilometre is now something the Cargobob flies through rather than
+    -- over. It has collision off (client/airdrop.lua), so that is a cosmetic
+    -- clip and never a crash -- but it was not reachable at 300m and it is now.
     descentMs = 30000,
-    altitude  = 260.0,
+    altitude  = 170.0,
 
     -- ------------------------------------------------------------------
     -- THE PLANE
@@ -182,14 +217,66 @@ BR.Config.Airdrop = {
     planeModel = 'cargobob',
     planePilot = 's_m_m_pilot_01',
     -- Metres a second. 90 is about 175 knots -- a cargo run rather than a strike
-    -- package, and slow enough to be readable from the ground at 300m.
+    -- package, and slow enough to be readable from the ground at 195m.
     planeSpeed = 90.0,
     -- Metres ABOVE THE CRATE's release altitude, never an absolute z. Same rule
     -- as `altitude` above and for the same reason: only a client can ground-probe.
-    planeAltAbove = 40.0,
+    --
+    -- 40 CAME DOWN TO 25 (owner, 2026-08-22: "too high off the ground when it
+    -- came in"). This is the CHEAP half of that fix and it costs nothing at all
+    -- -- the crate's release height, the fall time and the fall rate are all
+    -- `altitude`'s business, and this number only decides how far above the box
+    -- the aircraft that dropped it is flying. It is also the SMALL half: 15m of
+    -- the 105m the aircraft came down. See `altitude` for the other 90 and for
+    -- what that one traded.
+    planeAltAbove = 25.0,
     -- How long it stays in the world after the release. Long enough to watch it
     -- go, short enough that it is gone before the fight over the crate starts.
     planeTrailMs = 15000,
+
+    -- ------------------------------------------------------------------
+    -- AND THE OTHER CURE FOR "I COULD BARELY HEAR IT"
+    -- ------------------------------------------------------------------
+    --
+    -- AUDIO LOD IS THE DOCUMENTED REASON A DISTANT AIRCRAFT IS QUIET, and the
+    -- note above already said so without acting on it.
+    -- SET_AUDIO_VEHICLE_PRIORITY (0xE5564483E407F914) is a hint to the audio
+    -- system about what LOD a vehicle should use; its own documentation says
+    -- HIGH "will bump up the activation range significantly" and stops the LOD
+    -- dropping when the vehicle is outside the view frustum, and that MAX
+    -- "attempts to maintain full audio detail regardless of how far it is from
+    -- the listener".
+    --
+    -- ═══ MAX IS 2 AND HIGH IS 3. THE ENUM IS NOT IN ASCENDING ORDER. ═══
+    --
+    --   AUDIO_VEHICLE_PRIORITY_NORMAL = 0
+    --   AUDIO_VEHICLE_PRIORITY_MEDIUM = 1
+    --   AUDIO_VEHICLE_PRIORITY_MAX    = 2   <-- "regardless of distance"
+    --   AUDIO_VEHICLE_PRIORITY_HIGH   = 3
+    --
+    -- Read off citizenfx/natives (AUDIO/SetAudioVehiclePriority.md), the file
+    -- docs.fivem.net renders, and checked twice BECAUSE it is backwards: a 3
+    -- shipped in the belief it was the maximum is a HIGH, which is weaker and
+    -- would look exactly like the native doing nothing.
+    --
+    -- ─── WHAT IT COSTS, WHICH IS NOT NOTHING ───
+    --
+    -- The same documentation records a hard limit of FIVE simultaneous granular
+    -- vehicles including the player's, and says that spending them on max
+    -- priority leaves fewer engines for ordinary traffic. We spend exactly one,
+    -- for at most `planeTrailMs` past the release, once per match. That is the
+    -- cheapest possible version of this bet.
+    --
+    -- ─── AND ESSENTIALLY NOBODY USES IT, WHICH CUTS BOTH WAYS ───
+    --
+    -- The Cfx.re forum has no thread mentioning this native under either name --
+    -- no working examples and no bug reports. So there is no evidence it fails,
+    -- and none that it works, and NOTHING documents whether it is sticky or
+    -- needs re-asserting. client/airdrop.lua sets it once on the handle it just
+    -- created, which is the only moment it certainly has one.
+    --
+    -- Set to nil to stop asking for it at all.
+    planeAudioPriority = 2,
 
     -- ------------------------------------------------------------------
     -- THE DROP WAITS UNTIL SOMEBODY CAN SEE IT
@@ -503,178 +590,252 @@ BR.Config.Airdrop = {
     -- Owner, 2026-08-21: "we need to attach flares to the left and right side of
     -- the crate when it's spawned so the flares leave smoke trails as it falls."
     --
+    -- Owner, 2026-08-22: "there's still no flares on the crate, and there should
+    -- be flares on the husk too fwiw", then "After using brflare it's clear to me
+    -- why the flares aren't working - you used the wrong flare", and then, with a
+    -- reference: "None of those models are the ones we need in order to draw the
+    -- proper particles."
+    --
     -- ═══════════════════════════════════════════════════════════════════
-    -- SECOND ATTEMPT. THE FIRST ONE RENDERED NOTHING.
+    -- THIRD ATTEMPT, AND THE OWNER IS RIGHT: NO MODEL WAS EVER GOING TO
+    -- WORK. THE FIRST TWO ATTEMPTS WERE THE SAME MISTAKE TWICE.
     -- ═══════════════════════════════════════════════════════════════════
     --
-    -- Playtest, 2026-08-22: "I didn't see the flares present at all, nor any
-    -- smoke trails. Can we not use the flare weapon props which emit their own
-    -- smoke trails?"
+    --   1. `prop_flare_01a` -- a name that is not a model at all. The whole
+    --      flare block sat behind `if loadModel(...)`, so props and particles
+    --      vanished together and nothing said a word.
     --
-    -- ─── THE OWNER'S SUGGESTION IS REAL, AND WE STILL CANNOT USE IT ───
+    --   2. A candidate list that took the first name which loaded. Something
+    --      loaded. The owner still saw nothing.
     --
-    -- It was researched properly rather than waved off, because it is a good
-    -- idea and it very nearly works. GTA's flare is a genuine self-emitting
-    -- PROJECTILE: fire `weapon_flaregun` (NOT `weapon_flare` -- that one is
-    -- GROUP_THROWN with DamageType NONE and will not fire as a bullet) through
-    -- SHOOT_SINGLE_BULLET_BETWEEN_COORDS after REQUEST_WEAPON_ASSET, and the
-    -- trail and the glow come free, emitted by the projectile with no particle
-    -- call at all. Two released open-source resources do exactly this and
-    -- contain no ptfx code whatsoever.
+    -- BOTH ATTEMPTS WERE LOOKING FOR A MODEL THAT GLOWS. There is no such
+    -- model. `AMMO_FLARE` is a CAmmoThrownInfo block and every visual the flare
+    -- has is in it -- FuseFx `proj_flare_fuse`, TrailFx `proj_flare_trail`,
+    -- LightColour (1.0, 0.168, 0.168), LightIntensity 8, LightRange 0.5,
+    -- LightFlickers, CoronaSize, CoronaIntensity, and a LightBone of
+    -- `gun_vfx_projtrail` -- and all of it is applied by the PROJECTILE
+    -- controller. `<Model>w_am_flare</Model>` is only the drawable the
+    -- projectile wears. A CreateObject of it makes a CObject with no ammo info
+    -- and no controller, so none of that code runs and you get a grey tube.
+    -- That is `w_am_flare`, `prop_flare_01` and `prop_flare_01b` alike, and it
+    -- is why choosing between them could never have worked.
     --
-    -- THREE THINGS KILL IT HERE, AND EACH ONE IS ON ITS OWN SUFFICIENT:
+    -- ═══ SO WE FIRE A REAL FLARE. THE OWNER'S REFERENCE IS THE TECHNIQUE. ═══
     --
-    --   1. A PROJECTILE IS BALLISTIC. It is fired with a speed along a vector
-    --      and it then travels and falls under its own simulation. Our descent
-    --      is a coordinate write from a pure function of the published record
-    --      and the synced clock; a flare that flies its own path is the one
-    --      part of a drop that could disagree between two machines.
+    -- DevTestingPizza/Flares-and-Bombs (cflares.lua) fires `weapon_flaregun`
+    -- through ShootSingleBulletBetweenCoordsWithExtraParams after
+    -- RequestWeaponAsset and contains ZERO particle code -- the trail and the
+    -- light come free because it is a real projectile.
     --
-    --   2. IT REPLICATES, over the START_PROJECTILE_EVENT net game event.
-    --      That is not `sv_entityLockdown`'s business -- a projectile is not in
-    --      FiveM's networked entity type list at all, so lockdown would not
-    --      refuse it -- which makes it WORSE, not better: it would go out, and
-    --      forty-seven other clients would each draw a remote copy on top of
-    --      the local one they built themselves. The whole reason this file is
-    --      built the way it is, is that nothing about a drop crosses the wire
-    --      per frame.
+    -- AND ONE RESOURCE ALREADY DOES IT ON A CRATE DROP, which is our exact
+    -- case. Vechro/cratedrop fires `weapon_flare` at the parachute's
+    -- coordinates, and its two quirks ARE the technique:
     --
-    --   3. NOBODY KNOWS WHETHER A TELEPORTED PROJECTILE KEEPS ITS TRAIL. Two
-    --      independent sweeps found no report, in either direction, of anyone
-    --      writing a live projectile's coordinates every frame. Nor is there a
-    --      single published example of a script tracking a FIRED projectile of
-    --      any kind: every working use of the projectile-lookup native is a
-    --      THROWN one -- grenade, molotov, sticky, snowball -- and Rockstar's
-    --      own header calls that native's last argument `needsToBeStationary`,
-    --      which is not a native built for things in flight. The one shipped
-    --      resource that wanted a visual to ride a projectile did not move the
-    --      projectile at all; it flew a separate decoy prop to the projectile's
-    --      coordinates, which is the shape we already have.
+    --   * THE START AND END COORDS DIFFER BY 1e-4. That is what makes a
+    --     BALLISTIC thing stand still: with effectively no separation there is
+    --     no direction to travel in, so the flare stays where it was put. It is
+    --     also load-bearing in the other direction -- that resource's own
+    --     comment says a flare fired with IDENTICAL coords "remains static and
+    --     won't remove itself later".
+    --   * SPEED IS NEGATIVE (-1.0), which is idiomatic across every resource
+    --     that does this.
     --
-    --      Building the flares on an evidence vacuum is exactly how the first
-    --      attempt shipped, and this is the second attempt.
+    -- That answers the objection this file has refused the projectile over
+    -- twice: a projectile is ballistic, and this one is not going anywhere.
     --
-    -- NOTE THAT (1) AND (2) ARE DISQUALIFYING ON THEIR OWN, INDEPENDENT OF (3).
-    -- Even if a teleported projectile kept a perfect trail, a projectile is
-    -- simulated and it replicates -- and "nothing is simulated, nothing crosses
-    -- the wire per frame" is not a preference here, it is the reason a drop
-    -- cannot desync. So this is not "unverified, try it later": it is
-    -- architecturally incompatible, and the note is here so the third attempt
-    -- does not start by re-researching it.
+    -- ═══ AND THE OTHER OBJECTION HAS A SERVER-SIDE ANSWER, VERIFIED IN
+    --     FiveM'S OWN SOURCE RATHER THAN INFERRED ═══
     --
-    -- So it stays a prop and a looped particle. What follows is why the first
-    -- one was invisible.
+    -- A projectile REPLICATES. It is not a networked entity -- `sv_entityLock-
+    -- down` would not refuse it -- which makes it worse rather than better:
+    -- every client would draw forty-seven remote copies on top of the pair it
+    -- built itself. One research pass claimed the technique is "local to the
+    -- calling client". IT IS NOT, and the proof is that FiveM's server contains
+    -- a full wire parser for it: `CStartProjectileEvent`
+    -- (citizen-server-impl/src/state/ServerGameState.cpp), surfaced to scripts
+    -- as `startProjectileEvent`, carrying ownerId, projectileHash and
+    -- weaponHash. A purely local action does not get a net game event.
     --
-    -- ─── `proj_flare_trail` IS REAL. THAT WAS NOT THE BUG. ───
+    -- WHAT MAKES IT USABLE IS THAT CANCELLING THAT EVENT SUPPRESSES THE RELAY,
+    -- and that is not a guess either. Both of the server's packet paths gate the
+    -- relay on the handler's return value, verbatim:
     --
-    -- The suspicion was that the asset/effect pair had been copied out of a bad
-    -- dump. It had not: `core` / `proj_flare_trail` is verified present in
-    -- DurtyFree's particleEffectsCompact.json -- the dump citizenfx's own native
-    -- reference links to -- and independently in a CodeWalker extraction of the
-    -- game's .ypt files. The name was right.
+    --     if (eventHandler())            // false when a script cancelled
+    --     {
+    --         RouteEvent(...);           // the only thing that sends it on
+    --     }
     --
-    -- ─── WHAT WAS ACTUALLY WRONG, IN ORDER OF CONFIDENCE ───
+    -- (NetGameEventPacketHandler.cpp:134 for the V2 packet, and
+    -- ServerGameState.cpp:8003 for the legacy msgNetGameEvent path.)
     --
-    --   ═══ A. `prop_flare_01a` IS NOT A MODEL. THAT IS THE WHOLE BUG. ═══
+    -- So br_core/server/airdrop.lua cancels `startProjectileEvent` for the FLARE
+    -- weapon hash and nothing else. Every client fires its own pair locally and
+    -- receives nobody else's. The property this whole file rests on -- nothing
+    -- about a drop crosses the wire per frame -- is intact, and it is intact for
+    -- a checked reason rather than a hopeful one.
     --
-    --      It was never verified against an object dump, and it does not exist.
-    --      DurtyFree's ObjectList.ini, 21,631 entries, contains exactly these
-    --      flare-ish objects and no others:
+    -- ═══ WHAT NOBODY CAN TELL YOU FROM HERE ═══
     --
-    --        prop_flare_01, prop_flare_01b, w_am_flare, w_pi_flaregun,
-    --        w_pi_flaregun_mag1, w_pi_flaregun_shell, v_club_skirtflare,
-    --        m23_1_prop_m31_flarebox_01a, m23_2_prop_m32_flarebox_01a
+    -- Whether any of it RENDERS. That has been the honest answer twice and it is
+    -- the honest answer now. Nothing outside a running client can say whether a
+    -- fired flare appears, how bright it reads at 170m, or whether the cancel
+    -- leaves the local copy alone. /brflare is the instrument; it fires one in
+    -- front of the player and reports every fact a native will answer.
     --
-    --      There is a `_01` and a `_01b`. There is no `_01a`.
+    -- ─── THE TWO ROUTES, AND WHY THE SECOND ONE SURVIVES ───
     --
-    --      AND A MODEL THAT DOES NOT LOAD TOOK THE PARTICLES WITH IT. The whole
-    --      flare block in br_core/client/airdrop.lua sits behind
-    --      `if loadModel(flareModel)`, so a bad name meant no prop, no emitter,
-    --      no smoke and no error -- which is, word for word, what the owner
-    --      reported: "I didn't see the flares present at all, nor any smoke
-    --      trails." Everything below this line may well have been fine all
-    --      along; there was simply nothing there to look at.
+    --   'projectile'  THE DEFAULT. A real `weapon_flare` fired in place, with
+    --                 the engine's own light, corona, flicker and trail. No
+    --                 particle code, because the projectile is the particle.
+    --   'object'      The old prop + looped ptfx. Kept because it is the ONLY
+    --                 route with an observable: a looped ptfx handle can be
+    --                 asked whether it is alive, and a projectile cannot be
+    --                 asked anything at all. If the projectile route shows
+    --                 nothing, this is what distinguishes "the client is not
+    --                 drawing flares" from "the client is drawing flares that
+    --                 do not glow".
     --
-    --      SO THE NAME IS A LIST NOW, not a string. Three verified-existing
-    --      candidates in preference order, the client takes the first that
-    --      loads and SAYS WHICH, and it complains loudly if none do. The
-    --      community is not sure which of _01 and _01b is the lit one -- the
-    --      only forum comment on it is "I guess it's the second one, but I
-    --      don't know" -- so this is a question for one look in game rather
-    --      than one more confident guess in a config file.
+    -- CreateWeaponObject WAS CONSIDERED AND IS NOT IMPLEMENTED, so that attempt
+    -- four does not re-litigate it: a GitHub code search for CreateWeaponObject
+    -- with a flare returns only native stub files -- no released resource does
+    -- it -- and the one resource that uses the native at all ships a MODIFIED
+    -- weapons.meta, which suggests vanilla alone was not enough. It creates a
+    -- weapon object rather than a projectile, so there is still no path for the
+    -- ammo light code to run. It is the same mistake as the models, wearing a
+    -- different native.
+    flareRoute = 'projectile',
+
+    -- ------------------------------------------------------------------
+    -- THE PROJECTILE ROUTE
+    -- ------------------------------------------------------------------
     --
-    --   B. THE PROP IS PROBABLY INERT ANYWAY, WHICH IS WHY THE PARTICLE STAYS.
-    --      A flare's glow and trail are not attached to the prop: they are
-    --      weapons.meta data on the PROJECTILE (`AMMO_FLARE` is a
-    --      CAmmoThrownInfo block carrying TrailFx, LightColour, LightIntensity,
-    --      LightRange, CoronaSize and a LightBone of `gun_vfx_projtrail`). A
-    --      plain CreateObject of the model very likely renders a dark plastic
-    --      tube. There is also no flare-named native anywhere in the native DB
-    --      -- the flare is data and projectile behaviour, not an API. So the
-    --      particle is not decoration over the prop; it is the entire visual.
+    -- `weapon_flare`, NOT `weapon_flaregun`. Both appear in the wild by this
+    -- route; the crate-drop resource -- our exact case -- uses `weapon_flare`,
+    -- which is the thrown flare whose AMMO_FLARE block carries the light.
+    -- `weapon_flaregun` is the pistol that fires it, and the owner's reference
+    -- uses it because it is firing from an aircraft with real velocity.
+    flareWeapon = 'weapon_flare',
+    -- RequestWeaponAsset's two extra arguments, as two of the three resources
+    -- pass them. THE WAIT LOOP MUST CONTAIN A Citizen.Wait OR THE CLIENT HANGS,
+    -- which is why loadWeapon in client/flares.lua is bounded like every other
+    -- streaming wait in this project rather than a bare `while not ... do end`.
+    flareAssetP1 = 31,
+    flareAssetP2 = 26,
+    -- The separation between the shot's start and end coordinates, in metres.
+    -- SMALL ENOUGH THAT THE FLARE DOES NOT TRAVEL AND NON-ZERO ON PURPOSE: the
+    -- reference resource's comment records that identical coords leave a flare
+    -- that "remains static and won't remove itself later".
+    flareEpsilon = 0.0001,
+    -- Negative, as every resource that does this passes it.
+    flareSpeed   = -1.0,
+
+    -- ═══ HOW OFTEN A FLARE IS RE-FIRED, AND WHY THERE ARE TWO NUMBERS ═══
     --
-    --   C. THE PROP WAS ALSO TOO SMALL. A road flare is about a foot long and
-    --      it was drawn at authored size on a crate starting 260 METRES up.
-    --      Even had the name been right it would have been a pixel. Hence
-    --      `flareScale`.
+    -- A FIRED FLARE BURNS OUT. AMMO_FLARE's LifeTime is 62.5s and its
+    -- LifeTimeAfterExplosion is 60s, so a flare lit at the release is gone about
+    -- a minute later whatever we do -- which is fine for a 30s descent and is
+    -- NOT fine for a husk the owner wants marked for the rest of the match.
     --
-    --   B. THE EFFECT IS A PROJECTILE TRAIL AND WE HAVE NO VELOCITY. A `proj_*`
-    --      trail is the effect a moving projectile drags behind it, and the
-    --      strongest available hypothesis for the missing smoke is that its
-    --      emission is driven by the entity's velocity -- of which a frozen,
-    --      teleported prop has exactly none. The effect would start, report a
-    --      valid handle, sit in the right place and emit nothing.
+    --   `flareFallRefireMs` -- during the DESCENT. A flare fired in place stays
+    --      in place while the crate falls away from it, so the only way a
+    --      falling crate has flares beside it is to light a new one as it goes.
+    --      What that leaves behind is a burning column down the descent path,
+    --      which is the "smoke trails as it falls" the owner asked for on
+    --      2026-08-21, drawn by the engine instead of by us. At 3000ms a 30s
+    --      descent lights ten a side; they expire on their own about a minute
+    --      later and WE NEVER DELETE THEM -- see below.
     --
-    --      AND WE MAY NOT FIX THAT BY ADDING VELOCITY. Nothing in a drop is
-    --      simulated; SetEntityVelocity here would be the first thing in the
-    --      file that was. So the effect has to be one that emits on its own.
-    --      `weap_smoke_grenade` is that: a self-sustaining plume built to be
-    --      read across a map, verified present in `core`, and it is what a
-    --      smoke trail off a falling crate should look like anyway.
+    --   `flareRefireMs` -- on the LANDED crate and its husk. Just under the
+    --      vanilla burn time, so there is always one lit and rarely two.
     --
-    --   C. THE FAILURE HANDLE WAS THE WRONG NUMBER. The client tested the
-    --      returned handle against 0. Cfx's own wrapper says a failed
-    --      START_PARTICLE_FX_LOOPED_ON_ENTITY answers -1, and that a non-(-1)
-    --      handle can STILL be a dead effect -- the official check is
-    --      `handle ~= -1 and DoesParticleFxLoopedExist(handle)`. So a failure
-    --      was being stored as a success and nothing said so.
+    -- ═══ WE DO NOT CLEAN THESE UP, AND THAT IS DELIBERATE ═══
     --
-    --   The one thing the first attempt got right and is kept verbatim:
-    --   UseParticleFxAsset is `_SET_PTFX_ASSET_NEXT_CALL` and applies to ONE
-    --   following call, so it is re-asserted immediately before each start.
+    -- A fired flare settles into a real `w_am_flare` world object that we did
+    -- not create and hold no handle to. The reference resources find theirs
+    -- again with GetClosestObjectOfType and a radius -- a spatial search that
+    -- would, on this map, just as happily delete a flare somebody else lit. The
+    -- engine already expires them on AMMO_FLARE's own clock, so the honest
+    -- answer is to let it: nothing here creates an object it cannot delete,
+    -- because nothing here creates one at all.
+    flareFallRefireMs = 3000,
+    flareRefireMs     = 45000,
+
+    -- ------------------------------------------------------------------
+    -- THE OBJECT ROUTE (the fallback, and the only observable one)
+    -- ------------------------------------------------------------------
     --
-    -- ─── AND IT IS STILL A GUESS, WHICH IS WHY /brflare EXISTS ───
-    --
-    -- Nothing outside a running client can say whether a plume renders, how big
-    -- it reads, or whether B above was the real cause. So the client has a
-    -- command that starts any asset/effect/scale on a test prop in front of the
-    -- player and reports whether the handle is live -- which settles "it never
-    -- started" against "it started and I cannot see it" in one playtest instead
-    -- of another round of reasoning. Verified alternatives to try, all in
-    -- `core`: proj_flare_trail, proj_flare_fuse, exp_grd_flare,
-    -- weap_heist_flare_trail, env_smoke_grenade, proj_grenade_trail,
-    -- ent_amb_smoke_general. Also `wpn_flare` / `proj_heist_flare_trail`.
-    -- IN PREFERENCE ORDER, ALL THREE VERIFIED TO EXIST. The client takes the
-    -- first that loads and prints which; `w_am_flare` is WEAPON_FLARE's own
-    -- world model and is the last resort because a weapon model carried as a
-    -- plain object is the least predictable of the three.
-    flareProps     = { 'prop_flare_01b', 'prop_flare_01', 'w_am_flare' },
-    -- FOUR TIMES AUTHORED SIZE, AND THIS NUMBER IS A GUESS. A road flare has to
-    -- read from the ground while the crate is still hundreds of metres up;
-    -- nothing here can say what size does that. /brpropscale's warning applies
-    -- in full -- if the matrix scale does not render on this build then neither
-    -- does this, and the flares stay invisible for the same reason the crate
-    -- stays small.
-    flareScale     = 4.0,
-    flarePtfxAsset = 'core',
-    flarePtfxName  = 'weap_smoke_grenade',
+    -- Only read when `flareRoute` is 'object'. The model is a config value with
+    -- its alternatives beside it so all three can be tried from the console
+    -- without a code change -- but understand what is being tried: none of them
+    -- glows, and the visible part of this route is the PARTICLE.
+    flareModel        = 'w_am_flare',
+    flareAlternatives = { 'w_am_flare', 'prop_flare_01', 'prop_flare_01b' },
+    -- FOUR TIMES AUTHORED SIZE, AND STILL A GUESS. /brpropscale's warning
+    -- applies in full: if the matrix scale does not render on this build then
+    -- neither does this.
+    flareScale        = 4.0,
+    -- `core` / `exp_grd_flare` IS THE FLARE'S OWN EFFECT and it replaced
+    -- `weap_smoke_grenade` here. The chain is traceable: AMMO_FLARE's
+    -- <Explosion> is FLARE, eExplosionTag FLARE is 22, and explosionfx.dat's
+    -- EXP_VFXTAG_FLARE row names `exp_grd_flare`. It is verified present in
+    -- `core` and there is a shipped reference using it at a world coordinate
+    -- (Coffeelot/cw-racingapp). Other verified pairs, all reachable with
+    -- `/brflare ptfx <asset> <name> [scale]` and none needing an edit here:
+    --   core                     proj_flare_trail, proj_flare_fuse,
+    --                            weap_heist_flare_trail, weap_smoke_grenade
+    --   wpn_flare                proj_heist_flare_trail
+    --   scr_oddjobtraffickingair scr_crate_drop_flare, scr_crate_drop_beacon
+    --   scr_apartment_mp         scr_finders_package_flare
+    flarePtfx         = true,
+    flarePtfxAsset    = 'core',
+    flarePtfxName     = 'exp_grd_flare',
     -- Bigger than the 1.0 that showed nothing, and a plume rather than a wisp.
-    flarePtfxScale = 2.0,
+    flarePtfxScale    = 2.0,
+
+    -- ------------------------------------------------------------------
+    -- WHERE THEY GO, ON EITHER ROUTE
+    -- ------------------------------------------------------------------
+    --
     -- In the crate's LOCAL frame, so they stay on the crate's left and right
     -- faces while it yaws. One per side, and the sign is the only difference.
     -- Wider than they were, because the crate is drawn at 2x now and the old
     -- 0.55 would put both flares inside it.
-    flareOffset    = { x = 1.1, y = 0.0, z = 0.0 },
+    flareOffset = { x = 1.1, y = 0.0, z = 0.0 },
+
+    -- ------------------------------------------------------------------
+    -- ...AND THEY STAY ON THE BOX AFTER IT LANDS, THROUGH THE OPEN
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-22: "there should be flares on the husk too fwiw."
+    --
+    -- THE HUSK IS NOT A SECOND OBJECT, it is the same registry entry re-skinned
+    -- in place (server/loot.lua's openCrate: kind 'chest' -> 'husk', item
+    -- 'airdrop' -> 'airdrophusk', prop -> huskProp). client/loot.lua answers a
+    -- re-skin by DELETING the crate's prop and building the husk's, so anything
+    -- that lived on the crate's OBJECT would die with it -- which is exactly
+    -- what "the flares were torn down with the sealed crate" would mean.
+    --
+    -- SO THE LANDED FLARES ARE ATTACHED TO NOTHING. client/flares.lua asks
+    -- BR.Loot.airdropBox() where the box is and puts flares there; on the
+    -- projectile route it re-fires on `flareRefireMs`, on the object route it
+    -- keeps one pair alive and writes their coordinates. Either way the sealed
+    -- crate becoming its husk swaps the box UNDERNEATH the flares. On the object
+    -- route the two flare entities are never touched at all, which is a literal
+    -- carry-over rather than a rebuild that happens to look like one.
+    --
+    -- THEY DIE WITH THE PROP AND COME BACK WITH IT. The box's prop is streamed:
+    -- client/loot.lua despawns it past `propDistance + propHysteresis` and
+    -- rebuilds it on the way back, and the accessor answers nil in between, so
+    -- the flares stop being placed and (on the object route) are deleted. At the
+    -- end of the match forgetAll() drops every entry and the same nil tears them
+    -- down for good. There is no second lifetime here to get wrong, and nothing
+    -- survives the match it belonged to -- except a projectile already in the
+    -- air, which the engine expires on its own within a minute.
+    --
+    -- 10Hz, NOT PER FRAME. A landed box only moves when a car hits it, and the
+    -- pass that answers that (client/loot.lua's `loot.crates` drag) is already
+    -- at 10Hz.
+    flareOnLanded = true,
 
     -- HOW FAR THE CRATE TURNS OVER THE WHOLE DESCENT, in degrees. A crate under
     -- a canopy that never turns reads as a prop sliding down an invisible rail.

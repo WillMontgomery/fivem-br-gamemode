@@ -38,6 +38,15 @@ local entries   = {}      -- [id] = entry, with prop bookkeeping attached
 local byObject  = {}      -- [objectHandle] = id, so a ray hit resolves instantly
 local queue     = {}      -- ids waiting for a model
 local queued    = {}      -- [id] = true, so the queue cannot double up
+
+--- The one entry in a match that is the airdrop's box.
+---
+--- CACHED AS AN ID RATHER THAN FOUND BY WALKING, because client/flares.lua asks
+--- for it ten times a second for the whole match and the registry is hundreds
+--- of entries at a busy POI. The id does NOT change when the crate is opened --
+--- a husk is the same entry re-skinned in place -- so one id covers both halves
+--- of the box's life, which is exactly the property the flares need.
+local airdropId = nil
 local draining  = false
 local myCell    = nil     -- last cell reported to the server
 local claimedAt = {}      -- [id] = gametimer, to stop a held key spamming claims
@@ -855,10 +864,35 @@ local function clearRetiring()
     end
 end
 
+--- The world object the airdrop's box is currently drawn as -- the sealed crate,
+--- or the husk it becomes -- or nil if it has no prop right now.
+---
+--- ═══ WHY client/flares.lua ASKS FOR AN OBJECT AND NOT A POSITION ═══
+---
+--- Owner, 2026-08-22: "there should be flares on the husk too fwiw."
+---
+--- A landed crate is a PHYSICS object: drive into one and it moves, and only
+--- the local prop moves (the entry's authoritative position never changes). So
+--- the flares have to follow the PROP rather than the entry, or a crate shunted
+--- across a car park leaves its flares standing where it used to be.
+---
+--- AND IT ANSWERS nil FOR THE WHOLE OF THE REST OF THE MATCH, which is the
+--- flares' entire lifetime rule and the reason they need no teardown of their
+--- own: `e.obj` is nil while the box is streamed out (loot.props despawns it
+--- past propDistance + propHysteresis), nil between a crate's prop being
+--- deleted and its husk's being built, and nil forever once forgetAll() has run.
+--- @return integer|nil
+function BR.Loot.airdropBox()
+    local e = airdropId and entries[airdropId] or nil
+    if not e or not e.obj then return nil end
+    return e.obj
+end
+
 local function forget(id)
     local e = entries[id]
     if not e then return end
     despawn(e)
+    if airdropId == id then airdropId = nil end
     entries[id] = nil
     queued[id] = nil
     poses[id] = nil
@@ -875,6 +909,11 @@ local function forgetAll()
     clearRetiring()
     for id in pairs(entries) do forget(id) end
     entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
+    -- AND THE AIRDROP BOX WITH THEM. Left set, BR.Loot.airdropBox() would read
+    -- an id out of a registry that no longer has it -- harmless, because the
+    -- entry lookup answers nil -- but a stale id across a match boundary is
+    -- exactly the class of thing this file has been bitten by before.
+    airdropId = nil
     myCell, target = nil, nil
     clearHold('the whole registry was dropped')
     shineId, outlinedId = nil, nil
@@ -1123,6 +1162,19 @@ end
 local function addEntries(list)
     for _, d in ipairs(list or {}) do
         if d.id then
+            -- ═══ REMEMBER WHICH ENTRY IS THE AIRDROP'S BOX ═══
+            --
+            -- Set on BOTH halves of its life and off the ITEM ID rather than
+            -- the kind, because 'chest' and 'husk' are what the other ~1300
+            -- crates on the map call themselves and 'airdrop'/'airdrophusk' are
+            -- the airdrop's own (the same distinction airdropScale already
+            -- makes, and the reason those ids exist at all). A re-skin keeps
+            -- the id, so this is idempotent across the open rather than a
+            -- second registration.
+            if d.item == 'airdrop' or d.item == 'airdrophusk' then
+                airdropId = d.id
+            end
+
             local have = entries[d.id]
             if have then
                 -- A RE-SEND IS A CHANGE, not a duplicate. Two things arrive

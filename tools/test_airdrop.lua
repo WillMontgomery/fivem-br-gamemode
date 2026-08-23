@@ -162,46 +162,116 @@ do
         'the crate canopy is not the player canopy')
     eq(A.chuteModel, 'p_cargo_chute_s', 'it is Rockstar\'s own cargo chute')
 
-    -- ═══ THE FLARES, AND THE NAME THAT WAS NOT A MODEL ═══
+    -- ═══ THE FLARES ARE A PROJECTILE NOW, AND NO MODEL WAS EVER GOING TO
+    --     WORK ═══
     --
-    -- The 2026-08-21 flares shipped `prop_flare_01a`, which does not exist in
-    -- GTA V. IsModelValid refused it, loadModel returned false, and the whole
-    -- flare branch -- props AND particles, both behind that one `if` -- never
-    -- ran. The owner reported seeing no flares and no smoke, which is exactly
-    -- what that produces, and nothing in the game or the logs said so.
+    -- The 2026-08-21 flares shipped `prop_flare_01a`, which is not a model at
+    -- all. The 2026-08-22 flares shipped a candidate list, loaded one of three
+    -- real models, and the owner still saw nothing -- because every visual a
+    -- flare has lives in AMMO_FLARE's CAmmoThrownInfo and is applied by the
+    -- PROJECTILE controller. `w_am_flare` is only the drawable it wears.
     --
-    -- No test outside a running client can prove a model name is real. What it
-    -- CAN do is refuse the one name we know is fake, and require the config to
-    -- offer more than one candidate so a single bad guess cannot delete the
-    -- feature again.
-    ok(type(A.flareProps) == 'table' and #A.flareProps >= 2,
-        'the flares name at least two candidate props, so one bad name is '
-        .. 'survivable')
-    local sawFake = false
-    for _, n in ipairs(A.flareProps or {}) do
-        ok(type(n) == 'string' and n ~= '', 'every flare prop candidate is a name')
+    -- No test outside a running client can prove any of that renders. What it
+    -- CAN pin is the shape of the decision: that the default route is the
+    -- projectile one, that the numbers the projectile route depends on are
+    -- inside the bounds that make them work, and that the fake model name never
+    -- comes back.
+    eq(A.flareRoute, 'projectile',
+        'the default route is a real fired flare, not a prop')
+    ok(type(A.flareWeapon) == 'string' and A.flareWeapon ~= '',
+        'and it names a weapon to fire')
+
+    -- NON-ZERO, AND IT IS LOAD-BEARING IN BOTH DIRECTIONS. Big enough and the
+    -- flare travels, which is the ballistic objection this route had to answer;
+    -- ZERO and the reference resource's own comment says it "remains static and
+    -- won't remove itself later" -- so the engine's expiry, which is the only
+    -- reason we may create something we hold no handle to, depends on this.
+    ok((A.flareEpsilon or 0.0) > 0.0,
+        'the shot has a non-zero separation, or the flare never expires')
+    ok((A.flareEpsilon or 1.0) < 0.01,
+        'and a tiny one, or the flare flies off instead of standing still')
+
+    -- ═══ THE TWO CADENCES, AGAINST THE ONE NUMBER THAT BOUNDS THEM BOTH ═══
+    --
+    -- AMMO_FLARE's LifeTime is 62.5s. A landed flare re-lit less often than
+    -- that leaves the husk dark between flares, which is the owner's request
+    -- ("there should be flares on the husk too") quietly not happening.
+    ok((A.flareRefireMs or 0) > 0 and (A.flareRefireMs or 0) < 62500,
+        'the landed cadence re-lights before the vanilla 62.5s burn ends, so '
+        .. 'the husk is never dark')
+    -- And the descent has to light more than one, or a "trail" is one flare
+    -- hanging at the release altitude while the crate falls away from it.
+    ok((A.flareFallRefireMs or 0) > 0
+       and (A.flareFallRefireMs or 0) * 2 <= (A.descentMs or 0),
+        'and the descent cadence fires at least twice on the way down, which is '
+        .. 'what makes a trail rather than a dot')
+    eq(A.flareOnLanded, true, 'and the landed box gets flares at all')
+
+    -- The object route is the fallback and its numbers still have to be sane,
+    -- because it is one console command away and it is what gets reached for
+    -- when the projectile route shows nothing.
+    ok(type(A.flareModel) == 'string' and A.flareModel ~= '',
+        'the fallback route names exactly one model rather than a chain')
+    local sawFake = (A.flareModel == 'prop_flare_01a')
+    for _, n in ipairs(A.flareAlternatives or {}) do
+        ok(type(n) == 'string' and n ~= '', 'every named alternative is a name')
         if n == 'prop_flare_01a' then sawFake = true end
     end
     ok(not sawFake,
         'and prop_flare_01a -- which is not a model, and is the whole of the '
-        .. 'invisible-flare bug -- is not among them')
-
+        .. 'first invisible-flare bug -- is named nowhere')
     ok(type(A.flarePtfxAsset) == 'string' and A.flarePtfxAsset ~= '',
-        'the flares have a particle asset to stream')
+        'the fallback has a particle asset to stream')
     ok(type(A.flarePtfxName) == 'string' and A.flarePtfxName ~= '',
         'and an effect inside it')
     ok((A.flarePtfxScale or 0.0) > 0.0,
         'and a scale above zero -- a zero-scale effect renders nothing and '
         .. 'reports a perfectly healthy handle')
     ok((A.flareScale or 0.0) > 1.0,
-        'and the prop is scaled up, because a foot-long flare 260m away is a '
+        'and the prop is scaled up, because a foot-long flare 170m away is a '
         .. 'pixel')
+
     ok(A.flareOffset and (A.flareOffset.x or 0.0) > 0.0,
         'and an offset with a positive x -- the sign is what makes it two sides')
     -- The crate is drawn at 2x now, so an offset that used to clear it may not.
     ok((A.flareOffset.x or 0.0) >= (A.crateScale or 1.0) * 0.5,
         'and the offset clears a crate drawn at crateScale rather than sitting '
         .. 'inside it')
+end
+
+describe('config: the Cargobob came down, and what that traded')
+do
+    -- Owner, 2026-08-22: "The cargobob seemed to be too high off the ground
+    -- when it came in. I could barely hear it."
+    --
+    -- THE FALL TIME IS THE HALF THAT WAS CONFIRMED GOOD ("the airdrop arrived
+    -- perfectly") AND IT IS PINNED AS A LITERAL. BR.AirdropHeightAt is
+    -- `alt * (1 - progress)` measured against descentMs, so lowering the
+    -- altitude changes the descent RATE and not its duration -- and this line
+    -- is what fails if somebody ever "compensates" by shortening the fall.
+    eq(A.descentMs, 30000, 'the descent still takes exactly thirty seconds')
+    eq(A.altitude, 170.0, 'from 170m rather than the 260m that was too high')
+    eq(A.planeAltAbove, 25.0, 'with the aircraft 25m above the crate')
+    -- The aircraft's own height is the sum, and it is the number the owner was
+    -- complaining about. 300m before, 195m now.
+    ok(near(A.altitude + A.planeAltAbove, 195.0),
+        'so the Cargobob flies at 195m rather than 300m')
+    -- AND THE RATE IS WHAT MOVED. 170/30 is 5.67 m/s, which is inside the real
+    -- 5-7 m/s band for a cargo canopy -- a slower crate, not a wrong one.
+    local mps = A.altitude / (A.descentMs / 1000.0)
+    ok(mps > 4.0 and mps < 7.5,
+        ('the crate falls at %.1f m/s, which is still a canopy rather than a '
+         .. 'feather or a rock'):format(mps))
+
+    -- ═══ MAX IS 2. HIGH IS 3. THE ENUM IS NOT IN ASCENDING ORDER. ═══
+    --
+    -- eAudVehiclePriority is NORMAL 0, MEDIUM 1, MAX 2, HIGH 3 -- read off
+    -- citizenfx/natives, the file docs.fivem.net renders. A 3 shipped in the
+    -- belief that it was the maximum is a HIGH, which is weaker and would look
+    -- exactly like the native doing nothing at all. This literal is the only
+    -- thing standing between us and that, so it is a literal.
+    eq(A.planeAudioPriority, 2,
+        'the audio priority is MAX (2), not the higher-looking HIGH (3)')
 end
 
 describe('config: exclusive loot is exclusive')
@@ -1237,6 +1307,49 @@ BR.Loot = {
     end,
 }
 
+-- ═══ THE NET GAME EVENT SURFACE, WHICH IS NEW AND IS THE RISKIEST LINE IN
+--     THE WHOLE FEATURE ═══
+--
+-- server/airdrop.lua now cancels `startProjectileEvent` for flare projectiles,
+-- so that every client's locally-fired flares are not relayed to the other
+-- forty-seven. Cancelling that event TOO BROADLY would stop grenades, stickies
+-- and molotovs replicating -- thrown weapons would become invisible to
+-- everyone but the thrower, which looks like a netcode fault rather than like
+-- one line in this file. So the handler is driven here as code.
+local srvHandlers = {}
+function AddEventHandler(name, fn)
+    srvHandlers[name] = srvHandlers[name] or {}
+    srvHandlers[name][#srvHandlers[name] + 1] = fn
+end
+
+local srvCancelled = false
+function CancelEvent() srvCancelled = true end
+
+--- FiveM's GetHashKey answers a SIGNED 32-bit integer while the wire carries
+--- the UNSIGNED one, which is exactly the mismatch BR.NormHash exists for --
+--- and a filter that silently never matches looks identical to an event that
+--- never fires. So the rig's hashes are NEGATIVE, and the events below are
+--- fired with the unsigned form.
+local HASHES = {
+    weapon_flare    = -1233104067,
+    weapon_flaregun = -1198879012,
+    weapon_grenade  = -1813897027,
+    weapon_stickybomb = -1633413354,
+}
+function GetHashKey(s) return HASHES[s] or 4242 end
+
+--- What a client would actually put on the wire for that weapon.
+local function wireHash(name)
+    return GetHashKey(name) & 0xFFFFFFFF
+end
+
+--- Fire a server event; answer whether a handler cancelled it.
+local function fireServer(name, ...)
+    srvCancelled = false
+    for _, fn in ipairs(srvHandlers[name] or {}) do fn(...) end
+    return srvCancelled
+end
+
 loadAll({ 'br_core/server/airdrop.lua' })
 
 --- A match with a live storm centred on a real POI, big enough that plenty of
@@ -1968,6 +2081,66 @@ do
     eq(#m.airdrop.pending, 0, 'and the drop is cancelled rather than retried forever')
 end
 
+describe('server: flare projectiles do not replicate, and nothing else changes')
+do
+    -- ═══ THE MOST DANGEROUS LINE IN THE FEATURE, DRIVEN AS CODE ═══
+    --
+    -- The flares are real projectiles now, and a projectile REPLICATES: FiveM's
+    -- server carries a full wire parser for CStartProjectileEvent and relays it
+    -- to every client that can see the shooter. Without this handler each
+    -- client would draw its own pair plus forty-seven remote copies.
+    --
+    -- Cancelling suppresses the relay -- both of the server's packet paths gate
+    -- it on `if (eventHandler()) { RouteEvent(...); }` -- but cancelling too
+    -- MUCH is catastrophic in a way that would not look like this file:
+    -- grenades, stickies and molotovs are projectiles the match requires to
+    -- replicate, and suppressing those makes thrown weapons invisible to
+    -- everyone but the thrower.
+    local before = BR.Airdrop.flaresSuppressed
+
+    ok(fireServer('startProjectileEvent', 1,
+        { weaponHash = wireHash('weapon_flare') }),
+        'a flare projectile is refused')
+    ok(fireServer('startProjectileEvent', 1,
+        { weaponHash = wireHash('weapon_flaregun') }),
+        'and so is the flare gun, because /brflare weapon can switch to it')
+
+    -- ═══ AND THE THINGS PLAYERS ACTUALLY THROW ARE UNTOUCHED ═══
+    ok(not fireServer('startProjectileEvent', 1,
+        { weaponHash = wireHash('weapon_grenade') }),
+        'a GRENADE still replicates -- suppressing it would make thrown '
+        .. 'weapons invisible to everyone but the thrower')
+    ok(not fireServer('startProjectileEvent', 1,
+        { weaponHash = wireHash('weapon_stickybomb') }),
+        'and so does a sticky')
+
+    eq(BR.Airdrop.flaresSuppressed - before, 2,
+        'the counter follows the cancels exactly, so a filter that matches '
+        .. 'everything and one that matches nothing can be told apart')
+
+    -- ═══ THE SIGNED/UNSIGNED TRAP, WHICH IS INVISIBLE WHEN IT FIRES ═══
+    --
+    -- GetHashKey answers a NEGATIVE 32-bit integer in Lua; the wire carries the
+    -- unsigned one. Comparing them directly is false for the same weapon, the
+    -- filter never matches, and the symptom is "flares replicate anyway" --
+    -- which looks exactly like the event not being raised at all. Both forms
+    -- must be accepted.
+    ok(fireServer('startProjectileEvent', 1,
+        { weaponHash = GetHashKey('weapon_flare') }),
+        'the SIGNED form of the same hash is refused too, so a build that '
+        .. 'reports it either way is handled')
+
+    -- Malformed payloads must not throw on a handler the whole server's
+    -- projectile traffic runs through.
+    ok(not fireServer('startProjectileEvent', 1, nil), 'nil data cancels nothing')
+    ok(not fireServer('startProjectileEvent', 1, 'nope'),
+        'and neither does a payload that is not a table')
+    ok(not fireServer('startProjectileEvent', 1, {}),
+        'and neither does one with no weaponHash at all')
+    ok(not fireServer('startProjectileEvent', 1, { weaponHash = 'banana' }),
+        'and neither does a weaponHash that is not a number')
+end
+
 -- =========================================================================
 -- PART C -- the client
 -- =========================================================================
@@ -2017,8 +2190,21 @@ function IsModelValid(m)
     return validModels[m] and 1 or 0
 end
 function PlayerPedId() return 1 end
-function GetEntityCoords() return me end
-function GetEntityHeading() return me.h end
+--- WHERE AN ENTITY IS, and it has to be per-entity rather than always the
+--- player: client/flares.lua asks the LANDED BOX where it is, and a rig that
+--- answered the player's position for every handle would place the husk's
+--- flares wherever the player happened to be standing and still pass every
+--- distance check.
+function GetEntityCoords(e)
+    local t = ents[e] or vehicles[e] or peds[e]
+    if t then return t end
+    return me
+end
+function GetEntityHeading(e)
+    local t = ents[e] or vehicles[e] or peds[e]
+    if t and t.heading then return t.heading end
+    return me.h
+end
 function RequestModel() end
 function HasModelLoaded(m)
     if validModels and not validModels[m] then return 0 end
@@ -2164,17 +2350,61 @@ BR.Native = {
     pedReachable = function() return reachable, reachWhy end,
 }
 
-loadAll({ 'br_core/client/airdrop.lua' })
+-- ═══ THE PROJECTILE SURFACE, WHICH IS THE THIRD ATTEMPT'S WHOLE BET ═══
+--
+-- A fired flare has NO HANDLE. There is no native that reports one, so nothing
+-- in the game and nothing in this rig can ask whether it rendered. What CAN be
+-- asserted is that the call was made, with the right weapon, at the right
+-- place, at the right cadence -- which is exactly the set of things the first
+-- two attempts got wrong and nobody could see.
+local shots = {}        -- every ShootSingleBulletBetweenCoords
+local weaponAssets = {} -- [hash] = true once requested
+local weaponLoads = 1   -- what HasWeaponAssetLoaded answers
+
+function RequestWeaponAsset(h) weaponAssets[h] = true end
+function HasWeaponAssetLoaded(h)
+    if weaponLoads == 0 then return 0 end
+    return weaponAssets[h] and 1 or 0
+end
+function ShootSingleBulletBetweenCoords(x1, y1, z1, x2, y2, z2, damage, p7,
+                                        weapon, owner, audible, invisible, speed)
+    shots[#shots + 1] = {
+        x1 = x1, y1 = y1, z1 = z1, x2 = x2, y2 = y2, z2 = z2,
+        damage = damage, p7 = p7, weapon = weapon, owner = owner,
+        audible = audible, invisible = invisible, speed = speed,
+    }
+end
+
+--- What SET_AUDIO_VEHICLE_PRIORITY was asked for. The native returns void and
+--- has no getter, so this table IS the whole of what can be validated -- which
+--- is the honest answer to the owner's "we need a way to validate it".
+local audioCalls = {}
+function SetAudioVehiclePriority(veh, pri)
+    audioCalls[#audioCalls + 1] = { veh = veh, pri = pri }
+end
+
+--- The landed airdrop box client/flares.lua asks about, stubbed rather than
+--- standing up the whole of client/loot.lua. THE HANDLE IS THE POINT: a sealed
+--- crate becoming its husk is a NEW entity handle for the SAME registry entry,
+--- and the carry-over test below changes exactly this number and asserts that
+--- the flares do not notice.
+local lootBox = nil
+BR.Loot = { airdropBox = function() return lootBox end }
+
+loadAll({ 'br_core/client/flares.lua', 'br_core/client/airdrop.lua' })
 
 local render = loops['airdrop.render']
+local landedPass = loops['flares.landed']
 
 local function clientReset()
-    -- onResourceStop is also what drops the cached flare model, so every reset
-    -- re-resolves it against whatever `validModels` says this time round.
+    -- onResourceStop is also what drops the cached flare model and weapon
+    -- asset, so every reset re-resolves them against whatever this test says.
     fire('onResourceStop', 'br_core')
     ents, blips, attaches, anims, moves = {}, {}, {}, {}, {}
     vehicles, peds = {}, {}
     fxStarted, fxStopped, fxAssetUsed = {}, {}, {}
+    shots, weaponAssets, audioCalls = {}, {}, {}
+    weaponLoads = 1
     scaled = {}
     ground.ok, ground.z = 1, 12.0
     modelLoaded, ptfxLoaded = 1, 1
@@ -2182,6 +2412,13 @@ local function clientReset()
     fxAlive = true
     validModels = nil
     reachable, reachWhy = true, 'ok'
+    lootBox = nil
+    -- THE ROUTE IS RESET TOO. /brflare edits the live config on purpose, and a
+    -- test that switched to the object route would otherwise poison every test
+    -- after it -- which is the same silent-carry-over class of bug the flares
+    -- themselves have twice been.
+    A.flareRoute = 'projectile'
+    A.flarePtfx  = true
     -- Standing ON the drop point, so the plane's view radius passes unless a
     -- test deliberately walks away.
     me.x, me.y, me.z = 100.0, 200.0, 12.0
@@ -2189,14 +2426,9 @@ local function clientReset()
     gameMs = gameMs + 1000000
 end
 
---- The flare model the client will actually have picked.
----
---- A LIST NOW, NOT A NAME, and that is the fix for the invisible flares: the
---- shipped `prop_flare_01a` is not a model, IsModelValid refused it, and the
---- whole flare branch never ran. With every candidate valid the client takes
---- the first; a test that invalidates it gets the second.
-local function flareProp(n)
-    return (A.flareProps or {})[n or 1]
+--- The model the object route will build, when a test switches to it.
+local function flareProp()
+    return A.flareModel
 end
 
 --- Every entity currently alive, by model name.
@@ -2507,41 +2739,186 @@ do
     ok(e ~= nil, 'the crate is built')
     eq(e.model, A.crateProp, 'and it is the crate prop we already use')
 
-    -- FOUR OBJECTS, AND EVERY ONE OF THEM NON-NETWORKED. This is not a style
-    -- check: `sv_entityLockdown relaxed` refuses a client-created NETWORKED
-    -- entity outright, so a single `true` here is an object that silently never
+    -- TWO OBJECTS, AND BOTH NON-NETWORKED. This is not a style check:
+    -- `sv_entityLockdown relaxed` refuses a client-created NETWORKED entity
+    -- outright, so a single `true` here is an object that silently never
     -- appears for anyone.
-    eq(entCount(), 4, 'a crate, a canopy and two flares')
+    --
+    -- IT WAS FOUR UNTIL 2026-08-22. The flare props are gone -- the flares are
+    -- fired projectiles now, which are the engine's and not entities of ours at
+    -- all. If this ever counts more than two again, something has started
+    -- creating flare objects on the default route.
+    eq(entCount(), 2, 'a crate and a canopy, and nothing else')
     local networked = 0
     for _, x in pairs(ents) do
         if x.isNetwork ~= false then networked = networked + 1 end
     end
-    eq(networked, 0, 'and none of them is networked')
+    eq(networked, 0, 'and neither of them is networked')
 
     eq(#entsOfModel(A.chuteModel), 1, 'the canopy exists')
-    eq(#entsOfModel(flareProp()), 2, 'and a flare on each side')
+    eq(#entsOfModel(flareProp()), 0,
+        'and no flare PROP is created on the projectile route -- no model '
+        .. 'glows, which is the whole of the third attempt')
     ok(#anims >= 1, 'and the canopy deploy anim is played')
 
-    -- NOTHING IS ATTACHED TO ANYTHING. The canopy and the flares are positioned
-    -- from the same solver as the crate; an ATTACH_ENTITY_TO_ENTITY would be a
-    -- second mechanism deciding where a part of the drop is, and this suite
-    -- could not see it at all.
+    -- NOTHING IS ATTACHED TO ANYTHING. The canopy is positioned from the same
+    -- solver as the crate; an ATTACH_ENTITY_TO_ENTITY would be a second
+    -- mechanism deciding where a part of the drop is, and this suite could not
+    -- see it at all.
     eq(#attaches, 0, 'and nothing is attached to anything')
 end
 
-describe('client: the flares trail smoke')
+describe('client: the falling crate lights real flares')
 do
+    -- ═══ WHAT A TEST CAN AND CANNOT SAY ABOUT A PROJECTILE ═══
+    --
+    -- It has no handle. Nothing in the game reports whether it rendered, so
+    -- nothing here pretends to. What this block pins is every fact the first
+    -- two attempts got wrong and nobody could see: that the call is made at
+    -- all, with the configured weapon, at the two positions the crate's faces
+    -- are at, with the arguments that stop it flying away.
     clientReset()
     announce()
     render()
 
-    eq(#fxStarted, 2, 'one looped effect, on each flare')
+    eq(#shots, 2, 'one flare on each side, at the release')
+    for _, s in ipairs(shots) do
+        eq(s.weapon, A.flareWeapon, 'the configured weapon')
+        eq(s.owner, 0, 'owned by nobody, so nothing it does is attributed')
+        eq(s.damage, 0, 'and it does no damage')
+        eq(s.speed, A.flareSpeed, 'at the configured speed')
+        -- NEGATIVE, which is idiomatic across every resource that fires a flare
+        -- in place. Asserted as a SIGN rather than only as "whatever the config
+        -- says", because a config edited to a positive number would otherwise
+        -- pass this block unchanged.
+        ok((s.speed or 0) < 0, 'and that speed is negative')
+        -- ═══ THE SEPARATION IS THE ANSWER TO "A PROJECTILE IS BALLISTIC" ═══
+        --
+        -- Two coincident points give the shot no direction to travel in, so the
+        -- flare stands still. Non-zero because the reference resource records
+        -- that identical coords leave a flare that never removes itself -- and
+        -- the engine's own expiry is the only reason we are allowed to make
+        -- something we hold no handle to.
+        local sep = math.sqrt((s.x1 - s.x2) ^ 2 + (s.y1 - s.y2) ^ 2
+                              + (s.z1 - s.z2) ^ 2)
+        ok(sep > 0.0, 'the shot has a real separation, so the engine expires it')
+        ok(sep < 0.01, 'and a tiny one, so it does not fly anywhere')
+    end
+
+    -- ON OPPOSITE SIDES, which "each one is 1.1m from the crate" does not say.
+    -- Both flares stacked on one side satisfies every distance check, and a
+    -- mutation pass proved exactly that by flipping the sign and surviving.
+    local rec = drops and nil
+    ok(near(BR.Dist(shots[1].x1, shots[1].y1, shots[2].x1, shots[2].y1),
+            A.flareOffset.x * 2.0, 0.001),
+        'and they are a full diameter apart -- one offset, two signs')
+
+    -- ═══ THE CADENCE, WHICH IS WHAT MAKES A TRAIL RATHER THAN A DOT ═══
+    --
+    -- A fired flare stands where it was lit while the crate falls away from it.
+    -- Firing once would leave one flare at the release altitude and a crate
+    -- 170m below it; firing EVERY FRAME would light 1800 of them. Neither is
+    -- what the owner asked for.
+    render()
+    render()
+    eq(#shots, 2, 'a second frame within the cadence lights nothing new')
+
+    gameMs = gameMs + (A.flareFallRefireMs or 3000)
+    render()
+    eq(#shots, 4, 'and the cadence lights another pair when it comes due')
+
+    -- ...and the new pair is LOWER, because the crate has fallen. That is the
+    -- burning column, and it is the only assertion here that says the trail is
+    -- a trail.
+    ok(shots[3].z1 < shots[1].z1,
+        'lit lower than the last pair, because the crate fell between them')
+
+    -- NOTHING IS HELD, so there is nothing to leak and nothing to tear down.
+    eq(entCount(), 2, 'and still only a crate and a canopy exist')
+
+    -- ═══ AND THE FALLBACK IS NEGATIVE TOO ═══
+    --
+    -- `A.flareSpeed or -1.0` is only reached when the config value is missing,
+    -- which it never is -- so a mutation to that literal survived the whole
+    -- suite. A config key can be deleted by an override or a bad merge, and the
+    -- fallback is what runs then.
+    clientReset()
+    local realSpeed = A.flareSpeed
+    A.flareSpeed = nil
+    announce()
+    render()
+    ok(#shots >= 1, 'a missing flareSpeed still fires')
+    ok((shots[1].speed or 0) < 0,
+        'and the built-in fallback is negative, like every resource that does '
+        .. 'this')
+    A.flareSpeed = realSpeed
+end
+
+describe('client: touchdown leaves the fired flares to the engine')
+do
+    clientReset()
+    announce()
+    render()
+    local before = #fxStopped
+    local lit = #shots
+
+    gameMs = gameMs + A.descentMs
+    render()
+
+    eq(entCount(), 0, 'every object of ours is gone at touchdown')
+    eq(#fxStopped - before, 0,
+        'and no particle is stopped, because the projectile route started none')
+    ok(#shots >= lit, 'the flares already lit are not un-fired')
+    -- The engine expires them on AMMO_FLARE's own 62.5s clock. Nothing here
+    -- deletes an object it did not create, which is the reason the cleanup
+    -- loop the reference resources use -- GetClosestObjectOfType with a radius
+    -- -- is deliberately absent: on this map it would just as happily delete a
+    -- flare somebody else lit.
+end
+
+describe('client: a weapon asset that will not stream costs nothing')
+do
+    -- Best-effort, exactly as the canopy's deploy anim is. A drop that failed
+    -- to arrive because a weapon asset was missing is a match without its
+    -- airdrop, which is far worse than a crate with no flares.
+    clientReset()
+    weaponLoads = 0
+    announce()
+    render()
+    eq(#shots, 0, 'nothing is fired')
+    ok((BR.Flare.failed or 0) > 0, 'and the failure is COUNTED rather than '
+        .. 'silent -- /brairdrop prints it')
+    eq(entCount(), 2, 'but the crate and its canopy still arrive')
+
+    gameMs = gameMs + A.descentMs
+    render()
+    eq(entCount(), 0, 'and the drop still tears down cleanly')
+end
+
+describe('client: the object route still works, and is the one with a handle')
+do
+    -- ═══ WHY THIS ROUTE SURVIVES AT ALL ═══
+    --
+    -- A projectile can be asked nothing. A looped ptfx handle can be asked
+    -- whether it is alive. When the owner reports "no flares" again, this is
+    -- the route that tells "the client is not drawing flares" apart from "the
+    -- client is drawing flares that do not glow" -- two different bugs with one
+    -- symptom, which is what cost the last two rounds.
+    clientReset()
+    A.flareRoute = 'object'
+    announce()
+    render()
+
+    eq(#shots, 0, 'nothing is fired on this route')
+    eq(#entsOfModel(flareProp()), 2, 'a flare prop on each side')
+    eq(#fxStarted, 2, 'with one looped effect on each')
+
     local flares = entsOfModel(flareProp())
     local onFlare = 0
     for _, f in ipairs(fxStarted) do
         eq(f.name, A.flarePtfxName, 'the configured effect')
-        for _, h in ipairs(flares) do
-            if f.ent == h then onFlare = onFlare + 1 end
+        for _, hnd in ipairs(flares) do
+            if f.ent == hnd then onFlare = onFlare + 1 end
         end
     end
     eq(onFlare, 2,
@@ -2553,7 +2930,7 @@ do
     -- was named last, which on a quiet frame is nothing at all.
     eq(#fxAssetUsed, 2, 'the asset is re-asserted before every start')
 
-    -- ...and both are stopped, before the entities they are anchored to are
+    -- ...and both are stopped BEFORE the entities they are anchored to are
     -- deleted. A looped effect outlives its entity -- that is what looped means
     -- -- so the other order leaves an emitter running in mid-air forever.
     local n = #fxStopped
@@ -2565,10 +2942,8 @@ end
 
 describe('client: a particle asset that will not stream costs nothing')
 do
-    -- Best-effort, exactly as the canopy's deploy anim is. A flare with no
-    -- smoke still reads as a flare; a drop that failed to arrive because a
-    -- particle asset was missing is a match without its airdrop.
     clientReset()
+    A.flareRoute = 'object'
     ptfxLoaded = 0
     announce()
     render()
@@ -2590,6 +2965,7 @@ do
     -- answer is to refuse both.
     for _, failValue in ipairs({ -1, 0 }) do
         clientReset()
+        A.flareRoute  = 'object'
         ptfxHandle    = 0     -- the rig's "next start fails" switch
         ptfxFailValue = failValue
         announce()
@@ -2609,6 +2985,7 @@ do
     -- neither -1 nor 0 and is still DEAD. Only DoesParticleFxLoopedExist can
     -- tell, which is why Cfx asks it as well as the sentinel.
     clientReset()
+    A.flareRoute = 'object'
     fxAlive = false
     announce()
     render()
@@ -2618,6 +2995,174 @@ do
     render()
     eq(#fxStopped - before2, 0,
         'and it is still not stored, because the effect is not running')
+end
+
+describe('client: the flares survive the crate becoming its husk')
+do
+    -- ═══ THE OWNER'S SECOND REQUEST, AND THE ONE STRUCTURAL CLAIM IN IT ═══
+    --
+    -- Owner, 2026-08-22: "there should be flares on the husk too fwiw."
+    --
+    -- A husk is the SAME registry entry re-skinned in place, and client/loot.lua
+    -- answers a re-skin by DELETING the crate's prop and building the husk's.
+    -- So anything parented to that object would die with it -- which is exactly
+    -- what "torn down with the sealed crate" would mean.
+    --
+    -- The flares are parented to nothing. They follow whatever
+    -- BR.Loot.airdropBox() names, so changing the handle underneath them is the
+    -- open, and this block is that change.
+    clientReset()
+    A.flareRoute = 'object'
+
+    -- No box on the ground: no flares.
+    lootBox = nil
+    landedPass()
+    eq(#entsOfModel(flareProp()), 0, 'no box on the ground, no flares')
+
+    -- The sealed crate lands and streams in.
+    lootBox = 4001
+    ents[4001] = { model = A.huskProp, x = 5.0, y = 6.0, z = 7.0 }
+    landedPass()
+    local sealedFlares = entsOfModel(flareProp())
+    eq(#sealedFlares, 2, 'the landed crate gets a flare on each side')
+
+    -- ═══ THE OPEN. A NEW HANDLE FOR THE SAME ENTRY. ═══
+    ents[4001] = nil
+    lootBox = 4002
+    ents[4002] = { model = A.huskProp, x = 5.0, y = 6.0, z = 7.0 }
+    landedPass()
+
+    local huskFlares = entsOfModel(flareProp())
+    eq(#huskFlares, 2, 'the husk has flares too')
+    -- AND THEY ARE THE SAME TWO ENTITIES. This is the whole assertion: not
+    -- "there are two flares afterwards" (a rebuild satisfies that) but "they
+    -- were never torn down". A tear-down-and-rebuild would answer with fresh
+    -- handles, because the rig hands out a new one every CreateObjectNoOffset.
+    eq(huskFlares[1], sealedFlares[1],
+        'and they are the SAME entities -- carried over, not rebuilt')
+    eq(huskFlares[2], sealedFlares[2], 'both of them')
+
+    -- ...and they moved to the husk. The husk is at the same place here, so
+    -- assert on the offset rather than on a jump: each flare is one offset from
+    -- the box it is now following.
+    for _, h in ipairs(huskFlares) do
+        ok(near(BR.Dist(ents[h].x, ents[h].y, 5.0, 6.0),
+                A.flareOffset.x, 0.001),
+            'placed one offset from the husk')
+    end
+
+    -- ═══ AND ON OPPOSITE SIDES OF IT, WHICH THE LINE ABOVE DOES NOT SAY ═══
+    --
+    -- Both flares stacked on the same side of the husk is one offset from it
+    -- for each of them, and passes every check above. A mutation pass proved
+    -- exactly that -- flipping the sign in BR.Flare.positionsAround survived --
+    -- which is the same escape the DESCENT flares had in an earlier round and
+    -- the same fix. Left and right is the owner's whole instruction, and the
+    -- landed pair has to honour it as much as the falling one.
+    ok(near(BR.Dist(ents[huskFlares[1]].x, ents[huskFlares[1]].y,
+                    ents[huskFlares[2]].x, ents[huskFlares[2]].y),
+            A.flareOffset.x * 2.0, 0.001),
+        'and a full diameter apart -- one offset, two signs',
+        ('%.3f apart'):format(BR.Dist(
+            ents[huskFlares[1]].x, ents[huskFlares[1]].y,
+            ents[huskFlares[2]].x, ents[huskFlares[2]].y)))
+
+    -- The heading rotates them, so a box turned 90 degrees has its flares on
+    -- the other axis. Pinned because BR.Flare.positionsAround builds the right
+    -- vector by hand, and (cos, sin) written as (sin, cos) is the convention
+    -- error br_lib/shared/airdrop_solve.lua warns about in as many words.
+    ents[4002].heading = 90.0
+    landedPass()
+    ok(near(ents[huskFlares[1]].y - 6.0, A.flareOffset.x, 0.001)
+       or near(ents[huskFlares[2]].y - 6.0, A.flareOffset.x, 0.001),
+        'a box turned 90 degrees puts its flares on the other axis')
+    ents[4002].heading = 0.0
+    landedPass()
+
+    -- ═══ AND THEY GO WHEN THE BOX DOES ═══
+    --
+    -- The box's prop is streamed: client/loot.lua despawns it out of range and
+    -- forgetAll() drops it at the end of the match. Either way the accessor
+    -- answers nil, and that nil is the flares' ENTIRE lifetime rule -- there is
+    -- no second clock here that can outlive its box.
+    local stoppedBefore = #fxStopped
+    lootBox = nil
+    landedPass()
+    eq(#entsOfModel(flareProp()), 0, 'the box goes, and the flares go with it')
+    eq(#fxStopped - stoppedBefore, 2,
+        'with both emitters stopped before their props were deleted')
+
+    -- ...and they come back when it streams back in.
+    lootBox = 4003
+    ents[4003] = { model = A.huskProp, x = 5.0, y = 6.0, z = 7.0 }
+    landedPass()
+    eq(#entsOfModel(flareProp()), 2, 'and rebuilt when the box streams back in')
+end
+
+describe('client: the landed box gets fired flares on the default route')
+do
+    clientReset()
+    lootBox = 4101
+    ents[4101] = { model = A.huskProp, x = 5.0, y = 6.0, z = 7.0 }
+
+    landedPass()
+    eq(#shots, 2, 'the husk is lit by two real flares')
+    eq(entCount(), 1, 'and no flare object of ours exists -- only the box')
+
+    landedPass()
+    eq(#shots, 2, 'a second pass inside the cadence lights nothing new')
+
+    -- ═══ THE CADENCE IS WHAT KEEPS THE HUSK LIT ═══
+    --
+    -- AMMO_FLARE burns for 62.5s. A husk the owner wants marked for the rest of
+    -- the match needs a new flare before the last one dies, which is the only
+    -- thing `flareRefireMs` is for.
+    gameMs = gameMs + (A.flareRefireMs or 45000)
+    landedPass()
+    eq(#shots, 4, 'and the husk is re-lit before the last flare burns out')
+end
+
+describe('client: the audio priority receipt is honest about what it knows')
+do
+    -- Owner, 2026-08-22: "Sure let's use the audio priority native, but we need
+    -- a way to validate it especially since nobody uses it."
+    --
+    -- THE NATIVE RETURNS void AND HAS NO GETTER. Nothing can read a vehicle's
+    -- audio priority back, so the receipt says what was asked and whether the
+    -- call went through, and claims nothing about the engine agreeing. A test
+    -- that asserted more than that would be inventing the validation the owner
+    -- asked for.
+    clientReset()
+    announce()
+    render()
+
+    eq(#audioCalls, 1, 'the aircraft is asked for a priority once, at spawn')
+    eq(audioCalls[1].pri, A.planeAudioPriority, 'the configured one')
+    eq(audioCalls[1].pri, 2, 'which is MAX -- 2, not the higher-looking 3')
+    eq(audioCalls[1].veh, onePlane() and (function()
+        for h in pairs(vehicles) do return h end
+    end)() or nil, 'on the aircraft that was just built')
+
+    local r = BR.Airdrop.setPlaneAudio(1, 2)
+    eq(r.applied, true, 'a successful call reports applied')
+    eq(r.asked, 2, 'and what it asked for')
+
+    -- nil means "do not ask", which is how the owner turns the whole thing off
+    -- for the A half of an A/B.
+    local off = BR.Airdrop.setPlaneAudio(1, nil)
+    eq(off.applied, false, 'a nil priority asks for nothing')
+
+    -- ═══ A BUILD WITHOUT THE BINDING MUST SAY SO RATHER THAN THROW ═══
+    --
+    -- Essentially nobody uses this native, so "it does not exist here" is a
+    -- live possibility and it must be distinguishable from "it did nothing".
+    local real = SetAudioVehiclePriority
+    SetAudioVehiclePriority = nil
+    local missing = BR.Airdrop.setPlaneAudio(1, 2)
+    SetAudioVehiclePriority = real
+    eq(missing.applied, false, 'a missing native is reported, not thrown')
+    ok(tostring(missing.why):find('does not exist', 1, true) ~= nil,
+        'and it says which of the two failures it was')
 end
 
 describe('client: the descent')
@@ -2635,35 +3180,36 @@ do
     last = crateMove()
     ok(near(last.z, ground.z + 130.0, 0.001), 'halfway down halfway through')
 
-    -- EVERY PART FALLS WITH IT. The canopy and the flares are separate objects,
-    -- so "the crate is at the right height" says nothing about them -- and a
-    -- canopy left at 260m while the crate falls out from under it is exactly
-    -- what an attachment would have hidden.
+    -- EVERY PART FALLS WITH IT. The canopy is a separate object, so "the crate
+    -- is at the right height" says nothing about it -- and a canopy left at the
+    -- release altitude while the crate falls out from under it is exactly what
+    -- an attachment would have hidden.
     local crateZ = last.z
     local chute = entsOfModel(A.chuteModel)[1]
     ok(chute ~= nil and near(ents[chute].z,
         crateZ + (A.chuteOffset.z or 0.1), 0.001),
         'the canopy is directly over it, at its own offset')
-    local flares = entsOfModel(flareProp())
-    for _, h in ipairs(flares) do
-        ok(near(ents[h].z, crateZ + (A.flareOffset.z or 0.0), 0.001),
-            'and each flare is at the crate\'s height')
-        ok(near(BR.Dist(ents[h].x, ents[h].y, rec.x, rec.y),
-                A.flareOffset.x, 0.001),
+
+    -- AND THE FLARES ARE LIT AT THE CRATE'S HEIGHT, not at the release
+    -- altitude. On the projectile route there is no flare entity to inspect --
+    -- the assertion is on the SHOT, which is the only record that exists.
+    local pair = { shots[#shots - 1], shots[#shots] }
+    for _, s in ipairs(pair) do
+        ok(near(s.z1, crateZ + (A.flareOffset.z or 0.0), 0.001),
+            'each flare is lit at the crate\'s height, not where it started')
+        ok(near(BR.Dist(s.x1, s.y1, rec.x, rec.y), A.flareOffset.x, 0.001),
             'and out to the side by exactly the configured offset')
     end
 
-    -- ON OPPOSITE SIDES, which "each one is 0.55m from the crate" does not say
-    -- -- both flares stacked on the same side satisfy every check above, and a
-    -- mutation pass proved it by flipping the sign and surviving. Left and right
-    -- is the owner's whole instruction.
-    eq(#flares, 2, 'there are two of them')
-    ok(near(BR.Dist(ents[flares[1]].x, ents[flares[1]].y,
-                    ents[flares[2]].x, ents[flares[2]].y),
+    -- ON OPPOSITE SIDES, which "each one is 1.1m from the crate" does not say
+    -- -- both flares on the same side satisfy every check above, and a mutation
+    -- pass proved it by flipping the sign and surviving. Left and right is the
+    -- owner's whole instruction.
+    ok(near(BR.Dist(pair[1].x1, pair[1].y1, pair[2].x1, pair[2].y1),
             A.flareOffset.x * 2.0, 0.001),
         'and they are a full diameter apart -- one offset, two signs',
-        ('%.3f apart'):format(BR.Dist(ents[flares[1]].x, ents[flares[1]].y,
-                                      ents[flares[2]].x, ents[flares[2]].y)))
+        ('%.3f apart'):format(BR.Dist(pair[1].x1, pair[1].y1,
+                                      pair[2].x1, pair[2].y1)))
 
     -- Touchdown: the props go, the blip stays.
     gameMs = gameMs + 15000
@@ -2722,9 +3268,10 @@ do
     ok(near(last.z, 44.0 + 260.0, 0.001),
         'a probe answering 1 is an answer, and it is used', last and last.z)
 
-    -- HasNamedPtfxAssetLoaded is the fifth BOOL native in this file and the
-    -- newest, so it gets the same pair. A 0 must be a refusal...
+    -- HasNamedPtfxAssetLoaded gets the same pair, on the OBJECT route, which is
+    -- the only one that starts a particle at all. A 0 must be a refusal...
     clientReset()
+    A.flareRoute = 'object'
     ptfxLoaded = 0
     announce()
     render()
@@ -2732,10 +3279,27 @@ do
 
     -- ...and a 1 must be an answer.
     clientReset()
+    A.flareRoute = 'object'
     ptfxLoaded = 1
     announce()
     render()
     eq(#fxStarted, 2, 'and one answering 1 starts both trails')
+
+    -- HasWeaponAssetLoaded is the sixth BOOL native here and the newest, so it
+    -- gets the pair too. This is the one the whole projectile route hangs off:
+    -- a 0 read as truthy would have us firing against an unstreamed asset,
+    -- which is the documented cause of the native answering nothing at all.
+    clientReset()
+    weaponLoads = 0
+    announce()
+    render()
+    eq(#shots, 0, 'a weapon asset answering 0 fires nothing')
+
+    clientReset()
+    weaponLoads = 1
+    announce()
+    render()
+    eq(#shots, 2, 'and one answering 1 lights both flares')
 
     -- HasModelLoaded answering 1 must build the crate...
     clientReset()
@@ -2808,7 +3372,7 @@ do
     eq(oneBlip(), nil, 'and it takes the blip with it')
 end
 
-describe('client: the flare model is a candidate list, not a promise')
+describe('client: a flare model that does not load never costs the drop')
 do
     -- ═══ THE 2026-08-21 BUG, AS A TEST ═══
     --
@@ -2818,29 +3382,21 @@ do
     -- branch (props AND particles, both behind one `if`) never ran. The owner
     -- saw no flares and no smoke, and nothing said why.
     --
-    -- A test cannot know which names are real. It CAN prove that one bad name
-    -- no longer deletes the feature.
+    -- THE PROJECTILE ROUTE CANNOT HAVE THAT BUG AT ALL -- it loads no model --
+    -- which is worth stating plainly, because it is the strongest argument for
+    -- the route beyond the glow itself. This block therefore drives the OBJECT
+    -- route, where the failure mode still exists and still has to be survivable.
+    --
+    -- A test cannot know which names are real. It CAN prove that a bad one no
+    -- longer deletes the airdrop with it.
     clientReset()
-    validModels = { [flareProp(2)] = true, [A.crateProp] = true,
-                    [A.chuteModel] = true, [A.planeModel] = true,
-                    [A.planePilot] = true }
-    announce()
-    render()
-    eq(#entsOfModel(flareProp(1)), 0,
-        'the first candidate is not a model on this build...')
-    eq(#entsOfModel(flareProp(2)), 2,
-        '...so both flares are built from the second instead')
-
-    -- AND WHEN NOTHING LOADS, THE DROP STILL ARRIVES. A missing flare may never
-    -- cost the match its airdrop -- that trade is the whole reason the flares
-    -- are best-effort.
-    clientReset()
+    A.flareRoute = 'object'
     validModels = { [A.crateProp] = true, [A.chuteModel] = true,
                     [A.planeModel] = true, [A.planePilot] = true }
     announce()
     render()
-    eq(#entsOfModel(flareProp(1)) + #entsOfModel(flareProp(2)), 0,
-        'no flare model loads, so there are no flares')
+    eq(#entsOfModel(flareProp()), 0,
+        'the flare model does not load on this build, so there are no flares')
     ok(oneEnt() ~= nil, 'but the crate is still falling')
     eq(#entsOfModel(A.crateProp), 1, 'and it is the crate')
     eq(#entsOfModel(A.chuteModel), 1, 'under its canopy')
@@ -2869,8 +3425,25 @@ do
     local chute = entsOfModel(A.chuteModel)[1]
     eq(scaled[crate], A.crateScale, 'the crate is built at crateScale')
     eq(scaled[chute], A.chuteScale, 'the canopy at chuteScale')
-    for _, f in ipairs(entsOfModel(flareProp())) do
-        eq(scaled[f], A.flareScale, 'and each flare at flareScale')
+
+    -- The flare props only exist on the object route now, so the scale is
+    -- asserted there rather than here. A fired flare is drawn at whatever size
+    -- the engine draws a flare, and there is no lever on it at all.
+    do
+        clientReset()
+        A.flareRoute = 'object'
+        announce()
+        render()
+        local built = entsOfModel(flareProp())
+        eq(#built, 2, 'the object route builds two flare props')
+        for _, f in ipairs(built) do
+            eq(scaled[f], A.flareScale, 'and each at flareScale')
+        end
+        clientReset()
+        announce()
+        render()
+        crate = entsOfModel(A.crateProp)[1]
+        chute = entsOfModel(A.chuteModel)[1]
     end
 
     -- ═══ AND AGAIN AFTER EVERY HEADING WRITE, WHICH IS THE HALF THAT MATTERS

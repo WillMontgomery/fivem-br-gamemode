@@ -47,12 +47,11 @@
 -- every machine draws the same crate in the same place because there is nothing
 -- for them to disagree about.
 --
--- ═══ FOUR OBJECTS, ONE SOLVER, NO ATTACHMENTS ═══
+-- ═══ TWO OBJECTS, ONE SOLVER, NO ATTACHMENTS ═══
 --
--- A drop is a crate, a cargo canopy over it and a flare on each side. All four
--- are separate local objects and all four are positioned the same way: ask
--- BR.AirdropOffsetAt where this part of the crate is right now, and write the
--- coordinates.
+-- A drop is a crate and a cargo canopy over it. Both are separate local objects
+-- and both are positioned the same way: ask BR.AirdropOffsetAt where this part
+-- of the crate is right now, and write the coordinates.
 --
 -- They are NOT attached to each other, and that is deliberate. Rockstar's own
 -- crate drop uses ATTACH_ENTITY_TO_ENTITY; an earlier version of this file did
@@ -63,13 +62,26 @@
 -- local non-networked objects. The result on screen is identical and there is
 -- one fewer thing that has to be true.
 --
--- NOTHING IS SIMULATED. No ACTIVATE_PHYSICS, no SET_ENTITY_VELOCITY, no
+-- ═══ AND THE FLARES ARE NOT OBJECTS OF OURS AT ALL ANY MORE ═══
+--
+-- There were four objects here until 2026-08-22: a crate, a canopy and a flare
+-- prop on each side. Two attempts shipped that way and the owner saw nothing
+-- both times, because no MODEL glows -- every visual a flare has lives in
+-- `AMMO_FLARE`'s CAmmoThrownInfo and is applied by the projectile controller.
+--
+-- So this file no longer builds flares. It works out where the crate's left and
+-- right faces are, from the same solver and the same `spin` as everything else,
+-- and hands those two positions to client/flares.lua, which lights real
+-- projectile flares there on a cadence as the crate falls. See that file, and
+-- the long note in br_lib/config/airdrop.lua, for why a projectile is allowed
+-- here at all when nothing else in a drop is simulated: it does not travel (the
+-- two shot coordinates are 1e-4 apart), it is not ours to delete (the engine
+-- expires it), and its replication is REFUSED server-side rather than tolerated.
+--
+-- NOTHING OF OURS IS SIMULATED. No ACTIVATE_PHYSICS, no SET_ENTITY_VELOCITY, no
 -- SET_DAMPING -- which is what every physics-driven airdrop reaches for and
 -- exactly why they all end up networking the crate to paper over the divergence.
--- Collision is off and every object is frozen. The one thing here that is not a
--- pure function of the clock is the flares' particle effect, and it is
--- presentation with no position of its own: the emitter rides the flare, and
--- where its smoke has already been drawn does not change where anything IS.
+-- Collision is off and every object we make is frozen.
 
 BR = BR or {}
 BR.Airdrop = BR.Airdrop or {}
@@ -88,50 +100,15 @@ local function isTrue(v)
     return v ~= nil and v ~= false and v ~= 0
 end
 
---- Is this a looped-particle handle that is actually running?
----
---- ═══ THE FAILURE VALUE IS -1, NOT 0, AND CHECKING FOR 0 SHIPPED A LIE ═══
----
---- The first flare attempt stored the handle when it was `~= 0`, on the
---- reasoning that 0 is the falsy-looking value Lua would wave through. That is
---- the right instinct aimed at the wrong number: Cfx's own ParticleEffect
---- wrapper documents the handle as "-1 when this ParticleEffect is not active",
---- and its start path is
----
----     Handle = StartParticleFxLoopedOnEntity(...)
----     if IsActive then return true end
----     Handle = -1; return false
----
---- with `IsActive` being `Handle ~= -1 and DoesParticleFxLoopedExist(Handle)`.
---- So there are TWO ways to fail and the old check caught neither: -1 was
---- stored as a live handle, and a handle that came back non-(-1) but dead was
---- never questioned. Either way the diagnostic said "flares 2" and the sky was
---- empty.
----
---- BOTH TESTS, IN THE ORDER CFX DOES THEM. DoesParticleFxLoopedExist is guarded
---- because a build without it must degrade to the handle test rather than
---- error, and because the test rig does not stub every native in the engine.
---- BOTH SENTINELS ARE REFUSED, and 0 stays refused deliberately. Cfx's looped
---- wrapper compares against -1 while its NON-looped one compares `> 0`, so the
---- two halves of their own code disagree about which number means failure. When
---- the engine's own bindings cannot agree, treating either as a handle is a
---- guess with a known cost -- we have already paid it once -- and refusing both
---- costs at most one improbable legitimate zero.
---- @param fx any
---- @return boolean
-local function fxLive(fx)
-    if fx == nil or fx == false then return false end
-    if fx == -1 or fx == 0 then return false end
-    if DoesParticleFxLoopedExist then
-        return isTrue(DoesParticleFxLoopedExist(fx))
-    end
-    return true
-end
-
 --- [n] = { rec, obj, chute, flares, plane, pilot, blip, gz, gzAt, spawning,
----         flying, warned }
+---         flying, warned, audio }
 ---
---- `flares` is an array of { obj, fx, ox }, one per side.
+--- `flares` IS A BR.Flare SITE NOW, NOT AN ARRAY OF PROPS, and that is the
+--- shape change the third attempt needed. A site is "something that wants
+--- flares at moving positions"; what it does with that is the route's business
+--- and lives in client/flares.lua. On the default projectile route it holds
+--- nothing at all -- the engine owns every flare it lights and expires them on
+--- AMMO_FLARE's own clock -- so there is no array here to tear down.
 local drops = {}
 
 -- ---------------------------------------------------------------------------
@@ -147,21 +124,14 @@ local function dropPlane(d)
 end
 
 local function dropProps(d)
-    -- THE PARTICLE HANDLES GO FIRST, and before the entity they are anchored
-    -- to. A looped ptfx outlives the object it was started on -- that is what
-    -- "looped" means -- so deleting the flare first leaves an emitter running at
-    -- the last place it was, for the rest of the session, and nothing left holds
-    -- its handle.
-    for _, f in ipairs(d.flares or {}) do
-        -- Only handles that were ever live are stored (see fxLive), so this is
-        -- a nil check rather than a validity one -- but stopping an effect that
-        -- has already ended is harmless and stopping one that has not is the
-        -- whole point.
-        if f.fx ~= nil then StopParticleFxLooped(f.fx, false) end
-        f.fx = nil
-        if f.obj and isTrue(DoesEntityExist(f.obj)) then DeleteEntity(f.obj) end
-        f.obj = nil
-    end
+    -- THE FLARE SITE GOES FIRST, and it goes through client/flares.lua rather
+    -- than being unwound here. On the object route that stops each emitter
+    -- BEFORE deleting the prop it is anchored to -- a looped ptfx outlives its
+    -- entity, which is what "looped" means, so the other order leaves an
+    -- emitter running in mid-air for the rest of the session with nothing
+    -- holding its handle. On the projectile route it does nothing at all,
+    -- because we hold nothing: the flares are the engine's and it expires them.
+    BR.Flare.clearSite(d.flares)
     d.flares = nil
 
     if d.chute and isTrue(DoesEntityExist(d.chute)) then DeleteEntity(d.chute) end
@@ -269,15 +239,12 @@ AddEventHandler(BR.Net.STATE, function(d)
     end
 end)
 
--- An un-deleted local object outlives the resource that made it.
+-- An un-deleted local object outlives the resource that made it. The flares'
+-- own cached state is dropped by client/flares.lua's handler on the same event
+-- -- one owner, one teardown.
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
     clearAll()
-    -- ...AND THE RESOLVED FLARE MODEL GOES WITH IT. It is cached for the
-    -- session because the answer cannot change within one, but a restart is a
-    -- new session -- and the config it was resolved from may have been edited
-    -- in between, which is the whole point of restarting.
-    BR.Airdrop.forgetFlareModel()
 end)
 
 -- ---------------------------------------------------------------------------
@@ -297,81 +264,6 @@ local function loadModel(model)
         waited = waited + 50
     end
     return isTrue(HasModelLoaded(model))
-end
-
---- The first flare model in the config list that this build will actually load.
----
---- ═══ THE FIRST ATTEMPT NAMED A MODEL THAT DOES NOT EXIST ═══
----
---- It asked for `prop_flare_01a`. There is a `prop_flare_01` and a
---- `prop_flare_01b` in the game's object list and there is no `_01a` -- so
---- IsModelValid refused it, loadModel returned false, and the whole flare
---- branch (props AND particles, both behind that one `if`) never ran. No flare,
---- no smoke, no error, and a diagnostic that printed "flares 0" only if anyone
---- had thought to look. That is precisely the reported symptom.
----
---- SO A NAME IS A CANDIDATE NOW, NOT A PROMISE. Three verified names in
---- preference order; the first that loads wins; and if NONE load this says so
---- once, loudly, because a silent nothing is what cost the round. Cached after
---- the first resolve -- the answer cannot change within a session.
---- @return integer|nil model
---- @return string|nil name
-local flareModelCache, flareModelName, flareModelTried = nil, nil, false
-local function flareModel()
-    if flareModelTried then return flareModelCache, flareModelName end
-    flareModelTried = true
-
-    local names = A.flareProps
-    -- A bare string is still accepted, so a config edited back to one name is
-    -- a working config rather than a crash.
-    if type(names) == 'string' then names = { names } end
-    if type(names) ~= 'table' or #names == 0 then
-        print('[br_core] airdrop: no flare prop configured (flareProps) -- '
-              .. 'the crate will fall without flares')
-        return nil, nil
-    end
-
-    for _, n in ipairs(names) do
-        local m = GetHashKey(n)
-        if loadModel(m) then
-            flareModelCache, flareModelName = m, n
-            print(('[br_core] airdrop: flare prop is %s'):format(n))
-            return m, n
-        end
-    end
-
-    print(('[br_core] airdrop: NONE of the flare props would load (%s) -- '
-           .. 'the crate will fall without flares. Check the names against an '
-           .. 'object dump; this is exactly how the 2026-08-21 flares shipped '
-           .. 'invisible.'):format(table.concat(names, ', ')))
-    return nil, nil
-end
-
---- Drop the cached flare-model answer, so the next drop resolves it again.
----
---- Called on resource stop and nowhere else. A restart is a new session and the
---- config may have been edited across it -- which is the reason anybody
---- restarts a resource while tuning this.
-function BR.Airdrop.forgetFlareModel()
-    flareModelCache, flareModelName, flareModelTried = nil, nil, false
-end
-
---- Stream a named particle asset, bounded. Same shape and same bound as
---- loadModel, and returns false rather than blocking on an asset name that is
---- not one -- a missing trail costs the flares their smoke and must not cost the
---- match its airdrop.
---- @param asset string|nil
---- @return boolean
-local function loadPtfx(asset)
-    if type(asset) ~= 'string' or asset == '' then return false end
-    if isTrue(HasNamedPtfxAssetLoaded(asset)) then return true end
-    RequestNamedPtfxAsset(asset)
-    local waited = 0
-    while not isTrue(HasNamedPtfxAssetLoaded(asset)) and waited < 5000 do
-        Citizen.Wait(50)
-        waited = waited + 50
-    end
-    return isTrue(HasNamedPtfxAssetLoaded(asset))
 end
 
 --- One local, non-networked, non-colliding, frozen object at (x, y, z).
@@ -423,6 +315,41 @@ end
 --- Collision off and invincible, because it is scenery: nothing in the match may
 --- hit it, and it may not hit anybody.
 --- @param d table
+--- Ask the audio system to keep this aircraft at full audio LOD, and record
+--- exactly what happened -- which is less than anybody would like.
+---
+--- SET_AUDIO_VEHICLE_PRIORITY (0xE5564483E407F914) returns void and has no
+--- getter. There is no native that reads a vehicle's audio priority back, so a
+--- receipt is the most that can honestly be produced: whether the binding
+--- exists on this build, what value was passed, and whether the call threw.
+--- The forum has no thread mentioning this native under either name -- no
+--- working examples and no bug reports -- so nothing documents whether it is
+--- sticky either. It is applied on the handle at the moment it is created,
+--- which is the only moment we certainly have one.
+---
+--- @param plane integer
+--- @param priority integer|nil  nil means "do not ask"
+--- @return table  { asked, applied, why }
+function BR.Airdrop.setPlaneAudio(plane, priority)
+    if priority == nil then
+        return { asked = nil, applied = false, why = 'not configured' }
+    end
+    if not SetAudioVehiclePriority then
+        return { asked = priority, applied = false,
+                 why = 'SetAudioVehiclePriority does not exist on this build' }
+    end
+    -- pcall for the same reason the flare's fire path has one: an audio nicety
+    -- must not be able to throw inside the spawn thread and cost the match its
+    -- aircraft.
+    local ok, err = pcall(SetAudioVehiclePriority, plane, priority)
+    if not ok then
+        return { asked = priority, applied = false,
+                 why = 'threw: ' .. tostring(err) }
+    end
+    return { asked = priority, applied = true,
+             why = 'called; the engine reports nothing back' }
+end
+
 local function spawnPlane(d)
     d.flying = true
     Citizen.CreateThread(function()
@@ -460,6 +387,31 @@ local function spawnPlane(d)
         end
         SetVehicleEngineOn(plane, true, true, false)
 
+        -- ═══ AUDIO LOD, AND THE OWNER ASKED FOR A WAY TO VALIDATE IT ═══
+        --
+        -- Owner, 2026-08-22: "I could barely hear it" and then "Sure let's use
+        -- the audio priority native, but we need a way to validate it
+        -- especially since nobody uses it."
+        --
+        -- THE NATIVE RETURNS void AND THERE IS NO GETTER. Nothing can read a
+        -- vehicle's audio priority back -- not this native, not any other -- so
+        -- "we called it" is genuinely all the evidence that exists on this
+        -- machine, and pretending otherwise would be the fourth confident guess
+        -- in a row. What CAN be recorded honestly is: whether the binding
+        -- exists on this build, what value was passed, and whether the call
+        -- threw. That is what `d.audio` is, and /brairdrop prints it.
+        --
+        -- SO THE REAL VALIDATION IS AN A/B THE OWNER CAN HEAR, and it is
+        -- `/brairdrop audio <n>` on the client: it re-applies a priority to the
+        -- aircraft in flight, so 0 and 2 can be compared on the SAME pass
+        -- rather than across two matches. If they sound identical, the native
+        -- does nothing here and the altitude change is what did the work.
+        --
+        -- MAX IS 2, NOT 3. See the config: the enum is NORMAL 0, MEDIUM 1,
+        -- MAX 2, HIGH 3, which is not ascending, and a 3 shipped in the belief
+        -- it was the maximum would look exactly like the native doing nothing.
+        d.audio = BR.Airdrop.setPlaneAudio(plane, A.planeAudioPriority)
+
         d.flying = false
     end)
 end
@@ -476,12 +428,14 @@ end
 --- NOT BR.Config.Drop.parachuteModel. That is `p_parachute1_mp_s`, the
 --- player's back-worn canopy -- a different asset for a different job.
 ---
---- THE FLARES ARE A PROP AND A LOOPED PARTICLE EACH, and both halves are
---- best-effort in the same way the deploy anim is: a flare with no smoke still
---- reads as a flare, smoke with no flare prop still reads as a trail, and
---- neither missing may cost us the drop. The particle is anchored to the flare
---- rather than started at a coordinate, so the emitter rides the fall while the
---- smoke it has already made stays where it was made -- which is what a trail is.
+--- THE FLARES ARE NOT BUILT HERE ANY MORE, and that is the third attempt's
+--- shape change. They are lit by place() as the crate falls, through
+--- client/flares.lua, because on the default projectile route there is nothing
+--- to build ONCE: a fired flare stands where it was lit while the crate falls
+--- away from it, so the only way a falling crate has flares beside it is to
+--- light a new one on a cadence as it goes. What that leaves behind is a
+--- burning column down the descent path -- the "smoke trails as it falls" the
+--- owner asked for on 2026-08-21, drawn by the engine rather than by us.
 --- @param d table
 local function spawn(d)
     d.spawning = true
@@ -537,64 +491,6 @@ local function spawn(d)
                     end
                 end
             end
-        end
-
-        -- The flares, left and right. One offset, two signs.
-        local off = A.flareOffset or { x = 1.1, y = 0.0, z = 0.0 }
-        local fModel = flareModel()
-        if fModel and d.rec then
-            local ptfxReady = loadPtfx(A.flarePtfxAsset)
-            d.flares = {}
-            for _, side in ipairs({ 1.0, -1.0 }) do
-                -- SCALED, because the first attempt drew a one-foot road flare
-                -- on a crate 260 metres up and the owner reported seeing no
-                -- flares AT ALL -- which the prop's size explains on its own,
-                -- before any particle is involved.
-                local f = makePart(fModel, d.rec.x, d.rec.y, top,
-                    A.flareScale)
-                if f then
-                    local rec = { obj = f, ox = (off.x or 1.1) * side }
-                    if ptfxReady and A.flarePtfxName then
-                        -- USE_PARTICLE_FX_ASSET IS PER CALL, NOT PER SESSION --
-                        -- its own alias is _SET_PTFX_ASSET_NEXT_CALL, and Cfx's
-                        -- wrapper re-asserts it before every one of its start
-                        -- calls. Immediately before each start or the effect
-                        -- resolves against whatever asset was last named.
-                        UseParticleFxAsset(A.flarePtfxAsset)
-                        local fx = StartParticleFxLoopedOnEntity(
-                            A.flarePtfxName, f,
-                            0.0, 0.0, 0.0,
-                            0.0, 0.0, 0.0,
-                            A.flarePtfxScale or 1.0,
-                            false, false, false)
-                        -- STORED ONLY IF IT IS ACTUALLY RUNNING. See fxLive:
-                        -- the failure value is -1, not 0, and a handle that is
-                        -- neither can still be dead.
-                        if fxLive(fx) then
-                            rec.fx = fx
-                        else
-                            -- SAID OUT LOUD, ONCE PER DROP. A silent particle
-                            -- failure is what shipped last time: the flares
-                            -- counted 2, the handles looked fine and the sky
-                            -- was empty, and there was nothing anywhere that
-                            -- could tell "never started" from "started and
-                            -- invisible".
-                            if not d.fxWarned then
-                                d.fxWarned = true
-                                print(('[br_core] airdrop: flare ptfx %s/%s would not start (handle %s) -- try /brflare')
-                                    :format(tostring(A.flarePtfxAsset),
-                                            tostring(A.flarePtfxName),
-                                            tostring(fx)))
-                            end
-                        end
-                    end
-                    d.flares[#d.flares + 1] = rec
-                end
-            end
-            -- NOT released: flareModel() caches the hash for the session and a
-            -- second drop would find it unloaded. One model resident is cheaper
-            -- than re-streaming it, and it is the same call the two crate models
-            -- already get in client/loot.lua.
         end
 
         d.spawning = false
@@ -696,15 +592,30 @@ local function place(d, now)
         BR.Native.propScale(d.chute, A.chuteScale)
     end
 
-    for _, f in ipairs(d.flares or {}) do
-        if f.obj and isTrue(DoesEntityExist(f.obj)) then
-            local off = A.flareOffset or { x = 0.55, y = 0.0, z = 0.0 }
-            local fx, fy = BR.AirdropOffsetAt(d.rec, now, f.ox, off.y, spin)
-            SetEntityCoords(f.obj, fx, fy, z + (off.z or 0.0),
-                false, false, false, false)
-            SetEntityHeading(f.obj, hdg)
-        end
+    -- ═══ THE FLARES, THROUGH THE SITE RATHER THAN BY HAND ═══
+    --
+    -- The two world positions still come from BR.AirdropOffsetAt and the same
+    -- `spin`, so a flare is where the crate's left or right face is at this
+    -- millisecond and both ends agree about which way "left" is (that is why
+    -- BR.AirdropHeadingAt lives in the solver rather than here). What HAPPENS
+    -- at those positions is the route's business: the projectile route lights a
+    -- new flare there when its cadence is due, the object route writes the
+    -- coordinates of the two it holds.
+    --
+    -- GetGameTimer, NOT the synced clock, for the cadence. A refire rhythm is
+    -- local presentation and must not lurch when the clock estimate is
+    -- corrected; the POSITIONS are still solved from the synced clock, which is
+    -- the half that has to agree between machines.
+    local off = A.flareOffset or { x = 1.1, y = 0.0, z = 0.0 }
+    local pos = {}
+    for i, side in ipairs({ 1.0, -1.0 }) do
+        local fx, fy = BR.AirdropOffsetAt(d.rec, now,
+            (off.x or 1.1) * side, off.y, spin)
+        pos[i] = { x = fx, y = fy, z = z + (off.z or 0.0), h = hdg }
     end
+    d.flares = d.flares or BR.Flare.newSite()
+    BR.Flare.updateSite(d.flares, GetGameTimer(),
+        A.flareFallRefireMs or 3000, pos)
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
@@ -821,7 +732,37 @@ end)
 --- every window in this file is a comparison between the server's timestamps and
 --- this client's ESTIMATE of the server's clock, and that estimate is the one
 --- number a player cannot otherwise see.
-RegisterCommand('brairdrop', function()
+--- `/brairdrop audio <n>` IS THE OWNER'S A/B, and it is the only validation of
+--- the audio-priority native that is worth anything. The native returns void
+--- and nothing reads it back, so the honest test is not a printed value: it is
+--- setting 0 and then 2 on the SAME aircraft, on the same pass, and listening.
+--- Across two matches the altitude, the weather and where you are standing have
+--- all changed; within one flyover, nothing has but the number.
+RegisterCommand('brairdrop', function(_, args)
+    if args and args[1] == 'audio' then
+        local n = tonumber(args[2])
+        if not n then
+            print('[br_core] /brairdrop audio <0|1|2|3> -- NORMAL 0, MEDIUM 1, '
+                  .. 'MAX 2, HIGH 3. The enum is not in ascending order; MAX is '
+                  .. '2. Set 0, listen, set 2, listen.')
+            return
+        end
+        local touched = 0
+        for _, d in pairs(drops) do
+            if d.plane and isTrue(DoesEntityExist(d.plane)) then
+                d.audio = BR.Airdrop.setPlaneAudio(d.plane, n)
+                touched = touched + 1
+                print(('[br_core] airdrop: audio priority %d on plane %s -- %s')
+                    :format(n, tostring(d.plane), tostring(d.audio.why)))
+            end
+        end
+        if touched == 0 then
+            print('[br_core] airdrop: no aircraft in the world right now -- run '
+                  .. 'this while the Cargobob is on its run-in')
+        end
+        return
+    end
+
     local now = BR.Clock.now()
     print('=== airdrop (client) ===')
     print(('  clock: now %.0f, offset %+.0fms, synced %s')
@@ -893,156 +834,46 @@ RegisterCommand('brairdrop', function()
             :format(tostring(d.blip),
                     tostring(d.blip and isTrue(DoesBlipExist(d.blip))),
                     A.blipSprite or 161))
-        -- ═══ THE FLARE LINE IS THE ONE THAT COST A ROUND ═══
-        --
-        -- It used to print "flares 2" whether or not either of them had a
-        -- running particle, which is the same silence the owner reported into.
-        -- Each flare now says whether its effect is ALIVE, which separates
-        -- "the start failed" from "the start worked and I cannot see it" --
-        -- two different bugs with one symptom.
-        local fl = {}
-        for i, f in ipairs(d.flares or {}) do
-            fl[#fl + 1] = ('%d:%s%s'):format(i, tostring(f.fx),
-                fxLive(f.fx) and ' live' or ' DEAD')
-        end
         print(('    plane %s, pilot %s, crate %s (x%.1f), canopy %s (x%.1f)')
             :format(tostring(d.plane), tostring(d.pilot), tostring(d.obj),
                     A.crateScale or 1.0, tostring(d.chute), A.chuteScale or 1.0))
-        print(('    flares %d (prop x%.1f, ptfx %s/%s x%.1f): %s')
-            :format(#(d.flares or {}), A.flareScale or 1.0,
-                    tostring(A.flarePtfxAsset), tostring(A.flarePtfxName),
-                    A.flarePtfxScale or 1.0,
-                    #(d.flares or {}) > 0 and table.concat(fl, ', ') or 'none'))
+        -- ═══ THE AUDIO RECEIPT, WHICH IS ALL THERE IS ═══
+        --
+        -- Owner, 2026-08-22: "we need a way to validate it especially since
+        -- nobody uses it." SET_AUDIO_VEHICLE_PRIORITY returns void and there is
+        -- no getter for it, so this line says what was asked for and whether
+        -- the call went through, and does NOT claim the engine agreed. The A/B
+        -- is `/brairdrop audio <n>` while the aircraft is up.
+        local au = d.audio
+        print(('    audio priority: asked %s, applied %s -- %s')
+            :format(au and tostring(au.asked) or 'nothing yet',
+                    au and tostring(au.applied) or 'false',
+                    au and tostring(au.why) or 'the plane has not been built'))
     end
     if not any then
         print('  no drop record on this client -- nothing has been announced, '
               .. 'or it has already expired')
     end
+
+    -- ═══ THE FLARE LINE IS THE ONE THAT COST TWO ROUNDS ═══
+    --
+    -- It used to print "flares 2" whether or not either of them had a running
+    -- particle, which is the same silence the owner reported into. It now
+    -- reports the ROUTE and, on the projectile route, the number of flares this
+    -- client has actually lit -- because a projectile has no handle and a
+    -- counter is the only evidence that exists. A count that stays at zero
+    -- while a drop is falling is a real answer; so is a count that climbs while
+    -- the sky stays dark, and they are different bugs.
+    local st = BR.Flare.landedStatus()
+    print(('  flares: route %s, lit this session %d (failed %d)')
+        :format(tostring(st.route), BR.Flare.fired or 0, BR.Flare.failed or 0))
+    local fl = {}
+    for i, f in ipairs(st.flares) do
+        fl[#fl + 1] = ('%d:%s%s'):format(i, tostring(f.fx),
+            f.live and ' live' or ' DEAD')
+    end
+    print(('    on the landed box: %s, %d prop flare(s)%s')
+        :format(st.box and ('entity ' .. tostring(st.box)) or 'no box here',
+                #st.flares,
+                #fl > 0 and (' -- ' .. table.concat(fl, ', ')) or ''))
 end, false)
-
--- ---------------------------------------------------------------------------
--- The flare bench
--- ---------------------------------------------------------------------------
-
---- The last test flare, so a second /brflare replaces rather than litters.
-local bench = nil
-
---- Start any particle effect on a flare prop in front of the player, and say
---- whether it is actually running.
----
---- ═══ WRITTEN BECAUSE THE FLARES ARE THE SECOND ATTEMPT ═══
----
---- The first shipped `core` / `proj_flare_trail` at scale 1.0, taken from a
---- published dump, and the owner saw nothing. Everything about why is still a
---- hypothesis (see the long note in br_lib/config/airdrop.lua): the prop may
---- have been too small, the effect may need a velocity a frozen prop does not
---- have, the handle check was testing the wrong failure value. NONE of that can
---- be settled from outside a running client, and the cost of guessing again is
---- another whole playtest round.
----
---- So this puts the question on the ground, three metres away, at eye level,
---- where it takes ten seconds to answer:
----
----   /brflare                          the committed asset/effect/scale
----   /brflare <asset> <name> [scale]   any other pair, e.g.
----                                     /brflare core proj_flare_trail 2
----   /brflare off                      clear it
----
---- IT PRINTS WHETHER THE HANDLE IS LIVE, which is the distinction that was
---- missing: a dead handle means the effect never started and the asset or the
---- name is wrong; a LIVE handle with nothing visible means it started and is
---- invisible, which is a scale or a velocity problem and a completely different
---- fix. Verified names to try are listed in the config.
----
---- The prop is frozen, collision-off and non-networked exactly as a real flare
---- is, so what renders here is what would render on the crate.
-local function clearBench()
-    if not bench then return end
-    if bench.fx ~= nil then StopParticleFxLooped(bench.fx, false) end
-    if bench.obj and isTrue(DoesEntityExist(bench.obj)) then
-        DeleteEntity(bench.obj)
-    end
-    bench = nil
-end
-
-RegisterCommand('brflare', function(_, args)
-    local asset = args[1] and tostring(args[1]) or A.flarePtfxAsset
-    local name  = args[2] and tostring(args[2]) or A.flarePtfxName
-    local scale = tonumber(args[3]) or A.flarePtfxScale or 1.0
-
-    clearBench()
-    if asset == 'off' then
-        print('[br_core] flare bench cleared')
-        return
-    end
-
-    local ped = PlayerPedId()
-    local p   = GetEntityCoords(ped)
-    local h   = math.rad(GetEntityHeading(ped) or 0.0)
-    -- Three metres in front, at chest height: close enough to see a wisp, far
-    -- enough that a plume does not fill the screen.
-    local x, y, z = p.x - math.sin(h) * 3.0, p.y + math.cos(h) * 3.0, p.z + 1.0
-
-    -- WHICH FLARE MODELS THIS BUILD HAS, PRINTED EVERY TIME. This is the check
-    -- that was never run: the shipped name was `prop_flare_01a`, which is not a
-    -- model, and nothing anywhere said so. A fourth candidate can be added to
-    -- the config and tested by running this again.
-    print('=== flare bench ===')
-    local names = A.flareProps
-    if type(names) == 'string' then names = { names } end
-    for _, n in ipairs(names or {}) do
-        local h = GetHashKey(n)
-        print(('  model %-18s valid %s'):format(n,
-            tostring(isTrue(IsModelValid(h)))))
-    end
-
-    local model, modelName = flareModel()
-    if not model then
-        print('  NO FLARE MODEL LOADS -- that is the answer, and it is the '
-              .. 'whole 2026-08-21 bug. Nothing below matters until a name here '
-              .. 'is a real object.')
-        return
-    end
-    local obj = makePart(model, x, y, z, A.flareScale)
-    if not obj then
-        print('  the prop would not spawn')
-        return
-    end
-    bench = { obj = obj }
-
-    print(('  prop %s at x%.2f, effect %s / %s at x%.2f'):format(
-        tostring(modelName), A.flareScale or 1.0,
-        tostring(asset), tostring(name), scale))
-
-    if not loadPtfx(asset) then
-        print(('  asset %s WOULD NOT LOAD -- that is the answer: the name is '
-               .. 'not a particle asset on this build'):format(tostring(asset)))
-        return
-    end
-    print(('  asset %s loaded'):format(tostring(asset)))
-
-    UseParticleFxAsset(asset)
-    local fx = StartParticleFxLoopedOnEntity(name, obj,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, scale, false, false, false)
-    if fxLive(fx) then
-        bench.fx = fx
-        print(('  handle %s -- LIVE. If you cannot see it, the effect is '
-               .. 'rendering and the problem is size or velocity, not the name.')
-            :format(tostring(fx)))
-    else
-        print(('  handle %s -- DEAD. The effect did not start: %s is not an '
-               .. 'effect in %s, or it is not loopable.')
-            :format(tostring(fx), tostring(name), tostring(asset)))
-    end
-    print('  paste into br_lib/config/airdrop.lua:')
-    print(('    flarePtfxAsset = \'%s\','):format(tostring(asset)))
-    print(('    flarePtfxName  = \'%s\','):format(tostring(name)))
-    print(('    flarePtfxScale = %.2f,'):format(scale))
-    print('  /brflare off to clear it')
-end, false)
-
--- A bench flare is an un-deleted local object like any other.
-AddEventHandler('onResourceStop', function(res)
-    if res ~= GetCurrentResourceName() then return end
-    clearBench()
-end)

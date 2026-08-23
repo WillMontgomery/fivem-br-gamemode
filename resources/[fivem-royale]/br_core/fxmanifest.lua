@@ -136,10 +136,22 @@ client_scripts {
     -- loop registry; it is here because the mirror is what it reads.
     'client/driveby.lua',
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
-    -- The falling crate, its canopy, its two flares and the blip. Reads
-    -- BR.Native (natives.lua) for the blip name and BR.Clock (shared) for the
-    -- descent; it creates no loot of its own -- what lands is server registry
-    -- entries arriving through client/loot.lua like anything else.
+    -- The airdrop's flares: how one is lit, and where they go while the crate
+    -- falls and after it has landed. AFTER client/loot.lua for a READER rather
+    -- than for the loader -- its landed pass asks BR.Loot.airdropBox() where the
+    -- box is, at call time and nil-guarded, so the file that answers is declared
+    -- above the file that asks. It needs client/main.lua for the loop registry
+    -- and BR.Native (natives.lua) for the prop scale on the object route.
+    --
+    -- BEFORE client/airdrop.lua for the same reason in the other direction:
+    -- that file hands this one two world positions per frame and holds a
+    -- BR.Flare site rather than flare props of its own.
+    'client/flares.lua',
+    -- The falling crate, its canopy and the blip. Reads BR.Native (natives.lua)
+    -- for the blip name, BR.Clock (shared) for the descent and BR.Flare
+    -- (flares.lua) for the flares; it creates no loot of its own -- what lands
+    -- is server registry entries arriving through client/loot.lua like anything
+    -- else.
     'client/airdrop.lua',
     'client/dbno.lua',      -- downed + revive; yields the interact key from loot.lua
     -- The fuel gauge, the pump prompt and the station blips. AFTER dui.lua
