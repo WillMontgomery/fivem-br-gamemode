@@ -299,6 +299,20 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# The same panel shows a teammate's LEVEL beside their name. The behaviour --
+# derived from lifetime xp, squad-only, absent until the server knows it -- is
+# unit-tested in test_shared ('squad.level'). This gate is for what no suite can
+# execute: that the number has not drifted onto the public roster (where nothing
+# would break and nobody would notice), that it has not grown a caption, and
+# that it has not learned to scale with the text-size preference on a plate
+# whose height must not move.
+echo "${DIM}== squad levels ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_squad_level.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # A key is drawn as a key (#209). The half that is a value -- the owner's
 # sentence, and that a resolved key LABEL never reaches it -- is unit-tested in
 # test_client. This gate is for what no suite can execute: that the token Lua

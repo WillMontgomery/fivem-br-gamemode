@@ -4296,6 +4296,199 @@ do
 end
 
 -- ==========================================================================
+-- A SQUADMATE'S LEVEL, DERIVED FROM XP, ON THE SQUAD BEACON.
+-- ==========================================================================
+--
+-- Owner, 2026-08-22: "We need some way in the squad panel to see the levels of
+-- our teammates near their name."
+--
+-- Two properties carry this feature and neither is visible by looking at the
+-- panel. The AUDIENCE: a level was not published to anyone before this, and the
+-- obvious home -- roster.lua's PUBLIC_FIELDS -- hands it to every client in the
+-- match rather than to the squad the owner asked about. And the SOURCE: the
+-- profile row's stored `level` is written at match end and lags the `xp` beside
+-- it, so a player who levelled up last game would be shown their old number for
+-- the whole of the next one. A Ringmaster commit exists titled "Derive the level
+-- from xp, instead of trusting a field that goes stale"; this is that rule
+-- applied on this side of the boundary, and asserted rather than commented.
+
+describe('squad.level')
+do
+    local env = newSandbox()
+    local now, roster, out = 0, {}, {}
+
+    env.GetGameTimer = function() return now end
+    env.print = function() end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.GetPlayerName = function(s) return 'P' .. tostring(s) end
+    env.GetPlayers = function() return {} end
+    env.GetHashKey = function(s) return #tostring(s) end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand = function() end
+    env.AddEventHandler = function() end
+    env.TriggerEvent = function() end
+    env.TriggerClientEvent = function(ev, target, payload)
+        out[#out + 1] = { event = ev, target = target, payload = payload }
+    end
+    env.Citizen = { CreateThread = function() end, Wait = function() end,
+                    SetTimeout = function() end }
+
+    loadInto(env, SANDBOX_LIB)
+
+    env.BR.Roster = {
+        get = function(s) return roster[s] end,
+        each = function(pred, fn)
+            for src, e in pairs(roster) do
+                if (pred == nil or pred(e)) and fn then fn(src, e) end
+            end
+        end,
+        clearFields = function() end,
+        setMatch = function() end,
+        setState = function() end,
+    }
+    env.BR.Server = {
+        devMode = false, matches = {}, parties = {}, roster = roster,
+        isInMatch = function(st)
+            return st == env.BR.PlayerState.ALIVE or st == env.BR.PlayerState.BUS
+                or st == env.BR.PlayerState.FREEFALL or st == env.BR.PlayerState.GLIDE
+                or st == env.BR.PlayerState.DBNO or st == env.BR.PlayerState.WARMUP
+        end,
+        notify = function() end,
+    }
+    env.BR.Broadcast = { delta = function() end }
+    env.BR.Bus = { sendPreview = function() end }
+    env.BR.Inv = { reset = function() end }
+
+    loadInto(env, { 'br_core/server/party.lua' })
+
+    -- THE MARKET IS THE ONLY PLACE LIFETIME XP LIVES on this side, and its
+    -- accessor already answers nil for a player whose inventory has not come
+    -- back from the database. An absent key here IS that state -- which is why
+    -- the "not loaded" case below needs no flag, just a player nobody has set.
+    local lifetime = {}
+    env.BR.Market = {
+        lifetimeXp = function(s) return lifetime[s] end,
+    }
+
+    env.BR.Server.matches[1] = { id = 1, state = env.BR.MatchState.PLAYING,
+                                 mode = env.BR.Mode.SQUAD.key, players = { 1, 2 },
+                                 startedAt = 0 }
+    local PS = env.BR.PlayerState
+    for _, src in ipairs({ 1, 2 }) do
+        roster[src] = { src = src, name = 'P' .. src, matchId = 1, squadId = 'sq1',
+                        state = PS.ALIVE, pos = { x = src * 1.0, y = 0.0, z = 30.0 } }
+    end
+
+    --- One beacon pass, and the member record it produced for `src`.
+    local function beaconFor(src)
+        out = {}
+        now = now + 1000
+        env.BR.Sched.step(now)
+        for _, m in ipairs(out) do
+            if m.event == env.BR.Net.SQUAD_POS then
+                for _, member in ipairs(m.payload) do
+                    if member.src == src then return member end
+                end
+            end
+        end
+        return nil
+    end
+
+    local XP = env.BR.Xp
+
+    -- THE ORDINARY CASE. The xp is placed exactly on level 23's threshold, so
+    -- the expected answer is read off the same curve the server uses rather
+    -- than hardcoded -- a test that spelled out "23" would have to be edited
+    -- every time the curve was retuned, and would then be asserting the edit.
+    lifetime[1] = XP.thresholdFor(23)
+    local mate = beaconFor(1)
+    ok(mate ~= nil, 'a squad member is beaconed to their squad')
+    ok(mate and mate.level == 23,
+        'and carries the level their lifetime xp puts them on',
+        mate and ('level %s for %s xp'):format(tostring(mate.level),
+                                               tostring(lifetime[1])) or 'no member')
+
+    -- IT TRACKS THE XP WITH NOTHING RE-STORED. This is the whole of "derived,
+    -- not read": no writer ran between these two pushes, and the answer moved.
+    lifetime[1] = XP.thresholdFor(24)
+    local levelled = beaconFor(1)
+    ok(levelled and levelled.level == 24,
+        'and follows the xp up a level with no field anywhere rewritten',
+        levelled and tostring(levelled.level) or 'no member')
+
+    -- ...AND A STALE STORED LEVEL CANNOT WIN. The profile row really does carry
+    -- one, written at match end; if the beacon ever starts reading a field
+    -- instead of the curve, this is the assertion that catches it.
+    roster[1].level = 99
+    local stale = beaconFor(1)
+    ok(stale and stale.level == 24,
+        'a stale `level` sitting on the roster entry is ignored, not trusted',
+        stale and tostring(stale.level) or 'no member')
+    roster[1].level = nil
+
+    -- ZERO XP IS A LEVEL, NOT AN ABSENCE. In Lua 0 is truthy, and the bug this
+    -- pins is the other spelling: a guard written as `xp and xp > 0` drops the
+    -- brand-new account entirely, so the one player whose level is least
+    -- interesting is the one whose row silently loses its number.
+    lifetime[1] = 0
+    local fresh = beaconFor(1)
+    ok(fresh and fresh.level == 1,
+        'a player with 0 lifetime xp is level 1 -- present, not omitted',
+        fresh and tostring(fresh.level) or 'no member')
+
+    -- NOT LOADED IS ABSENT, AND ABSENT IS NOT LEVEL 1. These are different
+    -- facts and the panel draws them differently: a number, or nothing at all.
+    -- Collapsing them would paint a confident `1` over every squadmate for the
+    -- length of the database round trip and then correct itself.
+    lifetime[1] = nil
+    local unknown = beaconFor(1)
+    ok(unknown ~= nil, 'a mate whose profile has not loaded is still beaconed')
+    ok(unknown and unknown.level == nil,
+        'but carries no level at all -- not 0, and not a placeholder 1',
+        unknown and tostring(unknown.level) or 'no member')
+
+    -- THE WHOLE RESOURCE CAN BE MISSING. br_core boots without a market on a
+    -- server whose database is down, and a beacon that threw there would take
+    -- the squad blips and the bleed clock down with it.
+    local market = env.BR.Market
+    env.BR.Market = nil
+    local nomarket = beaconFor(1)
+    ok(nomarket ~= nil and nomarket.level == nil,
+        'with no market resource at all the beacon still goes out, levelless',
+        nomarket and tostring(nomarket.level) or 'no member -- the push threw')
+    env.BR.Market = market
+
+    -- THE AUDIENCE, WHICH IS THE POINT. The owner asked for his TEAMMATES'
+    -- levels; this asserts that is who gets them.
+    lifetime[1] = XP.thresholdFor(23)
+    beaconFor(1)
+    local strangers = 0
+    for _, m in ipairs(out) do
+        if m.event == env.BR.Net.SQUAD_POS then
+            local mt = roster[m.target]
+            if not mt or mt.squadId ~= 'sq1' then strangers = strangers + 1 end
+        end
+    end
+    ok(strangers == 0,
+        'the level reaches that player\'s own squad and nobody else',
+        ('%d sends went outside the squad'):format(strangers))
+
+    -- AND IT IS NOT ON THE PUBLIC ROSTER, asserted against the real allowlist.
+    -- A level is not positional and reveals nothing tactical -- but the test
+    -- that list applies is not "is this harmless", it is "does the whole lobby
+    -- need it", and the answer here is no.
+    local src = io.open(RES .. 'br_core/server/roster.lua', 'r')
+    local text = src and src:read('a') or ''
+    if src then src:close() end
+    local publicList = text:match('local PUBLIC_FIELDS = {(.-)}')
+    ok(publicList ~= nil, 'PUBLIC_FIELDS is where it was')
+    ok(publicList and not publicList:find('level', 1, true)
+       and not publicList:find('xp', 1, true),
+        'and the level is NOT on it: the squad was asked for, not the match',
+        publicList)
+end
+
+-- ==========================================================================
 -- THE REVIVE HOLD IS ONE NUMBER.
 -- ==========================================================================
 

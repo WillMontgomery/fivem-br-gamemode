@@ -272,15 +272,25 @@ export function startMockDriver(): void {
         // half of the feature permanently invisible -- which is how the mark
         // would end up reviewed only in the source.
         you: 1,
+        // `level` IS SQUAD-ONLY AND IT SPANS THE DIGIT WIDTHS ON PURPOSE.
+        // 7, 42 and 100 are one, two and three figures, which is the whole
+        // range the row has to hold without the name's truncation moving --
+        // a harness where every mate was level 12 would never show that.
+        //
+        // AND ONE MATE HAS NO LEVEL AT ALL. `Nyx` omits the field, because
+        // "the profile has not come back from the database yet" is a real
+        // state the panel has a rule for -- it draws nothing -- and a mock
+        // that always sent a number would leave that rule reviewable only in
+        // the source. Same argument as `you` and `bleedEndsAt` below.
         members: [
-          { src: 1, name: 'You',     state: 'alive', hp: 82,  armour: 45, colour: '#6EE7F9' },
-          { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF' },
+          { src: 1, name: 'You',     state: 'alive', hp: 82,  armour: 45, colour: '#6EE7F9', level: 42 },
+          { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF', level: 100 },
           // `bleedEndsAt` rides along on the downed mate, because the squad
           // panel's timer is unbuildable without it and the harness is where
           // it gets built. It is a SERVER timestamp everywhere else, and
           // `serverNow` above is `now`, so `now + n` is the honest shape here.
           { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24',
-            bleedEndsAt: now + 40_000 },
+            bleedEndsAt: now + 40_000, level: 7 },
           { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6' },
         ],
       },
@@ -350,11 +360,17 @@ export function startMockDriver(): void {
       d: {
         id: 'sq_1',
         you: 1,
+        // THE LEVELS REPEAT HERE, and they have to. This push lands once a
+        // second and REPLACES the snapshot's member list, so a re-push that
+        // dropped the field would blank every level a second into the session
+        // -- which is both wrong and the exact flicker the panel is supposed
+        // to be proof against. Nyx stays level-less on both, for the same
+        // reason she is level-less above.
         members: [
-          { src: 1, name: 'You',     state: 'alive', hp: Math.round(hp), armour: Math.round(armour), colour: '#6EE7F9' },
-          { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF' },
+          { src: 1, name: 'You',     state: 'alive', hp: Math.round(hp), armour: Math.round(armour), colour: '#6EE7F9', level: 42 },
+          { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF', level: 100 },
           { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24',
-            bleedEndsAt: knockAt + 40_000 },
+            bleedEndsAt: knockAt + 40_000, level: 7 },
           { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6' },
         ],
       },

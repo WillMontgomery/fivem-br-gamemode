@@ -2319,6 +2319,18 @@ function pushSquadOrParty()
                 -- that would drift from the server and keep ticking through a
                 -- revive.
                 bleedEndsAt = b and b.bleedEndsAt or nil,
+                -- THE LEVEL COMES OFF THE SAME BEACON, AND FOR THE SAME
+                -- REASON. It is not in PUBLIC_FIELDS -- the owner asked to see
+                -- his TEAMMATES' levels, and the public roster goes to the
+                -- whole match. The server derives it from lifetime XP on every
+                -- push (see levelOf in server/party.lua); nothing is derived
+                -- here, because a client that computed its own would eventually
+                -- disagree with the lobby about what level somebody is.
+                --
+                -- ABSENT UNTIL THE SERVER KNOWS IT. nil travels as "no level on
+                -- the wire" and the panel draws nothing rather than a 1 it
+                -- would have to take back.
+                level = b and b.level or nil,
             }
         end
     end

@@ -1005,6 +1005,44 @@ end
 
 -- ---------------------------------------------------------- squad beacons ---
 
+--- One squadmate's level, DERIVED FROM LIFETIME XP.
+---
+--- Owner, 2026-08-22: "We need some way in the squad panel to see the levels of
+--- our teammates near their name."
+---
+--- DERIVED, NEVER READ FROM A STORED FIELD. The profile row carries a `level`
+--- column, and it is written once at match end -- so it lags the `xp` beside it
+--- for the whole of the next match, and a player who levelled up last game is
+--- shown their old number by anything that trusts it. That is not hypothetical:
+--- server/debug.lua's profile dump used to print the stored one and was "the
+--- last place still disagreeing with the lobby after everything else was fixed
+--- to derive". BR.Xp.levelFor is the same authority server/market.lua sends the
+--- lobby and br_stats/server/persist.lua writes the row from, so the panel, the
+--- lobby chip and the verdict screen cannot drift apart.
+---
+--- nil MEANS "NOT KNOWN YET", AND IT IS NOT THE SAME AS LEVEL 1.
+--- BR.Market.lifetimeXp returns nil until that player's inventory has come back
+--- from the database, and a fresh account genuinely holding 0 XP is level 1.
+--- Collapsing the two would draw a confident `1` over every squadmate for the
+--- length of the fetch and then silently correct itself -- which is the exact
+--- symptom market.lua already has a comment about ("a level that reads wrong and
+--- then silently corrects itself... reported as 'it took a while to update'").
+--- The panel draws nothing at all for nil; see hud/SquadPanel.tsx.
+---
+--- `if xp == nil` RATHER THAN `if not xp`. In Lua 0 is TRUTHY, so `not xp` is
+--- false for a zero total and both spellings happen to work here -- but the one
+--- that reads as "has it loaded" is the one that keeps working if the accessor
+--- ever returns false, and this project has shipped the 0-is-truthy bug six
+--- times. The explicit nil test says what is actually being asked.
+--- @param src integer
+--- @return integer|nil
+local function levelOf(src)
+    if not (BR.Xp and BR.Market and BR.Market.lifetimeXp) then return nil end
+    local xp = BR.Market.lifetimeXp(src)
+    if xp == nil then return nil end
+    return BR.Xp.levelFor(xp)
+end
+
 -- Squadmate positions, to squad members ONLY.
 --
 -- This is the single deliberate exception to "positions never leave the
@@ -1094,6 +1132,25 @@ BR.Sched.every(250, 'party.squadpos', function()
                 -- key off IS the clear.
                 bleedEndsAt = (e.state == BR.PlayerState.DBNO)
                               and e.dbnoUntil or nil,
+
+                -- WHAT LEVEL THIS MATE IS, AND ONLY TO THEIR SQUAD.
+                --
+                -- It rides the beacon for the same reason the deadline above
+                -- does, and the reasoning is worth repeating rather than
+                -- pointing at: roster.lua's PUBLIC_FIELDS is the obvious home
+                -- and it is the wrong one, because that list is broadcast to
+                -- EVERY client in the match. A level is not positional and
+                -- gives away nothing tactical -- it is the least sensitive
+                -- thing this file could carry -- but "harmless" is not the
+                -- test the public list applies; the test is whether the whole
+                -- lobby needs to know, and for this it does not. The owner
+                -- asked to see it for TEAMMATES, so teammates are who is told.
+                --
+                -- RE-DERIVED ON EVERY PUSH rather than cached onto the roster
+                -- entry. A cached copy is precisely the stale field this whole
+                -- feature is written to avoid, and the cost is one closed-form
+                -- inversion per squadded player per quarter second.
+                level = levelOf(src),
             }
         end
     end)

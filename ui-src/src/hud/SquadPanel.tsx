@@ -202,6 +202,53 @@ function VitalBar({ value, colour, dying }:
   )
 }
 
+/**
+ * WHAT LEVEL THIS MATE IS.
+ *
+ * Owner, 2026-08-22: "We need some way in the squad panel to see the levels of
+ * our teammates near their name." That is the whole specification, and the
+ * whole of what is drawn: a number, beside the name, with no word attached.
+ *
+ * NO CAPTION, DELIBERATELY. "Lv" or "Level" is interface text nobody asked for,
+ * in the tightest row on the HUD -- the panel is 13rem wide and this row
+ * already holds a voice mark, a name that truncates, and a DOWN/OUT stamp. A
+ * bare figure beside a player's name is the convention every battle royale
+ * shares, and the panel's other numbers are already caption-free.
+ *
+ * WHICH LEAVES IT TO THE STYLING TO SAY THIS IS NOT A VITAL, because the row's
+ * other numerals are hp and shield and they are large, colour-coded and
+ * urgent. This one is 0.62rem in --color-text-dim: the stamp's size and the
+ * caption shade, so it sits in the name's group as an attribute OF the name
+ * rather than as a third quantity in the row.
+ *
+ * AFTER THE NAME RATHER THAN BEFORE IT, and that is a layout requirement, not
+ * a preference. VoiceMark's slot exists to pin the name's left edge for the
+ * life of the panel; a variable-width number between the mark and the name
+ * would unpin it again and shift the name sideways the moment anyone crossed
+ * from 9 to 10. Placed after, the name's left edge never moves, and the level
+ * is still `shrink-0` so a long name truncates rather than squeezing the
+ * figure out.
+ *
+ * IT DOES NOT SCALE WITH THE TEXT-SIZE PREFERENCE, matching the name it
+ * belongs to -- no `.ts`, no `tscale`. The squad plate is a fixed-size plate,
+ * which index.css names as the one place text scaling must not go, and the
+ * voice mark scaling alone is what forced the `align-self: center` /
+ * `items-baseline` pair next door. `leading-none` at 0.62rem puts the line box
+ * far under the name's 1.08rem, so the flex line, the plate and the panel
+ * PlayerList measures keep their height at every setting. Measured at 0.90,
+ * 1.00 and 1.15: identical to the pixel.
+ */
+function LevelMark({ level }: { level: number }) {
+  return (
+    <span
+      className="font-display leading-none tabular-nums text-[0.62rem] shrink-0"
+      style={{ color: 'var(--color-text-dim)', textShadow: 'var(--shadow-text)' }}
+    >
+      {level}
+    </span>
+  )
+}
+
 function Row({ m, talking, silent }: {
   m: SquadMember
   talking: boolean
@@ -285,6 +332,18 @@ function Row({ m, talking, silent }: {
                 See VoiceMark. */}
             <VoiceMark fs="0.72rem" talking={talking} silent={silent} />
             <span className="text-[0.72rem] font-semibold truncate">{m.name}</span>
+            {/* NOTHING AT ALL WHEN THE SERVER HAS NOT SAID, which is the same
+                rule the bleed clock below follows. A missing level means the
+                mate's profile has not come back from the database yet -- so the
+                honest rendering is no number, not a `1` that every high-level
+                player would watch correct itself a second into the match.
+
+                THE TEST IS A RANGE, NOT A TRUTHINESS CHECK. `m.level &&` would
+                also swallow a real 0, and `!= null` would let a NaN through to
+                be drawn; levels are 1..100, so that is what is asked. */}
+            {typeof m.level === 'number' && m.level >= 1 && (
+              <LevelMark level={m.level} />
+            )}
           </span>
           {(dead || downed) && (
             // The stamp and the clock travel together on the right edge. The

@@ -199,6 +199,28 @@ export interface SquadMember {
    * make the pickup when they do not.
    */
   bleedEndsAt?: number
+  /**
+   * THIS MATE'S PROGRESSION LEVEL, 1..100.
+   *
+   * SQUAD-ONLY. It arrives on the squad beacon assembled in br_core's
+   * server/party.lua -- deliberately NOT on roster.lua's PUBLIC_FIELDS, which
+   * is broadcast to every client in the match. A level gives away nothing
+   * tactical, but the owner asked to see his teammates' levels and teammates
+   * are therefore who is told.
+   *
+   * DERIVED SERVER-SIDE FROM LIFETIME XP, via the same BR.Xp.levelFor the
+   * lobby chip and the verdict screen use. The stored `level` column on a
+   * profile row is written at match end and lags the xp beside it, so nothing
+   * reads it.
+   *
+   * OPTIONAL, AND ABSENT IS A REAL STATE: the player's profile has not come
+   * back from the database yet, or this mate has no beacon this tick. The
+   * panel renders NO NUMBER for it rather than a placeholder -- a `1` would be
+   * indistinguishable from a genuine level 1 and would visibly correct itself
+   * a moment later on every high-level player. Same rule as `bleedEndsAt`
+   * above.
+   */
+  level?: number
 }
 
 export interface SquadPayload {
