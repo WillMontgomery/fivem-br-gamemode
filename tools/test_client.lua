@@ -294,10 +294,49 @@ function IsPedInAnyVehicle() return inVehicle end
 --- nil means the engine declined to answer -- `ok == false`, the shape a ped
 --- mid-animation or mid-stow produces -- and any number is a weapon actually
 --- held.
+--- `false` IS A THIRD ANSWER AND NOT A TYPO: the engine ANSWERED and named
+--- NOTHING -- `ok == true`, hash nil. It is the shape that makes the difference
+--- between "we could not read the hand" and "the hand is empty" testable, and
+--- both of this file's weapon reads model it, because the strip check compares
+--- the two against each other.
 local pedWeapon = nil
 function GetCurrentPedWeapon()
     if pedWeapon == nil then return false, 0 end
+    if pedWeapon == false then return true, nil end
     return true, pedWeapon
+end
+
+--- THE GUN BOLTED TO THE VEHICLE, WHICH IS A DIFFERENT QUESTION FROM THE ONE
+--- ABOVE AND THE WHOLE OF #216.
+---
+--- `GET_CURRENT_PED_VEHICLE_WEAPON` is `BOOL f(Ped, Hash*)`, so Lua gets the
+--- BOOL and then the hash -- the same shape `GetCurrentPedWeapon` has, and it is
+--- modelled with the same care, because the strip check reads BOTH and the bug
+--- being fixed is that it only ever read one.
+---
+--- nil means THIS BUILD HAS NO OPINION -- `ok == false` -- which is what an
+--- ordinary car, an ordinary ped on foot, and a build where the native is not
+--- implemented all produce. That is the default, so every case written before
+--- #216 keeps behaving exactly as it did.
+---
+--- `vehWeaponAnswersNumber` DRIVES THE BOOL'S SHAPE, for the reason
+--- `controlsAnswerNumbers` below drives IsControlEnabled's: this is a FiveM BOOL
+--- and this repo has shipped `v == true` on a build that answers `1` six times.
+--- Both shapes are put through the same assertions.
+--- `false` here is the same third answer `pedWeapon` above carries: the native
+--- answered and named nothing.
+---
+--- A TABLE IS THE FOURTH: `{ notOk = h }` means the native REFUSED -- `ok ==
+--- false` -- while still handing back a hash. That is the shape the whole `ok`
+--- test exists for, and without it in the fixture the test that a refused answer
+--- is not used cannot be written at all.
+local vehWeapon = nil
+local vehWeaponAnswersNumber = false
+function GetCurrentPedVehicleWeapon()
+    if vehWeapon == nil then return false, 0 end
+    if type(vehWeapon) == 'table' then return false, vehWeapon.notOk end
+    if vehWeapon == false then return (vehWeaponAnswersNumber and 1 or true), nil end
+    return (vehWeaponAnswersNumber and 1 or true), vehWeapon
 end
 function GetAmmoInPedWeapon() return 0 end
 function GetAmmoInClip() return false, 0 end
@@ -769,7 +808,15 @@ end
 --- distinction the false-positive guard turns on. Declared after the loop above
 --- so it overrides the noop rather than racing it.
 local stripped = {}
-function RemoveWeaponFromPed(_ped, hash) stripped[#stripped + 1] = hash end
+--- CALLS, NOT ENTRIES, AND THE TWO GENUINELY DIFFER. A hash of `nil` appends
+--- nothing to a Lua sequence -- `#stripped` stays where it was -- so a strip of
+--- a weapon the engine named as nil is invisible in the list and visible only
+--- here. #216's nil-versus-nil case is the one that needs it.
+local stripCalls = 0
+function RemoveWeaponFromPed(_ped, hash)
+    stripCalls = stripCalls + 1
+    stripped[#stripped + 1] = hash
+end
 
 --- ...AND THIS ONE, WHICH WAS SCENERY UNTIL #200 (the radio wheel).
 ---
@@ -6575,6 +6622,223 @@ do
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
     BR.Loop.step(BR.Loop.TICK)
     reset()
+end
+
+describe('a vehicle\'s own mounted gun is not a conjured weapon -- #216')
+do
+    -- ═══ THE OWNER'S REPORT, 2026-08-22 ═══
+    --
+    --   "can you confirm that vehicle-related incidents will not fire as a
+    --    weapons-related incident? Because that's exactly what happened here. I
+    --    caused this myself and confirmed no weapons were ever involved."
+    --
+    -- They had stolen an armed helicopter. The engine makes a seated ped's
+    -- CURRENT WEAPON the vehicle's mounted gun, `GetCurrentPedWeapon` reports
+    -- that hash, and the strip check above found it was not fists, not the
+    -- parachute and in no slot -- so it stripped it and filed a WEAPON case
+    -- against somebody who had never held a weapon. Once a tick, because the
+    -- engine hands it straight back.
+    --
+    -- ═══ WHAT THIS BLOCK IS ACTUALLY GUARDING, WHICH IS THE FIX AND NOT THE BUG
+    --
+    -- The bug is one assertion and it would pass against the one-line wrong fix
+    -- ("in a vehicle? skip the check"). So the assertions below are weighted the
+    -- other way: MOST of them are about the hole that fix would open, and the
+    -- suite is deliberately harder to satisfy than the report was.
+    --
+    -- WHY AN ORDINARY CAR NEEDS NO CASE HERE, and it is worth stating because
+    -- its absence looks like a gap: an ordinary car's seated ped reports
+    -- UNARMED, which was always allowed. If it reported anything else, every car
+    -- ride in every match since 2026-08-08 would have filed a weapon case, and
+    -- none has. The armed vehicle is the whole of the difference.
+
+    local CONJURED = 0x11111111            -- in no table this gamemode has
+    local CARBINE  = 0x83BF0278            -- WEAPON_CARBINERIFLE, issued
+    -- VEHICLE_WEAPON_PLAYER_BUZZARD. A real mounted-gun hash, and the point of
+    -- using a real one is that it is in none of this gamemode's tables either --
+    -- so it is indistinguishable from CONJURED to every check except the new one.
+    local MOUNTED  = 0xE2822A29
+    -- A SECOND MOUNTED GUN, so "the vehicle's own" can be told apart from "any
+    -- mounted-looking hash". VEHICLE_WEAPON_PLAYER_LAZER.
+    local OTHER_MOUNTED = 0x8B3428B8
+
+    local function reports()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.INV_STRIPPED then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+
+    local function strips(hash)
+        local n = 0
+        for _, h in ipairs(stripped) do if h == hash then n = n + 1 end end
+        return n
+    end
+
+    --- One TICK with `held` in the hand, seated in a vehicle whose mounted gun
+    --- is `mounted` (nil for a vehicle with no guns, or none the native knows).
+    local function tickSeated(held, mounted)
+        inVehicle, vehicle = true, 77
+        vehWeapon = mounted
+        pedWeapon = held
+        sent, stripped = {}, {}
+        fakeTime = fakeTime + 5000
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    --- The same, on foot.
+    local function tickOnFoot(held, mounted)
+        inVehicle, vehicle = false, 0
+        vehWeapon = mounted
+        pedWeapon = held
+        sent, stripped = {}, {}
+        fakeTime = fakeTime + 5000
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+
+    -- A carbine in slot 1, selected: an ordinary armed player who then steals a
+    -- Buzzard. This is the owner's situation exactly.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+
+    -- 1. THE BUG. The vehicle's own gun, in the seat of that vehicle.
+    tickSeated(MOUNTED, MOUNTED)
+    ok(strips(MOUNTED) == 0,
+        'the vehicle\'s own mounted gun is not taken out of the hand',
+        strips(MOUNTED))
+    ok(#reports() == 0,
+        'and NO weapon case is filed -- the act was stealing a vehicle',
+        #reports())
+
+    -- 2. THE HOLE THE ONE-LINE FIX WOULD OPEN, AND THE REASON THIS BLOCK EXISTS.
+    --    Same seat, same armed vehicle, a rifle this gamemode issues nobody.
+    --    "Skip the check in a vehicle" passes case 1 and fails this.
+    tickSeated(CONJURED, MOUNTED)
+    ok(strips(CONJURED) == 1,
+        'a CONJURED weapon in that same seat still comes out of the hand',
+        strips(CONJURED))
+    ok(#reports() == 1 and reports()[1] == CONJURED,
+        'and is still reported, with the hash that was actually held',
+        tostring(reports()[1]))
+
+    -- 3. AND THE EXCUSE IS THE VEHICLE'S OWN GUN, NOT ANY MOUNTED-LOOKING HASH.
+    --    A Lazer's cannon held in a Buzzard is not the Buzzard's minigun. Both
+    --    hashes are absent from every table this gamemode has, so nothing but
+    --    the equality can tell them apart.
+    tickSeated(OTHER_MOUNTED, MOUNTED)
+    ok(strips(OTHER_MOUNTED) == 1 and #reports() == 1,
+        'a DIFFERENT vehicle\'s mounted gun is stripped and reported')
+
+    -- 4. A VEHICLE THE NATIVE HAS NO OPINION ABOUT is not a blanket excuse.
+    --    An unarmed car -- `ok == false` -- leaves the check exactly as it was.
+    tickSeated(CONJURED, nil)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'a seat with no mounted gun excuses nothing')
+
+    -- 5. ON FOOT, EVEN IF THE NATIVE ANSWERS ANYWAY. A stale or over-eager
+    --    read must not reach across a ped standing in a field.
+    tickOnFoot(MOUNTED, MOUNTED)
+    ok(strips(MOUNTED) == 1 and #reports() == 1,
+        'the same hash on foot is stripped and reported')
+
+    -- 6. THE BOOL, IN BOTH SHAPES. `0` IS TRUTHY IN LUA and a FiveM BOOL may be
+    --    `1` rather than `true`; this repo has shipped the wrong reading SIX
+    --    times, and a `== true` here would have silently un-fixed the bug on
+    --    every build that answers numbers.
+    vehWeaponAnswersNumber = true
+    tickSeated(MOUNTED, MOUNTED)
+    ok(strips(MOUNTED) == 0 and #reports() == 0,
+        'a build whose BOOL answers 1 rather than true is read the same way')
+    vehWeaponAnswersNumber = false
+
+    -- 7. A VEHICLE THAT ANSWERS `0` HAS NO MOUNTED GUN, and `0` must not match
+    --    a hand that reads `0` either. This is the "0 is truthy in Lua" trap in
+    --    its exact local form: `BR.NormHash(0)` is `0` and not nil, so a bare
+    --    `m == h` would have called "this vehicle has no gun" a match for "this
+    --    hand holds nothing" and excused it. Delete the `m ~= 0` guard and this
+    --    is the assertion that fails.
+    --
+    --    (The REPORT is not asserted here: the client does send hash 0 on this
+    --    path and server/strip.lua refuses it explicitly -- `n ~= 0` -- so
+    --    nothing reaches a record either way. The strip is the behaviour this
+    --    file decides.)
+    tickSeated(0, 0)
+    ok(strips(0) == 1,
+        'a vehicle answering "no mounted gun" excuses nothing, hash 0 included',
+        strips(0))
+
+    -- 8. THE NATIVE SIMPLY NOT BEING ON THIS BUILD. Absent is no opinion, and
+    --    no opinion is not an excuse. Restored immediately after.
+    local realNative = GetCurrentPedVehicleWeapon
+    GetCurrentPedVehicleWeapon = nil
+    tickSeated(CONJURED, MOUNTED)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'a build without the native keeps the old behaviour rather than a hole')
+    GetCurrentPedVehicleWeapon = realNative
+
+    -- 8b. A NATIVE THAT THROWS. Same answer as one that is missing, and it is
+    --     asserted separately because the two reach it down different branches.
+    GetCurrentPedVehicleWeapon = function() error('no such vehicle') end
+    tickSeated(CONJURED, MOUNTED)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'a native that raises is no opinion either, not an exemption')
+    GetCurrentPedVehicleWeapon = realNative
+
+    -- 8c. ═══ THE ANSWER THE ENGINE REFUSED TO GIVE IS NOT AN ANSWER ═══
+    --
+    --     The native says `ok == false` AND hands back a hash anyway -- a stale
+    --     out-param, or a build that fills it before deciding. If the BOOL were
+    --     ignored and only the hash compared, that stale value becomes an
+    --     exemption for whatever it happens to name, and here it names the
+    --     conjured rifle in the player's hand.
+    --
+    --     THIS IS THE ONLY ASSERTION THAT THE `ok` TEST HAS ANY EFFECT AT ALL.
+    --     Mutation testing named it: with the BOOL dropped the suite still
+    --     passed, because every other case here has the hash disagreeing too.
+    tickSeated(CONJURED, { notOk = CONJURED })
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'a hash the native declined to vouch for excuses nothing')
+
+    -- 8d. AN ENGINE THAT ANSWERS AND NAMES NOTHING, on both sides at once: the
+    --     hand reads nil and the vehicle reads nil. `nil == nil` is TRUE in Lua,
+    --     so without the `m ~= nil` test the two nothings would have matched and
+    --     excused each other. Same family as the `0` trap in case 7 and the
+    --     sixth time this repo has paid for a member of it.
+    --
+    --     COUNTED IN CALLS RATHER THAN IN ENTRIES, because the hash being
+    --     stripped IS nil and `t[#t + 1] = nil` appends nothing at all. A list
+    --     length would have read 0 for a strip that happened, which is the
+    --     assertion passing for the exactly wrong reason.
+    inVehicle, vehicle = true, 77
+    vehWeapon = false
+    pedWeapon = false
+    sent, stripped, stripCalls = {}, {}, 0
+    fakeTime = fakeTime + 5000
+    BR.Loop.step(BR.Loop.TICK)
+    ok(stripCalls == 1,
+        'a nil hand and a nil mounted gun do not match each other',
+        stripCalls)
+
+    -- 9. AND THE ISSUED WEAPON IS STILL THE ISSUED WEAPON IN A SEAT. The one
+    --    case that is every tick of every match with a passenger in it.
+    tickSeated(CARBINE, MOUNTED)
+    ok(strips(CARBINE) == 0 and #reports() == 0,
+        'the active slot\'s own weapon is untouched in a seat')
+
+    -- Leave the world as this block found it.
+    inVehicle, vehicle = false, 0
+    vehWeapon, pedWeapon = nil, nil
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.Loop.step(BR.Loop.TICK)
+    sent, stripped = {}, {}
 end
 
 -- ------------------------------------------------ the downed presentation ---

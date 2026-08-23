@@ -764,6 +764,127 @@ local function inAnySlot(h)
     return false
 end
 
+--- Is the hash in this ped's hand the MOUNTED GUN OF THE VEHICLE THEY ARE SAT IN?
+---
+--- ═══ THE BUG THIS EXISTS FOR (owner, 2026-08-22) ═══
+---
+--- The owner stole an armed helicopter, read the case it produced, and asked:
+--- "can you confirm that vehicle-related incidents will not fire as a
+--- weapons-related incident? Because that's exactly what happened here. I caused
+--- this myself and confirmed no weapons were ever involved."
+---
+--- They were right. When a ped takes a seat in an armed vehicle the engine makes
+--- the vehicle's mounted gun their CURRENT WEAPON, and `GetCurrentPedWeapon`
+--- reports that hash. It is not fists, it is not the parachute, and it is in no
+--- inventory slot -- so the strip check above refused it, took it out of the
+--- hand, and filed a WEAPON case against a player who had never touched a
+--- weapon. Once a tick, for as long as they stayed in the seat, because the
+--- engine hands it straight back.
+---
+--- ═══ HOW A MOUNTED WEAPON IS IDENTIFIED, AND WHY NOT THE OTHER WAYS ═══
+---
+--- `GetCurrentPedVehicleWeapon` -- BOOL GET_CURRENT_PED_VEHICLE_WEAPON(Ped,
+--- Hash*) -- is the native built for exactly this question, and it is asked the
+--- way this file asks every out-param native: two returns, the BOOL first.
+--- The three alternatives were considered and rejected:
+---
+---   GetWeapontypeGroup. The obvious "is this hash in the vehicle group" test.
+---   The published group list is INCOMPLETE -- citizenfx's own native docs mark
+---   it `@todo` and name no group constants at all -- so the check would have
+---   been written against a number nobody can cite. A guess in an anticheat is
+---   worse than no check.
+---
+---   A hardcoded set of VEHICLE_WEAPON_* hashes. Finite, auditable, and wrong
+---   the day anyone adds a vehicle: DLC and add-on vehicles carry weapons whose
+---   hashes are not in any list written today, and each missing one is this same
+---   bug again for that vehicle only -- the hardest possible shape to find.
+---
+---   "Seated, and the hash is in no catalogue of ours." THIS IS THE OBVIOUS
+---   WRONG ANSWER and it is the one worth naming, because it is one line and it
+---   passes every test written from the owner's report. It excuses ANY weapon
+---   held in ANY seat, so a player who conjures a rifle and then sits in a car
+---   is holding a weapon this gamemode issues nobody, and this file would hand
+---   it back to them. See the header at the bottom of this file: the
+---   `IsPedInAnyVehicle` guard that used to live in the ammo path was REMOVED
+---   because the vehicle was the wrong question, and re-introducing it here as
+---   an anticheat exemption would be the same mistake with a worse blast radius.
+---
+--- ═══ THE TEST IS AN EQUALITY, AND THAT IS WHAT KEEPS THE HOLE SHUT ═══
+---
+--- The weapon in the hand must BE the mounted weapon the engine names -- not
+--- merely "some weapon, in some vehicle". A conjured rifle held in a Buzzard is
+--- not the Buzzard's minigun, so it fails this test, is stripped, and is
+--- reported exactly as it was before. tools/test_client.lua asserts that case
+--- directly, because it is the one a careless fix loses.
+---
+--- FOUR CONDITIONS, ALL OF THEM CHEAP, ALL OF THEM IN THE SAFE DIRECTION:
+---
+---   1. the ped is SEATED. On foot there is no mounted weapon to be holding, so
+---      a native that answers anyway cannot excuse anything. `inVehicle()` is
+---      the normalised read -- see its note, and note that `false` for the
+---      second argument means seated rather than climbing in.
+---   2. the native EXISTS and did not throw. Absent or angry is no opinion, and
+---      no opinion is not an excuse.
+---   3. it ANSWERED. A FiveM BOOL may be `true` or `1` and this repo has shipped
+---      the wrong reading SIX times, so `yes()` reads both. A build whose BOOL
+---      is unreliable here keeps the bug rather than gaining a hole, and that is
+---      the direction it is safe to be wrong in.
+---   4. the hash is NON-ZERO and EQUAL. A vehicle with no mounted gun answers
+---      `0`, and `0` is TRUTHY in Lua -- `BR.NormHash(0)` is `0`, not nil -- so
+---      without the explicit test "this vehicle has no gun" would compare equal
+---      to "this hand holds nothing" and excuse it. Tested ONCE, on the
+---      vehicle's side: a matching guard on the hand would be the same
+---      condition written twice and mutation testing would correctly call the
+---      second one unkillable, which is the argument client/vehrefuse.lua's
+---      `lock` already makes about a guard it deleted for the same reason.
+---
+--- ═══ WHAT THIS MISSES, STATED RATHER THAN DISCOVERED LATER ═══
+---
+--- A build on which `GetCurrentPedVehicleWeapon` does not answer for the seat
+--- the player is in -- a turret, a passenger gun position, a modded vehicle the
+--- native has no opinion about -- falls through to the old behaviour: the strip
+--- fires and a weapon case is filed. That is the bug, narrowed, not abolished.
+--- If it is ever reported again from a seat, this function is the first place to
+--- look and `/brprobe ammo`'s `inVehicle` is the reading that says whether the
+--- seat was even seen.
+---
+--- AND IT IS AS FORGEABLE AS EVERYTHING ELSE ON THIS PATH. A cheat that hooks
+--- this native to name the rifle it just conjured buys itself an exemption -- but
+--- a cheat that can hook natives can hook `GetCurrentPedWeapon` and never appear
+--- here at all, which is cheaper. The trust boundary is unchanged and is stated
+--- at length in br_core/server/strip.lua: this whole path is a tripwire in front
+--- of server/damage.lua, not the defence.
+--- @param h integer|nil  the normalised hash in the hand
+--- @return boolean
+local function isMountedWeapon(h)
+    if not inVehicle() then return false end
+
+    -- pcall AND NO `type(...) == 'function'` GUARD IN FRONT OF IT, deliberately.
+    -- `pcall(nil, ...)` returns false rather than raising, so the guard and the
+    -- pcall would have had identical behaviour -- and mutation testing said so,
+    -- exactly as it did for the guard client/vehrefuse.lua's `lock` deleted for
+    -- this reason. A native that is not on this build, and one that dislikes the
+    -- handle it was given, both read as "no opinion" here.
+    --
+    -- Three returns: the pcall's own, then the native's two.
+    --
+    -- `not pok` IS THE ONE CONDITION HERE MUTATION TESTING CANNOT KILL, and it
+    -- is kept rather than deleted like the two above: a failed pcall puts the
+    -- ERROR MESSAGE in `answered`, which `yes` rejects for being a string, so
+    -- the two halves cannot disagree today. They can the moment anything else
+    -- goes in that slot, and dropping it would leave `pok` bound and unread --
+    -- which reads as a pcall nobody checked.
+    local pok, answered, mounted = pcall(GetCurrentPedVehicleWeapon, PlayerPedId())
+    if not pok or not yes(answered) then return false end
+
+    -- NO `h == nil` GUARD AT THE TOP OF THIS FUNCTION, for the same reason and
+    -- with the same evidence: `m ~= nil` below already refuses the only shape a
+    -- nil hand can reach here in -- an engine that answered and named nothing --
+    -- and a second test of the same fact was reported unkillable.
+    local m = BR.NormHash(mounted)
+    return m ~= nil and m ~= 0 and m == h
+end
+
 --- Tell the server a weapon it never issued was taken out of this ped's hand.
 ---
 --- WHAT THIS IS AND IS NOT. It is a report of something that already happened;
@@ -843,9 +964,20 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
             local wantHash = BR.NormHash(hashOf(inv.slots[inv.active]))
             -- Fists and the parachute are never ours to strip: the chute is
             -- granted by skydive.lua and removing it at 400 metres is a death.
+            --
+            -- AND NEITHER IS THE GUN BOLTED TO THE VEHICLE THEY ARE SITTING IN.
+            -- A ped in an armed vehicle is HANDED its mounted weapon by the
+            -- engine; they did not conjure it and there is nothing to take out
+            -- of their hand. See `isMountedWeapon` for how that is established,
+            -- why it is an equality rather than "in a vehicle", and what it
+            -- misses. The vehicle itself is somebody's problem -- it is refused
+            -- by config/vehicles.lua, ejected by client/vehrefuse.lua and
+            -- detected by server/vehicles.lua -- but it is a VEHICLE problem,
+            -- and answering it here filed it as a weapon one.
             local allowed = h == BR.NormHash(UNARMED)
                 or h == BR.NormHash(BR.Config.Gadgets.PARACHUTE)
                 or (wantHash ~= nil and h == wantHash)
+                or isMountedWeapon(h)
             if not allowed then
                 RemoveWeaponFromPed(ped, held)
                 applied = nil          -- force the active slot back on
