@@ -336,6 +336,21 @@ export interface DbnoPayload {
   bleedEndsAt: number
   reviverName: string | null
   revivePct: number
+  /**
+   * I am a solo, I am holding a CPR kit, and pressing interact would spend it
+   * (#191). THE ONE FIELD ON THIS PAYLOAD THE SERVER DOES NOT DECIDE:
+   * client/rescue.lua answers it locally and merges it in through
+   * BR.Dbno.setCpr, because a prompt should not wait for a round trip.
+   *
+   * A BARE BOOLEAN, AND NO KEY LABEL WITH IT. The glyph is resolved in the
+   * component from the bindings the interface already holds (ui/KeyCap.tsx, by
+   * command name), so a rebind moves the prompt with no plumbing; a letter sent
+   * from Lua would be a second copy of the binding, going stale.
+   *
+   * Optional because it rides an envelope Lua has always been able to send
+   * without it -- absent means no.
+   */
+  cpr?: boolean
 }
 
 /**

@@ -7,14 +7,15 @@
 --
 -- ═══ ONE NOTIFICATION. THE WHOLE CYCLE. ═══
 --
--- "Press [interact key] to use the CPR kit" is THE ONLY THING SHOWN TO THE
--- PLAYER AT ANY POINT IN THIS FEATURE. (The owner's later wording, 2026-08-23;
--- it supersedes #191 step 2's "call a medic" -- see setPrompt.)
+-- "Use the CPR kit", on the interact key, is THE ONLY THING SHOWN TO THE PLAYER
+-- AT ANY POINT IN THIS FEATURE -- and it is drawn as a row of the bleed-out card
+-- rather than as a surface of its own (the owner's fix, 2026-08-23; his wording
+-- supersedes #191 step 2's "call a medic" -- see setPrompt for both).
 -- Not on dispatch, not on arrival, not when the
 -- ambulance is destroyed, not when a recovery fires. The owner has been
 -- explicit and repeatedly annoyed about invented UI copy, and the discipline is
--- easier to keep than to restore: there is exactly one BR.Dui.send in this file
--- and no BR.Native.help, no notify, and no toast anywhere in the feature.
+-- easier to keep than to restore: there is exactly one thing this file tells the
+-- interface, and no BR.Native.help, no notify, and no toast anywhere in it.
 --
 -- #191 STEP 6 ASKED FOR A TIMER AND THERE IS NONE. The hard deadline is real and
 -- does its whole job on the server; it simply is not drawn. A countdown is a
@@ -40,18 +41,13 @@ local function isTrue(v) return v == true or v == 1 end
 ---   ending        RESCUE_END is running; the sanity sweep must keep its hands off
 local ride = nil
 
---- The last thing the prompt was told, so it is sent on CHANGE rather than per
---- frame -- a re-send restarts the page's animation.
+--- The last thing the interface was told, so it is sent on CHANGE rather than
+--- per frame -- the card's row is not worth an envelope sixty times a second.
 local promptShown = nil
 
 -- ---------------------------------------------------------------------------
 -- The prompt
 -- ---------------------------------------------------------------------------
-
---- The crate's page. One browser for every world prompt in the game.
-local function promptPage()
-    return BR.Dui.page('lootprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
-end
 
 --- Do I hold a CPR kit?
 ---
@@ -93,119 +89,59 @@ local function setPrompt(show)
     if show == promptShown then return end
     promptShown = show
 
-    local page = promptPage()
-    if not show then
-        BR.Dui.send(page, { t = 'prompt', show = false })
-        return
-    end
-
-    -- ═══ THE WORDING IS THE OWNER'S, AND IT IS HIS LATER ONE ═══
+    -- ═══ IT IS A ROW OF THE BLEED-OUT CARD NOW, AND THAT IS THE FIX ═══
     --
-    -- Owner, 2026-08-23: "While they're bleeding out there should be a 'Press
-    -- [interact key] to use the CPR kit'".
+    -- Owner, 2026-08-23, after two rounds of an invisible prompt: "Why don't we
+    -- just make it part of the bleed out timer card?"
     --
-    -- THIS SUPERSEDES #191 STEP 2, which said "press [interact key] to call a
-    -- medic" -- and that is what this box said until now. The medic is an
-    -- implementation detail of what the item does; the ITEM is the thing the
-    -- player is holding and the thing they are being asked about, and naming it
-    -- is the difference between a prompt you understand at a glance and one you
-    -- have to connect to your inventory yourself. Recorded rather than quietly
-    -- swapped, because the issue body still carries the old sentence and the
-    -- next reader will find it there.
+    -- TWO WAYS OF DRAWING IT HAVE FAILED, for opposite reasons, and his idea
+    -- removes the thing both of them were fighting rather than dodging it:
     --
-    -- Split across label/hint/key because that is the shape the page draws --
-    -- the KEY is its own glyph, which is the whole reason this is a DUI and not
-    -- an engine help box. No third phrasing is invented and no second line is
-    -- added: this remains the only thing this feature ever says.
-    BR.Dui.send(page, {
-        t     = 'prompt',
-        show  = true,
-        label = 'Use the CPR kit',
-        hint  = 'Press',
-        key   = BR.Native.keyLabelForCommand('brinteract',
-                                             BR.Config.Loot.promptControl or 51),
-        ring  = false,
-    })
+    --   1. A NATIVE SPRITE AT THE SHARED PROMPT POSITION (0.5, 0.78). NUI
+    --      composites above every DrawSprite the game makes, and
+    --      ui-src/src/hud/DbnoOverlay.tsx is an effectively opaque `.panel-hot`
+    --      at `bottom-40` sitting right on top of it. No ordering on this side
+    --      can put a sprite in front of a browser overlay.
+    --
+    --   2. THE SAME SPRITE MOVED ONTO THE BODY (ad3ead8). Also invisible:
+    --      client/dbno.lua parks the downed camera at GROUND level, so a label
+    --      lifted above the ped is behind the ped, or off the top of a shot
+    --      that is mostly tarmac. Owner: "Putting a DUI above my ped while the
+    --      camera is on the ground is why I can't see it."
+    --
+    -- INSIDE THE CARD there is no compositing race, because the prompt now IS
+    -- the browser overlay that was winning; no camera dependency, because the
+    -- card is screen furniture; and no scale-dependent position to tune, which
+    -- was the third problem -- it lays out in the same flow as the countdown at
+    -- every interface size.
+    --
+    -- WHAT CROSSES THE BRIDGE IS ONE BIT. The wording lives in the component,
+    -- and the key glyph is resolved there from the bindings the interface
+    -- already holds (ui/KeyCap.tsx, by command name) -- so no letter is sent
+    -- from here and nothing goes stale on a rebind. That is why
+    -- BR.Native.keyLabelForCommand and the DUI page are both gone from this
+    -- file.
+    --
+    -- THE WORDING IS THE OWNER'S LATER ONE. "Use the CPR kit" (2026-08-23),
+    -- superseding #191 step 2's "call a medic": the medic is an implementation
+    -- detail of what the item does, and the ITEM is what the player is holding
+    -- and is being asked about. Recorded rather than quietly swapped, because
+    -- the issue body still carries the old sentence.
+    --
+    -- STILL EXACTLY ONE NOTIFICATION, and now it cannot become two: there is no
+    -- second surface left to fall back to. The prompt is one row of a card that
+    -- is already on screen, or it is nothing.
+    BR.Dbno.setCpr(show)
 end
 
+-- POLLED, AND NOTHING IS DRAWN FROM HERE ANY MORE. Nothing events this answer:
+-- it moves when the player is knocked down, when they pick a kit up, when a
+-- ride starts and when the match ends, and none of those call in here. Both
+-- `setPrompt` and BR.Dbno.setCpr refuse an unchanged answer, so sixty frames of
+-- "yes" still cost exactly one envelope -- which is the same send-on-change
+-- discipline this loop has always had, moved one layer down.
 BR.Loop.register(BR.Loop.FRAME, 'rescue.prompt', function()
-    local want = canCall()
-    setPrompt(want)
-    if not want then return end
-
-    local page = promptPage()
-    if not BR.Dui.ready(page) then return end
-
-    -- ═══ DRAWN ON THE BODY, NOT ON THE SCREEN, AND THAT IS THE BUG FIX ═══
-    --
-    -- Owner, 2026-08-23: "upon dying I get no prompt to use the CPR kit."
-    --
-    -- IT WAS BEING SENT AND IT WAS BEING DRAWN. The message went out, the page
-    -- rendered it, and the sprite went onto the screen at BR.Config.Drop's
-    -- promptX/promptY -- 0.5, 0.78 -- which is where the bus and the glider put
-    -- theirs. THE DOWNED PLACARD IS ALREADY THERE.
-    --
-    -- ui-src/src/hud/DbnoOverlay.tsx is `absolute inset-x-0 bottom-40`, a
-    -- `.panel-hot` whose background is rgba(8, 9, 14, 0.94). At 1080p and the
-    -- default interface size that is a centred, effectively opaque box from
-    -- ~160px to ~262px up from the bottom edge. The sprite is drawn from its
-    -- CENTRE at 0.78 -- 238px up -- and stands 0.17 * 0.5 * aspect of the screen
-    -- HEIGHT, about 163px, so it spans ~156px to ~319px. The placard sits inside
-    -- it, over the badge and the label both.
-    --
-    -- AND NUI ALWAYS WINS. A browser overlay composites above everything the
-    -- game draws, DrawSprite included, so no amount of ordering on this side
-    -- puts the prompt in front of it. From the player's chair: no prompt.
-    --
-    -- WHY NO OTHER PROMPT IN THE GAME EVER HIT THIS. The placard exists only
-    -- while a player is DOWNED, and the bus, the glider, the crate and the fuel
-    -- pump are all things you cannot be doing while downed. This prompt is the
-    -- only one in the project that is on screen at exactly and only the moment
-    -- the placard is, so it is the only one that could ever have collided.
-    --
-    -- ═══ AND WHY NOT SIMPLY MOVE IT UP THE SCREEN ═══
-    --
-    -- Because there is no y that survives the interface-size slider. The
-    -- placard is positioned and sized in `rem`, and the root font size is
-    -- clamp(11px, 1.481vh * --ui-scale, 28px); the sprite is scaled by the same
-    -- preference (dui.lua multiplies every draw by `prefs.ui`). Both grow, from
-    -- opposite anchors, at different rates -- a number that clears at 1.0 is
-    -- back underneath it at 1.5. Picking one would be fixing this for whoever
-    -- happens to share the author's settings.
-    --
-    -- THE BODY IS THE ANCHOR THAT CANNOT COLLIDE. client/dbno.lua's camera
-    -- points at the head bone every frame -- `PointCamAtCoord(cam, hx, hy, hz +
-    -- 0.05)` -- so this player's own head is dead centre of the shot whatever
-    -- they do with the look stick, and a label pinned just above it is nowhere
-    -- near a bottom-anchored placard at any interface size.
-    --
-    -- It is also the language the player already knows: this is exactly how
-    -- dbno.lua draws the revive prompt over a downed mate, at the same anchor,
-    -- the same lift and the same scale. A box over a body on the floor with the
-    -- interact key on it means one thing in this game, and now it means it for
-    -- your own body too.
-    --
-    -- NO ENGINE FALLBACK. The bus prompt falls back to BR.Native.help after
-    -- three seconds because a player who cannot see the jump prompt does not
-    -- jump and loses the match. This one is a downed player with a bleed timer
-    -- and a rare item: the cost of a missing browser is one wasted kit, and the
-    -- cost of a fallback is a second surface in a feature whose defining rule is
-    -- that it has exactly one.
-    local ped = PlayerPedId()
-    local hx, hy, hz
-    if BR.Squadmates and BR.Squadmates.headAnchor then
-        hx, hy, hz = BR.Squadmates.headAnchor(ped)
-    else
-        -- The same degrade squadmates.lua documents: the origin plus a
-        -- compromise between a standing head and one on the floor.
-        local c = GetEntityCoords(ped)
-        hx, hy, hz = c.x, c.y, c.z + 0.6
-    end
-
-    BR.Dui.drawWorld(promptPage(), hx, hy,
-                     hz + ((BR.Config.Match and BR.Config.Match.dbnoPromptLift)
-                           or 0.35),
-                     BR.Config.Loot.promptScale or 2.0)
+    setPrompt(canCall())
 end)
 
 BR.Keys.on('interact', function(pressed)

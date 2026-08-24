@@ -28,8 +28,12 @@ local M = BR.Config.Match
 -- What the server last told us about our OWN downed state. Held whole, because
 -- the UI envelope is sent whole -- REVIVE_PROGRESS merges into this and the
 -- merged copy goes across the bridge, so there is one shape and one writer.
+--
+-- `cpr` IS THE ONE FIELD THE SERVER DOES NOT SEND. It is client/rescue.lua's
+-- answer to "may I use my CPR kit right now", parked here so the placard can
+-- draw it -- see BR.Dbno.setCpr below.
 local mine = { downed = false, bleedEndsAt = 0, reviverName = nil,
-               revivePct = 0.0 }
+               revivePct = 0.0, cpr = false }
 
 -- The revive we are performing on somebody else, or nil.
 local holding = nil   -- { target = src, from = ms }
@@ -115,7 +119,30 @@ local function pushMine()
         bleedEndsAt = mine.bleedEndsAt or 0,
         reviverName = mine.reviverName,
         revivePct   = mine.revivePct or 0.0,
+        cpr         = mine.cpr and true or false,
     })
+end
+
+--- The CPR kit's prompt, as one bit on the downed payload (#191).
+---
+--- WHY IT COMES THROUGH HERE RATHER THAN AS ITS OWN ENVELOPE. The interface
+--- reads ONE payload for the whole overlay -- the same reason REVIVE_PROGRESS
+--- merges into `mine` instead of arriving separately -- and the prompt is now
+--- drawn INSIDE the placard this payload feeds. A second envelope would mean a
+--- second writer for one card.
+---
+--- WHY IT IS A BARE BOOLEAN AND CARRIES NO KEY LABEL. ui/KeyCap.tsx resolves the
+--- glyph from the keybinds the interface already holds, by command name. Sending
+--- a letter would be a second copy of the binding that goes stale on a rebind.
+---
+--- Idempotent: pushing the same answer again would be a wasted envelope, and
+--- client/rescue.lua calls this from a frame band.
+--- @param v boolean
+function BR.Dbno.setCpr(v)
+    v = v and true or false
+    if v == mine.cpr then return end
+    mine.cpr = v
+    pushMine()
 end
 
 -- THE DOWNED POSE.

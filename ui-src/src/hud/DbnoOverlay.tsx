@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useUi } from '../store'
+import { KeyCap } from '../ui/KeyCap'
 import type { DbnoPayload } from '../bridge/types'
 
 /**
@@ -147,6 +148,58 @@ export default function DbnoOverlay({ dbno }: { dbno: DbnoPayload }) {
               />
             )}
           </div>
+
+          {/* ═══ THE CPR KIT'S PROMPT, AND IT LIVES HERE BECAUSE NOWHERE ELSE
+              WORKED ═══
+
+              Owner, 2026-08-23, after two rounds of it being invisible: "Why
+              don't we just make it part of the bleed out timer card?"
+
+              BOTH EARLIER ATTEMPTS WERE NATIVE DRAWS AND BOTH LOST, in opposite
+              ways. A sprite at the shared prompt position (0.5, 0.78) landed
+              UNDERNEATH this placard, because NUI composites above every
+              DrawSprite the game makes and `.panel-hot` is rgba(8, 9, 14, 0.94)
+              -- effectively opaque, and on screen at exactly and only the moment
+              that prompt is. Moving the sprite onto the player's head anchor
+              lost the other way: client/dbno.lua parks the downed camera at
+              GROUND level, so a label above the body is behind the body.
+
+              Drawn as a row of this card, it is inside the surface that was
+              winning the compositing fight, it does not depend on where the
+              camera is, and it has no scale-dependent position to tune -- it
+              lays out in the same flow as the countdown at every setting of the
+              interface-size slider. That last one is why "just move it up the
+              screen" was never available: this placard is positioned in rem off
+              the bottom edge and a native sprite is scaled from its own centre,
+              so the two move apart at different rates.
+
+              ONE ROW, AND NOTHING ELSE JOINS IT. #191's defining rule is that
+              this feature has exactly one notification for its whole cycle --
+              dispatch, arrival, the ambulance being destroyed, the recovery, all
+              silent. There is no fallback surface left for it to become two.
+
+              THE KEY COMES FROM THE BINDING, LIKE EVERY OTHER KEY IN THE
+              INTERFACE. `KeyCap` resolves `brinteract` out of the keybinds the
+              store already holds, so a rebind redraws this with no plumbing and
+              Lua sends no letter. The cap is set ABOVE the words beside it,
+              which is the rule KeyCap documents -- a key you press must never be
+              the smaller of the two. */}
+          {dbno.cpr && (
+            <div className="mt-2 flex items-center justify-center gap-1.5">
+              <KeyCap command="brinteract" fs="0.9rem" />
+              <span
+                className="ts font-semibold"
+                style={{
+                  ['--fs' as string]: '0.8rem',
+                  lineHeight: 1.4,
+                  color: 'rgba(255,255,255,0.82)',
+                  textShadow: 'var(--shadow-text)',
+                }}
+              >
+                Use the CPR kit
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </div>

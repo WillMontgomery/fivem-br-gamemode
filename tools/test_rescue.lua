@@ -504,9 +504,21 @@ end
 -- DRAWN and where. They cannot settle whether the player can see it -- and that
 -- distinction is the whole story of fault 2, so it is worth being exact about:
 -- the prompt was always sent, and it was always drawn, and it was drawn
--- underneath an opaque NUI placard. The regression guard for that is the
--- assertion that the draw is a WORLD draw on the body rather than a screen draw
--- at BR.Config.Drop's coordinates; the reasoning is in client/rescue.lua.
+-- underneath an opaque NUI placard.
+--
+-- ═══ THE SURFACE THESE ASSERTIONS PIN CHANGED ON 2026-08-24 ═══
+--
+-- Two native draws were tried and both were invisible, in opposite ways: at the
+-- shared prompt position the placard composited on top of it, and on the
+-- player's head anchor the ground-level downed camera put it behind the body.
+-- The owner's fix removes the contest -- "Why don't we just make it part of the
+-- bleed out timer card?" -- so the prompt is now a ROW OF THAT CARD, handed
+-- across as one boolean on the downed payload (BR.Dbno.setCpr).
+--
+-- The four assertions that used to pin the DUI draw now pin that: that nothing
+-- is drawn natively AT ALL, that the fact reaches the interface as a bare bit
+-- with no key label on it, and that it flips on change rather than per frame.
+-- The reasoning is in client/rescue.lua and in DbnoOverlay.tsx.
 
 -- ---------------------------------------------------------------------------
 describe('kit.inertWhileAlive')
@@ -644,6 +656,19 @@ do
     BR.Inv = BR.Inv or {}
     BR.Inv.local_ = function() return { slots = slots } end
 
+    -- ═══ THE SURFACE. One boolean, onto the downed payload. ═══
+    --
+    -- BR.Dbno.setCpr is client/dbno.lua's merge into the envelope that feeds the
+    -- bleed-out card (ui-src/src/hud/DbnoOverlay.tsx). Stubbed rather than
+    -- loaded: dbno.lua is also the crawl, the camera and the revive, and none of
+    -- that is what this block is about. What is recorded here is the whole of
+    -- what rescue.lua now hands the interface.
+    local cpr = {}
+    BR.Dbno = { setCpr = function(v) cpr[#cpr + 1] = v end }
+
+    -- STILL STUBBED, AND THAT IS THE POINT: every one of these must stay empty.
+    -- The prompt used to go out through `send` and land through `drawScreen` or
+    -- `drawWorld`, and a second surface growing back would show up here.
     BR.Dui = {
         page       = function(n) return { name = n } end,
         send       = function(_, m) sends[#sends + 1] = m end,
@@ -653,9 +678,15 @@ do
         drawOnEntity = function() end,
     }
     BR.Keys       = { on = function() end, isHeld = function() return false end }
-    BR.Native     = { keyLabelForCommand = function() return 'E' end }
-    -- The head bone, which is what client/dbno.lua's camera points at every
-    -- frame -- so it is also the one anchor a prompt cannot be hidden behind.
+    -- A TRIPWIRE, not a stub with a job. Nothing in this feature may resolve a
+    -- key label any more: ui/KeyCap.tsx draws the glyph from the binding the
+    -- interface already holds, and a letter sent from Lua is a second copy of
+    -- that binding which goes stale the moment the player rebinds interact.
+    local askedForKey = false
+    BR.Native     = { keyLabelForCommand = function()
+        askedForKey = true
+        return 'E'
+    end }
     BR.Squadmates = { headAnchor = function() return 10.0, 20.0, 30.0 end }
     _G.PlayerPedId     = function() return 1 end
     _G.GetEntityCoords = function() return { x = 10.0, y = 20.0, z = 29.4 } end
@@ -683,7 +714,7 @@ do
     end
     local function shows()
         local n = 0
-        for _, m in ipairs(sends) do if m.show then n = n + 1 end end
+        for _, v in ipairs(cpr) do if v then n = n + 1 end end
         return n
     end
 
@@ -696,78 +727,99 @@ do
 
     -- ═══ AND OFFERED, ONCE, WHILE BLEEDING OUT ═══
     BR.State.me.state = BR.PlayerState.DBNO
-    sends, screenDraws, worldDraws = {}, {}, {}
+    cpr, sends, screenDraws, worldDraws = {}, {}, {}, {}
     frame(60)
 
     ok(shows() == 1,
         'a downed solo carrying a kit gets EXACTLY ONE prompt across sixty '
             .. 'frames -- one notification is the whole rule of this feature, '
-            .. 'and a re-send restarts the page animation',
+            .. 'and the card should not be re-rendered sixty times a second',
         shows())
 
-    local shown = sends[1]
-    ok(shown and shown.show == true, 'and it is a show rather than a hide')
+    ok(cpr[1] == true, 'and it is a show rather than a hide',
+        tostring(cpr[1]))
 
-    -- ═══ THE WORDING IS THE OWNER'S LATER ONE ═══
+    -- ═══ RE-POINTED FROM THE DUI DRAW: THE PROMPT IS THE CARD ═══
     --
-    -- "Press [interact key] to use the CPR kit", superseding #191 step 2's
-    -- "press [interact key] to call a medic". The key is its own glyph, so the
-    -- sentence is split across hint/key/label exactly as the page draws it.
-    ok(shown and shown.label == 'Use the CPR kit',
-        'it names the ITEM, not the medic -- the owner\'s 2026-08-23 wording '
-            .. 'supersedes #191\'s and this is what pins it',
-        shown and tostring(shown.label))
-    ok(shown and shown.hint == 'Press' and shown.key == 'E',
-        'with the interact key on it as a glyph',
-        shown and (tostring(shown.hint) .. ' ' .. tostring(shown.key)))
-    ok(shown and shown.ring == false,
-        'and no hold ring: this is a press, not a hold')
+    -- Owner, 2026-08-23: "Why don't we just make it part of the bleed out timer
+    -- card?" -- after two native draws that were both invisible. At the shared
+    -- prompt position (0.5, 0.78) the sprite went UNDER
+    -- ui-src/src/hud/DbnoOverlay.tsx's `absolute inset-x-0 bottom-40`
+    -- `.panel-hot` at rgba(8, 9, 14, 0.94), because NUI composites above every
+    -- native draw and that placard is on screen at exactly and only the moment
+    -- this prompt is. Moved onto the head anchor it went BEHIND the body,
+    -- because client/dbno.lua parks the downed camera at ground level.
+    --
+    -- So the guard is no longer "which native draw" but "no native draw at all".
+    -- The three BR.Dui recorders above are still live; all three must be empty.
+    ok(#sends == 0 and #screenDraws == 0 and #worldDraws == 0,
+        'nothing native is drawn or sent for this prompt any more -- the card '
+            .. 'IS the surface, so there is no second one to be hidden behind '
+            .. 'or to composite over',
+        ('%d send(s), %d screen, %d world')
+            :format(#sends, #screenDraws, #worldDraws))
 
-    -- ═══ THE REGRESSION GUARD FOR WHY IT WAS INVISIBLE ═══
+    -- ═══ WHAT CROSSES THE BRIDGE IS ONE BIT, AND NOT A LETTER ═══
     --
-    -- It WAS being drawn. At BR.Config.Drop's promptX/promptY -- 0.5, 0.78 --
-    -- which is where the bus and glider prompts go, and which is also where
-    -- ui-src/src/hud/DbnoOverlay.tsx puts an `absolute inset-x-0 bottom-40`
-    -- `.panel-hot` at rgba(8, 9, 14, 0.94). NUI composites above every native
-    -- draw, so the placard was simply in front of it -- and the placard is on
-    -- screen at exactly and only the moment this prompt is.
-    --
-    -- Asserted as "in the world, on the body" rather than as a different
-    -- screen y, because no screen y survives the interface-size slider: the
-    -- placard is laid out in rem off the bottom edge and the sprite is scaled by
-    -- the same preference from its own centre.
-    ok(#screenDraws == 0,
-        'the prompt is NOT drawn in screen space -- that is where the downed '
-            .. 'placard is, and NUI wins',
-        #screenDraws)
-    ok(#worldDraws > 0, 'it is drawn in the world', #worldDraws)
+    -- The wording ("Use the CPR kit", the owner's 2026-08-23 wording superseding
+    -- #191 step 2's "call a medic") lives in the component now, and so does the
+    -- key glyph -- ui/KeyCap.tsx resolves `brinteract` from the bindings the
+    -- interface already holds. A label sent from here would be a second copy of
+    -- the binding, stale the moment the player rebinds interact.
+    ok(type(cpr[1]) == 'boolean',
+        'it is a bare boolean on the downed payload, not a message with copy '
+            .. 'in it -- the card owns the wording',
+        type(cpr[1]))
+    ok(askedForKey == false,
+        'and no key label is resolved in Lua at all: the glyph follows the '
+            .. 'binding on the interface side',
+        tostring(askedForKey))
 
-    local d = worldDraws[#worldDraws]
-    ok(d and d.x == 10.0 and d.y == 20.0 and d.z > 30.0,
-        'on this player\'s own head anchor, which is the point dbno.lua\'s '
-            .. 'camera is aimed at -- so it cannot be behind anything',
-        d and ('%.1f, %.1f, %.1f'):format(d.x, d.y, d.z))
-
-    -- ═══ AND IT IS DRAWN EVERY FRAME, NOT ONCE ═══
+    -- ═══ SO THE WORDING IS PINNED WHERE IT NOW LIVES ═══
     --
-    -- Sent on change, drawn per frame: that split is what welds the box to a
-    -- body the camera is moving around. A prompt drawn once is a prompt that
-    -- appears for a sixtieth of a second.
-    ok(#worldDraws >= 59,
-        'every frame it is offered, so it stays on the body as the camera moves',
-        #worldDraws)
+    -- These three used to be assertions on the DUI message's label/hint/key.
+    -- They are the same three claims, re-pointed at the file that owns them now
+    -- -- a text read rather than a render, which is all this process can do and
+    -- is stated so a pass is not read as more than it is. It is worth keeping:
+    -- the wording has been changed by hand twice, and the whole point of writing
+    -- it down was that the issue body still carries the superseded sentence.
+    local card = io.open('ui-src/src/hud/DbnoOverlay.tsx')
+    local cardSrc = card and card:read('a') or ''
+    if card then card:close() end
+
+    ok(cardSrc:find('Use the CPR kit', 1, true) ~= nil,
+        'the card carries the owner\'s wording, "Use the CPR kit"',
+        #cardSrc == 0 and 'DbnoOverlay.tsx did not open' or 'not in the file')
+    ok(cardSrc:find('call a medic', 1, true) == nil,
+        'and not #191 step 2\'s superseded "call a medic" -- it names the ITEM '
+            .. 'the player is holding, not the implementation detail')
+    ok(cardSrc:find('KeyCap', 1, true) ~= nil
+           and cardSrc:find('brinteract', 1, true) ~= nil,
+        'with the interact key drawn as a glyph by the shared KeyCap, which is '
+            .. 'how every other key in the interface is drawn')
+
+    -- ═══ AND IT IS POLLED EVERY FRAME, EVEN THOUGH IT IS SENT ONCE ═══
+    --
+    -- The loop is what notices `ride` starting, the kit going, or the player
+    -- getting back up -- nothing events any of those. It used to also carry the
+    -- per-frame draw; now it carries only the poll, so the thing worth pinning
+    -- is that sixty frames of an unchanged answer cost exactly one call.
+    ok(#cpr == 1,
+        'sixty frames of the same answer cost exactly one call across the '
+            .. 'bridge -- the loop polls, the send is on change',
+        #cpr)
 
     -- ═══ THE THREE WAYS IT MUST GO AWAY ═══
     local function goesAway(what, mutate, restore)
-        sends = {}
+        cpr = {}
         mutate()
         frame(5)
         local hid = false
-        for _, m in ipairs(sends) do if m.show == false then hid = true end end
-        ok(hid and shows() == 0, what, ('%d send(s)'):format(#sends))
+        for _, v in ipairs(cpr) do if v == false then hid = true end end
+        ok(hid and shows() == 0, what, ('%d call(s)'):format(#cpr))
         restore()
         frame(5)
-        sends = {}
+        cpr = {}
     end
 
     goesAway('a squad player carrying a kit is offered nothing -- the kit is '
