@@ -68,6 +68,35 @@ BR.Inv.suspendAmmo = false
 -- without reporting, so a weapon switch never looks like a burst of fire.
 local lastReport = { total = -1, clip = -1, at = 0 }
 
+--- THE LAST FEW REPORTS THIS CLIENT SENT, AND WHAT BECAME OF THEM.
+---
+--- ═══ THE FIFTH DOOR WAS A MESSAGE IN FLIGHT (owner, 2026-08-23, third
+---     report) ═══
+---
+--- "I also picked up the railgun again this time, which came with ammo, and was
+--- immediately drained of all railgun ammo..... didn't even do anything."
+---
+--- He did not do anything. The report loop did. An INV_AMMO is a MEASUREMENT OF
+--- A MOMENT -- "you told me 6, the gun holds 5, take one off" -- and the server
+--- applied its arithmetic to whatever it happened to be holding when the message
+--- landed, which after a pickup is a different and LARGER number. The rounds the
+--- pickup had just credited paid for a previous weapon's shots. See the `was`
+--- field below and the INV_AMMO handler in server/inventory.lua.
+---
+--- WHY A LOG AND NOT ANOTHER COLUMN. Every number /brammo printed was correct at
+--- the instant it was printed, and that is exactly why the readout could not see
+--- this: the fault is a disagreement between two instants, and a still
+--- photograph has only one. What was missing is the sentence "you told the
+--- server a number and it was already out of date" -- so the reports are kept,
+--- with what each was measured against, and the NEXT INV_SET stamps each one
+--- with what the server turned out to hold. A row whose `was` and `now` differ
+--- is a report that described a holding the server no longer had.
+---
+--- EIGHT ROWS, because the window this lives in is one round trip and the loop
+--- speaks at most every 150ms; anything older than that is a different bug.
+local reportLog = {}
+local REPORT_LOG_MAX = 8
+
 --- ROUNDS THIS PED HAS ACTUALLY SPENT THAT THE SERVER HAS NOT CHARGED FOR.
 ---
 --- ═══ THE AMMO THAT CAME BACK ═══
@@ -122,6 +151,48 @@ local function shortfallFor(at, slot)
     local rec = shortfall[at]
     if not rec or not slot or rec.id ~= slot.id then return 0 end
     return rec.n or 0
+end
+
+--- WHAT THE SERVER SAID THIS SLOT'S MAGAZINE HOLDS -- not what the mirror says.
+---
+--- ═══ THE DEFICIT WAS BEING CHARGED TWICE (owner, 2026-08-23, third report) ═══
+---
+--- `shortfall` is measured against `rec.svClip` and it says why in its own note:
+--- the report loop writes the ENGINE's magazine into `slot.clip` every tick so
+--- the counter follows the gun, which leaves the mirror's clip laundered and the
+--- server's number recoverable only from the record. THE MEASUREMENT GOT THIS
+--- RIGHT AND BOTH CONSUMERS DID NOT: applyActive and reapplyAmmo each read
+--- `slot.clip` and then subtracted the deficit from it -- so every round already
+--- reflected in the laundered magazine was taken off a second time.
+---
+--- ONE RE-GRANT HALVES A GUN AND THREE EMPTY IT, WITHOUT A SHOT BEING FIRED IN
+--- ANY OF THEM. Measured on 56c0ba7, a railgun with two of six rounds gone:
+---
+---     tick 1   engine 4 -> 2   deficit 2      (1 + 3 - 2)
+---     tick 2   engine 2 -> 0   deficit 4      (0 + 3 - 4)
+---     tick 3   engine 0        deficit 6
+---
+--- Each re-grant lowers the engine, the next measurement reads the lower number
+--- as a bigger deficit, and the next re-grant subtracts that. It compounds, and
+--- it needs nothing from the player: skydive.lua's post-landing sweep calls
+--- BR.Inv.reapply on its third attempt and the strip check clears `applied` for
+--- the same effect, both from TICK loops between INV_SETs -- which is exactly
+--- when the mirror is laundered and the record is not.
+---
+--- The grant on an INV_SET was never wrong, because `adopt` replaces the slot
+--- tables with the server's payload a few lines earlier and the two numbers are
+--- briefly the same one. That is what made this invisible: the path everybody
+--- reads is the path that works.
+--- @param at integer
+--- @param slot table|false
+--- @return integer
+local function saidClipFor(at, slot)
+    if not slot then return 0 end
+    local rec = shortfall[at]
+    if rec and rec.id == slot.id and rec.svClip then
+        return math.floor(rec.svClip)
+    end
+    return math.floor(slot.clip or 0)
 end
 
 -- GTA'S OWN WEAPON UI HAS TO GO. The inventory replaces it wholesale, and
@@ -345,7 +416,11 @@ local function applyActive(force)
     RemoveAllPedWeapons(ped, true)
 
     if want and slot then
-        local clip    = math.floor(slot.clip or 0)
+        -- THE SERVER'S MAGAZINE, NOT THE MIRROR'S. `slot.clip` has had the
+        -- engine's magazine written into it by the report loop, and subtracting
+        -- the deficit from a number that already reflects it charges the same
+        -- rounds twice. See saidClipFor.
+        local clip    = saidClipFor(inv.active, slot)
         local reserve = reserveFor(slot)
 
         -- WHAT THIS PED HAS ALREADY SPENT COMES OFF THE TOP.
@@ -410,7 +485,10 @@ local function reapplyAmmo(serverClip)
     -- a mirror that had drifted upward looked like a gun that needed topping
     -- up, forever (user, 2026-08-06).
     local ped  = PlayerPedId()
-    local clip = math.floor(slot.clip or 0)
+    -- The SERVER's magazine, for the reason applyActive uses it: this path is
+    -- reached from a tick as well as from an INV_SET, and away from an INV_SET
+    -- the mirror's clip is the engine's. See saidClipFor.
+    local clip = saidClipFor(inv.active, slot)
 
     -- ...AND MINUS WHAT WAS ALREADY SPENT, exactly as applyActive does it and
     -- for the same reason. This path is reached on every INV_SET whose ammo
@@ -445,6 +523,37 @@ local function rebaseline()
     end
 end
 
+--- Write down what the server turned out to be holding, for every report that
+--- has not been answered yet.
+---
+--- Called on every INV_SET, which is the first moment a report's fate is
+--- observable from this side. A report that was APPLIED leaves the server
+--- holding exactly what it reported -- the far end subtracts the difference and
+--- lands on `total` -- so `now == total` reads "accepted" and anything else
+--- reads "the server did not act on this". `was` beside `now` then says WHY: two
+--- different numbers there mean the holding moved under the message, which is
+--- the whole of the 2026-08-23 third bug.
+---
+--- IT IS A DIAGNOSTIC AND NOT A PROOF, and the honest caveat is that an INV_SET
+--- sent for an unrelated reason can arrive before the report is processed and
+--- stamp the row early. That is worth one line in a readout that otherwise could
+--- not describe this class of fault at all.
+local function stampReports()
+    if #reportLog == 0 then return end
+    for _, r in ipairs(reportLog) do
+        if r.now == nil then
+            local s = inv.slots[r.slot]
+            if not s then
+                r.now = 0
+            elseif s.kind == BR.ItemKind.THROWABLE then
+                r.now = math.floor(s.count or 0)
+            else
+                r.now = math.floor(s.clip or 0) + reserveFor(s)
+            end
+        end
+    end
+end
+
 --- Forget everything. Called at match teardown and on death.
 ---
 --- BACK TO FISTS, NOT BACK TO SLOT 1 (#155). This is the death and teardown
@@ -460,6 +569,10 @@ local function clearLocal()
     -- out new weapons and a corpse's rifle is not this player's problem any
     -- more; carrying the numbers over would dock the next magazine.
     shortfall = {}
+    -- The log describes messages about a match that is over. Keeping it would
+    -- put rows from the last life above rows from this one with nothing to tell
+    -- them apart.
+    reportLog = {}
     BR.Inv.lastGainAt = 0
 end
 
@@ -637,6 +750,8 @@ local function adopt(d)
     -- The server has just spoken; that is what the next decrease is measured
     -- against, whether or not anything was reapplied to the ped.
     rebaseline()
+    -- ...and it is also the first news of what became of anything we said.
+    stampReports()
     pushUi()
 
     if gained then
@@ -1427,6 +1542,48 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     end
 end)
 
+--- SEND ONE AMMO REPORT, AND SAY WHAT IT WAS MEASURED AGAINST.
+---
+--- ═══ `was` IS THE WHOLE OF THE 2026-08-23 THIRD FIX ═══
+---
+--- A report is not an instruction, it is an OBSERVATION OF A MOMENT: the server
+--- said this slot holds `was` rounds, the engine says it holds `total`, so the
+--- difference is gone. Sent without `was`, the far end had no choice but to
+--- measure the difference against whatever it held when the message ARRIVED --
+--- and between the measurement and the arrival sits one round trip, which is
+--- exactly long enough for a pickup to land.
+---
+--- The owner's railgun came off the airdrop with three in the magazine and three
+--- in the heavy pool and was empty before he fired it, because a report about
+--- the weapon he had been holding a moment earlier arrived afterwards and the
+--- server charged the new rounds for the old weapon's shots. Nothing in the
+--- message said which holding it described, so nothing could tell it was stale.
+---
+--- Now it does, and the far end refuses a mismatch outright rather than guessing
+--- -- which is safe in the only direction that matters: a refused report is
+--- RE-SENT, because rebaseline() re-arms the loop on the very INV_SET that
+--- invalidated it, so rounds genuinely gone are still charged one cycle later.
+--- Refusing cannot lose ammunition; misapplying can, and did.
+---
+--- @param at integer      slot index the report is about
+--- @param was integer     what the SERVER last said that slot holds, in total
+--- @param total integer   what the ENGINE says it holds now
+--- @param clip integer    the split, for the HUD
+--- @param item string|nil the item measured, for the readout only
+local function sendReport(at, was, total, clip, item)
+    TriggerServerEvent(BR.Net.INV_AMMO, {
+        slot = at, was = math.floor(was), total = total, clip = clip,
+    })
+
+    -- `now` is filled in by the next INV_SET; until then the row is honest
+    -- about not knowing yet. See `reportLog`.
+    reportLog[#reportLog + 1] = {
+        at = GetGameTimer(), slot = at, item = item,
+        was = math.floor(was), total = total, clip = clip, now = nil,
+    }
+    while #reportLog > REPORT_LOG_MAX do table.remove(reportLog, 1) end
+end
+
 -- The ammo report: 2Hz, decrease-only at the far end, and silent when nothing
 -- moved. This is the ONE number the client is the only observer of until M6
 -- validates shots server-side; see server/inventory.lua for why that is safe.
@@ -1498,8 +1655,10 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if slot.kind == BR.ItemKind.THROWABLE
        and not HasPedGotWeapon(ped, hash, false) then
         if (slot.count or 0) > 0 then
-            TriggerServerEvent(BR.Net.INV_AMMO,
-                { slot = inv.active, total = 0, clip = 0 })
+            -- A THROWABLE'S `was` IS ITS STACK. The count is the only number
+            -- the server ever states for one, and `slot.count` is still that
+            -- number here -- this branch is the only thing that overwrites it.
+            sendReport(inv.active, slot.count or 0, 0, 0, slot.id)
         end
         return
     end
@@ -1601,13 +1760,16 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if slot.kind == BR.ItemKind.THROWABLE then
         local count = total
         if count ~= (slot.count or 0) and count < (slot.count or 0) then
+            -- READ BEFORE THE MIRROR IS OVERWRITTEN. `slot.count` is what the
+            -- server last said until the line below changes it, and that is
+            -- precisely the number the far end has to check against.
+            local was = slot.count or 0
             -- Shown immediately rather than waiting for the round trip, the
             -- same way the magazine is. The server still gets the last word
             -- with the next INV_SET.
             slot.count = count
             pushUi()
-            TriggerServerEvent(BR.Net.INV_AMMO,
-                { slot = inv.active, total = count, clip = count })
+            sendReport(inv.active, was, count, count, slot.id)
         end
         return
     end
@@ -1652,10 +1814,14 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if total > lastReport.total then return end
     if total == lastReport.total and clip == lastReport.clip then return end
 
+    -- THE BASELINE IS WHAT THIS REPORT IS ABOUT, so it is read before it is
+    -- advanced. rebaseline() anchors it on the SERVER's own numbers at every
+    -- INV_SET, which makes it exactly "what the far end last told us this slot
+    -- holds" -- the one fact that lets the far end tell a live report from one
+    -- that describes a holding it has since changed. See sendReport.
+    local was = lastReport.total
     lastReport.total, lastReport.clip = total, clip
-    TriggerServerEvent(BR.Net.INV_AMMO, {
-        slot = inv.active, total = total, clip = clip,
-    })
+    sendReport(inv.active, was, total, clip, slot.id)
 end)
 
 -- --------------------------------------------------------------------------
@@ -2034,6 +2200,33 @@ RegisterCommand('brammo', function()
     end
     lastHeld = held
 
+    -- ═══ WHAT THIS PLAYER HAS TOLD THE SERVER, AND WHETHER IT LANDED ═══
+    --
+    -- The table above is a still photograph and the third 2026-08-23 bug was a
+    -- disagreement between two INSTANTS: a report measured against one holding
+    -- and applied to another. Every column up there was correct when it was
+    -- printed, which is exactly why none of them could say so.
+    --
+    -- `was` is what the server had told us when the measurement was taken, `sent`
+    -- is what the engine held, and `now` is what the server turned out to hold at
+    -- the next INV_SET. A report that was ACCEPTED leaves the server holding
+    -- exactly what was sent, so `now == sent` reads "applied" and a `?` marks
+    -- anything else. `was` and `now` differing is the diagnosis: the holding
+    -- moved underneath the message, and the far end refused it rather than
+    -- charging the new rounds for old shots.
+    if #reportLog > 0 then
+        print('  reports sent (newest last)')
+        print('    age   slot item             was  sent  clip   now')
+        for _, r in ipairs(reportLog) do
+            print(('    %5s  %2d  %-15s %4d %5d %5d %5s%s')
+                :format(('%dms'):format(GetGameTimer() - r.at),
+                        r.slot, tostring(r.item or '-'),
+                        r.was, r.total, r.clip,
+                        r.now and tostring(r.now) or '-',
+                        (r.now ~= nil and r.now ~= r.total) and '  ?' or ''))
+        end
+    end
+
     print('  mag    what the mirror shows -- the ENGINE\'s magazine, written')
     print('         every tick so the counter follows the gun')
     print('  said   what the SERVER last said this weapon holds in total')
@@ -2044,4 +2237,7 @@ RegisterCommand('brammo', function()
     print('  held   pool PLUS every magazine drawing on it. Nothing may raise')
     print('         this but a pickup: a `+` after a drop, a switch or a')
     print('         reload is a round that was made rather than moved')
+    print('  was    what the server said we held when the report was measured;')
+    print('         a row where this differs from `now` is a report the holding')
+    print('         moved underneath, and the far end refuses those')
 end, false)

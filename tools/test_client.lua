@@ -13629,6 +13629,134 @@ do
     ok(pcall(commands['brammo'], nil, {}, ''),
        'and neither does it on an empty inventory holding fists')
 
+    -- ── 7. THE THIRD REPORT, AND IT IS THE SEQUENCE VERBATIM (owner,
+    --       2026-08-23): "I also picked up the railgun again this time, which
+    --       came with ammo, and was immediately drained of all railgun ammo.....
+    --       didn't even do anything."
+    --
+    --       DIDN'T EVEN DO ANYTHING IS THE ASSERTION. A found railgun arrives
+    --       loaded and one full second of the real loop passes with no shot, no
+    --       switch and no key -- and the gun still holds what it came with. The
+    --       drain itself is a server-side fault (see inv.ammo.staleReport in
+    --       test_roster, which is where the arithmetic lives); what is pinned
+    --       HERE is the half only this side can answer -- that the quiet second
+    --       after a pickup is genuinely quiet, and that anything this client DOES
+    --       say names the holding it measured.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    sent = {}
+    serverSays(1, RAILGUN.clip, RAILGUN.clip)
+    ok(gun.total[RH] == RAILGUN.clip * 2,
+       'the found railgun came with ammo',
+       tostring(gun.total[RH]))
+
+    -- One second of the loop, at the band it really runs at. Nothing is fired,
+    -- nothing is pressed, no INV_SET arrives -- this is the player standing
+    -- still, which is what he was doing.
+    for _ = 1, 10 do
+        fakeTime = fakeTime + 100
+        BR.Loop.step(BR.Loop.TICK)
+    end
+    ok(gun.total[RH] == RAILGUN.clip * 2,
+       'AND A SECOND LATER IT STILL HAS IT -- nothing was done and nothing left',
+       tostring(gun.total[RH]))
+    ok(gun.clip[RH] == RAILGUN.clip,
+       'with the magazine untouched as well', tostring(gun.clip[RH]))
+    ok(#ammoReports() == 0,
+       'and the client said nothing at all, because nothing happened',
+       ('%d report(s)'):format(#ammoReports()))
+
+    -- ...AND WHEN IT DOES SPEAK, IT SAYS WHAT IT MEASURED AGAINST. `was` is the
+    -- compare-and-swap token the far end refuses a stale report on; a report
+    -- without it is one the server cannot tell from a message that crossed a
+    -- pickup in flight, which is the whole of the third bug.
+    sent = {}
+    pull(RAILGUN.hash, 2)
+    local spoke = ammoReports()
+    ok(#spoke > 0, 'firing two rounds is reported', ('%d'):format(#spoke))
+    ok(spoke[1] and spoke[1].was == RAILGUN.clip * 2,
+       'and the report names the holding the server last stated',
+       tostring(spoke[1] and spoke[1].was))
+    ok(spoke[1] and spoke[1].total == RAILGUN.clip * 2 - 2,
+       'beside what the engine actually holds',
+       tostring(spoke[1] and spoke[1].total))
+    ok(spoke[1] and spoke[1].was > spoke[1].total,
+       'which is a DECREASE, still, in the only direction this may travel')
+
+    -- ── 8. AND THE GUN DOES NOT GO ON EMPTYING ITSELF, WHICH IS THE OTHER HALF
+    --       OF "DIDN'T EVEN DO ANYTHING".
+    --
+    --       Two rounds out of six are gone and the deficit is 2. Every re-grant
+    --       between INV_SETs used to subtract that deficit from the LAUNDERED
+    --       magazine -- the one the report loop had already written the engine's
+    --       number into -- so the same two rounds came off twice, the next
+    --       measurement read the lower engine as a bigger deficit, and it
+    --       compounded: 4, then 2, then 0, in three ticks with the player stood
+    --       still. On 56c0ba7 this block reads 2 and 0.
+    --
+    --       BR.Inv.reapply IS THE REAL DOOR AND IT IS CALLED HERE DIRECTLY.
+    --       skydive.lua's post-landing sweep escalates to it on its third
+    --       attempt, and the strip check clears `applied` for the same effect --
+    --       both from TICK loops, which is exactly when the mirror is laundered.
+    ok(gun.total[RH] == RAILGUN.clip * 2 - 2,
+       'two rounds fired leaves four', tostring(gun.total[RH]))
+
+    for _ = 1, 5 do
+        BR.Inv.reapply()
+        fakeTime = fakeTime + 100
+        BR.Loop.step(BR.Loop.TICK)
+    end
+    ok(gun.total[RH] == RAILGUN.clip * 2 - 2,
+       'AND FIVE RE-GRANTS LATER IT IS STILL FOUR -- the deficit is charged ONCE',
+       tostring(gun.total[RH]))
+
+    -- ...AND THE OTHER DIRECTION, WHICH A FIX THAT SIMPLY DROPPED THE
+    -- SUBTRACTION WOULD BREAK: the rounds that ARE gone must stay gone. A
+    -- re-grant may not hand back what the engine has spent, or 951c6ea's
+    -- duplication is open again on this side.
+    ok(gun.total[RH] < RAILGUN.clip * 2,
+       'and it has not been handed the two back either', tostring(gun.total[RH]))
+
+    -- Fire it the rest of the way dry and re-grant again: a weapon whose deficit
+    -- is its whole holding comes back with nothing, which is the case the whole
+    -- of 951c6ea exists for.
+    pull(RAILGUN.hash, RAILGUN.clip * 2)
+    BR.Inv.reapply()
+    BR.Loop.step(BR.Loop.TICK)
+    ok((gun.total[RH] or 0) == 0,
+       'a gun that ran dry still comes back dry -- 951c6ea intact',
+       tostring(gun.total[RH]))
+
+    -- A THROWABLE SPEAKS TOO, AND ITS `was` IS ITS STACK. The same window exists
+    -- for grenades -- throw one, pick two up, the report lands afterwards -- so
+    -- the branch that reports them carries the same token.
+    sent = {}
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'grenade', label = 'Grenade', kind = BR.ItemKind.THROWABLE,
+              rarity = 2, count = 3 },
+        },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    local GRENADE = BR.Config.WeaponById['grenade']
+    if GRENADE then
+        local GH2 = BR.NormHash(GRENADE.hash)
+        gun.total[GH2] = 1                 -- two thrown, one left in the hand
+        for _ = 1, 4 do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+        local thrown = ammoReports()
+        ok(#thrown > 0, 'a throw is reported', ('%d'):format(#thrown))
+        ok(thrown[1] and thrown[1].was == 3,
+           'and it names the stack the server last stated',
+           tostring(thrown[1] and thrown[1].was))
+    end
+
+    ok(pcall(commands['brammo'], nil, {}, ''),
+       'and /brammo still does not throw with the report log populated')
+
     GiveWeaponToPed     = savedGive
     RemoveAllPedWeapons = savedRemove
     SetPedAmmo          = savedSetAmmo

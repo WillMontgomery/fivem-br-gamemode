@@ -190,6 +190,55 @@ Infinite ammo and infinite-ammo-clip are asserted **off every tick**, not once
 per weapon grant: the raw probe showed the flag surviving a grant-time clear.
 Two natives a tick is cheaper than finding out what re-sets it.
 
+##### The fifth door goes the other way: ammunition that vanished (2026-08-23)
+
+Four doors were closed and every one of them **made** rounds. The fifth takes
+them. Owner, same day: *"I also picked up the railgun again this time, which came
+with ammo, and was immediately drained of all railgun ammo..... didn't even do
+anything."* He hadn't. Two faults were behind it and neither needs a shot fired
+at the gun that empties.
+
+**A report is a measurement of a moment, and it now says which one.** `INV_AMMO`
+means *"you said N, the engine holds M, so N − M are gone"* — but until this
+change the far end applied that subtraction to whatever it held when the message
+**arrived**, and one round trip sits between the two. The client speaks every
+150 ms and a `LOOT_CLAIM` is answered in rather less, so a report about the
+weapon in hand and the pickup that credits the pool cross in flight routinely:
+the rounds the pickup had just granted paid for the previous weapon's shots, in
+one write. Making the handler a floor is what gave a stale report the power to
+spend anything — before 951c6ea it returned outright.
+
+So the report carries **`was`**: what this server last told that slot it holds,
+echoed back. It is a **compare-and-swap token, never a quantity** — compared,
+never arithmetic — and a mismatch is refused whole rather than guessed at. A
+client lying about it achieves a refusal, which is the one outcome that cannot
+cost anybody a round. And **refusing cannot lose ammunition**: the push that
+invalidated a report re-baselines the client, which measures again and re-sends,
+so rounds an explosive really burnt are still charged one cycle later — against
+the holding they were actually taken out of. A throwable's `was` is its stack,
+for the same window and the same reason.
+
+**And the shortfall was being charged twice.** It is *measured* against the
+server's own magazine, `rec.svClip`, and says why in its own note: the report
+loop writes the engine's magazine into `slot.clip` every tick so the counter
+follows the gun, which leaves the mirror laundered. Both **consumers** read the
+laundered mirror and then subtracted the deficit from it, so every round already
+reflected in the magazine came off a second time. One re-grant halves a gun and
+three empty it, with the player stood still — on a railgun two rounds down:
+`4 → 2 → 0`, the deficit reading 2, then 4, then 6 as the engine it is measured
+against falls. The grant driven by an `INV_SET` was never wrong, because `adopt`
+replaces the slot tables with the server's payload a few lines earlier and the
+two numbers are briefly the same one; that is what made it invisible. The doors
+that are not driven by an `INV_SET` are `BR.Inv.reapply` — the post-landing chute
+sweep's third escalation — and the strip check clearing `applied`, both from tick
+loops.
+
+`/brammo` now prints **what this client has told the server and what became of
+it**: the last eight reports with `was`, what was sent, and what the server
+turned out to hold at the next `INV_SET`. Every column of the table above was
+correct at the instant it was printed, which is exactly why none of them could
+describe a disagreement between two instants.
+
 ### Downed, and getting back up
 
 Squads only, and only while a squadmate is still on their feet. The numbers are

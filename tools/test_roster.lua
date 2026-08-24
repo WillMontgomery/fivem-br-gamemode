@@ -415,6 +415,11 @@ for _, f in ipairs({
     -- maxSquadSize came from. A nil there would make that answer untestable.
     'br_lib/config/overrides.lua',
     'br_lib/shared/storm_solve.lua',
+    -- The CPR kit (#191). AFTER shared/storm_solve.lua, which BR.RescueDestination
+    -- calls to solve the circle forward to the ambulance's arrival, and AFTER
+    -- config/loot.lua, which registers the `cprkit` item the death fork reads.
+    'br_lib/config/rescue.lua',
+    'br_lib/shared/rescue_solve.lua',
     'br_lib/shared/loot_gen.lua',
     'br_lib/shared/combat_solve.lua',
     'br_lib/shared/spectate_solve.lua', -- the squad rule; server/spectate.lua asks it
@@ -430,6 +435,13 @@ for _, f in ipairs({
     'br_core/server/combat.lua',
     'br_core/server/storm.lua',
     'br_core/server/inventory.lua',
+    -- The CPR kit's rescue (#191). AFTER combat.lua and inventory.lua: it
+    -- eliminates and revives through the first and spends the kit through the
+    -- second. LOADING IT AT ALL IS THE POINT OF PUTTING IT HERE -- combat.lua's
+    -- `canBeDowned` asks `BR.Rescue.holdsKit` whether a solo's death is a knock,
+    -- and that call is guarded on `BR.Rescue ~= nil`, so a suite that omitted
+    -- this file would exercise the guard forever and never the rule.
+    'br_core/server/rescue.lua',
     'br_core/server/loot.lua',
     'br_core/server/markers.lua',
     'br_core/server/voice.lua',
@@ -676,6 +688,44 @@ local function eventsOf(name)
         if s.event == name then out[#out + 1] = s end
     end
     return out
+end
+
+--- Fire an INV_AMMO the way a real client does.
+---
+--- ═══ `was` IS A COMPARE-AND-SWAP TOKEN, NOT A QUANTITY (2026-08-23) ═══
+---
+--- An ammo report is a MEASUREMENT OF A MOMENT: "you said N, the engine holds
+--- M". The handler used to apply that difference to whatever it held when the
+--- message ARRIVED, and one round trip is comfortably long enough for a pickup
+--- to land in between -- which is how a found railgun arrived with three in the
+--- magazine and three in the pool and was empty before it was fired.
+---
+--- So the report now echoes what the server last said, and a mismatch is
+--- refused. `was` is DERIVED here rather than written out at each call site
+--- because that is what the client does: client/inventory.lua sends its
+--- rebaseline, which is the server's own last statement about that slot. A test
+--- that wants a STALE report passes its own `was` and gets the refusal.
+--- @param src integer
+--- @param slot integer
+--- @param total integer
+--- @param clip integer
+--- @param was integer|nil  override; nil means "current, like an honest client"
+local function ammoReport(src, slot, total, clip, was)
+    if was == nil then
+        local inv = BR.Inv.of(src)
+        local s   = inv and inv.slots[slot]
+        if s then
+            if s.kind == BR.ItemKind.THROWABLE then
+                was = s.count or 0
+            else
+                local w    = BR.Config.WeaponById[s.item]
+                local pool = (w and w.ammo) and (inv.ammo[w.ammo] or 0) or 0
+                was = (s.clip or 0) + pool
+            end
+        end
+    end
+    fire(BR.Net.INV_AMMO, src,
+         { slot = slot, was = was or 0, total = total, clip = clip })
 end
 
 -- ----------------------------------------------------------------- roster ---
@@ -6204,7 +6254,7 @@ do
     BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
                      rarity = 3, count = 1, clip = rifle.clip })
     BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM] = 60
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 5, clip = 5 })
+    ammoReport(1, 1, 5, 5)
     ok((BR.Inv.of(1).slots[1].clip or 0)
        + (BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM] or 0) == 5,
         'a client ammo report may lower the total, and only lower it',
@@ -7598,7 +7648,7 @@ do
     local inv = BR.Inv.of(1)
     inv.active = 1
 
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = 2 })
+    ammoReport(1, 1, 2, 2)
     ok(inv.slots[1] and inv.slots[1].count == 2,
         'throwing one grenade leaves two, even with server ammo on',
         tostring(inv.slots[1] and inv.slots[1].count))
@@ -7644,10 +7694,10 @@ do
                      rarity = 3, count = 3 })
     inv = BR.Inv.of(1)
     inv.active = 1
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = 2 })
+    ammoReport(1, 1, 2, 2)
 
     -- A RISE IS STILL REFUSED. Decrease-only is the whole safety argument.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 9, clip = 9 })
+    ammoReport(1, 1, 9, 9)
     ok(inv.slots[1].count == 2, 'and a report that conjures more is ignored',
         tostring(inv.slots[1].count))
 
@@ -7660,7 +7710,7 @@ do
 
     -- Throwing the last one empties the slot, and the memory is what carries
     -- the detonation that follows.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 0, clip = 0 })
+    ammoReport(1, 1, 0, 0)
     ok(not inv.slots[1] or inv.slots[1] == false,
         'the last grenade empties the slot')
     ok(BR.Damage.threwRecently(1, 'grenade'),
@@ -7710,7 +7760,7 @@ do
     local total = rail.clip + rail.clip
 
     -- THE MAGAZINE PAYS FIRST, because that is the order rounds leave a gun.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total - 1, clip = 0 })
+    ammoReport(1, 1, total - 1, 0)
     ok(inv.slots[1].clip == rail.clip - 1,
         'a round the server never saw still comes off the magazine',
         tostring(inv.slots[1].clip))
@@ -7731,7 +7781,7 @@ do
     -- looks the same whichever path emptied it.
     inv.slots[1].clip = 1
     inv.ammo[BR.AmmoType.HEAVY] = 3
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = 0 })
+    ammoReport(1, 1, 2, 0)
     ok(inv.slots[1].clip + inv.ammo[BR.AmmoType.HEAVY] == 2,
         'two rounds spent leave exactly what is left, wherever it sits',
         ('clip %s reserve %s'):format(inv.slots[1].clip,
@@ -7743,7 +7793,7 @@ do
 
     -- A RISE IS STILL REFUSED, WHICH IS THE WHOLE SAFETY ARGUMENT. Opening this
     -- path must not open the 2026-08-06 unlimited-ammo round with it.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 999, clip = 999 })
+    ammoReport(1, 1, 999, 999)
     ok(inv.slots[1].clip == 2 and inv.ammo[BR.AmmoType.HEAVY] == 0,
         'a client still cannot report itself more ammo with serverAmmo on',
         ('clip %s reserve %s'):format(inv.slots[1].clip,
@@ -7752,7 +7802,7 @@ do
     -- RUNNING DRY STAYS DRY. An empty pool cannot conjure a magazine, because
     -- there is nothing for the arithmetic to take it from -- and this is the
     -- state a slot switch used to undo.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 0, clip = 0 })
+    ammoReport(1, 1, 0, 0)
     ok(inv.slots[1].clip == 0 and inv.ammo[BR.AmmoType.HEAVY] == 0,
         'A DEPLETED WEAPON IS DEPLETED ON THE SERVER TOO',
         ('clip %s reserve %s'):format(inv.slots[1].clip,
@@ -7763,7 +7813,7 @@ do
     sent = {}
     inv.slots[1].clip = 3
     inv.ammo[BR.AmmoType.HEAVY] = 0
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 1, clip = 1 })
+    ammoReport(1, 1, 1, 1)
     ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the corrected inventory is pushed back')
 
     -- IT IS NOT RAILGUN-ONLY. The railgun is where the owner found it because
@@ -7776,7 +7826,7 @@ do
     inv = BR.Inv.of(1)
     inv.active = 1
     inv.ammo[BR.AmmoType.MEDIUM] = 0
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 0, clip = 0 })
+    ammoReport(1, 1, 0, 0)
     ok(inv.slots[1].clip == 0 and inv.ammo[BR.AmmoType.MEDIUM] == 0,
         'and an ordinary rifle emptied by misses is emptied on the server too',
         ('clip %s reserve %s'):format(inv.slots[1].clip,
@@ -7951,6 +8001,210 @@ do
     ok(pushedOut and pushedOut.carried == true,
        'a weapon displaced by a pickup is marked as having been carried',
        tostring(pushedOut and pushedOut.carried))
+end
+
+describe('inv.ammo.staleReport')
+do
+    -- ═══ THE FIFTH DOOR, AND IT TAKES AMMUNITION RATHER THAN MAKING IT
+    --     (owner, 2026-08-23, third report) ═══
+    --
+    -- "I also picked up the railgun again this time, which came with ammo, and
+    -- was immediately drained of all railgun ammo..... didn't even do anything."
+    --
+    -- HE DIDN'T. THE ROUND TRIP DID. An INV_AMMO is a measurement of a moment --
+    -- "you said N, the engine holds M" -- and the handler applied that
+    -- difference to whatever this inventory held when the message ARRIVED. The
+    -- client speaks every 150ms and a LOOT_CLAIM is answered in rather less, so
+    -- a report about the weapon in hand and the pickup that credits the pool
+    -- cross in flight routinely. The new rounds then paid for the old weapon's
+    -- shots, in one write, before the gun was fired.
+    --
+    -- IT IS THE SAME FLOOR 951c6ea OPENED. Before that commit this handler
+    -- returned outright while serverAmmo was on, so a stale report could not
+    -- spend anything; making it a floor made it able to, and nothing in the
+    -- message said which holding it had been measured against.
+    --
+    -- AND IT IS NOT RAILGUN-ONLY -- the pistol case below is the same drain. The
+    -- railgun is where it SHOWS for the two reasons it always is: an explosive
+    -- is charged for nothing the server can see, so its report is the whole
+    -- holding rather than one round, and HEAVY is the one pool normally at zero,
+    -- so there is nothing else in it to absorb the loss.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+
+    -- Two live players, which is what the fixture hands out; the scenarios below
+    -- take one each and are reset between rather than needing a third.
+    lootMatch()
+
+    local rail   = BR.Config.WeaponById['railgun']
+    local rpg    = BR.Config.WeaponById['rpg']
+    local pistol = BR.Config.WeaponById['pistol']
+
+    local function held(src, pool)
+        local i = BR.Inv.of(src)
+        local n = i.ammo[pool] or 0
+        for s = 1, 5 do
+            local slot = i.slots[s]
+            local w = slot and BR.Config.WeaponById[slot.item]
+            if w and w.ammo == pool then n = n + (slot.clip or 0) end
+        end
+        return n
+    end
+
+    -- ── 1. THE OWNER'S OWN TRIP, ACROSS TWO SLOTS AND ONE SHARED POOL.
+    --
+    --    A dry RPG in the hand over an empty heavy pool. The client measured
+    --    `total = 0` against `was = 0` and the message is in flight. Meanwhile
+    --    the airdrop railgun lands: clip 3, and three more into the pool.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'rpg', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rpg.clip, carried = true })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.slots[1].clip = 0
+    inv.ammo[BR.AmmoType.HEAVY] = 0
+
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'a found railgun arrives with a magazine and a reserve -- 1f894ec intact',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+
+    -- The in-flight report lands. `was = 0` is what the server said when it was
+    -- taken, and the server no longer says it.
+    ammoReport(1, 1, 0, 0, 0)
+    ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'A REPORT MEASURED BEFORE THE PICKUP CANNOT SPEND WHAT THE PICKUP ADDED',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+    ok(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY] == rail.clip,
+       'and the reserve the railgun came with is still in the pool',
+       tostring(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY]))
+
+    -- ── 2. THE SAME SLOT, A DIFFERENT WEAPON. A pickup that DISPLACES the held
+    --    weapon reuses the slot number the in-flight report is addressed to, so
+    --    the newcomer is charged for the departed gun's shots. This is the total
+    --    drain the owner photographed: three and three down to nothing.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 0, carried = true })
+    inv = BR.Inv.of(2)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.LIGHT] = 0
+    inv.slots[1] = false
+    BR.Inv.give(2, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    ammoReport(2, 1, 0, 0, 0)
+    ok(BR.Inv.of(2).slots[1].clip == rail.clip
+       and BR.Inv.of(2).ammo[BR.AmmoType.HEAVY] == rail.clip,
+       'a weapon that landed under an in-flight report is not emptied by it',
+       ('clip %s reserve %s'):format(
+           tostring(BR.Inv.of(2).slots[1].clip),
+           tostring(BR.Inv.of(2).ammo[BR.AmmoType.HEAVY])))
+
+    -- ── 3. AND IT IS NOT RAILGUN-ONLY, WHICH THE REPORT COULD NOT HAVE SAID.
+    --    A pistol arriving in the same window drains identically, and a pistol
+    --    emptied on pickup would be the more noticeable bug of the two.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                     rarity = 3, count = 1, clip = 0, carried = true })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.MEDIUM] = 0
+    inv.slots[1] = false
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = pistol.clip })
+    ammoReport(1, 1, 0, 0, 0)
+    ok(held(1, BR.AmmoType.LIGHT) == pistol.clip * 2,
+       'A PISTOL IS DRAINED THE SAME WAY -- this was never railgun-only',
+       tostring(held(1, BR.AmmoType.LIGHT)))
+
+    -- ── 4. THE OTHER DIRECTION, AND IT IS THE ONE THAT MATTERS MOST: 951c6ea
+    --    MUST STILL WORK. An explosive raises no weaponDamageEvent, so the
+    --    client's report is the ONLY thing that can charge it. A LIVE report --
+    --    one measured against what the server currently says -- still empties
+    --    the gun, or the leak this all started with is back.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    inv = BR.Inv.of(2)
+    inv.active = 1
+    local before = held(2, BR.AmmoType.HEAVY)
+    ok(before == rail.clip * 2, 'the railgun starts loaded', tostring(before))
+
+    -- Fired dry with the server none the wiser, exactly as an explosive is.
+    ammoReport(2, 1, 0, 0)
+    ok(held(2, BR.AmmoType.HEAVY) == 0,
+       'AN EXPLOSIVE STILL COSTS AMMUNITION -- 951c6ea intact',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ...and a partial one is charged partially, so this is not an all-or-
+    -- nothing gate that happens to pass the two extremes.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    BR.Inv.of(2).active = 1
+    ammoReport(2, 1, rail.clip * 2 - 2, 1)
+    ok(held(2, BR.AmmoType.HEAVY) == rail.clip * 2 - 2,
+       'and two rounds the server never saw cost exactly two',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ── 5. A REFUSED REPORT IS NOT A LOST ONE. The push that invalidated it
+    --    re-baselines the client, which measures again and re-sends -- so the
+    --    rounds are still charged one cycle later, against the numbers they were
+    --    actually taken out of. Without this the fix would trade a drain for a
+    --    leak, which is the trade that must not be made.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    ammoReport(1, 1, 0, 0, 999)          -- stale: refused
+    ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'a stale report changes nothing at all', tostring(held(1, BR.AmmoType.HEAVY)))
+    ammoReport(1, 1, 0, 0)               -- re-measured against the fresh numbers
+    ok(held(1, BR.AmmoType.HEAVY) == 0,
+       'and the re-sent one still empties the gun',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+
+    -- ── 6. THE INVARIANT, THROUGH THE WHOLE OF THIS. `clip + pool` may fall and
+    --    may not rise, and the refusal is a `return` before any write -- so a
+    --    hundred stale reports are exactly as harmless as none.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    BR.Inv.of(2).active = 1
+    for _ = 1, 100 do ammoReport(2, 1, 0, 0, 1) end
+    ok(held(2, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'a hundred stale reports do exactly what one does, which is nothing',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ...and a rise is STILL refused, which is the guard every one of the four
+    -- earlier doors was closed with. `was` must not become a way to smuggle one
+    -- past the subtraction.
+    ammoReport(2, 1, 9999, 9999)
+    ok(held(2, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'and a client still cannot report itself more ammunition',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ── 7. A THROWABLE'S STACK IS ITS `was`, AND THE SAME WINDOW EXISTS FOR IT.
+    --    A grenade thrown, then two more picked up, then the throw's report
+    --    arriving: the stack the pickup credited must not vanish.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                     rarity = 2, count = 1 })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    local grenSlot = inv.slots[1]
+    ok(grenSlot ~= nil and grenSlot.kind == BR.ItemKind.THROWABLE,
+       'the grenade is a throwable stack')
+    grenSlot.count = 3
+    ammoReport(1, 1, 0, 0, 1)            -- measured when only one was held
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 3,
+       'a throw reported after a pickup does not take the pickup with it',
+       tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
+    ammoReport(1, 1, 2, 2)
+    ok(BR.Inv.of(1).slots[1].count == 2,
+       'and a live throw report still costs a grenade',
+       tostring(BR.Inv.of(1).slots[1].count))
 end
 
 describe('inv.reload')
@@ -8183,7 +8437,7 @@ do
     local total = pistol.clip + 40
 
     -- FIRING: five rounds leave the world. The magazine falls with the total.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total - 5, clip = pistol.clip - 5 })
+    ammoReport(1, 1, total - 5, pistol.clip - 5)
     ok(inv.slots[1].clip == pistol.clip - 5, 'firing empties the magazine',
         tostring(inv.slots[1].clip))
     ok(inv.ammo[BR.AmmoType.LIGHT] == 40,
@@ -8192,7 +8446,7 @@ do
 
     -- RELOADING: the total does not move at all. The split does, and the
     -- reserve pays exactly the rounds that went into the magazine.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total - 5, clip = pistol.clip })
+    ammoReport(1, 1, total - 5, pistol.clip)
     ok(inv.slots[1].clip == pistol.clip, 'a reload fills the magazine')
     ok(inv.ammo[BR.AmmoType.LIGHT] == 35,
         'and the reserve pays exactly the difference',
@@ -8201,7 +8455,7 @@ do
     -- A RISING TOTAL IS REFUSED. This is the entire fix: whatever was
     -- inflating the engine's number, the server simply does not believe it.
     local beforeClip = inv.slots[1].clip
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total + 500, clip = pistol.clip })
+    ammoReport(1, 1, total + 500, pistol.clip)
     ok(inv.ammo[BR.AmmoType.LIGHT] == 35,
         'a client cannot report itself more ammo',
         tostring(inv.ammo[BR.AmmoType.LIGHT]))
@@ -8212,7 +8466,7 @@ do
     -- arithmetic to take it from.
     inv.ammo[BR.AmmoType.LIGHT] = 2
     inv.slots[1].clip = 0
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = pistol.clip })
+    ammoReport(1, 1, 2, pistol.clip)
     ok(inv.slots[1].clip == 2, 'a reload is capped by what the reserve held',
         tostring(inv.slots[1].clip))
     ok(inv.ammo[BR.AmmoType.LIGHT] == 0, 'which is now empty')
@@ -8220,7 +8474,7 @@ do
     -- And a magazine cannot exceed the weapon's own capacity.
     inv.ammo[BR.AmmoType.LIGHT] = 500
     inv.slots[1].clip = 0
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 500, clip = 9999 })
+    ammoReport(1, 1, 500, 9999)
     ok(inv.slots[1].clip == pistol.clip, 'a magazine cannot hold more than a magazine',
         tostring(inv.slots[1].clip))
     ok(inv.ammo[BR.AmmoType.LIGHT] == 500 - pistol.clip,
@@ -8229,7 +8483,7 @@ do
 
     -- RUNNING DRY takes the magazine with it: a total below a full magazine
     -- cannot leave a full magazine behind.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 3, clip = 3 })
+    ammoReport(1, 1, 3, 3)
     ok(inv.slots[1].clip == 3 and inv.ammo[BR.AmmoType.LIGHT] == 0,
         'the last three rounds are all in the magazine and none in reserve',
         ('clip %s reserve %s'):format(inv.slots[1].clip,
@@ -8237,9 +8491,9 @@ do
 
     -- Nonsense is refused outright.
     local before = inv.slots[1].clip
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = -50, clip = -50 })
+    ammoReport(1, 1, -50, -50)
     ok(inv.slots[1].clip == before, 'a negative report is ignored')
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 1 })
+    ammoReport(1, 1, nil, 1)
     ok(inv.slots[1].clip == before, 'and so is one carrying no total at all')
 
     -- The client is told, because the reserve is the SERVER's arithmetic -- it
@@ -8247,7 +8501,7 @@ do
     inv.ammo[BR.AmmoType.LIGHT] = 400
     inv.slots[1].clip = pistol.clip
     sent = {}
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 400, clip = 4 })
+    ammoReport(1, 1, 400, 4)
     ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the result is pushed back')
 end
 
@@ -10775,6 +11029,101 @@ do
     ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
         'the last one standing dies: two downed mates cannot revive anybody',
         BR.Roster.get(1).state)
+end
+
+describe('dbno.cprkit')
+do
+    -- ═══ THE CORE RULE CHANGE (#191) ═══
+    --
+    -- server/combat.lua's opening sentence is that being shot, burned or caught
+    -- by the wall "all knock a squad player down and all kill a solo". The CPR
+    -- kit makes the second half CONDITIONAL ON INVENTORY, which is a change to
+    -- the mode's core rule rather than an addition beside it -- so it is worth
+    -- the same pair of assertions from both directions.
+    --
+    -- THE CONTROL COMES FIRST, and it is not padding: `dbno.solo` above already
+    -- proves a solo dies, but it proves it in a suite where the kit did not
+    -- exist. Re-proving it HERE, in the same fixture, is what makes the second
+    -- assertion mean "the kit did this" rather than "something changed".
+    local function soloMatch()
+        reset()
+        BR.Server.devMode = true
+        queueUp(1, 'Kitted', BR.Mode.SOLO.key)
+        queueUp(2, 'Shooter', BR.Mode.SOLO.key)
+        tick(300)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    end
+
+    soloMatch()
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+        'a solo carrying nothing still dies outright -- the mode default is '
+            .. 'untouched', BR.Roster.get(1).state)
+
+    soloMatch()
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    ok(BR.Rescue.holdsKit(BR.Roster.get(1)) == true,
+        'the kit is in the inventory the server can see')
+
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a solo CARRYING a CPR kit goes down instead of dying', BR.Roster.get(1).state)
+
+    -- ═══ AND NOBODY CAN PICK THEM UP ═══
+    --
+    -- #191: "No revive is possible -- the only exits are the item or the
+    -- bleed-out timer." This is the assertion that the solo knock did not
+    -- accidentally open the squad revive path to a player with no squad.
+    --
+    -- DRIVEN THROUGH THE REAL NET EVENT, and the first draft of this block did
+    -- not: it called `BR.Combat.reviveAllowed`, which is a FILE-LOCAL in
+    -- combat.lua. That resolved to nil, `nil ~= true` passed, and the assertion
+    -- proved nothing whatsoever -- while reading like the strongest claim here.
+    -- REVIVE_START is the only way in from outside, so it is what gets tested,
+    -- and `reviverSrc` is the server-side evidence a hold was accepted.
+    setPos(2, 0.0, 0.0, 30.0)
+    setPos(1, 0.0, 0.0, 30.0)
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == nil,
+        'and no other player may revive them -- a solo has no squadId, so the '
+            .. 'same-squad test refuses the hold outright',
+        tostring(BR.Roster.get(1).reviverSrc))
+
+    -- THE MODE FLAG ITSELF MUST NOT HAVE MOVED. The old note in combat.lua
+    -- predicted `BR.Mode.SOLO.dbno = true` as the change, and that is emphatically
+    -- not what was done: flipping it would knock down every solo in every match,
+    -- kit or no kit. The assertion above proves the kit works; this one proves it
+    -- was not bought by breaking the default.
+    ok(BR.Mode.SOLO.dbno == false,
+        'the mode still says solos have no downed state -- the kit is a '
+            .. 'per-player exception, not a mode change')
+
+    -- ═══ SQUADS ARE UNAFFECTED, AND THE WITHDRAWN LOCKOUT IS NOT BUILT ═══
+    --
+    -- Owner, 2026-08-23: "CPR kit only in solos", superseding his earlier
+    -- same-day description of a squad revive lockout. A squad player holding a
+    -- kit must get exactly what they always got.
+    m = squadMatch(2)
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    BR.Combat.defeat(1, 'gunshot', nil)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a squad player holding a kit is downed as normal')
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 0.0, 0.0, 30.0)
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == 2,
+        'and their mate may STILL revive them -- the squad revive lockout was '
+            .. 'withdrawn and must not be re-added',
+        tostring(BR.Roster.get(1).reviverSrc))
+
+    -- The kit cannot be called on in a squad either, which is the other half of
+    -- "solos only" and is enforced separately from the death fork.
+    local canCall = BR.Rescue.canCall(BR.Roster.get(1))
+    ok(canCall == false,
+        'and no squad player can call a medic, whatever they are carrying')
 end
 
 describe('dbno.deadPed')
@@ -17071,8 +17420,13 @@ do
     -- Which is already true, because server/storm.lua's damage loop is a position
     -- check against a solved circle and a server-side ledger: it holds no ped
     -- handle and no vehicle handle, so there is nothing there for a car to change.
-    -- NOTHING WAS ADDED, and #191's ambulance exception is left as a sentence on
-    -- the DAMAGEABLE table rather than as a flag with no writer.
+    --
+    -- THE ONE EXCEPTION IS NOW WRITTEN. #191 landed the CPR kit, so `e.rescue`
+    -- has a writer and the damage filter carries `and not e.rescue`. The block
+    -- at the end of this section asserts BOTH halves of the owner's sentence,
+    -- which is the pair that has to hold together: the flag exempts, AND a
+    -- vehicle still does not. Asserting only the first would let somebody
+    -- "simplify" the filter into a vehicle test and still pass.
     --
     -- Two players stand on the same square metre outside the wall. One is at the
     -- wheel of a car and one is on foot, and they must be hurt identically -- an
@@ -17151,6 +17505,43 @@ do
     ok(BR.Roster.get(1).stormHp < before,
         'a player driving through the storm goes on losing health to it',
         ('%s -> %s'):format(tostring(before), tostring(BR.Roster.get(1).stormHp)))
+
+    -- ═══ AND THE ONE EXCEPTION, WHICH IS #191's ═══
+    --
+    -- "the only exception is the ambulance and ONLY while they're in `rescue`
+    -- state". Player 1 is the one in a car and has been taking storm damage for
+    -- every assertion above; setting the flag must stop it, and clearing it must
+    -- start it again. THE SAME PLAYER, IN THE SAME CAR, IN THE SAME PLACE is the
+    -- whole point -- nothing about them changes except the flag, so the flag is
+    -- provably the only thing doing the work.
+    local e1 = BR.Roster.get(1)
+    e1.rescue = true
+    local exempt0 = e1.stormHp
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(1).stormHp == exempt0,
+        'a player in `rescue` state stops losing health to the storm entirely',
+        ('%s -> %s'):format(tostring(exempt0), tostring(BR.Roster.get(1).stormHp)))
+
+    -- The walker beside them is NOT exempt, which proves the filter narrowed to
+    -- one player rather than the damage loop simply having stopped.
+    local w0 = BR.Roster.get(2).stormHp
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(2).stormHp < w0,
+        'while everybody else in the same storm keeps taking it',
+        ('%s -> %s'):format(tostring(w0), tostring(BR.Roster.get(2).stormHp)))
+
+    -- AND IT IS AN EXEMPTION, NOT A ONE-WAY DOOR. Every path out of a rescue
+    -- clears the flag; if clearing it did not restore damage, a delivered player
+    -- would be storm-immune for the rest of the match and nothing would ever
+    -- say so.
+    e1.rescue = nil
+    local back0 = BR.Roster.get(1).stormHp
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(1).stormHp < back0,
+        'and clearing the flag puts them straight back in the wall',
+        ('%s -> %s'):format(tostring(back0), tostring(BR.Roster.get(1).stormHp)))
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

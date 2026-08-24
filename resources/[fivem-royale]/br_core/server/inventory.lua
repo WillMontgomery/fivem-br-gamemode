@@ -923,6 +923,71 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
     local s = inv.slots[slot]
     if not s then return end
 
+    -- ═══ THE FIFTH DOOR, AND IT OPENED THE MOMENT THIS HANDLER STOPPED
+    --     RETURNING (owner, 2026-08-23, third report) ═══
+    --
+    -- "I also picked up the railgun again this time, which came with ammo, and
+    -- was immediately drained of all railgun ammo..... didn't even do anything."
+    --
+    -- HE DIDN'T. THE ROUND TRIP DID. An INV_AMMO is a MEASUREMENT OF A MOMENT --
+    -- "you said 6, the gun holds 5" -- and until this line the arithmetic below
+    -- was applied to whatever this inventory happened to hold when the message
+    -- ARRIVED. Between those two instants sits one round trip, and a pickup
+    -- lands inside it comfortably: the loop speaks every 150ms and a LOOT_CLAIM
+    -- is answered in rather less.
+    --
+    -- So a report about the weapon he was holding a moment earlier arrived after
+    -- the airdrop railgun had been credited, and `lost` was computed against the
+    -- LARGER number. Three rounds in the magazine and three in the heavy pool
+    -- paid for the previous weapon's shots, in one write, before he fired it.
+    --
+    --     probe, 2026-08-23: a dry rpg in slot 1 over an empty heavy pool; a
+    --     found railgun lands in slot 2 (clip 3, pool 3); the in-flight
+    --     `{slot=1,total=0}` then arrives and the pool reads 0. Same probe with
+    --     the railgun landing in slot 1 itself: clip 3 pool 3 -> clip 0 pool 0.
+    --
+    -- AND IT WAS NEVER RAILGUN-ONLY -- a pistol arriving under an in-flight
+    -- report is zeroed identically. The railgun is where it SHOWS, for the two
+    -- reasons it always is: an explosive is charged for nothing the server can
+    -- see, so its report is the whole holding rather than a round, and HEAVY is
+    -- the one pool normally at 0, so there is nothing else in it to absorb the
+    -- loss. 951c6ea's floor is what made a stale report able to spend anything
+    -- at all; before it this handler returned outright under serverAmmo.
+    --
+    -- ═══ SO THE REPORT NAMES WHAT IT WAS MEASURED AGAINST, AND A MISMATCH IS
+    --     REFUSED RATHER THAN GUESSED AT ═══
+    --
+    -- `was` is what THIS SERVER last told that slot it holds, echoed back. It is
+    -- a compare-and-swap: the swap happens only if the value the client read is
+    -- still the value here. Nothing about it is trusted -- it is compared, never
+    -- used as a quantity -- so a client that lies about it achieves a refusal,
+    -- which is the one outcome that cannot cost anybody a round.
+    --
+    -- REFUSING CANNOT LOSE AMMUNITION, WHICH IS WHY THIS IS THE SAFE DIRECTION
+    -- AND NOT A HOLE IN 951c6ea. The client re-arms its baseline on every
+    -- INV_SET -- rebaseline(), client/inventory.lua -- and the push that
+    -- invalidated a report is itself an INV_SET, so a refused report is measured
+    -- again against the fresh numbers and re-sent within one cycle. Rounds an
+    -- explosive really burnt are still charged; they are charged against the
+    -- holding they were actually taken out of.
+    --
+    -- WHAT `was` MEANS PER KIND, and it is the same sentence in both: the number
+    -- this server states for that slot. A magazined weapon states `clip` plus
+    -- its pool; a throwable's whole statement is its stack.
+    local was = math.tointeger(d.was)
+    if not was or was < 0 then return end
+    do
+        local here
+        if s.kind == BR.ItemKind.THROWABLE then
+            here = s.count or 0
+        else
+            local w = BR.Config.WeaponById[s.item]
+            local pool = (w and w.ammo) and (inv.ammo[w.ammo] or 0) or 0
+            here = (s.clip or 0) + pool
+        end
+        if was ~= here then return end
+    end
+
     -- THROWABLES ARE COUNTED, NOT MAGAZINED.
     --
     -- A grenade's "ammo" IS its stack: the engine holds three of them and
