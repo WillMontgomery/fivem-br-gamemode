@@ -144,6 +144,61 @@ BR.Loop.register(BR.Loop.FRAME, 'rescue.prompt', function()
     setPrompt(canCall())
 end)
 
+--- WHY IS THE CPR PROMPT NOT THERE?
+---
+--- Owner, 2026-08-23, on the third failed attempt: "still nothing in the card,
+--- still nothing happens when holding E."
+---
+--- canCall() is six guards and every one of them fails IDENTICALLY from the
+--- outside -- no row, no keypress, no error, no print. Reading the file cannot
+--- say which fired on a live client, and three rounds were spent guessing at it
+--- from the source. So it reports itself, the same way /brprobe ammo and
+--- /brboostwhy already do for the same class of problem.
+---
+--- BOTH SYMPTOMS SHARE THIS FUNCTION. The row and the interact handler are the
+--- same answer rendered two ways, which is why "nothing shows AND nothing
+--- happens" is one bug rather than two.
+RegisterCommand('brcpr', function()
+    local ok = true
+    local function line(label, pass, detail)
+        if not pass then ok = false end
+        print(('  %-22s %s%s'):format(
+            label, pass and 'ok' or 'NO  <-- this one',
+            detail and ('   ' .. detail) or ''))
+    end
+
+    print('--- brcpr: why canCall() answers what it does ---')
+    line('config loaded',   R ~= nil, 'BR.Config.Rescue')
+    line('feature enabled', R ~= nil and R.enabled == true,
+         'config/rescue.lua enabled')
+    line('not already riding', ride == nil,
+         ride and 'a rescue is already running' or nil)
+    line('match PLAYING',   BR.State.match.state == BR.MatchState.PLAYING,
+         ('state is %s'):format(tostring(BR.State.match.state)))
+    line('you are DBNO',    BR.State.me.state == BR.PlayerState.DBNO,
+         ('state is %s'):format(tostring(BR.State.me.state)))
+    line('mode is solo',    BR.State.match.mode == BR.Mode.SOLO.key,
+         ('mode is %s, wanted %s')
+             :format(tostring(BR.State.match.mode),
+                     tostring(BR.Mode.SOLO.key)))
+
+    local inv = BR.Inv and BR.Inv.local_()
+    line('inventory mirror', inv ~= nil and inv.slots ~= nil,
+         inv and 'slots present' or 'BR.Inv.local_() gave nothing')
+    line('holding a cprkit', holdingKit())
+
+    if inv and inv.slots then
+        print('  slots:')
+        for i = 1, (BR.Config.Loot.slots or 5) do
+            local sl = inv.slots[i]
+            print(('    %d  %s'):format(i, sl and tostring(sl.item) or '-'))
+        end
+    end
+
+    print(('  => canCall() = %s%s'):format(tostring(canCall()),
+        ok and '' or '   (the NO line above is why)'))
+end, false)
+
 BR.Keys.on('interact', function(pressed)
     if not pressed or not canCall() then return end
     TriggerServerEvent(BR.Net.RESCUE_CALL)
