@@ -86,12 +86,21 @@
 -- destructible by other players on 2026-08-23, and a non-networked vehicle does
 -- not exist on anybody else's machine for them to shoot.
 --
--- What exempts it is the STRETCHER. The rescued player is attached to the
--- vehicle with AttachEntityToEntity rather than put in a seat, and
--- GetVehiclePedIsIn answers 0 for an attached ped -- it reports SEATING, and
--- there is none. So the registry never admits it, exactly as before, by a
--- different route. The NPC medic IS in a seat, and is not a player, and the pass
--- below walks the ROSTER. Neither needs a special case and neither has one.
+-- What USED to exempt it was the STRETCHER, by side effect: the rescued player
+-- is attached to the vehicle with AttachEntityToEntity rather than put in a
+-- seat, and GetVehiclePedIsIn answers 0 for an attached ped -- it reports
+-- SEATING, and there is none. Being DBNO for the whole ride kept it out a second
+-- time, because LIVE below does not admit a downed player.
+--
+-- IT IS NOW AN EXEMPTION RATHER THAN A COINCIDENCE (owner, 2026-08-23: "we
+-- don't need to factor in fuel for the ambulance when an NPC is driving").
+-- Both of those accidents belong to other features and either could be undone
+-- by a change that has nothing to do with fuel, so `samplePass` states the rule
+-- itself: a player the server has flagged `rescue` is cargo and charges nothing.
+-- The full argument is at the filter.
+--
+-- The NPC medic IS in a seat, and is not a player, and the pass below walks the
+-- ROSTER. It needs no special case and has none.
 
 BR = BR or {}
 BR.Fuel = {}
@@ -417,6 +426,40 @@ local function samplePass(dtMs)
     local charged = {}
 
     BR.Roster.each(function(e)
+        -- ═══ AN NPC-DRIVEN RESCUE AMBULANCE BURNS NOTHING, ON PURPOSE ═══
+        --
+        -- Owner, 2026-08-23: "we don't need to factor in fuel for the ambulance
+        -- when an NPC is driving".
+        --
+        -- IT WAS ALREADY TRUE AND IT WAS TRUE BY ACCIDENT, TWICE OVER. The
+        -- rescued player is ATTACHED to the stretcher rather than seated, so
+        -- `vehicleOf` gets 0 out of GetVehiclePedIsIn (see the header); and they
+        -- are DBNO for the whole ride, which LIVE above does not admit. Either
+        -- alone kept the ambulance out of the registry, so nobody noticed that
+        -- the behaviour rested on two facts that belong to other features.
+        --
+        -- BOTH ARE ONE EDIT AWAY FROM GONE. Seating the passenger instead of
+        -- attaching them -- the obvious "fix" the moment anything about the
+        -- stretcher misbehaves -- restores the first. Any future ride that is
+        -- not spent downed restores the second. The symptom would be an
+        -- ambulance running dry halfway to the drop-off, on a rescue the player
+        -- cannot influence, in a vehicle they are not driving.
+        --
+        -- SO IT IS WRITTEN DOWN AS A RULE INSTEAD. `e.rescue` is the server's
+        -- own flag, set by server/rescue.lua's `begin` and cleared by `finish`,
+        -- never client-asserted -- the same flag and the same argument
+        -- server/storm.lua's damage filter uses for the same player. It says
+        -- what is actually meant: this person is cargo, not a driver, and the
+        -- vehicle they are in is not theirs to fuel.
+        --
+        -- NOT WRITTEN AS "NON-NETWORKED", which is what the old reasoning in
+        -- three files assumed and is no longer true: the ambulance had to become
+        -- a networked entity so other players could shoot it. An exemption
+        -- keyed on that would cover nothing at all.
+        --
+        -- THE MEDIC NEEDS NOTHING. This pass walks the ROSTER, and an NPC is not
+        -- on it.
+        if e.rescue then return false end
         return LIVE[e.state] == true and e.matchId ~= nil
     end, function(src, e)
         local ped = e.ped

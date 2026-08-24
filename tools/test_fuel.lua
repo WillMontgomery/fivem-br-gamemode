@@ -1013,10 +1013,15 @@ do
     ok(BR.Fuel.stats().tracked == 0, 'an empty car is not tracked',
        BR.Fuel.stats().tracked)
 
-    -- A NON-NETWORKED VEHICLE HAS NO LEDGER AT ALL. The Battle Bus and #191's
-    -- ambulance are both created with isNetwork = false, so the server sees a
-    -- network id of 0 for them -- and 0 is truthy in Lua, so this is the assert
-    -- that the guard is an explicit comparison rather than `if nid then`.
+    -- A NON-NETWORKED VEHICLE HAS NO LEDGER AT ALL. The Battle Bus is created
+    -- with isNetwork = false, so the server sees a network id of 0 for it -- and
+    -- 0 is truthy in Lua, so this is the assert that the guard is an explicit
+    -- comparison rather than `if nid then`.
+    --
+    -- #191'S AMBULANCE USED TO BE IN THIS SENTENCE AND IS NOT ANY MORE. It is a
+    -- networked entity as of 2026-08-23 -- it had to be, so other players can
+    -- shoot it -- so it is NOT covered by this rule and never was after that
+    -- change. What covers it is the exemption in the block below.
     reset()
     enrol(1, 1001, 7)
     makeVehicle(600, 0, 0.0, 0.0)   -- netId 0: local, non-networked
@@ -1039,6 +1044,84 @@ do
     moveVehicle(500, 500.0, 0.0)
     tick()
     ok(BR.Fuel.stats().tracked == 0, 'a player who is not live tracks nothing')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('ledger.rescueAmbulance')
+-- ═══════════════════════════════════════════════════════════════════════════
+do
+    -- Owner, 2026-08-23: "we don't need to factor in fuel for the ambulance
+    -- when an NPC is driving".
+    --
+    -- ═══ WHY THIS IS PINNED, WHEN IT ALREADY BEHAVED ═══
+    --
+    -- It behaved BY ACCIDENT, twice over, and both accidents belong to other
+    -- features. The rescued player is ATTACHED to the stretcher rather than
+    -- seated, so GetVehiclePedIsIn answers 0; and they are DBNO for the whole
+    -- ride, which the LIVE gate does not admit. Either alone kept the ambulance
+    -- out of the registry, so the correct behaviour rested on two facts that a
+    -- change to the attach -- or to what state a ride is spent in -- would
+    -- silently remove. The symptom would be an ambulance running dry halfway to
+    -- the drop-off, in a vehicle the player is not driving.
+    --
+    -- ═══ THE FIXTURE IS THE WORST CASE, NOT THE REAL ONE, AND THAT IS THE
+    --     WHOLE VALUE OF IT ═══
+    --
+    -- This player is SEATED, in the DRIVER'S seat, ALIVE, in a NETWORKED
+    -- vehicle. That is precisely the shape the two accidents ruled out and
+    -- precisely what the obvious future refactor produces. Under the old
+    -- behaviour this fixture would charge a full drive; it passes now only
+    -- because the exemption is written down as a rule.
+    reset()
+    enrol(1, 1001, 7)
+    roster[1].rescue = true
+    makeVehicle(500, 900, 0.0, 0.0)
+    seat(1, 500, -1)
+    tick()
+    drive(500, 1000.0)
+
+    ok(BR.Fuel.stats().tracked == 0,
+        'a vehicle carrying a rescue is never admitted to the ledger',
+        BR.Fuel.stats().tracked)
+    ok(near(BR.Fuel.left(900), TANK),
+        'so an NPC-driven rescue ambulance burns nothing over a kilometre',
+        ('%.1f of %.1f'):format(BR.Fuel.left(900), TANK))
+
+    -- ═══ THE CONTROL ═══
+    --
+    -- The same fixture and the same drive with the flag off MUST charge.
+    -- Without this, a harness that had quietly stopped driving anything at all
+    -- would pass the assertions above and prove nothing whatsoever.
+    reset()
+    enrol(1, 1001, 7)
+    makeVehicle(500, 900, 0.0, 0.0)
+    seat(1, 500, -1)
+    tick()
+    drive(500, 1000.0)
+    ok(BR.Fuel.left(900) < TANK - 900.0,
+        'and the identical drive without the flag does charge -- the exemption '
+            .. 'is what is being measured, not a dead harness',
+        ('%.1f of %.1f'):format(BR.Fuel.left(900), TANK))
+
+    -- ═══ AND IT IS A WINDOW, NOT A PARDON ═══
+    --
+    -- server/rescue.lua's `finish` clears the flag on every ending. A player
+    -- delivered back into the match drives their own car on their own fuel, so
+    -- the exemption has to stop when the rescue does -- otherwise one kit buys
+    -- free fuel for the rest of the match, which is a considerably better item
+    -- than the one that was designed.
+    reset()
+    enrol(1, 1001, 7)
+    roster[1].rescue = true
+    makeVehicle(500, 900, 0.0, 0.0)
+    seat(1, 500, -1)
+    tick()
+    drive(500, 500.0)
+    roster[1].rescue = nil
+    drive(500, 1000.0)
+    ok(BR.Fuel.left(900) < TANK - 900.0,
+        'once the rescue ends the same player pays for the same car again',
+        ('%.1f of %.1f'):format(BR.Fuel.left(900), TANK))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

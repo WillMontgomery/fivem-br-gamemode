@@ -852,6 +852,44 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     local c = BR.Config.ConsumableById[s.item]
     if not c then return end
 
+    -- ═══ `useMs` IS WHAT MAKES A CONSUMABLE USABLE FROM THE INVENTORY ═══
+    --
+    -- Owner, 2026-08-23, on the CPR kit: "this item should do absolutely
+    -- nothing while the player is alive." It did rather more than nothing --
+    -- it took the server down:
+    --
+    --     @br_core/server/inventory.lua:883: attempt to perform arithmetic on
+    --     a nil value (field 'useMs')
+    --
+    -- The kit is a CONSUMABLE and it is in BR.Config.ConsumableById, because it
+    -- has to be carried, dropped, labelled, propped and rolled into an airdrop
+    -- like any other. What it is NOT is a channelled item: it is spent by the
+    -- prompt while downed (BR.Net.RESCUE_CALL), which validates its own
+    -- conditions, so config/loot.lua gives it no `useMs` on purpose -- "a
+    -- `useMs` here would be a channel nothing can start". Nothing refused it
+    -- before the arithmetic below, so pressing use on it while standing threw.
+    --
+    -- ═══ WHY A GUARD HERE AND NOT A REQUIRED FIELD AT CONFIG LOAD ═══
+    --
+    -- Because the kit is not malformed. A load-time "every consumable must
+    -- declare useMs" check would be a rule the shipped config deliberately
+    -- breaks, so it would have to carry an exemption for `cprkit` -- which puts
+    -- the same decision in two files and makes the next non-channelled item a
+    -- config edit in both. A verify.sh gate has the same problem one step
+    -- further out: it cannot see which consumables are meant to be reachable
+    -- from a keypress, so it would be scanning for a fake field.
+    --
+    -- The honest statement is the POSITIVE one, and this line is it: a
+    -- consumable is usable through the inventory exactly when it declares how
+    -- long using it takes. Anything else is not an item with a missing field,
+    -- it is an item this path was never for -- and the whole class is refused
+    -- here rather than crashing on the next one somebody adds.
+    --
+    -- SILENTLY. No notify, no print, no INV_SET. "Absolutely nothing while the
+    -- player is alive" is the requirement, and a console line every time a
+    -- player mashes their kit slot is not nothing.
+    if type(c.useMs) ~= 'number' or c.useMs <= 0 then return end
+
     local e = BR.Roster.get(src)
 
     -- REFUSE A USE THAT WOULD DO NOTHING, out loud. Drinking a shield potion

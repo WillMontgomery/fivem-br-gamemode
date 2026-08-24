@@ -164,6 +164,63 @@ BR.Config.Rescue = {
     -- still dies to sustained fire.
     tyresBulletproof = true,
 
+    -- ═══ A CRASH BAD ENOUGH IS A WRECK, EVEN IF IT NEVER EXPLODES ═══
+    --
+    -- Owner, 2026-08-23: "if the ambulance gets in a wreck, even if it doesn't
+    -- blow up, the vehicle health should go to 0 if it's bad enough. In this
+    -- case the rescue also failed, in addition to the failure mode of being
+    -- blown up."
+    --
+    -- WHAT THIS FIXES. There were two bad endings -- destroyed (the client sees
+    -- the wreck and reports it) and never-moved (three re-places and still
+    -- nothing). A crash that mangles the ambulance without killing it fell
+    -- between them: it reads to the server as A VEHICLE THAT HAS STOPPED
+    -- MOVING, which is layer 2's signal, so the recovery ladder TELEPORTS THE
+    -- WRECK ONTO A ROAD and tells it to drive on. Either it limps to the
+    -- destination and delivers a player whose ambulance was destroyed, or it
+    -- burns three re-places and ~20 seconds arriving at the elimination this
+    -- now reaches in one tick.
+    --
+    -- ═══ WHAT "BAD ENOUGH" IS MEASURED AGAINST, WHICH IS NOT A NEW NUMBER ═══
+    --
+    -- The game already has a definition of "vehicle health" and it is on screen
+    -- in every car: client/fuel.lua's `healthPct` takes the WORST of
+    -- GetVehicleBodyHealth, GetVehicleEngineHealth and GetVehiclePetrolTankHealth
+    -- over BR.Config.Fuel.healthMax, and the HUD draws it as the condition bar.
+    -- This threshold is a fraction of THAT number, so "the vehicle health went
+    -- to zero" means the same thing here as it does on the bar the owner is
+    -- looking at, and a change to one cannot silently disagree with the other.
+    --
+    -- ═══ WHY 25, AND WHY IT CANNOT FIRE ON A NORMAL DRIVE ═══
+    --
+    -- #213 made vehicles roughly five times more fragile than stock -- see
+    -- config/vehicles.lua's BR.Config.VehicleDamage -- so this had to be argued
+    -- against the POST-#213 world rather than GTA's.
+    --
+    -- A quarter is chosen because of what the three pools do at that depth. The
+    -- engine pool is the one that moves fastest under #213 (its stock multiplier
+    -- is the highest of the three, 1.5, so it scales to ~7.5), and an engine at
+    -- a quarter is already smoking and losing power -- GTA starts the engine
+    -- fire well under half. So by the time the WORST of the three is at 25 the
+    -- ambulance is visibly finished, which is exactly the state the owner
+    -- described and could not previously report.
+    --
+    -- And it is a long way from a scrape. The NPC drives on roads at
+    -- `driveSpeed` with `driverAbility`/`driverAggression` set below; clipping a
+    -- lamppost or grazing a wall costs single-digit percent even at 5x, and
+    -- the pool it costs it from is the BODY, which starts at the same 1000 as
+    -- the others. Three quarters of the toughest pool is not a kerb, a bollard
+    -- or a parked car -- it is a head-on at speed, which is the case being asked
+    -- for. A rescue that failed because the NPC clipped a lamppost would be a
+    -- worse bug than the one this fixes, so the number is deliberately set where
+    -- a survivable knock cannot reach it.
+    --
+    -- IT IS THE NUMBER TO TURN, and the direction is plain: raise it to fail
+    -- rescues on lighter crashes, lower it to demand a bigger one. At or below
+    -- zero the check is off and only an explosion or a stall can end a ride
+    -- badly, which is the pre-2026-08-23 behaviour and a legitimate rollback.
+    wreckedAtPct = 25.0,
+
     -- ═══ THE PED'S PROTECTION, AND WHY THE ISSUE'S REASON IS DEAD ═══
     --
     -- #191 step 5 argued the ped needs no protection BECAUSE the vehicle is

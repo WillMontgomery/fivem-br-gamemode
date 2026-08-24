@@ -24,27 +24,42 @@
 -- vehicle creeping along just under the bar and a position that never refreshed,
 -- and neither is convenient to stage anywhere else.
 
-function GetGameTimer() return 0 end
+local fakeTime = 0
+function GetGameTimer() return fakeTime end
 
-local ROOT = 'resources/[fivem-royale]/br_lib/'
-local function load(f)
-    local chunk, err = loadfile(ROOT .. f)
+local RES = 'resources/[fivem-royale]/'
+local ROOT = RES .. 'br_lib/'
+local function loadAt(root, f)
+    local chunk, err = loadfile(root .. f)
     if not chunk then
         print('\27[31mload error\27[0m ' .. f .. ': ' .. tostring(err))
         os.exit(1)
     end
     chunk()
 end
+local function load(f) loadAt(ROOT, f) end
+--- A br_core module, by its path under resources/[fivem-royale]/.
+local function loadCore(f) loadAt(RES, f) end
 
 for _, f in ipairs({
     'shared/enums.lua',
     'shared/geo.lua',
+    -- BR.Net, for the two blocks at the foot of this file that drive real
+    -- event handlers rather than pure solvers.
+    'shared/protocol.lua',
     'config/match.lua',
     'config/overrides.lua',
     'config/storm.lua',
     'shared/storm_solve.lua',
     'config/map.lua',
     'config/loot.lua',
+    -- BR.LootLabel, which server/inventory.lua's public projection calls on
+    -- every push.
+    'shared/rng.lua',
+    'shared/loot_gen.lua',
+    -- BR.Config.Fuel.healthMax: the denominator the condition bar uses, and so
+    -- the one client/rescue.lua's wreck test measures against.
+    'config/fuel.lua',
     'config/rescue.lua',
     'shared/rescue_solve.lua',
 }) do load(f) end
@@ -460,6 +475,325 @@ do
     ok(#BR.Config.Rescue.Points() == before,
         'nothing a player parks can widen the set of points a rescue routes over')
     BR.Config.Rescue.discovered = nil
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE TWO FAULTS FROM THE 2026-08-23 PLAYTEST
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, testing 876acde:
+--
+--   "I tried using the CPR kit but upon dying I get no prompt to use the CPR
+--    kit. I thought perhaps I should have used it while standing to 'arm it' or
+--    something, and seems that was the written (but not acceptable) path(?),
+--    and produced this error on the server:
+--    @br_core/server/inventory.lua:883: attempt to perform arithmetic on a nil
+--    value (field 'useMs')
+--
+--    To be clear, this item should do absolutely nothing while the player is
+--    alive. While they're bleeding out there should be a 'Press [interact key]
+--    to use the CPR kit'"
+--
+-- Two faults, and neither was reachable by anything above this line: everything
+-- above is pure arithmetic over config, and both of these are BEHAVIOUR -- an
+-- event handler that threw, and a prompt loop whose output nobody had ever
+-- counted. So the two blocks below load the real modules against stub natives,
+-- which is tools/test_client.lua's arrangement rather than a new idea.
+--
+-- WHAT THEY CAN AND CANNOT SETTLE. They can settle what was SENT and what was
+-- DRAWN and where. They cannot settle whether the player can see it -- and that
+-- distinction is the whole story of fault 2, so it is worth being exact about:
+-- the prompt was always sent, and it was always drawn, and it was drawn
+-- underneath an opaque NUI placard. The regression guard for that is the
+-- assertion that the draw is a WORLD draw on the body rather than a screen draw
+-- at BR.Config.Drop's coordinates; the reasoning is in client/rescue.lua.
+
+-- ---------------------------------------------------------------------------
+describe('kit.inertWhileAlive')
+do
+    -- FAULT 1. `cprkit` is a CONSUMABLE with no `useMs`, deliberately -- it is
+    -- spent by the prompt while downed, not channelled from the inventory -- and
+    -- nothing refused it before `GetGameTimer() + c.useMs`.
+
+    local notes, sent = {}, {}
+    local handlers = {}
+
+    local roster = {}
+    BR.Roster = {
+        get  = function(src) return roster[src] end,
+        each = function(pred, fn)
+            for src, e in pairs(roster) do
+                if not pred or pred(e) then fn(src, e) end
+            end
+        end,
+    }
+    BR.Server = {
+        matchOf = function() return { state = BR.MatchState.PLAYING } end,
+        -- EVERY REFUSAL THIS FILE CAN PRODUCE LANDS HERE, which is what lets the
+        -- assertions below say "and it said nothing" rather than assuming it.
+        notify  = function(_, msg) notes[#notes + 1] = msg end,
+    }
+    BR.Sched = { every = function() end }
+
+    _G.RegisterNetEvent = function() end
+    _G.AddEventHandler  = function(name, fn) handlers[name] = fn end
+    _G.TriggerClientEvent = function(evt, src, d)
+        sent[#sent + 1] = { evt = evt, src = src, d = d }
+    end
+
+    loadCore('br_core/server/inventory.lua')
+
+    --- Deliver an event the way the platform does: `source` is a global.
+    local function fire(evt, src, payload)
+        _G.source = src
+        local okCall, err = pcall(handlers[evt], payload)
+        _G.source = nil
+        return okCall, err
+    end
+
+    local function player(src)
+        roster[src] = { src = src, state = BR.PlayerState.ALIVE,
+                        matchId = 1, hp = 100.0, armour = 0.0 }
+        BR.Inv.reset(src)
+        return BR.Inv.of(src)
+    end
+
+    -- ═══ THE CRASH, EXACTLY AS REPORTED ═══
+    local inv = player(1)
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    notes, sent = {}, {}
+
+    local okCall, err = fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(okCall, 'using a CPR kit while alive does not throw -- this is the line '
+        .. 'that took the server down (inventory.lua:883)', err)
+
+    -- ═══ ...AND IT DOES NOTHING, WHICH IS THE ACTUAL REQUIREMENT ═══
+    --
+    -- "this item should do absolutely nothing while the player is alive."
+    -- Not crashing is the floor. No channel, no message, no burnt kit.
+    ok(inv.using == nil, 'no channel is started',
+        inv.using and inv.using.item or 'nil')
+    ok(#notes == 0, 'and the player is told nothing at all -- a refusal message '
+        .. 'here would be the "AI slop" the owner has objected to',
+        notes[1])
+    ok(inv.slots[1] and inv.slots[1].item == 'cprkit',
+        'and the kit is still in the slot, unspent',
+        inv.slots[1] and inv.slots[1].item or 'gone')
+
+    -- ═══ THE CONTROL: AN ORDINARY CONSUMABLE STILL WORKS ═══
+    --
+    -- Without this the guard could be refusing every consumable in the game and
+    -- the three assertions above would still pass.
+    inv = player(2)
+    BR.Inv.give(2, { item = 'medkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.EPIC, count = 1 })
+    roster[2].hp = 10.0
+    fire(BR.Net.INV_USE, 2, { slot = 1 })
+    ok(inv.using ~= nil and inv.using.item == 'medkit',
+        'a med kit still channels -- the guard refuses a class, not the feature',
+        inv.using and inv.using.item or 'nothing started')
+    ok(inv.using and inv.using.ms == BR.Config.ConsumableById.medkit.useMs,
+        'for the duration its config declares',
+        inv.using and tostring(inv.using.ms))
+
+    -- ═══ AND THE CLASS, NOT JUST THE KIT ═══
+    --
+    -- The kit is the item that found this; it is not the last item that could.
+    -- A consumable that heals but declares no duration is the same crash with a
+    -- different name, and it would reach further into the handler than the kit
+    -- ever did -- past the "would this do nothing" refusals, which notify. This
+    -- registers exactly that item, drives it, and takes it away again.
+    BR.Config.ConsumableById.__probe = {
+        id = '__probe', label = 'Probe', kind = BR.ItemKind.CONSUMABLE,
+        rarity = BR.Rarity.COMMON, maxStack = 1, carryMax = 1,
+        health = 100, healthCap = 100,   -- ...and no useMs
+    }
+    inv = player(3)
+    BR.Inv.give(3, { item = '__probe', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.COMMON, count = 1 })
+    roster[3].hp = 10.0
+    notes = {}
+    okCall, err = fire(BR.Net.INV_USE, 3, { slot = 1 })
+    ok(okCall, 'ANY consumable with no useMs is refused rather than crashing -- '
+        .. 'the next one somebody adds is already covered', err)
+    ok(inv.using == nil and #notes == 0,
+        'silently, on the same rule', notes[1])
+    BR.Config.ConsumableById.__probe = nil
+
+    -- The config the guard reads. Asserted so that "the kit has no useMs" stays
+    -- a deliberate property of the item rather than something a later edit
+    -- papers over with a fake duration -- which is the one fix that would make
+    -- the crash go away AND give the kit a channel nothing can start.
+    ok(BR.Config.CprKit.useMs == nil,
+        'and the kit still declares no useMs, because it is not an inventory '
+            .. 'item -- the fix is the guard, not a made-up duration')
+end
+
+-- ---------------------------------------------------------------------------
+describe('kit.promptWhileDowned')
+do
+    -- FAULT 2. The prompt that never appeared.
+
+    local sends, screenDraws, worldDraws = {}, {}, {}
+
+    -- The client's own neighbours. BR.Inv is the SERVER model from the block
+    -- above; the client's mirror is a different object with a different reader,
+    -- so it is stubbed rather than borrowed.
+    local slots = {}
+    BR.Inv = BR.Inv or {}
+    BR.Inv.local_ = function() return { slots = slots } end
+
+    BR.Dui = {
+        page       = function(n) return { name = n } end,
+        send       = function(_, m) sends[#sends + 1] = m end,
+        ready      = function() return true end,
+        drawScreen = function(_, x, y) screenDraws[#screenDraws + 1] = { x = x, y = y } end,
+        drawWorld  = function(_, x, y, z) worldDraws[#worldDraws + 1] = { x = x, y = y, z = z } end,
+        drawOnEntity = function() end,
+    }
+    BR.Keys       = { on = function() end, isHeld = function() return false end }
+    BR.Native     = { keyLabelForCommand = function() return 'E' end }
+    -- The head bone, which is what client/dbno.lua's camera points at every
+    -- frame -- so it is also the one anchor a prompt cannot be hidden behind.
+    BR.Squadmates = { headAnchor = function() return 10.0, 20.0, 30.0 end }
+    _G.PlayerPedId     = function() return 1 end
+    _G.GetEntityCoords = function() return { x = 10.0, y = 20.0, z = 29.4 } end
+    _G.Citizen = { CreateThread = function() end, Wait = function() end }
+    _G.RegisterNetEvent = function() end
+    _G.AddEventHandler  = function() end
+    _G.TriggerServerEvent = function() end
+    _G.RegisterCommand  = function() end
+
+    loadCore('br_core/client/main.lua')
+
+    BR.State = {
+        me     = { src = 1, state = BR.PlayerState.ALIVE },
+        match  = { state = BR.MatchState.PLAYING, mode = BR.Mode.SOLO.key },
+        roster = {},
+    }
+
+    loadCore('br_core/client/rescue.lua')
+
+    local function frame(n)
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 16
+            BR.Loop.step(BR.Loop.FRAME)
+        end
+    end
+    local function shows()
+        local n = 0
+        for _, m in ipairs(sends) do if m.show then n = n + 1 end end
+        return n
+    end
+
+    -- ═══ INERT WHILE ALIVE ═══
+    slots[1] = { item = 'cprkit' }
+    frame(30)
+    ok(shows() == 0,
+        'a living player carrying a kit is offered nothing, for thirty frames',
+        shows())
+
+    -- ═══ AND OFFERED, ONCE, WHILE BLEEDING OUT ═══
+    BR.State.me.state = BR.PlayerState.DBNO
+    sends, screenDraws, worldDraws = {}, {}, {}
+    frame(60)
+
+    ok(shows() == 1,
+        'a downed solo carrying a kit gets EXACTLY ONE prompt across sixty '
+            .. 'frames -- one notification is the whole rule of this feature, '
+            .. 'and a re-send restarts the page animation',
+        shows())
+
+    local shown = sends[1]
+    ok(shown and shown.show == true, 'and it is a show rather than a hide')
+
+    -- ═══ THE WORDING IS THE OWNER'S LATER ONE ═══
+    --
+    -- "Press [interact key] to use the CPR kit", superseding #191 step 2's
+    -- "press [interact key] to call a medic". The key is its own glyph, so the
+    -- sentence is split across hint/key/label exactly as the page draws it.
+    ok(shown and shown.label == 'Use the CPR kit',
+        'it names the ITEM, not the medic -- the owner\'s 2026-08-23 wording '
+            .. 'supersedes #191\'s and this is what pins it',
+        shown and tostring(shown.label))
+    ok(shown and shown.hint == 'Press' and shown.key == 'E',
+        'with the interact key on it as a glyph',
+        shown and (tostring(shown.hint) .. ' ' .. tostring(shown.key)))
+    ok(shown and shown.ring == false,
+        'and no hold ring: this is a press, not a hold')
+
+    -- ═══ THE REGRESSION GUARD FOR WHY IT WAS INVISIBLE ═══
+    --
+    -- It WAS being drawn. At BR.Config.Drop's promptX/promptY -- 0.5, 0.78 --
+    -- which is where the bus and glider prompts go, and which is also where
+    -- ui-src/src/hud/DbnoOverlay.tsx puts an `absolute inset-x-0 bottom-40`
+    -- `.panel-hot` at rgba(8, 9, 14, 0.94). NUI composites above every native
+    -- draw, so the placard was simply in front of it -- and the placard is on
+    -- screen at exactly and only the moment this prompt is.
+    --
+    -- Asserted as "in the world, on the body" rather than as a different
+    -- screen y, because no screen y survives the interface-size slider: the
+    -- placard is laid out in rem off the bottom edge and the sprite is scaled by
+    -- the same preference from its own centre.
+    ok(#screenDraws == 0,
+        'the prompt is NOT drawn in screen space -- that is where the downed '
+            .. 'placard is, and NUI wins',
+        #screenDraws)
+    ok(#worldDraws > 0, 'it is drawn in the world', #worldDraws)
+
+    local d = worldDraws[#worldDraws]
+    ok(d and d.x == 10.0 and d.y == 20.0 and d.z > 30.0,
+        'on this player\'s own head anchor, which is the point dbno.lua\'s '
+            .. 'camera is aimed at -- so it cannot be behind anything',
+        d and ('%.1f, %.1f, %.1f'):format(d.x, d.y, d.z))
+
+    -- ═══ AND IT IS DRAWN EVERY FRAME, NOT ONCE ═══
+    --
+    -- Sent on change, drawn per frame: that split is what welds the box to a
+    -- body the camera is moving around. A prompt drawn once is a prompt that
+    -- appears for a sixtieth of a second.
+    ok(#worldDraws >= 59,
+        'every frame it is offered, so it stays on the body as the camera moves',
+        #worldDraws)
+
+    -- ═══ THE THREE WAYS IT MUST GO AWAY ═══
+    local function goesAway(what, mutate, restore)
+        sends = {}
+        mutate()
+        frame(5)
+        local hid = false
+        for _, m in ipairs(sends) do if m.show == false then hid = true end end
+        ok(hid and shows() == 0, what, ('%d send(s)'):format(#sends))
+        restore()
+        frame(5)
+        sends = {}
+    end
+
+    goesAway('a squad player carrying a kit is offered nothing -- the kit is '
+                .. 'solos only, and the client asks before the server does',
+        function() BR.State.match.mode = BR.Mode.SQUAD.key end,
+        function() BR.State.match.mode = BR.Mode.SOLO.key end)
+
+    goesAway('a downed solo who is NOT carrying one is offered nothing',
+        function() slots[1] = nil end,
+        function() slots[1] = { item = 'cprkit' } end)
+
+    goesAway('and it stops being offered the moment they are back on their feet',
+        function() BR.State.me.state = BR.PlayerState.ALIVE end,
+        function() BR.State.me.state = BR.PlayerState.DBNO end)
+
+    -- THE LOOP MUST STILL BE HEALTHY. A callback that throws five times running
+    -- is suspended for the rest of the session -- which would present as
+    -- exactly the symptom being fixed, and silently.
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'rescue.prompt' then
+            ok(s.errors == 0 and not s.suspended,
+                'and the prompt loop never threw -- a suspended callback is a '
+                    .. 'prompt that stops appearing and says nothing',
+                ('%d error(s), suspended=%s'):format(s.errors, tostring(s.suspended)))
+        end
+    end
 end
 
 print(('\n\27[32m%d passed\27[0m'):format(pass))

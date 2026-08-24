@@ -7,8 +7,10 @@
 --
 -- ═══ ONE NOTIFICATION. THE WHOLE CYCLE. ═══
 --
--- "press [interact key] to call a medic" is THE ONLY THING SHOWN TO THE PLAYER
--- AT ANY POINT IN THIS FEATURE. Not on dispatch, not on arrival, not when the
+-- "Press [interact key] to use the CPR kit" is THE ONLY THING SHOWN TO THE
+-- PLAYER AT ANY POINT IN THIS FEATURE. (The owner's later wording, 2026-08-23;
+-- it supersedes #191 step 2's "call a medic" -- see setPrompt.)
+-- Not on dispatch, not on arrival, not when the
 -- ambulance is destroyed, not when a recovery fires. The owner has been
 -- explicit and repeatedly annoyed about invented UI copy, and the discipline is
 -- easier to keep than to restore: there is exactly one BR.Dui.send in this file
@@ -97,15 +99,28 @@ local function setPrompt(show)
         return
     end
 
-    -- THE WORDING IS THE OWNER'S, VERBATIM (#191 step 2: "press [interact key]
-    -- to call a medic"), split across the page's label/hint/key fields because
-    -- that is the shape the page draws -- the KEY is rendered as its own glyph,
-    -- which is the whole reason this is a DUI and not an engine help box.
-    -- Nothing here invents a word.
+    -- ═══ THE WORDING IS THE OWNER'S, AND IT IS HIS LATER ONE ═══
+    --
+    -- Owner, 2026-08-23: "While they're bleeding out there should be a 'Press
+    -- [interact key] to use the CPR kit'".
+    --
+    -- THIS SUPERSEDES #191 STEP 2, which said "press [interact key] to call a
+    -- medic" -- and that is what this box said until now. The medic is an
+    -- implementation detail of what the item does; the ITEM is the thing the
+    -- player is holding and the thing they are being asked about, and naming it
+    -- is the difference between a prompt you understand at a glance and one you
+    -- have to connect to your inventory yourself. Recorded rather than quietly
+    -- swapped, because the issue body still carries the old sentence and the
+    -- next reader will find it there.
+    --
+    -- Split across label/hint/key because that is the shape the page draws --
+    -- the KEY is its own glyph, which is the whole reason this is a DUI and not
+    -- an engine help box. No third phrasing is invented and no second line is
+    -- added: this remains the only thing this feature ever says.
     BR.Dui.send(page, {
         t     = 'prompt',
         show  = true,
-        label = 'Call a medic',
+        label = 'Use the CPR kit',
         hint  = 'Press',
         key   = BR.Native.keyLabelForCommand('brinteract',
                                              BR.Config.Loot.promptControl or 51),
@@ -121,10 +136,54 @@ BR.Loop.register(BR.Loop.FRAME, 'rescue.prompt', function()
     local page = promptPage()
     if not BR.Dui.ready(page) then return end
 
-    -- THE DESCENT PROMPT'S POSITION, deliberately shared with the bus and the
-    -- glider. From the player's side these are one box that keeps appearing in
-    -- the same place with different words in it, and reading BR.Config.Drop
-    -- rather than copying its numbers is what stops them drifting apart.
+    -- ═══ DRAWN ON THE BODY, NOT ON THE SCREEN, AND THAT IS THE BUG FIX ═══
+    --
+    -- Owner, 2026-08-23: "upon dying I get no prompt to use the CPR kit."
+    --
+    -- IT WAS BEING SENT AND IT WAS BEING DRAWN. The message went out, the page
+    -- rendered it, and the sprite went onto the screen at BR.Config.Drop's
+    -- promptX/promptY -- 0.5, 0.78 -- which is where the bus and the glider put
+    -- theirs. THE DOWNED PLACARD IS ALREADY THERE.
+    --
+    -- ui-src/src/hud/DbnoOverlay.tsx is `absolute inset-x-0 bottom-40`, a
+    -- `.panel-hot` whose background is rgba(8, 9, 14, 0.94). At 1080p and the
+    -- default interface size that is a centred, effectively opaque box from
+    -- ~160px to ~262px up from the bottom edge. The sprite is drawn from its
+    -- CENTRE at 0.78 -- 238px up -- and stands 0.17 * 0.5 * aspect of the screen
+    -- HEIGHT, about 163px, so it spans ~156px to ~319px. The placard sits inside
+    -- it, over the badge and the label both.
+    --
+    -- AND NUI ALWAYS WINS. A browser overlay composites above everything the
+    -- game draws, DrawSprite included, so no amount of ordering on this side
+    -- puts the prompt in front of it. From the player's chair: no prompt.
+    --
+    -- WHY NO OTHER PROMPT IN THE GAME EVER HIT THIS. The placard exists only
+    -- while a player is DOWNED, and the bus, the glider, the crate and the fuel
+    -- pump are all things you cannot be doing while downed. This prompt is the
+    -- only one in the project that is on screen at exactly and only the moment
+    -- the placard is, so it is the only one that could ever have collided.
+    --
+    -- ═══ AND WHY NOT SIMPLY MOVE IT UP THE SCREEN ═══
+    --
+    -- Because there is no y that survives the interface-size slider. The
+    -- placard is positioned and sized in `rem`, and the root font size is
+    -- clamp(11px, 1.481vh * --ui-scale, 28px); the sprite is scaled by the same
+    -- preference (dui.lua multiplies every draw by `prefs.ui`). Both grow, from
+    -- opposite anchors, at different rates -- a number that clears at 1.0 is
+    -- back underneath it at 1.5. Picking one would be fixing this for whoever
+    -- happens to share the author's settings.
+    --
+    -- THE BODY IS THE ANCHOR THAT CANNOT COLLIDE. client/dbno.lua's camera
+    -- points at the head bone every frame -- `PointCamAtCoord(cam, hx, hy, hz +
+    -- 0.05)` -- so this player's own head is dead centre of the shot whatever
+    -- they do with the look stick, and a label pinned just above it is nowhere
+    -- near a bottom-anchored placard at any interface size.
+    --
+    -- It is also the language the player already knows: this is exactly how
+    -- dbno.lua draws the revive prompt over a downed mate, at the same anchor,
+    -- the same lift and the same scale. A box over a body on the floor with the
+    -- interact key on it means one thing in this game, and now it means it for
+    -- your own body too.
     --
     -- NO ENGINE FALLBACK. The bus prompt falls back to BR.Native.help after
     -- three seconds because a player who cannot see the jump prompt does not
@@ -132,10 +191,21 @@ BR.Loop.register(BR.Loop.FRAME, 'rescue.prompt', function()
     -- and a rare item: the cost of a missing browser is one wasted kit, and the
     -- cost of a fallback is a second surface in a feature whose defining rule is
     -- that it has exactly one.
-    local D = BR.Config.Drop
-    BR.Dui.drawScreen(page, (D and D.promptX) or 0.5,
-                            (D and D.promptY) or 0.78,
-                            (D and D.promptScale) or 0.17)
+    local ped = PlayerPedId()
+    local hx, hy, hz
+    if BR.Squadmates and BR.Squadmates.headAnchor then
+        hx, hy, hz = BR.Squadmates.headAnchor(ped)
+    else
+        -- The same degrade squadmates.lua documents: the origin plus a
+        -- compromise between a standing head and one on the floor.
+        local c = GetEntityCoords(ped)
+        hx, hy, hz = c.x, c.y, c.z + 0.6
+    end
+
+    BR.Dui.drawWorld(promptPage(), hx, hy,
+                     hz + ((BR.Config.Match and BR.Config.Match.dbnoPromptLift)
+                           or 0.35),
+                     BR.Config.Loot.promptScale or 2.0)
 end)
 
 BR.Keys.on('interact', function(pressed)
@@ -629,6 +699,57 @@ BR.Loop.register(BR.Loop.FRAME, 'rescue.cam', function()
     PointCamAtCoord(r.cam, c.x, c.y, c.z + 0.5)
 end)
 
+--- What the condition bar would say about this vehicle: 0..100.
+---
+--- THE SAME READING client/fuel.lua's `healthPct` TAKES, deliberately, because
+--- it is the one already on screen: the WORST of the three pools over
+--- BR.Config.Fuel.healthMax. "The vehicle health should go to 0" (owner,
+--- 2026-08-23) has to mean the same thing here as it does on the bar he is
+--- looking at when he says it, and two definitions of vehicle health that agree
+--- today would not agree for long.
+---
+--- NOT SHARED WITH fuel.lua's COPY, and that is a judgement rather than an
+--- oversight: hoisting it would put a reader of the fuel gauge and a reader of
+--- the rescue watchdog on one function, in a file that owns neither, for eight
+--- lines of arithmetic. The comment above is the coupling, and it names the
+--- file to change with.
+---
+--- pcall'd per pool for the reason server/fuel.lua pcalls its entity natives:
+--- these throw rather than answer on a handle that went stale between the
+--- existence test above and this line, and an uncaught throw in a loop callback
+--- costs five of them before the band suspends itself.
+--- @param veh integer
+--- @return number|nil pct   nil if nothing could be read at all
+local function vehicleHealthPct(veh)
+    local cap = tonumber(BR.Config.Fuel and BR.Config.Fuel.healthMax) or 1000.0
+    if cap <= 0.0 then return nil end
+
+    local worst, read = cap, false
+    local function pool(getter)
+        if type(getter) ~= 'function' then return end
+        local ok, v = pcall(getter, veh)
+        if not ok then return end
+        v = tonumber(v)
+        -- v ~= v is the NaN test; a NaN would sail through every comparison
+        -- below and poison the answer.
+        if v == nil or v ~= v then return end
+        read = true
+        if v < 0.0 then v = 0.0 end
+        if v > cap then v = cap end
+        if v < worst then worst = v end
+    end
+
+    pool(GetVehicleBodyHealth)
+    pool(GetVehicleEngineHealth)
+    pool(GetVehiclePetrolTankHealth)
+
+    -- NO READING IS NOT A READING OF ZERO. A build without these natives, or a
+    -- handle that answered nothing, must not be reported as a wreck -- that
+    -- would eliminate every rescued player on the platform it happened on.
+    if not read then return nil end
+    return (worst / cap) * 100.0
+end
+
 --- Is the ambulance a wreck, and are we there yet?
 ---
 --- THE ONLY TWO THINGS THIS CLIENT EVER TELLS THE SERVER ABOUT A RIDE IN
@@ -655,6 +776,56 @@ BR.Loop.register(BR.Loop.TICK, 'rescue.watch', function()
        or not isTrue(IsVehicleDriveable(r.veh, false)) then
         r.reported = true   -- latch: report once, whatever happens next
         print('[br_core] rescue: the ambulance is gone -- reporting it')
+        TriggerServerEvent(BR.Net.RESCUE_LOST)
+        return
+    end
+
+    -- ═══ ...AND A FOURTH: A WRECK THAT IS STILL TECHNICALLY DRIVEABLE ═══
+    --
+    -- Owner, 2026-08-23: "if the ambulance gets in a wreck, even if it doesn't
+    -- blow up, the vehicle health should go to 0 if it's bad enough. In this
+    -- case the rescue also failed."
+    --
+    -- The three tests above all wait for the engine to be FINISHED. A head-on
+    -- that mangles the ambulance and leaves the engine on its last few points is
+    -- none of them: DoesEntityExist is true, IsEntityDead is false, and
+    -- IsVehicleDriveable is still true right up until the engine pool hits zero.
+    -- What happened next was the worst available answer -- the vehicle crawls or
+    -- stops, the SERVER reads that as "not moving", and layer 2 of the recovery
+    -- ladder teleports the wreck onto a road and tells it to drive on.
+    --
+    -- WHY THIS IS THE RIGHT SIDE OF THE WIRE. It is the same report as an
+    -- explosion (BR.Net.RESCUE_LOST) and it is trusted for the same reason: the
+    -- only thing this message can do is eliminate the player who sent it. A
+    -- client that lies here resigns. And it is a CLIENT question by necessity --
+    -- the three health pools are client natives, the same wall server/fuel.lua
+    -- and client/vehdamage.lua both document.
+    --
+    -- WHAT IT DOES TO THE LADDER: it SHORT-CIRCUITS layers 2 and 3 for a
+    -- crippled-but-existing vehicle, which is the point -- there is nothing
+    -- worth re-placing. The ladder's invariant is untouched and slightly
+    -- strengthened: this is a new road to ELIMINATION and there is no arrangement
+    -- of it that delivers anybody, so "every ambiguous case resolves to
+    -- elimination" still holds. A silent or lying client changes nothing either:
+    -- the wreck stops moving and layers 2, 3 and 4 run exactly as they did.
+    --
+    -- THE HEALTH IS THEN ACTUALLY WRITTEN, because he asked for it in as many
+    -- words and because it is what everyone ELSE sees. Vehicle health rides the
+    -- entity's own sync tree (client/vehdamage.lua's header), so zeroing it here
+    -- is what turns the thing sitting in the road into a wreck on every machine
+    -- rather than a pristine ambulance that mysteriously stopped.
+    --
+    -- BODY AND ENGINE, NOT THE PETROL TANK. Taking the tank to zero detonates
+    -- the vehicle, and he was explicit that this is the case where it does NOT
+    -- blow up. Zeroing these two is enough to put the condition bar on the floor
+    -- -- it reads the WORST of the three -- and to make the vehicle undriveable.
+    local pct = vehicleHealthPct(r.veh)
+    if pct and pct <= (R.wreckedAtPct or 0.0) then
+        r.reported = true
+        if SetVehicleBodyHealth   then SetVehicleBodyHealth(r.veh, 0.0)   end
+        if SetVehicleEngineHealth then SetVehicleEngineHealth(r.veh, 0.0) end
+        print(('[br_core] rescue: the ambulance is a wreck (%.0f%%) -- reporting it')
+            :format(pct))
         TriggerServerEvent(BR.Net.RESCUE_LOST)
         return
     end

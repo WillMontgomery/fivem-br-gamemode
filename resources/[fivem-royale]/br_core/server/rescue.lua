@@ -58,6 +58,16 @@
 --      the fast path and it exists so the kill lands while the explosion is
 --      still on screen.
 --
+--      "DESTROYED" NOW INCLUDES A BAD ENOUGH WRECK (owner, 2026-08-23: "if the
+--      ambulance gets in a wreck, even if it doesn't blow up... the rescue also
+--      failed"). client/rescue.lua's watch reports on this same event when the
+--      condition reading falls to BR.Config.Rescue.wreckedAtPct, so a crippled
+--      ambulance SHORT-CIRCUITS layers 2 and 3 instead of being teleported onto
+--      a road and told to drive on. Nothing on this side changed, and nothing
+--      needed to: it is the same message with one more way of earning it, and
+--      it still only ever eliminates. A client that declines to send it is
+--      exactly the silent client layers 2-4 were built for.
+--
 --   2. NO PROGRESS, OBSERVED BY THE SERVER.
 --      Judged on BR.Roster's own position samples of the player's ped -- read
 --      server-side with GetEntityCoords, never reported -- so it is the same
