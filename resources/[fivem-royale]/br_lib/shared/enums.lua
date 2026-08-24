@@ -95,8 +95,19 @@ BR.AmmoType = {
     HEAVY  = 'heavy',  -- snipers / LMG
 }
 
---- Match modes. `squadSize` drives DBNO: solo has no downed state, because there
---- is nobody left who could revive you.
+--- Match modes.
+---
+--- `dbno` IS THE MODE'S DEFAULT ANSWER, NOT THE WHOLE RULE, and it is worth being
+--- exact because this comment used to claim `squadSize` drove DBNO, which was
+--- never true and is now doubly misleading. `squadSize` is read by nothing but a
+--- test; `dbno` is read in exactly one place, BR.Combat.canBeDowned.
+---
+--- Solo carries `false` because a solo player has nobody who could revive them,
+--- so a knock would be a slower death and a worse one. #191's CPR kit makes that
+--- CONDITIONAL ON INVENTORY rather than flipping it: a solo carrying a kit goes
+--- down instead of dying, because they can call an ambulance. THE FLAG STAYS
+--- FALSE -- flipping it would knock down every solo in every match, including
+--- the overwhelming majority holding no kit. See the block in canBeDowned.
 BR.Mode = {
     SOLO  = { key = 'solo',  label = 'Solo',  squadSize = 1, dbno = false },
     SQUAD = { key = 'squad', label = 'Squad', squadSize = 4, dbno = true  },

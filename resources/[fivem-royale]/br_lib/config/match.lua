@@ -296,7 +296,10 @@ BR.Config.Match = {
     healthFloor     = 100,    -- engine units; at or below this a player ped is dead
     maxArmour       = 100,    -- armour is already 0..100 natively, no conversion
 
-    -- DBNO (squads only -- solo has nobody who could revive you).
+    -- DBNO. Squads by default; solos only while carrying a CPR kit (#191), which
+    -- is the one thing that can pick a lone player up. The numbers below apply
+    -- to both -- a solo on the floor bleeds on the same clock, and it is the
+    -- clock the ambulance is racing.
     --
     -- TWO MINUTES ON THE FIRST KNOCK, up from 45 seconds (owner, playtest:
     -- "The DBNO bleed out timer seems awfully short. We should probably double

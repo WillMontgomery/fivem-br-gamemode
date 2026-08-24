@@ -57,6 +57,12 @@ shared_scripts {
     '@br_lib/shared/boost_solve.lua',
     '@br_lib/config/boost.lua',
     '@br_lib/config/audio.lua',
+    -- The CPR kit's ambulance (#191). AFTER config/map.lua for a reader rather
+    -- than for the loader: BR.Config.Rescue.Points() prefers the authored
+    -- pickup/drop-off list in BR.Config.Map when there is one, and reads it at
+    -- CALL time -- so the order here is about where somebody looks for the
+    -- points, not about whether they resolve.
+    '@br_lib/config/rescue.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
     -- The catalogue. SHARED rather than server-only: the server decides what
     -- you own, and the client has to resolve an equipped id into the natives
@@ -90,6 +96,12 @@ shared_scripts {
     '@br_lib/shared/xp.lua',
     '@br_lib/shared/storm_solve.lua',
     '@br_lib/shared/combat_solve.lua',
+    -- BR.RescueDestination and the drive estimate (#191). AFTER
+    -- shared/storm_solve.lua, and that IS a load order rather than a reader's
+    -- convenience: choosing a drop-off means asking BR.StormAt where the circle
+    -- will be when the ambulance ARRIVES, which is the whole rule -- a point
+    -- inside the wall at dispatch is routinely outside it on arrival.
+    '@br_lib/shared/rescue_solve.lua',
     -- BR.FuelSolve. SHARED because both halves of the fuel model call it: the
     -- server drains and refills through it, the client converts metres to a
     -- tank level through it, and a solver only one side can load is a solver
@@ -156,6 +168,15 @@ client_scripts {
     -- else.
     'client/airdrop.lua',
     'client/dbno.lua',      -- downed + revive; yields the interact key from loot.lua
+    -- The CPR kit's ambulance ride (#191). AFTER dbno.lua, and this one is a
+    -- real ordering rather than a reader's: both listen on BR.Keys 'interact'
+    -- while the player is DOWNED, and they must never both act on one press.
+    -- They cannot -- dbno.lua's handler is about reviving SOMEBODY ELSE and
+    -- returns early on `not me.squadId`, while this one only fires for a solo
+    -- holding a kit -- but the two conditions are mutually exclusive by
+    -- argument rather than by construction, so the file that yields is declared
+    -- after the file it yields to.
+    'client/rescue.lua',
     -- The fuel gauge, the pump prompt and the station blips. AFTER dui.lua
     -- (it borrows the crate's prompt page) and AFTER keybinds.lua (it reads
     -- BR.Keys.isHeld('interact')); it reads BR.Native.blipName at call time, so
@@ -242,6 +263,14 @@ server_scripts {
     'server/combat.lua',
     'server/storm.lua',     -- phase authority + the damage ledger
     'server/inventory.lua', -- BR.Inv: the authoritative inventory model
+    -- The CPR kit's rescue (#191). AFTER combat.lua and inventory.lua, and both
+    -- matter at CALL time rather than at load: it eliminates and revives through
+    -- BR.Combat, and it reads and spends a kit through BR.Inv. The dependency
+    -- also runs the other way -- BR.Combat.canBeDowned asks BR.Rescue.holdsKit
+    -- whether a solo's death is a knock -- and that call is guarded on
+    -- `BR.Rescue ~= nil`, because a lethal hit can land before this file has
+    -- loaded and the honest answer during that window is "no kit".
+    'server/rescue.lua',
     'server/loot.lua',      -- world loot: layout, streaming, claim arbitration
     -- Aerial supply drops. AFTER storm.lua and loot.lua for a reader rather
     -- than for the loader: it asks BR.StormAt where the circle will be when the

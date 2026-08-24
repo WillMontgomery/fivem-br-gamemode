@@ -77,11 +77,21 @@
 -- ═══ AMBIENT TRAFFIC AND #191'S AMBULANCE ARE FREE, BY CONSTRUCTION ═══
 --
 -- Nothing here looks at a vehicle nobody is sitting in, so NPC traffic never
--- enters the registry. The CPR ambulance is created client-side and
--- non-networked (the same `isNetwork = false` that keeps the Battle Bus out of
--- server/vehicles.lua's detector), so it has no network id on this server at
--- all -- GetVehiclePedIsIn answers 0 for a player inside one, and the loop below
--- moves on. Neither needs a special case and neither has one.
+-- enters the registry.
+--
+-- THE CPR AMBULANCE IS ALSO FREE, BUT NOT FOR THE REASON THIS PARAGRAPH USED TO
+-- GIVE, and the correction matters because the old reason would now be a lie.
+-- This said the ambulance was "created client-side and non-networked", so it had
+-- no network id here at all. It IS networked, as of #191: the owner made it
+-- destructible by other players on 2026-08-23, and a non-networked vehicle does
+-- not exist on anybody else's machine for them to shoot.
+--
+-- What exempts it is the STRETCHER. The rescued player is attached to the
+-- vehicle with AttachEntityToEntity rather than put in a seat, and
+-- GetVehiclePedIsIn answers 0 for an attached ped -- it reports SEATING, and
+-- there is none. So the registry never admits it, exactly as before, by a
+-- different route. The NPC medic IS in a seat, and is not a player, and the pass
+-- below walks the ROSTER. Neither needs a special case and neither has one.
 
 BR = BR or {}
 BR.Fuel = {}
@@ -192,8 +202,10 @@ local function vehicleOf(ped)
     nid = math.tointeger(tonumber(nid))
     -- ZERO IS TESTED EXPLICITLY. `0` is truthy in Lua and it is what the
     -- platform answers for "this entity is not networked" -- which is exactly
-    -- what a client-side, non-networked vehicle looks like from here. The
-    -- Battle Bus and #191's ambulance both land on this line.
+    -- what a client-side, non-networked vehicle looks like from here. The Battle
+    -- Bus lands on this line. #191'S AMBULANCE NO LONGER DOES -- it is networked
+    -- now (see the header) -- but it never reaches here either, because the
+    -- pcall above returns 0 for a ped that is ATTACHED rather than seated.
     if nid == nil or nid == 0 then return nil, nil end
     return nid, veh
 end

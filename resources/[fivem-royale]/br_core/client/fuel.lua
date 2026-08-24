@@ -888,10 +888,16 @@ BR.Loop.register(BR.Loop.TICK, 'fuel.apply', function()
 
     local nid = netOf(veh)
     if nid == nil then
-        -- A non-networked vehicle -- the Battle Bus, #191's ambulance. The
-        -- server has never heard of it and it has no tank here, so the fuel bar
-        -- would be describing nothing. The bars stay down rather than reading
-        -- full forever.
+        -- A non-networked vehicle -- the Battle Bus. The server has never heard
+        -- of it and it has no tank here, so the fuel bar would be describing
+        -- nothing. The bars stay down rather than reading full forever.
+        --
+        -- #191's AMBULANCE USED TO BE NAMED HERE AND IS NOT ONE OF THESE. It is
+        -- networked now (the owner made it destructible on 2026-08-23, and only
+        -- a networked vehicle can be shot by anybody else). It never reaches
+        -- this function at all: the rescued player is ATTACHED to the stretcher
+        -- rather than seated, so the vehicle read above finds nothing to ask
+        -- about.
         setPrompt(false)
         pushBars(nil, nil)
         return

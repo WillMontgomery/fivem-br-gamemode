@@ -275,27 +275,35 @@ end
 --- tools/test_roster.lua's `storm.vehicles` block is what stops it drifting,
 --- because "we never wrote the exemption" is not a property anything can check.
 ---
---- ═══ THE ONE EXCEPTION CANNOT BE WRITTEN YET, AND THIS IS WHERE IT GOES ═══
+--- ═══ THE ONE EXCEPTION, NOW THAT #191 HAS LANDED ═══
 ---
---- The ambulance exemption is #191's (the CPR kit), and it is conditioned on a
---- `rescue` state that does not exist anywhere in this tree today -- there is no
---- player state, no roster field and no ambulance. Writing the condition now
---- would mean inventing the thing it reads, and a flag with no writer is a flag
---- that reads false forever while looking like a working feature.
+--- This block used to say the exemption could not be written yet, because it was
+--- conditioned on a `rescue` state that existed nowhere -- and a flag with no
+--- writer is a flag that reads false forever while looking like a working
+--- feature. #191 (the CPR kit) built the writer, so the sentence is code now:
+--- `and not e.rescue` on the `BR.Roster.each` filter in `storm.damage` below,
+--- which is exactly the one-condition change this block specified in advance.
 ---
---- So it is left as a sentence rather than as code, the way server/combat.lua
---- leaves solo DBNO ("when it arrives the switch here is BR.Mode.SOLO.dbno =
---- true"). WHEN #191 LANDS, THE CHANGE IS ONE CONDITION ON THE `BR.Roster.each`
---- FILTER IN `storm.damage` BELOW -- `and not e.rescue` beside the DAMAGEABLE
---- test -- written by whatever puts the player in the ambulance, and read in that
---- one place. Two things it must not become:
+--- THE TWO PROHIBITIONS IT WAS WRITTEN WITH ARE BOTH HONOURED, and they are
+--- restated rather than deleted because they are what makes the flag safe:
 ---
----   * a client-asserted flag. Storm damage is the subsystem specifically built
----     so a client cannot influence it (#194 §4); an exemption a client can
----     assert is storm immunity a client can assert.
----   * a test on the VEHICLE. The owner's rule is about the rescue, not about the
----     ambulance -- a player who drives one off has no exemption, so a model
----     check would grant exactly the thing that sentence refuses.
+---   * NOT A CLIENT-ASSERTED FLAG. Storm damage is the subsystem specifically
+---     built so a client cannot influence it (#194 §4); an exemption a client can
+---     assert is storm immunity a client can assert. `e.rescue` is written in
+---     exactly two places, both in server/rescue.lua -- when the server GRANTS a
+---     rescue and when it ENDS one -- and no net event sets it. There is no
+---     client->server event in this whole feature that carries a payload at all.
+---   * NOT A TEST ON THE VEHICLE. The owner's rule is about the rescue, not about
+---     the ambulance -- a player who drives one off has no exemption, so a model
+---     check would grant exactly the thing that sentence refuses. Nothing below
+---     reads a model, a vehicle handle or a seat; the flag is on the PLAYER, and
+---     it is set only for a player the server itself put in an ambulance.
+---
+--- AND IT IS BOUNDED. server/rescue.lua's deadline is checked unconditionally on
+--- every tick and every path out of a rescue clears the flag, so there is no
+--- branch on which a player stays exempt -- which matters more here than
+--- anywhere else, because the failure would be silent and would look exactly
+--- like a player who is simply good at staying inside the circle.
 local DAMAGEABLE = {
     [BR.PlayerState.ALIVE] = true,
     [BR.PlayerState.DBNO]  = true,
@@ -358,7 +366,13 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         m.stormCarry = carry
 
         BR.Roster.each(
-            function(e) return e.matchId == m.id and DAMAGEABLE[e.state] end,
+            -- `not e.rescue` IS #191'S AMBULANCE EXEMPTION and is the only
+            -- exception to "a vehicle never grants storm immunity" that will
+            -- ever exist here. See the block above DAMAGEABLE for the two things
+            -- it is forbidden from becoming.
+            function(e)
+                return e.matchId == m.id and DAMAGEABLE[e.state] and not e.rescue
+            end,
             function(src, e)
                 if not e.pos then return end   -- not sampled yet (OneSync warning covers why)
 

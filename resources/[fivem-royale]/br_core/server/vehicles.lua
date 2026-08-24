@@ -76,11 +76,24 @@
 -- `CreateVehicle` is an RPC native: the server asks a client to make the entity,
 -- so it comes back up the clone path and DOES raise this event. (Server-side
 -- `CreateVehicleServerSetter`, `CreatePed` and `CreateObjectNoOffset` do not --
--- they are server setters.) The CPR ambulance is meant to be local and
--- non-networked, so it should reach none of this; if it is ever spawned with
--- server-side `CreateVehicle` and its model is one config/vehicles.lua refuses,
--- this file will open a case about whichever player the engine handed ownership
--- to. An ambulance is not on that list. A rescue helicopter would be.
+-- they are server setters.) If a vehicle is ever spawned with server-side
+-- `CreateVehicle` and its model is one config/vehicles.lua refuses, this file
+-- will open a case about whichever player the engine handed ownership to.
+--
+-- ═══ #191's AMBULANCE IS NETWORKED, AND IT REACHES THIS HANDLER ═══
+--
+-- This paragraph used to say the CPR ambulance was "meant to be local and
+-- non-networked, so it should reach none of this". That expectation did not
+-- survive the owner making it destructible (2026-08-23): other players can only
+-- shoot a vehicle that exists on their machine, so the rescue ambulance is
+-- created client-side with `isNetwork = true` and DOES arrive here up the clone
+-- path, owned by the player being rescued.
+--
+-- NOTHING WAS EXEMPTED, AND NOTHING NEEDED TO BE. This handler files only on a
+-- REFUSED model, and an ambulance is not on that list -- which is what the old
+-- paragraph already said, for a different reason. It is counted like any other
+-- client-created vehicle and opens no case. A rescue HELICOPTER would need the
+-- exemption, and BR.Config.VehicleRefusalFor is still the one place to put it.
 --
 -- ═══ NOTHING HERE TOUCHES THE PLAYER, AND NOTHING HERE CANCELS ═══
 --
@@ -1245,6 +1258,22 @@ BR.Sched.every(BR.Roster.sampleIntervalMs(), 'vehicles.roadkill', function()
             -- (not driving) is a meaningful value here rather than a skip,
             -- because it is what ENDS an occupancy.
             occupancySample(src, e, veh, now)
+
+            -- #191, OFF THE SAME SEAT READ AGAIN, and for a reason that has
+            -- nothing to do with anti-cheat: a player getting into an ambulance
+            -- is the ONLY moment this server can learn an ambient one exists.
+            -- Ambient traffic is client-created population, invisible from here
+            -- until somebody sits in it -- so this read is not the cheapest hook
+            -- for the owner's "add it to our list of blips", it is the only one.
+            --
+            -- IT FORMS NO OPINION AND FILES NOTHING. Driving an ambulance is not
+            -- an offence and this line is not part of the detector; it hands a
+            -- handle to the gamemode and returns. Guarded on the function
+            -- existing because this file must keep loading without br_core's
+            -- rescue half, which tools/test_vehicles fixtures rely on.
+            if veh and BR.Rescue and BR.Rescue.noteVehicle then
+                BR.Rescue.noteVehicle(src, e, veh)
+            end
         end)
 
     stat.driving = live

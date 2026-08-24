@@ -242,6 +242,61 @@ BR.Net = {
     -- server's position sample is a quarter of a second stale.
     REVIVED         = 'br:revive:atstart',
 
+    -- The CPR kit's rescue (#191).
+    --
+    -- THE TRAFFIC IS ASYMMETRIC ON PURPOSE, and the asymmetry is the security
+    -- model rather than an accident of what was convenient. Four of these six
+    -- events run server->client, because every DECISION in a rescue is the
+    -- server's: whether it may start, where it goes, when it is stuck, and how
+    -- it ends. The two that run client->server carry no parameters at all -- one
+    -- asks for a rescue and one says the ambulance is a wreck -- so there is
+    -- nothing in either for a modified client to forge. See the top of
+    -- server/rescue.lua for how the wreck report can be trusted on sight.
+    RESCUE_CALL     = 'br:rescue:call',   -- C->S  (no payload) "call a medic"
+    -- S->C  { pickup, dest, endsAt }. Everything the client needs to build the
+    -- ride, decided entirely on the server.
+    RESCUE_BEGIN    = 'br:rescue:begin',
+    -- S->C  { distM }. The server has judged this ambulance stuck -- from its
+    -- OWN position samples, never from anything the client said -- and is
+    -- ordering a re-place. The client carries it out; it never decides it.
+    RESCUE_PLACE    = 'br:rescue:place',
+    -- C->S  (no payload) the ambulance has been destroyed. Believed on sight,
+    -- because the only thing it can do is eliminate the player who sent it.
+    RESCUE_LOST     = 'br:rescue:lost',
+    -- C->S  (no payload) the ambulance reached the drop-off. CHECKED, unlike the
+    -- wreck report: it is refused unless the server has independently watched
+    -- the ambulance travel.
+    RESCUE_ARRIVED  = 'br:rescue:arrived',
+    -- S->C  { delivered, x, y, z, heading }. The one ending, both ways round:
+    -- `delivered = false` means tear the ride down without placing anybody.
+    RESCUE_END      = 'br:rescue:end',
+    -- S->C  { key, x, y }, or `{ key, gone = true }` to take one down. Owner,
+    -- 2026-08-23: "if someone takes it, we need to update it's location on the
+    -- map for other players".
+    --
+    -- KEYED BY AN OPAQUE STRING RATHER THAN BY A PLAYER, because two different
+    -- things end up on this channel and only one of them is a person: a rescue
+    -- in flight (`r:<src>`) and an ambient ambulance somebody was seen driving
+    -- (`v:<entity>`). The client neither parses nor interprets the key -- it is a
+    -- table index and nothing else -- which is what lets #219 add a third
+    -- category without touching either end.
+    --
+    -- BROADCAST TO THE MATCH, WHICH IS A DELIBERATE HOLE IN A RULE THIS PROJECT
+    -- OTHERWISE KEEPS ABSOLUTELY. server/roster.lua withholds `pos` from
+    -- PUBLIC_FIELDS because "broadcasting live positions to every client would
+    -- hand a wallhack to anyone reading the event stream", and that reasoning is
+    -- untouched -- this is ONE player, for the DURATION OF ONE RESCUE, and
+    -- publishing it is the point rather than a side effect. The owner made the
+    -- ambulance destructible so other players could end it, kept the siren on so
+    -- they could find it, and asked for the map to follow it. A rescue is a
+    -- position the game is deliberately announcing.
+    --
+    -- COORDINATES, NOT AN ENTITY. client/squadmates.lua records why: an
+    -- entity-anchored blip dies at the ~424m scope ceiling, and an ambulance
+    -- crossing the map is exactly the case that breaks. AddBlipForCoord fed from
+    -- the server has no such limit.
+    RESCUE_BLIP     = 'br:rescue:blip',
+
     -- Spectate / end
     --
     -- THE SERVER PICKS THE TARGET AND THE CLIENT DRAWS IT, and the split is a

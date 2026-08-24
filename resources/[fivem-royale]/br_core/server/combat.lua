@@ -557,18 +557,69 @@ function BR.Combat.canBeDowned(entry)
     local m = entry.matchId and BR.Server.matches[entry.matchId]
     if not m then return false end
 
-    -- SQUADS ONLY, AND THE GATE IS THE MODE'S OWN FLAG (owner, 2026-08-09).
+    -- ═══ SQUADS BY MODE, SOLOS BY INVENTORY (#191) ═══
     --
-    -- Solo has nobody who could revive you, so a knock today would only be a
-    -- slower death and a worse one. Solo DBNO is wanted LATER and is
-    -- deliberately not this milestone: it only becomes a real state once there
-    -- is something that can pick a lone player up, and that is M8d's hearse
-    -- rescue. When it arrives the switch here is `BR.Mode.SOLO.dbno = true`
-    -- plus a second answer to the question below -- which is why the two
-    -- conditions are separate rather than one "is this a squad match".
-    if not BR.ResolveMode(m.mode).dbno then return false end
+    -- This used to be one gate -- the mode's `dbno` flag -- with a note saying
+    -- solo DBNO would arrive when there was finally something that could pick a
+    -- lone player up. That is the CPR kit, and it arrived, but NOT in the shape
+    -- the note predicted: the note expected `BR.Mode.SOLO.dbno = true`, and that
+    -- is emphatically not the change.
+    --
+    -- `BR.Mode.SOLO.dbno` STAYS FALSE, and the reason is the whole design. The
+    -- mode's flag is a statement about the MODE -- "in this mode, running out of
+    -- health means being knocked down" -- and in solos that is still false for
+    -- almost every player almost all of the time. Flipping it would knock down
+    -- every solo player in every match and leave them on the floor with no kit,
+    -- no mate and no ambulance, which is the "slower death and a worse one" the
+    -- old note was written to avoid. What the kit changes is not the mode; it is
+    -- one player's own death, and only while they are carrying the item.
+    --
+    -- SO THE TWO ARMS ARE GENUINELY DIFFERENT QUESTIONS and are written as such:
+    --
+    --   SQUAD: the mode says yes, and then -- is anybody left who could actually
+    --   come and pick them up? A squad that is entirely down has nobody, so the
+    --   last knock of a wipe is a death.
+    --
+    --   SOLO: the mode says no, and then -- are they carrying a CPR kit? Nobody
+    --   can ever revive them (see below), so the kit is not "somebody could pick
+    --   them up", it is "they can call an ambulance", and the answer is in their
+    --   inventory rather than on the roster.
+    --
+    -- ═══ AND NO SOLO KNOCKED THIS WAY IS REVIVABLE. IT ALREADY COSTS NOTHING ═══
+    --
+    -- #191: "No revive is possible -- the only exits are the item or the
+    -- bleed-out timer." That is enforced by three things this change did not
+    -- have to touch, and it is worth naming them so nobody later "fixes" one:
+    --
+    --   * reviveAllowed() below requires `reviver.squadId == target.squadId`,
+    --     and a solo player has no squadId at all -- so `nil ~= nil` is false and
+    --     every revive request is refused server-side.
+    --   * client/dbno.lua's revive scan returns early on `not me.squadId`, so a
+    --     solo client never even looks for a body to hold a key on.
+    --   * hasStandingMate() is not consulted on this arm, so nothing here
+    --     implies a rescuer exists.
+    --
+    -- The kit therefore makes solo death conditional WITHOUT making solo revive
+    -- possible, which is exactly the pair #191 asked for.
+    --
+    -- ═══ SOLOS ONLY. THE SQUAD LOCKOUT WAS WITHDRAWN ═══
+    --
+    -- Owner, 2026-08-23: "CPR kit only in solos". Earlier the same day he
+    -- described the kit working in SQUADS instead, with a revive lockout as its
+    -- cost -- "when used in squads, immediately prevents that player from being
+    -- revived by any other players for that one use". The later message wins and
+    -- the lockout IS NOT BUILT. A squad player holding a kit falls through the
+    -- squad arm below and gets exactly what they have always got. Recorded here
+    -- because the issue thread still contains both quotes.
+    if BR.ResolveMode(m.mode).dbno then
+        return hasStandingMate(entry)
+    end
 
-    return hasStandingMate(entry)
+    -- ASKED OF THE INVENTORY, and asked LAST, so the ordinary solo death -- the
+    -- overwhelmingly common case -- costs one table lookup on the mode and stops.
+    -- BR.Damage.applyHit calls this before it writes any health, on every lethal
+    -- hit in every match, so the cheap answer has to be on the cheap path.
+    return BR.Rescue ~= nil and BR.Rescue.holdsKit(entry)
 end
 
 --- 0..1 through the revive currently being held on this player.
@@ -827,11 +878,24 @@ end
 ---
 --- Public so `/brrevive` runs the SAME path a player's eight seconds run,
 --- rather than a shortcut that could keep working while the feature does not.
+--- `hp` IS THE THIRD CALLER'S DOING (#191) AND DEFAULTS TO THE OLD BEHAVIOUR.
+--- A squad revive and an admin revive both hand back `dbnoReviveHp`; the CPR
+--- kit's ambulance hands back full health, because it is an ultra-rare item
+--- spent in full on a ride the player could not shoot back during. The
+--- alternative was for server/rescue.lua to call this and then correct the
+--- health afterwards, which is two health writes and a visible flicker between
+--- them -- and the undo below (the bleed deadline, the owed kill, the client's
+--- downed mirror) is what nobody may skip, so routing every revive through here
+--- matters more than keeping the signature short.
+---
 --- @param src integer
 --- @param reviverSrc integer|nil  credited with the revive; nil for an admin
-function BR.Combat.revive(src, reviverSrc)
+--- @param hp number|nil  display health to come back on; default dbnoReviveHp
+function BR.Combat.revive(src, reviverSrc, hp)
     local entry = BR.Roster.get(src)
     if not entry or entry.state ~= BR.PlayerState.DBNO then return end
+
+    hp = hp or (M.dbnoReviveHp or 30)
 
     reviverSrc = reviverSrc or entry.reviverSrc
     local reviver = reviverSrc and BR.Roster.get(reviverSrc) or nil
@@ -842,7 +906,7 @@ function BR.Combat.revive(src, reviverSrc)
     -- owns a finish that is not going to happen.
     entry.dbnoUntil, entry.downedBy = nil, nil
 
-    BR.Roster.update(src, { hp = (M.dbnoReviveHp or 30) + 0.0, armour = 0.0 })
+    BR.Roster.update(src, { hp = hp + 0.0, armour = 0.0 })
     BR.Roster.setState(src, BR.PlayerState.ALIVE)
 
     if reviver then
@@ -853,7 +917,7 @@ function BR.Combat.revive(src, reviverSrc)
     -- client applies it -- the same contract the storm and the validated shot
     -- already use, in absolute form rather than as a delta.
     TriggerClientEvent(BR.Net.HEALTH_SYNC, src,
-        { hp = M.dbnoReviveHp or 30, armour = 0 })
+        { hp = hp, armour = 0 })
     BR.Combat.pushDbno(src)
 
     -- ...AND THE SQUAD HEARS IT, which is the third of the three phases this
@@ -1266,10 +1330,10 @@ end, true)
 
 --- Knock a player down without shooting them.
 ---
---- `brdown <id>` refuses when the rules say it should -- solo, no standing
---- squadmate, already down -- and SAYS WHICH, because "nothing happened" is
---- indistinguishable from a bug and this is the command that will be used to
---- decide whether DBNO is working at all.
+--- `brdown <id>` refuses when the rules say it should -- no standing squadmate
+--- in a squad, no CPR kit in a solo, already down -- and SAYS WHICH, because
+--- "nothing happened" is indistinguishable from a bug and this is the command
+--- that will be used to decide whether DBNO is working at all.
 RegisterCommand('brdown', function(_, args)
     local src = tonumber(args[1])
     if not src then

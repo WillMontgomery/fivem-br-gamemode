@@ -236,8 +236,9 @@ local reportedDeath = false
 ---
 --- Reading the LOCAL player's ped is always legitimate -- it is the one entity a
 --- client can observe directly and authoritatively. This is a report, not a
---- decision: the server decides whether it means elimination, and in squads
---- whether it means downed instead.
+--- decision: the server decides whether it means elimination, or whether it
+--- means downed instead -- in squads, and since #191 in solos too, for a player
+--- carrying a CPR kit.
 BR.Loop.register(BR.Loop.TICK, 'gamerules.death', function()
     local ped = PlayerPedId()
     local dead = IsEntityDead(ped) or IsPedFatallyInjured(ped)

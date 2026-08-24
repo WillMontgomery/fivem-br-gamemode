@@ -126,10 +126,58 @@ BR.Config.Consumables = {
     },
 }
 
+--- THE CPR KIT (#191). AN ORDINARY CONSUMABLE IN EVERY RESPECT BUT ONE: it is
+--- in no rarity bucket, so no world roll can ever produce it.
+---
+--- IT IS THE AIRDROP-SHELF PATTERN, which config/weapons.lua established for the
+--- exclusive weapons and which config/airdrop.lua's header explains in full.
+--- Registered into BR.Config.ConsumableById by hand below, exactly as the
+--- exclusive weapons are registered into WeaponById, and into
+--- BR.Config.ConsumablesByRarity never.
+---
+--- WHY NOT JUST APPEND IT TO BR.Config.Consumables. That array is what the
+--- rarity buckets are built from, and the buckets are what BR.RollLootStack
+--- rolls against -- so a legendary CPR kit in that table is a CPR kit in every
+--- crate on the map that rolls legendary, roughly the rarest-common item in the
+--- game. #191 says ULTRA-RARE and says the weight is NOT YET DECIDED:
+---
+---     "Ultra-rare is stated; the actual weight and which crates can roll it are
+---      not."
+---
+--- So no weight is invented here. The one place it is obtainable is the airdrop,
+--- whose `healing` pool has named `cprkit` by id since 2026-08-21 specifically so
+--- that this day would need no edit to that file -- the resolver there drops ids
+--- that do not resolve, and this one now resolves. When the owner decides the
+--- world weight, the change is to move this row into BR.Config.Consumables and
+--- delete the hand registration; nothing else has to know.
+---
+--- CARRY ONE, STACK ONE. It is the item that decides whether death is final, and
+--- a pocket of three would mean three lives -- which is a different item. The
+--- rescue spends the whole slot (server/rescue.lua takes it with BR.Inv.take),
+--- so the stack size and the carry cap have to agree at 1.
+---
+--- NO `useMs`, `health` OR `armour`, AND THAT IS NOT AN OMISSION. The kit is
+--- never used through the inventory: BR.Net.INV_USE refuses a downed player
+--- outright -- deliberately, so nobody can bandage themselves off the floor --
+--- and this item is only ever reachable while downed. It is spent by pressing
+--- the interact key on the "call a medic" prompt, which is its own path
+--- (BR.Net.RESCUE_CALL) and validates its own conditions. A `useMs` here would
+--- be a channel nothing can start.
+BR.Config.CprKit = {
+    id = 'cprkit', label = 'CPR Kit', plural = 'CPR Kits', rarity = BR.Rarity.LEGENDARY,
+    kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
+    maxStack = 1, carryMax = 1,
+    chestOnly = true,
+}
+
 BR.Config.ConsumableById = {}
 for _, c in ipairs(BR.Config.Consumables) do
     BR.Config.ConsumableById[c.id] = c
 end
+
+-- The hand registration. Resolvable everywhere -- the inventory, the ground
+-- prop, the label, the airdrop pool -- and rollable nowhere.
+BR.Config.ConsumableById[BR.Config.CprKit.id] = BR.Config.CprKit
 
 --- Consumables bucketed by rarity, in authored order. Built once, and built from
 --- an ipairs walk rather than a pairs walk for the same reason the weapon
