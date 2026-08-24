@@ -29,19 +29,29 @@ local function text(x, y, s, scale, r, g, b)
 end
 
 local function drawPerf(y)
+    -- The overlay shows PASSES, STALLS and frame times, and no averaged
+    -- millisecond anywhere. Everything it draws is a number this runtime can
+    -- actually produce: a count, or a gap between frame stamps.
     local bands = BR.Loop.bandStats()
-    text(0.012, y, '~b~BAND (wall clock, trustworthy)', 0.30) y = y + 0.018
+
+    text(0.012, y, '~b~BAND', 0.30) y = y + 0.018
     for _, band in ipairs({ BR.Loop.FRAME, BR.Loop.TICK, BR.Loop.SLOW }) do
         local b = bands[band]
         if b then
-            text(0.012, y, ('  %-6s %6d passes  avg %.2fms  peak %dms')
-                :format(band, b.passes, b.avgMs, b.peakMs), 0.28)
+            text(0.012, y, b.stalls > 0
+                and ('  %-6s %7d passes  ~y~%d stalls, worst %dms')
+                    :format(band, b.passes, b.stalls, b.peakMs)
+                or  ('  %-6s %7d passes'):format(band, b.passes), 0.28)
             y = y + 0.016
         end
     end
 
+    local f = BR.Loop.frameStats()
+    text(0.012, y, ('  frame  %7d samples  worst %dms'):format(f.samples, f.worstMs), 0.28)
+    y = y + 0.016
+
     y = y + 0.006
-    text(0.012, y, '~b~CALLBACK (relative share -- see natives.lua on timing)', 0.30)
+    text(0.012, y, '~b~CALLBACK (calls, stalls -- /brbench for cost)', 0.30)
     y = y + 0.018
 
     local stats = BR.Loop.stats()
@@ -50,11 +60,14 @@ local function drawPerf(y)
         local r, g, b = 255, 255, 255
         if s.suspended then r, g, b = 255, 90, 90
         elseif not s.enabled then r, g, b = 140, 140, 140
-        elseif s.peakMs > 1.0 then r, g, b = 255, 200, 90 end
+        elseif s.stalls > 0 then r, g, b = 255, 200, 90 end
 
-        text(0.012, y, ('  %-22s %-5s %6d  avg %.3f  peak %.3f%s')
-            :format(s.name, s.band, s.calls, s.avgMs, s.peakMs,
-                    s.errors > 0 and ('  err ' .. s.errors) or ''), 0.28, r, g, b)
+        text(0.012, y, s.stalls > 0
+            and ('  %-22s %-5s %7d  ~y~%d stall(s), worst %dms')
+                :format(s.name, s.band, s.calls, s.stalls, s.peakMs)
+            or  ('  %-22s %-5s %7d%s')
+                :format(s.name, s.band, s.calls,
+                        s.errors > 0 and ('  err ' .. s.errors) or ''), 0.28, r, g, b)
         y = y + 0.015
     end
     return y
@@ -159,42 +172,89 @@ RegisterCommand('brperf', function(_, args)
         return
     end
 
-    print('--- band totals (wall clock) ---')
-    for band, b in pairs(BR.Loop.bandStats()) do
-        print(('  %-6s passes %-7d avg %.3fms  peak %dms')
-            :format(band, b.passes, b.avgMs, b.peakMs))
+    -- WHAT THIS COMMAND MAY AND MAY NOT PRINT.
+    --
+    -- It used to print a column of "0.0000ms" and three bands reading "avg
+    -- 0.000ms peak 0ms" over 6391 passes, and that was not a fast gamemode, it
+    -- was a stopwatch reading zero: GetGameTimer is latched once per frame, and
+    -- every one of those measurements started and finished inside one frame.
+    -- The fix is not a better format string -- it is refusing to print a number
+    -- the instrument cannot produce. probeClock() settles that on this machine
+    -- by busy-working until the clock moves, or proving it never does.
+    local probe = BR.Loop.probeClock()
+    local t     = BR.Loop.timing()
+
+    print('--- timing capability ---')
+    if not t.perCallResolvable then
+        print(('  in-frame clock did NOT advance over %d iterations of busy work.')
+            :format(probe.iterations))
+        print('  GetGameTimer is latched once per rendered frame, so an elapsed')
+        print('  time measured WITHIN a frame is exactly 0 -- for a free callback')
+        print('  and for a 9ms one alike. NO PER-CALL COST IS PRINTED BELOW,')
+        print('  because none can be read off this clock.')
+        print('  What the ms below DO mean: a pass whose reading left zero must')
+        print('  have SPANNED A FRAME -- yielded, or blocked the main thread.')
+        print('  That is a stall, and the count and size of those are real.')
+        print('  For cost: /brbench <name>  (per-call, by amplification)')
+        print('            /brab <name>     (in-situ, incl. engine-side draw cost)')
+    else
+        print(('  in-frame clock advanced within %d iterations -- per-call timing')
+            :format(probe.iterations))
+        print('  resolves on this machine, so the ms below are true costs.')
     end
-    -- HONEST UNITS. GetGameTimer resolves to 1ms and a healthy callback costs
-    -- far less, so every sample rounds to zero and the total stays zero -- a
-    -- column of "0.0000ms" that looks like data and is not (user's paste,
-    -- 2026-08-06). Anything that never reached a millisecond is reported as
-    -- "<1ms", which is the truth, and /brbench is how to get a real number.
-    print('--- callbacks (peak cost; "<1ms" means never measurable) ---')
+
+    -- NO AVERAGE OVER CALLS, ANYWHERE BELOW. The ms collected here only accrue
+    -- on a pass that spanned a frame; dividing them by every pass is how
+    -- "avg 0.000ms" came to be printed beside "peak 55ms" in the owner's
+    -- capture, and a tool that contradicts itself on one line is not believed
+    -- on any of the others. Stalls are counted and sized; cost is a different
+    -- command.
+    print('--- band passes ---')
+    for band, b in pairs(BR.Loop.bandStats()) do
+        if b.stalls > 0 then
+            print(('  %-6s passes %-7d  STALLS %d  worst %dms  (mean stall %.1fms)')
+                :format(band, b.passes, b.stalls, b.peakMs, b.avgStallMs))
+        else
+            print(('  %-6s passes %-7d  no pass ever spanned a frame')
+                :format(band, b.passes))
+        end
+    end
+
+    print('--- callbacks ---')
     for _, s in ipairs(BR.Loop.stats()) do
-        local cost = (s.peakMs > 0)
-            and ('total %5dms peak %dms'):format(s.totalMs, s.peakMs)
-            or  ('   <1ms per call, never measurable')
+        local cost = (s.stalls > 0)
+            and ('STALLED %d of %d passes, worst %dms')
+                :format(s.stalls, s.calls, s.peakMs)
+            or  ('never spanned a frame; cost via /brbench or /brab')
         print(('  %-24s %-5s calls %-7d %s%s%s')
             :format(s.name, s.band, s.calls, cost,
                     s.errors > 0 and ('  errors ' .. s.errors) or '',
                     s.suspended and '  SUSPENDED' or (s.enabled and '' or '  disabled')))
     end
-    print('  For a real per-call cost: /brbench <name> [iterations]')
 end, false)
 
---- Time one callback properly, by running it many times back to back.
+--- Per-call cost of one callback, by AMPLIFICATION.
 ---
----   /brbench loot.render          500 iterations
+---   /brbench loot.render          256 calls per burst frame, 9 rounds
 ---   /brbench loot.render 2000
----   /brbench all                  every callback, 200 each
+---   /brbench all                  every callback, 128 each
 ---
---- This exists because /brperf structurally cannot measure a sub-millisecond
---- callback: 1ms timer resolution means each sample rounds to zero and the
---- total never leaves zero. N calls in a row DO exceed a millisecond, so
---- total/N is a real number.
+--- This exists because a frame-stamped GetGameTimer cannot time anything that
+--- begins and ends inside one frame -- the reading is not coarse, it does not
+--- move at all. So instead of timing one call, this makes ONE FRAME do N of
+--- them, measures that frame against an idle one (a gap between frame stamps,
+--- which is the one thing the clock can see), and divides. At N=256 the
+--- resolution is about 4 microseconds per call.
 ---
---- It runs the callbacks for real, out of band. Most are idempotent per-frame
---- draws; read the list before benching "all" on a live match.
+--- It runs the callbacks for real, thousands of times, out of band. Most are
+--- idempotent per-frame draws; read the list before benching "all" on a live
+--- match. It also deliberately makes frames long -- expect a visible stutter
+--- while it runs. That stutter IS the measurement.
+---
+--- Runs on its own transient thread because it must wait for frame boundaries.
+--- That is not a breach of the no-CreateThread rule in main.lua: the rule bans
+--- SUBSYSTEMS from owning a thread on the hot path, and this is tooling that
+--- exists for a few hundred milliseconds when a human asks.
 RegisterCommand('brbench', function(_, args)
     local which = args[1]
     if not which then
@@ -208,28 +268,86 @@ RegisterCommand('brbench', function(_, args)
 
     local iters = tonumber(args[2])
 
-    if which == 'all' then
-        local rows = {}
-        for _, e in ipairs(BR.Loop.names()) do
-            local r = BR.Loop.bench(e.name, iters or 200)
-            if r then rows[#rows + 1] = r end
+    local function report(r, indent)
+        if r.resolved then
+            print(('%s%-24s %-5s %8.4f ms/call   (+%.0fms over %d calls; idle frame %.0fms)')
+                :format(indent, r.name, r.band, r.perCallMs, r.deltaMs, r.iterations, r.baseMs))
+        elseif r.perCallMaxMs then
+            -- A ceiling is still a finding: it is what "too cheap to see" looks
+            -- like when the tool is honest about where its floor is.
+            print(('%s%-24s %-5s   < %.4f ms/call  (%s)')
+                :format(indent, r.name, r.band, r.perCallMaxMs, r.reason))
+        else
+            print(('%s%-24s %-5s   NO MEASUREMENT -- %s')
+                :format(indent, r.name, r.band, r.reason))
         end
-        table.sort(rows, function(a, b) return a.perCallMs > b.perCallMs end)
-        print('--- per-call cost, most expensive first ---')
-        for _, r in ipairs(rows) do
-            print(('  %-24s %-5s %8.4fms/call  (%dms over %d calls)')
-                :format(r.name, r.band, r.perCallMs, r.totalMs, r.iterations))
-        end
-        return
     end
 
-    local r = BR.Loop.bench(which, iters)
-    if not r then
-        print(('[br_core] no such callback: %s   (see /brbench for the list)'):format(which))
+    Citizen.CreateThread(function()
+        if which == 'all' then
+            local rows = {}
+            for _, e in ipairs(BR.Loop.names()) do
+                local r = BR.Loop.bench(e.name, iters or 128, 5)
+                if r then rows[#rows + 1] = r end
+            end
+            table.sort(rows, function(a, b)
+                return (a.perCallMs or a.perCallMaxMs or 0) > (b.perCallMs or b.perCallMaxMs or 0)
+            end)
+            print('--- per-call cost, most expensive first ---')
+            for _, r in ipairs(rows) do report(r, '  ') end
+            return
+        end
+
+        local r = BR.Loop.bench(which, iters)
+        if not r then
+            print(('[br_core] no such callback: %s   (see /brbench for the list)'):format(which))
+            return
+        end
+        report(r, '  ')
+    end)
+end, false)
+
+--- In-situ cost of one callback, by DIFFERENCE.
+---
+---   /brab loot.render             6 blocks of 30 frames on/off
+---   /brab loot.render 10 45
+---
+--- brbench times the LUA CALL. For anything that DRAWS -- a blip, a marker, a
+--- DUI surface, a world-space plate -- much of the cost is paid by the engine
+--- after our function has already returned, and brbench cannot see a penny of
+--- it. This can: it holds the callback off for a block of frames, on for the
+--- next, and compares median frame time. Whatever the difference is, that is
+--- what the callback really costs this client.
+---
+--- Slower and noisier than brbench, and it stops the subsystem while it runs.
+--- Use it on the draw-heavy suspects and brbench on everything else.
+RegisterCommand('brab', function(_, args)
+    local which = args[1]
+    if not which then
+        print('  usage: brab <callbackName> [blocks] [framesPerBlock]')
         return
     end
-    print(('  %s (%s): %.4fms per call -- %dms over %d calls')
-        :format(r.name, r.band, r.perCallMs, r.totalMs, r.iterations))
+    local blocks, frames = tonumber(args[2]), tonumber(args[3])
+
+    Citizen.CreateThread(function()
+        local r = BR.Loop.ab(which, blocks, frames)
+        if not r then
+            print(('[br_core] no such callback: %s   (see /brbench for the list)'):format(which))
+            return
+        end
+        if not r.resolved then
+            print(('  %s: NO MEASUREMENT -- %s'):format(which, r.reason))
+            return
+        end
+        print(('  %s (%s), %d blocks x %d frames:')
+            :format(r.name, r.band, r.blocks, r.blockFrames))
+        print(('    median frame ON  %.1fms'):format(r.onMs))
+        print(('    median frame OFF %.1fms'):format(r.offMs))
+        print(('    -> costs %.2fms per frame'):format(r.deltaMs))
+        if math.abs(r.deltaMs) < 1.0 then
+            print('    (within one clock tick of zero -- treat as "not the problem")')
+        end
+    end)
 end, false)
 
 --- The hitch hunter.
@@ -257,6 +375,10 @@ RegisterCommand('brhitch', function(_, args)
         return
     end
 
+    -- Settle what this machine's clock can resolve BEFORE reading the stats, so
+    -- the verdict below is gated on a fact rather than on a default.
+    BR.Loop.probeClock()
+
     local f = BR.Loop.frameStats()
     if f.samples < 60 then
         print('[br_core] only ' .. f.samples .. ' frames sampled. Let it run a few seconds.')
@@ -276,24 +398,59 @@ RegisterCommand('brhitch', function(_, args)
     end
     print(('  worst frame: %dms'):format(f.worstMs))
 
+    -- THE VERDICT, AND WHEN IT MAY BE GIVEN.
+    --
+    -- This block used to print "no br_core callback measured above 0ms on the
+    -- worst frame -> the stall was very likely NOT br_core." That sentence was
+    -- reached whenever the attribution list was empty -- and on a frame-stamped
+    -- clock the list is ALWAYS empty, because every callback's measured time is
+    -- always exactly 0. So the tool exonerated br_core on every hitch it ever
+    -- saw, and could not tell "our code was innocent" from "our clock is
+    -- broken". It is the same failure as the zeros in /brperf wearing a
+    -- conclusion instead of a number.
+    --
+    -- The list itself is still worth printing and is now strong evidence when
+    -- it has a name in it: a callback only lands there by SPANNING A FRAME,
+    -- which is a stall by definition. What is withheld is the conclusion drawn
+    -- from an EMPTY list, because that rules out only the callbacks that
+    -- stalled across a frame and says nothing about one that burned nine
+    -- milliseconds inside a single frame, which this clock cannot see.
     if f.worstBy and #f.worstBy > 0 then
-        print('--- worst frame, by callback ---')
+        print('--- worst frame, by callback (these SPANNED a frame) ---')
         for i = 1, math.min(5, #f.worstBy) do
             local e = f.worstBy[i]
             print(('  %-24s %-5s %dms'):format(e.name, e.band, e.ms))
         end
-    else
+        print('  A callback here yielded or blocked across a frame boundary.')
+        print('  That is a stall with a name on it -- start here.')
+    elseif f.attributable then
         print('  no br_core callback measured above 0ms on the worst frame')
         print('  -> the stall was very likely NOT br_core. Check other')
         print('     resources, asset streaming, or the engine itself.')
+    else
+        print('--- worst frame, by callback: NO VERDICT ---')
+        print('  No br_core callback spanned a frame, which rules out a stall of')
+        print('  THAT shape and nothing else: this client cannot time a callback')
+        print('  WITHIN a frame (GetGameTimer is latched once per frame), so a')
+        print('  callback that burned 9ms in one frame would look identical to')
+        print('  one that did nothing. The old build printed "very likely NOT')
+        print('  br_core" here, and that did not follow.')
+        print('  To convict or clear a suspect: /brab <name> -- it holds the')
+        print('  callback off for whole frames and compares frame times, which')
+        print('  this runtime CAN measure.')
     end
 
-    print('--- band totals ---')
+    print('--- band passes ---')
     for band, b in pairs(BR.Loop.bandStats()) do
-        print(('  %-6s passes %-7d avg %.3fms  peak %dms')
-            :format(band, b.passes, b.avgMs, b.peakMs))
+        if b.stalls > 0 then
+            print(('  %-6s passes %-7d  STALLS %d  worst %dms')
+                :format(band, b.passes, b.stalls, b.peakMs))
+        else
+            print(('  %-6s passes %-7d  no pass ever spanned a frame')
+                :format(band, b.passes))
+        end
     end
-    print('  (then: /brperf for per-callback totals, /brloop off <name> to bisect)')
+    print('  (then: /brbench <name> for per-call cost, /brab <name> for in-situ)')
 end, false)
 
 RegisterCommand('brloop', function(_, args)
