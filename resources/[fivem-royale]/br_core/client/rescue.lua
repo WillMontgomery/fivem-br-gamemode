@@ -60,9 +60,28 @@ local promptShown = nil
 local function holdingKit()
     local inv = BR.Inv and BR.Inv.local_()
     if not inv or not inv.slots then return false end
+    -- ═══ THE FIELD IS `id`, NOT `item`, AND THAT WAS THE WHOLE BUG ═══
+    --
+    -- Owner, 2026-08-23, after three failed attempts at the prompt: /brcpr
+    -- printed `1  nil` for a slot holding a CPR kit while slots 2-5 printed
+    -- `-`. Two different answers: `-` is an empty slot (they are `false`, see
+    -- inventory.lua:43), `nil` is a slot that EXISTS and whose `item` field
+    -- does not.
+    --
+    -- The client mirror keys a slot's identity as `slot.id`. inventory.lua
+    -- reads it that way everywhere -- `BR.Config.WeaponById[slot.id]`,
+    -- `rec.id ~= slot.id`, `if s.id then` -- and its own report builders
+    -- RENAME it on the way out (`item = slot and slot.id or nil`, twice). The
+    -- server's entry uses `item`. This file read the server's spelling against
+    -- the client's table, so it was nil for every slot, for every item, always.
+    --
+    -- IT NEVER RETURNED TRUE ONCE. Not for the wrong slot, not for the wrong
+    -- selection, not intermittently -- which is why moving the prompt to three
+    -- different places changed nothing: the display was correct every time and
+    -- was being told there was no kit.
     for i = 1, (BR.Config.Loot.slots or 5) do
         local s = inv.slots[i]
-        if s and s.item == 'cprkit' then return true end
+        if type(s) == 'table' and s.id == 'cprkit' then return true end
     end
     return false
 end
@@ -191,7 +210,8 @@ RegisterCommand('brcpr', function()
         print('  slots:')
         for i = 1, (BR.Config.Loot.slots or 5) do
             local sl = inv.slots[i]
-            print(('    %d  %s'):format(i, sl and tostring(sl.item) or '-'))
+            print(('    %d  %s'):format(i,
+                type(sl) == 'table' and tostring(sl.id) or '-'))
         end
     end
 

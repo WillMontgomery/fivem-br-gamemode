@@ -719,7 +719,7 @@ do
     end
 
     -- ═══ INERT WHILE ALIVE ═══
-    slots[1] = { item = 'cprkit' }
+    slots[1] = { id = 'cprkit' }
     frame(30)
     ok(shows() == 0,
         'a living player carrying a kit is offered nothing, for thirty frames',
@@ -829,7 +829,7 @@ do
 
     goesAway('a downed solo who is NOT carrying one is offered nothing',
         function() slots[1] = nil end,
-        function() slots[1] = { item = 'cprkit' } end)
+        function() slots[1] = { id = 'cprkit' } end)
 
     goesAway('and it stops being offered the moment they are back on their feet',
         function() BR.State.me.state = BR.PlayerState.ALIVE end,
