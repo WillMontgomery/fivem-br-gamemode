@@ -796,6 +796,56 @@ local function awaitCollision(obj, x, y, z)
     return done(true)
 end
 
+--- WHERE A GROUND PROBE STARTS ITS SEARCH DOWNWARD, absolute z.
+---
+--- ═══ "HILLSIDE LOOT JUST SPAWNED BELOW THE MAP INSTEAD, NEVER REACHING THE
+---     SURFACE OR ANYTHING" (owner, 2026-08-23) ═══
+---
+--- GetGroundZFor_3dCoord answers with the highest ground BELOW the point it is
+--- given, so a probe started under the surface can only answer with something
+--- lower or with nothing at all. Both callers below started at
+--- `max(e.z + 50, 300)`, and BOTH HALVES OF THAT ARE TOO LOW ON A HILLSIDE:
+---
+---   * `e.z` IS NOT A MEASUREMENT. Scattered POI loot inherits its POI's centre
+---     z verbatim (BR.GenerateLoot writes `s.z = poi.z` for every item in the
+---     disc), and config/map.lua's own header says those coordinates "were
+---     authored from map knowledge, not surveyed in-game". 121 of the 128 POIs
+---     are authored low enough that `e.z + 50` never even reached the 300 floor.
+---   * AND ROADSIDE FILLER HAS NO z AT ALL. The generator writes `s.z = 0.0` for
+---     every filler item, so 300 was the only thing deciding for all of them.
+---
+--- 300 IS NOT HIGH ON THIS MAP, and config/map.lua proves it in its own words:
+--- the battle bus's northern legs carry hand-written z values of 598 and 892
+--- with the note that they "overfly the Chiliad massif, and the default cruise
+--- altitude is inside the rock". The massif has five POIs on it -- chiliad 780,
+--- chiliad_ridge 400, chiliad_n 320, chiliad_trail 250, chiliad_e 160 -- and
+--- every one of them but the summit scattered its loot with a probe starting at
+--- 300-450, into ground the same file says goes to 892.
+---
+--- So on high ground the probe was fired from inside the hill, and it could only
+--- answer with something below the surface or with nothing. Where it found a
+--- lower surface the item was built there, frozen, and its resting height
+--- captured once -- nothing re-probes afterwards, so it stays under the map for
+--- the rest of the match. Where it found nothing the item was never built at
+--- all, which is the same bug wearing the other symptom.
+---
+--- ═══ AND 835254d's COLLISION WAIT IS NOT THE FIX FOR THIS ═══
+---
+--- That commit is about the crate: a container is the one prop here handed to
+--- the physics simulation, and it fell through roofs whose collision had not
+--- streamed. Loose loot takes a different path on purpose -- collision off,
+--- FreezeEntityPosition true, never dynamic -- so gravity never touches it and
+--- there is nothing for a collision wait to prevent. Its height is the probe
+--- plus `restLift`, settled by PlaceObjectOnGroundProperly, and the probe is
+--- what was wrong.
+---
+--- 1200 IS ABOVE EVERY PIECE OF GROUND ON THIS MAP, so the answer is the surface
+--- everywhere. It changes nothing at street level: between 300 and 1200 there is
+--- no geometry over any city block, so the highest ground below either start
+--- point is the same surface. The same number, for the same reason, is
+--- BR.Config.Airdrop.planeProbeFromZ.
+local PROBE_FROM_Z = 1200.0
+
 --- Is a point dry land with something solid under it?
 ---
 --- DECLARED BEFORE groundZ ON PURPOSE. A `local function` referenced above its
@@ -879,7 +929,7 @@ end
 --- @return number|nil y
 --- @return number|nil z
 local function dryPointNear(e)
-    local from   = math.max((e.z or 0.0) + 50.0, 300.0)
+    local from   = math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z)
     local reach  = needsReachable(e)
     for i = 1, 12 do
         local ang = i * 2.39996323   -- golden angle in radians
@@ -926,7 +976,7 @@ end
 local function groundZ(e)
     local now = GetGameTimer()
     if e.gz and now - (e.gzAt or 0) < 10000 then return e.gz end
-    local from = math.max((e.z or 0.0) + 50.0, 300.0)
+    local from = math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z)
     local ok, gz = solidGround(e.x, e.y, from)
 
     e.reachOk = true
@@ -1198,7 +1248,7 @@ local function drain()
                                     awaitCollision(obj, sx, sy, sz)
                                     if not pose then
                                         local ok2, gz2 = solidGround(sx, sy,
-                                            math.max((e.z or 0.0) + 50.0, 300.0))
+                                            math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z))
                                         if ok2 and math.abs(gz2 - gz) > 0.05 then
                                             local S = BR.Loot.settle
                                             S.reseated = S.reseated + 1

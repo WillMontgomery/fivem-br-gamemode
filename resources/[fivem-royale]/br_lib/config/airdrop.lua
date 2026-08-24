@@ -150,8 +150,38 @@ BR.Config.Airdrop = {
     -- off (client/airdrop.lua), so that is a cosmetic clip and never a crash --
     -- but it was not reachable at 300m and it is now. The shorter run-in halves
     -- the stretch of map this can happen over; see `planeSpeed`.
-    descentMs = 30000,
-    altitude  = 170.0,
+    --
+    -- ═══ 30s CAME DOWN TO 15s AND 170 WENT UP TO 225 (owner, 2026-08-23) ═══
+    --
+    -- "fly the cargobob 250m above that... Also please make the loot drop 2x
+    -- the speed."
+    --
+    -- TWO INSTRUCTIONS, AND `altitude` IS WHERE THEY MEET. `planeHeight` is the
+    -- owner's 250 and it is the number the aircraft flies at; the crate leaves
+    -- from `planeAltAbove` beneath it, so the release altitude is what is left:
+    --
+    --     altitude = planeHeight - planeAltAbove = 250 - 25 = 225
+    --
+    -- IT IS WRITTEN OUT AS A LITERAL AND ASSERTED IN THE SUITE rather than
+    -- computed here, because a config file that does arithmetic is a config file
+    -- you cannot read the value of. tools/test_airdrop.lua fails the build if
+    -- these three stop adding up, which is the same guarantee with the number
+    -- still visible.
+    --
+    -- WHAT "2x THE SPEED" COSTS, STATED. The descent is `alt * (1 - progress)`
+    -- against `descentMs`, so halving descentMs halves the fall time: 30s
+    -- becomes 15s, which is the instruction. The rate moves by more than 2x
+    -- because the height moved too -- 170m/30s was 5.7 m/s and 225m/15s is
+    -- 15 m/s. That is faster than a cargo canopy really descends and it is what
+    -- was asked for; it also buys back most of what the higher release cost,
+    -- since the crate is in the air for half as long from a third higher up.
+    --
+    -- AND THE MAP LOSES FIFTEEN SECONDS OF CONVERGING ON THE BLIP, which the
+    -- 2026-08-22 note flagged as the trade the other way ("those two cannot
+    -- both be held"). The blip's own window is unchanged; what shortens is the
+    -- part of it during which the crate is still visibly falling.
+    descentMs = 15000,
+    altitude  = 225.0,
 
     -- ------------------------------------------------------------------
     -- ...AND A CRATE THAT HIGH HAS TO BE ASKED TO DRAW AT ALL
@@ -331,72 +361,86 @@ BR.Config.Airdrop = {
     planeTrailMs = 15000,
 
     -- ------------------------------------------------------------------
-    -- AND IT HAS TO CLEAR WHAT IS BETWEEN IT AND THE DROP
+    -- HOW HIGH IT FLIES, AND WHAT IT HAS TO CLEAR
     -- ------------------------------------------------------------------
     --
-    -- Owner, 2026-08-23: "We also need a way to make sure the cargobob avoids
-    -- terrain, because drops at chili[ad]".
+    -- Owner, 2026-08-23, on the SECOND attempt: "Seems we've not landed on a way
+    -- to stop the cargobob from flying through the terrain? ... We need to get
+    -- the Z for each coord where the drop is happening, fly the cargobob 250m
+    -- above that... Not sure why it's that hard."
     --
-    -- ═══ THE `altitude` NOTE ABOVE PREDICTED THIS AND DID NOTHING ABOUT IT ═══
+    -- ═══ WHY THE FIRST ATTEMPT DID NOTHING, IN ONE PARAGRAPH ═══
     --
-    -- "A ridge more than ~195m above the drop point within that half-kilometre
-    -- is something the Cargobob flies through rather than over." It is worse
-    -- than a ridge: `chiliad_e` is authored at z 160 and the `chiliad` summit
-    -- POI at 780, so a run-in laid across the massif puts the aircraft six
-    -- hundred metres inside it.
+    -- It probed a corridor ahead of the aircraft and lifted it over the highest
+    -- answer. GetGroundZFor_3dCoord only answers for terrain the client has
+    -- STREAMED, the corridor reached up to 810m from the drop point, and the
+    -- only player a drop is guaranteed to have is within `armWithin` -- 200m --
+    -- of it. So it failed open on nearly every frame; and the corridor was
+    -- clipped at tRelease, which meant the one stretch it COULD see was the
+    -- stretch collapsing onto the drop point, where by construction there is
+    -- nothing to clear. The long version is in br_lib/shared/airdrop_solve.lua.
     --
-    -- WHAT CHANGES IS THE HEIGHT AND NOTHING ELSE. The route is still a straight
-    -- line at constant speed passing over the drop point at tRelease -- the
-    -- property the whole file rests on. The aircraft now flies at whichever is
-    -- higher: its nominal altitude, or `planeTerrainClearance` above the highest
-    -- ground still AHEAD of it. See BR.AirdropApproach and BR.AirdropPlaneZ.
+    -- ═══ SO THE HEIGHT IS A CONSTANT AND IT COMES FROM THE MAP FILE ═══
     --
-    -- AND IT COSTS THE RELEASE NOTHING, which is the half worth checking rather
-    -- than trusting: the corridor is measured forward from the aircraft and
-    -- clipped at tRelease, so it collapses onto the drop point as the release
-    -- arrives and the floor drops back under the nominal height. The crate still
-    -- leaves exactly `planeAltAbove` beneath the aircraft.
+    -- Metres above the ground at the drop point, held for the whole pass. The
+    -- ground at the drop point is `rec.gz`, which is the POI's hand-authored z
+    -- out of config/map.lua -- in memory on every machine, identical on all of
+    -- them, and incapable of failing to answer, which is the one property the
+    -- probe could not provide.
     --
-    -- 60m OVER THE HIGHEST GROUND AHEAD. A Cargobob is about 20m long and the
-    -- probe answers bare ground, not the pylon, mast or pine standing on it, so
-    -- this is three airframes of margin and not a tight fit. It is deliberately
-    -- WELL under `altitude` + `planeAltAbove` (195m): a clearance above that
-    -- would raise the aircraft over flat ground too, and the drop point's own
-    -- ground is always in the corridor.
+    -- 250 IS THE OWNER'S NUMBER and it is also `altitude` + `planeAltAbove`; see
+    -- `altitude` for why those three have to agree and where that is asserted.
+    planeHeight = 250.0,
+    --
+    -- ═══ AND A FLOOR UNDER IT, BECAUSE 250 OVER THE DROP POINT IS NOT 250 OVER
+    --     THE ROUTE ═══
+    --
+    -- Checked against the real table rather than worried about. Over all 128
+    -- authored POIs, against a pass covering planeSpeed * (planeLeadMs +
+    -- planeTrailMs) = 540m of run-in plus 675m of trail, exactly two drop points
+    -- have a HIGHER authored POI inside that distance:
+    --
+    --   chiliad_ridge  z 400 -> flying 650, and `chiliad` (z 780) 391m away:
+    --                  130m inside the summit.
+    --   paleto         z  31 -> flying 281, and `chiliad_n` (z 320) 304m away:
+    --                  39m inside it.
+    --
+    -- Two in 128, and one of them is Chiliad, which is the case the owner
+    -- reported. So the aircraft flies at whichever is higher: `planeHeight` over
+    -- the drop point, or `planeTerrainClearance` over the highest AUTHORED POI
+    -- its flight line passes. See BR.AirdropRunInTop and BR.AirdropFlightZ.
+    --
+    -- 60m OVER THAT POI. A Cargobob is about 20m long and an authored z is a
+    -- landmark's nominal height, not the mast or the pine standing on it, so
+    -- this is three airframes of margin. It is deliberately WELL under
+    -- `planeHeight`: a clearance above 250 would raise the aircraft over its own
+    -- drop point too, since that POI is always on its own flight line.
     planeTerrainClearance = 60.0,
-    -- How far ahead the corridor looks, in MILLISECONDS OF FLIGHT rather than
-    -- metres -- so it is a fixed slice of the run-in whatever `planeSpeed` is,
-    -- exactly as `planeLeadMs` is. 6s of the 12s run-in, which is 270m at the
-    -- current speed.
-    --
-    -- LONGER IS NOT BETTER. GetGroundZFor_3dCoord is documented to fail beyond
-    -- render distance and the far end of the corridor is already the far end of
-    -- what a client near the drop can answer for; samples that fail are skipped,
-    -- so a longer horizon buys mostly nothing and costs probes.
-    planeLookAheadMs      = 6000,
-    -- Points along it, ends included. Eight over 270m is a sample every ~39m --
-    -- finer than the aircraft's own length, which is the resolution that
-    -- matters, since anything narrower than the airframe it can fly through
-    -- without touching.
-    planeProbeSamples     = 8,
-    -- How often the corridor is re-probed. The ground probe is slow enough that
-    -- config/storm.lua caches it at 1Hz for the wall; 4Hz over 8 points for at
-    -- most 27 seconds once a match is the cheapest version of this that still
-    -- reads as flying rather than stepping.
-    planeProbeMs          = 250,
-    -- ...and how long a corridor that stops answering keeps its last verdict.
-    -- FAIL-OPEN, BUT NOT INSTANTLY: a probe that blinks out for one pass must
-    -- not drop the aircraft into the ridge it just measured, and a probe that
-    -- has been silent for two seconds is not describing anything any more.
-    planeProbeHoldMs      = 2000,
-    -- WHERE THE PROBE STARTS ITS SEARCH DOWNWARD, as an ABSOLUTE z, and it is
-    -- the one number here that cannot be derived from the drop.
+    -- How far off the flight line a POI still counts, ON TOP OF its own radius.
+    -- The radius is the real measure -- an authored z describes the ground
+    -- across a named place, and lsia's 400m disc really is 400m of z-20 tarmac
+    -- -- and this is the slack on either side of it, so a route that grazes a
+    -- summit's edge is still treated as crossing it.
+    planeCorridorPad      = 100.0,
+    -- WHERE A GROUND PROBE STARTS ITS SEARCH DOWNWARD, as an ABSOLUTE z.
     -- GetGroundZFor_3dCoord returns the highest ground BELOW the point it is
-    -- given, so probing from the aircraft's own altitude would find nothing at
-    -- all over a summit that stands above it -- the exact case this feature
-    -- exists for. 1200 clears Mount Chiliad (~1100m), which is the highest
-    -- ground on this map.
+    -- given, so a probe started under the surface finds a lower one or nothing
+    -- at all. 1200 clears Mount Chiliad (~1100m), which is the highest ground on
+    -- this map, so it is above everything everywhere.
+    --
+    -- IT IS NO LONGER THE AIRCRAFT'S. Nothing about the flight is probed any
+    -- more; this is where client/airdrop.lua's groundOf starts, and that used to
+    -- start at `rec.gz + rec.alt` -- the authored POI height plus the release
+    -- altitude, which for a first-pass z on a hillside is a start point INSIDE
+    -- the hill. Same bug as the one br_core/client/loot.lua's 300.0 floor had,
+    -- found the same day and fixed the same way.
     planeProbeFromZ       = 1200.0,
+    -- How often the ground under the drop point is re-probed while the crate is
+    -- in the air, in the thread that follows the descent -- NEVER on the render
+    -- pass, which is where it used to live. 1Hz is what config/storm.lua caches
+    -- the wall's probe at, for the same reason: the answer improves as the match
+    -- closes on the blip, and it does not improve sixty times a second.
+    groundRefreshMs       = 1000,
 
     -- ------------------------------------------------------------------
     -- AND THE OTHER CURE FOR "I COULD BARELY HEAR IT"

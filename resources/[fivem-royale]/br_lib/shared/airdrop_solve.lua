@@ -580,6 +580,12 @@ end
 
 --- Metres above the ground at `now`. Linear, because a canopy falls at
 --- terminal velocity -- there is no acceleration to model.
+---
+--- THE PURE FALL CURVE, and since 2026-08-23 the client no longer draws the
+--- crate off it directly -- see BR.AirdropCrateZ below and the note on its two
+--- anchors. It stays because it is the honest statement of "how far above its
+--- landing point is it", which is what every predicate and every test about the
+--- descent is really asking.
 --- @param rec table|nil
 --- @param now number
 --- @return number
@@ -588,16 +594,58 @@ function BR.AirdropHeightAt(rec, now)
     return (rec.alt or 0.0) * (1.0 - BR.AirdropProgress(rec, now))
 end
 
+--- Where the crate actually is, as an ABSOLUTE z.
+---
+--- ═══ TWO ANCHORS, AND THAT IS THE WHOLE OF IT ═══
+---
+--- It LEAVES at `rec.gz + rec.alt` -- the POI's hand-authored height plus the
+--- release altitude. Authored, so it is the same number on every machine with
+--- nothing probed, and so an aircraft flying at `rec.gz + planeHeight` is
+--- exactly `planeAltAbove` above the box on the frame it lets go, by
+--- arithmetic rather than by luck.
+---
+--- It ARRIVES at `groundZ` -- the client's own probe of the surface it has to
+--- come to rest on. That end has to be measured: the authored z is a landmark's
+--- nominal height and the crate lands on whatever is really under (x, y),
+--- rooftop included (see client/airdrop.lua's groundOf, and 835254d for what
+--- happens when a height is chosen on an opinion instead).
+---
+--- BOTH ENDS USED TO BE THE PROBE, which is how a crate came to hang below the
+--- Cargobob that dropped it: the aircraft flew off one number and the crate off
+--- another, and they differ by however wrong config/map.lua's first-pass z is at
+--- that POI. The release end now pays no error at all, and the landing end pays
+--- all of it -- which is the right way round, because only one of those two
+--- moments is watched from ten metres away.
+---
+--- A nil `groundZ` means "this client has no probe answer yet" and falls back to
+--- the authored height, exactly as every other reader of `rec.gz` does.
+--- @param rec table|nil
+--- @param now number
+--- @param groundZ number|nil  absolute z of the surface under (rec.x, rec.y)
+--- @return number
+function BR.AirdropCrateZ(rec, now, groundZ)
+    if not rec then return 0.0 end
+    local releaseZ = (rec.gz or 0.0) + (rec.alt or 0.0)
+    local gz = (type(groundZ) == 'number') and groundZ or (rec.gz or 0.0)
+    return gz + (releaseZ - gz) * (1.0 - BR.AirdropProgress(rec, now))
+end
+
 -- ---------------------------------------------------------------------------
 -- The plane
 -- ---------------------------------------------------------------------------
 
 --- Is the delivery plane in the world at `now`?
 ---
---- From the announcement until `trailMs` after the release. Deliberately NOT
---- until the crate lands: the aircraft's job is over the moment the box leaves
---- it, and a Titan orbiting the drop for another half-minute is scenery arguing
---- with the fight underneath it.
+--- From the announcement until `trailMs` after the release. Never longer: the
+--- aircraft's job is over the moment the box leaves it, and one orbiting the
+--- drop is scenery arguing with the fight underneath it.
+---
+--- IT USED TO GO HALF A MINUTE BEFORE THE CRATE LANDED AND NOW IT GOES WITH IT.
+--- `descentMs` was halved to 15000 on 2026-08-23 ("make the loot drop 2x the
+--- speed") and `planeTrailMs` is 15000, so the two windows close on the same
+--- instant. Nothing here depends on which came first -- by then the Cargobob is
+--- 675m away and 250m up -- but the coincidence is real and the suite asserts
+--- it, so a change to either number is a change somebody has to look at.
 --- @param rec table|nil
 --- @param now number
 --- @param cfg table|nil  BR.Config.Airdrop
@@ -661,99 +709,211 @@ function BR.AirdropPlaneAt(rec, now, cfg)
 end
 
 -- ---------------------------------------------------------------------------
--- ...AND WHAT IS BETWEEN IT AND THE DROP
+-- ...AND WHAT IS UNDER IT, ANSWERED ONCE, OUT OF THE MAP FILE
 -- ---------------------------------------------------------------------------
 --
--- Owner, 2026-08-23: "We also need a way to make sure the cargobob avoids
--- terrain, because drops at chili[ad]".
+-- Owner, 2026-08-23, testing 56c0ba7 -- which already contained the first
+-- attempt at this: "Seems we've not landed on a way to stop the cargobob from
+-- flying through the terrain? On 56c0ba7 it's definitely still doing that...
+-- We need to get the Z for each coord where the drop is happening, fly the
+-- cargobob 250m above that, and drop all flares and loot at the same time as
+-- soon as it flies over the point. Not sure why it's that hard."
 --
--- THE FLIGHT PLAN IS FLAT AND IT IS PINNED TO THE WRONG GROUND. `rec.alt` and
--- `planeAltAbove` are both measured from the ground AT THE DROP POINT, so the
--- aircraft holds one absolute height for the whole run-in: groundAtDrop + 195.
--- Nothing in it has ever looked at what the run-in crosses. Site a drop at
--- `chiliad_e` (authored z 160) and the corridor behind it climbs into a massif
--- whose summit POI is authored at 780 -- the Cargobob is six hundred metres
--- inside the rock, and the only reason it has never been a crash is that
--- client/airdrop.lua switches its collision off.
+-- ═══ WHY THE FIRST ATTEMPT FAILED, WHICH HAD TO BE ANSWERED BEFORE ANYTHING
+--     REPLACED IT ═══
 --
--- ═══ THE FIX IS A FLOOR UNDER THE FLIGHT PLAN, NOT A NEW FLIGHT PLAN ═══
+-- bff7922 probed a CORRIDOR: eight GetGroundZFor_3dCoord samples spread over
+-- the `planeLookAheadMs` of flight still ahead of the aircraft, lifting it
+-- `planeTerrainClearance` above the highest answer, failing open when nothing
+-- answered. The arithmetic was right. Two facts about WHERE it was asking kill
+-- it anyway, and they compound into a feature that could never fire.
 --
--- The route stays a straight line at constant speed passing over the drop point
--- at tRelease -- that is what makes every client's aircraft the same pure
--- function of the record and the clock. What changes is the HEIGHT, and only
--- upward: the aircraft flies at whichever is higher, its nominal altitude or a
--- fixed clearance above the highest ground still ahead of it.
+--   1. THE PROBE ONLY ANSWERS FOR TERRAIN THIS CLIENT HAS STREAMED, and the
+--      aircraft spends its run-in over ground nobody is standing on. The run-in
+--      is planeSpeed * planeLeadMs = 540m long, the corridor looked 270m
+--      further ahead again, and the only player a drop is guaranteed to have is
+--      within `armWithin` -- 200m -- of the drop point. So for the first half
+--      of every pass it was asking about ground up to 810m away from the one
+--      person who could have made it answer. Every sample failed, `top` stayed
+--      nil, and BR.AirdropPlaneZ returned the nominal height. The fail-open
+--      path was not the rare case it was written for; it was the flight.
 --
--- IT IS EXACT AT THE RELEASE BY CONSTRUCTION, which is the property that stops
--- this from costing the drop its geometry. The corridor below is measured from
--- where the aircraft IS to where it will be `horizonMs` later, clipped at
--- tRelease -- so as the release approaches the corridor collapses onto the drop
--- point, the highest ground in it is the ground under the crate, and the floor
--- falls back below the nominal altitude. The crate leaves the aircraft exactly
--- `planeAltAbove` beneath it however high the ridge behind them was.
+--   2. AND THE CLIP GUARANTEED THAT WHAT IT COULD ANSWER FOR NEEDED NO LIFT.
+--      The corridor was clipped inclusively at tRelease, and the commit message
+--      presented that as the feature: "it collapses onto the drop point as the
+--      release arrives". It does. The drop point is an authored street-level
+--      POI, and it is the LOWEST point on the route by construction. So the
+--      corridor only came inside streaming range as it shrank onto the one
+--      place with nothing to clear. The window in which the probe could see and
+--      the window in which it had something to say never overlapped.
 --
--- THE PROBING IS THE CLIENT'S (GetGroundZFor_3dCoord is a client native, the
--- same rule `rec.alt` is written under), and it FAILS OPEN: a corridor nothing
--- answers for leaves the aircraft at its nominal height, which is exactly
--- today's behaviour.
+-- There was no third bug under those two. Nothing was mis-applied, nothing
+-- raced, and the height really was written to the entity the aircraft follows.
+-- The answer was "nothing to clear" on every frame it ran, and it was wrong on
+-- every frame it ran.
+--
+-- ═══ SO NOTHING IS PROBED FOR THIS AT ALL ANY MORE ═══
+--
+-- The owner's prescription is both simpler and the one that cannot fail this
+-- way: resolve the ground at the drop point ONCE, fly a CONSTANT height above
+-- it, and release everything the instant the aircraft is over the point.
+--
+-- The ground at the drop point is `rec.gz`, and `rec.gz` is the POI's
+-- hand-authored z out of config/map.lua. It is not a measurement, and for THIS
+-- job it does not need to be: it is in a file both ends already have, it is the
+-- same number on every machine, and no amount of distance or streaming can stop
+-- it answering. That is precisely the property the probe could not supply, and
+-- it is why the drop point's height is taken from the map file while the
+-- CRATE's landing height is still probed (see BR.AirdropCrateZ) -- the two
+-- questions want opposite trade-offs and were being answered by one number.
+--
+-- ═══ AND A FLOOR IS STILL NEEDED. THAT IS A CHECKED CLAIM, NOT A WORRY ═══
+--
+-- A constant 250m over the DROP POINT is not 250m over everything the pass
+-- crosses, and the map file can say by how much. Over all 128 authored POIs,
+-- against a pass covering planeSpeed * (planeLeadMs + planeTrailMs) = 540m of
+-- run-in plus 675m of trail, exactly two drop points have a HIGHER authored POI
+-- inside that distance:
+--
+--   chiliad_ridge  z 400 -> flying 650, and `chiliad` (z 780) is 391m away.
+--                  130m INSIDE the summit.
+--   paleto         z  31 -> flying 281, and `chiliad_n` (z 320) is 304m away.
+--                  39m inside it.
+--
+-- Two in 128 is rare, and it is also exactly the case the owner reported, so
+-- the floor stays. What changes is where it comes from: the same authored
+-- table, read once, rather than a probe read sixty times a second -- so the
+-- floor is a pure function of the record and the config, identical on every
+-- client, and it is known before the aircraft is built rather than discovered
+-- while it flies.
+--
+-- WHAT THIS FLOOR CANNOT SEE is unnamed ground: a ridge with no POI on it is
+-- not in the table and does not lift anything. That is a real limit and it is
+-- stated rather than papered over -- but it is strictly better than the probe
+-- it replaces, which could not see the named ground either.
 
---- The points to ground-probe for an aircraft's approach at `now`.
+--- The straight line of map this aircraft passes over, end to end.
 ---
---- FROM WHERE IT IS TO WHERE IT IS GOING, never the whole route: the ridge
---- behind the aircraft is not its problem, and a corridor that kept it would
---- hold the Cargobob high all the way to a drop point at sea level.
+--- BOTH ENDS OF THE WHOLE PASS, not a look-ahead. The old corridor deliberately
+--- forgot the ground behind the aircraft, which was correct for a floor
+--- recomputed every frame and is wrong for one solved once -- a height chosen
+--- before takeoff has to cover everything the aircraft will ever be over.
 ---
---- CLIPPED AT tRelease ON THE INBOUND LEG. That clip is what makes the lift
---- vanish exactly when the crate leaves -- see the block above. After the
---- release the horizon runs full length again, because the aircraft still has
---- `planeTrailMs` of flying to do and the ridge in FRONT of it is real.
+--- AND IT INCLUDES THE TRAIL, which the old one only reached by accident. The
+--- Cargobob keeps flying for `planeTrailMs` after the release: 675m at the
+--- current numbers, further than the 540m run-in. Half the exposure was past
+--- the drop point the whole time.
 --- @param rec table|nil
---- @param now number
---- @param cfg table|nil     BR.Config.Airdrop
---- @param samples integer|nil  how many points, ends included (min 2)
---- @param horizonMs number|nil how far ahead to look, in ms of flight
---- @return table[]  array of { x, y }
-function BR.AirdropApproach(rec, now, cfg, samples, horizonMs)
-    local out = {}
-    if not rec then return out end
+--- @param cfg table|nil  BR.Config.Airdrop
+--- @return number x1
+--- @return number y1
+--- @return number x2
+--- @return number y2
+function BR.AirdropRunIn(rec, cfg)
+    if not rec then return 0.0, 0.0, 0.0, 0.0 end
     cfg = cfg or {}
 
-    local n = math.tointeger(samples or 8) or 8
-    if n < 2 then n = 2 end
+    -- GTA forward for a heading: (-sin, cos). Same convention, same reason, as
+    -- BR.AirdropPlaneAt and BR.AirdropOffsetAt -- and it has to be the same
+    -- one, because this segment is where BR.AirdropPlaneAt will actually put
+    -- the aircraft.
+    local a = math.rad(rec.heading or 0.0)
+    local fx, fy = -math.sin(a), math.cos(a)
 
-    -- CLIPPED AT tRelease INCLUSIVELY -- `<=`, not `<`. On the frame of the
-    -- release itself the corridor has to be a POINT, or the terrain in front of
-    -- the aircraft could still be lifting it on the one frame where the crate
-    -- leaves and the gap between them has to be exactly `planeAltAbove`.
-    local tRel = rec.tRelease or rec.tStart or 0.0
-    local tEnd = now + (horizonMs or 6000)
-    if now <= tRel and tEnd > tRel then tEnd = tRel end
+    local sp   = cfg.planeSpeed or 45.0
+    local back = sp * ((cfg.planeLeadMs or 12000) / 1000.0)
+    local fwd  = sp * ((cfg.planeTrailMs or 15000) / 1000.0)
+    local x, y = rec.x or 0.0, rec.y or 0.0
 
-    for i = 0, n - 1 do
-        local t = now + (tEnd - now) * (i / (n - 1))
-        local x, y = BR.AirdropPlaneAt(rec, t, cfg)
-        out[#out + 1] = { x = x, y = y }
-    end
-    return out
+    return x - fx * back, y - fy * back, x + fx * fwd, y + fy * fwd
 end
 
---- How high the aircraft actually flies, given what is under its approach.
+--- The highest AUTHORED ground the pass crosses, as an absolute z.
 ---
---- UPWARD ONLY. `nominalZ` is the flight plan and this can never lower it: an
---- aircraft that dipped toward a valley would arrive under the crate's release
---- height, and the crate's height is the record's business and nobody else's.
+--- A POI counts when the flight line passes within its own radius plus
+--- `planeCorridorPad`. The radius is the right measure and not a fixed number:
+--- the authored z describes the ground across a named place, and lsia's 400m
+--- disc really is 400m of z-20 tarmac while a 200m one is not.
 ---
---- A nil `terrainZ` is "nothing answered", not "no terrain". It returns the
---- nominal height -- the behaviour this file had before terrain was considered
---- at all -- because a probe that cannot see must never be read as a probe that
---- saw flat ground.
---- @param nominalZ number       absolute z the flight plan wants
---- @param terrainZ number|nil   highest ground along the approach, absolute
+--- nil MEANS "NOTHING NAMED IS NEAR THE ROUTE", which over most of this map is
+--- the true answer and not a failure. There is no fail-open here to get wrong,
+--- because there is nothing that can fail: the table is in memory.
+--- @param rec table|nil
+--- @param pois table|nil    BR.Config.Map.POIs
+--- @param cfg table|nil     BR.Config.Airdrop
+--- @return number|nil z     absolute, or nil
+--- @return string|nil id    which POI it was, for the diagnostic
+function BR.AirdropRunInTop(rec, pois, cfg)
+    if not rec or type(pois) ~= 'table' then return nil end
+    cfg = cfg or {}
+
+    local pad = cfg.planeCorridorPad or 100.0
+    local x1, y1, x2, y2 = BR.AirdropRunIn(rec, cfg)
+    local dx, dy = x2 - x1, y2 - y1
+    local len2 = dx * dx + dy * dy
+
+    local top, id = nil, nil
+    for _, p in ipairs(pois) do
+        if type(p) == 'table'
+           and type(p.x) == 'number' and type(p.y) == 'number' then
+            -- Distance to the SEGMENT, not to the infinite line and not to the
+            -- drop point: a summit half a kilometre off the bearing is not
+            -- something this aircraft flies through, and lifting for it would
+            -- be the permanent altitude increase this feature must not become.
+            local t = 0.0
+            if len2 > 0.0 then
+                t = BR.Clamp(((p.x - x1) * dx + (p.y - y1) * dy) / len2,
+                             0.0, 1.0)
+            end
+            if BR.Dist(p.x, p.y, x1 + dx * t, y1 + dy * t)
+               <= (p.radius or 0.0) + pad then
+                local z = p.z or 0.0
+                if not top or z > top then top, id = z, p.id end
+            end
+        end
+    end
+    return top, id
+end
+
+--- The ONE height this aircraft flies at, absolute z, for the whole pass.
+---
+--- A CONSTANT (owner, 2026-08-23: "fly the cargobob 250m above that"). Solved
+--- from the record and the map file, so it can be worked out before the
+--- Cargobob exists and never has to be revisited -- which is the difference
+--- between an aircraft that flies and one that steps upward whenever a probe
+--- changes its mind.
+--- @param rec table|nil
+--- @param pois table|nil  BR.Config.Map.POIs
+--- @param cfg table|nil   BR.Config.Airdrop
+--- @return number z       absolute
+--- @return string|nil id  the POI that raised it, or nil if nothing did
+function BR.AirdropFlightZ(rec, pois, cfg)
+    if not rec then return 0.0 end
+    cfg = cfg or {}
+
+    local nominal = (rec.gz or 0.0) + (cfg.planeHeight or 250.0)
+    local top, id = BR.AirdropRunInTop(rec, pois, cfg)
+    local z = BR.AirdropPlaneZ(nominal, top, cfg.planeTerrainClearance)
+    if z <= nominal then return z, nil end
+    return z, id
+end
+
+--- The higher of the flight plan and a floor under it.
+---
+--- UPWARD ONLY. `nominalZ` is what the drop wants and this can never lower it:
+--- an aircraft that dipped toward a valley would arrive under the crate's
+--- release height, and that height is the record's business and nobody else's.
+---
+--- A nil `floorZ` is "nothing to clear". It returns the nominal height, which
+--- is what happens everywhere on this map except the two POIs named in the
+--- block above.
+--- @param nominalZ number     absolute z the flight plan wants
+--- @param floorZ number|nil   highest ground under the pass, absolute
 --- @param clearance number|nil  metres to hold above it
 --- @return number z
-function BR.AirdropPlaneZ(nominalZ, terrainZ, clearance)
-    if type(terrainZ) ~= 'number' then return nominalZ end
-    local floor = terrainZ + (clearance or 60.0)
+function BR.AirdropPlaneZ(nominalZ, floorZ, clearance)
+    if type(floorZ) ~= 'number' then return nominalZ end
+    local floor = floorZ + (clearance or 60.0)
     if floor > nominalZ then return floor end
     return nominalZ
 end

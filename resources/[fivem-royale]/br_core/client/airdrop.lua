@@ -101,7 +101,20 @@ local function isTrue(v)
 end
 
 --- [n] = { rec, obj, chute, flares, plane, pilot, blip, blipMini, gz, gzAt,
----         spawning, flying, warned, audio }
+---         spawning, flying, warned, audio, assetsTried, primed, flaresReady,
+---         groundTried, planeZ, planeZFrom, roof }
+---
+--- `planeZ` IS THE WHOLE OF THE FLIGHT PLAN'S HEIGHT and `planeZFrom` is which
+--- authored POI raised it, or nil for "nothing did". Solved once by flightZ()
+--- and dropped by dropPlane(); there is no per-frame terrain state here any
+--- more, which is the 2026-08-23 rework in one line of the record's shape.
+---
+--- `primed` IS "THE RELEASE FRAME WILL NOT HAVE TO STREAM ANYTHING" and
+--- `flaresReady` is "place() may call into client/flares.lua". Both are set by
+--- primeAssets, which runs at the ANNOUNCEMENT -- minutes of headroom -- because
+--- every path into flares.lua ends at a bounded stream loop with a Citizen.Wait
+--- in it, and a wait on the render path is the spanned frame /brperf caught at
+--- 55ms. `assetsTried` is the one-shot latch and is never cleared.
 ---
 --- `blip` AND `blipMini` ARE TWO REAL BLIPS FOR ONE DROP, restricted to the big
 --- map and to the minimap respectively so each can carry its own scale (owner,
@@ -125,10 +138,10 @@ local function dropPlane(d)
     if d.pilot and isTrue(DoesEntityExist(d.pilot)) then DeleteEntity(d.pilot) end
     if d.plane and isTrue(DoesEntityExist(d.plane)) then DeleteEntity(d.plane) end
     d.plane, d.pilot = nil, nil
-    -- THE TERRAIN FLOOR GOES WITH THE AIRCRAFT IT WAS MEASURED FOR. It is a
-    -- corridor ahead of a thing that no longer exists; leaving it set would hand
-    -- a stale ridge to whatever aircraft came next.
-    d.terrainZ, d.terrainAt, d.terrainFresh = nil, nil, nil
+    -- THE FLIGHT HEIGHT GOES WITH THE AIRCRAFT IT WAS SOLVED FOR. It is a
+    -- constant belonging to one pass over one drop point; leaving it set would
+    -- hand a stale height to whatever aircraft came next.
+    d.planeZ, d.planeZFrom = nil, nil
 end
 
 local function dropProps(d)
@@ -145,6 +158,19 @@ local function dropProps(d)
     if d.chute and isTrue(DoesEntityExist(d.chute)) then DeleteEntity(d.chute) end
     if d.obj and isTrue(DoesEntityExist(d.obj)) then DeleteEntity(d.obj) end
     d.chute, d.obj = nil, nil
+
+    -- AND THE MODELS PRIMED FOR THEM. primeAssets holds the crate and canopy
+    -- resident from the ANNOUNCEMENT to the release, so that the release frame
+    -- does not have to stream -- which means somebody has to hand them back, and
+    -- the moment the props are gone is that moment. `primed` goes with them; the
+    -- `assetsTried` latch does NOT, because a drop is never re-primed after it
+    -- has landed and clearing it would put the render loop back on a streaming
+    -- request every frame until the blip expired.
+    if SetModelAsNoLongerNeeded then
+        SetModelAsNoLongerNeeded(GetHashKey(A.crateProp or 'prop_box_wood05a'))
+        SetModelAsNoLongerNeeded(GetHashKey(A.chuteModel or 'p_cargo_chute_s'))
+    end
+    d.primed = false
 end
 
 local function removeDrop(n)
@@ -388,6 +414,32 @@ local function makePart(model, x, y, z, scale)
     return obj
 end
 
+--- The ONE height this aircraft flies at, absolute z, solved once and kept.
+---
+--- ═══ "FLY THE CARGOBOB 250M ABOVE THAT" (owner, 2026-08-23) ═══
+---
+--- Everything about this is deliberately dull. It is `rec.gz + planeHeight`,
+--- raised if the flight line passes a higher authored POI, computed the first
+--- time it is asked and never again for this pass. There is no probe in it, so
+--- there is nothing to fail, nothing to cache against a clock, nothing to blink
+--- out and nothing to hold open. The whole of the 2026-08-23 terrain feature
+--- that did not work is gone, and the argument for why it could not have worked
+--- is in br_lib/shared/airdrop_solve.lua.
+---
+--- CONSTANT IS ALSO WHAT MAKES THE RELEASE EXACT. The crate leaves at
+--- `rec.gz + rec.alt` (BR.AirdropCrateZ) and the aircraft holds
+--- `rec.gz + planeHeight`, and `altitude + planeAltAbove == planeHeight` is
+--- asserted in the suite -- so the gap on the release frame is `planeAltAbove`
+--- by arithmetic, not by a corridor collapsing onto a point at the right moment.
+--- @param d table
+--- @return number  absolute z
+local function flightZ(d)
+    if d.planeZ then return d.planeZ end
+    local z, from = BR.AirdropFlightZ(d.rec, (BR.Config.Map or {}).POIs, A)
+    d.planeZ, d.planeZFrom = z, from
+    return z
+end
+
 --- Build the delivery plane and the pilot who keeps its engine turning.
 ---
 --- LOCAL, NON-NETWORKED, AND FLOWN BY COORDINATE WRITE, exactly as
@@ -451,9 +503,11 @@ local function spawnPlane(d)
         end
         if not d.rec then d.flying = false return end
 
-        local px, py, pz = BR.AirdropPlaneAt(d.rec, BR.Clock.now(), A)
-        local gz = d.gz or d.rec.gz or 0.0
-        local plane = CreateVehicle(model, px, py, gz + pz,
+        -- BUILT AT THE HEIGHT IT WILL FLY AT, not at a nominal one the render
+        -- pass then corrects. flightZ is a constant for this drop, so there is
+        -- no first frame at the wrong altitude to see.
+        local px, py = BR.AirdropPlaneAt(d.rec, BR.Clock.now(), A)
+        local plane = CreateVehicle(model, px, py, flightZ(d),
             d.rec.heading or 0.0, false, false)
         SetModelAsNoLongerNeeded(model)
         if not plane or plane == 0 then d.flying = false return end
@@ -470,7 +524,7 @@ local function spawnPlane(d)
         -- worth losing the flyover over.
         local pilotModel = GetHashKey(A.planePilot or 's_m_m_pilot_01')
         if loadModel(pilotModel) and isTrue(DoesEntityExist(plane)) then
-            local pilot = CreatePed(4, pilotModel, px, py, gz + pz,
+            local pilot = CreatePed(4, pilotModel, px, py, flightZ(d),
                 d.rec.heading or 0.0, false, false)
             SetModelAsNoLongerNeeded(pilotModel)
             if pilot and pilot ~= 0 then
@@ -531,6 +585,60 @@ end
 --- light a new one on a cadence as it goes. What that leaves behind is a
 --- burning column down the descent path -- the "smoke trails as it falls" the
 --- owner asked for on 2026-08-21, drawn by the engine rather than by us.
+---
+--- ═══ AND IT IS SYNCHRONOUS, WHICH IS THE POINT (owner, 2026-08-23) ═══
+---
+--- "drop all flares and loot at the same time as soon as it flies over the
+--- point". NOTHING IN HERE MAY YIELD. Both models are resident before it runs --
+--- primeAssets streams them at the ANNOUNCEMENT -- so this is object creation
+--- and matrix writes and nothing else, and the caller can put
+--- the crate, the canopy and both flares on the SAME frame the aircraft passes
+--- overhead. The version that streamed here produced a box whenever the stream
+--- finished, which is a delay nobody could see the cause of.
+---
+--- THE DEPLOY ANIM IS PLAYED, NOT REQUESTED. The dictionary is primeAssets'
+--- job for the same reason; if it did not arrive the canopy simply does not
+--- unfurl, which is what "best-effort" has always meant here.
+--- @param d table
+--- @return boolean  built
+local function buildParts(d)
+    local rec = d.rec
+    if not rec then return false end
+
+    local model = GetHashKey(A.crateProp or 'prop_box_wood05a')
+    -- THE RELEASE HEIGHT IS AUTHORED, NOT PROBED. It has to be the number the
+    -- aircraft's own height was solved from, or the box leaves from somewhere
+    -- the Cargobob is not -- see BR.AirdropCrateZ.
+    local top = (rec.gz or 0.0) + (rec.alt or 0.0)
+
+    local obj = makePart(model, rec.x, rec.y, top, A.crateScale)
+    if not obj then return false end
+    SetEntityHeading(obj, rec.heading or 0.0)
+    d.obj = obj
+
+    -- The canopy. Positioned every frame from the same solver as the crate.
+    local chuteModel = GetHashKey(A.chuteModel or 'p_cargo_chute_s')
+    local chute = makePart(chuteModel, rec.x, rec.y, top, A.chuteScale)
+    if chute then
+        d.chute = chute
+        local dict, anim = A.chuteAnimDict, A.chuteAnim
+        if dict and anim and isTrue(HasAnimDictLoaded(dict)) then
+            PlayEntityAnim(chute, anim, dict, 1000.0,
+                false, false, false, 0.0, 0)
+        end
+    end
+    return true
+end
+
+--- The fallback for a release that arrived before primeAssets finished.
+---
+--- BOUNDED AND RARE. primeAssets has from the announcement to the release --
+--- often minutes -- to stream two props, an anim dictionary and a weapon asset,
+--- which makes this the path for a
+--- client that joined mid-arm or a disk having a very bad day. It is the OLD
+--- behaviour exactly: stream, then build whenever that finishes, with the crate
+--- and its flares still arriving together because place() cannot run without
+--- the box. What it cannot promise is the frame.
 --- @param d table
 local function spawn(d)
     d.spawning = true
@@ -545,49 +653,21 @@ local function spawn(d)
             end
             return
         end
+        loadModel(GetHashKey(A.chuteModel or 'p_cargo_chute_s'))
 
-        -- The record may have been torn down while the model streamed.
-        if not d.rec then d.spawning = false return end
-
-        local gz  = d.gz or d.rec.gz or 0.0
-        local top = gz + (d.rec.alt or 0.0)
-
-        local obj = makePart(model, d.rec.x, d.rec.y, top, A.crateScale)
-        SetModelAsNoLongerNeeded(model)
-        if not obj then d.spawning = false return end
-        SetEntityHeading(obj, d.rec.heading or 0.0)
-        d.obj = obj
-
-        -- The canopy. Positioned every frame from the same solver as the crate.
-        local chuteModel = GetHashKey(A.chuteModel or 'p_cargo_chute_s')
-        if loadModel(chuteModel) and d.rec then
-            local chute = makePart(chuteModel, d.rec.x, d.rec.y, top,
-                A.chuteScale)
-            SetModelAsNoLongerNeeded(chuteModel)
-            if chute then
-                d.chute = chute
-
-                -- The deploy anim, once. Best-effort: a canopy that never
-                -- unfurls still reads as a canopy, and a missing anim dict must
-                -- not cost us the drop.
-                local dict = A.chuteAnimDict
-                local anim = A.chuteAnim
-                if dict and anim then
-                    RequestAnimDict(dict)
-                    local waited = 0
-                    while not isTrue(HasAnimDictLoaded(dict)) and waited < 2000 do
-                        Citizen.Wait(50)
-                        waited = waited + 50
-                    end
-                    if isTrue(HasAnimDictLoaded(dict))
-                       and isTrue(DoesEntityExist(chute)) then
-                        PlayEntityAnim(chute, anim, dict, 1000.0,
-                            false, false, false, 0.0, 0)
-                    end
-                end
+        local dict = A.chuteAnimDict
+        if dict and A.chuteAnim then
+            RequestAnimDict(dict)
+            local waited = 0
+            while not isTrue(HasAnimDictLoaded(dict)) and waited < 2000 do
+                Citizen.Wait(50)
+                waited = waited + 50
             end
         end
 
+        -- The record may have been torn down while all that streamed.
+        if not d.rec then d.spawning = false return end
+        buildParts(d)
         d.spawning = false
     end)
 end
@@ -645,6 +725,23 @@ end
 --- shape of correction that cannot bury a crate. Nothing in this file may lower
 --- a z on a reachability opinion, and that is the rule the 2026-08-22 version
 --- broke.
+---
+--- ═══ IT STARTS AT `planeProbeFromZ` NOW, AND THE OLD START WAS A BUG ═══
+---
+--- It used to search downward from `rec.gz + rec.alt` -- the POI's authored
+--- height plus the release altitude. GetGroundZFor_3dCoord returns the highest
+--- ground BELOW where it is asked, and config/map.lua says in its own header
+--- that those heights "were authored from map knowledge, not surveyed in-game".
+--- On a hillside a first-pass z that is 250m low is a probe fired from INSIDE
+--- the hill, which can only answer with something under the surface or with
+--- nothing at all. 1200 is above every piece of ground on this map, so the
+--- answer is the surface, everywhere, always. Same fault and same fix as
+--- br_core/client/loot.lua's 300.0 floor, found in the same report.
+---
+--- AND IT NO LONGER ASKS THE NAVMESH. That question is `d.roof`, it is a
+--- diagnostic and never a height (see above), and GET_SAFE_COORD_FOR_PED is a
+--- pathfinding query -- far too expensive to sit on the render path for a line
+--- that only /brairdrop reads. It is asked once, in the arm thread, off-frame.
 --- @param d table
 --- @return number
 local function groundOf(d)
@@ -653,83 +750,218 @@ local function groundOf(d)
     d.gzAt = now
 
     local ok, gz = GetGroundZFor_3dCoord(d.rec.x, d.rec.y,
-        (d.rec.gz or 0.0) + (d.rec.alt or 0.0), false)
-    if isTrue(ok) then
-        -- THE VERDICT IS RECORDED AND NOT ACTED ON. `d.roof` is what /brairdrop
-        -- prints and what makes "it came down on the Maze Bank" legible from a
-        -- log; the crate still descends to `gz`, because `gz` is where the
-        -- world is.
-        local reach, why = BR.Native.pedReachable(d.rec.x, d.rec.y, gz)
-        d.gz   = gz
-        d.roof = (not isTrue(reach)) and why or nil
+        A.planeProbeFromZ or 1200.0, false)
+    -- SEA LEVEL IS ZERO AND A SEABED IS NOT A LANDING SURFACE. Same rule
+    -- client/loot.lua's solidGround applies: a failed probe hands back a z as
+    -- well as a false, and this map's ocean floor is what answers over water.
+    if isTrue(ok) and type(gz) == 'number' and gz > 0.0 then
+        d.gz = gz
     else
         d.gz = d.gz or d.rec.gz or 0.0
     end
     return d.gz
 end
 
---- The highest ground the aircraft still has to cross, absolute z.
+--- Stream everything a drop will ever ask for, AT THE ANNOUNCEMENT.
 ---
---- ═══ "WE ALSO NEED A WAY TO MAKE SURE THE CARGOBOB AVOIDS TERRAIN, BECAUSE
----     DROPS AT CHILI[AD]" (owner, 2026-08-23) ═══
+--- ═══ NOTHING ON THE RENDER PATH MAY WAIT FOR AN ASSET ═══
 ---
---- The flight plan is FLAT and it is pinned to the ground at the DROP POINT:
---- groundOf(d) + rec.alt + planeAltAbove, held for the whole run-in. Nothing in
---- it has ever looked at what the run-in crosses. `chiliad_e` is authored at z
---- 160 and the `chiliad` summit POI at 780, so a corridor laid across the massif
---- puts the aircraft hundreds of metres inside it -- cosmetic rather than fatal,
---- because its collision is off, and visible from every angle.
+--- /brperf measured one pass of `airdrop.render` in 113,237 at 55ms, with every
+--- other sample in the whole registry at zero and total == peak. BR.Loop.step's
+--- stopwatch is a STALL DETECTOR and not a cost meter -- GetGameTimer is latched
+--- per frame (4864976), so `elapsed` can only come back non-zero when a callback
+--- SPANNED A FRAME BOUNDARY. "55ms" therefore means "this yielded, or the engine
+--- re-latched while it was on the stack", never "this did 55ms of work".
 ---
---- SO THE CORRIDOR IS PROBED AND THE AIRCRAFT IS GIVEN A FLOOR. Upward only, and
---- only over the ground it has not passed yet: BR.AirdropApproach walks forward
---- from where the aircraft is to where it will be `planeLookAheadMs` later,
---- clipped at tRelease, so the corridor collapses onto the drop point exactly as
---- the release arrives and the floor falls back under the nominal height. The
---- crate still leaves `planeAltAbove` beneath the aircraft.
+--- WHICH IS WHY THAT SAMPLE IS NOT PROOF ABOUT THIS FILE, and the owner's
+--- follow-up says so plainly: "that even happens on matches which haven't had
+--- airdrops". With no record the callback returns on its first line -- `if not
+--- next(drops) then return end` -- and a function that does one table lookup and
+--- returns cannot span a frame. On those matches the reading is an engine-level
+--- hitch attributed to whichever callback happened to straddle the re-latch, and
+--- there is exactly one such event in the whole sample.
 ---
---- IT STARTS THE SEARCH AT `planeProbeFromZ` AND NOT AT THE AIRCRAFT.
---- GetGroundZFor_3dCoord returns the highest ground BELOW the point it is given,
---- so probing from the aircraft's own altitude would find nothing at all over a
---- summit standing above it -- the exact case this exists for.
+--- WHAT IS STRUCTURALLY WRONG IS TRUE ANYWAY, and it is what this function
+--- fixes: there are three things reachable from place() that really can yield,
+--- all in client/flares.lua, all the same shape -- `Citizen.Wait(50)` inside a
+--- bounded stream loop:
 ---
---- FAIL-OPEN, AND ON A HOLD. A sample the probe cannot answer for is skipped; a
---- pass where nothing answers keeps the last verdict for `planeProbeHoldMs` and
---- then forgets it, which is today's behaviour. A probe that blinks out for one
---- pass must not drop the aircraft into the ridge it just measured, and one that
---- has been silent for two seconds is not describing anything any more.
+---   * loadWeapon, from BR.Flare.fire on the PROJECTILE route. `weaponTried`
+---     caches for the session, so at most one per client per session.
+---   * loadModel, from BR.Flare.make on the OBJECT route. `resolveTried` caches
+---     the same way.
+---   * loadPtfx, also from BR.Flare.make, and this one has NO tried-flag -- a
+---     ptfx asset that never arrives costs five seconds every time a site is
+---     built.
+---
+--- A synchronous asset wait on a per-frame callback is a hitch waiting for the
+--- first drop of every session whatever the 55ms turns out to have been, and 50
+--- is a suspicious number to find inside a 55.
+---
+--- ALL THREE ARE PRE-LOADED HERE, off-frame, so each of those loops finds its
+--- `Has...Loaded` already true and returns without a single Wait. flares.lua is
+--- untouched: the fix is that nothing ever reaches those loops cold.
+---
+--- AND place() STILL REFUSES TO CALL THEM UNTIL THIS SAYS SO -- see
+--- `d.flaresReady`. Pre-loading makes the wait unnecessary; the gate makes it
+--- unreachable, which is the half that survives somebody adding a fourth asset.
+--- A drop whose flares are not ready lights none that frame rather than stalling
+--- it.
+---
+--- AT THE ANNOUNCEMENT AND NOT AT THE ARM. A drop is announced when it is
+--- scheduled and armed only when somebody comes within `armWithin`, which can be
+--- minutes later -- so this has minutes of headroom rather than the twelve
+--- seconds of `planeLeadMs`. It is also what makes the release a single frame:
+--- the crate and canopy models and the canopy's anim dictionary are resident
+--- long before buildParts() runs. See release().
 --- @param d table
---- @param now number   synced clock
---- @return number|nil  absolute z, or nil for "nothing answered"
-local function approachTop(d, now)
-    if not d.rec then return nil end
-    local ms = GetGameTimer()
-    if d.terrainAt and (ms - d.terrainAt) < (A.planeProbeMs or 250) then
-        return d.terrainZ
-    end
-    d.terrainAt = ms
+local function primeAssets(d)
+    -- NEVER CLEARED, unlike `primed`. dropProps hands the prop models back at
+    -- touchdown, and without this the render loop would start re-streaming them
+    -- on the very next frame and keep doing it until the blip expired.
+    if d.assetsTried then return end
+    d.assetsTried = true
 
-    local from = A.planeProbeFromZ or 1200.0
-    local top  = nil
-    for _, p in ipairs(BR.AirdropApproach(d.rec, now, A,
-                                          A.planeProbeSamples or 8,
-                                          A.planeLookAheadMs or 6000)) do
-        local ok, gz = GetGroundZFor_3dCoord(p.x, p.y, from, false)
-        -- SEA LEVEL IS ZERO AND A SEABED IS NOT TERRAIN TO CLEAR. Same rule
-        -- client/loot.lua's solidGround applies, and for the same reason: a
-        -- failed probe hands back a z as well as a false, and the ocean floor
-        -- is the answer over open water.
-        if isTrue(ok) and type(gz) == 'number' and gz > 0.0 then
-            if not top or gz > top then top = gz end
+    Citizen.CreateThread(function()
+        -- THE PROJECTILE ROUTE'S WEAPON ASSET, which is the one with a
+        -- measurement attached. Same native and the same two parameters
+        -- client/flares.lua's loadWeapon uses, out of the same config.
+        local ready = false
+        if A.flareRoute ~= 'object' then
+            local wname = A.flareWeapon
+            if type(wname) == 'string' and wname ~= ''
+               and RequestWeaponAsset and HasWeaponAssetLoaded then
+                local wh = GetHashKey(wname)
+                if not isTrue(HasWeaponAssetLoaded(wh)) then
+                    RequestWeaponAsset(wh, A.flareAssetP1 or 31,
+                                           A.flareAssetP2 or 26)
+                    local waited = 0
+                    while not isTrue(HasWeaponAssetLoaded(wh))
+                          and waited < 5000 do
+                        Citizen.Wait(50)
+                        waited = waited + 50
+                    end
+                end
+                ready = isTrue(HasWeaponAssetLoaded(wh))
+            end
+        else
+            -- ...AND THE OBJECT ROUTE'S TWO. /brflare can put the match on this
+            -- route at any moment, so "the default route is the projectile one"
+            -- is not a reason to leave the other one able to stall a frame.
+            local fm = A.flareModel
+            if type(fm) == 'string' and fm ~= '' then
+                ready = loadModel(GetHashKey(fm))
+            end
+            local asset = A.flarePtfxAsset
+            if A.flarePtfx == true and type(asset) == 'string' and asset ~= ''
+               and RequestNamedPtfxAsset and HasNamedPtfxAssetLoaded then
+                if not isTrue(HasNamedPtfxAssetLoaded(asset)) then
+                    RequestNamedPtfxAsset(asset)
+                    local waited = 0
+                    while not isTrue(HasNamedPtfxAssetLoaded(asset))
+                          and waited < 5000 do
+                        Citizen.Wait(50)
+                        waited = waited + 50
+                    end
+                end
+            end
         end
-    end
+        d.flaresReady = ready
 
-    if top then
-        d.terrainZ, d.terrainFresh = top, ms
-    elseif d.terrainFresh
-           and (ms - d.terrainFresh) > (A.planeProbeHoldMs or 2000) then
-        d.terrainZ, d.terrainFresh = nil, nil
-    end
-    return d.terrainZ
+        if not d.rec then return end
+
+        -- THE CRATE AND CANOPY MODELS. Kept resident until the drop is torn
+        -- down, because SetModelAsNoLongerNeeded between here and the release is
+        -- exactly how a primed model comes to need streaming again. dropProps
+        -- hands them back.
+        local haveCrate = loadModel(GetHashKey(A.crateProp
+                                               or 'prop_box_wood05a'))
+        local haveChute = loadModel(GetHashKey(A.chuteModel
+                                               or 'p_cargo_chute_s'))
+
+        -- ...and the canopy's deploy animation, which is the fourth stream the
+        -- release frame used to be paying for.
+        local dict = A.chuteAnimDict
+        if dict and A.chuteAnim then
+            RequestAnimDict(dict)
+            local waited = 0
+            while not isTrue(HasAnimDictLoaded(dict)) and waited < 5000 do
+                Citizen.Wait(50)
+                waited = waited + 50
+            end
+        end
+
+        d.primed = haveCrate and haveChute
+    end)
+end
+
+--- The ground under the drop, and the collision that makes the probe honest.
+---
+--- AT THE ARM AND NOT AT THE ANNOUNCEMENT, which is the opposite of
+--- primeAssets. An asset is the same asset wherever anybody is standing; the
+--- ground probe only answers for terrain a client has streamed, and at the
+--- announcement the whole match is kilometres away. The arm is the first moment
+--- somebody is guaranteed to be within `armWithin` of the point, so it is the
+--- first moment this question has an answer at all.
+---
+--- OFF THE RENDER PATH, ALL OF IT. Two things used to sit inside groundOf on the
+--- render loop:
+---
+---   * THE PROBE ITSELF, cached for 3s. Cheap, but not free, and there is no
+---     distance gate on a drop -- the client-side view radius was deliberately
+---     removed -- so every client in the match ran it for a drop anywhere on the
+---     map.
+---   * BR.Native.pedReachable, WHICH IS A NAVMESH QUERY. GET_SAFE_COORD_FOR_PED
+---     searches a volume of pathfinding polygons. It early-outs when the navmesh
+---     is not loaded, so it was cheap at distance and not cheap when it
+---     mattered, and the 3s cache did cover it -- but `d.roof` is one line in
+---     /brairdrop and a pathfinding query has no business on a render loop at
+---     any cadence. It is asked ONCE, here.
+--- @param d table
+local function primeGround(d)
+    if d.groundTried then return end
+    d.groundTried = true
+
+    Citizen.CreateThread(function()
+        local rec = d.rec
+        if not rec then return end
+
+        -- The collision request is what makes the probe answer about the surface
+        -- rather than about whatever streamed first -- same native, same reason,
+        -- as client/loot.lua's awaitCollision and client/debug.lua's teleport.
+        if RequestCollisionAtCoord then
+            RequestCollisionAtCoord(rec.x, rec.y, rec.gz or 0.0)
+            Citizen.Wait(0)
+        end
+        if not d.rec then return end
+
+        d.gz, d.gzAt = nil, nil
+        local gz = groundOf(d)
+
+        -- ...and the verdict on it, which is a diagnostic and never a height.
+        local reach, why = BR.Native.pedReachable(rec.x, rec.y, gz)
+        d.roof = (not isTrue(reach)) and why or nil
+
+        -- ═══ AND THE GROUND IS KEPT FRESH WHILE THE BOX IS IN THE AIR ═══
+        --
+        -- The answer improves as the match closes on the blip, and the crate has
+        -- to come to rest on what is really under it. The release end of
+        -- BR.AirdropCrateZ is authored and never moves, so a ground that arrives
+        -- late corrects the LANDING and nothing else.
+        --
+        -- BOUNDED BY THE FLIGHT RATHER THAN BY A PREDICATE. The whole drop is
+        -- planeLeadMs + descentMs long; counting passes means this thread cannot
+        -- outlive the thing it follows even if the record is replaced under it.
+        local every  = A.groundRefreshMs or 1000
+        local passes = math.ceil(((A.planeLeadMs or 12000)
+                                  + (A.descentMs or 15000)) / every) + 2
+        for _ = 1, passes do
+            Citizen.Wait(every)
+            if not d.rec then return end
+            d.gz, d.gzAt = nil, nil
+            groundOf(d)
+        end
+    end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -743,15 +975,19 @@ end
 --- rotated by that heading. Positioning the crate here and the canopy somewhere
 --- else is how a canopy comes to lag a frame behind the box it is over.
 ---
---- The z is `groundOf` + BR.AirdropHeightAt, and the ground is re-probed rather
---- than resolved once: the drop is announced while everyone is kilometres away,
---- where the probe is documented not to answer, and it starts answering as
---- players close in.
+--- The z is BR.AirdropCrateZ: authored at the release end so the box leaves
+--- exactly where the aircraft is, probed at the landing end so it comes to rest
+--- on the surface that is really there. See that function for why those have to
+--- be two different numbers.
+---
+--- IT DOES NOT PROBE. `d.gz` is resolved by primeGround at the arm and kept
+--- fresh by the thread it leaves running, both off-frame; this reads the answer.
+--- Nothing on this callback may call a native that can yield or search -- see
+--- primeAssets, primeGround, and the 55ms stall measured on this callback.
 --- @param d table
 --- @param now number  synced clock
 local function place(d, now)
-    local gz   = groundOf(d)
-    local z    = gz + BR.AirdropHeightAt(d.rec, now)
+    local z    = BR.AirdropCrateZ(d.rec, now, d.gz)
     local spin = A.spinDegrees or 0.0
     local hdg  = BR.AirdropHeadingAt(d.rec, now, spin)
 
@@ -786,6 +1022,18 @@ local function place(d, now)
     -- local presentation and must not lurch when the clock estimate is
     -- corrected; the POSITIONS are still solved from the synced clock, which is
     -- the half that has to agree between machines.
+    --
+    -- ═══ AND NOT AT ALL UNTIL THE ASSETS ARE IN (2026-08-23) ═══
+    --
+    -- Every route into client/flares.lua ends at a bounded stream loop with a
+    -- `Citizen.Wait(50)` in it -- loadWeapon on the projectile route, loadModel
+    -- and loadPtfx on the object one. A wait on the render path is a spanned
+    -- frame, which is the shape /brperf's 55ms sample has. primeAssets makes
+    -- those loops find their asset already there; this gate makes it so a frame
+    -- cannot reach them even if it did not. A drop whose flares are not ready
+    -- lights none this frame; it does not stall the frame waiting for them.
+    if not d.flaresReady then return end
+
     local off = A.flareOffset or { x = 1.1, y = 0.0, z = 0.0 }
     local pos = {}
     for i, side in ipairs({ 1.0, -1.0 }) do
@@ -796,6 +1044,33 @@ local function place(d, now)
     d.flares = d.flares or BR.Flare.newSite()
     BR.Flare.updateSite(d.flares, GetGameTimer(),
         A.flareFallRefireMs or 3000, pos)
+end
+
+--- The crate, the canopy and both flares, on one frame, once.
+---
+--- ═══ "DROP ALL FLARES AND LOOT AT THE SAME TIME AS SOON AS IT FLIES OVER THE
+---     POINT" (owner, 2026-08-23) ═══
+---
+--- ONE EVENT, AND THE FRAME IT HAPPENS ON IS THE FRAME THE AIRCRAFT IS
+--- OVERHEAD. buildParts() creates both props from models primeAssets has already
+--- made resident -- no request, no wait, no thread, nothing that can yield --
+--- and the caller's place() on the very next line writes their positions and
+--- lights the pair of flares beside them. Crate, canopy and both flares, same
+--- pass of the same callback, out of one released-yet predicate.
+---
+--- THE FALLBACK IS THE OLD SHAPE AND IS STILL HONEST. If primeAssets has not
+--- finished, spawn() streams and builds in a thread and place() picks it up on
+--- whichever frame the box appears -- so the flares are still lit WITH the crate
+--- and never before it, which is the property bff7922 was defending. What is
+--- lost is only the promise about which frame.
+--- @param d table
+local function release(d)
+    if d.obj or d.spawning then return end
+    if not d.primed then
+        spawn(d)
+        return
+    end
+    buildParts(d)
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
@@ -838,6 +1113,23 @@ BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
             -- before the crate is, and it is torn down where it is decided
             -- rather than where the crate is.
             --
+            -- ═══ THE TWO PRIMERS, AND THEY FIRE AT DIFFERENT MOMENTS ═══
+            --
+            -- EVERY STREAM AT THE ANNOUNCEMENT. The two prop models, the
+            -- canopy's anim dictionary and whichever assets the flare route
+            -- needs, minutes before anything wants them -- so no frame ever
+            -- waits for one, and the release can be a single frame. See
+            -- primeAssets: the waits it is removing are the only things on this
+            -- callback that were ever able to span a frame.
+            --
+            -- THE GROUND AT THE ARM, because that is the first moment the probe
+            -- has anybody near enough to answer for. See primeGround.
+            --
+            -- Both are one-shot and both start a thread; on every frame after
+            -- the first this is a flag test and nothing else.
+            primeAssets(d)
+            if BR.AirdropArmed(d.rec) then primeGround(d) end
+
             -- ═══ THE CLIENT-SIDE VIEW RADIUS IS GONE, AND SO IS THE PROBLEM IT
             --     SOLVED ═══
             --
@@ -852,22 +1144,17 @@ BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
             -- squadmate watching from a ridge a kilometre away.
             if BR.AirdropPlaneVisible(d.rec, now, A) then
                 if not d.plane and not d.flying then
-                    groundOf(d)
                     spawnPlane(d)
                 end
                 if d.plane and isTrue(DoesEntityExist(d.plane)) then
-                    local px, py, pz, phdg = BR.AirdropPlaneAt(d.rec, now, A)
-                    -- THE FLIGHT PLAN, AND THEN A FLOOR UNDER IT. `pz` is
-                    -- measured from the ground at the DROP POINT and says
-                    -- nothing about what the run-in crosses; approachTop is what
-                    -- the aircraft has to clear before it gets there (owner,
-                    -- 2026-08-23: "make sure the cargobob avoids terrain,
-                    -- because drops at chili[ad]"). Upward only, and it is back
-                    -- at the nominal height by tRelease by construction -- see
-                    -- BR.AirdropApproach.
-                    local z = BR.AirdropPlaneZ(groundOf(d) + pz,
-                        approachTop(d, now), A.planeTerrainClearance)
-                    SetEntityCoordsNoOffset(d.plane, px, py, z,
+                    local px, py, _, phdg = BR.AirdropPlaneAt(d.rec, now, A)
+                    -- ONE HEIGHT, FOR THE WHOLE PASS (owner, 2026-08-23: "fly
+                    -- the cargobob 250m above that"). Solved once out of the
+                    -- record and config/map.lua and then simply written -- there
+                    -- is no probe left in this callback and nothing that can
+                    -- change its mind between frames. flightZ() caches it on the
+                    -- drop; dropPlane() is what forgets it.
+                    SetEntityCoordsNoOffset(d.plane, px, py, flightZ(d),
                         false, false, false)
                     -- A STRAIGHT LINE NEEDS NO EASED HEADING. bus.lua smooths
                     -- its bearing because a polyline steps between legs; this
@@ -893,10 +1180,11 @@ BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
                 -- during the run-in would put a box in the sky under an aircraft
                 -- that has not reached it, which is the picture the run-in was
                 -- added to replace.
-                if not d.obj and not d.spawning then
-                    groundOf(d)
-                    spawn(d)
-                end
+                --
+                -- release() BUILDS AND place() LIGHTS, on this pass, out of one
+                -- predicate. release() returns immediately once the box exists,
+                -- so from the second frame on this is just the descent.
+                release(d)
                 if d.obj and isTrue(DoesEntityExist(d.obj)) then
                     place(d, now)
                 end
@@ -1008,30 +1296,42 @@ RegisterCommand('brairdrop', function(_, args)
                         tostring(BR.AirdropLanded(rec, now)),
                         tostring(BR.AirdropBlipVisible(rec, now, A)),
                         tostring(BR.AirdropExpired(rec, now, A))))
-            local px, py, ppz = BR.AirdropPlaneAt(rec, now, A)
+            local px, py = BR.AirdropPlaneAt(rec, now, A)
             print(('    plane should be up %s, at (%.0f, %.0f)')
                 :format(tostring(BR.AirdropPlaneVisible(rec, now, A)), px, py))
             -- ═══ WHAT THE AIRCRAFT IS CLEARING, WHICH IS THE ONLY WAY TO TELL
             --     A LIFT FROM A BUG ═══
             --
             -- An aircraft flying 300m higher than the flight plan is either
-            -- avoiding Mount Chiliad exactly as asked or reading a probe that
-            -- has gone wrong, and from a chair those look identical. So the
-            -- line names the nominal height, the highest ground the corridor
-            -- found, and the height actually written.
-            local nominal = (d.gz or 0.0) + ppz
-            print(('    approach: nominal z %.0f, highest ground ahead %s, '
-                   .. 'flying at %.0f (clearance %.0f over %d sample(s), '
-                   .. 'lod %s)')
-                :format(nominal,
-                        type(d.terrainZ) == 'number'
-                            and ('%.0f'):format(d.terrainZ)
-                            or 'nothing answered',
-                        BR.AirdropPlaneZ(nominal, d.terrainZ,
-                            A.planeTerrainClearance),
-                        A.planeTerrainClearance or 60.0,
-                        A.planeProbeSamples or 8,
+            -- avoiding Mount Chiliad exactly as asked or reading something that
+            -- has gone wrong, and from a chair those look identical. So the line
+            -- names the nominal height, the authored POI that raised it (if any)
+            -- and the height actually written -- all three of which are now
+            -- knowable BEFORE the aircraft is built, which the corridor probe's
+            -- version never was.
+            local nominal = (rec.gz or 0.0) + (A.planeHeight or 250.0)
+            local fz, from = BR.AirdropFlightZ(rec, (BR.Config.Map or {}).POIs, A)
+            print(('    flight: nominal z %.0f (POI z %.1f + %.0f), flying at '
+                   .. '%.0f%s, lod %s')
+                :format(nominal, rec.gz or 0.0, A.planeHeight or 250.0, fz,
+                        from and (' -- raised %.0fm to clear %s at %.0f + %.0f')
+                                    :format(fz - nominal, tostring(from),
+                                            fz - (A.planeTerrainClearance or 60.0),
+                                            A.planeTerrainClearance or 60.0)
+                             or ' (nothing authored is under the route)',
                         tostring(A.propLodDist)))
+            -- ═══ AND WHETHER THE RELEASE FRAME WILL HAVE TO STREAM ═══
+            --
+            -- "primed false" while a drop is armed is the reading behind a late
+            -- crate AND behind a stall on this callback -- both of the things
+            -- 2026-08-23 was spent on. See primeAssets().
+            print(('    assets asked %s, props primed %s, flares ready %s '
+                   .. '(route %s), ground primed %s')
+                :format(tostring(d.assetsTried or false),
+                        tostring(d.primed or false),
+                        tostring(d.flaresReady or false),
+                        tostring(A.flareRoute),
+                        tostring(d.groundTried or false)))
             -- THE ROOFTOP VERDICT for the point the crate is falling to. `roof`
             -- is set by groundOf when the navmesh refuses the probed ground --
             -- and since 2026-08-23 that is ALL it is. The crate comes down onto

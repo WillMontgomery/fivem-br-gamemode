@@ -256,24 +256,39 @@ do
     -- Owner, 2026-08-22: "The cargobob seemed to be too high off the ground
     -- when it came in. I could barely hear it."
     --
-    -- THE FALL TIME IS THE HALF THAT WAS CONFIRMED GOOD ("the airdrop arrived
-    -- perfectly") AND IT IS PINNED AS A LITERAL. BR.AirdropHeightAt is
-    -- `alt * (1 - progress)` measured against descentMs, so lowering the
-    -- altitude changes the descent RATE and not its duration -- and this line
-    -- is what fails if somebody ever "compensates" by shortening the fall.
-    eq(A.descentMs, 30000, 'the descent still takes exactly thirty seconds')
-    eq(A.altitude, 170.0, 'from 170m rather than the 260m that was too high')
-    eq(A.planeAltAbove, 25.0, 'with the aircraft 25m above the crate')
-    -- The aircraft's own height is the sum, and it is the number the owner was
-    -- complaining about. 300m before, 195m now.
-    ok(near(A.altitude + A.planeAltAbove, 195.0),
-        'so the Cargobob flies at 195m rather than 300m')
-    -- AND THE RATE IS WHAT MOVED. 170/30 is 5.67 m/s, which is inside the real
-    -- 5-7 m/s band for a cargo canopy -- a slower crate, not a wrong one.
+    -- ═══ 2026-08-23: 250m UP AND TWICE AS FAST DOWN ═══
+    --
+    -- Owner: "fly the cargobob 250m above that... Also please make the loot drop
+    -- 2x the speed."
+    --
+    -- THE THREE NUMBERS HAVE TO ADD UP AND THIS IS WHERE THAT IS ENFORCED.
+    -- config/airdrop.lua writes `altitude` as a literal rather than computing it
+    -- -- a config file that does arithmetic is one you cannot read the value of
+    -- -- so the invariant lives here instead. The crate is released from
+    -- `altitude` and the aircraft holds `planeHeight`; if those stop differing
+    -- by exactly `planeAltAbove` the box no longer leaves the Cargobob, it
+    -- appears somewhere near it.
+    eq(A.planeHeight, 250.0, 'the Cargobob flies 250m over the drop point')
+    eq(A.planeAltAbove, 25.0, 'with the crate 25m beneath it')
+    eq(A.altitude, 225.0, 'so the crate is released from 225m')
+    ok(near(A.altitude + A.planeAltAbove, A.planeHeight),
+        'and those three add up, which is what makes the release exact')
+    -- HALVED, AS ASKED. `descentMs` is what "2x the speed" means when the height
+    -- is a separate instruction: BR.AirdropHeightAt is `alt * (1 - progress)`
+    -- against descentMs, so the fall time is descentMs and nothing else.
+    eq(A.descentMs, 15000, 'and the fall takes half the thirty seconds it did')
+    -- AND THE RATE IS THE CONSEQUENCE, WHICH IS MORE THAN 2x BECAUSE THE HEIGHT
+    -- MOVED TOO. 170/30 was 5.7 m/s and 225/15 is 15 m/s. That is faster than a
+    -- real cargo canopy and it is what was asked for; the band below is wide
+    -- enough to say "still a controlled descent" and tight enough to catch a
+    -- descentMs somebody has zeroed or a stray order of magnitude.
     local mps = A.altitude / (A.descentMs / 1000.0)
-    ok(mps > 4.0 and mps < 7.5,
-        ('the crate falls at %.1f m/s, which is still a canopy rather than a '
+    ok(mps > 12.0 and mps < 20.0,
+        ('the crate falls at %.1f m/s, which is a fast canopy rather than a '
          .. 'feather or a rock'):format(mps))
+    ok(mps > 170.0 / 30.0 * 2.0,
+        ('and more than twice the %.1f m/s it fell at before')
+            :format(170.0 / 30.0))
 
     -- ═══ AND IT SLOWED DOWN, 2026-08-23, BY HALF ═══
     --
@@ -1387,10 +1402,30 @@ do
         'and the box leaves exactly planeAltAbove beneath it')
 end
 
-describe('the plane: the approach clears what is under it')
+describe('the plane: one height, solved from the map file, for the whole pass')
 do
-    -- ═══ "WE ALSO NEED A WAY TO MAKE SURE THE CARGOBOB AVOIDS TERRAIN, BECAUSE
-    --     DROPS AT CHILI[AD]" (owner, 2026-08-23) ═══
+    -- ═══ THE SECOND ATTEMPT AT "MAKE SURE THE CARGOBOB AVOIDS TERRAIN, BECAUSE
+    --     DROPS AT CHILI[AD]" ═══
+    --
+    -- Owner, 2026-08-23, on 56c0ba7 -- which already had the first: "it's
+    -- definitely still doing that... get the Z for each coord where the drop is
+    -- happening, fly the cargobob 250m above that".
+    --
+    -- WHAT THE FIRST ATTEMPT'S TESTS PROVED, AND WHY THEY PASSED ANYWAY. They
+    -- asserted the corridor's SHAPE -- eight samples, forward of the aircraft,
+    -- collapsing onto the drop point at tRelease, opening out on the trail --
+    -- and every one of those was true. What no pure test could reach is that
+    -- GetGroundZFor_3dCoord only answers for terrain the client has streamed,
+    -- so the corridor was asking about ground up to 810m from the only player
+    -- the drop is guaranteed to have, and the clip meant the one stretch it
+    -- COULD see was the one with nothing to clear. The shape was right and the
+    -- answer was always nil.
+    --
+    -- SO THE CASES BELOW ARE THE SAME QUESTIONS ASKED OF A MODEL THAT CANNOT
+    -- ANSWER nil: the height comes out of BR.Config.Map.POIs, which is in
+    -- memory. Every assertion the corridor block made has an heir here, and
+    -- three of them are now checked against the REAL map table rather than a
+    -- constructed record.
     local poi = { id = 'chiliad_e', x = 1150.0, y = 5350.0, z = 160.0 }
     local rec = BR.ArmAirdropRecord(
         BR.BuildAirdropSite(1, poi, A.altitude, 0.0, 270.0), 0.0, A)
@@ -1398,8 +1433,10 @@ do
     -- UPWARD ONLY, AND NEVER DOWNWARD. The flight plan is a floor of its own:
     -- an aircraft that dipped into a valley would arrive under the crate's
     -- release height, which is the record's business and not the terrain's.
+    -- Unchanged from the corridor version -- BR.AirdropPlaneZ survived the
+    -- rework because taking the higher of two numbers was never the broken part.
     eq(BR.AirdropPlaneZ(355.0, nil, 60.0), 355.0,
-        'nothing answered means the nominal height, which is today\'s behaviour')
+        'nothing under the route means the nominal height')
     eq(BR.AirdropPlaneZ(355.0, 10.0, 60.0), 355.0,
         'ground far below it changes nothing')
     eq(BR.AirdropPlaneZ(355.0, 780.0, 60.0), 840.0,
@@ -1407,40 +1444,157 @@ do
     eq(BR.AirdropPlaneZ(355.0, 295.0, 60.0), 355.0,
         'a ridge exactly at the clearance is not a lift')
 
-    -- THE CORRIDOR IS AHEAD OF THE AIRCRAFT AND CLIPPED AT THE RELEASE, which is
-    -- what makes the lift vanish exactly when the crate leaves.
-    local far = BR.AirdropApproach(rec, rec.tArm, A, 8, A.planeLookAheadMs)
-    eq(#far, 8, 'eight samples, ends included')
-    local ax, ay = BR.AirdropPlaneAt(rec, rec.tArm, A)
-    ok(near(far[1].x, ax, 1e-6) and near(far[1].y, ay, 1e-6),
-        'the first is where the aircraft is')
-    ok(BR.Dist(far[8].x, far[8].y, rec.x, rec.y)
-       < BR.Dist(far[1].x, far[1].y, rec.x, rec.y),
-        'and the last is closer to the drop than the first -- forward, not behind')
+    -- ═══ THE FLIGHT LINE COVERS THE WHOLE PASS, BOTH SIDES OF THE DROP ═══
+    --
+    -- The corridor deliberately forgot the ground behind the aircraft, which was
+    -- right for a floor recomputed every frame and wrong for one solved once.
+    -- And it only reached the trail by accident: the Cargobob flies on for
+    -- planeTrailMs after the release -- 675m, FURTHER than the 540m run-in --
+    -- so half the exposure was past the drop point the whole time.
+    local x1, y1, x2, y2 = BR.AirdropRunIn(rec, A)
+    ok(near(BR.Dist(x1, y1, rec.x, rec.y),
+            A.planeSpeed * (A.planeLeadMs / 1000.0), 1e-3),
+        'the line starts where the run-in starts, 540m back')
+    ok(near(BR.Dist(x2, y2, rec.x, rec.y),
+            A.planeSpeed * (A.planeTrailMs / 1000.0), 1e-3),
+        'and ends where the trail ends, 675m on -- further than the run-in')
+    local sx, sy = BR.AirdropPlaneAt(rec, rec.tArm, A)
+    ok(near(sx, x1, 1e-6) and near(sy, y1, 1e-6),
+        'and its near end is exactly where BR.AirdropPlaneAt builds the aircraft')
 
-    -- AT THE RELEASE THE CORRIDOR IS A POINT: the drop point itself. So the
-    -- highest ground in it is the ground under the crate, the floor falls under
-    -- the nominal height, and the release geometry is untouched.
-    local atRel = BR.AirdropApproach(rec, rec.tRelease, A, 8, A.planeLookAheadMs)
-    local collapsed = true
-    for _, p in ipairs(atRel) do
-        if not (near(p.x, rec.x, 1e-6) and near(p.y, rec.y, 1e-6)) then
-            collapsed = false
-        end
+    -- ═══ AND WHAT IS UNDER IT COMES OUT OF THE AUTHORED TABLE ═══
+    local one = { { id = 'peak', x = rec.x, y = rec.y, z = 700.0, radius = 50.0 } }
+    local top, id = BR.AirdropRunInTop(rec, one, A)
+    eq(top, 700.0, 'a POI on the line is found')
+    eq(id, 'peak', 'and named, which is what /brairdrop prints')
+
+    -- OFF THE BEARING IS NOT A LIFT. A summit half a kilometre to the side is
+    -- not something this aircraft flies through, and lifting for it would make
+    -- the feature the permanent altitude increase it must never become.
+    local a = math.rad(rec.heading)
+    local rx, ry = math.cos(a), math.sin(a)   -- the flight line's own right
+    local side = { { id = 'aside', x = rec.x + rx * 900.0,
+                     y = rec.y + ry * 900.0, z = 700.0, radius = 50.0 } }
+    eq(BR.AirdropRunInTop(rec, side, A), nil,
+        'a summit 900m off the bearing is not under the route')
+
+    -- ...AND BEHIND THE AIRCRAFT STILL COUNTS, which is the case the corridor
+    -- could not see at all: the height is chosen before takeoff, so it has to
+    -- cover ground the aircraft has not reached yet AND ground it starts over.
+    local behindX, behindY = BR.AirdropPlaneAt(rec, rec.tArm, A)
+    local behind = { { id = 'start', x = behindX, y = behindY, z = 700.0,
+                       radius = 50.0 } }
+    eq(BR.AirdropRunInTop(rec, behind, A), 700.0,
+        'the ground the run-in begins over is under the route too')
+
+    ok(BR.AirdropRunInTop(nil, BR.Config.Map.POIs, A) == nil,
+        'no record, no answer')
+    ok(BR.AirdropRunInTop(rec, nil, A) == nil,
+        'and no table, no answer -- never a zero, which would be sea level')
+
+    -- ═══ THE HEIGHT ITSELF, AGAINST THE REAL MAP ═══
+    --
+    -- These three are the whole feature, and they are checked against
+    -- BR.Config.Map.POIs rather than a fixture -- so a POI edited into or out of
+    -- the massif changes the answer here rather than in a playtest.
+    local P = BR.Config.Map.POIs
+    local function poiById(want)
+        for _, p in ipairs(P) do if p.id == want then return p end end
     end
-    ok(collapsed, 'every sample sits on the drop point at the release itself')
 
-    -- ...AND IT OPENS OUT AGAIN AFTERWARDS, because the aircraft still has
-    -- planeTrailMs of flying to do and the ridge in FRONT of it is real.
-    local after = BR.AirdropApproach(rec, rec.tRelease + 5000, A, 8,
-        A.planeLookAheadMs)
-    ok(BR.Dist(after[1].x, after[1].y, after[8].x, after[8].y) > 1.0,
-        'the corridor has length again on the outbound leg')
+    -- FLAT GROUND IS NOT A LIFT. lsia is at z 20 with nothing high anywhere
+    -- near it, so the aircraft flies exactly planeHeight over the drop point --
+    -- otherwise this feature is a permanent altitude increase wearing a table.
+    local flat = poiById('lsia')
+    local flatRec = BR.ArmAirdropRecord(
+        BR.BuildAirdropSite(1, flat, A.altitude, 0.0, 90.0), 0.0, A)
+    local fz, ffrom = BR.AirdropFlightZ(flatRec, P, A)
+    ok(near(fz, flat.z + A.planeHeight),
+        'over LSIA the Cargobob flies exactly 250m up and no higher', fz)
+    eq(ffrom, nil, 'with nothing authored under the route to raise it')
 
-    ok(#BR.AirdropApproach(nil, 0.0, A, 8, 6000) == 0,
-        'no record, no corridor')
-    eq(#BR.AirdropApproach(rec, rec.tArm, A, 1, 6000), 2,
-        'and a single sample is refused -- a corridor needs two ends')
+    -- ...AND CHILIAD RIDGE IS THE CASE THE OWNER REPORTED. Authored at 400, so
+    -- a flat 250 puts it at 650 -- and the summit POI is 780, 391m away. This is
+    -- the drop the first attempt was written for and never lifted.
+    local ridge = poiById('chiliad_ridge')
+    local summit = poiById('chiliad')
+    ok(ridge and summit, 'the two Chiliad POIs are still in the map file')
+    ok(ridge.z + A.planeHeight < summit.z,
+        'and a flat 250 over the ridge really is INSIDE the summit -- this test '
+        .. 'would pass by accident otherwise',
+        ('%.0f vs %.0f'):format(ridge.z + A.planeHeight, summit.z))
+    -- On the bearing that points at the summit, which is the drop that goes
+    -- wrong; the bearing is the server's per-drop roll, so this asks about the
+    -- worst one rather than the average one.
+    local hdg = BR.GtaHeading(BR.Bearing(ridge.x, ridge.y, summit.x, summit.y))
+    local ridgeRec = BR.ArmAirdropRecord(
+        BR.BuildAirdropSite(1, ridge, A.altitude, 0.0, hdg), 0.0, A)
+    local rz, rfrom = BR.AirdropFlightZ(ridgeRec, P, A)
+    eq(rfrom, 'chiliad', 'the summit is what raises a drop on the ridge')
+    ok(near(rz, summit.z + A.planeTerrainClearance),
+        'and it flies 60m over the rock rather than 130m inside it', rz)
+    ok(rz > ridge.z + A.planeHeight,
+        'which is higher than the flat 250 it would otherwise have held')
+
+    -- AND IT IS A CONSTANT, WHICH IS THE OWNER'S ACTUAL INSTRUCTION. The old
+    -- floor moved every frame by design; this one is not a function of `now` at
+    -- all, and that is asserted rather than assumed.
+    local z1 = BR.AirdropFlightZ(ridgeRec, P, A)
+    local z2 = BR.AirdropFlightZ(ridgeRec, P, A)
+    eq(z1, z2, 'asking twice gives the same height -- there is no clock in it')
+
+    -- THE RELEASE GEOMETRY, WHICH THE CORRIDOR HAD TO EARN AND THIS GETS FREE.
+    -- The aircraft holds rec.gz + planeHeight and the crate leaves at
+    -- rec.gz + alt, so the gap is planeAltAbove by arithmetic -- on a Chiliad
+    -- drop that has been lifted 190m as much as on a flat one.
+    local crateAtRelease = BR.AirdropCrateZ(ridgeRec, ridgeRec.tRelease, nil)
+    ok(near(crateAtRelease, (ridgeRec.gz or 0.0) + A.altitude),
+        'the crate leaves from the authored height, lift or no lift')
+end
+
+describe('the crate: authored where it leaves, probed where it lands')
+do
+    -- ═══ TWO ANCHORS, WHICH IS WHAT THE 250m HEIGHT FORCED ═══
+    --
+    -- The aircraft flies off `rec.gz` -- the authored POI z, because that is the
+    -- only height that cannot fail to answer at a kilometre. The crate has to
+    -- land on the surface that is really there, which only a probe knows. Those
+    -- are different numbers whenever config/map.lua's first pass was off, and
+    -- BR.AirdropCrateZ is where they are reconciled: authored at the release
+    -- end, probed at the landing end, straight line between.
+    local poi = { id = 'hill', x = 0.0, y = 0.0, z = 100.0 }
+    local rec = BR.ArmAirdropRecord(
+        BR.BuildAirdropSite(1, poi, A.altitude, 0.0, 0.0), 0.0, A)
+
+    -- The probe says the real ground is 30m above the authored number.
+    local probed = 130.0
+    ok(near(BR.AirdropCrateZ(rec, rec.tRelease, probed), 100.0 + A.altitude),
+        'at the release it is exactly where the aircraft is, authored')
+    ok(near(BR.AirdropCrateZ(rec, rec.tLand, probed), probed),
+        'and at the landing it is exactly on the probed surface')
+    ok(near(BR.AirdropCrateZ(rec, (rec.tRelease + rec.tLand) / 2, probed),
+            (100.0 + A.altitude + probed) / 2),
+        'halfway down it is halfway between them')
+
+    -- A CLIENT WITH NO PROBE ANSWER YET FALLS TO THE AUTHORED HEIGHT, which is
+    -- what every other reader of rec.gz does and what the blip is drawn at.
+    ok(near(BR.AirdropCrateZ(rec, rec.tLand, nil), 100.0),
+        'no probe answer means the authored ground, not zero')
+    -- 0 IS A REAL HEIGHT AND NOT AN ABSENCE. In Lua 0 is truthy, and a
+    -- `groundZ or rec.gz` written the obvious way would still be right -- but
+    -- the type test is what makes a false from a caller read as "no answer"
+    -- rather than as sea level.
+    ok(near(BR.AirdropCrateZ(rec, rec.tLand, 0.0), 0.0),
+        'a probed zero is honoured as zero')
+
+    ok(near(BR.AirdropCrateZ(nil, 0.0, 50.0), 0.0), 'no record, no height')
+
+    -- AND AN UNARMED DROP HAS NOT STARTED FALLING. BR.AirdropProgress answers 0
+    -- for a record with no tLand, so the box sits at its release height rather
+    -- than reading a missing number as fully descended.
+    local sited = BR.BuildAirdropSite(2, poi, A.altitude, 0.0, 0.0)
+    ok(near(BR.AirdropCrateZ(sited, 1e9, probed), 100.0 + A.altitude),
+        'a sited drop is still aboard, however late the clock is')
 end
 
 describe('descent: expiry is not the same question as visibility')
@@ -2668,7 +2822,12 @@ function GetEntityHeading(e)
     if t and t.heading then return t.heading end
     return me.h
 end
-function RequestModel() end
+--- EVERY MODEL REQUEST, IN ORDER, so a test can ask WHEN a stream was asked
+--- for and not merely whether the prop exists. That is the whole of the
+--- 2026-08-23 perf change: nothing on the render path may wait for an asset, so
+--- the requests have to land at the announcement and not on the release frame.
+local modelRequests = {}
+function RequestModel(m) modelRequests[#modelRequests + 1] = m end
 function HasModelLoaded(m)
     if validModels and not validModels[m] then return 0 end
     return modelLoaded
@@ -2899,10 +3058,23 @@ local function clientReset()
     vehicles, peds = {}, {}
     fxStarted, fxStopped, fxAssetUsed = {}, {}, {}
     shots, weaponAssets, audioCalls = {}, {}, {}
+    modelRequests = {}
     weaponLoads = 1
     scaled = {}
     lods = {}
     ground.ok, ground.z, ground.at = 1, 12.0, nil
+    -- ═══ THE AUTHORED TABLE THE FLIGHT HEIGHT IS SOLVED FROM (2026-08-23) ═══
+    --
+    -- EMPTY BY DEFAULT, because every client test but the terrain one is asking
+    -- what the aircraft does with nothing under it, and the rig's drop point
+    -- (100, 200) sits close enough to `casino` on the real map that a change of
+    -- heading could start lifting it. The terrain block installs its own summit
+    -- and the pure half above still measures against the real 128 POIs, which is
+    -- where that coverage belongs.
+    --
+    -- SAFE TO OVERWRITE AND NEVER RESTORE: every remaining test in this file is
+    -- a client test, and the siting half that reads the real table has run.
+    BR.Config.Map.POIs = {}
     modelLoaded, ptfxLoaded = 1, 1
     ptfxHandle = 900
     fxAlive = true
@@ -2970,9 +3142,15 @@ end
 ---
 --- Its record has a tStart and no tRelease, no tLand and no tArm. A blip and
 --- nothing else.
+--- `A.altitude` AND NOT A LITERAL, unlike announce() above. Since 2026-08-23 the
+--- aircraft's height and the crate's release height are two halves of one number
+--- -- `altitude + planeAltAbove == planeHeight` -- so a sited drop built with a
+--- stale 260 would put the box above the Cargobob that is meant to be carrying
+--- it, and every geometry assertion in the terrain block would be measuring the
+--- rig's own inconsistency.
 local function announceSited()
     local rec = BR.BuildAirdropSite(1,
-        { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 }, 260.0, gameMs, 90.0)
+        { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 }, A.altitude, gameMs, 90.0)
     fire(BR.Net.AIRDROP_SYNC, rec)
     return rec
 end
@@ -3156,19 +3334,30 @@ do
         plane and ('%.1fm'):format(BR.Dist(plane.x, plane.y, rec.x, rec.y)))
     ok(oneEnt() ~= nil, 'which is when the crate appears')
 
-    -- OUTBOUND, and gone when its trail window closes -- long before the crate
-    -- lands. A Titan orbiting the drop for another half-minute is scenery
-    -- arguing with the fight underneath it.
-    gameMs = gameMs + A.planeTrailMs
+    -- OUTBOUND, and still flying while the box comes down behind it.
+    --
+    -- ═══ THE TRAIL AND THE FALL NOW END ON THE SAME INSTANT (2026-08-23) ═══
+    --
+    -- `descentMs` was halved to 15000 on the owner's "make the loot drop 2x the
+    -- speed", and `planeTrailMs` is 15000 -- so the aircraft leaves exactly as
+    -- the crate touches down rather than, as it used to, half a minute before.
+    -- Nothing depends on the old ordering (the aircraft is 675m away and 250m up
+    -- by then either way) but it IS a relationship that changed silently, so it
+    -- is asserted here rather than discovered in a playtest.
+    eq(A.planeTrailMs, A.descentMs,
+        'the trail window and the fall are now the same length')
+
+    gameMs = gameMs + A.planeTrailMs - 1
     render()
     ok(onePlane() ~= nil, 'still there at the end of the trail window')
     ok(onePlane().y > rec.y, 'north of the drop point now, outbound')
+    ok(oneEnt() ~= nil, 'while the crate is still falling')
 
-    gameMs = gameMs + 1
+    gameMs = gameMs + 2
     render()
     eq(onePlane(), nil, 'and gone a millisecond later')
     eq(onePed(), nil, 'pilot and all')
-    ok(oneEnt() ~= nil, 'while the crate is still falling')
+    eq(oneEnt(), nil, 'on the same frame the crate finishes its fall')
 
     -- Teardown takes the aircraft too, whenever it happens. A fresh record,
     -- because the clock has been wound past the one above's trail window.
@@ -3487,7 +3676,13 @@ do
         ok(near(shots[1].z1, mv.z, 1e-6),
             'and the flares are at the crate\'s own height, not somewhere above it',
             ('flare %.3f, crate %.3f'):format(shots[1].z1, mv.z))
-        ok(near(mv.z, ground.z + 170.0, 1e-6),
+        -- THE AUTHORED HEIGHT, NOT THE PROBED ONE (2026-08-23). The rig's POI
+        -- is authored at 30 and its ground probes to 12, and the release end of
+        -- BR.AirdropCrateZ is the authored number on purpose: the aircraft flies
+        -- off `rec.gz` too, so the box leaves exactly planeAltAbove beneath it
+        -- however wrong config/map.lua's first pass was. The probed 12 is where
+        -- it LANDS, which the descent block below checks.
+        ok(near(mv.z, 30.0 + 170.0, 1e-6),
             'which is the full release altitude -- nothing has fallen yet',
             mv.z)
     end
@@ -3524,19 +3719,102 @@ do
     SetEntityLodDist = realLod
 end
 
-describe('client: the aircraft climbs over what is between it and the drop')
+describe('client: nothing on the render path waits for an asset')
 do
-    -- ═══ "WE ALSO NEED A WAY TO MAKE SURE THE CARGOBOB AVOIDS TERRAIN, BECAUSE
-    --     DROPS AT CHILI[AD]" (owner, 2026-08-23) ═══
+    -- ═══ A SYNCHRONOUS ASSET WAIT ON A PER-FRAME CALLBACK (2026-08-23) ═══
     --
-    -- The flight plan is flat and pinned to the ground at the DROP POINT, so a
-    -- drop at the foot of a massif flies the aircraft through it. The rig's
-    -- ground is a ridge: everything more than 120m from the drop point stands at
-    -- 500, the drop point itself at 12.
+    -- /brperf: one pass of `airdrop.render` in 113,237 at 55ms, every other
+    -- sample in the registry zero, total == peak. BR.Loop.step's stopwatch reads
+    -- GetGameTimer either side of the callback and GetGameTimer is LATCHED PER
+    -- FRAME (4864976), so a non-zero reading means the call SPANNED A FRAME --
+    -- it yielded, or the engine re-latched while it was on the stack -- and says
+    -- nothing about how much work it did.
+    --
+    -- THAT SAMPLE IS NOT PROOF ABOUT THIS FILE. The owner adds: "that even
+    -- happens on matches which haven't had airdrops", and with no record the
+    -- callback returns on its first line and cannot span anything.
+    --
+    -- WHAT IS WRONG REGARDLESS is that three things reachable from place() CAN
+    -- yield, all in client/flares.lua and all the same shape -- a
+    -- `Citizen.Wait(50)` inside a bounded stream loop: loadWeapon (projectile
+    -- route), loadModel and loadPtfx (object route). That is a hitch waiting for
+    -- the first drop of every session, and this block is the fix as code: what
+    -- has been requested, and when.
     clientReset()
-    ground.at = function(x, y)
-        return BR.Dist(x, y, 100.0, 200.0) > 120.0 and 500.0 or 12.0
-    end
+    local sited = announceSited()
+    render()
+
+    -- NOT ARMED. No aircraft, no crate, no flare -- and every stream already
+    -- asked for. This is the frame the old code did nothing on.
+    ok(not BR.AirdropArmed(sited), 'the drop is announced and not yet armed')
+    eq(entCount(), 0, 'so nothing is built')
+    eq(#shots, 0, 'and nothing is lit')
+    ok(next(weaponAssets) ~= nil,
+        'but the flare weapon asset has already been requested')
+    local asked = {}
+    for _, m in ipairs(modelRequests) do asked[m] = true end
+    ok(asked[GetHashKey(A.crateProp)], 'and the crate model')
+    ok(asked[GetHashKey(A.chuteModel)], 'and the canopy model')
+
+    -- ═══ AND THE RELEASE FRAME ASKS FOR NOTHING AT ALL ═══
+    --
+    -- This is the assertion that fails if somebody moves a stream back onto the
+    -- release: the frame the crate, the canopy and both flares appear on must
+    -- make no request of any kind.
+    armSited(sited)
+    render()                          -- the run-in
+    local beforeRelease = #modelRequests
+    gameMs = gameMs + A.planeLeadMs
+    render()                          -- the release itself
+    eq(#modelRequests, beforeRelease,
+        'the release frame requests no model -- everything it needs is resident')
+    eq(#entsOfModel(A.crateProp), 1, 'the crate is built on it')
+    eq(#entsOfModel(A.chuteModel), 1, 'and the canopy')
+    eq(#shots, 2, 'and both flares are lit on the same frame')
+
+    -- ═══ THE OBJECT ROUTE IS PRIMED TOO ═══
+    --
+    -- /brflare can put the match on it at any moment, so "the projectile route
+    -- is the default" is not a reason to leave the other one able to stall a
+    -- frame. Its two streams are a prop model and a ptfx asset.
+    clientReset()
+    A.flareRoute = 'object'
+    local obj = announceSited()
+    render()
+    local askedObj = {}
+    for _, m in ipairs(modelRequests) do askedObj[m] = true end
+    ok(askedObj[GetHashKey(A.flareModel)],
+        'the object route\'s flare model is requested at the announcement too')
+    eq(entCount(), 0, 'with nothing built yet')
+    armSited(obj)
+    gameMs = gameMs + A.planeLeadMs
+    render()
+    eq(#entsOfModel(A.flareModel), 2, 'and its two flares arrive with the crate')
+    A.flareRoute = 'projectile'
+end
+
+describe('client: the aircraft holds one height, and no probe decides it')
+do
+    -- ═══ THE SAME QUESTION THE CORRIDOR BLOCK ASKED, OF THE MODEL THAT
+    --     REPLACED IT (owner, 2026-08-23) ═══
+    --
+    -- The corridor version of this block set `ground.at` to a ridge and checked
+    -- the aircraft rose over it. It passed, and the feature did nothing in game,
+    -- because the rig answers every probe and a real client answers almost none
+    -- of them at 810m. THAT IS THE CASE THIS RIG STRUCTURALLY CANNOT TEST, so
+    -- the height is no longer a probe's business at all: it comes from
+    -- BR.Config.Map.POIs, which is in memory on both sides.
+    --
+    -- The rig's drop is the sited one at (100, 200) with the POI authored at
+    -- z 30 and heading 90 -- so forward is -x, and the run-in comes in from the
+    -- +x side.
+    clientReset()
+    -- A summit ON the flight line, 300m up the run-in. Nothing about the ground
+    -- probe is involved; this is a table entry.
+    BR.Config.Map.POIs = {
+        { id = 'ridge', x = 100.0 + 300.0, y = 200.0, z = 500.0,
+          radius = 60.0 },
+    }
 
     local rec = announceSited()
     armSited(rec)
@@ -3545,51 +3823,78 @@ do
     local ph = planeHandle()
     ok(ph ~= nil, 'the aircraft is on its run-in')
     if ph then
-        ok(vehicles[ph].z >= 500.0 + (A.planeTerrainClearance or 60.0),
-            'and it is flying clear of the ridge rather than through it',
+        ok(near(vehicles[ph].z, 500.0 + (A.planeTerrainClearance or 60.0), 1e-6),
+            'and it is flying 60m clear of the ridge rather than through it',
             vehicles[ph].z)
-        -- ...WHICH IT WOULD NOT HAVE BEEN. The nominal flight plan is the
-        -- ground at the DROP POINT plus the release altitude plus
-        -- planeAltAbove, and that is 200m inside the rock here.
-        ok(12.0 + 260.0 + (A.planeAltAbove or 25.0) < 500.0,
+        -- ...WHICH IT WOULD NOT HAVE BEEN. The nominal height is the authored
+        -- ground at the DROP POINT plus planeHeight, and that is 220m inside the
+        -- rock here.
+        ok(30.0 + A.planeHeight < 500.0,
             'the nominal height really is below the ridge -- this test would '
             .. 'pass by accident otherwise')
     end
 
-    -- ═══ AND IT IS BACK ON THE FLIGHT PLAN AT THE RELEASE ═══
+    -- ═══ AND IT DOES NOT COME BACK DOWN AT THE RELEASE ═══
     --
-    -- The corridor is clipped at tRelease, so it collapses onto the drop point
-    -- as the release arrives and the highest ground in it is the ground under
-    -- the crate. The box still leaves exactly planeAltAbove beneath the
-    -- aircraft, however high the ridge behind them was.
+    -- This is the assertion that INVERTS. The corridor was clipped at tRelease
+    -- so the lift vanished exactly as the crate left, and the release geometry
+    -- was recovered by that collapse. A constant does not collapse: the
+    -- aircraft is at the same height on the release frame as on the first one,
+    -- and the geometry is recovered by arithmetic instead -- the crate leaves at
+    -- `rec.gz + altitude` and the aircraft holds `rec.gz + planeHeight`, so the
+    -- gap is planeAltAbove wherever the pair happen to be.
+    local before = ph and vehicles[ph].z
     gameMs = gameMs + A.planeLeadMs
     render()
     if ph and vehicles[ph] then
-        ok(near(vehicles[ph].z, 12.0 + 260.0 + (A.planeAltAbove or 25.0), 1e-6),
-            'at the release it is exactly where the flight plan says',
+        ok(near(vehicles[ph].z, before, 1e-6),
+            'at the release it is at exactly the height it started at',
             vehicles[ph].z)
         local mv = crateMove()
-        ok(mv and near(vehicles[ph].z - mv.z, A.planeAltAbove or 25.0, 1e-6),
-            'and exactly planeAltAbove over the crate that just left it',
-            mv and (vehicles[ph].z - mv.z))
+        ok(mv and near(mv.z, 30.0 + A.altitude, 1e-6),
+            'and the crate leaves from the authored release height',
+            mv and mv.z)
+        ok(mv and near((30.0 + A.planeHeight) - mv.z,
+                       A.planeAltAbove or 25.0, 1e-6),
+            'which is exactly planeAltAbove under the nominal flight height')
     end
 
-    -- FLAT GROUND IS NOT A LIFT. The same corridor over the same ground with no
-    -- ridge in it must write the nominal height and nothing else -- otherwise
-    -- this feature is a permanent altitude increase wearing a probe.
+    -- FLAT GROUND IS NOT A LIFT. Nothing authored under the route must write the
+    -- nominal height and nothing else -- otherwise this feature is a permanent
+    -- altitude increase wearing a table.
     clientReset()
     local flat = announceSited()
     armSited(flat)
     render()
     local ph2 = planeHandle()
-    ok(ph2 and near(vehicles[ph2].z, 12.0 + 260.0 + (A.planeAltAbove or 25.0),
-                    1e-6),
-        'over flat ground the aircraft flies its nominal height exactly',
+    ok(ph2 and near(vehicles[ph2].z, 30.0 + A.planeHeight, 1e-6),
+        'with nothing authored under the route it flies exactly 250m up',
         ph2 and vehicles[ph2].z)
 
-    -- AND A PROBE THAT ANSWERS NOTHING IS TODAY'S BEHAVIOUR, not a crash and
-    -- not a lift. `ground.ok = 0` is the shape that matters: 0 is truthy in Lua
-    -- and this project has shipped that six times.
+    -- A POI OFF THE BEARING IS NOT UNDER THE ROUTE. Same summit, moved to the
+    -- side: the aircraft never crosses it, so it must not lift for it.
+    clientReset()
+    BR.Config.Map.POIs = {
+        { id = 'aside', x = 100.0, y = 200.0 + 900.0, z = 500.0,
+          radius = 60.0 },
+    }
+    local aside = announceSited()
+    armSited(aside)
+    render()
+    local ph4 = planeHandle()
+    ok(ph4 and near(vehicles[ph4].z, 30.0 + A.planeHeight, 1e-6),
+        'a summit 900m off the bearing does not raise the aircraft',
+        ph4 and vehicles[ph4].z)
+
+    -- ═══ AND A PROBE THAT ANSWERS NOTHING NO LONGER MOVES THE AIRCRAFT AT ALL
+    --     ═══
+    --
+    -- This case used to be the fail-open path and it was the whole flight in
+    -- practice. It is now unreachable by construction: the height is solved from
+    -- the record and the table, so a blind client flies the identical route. The
+    -- 0 shape still matters for the CRATE's landing height, which is the probe's
+    -- remaining job -- 0 is truthy in Lua and this project has shipped that six
+    -- times.
     clientReset()
     ground.ok = 0
     local blind = announceSited()
@@ -3598,9 +3903,8 @@ do
     local ph3 = planeHandle()
     ok(ph3 ~= nil, 'a blind probe still builds the aircraft')
     if ph3 then
-        ok(near(vehicles[ph3].z, (blind.gz or 0.0) + 260.0
-                                 + (A.planeAltAbove or 25.0), 1e-6),
-            'and flies it off the POI\'s authored height, exactly as before',
+        ok(near(vehicles[ph3].z, (blind.gz or 0.0) + A.planeHeight, 1e-6),
+            'and flies it at exactly the same height a sighted one gets',
             vehicles[ph3].z)
     end
 end
@@ -3637,8 +3941,26 @@ do
     announce()
     render()
     eq(#shots, 0, 'nothing is fired')
-    ok((BR.Flare.failed or 0) > 0, 'and the failure is COUNTED rather than '
-        .. 'silent -- /brairdrop prints it')
+    -- ═══ AND IT IS NOT EVEN ATTEMPTED, WHICH IS THE 2026-08-23 CHANGE ═══
+    --
+    -- It used to be attempted, fail inside client/flares.lua and be counted
+    -- there -- and getting to that counter meant walking into loadWeapon's
+    -- `Citizen.Wait(50)` loop ON THE RENDER PATH, which is a spanned frame and
+    -- is what /brperf measured at 55ms. primeAssets asks for the asset at the
+    -- announcement instead and place() refuses to call flares.lua at all until
+    -- it has one. A frame that cannot light a flare lights none; it does not
+    -- wait five seconds to find that out.
+    --
+    -- THE DIAGNOSTIC DID NOT GO AWAY, IT MOVED AND GOT BETTER. `BR.Flare.failed`
+    -- said "something went wrong lighting a flare"; /brairdrop now names which
+    -- half is missing before anything is attempted.
+    local printed = {}
+    local realPrintFn = print
+    print = function(s) printed[#printed + 1] = tostring(s) end
+    commands['brairdrop'](0, {}, '')
+    print = realPrintFn
+    ok(table.concat(printed, '\n'):find('flares ready false', 1, true) ~= nil,
+        'and /brairdrop says why, before anything is attempted')
     eq(entCount(), 2, 'but the crate and its canopy still arrive')
 
     gameMs = gameMs + A.descentMs
@@ -3888,13 +4210,23 @@ do
     render()
     local last = crateMove()
     ok(last ~= nil, 'the crate is positioned')
-    ok(near(last.z, ground.z + 260.0, 0.001), 'starting 260m above the ground')
+    -- ═══ THE RELEASE END IS AUTHORED AND THE LANDING END IS PROBED
+    --     (2026-08-23) ═══
+    --
+    -- It used to be `ground.z + alt` at BOTH ends, which is why a crate could
+    -- hang below the Cargobob that dropped it: the aircraft flies off the
+    -- authored `rec.gz` -- the only height that answers at a kilometre -- and
+    -- the probe here says 12 where the POI is authored at 30. The box now leaves
+    -- from 30 + 260 and arrives at the probed 12, interpolating between them.
+    ok(near(last.z, rec.gz + 260.0, 0.001),
+        'starting 260m above the AUTHORED ground, where the aircraft is')
     ok(near(last.x, rec.x, 0.001), 'over the POI')
 
     gameMs = gameMs + 15000
     render()
     last = crateMove()
-    ok(near(last.z, ground.z + 130.0, 0.001), 'halfway down halfway through')
+    ok(near(last.z, (rec.gz + 260.0 + ground.z) / 2, 0.001),
+        'halfway between the two of them, halfway through')
 
     -- EVERY PART FALLS WITH IT. The canopy is a separate object, so "the crate
     -- is at the right height" says nothing about it -- and a canopy left at the
@@ -3962,15 +4294,29 @@ do
     -- false for a yes. And IN LUA 0 IS TRUTHY, so `if v then` is true for a no.
     -- A fix has to survive both rows or it has only moved the fault.
 
+    -- ═══ MEASURED AT TOUCHDOWN, NOT AT THE RELEASE (2026-08-23) ═══
+    --
+    -- The release height is authored now and the probe has nothing to do with
+    -- it, so asking about the first frame would give the same answer for a probe
+    -- that said yes, a probe that said no and a probe that was never called.
+    -- The LANDING is where the probe's answer lives, so that is where both rows
+    -- below are read -- one frame short of tLand, because at tLand the crate is
+    -- deleted and there is nothing left to measure.
+    local function crateNearTouchdown(span)
+        gameMs = gameMs + span - 1
+        render()
+        return crateMove()
+    end
+
     -- The probe says NO, with a zero. A guard written `if ok then` would take
-    -- the zero as a yes and fall to the probe's garbage z instead of the POI's
-    -- authored height.
+    -- the zero as a yes and fall toward the probe's garbage z instead of the
+    -- POI's authored height.
     clientReset()
     ground.ok, ground.z = 0, -9999.0
     local rec = announce(260.0, 30000)
     render()
-    local last = crateMove()
-    ok(near(last.z, rec.gz + 260.0, 0.001),
+    local last = crateNearTouchdown(30000)
+    ok(last and last.z > rec.gz - 1.0,
         'a probe answering 0 is a refusal, so the POI height stands in',
         last and last.z)
 
@@ -3980,9 +4326,10 @@ do
     ground.ok, ground.z = 1, 44.0
     announce(260.0, 30000)
     render()
-    last = crateMove()
-    ok(near(last.z, 44.0 + 260.0, 0.001),
-        'a probe answering 1 is an answer, and it is used', last and last.z)
+    last = crateNearTouchdown(30000)
+    ok(last and near(last.z, 44.0, 0.05),
+        'a probe answering 1 is an answer, and the crate lands on it',
+        last and last.z)
 
     -- HasNamedPtfxAssetLoaded gets the same pair, on the OBJECT route, which is
     -- the only one that starts a particle at all. A 0 must be a refusal...
@@ -4337,12 +4684,25 @@ do
     render()
     local crate = oneEnt()
     ok(crate ~= nil, 'the crate exists')
-    -- At the release it is `alt` above the ground it is falling to.
-    ok(near(crate.z, 84.0 + rec.alt, 0.001),
+    -- ═══ READ AT TOUCHDOWN, NOT AT THE RELEASE (2026-08-23) ═══
+    --
+    -- The release height is the AUTHORED one now, because that is where the
+    -- aircraft is; the probe's answer is the LANDING height. So the question
+    -- this block has always asked -- "does it come down on the roof or on the
+    -- street inside the building" -- is a question about the far end of the
+    -- fall, and it is read one frame before tLand, where the crate still exists.
+    ok(near(crate.z, rec.gz + rec.alt, 0.001),
+        'it leaves from the authored height, under the aircraft',
+        ('%.1f'):format(crate.z))
+    gameMs = gameMs + A.descentMs - 1
+    render()
+    local landing = crateMove()
+    ok(landing and near(landing.z, 84.0, 0.05),
         'and it is falling to the ROOF the probe found, not to the authored '
         .. 'street below it',
-        ('%.1f, roof %.1f, authored %.1f'):format(crate.z, 84.0, rec.gz))
-    ok(not near(crate.z, rec.gz + rec.alt, 0.001),
+        landing and ('%.1f, roof %.1f, authored %.1f')
+            :format(landing.z, 84.0, rec.gz))
+    ok(landing and not near(landing.z, rec.gz, 1.0),
         'which is the height that used to sink it into the building')
 
     -- AND THE VERDICT IS STILL TAKEN, because /brairdrop prints it and "it came
@@ -4364,10 +4724,12 @@ do
     clientReset()
     ground.z = 84.0
     reachable, reachWhy = true, 'ok'
-    local rec2 = announce()
+    announce()
     render()
-    local crate2 = oneEnt()
-    ok(crate2 ~= nil and near(crate2.z, 84.0 + rec2.alt, 0.001),
+    gameMs = gameMs + A.descentMs - 1
+    render()
+    local crate2 = crateMove()
+    ok(crate2 ~= nil and near(crate2.z, 84.0, 0.05),
         'a reachable probe is used as-is',
         crate2 and ('%.1f'):format(crate2.z) or 'no crate')
 end
