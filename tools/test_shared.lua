@@ -9201,6 +9201,426 @@ do
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- The storm: WHOSE BODY the client reads it from.
+--
+-- "Storms are not synced between screens when spectating" -- the owner,
+-- two-player playtest, 2026-08-23 (#225).
+--
+-- NOTHING HAD DESYNCED. The record goes to every src in the match with no state
+-- filter, and BR.StormAt is pure over (record, synced clock), so both screens
+-- solve the identical circle to the millisecond -- which is exactly why the
+-- purple curtain and the two map rings, drawn at absolute world coordinates,
+-- agreed on both. Everything else in client/storm.lua measured from
+-- GetEntityCoords(PlayerPedId()): a corpse lying wherever the spectator died.
+--
+-- BOTH DIRECTIONS OF THE REPORT ARE PINNED BELOW, because answering only one of
+-- them is how this comes back:
+--
+--   * watch somebody SAFE from a corpse out in the storm and the screen must
+--     stop being red and raining;
+--   * watch somebody CAUGHT from a corpse safe inside and the sky must go
+--     thunderous -- which "no storm effects for a ghost" would NOT do, and
+--     which is the second half the owner filed;
+--   * and a LIVING viewer -- including an admin spectating while mid-fight in
+--     their own match -- must still read their own body, or the fix trades one
+--     silent death for another.
+--
+-- All three bands are covered separately: the 10Hz readout, the per-frame
+-- distance push, and the column wall. A fix applied to one of them would be
+-- overwritten by the next.
+-- ---------------------------------------------------------------------------
+
+describe('storm / viewpoint')
+do
+    local function pt(x, y, z) return { x = x, y = y, z = z or 30.0 } end
+
+    local PED = 1
+
+    --- One client with the real client/storm.lua on the real loop.
+    local function newStormClient()
+        local env = newSandbox()
+        local C = {
+            now = 100000,
+            envelopes = {}, weather = {}, tc = {}, blips = {},
+            markers = {}, prints = {},
+            pedAt = pt(0.0, 0.0),
+        }
+
+        env.GetGameTimer = function() return C.now end
+        env.print = function(...)
+            local parts = {}
+            for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+            C.prints[#C.prints + 1] = table.concat(parts, ' ')
+        end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey       = function(s) return #tostring(s) end
+        env.PlayerId         = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+        env.AddEventHandler  = function() end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand  = function() end
+        env.TriggerServerEvent = function() end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+
+        loadInto(env, SANDBOX_LIB)
+
+        -- THE CORPSE NEVER MOVES ITSELF. client/spectate.lua leaves the body
+        -- where it fell on purpose, so this native answers the same point all
+        -- session long -- which is the whole shape of the bug.
+        env.PlayerPedId = function() return PED end
+        env.GetEntityCoords = function()
+            return pt(C.pedAt.x, C.pedAt.y, C.pedAt.z)
+        end
+
+        -- The HUD envelope is the only wire this file speaks on.
+        env.TriggerEvent = function(name, key, payload)
+            if name == 'br:ui:sendLocal' and key == env.BR.Nui.STORM then
+                C.envelopes[#C.envelopes + 1] = payload
+            end
+        end
+
+        -- The colour grade.
+        env.SetTimecycleModifier         = function(n) C.tc.name = n end
+        env.SetTimecycleModifierStrength = function(v) C.tc.strength = v end
+        env.ClearTimecycleModifier       = function() C.tc.name = nil end
+        env.AnimpostfxPlay = function() end
+        env.AnimpostfxStop = function() end
+
+        -- The sky. Only the overtime blend is a decision about who is being
+        -- watched; the rest is the drying schedule.
+        env.SetWeatherTypeOvertimePersist = function(w)
+            C.weather[#C.weather + 1] = w
+        end
+        env.SetWeatherTypeNowPersist = function() end
+        env.ClearWeatherTypePersist  = function() end
+        env.SetRainLevel             = function() end
+
+        env.DrawMarker = function(_, x, y, z)
+            C.markers[#C.markers + 1] = { x = x, y = y, z = z }
+        end
+        env.GetGroundZFor_3dCoord = function() return false, 0.0 end
+
+        -- Blips are tagged by the native that made them, so the arrow can be
+        -- told from the two radius rings without matching display text.
+        local handle = 100
+        local function newBlip(kind, x, y)
+            handle = handle + 1
+            C.blips[handle] = { kind = kind, x = x, y = y, exists = true }
+            return handle
+        end
+        env.AddBlipForCoord     = function(x, y) return newBlip('arrow', x, y) end
+        env.RemoveBlip          = function(h)
+            if C.blips[h] then C.blips[h].exists = false end
+        end
+        env.DoesBlipExist       = function(h)
+            return C.blips[h] ~= nil and C.blips[h].exists
+        end
+        env.SetBlipSprite       = function() end
+        env.SetBlipColour       = function() end
+        env.SetBlipScale        = function() end
+        env.SetBlipAsShortRange = function() end
+        env.SetBlipCoords       = function(h, x, y)
+            if C.blips[h] then C.blips[h].x, C.blips[h].y = x, y end
+        end
+        env.SetBlipRotation     = function(h, rot)
+            if C.blips[h] then C.blips[h].rot = rot end
+        end
+
+        loadInto(env, { 'br_core/client/main.lua' })
+        env.BR.Native = env.BR.Native or {}
+        env.BR.Native.radiusBlip = function(h, x, y)
+            if h and C.blips[h] and C.blips[h].exists then
+                C.blips[h].x, C.blips[h].y = x, y
+                return h
+            end
+            return newBlip('radius', x, y)
+        end
+        env.BR.Native.blipName = function(h, name)
+            if C.blips[h] then C.blips[h].name = name end
+        end
+
+        loadInto(env, { 'br_core/client/storm.lua' })
+
+        env.BR.State.match.state = env.BR.MatchState.PLAYING
+        env.BR.State.me.state    = env.BR.PlayerState.ALIVE
+        -- A PHASE-2 HOLD, deliberately: the free-loot rule that zeroes dps is
+        -- `phase <= 1`, so a later phase's hold is the one shape where the
+        -- storm is both stationary and genuinely hurting. Nothing in these
+        -- cases then depends on how long the suite takes to run.
+        env.BR.State.storm = {
+            phase = 2,
+            cx0 = 0.0, cy0 = 0.0, r0 = 200.0,
+            cx1 = 0.0, cy1 = 0.0, r1 = 200.0,
+            tStart = 0, tWait = 600000, tShrink = 60000,
+            dps = 4.0,
+        }
+
+        C.env = env
+
+        --- Run TICK passes 1.5s apart -- past the sky's holdMs hysteresis, so a
+        --- settled decision has actually reached the weather.
+        function C.tick(n)
+            for _ = 1, (n or 1) do
+                C.now = C.now + 1500
+                env.BR.Loop.step(env.BR.Loop.TICK)
+            end
+        end
+
+        function C.frame()
+            C.now = C.now + 16
+            env.BR.Loop.step(env.BR.Loop.FRAME)
+        end
+
+        --- Put a session on this client. `point` is what the eased camera is
+        --- looking at; nil is the first frames, before the feed lands.
+        function C.spectate(point)
+            env.BR.Spectate = {
+                active     = function() return true end,
+                watchPoint = function() return point end,
+            }
+        end
+
+        function C.last() return C.envelopes[#C.envelopes] end
+
+        function C.arrow()
+            for _, b in pairs(C.blips) do
+                if b.exists and b.kind == 'arrow' then return b end
+            end
+            return nil
+        end
+
+        --- BR.Loop.step pcalls every callback and prints the failure, so a
+        --- storm callback that threw would leave a green suite behind it.
+        function C.errored()
+            for _, line in ipairs(C.prints) do
+                if line:find('errored', 1, true) then return line end
+            end
+            return nil
+        end
+
+        return C
+    end
+
+    local REDMIST = BR.Config.Storm.fx.timecycle
+
+    -- A LIVING PLAYER IS UNCHANGED, and that is half the point of the fix.
+    do
+        local C = newStormClient()
+        C.pedAt = pt(900.0, 0.0)
+        C.tick(3)
+
+        local e = C.last()
+        ok(C.errored() == nil, 'the storm callbacks run clean', C.errored())
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'a living player 900m out from a 200m circle reads 700m outside',
+           e and e.edgeDistance)
+        ok(C.arrow() ~= nil, 'and gets the way-home arrow')
+        ok(C.weather[#C.weather] == 'THUNDER', 'and a thunderstorm',
+           tostring(C.weather[#C.weather]))
+        ok(C.tc.name == REDMIST, 'and the storm colour grade',
+           tostring(C.tc.name))
+    end
+
+    -- THE REPORT, FIRST HALF: red and raining while the person on screen is
+    -- standing in the sun.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.pedAt = pt(900.0, 0.0)          -- the corpse, out in the storm
+        C.spectate(pt(0.0, 0.0))          -- the squadmate, dead centre
+        C.tick(3)
+
+        local e = C.last()
+        ok(C.errored() == nil, 'the spectating pass runs clean', C.errored())
+        ok(e ~= nil and near(e.edgeDistance, -200.0, 0.5),
+           'the HUD counts metres from the WATCHED player -- 200m inside, '
+           .. 'where they are actually standing -- not 700m out at the corpse',
+           e and e.edgeDistance)
+        ok(C.arrow() == nil,
+           'and there is no way-home arrow, because the person on screen is '
+           .. 'already home')
+        ok(C.weather[#C.weather] ~= 'THUNDER',
+           'the sky over the shot stays clear', tostring(C.weather[#C.weather]))
+        ok(C.tc.name == nil,
+           'and no REDMIST grade is laid over a player standing in the sun',
+           tostring(C.tc.name))
+    end
+
+    -- THE REPORT, SECOND HALF: "watch a squadmate die in the storm and your sky
+    -- stays clear". This is the case that rules out fixing it by switching a
+    -- spectator's storm off -- the effects have to move, not vanish.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.pedAt = pt(0.0, 0.0)            -- the corpse, safe in the middle
+        C.spectate(pt(900.0, 0.0))        -- the squadmate, out in it
+        C.tick(3)
+
+        local e = C.last()
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'the readout is the watched player 700m outside, not the corpse '
+           .. 'safe at the centre', e and e.edgeDistance)
+        ok(C.arrow() ~= nil, 'the way-home arrow appears for them')
+        ok(C.weather[#C.weather] == 'THUNDER',
+           'the sky over the shot goes thunderous',
+           tostring(C.weather[#C.weather]))
+        ok(C.tc.name == REDMIST,
+           'and the grade comes with it', tostring(C.tc.name))
+    end
+
+    -- ═══ THE EFFECTS GATE IS THE SESSION, NOT THE PLAYER STATE ═══
+    --
+    -- Today a spectator falls through storm.state's `affected` test as DEAD,
+    -- because BR.PlayerState.SPECTATING is read in six places and assigned in
+    -- none (client/state.lua:503 says so, and grep agrees). #233 is the rework
+    -- that finally assigns it -- and on the day it lands, a gate spelled
+    -- "ALIVE or DBNO or DEAD" would silently switch the spectator's sky and
+    -- grade back off, re-filing half of #225 with nothing to point at.
+    --
+    -- So the case is pinned NOW, against the state #233 will produce. It is
+    -- the assertion that makes gating on the session load-bearing rather than
+    -- merely better-worded.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.SPECTATING
+        C.pedAt = pt(0.0, 0.0)
+        C.spectate(pt(900.0, 0.0))
+        C.tick(3)
+
+        local e = C.last()
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'a viewer already carrying #233 state reads the watched player',
+           e and e.edgeDistance)
+        ok(C.weather[#C.weather] == 'THUNDER',
+           'and keeps the sky over the shot -- the session decides this, not '
+           .. 'a list of player states that SPECTATING is not on',
+           tostring(C.weather[#C.weather]))
+        ok(C.tc.name == REDMIST, 'and the grade with it', tostring(C.tc.name))
+    end
+
+    -- BOTH BODIES OUTSIDE, IN DIFFERENT DIRECTIONS. Everything above could in
+    -- principle pass on a client that merely switched the storm off while
+    -- spectating; this cannot. The arrow parks at the nearest safe point just
+    -- inside the target edge, so its coordinates name the body the bearing was
+    -- taken from.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.pedAt = pt(900.0, 0.0)          -- corpse: due EAST of the circle
+        C.spectate(pt(0.0, 900.0))        -- watched: due NORTH of it
+        C.tick(3)
+
+        local a = C.arrow()
+        ok(a ~= nil, 'both bodies are outside, so there is an arrow either way')
+        ok(a ~= nil and near(a.x, 0.0, 0.5) and near(a.y, 175.0, 0.5),
+           'and it points home from the WATCHED player north of the circle, '
+           .. 'not from the corpse east of it',
+           a and (tostring(a.x) .. ', ' .. tostring(a.y)))
+    end
+
+    -- AN ADMIN SPECTATOR IS STILL IN THEIR OWN MATCH. server/spectate.lua's
+    -- adminStart asks only that they be in game, so their body may be alive,
+    -- armed and outside the wall taking the server's damage for it. Moving
+    -- their readout onto the shot would be this same bug pointed the other
+    -- way: a HUD saying safe while the ledger bleeds them out.
+    do
+        local C = newStormClient()
+        C.pedAt = pt(900.0, 0.0)          -- their own body, out in the storm
+        C.spectate(pt(0.0, 0.0))          -- watching a suspect, safe inside
+        C.tick(3)
+
+        local e = C.last()
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'a LIVING viewer keeps their own distance while spectating',
+           e and e.edgeDistance)
+        ok(C.weather[#C.weather] == 'THUNDER',
+           'and their own weather, because their own body really is in it',
+           tostring(C.weather[#C.weather]))
+    end
+
+    -- The first frames of a session, before the 4Hz feed has landed a point.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.pedAt = pt(900.0, 0.0)
+        C.spectate(nil)
+        C.tick(3)
+
+        local e = C.last()
+        ok(C.errored() == nil,
+           'a session with no eased point yet does not throw', C.errored())
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'it falls back to the ped rather than measuring from nothing',
+           e and e.edgeDistance)
+    end
+
+    -- ═══ THE FRAME BAND IS A SECOND READ, PINNED SEPARATELY ═══
+    --
+    -- storm.edge re-reads the position every frame -- that is the entire reason
+    -- it exists, the 10Hz number having "read as laggy" at a sprint -- so a fix
+    -- applied only to the 10Hz band would be overwritten by the next frame.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.pedAt = pt(0.0, 0.0)
+        local watched = pt(900.0, 0.0)
+        C.spectate(watched)
+        C.tick(1)
+        ok(near(C.last().edgeDistance, 700.0, 0.5),
+           'the tick band sets the baseline at the watched player',
+           C.last().edgeDistance)
+
+        -- A corpse cannot walk, but prove the frame band ignores it anyway.
+        C.pedAt = pt(1200.0, 0.0)
+        local before = #C.envelopes
+        C.frame()
+        ok(#C.envelopes == before,
+           'a frame that moves only the corpse pushes nothing at all',
+           #C.envelopes - before)
+
+        watched.x = 910.0
+        C.frame()
+        local e = C.last()
+        ok(#C.envelopes > before and near(e.edgeDistance, 710.0, 0.5),
+           'the watched player moving 10m moves the readout 10m, per frame',
+           e and e.edgeDistance)
+    end
+
+    -- ═══ AND THE COLUMN WALL, THE THIRD READ ═══
+    --
+    -- 'solid' ships and draws one cylinder at the circle's own coordinates,
+    -- which is precisely why the curtain agreed across both screens. The
+    -- column renderer behind /brwallstyle centres its arc on the viewer's
+    -- bearing and probes the ground beneath them, so it is the one part of the
+    -- wall that could disagree.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.env.BR.Storm.wallStyle = 'columns'
+        -- Wide enough that the arc is a slice of the ring rather than all of
+        -- it: at r=200 every slot is drawn and centring cannot be observed.
+        C.env.BR.State.storm.r0 = 2000.0
+        C.env.BR.State.storm.r1 = 2000.0
+        C.pedAt = pt(2100.0, 0.0)         -- corpse just outside, due EAST
+        C.spectate(pt(0.0, 2100.0))       -- watched just outside, due NORTH
+        C.frame()
+
+        local north, east = 0, 0
+        for _, m in ipairs(C.markers) do
+            if m.y > 1000.0 then north = north + 1 end
+            if m.x > 1000.0 then east  = east + 1 end
+        end
+        ok(C.errored() == nil, 'the column renderer runs clean', C.errored())
+        ok(#C.markers > 0, 'the column renderer drew something', #C.markers)
+        ok(north == #C.markers and east == 0,
+           'every column stands on the arc the CAMERA is looking at, not the '
+           .. 'arc above the corpse',
+           ('north %d / east %d of %d'):format(north, east, #C.markers))
+    end
+end
+
 -- ═══════════════════════════════════════════════════════════════════════════
 describe('audio.catalogue')
 -- ═══════════════════════════════════════════════════════════════════════════
