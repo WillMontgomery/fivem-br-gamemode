@@ -52,19 +52,24 @@
      br_core/client/screen.lua). --safe-x/--safe-y are the LEFT and TOP insets
      under the names the HUD has always positioned by.
 
-     THE FOUR ARE NOT ONE NUMBER. The engine's inset is a physical distance, so
-     as a PERCENTAGE the horizontal one is the vertical one divided by the
-     aspect ratio -- 3.2% of height is 1.8% of width on 16:9, and much less than
-     that on an ultrawide, where the engine also pushes the whole box inward.
-     The old fallbacks here were 2.2%/3.2% while Lua published one number for
-     both, so the stylesheet and the game never agreed even on 16:9.
+     THE FOUR ARE NOT ONE NUMBER -- but they ARE one number on 16:9, and the
+     round that made them four got the reason wrong. It said the engine's inset
+     is a physical distance, so 3.2% of height is 1.8% of width. It is not.
+     CHudTools::GetMinSafeZone computes `(width - width * safezoneSize) * 0.5`
+     and divides by width, and the same for height: the SAME PERCENTAGE of each
+     axis, so all four are (1 - safeZoneSize) / 2 and the old single inset was
+     right about that much.
+
+     What actually makes them four is the SUPERWIDE OFFSET, which the same
+     function adds to the left and right edges only, past 16:9 -- see
+     --hud-left below. Vertical never moves.
 
      These values are the harness fallback and the first frame in game: a 16:9
-     screen at the 3.2%-of-height inset this file has always assumed. The real
-     numbers come from the engine, and `/brprobe` prints them. */
-  --safe-x: 1.8%;
+     screen at the 3.2% inset this file has always assumed. The real numbers
+     come from the engine, and `/brprobe` prints them. */
+  --safe-x: 3.2%;
   --safe-y: 3.2%;
-  --safe-r: 1.8%;
+  --safe-r: 3.2%;
   --safe-b: 3.2%;
 
   /* Baseline for the TOP ROW: the safe-zone top plus the height of GTA's own
@@ -87,13 +92,45 @@
 
      The fallbacks are what Lua sends on a 16:9 screen at the inset above: the
      radar's map area is screenHeight/4 wide and screenHeight/5.674 tall
-     (glitchdetector/fivem-minimap-anchor), so 25vh of width is 14.06vw at 16:9,
-     and 100/5.674 is 17.63vh of height. They were 20.8/19.5 -- numbers that
-     matched nothing Lua has ever published. */
-  --map-left: 1.8vw;
+     (the FiveM cookbook's frontend.xml figures, and Dalrae1/MinimapPositionFiveM),
+     so 25vh of width is 14.06vw at 16:9, and 100/5.674 is 17.63vh of height.
+     They were 20.8/19.5 -- numbers that matched nothing Lua has ever
+     published. */
+  --map-left: 3.2vw;
   --map-bottom: 3.2vh;
   --map-w: 14.06vw;
   --map-h: 17.63vh;
+
+  /* ═══ THE HUD'S FRAME, WHICH IS THE MINIMAP'S BOX AND NOT THE VIEWPORT ═══
+
+     "See the minimap near the center of the screen? That's where we want our
+     bars to be. this should include our voice chat, squad panel, inventory,
+     chat, etc"  -- the owner, 2026-08-23, over a real 32:9 screenshot.
+
+     Past 16:9 the engine pushes its own interface into a centred 16:9 box and
+     will not let the radar out of it. That is deliberate, and it is in RAGE's
+     source rather than in anyone's judgement: CHudTools::GetMinSafeZone adds
+     `(1 - (16/9) / aspect) * 0.5` to the safe zone's left edge and takes it
+     off the right, on any screen where `aspect > 16/9`. nta, on the Cfx forum:
+     the radar "is supposed to be 16:9-clamped (imagine playing on a 32:9
+     monitor and having to twist your neck to even see the HUD) according to
+     R*". citizenfx/fivem#2719 is the same behaviour reported as a bug.
+
+     So there are two rectangles once the panel is wide: the SAFE ZONE and the
+     box the engine actually draws in. They are the same rectangle at 16:9,
+     where that offset is zero -- which is why every surface in this file could
+     read --safe-x and --safe-r for a year and look perfectly correct.
+
+     The HUD's left and right edges are these. The TOP and BOTTOM are still the
+     safe zone's: the offset is applied to x0 and x1 only, and there is nothing
+     for a vertical pair to correct.
+
+     --hud-left IS --map-left, aliased rather than published twice, so the
+     minimap's edge and the HUD's left edge cannot drift apart. Overwritten at
+     runtime from the game; the fallbacks are what Lua sends at 16:9, where
+     they equal --safe-x and --safe-r exactly. */
+  --hud-left: var(--map-left);
+  --hud-right: 3.2vw;
 
   /* How far the vitals strip hangs BELOW the radar's bottom edge. One number,
      because the right clearance depends on the player's safe-zone slider and
@@ -382,11 +419,24 @@
 
    The inward pull it was hand-rolling is the engine's own job, and Lua now
    reads the engine's answer instead of approximating one, so nothing is lost
-   by deleting it. check-ui R12 fails the build if a transform comes back. */
+   by deleting it. check-ui R12 fails the build if a transform comes back.
+
+   THE HORIZONTAL PADDING IS THE HUD'S FRAME, NOT THE SAFE ZONE, for the reason
+   --hud-left carries: past 16:9 the minimap stays inside the engine's centred
+   layout box while the safe zone follows the panel, and this box is meant to
+   describe where the HUD lives. The vertical padding is still the safe zone's,
+   which is the same thing.
+
+   AND NONE OF IT POSITIONS ANYTHING. Every child in Hud.tsx is `absolute` or
+   `fixed`, and an out-of-flow box resolves against its ancestor's PADDING box
+   -- which is the full viewport here, padding included. So this declaration is
+   the box's own description and the children each name an edge; changing it
+   moves nothing on its own, and leaving it disagreeing with them would be a
+   trap for whoever adds the first in-flow child. */
 .hud-safe {
   position: fixed;
   inset: 0;
-  padding: var(--safe-y) var(--safe-r) var(--safe-b) var(--safe-x);
+  padding: var(--safe-y) var(--hud-right) var(--safe-b) var(--hud-left);
   box-sizing: border-box;
   pointer-events: none;
 }

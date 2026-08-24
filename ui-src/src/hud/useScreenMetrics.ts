@@ -6,9 +6,11 @@ import type { ScreenPayload } from '../bridge/types'
  * Applies the game's real screen metrics to CSS custom properties.
  *
  * Everything in the HUD positions against the safe-zone rectangle
- * (--safe-x/--safe-y/--safe-r/--safe-b) and the minimap rectangle (--map-*),
- * so writing them here is enough to relayout the whole interface. No component
- * needs to know the resolution, and nothing works out a margin of its own.
+ * (--safe-x/--safe-y/--safe-r/--safe-b), the minimap rectangle (--map-*) and
+ * the HUD frame those two are NOT the same as on an ultrawide
+ * (--hud-left/--hud-right), so writing them here is enough to relayout the
+ * whole interface. No component needs to know the resolution, and nothing
+ * works out a margin of its own.
  *
  * FOUR EDGES, NOT TWO. Lua asks the engine for each corner of the safe zone
  * rather than deriving one inset from GetSafeZoneSize, because the horizontal
@@ -50,6 +52,27 @@ export function useScreenMetrics(): ScreenPayload | null {
     if (d.mapBottom != null) root.setProperty('--map-bottom', `${d.mapBottom}vh`)
     if (d.mapW != null)      root.setProperty('--map-w',      `${d.mapW}vw`)
     if (d.mapH != null)      root.setProperty('--map-h',      `${d.mapH}vh`)
+
+    // ═══ THE HUD'S FRAME -- THE MINIMAP'S BOX, NOT THE VIEWPORT'S EDGES ═══
+    //
+    // The right edge of the box the minimap lives in. Its LEFT edge is
+    // --map-left, aliased as --hud-left in index.css rather than written twice
+    // here, because the minimap's edge and the HUD's left edge are the same
+    // edge and a second copy is a second thing to drift.
+    //
+    // WHY THERE IS A FRAME AT ALL. The engine keeps its own interface inside a
+    // 16:9 box centred in the viewport and will not move the minimap out of it
+    // (citizenfx/fivem#2719); the safe zone, by the same report, follows the
+    // panel correctly. At 16:9 that is one rectangle and every surface could
+    // read --safe-x/--safe-r and look right. At 32:9 they are hundreds of
+    // pixels apart, and the owner's screenshot is what that looks like: the
+    // map near the middle, the health bars on the far left, the inventory on
+    // the far right.
+    //
+    // OLDER PAYLOADS FALL BACK TO THE SAFE ZONE, which is exactly the old
+    // behaviour -- right on 16:9, wrong on an ultrawide, and no worse than not
+    // writing the variable at all.
+    root.setProperty('--hud-right', `${d.hudR ?? d.safeR ?? d.safeX}vw`)
 
     // THE TOP ROW'S OWN BASELINE.
     //

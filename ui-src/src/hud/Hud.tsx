@@ -169,6 +169,39 @@ function useVitalsPlacement() {
  * comes from Lua as --map-left / --map-bottom / --map-w / --map-h, in viewport
  * units, and every surface that anchors to the radar reads those same four.
  *
+ * ═══ THE MINIMAP IS THE ORIGIN, AND THE VIEWPORT IS NOT ═══
+ *
+ * ...and THAT is the layout model, restated after the first ultrawide fix got
+ * it half right. GTA lays its own interface out inside a 16:9 box centred in
+ * the viewport and will not move the minimap out of it, while the safe zone
+ * correctly follows the panel (citizenfx/fivem#2719 says both). One rectangle
+ * at 16:9; two rectangles a quarter of a screen apart at 32:9.
+ *
+ * So the HUD's left and right edges are --hud-left and --hud-right, the edges
+ * of the box the MAP is in. Every surface that reads as part of the cluster
+ * around the map uses them: the squad panel, the counters, the kill feed, the
+ * inventory column -- alongside the vitals strip, the chat column and the
+ * notice stack, which already read --map-* directly. --safe-x and --safe-r are
+ * the PANEL's edges and no HUD surface wants them; check-ui R13 says so.
+ *
+ * WHAT STAYS ON THE VIEWPORT, and why it is not an oversight:
+ *
+ *   the storm bar and warmup timer   top centre
+ *   the talking line, voice notice
+ *     and spectate hint              bottom centre
+ *   the DBNO plate                   bottom centre
+ *   the hit marker                   dead screen centre, outside .hud-safe
+ *   the storm vignette               full bleed, an effect and not an element
+ *
+ * A CENTRED THING IS ALREADY CORRECT, because the engine's box is itself
+ * centred: the middle of the frame and the middle of the viewport are the same
+ * column at every aspect ratio. Moving them would be motion with no meaning.
+ * The vignette and the hit marker are about the SCREEN -- a crosshair that
+ * drifted off the point of aim to keep the minimap company would be a bug.
+ *
+ * Vertically nothing changes anywhere: a panel wider than 16:9 has spare
+ * WIDTH, so --safe-y and --safe-b are still the engine's own top and bottom.
+ *
  * Deliberately plain Tailwind rather than HeroUI: these are read-only readouts
  * on the 60fps path, not controls. HeroUI earns its place in the lobby and
  * summary screens.
@@ -252,8 +285,13 @@ export default function Hud({ visible }: { visible: boolean }) {
         </div>
 
         {/* Top row: counters right, squad left, BOTH on --hud-top so they sit
-            at the same height and both clear the engine's help band. */}
-        <div className="absolute" style={{ top: 'var(--hud-top)', right: 'var(--safe-r)' }}>
+            at the same height and both clear the engine's help band.
+
+            RIGHT IS --hud-right, NOT --safe-r. See the note on the squad panel
+            below: the two are the same edge at 16:9 and a quarter of the screen
+            apart at 32:9, and this corner is part of the cluster the owner
+            asked to keep with the map. */}
+        <div className="absolute" style={{ top: 'var(--hud-top)', right: 'var(--hud-right)' }}>
           <Counters
             alive={hud.alive}
             squads={hud.squadsAlive}
@@ -271,7 +309,7 @@ export default function Hud({ visible }: { visible: boolean }) {
 
         <div
           className="absolute w-[16rem]"
-          style={{ top: 'calc(var(--hud-top) + 5rem)', right: 'var(--safe-r)' }}
+          style={{ top: 'calc(var(--hud-top) + 5rem)', right: 'var(--hud-right)' }}
         >
           <KillFeed entries={feed} />
         </div>
@@ -296,7 +334,16 @@ export default function Hud({ visible }: { visible: boolean }) {
           <div
             id={SQUAD_SLOT_ID}
             className="absolute w-[13rem]"
-            style={{ top: 'var(--hud-top)', left: 'var(--safe-x)' }}
+            /* LEFT IS --hud-left, WHICH IS THE MINIMAP'S EDGE, NOT --safe-x.
+               The squad panel heads a column whose other two members -- chat
+               and the vitals strip -- have always anchored to the map, and on
+               an ultrawide --safe-x is a different edge entirely: the engine
+               keeps the map inside a centred 16:9 box while the safe zone
+               follows the panel (citizenfx/fivem#2719). This panel sat on the
+               far left of a 32:9 screen with the map a quarter of a screen
+               away from it, which is the owner's screenshot. Identical to
+               --safe-x on 16:9. */
+            style={{ top: 'var(--hud-top)', left: 'var(--hud-left)' }}
           >
             <SquadPanel
               squad={squad}
@@ -375,7 +422,13 @@ export default function Hud({ visible }: { visible: boolean }) {
         {!descending && (
           <div
             className="absolute flex flex-col items-end gap-1"
-            style={{ bottom: 'var(--safe-b)', right: 'var(--safe-r)' }}
+            /* RIGHT IS --hud-right. "this should include our ... inventory"
+               (owner, 2026-08-23): on the 32:9 screenshot this column was hard
+               against the viewport's right edge while the map sat near the
+               middle. BOTTOM is still --safe-b, and deliberately: a panel wider
+               than 16:9 has spare WIDTH, so the bottom edge of the engine's
+               layout box IS the safe zone's and there is nothing to correct. */
+            style={{ bottom: 'var(--safe-b)', right: 'var(--hud-right)' }}
           >
             {/* ═══ THE CAR YOU ARE IN, ABOVE THE INVENTORY AND IN THE SAME
                     COLUMN ═══

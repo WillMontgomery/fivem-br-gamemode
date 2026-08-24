@@ -455,6 +455,21 @@ export interface ScreenPayload {
   safeT?: number
   safeR?: number
   safeB?: number
+  /** THE HUD'S FRAME, in viewport percentages, and NOT the same rectangle as
+   *  the safe zone once the display stops being 16:9.
+   *
+   *  GTA lays its own interface out inside a 16:9 box centred in the viewport
+   *  and will not move the minimap out of it (citizenfx/fivem#2719), while the
+   *  safe zone follows the panel. So `hudL`/`hudR` are the left and right edges
+   *  of the box the MINIMAP lives in, and everything clustered around the map
+   *  -- squad panel, counters, kill feed, inventory -- anchors to them instead
+   *  of to safeL/safeR. Identical to safeL/safeR on 16:9; hundreds of pixels
+   *  apart at 32:9, which is what the owner's screenshot showed.
+   *
+   *  There is no vertical pair: a wide panel has spare WIDTH, so the top and
+   *  bottom edges are still the safe zone's. */
+  hudL?: number
+  hudR?: number
   /** The native minimap's rectangle, in viewport percentages: left/bottom
    *  insets and width/height. Our health bars, the chat column and the
    *  notice stack all anchor to it -- it moves with the player's safe-zone
@@ -463,7 +478,11 @@ export interface ScreenPayload {
    *  mapW comes off the RENDERER's aspect ratio (GetAspectRatio), not off
    *  width/height: the radar is sized against screen HEIGHT, so turning that
    *  into a percentage of WIDTH is a division by the aspect, and the two
-   *  aspects agree on 16:9 and diverge exactly where it matters. */
+   *  aspects agree on 16:9 and diverge exactly where it matters.
+   *
+   *  mapLeft IS hudL. The radar sits on the left edge of the engine's layout
+   *  box, which used to be read as the left edge of the safe zone -- the same
+   *  corner at 16:9 and the whole of the ultrawide bug anywhere else. */
   mapLeft?: number
   mapBottom?: number
   mapW?: number

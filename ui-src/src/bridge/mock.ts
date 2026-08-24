@@ -229,15 +229,35 @@ const NAMES = ['Kestrel', 'Vandal', 'Nyx', 'Rook', 'Ember', 'Halcyon', 'Wraith']
    The radar rectangle and the per-edge safe zone are computed exactly as Lua
    computes them, from the same two constants. Those are not a model.
 
-   The safe zone's own SHAPE is. In game Lua asks the engine where each corner
-   landed (SetScriptGfxAlign + GetScriptGfxPosition) and does no arithmetic at
-   all; there is no engine here to ask, so this reproduces the behaviour
-   citizenfx/fivem#2719 describes -- past 16:9 the engine keeps the HUD "in the
-   center(ish) of the screen as if it was following a 16:9 aspect ratio" -- by
-   laying the safe zone out inside a centred 16:9 box. That is a MODEL OF A BUG
-   REPORT, not a measurement, and it is only ever as good as that report. The
-   authority is the machine: `/brprobe` prints the engine's real rectangle, and
-   a paste of that from an ultrawide beats anything in this file.
+   The safe zone's own SHAPE is a model, and IT WAS THE WRONG ONE -- which is
+   how a round got signed off here and shipped broken.
+
+   In game Lua asks the engine where each corner landed (SetScriptGfxAlign +
+   GetScriptGfxPosition); there is no engine here to ask. The previous version
+   modelled that as the safe zone ALREADY being inset into the centred 16:9 box
+   -- and under that model `mapLeft = safeL` is correct, every surface lined up
+   on one left edge in the browser, and it went out. On the owner's real 32:9
+   the minimap sat near the middle with the health bars hard against the
+   panel's left edge and the inventory hard against the right, which is what a
+   16:9-derived safe zone with no superwide offset in it looks like.
+
+   THE ENGINE ARITHMETIC IS KNOWN, so this no longer has to guess at it.
+   CHudTools::GetMinSafeZone (source/frontend/HudTools.cpp) builds the safe
+   zone as `(1 - safeZoneSize) / 2` of EACH axis -- the same percentage, not
+   the same physical distance, which is what this file used to have wrong on
+   the horizontal -- and then, for script callers only, adds
+   `(1 - (16/9) / aspect) * 0.5` to the left edge and subtracts it from the
+   right whenever `aspect > 16/9`. That offset is reproduced below, exactly,
+   and it is the whole of the difference between the two rectangles.
+
+   WHAT IS STILL A MODEL: whether the reading Lua gets carries that offset.
+   The gfx-align path should (it goes through the same function with the script
+   flag set); the GetSafeZoneSize fallback provably cannot, because that native
+   is the pause-menu slider and nothing else. `?safezone=viewport` (default)
+   models the second, `?safezone=box` the first, and screen.lua's intoBox()
+   handles either -- so both are worth being able to look at. The authority is
+   still the machine: `/brprobe` prints the engine's real rectangle beside the
+   offset, and a paste of that from an ultrawide beats anything here.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /** The aspect past which the engine stops widening its layout box. */
@@ -267,23 +287,37 @@ let mockSafe = 0.936
 /** null = follow the window, which is the default and the honest one. */
 let mockPreset: [number, number] | null = null
 
+/** Which of the two readings of #2719 to model -- see the block above.
+ *  `viewport` is the one the owner's 32:9 screenshot corroborates. */
+let mockSafeZone: 'viewport' | 'box' = 'viewport'
+
 function mockScreenPayload(): ScreenPayload {
   const [w, h] = mockPreset ?? [window.innerWidth, window.innerHeight]
   const aspect = h > 0 ? w / h : REF_ASPECT
 
-  // The engine's inset is a physical distance, so it is a fraction of HEIGHT on
-  // both axes -- which is the whole reason safeX and safeY are different
-  // percentages and the old single `inset` could not be both.
-  const insetPx = Math.max(0, (1 - mockSafe) * 0.5) * h
+  // The base safe zone: `(1 - safeZoneSize) / 2`, the SAME PERCENTAGE of each
+  // axis. Not the same physical distance -- GetMinSafeZone divides the x offset
+  // by width and the y offset by height, so on 16:9 all four edges are one
+  // number and the previous version's 1.8%-of-width horizontal was wrong.
+  const inset = Math.max(0, (1 - mockSafe) * 0.5) * 100
 
-  // Past 16:9, the layout box stops widening and stays centred (fivem#2719).
-  const boxW = h * Math.min(aspect, REF_ASPECT)
-  const boxLeft = (w - boxW) / 2
+  // The engine's superwide offset, verbatim from GetMinSafeZone: applied to the
+  // left and right edges only, and only past 16:9.
+  const pillar = aspect > REF_ASPECT ? ((1 - REF_ASPECT / aspect) / 2) * 100 : 0
 
-  const safeL = ((boxLeft + insetPx) / w) * 100
-  const safeR = ((w - (boxLeft + boxW - insetPx)) / w) * 100
-  const safeT = (insetPx / h) * 100
-  const safeB = (insetPx / h) * 100
+  // ...and whether the reading Lua gets already carries it. `box` is the
+  // gfx-align path (script flag set, offset applied); `viewport` is the
+  // GetSafeZoneSize fallback, which cannot carry it. See the block above.
+  const safeL = mockSafeZone === 'box' ? inset + pillar : inset
+  const safeR = safeL
+  const safeT = inset
+  const safeB = inset
+
+  // The HUD's frame, derived the way br_core/client/screen.lua derives it --
+  // including the "is the offset already in this number?" test, so the harness
+  // exercises the branch rather than assuming one side of it.
+  const hudL = safeL >= pillar ? safeL : pillar + safeL
+  const hudR = safeR >= pillar ? safeR : pillar + safeR
 
   return {
     width: w,
@@ -295,9 +329,13 @@ function mockScreenPayload(): ScreenPayload {
     safeT,
     safeR,
     safeB,
-    // The radar hangs off the safe zone's bottom-left corner, and its width is
-    // a fraction of HEIGHT turned into a fraction of WIDTH by the aspect.
-    mapLeft: safeL,
+    hudL,
+    hudR,
+    // The radar hangs off the LAYOUT BOX's bottom-left corner -- its left is
+    // the frame's, its bottom is the safe zone's, because only the horizontal
+    // axis is stretched by a wide panel. Its width is a fraction of HEIGHT
+    // turned into a fraction of WIDTH by the aspect.
+    mapLeft: hudL,
     mapBottom: safeB,
     mapW: (RADAR_W_FRAC / aspect) * 100,
     mapH: RADAR_H_FRAC * 100,
@@ -315,8 +353,15 @@ function mockScreenPayload(): ScreenPayload {
  *   ?screen=32x9        force a shape the window cannot be dragged to
  *   ?safe=1.0           the safe-zone slider at its maximum, which is where the
  *                       health/shield strip runs off the bottom of the screen
+ *   ?safezone=box       model the safe zone as being INSIDE the engine's 16:9
+ *                       layout box instead of on the panel's edges. The other
+ *                       reading of fivem#2719, and the one the previous round
+ *                       assumed -- keep it reachable, because a `/brprobe`
+ *                       paste is what decides between them and the HUD has to
+ *                       be right under either.
  *   brScreen('21x9', 0.98)      both, live, from the F12 console
  *   brScreen('window')          back to following the window
+ *   brSafeZone('box' | 'viewport')  switch the reading live
  *
  * The live form is the one that matters for #231's "re-evaluated, not decided
  * once" -- calling it repeatedly is a player dragging the slider mid-match, and
@@ -330,6 +375,9 @@ function startMockScreen(): void {
 
   const safe = Number(params.get('safe'))
   if (Number.isFinite(safe) && safe > 0) mockSafe = Math.min(1, Math.max(0.5, safe))
+
+  const zone = params.get('safezone')
+  if (zone === 'box' || zone === 'viewport') mockSafeZone = zone
 
   const push = () => emit({ k: 'screen', d: mockScreenPayload() })
 
@@ -348,7 +396,14 @@ function startMockScreen(): void {
       push()
       // eslint-disable-next-line no-console
       console.info('[mock] screen', mockScreenPayload(), 'safeZoneSize', mockSafe,
+        'safeZone', mockSafeZone,
         'shapes:', Object.keys(SCREEN_PRESETS).join(' '), 'window')
+    },
+    brSafeZone(which?: string) {
+      if (which === 'box' || which === 'viewport') mockSafeZone = which
+      push()
+      // eslint-disable-next-line no-console
+      console.info('[mock] safeZone', mockSafeZone, mockScreenPayload())
     },
   })
 }

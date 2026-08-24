@@ -536,6 +536,64 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R13  A HUD surface anchors to the MINIMAP's box, never to the panel's edges.
+//
+// #231, round two, and the reason there was a round two. The first fix read the
+// safe zone from the engine instead of computing it -- correct, and not enough.
+// It then said the minimap sits on the safe zone's bottom-left corner, which is
+// true on a 16:9 monitor and false on every wider one: citizenfx/fivem#2719
+// reports BOTH that the minimap stays "in the center(ish) of the screen as if
+// it was following a 16:9 aspect ratio" AND that "the screen safe-zone has been
+// verified to be setup correctly". Two rectangles. The gap between them is the
+// bug, and at 16:9 the gap is zero -- which is why --safe-x and --safe-r looked
+// right for a year and produced a screenshot of a 32:9 with the map near the
+// middle, the health bars hard against the left edge and the inventory hard
+// against the right.
+//
+// So: --hud-left and --hud-right, which are the edges of the box the MAP is in.
+// --safe-x and --safe-r are the PANEL's edges. They are still published, still
+// correct, and still what a full-screen menu should use -- the lobby is
+// viewport-anchored on purpose and is confirmed good on the owner's ultrawide.
+// This rule is about the HUD, which is the cluster around the map.
+//
+// --safe-y and --safe-b are NOT banned and must not be: a panel wider than 16:9
+// has spare WIDTH, so the top and bottom edges of the engine's box are the safe
+// zone's own and there is nothing there to correct.
+//
+// IT CAN FAIL. Put `var(--safe-x)` back on the squad panel and this goes red.
+// ---------------------------------------------------------------------------
+{
+  const HUD_SURFACES = files.filter((f) => {
+    const r = rel(f)
+    return r.startsWith('src/hud/')
+      || r.startsWith('src/chat/')
+      || r === 'src/screens/PlayerList.tsx'
+  })
+
+  if (HUD_SURFACES.length === 0) {
+    fail('R13 hud-frame', 'src/hud',
+      'no HUD surfaces found to check. src/hud and src/chat are where the'
+      + ' interface around the minimap lives; if they moved, point this rule at'
+      + ' the new place rather than letting it pass over nothing.')
+  }
+
+  for (const f of HUD_SURFACES) {
+    // `var(--safe-x)` only -- the prose in these files names the variable
+    // while explaining why it is the wrong one, and setProperty('--safe-x')
+    // in useScreenMetrics is the writer, not a consumer.
+    const used = [...read(f).matchAll(/var\(\s*(--safe-[xr])\s*\)/g)]
+      .map((m) => m[1])
+    if (used.length === 0) continue
+    fail('R13 hud-frame', rel(f),
+      `anchors to ${[...new Set(used)].join(', ')}, which is the PANEL's edge.`
+      + ' On an ultrawide the minimap is a quarter of a screen inboard of it'
+      + ' (fivem#2719) and this surface would sit alone out at the edge. Use'
+      + ' --hud-left / --hud-right, the edges of the box the map is in. Vertical'
+      + ' is unaffected: --safe-y and --safe-b are still right.')
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

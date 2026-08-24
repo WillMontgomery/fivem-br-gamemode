@@ -48,6 +48,87 @@ end
 local RADAR_H_FRAC = 1.0 / 5.674   -- ~0.1763
 local RADAR_W_FRAC = 0.25          -- width == height/4, of HEIGHT
 
+--- The aspect the engine lays its own interface out at. Past this it stops
+--- widening its layout box and keeps it CENTRED in the viewport.
+local REF_ASPECT = 16.0 / 9.0
+
+--- ═══ THE ENGINE'S OWN SUPERWIDE OFFSET, TRANSCRIBED ═══
+---
+--- The first fix at #231 read the safe zone from the engine instead of
+--- computing it -- right, and not enough. It then said `mapLeft = safeL`,
+--- because the radar hangs off the safe zone's bottom-left corner. That is
+--- true on a 16:9 monitor and it is the whole of the bug on anything wider.
+---
+--- THIS IS NOT A GUESS AND IT IS NOT A MODEL OF A BUG REPORT. It is RAGE's
+--- arithmetic, from CHudTools::GetMinSafeZone (source/frontend/HudTools.cpp),
+--- which insets the safe zone into a centred 16:9 box for script callers:
+---
+---     if(bScript && IsSuperWideScreen())
+---     {
+---         float fDifference = ASPECT_RATIO_16_9 / GetAspectRatio();
+---         float fMaxBounds = width * fDifference;
+---         float fResDif = width - fMaxBounds;
+---         float fOffsetAbsolute = fResDif * 0.5f;
+---         float fOffsetRelative = fOffsetAbsolute / width;
+---         x0 += fOffsetRelative;
+---         x1 -= fOffsetRelative;
+---     }
+---
+--- with `IsSuperWideScreen()` being `GetAspectRatio() > ASPECT_RATIO_16_9`.
+--- Reduced, fOffsetRelative is `(1 - (16/9) / aspect) * 0.5` -- the function
+--- below, and the reason the constant is 0.5 and not something tuned.
+---
+--- It is Rockstar's deliberate design, not a FiveM defect: nta, on the Cfx
+--- forum -- "the radar ... is supposed to be 16:9-clamped (imagine playing on
+--- a 32:9 monitor and having to twist your neck to even see the HUD)
+--- according to R*". citizenfx/fivem#2719 is the same behaviour reported as a
+--- bug: the minimap stays "in the center(ish) of the screen as if it was
+--- following a 16:9 aspect ratio".
+---
+--- SUPERWIDE IS OFF ON A MULTI-MONITOR SETUP -- IsSuperWideScreen returns
+--- false outright when the monitor config is multihead, so a surround player's
+--- radar really is at the panel edge and this returns 0 for them only if the
+--- aspect we are handed is theirs. It is why the aspect comes from
+--- GetAspectRatio rather than from the resolution, and why /brprobe prints
+--- both.
+--- @param aspect number
+--- @return number
+local function pillarFrac(aspect)
+    if type(aspect) ~= 'number' or aspect <= REF_ASPECT then return 0.0 end
+    return (1.0 - REF_ASPECT / aspect) * 0.5
+end
+
+--- Apply that offset to an edge -- IF THE ENGINE HAS NOT ALREADY APPLIED IT.
+---
+--- WHICH IT USUALLY HAS, AND THE CASE THAT MATTERS IS WHEN IT HAS NOT.
+--- safeZoneRect() below has two paths. The gfx-align read goes through
+--- CalculateHudPosition -> GetMinSafeZone with bScript set, so the offset is
+--- already in the number and there is nothing to add. THE FALLBACK CANNOT
+--- HAVE IT: it is built from GetSafeZoneSize, which in the same file is
+--- nothing but the pause-menu slider --
+---
+---     int size = SAFEZONE_SLIDER_MAX - CPauseMenu::GetMenuPreference(...);
+---     float fSafezone = (float)(100-size)*0.01f;
+---
+--- -- no width, no aspect ratio, no viewport. A rectangle derived from it is
+--- 16:9 by construction and CANNOT see the clamp, on any screen, ever. That is
+--- the path that puts the health bars on the panel's left edge while the map
+--- sits a quarter of a screen inboard, which is the owner's screenshot.
+---
+--- Rather than trusting which path ran, this ASKS: at 32:9 the offset is 25%
+--- of the screen and the safe-zone inset is about 3%, so which side of the
+--- offset the reported edge falls on IS the answer, and the two are never
+--- close enough to confuse. On 16:9 the offset is 0, every edge is already
+--- `>= 0`, and this returns its argument untouched -- the ordinary monitor
+--- never reaches the branch at all.
+--- @param edge number   the reported inset from that side, 0..1
+--- @param pillar number the engine's superwide offset on that side, 0..1
+--- @return number
+local function intoBox(edge, pillar)
+    if edge >= pillar then return edge end
+    return pillar + edge
+end
+
 --- Whether the radar is currently on screen. IsRadarHidden reflects both our
 --- own DisplayRadar calls and the pause map; guarded because a wrong native
 --- name is nil and this must never take the metrics loop down.
@@ -131,6 +212,36 @@ local function safeZoneRect()
         return l, t, r, b
     end
 
+    -- ═══ AND SAY SO, ONCE, OUT LOUD ═══
+    --
+    -- THIS FALLING THROUGH SILENTLY IS THE SHAPE OF THE ROUND THAT SHIPPED
+    -- BROKEN. The engine read is the entire fix; if it does not happen, the
+    -- HUD lays out on a 16:9 guess and looks exactly like a HUD that was never
+    -- fixed, with nothing anywhere saying which of the two it is. One console
+    -- line costs nothing and turns "the ultrawide fix did not work" into a
+    -- question with an answer.
+    --
+    -- ONCE, not per poll: this runs at the SLOW rate and a per-tick warning
+    -- would bury the log it is supposed to be readable in.
+    if not last.warned then
+        last.warned = true
+        print('[br_core] screen: SetScriptGfxAlign/GetScriptGfxPosition did not '
+            .. 'give a safe-zone rectangle -- falling back to the '
+            .. 'GetSafeZoneSize formula, which is 16:9 by construction. On an '
+            .. 'ultrawide the HUD will sit on the panel edges. Run /brprobe.')
+    end
+
+    -- The old arithmetic. It is CORRECT on 16:9 and structurally blind
+    -- everywhere else: GetSafeZoneSize is the pause-menu slider and nothing
+    -- else (CHudTools::GetSafeZoneSize -- no width, no aspect), so no
+    -- rectangle derived from it can carry the engine's superwide offset.
+    -- intoBox() in publish() puts that offset back, which is the only reason
+    -- this path is survivable on a wide panel at all.
+    --
+    -- Both axes get the same FRACTION, which is what the engine does:
+    -- GetMinSafeZone computes `offsetW = (width - width*safezoneSize) * 0.5`
+    -- and divides by width, and the same for height -- so it is the same
+    -- percentage of each axis, not the same physical distance on both.
     local safe = GetSafeZoneSize()
     local inset = (type(safe) == 'number') and ((1.0 - safe) * 0.5) or 0.032
     return inset, inset, 1.0 - inset, 1.0 - inset
@@ -149,12 +260,37 @@ local function publish()
     local safeR = (1.0 - r) * 100.0
     local safeB = (1.0 - b) * 100.0
 
+    -- ═══ AND THE HUD'S OWN FRAME, WHICH IS THE MINIMAP'S BOX, NOT THE PANEL ═══
+    --
+    -- "See the minimap near the center of the screen? That's where we want our
+    -- bars to be. this should include our voice chat, squad panel, inventory,
+    -- chat, etc" -- the owner, 2026-08-23, over a real 32:9 screenshot.
+    --
+    -- The minimap is the HUD's ORIGIN. GTA lays its own interface out inside a
+    -- 16:9 box centred in the viewport and will not move the radar out of it,
+    -- so a HUD that anchors to the viewport's edges scatters away from the map
+    -- by the width of the pillar -- invisible at 16:9, where the pillar is
+    -- zero and the two models are the same model.
+    --
+    -- HORIZONTAL ONLY. A panel wider than 16:9 has spare WIDTH; the top and
+    -- bottom edges are the safe zone's and stay that way, which is why
+    -- mapBottom below is still safeB and there is no vertical counterpart to
+    -- this. A panel NARROWER than 16:9 is the mirrored case and we have no
+    -- report of it: pillarFrac returns 0 there and nothing moves.
+    local pillar = pillarFrac(aspect)
+    local hudL = intoBox(safeL, pillar * 100.0)
+    local hudR = intoBox(safeR, pillar * 100.0)
+
     -- The minimap rectangle, so the UI can anchor our health/shield bars, the
     -- chat and the notices to the real radar wherever the player's safe-zone
     -- slider put it. RADAR_W_FRAC is a fraction of screen HEIGHT, so dividing
     -- by the RENDERER's aspect converts it to a fraction of screen WIDTH --
     -- the one place the aspect ratio enters this file, and the reason it comes
     -- from GetAspectRatio rather than from w/h.
+    --
+    -- THE WIDTH NEEDED NO CORRECTION and did not get one: it is already a
+    -- fraction of the viewport, and a narrower map on a wider panel is what
+    -- the engine actually draws. Only the map's PLACE was wrong.
     local mapW = (RADAR_W_FRAC / aspect) * 100.0
     local mapH = RADAR_H_FRAC * 100.0
 
@@ -170,9 +306,20 @@ local function publish()
         safeT   = safeT,
         safeR   = safeR,
         safeB   = safeB,
-        -- The radar rect: left/bottom match the safe zone, because the engine
-        -- anchors the radar to the safe zone's bottom-left corner.
-        mapLeft   = safeL,
+        -- THE HUD'S FRAME. The safe zone's top and bottom, and the engine's
+        -- layout box left and right. Everything clustered around the minimap
+        -- -- the squad panel, the counters, the kill feed, the inventory --
+        -- hangs off these two rather than off safeL/safeR, so the whole
+        -- interface stays with the map instead of spreading to the panel's
+        -- edges. Identical to safeL/safeR on 16:9.
+        hudL    = hudL,
+        hudR    = hudR,
+        -- The radar rect. Its BOTTOM is still the safe zone's -- the engine
+        -- anchors the radar to the safe zone's bottom-left corner and the
+        -- vertical axis is not what a wide panel stretches. Its LEFT is the
+        -- frame's, which is the correction: the safe zone's left edge is the
+        -- PANEL's on an ultrawide and the radar is not there.
+        mapLeft   = hudL,
         mapBottom = safeB,
         mapW      = mapW,
         mapH      = mapH,

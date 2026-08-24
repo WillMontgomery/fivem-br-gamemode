@@ -643,7 +643,15 @@ export default function PlayerList() {
             `max-h-full` is now a cap that means something. */}
         <div
           className="absolute flex items-center"
-          style={{ left: 'var(--safe-x)', top: band.top, bottom: band.bottom }}
+          /* --hud-left, NOT --safe-x, and for the reason this card measures
+             its neighbours at all: it lives in the left column BETWEEN the
+             squad panel and the chat log, and both of those anchor to the
+             minimap. On an ultrawide the safe zone's left edge is the panel's
+             and the map's is a quarter of a screen inboard of it (#231), so
+             --safe-x would have left this card on its own out at the edge
+             while the two boxes it is squeezed between moved in. Identical to
+             --safe-x on 16:9. */
+          style={{ left: 'var(--hud-left)', top: band.top, bottom: band.bottom }}
         >
           <div
             className="interactive plate flex max-h-full flex-col"
