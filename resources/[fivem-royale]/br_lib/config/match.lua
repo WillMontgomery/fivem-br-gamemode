@@ -798,6 +798,83 @@ BR.Config.Combat = {
     -- How many payloads /brdamagelog captures before it stops on its own. It
     -- prints every key it sees, so this is the tool that replaces guessing.
     logSamples    = 15,
+
+    --[[
+        IS ANYBODY REFUSING TO TAKE DAMAGE. (The health audit.)
+
+        server/roster.lua samples every ped's health four times a second and
+        writes it into the same `entry.hp` that BR.Damage.applyHit subtracts
+        from. The ped's health belongs to the OWNING CLIENT, so that write hands
+        back the one number the whole damage model depends on: a client that
+        pins its ped at full has its ledger restored 250ms after every hit, and
+        the server-observed death check in server/combat.lua reads the same
+        client-owned value, so the backstop misses it too.
+
+        THIS BLOCK CHANGES NOTHING ABOUT WHAT HAPPENS TO ANY PLAYER. It counts.
+        The fix is a gameplay change with a real blast radius -- the legitimate
+        upward paths are med kits, shields, revives and respawns, and a ledger
+        that refuses the engine outright would also refuse falls, fire and
+        drowning -- so it goes behind a playtest, and this goes in first. It is
+        the same order the damage validator shipped in (see `enforce` above and
+        docs/security.md): measure, prove the log is empty during honest play,
+        then act.
+
+        THE NUMBERS ARE CHOSEN TO NEVER FIRE ON HONEST PLAY, in that direction
+        deliberately. Every ambiguous sample is excused, because the exploit is
+        not one sample -- it is the same lie four times a second for a whole
+        match -- so a detector that misses its first two seconds still catches
+        it, while one that fires on a bad ping gets switched off.
+    ]]
+    healthAudit = {
+        -- OFF IS NOT A DEFAULT ANYONE HAS TO REMEMBER: this is a counter and a
+        -- console line, it touches no gameplay path, and the whole point is to
+        -- learn what honest play looks like. It is here so a playtest that
+        -- turns up noise can be quietened without a redeploy.
+        enabled = true,
+
+        -- Rounding, not evidence. Our display value and the engine's come
+        -- through different float pipelines and both get floored.
+        toleranceHp     = 2.0,
+        toleranceArmour = 2.0,
+
+        -- HOW LONG AFTER THE SERVER HURT SOMEBODY THE PED MAY STILL READ HIGH.
+        --
+        -- This is the main false-positive control and it is the reason the bar
+        -- is not tighter. The server subtracts from the ledger and TELLS the
+        -- client to hurt its own ped; between those two moments the ped is
+        -- legitimately higher, by exactly the damage in flight. That gap is one
+        -- sample interval (250ms) plus the round trip, and a player on a bad
+        -- connection is not a cheat -- so 1500ms covers a 1.2s round trip,
+        -- which is worse than anybody actually plays on.
+        hurtGraceMs = 1500,
+
+        -- HOW LONG A CONSUMABLE OR A REVIVE IS ALLOWED TO KEEP CLIMBING.
+        --
+        -- A med kit's INV_EFFECT carries a TARGET and the client walks its own
+        -- ped up to it, so the sampler reads the rise on the way past -- that is
+        -- the one honest upward path the ledger does not already own. The window
+        -- starts when the server issues the effect, so it covers the animation
+        -- and the round trip after it.
+        healSettleMs = 2000,
+
+        -- A revive or a respawn is the LEDGER leading and the ped following, so
+        -- the sample normally reads LOW rather than high. This covers the
+        -- crossover: a client that applies HEALTH_SYNC early, or a resurrection
+        -- that restores GTA's default health before our number lands.
+        settleMs = 2000,
+
+        -- WHAT EARNS AN OPERATOR LINE. Cumulative unexplained recovery within
+        -- one match, in display points.
+        --
+        -- 100 IS A WHOLE HEALTH BAR AND IT IS MEANT TO READ THAT WAY: "this
+        -- player has been handed back a full bar the server never issued".
+        -- Honest play sits at zero -- every legitimate rise is excused by name
+        -- -- so the bar is not separating signal from noise, it is waiting long
+        -- enough to be certain. A working exploit crosses it inside a single
+        -- fight; nothing else crosses it at all.
+        reportHp     = 100.0,
+        reportArmour = 100.0,
+    },
 }
 
 --[[

@@ -40,6 +40,7 @@ for _, f in ipairs({
     'shared/storm_solve.lua',
     'shared/loot_gen.lua',
     'shared/combat_solve.lua',
+    'shared/health_solve.lua',
     -- AFTER enums.lua, which it does not read at load time but whose
     -- BR.PlayerState the tests below build their views from.
     'shared/spectate_solve.lua',
@@ -10009,6 +10010,172 @@ do
        'and the exact pair it names is one the catalogue lists -- so it is a '
            .. 'call GTA\'s own scripts make, not a name off a wiki',
        move.set .. ' / ' .. move.name)
+end
+
+describe('health.audit')
+do
+    -- THE EXPLOIT THIS MEASURES, in one sentence: server/roster.lua samples the
+    -- ped's health four times a second and writes it into the same `entry.hp`
+    -- the damage arithmetic subtracts from, and the ped's health belongs to the
+    -- owning client -- so a modified client restores its own ledger 250ms after
+    -- every hit. These assertions are about the DETECTOR, which counts that and
+    -- changes nothing; the fix is a separate, playtested change.
+    local A = BR.Config.Combat.healthAudit
+    local ALIVE = { now = 10000, state = BR.PlayerState.ALIVE }
+
+    local function ctx(over)
+        local c = {}
+        for k, v in pairs(ALIVE) do c[k] = v end
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    -- ═══ THE SIGNAL ═══
+    local gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0, ctx(), A)
+    ok(gain == 70.0 and excuse == BR.HealthExcuse.COUNTED,
+        'a ped that reads a full bar over the ledger, with nothing to explain '
+            .. 'it, is counted in full',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- ═══ AND EVERY HONEST WAY TO READ HIGH, ONE AT A TIME ═══
+    --
+    -- Each of these is a REAL path in the running game, and if any of them ever
+    -- starts counting, the detector is broken and an honest player is about to
+    -- be accused. They are asserted separately rather than as one "no false
+    -- positives" case so that a failure names which window closed.
+
+    -- The world hurting somebody. The engine still owns falls, fire, drowning
+    -- and cars -- the server models none of them -- so the ledger FOLLOWS the
+    -- ped down. Wrong direction; never counted.
+    gain, excuse = BR.HealthUnexplainedGain(100.0, 30.0, ctx(), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.NONE,
+        'a fall, a fire or a car reads BELOW the ledger and is never the signal',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- The single largest source of honest divergence: the server subtracted
+    -- from the ledger and the client has not applied HIT_DAMAGE yet.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ lastHitAt = 10000 - (A.hurtGraceMs - 100) }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.HURT,
+        'damage still in flight to the client is excused, which is the window a '
+            .. 'bad ping lives in',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- ...AND THE GRACE ENDS. A window that never closed would excuse the whole
+    -- match for anybody who had been shot once.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ lastHitAt = 10000 - (A.hurtGraceMs + 100) }), A)
+    ok(gain == 70.0 and excuse == BR.HealthExcuse.COUNTED,
+        'and once the round trip is over the same reading counts',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- A med kit or shield. The server ISSUES the target and the client walks
+    -- its ped up to it, so the sampler reads the rise on the way past. This is
+    -- the one legitimate upward path the ledger does not already own, and it is
+    -- the reason a naive "refuse every rise" fix would break healing.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ healUntil = 10000 + 500 }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.HEALING,
+        'a med kit the SERVER issued is not a client inventing health',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- A revive or a respawn: here the LEDGER leads and the ped follows, so the
+    -- usual direction is reversed and the crossover can spike the other way.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ settleUntil = 10000 + 500 }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.SETTLING,
+        'a revive the server wrote is excused while the ped catches up',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- #191, AND IT LANDED THE SAME WEEK AS THIS DETECTOR. A downed player rides
+    -- an ambulance to a drop-off and BR.Combat.revive hands their health back on
+    -- arrival. A detector that cried wolf on the feature shipping beside it
+    -- would have been switched off in its first playtest.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ rescue = { id = 1 } }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.RESCUE,
+        'a player being rescued (#191) is never the signal',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- Only a player who can be SHOT is worth defending. A dead player's ped gets
+    -- resurrected for the spectator camera; a lobby ped is whatever the lobby
+    -- left it on. Both would read high forever and neither means anything.
+    for _, st in ipairs({ BR.PlayerState.DEAD, BR.PlayerState.LOBBY,
+                          BR.PlayerState.BUS, BR.PlayerState.DBNO }) do
+        gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+            ctx({ state = st }), A)
+        ok(gain == 0.0 and excuse == BR.HealthExcuse.NOT_LIVE,
+            ('a %s player is not audited'):format(tostring(st)),
+            ('%s / %s'):format(tostring(gain), tostring(excuse)))
+    end
+
+    -- Rounding. Two float pipelines, both floored.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 30.0 + A.toleranceHp, ctx(), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.TOLERANCE,
+        'a point of float disagreement is arithmetic, not evidence',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- ═══ AND THE ARITHMETIC CANNOT BE DISABLED BY A BAD NUMBER ═══
+    --
+    -- `nan > x` is false for every x, so a NaN sliding through would read as "no
+    -- gain" and silently switch the detector off for that player -- which is the
+    -- one failure mode an anticheat must not have.
+    local nan = 0.0 / 0.0
+    gain, excuse = BR.HealthUnexplainedGain(nan, 100.0, ctx(), A)
+    ok(gain == 0.0, 'a NaN ledger does not throw', tostring(gain))
+    gain, excuse = BR.HealthUnexplainedGain(30.0, nan, ctx(), A)
+    ok(gain == 0.0, 'nor a NaN sample', tostring(gain))
+    gain = BR.HealthUnexplainedGain(nil, 100.0, ctx(), A)
+    ok(gain == 0.0, 'and a player with no ledger yet has no opinion to contradict',
+        tostring(gain))
+
+    -- ═══ THE TALLY ═══
+    --
+    -- CUMULATIVE, because that is what makes this a good signal: the excuses
+    -- above absorb every legitimate rise, so honest play sits at zero, while the
+    -- exploit has to repeat the lie four times a second to keep working.
+    local t = nil
+    t = BR.HealthTally(t, 70.0, BR.HealthExcuse.COUNTED)
+    t = BR.HealthTally(t, 40.0, BR.HealthExcuse.COUNTED)
+    ok(t.hp == 110.0 and t.samples == 2 and t.peak == 70.0,
+        'the tally accumulates, counts samples and remembers the worst one',
+        ('%s / %s / %s'):format(tostring(t.hp), tostring(t.samples),
+            tostring(t.peak)))
+
+    -- The excuse breakdown is the false-positive audit -- it is what `/brhealth`
+    -- prints beside the totals so an operator can see WHAT was thrown away.
+    t = BR.HealthTally(t, 0.0, BR.HealthExcuse.HURT)
+    t = BR.HealthTally(t, 0.0, BR.HealthExcuse.HURT)
+    t = BR.HealthTally(t, 0.0, BR.HealthExcuse.HEALING)
+    ok(t.excused[BR.HealthExcuse.HURT] == 2
+       and t.excused[BR.HealthExcuse.HEALING] == 1,
+        'and it records which excuse absorbed each sample',
+        ('%s / %s'):format(tostring(t.excused[BR.HealthExcuse.HURT]),
+            tostring(t.excused[BR.HealthExcuse.HEALING])))
+
+    -- ...BUT NOT `NONE`, which is every ordinary sample of every honest player.
+    -- 48 players at 4Hz is two hundred a second, and a counter that ticked on all
+    -- of them would be a number nobody could read anything out of.
+    local before = t.excused[BR.HealthExcuse.NONE]
+    t = BR.HealthTally(t, 0.0, BR.HealthExcuse.NONE)
+    ok(before == nil and t.excused[BR.HealthExcuse.NONE] == nil,
+        'the ordinary case is not tallied at all', tostring(before))
+
+    -- Totals unchanged by the excused samples: an excuse must not be able to
+    -- move the number the bar is measured against.
+    ok(t.hp == 110.0, 'an excused sample never adds to the total',
+        tostring(t.hp))
+
+    -- ═══ THE BAR, AND WHY IT FIRES ONCE ═══
+    ok(BR.HealthShouldReport({ hp = A.reportHp }, A),
+        'a whole bar of unissued health earns an operator line')
+    ok(not BR.HealthShouldReport({ hp = A.reportHp - 1 }, A),
+        'and one point short of it does not')
+    ok(not BR.HealthShouldReport({ hp = A.reportHp * 10, reportedAt = 1 }, A),
+        'a player already reported is not reported again -- a working exploit '
+            .. 'crosses the bar on EVERY sample after the first, and four console '
+            .. 'lines a second is the same as no detector')
+    ok(not BR.HealthShouldReport(nil, A), 'and an untouched player is not reported')
 end
 
 -- ----------------------------------------------------------------- result ---

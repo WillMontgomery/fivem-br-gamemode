@@ -83,7 +83,17 @@ end
 -- observes death, server eliminates.
 local pedHealth = {}
 function GetEntityHealth(ped) return pedHealth[ped] or 200 end
-function GetPedArmour() return 0 end
+
+-- ARMOUR IS SETTABLE FOR THE SAME REASON HEALTH IS, and it used to answer a
+-- flat 0. That was fine while armour was only ever a display value, and stopped
+-- being fine the moment the health audit started reading it: `entry.armour` is
+-- what BR.Damage.applyHit soaks a hit with BEFORE health is touched, and it is
+-- sampled off this native -- so a client pinning its armour at 100 regenerates
+-- the soak four times a second, which is the same exploit as the health one and
+-- costs the shooter more. A stub that could not express that could not test it.
+-- Defaults to 0, so every block written against the old constant is unchanged.
+local pedArmour = {}
+function GetPedArmour(ped) return pedArmour[ped] or 0 end
 
 -- ═══ THE TWO SERVER-SIDE VEHICLE NATIVES, AND ONE OF THEM LIES ═══
 --
@@ -422,6 +432,9 @@ for _, f in ipairs({
     'br_lib/shared/rescue_solve.lua',
     'br_lib/shared/loot_gen.lua',
     'br_lib/shared/combat_solve.lua',
+    -- BR.HealthUnexplainedGain; server/roster.lua's sampler asks it whether the
+    -- ped it just read agrees with the ledger it is about to overwrite.
+    'br_lib/shared/health_solve.lua',
     'br_lib/shared/spectate_solve.lua', -- the squad rule; server/spectate.lua asks it
     'br_lib/shared/evidence_buf.lua', -- BR.EvidenceBuf; server/evidence.lua wraps it
     'br_core/server/main.lua',
@@ -880,25 +893,98 @@ do
         ('got %s'):format(tostring(BR.Roster.get(1).hp)))
     ok(BR.Roster.get(1).engineHp == mid, 'and the raw engine value is kept too')
 
+    --- What a health delta on the wire actually SAID, rather than merely that
+    --- one existed.
+    ---
+    --- ═══ THIS USED TO ASK "WAS THERE AN hp KEY", AND THAT WAS NOT ENOUGH ═══
+    ---
+    --- The old form set `sent = {}`, stepped once, flushed, and passed if any
+    --- delta carried an `hp` field at all. `sent = {}` clears the CAPTURED
+    --- events; it does not empty BR.Broadcast's pending buffer -- so the delta
+    --- it was reading was the PREVIOUS transition's (100 -> 0), flushed late,
+    --- and the assertion passed without the step under test having broadcast
+    --- anything. Measured 2026-08-23: with the sampler's upward write removed
+    --- the block still passed, on a delta that said `hp = 0`.
+    ---
+    --- So it proved "some health delta reached a client eventually", which is
+    --- true of almost any change to this file, when what it MEANT to prove is
+    --- "the change this step made was the change that went out". Flushing first
+    --- and reading the VALUE closes both halves.
+    local function hpDeltasFor(src)
+        local out = {}
+        for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+            for _, d in ipairs(s.args[1].deltas or {}) do
+                if d.src == src and d.e and d.e.hp ~= nil then
+                    out[#out + 1] = d.e.hp
+                end
+            end
+        end
+        return out
+    end
+
+    -- EMPTY THE BUFFER, not just the capture, so nothing below can be satisfied
+    -- by a delta from a step it did not run.
+    BR.Broadcast.flushNow()
+    sent = {}
+
+    -- ═══ A FALL IS BROADCAST, AND THIS HALF IS PERMANENT ═══
+    --
+    -- Health changes must reach clients or squad panels show stale bars, which
+    -- is the property the original block was written for and it is still the
+    -- property. Asserted DOWNWARD deliberately: the engine owns falls, fire,
+    -- drowning and cars, the server models none of them, so a sample that reads
+    -- below the ledger is ordinary play and will still be ordinary play under
+    -- any future change to who owns health.
+    --
+    -- THE SAME STEP THE OLD BLOCK USED, and the step count of this whole block
+    -- is unchanged on purpose: `fakeTime` is a suite-wide clock that later
+    -- blocks (match.busDescent, the storm anchor) read absolutely, so an extra
+    -- 1000ms spent proving a point here comes out of a timer over there.
     pedHealth[1001] = BR.Config.Match.healthFloor
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
+    BR.Broadcast.flushNow()
     ok(BR.Roster.get(1).hp == 0, 'a dead player reports zero display health',
         ('got %s'):format(tostring(BR.Roster.get(1).hp)))
-
-    -- Health changes must reach clients, or squad panels show stale bars.
+    local fell = hpDeltasFor(1)
+    ok(#fell == 1 and fell[1] == 0,
+        'a health change is broadcast to clients, carrying the new value',
+        table.concat(fell, ','))
     sent = {}
-    pedHealth[1001] = 200
+
+    -- ═══ AND A RISE IS TOO -- WHICH IS THE EXPLOIT, WRITTEN DOWN ═══
+    --
+    -- THIS ASSERTION DESCRIBES A KNOWN SECURITY WEAKNESS AND IS DELIBERATE.
+    --
+    -- `pedHealth` is the OWNING CLIENT's number. The sampler converts it and
+    -- writes it into `entry.hp` -- the same field BR.Damage.applyHit subtracts
+    -- from -- so a modified client that pins its ped at full has the server's
+    -- own damage ledger restored for it four times a second, and the
+    -- server-observed death check reads `engineHp`, which is the same
+    -- client-owned value, so the backstop misses it too. Everything below the
+    -- comment is one line of a cheat, expressed in the test harness.
+    --
+    -- IT IS PINNED RATHER THAN FIXED because closing it is a gameplay change
+    -- with a real blast radius -- med kits, shield potions, revives and
+    -- respawns are all legitimate upward moves, and a ledger that refused the
+    -- engine outright would refuse falls and fire with them -- so it goes behind
+    -- a playtest. What went in first is the DETECTOR (see `health.audit` in
+    -- tools/test_shared.lua and the block below), which counts this without
+    -- changing it.
+    --
+    -- WHOEVER LANDS THAT FIX: this is the assertion you are looking for. Invert
+    -- it on purpose, here, and say so -- do not delete it. The value it names is
+    -- the difference between the ledger the server computed and the number the
+    -- client asked for.
+    pedHealth[1001] = BR.Config.Match.maxHealth
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     BR.Broadcast.flushNow()
-    local sawHp = false
-    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
-        for _, d in ipairs(s.args[1].deltas or {}) do
-            if d.e and d.e.hp ~= nil then sawHp = true end
-        end
-    end
-    ok(sawHp, 'a health change is broadcast to clients')
+    local rose = hpDeltasFor(1)
+    ok(#rose == 1 and rose[1] == 100,
+        'a ped that claims more health than the ledger has REPLACES it -- the '
+            .. 'exploit, pinned here so a fix has to come past it',
+        table.concat(rose, ','))
 
     -- ...but an unchanged value must not be, or 48 players at 2Hz would flood
     -- the wire with deltas that say nothing.
@@ -17543,6 +17629,185 @@ do
         'and clearing the flag puts them straight back in the wall',
         ('%s -> %s'):format(tostring(back0), tostring(BR.Roster.get(1).stormHp)))
 end
+
+describe('health.audit.live')
+do
+    -- THE DETECTOR, THROUGH THE REAL SAMPLER, rather than through the solver.
+    -- tools/test_shared.lua's `health.audit` block pins the arithmetic and every
+    -- excuse; this one proves the sampler actually asks it, with the stamps the
+    -- running server writes -- which is the half that a correct solver wired to
+    -- the wrong field would still fail.
+    local A = BR.Config.Combat.healthAudit
+
+    --- An ALIVE player in a PLAYING match, with the sampler already settled.
+    local function audited()
+        reset()
+        queueUp(1, 'Cheat', BR.Mode.SOLO.key)
+        queueUp(2, 'Honest', BR.Mode.SOLO.key)
+        queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+        theMatch().state = BR.MatchState.PLAYING
+        setPos(1, 0.0, 0.0, 30.0)
+        setPos(2, 50.0, 0.0, 30.0)
+        setPos(3, 500.0, 500.0, 30.0)
+        for s = 1, 3 do pedHealth[1000 + s] = BR.Config.Match.maxHealth end
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        sent = {}
+        return BR.Roster.get(1), BR.Roster.get(2)
+    end
+
+    -- ═══ AN HONEST PLAYER SCORES ZERO, AND THIS IS THE ASSERTION THAT MATTERS ═══
+    --
+    -- A detector that fires on honest play is worse than no detector, because it
+    -- gets switched off -- and the day it gets switched off is the day it was
+    -- needed. So this comes first.
+    do
+        local cheat, honest = audited()
+        -- The ordinary case: the ped agrees with the ledger, sample after
+        -- sample, which is what every honest client does four times a second.
+        for _ = 1, 8 do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+        ok((cheat.healthAudit or {}).hp == nil
+           or (cheat.healthAudit or {}).hp == 0.0,
+            'a player whose ped agrees with the ledger scores nothing',
+            tostring((cheat.healthAudit or {}).hp))
+
+        -- ...AND SO DOES A FALL. The engine owns falls, fire, drowning and
+        -- cars; the server models none of them, so the ledger FOLLOWS the ped
+        -- down. Counting that would mean counting ordinary play -- and it is not
+        -- the exploit anyway: a player who lowers their own health has cheated
+        -- themselves.
+        pedHealth[1001] = BR.ToEngineHp(20.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok((cheat.healthAudit or {}).hp == nil
+           or (cheat.healthAudit or {}).hp == 0.0,
+            'and neither does a fall, a fire or a drowning',
+            tostring((cheat.healthAudit or {}).hp))
+        ok(cheat.hp == 20, 'the world still hurts them, exactly as before',
+            tostring(cheat.hp))
+        ok(honest ~= nil, 'the second player exists')
+    end
+
+    -- ═══ THE EXPLOIT IS SEEN ═══
+    do
+        local cheat = audited()
+
+        -- The server hurts them for real, through the real path.
+        BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+        ok(cheat.hp == 60.0, 'the server ledger takes the damage',
+            tostring(cheat.hp))
+
+        -- THE CHEAT: the ped never applies it. `pedHealth` is the owning
+        -- client's number and it stays pinned at full.
+        --
+        -- Stepped past `hurtGraceMs` first, because the honest reading of a ped
+        -- that has not yet applied our damage is EXACTLY this shape -- that is
+        -- the whole reason the grace exists, and a detector that fired inside it
+        -- would accuse every player on a bad connection.
+        local steps = math.ceil((A.hurtGraceMs + 1000) / 500)
+        for _ = 1, steps do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+
+        ok((cheat.healthAudit or {}).hp and cheat.healthAudit.hp > 0.0,
+            'a ped pinned at full while the ledger says 60 is counted',
+            tostring((cheat.healthAudit or {}).hp))
+        ok(cheat.healthAudit.excused[BR.HealthExcuse.HURT] ~= nil,
+            'and the samples inside the grace were excused rather than missed -- '
+                .. 'which is what /brhealth prints to prove the window is right',
+            tostring(cheat.healthAudit.excused[BR.HealthExcuse.HURT]))
+
+        -- AND THE LEDGER IS STILL BEING OVERWRITTEN, because this change is a
+        -- detector and nothing else. If this assertion ever flips, somebody has
+        -- landed prevention -- which is a good day, and this block is one of the
+        -- places that has to be updated on purpose.
+        ok(cheat.hp == 100, 'the exploit still WORKS -- detection changed no '
+            .. 'gameplay, which is the whole safety story of this change',
+            tostring(cheat.hp))
+    end
+
+    -- ═══ A MED KIT IS NOT A CHEAT ═══
+    --
+    -- The one legitimate upward path the ledger does not already own: the server
+    -- issues INV_EFFECT with a target and the CLIENT walks its own ped up to it,
+    -- so the sampler reads the rise on the way past. This is also why the
+    -- eventual fix cannot simply refuse every rise.
+    do
+        local cheat = audited()
+        BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+        local steps = math.ceil((A.hurtGraceMs + 500) / 500)
+        for _ = 1, steps do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+        -- Wound the ped to match, so the rise below is a real rise.
+        pedHealth[1001] = BR.ToEngineHp(60.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        local baseline = (cheat.healthAudit or {}).hp or 0.0
+
+        -- The server issues a heal, exactly as server/inventory.lua does.
+        cheat.healUntil = fakeTime + A.healSettleMs
+        pedHealth[1001] = BR.Config.Match.maxHealth
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+
+        ok(((cheat.healthAudit or {}).hp or 0.0) == baseline,
+            'health the server ISSUED is not counted against the player',
+            ('%s -> %s'):format(tostring(baseline),
+                tostring((cheat.healthAudit or {}).hp)))
+        ok((cheat.healthAudit or {}).excused[BR.HealthExcuse.HEALING] ~= nil,
+            'and it is recorded as a heal rather than silently dropped')
+    end
+
+    -- ═══ #191: A PLAYER IN AN AMBULANCE IS NOT A CHEAT ═══
+    --
+    -- The CPR kit landed the same week as this detector, and it puts a downed
+    -- player inside a vehicle with their health restored on arrival. A detector
+    -- that cried wolf on the feature shipping beside it would have been switched
+    -- off in its first playtest, so the exemption is asserted rather than
+    -- assumed.
+    do
+        local cheat = audited()
+        BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+        cheat.rescue = { id = 1 }
+        local steps = math.ceil((A.hurtGraceMs + 1500) / 500)
+        for _ = 1, steps do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+        ok(((cheat.healthAudit or {}).hp or 0.0) == 0.0,
+            'a player being rescued is never counted',
+            tostring((cheat.healthAudit or {}).hp))
+        ok((cheat.healthAudit or {}).excused[BR.HealthExcuse.RESCUE] ~= nil,
+            'and the exemption is visible in the breakdown')
+        cheat.rescue = nil
+    end
+
+    -- ═══ THE TALLY DOES NOT FOLLOW ANYBODY INTO THE NEXT MATCH ═══
+    --
+    -- #161's rule, and the bar depends on it: "a whole bar the server never
+    -- issued" only means anything inside one round. Carried over, a player who
+    -- collected honest jitter across three matches would be reported for having
+    -- played a lot.
+    do
+        local cheat = audited()
+        cheat.healthAudit = { hp = 500.0, samples = 9, peak = 90.0, excused = {} }
+        cheat.healUntil = fakeTime + 5000
+        cheat.healthSettleUntil = fakeTime + 5000
+        BR.Match.resetPlayer(1, cheat)
+        ok(cheat.healthAudit == nil,
+            'the per-match tally is wiped with the rest of the match record',
+            tostring(cheat.healthAudit))
+        ok(cheat.healUntil == nil and cheat.healthSettleUntil == nil,
+            'and so are both grace windows, which are deadlines on the OLD '
+                .. 'match clock -- a stale one would excuse the first seconds '
+                .. 'of the next round')
+    end
+
+    pedHealth[1001], pedHealth[1002] = nil, nil
+end
+
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then

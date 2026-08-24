@@ -189,6 +189,15 @@ function BR.Combat.reviveHeld(src, entry)
 
     TriggerClientEvent(BR.Net.REVIVED, src)
 
+    -- THE LEDGER LEADS AND THE PED FOLLOWS, which is the reverse of the usual
+    -- direction and is why the health audit needs telling. For one round trip
+    -- this player's entry says 100 and their ped is still a corpse; the moment
+    -- the client applies HEALTH_SYNC the ped crosses back over. The audit in
+    -- server/roster.lua reads this stamp so the crossover is not counted as a
+    -- client inventing health for itself.
+    entry.healthSettleUntil = GetGameTimer()
+        + ((BR.Config.Combat.healthAudit or {}).settleMs or 2000)
+
     BR.Roster.update(src, { hp = 100.0, armour = 0.0 })
     BR.Roster.setState(src, BR.PlayerState.ALIVE)
     TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = 100, armour = 0 })
@@ -905,6 +914,13 @@ function BR.Combat.revive(src, reviverSrc, hp)
     -- The knock is UNDONE, not merely paused: whoever put them down no longer
     -- owns a finish that is not going to happen.
     entry.dbnoUntil, entry.downedBy = nil, nil
+
+    -- The same crossover reviveHeld describes, and this is the path #191's
+    -- ambulance delivery arrives on as well: the ledger is written here and the
+    -- ped only reaches this number when the client applies the HEALTH_SYNC
+    -- below. Stamped before the write so no sample can land in between.
+    entry.healthSettleUntil = GetGameTimer()
+        + ((BR.Config.Combat.healthAudit or {}).settleMs or 2000)
 
     BR.Roster.update(src, { hp = hp + 0.0, armour = 0.0 })
     BR.Roster.setState(src, BR.PlayerState.ALIVE)

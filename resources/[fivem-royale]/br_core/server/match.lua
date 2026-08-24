@@ -789,6 +789,19 @@ function BR.Match.resetPlayer(src, e)
     e.stormHp, e.lastStormAt = nil, nil
     e.hp, e.armour = 100.0, 0.0
 
+    -- THE HEALTH AUDIT'S TALLY IS PER MATCH, for the reason #161 spells out
+    -- one paragraph up and for one more of its own: the bar it is measured
+    -- against ("a whole bar the server never issued") only means anything
+    -- inside one round. Carried over, a player who collected forty points of
+    -- honest jitter across three matches would eventually be reported for
+    -- having played a lot.
+    --
+    -- The two WINDOWS go with it. Both are deadlines on the old match's clock,
+    -- and a stale one would excuse the first two seconds of the next match --
+    -- which is exactly the window a returning cheat would land in.
+    e.healthAudit, e.armourAudit = nil, nil
+    e.healUntil, e.healthSettleUntil = nil, nil
+
     -- Per-match, like the counters above. A stale diedAt would date a
     -- player's next match to their last one's clock and pay them
     -- survival XP for a match they had not started.

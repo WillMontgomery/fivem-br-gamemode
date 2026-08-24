@@ -96,6 +96,11 @@ shared_scripts {
     '@br_lib/shared/xp.lua',
     '@br_lib/shared/storm_solve.lua',
     '@br_lib/shared/combat_solve.lua',
+    -- BR.HealthUnexplainedGain: does the client's ped agree with the server's
+    -- health ledger. Pure, and cfg is a parameter, so it has no load-order
+    -- requirement of its own -- it sits here because it is read by
+    -- server/roster.lua's sampler and belongs beside the other anticheat solver.
+    '@br_lib/shared/health_solve.lua',
     -- BR.RescueDestination and the drive estimate (#191). AFTER
     -- shared/storm_solve.lua, and that IS a load order rather than a reader's
     -- convenience: choosing a drop-off means asking BR.StormAt where the circle

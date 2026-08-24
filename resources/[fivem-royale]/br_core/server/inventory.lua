@@ -1203,6 +1203,14 @@ BR.Sched.every(250, 'inv.use', function()
                         (u.hp0 or 0) + c.health * pct)
                     partial.healthCap = c.healthCap
                 end
+                -- THE SERVER JUST TOLD THIS PLAYER TO GET HEALTHIER, so the
+                -- health audit in server/roster.lua must not read the rise as a
+                -- client lying about its own ped. Stamped where the effect is
+                -- ISSUED rather than where the use starts: these targets are
+                -- what the client actually climbs toward, and a window anchored
+                -- anywhere else would either open before there was anything to
+                -- excuse or close while the ped was still on its way up.
+                e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, partial)
                 return
             end
@@ -1240,6 +1248,10 @@ BR.Sched.every(250, 'inv.use', function()
                         (u.hp0 or 0) + c.health)
                     payload.healthCap = c.healthCap
                 end
+                -- The same stamp as the partials above, and the landing one
+                -- matters most: this is the payload that carries the FULL
+                -- target, so it is the largest single rise the ped will make.
+                e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, payload)
             end
 
