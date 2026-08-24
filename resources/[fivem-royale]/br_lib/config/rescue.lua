@@ -52,26 +52,33 @@ BR.Config.Rescue = {
     -- circle it is a drop-off, and the same 23 coordinates are eligible for
     -- either job on any given rescue.
     --
-    -- THE OWNER AUTHORED 23 OF THESE IN GAME ON 2026-08-23 AND THEY HAD NOT
-    -- REACHED `dev` WHEN THIS FILE WAS WRITTEN. They were being landed in
-    -- config/map.lua by another change in flight at the same time. This table is
-    -- therefore EMPTY ON PURPOSE and is NOT a second copy of coordinates that
-    -- exist somewhere else -- duplicating them would guarantee the two lists
-    -- drift, and the first symptom would be ambulances arriving at points the
-    -- owner had already moved.
+    -- THE OWNER AUTHORED 23 OF THESE IN GAME ON 2026-08-23 AND THEY LIVE IN
+    -- config/map.lua, as `BR.Config.Map.AmbulanceSpawns`. THIS TABLE IS EMPTY ON
+    -- PURPOSE and is NOT a second copy of them: duplicating twenty-three
+    -- surveyed coordinates would guarantee the two lists drift, and the first
+    -- symptom would be ambulances arriving at points the owner had already
+    -- moved.
     --
-    -- `BR.Config.Rescue.Points()` below is the only reader. It takes map.lua's
-    -- list when there is one and this one otherwise, so whichever of the two
-    -- changes lands first, the other is not lost and neither has to be edited
-    -- again.
+    -- They are real ped-standing positions taken with /brcoords, not points
+    -- picked off a map, which is why their z values can be trusted and their
+    -- headings are the way a vehicle put there should face.
+    --
+    -- `BR.Config.Rescue.Points()` below is the only reader, and it reads
+    -- map.lua's table at CALL time rather than copying it at load -- so the
+    -- owner can add, move or delete a point in the one place he authored them
+    -- and nothing here has to be touched.
+    --
+    -- THEY CARRY NO `id`, and nothing requires one: the id is only ever used in
+    -- a log line, and `pointName` in server/rescue.lua falls back to the
+    -- coordinates. An id invented here would not match the one the owner would
+    -- choose later.
     --
     -- WITH NO POINTS THE FEATURE IS INERT RATHER THAN BROKEN: server/rescue.lua
-    -- refuses to start a rescue it cannot route, logs the reason once, and the
-    -- kit simply cannot be called. That is the correct behaviour for a half-
-    -- landed config and it is why there is no hardcoded fallback pair here.
+    -- refuses to start a rescue it cannot route, logs the reason, and the kit
+    -- simply cannot be called. That is the correct behaviour if the table is
+    -- ever emptied, and it is why there is no hardcoded fallback pair here.
     --
-    -- Shape, matching config/map.lua's own point tables:
-    --   { id = 'string', name = 'Human Name', x =, y =, z =, heading = }
+    -- Shape:  { id = 'optional', x =, y =, z =, heading = }
     points = {},
 
     -- ------------------------------------------------------------------
@@ -195,34 +202,48 @@ BR.Config.Rescue = {
     -- THE STRETCHER
     -- ------------------------------------------------------------------
     --
-    -- ═══ THESE NUMBERS ARE A PLACEHOLDER AND HAVE NOT BEEN MEASURED ═══
+    -- ═══ MEASURED IN GAME BY THE OWNER, 2026-08-23 ═══
     --
-    -- They are a reasoned guess at where the stretcher is -- x across the cabin,
-    -- y down its length with negative being rearward, z the deck height above
-    -- the vehicle origin, and a 90-degree roll to put the ped on its back. NOBODY
-    -- HAS STOOD IN AN AMBULANCE AND CHECKED. Do not read the precision of the
-    -- decimals as evidence; a ped floating through the roof or clipped into the
-    -- floor is the expected first result.
+    -- Authored with /brattach (client/attachtune.lua) at 0.01 m and 1 degree
+    -- steps against model `ambulance`, and confirmed by looking at it: "Here's
+    -- the coords. Looks perfect just like this."
     --
-    -- THE OWNER IS AUTHORING THE REAL ONES. He asked for a client command to
-    -- attach his ped and nudge it with WASD/Q/Z/E/R until it looks right, then
-    -- dump the offset (2026-08-23), and a separate change is building that tool.
-    -- This is the ONE PLACE the measured numbers land: six fields in one named
-    -- table, read once in client/rescue.lua's attach and nowhere else, so the
-    -- swap is a one-line edit and no constant is scattered through the call.
+    -- These replace a placeholder guess that was nearly two metres out in y and
+    -- carried a 90-degree roll. THE ROLL IS ZERO, which is worth noticing before
+    -- anybody "corrects" it back: the guess assumed a ped had to be rolled onto
+    -- its back to lie down, and in the event the ambulance's own cabin geometry
+    -- and the pose put the body where it belongs without one. Do not reintroduce
+    -- a rotation to make the numbers look more like what a stretcher ought to
+    -- need -- these were arrived at by moving a real ped until it looked right.
     --
-    -- THE OFFSETS WILL TRANSFER DIRECTLY, because the attach is the same one the
-    -- tool uses: AttachEntityToEntity, own ped to the vehicle, identical
-    -- argument shape to client/bus.lua:244. ONE DIFFERENCE, STATED SO NOBODY IS
-    -- SURPRISED: the bus attaches to a LOCAL, non-networked vehicle and this
-    -- attaches to a NETWORKED one, because #191's ambulance has to exist on
-    -- other players' machines for them to destroy it. That changes nothing about
-    -- these six numbers -- an offset and a rotation are relative to the vehicle
-    -- MODEL, and the model is the same ambulance either way.
+    -- THEY ARE ONLY VALID FOR AN IDENTICAL ATTACH, and client/rescue.lua's is
+    -- identical -- same bone index 0, same argument tail
+    -- `false, false, false, false, 2, true`, which is client/bus.lua:244's shape
+    -- and the one /brattach itself used. Changing the bone or any of those flags
+    -- silently moves the body somewhere the owner never approved.
+    --
+    -- One difference that does NOT affect them: the bus attaches to a LOCAL,
+    -- non-networked vehicle and this attaches to a NETWORKED one, because #191's
+    -- ambulance has to exist on other players' machines for them to destroy it.
+    -- An offset and a rotation are relative to the vehicle MODEL, and the model
+    -- is the same ambulance either way.
     stretcher = {
-        x = 0.0, y = -1.6, z = 0.55,
-        pitch = 0.0, roll = 90.0, yaw = 180.0,
+        x = -0.010, y = -3.100, z = 1.690,
+        pitch = 0.0, roll = 0.0, yaw = 1.0,
     },
+
+    -- ═══ VEHICLE EXTRAS 1 AND 2 ═══
+    --
+    -- Owner, 2026-08-23: "make sure vehicle extra 1 and 2 are enabled please".
+    --
+    -- THE NATIVE'S THIRD ARGUMENT IS `disable`, NOT `enable`, AND THAT IS WHY
+    -- THIS LIST IS DATA RATHER THAN THREE CALLS AT THE SPAWN SITE.
+    -- SetVehicleExtra(veh, id, toggle) turns the extra ON when toggle is FALSE.
+    -- Passing `true` to "enable" is the obvious reading, the wrong one, and
+    -- exactly the edit a future reader makes while tidying up -- so the
+    -- inversion is stated once, in client/rescue.lua, beside the one call that
+    -- performs it, rather than being re-derived at every use.
+    extras = { 1, 2 },
 
     -- ------------------------------------------------------------------
     -- THE DRIVE
@@ -446,18 +467,23 @@ BR.Config.Rescue = {
 
 --- The pickup/drop-off points, from wherever they landed.
 ---
---- TWO HOMES, ONE READER, AND THAT IS A MERGE SEAM RATHER THAN INDECISION. The
---- owner authored 23 points in game on 2026-08-23 and they were being added to
---- config/map.lua by a change in flight while this file was being written. A
---- second copy here would drift from that one; refusing to read map.lua would
---- lose them. So map.lua wins when it has them and this file's own table is the
---- fallback, which means neither change has to know whether the other landed
---- first.
+--- THE OWNER'S SURVEYED TABLE WINS, AND THIS FILE'S IS A FALLBACK. The 23 points
+--- live in config/map.lua because that is where he authored them and where he
+--- will edit them; reading them there rather than copying them here is the whole
+--- reason the two can never disagree.
+---
+--- READ AT CALL TIME, NOT COPIED AT LOAD, so a point added or moved in map.lua
+--- takes effect without this file being touched -- and so the load order between
+--- the two configs cannot matter.
+---
+--- RETURNS THE TABLE ITSELF RATHER THAN A COPY, which is safe because every
+--- caller only ever iterates it. Nothing in this feature writes to a point, and
+--- nothing may start: it is the owner's survey data, shared with #219.
 ---
 --- @return table[]  possibly empty; callers must handle that rather than assume
 function BR.Config.Rescue.Points()
     local M = BR.Config.Map
-    local fromMap = M and M.RescuePoints
-    if type(fromMap) == 'table' and #fromMap > 0 then return fromMap end
+    local surveyed = M and M.AmbulanceSpawns
+    if type(surveyed) == 'table' and #surveyed > 0 then return surveyed end
     return BR.Config.Rescue.points
 end

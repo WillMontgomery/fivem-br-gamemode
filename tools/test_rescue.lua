@@ -325,20 +325,51 @@ end
 -- ---------------------------------------------------------------------------
 describe('config')
 do
-    -- THE POINTS SHIP EMPTY AND THAT IS DELIBERATE. The owner authored 23 in
-    -- game on 2026-08-23 and they were landing in config/map.lua by a separate
-    -- change; a second copy here would drift from that one. This asserts the
-    -- READER rather than the contents, because the contents are somebody else's
-    -- to land.
-    ok(type(BR.Config.Rescue.Points()) == 'table',
-        'the points reader always answers a table, even with nothing authored')
+    -- ═══ THE READER IS POINTED AT THE OWNER'S OWN SURVEY ═══
+    --
+    -- He authored 23 points in game on 2026-08-23 with /brcoords, and they live
+    -- in config/map.lua as BR.Config.Map.AmbulanceSpawns -- which is where he
+    -- will edit them. THIS FILE'S OWN `points` TABLE IS EMPTY on purpose: a
+    -- second copy of twenty-three surveyed coordinates would drift from the
+    -- first, and the symptom would be ambulances arriving where a point used to
+    -- be.
+    --
+    -- ASSERTED AGAINST THE REAL TABLE RATHER THAN A FIXTURE, because the failure
+    -- worth catching is precisely the one that a fixture hides: the reader
+    -- naming a table that does not exist. An earlier draft of this feature read
+    -- `BR.Config.Map.RescuePoints`, which was a guess at the name and was wrong
+    -- -- and against a fixture that injected `RescuePoints` it passed happily
+    -- while the shipped feature would have found nothing and refused every
+    -- rescue.
+    ok(#BR.Config.Rescue.points == 0,
+        'this file holds no copy of the surveyed points',
+        #BR.Config.Rescue.points)
+    ok(type(BR.Config.Map.AmbulanceSpawns) == 'table'
+       and #BR.Config.Map.AmbulanceSpawns > 0,
+        'config/map.lua carries the owner-surveyed ambulance points',
+        BR.Config.Map.AmbulanceSpawns and #BR.Config.Map.AmbulanceSpawns)
+    ok(BR.Config.Rescue.Points() == BR.Config.Map.AmbulanceSpawns,
+        'and the rescue reads THAT table, not a name nobody writes',
+        #BR.Config.Rescue.Points())
 
-    BR.Config.Map.RescuePoints = { { id = 'x', x = 1.0, y = 2.0, z = 3.0 } }
-    ok(#BR.Config.Rescue.Points() == 1,
-        'and it prefers the authored list in config/map.lua when there is one')
-    BR.Config.Map.RescuePoints = nil
-    ok(#BR.Config.Rescue.Points() == #BR.Config.Rescue.points,
-        'falling back to its own table when there is not')
+    -- Every point has to be routable and placeable: the solver measures against
+    -- x/y, and the ambulance is created at z facing `heading`. A row missing any
+    -- of the four is a rescue that spawns at the origin or under the map.
+    local bad = 0
+    for _, p in ipairs(BR.Config.Rescue.Points()) do
+        if type(p.x) ~= 'number' or type(p.y) ~= 'number'
+           or type(p.z) ~= 'number' or type(p.heading) ~= 'number' then
+            bad = bad + 1
+        end
+    end
+    ok(bad == 0, 'every surveyed point carries x, y, z and a heading', bad)
+
+    -- AND THE FEATURE IS INERT, NOT BROKEN, IF THAT TABLE EVER EMPTIES.
+    local saved = BR.Config.Map.AmbulanceSpawns
+    BR.Config.Map.AmbulanceSpawns = nil
+    ok(#BR.Config.Rescue.Points() == 0,
+        'with the survey gone the reader answers empty rather than erroring')
+    BR.Config.Map.AmbulanceSpawns = saved
 
     -- THE ITEM IS RESOLVABLE AND UNROLLABLE, which is the airdrop-shelf pattern
     -- and is what keeps the world layout byte-identical. Both halves are
@@ -367,6 +398,35 @@ do
     ok(R.godmode == nil and R.invincible == nil,
         'there is no invincibility knob -- the owner reversed that and a knob '
             .. 'would be an invitation to turn it back on')
+
+    -- ═══ THE STRETCHER IS THE OWNER'S MEASUREMENT, NOT A GUESS ═══
+    --
+    -- Authored in game with /brattach on 2026-08-23 and confirmed by looking at
+    -- it. Pinned as literals because the failure they guard against is silent:
+    -- a body in the wrong place still rides to the destination, and nobody finds
+    -- out until somebody watches a rescue.
+    --
+    -- THE ROLL IS ZERO ON PURPOSE. The placeholder these replaced carried 90, on
+    -- the reasonable-sounding theory that a ped must be rolled onto its back to
+    -- lie down. It does not, and this asserts the measured value so that theory
+    -- cannot quietly come back.
+    local S = R.stretcher
+    ok(S and math.abs(S.x - (-0.010)) < 1e-6
+         and math.abs(S.y - (-3.100)) < 1e-6
+         and math.abs(S.z - 1.690) < 1e-6,
+        'the stretcher offset is the one the owner measured',
+        S and ('%.3f, %.3f, %.3f'):format(S.x, S.y, S.z))
+    ok(S and S.pitch == 0.0 and S.roll == 0.0 and S.yaw == 1.0,
+        'and so is the rotation, roll included',
+        S and ('%.1f, %.1f, %.1f'):format(S.pitch, S.roll, S.yaw))
+
+    -- EXTRAS 1 AND 2 (owner, 2026-08-23). Asserted as a set rather than by
+    -- index, so reordering the list is not a failure but losing one is.
+    local want = { [1] = false, [2] = false }
+    for _, id in ipairs(R.extras or {}) do want[id] = true end
+    ok(want[1] and want[2],
+        'extras 1 and 2 are both configured to be enabled',
+        table.concat(R.extras or {}, ','))
 
     -- ONE LIST FOR BOTH JOBS. The vehicle the rescue BUILDS must be one of the
     -- models it RECOGNISES, or a rescue ambulance would not count as an

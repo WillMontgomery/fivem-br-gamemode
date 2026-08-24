@@ -200,6 +200,40 @@ local function loadModel(name, ms)
     return hash
 end
 
+--- Turn on the extras the owner asked for.
+---
+--- Owner, 2026-08-23: "make sure vehicle extra 1 and 2 are enabled please".
+---
+--- ═══ THE THIRD ARGUMENT IS `disable`. FALSE TURNS THE EXTRA ON. ═══
+---
+--- SET_VEHICLE_EXTRA(Vehicle, int extraId, BOOL disable) -- the parameter is
+--- named for what it SUPPRESSES, so `false` enables and `true` removes. Reading
+--- it as "enabled" and passing `true` is the obvious mistake, it compiles, it
+--- runs, and its only symptom is the extras being missing -- which looks exactly
+--- like the model not having them.
+---
+--- THIS COMMENT IS THE POINT OF THIS FUNCTION EXISTING. The call is one line;
+--- what it costs to get wrong is a future reader "fixing" `false` into `true`
+--- while tidying, and nothing failing loudly when they do.
+---
+--- `DoesExtraExist` FIRST, because not every ambulance variant carries both, and
+--- setting one that does not exist is a silent no-op that would leave this
+--- function looking like it worked.
+---
+--- CALLED AT EVERY CREATION, never once globally: a freshly created vehicle
+--- comes up with the MODEL's defaults, so anything set on a previous ambulance
+--- is gone. There is one creation site today and this is called from it; a
+--- second one must call it too.
+--- @param veh integer
+local function applyExtras(veh)
+    if not veh or not isTrue(DoesEntityExist(veh)) then return end
+    for _, id in ipairs((R and R.extras) or {}) do
+        if isTrue(DoesExtraExist(veh, id)) then
+            SetVehicleExtra(veh, id, false)   -- false = ON. See above.
+        end
+    end
+end
+
 --- Point the AI at the destination.
 ---
 --- THE FIRST `TaskVehicleDriveToCoord` IN THIS TREE. Everything else that moves
@@ -360,6 +394,8 @@ local function board(d)
         end
         if (R.upgrades or {}).turbo then ToggleVehicleMod(r.veh, 18, true) end
 
+        applyExtras(r.veh)
+
         -- The medic. A seated ped is what drives; it is also what keeps the
         -- engine simulation running, the same property the Battle Bus's pilot
         -- has. Invincible, unlike the vehicle: an NPC that can be shot out of
@@ -411,10 +447,22 @@ local function board(d)
         -- seat cannot leave one.
         local ped = PlayerPedId()
         local S = R.stretcher or {}
+        -- ═══ THIS CALL'S SHAPE IS PART OF THE MEASUREMENT ═══
+        --
+        -- The owner authored the six numbers in config with /brattach, which
+        -- attached with bone index 0 and this exact argument tail
+        -- (`false, false, false, false, 2, true`) -- itself client/bus.lua:244's
+        -- shape. THE OFFSET IS ONLY VALID FOR AN IDENTICAL ATTACH: change the
+        -- bone or any of those flags and the body moves somewhere he never
+        -- looked at, with nothing to indicate it drifted.
+        --
+        -- The defaults below are the measured values, not a fallback guess, so a
+        -- config that loses its `stretcher` table still puts the ped where he
+        -- put it rather than somewhere plausible-looking.
         AttachEntityToEntity(ped, r.veh,
             0,
-            S.x or 0.0, S.y or -1.6, S.z or 0.55,
-            S.pitch or 0.0, S.roll or 90.0, S.yaw or 180.0,
+            S.x or -0.010, S.y or -3.100, S.z or 1.690,
+            S.pitch or 0.0, S.roll or 0.0, S.yaw or 1.0,
             false, false, false, false, 2, true)
 
         -- ═══ THE CAMERA ═══

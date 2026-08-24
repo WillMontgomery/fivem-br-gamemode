@@ -412,18 +412,29 @@ BR.Config.Map.NoLoot = {
 
 --- Ambulance spawn points, surveyed in game by the owner on 2026-08-23.
 ---
---- ═══ NOTHING READS THIS TABLE YET, AND THAT IS THE POINT ═══
+--- ═══ #191 READS THIS NOW. #219 STILL DOES NOT ═══
 ---
---- It is stored ahead of the two features that will want it -- #191 (the CPR
---- kit, whose ambulance spawns at "a preset point chosen for proximity to the
---- death location" and drives to another from "a preset list") and #219 (squad
---- resurrection, where ambulances become "a tracked, map-wide resource",
---- blipped for every squad). Neither is built. Twenty-three points is an hour
---- of somebody standing in twenty-three car parks, and that hour is done; the
---- feature that consumes it can be written whenever.
+--- This block said "nothing reads this table yet, and that is the point", which
+--- was true for exactly as long as it took the CPR kit to land. It is corrected
+--- rather than deleted, because the warning it carried is the reason to keep
+--- reading: a value with no readers is a value with no behaviour, so grep before
+--- trusting it in either direction.
 ---
---- Grep before trusting it in either direction: a value with no readers is a
---- value with no behaviour, and this one is deliberately in that state.
+--- THE ONE READER IS `BR.Config.Rescue.Points()` (br_lib/config/rescue.lua),
+--- which returns THIS TABLE ITSELF rather than a copy, at call time. So these
+--- rows are live data: adding, moving or deleting one here changes where
+--- ambulances appear and where they drive to, with no other file edited. #191
+--- uses it for BOTH ends of a rescue -- nearest point to the death is the
+--- pickup, and the shortest point that will still be inside the storm circle on
+--- arrival is the drop-off.
+---
+--- NOTHING WRITES TO IT, and nothing may start. It is survey data, and #219
+--- (squad resurrection, where ambulances become "a tracked, map-wide resource"
+--- blipped for every squad) is still unbuilt and will want the same rows.
+---
+--- THE ROWS HAVE NO `id` AND DO NOT NEED ONE. #191 only ever uses an id in a log
+--- line and falls back to printing the coordinates, which is the thing somebody
+--- would search this table for anyway.
 ---
 --- AUTHORED WITH /brcoords (br_core/client/debug.lua), which prints exactly
 --- these four numbers in exactly this order. So these are ped-standing

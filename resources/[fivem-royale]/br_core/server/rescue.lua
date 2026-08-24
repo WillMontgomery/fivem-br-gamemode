@@ -165,6 +165,20 @@ local function publishBlip(src, entry, rec, gone)
     pushBlip(m, 'r:' .. tostring(src), pos and pos.x, pos and pos.y)
 end
 
+--- What to call a point in a log line.
+---
+--- THE OWNER'S SURVEYED POINTS CARRY NO `id` -- they are 23 rows of x/y/z/heading
+--- taken with /brcoords -- and inventing one here would not match whatever he
+--- named them later. The coordinates are the honest identifier: they are what he
+--- would search config/map.lua for.
+--- @param p table|nil
+--- @return string
+local function pointName(p)
+    if not p then return 'nowhere' end
+    if p.id then return tostring(p.id) end
+    return ('(%.0f, %.0f)'):format(p.x or 0.0, p.y or 0.0)
+end
+
 --- Which slot holds a CPR kit, or nil.
 ---
 --- FIRST MATCH WINS, low slot first, and the order is fixed rather than a pairs()
@@ -280,7 +294,7 @@ local function finish(src, delivered, why)
     if not entry or entry.state ~= BR.PlayerState.DBNO then return end
 
     print(('[br_core] rescue: %d delivered to %s (%s)')
-        :format(src, tostring(rec.dest and rec.dest.id), why))
+        :format(src, pointName(rec.dest), why))
 
     -- BACK ON THEIR FEET WITH THEIR HEALTH, through the one function every
     -- revive in this game goes through. The third argument is this feature's
@@ -357,7 +371,7 @@ function BR.Rescue.begin(src)
     BR.Roster.update(src, { rescue = true })
 
     print(('[br_core] rescue: %d picked up at %s, bound for %s (%.0fm, %s, deadline %.0fs)')
-        :format(src, tostring(pickup.id), tostring(dest.id), dist,
+        :format(src, pointName(pickup), pointName(dest), dist,
                 inside and 'inside the circle on arrival' or 'NO POINT QUALIFIES -- nearest to centre',
                 deadline / 1000.0))
 
@@ -674,7 +688,7 @@ RegisterCommand('brrescue', function(src, args)
 
     if rec then
         print(('    dest=%s deadline in %.1fs recoveries=%d everMoved=%s')
-            :format(tostring(rec.dest and rec.dest.id),
+            :format(pointName(rec.dest),
                     (rec.deadlineAt - GetGameTimer()) / 1000.0,
                     rec.recoveries, tostring(rec.everMoved)))
     end
