@@ -1,3 +1,4 @@
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   useUi, selHud, selStorm, selSquad, selFeed, selDbno, selMatch, selInv,
   selVehicle,
@@ -29,20 +30,144 @@ import VoiceNotice from './VoiceNotice'
 export const SQUAD_SLOT_ID = 'br-squad-slot'
 
 /**
+ * Below the radar, or above it -- decided from the safe zone the game actually
+ * reports, re-decided whenever it moves.
+ *
+ * ═══ THE RULE ═══
+ *
+ *   "if the safezone size doesn't allow our health/shield bars to be displayed
+ *    below the minimap (because they'd get cut off) then we should display them
+ *    on top of the minimap instead and bump the chat up"   -- owner, 2026-08-23
+ *
+ * ═══ WHY IT CANNOT BE ANSWERED FROM THE ASPECT RATIO ═══
+ *
+ * The radar is anchored to the safe zone's BOTTOM-left corner, so the strip's
+ * usual place -- --vitals-drop below the radar's lower edge -- is not inside
+ * the safe zone at all. It is in the margin underneath it. That margin is
+ * whatever the player's safe-zone slider left there, and at the top of the
+ * slider's range there is none: the bars run off the bottom of the screen.
+ *
+ * That happens on a 16:9 monitor. It is not an ultrawide symptom and a test
+ * that keyed on the aspect ratio would miss it entirely -- which is the whole
+ * reason #231 says this must be MEASURED.
+ *
+ * ═══ WHAT IS MEASURED, AND WHY IT IS MEASURED THIS WAY ═══
+ *
+ * Two zero-width hidden probes, sized in the same CSS variables the layout is
+ * written in, and read back in pixels:
+ *
+ *   space  height: var(--map-bottom)   the margin below the radar
+ *   drop   height: var(--vitals-drop)  how much of it the strip needs
+ *
+ * Reading a probe rather than doing the arithmetic in TypeScript is what keeps
+ * this honest. Nothing here knows that --vitals-drop is 0.85rem, that a rem is
+ * 1.481vh, that the root font size is clamped at both ends, or that the
+ * interface-size slider multiplies it -- change any of those, in any unit, and
+ * the measurement follows. A hardcoded rem would be a second copy of a number
+ * that is already declared once, and it would be the copy that is wrong.
+ *
+ * ═══ RE-DECIDED, NOT DECIDED ONCE ═══
+ *
+ * The read runs after EVERY render of the HUD, and the HUD re-renders whenever
+ * a screen envelope lands (useScreenMetrics holds the metrics in state). Lua
+ * republishes the rectangle the moment the safe zone moves, so a player
+ * dragging that slider mid-match watches the strip change places -- which is
+ * the requirement, and it is the failure mode a decide-once version would ship
+ * with looking perfectly correct on the developer's machine.
+ *
+ * DELIBERATELY NOT A ResizeObserver, which is the obvious tool. Its callbacks
+ * ride the rendering lifecycle, so they arrive only while frames are being
+ * produced -- and in the headless browser this was verified in, which composites
+ * nothing, it did not fire once: not for the probes, and not for a plain visible
+ * div whose height was being changed underneath it. That is a property of that
+ * browser rather than of CEF, and it is exactly the point: a measurement that
+ * cannot be exercised where the work is done is a measurement nobody can check.
+ * The render lifecycle can be, and setFit is guarded, so a re-read that finds
+ * nothing new costs one comparison and no render.
+ *
+ * The window listener is for the harness, where the viewport can change without
+ * any envelope arriving. In game a resolution change republishes the rectangle,
+ * so that path is already covered.
+ *
+ * The strip's own height is measured too, and only for the chat column: it is
+ * published as --vitals-lift so chat can move up by exactly the space the strip
+ * took, which is the "bump the chat up" half of the rule.
+ */
+function useVitalsPlacement() {
+  const stripRef = useRef<HTMLDivElement>(null)
+  const spaceRef = useRef<HTMLDivElement>(null)
+  const dropRef = useRef<HTMLDivElement>(null)
+  // `below` starts true, which is where the strip has always been: until the
+  // probes have been read once, nothing moves.
+  const [fit, setFit] = useState({ below: true, strip: 0 })
+  // Bumped by a viewport change, purely to force the read below to run again.
+  const [, setTick] = useState(0)
+
+  // NO DEPENDENCY ARRAY: this is a measurement of what was just laid out, so it
+  // belongs after every layout. The guard inside setFit is what stops it from
+  // being a render loop -- an unchanged answer returns the same state object.
+  useLayoutEffect(() => {
+    const strip = stripRef.current
+    const space = spaceRef.current
+    const drop = dropRef.current
+    if (!strip || !space || !drop) return
+
+    const spacePx = space.getBoundingClientRect().height
+    const dropPx = drop.getBoundingClientRect().height
+    // ROUNDED, AND THAT IS THE LOOP GUARD. This effect runs after every layout
+    // and writes state, so the comparison below is the only thing between it
+    // and an infinite render -- and a raw sub-pixel height that flickered in
+    // its last decimal place would defeat it silently.
+    const stripPx = Math.round(strip.getBoundingClientRect().height * 100) / 100
+    // FITS ⟺ THE STRIP'S LOWER EDGE IS STILL ON THE SCREEN. The strip is
+    // bottom-anchored, so its lower edge IS the anchor: --map-bottom minus
+    // --vitals-drop, measured up from the bottom of the viewport.
+    const below = spacePx >= dropPx
+    setFit((p) => (p.below === below && p.strip === stripPx
+      ? p
+      : { below, strip: stripPx }))
+  })
+
+  useEffect(() => {
+    const bump = () => setTick((n) => n + 1)
+    window.addEventListener('resize', bump)
+    return () => window.removeEventListener('resize', bump)
+  }, [])
+
+  // Published for the chat column, which has no other way to know. `calc` with
+  // the gap left symbolic so the two surfaces cannot drift apart.
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty(
+      '--vitals-lift',
+      fit.below ? '0px' : `calc(${fit.strip}px + var(--vitals-gap))`,
+    )
+  }, [fit.below, fit.strip])
+
+  return { fit, stripRef, spaceRef, dropRef }
+}
+
+/**
  * The in-match HUD.
  *
  * LAYOUT MODEL
  *
- * Everything lives inside `.hud-safe`, a box inset by the game's real safe zone
- * and clamped on very wide displays. Positions inside it are anchored to its
- * edges; sizes are in rem, and rem is tied to viewport height (see index.css).
- * The result scales linearly across 720p to 4K from a single number, and lands
- * where the player expects on any aspect ratio the engine reports.
+ * Everything lives inside `.hud-safe`, a full-viewport box padded by the game's
+ * real safe zone. Positions inside it are anchored to its edges; sizes are in
+ * rem, and rem is tied to viewport height (see index.css). The result scales
+ * linearly across 720p to 4K from a single number, and lands where the player
+ * expects on any aspect ratio the engine reports.
+ *
+ * FOUR EDGES, NOT TWO: --safe-x/--safe-y are the left and top insets and
+ * --safe-r/--safe-b the right and bottom, because they are not the same number
+ * once the display stops being 16:9. And `.hud-safe` is NOT transformed -- it
+ * used to be, for an ultrawide clamp, and that quietly captured every
+ * `position: fixed` child inside it (#231; see index.css and check-ui R12).
  *
  * The bottom-left corner is reserved for GTA's native radar, which we
  * deliberately do not replace -- re-rendering the map in CEF costs real frames
- * and the storm circle already comes free from AddBlipForRadius. Its footprint
- * comes from Lua as --radar-w / --radar-h.
+ * and the storm circle already comes free from AddBlipForRadius. Its rectangle
+ * comes from Lua as --map-left / --map-bottom / --map-w / --map-h, in viewport
+ * units, and every surface that anchors to the radar reads those same four.
  *
  * Deliberately plain Tailwind rather than HeroUI: these are read-only readouts
  * on the 60fps path, not controls. HeroUI earns its place in the lobby and
@@ -73,6 +198,9 @@ export default function Hud({ visible }: { visible: boolean }) {
 
   // Applies the game's resolution and safe zone to CSS variables.
   useScreenMetrics()
+
+  // Below the radar or above it, re-decided from the real safe zone.
+  const { fit: { below }, stripRef, spaceRef, dropRef } = useVitalsPlacement()
 
   // Red only when the storm is actually hurting: dps is 0 during the phase-1
   // free-loot hold, where being outside circle 1 is a rotation problem, not
@@ -125,7 +253,7 @@ export default function Hud({ visible }: { visible: boolean }) {
 
         {/* Top row: counters right, squad left, BOTH on --hud-top so they sit
             at the same height and both clear the engine's help band. */}
-        <div className="absolute" style={{ top: 'var(--hud-top)', right: 'var(--safe-x)' }}>
+        <div className="absolute" style={{ top: 'var(--hud-top)', right: 'var(--safe-r)' }}>
           <Counters
             alive={hud.alive}
             squads={hud.squadsAlive}
@@ -143,7 +271,7 @@ export default function Hud({ visible }: { visible: boolean }) {
 
         <div
           className="absolute w-[16rem]"
-          style={{ top: 'calc(var(--hud-top) + 5rem)', right: 'var(--safe-x)' }}
+          style={{ top: 'calc(var(--hud-top) + 5rem)', right: 'var(--safe-r)' }}
         >
           <KillFeed entries={feed} />
         </div>
@@ -180,27 +308,63 @@ export default function Hud({ visible }: { visible: boolean }) {
         )}
 
         {/* Vitals sit UNDER the radar, spanning its width -- not over it.
-            Positioned FIXED against the viewport (not inside hud-safe's
-            padding) because the --map-* variables are viewport-true
-            coordinates of the real radar.
 
-            THE OFFSET IS NEGATIVE NOW. It was `+ 0.3rem`, which tucked a
-            0.75rem strip just inside the radar's lower edge. Making the
-            numerals legible meant growing the bar, and a taller bar anchored
-            at its BOTTOM grows upward -- so it climbed over the minimap
-            (user, 2026-08-09). Dropping the anchor below the radar's bottom
-            edge puts the whole strip back underneath it.
+            FIXED, AND IT NOW ACTUALLY IS. The comment here used to claim this
+            was "positioned FIXED against the viewport (not inside hud-safe's
+            padding) because the --map-* variables are viewport-true
+            coordinates of the real radar". The reason was right and the claim
+            was false: `.hud-safe` carried `transform: translateX(-50%)` for the
+            ultrawide clamp, a transformed ancestor becomes the containing block
+            for `position: fixed` descendants, and this strip resolved against
+            THAT box instead of the viewport -- 305px away from the minimap at
+            32:9, while the notice stack, `fixed` at App level and outside the
+            box, stayed put. index.css carries the write-up; check-ui R12 fails
+            the build if the transform comes back. The word `fixed` below is
+            load-bearing and so is where this div is mounted.
+
+            THE OFFSET IS NEGATIVE. It was `+ 0.3rem`, which tucked a 0.75rem
+            strip just inside the radar's lower edge. Making the numerals
+            legible meant growing the bar, and a taller bar anchored at its
+            BOTTOM grows upward -- so it climbed over the minimap (user,
+            2026-08-09). Dropping the anchor below the radar's bottom edge puts
+            the whole strip back underneath it.
 
             --vitals-drop is one number on purpose: the exact clearance is a
-            thing only an eye in game can settle, and this is the knob. */}
+            thing only an eye in game can settle, and this is the knob.
+
+            AND WHEN THERE IS NO ROOM DOWN THERE, THE STRIP GOES ABOVE THE
+            RADAR INSTEAD -- see useVitalsPlacement. The fallback anchors to the
+            radar's TOP edge, which is --map-h above its bottom one, and cannot
+            run off anything: it is only ever reached when the bottom margin is
+            nearly zero, and it grows into the middle of the screen. */}
         <div
+          ref={stripRef}
           className="fixed"
           style={{
             left: 'var(--map-left)',
-            bottom: 'calc(var(--map-bottom) - var(--vitals-drop))',
+            bottom: below
+              ? 'calc(var(--map-bottom) - var(--vitals-drop))'
+              : 'calc(var(--map-bottom) + var(--map-h) + var(--vitals-gap))',
             width: 'var(--map-w)',
           }}
         >
+          {/* THE TWO PROBES. Zero width, hidden, out of flow: they change
+              nothing about the layout and exist only to resolve two CSS
+              lengths into pixels so the placement above can compare them.
+              See useVitalsPlacement for why this is measured rather than
+              computed. */}
+          <div
+            ref={spaceRef}
+            className="absolute bottom-0 left-0 w-0 pointer-events-none"
+            style={{ height: 'var(--map-bottom)', visibility: 'hidden' }}
+            aria-hidden
+          />
+          <div
+            ref={dropRef}
+            className="absolute bottom-0 left-0 w-0 pointer-events-none"
+            style={{ height: 'var(--vitals-drop)', visibility: 'hidden' }}
+            aria-hidden
+          />
           <Vitals hp={hud.hp} armour={hud.armour} stamina={hud.stamina} />
         </div>
 
@@ -211,7 +375,7 @@ export default function Hud({ visible }: { visible: boolean }) {
         {!descending && (
           <div
             className="absolute flex flex-col items-end gap-1"
-            style={{ bottom: 'var(--safe-y)', right: 'var(--safe-x)' }}
+            style={{ bottom: 'var(--safe-b)', right: 'var(--safe-r)' }}
           >
             {/* ═══ THE CAR YOU ARE IN, ABOVE THE INVENTORY AND IN THE SAME
                     COLUMN ═══
@@ -271,7 +435,7 @@ export default function Hud({ visible }: { visible: boolean }) {
           className="absolute left-1/2 -translate-x-1/2 flex flex-col
                      items-center gap-1 pointer-events-none"
           style={{
-            bottom: 'calc(var(--safe-y) + var(--talkline-h) + 0.4rem)',
+            bottom: 'calc(var(--safe-b) + var(--talkline-h) + 0.4rem)',
           }}
         >
           {/* WHY YOU MIGHT BE HEARING NONE OF THEM. Renders nothing on nearby,
@@ -286,16 +450,25 @@ export default function Hud({ visible }: { visible: boolean }) {
 
         {/* Dev-only outline of the native radar's footprint. Without it this
             collision is invisible until you are in-game, which is exactly how
-            the first version of this HUD ended up drawn on top of the map. */}
+            the first version of this HUD ended up drawn on top of the map.
+
+            NOTE THIS IS THE *NUI DEV BUILD*, `npm run dev` -- not /brdebug,
+            which has never drawn it. screen.lua used to say otherwise.
+
+            IT READS THE SAME RECTANGLE EVERYTHING ELSE DOES. It used to be
+            drawn from --radar-w/--radar-h, a second copy of this rectangle in
+            rem, so the outline could agree with itself while disagreeing with
+            every surface it exists to check against. `fixed`, for the same
+            reason the vitals strip is: --map-* are viewport-true. */}
         {import.meta.env.DEV && (
           <div
-            className="absolute border border-dashed border-white/20 rounded-md
+            className="fixed border border-dashed border-white/20 rounded-md
                        flex items-end justify-center pb-1"
             style={{
-              left: 'var(--safe-x)',
-              bottom: 'var(--safe-y)',
-              width: 'var(--radar-w)',
-              height: 'var(--radar-h)',
+              left: 'var(--map-left)',
+              bottom: 'var(--map-bottom)',
+              width: 'var(--map-w)',
+              height: 'var(--map-h)',
             }}
           >
             <span className="text-[0.55rem] uppercase tracking-widest text-white/25">

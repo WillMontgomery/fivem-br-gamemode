@@ -489,6 +489,53 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R12  `.hud-safe` must not be transformed, or it eats the vitals strip.
+//
+// R9's twin, and the second one this project has shipped. `.hud-safe` carried
+// `left: 50%; width: var(--usable-w); transform: translateX(-50%)` -- an
+// ultrawide clamp -- and a transformed element becomes the CONTAINING BLOCK for
+// every `position: fixed` descendant. The health/shield strip is `fixed`
+// precisely BECAUSE the --map-* variables are viewport-true coordinates of the
+// real minimap, and it sits inside this box, so it stopped resolving against
+// the viewport: 305px away from the minimap at 32:9, while the notice stack --
+// `fixed` too, but rendered at App level and OUTSIDE this box -- did not move
+// at all. Two surfaces meant to share the minimap's left edge, pulled apart by
+// a rule about neither (#231).
+//
+// R9 checks that a wrapper which MUST be transformed is sized to the viewport.
+// This checks the other shape of the same trap: a wrapper that must not be
+// transformed at all, because its fixed children are addressing the viewport on
+// purpose. Neither rule generalises to the other.
+//
+// IT CAN FAIL. Put any `transform` back on `.hud-safe` and this goes red.
+// ---------------------------------------------------------------------------
+{
+  const cssPath = join(SRC, 'index.css')
+  const hudPath = join(SRC, 'hud', 'Hud.tsx')
+  if (existsSync(cssPath) && existsSync(hudPath)) {
+    const css = read(cssPath)
+    // Same un-anchored match R9 uses, and for the same reason: the rule is
+    // preceded by a comment block. `\s*\{` keeps `.hud-safe-x {` out.
+    const rule = (css.match(/\.hud-safe\s*\{([^}]*)\}/) ?? [])[1] ?? null
+    // Only worth checking while something inside it is actually `fixed`.
+    const fixedInside = /className="fixed"|className={`fixed/.test(read(hudPath))
+
+    if (rule == null) {
+      fail('R12 fixed-trap', 'src/index.css',
+        'there is no `.hud-safe` rule. The HUD lays out inside that box and'
+        + ' this gate is what keeps a transform off it; if the box was renamed,'
+        + ' rename it here too rather than deleting the rule.')
+    } else if (fixedInside && /(^|[;\s])transform\s*:/.test(rule)) {
+      fail('R12 fixed-trap', 'src/index.css',
+        '.hud-safe carries a `transform`. It becomes the containing block for'
+        + ' every `position: fixed` child, and the vitals strip inside it is'
+        + ' fixed on purpose -- it addresses the viewport, because --map-* are'
+        + ' viewport-true coordinates of the real minimap. This is #231.')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

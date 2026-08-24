@@ -9,68 +9,174 @@
 -- to the UI means our HUD sits exactly where the player expects their interface
 -- to sit, on any display, including the ultrawide cases we cannot otherwise
 -- reason about.
+--
+-- "ASKED DIRECTLY" IS NEW, AND IT IS THE WHOLE OF #231. Until now this file
+-- said that and then worked the answer out anyway, from one GetSafeZoneSize
+-- scalar and a formula that is only correct on 16:9. See safeZoneRect().
 
-local last = { w = 0, h = 0, safe = -1.0, radar = nil, ready = nil }
+local last = { w = 0, h = 0, l = -1.0, t = -1.0, r = -1.0, b = -1.0,
+               radar = nil, ready = nil }
+
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true -- so `if v then` is TRUE for a native that said no with a zero,
+--- and `not v` is FALSE for the same zero. Same helper, same reason, as
+--- client/airdrop.lua; see tools/bool_native_rules.lua for the write-up.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
 
 --- The native radar's footprint, as a fraction of screen height.
 ---
---- MEASURED, NOT DERIVED. GTA does not expose the radar rectangle, so these come
---- from measuring a 1080p screenshot: the minimap occupies roughly 400x210 px
---- with the default safe zone. They scale with height, which is how the engine
---- scales it. Re-measure with /brdebug if the radar ever looks wrong -- the dev
---- overlay draws this rectangle so a mismatch is visible immediately.
--- THE CANONICAL VALUES, finally researched instead of measured off
--- screenshots (glitchdetector/fivem-minimap-anchor, the community-standard
--- derivation): the radar's map area is EXACTLY screenHeight/4 wide and
--- screenHeight/5.674 tall, anchored to the safe zone's bottom-left. Two
--- rounds of screenshot-measuring produced 0.370 then 0.291; the real number
--- is 0.25, which is why the bars kept overshooting the map's right edge.
+--- THE CANONICAL VALUES, researched rather than measured off screenshots
+--- (glitchdetector/fivem-minimap-anchor, the community-standard derivation):
+--- the radar's map area is EXACTLY screenHeight/4 wide and screenHeight/5.674
+--- tall, anchored to the safe zone's bottom-left. Two rounds of
+--- screenshot-measuring produced 0.370 then 0.291; the real number is 0.25,
+--- which is why the bars kept overshooting the map's right edge.
+---
+--- BOTH ARE FRACTIONS OF *HEIGHT*, including the width. That is how the engine
+--- scales the radar, and it is why the width has to be divided by the RENDERER's
+--- aspect ratio to become a fraction of screen width -- see publish().
+---
+--- Nothing in Lua draws this rectangle. The dashed outline that makes a
+--- mismatch visible is in the NUI, hud/Hud.tsx, and only in a DEV build
+--- (`npm run dev`); /brdebug has never drawn it. To check it against the real
+--- radar, run the harness -- or paste `/brprobe` output from the machine that
+--- looks wrong, which is what reports the real safe zone.
 local RADAR_H_FRAC = 1.0 / 5.674   -- ~0.1763
-local RADAR_W_FRAC = 0.25          -- width == height/4, aspect-independent
+local RADAR_W_FRAC = 0.25          -- width == height/4, of HEIGHT
 
 --- Whether the radar is currently on screen. IsRadarHidden reflects both our
 --- own DisplayRadar calls and the pause map; guarded because a wrong native
 --- name is nil and this must never take the metrics loop down.
 local function radarVisible()
-    local ok, hidden = pcall(function() return IsRadarHidden() end)
+    local ok, hidden = pcall(IsRadarHidden)
     if not ok then return true end
-    return not hidden
+    return not isTrue(hidden)
+end
+
+--- The RENDERER's aspect ratio.
+---
+--- NOT width/height. The two agree on an ordinary 16:9 monitor and diverge
+--- exactly where it matters -- ultrawide, letterboxed and multi-monitor setups,
+--- where the rendered aspect is not the window's. GetAspectRatio is what the
+--- engine itself lays out against, so it is what our arithmetic has to use.
+--- client/dui.lua learned this first and carries the longer note.
+--- @param w number|nil
+--- @param h number|nil
+--- @return number
+local function renderAspect(w, h)
+    local a = GetAspectRatio(false)
+    if type(a) ~= 'number' or a <= 0.1 then
+        a = (w and h and h > 0) and (w / h) or (16.0 / 9.0)
+    end
+    return a
+end
+
+--- The safe-zone rectangle, in SCREEN FRACTIONS measured from the top-left:
+--- left edge, top edge, right edge, bottom edge.
+---
+--- ═══ ASKED FOR, NOT WORKED OUT ═══
+---
+--- This used to be `local inset = (1.0 - GetSafeZoneSize()) * 0.5`, applied to
+--- both axes. That formula is a 16:9 ASSUMPTION wearing the clothes of a
+--- measurement, and it is wrong on every other shape of display:
+--- glitchdetector/fivem-minimap-anchor DELETED the same arithmetic from its own
+--- ultrawide fix and replaced it with exactly the two calls below, and
+--- citizenfx/fivem#2719 records why -- on an ultrawide the engine keeps the
+--- minimap "in the center(ish) of the screen as if it was following a 16:9
+--- aspect ratio", which no arithmetic over a single 0.8..1.0 scalar models.
+---
+--- SetScriptGfxAlign puts the drawing origin on a corner of the SAFE ZONE, and
+--- GetScriptGfxPosition then reports where that origin actually landed. The
+--- engine has already applied the player's slider, the aspect ratio, and
+--- whatever it does on unusual displays; we only read the answer. Two corners
+--- give the whole rectangle -- and it is published as a rectangle rather than
+--- as one inset because left and top are NOT the same number once the display
+--- stops being 16:9.
+---
+--- The fallback below is the old arithmetic, kept ONLY for the case where the
+--- gfx natives are unavailable and clearly labelled as the thing that is wrong
+--- on ultrawide -- a HUD laid out on a 16:9 guess beats no HUD at all.
+--- @return number, number, number, number
+local function safeZoneRect()
+    local ok, l, t, r, b = pcall(function()
+        -- Bottom-LEFT corner: x is the left edge, y is the bottom edge.
+        SetScriptGfxAlign(string.byte('L'), string.byte('B'))
+        local lx, by = GetScriptGfxPosition(0.0, 0.0)
+        ResetScriptGfxAlign()
+        -- Top-RIGHT corner: x is the right edge, y is the top edge.
+        SetScriptGfxAlign(string.byte('R'), string.byte('T'))
+        local rx, ty = GetScriptGfxPosition(0.0, 0.0)
+        ResetScriptGfxAlign()
+        return lx, ty, rx, by
+    end)
+
+    -- THE ALIGN STATE MUST NOT BE LEFT SET, whatever happened in there. It is
+    -- per-script, so a throw between the Set and the Reset above would hand
+    -- every other DrawSprite in this resource -- the descent prompt, for one --
+    -- an origin it never asked for, and that failure would present nowhere near
+    -- this file.
+    pcall(ResetScriptGfxAlign)
+
+    -- A rectangle or nothing. A half-answer here becomes a HUD drawn off the
+    -- edge of the screen, so anything that is not four numbers making a box
+    -- falls through to the approximation rather than being published.
+    if ok and type(l) == 'number' and type(t) == 'number'
+       and type(r) == 'number' and type(b) == 'number'
+       and l >= 0.0 and t >= 0.0 and r <= 1.0 and b <= 1.0
+       and r > l and b > t then
+        return l, t, r, b
+    end
+
+    local safe = GetSafeZoneSize()
+    local inset = (type(safe) == 'number') and ((1.0 - safe) * 0.5) or 0.032
+    return inset, inset, 1.0 - inset, 1.0 - inset
 end
 
 local function publish()
     local w, h = GetActiveScreenResolution()
-    local safe = GetSafeZoneSize()
+    local aspect = renderAspect(w, h)
+    local l, t, r, b = safeZoneRect()
 
-    -- GetSafeZoneSize returns roughly 0.8..1.0, where 1.0 is no inset. Convert
-    -- to a percentage inset the CSS can use directly.
-    local inset = (1.0 - safe) * 0.5
+    -- ONE RECTANGLE, IN VIEWPORT PERCENTAGES, AND EVERY SURFACE READS IT.
+    -- Per-edge, because on an ultrawide the horizontal inset is nothing like
+    -- the vertical one and a single number cannot be both.
+    local safeL = l * 100.0
+    local safeT = t * 100.0
+    local safeR = (1.0 - r) * 100.0
+    local safeB = (1.0 - b) * 100.0
 
-    -- The minimap rectangle in VIEWPORT PERCENTAGES, so the UI can anchor our
-    -- health/shield bars, the chat and the notices to the real radar wherever
-    -- the player's safe-zone slider put it. Width is measured against screen
-    -- HEIGHT (that is how the engine scales the radar) and converted to a
-    -- width-percentage here.
-    local mapW = (h > 0 and w > 0) and (RADAR_W_FRAC * h / w * 100.0) or 20.8
+    -- The minimap rectangle, so the UI can anchor our health/shield bars, the
+    -- chat and the notices to the real radar wherever the player's safe-zone
+    -- slider put it. RADAR_W_FRAC is a fraction of screen HEIGHT, so dividing
+    -- by the RENDERER's aspect converts it to a fraction of screen WIDTH --
+    -- the one place the aspect ratio enters this file, and the reason it comes
+    -- from GetAspectRatio rather than from w/h.
+    local mapW = (RADAR_W_FRAC / aspect) * 100.0
     local mapH = RADAR_H_FRAC * 100.0
 
     TriggerEvent('br:ui:sendLocal', BR.Nui.SCREEN, {
         width   = w,
         height  = h,
-        -- Percentages, because the UI positions with them.
-        safeX   = inset * 100.0,
-        safeY   = inset * 100.0,
-        -- rem, where 1rem is 1.481vh -- matching the root scale in index.css, so
-        -- the radar box scales with the rest of the interface.
-        radarW  = (RADAR_W_FRAC * 100.0) / 1.481,
-        radarH  = (RADAR_H_FRAC * 100.0) / 1.481,
-        -- The radar rect: left/bottom insets match the safe zone (the engine
-        -- anchors the radar to the safe zone's bottom-left corner).
-        mapLeft   = inset * 100.0,
-        mapBottom = inset * 100.0,
+        -- Percentages, because the UI positions with them. safeX/safeY are the
+        -- LEFT and TOP edges under their old names, kept because the UI's
+        -- "is this a metrics envelope or the scope flag?" guard reads safeX.
+        safeX   = safeL,
+        safeY   = safeT,
+        safeL   = safeL,
+        safeT   = safeT,
+        safeR   = safeR,
+        safeB   = safeB,
+        -- The radar rect: left/bottom match the safe zone, because the engine
+        -- anchors the radar to the safe zone's bottom-left corner.
+        mapLeft   = safeL,
+        mapBottom = safeB,
         mapW      = mapW,
         mapH      = mapH,
         radarOn   = radarVisible(),
-        aspect  = (h > 0) and (w / h) or (16.0 / 9.0),
         -- Rides here rather than in its own envelope so a br_ui restart
         -- mid-session re-learns it on the next periodic publish. Owned by
         -- loading.lua; the lobby's opaque streaming backdrop keys on it.
@@ -140,13 +246,21 @@ end)
 
 BR.Loop.register(BR.Loop.SLOW, 'screen.metrics', function()
     local w, h = GetActiveScreenResolution()
-    local safe = GetSafeZoneSize()
+    -- THE RECTANGLE IS WHAT IS WATCHED, not the GetSafeZoneSize scalar it used
+    -- to be derived from. The engine can move these edges for reasons that
+    -- scalar does not change with -- a resolution change, a monitor swap --
+    -- and the UI has to follow every one of them, not only the slider.
+    local l, t, r, b = safeZoneRect()
     local radar = radarVisible()
     local ready = BR.State.worldReady ~= false
 
-    if w ~= last.w or h ~= last.h or math.abs(safe - last.safe) > 0.001
+    if w ~= last.w or h ~= last.h
+       or math.abs(l - last.l) > 0.0005 or math.abs(t - last.t) > 0.0005
+       or math.abs(r - last.r) > 0.0005 or math.abs(b - last.b) > 0.0005
        or radar ~= last.radar or ready ~= last.ready then
-        last.w, last.h, last.safe, last.radar, last.ready = w, h, safe, radar, ready
+        last.w, last.h = w, h
+        last.l, last.t, last.r, last.b = l, t, r, b
+        last.radar, last.ready = radar, ready
         publish()
     end
 end)

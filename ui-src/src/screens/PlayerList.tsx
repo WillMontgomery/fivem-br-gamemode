@@ -71,7 +71,7 @@ const MIN_BAND_REM = 14
  * exactly the right answer when there is nothing to avoid.
  */
 type Band = { top: string; bottom: string }
-const FULL_BAND: Band = { top: 'var(--hud-top)', bottom: 'var(--safe-y)' }
+const FULL_BAND: Band = { top: 'var(--hud-top)', bottom: 'var(--safe-b)' }
 
 /**
  * Who is in this match, and the way to report them.
@@ -250,7 +250,7 @@ export default function PlayerList() {
   useLayoutEffect(() => {
     const compute = () => {
       // The measured boxes are viewport coordinates and so is this card's
-      // containing block: `.hud-safe` is `position: fixed; top: 0; height: 100%`,
+      // containing block: `.hud-safe` is `position: fixed; inset: 0`,
       // so an absolute child's `top: Npx` IS N pixels down the viewport. Checked
       // in the harness -- the old `top-1/2` card centred on exactly 540 at
       // 1080p. No conversion, and nothing here has to know about the safe-zone

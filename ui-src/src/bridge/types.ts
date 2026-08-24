@@ -428,22 +428,42 @@ export interface ChatMessage {
 /**
  * Real screen metrics, read from the game.
  *
- * safeX/safeY are percentage insets derived from GetSafeZoneSize, which the
- * player controls in Settings > Display and which the engine varies with aspect
- * ratio. radarW/radarH describe the native minimap's footprint in rem.
+ * ONE RECTANGLE, ASKED FOR RATHER THAN WORKED OUT. Lua puts the drawing origin
+ * on each corner of the safe zone and asks the engine where it landed
+ * (SetScriptGfxAlign + GetScriptGfxPosition), so the player's slider, the
+ * aspect ratio, and whatever the engine does on an unusual display are all
+ * already applied. Nothing on this side re-derives a margin -- see
+ * br_core/client/screen.lua.
+ *
+ * PER EDGE, because they are not the same number. safeX/safeY are the LEFT and
+ * TOP insets under the names the HUD has always used them by; safeR/safeB are
+ * the right and bottom. On 16:9 all four are close enough to look
+ * interchangeable, which is exactly how a HUD ends up assuming they are.
+ *
+ * `radarW`/`radarH` (the minimap footprint, in rem) ARE GONE. They described
+ * the same rectangle as mapW/mapH in a second unit, derived against a fixed
+ * 1.481vh that the interface-size slider and the clamp on the root font size
+ * both move -- so the two disagreed, and the only reader was the dev outline
+ * that exists to show a disagreement. One rectangle, one unit, every surface.
  */
 export interface ScreenPayload {
   width: number
   height: number
   safeX: number
   safeY: number
-  radarW: number
-  radarH: number
-  aspect: number
+  safeL?: number
+  safeT?: number
+  safeR?: number
+  safeB?: number
   /** The native minimap's rectangle, in viewport percentages: left/bottom
    *  insets and width/height. Our health bars, the chat column and the
    *  notice stack all anchor to it -- it moves with the player's safe-zone
-   *  slider, so nothing here is hardcodeable. */
+   *  slider, so nothing here is hardcodeable.
+   *
+   *  mapW comes off the RENDERER's aspect ratio (GetAspectRatio), not off
+   *  width/height: the radar is sized against screen HEIGHT, so turning that
+   *  into a percentage of WIDTH is a division by the aspect, and the two
+   *  aspects agree on 16:9 and diverge exactly where it matters. */
   mapLeft?: number
   mapBottom?: number
   mapW?: number

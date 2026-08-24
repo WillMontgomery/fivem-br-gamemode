@@ -11,7 +11,7 @@
 
 import { dispatch } from './nui'
 import type {
-  CallbackName, ChatMessage, Envelope, WireEnvelope,
+  CallbackName, ChatMessage, Envelope, ScreenPayload, WireEnvelope,
 } from './types'
 
 let seq = 0
@@ -201,6 +201,158 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
 const NAMES = ['Kestrel', 'Vandal', 'Nyx', 'Rook', 'Ember', 'Halcyon', 'Wraith']
 
 /** Seed a plausible mid-match state and keep it moving. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE FAKE SCREEN
+
+   This used to be one frozen envelope: `aspect: 16/9`, `mapW: 20.8`,
+   `safeX: 2.2, safeY: 3.2`. Every number in it was wrong in a way that mattered
+   (#231):
+
+     - the aspect never moved, so the harness could not reproduce an ultrawide
+       at all -- which is most of why an ultrawide bug reached a player;
+     - mapW was 20.8vw when Lua sends 14.06vw on the very 16:9 screen this was
+       claiming to be, so the minimap outline in the dev build was a third of a
+       screen too wide and the bars were laid out against a map that does not
+       exist anywhere;
+     - safeX and safeY were different numbers while Lua published one inset for
+       both, so the harness disagreed with the game on the one axis the old Lua
+       was actually right about.
+
+   A harness that lies is worse than no harness, because work gets signed off
+   against it. So this DERIVES the payload the same way br_core/client/screen.lua
+   does, from the window you are actually looking at, and re-sends it whenever
+   that window changes shape -- drag the browser wide and the HUD relays out as
+   it would on the corresponding monitor.
+
+   ═══ WHAT IS A MODEL AND WHAT IS NOT ═══
+
+   The radar rectangle and the per-edge safe zone are computed exactly as Lua
+   computes them, from the same two constants. Those are not a model.
+
+   The safe zone's own SHAPE is. In game Lua asks the engine where each corner
+   landed (SetScriptGfxAlign + GetScriptGfxPosition) and does no arithmetic at
+   all; there is no engine here to ask, so this reproduces the behaviour
+   citizenfx/fivem#2719 describes -- past 16:9 the engine keeps the HUD "in the
+   center(ish) of the screen as if it was following a 16:9 aspect ratio" -- by
+   laying the safe zone out inside a centred 16:9 box. That is a MODEL OF A BUG
+   REPORT, not a measurement, and it is only ever as good as that report. The
+   authority is the machine: `/brprobe` prints the engine's real rectangle, and
+   a paste of that from an ultrawide beats anything in this file.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** The aspect past which the engine stops widening its layout box. */
+const REF_ASPECT = 16 / 9
+
+/** The radar's map area, as fractions of screen HEIGHT -- the same two numbers
+ *  br_core/client/screen.lua carries, from glitchdetector/fivem-minimap-anchor.
+ *  Duplicated here and nowhere else: this file is the stand-in for that one. */
+const RADAR_W_FRAC = 0.25
+const RADAR_H_FRAC = 1 / 5.674
+
+/** Shapes a `?screen=` preset can force when the window cannot be dragged that
+ *  wide -- a laptop panel, or a second monitor that is not there. */
+const SCREEN_PRESETS: Record<string, [number, number]> = {
+  '16x9':  [1920, 1080],
+  '16x10': [1920, 1200],
+  '21x9':  [2560, 1080],
+  '32x9':  [3840, 1080],
+}
+
+/** GetSafeZoneSize, as the engine reports it: roughly 0.8..1.0, where 1.0 is
+ *  the TOP of the player's slider and leaves no margin at all. The default is
+ *  the value index.css has always assumed for its fallbacks -- a 3.2%-of-height
+ *  inset -- so the harness and the stylesheet start out agreeing. */
+let mockSafe = 0.936
+
+/** null = follow the window, which is the default and the honest one. */
+let mockPreset: [number, number] | null = null
+
+function mockScreenPayload(): ScreenPayload {
+  const [w, h] = mockPreset ?? [window.innerWidth, window.innerHeight]
+  const aspect = h > 0 ? w / h : REF_ASPECT
+
+  // The engine's inset is a physical distance, so it is a fraction of HEIGHT on
+  // both axes -- which is the whole reason safeX and safeY are different
+  // percentages and the old single `inset` could not be both.
+  const insetPx = Math.max(0, (1 - mockSafe) * 0.5) * h
+
+  // Past 16:9, the layout box stops widening and stays centred (fivem#2719).
+  const boxW = h * Math.min(aspect, REF_ASPECT)
+  const boxLeft = (w - boxW) / 2
+
+  const safeL = ((boxLeft + insetPx) / w) * 100
+  const safeR = ((w - (boxLeft + boxW - insetPx)) / w) * 100
+  const safeT = (insetPx / h) * 100
+  const safeB = (insetPx / h) * 100
+
+  return {
+    width: w,
+    height: h,
+    // safeX/safeY are the LEFT and TOP edges under their old names.
+    safeX: safeL,
+    safeY: safeT,
+    safeL,
+    safeT,
+    safeR,
+    safeB,
+    // The radar hangs off the safe zone's bottom-left corner, and its width is
+    // a fraction of HEIGHT turned into a fraction of WIDTH by the aspect.
+    mapLeft: safeL,
+    mapBottom: safeB,
+    mapW: (RADAR_W_FRAC / aspect) * 100,
+    mapH: RADAR_H_FRAC * 100,
+    radarOn: true,
+  }
+}
+
+/**
+ * Publish the fake screen, and keep publishing it.
+ *
+ * DRIVEN FROM THE URL AND FROM THE CONSOLE, because the two things worth
+ * reproducing are both settings a player owns and neither is reachable from the
+ * page itself:
+ *
+ *   ?screen=32x9        force a shape the window cannot be dragged to
+ *   ?safe=1.0           the safe-zone slider at its maximum, which is where the
+ *                       health/shield strip runs off the bottom of the screen
+ *   brScreen('21x9', 0.98)      both, live, from the F12 console
+ *   brScreen('window')          back to following the window
+ *
+ * The live form is the one that matters for #231's "re-evaluated, not decided
+ * once" -- calling it repeatedly is a player dragging the slider mid-match, and
+ * the strip has to change places under it without a reload.
+ */
+function startMockScreen(): void {
+  const params = new URLSearchParams(window.location.search)
+
+  const preset = params.get('screen')
+  if (preset && SCREEN_PRESETS[preset]) mockPreset = SCREEN_PRESETS[preset]
+
+  const safe = Number(params.get('safe'))
+  if (Number.isFinite(safe) && safe > 0) mockSafe = Math.min(1, Math.max(0.5, safe))
+
+  const push = () => emit({ k: 'screen', d: mockScreenPayload() })
+
+  push()
+  // Only meaningful while following the window, but harmless otherwise and one
+  // fewer branch to get wrong.
+  window.addEventListener('resize', push)
+
+  Object.assign(window, {
+    brScreen(shape?: string, safeSize?: number) {
+      if (shape === 'window') mockPreset = null
+      else if (shape && SCREEN_PRESETS[shape]) mockPreset = SCREEN_PRESETS[shape]
+      if (Number.isFinite(safeSize) && (safeSize as number) > 0) {
+        mockSafe = Math.min(1, Math.max(0.5, safeSize as number))
+      }
+      push()
+      // eslint-disable-next-line no-console
+      console.info('[mock] screen', mockScreenPayload(), 'safeZoneSize', mockSafe,
+        'shapes:', Object.keys(SCREEN_PRESETS).join(' '), 'window')
+    },
+  })
+}
+
 export function startMockDriver(): void {
   const now = Date.now()
 
@@ -323,17 +475,10 @@ export function startMockDriver(): void {
     },
   })
 
-  // Screen metrics as the game would report them at 1080p, default safe
-  // zone -- so the minimap-anchored layout (bars/chat/notices) is exercised
-  // in the browser too.
-  emit({
-    k: 'screen',
-    d: {
-      width: 1920, height: 1080, safeX: 2.2, safeY: 3.2,
-      radarW: 25, radarH: 12.5, aspect: 16 / 9,
-      mapLeft: 2.2, mapBottom: 3.2, mapW: 20.8, mapH: 19.5, radarOn: true,
-    },
-  })
+  // Screen metrics, DERIVED FROM THE WINDOW rather than frozen at 16:9.
+  // Re-sent whenever the window changes shape, so dragging the browser wide
+  // reproduces an ultrawide -- see mockScreen below.
+  startMockScreen()
 
   // Vitals drift, so the bars and their transitions can be seen working.
   let hp = 82, armour = 45, kills = 3, alive = 23

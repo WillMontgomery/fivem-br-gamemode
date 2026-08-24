@@ -207,13 +207,50 @@ local function screenDump()
         'what DrawSprite actually renders into')
     val('GetAspectRatio(true)', GetAspectRatio(true))
     val('GetScreenAspectRatio', pcall(GetScreenAspectRatio) and GetScreenAspectRatio() or 'n/a')
-    local szx, szy = GetSafeZoneSize(), nil
-    val('GetSafeZoneSize', szx)
+    val('GetSafeZoneSize', GetSafeZoneSize())
+
+    -- ═══ THE SAFE ZONE AS THE ENGINE ACTUALLY PLACES IT ═══
+    --
+    -- THIS is the reading worth pasting from an ultrawide, and it is the one
+    -- the HUD now lays out against (#231). GetSafeZoneSize is a single
+    -- 0.8..1.0 scalar; turning it into a rectangle takes arithmetic, and the
+    -- arithmetic is a 16:9 assumption. SetScriptGfxAlign puts the drawing
+    -- origin on a corner of the real safe zone and GetScriptGfxPosition reports
+    -- where it landed -- the player's slider, the aspect ratio and whatever the
+    -- engine does on an unusual panel, already applied.
+    --
+    -- The old formula is printed BESIDE it on purpose. On a 16:9 monitor the
+    -- two agree and this looks like a pointless pair of lines; the gap between
+    -- them on an ultrawide is the whole bug.
+    local ok, l, t, r, b = pcall(function()
+        SetScriptGfxAlign(string.byte('L'), string.byte('B'))
+        local lx, by = GetScriptGfxPosition(0.0, 0.0)
+        ResetScriptGfxAlign()
+        SetScriptGfxAlign(string.byte('R'), string.byte('T'))
+        local rx, ty = GetScriptGfxPosition(0.0, 0.0)
+        ResetScriptGfxAlign()
+        return lx, ty, rx, by
+    end)
+    if ok and type(l) == 'number' then
+        val('safe zone left (engine)',   ('%.4f'):format(l))
+        val('safe zone top (engine)',    ('%.4f'):format(t))
+        val('safe zone right (engine)',  ('%.4f'):format(r))
+        val('safe zone bottom (engine)', ('%.4f'):format(b))
+    else
+        val('GetScriptGfxPosition', 'FAILED', tostring(l))
+    end
+    local safe = GetSafeZoneSize()
+    if type(safe) == 'number' then
+        val('  -> old formula would say', ('%.4f'):format((1.0 - safe) * 0.5),
+            'left AND top, which is the 16:9 guess #231 removed')
+    end
 
     -- The two disagree on letterboxed and multi-monitor setups, and the one
     -- that matters for a world-anchored sprite is whatever DrawSprite uses.
     print('  NOTE: if the derived aspect and GetAspectRatio disagree, the DUI')
     print('        prompt should use GetAspectRatio -- it is the renderer\'s.')
+    print('  NOTE: if the engine safe zone and the old formula disagree, the')
+    print('        HUD would have been wrong everywhere before #231.')
 end
 
 -- --------------------------------------------------------------------------

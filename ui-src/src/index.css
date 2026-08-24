@@ -46,10 +46,26 @@
      line height simply clips. */
   --text-scale: 1;
 
-  /* Safe-zone insets, overwritten at runtime from GetSafeZoneSize. These are
-     the fallback for the browser dev harness and the first frame in game. */
-  --safe-x: 2.2%;
+  /* THE SAFE-ZONE RECTANGLE, PER EDGE. Overwritten at runtime from the game --
+     which is asked where each corner of the safe zone landed rather than being
+     asked for one 0.8..1.0 scalar we then do arithmetic on (#231; see
+     br_core/client/screen.lua). --safe-x/--safe-y are the LEFT and TOP insets
+     under the names the HUD has always positioned by.
+
+     THE FOUR ARE NOT ONE NUMBER. The engine's inset is a physical distance, so
+     as a PERCENTAGE the horizontal one is the vertical one divided by the
+     aspect ratio -- 3.2% of height is 1.8% of width on 16:9, and much less than
+     that on an ultrawide, where the engine also pushes the whole box inward.
+     The old fallbacks here were 2.2%/3.2% while Lua published one number for
+     both, so the stylesheet and the game never agreed even on 16:9.
+
+     These values are the harness fallback and the first frame in game: a 16:9
+     screen at the 3.2%-of-height inset this file has always assumed. The real
+     numbers come from the engine, and `/brprobe` prints them. */
+  --safe-x: 1.8%;
   --safe-y: 3.2%;
+  --safe-r: 1.8%;
+  --safe-b: 3.2%;
 
   /* Baseline for the TOP ROW: the safe-zone top plus the height of GTA's own
      instructional/help band, which draws in the top left and was landing
@@ -63,25 +79,46 @@
      2026-08-08). Level with the storm bar, which anchors on --safe-y. */
   --hud-top: var(--safe-y);
 
-  /* Footprint of GTA's native radar, which we deliberately do not replace. */
-  --radar-w: 25rem;
-  --radar-h: 12.5rem;
-
   /* The radar's real rectangle in viewport units, overwritten at runtime from
-     the game (screen envelope). Bars, chat and notices anchor to these.
-     Fallbacks approximate a 1080p default safe zone for the dev harness. */
-  --map-left: 2.2vw;
-  --map-bottom: 3.2vh;
-  --map-w: 20.8vw;
-  --map-h: 19.5vh;
+     the game (screen envelope). Bars, chat and notices anchor to these, and so
+     does the dev-build outline that exists to show a disagreement -- ONE
+     rectangle in ONE unit, rather than the second copy in rem that used to sit
+     beside it and drift with the interface-size slider.
 
-  /* Narrowed past ~21:9 so anchored columns do not end up needing a head turn. */
-  --usable-w: 100%;
+     The fallbacks are what Lua sends on a 16:9 screen at the inset above: the
+     radar's map area is screenHeight/4 wide and screenHeight/5.674 tall
+     (glitchdetector/fivem-minimap-anchor), so 25vh of width is 14.06vw at 16:9,
+     and 100/5.674 is 17.63vh of height. They were 20.8/19.5 -- numbers that
+     matched nothing Lua has ever published. */
+  --map-left: 1.8vw;
+  --map-bottom: 3.2vh;
+  --map-w: 14.06vw;
+  --map-h: 17.63vh;
 
   /* How far the vitals strip hangs BELOW the radar's bottom edge. One number,
      because the right clearance depends on the player's safe-zone slider and
-     is settled by looking at it in game, not by arithmetic here. */
+     is settled by looking at it in game, not by arithmetic here.
+
+     IT IS ALSO WHAT DECIDES WHETHER THE STRIP FITS THERE AT ALL. The radar is
+     anchored to the safe zone's bottom-left, so this much of the strip hangs
+     into the margin BELOW the safe zone -- and once the player's slider runs
+     out of margin, off the bottom of the screen. hud/Hud.tsx measures this
+     against the real safe zone every render and moves the strip above the
+     radar when it no longer fits. Nothing hardcodes the number twice: the
+     measurement reads THIS declaration, whatever unit it is written in. */
   --vitals-drop: 0.85rem;
+
+  /* Breathing room between the vitals strip and whatever it is stacked with
+     when it does NOT fit under the radar -- the radar's top edge below it, the
+     chat column above it. The same 0.3rem the chat column already keeps from
+     the radar, so the whole left column reads as one unit either way. */
+  --vitals-gap: 0.3rem;
+
+  /* How far the chat column has to move to stay clear of a vitals strip that
+     has come up above the radar. Written by hud/Hud.tsx from the strip's
+     MEASURED height; 0 whenever the strip is in its usual place, which is
+     almost always. */
+  --vitals-lift: 0px;
 
   /* THE "Currently Talking" LINE, AS A SIZE TWO COMPONENTS AGREE ON.
      Bottom centre is now shared: TalkingBar sits ON the bottom safe edge and
@@ -321,16 +358,35 @@
 .tscale { font-size: calc(1em * var(--text-scale)); }
 
 
-/* The HUD lays out inside this box rather than the raw viewport, so safe zone
-   and ultrawide clamping are applied once instead of per component. */
+/* The HUD lays out inside this box rather than the raw viewport, so the safe
+   zone is applied once instead of per component.
+
+   ═══ IT MUST NOT BE TRANSFORMED, AND IT USED TO BE ═══
+
+   This carried `left: 50%; width: var(--usable-w); transform: translateX(-50%)`
+   -- an ultrawide clamp that narrowed and re-centred the HUD past ~21:9. Two
+   separate failures came out of those three lines (#231):
+
+   1. A TRANSFORMED ANCESTOR IS THE CONTAINING BLOCK FOR `position: fixed`
+      DESCENDANTS. This file already says so about `.page` sixty lines down,
+      where it cost every menu in the game. Here it silently captured the
+      vitals strip, which is `fixed` precisely BECAUSE the --map-* variables
+      are viewport-true coordinates of the real radar -- so at 32:9 the health
+      and shield bars were displaced 305px from the minimap they are supposed
+      to sit under, while the notice stack, `fixed` at App level and outside
+      this box, did not move at all.
+
+   2. THE CLAMP ONLY EVER REACHED WHAT WAS INSIDE. Chat and notices render
+      outside `.hud-safe`, so it pulled some of the minimap-anchored column in
+      and left the rest where it was.
+
+   The inward pull it was hand-rolling is the engine's own job, and Lua now
+   reads the engine's answer instead of approximating one, so nothing is lost
+   by deleting it. check-ui R12 fails the build if a transform comes back. */
 .hud-safe {
   position: fixed;
-  left: 50%;
-  top: 0;
-  transform: translateX(-50%);
-  width: var(--usable-w);
-  height: 100%;
-  padding: var(--safe-y) var(--safe-x);
+  inset: 0;
+  padding: var(--safe-y) var(--safe-r) var(--safe-b) var(--safe-x);
   box-sizing: border-box;
   pointer-events: none;
 }

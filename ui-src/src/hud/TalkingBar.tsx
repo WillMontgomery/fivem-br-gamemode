@@ -74,7 +74,7 @@ export default function TalkingBar() {
     <div
       className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2
                  max-w-[46%] pointer-events-none"
-      style={{ bottom: 'var(--safe-y)' }}
+      style={{ bottom: 'var(--safe-b)' }}
     >
       {/* THE SAME MARK THE SQUAD PANEL PUTS BESIDE A SPEAKING MATE, from the
           same component. Voice has one visual vocabulary and this is it; a
