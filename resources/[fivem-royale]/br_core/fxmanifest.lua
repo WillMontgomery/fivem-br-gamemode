@@ -197,6 +197,17 @@ client_scripts {
     'client/chat.lua',
     'client/voice.lua',   -- Mumble channels; server/voice.lua decides them
     'client/probe.lua',    -- /brprobe: what the natives ACTUALLY do on this build
+    -- /brattach: attach the ped to a vehicle and nudge the offset until it looks
+    -- right (#191's stretcher). Beside probe.lua because it is the same kind of
+    -- thing -- a command that MEASURES what has to be written down, rather than
+    -- a subsystem -- and nothing in the gamemode calls it.
+    --
+    -- NEEDS client/main.lua FOR THE LOOP REGISTRY AND NOTHING ELSE AT LOAD TIME.
+    -- BR.PlayerState comes from shared/enums.lua, already the first line above.
+    -- BR.State, BR.Config.Rescue and BR.NormHash are all reached at CALL time
+    -- and nil-guarded -- BR.Config.Rescue deliberately, because #191's config is
+    -- landing alongside this and the tool has to work with or without it.
+    'client/attachtune.lua',
     'client/debug.lua',
 }
 
