@@ -1003,6 +1003,40 @@ do
     ok(not S.watching(1), 'and stops on the pause-menu verb')
 end
 
+do
+    -- AND THE HOLD IS A WINDOW, NOT A MARK ON THE PLAYER.
+    --
+    -- THE WAY THIS FIX GOES WRONG IS BY BEING TOO WIDE, and it would go wrong
+    -- quietly: `revivePending` is cleared in three places, and a version that
+    -- leaked it -- a flag left set by a revive that took a different branch, or
+    -- one made sticky by somebody solving an unrelated problem with it -- would
+    -- bar its owner from spectating for the rest of the round, which is the
+    -- reported bug wearing the opposite coat and nothing on screen would say so.
+    --
+    -- So the whole arc, in one fixture: held before the start, revived into the
+    -- match, and then killed for real. The last death is an ordinary one and has
+    -- to behave like one.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.DEAD, { revivePending = true })
+    S.add(2, PS.ALIVE)
+    S.cycle(1, 0)
+    ok(not S.watching(1), 'held before the start: no camera')
+
+    S.roster[1].state, S.roster[1].revivePending = PS.ALIVE, nil
+    S.feed()
+    ok(not S.watching(1), 'revived into the match: still no camera, and none was '
+          .. 'left running from the hold')
+
+    -- Killed for real, twenty minutes later. BR.Combat.eliminate writes the
+    -- state and touches `revivePending` not at all -- it was already nil.
+    S.roster[1].state = PS.DEAD
+    S.cycle(1, 0)
+    ok(S.watching(1),
+       'and a real death later in the SAME match gets the camera it always '
+           .. 'should have -- the hold gated a window, not a person')
+end
+
 -- ---------------------------------------------------------------- result ---
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
