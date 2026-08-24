@@ -176,6 +176,33 @@ local function pushUi()
     })
 end
 
+--- Put this machine back the way it was. Safe to call with no session running.
+---
+--- THE WHOLE LOCAL END OF A SESSION, IN ONE FUNCTION AND NOT TWO. The server's
+--- stop message used to be the only thing that ran it, so it was written inline
+--- where that message arrives -- and then /brunstuck needed the same five lines,
+--- which is the moment a copy gets made. server/spectate.lua's microphone note
+--- argues the general form of this ("anything that adds a third edge without
+--- coming here"); the specific form here is that a partial teardown is invisible
+--- until somebody is standing in it: a `session` cleared without `camDown` is a
+--- camera rendering forever, and a `camDown` without `session` is a player whose
+--- controls are still held every frame by the loop below.
+--- @param reason string  for the console line only
+local function endLocally(reason)
+    if session then
+        print(('[br_core] spectate: stopped (%s)'):format(tostring(reason)))
+    end
+    session = nil
+    camDown()
+    pushUi()
+    -- THE HUD GOES BACK TO ITS OWNER. Both of these are the same call the start
+    -- path makes, and they are here as well because the end of a session is the
+    -- other edge of the same substitution: without them a player who stopped
+    -- spectating would keep looking at the last person they watched.
+    TriggerEvent('br:spectate:inv', nil)
+    if BR.PushHud then BR.PushHud(true) end
+end
+
 -- --------------------------------------------------------------- the wire ---
 
 RegisterNetEvent(BR.Net.SPECTATE_SET)
@@ -183,19 +210,7 @@ AddEventHandler(BR.Net.SPECTATE_SET, function(d)
     if type(d) ~= 'table' then return end
 
     if d.stop then
-        if session then
-            print(('[br_core] spectate: stopped (%s)'):format(tostring(d.reason)))
-        end
-        session = nil
-        camDown()
-        pushUi()
-        -- THE HUD GOES BACK TO ITS OWNER. Both of these are the same call the
-        -- start path makes, and they are here as well because the end of a
-        -- session is the other edge of the same substitution: without them a
-        -- player who stopped spectating would keep looking at the last person
-        -- they watched.
-        TriggerEvent('br:spectate:inv', nil)
-        if BR.PushHud then BR.PushHud(true) end
+        endLocally(d.reason)
         return
     end
 
@@ -304,6 +319,44 @@ AddEventHandler('br:ui:pauseAction', function(action)
     if action ~= 'spectate' then return end
     TriggerServerEvent(BR.Net.SPECTATE_STOP)
 end)
+
+--- /brunstuck's half of the escape hatch. Called by client/spawn.lua.
+---
+--- ═══ THE HEADER OF THIS FILE PROMISED THIS AND IT WAS NOT TRUE ═══
+---
+--- Line 18 says the camera has the "same escape hatch (/brunstuck destroys all
+--- cams)" as the bus shot. It does not, and could not: brunstuck calls
+--- DestroyAllCams, and the camera loop below rebuilds one on the very next frame
+--- because it is keyed on `session` and `session` is still set -- while the
+--- control suppression, which is what actually pins the player, was never a
+--- camera at all and brunstuck has never touched it. The recovery command this
+--- project reaches for when everything else has failed could not recover the one
+--- state that takes the player's controls away.
+---
+--- ═══ IT ASKS THE SERVER *AND* CLEARS THE LOCAL HALF, WHICH THE PAUSE-MENU
+---     VERB ABOVE DELIBERATELY DOES NOT ═══
+---
+--- The pause menu is an ordinary exit and the session is the server's, so it
+--- asks and waits -- the note above says why, and that reasoning is untouched.
+--- THIS IS NOT AN ORDINARY EXIT. It is the last resort, and the state it exists
+--- for is precisely the one where asking is not enough: a local session whose
+--- server counterpart is already gone -- a stop message lost to the wire, a
+--- resource restarted on one side -- is a session the feed will never mention
+--- again, and BR.Spectate.stop returns early for a watcher it has no record of,
+--- so it would send nothing back and the player would stay pinned forever.
+---
+--- So it does both, in that order. The server still gets the verb, so an admin's
+--- audit row is closed with a duration by the side that owns it and the
+--- microphone is given back by the side that took it; and the local teardown
+--- happens whether or not anybody answers, which is the only property a recovery
+--- command actually has to have.
+--- @return boolean  was anything running?
+function BR.Spectate.unstuck()
+    if not session then return false end
+    TriggerServerEvent(BR.Net.SPECTATE_STOP)
+    endLocally('brunstuck')
+    return true
+end
 
 -- --------------------------------------------------------------- the open ---
 

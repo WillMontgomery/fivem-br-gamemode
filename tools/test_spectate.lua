@@ -483,7 +483,12 @@ do
     -- travels with it, and a client that ever branched on the reason would be a
     -- client where one of these leaked. Cheap to assert; expensive to discover.
     for _, reason in ipairs({ 'stopped', 'left', 'target-left', 'no-targets',
-                              'no-match', 'gone', 'retargeted', 'shutdown' }) do
+                              'no-match', 'gone', 'retargeted', 'shutdown',
+                              -- The watcher came back to life under the session
+                              -- (#144's revive). Server-side it is the only stop
+                              -- nobody asked for; here it is one more reason
+                              -- string, which is the point of the loop.
+                              'in-the-fight' }) do
         start()
         frame()
         stop(reason)
@@ -491,6 +496,58 @@ do
            ('a session ended with reason %q restores the ped'):format(reason),
            sorted(held))
     end
+end
+
+describe('the escape hatch')
+do
+    -- /brunstuck IS THE LAST RESORT AND IT COULD NOT REACH THIS STATE.
+    --
+    -- This file's own header has claimed since #192 that the camera has the
+    -- "same escape hatch (/brunstuck destroys all cams)" as the bus shot. It did
+    -- not: brunstuck's DestroyAllCams is undone on the next frame, because the
+    -- shot is keyed on the SESSION and rebuilds itself -- and the controls, which
+    -- are what actually pin a spectator, were never a camera and were never
+    -- touched by any line of that command.
+    --
+    -- THE STEP AFTERWARDS IS THE ASSERTION, not the call. "Destroying the camera
+    -- ended it" and "the session ended" are exactly the two things the shipped
+    -- version could not tell apart, so the test has to run a frame and watch what
+    -- the loop does with a clean slate.
+    start()
+    ok(count(frame()) > 0, 'a session is running and holding the ped')
+    sent = {}
+    local was = BR.Spectate.unstuck()
+    ok(was == true, 'unstuck reports that something was running')
+    ok(count(frame()) == 0,
+       'and /brunstuck gives every control back on the very next frame',
+       sorted(held))
+    ok(count(frame()) == 0, 'and keeps them given back on the frames after')
+
+    -- ...AND THE SERVER IS STILL TOLD. The local teardown is what makes this a
+    -- recovery command; the message is what closes the audit row and gives an
+    -- admin's microphone back on the side that took it. Doing only the first
+    -- would leave the server pushing a feed at a client with no session.
+    local told = false
+    for _, m in ipairs(sent) do
+        if m.name == BR.Net.SPECTATE_STOP then told = true end
+    end
+    ok(told, 'and the server is asked to stop as well, so its own bookkeeping '
+          .. 'closes rather than being abandoned')
+
+    -- ...AND IT DOES NOT WAIT FOR AN ANSWER, which is the whole reason it clears
+    -- the local half at all. The state this exists for is a session whose server
+    -- counterpart is already gone -- BR.Spectate.stop returns early for a watcher
+    -- it has no record of and sends nothing back -- so a version that only asked
+    -- would leave the player pinned forever. No stop message is fired above and
+    -- the controls came back anyway.
+    ok(not BR.Spectate.active(),
+       'the session is over on this machine without the server having answered')
+
+    -- Nothing running is not an error, and it must not send traffic.
+    sent = {}
+    ok(BR.Spectate.unstuck() == false, 'unstuck with no session reports nothing '
+          .. 'was running')
+    ok(#sent == 0, 'and asks the server for nothing')
 end
 
 do
@@ -618,6 +675,332 @@ do
     ok(table.concat(logged, '\n'):find('controls 0 held'),
        'and reads 0 once the session is over -- the readout cannot drift from '
            .. 'the behaviour, because it is the same condition')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE SERVER'S HALF: WHO MAY HOLD A SESSION, AND FOR HOW LONG
+--
+-- "New bug: dying before the match results in spectating, then getting stuck in
+--  spectate. Spectating before the match starts should not be possible."
+--                                                    -- the owner, 2026-08-23
+--
+-- ═══ WHY THIS IS HERE AND NOT IN tools/test_roster.lua ═══
+--
+-- test_roster.lua loads br_core/server/spectate.lua and says in a comment that
+-- it is the right home for the POLICY -- who shares a squad, who is still in the
+-- fight -- because that policy is only honest against a real roster. That is
+-- still true and none of it moves.
+--
+-- WHAT IS BEING PINNED HERE IS NOT THE POLICY, IT IS THE LIFETIME: a session
+-- that opens for somebody who should never have had one, and a session that
+-- keeps running after its watcher is back on their feet. Neither is a question
+-- about squads, and both need a roster fixture that can be put in ONE state a
+-- real match passes through in about a second -- DEAD with `revivePending` set --
+-- and then stepped. A real match reaches that state by flying a bus.
+--
+-- And it belongs beside the client half above rather than anywhere else, because
+-- the two are one bug: the server is what opens the session, and the controls the
+-- block above proves are held are held BY that session, on the machine of a
+-- player the server has already put back in the match.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+local SANDBOX_STD = {
+    assert = assert, error = error, ipairs = ipairs, next = next,
+    pairs = pairs, pcall = pcall, select = select, rawget = rawget,
+    setmetatable = setmetatable, getmetatable = getmetatable,
+    tonumber = tonumber, tostring = tostring, type = type,
+    math = math, string = string, table = table,
+}
+
+--- A sandbox with nothing of this file's CLIENT harness in it.
+---
+--- SEPARATE FROM THE GLOBALS ABOVE, AND THAT IS THE POINT rather than hygiene:
+--- both files define `BR.Spectate`, they are different tables with different
+--- functions, and in the real game they are different Lua states. Loading the
+--- server file into the globals here would overwrite the client's `active()`
+--- with the server's `stop()` and every assertion above this line would start
+--- testing the wrong file. Explicit `__index` so a native nobody stubbed is a
+--- loud nil call rather than a silent no-op.
+local function newSandbox()
+    local env = setmetatable({}, { __index = function(_, k) return SANDBOX_STD[k] end })
+    env._G = env
+    return env
+end
+
+local function loadInto(env, list)
+    for _, f in ipairs(list) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        local okc, e2 = pcall(chunk)
+        if not okc then
+            realPrint('\27[31msandbox run error\27[0m ' .. f .. ': ' .. tostring(e2))
+            os.exit(1)
+        end
+    end
+end
+
+--- The real br_core/server/spectate.lua behind the smallest roster that holds
+--- it up. Returns the handles the assertions below drive it through.
+local function newServer()
+    local env  = newSandbox()
+    local now  = 0
+    local roster = {}
+    local toClient, srvLog = {}, {}
+    local netHandlers = {}
+
+    env.print = function(s) srvLog[#srvLog + 1] = tostring(s) end
+    env.GetGameTimer = function() return now end
+    env.TriggerEvent = function() end
+    env.TriggerClientEvent = function(name, src, d)
+        toClient[#toClient + 1] = { name = name, src = src, d = d }
+    end
+    env.RegisterNetEvent = function() end
+    env.AddEventHandler = function(n, fn)
+        netHandlers[n] = netHandlers[n] or {}
+        table.insert(netHandlers[n], fn)
+    end
+    env.RegisterCommand = function() end
+
+    loadInto(env, {
+        'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+        'br_lib/shared/sched.lua', 'br_lib/config/match.lua',
+        'br_lib/shared/spectate_solve.lua',
+    })
+
+    local PS = env.BR.PlayerState
+
+    env.BR.Roster = {
+        get = function(s) return roster[s] end,
+        each = function(pred, fn)
+            -- Ordered, because pairs() is not and `step` walks the result: an
+            -- unordered fixture would make "who is target 1" a coin flip and
+            -- this suite flaky in a way that reads as a real failure.
+            local keys = {}
+            for src in pairs(roster) do keys[#keys + 1] = src end
+            table.sort(keys)
+            for _, src in ipairs(keys) do
+                local e = roster[src]
+                if pred == nil or pred(e) then fn(src, e) end
+            end
+        end,
+        licenseOf = function(s) return roster[s] and roster[s].license or nil end,
+    }
+
+    -- THE REAL isInMatch, COPIED RATHER THAN STUBBED TO TASTE. server/main.lua
+    -- is not loaded here (it wants a roster, a broadcast and a match table), so
+    -- this is the one place the suite restates production logic -- and it is
+    -- restated in full, WARMUP included, because WARMUP being "in the match" is
+    -- exactly what stops a player on the practice pad opening a camera.
+    env.BR.Server = {
+        devMode = false,
+        isInMatch = function(st)
+            return st == PS.ALIVE or st == PS.DBNO or st == PS.WARMUP
+                or st == PS.BUS or st == PS.FREEFALL or st == PS.GLIDE
+        end,
+    }
+
+    loadInto(env, { 'br_core/server/spectate.lua' })
+
+    local S = {}
+    S.env, S.roster, S.toClient = env, roster, toClient
+
+    --- Put a player on the roster. Solos by default: `freeAfterSquadOut` ships
+    --- false, and spectate_solve widens a SOLO's list regardless, so a solo
+    --- fixture is the one that has targets under the shipped config.
+    function S.add(src, state, extra)
+        roster[src] = { src = src, name = 'P' .. src, license = 'lic' .. src,
+                        matchId = 1, squadId = nil, state = state,
+                        pos = { x = src * 1.0, y = 0.0, z = 30.0 } }
+        for k, v in pairs(extra or {}) do roster[src][k] = v end
+        return roster[src]
+    end
+
+    --- What client/spectate.lua's `spectate.open` loop sends: dir 0, "start or
+    --- re-resolve". Driven through the REAL net handler, so the gate under test
+    --- is the one a client actually reaches.
+    function S.cycle(src, dir)
+        env.source = src
+        for _, fn in ipairs(netHandlers[env.BR.Net.SPECTATE_CYCLE] or {}) do
+            fn({ dir = dir or 0 })
+        end
+    end
+
+    --- One pass of the 4 Hz feed.
+    function S.feed()
+        now = now + env.BR.Config.Spectate.feedMs
+        env.BR.Sched.step(now)
+        -- BR.Sched.step pcalls every job and prints the error rather than
+        -- raising it, so a feed that threw would leave this suite green and the
+        -- session untouched. The log is the only place that shows.
+        for _, line in ipairs(srvLog) do
+            if line:find('errored') then
+                ok(false, 'the spectate feed raised: ' .. line)
+            end
+        end
+    end
+
+    --- Is a session running for this watcher? Read off the messages the server
+    --- actually sent, not off its private table: `sessions` is a local and the
+    --- client's view of "am I spectating" IS the last message it received.
+    function S.watching(src)
+        local live = false
+        for _, m in ipairs(toClient) do
+            if m.name == env.BR.Net.SPECTATE_SET and m.src == src then
+                live = not m.d.stop
+            end
+        end
+        return live
+    end
+
+    --- The reason on the last stop sent to this watcher, or nil.
+    function S.lastStop(src)
+        local r = nil
+        for _, m in ipairs(toClient) do
+            if m.name == env.BR.Net.SPECTATE_SET and m.src == src and m.d.stop then
+                r = m.d.reason
+            end
+        end
+        return r
+    end
+
+    return S
+end
+
+describe('a death before the match starts')
+do
+    -- THE CONTROL COMES FIRST, and it is not decoration. Every assertion in this
+    -- block is an absence -- no session, no camera -- and an absence passes just
+    -- as happily against a file that refuses EVERYBODY as against a file that
+    -- refuses the right people. So the same fixture, one field different, has to
+    -- produce a session.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.DEAD)          -- genuinely out: died in a live match
+    S.add(2, PS.ALIVE)
+    S.cycle(1, 0)
+    ok(S.watching(1),
+       'a player who is really dead gets a camera -- the control, without which '
+           .. 'every absence below is vacuous')
+end
+
+do
+    -- ═══ THE REPORTED BUG ═══
+    --
+    -- A death before the match starts is #144's HELD death, and it is the only
+    -- way to be dead before a match starts: WARMUP and LOBBY peds are invincible
+    -- (client/natives.lua) and combat_solve refuses warmup damage outright, which
+    -- is the owner's own "dying during warmup ... is not possible" (2026-08-16,
+    -- quoted in server/combat.lua). What DOES happen is holdForStart: the roster
+    -- goes to DEAD -- deliberately, or the server-observed health check finishes
+    -- them for real -- with `revivePending` set, and match.lua stands them back
+    -- up on the transition into PLAYING.
+    --
+    -- DEAD IS NOT isInMatch, so the shipped gate admitted them.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.DEAD, { revivePending = true })   -- died on the drop, held
+    S.add(2, PS.ALIVE)
+
+    S.cycle(1, 0)
+    ok(not S.watching(1),
+       'a player held for the start-of-match revive is refused a camera -- '
+           .. 'spectating before the match starts is not possible')
+
+    -- ...AND NOT ON THE SECOND ASK EITHER. client/spectate.lua budgets three
+    -- attempts per death, so a gate that only held for the first would produce
+    -- the reported bug one second later.
+    S.cycle(1, 0)
+    S.cycle(1, 0)
+    ok(not S.watching(1), 'and is still refused on every retry of the budget')
+
+    -- ...AND THE ARROWS ARE THE SAME ANSWER. The open loop is not the only door:
+    -- `ask(dir)` fires on the arrow keys the moment the state reads DEAD, and the
+    -- hint that tells a player those keys exist is on screen by then.
+    S.cycle(1, 1)
+    S.cycle(1, -1)
+    ok(not S.watching(1), 'and the arrow keys open nothing either')
+end
+
+do
+    -- THE OTHER PRE-MATCH STATES, from the other side. Not the reported route --
+    -- nothing can kill a ped in either -- but they are what "before the match
+    -- starts" means to a player standing on the pad, and the gate should not
+    -- depend on the invincibility holding.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(2, PS.ALIVE)
+    for _, st in ipairs({ PS.WARMUP, PS.BUS, PS.FREEFALL, PS.GLIDE,
+                          PS.ALIVE, PS.DBNO }) do
+        S.add(1, st)
+        S.cycle(1, 0)
+        ok(not S.watching(1),
+           ('a player in %s is still in the fight and gets no camera'):format(st))
+    end
+end
+
+describe('a session that outlived its watcher')
+do
+    -- ═══ THE HALF THAT RUINS A SESSION ═══
+    --
+    -- Being wrongly IN spectate is a nuisance; being unable to leave is the
+    -- report. The shipped feed re-resolved the TARGET on every push and had no
+    -- opinion about the WATCHER at all, so a session that had opened while its
+    -- owner was dead went on running after they were stood back up -- alive, in a
+    -- live match, with client/spectate.lua's control suppression re-asserted
+    -- every frame and nothing anywhere to end it.
+    --
+    -- THIS IS THE PROPERTY, AND IT IS DELIBERATELY NOT "#144 ALSO SENDS A STOP":
+    -- nobody sends anything here. The session ends because the next push asks
+    -- whether its watcher is still entitled to it, which is the only shape that
+    -- also covers the route somebody adds next year.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.DEAD)
+    S.add(2, PS.ALIVE)
+    S.cycle(1, 0)
+    ok(S.watching(1), 'a dead player is watching')
+
+    S.feed()
+    ok(S.watching(1), 'and stays watching while they are still dead')
+
+    -- match.lua's onEnter(PLAYING) -> BR.Combat.reviveHeld, in the two writes it
+    -- makes that this file can see.
+    S.roster[1].state = PS.ALIVE
+    S.roster[1].revivePending = nil
+
+    S.feed()
+    ok(not S.watching(1),
+       'and the session ends by itself on the very next push once they are back '
+           .. 'in the fight -- nobody had to ask')
+    ok(S.lastStop(1) == 'in-the-fight',
+       'with the reason naming why', tostring(S.lastStop(1)))
+end
+
+do
+    -- AND AN ADMIN'S SESSION IS UNTOUCHED BY ALL OF IT. An admin spectator is
+    -- ALIVE and mid-match by definition -- the console's button requires only
+    -- that they be in game -- so a watcher-eligibility rule written one notch too
+    -- wide would end every moderation session on its first push. The camera has
+    -- two policies and this is the one the change must not reach.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.add(1, PS.ALIVE)
+    S.add(2, PS.ALIVE)
+    local okStart = S.env.BR.Spectate.adminStart({ admin = 1, target = 2 })
+    ok(okStart, 'an admin session starts against a living admin')
+    S.feed()
+    S.feed()
+    ok(S.watching(1),
+       'and survives the feed, because an admin is entitled to be alive')
+
+    -- ...AND STILL ENDS WHEN ASKED. "Always exitable" has to be true of the kind
+    -- of session that HAS an exit in the interface, or the rule above is the only
+    -- thing keeping the promise.
+    S.env.BR.Spectate.stop(1, 'stopped')
+    ok(not S.watching(1), 'and stops on the pause-menu verb')
 end
 
 -- ---------------------------------------------------------------- result ---

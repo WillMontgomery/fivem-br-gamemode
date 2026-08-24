@@ -311,6 +311,61 @@ local function adminView(want)
     return { want = want, players = players }
 end
 
+--- MAY THIS PLAYER BE WATCHING ANYBODY AT ALL?
+---
+--- ONE PREDICATE, ASKED ON BOTH EDGES -- opening a session, and every push of
+--- the feed for the rest of it. "May I start" and "may I still be here" were
+--- never two questions, and the shipped code only ever asked the first: the
+--- arrow handler refused a player who was still in the fight, and `resolve` --
+--- which the feed calls four times a second -- had no opinion about the WATCHER
+--- at all. It re-resolved the TARGET faithfully and would have gone on doing it
+--- forever.
+---
+--- ═══ WHAT THAT MISSING EDGE COST (owner, 2026-08-23) ═══
+---
+---   "dying before the match results in spectating, then getting stuck in
+---    spectate. Spectating before the match starts should not be possible."
+---
+--- BOTH HALVES ARE THIS FUNCTION'S ABSENCE, and they are one bug seen from two
+--- ends. A death before the match starts is #144's HELD death: server/combat.lua
+--- puts the roster through DEAD -- holdForStart is explicit that it must, or the
+--- server-observed health check finishes them for real -- and sets
+--- `revivePending`, and server/match.lua picks them back up on the transition
+--- into PLAYING. DEAD is not `isInMatch`, so client/spectate.lua's `spectate.open`
+--- loop asked for a camera and this file handed one over. Then the revive landed,
+--- the roster said ALIVE, and nothing was listening: the player was alive in a
+--- live match with client/spectate.lua's control suppression re-asserted every
+--- frame -- unable to move, shoot or leave the shot -- because the session that
+--- suppression is keyed on had no reason to end.
+---
+--- ═══ `revivePending` IS THE SECOND TERM AND IT HAS TO BE ═══
+---
+--- A held player's state is a TRUE DEAD and must stay one, so the state string
+--- cannot tell them apart from somebody genuinely out of the round. The flag is
+--- the only fact that can, and reading it HERE rather than widening
+--- BR.Server.isInMatch is the same call server/match.lua already makes for the
+--- headcount (`isInMatch(e.state) or e.revivePending == true`): isInMatch is the
+--- win condition, and a held player is not standing -- they are coming back.
+--- It is bounded in three places (the revive, walking out, CLEANUP), so no
+--- player can be locked out of spectating by a flag nothing clears.
+---
+--- NOT GATED ON BR.PlayerState.SPECTATING, which is ASSIGNED NOWHERE in this
+--- project -- client/state.lua:503 spells that out, and client/storm.lua took
+--- the same turning today. The session is the fact that gets written, and the
+--- session is what this file already holds.
+--- @param entry table|nil
+--- @return boolean
+local function mayWatch(entry)
+    if not entry then return false end
+    if BR.Server.isInMatch(entry.state) then return false end
+    -- `~= true` RATHER THAN A TRUTH TEST, for the reason spectate_solve.lua
+    -- gives about killerSrc one file over: in Lua `0` is TRUTHY, so a truth
+    -- test reads correctly against a nil/true field today and lies the moment
+    -- the flag becomes a count or a timestamp. Every other reader of
+    -- `revivePending` spells it out the same way (server/match.lua, twice).
+    return entry.revivePending ~= true
+end
+
 --- Resolve a PLAYER session's next target and apply it.
 ---
 --- THE ONE PLACE A PLAYER'S TARGET IS EVER SET. Opening a session, the arrow
@@ -332,6 +387,15 @@ local function resolve(src, dir)
     local entry = BR.Roster.get(src)
     if not entry then
         if s then BR.Spectate.stop(src, 'gone') end
+        return false
+    end
+    -- STILL ENTITLED TO BE HERE? Asked before the target is, because who the
+    -- watcher may look at stops mattering the moment they are back in the round
+    -- themselves. This is the line the feed runs into 250 ms after #144's revive
+    -- puts a held player back on their feet, and it is what makes a session end
+    -- BY ITSELF rather than waiting for a stop nobody was going to send.
+    if not mayWatch(entry) then
+        if s then BR.Spectate.stop(src, 'in-the-fight') end
         return false
     end
     if not entry.matchId then
@@ -392,12 +456,16 @@ AddEventHandler(BR.Net.SPECTATE_CYCLE, function(d)
     local s = sessions[src]
     if s and s.kind == 'admin' then return end
 
-    -- ONLY THE OUT-OF-THE-FIGHT MAY WATCH. A living player pressing the arrow
-    -- gets nothing: BR.Server.isInMatch is the same test that decides whether
-    -- they count toward the alive number, so "can still play" and "may watch"
-    -- are answers to one question and cannot come apart.
+    -- ONLY THE OUT-OF-THE-FIGHT MAY WATCH, AND A HELD DEATH IS NOT OUT OF IT.
+    -- The same predicate `resolve` asks on every push, so the answer cannot come
+    -- apart between the two edges -- which is exactly how a session used to open
+    -- for a player the arrows would have refused a moment later.
+    --
+    -- KEPT HERE AS WELL AS IN `resolve`, even though resolve would now refuse
+    -- this on its own: this is the cheap refusal, and without it every arrow
+    -- press from every living player walks the whole roster before being told no.
     local entry = BR.Roster.get(src)
-    if not entry or BR.Server.isInMatch(entry.state) then return end
+    if not mayWatch(entry) then return end
 
     resolve(src, dir)
 end)

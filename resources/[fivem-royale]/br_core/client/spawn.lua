@@ -1086,6 +1086,19 @@ RegisterCommand('brunstuck', function()
     SetEntityCollision(ped, true, true)
     SetPlayerControl(PlayerId(), true, 0)
 
+    -- A SPECTATE SESSION GOES FIRST, BECAUSE THE CAMERA IS NOT THE THING
+    -- HOLDING THE PLAYER. DestroyAllCams below is undone in one frame while a
+    -- session is running -- client/spectate.lua's shot is keyed on the SESSION
+    -- and rebuilds itself -- and the controls that actually pin a spectator were
+    -- never a camera at all, so every line in this command missed them. Ended
+    -- through the file that owns it, which asks the server as well as clearing
+    -- the local half; see BR.Spectate.unstuck.
+    --
+    -- NIL-GUARDED AND CALLED AT COMMAND TIME, which is the same arrangement
+    -- fxmanifest.lua already records for BR.Spectate.active(): load order
+    -- between these two files is not a thing either of them may depend on.
+    if BR.Spectate and BR.Spectate.unstuck then BR.Spectate.unstuck() end
+
     -- Tear down any script camera: one left rendering shows whatever it points
     -- at, which after a failed placement is often nothing at all.
     RenderScriptCams(false, false, 0, true, true)
