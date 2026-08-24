@@ -1088,6 +1088,185 @@ function BR.Native.forgetRules()
     latch.visible, latch.clockSec = nil, nil
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- EMERGENCY DISPATCH -- "For some reason firetrucks are dispatching when I do
+-- things?" (owner, 2026-08-23, during a playtest)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ENABLE_DISPATCH_SERVICE WAS CALLED NOWHERE IN THIS REPOSITORY. Not once, in
+-- any resource, on either side of the wire -- so every dispatch service GTA
+-- ships with has been ON in every match this gamemode has ever run. The report
+-- is not a bug in something we wrote; it is the absence of a line nobody wrote.
+--
+-- What that costs a battle royale is not subtle. NPC emergency vehicles drive
+-- into firefights, block the roads the rotation depends on, and add engine
+-- population nobody asked for. Two smaller consequences worth naming because
+-- they are the kind that get blamed on the wrong subsystem later:
+--
+--   * server/vehicles.lua's `refusedPop` counter exists precisely because "a
+--     refused MODEL claiming an engine population type" is ambiguous between
+--     GTA's own ambient aircraft and a client lying about the field. Dispatch
+--     services 2 and 12 are POLICE AND SWAT HELICOPTERS -- refused models, put
+--     in the world by the engine -- so they were one known contributor to that
+--     ambiguity. Nothing files on it, so this was never a false case; it was
+--     noise in the one diagnostic meant to settle the question.
+--   * roadkill attribution is NOT affected, and the check was worth doing
+--     rather than assuming: server/debug.lua states in as many words that a
+--     roadkill by an ambient driver is credited to nobody by design. A police
+--     cruiser running somebody over was already nobody's kill.
+--
+-- ═══ THE ENUM, AND THE TWO PUBLISHED VERSIONS OF IT THAT ARE WRONG ═════════
+--
+-- `EnableDispatchService(dispatchService, toggle)` takes GTA's DISPATCH_TYPE
+-- ordinal, and the ids below are NOT guessable from the names -- there are
+-- three mappings in circulation and only one of them is Rockstar's.
+--
+-- THE SOURCE USED HERE is alloc8or's extraction of the enum from the
+-- `CDispatchResponse` parser definition in the game itself:
+-- https://alloc8or.re/gta5/doc/enums/DispatchType.txt
+-- Sixteen members, no explicit values, so implicit 0..15 with DT_Invalid at 0.
+-- Fetched and read directly rather than taken second-hand.
+--
+-- WHY THAT SOURCE AND NOT THE OBVIOUS ONE. The obvious one is the FiveM native
+-- reference (citizenfx/natives, MISC/EnableDispatchService.md), and its list is
+-- WRONG FROM 12 UP: it skips 12 entirely and then gives
+-- `DT_SwatHelicopter = 13, DT_PoliceBoat = 14, DT_ArmyVehicle = 15,
+--  DT_BikerBackup = 15` -- everything above 11 shifted by one, and 15 issued
+-- twice. Checked against the raw markdown, not inferred. A Cfx maintainer
+-- pointed at the alloc8or file for exactly this reason when a contributor
+-- proposed yet another list (citizenfx/natives PR #473, closed unmerged); the
+-- list in that PR is the one from the most-copied cfx.re release thread, which
+-- has FIRE_DEPARTMENT at 4 -- so anyone following the popular thread and
+-- calling `EnableDispatchService(4, false)` for "fire" is turning off SWAT.
+--
+-- ═══ AND THIS IS WHY THE LOOP DISABLES A RANGE RATHER THAN A NAME ═══
+--
+-- The three mappings disagree about which NAME each id carries; all three agree
+-- the ids are 1..15. Since every one of them is turned off, the naming dispute
+-- cannot cost this gamemode anything -- the table below is DOCUMENTATION, and
+-- the contiguous range is what does the work. That is deliberate: it is the
+-- arrangement in which being wrong about a name is free, and it is why nothing
+-- in the write path looks a service up by name.
+BR.Native.DispatchService = {
+    POLICE_AUTOMOBILE                  = 1,
+    POLICE_HELICOPTER                  = 2,
+    FIRE_DEPARTMENT                    = 3,
+    SWAT_AUTOMOBILE                    = 4,
+    AMBULANCE_DEPARTMENT               = 5,
+    POLICE_RIDERS                      = 6,
+    POLICE_VEHICLE_REQUEST             = 7,
+    POLICE_ROAD_BLOCK                  = 8,
+    POLICE_AUTOMOBILE_WAIT_PULLED_OVER = 9,
+    POLICE_AUTOMOBILE_WAIT_CRUISING    = 10,
+    GANGS                              = 11,
+    SWAT_HELICOPTER                    = 12,
+    POLICE_BOAT                        = 13,
+    ARMY_VEHICLE                       = 14,
+    BIKER_BACKUP                       = 15,
+}
+
+--- Every dispatch service, and the whole set is turned off.
+---
+--- THE WHOLE SET RATHER THAN JUST THE FIRE DEPARTMENT, and that is a decision
+--- rather than a shrug. The report names fire trucks because fire trucks are
+--- what the owner saw; every other entry on that list is the same category of
+--- thing -- an AI response to a crime, a fire or a body, in a game mode that is
+--- made entirely of crimes, fires and bodies. Disabling three and leaving
+--- twelve would guarantee a second report and a second round of this.
+---
+--- The ONE that deserved a second look before going on the list is 5,
+--- AMBULANCE_DEPARTMENT -- see the note on #191 below. It goes on the list.
+BR.Native.DISPATCH_OFF = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+}
+
+-- ═══ #191's CPR AMBULANCE IS NOT AFFECTED BY SERVICE 5, AND HERE IS WHY ═════
+--
+-- WRITTEN DOWN RATHER THAN LEFT TO BE REDISCOVERED. "We turned off the
+-- ambulance dispatch service and then the CPR kit stopped spawning its
+-- ambulance" is exactly the shape of thing that surfaces three weeks after the
+-- commit that caused it, by which point nobody is looking at this file.
+--
+-- A DISPATCH SERVICE GOVERNS THE ENGINE'S OWN AI DISPATCH AND NOTHING ELSE. It
+-- decides whether the game, unprompted, sends an emergency unit at a crime, a
+-- fire or a body. It is not a model ban, not a spawn ban, and not a filter on
+-- anything a script asks for by name -- a script that calls CreateVehicle with
+-- the `ambulance` model and puts a ped in the driving seat gets an ambulance
+-- with a driver, whatever this flag says.
+--
+-- AND #191'S AMBULANCE IS EXACTLY THAT, CHECKED IN THE TREE RATHER THAN
+-- ASSUMED. The feature is not built yet -- `cprkit` is a named seam in
+-- config/airdrop.lua's healing pool that currently resolves to nothing -- but
+-- the shape it must take is already written into four files that would have to
+-- change if it did not:
+--
+--   server/fuel.lua      "The CPR ambulance is created client-side and
+--                        non-networked (the same `isNetwork = false` that keeps
+--                        the Battle Bus out of server/vehicles.lua's detector)"
+--   server/vehicles.lua  "The CPR ambulance is meant to be local and
+--                        non-networked, so it should reach none of this"
+--   client/fuel.lua      names it alongside the Battle Bus as a vehicle with no
+--                        network id
+--   config/vehicles.lua  "#191's ambulance goes in here (or in the model
+--                        table); nowhere else" -- i.e. its exemption is from
+--                        the REFUSAL ruling, which is a different mechanism
+--                        again and is untouched here.
+--
+-- So it is a gamemode-created entity from end to end. Disabling service 5 stops
+-- the engine sending an ambulance to a corpse; it does not stop us from making
+-- one. If #191 ever changes its mind and asks the ENGINE for a medic -- a
+-- dispatch request rather than a CreateVehicle -- this is the line it has to
+-- come back and argue with. There IS such a route, and naming it is the point:
+-- CREATE_INCIDENT takes a `dispatchService` argument and is the script-side
+-- door INTO this system, so an incident raised that way IS governed by the
+-- flags above. A CreateVehicle is not.
+--
+-- ═══ IS DISPATCH ENOUGH ON ITS OWN? FOR THE REPORT, YES. NOT FOR EVERYTHING ═
+--
+-- THE WORRY, AND IT IS A REASONABLE ONE: fire trucks answer FIRES and
+-- EXPLOSIONS rather than wanted levels, and this gamemode makes explosions
+-- constantly -- grenades, RPGs, the railgun, and vehicles that #213 deliberately
+-- made break faster with #194 about to credit the kills. If fire response ran on
+-- some second system, a wanted-level fix would have looked like it worked and
+-- then failed under fire.
+--
+-- IT DOES NOT. Service 3 IS the fire-response control, and that is a maintainer
+-- statement rather than an inference: a Cfx developer describes this native as
+-- governing "emergency response AI (e.g. spawning fire trucks for fires,
+-- spawning police when there's a wanted level)" -- the two clauses being
+-- separate is the whole answer. The FiveM reference makes the same split from
+-- the other side, illustrating the native with "a fire in the street (type 3 -
+-- DT_FireDepartment)". The entire FIRE namespace was enumerated looking for a
+-- second control and there is none: every native in it (StartScriptFire,
+-- StopFireInRange, SetFireSpreadRate, GetNumberOfFiresInRange and the rest) is
+-- fire PHYSICS. Nothing else decides who comes to put it out.
+--
+-- THE SECOND LEVER IS REAL BUT IT IS ABOUT A DIFFERENT SYMPTOM, and it is named
+-- here so that "we disabled dispatch and there are still fire trucks" has an
+-- answer waiting rather than another round of research:
+--
+--   REMOVE_VEHICLES_FROM_GENERATORS_IN_AREA (0x46A1E1A299EC4BBA, VEHICLE), over
+--   a box around each fire station. Station-parked fire trucks are placed by
+--   VEHICLE GENERATORS, which are static world population and not dispatch at
+--   all -- as a cfx.re thread on precisely this puts it, disabling emergency
+--   services "does not stop them from spawning in the station it only stops
+--   them from responding". qb-smallresources pairs the two for this reason,
+--   calling the generator native over eight hardcoded ±300m boxes.
+--
+-- AND IT IS DELIBERATELY NOT PULLED, which is a design call and not an
+-- oversight. A fire truck standing in a fire station is a PARKED VEHICLE, and
+-- parked vehicles are this gamemode's rotation supply: BR.Config.Ambient.parked
+-- runs at 1.0 -- full density, alone among the multipliers -- under a comment
+-- saying parked cars are where off-road vehicles actually come from. Clearing
+-- the stations would delete drivable vehicles from the middle of the map to fix
+-- a complaint nobody has made. The owner reported trucks DISPATCHING, which is
+-- the half turned off above.
+--
+-- So: if a later report is "there is a fire truck parked at the station",
+-- that is this paragraph and not a regression in the one above. The station
+-- coordinates would belong in br_lib/config/map.lua, beside the POIs, and
+-- nowhere else.
+
 --- Strip the vanilla systems that make no sense in a battle royale. Called from
 --- the frame loop because the `*ThisFrame` half genuinely resets every tick;
 --- see the long note above for what the other half does instead.
@@ -1170,6 +1349,41 @@ function BR.Native.applyGameRules()
         SetCreateRandomCops(false)
         SetCreateRandomCopsNotOnScenarios(false)
         SetCreateRandomCopsOnScenarios(false)
+
+        -- EMERGENCY DISPATCH, ON THE SAME LATCH AS THE FOUR ABOVE.
+        --
+        -- LATCHING, NOT PER-FRAME, and it belongs in exactly this block: it is
+        -- an engine setting the game holds, in the same family as the wanted
+        -- cap and the cop flags, and 56c0ba7 took that whole family off the
+        -- frame path. Fifteen writes a frame is what this would have cost as a
+        -- per-frame call -- more than the entire settled frame path costs now.
+        --
+        -- RE-ASSERTED ON EVERY TRIGGER THE NEIGHBOURS HAVE, which is what makes
+        -- the latch safe here rather than merely cheap: a ped handle change
+        -- (respawn), a player state change, a match state change and a
+        -- one-second heartbeat.
+        --
+        -- AND THE EVIDENCE SAYS IT WOULD PROBABLY LATCH WITHOUT ANY OF THAT,
+        -- which is worth writing down because the published scripts suggest
+        -- otherwise. Plenty of them wrap this native in a `while true do
+        -- Wait(0)` loop -- and the search for a REASON came back empty: no
+        -- documented reset, no cfx.re report of it decaying on respawn, ped
+        -- change or session change, and the one bug thread that claimed it
+        -- ("Issue with EnableDispatchService native") was answered by a Cfx dev
+        -- as a confusion with the police scanner. qb-smallresources, the most
+        -- widely deployed codebase that touches it, calls it ONCE under a
+        -- comment reading "all these should only need to be called once".
+        --
+        -- So the cadence here is INSURANCE, not a known requirement, and it is
+        -- priced accordingly: fifteen writes at most once a second, versus the
+        -- nine hundred a second a `while true` loop would have cost -- which on
+        -- a frame path 56c0ba7 just cut from 29 engine writes to 14 would have
+        -- been the single most expensive thing in it by two orders of
+        -- magnitude. Worst case is a second of staleness on a flag nothing has
+        -- ever been observed to clear.
+        for i = 1, #BR.Native.DISPATCH_OFF do
+            EnableDispatchService(BR.Native.DISPATCH_OFF[i], false)
+        end
     end
 
     if due or (tonumber(GetPlayerWantedLevel(pid)) or 0) > 0 then
@@ -1720,6 +1934,14 @@ function BR.Native.check()
         SetModelAsNoLongerNeeded(m)
     end)
     probe('PauseDeathArrestRestart', function() PauseDeathArrestRestart(true) end)
+
+    -- EMERGENCY DISPATCH. A nil binding here is the silent kind docs/platform.md
+    -- is about: nothing throws, nothing logs, and the only symptom is a fire
+    -- engine arriving at a firefight three weeks later. Harmless to run in the
+    -- lobby -- applyGameRules writes the same thing on the next heartbeat.
+    probe('EnableDispatchService',   function()
+        EnableDispatchService(BR.Native.DispatchService.FIRE_DEPARTMENT, false)
+    end)
 
     -- M5 loot and inventory. Every one of these is load-bearing on a path the
     -- unit tests cannot reach (they stub natives), and a misspelled native is

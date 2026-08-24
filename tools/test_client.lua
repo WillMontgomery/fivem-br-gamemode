@@ -9337,6 +9337,27 @@ do
     local copFlags = 0
     local function countCops() copFlags = copFlags + 1 end
 
+    -- ── EMERGENCY DISPATCH (the firetruck report, 2026-08-23) ───────────────
+    --
+    -- RECORDED WITH ITS TYPE, like the friendly-fire gate above and for the
+    -- same reason: the second argument is a BOOL and this repo has shipped the
+    -- 1-versus-true confusion four times. A stub that coerced would hide a
+    -- dispatch service handed a `0` -- which Lua reads as truthy and which
+    -- would leave the service ENABLED while every assertion about "we turned it
+    -- off" still passed.
+    --
+    -- `sweeps` counts complete passes rather than individual writes, because
+    -- the rule being asserted is "the whole set goes off together on the same
+    -- triggers as the wanted cap", and a count of 15 versus 30 is harder to
+    -- read at a glance than 1 versus 2.
+    local dispatch = { off = {}, kinds = {}, writes = 0, sweeps = 0 }
+    function EnableDispatchService(id, on)
+        dispatch.off[id] = on
+        dispatch.kinds[id] = type(on)
+        dispatch.writes = dispatch.writes + 1
+        if id == 1 then dispatch.sweeps = dispatch.sweeps + 1 end
+    end
+
     local function noop2() end
     SetCanAttackFriendly = noop2
     SetPedRelationshipGroupHash = noop2
@@ -9492,6 +9513,12 @@ do
     if type(N.SOLO_TEAM) ~= 'number' then N.SOLO_TEAM = -998 end
     if type(N.forgetTeam) ~= 'function' then N.forgetTeam = function() end end
     if type(N.forgetRules) ~= 'function' then N.forgetRules = function() end end
+    -- The dispatch stand-ins, for the same reason as the four above: revert the
+    -- production change and section 7c should REPORT rather than abort on the
+    -- first `#nil`. An empty list and an empty table make every case there fail
+    -- with a readable number instead of taking the suite down.
+    if type(N.DISPATCH_OFF) ~= 'table' then N.DISPATCH_OFF = {} end
+    if type(N.DispatchService) ~= 'table' then N.DispatchService = {} end
 
     -- ------------------------------------------------------------ the world ---
 
@@ -9730,11 +9757,16 @@ do
     -- 7. WHAT applyGameRules ACTUALLY HANDS THE ENGINE
     -- ==================================================================== --
 
-    local function rules(src, r, state)
+    -- `mst` is optional and defaults to PLAYING, which is every caller written
+    -- before the dispatch cases below. It is a parameter at all because the
+    -- MATCH state is one of the five latch triggers and nothing else in this
+    -- file could move it -- so without it, one of the five would be asserted
+    -- by no case.
+    local function rules(src, r, state, mst)
         BR.State.me = { src = src, squadId = r[src] and r[src].squadId,
                         state = state or BR.PlayerState.ALIVE }
         BR.State.roster = r
-        BR.State.match = { state = BR.MatchState.PLAYING }
+        BR.State.match = { state = mst or BR.MatchState.PLAYING }
         N.applyGameRules()
     end
 
@@ -9743,6 +9775,8 @@ do
         gate.writes, gate.last, gate.kind = {}, nil, nil
         wanted.level, wanted.flushes, wanted.caps = 0, 0, 0
         copFlags, invincibleWrites = 0, 0
+        dispatch.off, dispatch.kinds = {}, {}
+        dispatch.writes, dispatch.sweeps = 0, 0
         N.forgetTeam()
         -- The rule latch is a memo like the team's, and for the same reason;
         -- a suite that forgot one and not the other would be measuring a
@@ -9935,6 +9969,241 @@ do
         ('invincible %s after %d write(s)')
             :format(tostring(invincible), invincibleWrites - before))
     BR.State.dropGraceUntil = 0
+
+    -- ==================================================================== --
+    -- 7c. EMERGENCY DISPATCH IS OFF, AND STAYS OFF
+    -- ==================================================================== --
+    --
+    -- OWNER, 2026-08-23, MID-PLAYTEST: "For some reason firetrucks are
+    -- dispatching when I do things?"
+    --
+    -- They were, and the cause was an absence: ENABLE_DISPATCH_SERVICE was
+    -- called NOWHERE in this repository, so every dispatch service GTA ships
+    -- with had been on in every match ever run here. GTA dispatches police,
+    -- ambulances, fire trucks and helicopters at crimes, fires and explosions
+    -- by default -- which in a game mode made of crimes, fires and explosions
+    -- is a permanent second population driving into every firefight.
+    --
+    -- WHY THESE CASES ARE SHAPED AGAINST THE WANTED CAP RATHER THAN WRITTEN
+    -- ALONE. The rule is not "dispatch is disabled once"; it is "dispatch is
+    -- disabled on exactly the triggers the neighbouring latching rules use".
+    -- A case that only counted its own sweeps would still pass if a later edit
+    -- moved dispatch onto its own cadence, or dropped it from `due` and left it
+    -- firing on the heartbeat alone. So every re-assertion case below compares
+    -- the sweep count against `wanted.caps`, which is SET_MAX_WANTED_LEVEL --
+    -- the rule immediately above it in the same block. They move together or a
+    -- case fails.
+    --
+    -- ── THE WHOLE SET, ON THE FIRST FRAME ───────────────────────────────────
+    reset()
+    rules(1, twoSquads)
+
+    do
+        local missing, wrongValue = {}, {}
+        for _, id in ipairs(N.DISPATCH_OFF) do
+            if dispatch.off[id] == nil then
+                missing[#missing + 1] = id
+            elseif dispatch.off[id] ~= false then
+                wrongValue[#wrongValue + 1] = id
+            end
+        end
+        ok(#N.DISPATCH_OFF == 15 and #missing == 0,
+            'EVERY DISPATCH SERVICE 1..15 IS TURNED OFF ON THE FIRST FRAME -- '
+            .. 'the firetruck report was an absence, not a wrong value',
+            ('%d in the list, %d never written (%s)')
+                :format(#N.DISPATCH_OFF, #missing,
+                        table.concat(missing, ',')))
+        ok(#wrongValue == 0,
+            'and every one of them is turned OFF rather than merely written',
+            ('%d written with the wrong value (%s)')
+                :format(#wrongValue, table.concat(wrongValue, ',')))
+    end
+
+    -- ═══ 0 IS TRUTHY IN LUA AND A FIVEM BOOL MAY BE HANDED ONE ═══
+    --
+    -- The second argument is a BOOL. Handing the engine `0` for "off" is the
+    -- fifth instance of the bug this project has shipped four times, and it is
+    -- the direction that FAILS SILENTLY: the engine reads a number, every
+    -- assertion about "we wrote to service 3" still passes, and the fire
+    -- engines keep coming. The TYPE is asserted, not just the value.
+    do
+        local wrongType = {}
+        for _, id in ipairs(N.DISPATCH_OFF) do
+            if dispatch.kinds[id] ~= 'boolean' then
+                wrongType[#wrongType + 1] = id
+            end
+        end
+        ok(#wrongType == 0,
+            'with a real Lua boolean and not a 0 -- a 0 here would read as ON '
+            .. 'and every other assertion in this block would still pass',
+            ('%d handed a non-boolean (%s)')
+                :format(#wrongType, table.concat(wrongType, ',')))
+    end
+
+    -- ── THE TWO IDS THAT ARE PINNED BY NAME, AND WHY ────────────────────────
+    --
+    -- 3 IS THE REPORT. Fire response is service 3 and nothing else -- there is
+    -- no second fire-dispatch native, so if this id is wrong the owner's
+    -- symptom comes straight back and nothing else in the suite notices.
+    --
+    -- AND THE ID IS THE ONE THING HERE THAT IS EASY TO GET WRONG. Three
+    -- mappings of this enum are in circulation: R*'s own (alloc8or's
+    -- DispatchType.txt, extracted from the CDispatchResponse parser
+    -- definition), the FiveM reference's -- which skips 12 and issues 15 twice
+    -- -- and the most-copied cfx.re release thread's, which puts FIRE_DEPARTMENT
+    -- at 4. Following that last one, `EnableDispatchService(4, false)` turns off
+    -- SWAT and leaves the fire brigade running.
+    ok(N.DispatchService.FIRE_DEPARTMENT == 3
+       and dispatch.off[3] == false,
+        'DT_FireDepartment IS 3, from Rockstar\'s own enum -- the popular '
+        .. 'cfx.re list says 4, which is DT_SwatAutomobile and would have '
+        .. 'shipped the bug back with a fix sitting on top of it',
+        ('FIRE_DEPARTMENT = %s, written %s')
+            :format(tostring(N.DispatchService.FIRE_DEPARTMENT),
+                    tostring(dispatch.off[3])))
+
+    -- 5 IS THE ONE THAT COULD HAVE BROKEN SOMETHING, and it is pinned so that
+    -- the reasoning is attached to the assertion rather than left in a commit
+    -- message. #191's CPR kit spawns an ambulance with an NPC medic -- and a
+    -- dispatch service governs the ENGINE's unprompted AI response, not a
+    -- CreateVehicle. #191's ambulance is client-side and non-networked by
+    -- design (server/fuel.lua and server/vehicles.lua both say so in as many
+    -- words), so it is a gamemode entity end to end and this flag cannot reach
+    -- it. If #191 ever asks for a medic via CREATE_INCIDENT instead, that
+    -- native takes a dispatchService argument and IS governed -- and this is
+    -- the case that should fail when it does.
+    ok(N.DispatchService.AMBULANCE_DEPARTMENT == 5
+       and dispatch.off[5] == false,
+        'DT_AmbulanceDepartment IS 5 and is off too -- #191\'s CPR ambulance is '
+        .. 'gamemode-created, so this cannot reach it',
+        ('AMBULANCE_DEPARTMENT = %s, written %s')
+            :format(tostring(N.DispatchService.AMBULANCE_DEPARTMENT),
+                    tostring(dispatch.off[5])))
+
+    -- THE DOCUMENTED NAMES AND THE WRITTEN RANGE ARE THE SAME SET. The table is
+    -- documentation and the array is what runs, which is the arrangement that
+    -- makes the naming dispute above harmless -- but only while the two agree.
+    -- A service added to one and not the other is exactly the drift this pins.
+    do
+        local named = {}
+        for _, id in pairs(N.DispatchService) do named[id] = true end
+        local unnamed, unwritten = {}, {}
+        for _, id in ipairs(N.DISPATCH_OFF) do
+            if not named[id] then unnamed[#unnamed + 1] = id end
+        end
+        for id in pairs(named) do
+            if dispatch.off[id] == nil then unwritten[#unwritten + 1] = id end
+        end
+        table.sort(unnamed); table.sort(unwritten)
+        ok(#unnamed == 0 and #unwritten == 0,
+            'the named enum and the disabled range are the same set -- the '
+            .. 'table cannot document a service the loop does not turn off',
+            ('%d written but unnamed (%s), %d named but unwritten (%s)')
+                :format(#unnamed, table.concat(unnamed, ','),
+                        #unwritten, table.concat(unwritten, ',')))
+    end
+
+    -- 0 IS DT_Invalid AND IS NOT A SERVICE. It is in R*'s enum, which is
+    -- exactly why a range loop written from that file is one `for i = 0` away
+    -- from asking the engine about a service that does not exist.
+    ok(dispatch.off[0] == nil and dispatch.off[16] == nil,
+        'and DT_Invalid (0) is never written, nor anything past the end',
+        ('0 => %s, 16 => %s')
+            :format(tostring(dispatch.off[0]), tostring(dispatch.off[16])))
+
+    -- ── THE COST IS BOUNDED, LIKE THE RULES IT SITS WITH ────────────────────
+    --
+    -- Fifteen natives is the most expensive single rule in this function, which
+    -- is precisely why it may not go on the frame path. At sixty frames a
+    -- second it would be nine hundred engine writes per second on a function
+    -- 56c0ba7 had just cut from 29 writes per frame to 14.
+    reset()
+    rules(1, twoSquads)
+    ok(dispatch.sweeps == 1 and dispatch.writes == 15,
+        'one settling frame sweeps the set exactly once',
+        ('%d sweep(s), %d write(s)'):format(dispatch.sweeps, dispatch.writes))
+
+    for _ = 1, 120 do rules(1, twoSquads) end
+    ok(dispatch.sweeps == 1 and dispatch.writes == 15,
+        'AND 120 SETTLED FRAMES AFTER IT SWEEP NOTHING -- this is a latching '
+        .. 'engine setting, not a per-frame one',
+        ('%d sweep(s), %d write(s) over 121 frames')
+            :format(dispatch.sweeps, dispatch.writes))
+
+    -- ── AND IT IS RE-ASSERTED ON THE SAME FIVE TRIGGERS AS ITS NEIGHBOURS ───
+    --
+    -- Each case moves exactly one trigger and asserts that the dispatch sweep
+    -- and SET_MAX_WANTED_LEVEL both fired. Comparing against the cap is what
+    -- makes these cases about the SHARED latch rather than about a cadence that
+    -- happens to look similar today.
+
+    -- 1. THE PLAYER STATE.
+    reset()
+    rules(1, twoSquads)
+    local baseSweeps, baseCaps = dispatch.sweeps, wanted.caps
+    rules(1, twoSquads, BR.PlayerState.DBNO)
+    ok(dispatch.sweeps == baseSweeps + 1 and wanted.caps == baseCaps + 1,
+        'a change of PLAYER state puts dispatch back, on the same frame as the '
+        .. 'wanted cap',
+        ('%d sweep(s), %d cap(s)'):format(dispatch.sweeps - baseSweeps,
+                                          wanted.caps - baseCaps))
+
+    -- 2. THE MATCH STATE.
+    reset()
+    rules(1, twoSquads)
+    baseSweeps, baseCaps = dispatch.sweeps, wanted.caps
+    rules(1, twoSquads, nil, BR.MatchState.ENDED)
+    ok(dispatch.sweeps == baseSweeps + 1 and wanted.caps == baseCaps + 1,
+        'a change of MATCH state does too -- a match boundary is where the '
+        .. 'engine resets most of what this function believes',
+        ('%d sweep(s), %d cap(s)'):format(dispatch.sweeps - baseSweeps,
+                                          wanted.caps - baseCaps))
+
+    -- 3. THE PED HANDLE -- a respawn. The one trigger whose whole purpose is a
+    -- new ped, and the reason the old code was per-frame at all.
+    reset()
+    rules(1, twoSquads)
+    baseSweeps, baseCaps = dispatch.sweeps, wanted.caps
+    local keepPed = PlayerPedId
+    PlayerPedId = function() return 77 end
+    rules(1, twoSquads)
+    PlayerPedId = keepPed
+    ok(dispatch.sweeps == baseSweeps + 1 and wanted.caps == baseCaps + 1,
+        'and so does a new PED HANDLE -- a respawn re-asserts the whole set',
+        ('%d sweep(s), %d cap(s)'):format(dispatch.sweeps - baseSweeps,
+                                          wanted.caps - baseCaps))
+
+    -- 4. THE HEARTBEAT, with nothing else moving at all. This is the one that
+    -- is insurance rather than a known requirement: no documented reset for
+    -- this native exists, no cfx.re report of it decaying was found, and
+    -- qb-smallresources calls it once under a comment saying once is enough.
+    -- A second of staleness is the worst case; it costs 15 writes a second.
+    reset()
+    rules(1, twoSquads)
+    baseSweeps, baseCaps = dispatch.sweeps, wanted.caps
+    for _ = 1, 30 do rules(1, twoSquads) end
+    ok(dispatch.sweeps == baseSweeps, 'a settled frame sweeps nothing...')
+
+    fakeTime = fakeTime + 5000
+    rules(1, twoSquads)
+    ok(dispatch.sweeps == baseSweeps + 1 and wanted.caps == baseCaps + 1,
+        '...AND THE HEARTBEAT STILL PUTS IT BACK with nothing changed, because '
+        .. 'a memo is only a belief about what the engine currently holds',
+        ('%d sweep(s), %d cap(s)'):format(dispatch.sweeps - baseSweeps,
+                                          wanted.caps - baseCaps))
+
+    -- 5. AND forgetRules FORGETS IT TOO. The kill switch for the whole latch is
+    -- what anything that knows the engine was reset underneath us calls, and a
+    -- rule it does not clear is a rule that never comes back.
+    reset()
+    rules(1, twoSquads)
+    baseSweeps = dispatch.sweeps
+    N.forgetRules()
+    rules(1, twoSquads)
+    ok(dispatch.sweeps == baseSweeps + 1,
+        'and forgetRules puts dispatch back on the next frame, like every '
+        .. 'other belief in the latch',
+        ('%d sweep(s)'):format(dispatch.sweeps - baseSweeps))
 
     -- ==================================================================== --
     -- 8. THE ONE-LINE WAY BACK
