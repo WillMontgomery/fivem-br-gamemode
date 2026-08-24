@@ -218,6 +218,72 @@ BR.Config.Map.POIs = {
     { id = 'senora_n',    name = 'North Senora Flats', x = 2500.0, y =  4300.0, z =  40.0, radius = 240.0, tier = 2 },
     { id = 'mthaan',      name = 'Mount Haan',       x =  3100.0, y =  4500.0, z = 110.0, radius = 220.0, tier = 2 },
     { id = 'eastbeach',   name = 'East Coast Bluffs', x = 3600.0, y =  4350.0, z =  30.0, radius = 200.0, tier = 1 },
+
+    -- TWENTY-ONE MORE GREEN, OUT OF A LIST OF TWENTY-FIVE COORDINATES.
+    --
+    -- Owner, 2026-08-23: a bare list of 25 x/y pairs and "all of these should
+    -- be green". Green is tier 1 -- br_core/client/loot.lua colours the
+    -- /brpois blips { [1] = 2, [2] = 5, [3] = 1 } and prints "green = tier 1
+    -- (rural)" underneath them.
+    --
+    -- THE LIST IS NOT A RE-TIERING REQUEST, and that was the first thing that
+    -- had to be settled rather than assumed. NOT ONE of the 25 falls inside
+    -- any existing POI's radius. The closest approach in the whole set is 331m
+    -- from San Chianski Range's centre on a 240m radius -- 91m outside its rim
+    -- -- and the next is 311m from Land Act Dam's. Every one is a gap, which
+    -- is also what a pass over the map with the /brpois blips on produces: the
+    -- places with no blip on them.
+    --
+    -- FOUR OF THE 25 ARE NOT HERE, because they may be sea and a POI centre in
+    -- the sea is silent. The generator only refuses the authored Water
+    -- rectangles below, and none of the four is inside one; the client's ground
+    -- probe then declines to build a prop over a seabed WITHOUT SAYING SO, so
+    -- the whole POI would simply be 25 loot entries that never appear.
+    --   (218.9, 7414.8)   1174m north of Paleto Bay, and further north than
+    --                     anything else in this table by 769m
+    --   (4116.2, 4494.0)  536m from East Coast Bluffs, and further east than
+    --                     any mainland POI by 438m
+    --   (2499.3, -1885.0) 101m west of the eastern-seaboard water rectangle,
+    --                     inside its latitudes
+    --   (2838.6, -1453.3) 147m north of the same rectangle, inside its
+    --                     longitudes -- and that rectangle is drawn
+    --                     deliberately SMALLER than the real sea
+    -- They want one /brtp each before they go in, not a guess.
+    --
+    -- Z IS INTERPOLATED, NOT WALKED. The owner gave x/y only, so each z here
+    -- comes from the hand-walked z of the POIs around it. That is survivable
+    -- because z is only ever a hint: the client probes from max(z + 50, 300)
+    -- and puts the item on the ground it finds (client/loot.lua, groundZ).
+    -- `noose_n` is the exception and is real -- it sits 40m from one of the
+    -- ambulance points the owner surveyed the same day, which read z 108.11.
+    --
+    -- RADIUS 200 THROUGHOUT, the smallest the tier-1 set uses. Several of
+    -- these sit within 400m of an existing centre, and a tight disc keeps the
+    -- overlap down until somebody walks the rims with /brtp.
+    --
+    -- Appended at the END on purpose: loot_gen walks this table in authored
+    -- order, so adding here leaves every existing item's id where it was.
+    { id = 'mirrorpark_s', name = 'South Mirror Park', x = 1167.03, y = -1179.0, z = 35.0, radius = 200.0, tier = 1 },
+    { id = 'noose_w',     name = 'West NOOSE Ridge',  x =  1931.5, y =  -837.6, z =  80.0, radius = 200.0, tier = 1 },
+    { id = 'burro_n',     name = 'North Burro Ridge', x =  1721.0, y = -1579.4, z =  40.0, radius = 200.0, tier = 1 },
+    { id = 'burro_e',     name = 'East Burro Coast',  x =  1989.8, y = -1813.4, z =  35.0, radius = 200.0, tier = 1 },
+    { id = 'landact_s',   name = 'Land Act South',    x =  1628.7, y =  -338.9, z =  60.0, radius = 200.0, tier = 1 },
+    { id = 'noose_n',     name = 'North NOOSE Ridge', x =  2577.3, y =   372.6, z = 108.0, radius = 200.0, tier = 1 },
+    { id = 'noose_e',     name = 'East NOOSE Bluffs', x =  3272.2, y =  -138.5, z =  40.0, radius = 200.0, tier = 1 },
+    { id = 'palomino_s',  name = 'South Palomino Ridge', x = 2295.9, y = 1182.2, z = 30.0, radius = 200.0, tier = 1 },
+    { id = 'palmer_s',    name = 'South Palmer Flats', x = 2989.9, y =   859.8, z =  35.0, radius = 200.0, tier = 1 },
+    { id = 'chianski_e',  name = 'East San Chianski', x =  3487.1, y =  2565.8, z =  50.0, radius = 200.0, tier = 1 },
+    { id = 'senora_w',    name = 'Grand Senora West', x =   879.0, y =  3394.6, z =  55.0, radius = 200.0, tier = 1 },
+    { id = 'grapeseed_n', name = 'North Grapeseed Fields', x = 2055.6, y = 5183.5, z = 70.0, radius = 200.0, tier = 1 },
+    { id = 'procopio_e',  name = 'Procopio Bluffs',   x =  1994.0, y =  6179.7, z =  35.0, radius = 200.0, tier = 1 },
+    { id = 'cove_n',      name = 'North Cove Point',  x =   688.0, y =  6645.4, z =  25.0, radius = 200.0, tier = 1 },
+    { id = 'lighthouse_e', name = 'Lighthouse Point', x =  3677.9, y =  4973.3, z =  25.0, radius = 200.0, tier = 1 },
+    { id = 'chaparral_w', name = 'West Chaparral',    x =  -714.4, y =  2409.6, z =  75.0, radius = 200.0, tier = 1 },
+    { id = 'kortz_s',     name = 'South Kortz Bluffs', x = -2176.2, y =  -402.6, z =  45.0, radius = 200.0, tier = 1 },
+    { id = 'richman_n',   name = 'North Richman Hills', x = -1237.8, y =  674.6, z = 110.0, radius = 200.0, tier = 1 },
+    { id = 'obs_ridge',   name = 'Observatory Ridge', x =  -647.0, y =   845.0, z = 240.0, radius = 200.0, tier = 1 },
+    { id = 'arena_w',     name = 'West Arena Flats',  x =  -684.4, y = -2112.9, z =  12.0, radius = 200.0, tier = 1 },
+    { id = 'fuente_s',    name = 'South Fuente Ridge', x = 1545.2, y =   835.3, z = 105.0, radius = 200.0, tier = 1 },
 }
 
 --- Where the Battle Bus opens its doors regardless of where it is in the tour.
@@ -342,6 +408,62 @@ BR.Config.Map.NoLoot = {
     -- margin either side for the wings.
     { minX = 3932.59 - 25.0, minY = -4712.51 - 25.0,
       maxX = 4525.47 + 25.0, maxY = -4456.65 + 25.0 },
+}
+
+--- Ambulance spawn points, surveyed in game by the owner on 2026-08-23.
+---
+--- ═══ NOTHING READS THIS TABLE YET, AND THAT IS THE POINT ═══
+---
+--- It is stored ahead of the two features that will want it -- #191 (the CPR
+--- kit, whose ambulance spawns at "a preset point chosen for proximity to the
+--- death location" and drives to another from "a preset list") and #219 (squad
+--- resurrection, where ambulances become "a tracked, map-wide resource",
+--- blipped for every squad). Neither is built. Twenty-three points is an hour
+--- of somebody standing in twenty-three car parks, and that hour is done; the
+--- feature that consumes it can be written whenever.
+---
+--- Grep before trusting it in either direction: a value with no readers is a
+--- value with no behaviour, and this one is deliberately in that state.
+---
+--- AUTHORED WITH /brcoords (br_core/client/debug.lua), which prints exactly
+--- these four numbers in exactly this order. So these are ped-standing
+--- positions on ground that streamed in, not points picked off a map -- and
+--- the z values are real, which is the difference between this table and the
+--- POI centres above. `heading` is the way the owner was facing, which is the
+--- way a vehicle put here should face.
+---
+--- Each was cross-checked against the hand-walked z of the nearest POI and
+--- nothing looks like a typo. The two largest disagreements are both a road
+--- above a shoreline rather than an error: 6434.23 north sits 30m above
+--- Procopio BEACH's centre 263m away, and -2596.73 sits 42m above the
+--- Terminal's dock 406m away. The two highest points in the list are the ones
+--- that look wrong and are not -- (-408.51, 1200.45, 325.30) is 2m from
+--- Galileo Observatory, whose walked z is 330, and (358.31, 786.37, 186.16) is
+--- 96m from Vinewood Hills East, whose walked z is 180.
+BR.Config.Map.AmbulanceSpawns = {
+    { x =  -357.57, y = 6134.72, z =  31.10, heading =  43.9 },
+    { x =  1686.21, y = 6434.23, z =  32.04, heading = 161.7 },
+    { x =  1687.58, y = 4796.53, z =  41.56, heading = 181.7 },
+    { x =  2518.10, y = 4198.01, z =  39.58, heading = 149.1 },
+    { x =  1866.94, y = 3698.16, z =  33.21, heading = 209.0 },
+    { x =   568.70, y = 2721.65, z =  41.71, heading =   3.9 },
+    { x =  1834.39, y = 2541.99, z =  45.53, heading = 268.5 },
+    { x =  2558.61, y = 2743.19, z =  42.21, heading = 326.9 },
+    { x =  2676.64, y = 1369.68, z =  24.18, heading = 270.5 },
+    { x =  3638.16, y = 3768.96, z =  28.19, heading =  22.5 },
+    { x =  1444.42, y = -2596.73, z = 47.89, heading = 345.4 },
+    { x =  2550.40, y =  342.59, z = 108.11, heading = 268.9 },
+    { x =    57.17, y = -1569.73, z = 29.11, heading =  49.1 },
+    { x =  -820.16, y = -2373.66, z = 14.22, heading = 149.6 },
+    { x =   411.83, y = -1433.28, z = 29.05, heading =  30.0 },
+    { x =   469.59, y =  247.19, z = 102.86, heading =  69.4 },
+    { x = -1679.92, y =   44.41, z =  63.30, heading = 160.8 },
+    { x = -3153.00, y = 1089.12, z =  20.36, heading = 280.4 },
+    { x =  -408.51, y = 1200.45, z = 325.30, heading = 163.3 },
+    { x = -1725.42, y = 2945.55, z =  32.46, heading =  62.1 },
+    { x =  -531.22, y = -323.49, z =  34.68, heading =  29.9 },
+    { x =   358.31, y =  786.37, z = 186.16, heading = 243.9 },
+    { x = -1491.27, y = 4963.30, z =  63.56, heading =   2.0 },
 }
 
 --- Is this point somewhere loot is banned outright?

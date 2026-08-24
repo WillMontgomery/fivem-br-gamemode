@@ -152,6 +152,37 @@ for id in pairs(BACKCOUNTRY) do
     end
 end
 
+-- 6. The ambulance spawns (#191, #219). These are hand-typed surveyed points
+--    that NOTHING READS YET, which means no other check in this tree and no
+--    test would notice a transposed digit in one -- the value has no behaviour
+--    to go wrong. Same gross-error catch the POIs get, and for the same reason.
+local AMB = BR.Config.Map.AmbulanceSpawns or {}
+local ambClosest, ambPair = math.huge, '-'
+for i, a in ipairs(AMB) do
+    if BR.Config.Map.IsWater(a.x, a.y) then
+        fail('ambulance spawn %d is inside an authored water rectangle', i)
+    end
+    if BR.Config.Map.IsNoLoot(a.x, a.y) then
+        fail('ambulance spawn %d is inside a no-loot rectangle', i)
+    end
+    -- A heading is a compass bearing, and a vehicle spawned on a nil one faces
+    -- north silently rather than erroring.
+    if type(a.heading) ~= 'number' or a.heading < 0.0 or a.heading >= 360.0 then
+        fail('ambulance spawn %d has heading %s', i, tostring(a.heading))
+    end
+    for j = i + 1, #AMB do
+        local b = AMB[j]
+        local d = math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+        if d < ambClosest then ambClosest, ambPair = d, i .. ' / ' .. j end
+        -- Two spawns on the same car park is a copy-paste, and #191 picks the
+        -- point NEAREST the death -- so a duplicate is a coin flip between two
+        -- identical answers rather than a second destination.
+        if d < 50.0 then
+            fail('ambulance spawns %d and %d are only %.0fm apart', i, j, d)
+        end
+    end
+end
+
 -- ------------------------------------------------------------------- report --
 
 local north, tiers = 0, { 0, 0, 0 }
@@ -168,6 +199,9 @@ if fails == 0 then
     io.write(string.format(
         '     closest pair %.0fm (%s); backcountry nearest road %.0fm (%s)\n',
         closest, closestPair, roadWorst, roadWorstId))
+    io.write(string.format(
+        '     %d ambulance spawns, closest pair %.0fm (%s)\n',
+        #AMB, ambClosest == math.huge and 0.0 or ambClosest, ambPair))
 else
     io.write(string.format('\27[31m%d POI problem(s)\27[0m\n', fails))
 end
