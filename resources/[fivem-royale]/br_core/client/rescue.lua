@@ -254,9 +254,24 @@ end)
 --- safe to call on a ride that never finished being built, because the failure
 --- it prevents is a scripted camera and a detached ped surviving into the next
 --- match.
+--- Take the destination waypoint down.
+---
+--- CALLED FROM cleanup SO EVERY ENDING GETS IT -- delivered, destroyed, lost,
+--- match over. A waypoint left behind is a route line to a car park the player
+--- has already been driven to, and it would outlive the match.
+local function clearWaypoint()
+    if isTrue(IsWaypointActive()) then DeleteWaypoint() end
+end
+
 local function cleanup()
     local r = ride
     ride = nil
+
+    -- BEFORE the early return: a ride torn down with no record still set a
+    -- waypoint, and a route line to a car park nobody is being driven to would
+    -- outlive the match.
+    clearWaypoint()
+
     if not r then return end
 
     local ped = PlayerPedId()
@@ -602,13 +617,38 @@ local function board(d)
         -- welded in place and kills free look, and free look was the first thing
         -- missed. Third person on the vehicle, scenic, never first person, and
         -- the same behaviour at both ends of the journey.
+        -- PULLED BACK ON THE OWNER'S CALL, 2026-08-28: "can you zoom out our
+        -- scripted camera by like 6ft?". Six feet is 1.83m, so the height goes
+        -- 3.0 -> 4.83. It is a config value because a number arrived at by eye
+        -- is a number that gets adjusted by eye.
         local vc = GetEntityCoords(r.veh)
         r.cam = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
-            vc.x, vc.y, vc.z + 3.0, 0.0, 0.0, 0.0, 60.0, false, 2)
+            vc.x, vc.y, vc.z + (R.camHeight or 4.83), 0.0, 0.0, 0.0, 60.0, false, 2)
         SetCamActive(r.cam, true)
         RenderScriptCams(true, false, 0, true, true)
 
         taskDrive(r)
+
+        -- ═══ WHERE IT IS TAKING YOU, ON THE MAP YOU ALREADY READ ═══
+        --
+        -- Owner, 2026-08-28: "It would be neat if there was a clear blip on my
+        -- map to show where the ambulance is taking me - perhaps we could
+        -- actually use GTA's built-in waypoint system for this one. Then delete
+        -- that once the revive is processed."
+        --
+        -- His suggestion, and it is the better one: a waypoint draws the route
+        -- line the player already knows how to read, survives the map being
+        -- opened and closed, and needs no blip lifecycle of its own. The cost is
+        -- that it CLOBBERS a waypoint they had set before going down -- accepted
+        -- as an explicit trade, because a downed player is not navigating to
+        -- anything and the destination is the only thing they can act on.
+        --
+        -- client/markers.lua consumes fresh waypoints and turns them into squad
+        -- pings; it now stands down for the ride, or this would be eaten on the
+        -- next tick.
+        if r.dest and r.dest.x then
+            SetNewWaypoint(r.dest.x + 0.0, r.dest.y + 0.0)
+        end
 
         -- ═══ DO NOT COME BACK UNTIL THE AMBULANCE IS REALLY THERE ═══
         --

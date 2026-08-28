@@ -147,12 +147,29 @@ end
 --- @return table|nil point
 --- @return number distance      metres from the start
 --- @return boolean inside       true if the chosen point qualified
-function BR.RescueDestination(points, fromX, fromY, storm, now, cfg)
+--- `exclude` IS THE PICKUP, AND WITHOUT IT THE RESCUE DRIVES NOWHERE.
+---
+--- Owner, 2026-08-28, on the first ride that actually ran: "It drove for maybe
+--- 30 seconds successfully, but then de-spawned and put me back at the point
+--- where it spawned."
+---
+--- The pickup is one of the same surveyed points this loop chooses from, and
+--- its distance from itself is ZERO -- so `d < bestD` always picked it and the
+--- destination was the place the ambulance had just been built. It then drove a
+--- circle until the deadline (floored at etaFloorMs, hence ~30s) and delivered
+--- the player back where they started, with a success toast, having gone
+--- nowhere. Every layer above worked perfectly; the route was zero-length.
+function BR.RescueDestination(points, fromX, fromY, storm, now, cfg, exclude)
     local best, bestD = nil, math.huge          -- best QUALIFYING
     local fall, fallD = nil, math.huge          -- best by distance-to-centre
 
+    -- A point closer than this is the pickup by another name -- two surveyed
+    -- car parks in the same forecourt would produce the same non-journey.
+    local minTrip = (cfg and cfg.minTripM) or 150.0
+
     for _, p in ipairs(points or {}) do
         local d = BR.Dist(fromX, fromY, p.x, p.y)
+        if (exclude and p == exclude) or d < minTrip then goto continue end
 
         -- This candidate's own arrival, and the circle as it will be then.
         local eta = now + BR.RescueDriveMs(d, cfg)
@@ -171,6 +188,7 @@ function BR.RescueDestination(points, fromX, fromY, storm, now, cfg)
             local dc = BR.Dist(p.x, p.y, cx, cy)
             if dc < fallD then fall, fallD = p, dc end
         end
+        ::continue::
     end
 
     if best then

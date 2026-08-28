@@ -94,6 +94,13 @@ end)
 BR.Loop.register(BR.Loop.TICK, 'markers.place', function()
     if not IsWaypointActive() then return end
 
+    -- THE RESCUE'S WAYPOINT IS NOT A PING. This pass consumes any fresh
+    -- waypoint and turns it into a squad marker -- correct for a player
+    -- clicking the map, and exactly wrong for the one client/rescue.lua sets to
+    -- show a downed player where the ambulance is taking them. Without this the
+    -- destination waypoint would be eaten on the tick after it was set.
+    if BR.Rescue and BR.Rescue.riding and BR.Rescue.riding() then return end
+
     local st = BR.State.me.state
     if st == BR.PlayerState.LOBBY or st == BR.PlayerState.LEFT then return end
 

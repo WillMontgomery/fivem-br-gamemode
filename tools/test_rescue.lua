@@ -153,18 +153,48 @@ do
         tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
     }
     local pts = {
-        { id = 'far_inside',  x = 100.0,  y = 0.0 },
-        { id = 'near_inside', x = 350.0,  y = 0.0 },
+        { id = 'far_inside',  x = 0.0,    y = 0.0 },
+        { id = 'near_inside', x = 200.0,  y = 0.0 },
         { id = 'outside',     x = 3000.0, y = 0.0 },
     }
 
-    -- Dispatching from x = 400: `near_inside` is 50m away, `far_inside` is 300m.
-    -- Both qualify, so the SHORTEST wins.
+    -- Dispatching from x = 400: `near_inside` is 200m away, `far_inside` is 400m.
+    -- Both qualify and both clear minTripM, so the SHORTEST wins.
+    --
+    -- THE FIXTURE MOVED WHEN minTripM ARRIVED. It used to put `near_inside` 50m
+    -- from the dispatch point, which the floor now refuses -- so the case was
+    -- asserting the right property with numbers that had stopped being able to
+    -- express it. Both candidates are past the floor now and the ordering is
+    -- still what is under test.
     local d, dist, inside = BR.RescueDestination(pts, 400.0, 0.0, storm, 0, R)
     ok(d and d.id == 'near_inside',
         'among points inside the circle, the shortest route wins', d and d.id)
+
+    -- ═══ THE PICKUP CANNOT BE THE DESTINATION ═══
+    --
+    -- Owner, 2026-08-28, on the first ride that ran: "It drove for maybe 30
+    -- seconds successfully, but then de-spawned and put me back at the point
+    -- where it spawned."
+    --
+    -- The pickup is one of the same surveyed points the destination is chosen
+    -- from, and it is ZERO metres from itself, so it won every time. The ride
+    -- was a circle and the delivery was a teleport to where it began.
+    local here = { id = 'here', x = 400.0, y = 0.0 }
+    local withHere = { here, pts[1], pts[2], pts[3] }
+    local d2 = BR.RescueDestination(withHere, 400.0, 0.0, storm, 0, R, here)
+    ok(d2 and d2.id ~= 'here',
+        'the point the ambulance was built at is never the place it drives to',
+        d2 and d2.id)
+
+    -- And the floor covers the same failure without an explicit exclusion: two
+    -- surveyed car parks in one forecourt would produce the same non-journey.
+    local d3 = BR.RescueDestination(
+        { { id = 'next_door', x = 420.0, y = 0.0 }, pts[2] },
+        400.0, 0.0, storm, 0, R)
+    ok(d3 and d3.id ~= 'next_door',
+        'a destination inside minTripM of the pickup is refused', d3 and d3.id)
     ok(inside == true, 'and it is reported as a qualifying pick')
-    ok(math.abs(dist - 50.0) < 0.01, 'with the distance it was chosen on', dist)
+    ok(math.abs(dist - 200.0) < 0.01, 'with the distance it was chosen on', dist)
 
     -- THE FILTER IS NOT A SCORE, AND THIS IS THE ASSERTION THAT PROVES IT.
     -- Dispatch from just outside the wall, where the OUTSIDE point is nearer
@@ -305,7 +335,7 @@ do
     -- Treating that as "nothing qualifies" would send every pre-storm rescue
     -- down the fallback path for no reason.
     local pts = {
-        { id = 'near', x = 100.0,  y = 0.0 },
+        { id = 'near', x = 200.0,  y = 0.0 },   -- past minTripM; 100 was not
         { id = 'far',  x = 4000.0, y = 0.0 },
     }
     local d, _, inside = BR.RescueDestination(pts, 0.0, 0.0, nil, 0, R)

@@ -316,6 +316,19 @@ BR.Config.Rescue = {
     -- that lets an AI driver cut across open ground. A grass-crossing ambulance
     -- is both wrong-looking and the single most reliable way to wedge one.
     driveSpeed       = 30.0,
+
+    -- The shortest journey worth making. Any surveyed point nearer than this to
+    -- the pickup is refused as a destination, along with the pickup itself.
+    --
+    -- Owner, 2026-08-28: "It drove for maybe 30 seconds successfully, but then
+    -- de-spawned and put me back at the point where it spawned." The pickup is
+    -- one of the same 23 surveyed points the destination is chosen from, and it
+    -- is zero metres from itself, so it won every time. The ride was a circle
+    -- and the delivery was a teleport to where it began.
+    --
+    -- 150m rather than 1m because two car parks in one forecourt would produce
+    -- the same non-journey with none of the obviousness.
+    minTripM         = 150.0,
     driveStyle       = 262144,
     driverAbility    = 0.6,   -- not 1.0: "erratically" is the brief
     driverAggression = 0.8,

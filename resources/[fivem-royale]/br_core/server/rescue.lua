@@ -368,7 +368,7 @@ function BR.Rescue.begin(src)
     -- it stands now. See shared/rescue_solve.lua for why that distinction is the
     -- whole rule.
     local dest, dist, inside =
-        BR.RescueDestination(points, pickup.x, pickup.y, m.storm, now, R)
+        BR.RescueDestination(points, pickup.x, pickup.y, m.storm, now, R, pickup)
     if not dest then return false end
 
     -- THE KIT IS SPENT HERE, at the moment the rescue is granted and after every
