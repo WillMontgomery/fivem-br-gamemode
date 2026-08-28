@@ -401,20 +401,40 @@ function BR.Rescue.begin(src)
     --
     -- THE TYPE ARGUMENT THROWS on an unrecognised value rather than answering
     -- 0, which is why the call is pcall'd rather than tested.
-    -- Creation lives in server/vehicles.lua beside the allowlist, and
-    -- tools/verify.sh refuses it anywhere else -- see BR.Vehicles.spawnOwned
-    -- for why that rule exists and what it is protecting.
-    local veh, netId, why = BR.Vehicles.spawnOwned(
-        R.model or 'ambulance', 'automobile',
-        pickup.x, pickup.y, pickup.z, pickup.heading or 0.0, src)
-    if not veh then
-        print(('[br_core] rescue: no ambulance -- %s'):format(tostring(why)))
-        return false
-    end
-
+    -- ═══ THE SERVER DOES NOT MAKE THE AMBULANCE, AND 424 METRES IS WHY ═══
+    --
+    -- It did, for one round, with CreateVehicleServerSetter. The owner got:
+    -- "net id 65534 never resolved to an ambulance here".
+    --
+    -- 65534 WAS NOT THE BUG. The server allocates object ids DOWNWARD from
+    -- MaxObjectId - 1 under OneSync (ServerGameState.cpp CreateEntityFromTree),
+    -- so 65534 is exactly what the first server-created entity gets. Clients
+    -- count up from 1. The id was correct and so was the conversion.
+    --
+    -- THE BUG WAS SCOPE. Relevancy is per-client and, for an EMPTY vehicle, is
+    -- pure 2D distance -- default radius 424m, onesync_distanceCulling on. The
+    -- 23 surveyed rescue points average 825m from an arbitrary map position and
+    -- 81.7% of the map is further than 424m from the nearest one. So for about
+    -- four downed players in five the ambulance was created outside their
+    -- scope, never cloned to them, and NetworkDoesNetworkIdExist answered false
+    -- honestly for the full five seconds -- while the player lay where they
+    -- fell, up to 2.4km away, because they are only attached to it later.
+    --
+    -- No platform bug was needed to explain it, and no amount of waiting would
+    -- have fixed it.
+    --
+    -- SO IT IS LOCAL NOW, LIKE EVERY OTHER VEHICLE THIS GAMEMODE MAKES.
+    -- client/bus.lua already performs this exact ride -- local vehicle, local
+    -- pilot, the player's own ped attached to it, scripted camera, driven by
+    -- the script -- and says why: "nothing here is synced". Scope, buckets,
+    -- cloning, ownership and entityLockdown all stop being able to fail.
+    --
+    -- THE COST, NAMED: only the rescued player can destroy their own ambulance.
+    -- The rule survives -- their own wreck and condition watch still fire
+    -- RESCUE_LOST -- but a third party cannot shoot it. That is the single
+    -- requirement that moved this feature off every path this codebase has
+    -- working, and it is now a deliberate trade rather than an inherited one.
     live[src] = {
-        veh        = veh,
-        netId      = netId,
         matchId    = entry.matchId,
         dest       = dest,
         deadlineAt = now + deadline,
@@ -437,10 +457,6 @@ function BR.Rescue.begin(src)
         pickup = pickup,
         dest   = dest,
         endsAt = now + deadline,
-        -- The client ADOPTS this vehicle now rather than making one. It is the
-        -- only new field on this envelope and it is the whole of the change on
-        -- the wire.
-        netId  = netId,
     })
     return true
 end

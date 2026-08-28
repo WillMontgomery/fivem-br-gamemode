@@ -454,48 +454,34 @@ local function board(d)
         --   only on a REFUSED model, and that file already anticipated this
         --   exact vehicle: "An ambulance is not on that list." Nothing is
         --   exempted, because nothing needs to be.
-        -- ═══ THE CLIENT ADOPTS THE SERVER'S AMBULANCE ═══
+        -- ═══ LOCAL, LIKE THE BATTLE BUS ═══
         --
-        -- This was CreateVehicle(..., networked) on the client until
-        -- 2026-08-28. Owner's run: "there was no ambulance. I could walk around
-        -- as normal." A refused CreateVehicle answers 0, 0 is truthy in Lua,
-        -- and every call after it no-opped against entity 0 without erroring.
+        -- Networked first, then server-created and adopted. Both failed, and
+        -- the second one failed for a reason worth writing down: the ambulance
+        -- is built at a rescue point averaging 825m from where the player fell,
+        -- and an EMPTY vehicle is culled to any client past 424m. It was never
+        -- cloned here, so the net id never resolved -- correctly.
         --
-        -- server/rescue.lua now builds it with CreateVehicleServerSetter --
-        -- which returns a REAL entity, takes SetEntityRoutingBucket without
-        -- throwing, and needs no player in scope -- and sends the net id. All
-        -- this side does is wait for that id to resolve locally.
+        -- client/bus.lua does this whole ride locally already and says why:
+        -- "Attaching own-local-ped to own-local-plane has none of the network
+        -- attach problems this design originally avoided; nothing here is
+        -- synced." The same is true of an ambulance.
         --
-        -- IT CAN TAKE A FEW FRAMES and that is not a failure: the entity is
-        -- created and bucketed server-side before the event is sent, but the
-        -- clone still has to reach this machine. Bounded, and a miss ends the
-        -- ride loudly rather than continuing without a vehicle.
-        local netId = tonumber(d.netId)
-        if not netId then
-            print('[br_core] rescue: the server sent no ambulance id')
-            TriggerServerEvent(BR.Net.RESCUE_LOST)
-            return
-        end
-
-        local tv = GetGameTimer()
-        repeat
-            if not ride or ride ~= r then return end
-            if isTrue(NetworkDoesNetworkIdExist(netId)) then
-                r.veh = NetToVeh(netId)
-            end
-            if r.veh and r.veh ~= 0 and isTrue(DoesEntityExist(r.veh)) then break end
-            r.veh = nil
-            Citizen.Wait(50)
-        until GetGameTimer() - tv > 5000
-
-        if not r.veh then
-            print(('[br_core] rescue: net id %d never resolved to an ambulance here')
-                :format(netId))
-            TriggerServerEvent(BR.Net.RESCUE_LOST)
-            return
-        end
-
+        -- `false, false` IS THE WHOLE FIX. Not networked, so entityLockdown
+        -- cannot refuse it; not networked, so scope cannot cull it; not
+        -- networked, so no bucket, no clone, no ownership handoff.
+        r.veh = CreateVehicle(model, px, py, pz, p.heading or 0.0, false, false)
         SetModelAsNoLongerNeeded(model)
+
+        -- 0 is truthy in Lua and a refused create answers 0 -- the fault that
+        -- cost round four, kept guarded now that the create is local.
+        if not r.veh or r.veh == 0 or not isTrue(DoesEntityExist(r.veh)) then
+            print(('[br_core] rescue: CreateVehicle refused (%s) at %.1f %.1f %.1f')
+                :format(tostring(r.veh), px, py, pz))
+            r.veh = nil
+            TriggerServerEvent(BR.Net.RESCUE_LOST)
+            return
+        end
         SetEntityAsMissionEntity(r.veh, true, true)
 
         -- NOT INVINCIBLE. There is no SetEntityInvincible here and there must
@@ -544,7 +530,12 @@ local function board(d)
         -- here, before it happens.
         local pedModel = loadModel(R.driverModel or 's_m_m_paramedic_01', 5000)
         if pedModel then
-            r.driver = CreatePed(4, pedModel, px, py, pz, p.heading or 0.0, true, false)
+            -- LOCAL, and the same reason as the vehicle above: a client script's
+            -- ped is POPTYPE_MISSION, which sv_entityLockdown relaxed refuses
+            -- outright. This was the next failure already queued behind the
+            -- vehicle one -- fixing scope alone would have bought an ambulance
+            -- with nobody driving it.
+            r.driver = CreatePed(4, pedModel, px, py, pz, p.heading or 0.0, false, false)
             SetModelAsNoLongerNeeded(pedModel)
             SetEntityInvincible(r.driver, true)
             SetBlockingOfNonTemporaryEvents(r.driver, true)
