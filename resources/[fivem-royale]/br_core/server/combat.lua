@@ -800,7 +800,10 @@ function BR.Combat.bleed(src, amount, shooterSrc, meta)
         e.downedBy = shooterSrc
     end
 
-    if e.dbnoUntil <= now then
+    -- Same rule as the tick below: a player being carried is not finishable by
+    -- a clock. Damage still shortens the deadline they return to if the rescue
+    -- fails, which is why this subtracts before it checks rather than instead.
+    if not e.rescue and e.dbnoUntil <= now then
         BR.Combat.eliminate(src, 'finished', e.downedBy)
         return
     end
@@ -1058,7 +1061,25 @@ local function stepDowned(src, entry, now)
         entry.reviveTickAt = nil
     end
 
-    if now >= (entry.dbnoUntil or 0) then
+    -- ═══ A PLAYER ON THE AMBULANCE DOES NOT BLEED OUT ═══
+    --
+    -- Owner, 2026-08-28, first ride that reached the server: "My ped stayed in
+    -- place while the timer continued for some reason... Then the timer expired
+    -- and I died."
+    --
+    -- BR.Rescue.begin sets `rescue` and hands the ride to the client, and that
+    -- was the whole of it -- nothing ever stopped the clock that was already
+    -- running. The countdown that made the kit worth using went on counting and
+    -- finished the player mid-rescue.
+    --
+    -- THE GUARD IS ON THE FLAG, NOT ON A CLEARED TIMER. Clearing dbnoUntil
+    -- would work until a rescue fails: RESCUE_LOST puts the player back in
+    -- DBNO, and a cleared clock would leave them downed forever with nothing to
+    -- finish them. Suspending it keeps the deadline intact for exactly that
+    -- return, and `rescue` is already the flag storm.lua reads for the same
+    -- reason -- a player in the back of an ambulance is not available to be
+    -- killed by anything the match is doing outside it.
+    if not entry.rescue and now >= (entry.dbnoUntil or 0) then
         BR.Combat.eliminate(src, 'bledout', entry.downedBy)
     end
 end
