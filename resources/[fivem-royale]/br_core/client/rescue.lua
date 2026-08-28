@@ -456,6 +456,38 @@ local function board(d)
         --   exempted, because nothing needs to be.
         r.veh = CreateVehicle(model, px, py, pz, p.heading or 0.0, true, false)
         SetModelAsNoLongerNeeded(model)
+
+        -- ═══ A REFUSED CREATE RETURNS 0, AND 0 IS TRUTHY ═══
+        --
+        -- Owner, 2026-08-28: "I spawned a location where the ambulance should
+        -- have been and my camera locked to the correct position I think, but
+        -- there was no ambulance. I could walk around as normal."
+        --
+        -- That is this line failing and nothing noticing. CreateVehicle answers
+        -- 0 when it is refused; a bare 'not' test on 0 is FALSE in Lua, so every
+        -- call below took the handle anyway -- SetEntityAsMissionEntity, the
+        -- siren, the door lock, the attach. All of them no-op against entity 0
+        -- without erroring, so the camera built at the right coordinates
+        -- pointing at nothing and the ride 'started' with no vehicle in it.
+        --
+        -- EIGHTH TIME THIS FAMILY HAS SHIPPED HERE -- see the bool natives gate
+        -- and its baseline. The gate cannot catch this one: CreateVehicle is not
+        -- named like a question, which is the blind spot that file documents
+        -- about itself.
+        --
+        -- IT FAILS LOUDLY AND ENDS THE RIDE. Silence was the whole problem: the
+        -- deadline eventually delivered him with a 'you have been revived'
+        -- toast, which reads like the feature worked. Losing the kit and saying
+        -- so in the console beats faking a rescue.
+        if not r.veh or r.veh == 0 or not isTrue(DoesEntityExist(r.veh)) then
+            print(('[br_core] rescue: CreateVehicle refused (%s) at %.1f %.1f %.1f'
+                .. ' -- no ambulance was made, so there is no ride')
+                :format(tostring(r.veh), px, py, pz))
+            r.veh = nil
+            TriggerServerEvent(BR.Net.RESCUE_LOST)
+            return
+        end
+
         SetEntityAsMissionEntity(r.veh, true, true)
 
         -- NOT INVINCIBLE. There is no SetEntityInvincible here and there must
