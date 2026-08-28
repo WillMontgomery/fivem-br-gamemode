@@ -1385,7 +1385,25 @@ function BR.Vehicles.spawnOwned(model, vtype, x, y, z, heading, forSrc)
         if n and n >= 0 then pcall(SetEntityRoutingBucket, veh, n) end
     end
 
-    return veh, NetworkGetNetworkIdFromEntity(veh), nil
+    -- ═══ IT SAYS WHAT IT BUILT, BECAUSE THE CALLER CANNOT SEE ANY OF IT ═══
+    --
+    -- Owner, 2026-08-28: "net id 65534 never resolved to an ambulance here."
+    -- The vehicle was created and the id was sent; nothing on either side could
+    -- say WHICH of the four things between those two facts had gone wrong --
+    -- the handle, the id, the bucket, or the clone never reaching the client.
+    --
+    -- Same lesson as /brcpr an hour earlier: six indistinguishable failures
+    -- cost three rounds of reading source, and one line of output ended it.
+    local netId = math.tointeger(tonumber(
+        (select(2, pcall(NetworkGetNetworkIdFromEntity, veh))))) or -1
+    local okB2, gotB = pcall(GetEntityRoutingBucket, veh)
+    print(('[br_core] spawnOwned: handle %d  netId %d  bucket asked %s got %s')
+        :format(veh, netId,
+                tostring(forSrc and select(2, pcall(GetPlayerRoutingBucket,
+                                                    tostring(forSrc)))),
+                okB2 and tostring(gotB) or 'unreadable'))
+
+    return veh, netId, nil
 end
 --- The eight sync trees `CreateVehicleServerSetter` knows how to build.
 ---
