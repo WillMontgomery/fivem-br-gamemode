@@ -371,6 +371,28 @@ function BR.Rescue.begin(src)
         BR.RescueDestination(points, pickup.x, pickup.y, m.storm, now, R, pickup)
     if not dest then return false end
 
+    -- ═══ IT SAYS WHERE IT IS TAKING THEM, BECAUSE READING SAID IT CANNOT ═══
+    --
+    -- Owner, 2026-08-28: "the waypoint is actually the spawn point of the
+    -- ambulance, not it's destination, and once I do respawn I am taken to the
+    -- ambulance's spawn point. Are you even telling the driver where to go?"
+    --
+    -- Every reading of the code says this is impossible: taskDrive uses
+    -- r.dest, the delivery uses the coordinates this function sends, and
+    -- RescueDestination skips any candidate within minTripM -- which a pickup
+    -- at zero metres from itself always is. So the reading is wrong somewhere,
+    -- and a fifth guess costs another playtest.
+    --
+    -- Same move as /brcpr, which found a three-round bug in one run: print the
+    -- two ids and the distance between them. If they are the same point the
+    -- exclusion is not biting; if they differ, the fault is downstream of here
+    -- and this line clears the solver in one glance.
+    print(('[br_core] rescue: %d  pickup=%s (%.1f, %.1f)  dest=%s (%.1f, %.1f)  %.0fm apart%s')
+        :format(src, tostring(pickup.id), pickup.x, pickup.y,
+                tostring(dest.id), dest.x, dest.y,
+                BR.Dist(pickup.x, pickup.y, dest.x, dest.y),
+                (pickup == dest) and '  <-- SAME POINT' or ''))
+
     -- THE KIT IS SPENT HERE, at the moment the rescue is granted and after every
     -- refusal above has already passed. Spending it earlier would burn an
     -- ultra-rare item on a call that then failed to route; spending it later

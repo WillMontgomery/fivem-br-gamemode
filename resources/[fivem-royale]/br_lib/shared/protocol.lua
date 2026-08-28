@@ -132,6 +132,11 @@ BR.Net = {
     LOOT_CELL       = 'br:loot:cell',        -- C->S  { cx, cy } subscribe to a grid cell
     LOOT_ADD        = 'br:loot:add',         -- S->C  array of loot entries entering scope
     LOOT_GONE       = 'br:loot:gone',        -- S->C  array of loot ids removed
+
+    -- Volts never enter the inventory, so they never reach the client path that
+    -- plays the pickup cue. This is that cue, on its own, for the one kind of
+    -- loot that collects without a slot (owner, 2026-08-28).
+    LOOT_PICKUP_CUE = 'br:loot:pickupcue',   -- S->C  play the pickup sound, no payload
     LOOT_CLAIM      = 'br:loot:claim',       -- C->S  { id }
     -- The repair round-trip. Only a CLIENT can ground-probe or read water
     -- height, so a client that finds an entry floating in the sea or buried

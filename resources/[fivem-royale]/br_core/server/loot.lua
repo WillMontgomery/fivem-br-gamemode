@@ -1036,6 +1036,23 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
             e.voltsPickedUp = (e.voltsPickedUp or 0) + n
         end
         retire(m, item)
+
+        -- ═══ IT SOUNDS LIKE A PICKUP BECAUSE IT IS ONE ═══
+        --
+        -- Owner, 2026-08-28: "picking up volts doesn't make a sound - it should
+        -- make the same sound as picking up an inventory item."
+        --
+        -- The pickup cue lives on the INVENTORY path (client/inventory.lua
+        -- plays L.pickupSound when a slot gains something), and Volts
+        -- deliberately never enter the inventory -- owner, 2026-08-21: "they
+        -- simply pick it up and it's gone". So the one kind of loot that is
+        -- pure reward was the one kind that collected in silence.
+        --
+        -- SAME CUE, NOT A NEW ONE. He asked for the sound an item makes, so
+        -- this reuses BR.Config.Loot.pickupSound rather than introducing a
+        -- second Volts-only cue that would drift from it.
+        TriggerClientEvent(BR.Net.LOOT_PICKUP_CUE, src)
+
         BR.Server.notify(src,
             ('You collected %d %s.'):format(n,
                 (BR.Config.Market and BR.Config.Market.currency) or 'Volts'),

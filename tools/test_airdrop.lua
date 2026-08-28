@@ -465,8 +465,11 @@ end
 
 describe('config: the Volts pile')
 do
-    -- The owner named the number: "they should be 100 Volts".
-    eq(A.voltsAmount, 100, 'a drop carries 100 Volts')
+    -- The owner named the number twice. 2026-08-22: "they should be 100
+    -- Volts". Then 2026-08-28, after playing with it: "change the volts to 500
+    -- on the pickup please". The later one wins, and the earlier is kept here
+    -- so the change reads as a decision rather than a drift.
+    eq(A.voltsAmount, 500, 'a drop carries 500 Volts')
 
     local pool = A.resolvedPools.volts
     ok(pool ~= nil and #pool == 1,

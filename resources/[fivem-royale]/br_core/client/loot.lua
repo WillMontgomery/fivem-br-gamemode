@@ -1539,6 +1539,17 @@ AddEventHandler(BR.Net.LOOT_ADD, function(list)
     addEntries(list)
 end)
 
+-- The Volts cue. See protocol.lua: Volts are collected without a slot, so the
+-- inventory's own pickup sound never fires for them and this is the whole of
+-- the fix -- the same cue, from BR.Config.Loot.pickupSound, not a second one.
+RegisterNetEvent(BR.Net.LOOT_PICKUP_CUE)
+AddEventHandler(BR.Net.LOOT_PICKUP_CUE, function()
+    local L = BR.Config.Loot
+    if L and L.pickupSound then
+        PlaySoundFrontend(-1, L.pickupSound.name, L.pickupSound.set, true)
+    end
+end)
+
 RegisterNetEvent(BR.Net.LOOT_GONE)
 AddEventHandler(BR.Net.LOOT_GONE, function(ids)
     for _, id in ipairs(ids or {}) do

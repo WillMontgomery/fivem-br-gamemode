@@ -775,8 +775,6 @@ local function board(d)
         SetCamActive(r.cam, true)
         RenderScriptCams(true, false, 0, true, true)
 
-        taskDrive(r)
-
         -- ═══ WHERE IT IS TAKING YOU, ON THE MAP YOU ALREADY READ ═══
         --
         -- Owner, 2026-08-28: "It would be neat if there was a clear blip on my
@@ -833,6 +831,22 @@ local function board(d)
         end
 
         DoScreenFadeIn(600)
+
+        -- ═══ THE DRIVER WAITS FOR THE PLAYER'S SCREEN ═══
+        --
+        -- Owner, 2026-08-28: "please make it so the ped doesn't start driving
+        -- until my screen fades in."
+        --
+        -- It used to be tasked BEFORE the fade wait, so the ambulance pulled
+        -- away while the screen was still black and the ride opened halfway
+        -- down the road -- the arrival the fade exists to stage was already
+        -- over by the time anyone saw it.
+        --
+        -- AFTER the fade call, not before: DoScreenFadeIn is the request, and
+        -- the wait above it is what guarantees there is an ambulance to look
+        -- at. Tasking here means the first frame the player sees is the
+        -- vehicle standing still with them in the back.
+        taskDrive(r)
         print(('[br_core] rescue: aboard (vehicle %d) bound for %s')
             :format(r.veh, tostring(r.dest.id)))
     end)

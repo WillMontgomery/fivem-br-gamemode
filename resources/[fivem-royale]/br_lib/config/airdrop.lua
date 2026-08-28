@@ -832,7 +832,8 @@ BR.Config.Airdrop = {
     -- half the owner described. A player who leaves the match before it ends
     -- forfeits it along with their XP, their kills and their placement -- the
     -- rule roster.lua already applies to everything else a match earned.
-    voltsAmount = 100,
+    -- Owner, 2026-08-28: "change the volts to 500 on the pickup please".
+    voltsAmount = 500,
     -- The prop the pile is drawn as. A vanilla money bundle: this is currency
     -- on the floor and it should read as currency on the floor.
     voltsProp   = 'prop_anim_cash_pile_01',
