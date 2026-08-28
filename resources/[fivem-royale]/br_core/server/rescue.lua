@@ -268,6 +268,20 @@ local function finish(src, delivered, why)
     live[src] = nil
     if not rec then return end
 
+    -- THE SERVER OWNS THE VEHICLE NOW, so the server deletes it -- on every
+    -- ending, before anything below can fail or return early. The client used
+    -- to do this because the client used to create it; leaving it there would
+    -- mean a disconnect mid-ride abandons an ambulance nothing owns.
+    -- `== true` rather than a truth test, the same reason this file already
+    -- records where it sweeps destroyed ambulances: DoesEntityExist is a BOOL
+    -- native, may answer 1 or 0, and 0 is truthy in Lua.
+    if rec.veh then
+        local okEx, exists = pcall(DoesEntityExist, rec.veh)
+        if okEx and (exists == true or exists == 1) then
+            pcall(DeleteEntity, rec.veh)
+        end
+    end
+
     local entry = BR.Roster.get(src)
     if entry then
         BR.Roster.update(src, { rescue = nil })
@@ -366,7 +380,41 @@ function BR.Rescue.begin(src)
 
     local deadline = BR.RescueDeadlineMs(dist, R)
 
+    -- ═══ THE SERVER MAKES THE AMBULANCE, NOT THE CLIENT ═══
+    --
+    -- It was a client-side networked CreateVehicle call until 2026-08-28, and
+    -- the owner's run showed what that is worth: no ambulance, a camera at the
+    -- right coordinates pointing at nothing, and a 'you have been revived'
+    -- toast at the end. CreateVehicle answers 0 when it is refused and 0 is
+    -- truthy, so nothing downstream noticed.
+    --
+    -- CreateVehicleServerSetter is the documented route here (see the long
+    -- write-up above brcar in server/vehicles.lua). It builds the sync tree and
+    -- registers the entity BEFORE minting the handle, so what comes back is a
+    -- real entity: SetEntityRoutingBucket works on it at once, with no polling
+    -- and no throw, and it needs no player in scope.
+    --
+    -- THE ROUTING BUCKET IS THE SECOND WAY TO GET AN INVISIBLE AMBULANCE, and
+    -- it is not the one that bit him. Matches run in their own buckets and the
+    -- setter defaults to bucket 0, so a vehicle left there is one nobody in the
+    -- match can see -- the same failure wearing different clothes.
+    --
+    -- THE TYPE ARGUMENT THROWS on an unrecognised value rather than answering
+    -- 0, which is why the call is pcall'd rather than tested.
+    -- Creation lives in server/vehicles.lua beside the allowlist, and
+    -- tools/verify.sh refuses it anywhere else -- see BR.Vehicles.spawnOwned
+    -- for why that rule exists and what it is protecting.
+    local veh, netId, why = BR.Vehicles.spawnOwned(
+        R.model or 'ambulance', 'automobile',
+        pickup.x, pickup.y, pickup.z, pickup.heading or 0.0, src)
+    if not veh then
+        print(('[br_core] rescue: no ambulance -- %s'):format(tostring(why)))
+        return false
+    end
+
     live[src] = {
+        veh        = veh,
+        netId      = netId,
         matchId    = entry.matchId,
         dest       = dest,
         deadlineAt = now + deadline,
@@ -389,6 +437,10 @@ function BR.Rescue.begin(src)
         pickup = pickup,
         dest   = dest,
         endsAt = now + deadline,
+        -- The client ADOPTS this vehicle now rather than making one. It is the
+        -- only new field on this envelope and it is the whole of the change on
+        -- the wire.
+        netId  = netId,
     })
     return true
 end

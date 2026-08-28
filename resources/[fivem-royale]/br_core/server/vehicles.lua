@@ -1334,6 +1334,59 @@ end)
 --- which is what a squad test wants and what the allowlist above is happy with.
 local DEFAULT_MODEL = 'granger'
 
+--- Build a gamemode-owned vehicle, in a player's routing bucket.
+---
+--- IT LIVES HERE BECAUSE tools/verify.sh SAYS IT MUST. The gate refuses any
+--- server-side CreateVehicle/CreateVehicleServerSetter outside this file, and
+--- the reason is written above brcar: the allowlist pre-check is the ONLY thing
+--- standing between a refused model and a vehicle nothing would notice, because
+--- the server setter raises `serverEntityCreated` and this resource listens to
+--- no such event. Creation and the allowlist are reviewed on one screen or the
+--- backstop is gone.
+---
+--- #191's ambulance was the second caller to need this, and it tried to make
+--- its own on the CLIENT instead -- CreateVehicle(..., networked), which the
+--- owner's 2026-08-28 run showed answering 0 while every call after it no-opped
+--- against entity 0. This is the route that works, so it stops being a private
+--- trick of one debug verb.
+---
+--- THE BUCKET IS NOT OPTIONAL. Matches run in their own (server/roster.lua) and
+--- the setter defaults to bucket 0 -- a vehicle left there is one nobody in the
+--- match can see, which is the same failure as not creating it at all.
+---
+--- @param model string|number
+--- @param vtype string   automobile/bike/boat/heli/plane/submarine/trailer/train
+--- @param x number @param y number @param z number @param heading number
+--- @param forSrc number|nil  take this player's routing bucket
+--- @return number|nil veh, number|nil netId, string|nil why
+function BR.Vehicles.spawnOwned(model, vtype, x, y, z, heading, forSrc)
+    local hash = type(model) == 'number' and model or GetHashKey(model)
+    if BR.Config.IsAllowedVehicle and not BR.Config.IsAllowedVehicle(hash) then
+        return nil, nil, 'the allowlist refuses that model'
+    end
+
+    -- The type argument THROWS on an unrecognised value rather than answering
+    -- 0, which is why this is pcall'd rather than tested.
+    local okCreate, raw = pcall(CreateVehicleServerSetter,
+        hash, vtype or 'automobile', x, y, z, heading or 0.0)
+    if not okCreate then return nil, nil, tostring(raw) end
+
+    local veh = math.tointeger(tonumber(raw)) or 0
+    -- `== true` rather than a truth test: DoesEntityExist is a BOOL native and
+    -- may answer 1 or 0, and 0 is truthy in Lua.
+    local okEx, exists = pcall(DoesEntityExist, veh)
+    if veh == 0 or not okEx or not (exists == true or exists == 1) then
+        return nil, nil, 'the engine refused it (handle 0)'
+    end
+
+    if forSrc then
+        local okB, b = pcall(GetPlayerRoutingBucket, tostring(forSrc))
+        local n = okB and math.tointeger(tonumber(b) or -1) or nil
+        if n and n >= 0 then pcall(SetEntityRoutingBucket, veh, n) end
+    end
+
+    return veh, NetworkGetNetworkIdFromEntity(veh), nil
+end
 --- The eight sync trees `CreateVehicleServerSetter` knows how to build.
 ---
 --- SPELLED OUT HERE SO A BAD ONE NEVER REACHES THE NATIVE, because the native

@@ -454,40 +454,48 @@ local function board(d)
         --   only on a REFUSED model, and that file already anticipated this
         --   exact vehicle: "An ambulance is not on that list." Nothing is
         --   exempted, because nothing needs to be.
-        r.veh = CreateVehicle(model, px, py, pz, p.heading or 0.0, true, false)
-        SetModelAsNoLongerNeeded(model)
-
-        -- ═══ A REFUSED CREATE RETURNS 0, AND 0 IS TRUTHY ═══
+        -- ═══ THE CLIENT ADOPTS THE SERVER'S AMBULANCE ═══
         --
-        -- Owner, 2026-08-28: "I spawned a location where the ambulance should
-        -- have been and my camera locked to the correct position I think, but
-        -- there was no ambulance. I could walk around as normal."
+        -- This was CreateVehicle(..., networked) on the client until
+        -- 2026-08-28. Owner's run: "there was no ambulance. I could walk around
+        -- as normal." A refused CreateVehicle answers 0, 0 is truthy in Lua,
+        -- and every call after it no-opped against entity 0 without erroring.
         --
-        -- That is this line failing and nothing noticing. CreateVehicle answers
-        -- 0 when it is refused; a bare 'not' test on 0 is FALSE in Lua, so every
-        -- call below took the handle anyway -- SetEntityAsMissionEntity, the
-        -- siren, the door lock, the attach. All of them no-op against entity 0
-        -- without erroring, so the camera built at the right coordinates
-        -- pointing at nothing and the ride 'started' with no vehicle in it.
+        -- server/rescue.lua now builds it with CreateVehicleServerSetter --
+        -- which returns a REAL entity, takes SetEntityRoutingBucket without
+        -- throwing, and needs no player in scope -- and sends the net id. All
+        -- this side does is wait for that id to resolve locally.
         --
-        -- EIGHTH TIME THIS FAMILY HAS SHIPPED HERE -- see the bool natives gate
-        -- and its baseline. The gate cannot catch this one: CreateVehicle is not
-        -- named like a question, which is the blind spot that file documents
-        -- about itself.
-        --
-        -- IT FAILS LOUDLY AND ENDS THE RIDE. Silence was the whole problem: the
-        -- deadline eventually delivered him with a 'you have been revived'
-        -- toast, which reads like the feature worked. Losing the kit and saying
-        -- so in the console beats faking a rescue.
-        if not r.veh or r.veh == 0 or not isTrue(DoesEntityExist(r.veh)) then
-            print(('[br_core] rescue: CreateVehicle refused (%s) at %.1f %.1f %.1f'
-                .. ' -- no ambulance was made, so there is no ride')
-                :format(tostring(r.veh), px, py, pz))
-            r.veh = nil
+        -- IT CAN TAKE A FEW FRAMES and that is not a failure: the entity is
+        -- created and bucketed server-side before the event is sent, but the
+        -- clone still has to reach this machine. Bounded, and a miss ends the
+        -- ride loudly rather than continuing without a vehicle.
+        local netId = tonumber(d.netId)
+        if not netId then
+            print('[br_core] rescue: the server sent no ambulance id')
             TriggerServerEvent(BR.Net.RESCUE_LOST)
             return
         end
 
+        local tv = GetGameTimer()
+        repeat
+            if not ride or ride ~= r then return end
+            if isTrue(NetworkDoesNetworkIdExist(netId)) then
+                r.veh = NetToVeh(netId)
+            end
+            if r.veh and r.veh ~= 0 and isTrue(DoesEntityExist(r.veh)) then break end
+            r.veh = nil
+            Citizen.Wait(50)
+        until GetGameTimer() - tv > 5000
+
+        if not r.veh then
+            print(('[br_core] rescue: net id %d never resolved to an ambulance here')
+                :format(netId))
+            TriggerServerEvent(BR.Net.RESCUE_LOST)
+            return
+        end
+
+        SetModelAsNoLongerNeeded(model)
         SetEntityAsMissionEntity(r.veh, true, true)
 
         -- NOT INVINCIBLE. There is no SetEntityInvincible here and there must
