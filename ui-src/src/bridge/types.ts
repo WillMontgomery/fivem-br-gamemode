@@ -351,6 +351,28 @@ export interface DbnoPayload {
    * without it -- absent means no.
    */
   cpr?: boolean
+  /**
+   * The ambulance has me (#191). THE SECOND FIELD ON THIS PAYLOAD THE SERVER
+   * DOES NOT DECIDE, and it arrives the same way `cpr` does --
+   * client/rescue.lua polls its own `ride` local and merges the bit in through
+   * BR.Dbno.setRiding.
+   *
+   * ═══ IT IS READ IN App.tsx, NOT IN DbnoOverlay ═══
+   *
+   * Owner, 2026-08-28: "I need you to make the bleed out timer completely go
+   * away while in the ambulance. That time should not be relevant anymore once
+   * the ambulance takes over" and "while in the ambulance, our HUD should be
+   * hidden just like in the bus".
+   *
+   * Those are one change, not two. The bleed-out card is drawn inside the HUD,
+   * and App.tsx already hides the whole HUD for the Battle Bus with one line
+   * (`ridingBus`, feeding `hudUp`). So this field joins that line and the card
+   * goes with everything else -- which is why DbnoOverlay.tsx does not read it
+   * and must not grow a branch for it.
+   *
+   * Optional for the same reason `cpr` is: absent means no.
+   */
+  riding?: boolean
 }
 
 /**

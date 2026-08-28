@@ -36,6 +36,18 @@ import type { DbnoPayload } from '../bridge/types'
  * -- so recomputing the total from the time remaining would refill the bar to
  * full every time somebody shot them. Held still, a burst visibly tears a
  * chunk out of it, which is the only reason the bar is there.
+ *
+ * ═══ THERE IS NO "ON THE AMBULANCE" BRANCH HERE, AND THAT IS THE DESIGN ═══
+ *
+ * Owner, 2026-08-28: "I need you to make the bleed out timer completely go away
+ * while in the ambulance." It does -- one level up. The payload's `riding` bit
+ * is read in App.tsx, where it joins the rule that already hides the whole HUD
+ * for the Battle Bus, and this card is drawn inside that HUD.
+ *
+ * So nothing in this file needs to know about #191, and a future reader adding
+ * a `riding` test here would be building the second half of a switch whose
+ * first half is somewhere else. If the ride should stop hiding this card, the
+ * line to change is `ridingAmbulance` in App.tsx.
  */
 export default function DbnoOverlay({ dbno }: { dbno: DbnoPayload }) {
   const timeRef = useRef<HTMLSpanElement>(null)

@@ -287,6 +287,39 @@ BR.Config.Rescue = {
     stretcher = {
         x = -0.010, y = -3.100, z = 1.690,
         pitch = 0.0, roll = 0.0, yaw = 1.0,
+
+        -- ═══ THE POSE IS THE SEVENTH NUMBER, AND IT IS NOT DECORATION ═══
+        --
+        -- Owner, 2026-08-28: "please enforce the ped emote in the ambulance as
+        -- we discussed. It should be sunbathe".
+        --
+        -- The six offsets above were authored against THIS CLIP -- /brattach's
+        -- first candidate, the one client/attachtune.lua prints beside the
+        -- numbers precisely because "the numbers only mean anything alongside
+        -- the pose they were measured with". A ped attached at
+        -- (-0.010, -3.100, 1.690) in any other posture is not at the offset the
+        -- owner approved; it is at the same coordinates with a different body
+        -- around them, which is how the note above about the zero roll came to
+        -- be true ("the ambulance's own cabin geometry AND THE POSE put the body
+        -- where it belongs").
+        --
+        -- AN ANIMATION, NOT A SCENARIO, and attachtune.lua carries the full
+        -- argument: TaskStartScenarioInPlace('WORLD_HUMAN_SUNBATHE') is a TASK
+        -- that sites itself against the ground and moves the ped, which is a
+        -- direct fight with AttachEntityToEntity over where the body is.
+        -- TaskPlayAnim on the dictionary poses the ped and asks for nothing
+        -- else. Changing this to a scenario would drift the body with nothing
+        -- to indicate it had.
+        --
+        -- THE MALE DICTIONARY FOR EVERY PED, deliberately. There is a
+        -- `@female@back@base` sibling and it is NOT selected per model: the
+        -- offset was measured against this one, and a clip that varies with the
+        -- player's cosmetic choice is an offset that is only right for half the
+        -- lobby. The difference lying on a stretcher is a wrist.
+        pose = {
+            dict = 'amb@world_human_sunbathe@male@back@base',
+            anim = 'base',
+        },
     },
 
     -- ═══ VEHICLE EXTRAS 1 AND 2 ═══

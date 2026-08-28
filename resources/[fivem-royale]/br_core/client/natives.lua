@@ -325,6 +325,56 @@ function BR.Native.initHealthModel()
     SetPlayerHealthRechargeMultiplier(PlayerId(), 0.0)
 end
 
+--- Take the knock off the body: blood, damage decals and dirt.
+---
+--- ═══ THE REQUEST ═══
+---
+--- Owner, 2026-08-28: "any time revive is processed, please clean the ped."
+---
+--- He noticed it stepping out of an ambulance, because #191's delivery hands
+--- back FULL health (server/rescue.lua passes `deliverHp`) -- so the one revive
+--- in the game that restores a player completely was also the one that left
+--- them wearing every hit that put them down. But the request is "any revive"
+--- and so is this: it is called from client/dbno.lua's DBNO_SET handler, which
+--- is where EVERY BR.Combat.revive lands -- a squad pick-up, /brrevive and the
+--- CPR delivery alike -- and from client/spawn.lua's REVIVED handler, which is
+--- the other one (BR.Combat.reviveHeld, the death undone at match start).
+---
+--- ═══ THREE NATIVES, AND THE FOURTH IS DELIBERATELY NOT HERE ═══
+---
+---   ClearPedBloodDamage    the blood itself: the decals a hit sprays on.
+---   ResetPedVisibleDamage  the damage LAYER those decals live in -- bruising,
+---                          scarring, the marks a fall leaves. Blood is one
+---                          kind of visible damage and not all of it, so
+---                          clearing only the first leaves a beaten-looking
+---                          player who is no longer bleeding.
+---   ClearPedEnvDirt        the road. A downed player CRAWLS (client/dbno.lua),
+---                          face down, for up to a minute; the dirt that puts
+---                          on them is part of what "clean the ped" means and
+---                          nothing else ever takes it off.
+---
+--- NOT ClearPedWetness. Wetness is a fact about the WORLD, not about the knock:
+--- a player revived in the rain or pulled out of the sea is wet for the same
+--- reason everyone standing next to them is, and drying them for a second until
+--- the weather puts it back would be the one visibly WRONG thing in a function
+--- whose whole job is to remove things that should not be there.
+---
+--- ═══ WHY EACH CALL IS GUARDED ═══
+---
+--- Not superstition about the native list -- all three are long-standing CFX
+--- natives. It is about the CALLER: the DBNO_SET handler runs `pushMine()`
+--- AFTER this, and pushMine is what tells the interface the player is back up.
+--- A throw here would take that push with it, so a missing native on some
+--- future build would cost a revived player their HUD rather than a wash. The
+--- guard is three words and it cannot be the thing that fails.
+--- @param ped integer|nil  defaults to the local player's ped
+function BR.Native.cleanPed(ped)
+    ped = ped or PlayerPedId()
+    if ClearPedBloodDamage   then ClearPedBloodDamage(ped)   end
+    if ResetPedVisibleDamage then ResetPedVisibleDamage(ped) end
+    if ClearPedEnvDirt       then ClearPedEnvDirt(ped)       end
+end
+
 -- -------------------------------------------------------------------- blips ---
 
 --- Radius blips CANNOT be resized in place -- the blip must be removed and

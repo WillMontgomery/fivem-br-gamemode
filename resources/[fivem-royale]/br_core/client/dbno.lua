@@ -29,11 +29,12 @@ local M = BR.Config.Match
 -- the UI envelope is sent whole -- REVIVE_PROGRESS merges into this and the
 -- merged copy goes across the bridge, so there is one shape and one writer.
 --
--- `cpr` IS THE ONE FIELD THE SERVER DOES NOT SEND. It is client/rescue.lua's
--- answer to "may I use my CPR kit right now", parked here so the placard can
--- draw it -- see BR.Dbno.setCpr below.
+-- `cpr` AND `riding` ARE THE TWO FIELDS THE SERVER DOES NOT SEND. Both are
+-- client/rescue.lua's answers -- "may I use my CPR kit right now" and "am I on
+-- the ambulance" -- parked here because the placard is drawn from this one
+-- payload. See BR.Dbno.setCpr and BR.Dbno.setRiding below.
 local mine = { downed = false, bleedEndsAt = 0, reviverName = nil,
-               revivePct = 0.0, cpr = false }
+               revivePct = 0.0, cpr = false, riding = false }
 
 -- The revive we are performing on somebody else, or nil.
 local holding = nil   -- { target = src, from = ms }
@@ -120,6 +121,7 @@ local function pushMine()
         reviverName = mine.reviverName,
         revivePct   = mine.revivePct or 0.0,
         cpr         = mine.cpr and true or false,
+        riding      = mine.riding and true or false,
     })
 end
 
@@ -142,6 +144,46 @@ function BR.Dbno.setCpr(v)
     v = v and true or false
     if v == mine.cpr then return end
     mine.cpr = v
+    pushMine()
+end
+
+--- The ambulance has this player (#191). One bit, the same route as `cpr`.
+---
+--- ═══ WHAT IT TURNS OFF IS THE WHOLE HUD, NOT JUST THIS CARD ═══
+---
+--- Owner, 2026-08-28, two sentences that turn out to be one change:
+---
+---   "I need you to make the bleed out timer completely go away while in the
+---    ambulance. That time should not be relevant anymore once the ambulance
+---    takes over"
+---   "while in the ambulance, our HUD should be hidden just like in the bus"
+---
+--- THE SECOND ONE ANSWERS THE FIRST. The bleed-out card is drawn INSIDE the HUD
+--- (ui-src/src/hud/Hud.tsx renders DbnoOverlay), and the bus ride already hides
+--- the HUD through one line in App.tsx -- `ridingBus`, which feeds `hudUp`, the
+--- master switch for every in-match surface. So the ride is made to look like
+--- the bus to THAT rule, and the card goes with the rest of the chrome. There
+--- is no second mechanism, no `hideTimer` prop, and nothing in DbnoOverlay
+--- needed changing.
+---
+--- AND THE WHOLE CARD GOES, NOT ONLY THE COUNTDOWN. Every row of it is false
+--- during a ride: "YOU ARE DOWN" (an ambulance has you), "UNTIL YOU BLEED OUT"
+--- (server/combat.lua suspends the deadline for the whole journey, 37ef178),
+--- the revive bar (the kit is solos-only, so nobody is coming), and the CPR
+--- prompt (canCall() already refuses while `ride` exists). A card with four
+--- untrue rows is not a card with one bad row.
+---
+--- WHY THIS FILE OWNS THE FLAG rather than the HUD envelope. `ride` is
+--- client/rescue.lua's local and the interface reads ONE payload for this
+--- placard -- the same argument that put `cpr` here. Routing it through
+--- BR.PushHud instead would mean a second writer for a fact one file knows.
+---
+--- Idempotent, because rescue.lua publishes it from a frame band.
+--- @param v boolean
+function BR.Dbno.setRiding(v)
+    v = v and true or false
+    if v == mine.riding then return end
+    mine.riding = v
     pushMine()
 end
 
@@ -1628,7 +1670,23 @@ AddEventHandler(BR.Net.DBNO_SET, function(d)
         leaveDowned()
         -- Picked up, or finished. The two look identical from here except for
         -- this flag, and only one of them ends with a body.
-        if d.died then dieNow() end
+        --
+        -- ═══ AND A PICK-UP CLEANS THE BODY (owner, 2026-08-28) ═══
+        --
+        -- "any time revive is processed, please clean the ped."
+        --
+        -- THIS IS WHERE EVERY BR.Combat.revive LANDS. The server's one revive
+        -- function ends in BR.Combat.pushDbno, which sends `{ downed = false }`
+        -- with no `died` -- so a squad pick-up, `/brrevive` and #191's ambulance
+        -- delivery all arrive at exactly this line. Cleaning at the three call
+        -- sites instead would be three chances to add a fourth and forget.
+        --
+        -- IN THE `else`, NOT BESIDE leaveDowned(). A bleed-out reaches the same
+        -- branch and must NOT be washed: `dieNow` is about to leave a body on
+        -- the floor, and scrubbing the blood off it one frame before it drops
+        -- would erase the evidence of the fight that killed them for everybody
+        -- still standing there.
+        if d.died then dieNow() else BR.Native.cleanPed() end
     end
 
     pushMine()

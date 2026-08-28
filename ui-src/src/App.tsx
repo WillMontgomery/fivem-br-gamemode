@@ -264,9 +264,38 @@ export default function App() {
   // flight, and the flight is over.
   const ridingBus = s.hud.state === 'bus' && !s.hud.landed
 
+  // ═══ AND THE AMBULANCE IS THE SECOND CUTSCENE (#191) ═══
+  //
+  // Owner, 2026-08-28: "while in the ambulance, our HUD should be hidden just
+  // like in the bus".
+  //
+  // THE SAME RULE, ONE LINE LOWER, RATHER THAN A SECOND MECHANISM. The two
+  // rides are the same shape: the player has no controls, no weapon and no
+  // decisions, a scripted camera is on their own body, and every readout on
+  // screen is about a game they are not currently playing. `hudUp` is the
+  // master switch that already expresses that for the bus, so the ambulance is
+  // made to look like the bus to it.
+  //
+  // WHY THE FACT COMES OFF THE DBNO PAYLOAD AND NOT `hud.state`. There is no
+  // player state for "on the ambulance" and there must not be one: the server
+  // keeps this player DBNO for the whole journey, because a failed rescue puts
+  // them straight back on the floor with a bleed clock that was only ever
+  // suspended (server/combat.lua, 37ef178). Inventing a state to hide a HUD
+  // would put a presentation concern into the roster.
+  //
+  // AND THIS IS ALSO THE ANSWER TO THE OTHER HALF OF HIS MESSAGE: "I need you
+  // to make the bleed out timer completely go away while in the ambulance.
+  // That time should not be relevant anymore once the ambulance takes over."
+  // DbnoOverlay is drawn INSIDE Hud, so hiding the HUD takes the whole card
+  // with it -- which is the right amount to take. "YOU ARE DOWN" is false once
+  // an ambulance has you, and a card reduced to a true heading over no content
+  // would be furniture. There is deliberately no `hideTimer` prop and no branch
+  // in DbnoOverlay: one flag, one rule, one thing to reason about.
+  const ridingAmbulance = s.dbno.riding === true
+
   // Whether the vitals strip is on screen -- chat and notices fall back to
   // its position when the radar is hidden, so they need to know.
-  const hudUp = !showLobby && !ridingBus && !tearingDown
+  const hudUp = !showLobby && !ridingBus && !ridingAmbulance && !tearingDown
 
   return (
     /* THE WHOLE INTERFACE, BEHIND ONE GATE (#122).

@@ -7219,6 +7219,12 @@ do
     }
     BR.Sfx = BR.Sfx or { play = noop }
     BR.Native.knockdown = function() note('knockdown') end
+    -- THE WASH (owner, 2026-08-28: "any time revive is processed, please clean
+    -- the ped"). Recorded rather than performed: WHICH natives take blood and
+    -- dirt off a ped is a list in client/natives.lua and a test that repeated
+    -- the list would only be agreeing with itself. What can go wrong -- and what
+    -- this block drives -- is WHEN it is asked for.
+    BR.Native.cleanPed = function() note('clean') end
     BR.Native.setDisplayHealth = function(hp) note('setHealth', hp) end
     BR.Native.keyLabelForCommand = function() return 'E' end
     BR.Native.ALLY_GROUP = 1
@@ -7654,6 +7660,63 @@ do
         'and so does the match ending while they are still on the floor',
         ('up %s, then rendering %s'):format(tostring(upMidMatch),
                                             tostring(shot.rendering)))
+
+    -- ====================================================================== --
+    -- A REVIVE CLEANS THE BODY. A BLEED-OUT DOES NOT.
+    -- ====================================================================== --
+    --
+    -- Owner, 2026-08-28: "any time revive is processed, please clean the ped."
+    --
+    -- He said it about #191's ambulance -- that delivery hands back FULL health,
+    -- so it produced the sight of a player stepping out of the back of an
+    -- ambulance covered in the blood that put them in it -- but the rule he
+    -- stated is every revive, and this is where every BR.Combat.revive lands:
+    -- the server's one revive function ends in pushDbno, which sends
+    -- `{ downed = false }` with no `died`. A squad pick-up, `/brrevive` and the
+    -- CPR delivery are the same line on this side.
+    --
+    -- THE SECOND ASSERTION IS THE ONE WITH TEETH. `leaveDowned` runs for BOTH
+    -- endings and the two are one field apart, so the obvious place to put the
+    -- wash -- next to it -- would also scrub a corpse a frame before it drops,
+    -- erasing the evidence of the fight for everybody still standing over it.
+    -- Nothing on screen would say which of the two had been written.
+
+    describe('a revive cleans the ped -- owner, 2026-08-28')
+
+    bodies[1].dead = false
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    log = {}
+
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
+    ok(countOf('clean') == 1,
+        'being picked up takes the knock off the body -- once',
+        ('%d wash(es)'):format(countOf('clean')))
+
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    log = {}
+
+    fire(BR.Net.DBNO_SET, { downed = false, died = true })
+    runThreads()
+    ok(countOf('clean') == 0,
+        'and bleeding out does NOT -- the corpse keeps the blood that put it '
+            .. 'there, which is what everybody standing over it should see',
+        ('%d wash(es)'):format(countOf('clean')))
+
+    -- NOT ASSERTED HERE, AND WORTH SAYING WHY. The wash runs one statement
+    -- before `pushMine`, which is what tells the interface the player is back
+    -- up -- so a native that THREW would cost them their whole placard rather
+    -- than a wash. That is the reason every call inside BR.Native.cleanPed is
+    -- guarded, and it is a property of that function rather than of this
+    -- handler: driving it from here would only prove that a stub this file
+    -- wrote does what this file made it do.
+    bodies[1].dead = false
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
 
     -- ====================================================================== --
     -- THE READOUT, which is the only instrument for any of this

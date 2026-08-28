@@ -3933,6 +3933,10 @@ local function newClient(settleMs, streamMs)
     env.BR.Native.setDisplayHealth = function(hp)
         env.SetEntityHealth(1, env.BR.ToEngineHp(hp))
     end
+    -- The wash a revive performs (owner, 2026-08-28: "any time revive is
+    -- processed, please clean the ped"). A no-op here: this harness is about the
+    -- crawl, and WHEN the wash is asked for is driven in tools/test_client.lua.
+    env.BR.Native.cleanPed = function() end
     env.BR.Native.keyLabelForCommand = function() return 'E' end
     env.BR.Native.applyGameRules = function() end
     env.BR.Native.ALLY_GROUP = 1
@@ -4997,6 +5001,7 @@ local function newReviver(mySrc, mateSrc, peds)
     env.BR.Native = env.BR.Native or {}
     env.BR.Native.knockdown = function() end
     env.BR.Native.setDisplayHealth = function() end
+    env.BR.Native.cleanPed = function() end
     env.BR.Native.keyLabelForCommand = function() return 'E' end
     env.BR.Native.applyGameRules = function() end
     env.BR.Native.ALLY_GROUP = 1

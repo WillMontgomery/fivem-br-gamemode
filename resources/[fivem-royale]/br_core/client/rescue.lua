@@ -20,6 +20,19 @@
 -- #191 STEP 6 ASKED FOR A TIMER AND THERE IS NONE. The hard deadline is real and
 -- does its whole job on the server; it simply is not drawn. A countdown is a
 -- second notification, and there is only one.
+--
+-- ═══ ...AND ONCE THE AMBULANCE HAS THEM, THERE IS NOT EVEN THAT ═══
+--
+-- Owner, 2026-08-28: "while in the ambulance, our HUD should be hidden just like
+-- in the bus", and "I need you to make the bleed out timer completely go away
+-- while in the ambulance. That time should not be relevant anymore once the
+-- ambulance takes over".
+--
+-- So the prompt's own surface leaves with everything else the moment the ride
+-- starts, and this file's contribution to the screen goes from ONE ROW to
+-- NOTHING AT ALL. It is published as a second bit on the same payload
+-- (BR.Dbno.setRiding) and consumed by the rule that already hides the HUD for
+-- the Battle Bus -- see the note on setRiding in client/dbno.lua.
 
 BR = BR or {}
 BR.Rescue = {}
@@ -179,6 +192,25 @@ end
 -- discipline this loop has always had, moved one layer down.
 BR.Loop.register(BR.Loop.FRAME, 'rescue.prompt', function()
     setPrompt(canCall())
+
+    -- ═══ ...AND THE OTHER BIT THE CARD NEEDS: AM I ON THE AMBULANCE ═══
+    --
+    -- Owner, 2026-08-28: "I need you to make the bleed out timer completely go
+    -- away while in the ambulance" and "while in the ambulance, our HUD should
+    -- be hidden just like in the bus". One flag serves both, because the card
+    -- is part of the HUD -- see BR.Dbno.setRiding for the whole argument.
+    --
+    -- POLLED FROM THE SAME PLACE AND FOR THE SAME REASON THE PROMPT IS. Nothing
+    -- events `ride` going away: it is nilled by cleanup(), which is reached from
+    -- a delivery, a destroyed ambulance, the match ending under a ride and the
+    -- sanity sweep. A flag pushed from RESCUE_BEGIN/RESCUE_END alone would
+    -- survive the two of those that are not events, and a HUD that never came
+    -- back is a worse bug than one that never went away. Asking a local every
+    -- frame cannot miss a path.
+    --
+    -- setRiding refuses an unchanged answer, so sixty frames of a ride still
+    -- cost exactly one envelope.
+    BR.Dbno.setRiding(ride ~= nil)
 end)
 
 --- WHY IS THE CPR PROMPT NOT THERE?
@@ -276,6 +308,24 @@ local function cleanup()
 
     local ped = PlayerPedId()
     DetachEntity(ped, true, true)
+    -- ...AND THE STRETCHER POSE GOES WITH THE STRETCHER.
+    --
+    -- THE RACE THIS CLOSES IS REAL AND ITS SYMPTOM IS ABSURD. A delivery
+    -- revives the player on the server, so DBNO_SET (`downed = false`) and
+    -- RESCUE_END are two messages with no ordering between them -- and the
+    -- first of them runs client/dbno.lua's `leaveDowned`, which clears the
+    -- ped's tasks. If that lands FIRST, `rescue.pose` below is still running
+    -- against a ride that has not been torn down yet and puts the sunbathe
+    -- straight back on. The player is then detached, teleported behind the
+    -- ambulance and left lying in the road sunbathing, on their feet
+    -- everywhere except the animation.
+    --
+    -- Cleared HERE because this is the one place every ending passes through,
+    -- and every ending that matters is behind a fade -- so the clear is never
+    -- seen, whichever of the two messages won. `rescue.pose` stands down on
+    -- `ride.ending` as well, which closes the same window from the other side;
+    -- this is the one that does not depend on RESCUE_END having arrived.
+    ClearPedTasks(ped)
     SetEntityVisible(ped, true, false)
     FreezeEntityPosition(ped, false)
     SetEntityCollision(ped, true, true)
@@ -312,6 +362,72 @@ local function loadModel(name, ms)
     end
     if not isTrue(HasModelLoaded(hash)) then return nil end
     return hash
+end
+
+-- ---------------------------------------------------------------------------
+-- The pose
+-- ---------------------------------------------------------------------------
+
+--- The clip the stretcher offset was measured against.
+---
+--- Read from config so the six numbers and the seventh fact live together --
+--- see the note beside `stretcher` in config/rescue.lua. The defaults are the
+--- measured pose rather than a plausible fallback, for the same reason the
+--- offsets' defaults are: a config that loses its `stretcher` table must still
+--- put the body where the owner put it.
+local POSE_DICT = ((R and R.stretcher and R.stretcher.pose) or {}).dict
+    or 'amb@world_human_sunbathe@male@back@base'
+local POSE_ANIM = ((R and R.stretcher and R.stretcher.pose) or {}).anim
+    or 'base'
+
+--- Request the dictionary and wait a beat for it.
+---
+--- DoesAnimDictExist FIRST, because requesting a name the game has never heard
+--- of is a streaming request that can never complete -- the whole wait would be
+--- paid for nothing. Lifted from client/attachtune.lua's loadDict, which lifted
+--- it from client/dbno.lua.
+---
+--- YIELDS, so it may only be called from `board`'s thread. The re-assert below
+--- deliberately does not use it.
+--- @return boolean
+local function loadPoseDict()
+    if isTrue(HasAnimDictLoaded(POSE_DICT)) then return true end
+    if DoesAnimDictExist and not isTrue(DoesAnimDictExist(POSE_DICT)) then
+        return false
+    end
+    RequestAnimDict(POSE_DICT)
+    local deadline = GetGameTimer() + 1000
+    while not isTrue(HasAnimDictLoaded(POSE_DICT)) and GetGameTimer() < deadline do
+        Citizen.Wait(50)
+    end
+    return isTrue(HasAnimDictLoaded(POSE_DICT))
+end
+
+--- Put the body in the pose, if the dictionary is here.
+---
+--- ═══ THE ARGUMENT TAIL IS PART OF THE MEASUREMENT, LIKE THE ATTACH'S ═══
+---
+--- `8.0, -8.0, -1, 1, 0.0, false, false, false` is exactly the call
+--- client/attachtune.lua makes -- the tool the owner authored the offsets with.
+--- Flag 1 is LOOPING and the -1 duration is "until something stops it", which
+--- together are what make this a pose rather than an animation that plays once
+--- and leaves the ped in whatever the engine falls back to. The three `false`s
+--- are the position locks: an attached ped's position is the ATTACH's business,
+--- and locking it here would be a second writer for the same matrix.
+---
+--- NON-BLOCKING, unlike loadPoseDict: this is called from a loop band, where a
+--- Citizen.Wait would stall every other callback in it. A dictionary that is
+--- somehow not resident is re-requested and picked up on a later pass.
+--- @param ped integer
+--- @return boolean posed
+local function poseOnStretcher(ped)
+    if not isTrue(HasAnimDictLoaded(POSE_DICT)) then
+        RequestAnimDict(POSE_DICT)
+        return false
+    end
+    TaskPlayAnim(ped, POSE_DICT, POSE_ANIM, 8.0, -8.0, -1, 1, 0.0,
+                 false, false, false)
+    return true
 end
 
 --- Turn on the extras the owner asked for.
@@ -610,6 +726,38 @@ local function board(d)
             S.pitch or 0.0, S.roll or 0.0, S.yaw or 1.0,
             false, false, false, false, 2, true)
 
+        -- ═══ AND THE POSE, WHICH THE OFFSET IS ONLY CORRECT FOR ═══
+        --
+        -- Owner, 2026-08-28: "please enforce the ped emote in the ambulance as
+        -- we discussed. It should be sunbathe".
+        --
+        -- WHAT WAS ON THE STRETCHER BEFORE THIS. Not nothing -- the CRAWL. A
+        -- player reaches this line already downed, and client/dbno.lua has been
+        -- re-issuing `move_injured_ground` at them every frame since the knock;
+        -- it stands down for the ride (c0016d6) but does not undo its last task,
+        -- so the clip that was playing kept playing. The owner measured
+        -- (-0.010, -3.100, 1.690) against a body lying flat on its back, and a
+        -- body curled on its front at the same offset is not at the offset he
+        -- approved. THIS IS THE FIX, not a flourish on top of one.
+        --
+        -- AFTER THE ATTACH AND NOT BEFORE. TaskPlayAnim on a free ped, then
+        -- attaching it, is two writes to the same matrix in the order that lets
+        -- the first one lose; attachtune.lua's poseAndHold does the attach first
+        -- for the same reason, and its numbers are the ones in the config.
+        --
+        -- LOADED HERE, BEHIND THE FADE. The dictionary is a streaming request
+        -- and this thread is already the one place in the feature that can
+        -- afford to wait for one -- the screen is black until the last block of
+        -- this function lifts it.
+        loadPoseDict()
+        if not poseOnStretcher(ped) then
+            -- Said once, and nothing is shown to the player: the ride still
+            -- works, it just does not look right, and #191's one-notification
+            -- rule does not bend for a cosmetic failure.
+            print(('[br_core] rescue: the stretcher pose (%s) never loaded')
+                :format(POSE_DICT))
+        end
+
         -- ═══ THE CAMERA ═══
         --
         -- UNATTACHED, repositioned every frame by the loop below. client/bus.lua
@@ -831,6 +979,57 @@ BR.Loop.register(BR.Loop.FRAME, 'rescue.cam', function()
                        c.y - math.cos(rad) * back,
                        c.z + up)
     PointCamAtCoord(r.cam, c.x, c.y, c.z + 0.5)
+end)
+
+--- The pose, kept.
+---
+--- ═══ "ENFORCE" IS THE OPERATIVE WORD, AND NOTHING ELSE IS ENFORCING IT ═══
+---
+--- Owner, 2026-08-28. Posing once at boarding time is a call something else
+--- overwrites, and this ride has a specific reason to expect that: the file
+--- that was re-asserting a pose on this ped every frame -- client/dbno.lua's
+--- `dbno.controls` -- STANDS DOWN for the ride (c0016d6), correctly, because
+--- its pose and its stayPut were dragging the body off the moving ambulance.
+--- The ped therefore goes from "re-tasked sixty times a second" to "tasked
+--- once, by us" at exactly the moment the journey starts. Anything the engine
+--- hands it over the next minute or two wins by default.
+---
+--- WHAT CAN TAKE IT AWAY, none of which is hypothetical: an ambient event the
+--- non-temporary block does not cover, a ragdoll from the vehicle's own physics
+--- as the AI driver "drives erratically" into things, and the re-place
+--- (RESCUE_PLACE) which teleports the vehicle out from under an attached ped.
+--- The failure is silent and cosmetic-looking and it is not cosmetic: the
+--- offset is only correct for this clip, so a lost pose is a body in the wrong
+--- place.
+---
+--- ═══ ON THE TICK BAND, AND GUARDED BY IsEntityPlayingAnim ═══
+---
+--- 10Hz rather than per frame: the worst case is a tenth of a second of a body
+--- in the wrong posture behind a camera seven metres back, which is not worth a
+--- frame callback. The guard is client/dbno.lua's own rule, learned there --
+--- re-tasking unconditionally is a clip that restarts on its first frame for
+--- ever and never plays. It is read through isTrue because IsEntityPlayingAnim
+--- is declared BOOL and `0` is truthy in Lua; dbno.lua shipped exactly that bug.
+---
+--- `3` is the standard task-filter mask for "is this the clip I asked for".
+BR.Loop.register(BR.Loop.TICK, 'rescue.pose', function()
+    local r = ride
+    if not r or not r.veh then return end
+    -- THE RIDE IS ENDING, SO STOP PUTTING THE BODY BACK ON THE STRETCHER.
+    -- RESCUE_END sets this before its first yield, and the ~400ms of fade that
+    -- follows is 4 passes of this band -- 4 chances to re-task a pose over the
+    -- ClearPedTasks a delivery's revive has just performed. Same window,
+    -- opposite end, as the clear in `cleanup`.
+    if r.ending then return end
+    if not isTrue(DoesEntityExist(r.veh)) then return end
+
+    local ped = PlayerPedId()
+    -- Only while the body is actually ON the ambulance. Re-posing a ped the
+    -- attach has lost would pin a player to the floor in a sunbathe.
+    if not isTrue(IsEntityAttachedToEntity(ped, r.veh)) then return end
+    if isTrue(IsEntityPlayingAnim(ped, POSE_DICT, POSE_ANIM, 3)) then return end
+
+    poseOnStretcher(ped)
 end)
 
 --- What the condition bar would say about this vehicle: 0..100.

@@ -693,8 +693,26 @@ do
     -- loaded: dbno.lua is also the crawl, the camera and the revive, and none of
     -- that is what this block is about. What is recorded here is the whole of
     -- what rescue.lua now hands the interface.
-    local cpr = {}
-    BR.Dbno = { setCpr = function(v) cpr[#cpr + 1] = v end }
+    --
+    -- TWO BITS NOW, NOT ONE. `setRiding` is the second (owner, 2026-08-28: the
+    -- HUD goes away in the ambulance, and the bleed-out card with it), and it
+    -- travels the same route for the same reason. Recorded separately so the
+    -- block below can say which of the two moved.
+    local cpr, riding = {}, {}
+    -- SEEDED false, because `mine.riding` is. The real BR.Dbno.setRiding
+    -- refuses an unchanged answer, and a stub that recorded every call would
+    -- make "sixty frames of a ride cost one envelope" untestable -- it would be
+    -- measuring the LOOP's discipline rather than the pair's. So the stub keeps
+    -- the same latch the real one has, starting where the real one starts.
+    local ridingLast = false
+    BR.Dbno = {
+        setCpr    = function(v) cpr[#cpr + 1] = v end,
+        setRiding = function(v)
+            if v == ridingLast then return end
+            ridingLast = v
+            riding[#riding + 1] = v
+        end,
+    }
 
     -- STILL STUBBED, AND THAT IS THE POINT: every one of these must stay empty.
     -- The prompt used to go out through `send` and land through `drawScreen` or
@@ -722,7 +740,17 @@ do
     _G.GetEntityCoords = function() return { x = 10.0, y = 20.0, z = 29.4 } end
     _G.Citizen = { CreateThread = function() end, Wait = function() end }
     _G.RegisterNetEvent = function() end
-    _G.AddEventHandler  = function() end
+    -- CAPTURED RATHER THAN DISCARDED, so the ride can actually be STARTED.
+    -- `ride` is a local in client/rescue.lua and the only door to it is
+    -- BR.Net.RESCUE_BEGIN; without this the block below could assert what the
+    -- flag does when there is no ride and nothing else.
+    --
+    -- Citizen.CreateThread stays a no-op on purpose, so `board` is registered
+    -- and never runs: it fades the screen in a loop bounded by GetGameTimer,
+    -- and this file's clock only moves when a test moves it -- an inline thread
+    -- would spin there for ever. What that costs is exercised below.
+    local chandlers = {}
+    _G.AddEventHandler  = function(name, fn) chandlers[name] = fn end
     _G.TriggerServerEvent = function() end
     _G.RegisterCommand  = function() end
 
@@ -864,6 +892,176 @@ do
     goesAway('and it stops being offered the moment they are back on their feet',
         function() BR.State.me.state = BR.PlayerState.ALIVE end,
         function() BR.State.me.state = BR.PlayerState.DBNO end)
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE RIDE TAKES THE SCREEN WITH IT (owner, 2026-08-28)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "I need you to make the bleed out timer completely go away while in the
+    --    ambulance. That time should not be relevant anymore once the ambulance
+    --    takes over"
+    --   "while in the ambulance, our HUD should be hidden just like in the bus"
+    --
+    -- ONE FLAG ANSWERS BOTH, because the bleed-out card is drawn inside the HUD
+    -- and App.tsx already hides the whole HUD for the Battle Bus. What this
+    -- block can settle is the LUA half: that the bit is published when a ride
+    -- starts, that it costs one envelope rather than sixty a second, and -- the
+    -- one that actually protects the player -- that it is taken back down on a
+    -- teardown path that is not an event. It cannot settle that the browser
+    -- hides anything; the two text reads at the end of the block pin the rule
+    -- to the line that does.
+
+    ok(#riding == 0,
+        'a downed player who is NOT on an ambulance costs no riding envelope at '
+            .. 'all -- the flag has never been sent up to this point',
+        ('%d call(s)'):format(#riding))
+
+    -- ═══ THE RIDE BEGINS ═══
+    --
+    -- `board` is a no-op here (Citizen.CreateThread is stubbed), which is
+    -- exactly the shape worth testing: the flag must ride the HANDLER setting
+    -- `ride`, not anything the boarding thread gets round to. A player whose
+    -- ambulance model is still streaming is already in the cutscene.
+    cpr = {}
+    chandlers[BR.Net.RESCUE_BEGIN]({
+        pickup = { x = 100.0, y = 200.0, z = 30.0, heading = 90.0 },
+        dest   = { id = 'dest', x = 900.0, y = 800.0, z = 30.0 },
+    })
+    frame(60)
+
+    ok(#riding == 1 and riding[1] == true,
+        'the moment a rescue begins the interface is told once, and the HUD '
+            .. 'rule in App.tsx has what it needs before the ambulance exists',
+        ('%d call(s), first=%s'):format(#riding, tostring(riding[1])))
+
+    ok(#cpr == 1 and cpr[1] == false,
+        'and the CPR row is withdrawn in the same beat -- this file\'s one '
+            .. 'notification has no surface left to be drawn on',
+        ('%d call(s), first=%s'):format(#cpr, tostring(cpr[1])))
+
+    frame(120)
+    ok(#riding == 1,
+        'and a hundred and eighty frames of an unchanged ride still cost that '
+            .. 'one envelope -- the loop polls, the send is on change',
+        ('%d call(s)'):format(#riding))
+
+    -- ═══ AND IT COMES BACK DOWN ON A PATH NOTHING EVENTS ═══
+    --
+    -- THIS IS THE ASSERTION THE WHOLE ARRANGEMENT EXISTS FOR. `cleanup` is
+    -- reached from four places and only two of them are messages from the
+    -- server; the other two -- the match ending under a ride, and this sanity
+    -- sweep -- are the client noticing on its own. A flag pushed from
+    -- RESCUE_BEGIN/RESCUE_END would survive both, and the symptom is a player
+    -- back on their feet with no HUD and no way to get one back.
+    --
+    -- The five stubs below are what `cleanup` touches on a ride that never
+    -- finished being built: no camera, no vehicle and no driver were made, so
+    -- those branches short-circuit on nil before they reach a native.
+    _G.IsWaypointActive      = function() return false end
+    _G.DetachEntity          = function() end
+    _G.ClearPedTasks         = function() end
+    _G.SetEntityVisible      = function() end
+    _G.FreezeEntityPosition  = function() end
+    _G.SetEntityCollision    = function() end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.SLOW)
+    frame(2)
+
+    ok(#riding == 2 and riding[2] == false,
+        'a ride torn down by the sanity sweep -- no RESCUE_END, no message at '
+            .. 'all -- gives the HUD straight back, because the flag is polled '
+            .. 'off `ride` rather than pushed from the two events',
+        ('%d call(s), last=%s'):format(#riding, tostring(riding[#riding])))
+
+    ok(BR.Rescue.riding() == false,
+        'and the ride really is over, so a second sweep has nothing to do',
+        tostring(BR.Rescue.riding()))
+
+    BR.State.me.state = BR.PlayerState.DBNO
+    frame(2)
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE POSE IS PART OF THE OFFSET (owner, 2026-08-28)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- "please enforce the ped emote in the ambulance as we discussed. It should
+    -- be sunbathe"
+    --
+    -- WHAT MAKES THIS TESTABLE AT ALL is that it is a CONFIG fact with a
+    -- cross-file agreement, not a judgement about a body. Whether the ped looks
+    -- right on the stretcher is something only an eye in game can settle. What
+    -- can be settled here is that the clip named in config is the one the
+    -- offsets beside it were measured with, which is the property that makes
+    -- those six numbers mean anything -- and it is exactly the agreement a
+    -- later "tidy-up" breaks without noticing.
+
+    local P = (R.stretcher or {}).pose or {}
+    ok(P.dict == 'amb@world_human_sunbathe@male@back@base' and P.anim == 'base',
+        'the stretcher carries the pose its offsets were measured against',
+        ('%s / %s'):format(tostring(P.dict), tostring(P.anim)))
+
+    local tuneFh = io.open('resources/[fivem-royale]/br_core/client/attachtune.lua')
+    local tuneSrc = tuneFh and tuneFh:read('a') or ''
+    if tuneFh then tuneFh:close() end
+    ok(tuneSrc:find(P.dict or '\0', 1, true) ~= nil,
+        'and it is a pose /brattach itself offers -- the tool the owner authored '
+            .. 'the six numbers with, which is the whole reason they agree',
+        #tuneSrc == 0 and 'attachtune.lua did not open' or 'not in its POSES')
+
+    local resFh = io.open('resources/[fivem-royale]/br_core/client/rescue.lua')
+    local resSrc = resFh and resFh:read('a') or ''
+    if resFh then resFh:close() end
+
+    -- THE TRAP THE CONFIG WARNS ABOUT, AS A GATE. A scenario is the obvious way
+    -- to reach this pose and it is the wrong one: TaskStartScenarioInPlace is a
+    -- TASK, it sites the ped against the ground, and it fights
+    -- AttachEntityToEntity for the matrix -- so the body drifts off the offset
+    -- with nothing to say it did. attachtune.lua rejected it for that reason
+    -- before a single number was measured.
+    ok(resSrc:find('TaskPlayAnim', 1, true) ~= nil
+           and resSrc:find('TaskStartScenarioInPlace', 1, true) == nil,
+        'the ride poses with TaskPlayAnim and never with a scenario -- a '
+            .. 'scenario would quietly move the body off the measured offset')
+
+    local posedBand = nil
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'rescue.pose' then posedBand = s.band end
+    end
+    ok(posedBand == BR.Loop.TICK,
+        'and the pose is RE-ASSERTED on a loop band rather than set once: '
+            .. 'client/dbno.lua stops re-posing this ped for the whole ride, so '
+            .. 'nothing else would put it back',
+        tostring(posedBand))
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- ...AND THE RULE ON THE OTHER SIDE OF THE BRIDGE
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Text reads, on the same terms as the wording assertions above: this
+    -- process cannot render App.tsx, and what it is guarding against is not a
+    -- rendering fault but a SECOND MECHANISM growing. The owner asked for the
+    -- HUD to be hidden "just like in the bus", and the value of that is entirely
+    -- in there being one rule -- so the check is that the ride joins the bus's
+    -- line, and that the card does not also learn to hide itself.
+    local appFh = io.open('ui-src/src/App.tsx')
+    local appSrc = appFh and appFh:read('a') or ''
+    if appFh then appFh:close() end
+
+    ok(appSrc:find('ridingBus', 1, true) ~= nil
+           and appSrc:find('dbno.riding', 1, true) ~= nil,
+        'App.tsx hides the HUD for the ambulance on the same `hudUp` line it '
+            .. 'already hid it for the bus',
+        #appSrc == 0 and 'App.tsx did not open' or 'the ride is not on that rule')
+
+    local cardFh = io.open('ui-src/src/hud/DbnoOverlay.tsx')
+    local cardSrc2 = cardFh and cardFh:read('a') or ''
+    if cardFh then cardFh:close() end
+
+    ok(cardSrc2:find('dbno.riding', 1, true) == nil,
+        'and the card itself has no opinion about the ride -- the whole card '
+            .. 'goes with the HUD, so a second test inside it would be half a '
+            .. 'switch with its other half in another file')
 
     -- THE LOOP MUST STILL BE HEALTHY. A callback that throws five times running
     -- is suspended for the rest of the session -- which would present as

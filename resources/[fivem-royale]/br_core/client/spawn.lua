@@ -399,6 +399,13 @@ AddEventHandler(BR.Net.REVIVED, function()
     -- and then finishes collapsing.
     ClearPedTasksImmediately(PlayerPedId())
     BR.Native.initHealthModel()
+    -- ...AND THE DEATH COMES OFF THE BODY WITH IT (owner, 2026-08-28: "any time
+    -- revive is processed, please clean the ped"). THE SECOND OF THE TWO PLACES
+    -- A REVIVE LANDS ON THIS CLIENT: BR.Combat.reviveHeld does not go through
+    -- BR.Combat.revive, so client/dbno.lua's DBNO_SET handler never hears about
+    -- this one. A resurrection restores the health model, not the skin -- and
+    -- this player died, so there is more on them than a knock leaves.
+    BR.Native.cleanPed()
 
     print('[br_core] revived where we fell -- the match had not started yet')
 end)
