@@ -103,6 +103,24 @@ local function canCall()
     return holdingKit()
 end
 
+--- Is this player currently on the ambulance?
+---
+--- READ BY client/dbno.lua, WHICH IS OTHERWISE TRYING TO UNDO THE RIDE. A downed
+--- ped is not left alone: dbno.controls re-issues the crawl every frame and
+--- stayPut writes the body back to where it fell. Both are correct for a player
+--- bleeding out on the floor and both are exactly wrong for one attached to the
+--- back of a vehicle -- between them they pinned the owner's ped at the down
+--- point while the ambulance drove away with a camera on it (2026-08-28: "My ped
+--- stayed in place while the timer continued").
+---
+--- A FUNCTION RATHER THAN A FLAG ON BR.State, because `ride` is this file's
+--- local and the one thing dbno.lua needs to know is whether it exists. Nil-safe
+--- at the call site, so load order cannot matter.
+--- @return boolean
+function BR.Rescue.riding()
+    return ride ~= nil
+end
+
 --- @param show boolean
 local function setPrompt(show)
     if show == promptShown then return end

@@ -1398,6 +1398,28 @@ local function resyncBody(ped, c)
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
+    -- ═══ THE AMBULANCE OWNS THE BODY, SO THIS FILE LETS GO OF IT ═══
+    --
+    -- Everything below assumes a downed ped is lying where it fell and must be
+    -- kept there: playCrawl re-issues the clip the moment anything cancels it,
+    -- and stayPut writes the body back if it drifts past HOLD_SLACK. Both are
+    -- right for a player bleeding out on a road.
+    --
+    -- They are the opposite of right for one AttachEntityToEntity'd to the back
+    -- of a moving ambulance. The attach succeeds and is then undone frame by
+    -- frame -- the owner's report is the symptom stated exactly: "My ped stayed
+    -- in place while the timer continued... and my camera moved to some other
+    -- place." The camera followed the vehicle because the vehicle left; the ped
+    -- did not, because this loop kept putting it back.
+    --
+    -- RETURNING, NOT UNDOING. The state is still DBNO and must stay that way --
+    -- the bleed deadline is only suspended (server/combat.lua), and a failed
+    -- rescue puts the player back on the floor with this loop resuming. So the
+    -- hold and the resync stamps are deliberately NOT cleared here: they are
+    -- what a returning body needs, and clearing them would make RESCUE_LOST
+    -- drop somebody in a pose nothing was tracking.
+    if BR.Rescue and BR.Rescue.riding and BR.Rescue.riding() then return end
+
     if not mine.downed then
         hold, resyncPhase, resyncArmed = nil, 0, false
         -- Not `hideBody` -- the cover is simply not asserted, and a flag that
