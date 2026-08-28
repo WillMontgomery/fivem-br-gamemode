@@ -611,6 +611,40 @@ local function board(d)
 
         taskDrive(r)
 
+        -- ═══ DO NOT COME BACK UNTIL THE AMBULANCE IS REALLY THERE ═══
+        --
+        -- Owner, 2026-08-28: "After using the cprkit, let's not fade in the
+        -- screen until HasVehicleAssetLoaded = true also."
+        --
+        -- The fade exists to hide a vehicle appearing out of nothing. It was
+        -- lifting on a timer instead, so the one run where the vehicle never
+        -- appeared faded up on an empty road and looked like the feature had
+        -- worked. Waiting on the thing itself is the difference between hiding
+        -- a seam and hiding a failure.
+        --
+        -- ON THE NATIVE HE NAMED: HasVehicleAssetLoaded pairs with
+        -- RequestVehicleAsset and answers for an asset id, not for a spawned
+        -- vehicle -- we request none, so on its own it would answer about
+        -- nothing. It is asked anyway, guarded, because it costs nothing and is
+        -- the right question the day this feature does request one. What
+        -- actually gates the fade is the vehicle existing, its model resident,
+        -- and the world around it streamed in -- which is what he was asking
+        -- for, in the words the natives happen to use.
+        --
+        -- BOUNDED, AND IT FADES IN REGARDLESS. A fade that never lifts is a
+        -- black screen forever, which is worse than an early one. The wait is
+        -- an improvement on the timing, never a new way to be stuck.
+        local waited = GetGameTimer()
+        while GetGameTimer() - waited < 5000 do
+            local there = isTrue(DoesEntityExist(r.veh))
+                and isTrue(HasCollisionLoadedAroundEntity(r.veh))
+            local asset = (not HasVehicleAssetLoaded)
+                or isTrue(HasVehicleAssetLoaded(model))
+            if there and asset then break end
+            if not ride or ride ~= r then return end
+            Citizen.Wait(50)
+        end
+
         DoScreenFadeIn(600)
         print(('[br_core] rescue: aboard (vehicle %d) bound for %s')
             :format(r.veh, tostring(r.dest.id)))
