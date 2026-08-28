@@ -180,8 +180,83 @@ BR.Config.Airdrop = {
     -- 2026-08-22 note flagged as the trade the other way ("those two cannot
     -- both be held"). The blip's own window is unchanged; what shortens is the
     -- part of it during which the crate is still visibly falling.
+    --
+    -- ═══ AND `descentMs` IS THE CRUISE RATE NOW, NOT THE LENGTH OF THE FALL
+    --     (owner, 2026-08-28) ═══
+    --
+    -- "please make the speed of the air drop a function of it's height - as it
+    -- drops the current speed is correct, but as it reaches the ground it should
+    -- slow down exponentially to 25% of the current set speed. The final speed
+    -- should be achieved roughly 25ft before it touches down."
+    --
+    -- THE THREE `slow*` NUMBERS BELOW ARE THAT SENTENCE, and this one is what it
+    -- leaves alone: "the current speed is correct" is a statement about the RATE,
+    -- so the rate is what is pinned. `altitude / descentMs` is still 15 m/s and
+    -- the early fall is unchanged to the millimetre. What changes is that the
+    -- crate no longer holds 15 m/s all the way to the floor, so the fall takes
+    -- LONGER than this number -- 17.23s rather than 15s. See `slowTo`.
     descentMs = 15000,
     altitude  = 225.0,
+
+    -- ------------------------------------------------------------------
+    -- THE FLARE -- HOW IT ARRIVES, AS OPPOSED TO HOW IT FALLS
+    -- ------------------------------------------------------------------
+    --
+    -- ═══ THE OTHER READING WAS AVAILABLE AND WAS REFUSED ═══
+    --
+    -- The slow tail has to be paid for out of something, and there were exactly
+    -- two candidates: make the early fall faster and keep the 15s total, or keep
+    -- the early fall and let the total grow. The first one holds a number the
+    -- owner never mentioned at the cost of the one they did -- they said the
+    -- current speed IS CORRECT and asked for a change only near the ground -- so
+    -- the second is what shipped. The crate lands about two and a quarter seconds
+    -- later than it used to and every metre above 30m looks exactly as it did.
+    --
+    -- ═══ WHERE THE 17.23s COMES FROM, WHICH IS ARITHMETIC AND NOT A GUESS ═══
+    --
+    --     217.38m of cruise above the flare, at 15 m/s   14.492s
+    --     the exponential tail into the flare             0.704s
+    --     7.62m of flare at 3.75 m/s                      2.032s
+    --                                                    -------
+    --     BR.AirdropFallMs                               17.228s
+    --
+    -- NOBODY WRITES THAT NUMBER DOWN. BR.AirdropFallShape solves it from the
+    -- three values below, BR.ArmAirdropRecord builds `tLand` out of it,
+    -- /brairdrop prints it, and tools/test_airdrop.lua fails the build if it
+    -- drifts -- which is the whole difference between a derived consequence and a
+    -- hidden one.
+    --
+    -- 25% OF THE CRUISE RATE. 15 m/s down to 3.75 m/s, which is where a real
+    -- cargo canopy actually descends -- so the drop reads as a fast delivery that
+    -- settles rather than as a box on a string. Set it to 1.0 (or delete it) and
+    -- every curve in the solver collapses back to the straight line this was
+    -- before 2026-08-28, `tLand` included.
+    slowTo     = 0.25,
+    -- 25 FEET, IN THE UNITS THE REST OF THIS FILE USES. The owner's number,
+    -- converted once, here, rather than in four places downstream. It is the
+    -- height at which the final rate is REACHED -- exactly, not approximately,
+    -- because the curve is an exponential in HEIGHT and its exponent is zero here
+    -- (see br_lib/shared/airdrop_solve.lua) -- and it is then held to touchdown,
+    -- which is the last 2.03 seconds of the fall.
+    slowHeight = 7.62,
+    -- HOW FAR ABOVE THAT THE SLOWING IS SPREAD, as an e-folding height. This is
+    -- the one number in the block the owner did not give, because "slow down
+    -- exponentially" names a shape and not a rate, and it is the knob to turn if
+    -- a playtest says the flare is too abrupt or too early.
+    --
+    -- ONE FLARE-HEIGHT PER e-FOLD is the default, and what it buys is this:
+    --
+    --     23.2m up  90% of cruise   -- nothing visible has happened yet
+    --     10.7m up  50%
+    --      7.6m up  25%             -- the final rate, held from here down
+    --
+    -- So the deceleration lives in the last 23 metres -- the last 1.9 seconds of
+    -- a 17-second fall -- and everything above that is the descent the owner
+    -- confirmed. RAISING IT makes the flare start higher and gentler and adds
+    -- (slowEFold / 15) * ln(4) seconds to the fall; lowering it sharpens the
+    -- flare toward a step. Zero IS a step: cruise to 7.62m, then 3.75 m/s, which
+    -- the solver resolves rather than refuses.
+    slowEFold  = 7.62,
 
     -- ------------------------------------------------------------------
     -- ...AND A CRATE THAT HIGH HAS TO BE ASKED TO DRAW AT ALL

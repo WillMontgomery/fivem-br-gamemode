@@ -274,8 +274,9 @@ do
     ok(near(A.altitude + A.planeAltAbove, A.planeHeight),
         'and those three add up, which is what makes the release exact')
     -- HALVED, AS ASKED. `descentMs` is what "2x the speed" means when the height
-    -- is a separate instruction: BR.AirdropHeightAt is `alt * (1 - progress)`
-    -- against descentMs, so the fall time is descentMs and nothing else.
+    -- is a separate instruction -- and since 2026-08-28 it is the CRUISE-RATE
+    -- reference rather than the length of the fall: the crate holds
+    -- `altitude / descentMs` for nearly all of the descent and then flares.
     eq(A.descentMs, 15000, 'and the fall takes half the thirty seconds it did')
     -- AND THE RATE IS THE CONSEQUENCE, WHICH IS MORE THAN 2x BECAUSE THE HEIGHT
     -- MOVED TOO. 170/30 was 5.7 m/s and 225/15 is 15 m/s. That is faster than a
@@ -289,6 +290,32 @@ do
     ok(mps > 170.0 / 30.0 * 2.0,
         ('and more than twice the %.1f m/s it fell at before')
             :format(170.0 / 30.0))
+
+    -- ═══ AND IT FLARES OUT OVER THE LAST 25 FEET (owner, 2026-08-28) ═══
+    --
+    -- "please make the speed of the air drop a function of it's height - as it
+    -- drops the current speed is correct, but as it reaches the ground it should
+    -- slow down exponentially to 25% of the current set speed. The final speed
+    -- should be achieved roughly 25ft before it touches down."
+    --
+    -- THREE NUMBERS, AND TWO OF THEM ARE THE OWNER'S VERBATIM. Pinned as
+    -- literals for the reason every other number in this block is: they are
+    -- somebody's decision rather than a value that drifted.
+    eq(A.slowTo, 0.25, 'it lands at a quarter of the cruise rate')
+    ok(near(A.slowHeight, 7.62),
+        'reached 7.62m up, which is the owner\'s 25 feet in this file\'s units')
+    ok(near(A.slowHeight / 0.3048, 25.0, 1e-9),
+        ('and 7.62m really is 25ft -- %.4f'):format(A.slowHeight / 0.3048))
+    ok((A.slowEFold or 0.0) > 0.0,
+        'and the deceleration is spread over a real height rather than stepped')
+
+    -- THE FLARE IS A SMALL PART OF THE DROP, which is the half of the owner's
+    -- sentence that is easy to lose: "the current speed is correct" is about
+    -- everything above it. At the shipped numbers the final rate is reached with
+    -- 3.4% of the altitude left.
+    ok(A.slowHeight < A.altitude * 0.1,
+        ('the flare is the last %.1f%% of the drop and no more')
+            :format(A.slowHeight / A.altitude * 100.0))
 
     -- ═══ AND IT SLOWED DOWN, 2026-08-23, BY HALF ═══
     --
@@ -1065,8 +1092,20 @@ do
     ok(near(BR.AirdropProgress(rec, 99999.0), 1.0), 'and above')
 
     ok(near(BR.AirdropHeightAt(rec, 1000.0), 260.0), 'it starts 260m up')
-    ok(near(BR.AirdropHeightAt(rec, 16000.0), 130.0), 'and is halfway down halfway')
     ok(near(BR.AirdropHeightAt(rec, 31000.0), 0.0), 'and on the ground at tLand')
+
+    -- ═══ AND HALFWAY THROUGH THE SECONDS IS NO LONGER HALFWAY DOWN THE METRES
+    --     (owner, 2026-08-28) ═══
+    --
+    -- This line used to read 130.0. The crate now spends nearly all of the fall
+    -- at the cruise rate and the last stretch at a quarter of it, so by the
+    -- midpoint of the clock it is well past the midpoint of the drop -- which is
+    -- the entire visible difference and is what BR.AirdropProgress and
+    -- BR.AirdropFallen being two different questions means in metres.
+    local mid = BR.AirdropHeightAt(rec, 16000.0)
+    ok(mid < 130.0 and mid > 100.0,
+        ('halfway through the fall it is %.1fm up, BELOW the 130m a linear '
+         .. 'descent would be at'):format(mid))
 
     ok(not BR.AirdropLanded(rec, 30999.0), 'not landed a millisecond early')
     ok(BR.AirdropLanded(rec, 31000.0), 'landed at tLand')
@@ -1076,6 +1115,200 @@ do
     local instant = BR.BuildAirdropRecord(1, poi, 260.0, 5000.0, 5000.0, 0.0)
     ok(near(BR.AirdropProgress(instant, 5000.0), 1.0),
         'a zero-span descent is already over')
+end
+
+describe('descent: the flare')
+do
+    -- ═══ "PLEASE MAKE THE SPEED OF THE AIR DROP A FUNCTION OF IT'S HEIGHT - AS
+    --     IT DROPS THE CURRENT SPEED IS CORRECT, BUT AS IT REACHES THE GROUND IT
+    --     SHOULD SLOW DOWN EXPONENTIALLY TO 25% OF THE CURRENT SET SPEED. THE
+    --     FINAL SPEED SHOULD BE ACHIEVED ROUGHLY 25FT BEFORE IT TOUCHES DOWN."
+    --     (owner, 2026-08-28) ═══
+    --
+    -- Four claims and four groups of assertions: the cruise rate is the one that
+    -- was already confirmed and is untouched, the final rate is a quarter of it,
+    -- that rate arrives 25 feet up and is held from there, and the whole thing is
+    -- still arithmetic over a published record and a clock.
+    --
+    -- MEASURED, NOT READ BACK OFF THE SHAPE. Everything below walks the fall a
+    -- millisecond at a time through the same two functions the client calls, so
+    -- these are statements about the curve rather than about the algebra that
+    -- produced it.
+    local poi = { id = 'x', x = 0.0, y = 0.0, z = 0.0 }
+    local rec = BR.ArmAirdropRecord(
+        BR.BuildAirdropSite(1, poi, A.altitude, 0.0, 0.0), 0.0, A)
+    local span  = rec.tLand - rec.tRelease
+    local V     = A.altitude * 1000.0 / A.descentMs        -- the cruise rate
+    local final = V * A.slowTo
+
+    -- ─── 1. THE CURRENT SPEED IS STILL THE CURRENT SPEED ───
+    --
+    -- The rate the owner confirmed on 2026-08-23 is `altitude / descentMs`, and
+    -- holding it is the entire reason the fall got longer instead of the early
+    -- part getting faster. This is the assertion that fails if somebody ever
+    -- pays for the tail out of the cruise.
+    ok(near(V, 15.0), ('the cruise rate is %.2f m/s'):format(V))
+    ok(near(BR.AirdropSpeedAt(rec, rec.tRelease, A), V, 1e-6),
+        'and the crate leaves the aircraft at exactly that',
+        ('%.9f'):format(BR.AirdropSpeedAt(rec, rec.tRelease, A)))
+    -- ...AND THE EARLY FALL IS THE OLD FALL, TO THE MILLIMETRE. One second after
+    -- the release it has dropped V metres and no more, which is what "as it
+    -- drops the current speed is correct" means when it is turned into a number.
+    ok(near(BR.AirdropHeightAt(rec, rec.tRelease + 1000.0, A),
+            A.altitude - V, 1e-6),
+        'one second in it has fallen exactly the cruise rate, as it always did')
+    ok(near(BR.AirdropHeightAt(rec, rec.tRelease + 10000.0, A),
+            A.altitude - V * 10.0, 0.01),
+        'and ten seconds in it is still within a centimetre of the old line')
+
+    -- ─── 2. A QUARTER OF IT AT TOUCHDOWN ───
+    local vDown = BR.AirdropSpeedAt(rec, rec.tLand, A)
+    ok(near(vDown, final, 1e-9),
+        ('it touches down at %.4f m/s'):format(vDown))
+    ok(near(vDown / BR.AirdropSpeedAt(rec, rec.tRelease, A), A.slowTo, 1e-9),
+        'which is 25% of the speed it left at, which is the ratio that was asked '
+        .. 'for rather than a number that happens to be small')
+
+    -- ─── 3. REACHED 25 FEET UP, AND HELD FROM THERE ───
+    --
+    -- Walked at 1ms, so the height reported is the first sample at or under the
+    -- boundary rather than the boundary itself -- hence the 2cm band, which is
+    -- one millisecond of travel at the final rate and nothing else.
+    local hReached, tReached = nil, nil
+    local prevH, prevV = A.altitude + 1.0, V + 1.0
+    local monotone, inBand = true, true
+    local t = rec.tRelease
+    while t <= rec.tLand do
+        local h = BR.AirdropHeightAt(rec, t, A)
+        local v = BR.AirdropSpeedAt(rec, t, A)
+        -- NEVER FASTER THAN THE CRUISE AND NEVER SLOWER THAN THE FINAL RATE. An
+        -- exponential written the wrong way round overshoots one end or the
+        -- other, and a crate that briefly falls at 40 m/s reads as a dropped
+        -- frame rather than as a bug.
+        if v > V + 1e-9 or v < final - 1e-9 then inBand = false end
+        -- AND IT ONLY EVER SLOWS. Both curves are monotone, which is what stops
+        -- a mis-signed exponent producing a crate that hesitates or rises.
+        if h > prevH + 1e-9 or v > prevV + 1e-9 then monotone = false end
+        prevH, prevV = h, v
+        if not hReached and v <= final * (1.0 + 1e-9) then
+            hReached, tReached = h, t
+        end
+        t = t + 1.0
+    end
+    ok(monotone, 'the crate only ever falls, and only ever slows down')
+    ok(inBand, 'never faster than the cruise rate, never slower than the final one')
+    ok(hReached ~= nil and near(hReached, A.slowHeight, 0.02),
+        ('the final rate is reached %.2fm up -- %.1f feet, which is the owner\'s '
+         .. '25'):format(hReached or -1.0, (hReached or 0.0) / 0.3048))
+
+    -- HELD, not merely touched. The last 25 feet are a straight line at the
+    -- final rate, which is what "the final speed should be ACHIEVED roughly 25ft
+    -- before it touches down" says about the 25 feet after it.
+    local held, straight = true, true
+    for tt = tReached, rec.tLand, 1.0 do
+        if not near(BR.AirdropSpeedAt(rec, tt, A), final, 1e-9) then
+            held = false
+        end
+        if not near(BR.AirdropHeightAt(rec, tt, A),
+                    hReached - final * (tt - tReached) / 1000.0, 1e-6) then
+            straight = false
+        end
+    end
+    ok(held, 'and held at it for every millisecond of the rest of the fall')
+    ok(straight, 'so the last 25 feet are a straight line, not a decaying tail')
+    ok(near((rec.tLand - tReached) / 1000.0, A.slowHeight / final, 0.01),
+        ('which takes %.2fs'):format((rec.tLand - tReached) / 1000.0))
+
+    -- ...AND NOTHING VISIBLE HAPPENS ABOVE THE FLARE'S OWN NEIGHBOURHOOD. The
+    -- owner asked for a change "as it reaches the ground", so the deceleration
+    -- has to be confined to the bottom of the drop rather than smeared over it.
+    local hNinety = nil
+    for tt = rec.tRelease, rec.tLand, 1.0 do
+        if BR.AirdropSpeedAt(rec, tt, A) < V * 0.9 then
+            hNinety = BR.AirdropHeightAt(rec, tt, A)
+            break
+        end
+    end
+    ok(hNinety ~= nil and hNinety < 30.0 and hNinety > A.slowHeight,
+        ('it is still doing 90%% of the cruise rate at %.1fm, so the whole flare '
+         .. 'is the last %.0f metres'):format(hNinety or -1.0, hNinety or 0.0))
+
+    -- ─── 4. AND THE TOTAL IS DERIVED, WHICH IS WHERE THE TIME WENT ───
+    --
+    -- 14.492s of cruise above the flare, 0.704s of exponential tail, 2.032s of
+    -- flare. Nothing anywhere writes 17228 down; this is the number falling out
+    -- of the three config values, and it is pinned here so that a change to any
+    -- of them is a change somebody has to look at.
+    ok(near(span, BR.AirdropFallMs(A), 1e-6),
+        'the record\'s own span is BR.AirdropFallMs')
+    ok(near(span, 17228.24, 0.01),
+        ('and the fall takes %.3fs rather than the %.3fs of cruise it is built '
+         .. 'from'):format(span / 1000.0, A.descentMs / 1000.0))
+    ok(span > A.descentMs and span < A.descentMs * 1.25,
+        ('which is %.0fms longer -- a tail, not a different drop')
+            :format(span - A.descentMs))
+
+    -- BOTH ENDS ARE EXACT, which is the property that lets the client keep
+    -- drawing a crate straight off `tLand` with no landing tolerance anywhere.
+    ok(near(BR.AirdropHeightAt(rec, rec.tRelease, A), A.altitude),
+        'it leaves at the full release altitude')
+    ok(near(BR.AirdropHeightAt(rec, rec.tLand, A), 0.0),
+        'and is exactly on the ground at tLand, with nothing left over')
+
+    -- ─── AND IT IS STILL A PURE FUNCTION OF TIME SINCE THE RELEASE ───
+    --
+    -- ═══ THE ONE PROPERTY THE WHOLE DESIGN RESTS ON ═══
+    --
+    -- The crate is a LOCAL, non-networked object on every client and there is no
+    -- position on the wire. That only works while its height is decided by
+    -- arithmetic over the published record and the synced clock -- so the curve
+    -- may read the elapsed time, the altitude and the config, and nothing else.
+    -- A second record with a different place, bearing, announcement and release
+    -- must draw exactly the same fall.
+    local elsewhere = BR.BuildAirdropRecord(9,
+        { id = 'y', x = -4000.0, y = 900.0, z = 512.0 },
+        A.altitude, 777000.0, 777000.0 + 61234.0 + span, 213.0,
+        777000.0 + 61234.0)
+    local pure = true
+    for e = 0, math.floor(span), 97 do
+        if not near(BR.AirdropHeightAt(rec, rec.tRelease + e, A),
+                    BR.AirdropHeightAt(elsewhere, elsewhere.tRelease + e, A),
+                    1e-9) then
+            pure = false
+        end
+    end
+    ok(pure, 'two drops at two places on two clocks fall identically, which is '
+        .. 'what lets the crate stay off the wire')
+
+    -- NO STATE, EITHER. Asking out of order, or twice, must not move the answer
+    -- -- a stepped integration would pass every assertion above and fail this
+    -- one, and it is the shape a "physics" descent would arrive as.
+    local stateless = true
+    local first = BR.AirdropHeightAt(rec, rec.tRelease + 9000.0, A)
+    for _, at in ipairs({ span, 0.0, span * 0.5, 1.0, span - 1.0, 9000.0 }) do
+        BR.AirdropHeightAt(rec, rec.tRelease + at, A)
+        if BR.AirdropHeightAt(rec, rec.tRelease + 9000.0, A) ~= first then
+            stateless = false
+        end
+    end
+    ok(stateless, 'and asking for the same instant twice gives the same answer, '
+        .. 'whatever was asked in between')
+
+    -- ─── AND THE LINEAR FALL IS STILL REACHABLE FROM ONE CONFIG LINE ───
+    --
+    -- A cfg with no `slowTo` is the pre-2026-08-28 descent exactly: no stretch,
+    -- no flare, halfway through is halfway down. That is what makes the flare a
+    -- thing that was added rather than a thing that was baked in.
+    local flat = { descentMs = A.descentMs, altitude = A.altitude }
+    ok(near(BR.AirdropFallShape(A.altitude, flat).total, 1.0),
+        'without slowTo the fall is not stretched at all')
+    ok(near(BR.AirdropFallMs(flat), A.descentMs),
+        'so BR.AirdropFallMs is descentMs, exactly as it was')
+    local lin = BR.ArmAirdropRecord(
+        BR.BuildAirdropSite(1, poi, A.altitude, 0.0, 0.0), 0.0, flat)
+    ok(near(BR.AirdropHeightAt(lin, lin.tRelease + A.descentMs / 2, flat),
+            A.altitude / 2),
+        'and it is a straight line again, halfway down halfway through')
 end
 
 describe('descent: the rigid parts')
@@ -1572,9 +1805,24 @@ do
         'at the release it is exactly where the aircraft is, authored')
     ok(near(BR.AirdropCrateZ(rec, rec.tLand, probed), probed),
         'and at the landing it is exactly on the probed surface')
-    ok(near(BR.AirdropCrateZ(rec, (rec.tRelease + rec.tLand) / 2, probed),
-            (100.0 + A.altitude + probed) / 2),
-        'halfway down it is halfway between them')
+    -- ═══ THE LINE IS THE SAME LINE; WHAT MOVED IS HOW FAST IT TRAVELS ALONG IT
+    --     (2026-08-28) ═══
+    --
+    -- This used to assert the midpoint of the clock was the midpoint of the two
+    -- anchors, which was true only because the descent was linear. Both anchors
+    -- and the straight line between them are untouched by the flare, so what can
+    -- still be said -- and is the thing worth saying -- is that the crate is ON
+    -- that line at the height the solver reports, and past the middle of it by
+    -- the time half the seconds have gone.
+    local half = (rec.tRelease + rec.tLand) / 2
+    local hz   = BR.AirdropCrateZ(rec, half, probed)
+    local frac = BR.AirdropHeightAt(rec, half) / A.altitude
+    ok(near(hz, probed + (100.0 + A.altitude - probed) * frac, 1e-9),
+        'halfway through, it is on the same straight line at the curve\'s height',
+        ('%.4f'):format(hz))
+    ok(hz < (100.0 + A.altitude + probed) / 2,
+        ('and below where a linear fall would put it -- %.1f against %.1f')
+            :format(hz, (100.0 + A.altitude + probed) / 2))
 
     -- A CLIENT WITH NO PROBE ANSWER YET FALLS TO THE AUTHORED HEIGHT, which is
     -- what every other reader of rec.gz does and what the blip is drawn at.
@@ -1828,7 +2076,13 @@ end
 --- Every block below that wants "wind the clock forward until it lands" wants
 --- this rather than descentMs -- the two were the same number until the plane
 --- put a release between them.
-local FLIGHT = (A.planeLeadMs or 0) + A.descentMs
+---
+--- AND THE FALL IS NOT `descentMs` EITHER, SINCE 2026-08-28. The crate flares
+--- out over the last 25 feet, so it is in the air 2.2s longer than the
+--- cruise-rate reference says; a harness still winding forward by descentMs
+--- would tick one second short of every landing in this file and report it as a
+--- drop that never arrived.
+local FLIGHT = (A.planeLeadMs or 0) + BR.AirdropFallMs(A)
 
 describe('server: the job is registered once')
 do
@@ -2060,8 +2314,17 @@ do
     ok(rec.tRelease - rec.tArm == A.planeLeadMs,
         'the plane gets planeLeadMs between the arm and the release',
         ('%s'):format(tostring(rec.tRelease - rec.tArm)))
-    ok(rec.tLand - rec.tRelease == A.descentMs,
-        'and the descent is descentMs long, measured from the RELEASE',
+    -- AND THE FALL IS BR.AirdropFallMs LONG, MEASURED FROM THE RELEASE. Not
+    -- `descentMs`, which since 2026-08-28 is the CRUISE-RATE reference: the crate
+    -- flares out over the last 25 feet, so the landing time is descentMs plus
+    -- however long that tail takes. Nothing writes the total down and this is one
+    -- of the three places it is checked.
+    -- TO A MILLIONTH OF A MILLISECOND, and not exactly, because `tLand` is a
+    -- sum built on a server timestamp in the hundreds of thousands and the fall
+    -- is a fraction with a logarithm in it -- the last two bits of a double are
+    -- not a property anybody wants pinned.
+    ok(near(rec.tLand - rec.tRelease, BR.AirdropFallMs(A), 1e-6),
+        'and the fall is BR.AirdropFallMs long, measured from the RELEASE',
         ('%s'):format(tostring(rec.tLand - rec.tRelease)))
 
     -- THE CONTENTS DO NOT TRAVEL, the same rule a chest's contents follow: a
@@ -3336,16 +3599,34 @@ do
 
     -- OUTBOUND, and still flying while the box comes down behind it.
     --
-    -- ═══ THE TRAIL AND THE FALL NOW END ON THE SAME INSTANT (2026-08-23) ═══
+    -- ═══ THE TRAIL ENDS TWO SECONDS BEFORE THE FALL NOW (2026-08-28) ═══
     --
     -- `descentMs` was halved to 15000 on the owner's "make the loot drop 2x the
-    -- speed", and `planeTrailMs` is 15000 -- so the aircraft leaves exactly as
-    -- the crate touches down rather than, as it used to, half a minute before.
-    -- Nothing depends on the old ordering (the aircraft is 675m away and 250m up
-    -- by then either way) but it IS a relationship that changed silently, so it
-    -- is asserted here rather than discovered in a playtest.
+    -- speed" and `planeTrailMs` is 15000, so for five days the aircraft left on
+    -- exactly the instant the crate touched down. The flare added 2.2s to the
+    -- FALL and nothing to the trail, so it now goes while the box is still in the
+    -- air -- 8.5m up, doing about 4.9 m/s.
+    --
+    -- LEFT ALONE ON PURPOSE, and asserted rather than corrected. Deriving the
+    -- trail from the descent curve would make a number the owner set move
+    -- whenever an unrelated one does, and by then the Cargobob is 675m away and
+    -- 250m up: nothing here ever depended on the order. What matters is that the
+    -- relationship is written down, so the next change to either number is a
+    -- change somebody has to look at rather than one they find in a playtest.
     eq(A.planeTrailMs, A.descentMs,
-        'the trail window and the fall are now the same length')
+        'the trail window is still the cruise-rate reference exactly')
+    do
+        local shaped = BR.ArmAirdropRecord(
+            BR.BuildAirdropSite(1, { id = 'x', x = 0.0, y = 0.0, z = 0.0 },
+                                A.altitude, 0.0, 0.0), 0.0, A)
+        local goes = shaped.tRelease + A.planeTrailMs
+        ok(goes < shaped.tLand,
+            ('the aircraft leaves %.2fs before the crate lands')
+                :format((shaped.tLand - goes) / 1000.0))
+        local left = BR.AirdropHeightAt(shaped, goes, A)
+        ok(left > 0.0 and left < 15.0,
+            ('with the box %.1fm up and already in its flare'):format(left))
+    end
 
     gameMs = gameMs + A.planeTrailMs - 1
     render()
@@ -4225,8 +4506,18 @@ do
     gameMs = gameMs + 15000
     render()
     last = crateMove()
-    ok(near(last.z, (rec.gz + 260.0 + ground.z) / 2, 0.001),
-        'halfway between the two of them, halfway through')
+    -- ═══ AND THE CLIENT DRAWS THE CURVE, NOT THE CLOCK (2026-08-28) ═══
+    --
+    -- This used to be the midpoint of the two anchors, which held only while the
+    -- descent was linear. The point of the assertion has not changed -- "the box
+    -- on screen is where the solver says" -- so it is written against the solver
+    -- rather than against a number that happened to equal it.
+    ok(near(last.z, BR.AirdropCrateZ(rec, gameMs, ground.z, A), 0.001),
+        'the crate is exactly where the shared solver puts it', last.z)
+    ok(last.z < (rec.gz + 260.0 + ground.z) / 2,
+        ('and past the halfway point already, because most of the fall happens '
+         .. 'at the cruise rate -- %.1f against %.1f')
+            :format(last.z, (rec.gz + 260.0 + ground.z) / 2))
 
     -- EVERY PART FALLS WITH IT. The canopy is a separate object, so "the crate
     -- is at the right height" says nothing about it -- and a canopy left at the
@@ -4632,7 +4923,13 @@ do
     BR.ArmAirdropRecord(armed, 181000.0, A)   -- three minutes of waiting
     eq(armed.tArm, 181000.0, 'the arm is stamped')
     eq(armed.tRelease, 181000.0 + A.planeLeadMs, 'the release follows it')
-    eq(armed.tLand, 181000.0 + A.planeLeadMs + A.descentMs, 'and the landing')
+    -- THE LANDING IS SOLVED FROM THE RECORD'S OWN ALTITUDE (2026-08-28). This
+    -- record carries 260 rather than the config's 225, and the fall curve is a
+    -- fraction of whatever altitude it is given -- so the stretch this drop gets
+    -- is its own and the assertion has to ask for it that way.
+    ok(near(armed.tLand,
+            181000.0 + A.planeLeadMs + BR.AirdropFallMs(A, armed.alt), 1e-6),
+        'and the landing', ('%s'):format(tostring(armed.tLand)))
     eq(BR.AirdropBlipEndsAt(armed, A), 181000.0 + A.blipMaxMs,
         'and the ceiling now runs from the ARM, not from the announcement')
     ok(not BR.AirdropExpired(armed, armed.tLand, A),

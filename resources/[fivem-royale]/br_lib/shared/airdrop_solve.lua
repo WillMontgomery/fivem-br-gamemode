@@ -127,6 +127,20 @@ end
 --- three minutes for somebody has its blip expire twelve seconds after the crate
 --- touches down -- and, worse, the client's teardown fires on the same
 --- predicate, so the whole drop would be destroyed mid-descent.
+---
+--- ═══ tLand IS NO LONGER tRelease + descentMs, AND THAT IS THE 2026-08-28 FLARE
+---     ═══
+---
+--- `descentMs` stopped being the length of the fall on the day the crate started
+--- slowing down near the ground: it is now the length of the fall AT THE CRUISE
+--- RATE, which is the number the owner confirmed and the one thing that must not
+--- move. The tail is longer than the cruise it replaces, so the landing time is
+--- BR.AirdropFallMs -- descentMs times a stretch the curve itself decides. See
+--- the fall-curve block below for that number and where it comes from.
+---
+--- IT IS SOLVED FROM `rec.alt`, NOT FROM `cfg.altitude`, because the record's own
+--- altitude is what the crate actually falls through: the cruise rate is
+--- `rec.alt / descentMs` at any altitude, exactly as it always was.
 --- @param rec table
 --- @param now number
 --- @param cfg table|nil  BR.Config.Airdrop
@@ -136,7 +150,7 @@ function BR.ArmAirdropRecord(rec, now, cfg)
     cfg = cfg or {}
     rec.tArm     = now + 0.0
     rec.tRelease = now + (cfg.planeLeadMs or 0)
-    rec.tLand    = rec.tRelease + (cfg.descentMs or 30000)
+    rec.tLand    = rec.tRelease + BR.AirdropFallMs(cfg, rec.alt)
     return rec
 end
 
@@ -383,7 +397,11 @@ end
 --- @return table[]  array of { x, y, r }
 function BR.AirdropLandingCircles(storm, now, cfg, waitMs)
     cfg = cfg or {}
-    local flight  = (cfg.planeLeadMs or 0) + (cfg.descentMs or 30000)
+    -- THE WHOLE FLIGHT, WHICH IS LONGER THAN `descentMs` SINCE THE FLARE. The
+    -- margin is a promise about where the crate ARRIVES, so the instant it is
+    -- solved against has to be the real landing time -- BR.AirdropFallMs, not
+    -- the cruise-rate reference the crate no longer falls the whole way at.
+    local flight  = (cfg.planeLeadMs or 0) + BR.AirdropFallMs(cfg)
     local soonest = now + flight
     local latest  = soonest + (waitMs or 0)
 
@@ -539,7 +557,16 @@ end
 -- The descent
 -- ---------------------------------------------------------------------------
 
---- How far through the fall, 0 at the RELEASE and 1 at tLand.
+--- How far through the fall IN TIME, 0 at the RELEASE and 1 at tLand.
+---
+--- ═══ THIS IS THE CLOCK, NOT THE HEIGHT, AND SINCE 2026-08-28 THEY DIFFER ═══
+---
+--- It used to be both: the descent was linear, so "half the seconds" and "half
+--- the metres" were one number and this function was asked for either. The crate
+--- now flares out near the ground (see the fall-curve block below), so the two
+--- have separated and each has its own reader -- BR.AirdropFallen is the HEIGHT
+--- and is what the crate, the canopy and the flares are drawn off. This stays
+--- the TIME, which is what the blip's windows and the crate's slow turn want.
 ---
 --- MEASURED FROM tRelease, NOT tStart. The fall begins when the crate leaves the
 --- plane; the announcement is `planeLeadMs` earlier and is when the blip goes up,
@@ -578,8 +605,263 @@ function BR.AirdropReleased(rec, now)
     return now >= (rec.tRelease or rec.tStart or 0.0)
 end
 
---- Metres above the ground at `now`. Linear, because a canopy falls at
---- terminal velocity -- there is no acceleration to model.
+-- ---------------------------------------------------------------------------
+-- THE FALL CURVE -- CRUISE, THEN A FLARE
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-08-28: "please make the speed of the air drop a function of it's
+-- height - as it drops the current speed is correct, but as it reaches the
+-- ground it should slow down exponentially to 25% of the current set speed. The
+-- final speed should be achieved roughly 25ft before it touches down."
+--
+-- ═══ IT IS STILL A PURE FUNCTION OF THE RECORD AND THE CLOCK, AND THAT WAS THE
+--     ONLY HARD CONSTRAINT ═══
+--
+-- Everything at the top of this file about the crate being a LOCAL, non-
+-- networked object on every client rests on one property: its position is
+-- decided by arithmetic over a published record and a synced clock, so there is
+-- nothing for two machines to disagree about. A speed that "responds to the
+-- ground" would be a per-client simulation and would take that away. So the
+-- curve below reads NOTHING but the elapsed time, `rec.alt` and the config. No
+-- probe, no state, no frame history. Ask it twice and it answers twice the same.
+--
+-- ═══ THE FUNCTION, WHICH IS AN EXPONENTIAL IN HEIGHT AND NOT IN TIME ═══
+--
+-- The owner's sentence is literally "a function of its height", and taking that
+-- literally is also what makes the 25ft mark EXACT rather than approximate.
+-- With `h` the height above the landing point, `V` the cruise rate, `F` the
+-- final rate (25% of V), `b` the flare height (25ft = 7.62m) and `L` the
+-- e-folding height:
+--
+--     v(h) = V - (V - F) * exp(-(h - b) / L)        for h >= b
+--     v(h) = F                                      for h <  b
+--
+-- AT h = b THE EXPONENT IS ZERO, so v(b) = V - (V - F) = F -- the final speed
+-- is REACHED at the flare height, on the nose, and is then held to touchdown.
+-- An exponential written in TIME cannot do that: it approaches its asymptote
+-- and never arrives, so "the final speed is achieved 25 feet up" would have had
+-- to become "within a few percent of it, at a height nobody chose".
+--
+-- AND THERE IS NO KNEE AT THE TOP. exp(-(h - b)/L) is 4e-13 at the release
+-- height, so v(alt) is the cruise rate to thirteen decimal places and the
+-- deceleration simply grows out of it. The curve is ONE smooth expression from
+-- the release to the flare -- there is no moment where a constant phase hands
+-- over to a decelerating one, which is the gear-change this shape was chosen to
+-- avoid. The only corner left is at `b`, and it is a corner in ACCELERATION
+-- with the speed itself continuous: the crate is 7.6m up doing 3.75 m/s when it
+-- happens, and holding the final rate for the last 25 feet is the thing the
+-- owner asked for rather than an artefact.
+--
+-- ═══ AND IT INTEGRATES IN CLOSED FORM, WHICH IS WHY IT IS HERE AND NOT A
+--     PER-FRAME EULER STEP ═══
+--
+-- A speed law is not directly usable: the client needs height FROM TIME, once,
+-- with no accumulated state (a stepped integration is per-client state by
+-- another name and would desync). Working in fractions -- phi = h/alt, beta =
+-- b/alt, eps = L/alt, rho = F/V, D = 1 - rho, and theta the elapsed time in
+-- units of the reference fall alt/V -- the integral inverts exactly:
+--
+--     m(theta) = exp((theta - 1 + beta)/eps) / vTop
+--     phi      = 1 - theta + eps * ln(vTop * (1 + D * m))
+--
+-- with vTop = 1 - D*exp(-(1 - beta)/eps), the release speed as a fraction of
+-- cruise. It is exact at both ends by construction: m -> vTop^-1 at theta = 0
+-- gives phi = 1, and m = 1/rho at the flare gives phi = beta. The speed falls
+-- out of the same algebra as v/V = 1/(1 + D*m), which is what BR.AirdropSpeedAt
+-- returns and what the suite checks the 25% against.
+--
+-- ═══ WHAT IT COSTS IS TIME, AND THE COST IS DERIVED RATHER THAN HIDDEN ═══
+--
+-- "The current speed is correct" is a statement about the RATE, and there were
+-- two ways to honour it. Keeping `descentMs` as the total would have paid for
+-- the slow tail by making the early fall FASTER than the rate the owner just
+-- confirmed. So the rate is what is held: the cruise is still `alt / descentMs`
+-- -- 225m in 15s, 15 m/s, exactly what it was -- and the fall simply takes
+-- longer by however long the tail is. At the shipped numbers:
+--
+--     cruise above the flare   217.38m at 15 m/s   14.492s
+--     the exponential tail                          0.704s
+--     the flare, 7.62m at 3.75 m/s                  2.032s
+--                                                  -------
+--     BR.AirdropFallMs                             17.228s   (descentMs x 1.1485)
+--
+-- THAT NUMBER IS SOLVED, NOT WRITTEN DOWN. BR.ArmAirdropRecord builds `tLand`
+-- out of it, tools/test_airdrop.lua pins it, and /brairdrop prints it -- so the
+-- two seconds are visible in three places rather than being a thing the crate
+-- does that nobody wrote down.
+
+--- The curve, reduced to the numbers every reader of it needs.
+---
+--- SOLVED FROM SCRATCH ON EVERY CALL, deliberately: it is a dozen flops with no
+--- allocation worth caching, and a cache would be the one piece of state in a
+--- descent whose entire design is that it has none.
+---
+--- A cfg WITHOUT `slowTo` IS A LINEAR FALL, which is not a fallback so much as
+--- the old behaviour staying reachable: rho collapses to 1, the flare height
+--- stops mattering, `total` is exactly 1 and every function below is the
+--- straight line it was before 2026-08-28. Tests that pass a hand-built cfg get
+--- that, and passing no cfg at all reads BR.Config.Airdrop and gets the flare.
+--- @param alt number|nil   the record's own release altitude, metres
+--- @param cfg table|nil    defaults to BR.Config.Airdrop
+--- @return table  { beta, eps, rho, d, vTop, lnvTop, thetaB, total }
+function BR.AirdropFallShape(alt, cfg)
+    cfg = cfg or BR.Config.Airdrop or {}
+    alt = (type(alt) == 'number' and alt > 0.0) and alt or 0.0
+
+    local rho = cfg.slowTo
+    rho = (type(rho) == 'number' and rho > 0.0 and rho < 1.0) and rho or 1.0
+
+    -- CLAMPED TO THE ALTITUDE. A flare height at or above the release height is
+    -- a drop that is in its flare the whole way down, and the arithmetic below
+    -- resolves that case rather than being protected from it -- beta goes to 1,
+    -- the exponential phase has zero length, and the fall is a straight line at
+    -- the final rate. The alternative, refusing it, would be a silent linear
+    -- fall at the CRUISE rate, which is the wrong one of the two.
+    local b = cfg.slowHeight
+    b = (type(b) == 'number' and b > 0.0) and b or 0.0
+    if b > alt then b = alt end
+
+    local lam = cfg.slowEFold
+    lam = (type(lam) == 'number' and lam > 0.0) and lam or 0.0
+
+    local beta = (alt > 0.0) and (b / alt) or 0.0
+    local eps  = (alt > 0.0) and (lam / alt) or 0.0
+    local d    = 1.0 - rho
+
+    -- vTop IS THE RELEASE SPEED AS A FRACTION OF CRUISE, and at the shipped
+    -- numbers it is 1 - 3e-13. It is carried rather than assumed to be 1
+    -- because it is what makes the inversion exact at theta = 0 for ANY
+    -- e-folding height -- including a large one, where the crate really would
+    -- leave the aircraft already slowing.
+    local vTop, thetaB
+    if eps > 0.0 and d > 0.0 then
+        vTop   = 1.0 - d * math.exp(-(1.0 - beta) / eps)
+        thetaB = (1.0 - beta) + eps * math.log(vTop / rho)
+    else
+        -- NO e-FOLD IS A STEP, NOT AN ERROR: cruise to the flare height, then
+        -- the final rate. Ugly to watch and perfectly well defined, which is
+        -- the right way round for a config value somebody has zeroed.
+        vTop   = 1.0
+        thetaB = 1.0 - beta
+    end
+
+    return {
+        beta = beta, eps = eps, rho = rho, d = d,
+        vTop = vTop, lnvTop = math.log(vTop),
+        thetaB = thetaB,
+        -- THE STRETCH: the whole fall in units of the reference fall alt/V. 1.0
+        -- for a linear descent, 1.1485 at the shipped numbers.
+        total = thetaB + beta / rho,
+    }
+end
+
+--- How long a fall from `alt` really takes, in milliseconds.
+---
+--- `descentMs` TIMES THE STRETCH, and `descentMs` is now the CRUISE-RATE
+--- REFERENCE rather than the length of the fall -- the time the crate would
+--- take if it never slowed down. Holding it fixed is what holds the rate the
+--- owner confirmed fixed; the tail is added on top.
+--- @param cfg table|nil  BR.Config.Airdrop
+--- @param alt number|nil defaults to cfg.altitude
+--- @return number ms
+function BR.AirdropFallMs(cfg, alt)
+    cfg = cfg or BR.Config.Airdrop or {}
+    if type(alt) ~= 'number' then alt = cfg.altitude end
+    return (cfg.descentMs or 30000) * BR.AirdropFallShape(alt, cfg).total
+end
+
+--- How much of the ALTITUDE has been given up at `now`, 0 at the release and 1
+--- at tLand.
+---
+--- THE SIBLING OF BR.AirdropProgress AND NOT A REPLACEMENT FOR IT. Progress is
+--- how far through the TIME the fall is and stays linear, because that is what
+--- the blip and the crate's slow turn are measured against. This is how far
+--- through the HEIGHT it is, and since 2026-08-28 the two are different numbers:
+--- halfway through the fall in seconds the crate is already 56% of the way down.
+---
+--- NORMALISED TO THE RECORD'S OWN SPAN, which is the property that makes this
+--- safe on a record nobody solved `tLand` for. Whatever `tLand - tRelease` is,
+--- the crate leaves at full altitude and touches down exactly on it; what the
+--- span decides is the cruise rate, not whether the arithmetic lands. A record
+--- built by hand with a short span is a faster drop with the same shape rather
+--- than a crate that arrives early or hangs in the air.
+--- @param rec table|nil
+--- @param now number
+--- @param cfg table|nil
+--- @return number
+function BR.AirdropFallen(rec, now, cfg)
+    local u = BR.AirdropProgress(rec, now)
+    if u <= 0.0 then return 0.0 end
+    if u >= 1.0 then return 1.0 end
+
+    local s = BR.AirdropFallShape(rec and rec.alt or 0.0, cfg)
+    local theta = u * s.total
+
+    if theta >= s.thetaB then
+        -- THE FLARE: the last `slowHeight` metres, at the final rate, straight.
+        return 1.0 - BR.Clamp(s.beta - s.rho * (theta - s.thetaB), 0.0, 1.0)
+    end
+    if s.eps <= 0.0 or s.d <= 0.0 then
+        -- Linear, either because nothing asked for a flare or because nothing
+        -- said how to spread one.
+        return BR.Clamp(theta, 0.0, 1.0)
+    end
+
+    -- THE INVERSION. `L` is ln(m) computed directly rather than by taking a log
+    -- of an exponential: at the release m is 4e-13 and the naive route would be
+    -- exp() of a large negative number fed straight back into log(). It is
+    -- bounded above by 1/rho, because this branch only ever runs below the
+    -- flare boundary, so the exp() below cannot overflow either.
+    local L   = (theta - 1.0 + s.beta) / s.eps - s.lnvTop
+    local phi = 1.0 - theta
+              + s.eps * (s.lnvTop + math.log(1.0 + s.d * math.exp(L)))
+    return 1.0 - BR.Clamp(phi, 0.0, 1.0)
+end
+
+--- How fast the crate is falling at `now`, in metres a second.
+---
+--- READ BY NOTHING THAT DRAWS ANYTHING -- the descent is a position curve and
+--- the client never integrates a speed. It exists because the owner's request
+--- was a statement about SPEED, so the suite has to be able to ask about speed
+--- directly rather than inferring it from two heights, and because /brairdrop
+--- printing "15.0 m/s now, 3.8 m/s at touchdown" is the difference between the
+--- flare being checkable from a chair and being a paragraph.
+--- @param rec table|nil
+--- @param now number
+--- @param cfg table|nil
+--- @return number m/s
+function BR.AirdropSpeedAt(rec, now, cfg)
+    if not BR.AirdropArmed(rec) then return 0.0 end
+    local from = rec.tRelease or rec.tStart or 0.0
+    local span = (rec.tLand or 0.0) - from
+    if span <= 0.0 then return 0.0 end
+
+    local alt = rec.alt or 0.0
+    local s   = BR.AirdropFallShape(alt, cfg)
+    local theta = BR.AirdropProgress(rec, now) * s.total
+
+    local frac
+    if theta >= s.thetaB then
+        frac = s.rho
+    elseif s.eps <= 0.0 or s.d <= 0.0 then
+        frac = 1.0
+    else
+        frac = 1.0 / (1.0 + s.d
+                      * math.exp((theta - 1.0 + s.beta) / s.eps - s.lnvTop))
+    end
+
+    -- alt * total / span IS THE CRUISE RATE, whatever the span happens to be:
+    -- at the shipped numbers span is descentMs * total, so it reduces to
+    -- alt / descentMs -- 15 m/s -- with the stretch cancelling itself out.
+    return frac * alt * s.total * 1000.0 / span
+end
+
+--- Metres above the ground at `now`.
+---
+--- NOT LINEAR SINCE 2026-08-28. It cruises at `alt / descentMs`, decelerates
+--- exponentially into the last few tens of metres and holds 25% of the cruise
+--- rate for the final 25 feet -- see the fall-curve block above for the shape
+--- and for why it is written in height rather than in time.
 ---
 --- THE PURE FALL CURVE, and since 2026-08-23 the client no longer draws the
 --- crate off it directly -- see BR.AirdropCrateZ below and the note on its two
@@ -588,10 +870,11 @@ end
 --- descent is really asking.
 --- @param rec table|nil
 --- @param now number
+--- @param cfg table|nil
 --- @return number
-function BR.AirdropHeightAt(rec, now)
+function BR.AirdropHeightAt(rec, now, cfg)
     if not rec then return 0.0 end
-    return (rec.alt or 0.0) * (1.0 - BR.AirdropProgress(rec, now))
+    return (rec.alt or 0.0) * (1.0 - BR.AirdropFallen(rec, now, cfg))
 end
 
 --- Where the crate actually is, as an ABSOLUTE z.
@@ -619,15 +902,22 @@ end
 ---
 --- A nil `groundZ` means "this client has no probe answer yet" and falls back to
 --- the authored height, exactly as every other reader of `rec.gz` does.
+---
+--- THE INTERPOLATION IS THE FALL CURVE AND NOT THE CLOCK (2026-08-28). Both
+--- anchors are unchanged and so is the straight line between them; what moved is
+--- how fast the crate travels along it. Reading BR.AirdropProgress here instead
+--- would draw a crate at a linear height while every predicate and every test
+--- said it was somewhere else.
 --- @param rec table|nil
 --- @param now number
 --- @param groundZ number|nil  absolute z of the surface under (rec.x, rec.y)
+--- @param cfg table|nil
 --- @return number
-function BR.AirdropCrateZ(rec, now, groundZ)
+function BR.AirdropCrateZ(rec, now, groundZ, cfg)
     if not rec then return 0.0 end
     local releaseZ = (rec.gz or 0.0) + (rec.alt or 0.0)
     local gz = (type(groundZ) == 'number') and groundZ or (rec.gz or 0.0)
-    return gz + (releaseZ - gz) * (1.0 - BR.AirdropProgress(rec, now))
+    return gz + (releaseZ - gz) * (1.0 - BR.AirdropFallen(rec, now, cfg))
 end
 
 -- ---------------------------------------------------------------------------
@@ -640,12 +930,19 @@ end
 --- aircraft's job is over the moment the box leaves it, and one orbiting the
 --- drop is scenery arguing with the fight underneath it.
 ---
---- IT USED TO GO HALF A MINUTE BEFORE THE CRATE LANDED AND NOW IT GOES WITH IT.
---- `descentMs` was halved to 15000 on 2026-08-23 ("make the loot drop 2x the
---- speed") and `planeTrailMs` is 15000, so the two windows close on the same
---- instant. Nothing here depends on which came first -- by then the Cargobob is
---- 675m away and 250m up -- but the coincidence is real and the suite asserts
---- it, so a change to either number is a change somebody has to look at.
+--- IT USED TO GO HALF A MINUTE BEFORE THE CRATE LANDED, THEN WITH IT, AND NOW
+--- IT GOES TWO SECONDS BEFORE. `descentMs` was halved to 15000 on 2026-08-23
+--- ("make the loot drop 2x the speed") and `planeTrailMs` is 15000, so for five
+--- days the two windows closed on the same instant. The 2026-08-28 flare added
+--- 2.2s to the FALL and nothing to the trail, so the aircraft now leaves with
+--- the crate 8.5m up and doing 4.9 m/s.
+---
+--- THAT IS LEFT ALONE ON PURPOSE. By then the Cargobob is 675m away and 250m up
+--- -- nothing here ever depended on the order -- and following the fall would
+--- mean deriving a trail window from a descent curve, which is a config number
+--- the owner set becoming a thing that moves when an unrelated one does. The
+--- suite asserts the new ordering rather than the old coincidence, so it is
+--- still a change somebody has to look at.
 --- @param rec table|nil
 --- @param now number
 --- @param cfg table|nil  BR.Config.Airdrop
@@ -927,6 +1224,14 @@ end
 --- world positions are the crate's position plus an offset ROTATED BY THIS
 --- ANGLE, so a heading computed in one place and an offset rotated in another
 --- is two chances to disagree about which way "left" is.
+---
+--- ON THE CLOCK AND NOT ON THE FALL CURVE, which is a choice and not an
+--- oversight. The 2026-08-28 flare slowed the crate's DESCENT; the spin is a
+--- fixed number of degrees spread over the fall to stop the box reading as a
+--- prop on a rail, and taking it off BR.AirdropFallen would make it drift
+--- through most of its arc in the first two thirds and creep through the rest.
+--- Linear in time is the flourish that was asked for; nothing asked for the
+--- rotation to slow down with the descent.
 --- @param rec table|nil
 --- @param now number
 --- @param spinDeg number|nil  degrees turned across the whole fall

@@ -950,11 +950,17 @@ local function primeGround(d)
         -- late corrects the LANDING and nothing else.
         --
         -- BOUNDED BY THE FLIGHT RATHER THAN BY A PREDICATE. The whole drop is
-        -- planeLeadMs + descentMs long; counting passes means this thread cannot
+        -- planeLeadMs + the fall long; counting passes means this thread cannot
         -- outlive the thing it follows even if the record is replaced under it.
+        --
+        -- THE FALL IS BR.AirdropFallMs AND NOT `descentMs` (2026-08-28). Since
+        -- the crate flares out near the ground it is in the air 2.2s longer than
+        -- the cruise-rate reference says, and the two spare passes below are two
+        -- seconds -- so reading `descentMs` here would have left the probe
+        -- stopping at the exact moment the landing height starts to matter.
         local every  = A.groundRefreshMs or 1000
         local passes = math.ceil(((A.planeLeadMs or 12000)
-                                  + (A.descentMs or 15000)) / every) + 2
+                                  + BR.AirdropFallMs(A)) / every) + 2
         for _ = 1, passes do
             Citizen.Wait(every)
             if not d.rec then return end
@@ -987,7 +993,13 @@ end
 --- @param d table
 --- @param now number  synced clock
 local function place(d, now)
-    local z    = BR.AirdropCrateZ(d.rec, now, d.gz)
+    -- THE CONFIG IS PASSED, AND SINCE 2026-08-28 IT DECIDES THE SHAPE OF THE
+    -- FALL RATHER THAN NOTHING AT ALL. BR.AirdropCrateZ cruises, flares
+    -- exponentially into the last few tens of metres and holds a quarter of the
+    -- cruise rate for the final 25 feet -- all of it solved from the record, the
+    -- synced clock and these numbers, which is what keeps every client's crate in
+    -- the same place with nothing on the wire.
+    local z    = BR.AirdropCrateZ(d.rec, now, d.gz, A)
     local spin = A.spinDegrees or 0.0
     local hdg  = BR.AirdropHeadingAt(d.rec, now, spin)
 
@@ -1296,6 +1308,28 @@ RegisterCommand('brairdrop', function(_, args)
                         tostring(BR.AirdropLanded(rec, now)),
                         tostring(BR.AirdropBlipVisible(rec, now, A)),
                         tostring(BR.AirdropExpired(rec, now, A))))
+            -- ═══ AND WHAT THE FALL IS ACTUALLY DOING (2026-08-28) ═══
+            --
+            -- `descentMs` stopped being the length of the fall on the day the
+            -- crate started flaring out near the ground: it is the CRUISE-RATE
+            -- reference and the real fall is longer by however long the tail is.
+            -- Nothing writes that total down -- BR.AirdropFallShape solves it --
+            -- so this is where it becomes a number somebody can read, next to the
+            -- speed the crate has at this instant. "It looks slow" and "it is
+            -- slow" are otherwise the same report.
+            local shape  = BR.AirdropFallShape(rec.alt, A)
+            local refMs  = A.descentMs or 0
+            local cruise = (refMs > 0) and ((rec.alt or 0.0) * 1000.0 / refMs)
+                                        or 0.0
+            print(('    fall: %.0fm in %.2fs -- %.2fs of cruise, stretched x%.4f')
+                :format(rec.alt or 0.0, BR.AirdropFallMs(A, rec.alt) / 1000,
+                        refMs / 1000, shape.total))
+            print(('      %.2f m/s cruise -> %.2f m/s, reached %.1fm up and held; '
+                   .. 'right now %.2f m/s at %.1fm')
+                :format(cruise, cruise * shape.rho,
+                        shape.beta * (rec.alt or 0.0),
+                        BR.AirdropSpeedAt(rec, now, A),
+                        BR.AirdropHeightAt(rec, now, A)))
             local px, py = BR.AirdropPlaneAt(rec, now, A)
             print(('    plane should be up %s, at (%.0f, %.0f)')
                 :format(tostring(BR.AirdropPlaneVisible(rec, now, A)), px, py))
