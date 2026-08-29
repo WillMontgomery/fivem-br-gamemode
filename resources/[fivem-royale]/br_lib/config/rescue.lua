@@ -501,8 +501,30 @@ BR.Config.Rescue = {
     -- 150m rather than 1m because two car parks in one forecourt would produce
     -- the same non-journey with none of the obviousness.
     minTripM         = 150.0,
-    driverAbility    = 0.6,   -- not 1.0: "erratically" is the brief
-    driverAggression = 0.8,
+    -- ═══ THE STYLE WAS NEVER WHAT WAS HITTING THE CARS ═══
+    --
+    -- Owner, 2026-08-28, after 262460 and then 4980863: "The driver still
+    -- doesn't swerve around obstacles and vehicles... Should we adjust
+    -- something or should we try a different driving style?"
+    --
+    -- Neither. A driving STYLE is a set of permissions -- may swerve, may stop,
+    -- may cross lanes. These two decide whether the driver is any good at
+    -- exercising them, and no bit in any style overrides them.
+    --
+    -- 0.8 AGGRESSION IS A DRIVER THAT PUSHES THROUGH TRAFFIC rather than
+    -- yielding to it, and 0.6 ability is one that reads the road badly while
+    -- doing so. Together they describe exactly what he watched happen twice:
+    -- a van that has permission to swerve and neither the skill nor the
+    -- temperament to use it.
+    --
+    -- THIS REVERSES #191, DELIBERATELY AND ON HIS ASK. That issue says "The
+    -- driver drives ERRATICALLY but stays on roads", which is where 0.6/0.8
+    -- came from -- they were the brief being met, not an oversight. It also
+    -- warned that erratic driving makes wedging likelier, and wedging is what
+    -- the stuck-recovery ladder exists for. Restoring the old feel is these two
+    -- numbers and nothing else.
+    driverAbility    = 1.0,
+    driverAggression = 0.0,
 
     -- ------------------------------------------------------------------
     -- THE CAMERA
