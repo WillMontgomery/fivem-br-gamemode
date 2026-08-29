@@ -648,6 +648,96 @@ function BR.Spawn.warmupSpawn()
     }
 end
 
+-- ---------------------------------------------------------------------------
+-- THE DEPARTURE'S OWN NUMBERS
+-- ---------------------------------------------------------------------------
+--
+-- "when the lobby fades to black, before fading in, we need to move the focus
+-- to the selected warmup spawn area for at least 1 second before moving the
+-- ped, then we fade in once the ped is there." -- the owner, 2026-08-29.
+--
+-- THEIR NATURAL HOME IS br_lib/config/match.lua, beside lobbyEntrance's
+-- focusLeadMs, which is the mirror image of focusHoldMs below -- that one leads
+-- the arrival, this one leads the departure. They are here instead because this
+-- round was not permitted to edit that file; moving them is a two-line change
+-- and nothing outside this block reads either number.
+BR.Spawn.departure = {
+    -- How long the streaming focus sits on the warmup spawn BEFORE the ped is
+    -- moved there. The owner's "at least 1 second". Raising it buys the world
+    -- more time to stream in and costs exactly that much extra black.
+    focusHoldMs = 1000,
+
+    -- The net under the focus, not the plan. The focus is handed back by
+    -- landed(), which every ending of the trip goes through -- but a thread
+    -- that throws between taking it and getting there simply stops, with no
+    -- error handler and nothing to notice. A client left streaming a pad it
+    -- never reached shows up much later as world geometry refusing to load
+    -- around the player, with nothing pointing back here. Comfortably longer
+    -- than the 9s placement escape below, so it can only fire on a trip that
+    -- has genuinely been abandoned.
+    focusMaxMs = 14000,
+}
+
+--- Whether WE are holding the streaming focus on a warmup spawn.
+---
+--- One flag, checked by the one function that gives it back, so the release is
+--- idempotent and every path may call it without knowing what the others did.
+local focusHeld = false
+
+--- Point the streaming focus at the warmup spawn.
+---
+--- SET_FOCUS_POS_AND_VEL MOVES WHERE THE ENGINE STREAMS TERRAIN AND ASSETS, and
+--- that is the whole of what it does. It has NO bearing on which entities are
+--- relevant to this client under OneSync -- that is decided from the player's
+--- own synced ped position and camera sync node, and never reads the focus.
+--- It is used here for exactly what the owner asked for: hurrying the world in
+--- under the pad before the player is standing on it.
+--- @param spot table  { x, y, z }
+local function focusWarmup(spot)
+    if not SetFocusPosAndVel then return end
+    SetFocusPosAndVel(spot.x + 0.0, spot.y + 0.0, spot.z + 0.0, 0.0, 0.0, 0.0)
+    focusHeld = true
+end
+
+--- Give the streaming focus back to the player.
+---
+--- ON EVERY ENDING, which is the same rule client/lobbyped.lua's releaseFocus
+--- states for the arrival, arrived at from the other direction. Abandonment,
+--- failure and timeout included -- not just the happy one.
+local function releaseFocus()
+    if not focusHeld then return end
+    focusHeld = false
+    if SetFocusEntity then
+        SetFocusEntity(PlayerPedId())
+    elseif ClearFocus then
+        ClearFocus()
+    end
+end
+
+--- Is the departure holding the streaming focus? For the tests and /brblack.
+--- @return boolean
+function BR.Spawn.focusHeld()
+    return focusHeld
+end
+
+-- The focus's own watchdog, and it is the same shape as the curtain's at the
+-- bottom of this file for the same reason: this is a piece of state that is
+-- taken at the start of a trip and given back at the end of it, so every way a
+-- trip can be abandoned between those two points is a way to leave it behind.
+--
+-- THE CONDITION IS "HELD, BUT NOT TRAVELLING", which needs no deadline and no
+-- second clock: landed() gives the focus back BEFORE it clears `traveling`, so
+-- a healthy trip can never be seen in this state. Anything that is -- a state
+-- that bounced back to LOBBY, a thread that threw, a /brunstuck -- is by
+-- definition an ending that did not go through landed().
+BR.Loop.register(BR.Loop.SLOW, 'spawn.focuswatch', function()
+    if not focusHeld then return end
+    if BR.Spawn.traveling then return end
+
+    print('[br_core] the warmup focus outlived its trip -- handing it back (watchdog)')
+    releaseFocus()
+end)
+
 --- @return boolean  whether the trip actually started
 function BR.Spawn.toWarmupPad()
     -- REFUSED, NOT SWALLOWED. The caller latches on "I have gathered this
@@ -660,6 +750,42 @@ function BR.Spawn.toWarmupPad()
     BR.Spawn.traveling = true
 
     Citizen.CreateThread(function()
+        -- ═══ THE TRIP SAYS WHICH PATH IT TOOK ═══
+        --
+        -- "occasionally I'll press ready up and the lobby UI doesn't go away
+        -- and we don't fade to black on time. The ped transports to the warmup
+        -- area, and the NUI only transitions when the inventory/HUD UI shows
+        -- up." -- the owner, 2026-08-29.
+        --
+        -- An INTERMITTENT ordering fault is invisible to every static gate and
+        -- to a screenshot, and each guess at it costs the owner a twenty-minute
+        -- playtest. So the trip records when each of its steps actually
+        -- happened and prints the lot as one line at the end.
+        --
+        -- THE NUMBER THAT ANSWERS THE REPORT IS `cover`. The lobby page's own
+        -- hide rides on the HUD envelope (App.tsx's showLobby needs
+        -- hud.state ~= 'lobby'), and client/state.lua holds that envelope --
+        -- and the match-state one with it -- behind BR.Spawn.awaitCover, the
+        -- same gate step 1 below waits on. So how long the cover took to be
+        -- acknowledged IS how late the interface was, and the three readings
+        -- mean three different faults:
+        --
+        --   cover ~0ms      the page had ALREADY reported black before the trip
+        --                   began -- either legitimately (state.lua raised the
+        --                   curtain a tick earlier and it finished painting) or
+        --                   from a stale report left by the previous trip. If
+        --                   the owner saw an uncovered cut, this reading means
+        --                   the report was stale.
+        --   cover ~600-900  healthy. The curtain painted and said so.
+        --   cover = timeout the page never answered: every step ran on its
+        --                   deadline instead, the interface stood on the lobby
+        --                   for the whole of it, and THAT is the report.
+        local t0 = GetGameTimer()
+        local trace = {}
+        local function step(what)
+            trace[#trace + 1] = ('%s %dms'):format(what, GetGameTimer() - t0)
+        end
+
         -- 1. THE CURTAIN FIRST, AND IT IS NUI, NOT THE GAME'S FADE.
         --
         -- DoScreenFadeOut blacks the WORLD. It does not touch the HUD, which
@@ -682,15 +808,39 @@ function BR.Spawn.toWarmupPad()
         -- participant, before it lets the new state reach the page at all --
         -- in which case this returns immediately.
         BR.Spawn.curtain(true, 'dropping')
-        BR.Spawn.awaitCover('curtain', BR.Config.Match.coverWaitMs or 2500)
 
-        -- 2. Then the world goes dark too, so nothing renders a teleport
-        --    underneath the curtain if it is ever less than fully opaque.
+        -- 2. AND THE WORLD GOES DARK IN THE SAME BREATH, NOT AFTER THE COVER.
+        --
+        -- THIS ORDER IS THE FIX FOR "we don't fade to black on time". The game
+        -- fade used to sit BELOW the cover wait, which made the one thing
+        -- that can black the world out unconditionally -- an engine call, in
+        -- process, that cannot be dropped -- wait on an acknowledgement from
+        -- another process that can be. Every way the handshake goes wrong (a
+        -- page that never painted, a POST that never landed, a stale report)
+        -- therefore delayed the FADE as well as the interface, and a delayed
+        -- fade is a teleport the player can watch.
+        --
+        -- Nothing is lost by moving it up. The curtain is opaque black and the
+        -- fade is black, so on the healthy path the two are indistinguishable
+        -- -- the world under a fully opaque curtain is not on screen either
+        -- way. What changes is only the FAILING path, where the world is now
+        -- black within 300ms whatever CEF does. The curtain still covers what
+        -- the fade cannot (the HUD we draw and the radar the engine draws), and
+        -- is still waited for below before anything moves.
         DoScreenFadeOut(300)
-        local t0 = GetGameTimer()
-        while not isTrue(IsScreenFadedOut()) and GetGameTimer() - t0 < 1200 do
+
+        -- THE ANSWER GOES IN THE LINE, not just its timing. awaitCover already
+        -- prints when it gives up, but "the trip was slow" and "the page never
+        -- answered" are the two readings that have to be told apart at a glance
+        -- and correlating two console lines by eye is how that gets got wrong.
+        local acked = BR.Spawn.awaitCover('curtain', BR.Config.Match.coverWaitMs or 2500)
+        step(acked and 'cover' or 'COVER-NEVER-ACKED')
+
+        local tf = GetGameTimer()
+        while not isTrue(IsScreenFadedOut()) and GetGameTimer() - tf < 1200 do
             Citizen.Wait(50)
         end
+        step('black')
 
         -- A NEW MATCH IS PLACING US IN THE WORLD: whatever end-of-match dark
         -- hold was running is over -- even though its WAITING handover never
@@ -723,6 +873,43 @@ function BR.Spawn.toWarmupPad()
 
         local spot = BR.Spawn.warmupSpawn()
 
+        -- 4. THE STREAMING FOCUS GOES AHEAD OF THE PED, AND IS HELD THERE.
+        --
+        -- "when the lobby fades to black, before fading in, we need to move the
+        -- focus to the selected warmup spawn area for at least 1 second before
+        -- moving the ped, then we fade in once the ped is there." -- the owner,
+        -- 2026-08-29.
+        --
+        -- AFTER the black and BEFORE the ped move, which is the whole of what
+        -- was asked: the engine spends this second pulling the pad's terrain in
+        -- while there is nothing on screen to spoil, so the collision wait on
+        -- the far side has less to do and the world the player fades into is
+        -- already there.
+        --
+        -- IT DOES NOT MOVE THE PED AND IT DOES NOT MOVE ANYBODY ELSE'S. It
+        -- moves where the engine STREAMS, and that is all it does; entity
+        -- relevancy under OneSync is decided from the player's own synced ped
+        -- position and camera sync node and never reads the focus.
+        --
+        -- AND THE NETWORKED FLIP IS STILL BELOW THE PED MOVE, in landed(),
+        -- where it has to stay: this step goes in front of the teleport, not in
+        -- front of the flip. tools/test_lobbyseq.lua asserts that three ways.
+        focusWarmup(spot)
+        step('focus')
+
+        -- THE NET UNDER THE FOCUS, scheduled in the same breath as taking it so
+        -- there is no path between the two. landed() gives it back on both of
+        -- its callers -- the placement's own callback and the 9s escape below
+        -- -- and this covers the third case those cannot: a bare Citizen thread
+        -- that throws simply stops, with no error handler and nothing to
+        -- notice, and a client left streaming a pad it never reached presents
+        -- much later as world geometry refusing to load around the player with
+        -- nothing pointing back here. releaseFocus is idempotent, so a trip
+        -- that finished normally makes this a no-op.
+        Citizen.SetTimeout(BR.Spawn.departure.focusMaxMs, releaseFocus)
+
+        Citizen.Wait(BR.Spawn.departure.focusHoldMs)
+
         -- THE LAST THING TO LIFT IS THE CURTAIN, and it lifts on the world
         -- being ready rather than on a timer. placeAt waits for collision and
         -- calls reveal() (the game's fade back in) before this runs, so by
@@ -751,7 +938,21 @@ function BR.Spawn.toWarmupPad()
             -- with a networked ped rather than an invisible player in a match.
             BR.LobbyPed.setNetworked(true, 'placed at the warmup spawn')
 
+            -- AND THE FOCUS COMES BACK HERE, which is the one place both
+            -- endings pass through -- the placement's callback and the 9s
+            -- escape. AFTER the placement rather than before it: releasing it
+            -- any earlier would stop streaming the exact ground the player is
+            -- being put down on.
+            releaseFocus()
+
             BR.Spawn.traveling = false
+
+            -- ONE LINE, ONCE PER READY-UP. Cheap enough to leave in: a ready-up
+            -- happens once a match, and the difference between "it still cuts"
+            -- and "the page never acknowledged" is not visible from a chair.
+            step('in')
+            print('[br_core] warmup departure: ' .. table.concat(trace, ' / '))
+
             -- One breath after the world fade so the two do not both move at
             -- once; the curtain then takes its own 600ms to clear.
             Citizen.SetTimeout(250, function()
@@ -759,6 +960,7 @@ function BR.Spawn.toWarmupPad()
             end)
         end
 
+        step('ped')
         BR.Spawn.respawn(spot.x, spot.y, spot.z, spot.heading, false, landed)
 
         -- placeAt refuses to start while another placement is running, in
