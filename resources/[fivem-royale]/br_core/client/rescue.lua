@@ -308,8 +308,39 @@ end
 
 --- @param keepVehicle boolean|nil  leave the parked ambulance and its medic in
 ---                                 the world instead of deleting them
+-- Forward-declared: cleanup parks a kept ambulance and is defined above park,
+-- because cleanup is the single exit every ending routes through and park is
+-- the scene it leaves behind.
+local park
+
 local function cleanup(keepVehicle)
     local r = ride
+
+    -- ═══ AN AMBULANCE LEFT BEHIND IS PARKED, WHATEVER ENDED THE RIDE ═══
+    --
+    -- Owner, 2026-08-28: "once the timer ran out the ambulance did not park. He
+    -- just kept driving".
+    --
+    -- park() was reached from ONE place -- the arrival watch -- so it described
+    -- arriving rather than ending. Every other way a ride finishes with the van
+    -- still standing (the deadline expiring on a drive that was going fine, the
+    -- match tearing down, a sanity sweep) left a driver mid-task and a medic
+    -- who never got out: doors shut, lights off, still driving, with the player
+    -- already gone. The one thing the parked scene exists to say -- somebody got
+    -- out of this -- was true only on the happy path.
+    --
+    -- HERE BECAUSE THIS IS THE SINGLE EXIT. Putting it beside the deadline case
+    -- would have fixed the reported symptom and left the other two, which is how
+    -- this feature has been going. `keepVehicle` is already exactly the question
+    -- "is the ambulance staying?", so parking is what that answer means.
+    --
+    -- park() is idempotent by inspection -- halting a stopped van, unlocking an
+    -- unlocked door and opening an open one are all no-ops -- so arriving and
+    -- then ending does not double up.
+    if keepVehicle and r and r.veh and isTrue(DoesEntityExist(r.veh)) then
+        park(r, 'the ride ended with the ambulance still here')
+    end
+
     ride = nil
 
     -- BEFORE the early return: a ride torn down with no record still set a
@@ -602,7 +633,7 @@ end
 --- with its doors hanging open.
 --- @param r table
 --- @param why string   how it got here, for the log
-local function park(r, why)
+function park(r, why)
     if r.parked then return end
     r.parked = true
     if not r.veh or not isTrue(DoesEntityExist(r.veh)) then return end
@@ -1348,12 +1379,29 @@ AddEventHandler(BR.Net.RESCUE_END, function(d)
         -- READ NOW, because `cleanup` below hands the ambulance back to the
         -- engine and the handle stops being ours a line later.
         local dd = (type(d) == 'table') and d or {}
+        -- ═══ THE DESTINATION, ALWAYS. NOT WHERE THE AMBULANCE GOT TO. ═══
+        --
+        -- Owner, 2026-08-28: "when the timer expired it just dumped me on the
+        -- side of the road where the ambulance was. No matter what - the revive
+        -- must leave the player AT the destination whether the ambulance makes
+        -- it there or not."
+        --
+        -- This read the VEHICLE's parked position for one commit, on the
+        -- reasoning that a 50m arrival radius would otherwise set the player
+        -- down away from the ambulance they had just ridden in. That reasoning
+        -- was about the good case and ignored the bad one: a ride that runs out
+        -- of deadline halfway leaves the player wherever the van happened to
+        -- be, which is the one outcome a rescue must never produce.
+        --
+        -- THE DESTINATION IS THE PROMISE. The waypoint named it, the storm rule
+        -- chose it for being inside the next circle, and a player who spent an
+        -- ultra-rare kit is owed arrival there whether the drive succeeded, ran
+        -- long, wedged, or was abandoned. The ambulance is scenery; the
+        -- destination is the feature.
+        --
+        -- The parked ambulance, its open doors and its wandering medic still
+        -- stand wherever they stopped -- they are a scene, not a delivery.
         local px, py, pz, ph = dd.x, dd.y, dd.z, dd.heading or 0.0
-        local rr = ride
-        if delivered and rr and rr.veh and isTrue(DoesEntityExist(rr.veh)) then
-            local vc = GetEntityCoords(rr.veh)
-            px, py, pz, ph = vc.x, vc.y, vc.z, GetEntityHeading(rr.veh)
-        end
 
         -- FADE FIRST ON THE WAY OUT TOO (#191 step 7), and the fade is what the
         -- detach and the teleport hide.

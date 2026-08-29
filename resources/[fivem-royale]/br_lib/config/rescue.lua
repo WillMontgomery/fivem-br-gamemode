@@ -470,7 +470,7 @@ BR.Config.Rescue = {
     -- 16777216 -- all three let the driver leave the road network, and a
     -- grass-crossing ambulance is both wrong-looking and the most reliable way
     -- to wedge one.
-    driveStyle       = 786485,
+    driveStyle       = 262460,
 
     -- The shortest journey worth making. Any surveyed point nearer than this to
     -- the pickup is refused as a destination, along with the pickup itself.
