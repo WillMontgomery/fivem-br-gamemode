@@ -657,6 +657,13 @@ function BR.Rescue.begin(src)
     TriggerClientEvent(BR.Net.RESCUE_BEGIN, src, {
         pickup = pickup,
         dest   = dest,
+        -- THE SAME NUMBER AS `deadlineAt` ABOVE, AND IT IS NOW DRAWN. It was
+        -- carried here from the start and read by nothing; since 2026-08-28
+        -- ("let's add an on-screen timer showing their time to revive please")
+        -- the client parks it on its `ride` record and publishes it to the
+        -- interface, which counts down to it. It must stay identical to the
+        -- record's copy: two deadlines for one ride means the clock the player
+        -- watches is not the clock that ends the journey.
         endsAt = now + deadline,
         -- The client ADOPTS this vehicle rather than making one. It is the only
         -- new field on this envelope and it is the whole of the change on the

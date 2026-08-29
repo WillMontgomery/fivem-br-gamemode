@@ -1109,19 +1109,29 @@ do
     -- HUD goes away in the ambulance, and the bleed-out card with it), and it
     -- travels the same route for the same reason. Recorded separately so the
     -- block below can say which of the two moved.
-    local cpr, riding = {}, {}
-    -- SEEDED false, because `mine.riding` is. The real BR.Dbno.setRiding
-    -- refuses an unchanged answer, and a stub that recorded every call would
-    -- make "sixty frames of a ride cost one envelope" untestable -- it would be
-    -- measuring the LOOP's discipline rather than the pair's. So the stub keeps
-    -- the same latch the real one has, starting where the real one starts.
-    local ridingLast = false
+    --
+    -- AND `setRiding` CARRIES A SECOND ARGUMENT NOW: the server's deadline for
+    -- the ride (owner, 2026-08-28: "let's add an on-screen timer showing their
+    -- time to revive please"). Recorded alongside the flag, because the claim
+    -- worth testing is that the two move TOGETHER -- a readout that knows it
+    -- should be on screen before it knows what to count to would draw a
+    -- placeholder.
+    local cpr, riding, rideEnds = {}, {}, {}
+    -- SEEDED false/0, because `mine.riding` and `mine.rideEndsAt` are. The real
+    -- BR.Dbno.setRiding refuses an unchanged answer, and a stub that recorded
+    -- every call would make "sixty frames of a ride cost one envelope"
+    -- untestable -- it would be measuring the LOOP's discipline rather than the
+    -- pair's. So the stub keeps the same latch the real one has, starting where
+    -- the real one starts, and latches on the PAIR exactly as it does.
+    local ridingLast, endsLast = false, 0
     BR.Dbno = {
         setCpr    = function(v) cpr[#cpr + 1] = v end,
-        setRiding = function(v)
-            if v == ridingLast then return end
-            ridingLast = v
+        setRiding = function(v, endsAt)
+            endsAt = v and (tonumber(endsAt) or 0) or 0
+            if v == ridingLast and endsAt == endsLast then return end
+            ridingLast, endsLast = v, endsAt
             riding[#riding + 1] = v
+            rideEnds[#rideEnds + 1] = endsAt
         end,
     }
 
@@ -1334,9 +1344,16 @@ do
     -- `ride`, not anything the boarding thread gets round to. A player whose
     -- ambulance model is still streaming is already in the cutscene.
     cpr = {}
+    -- `endsAt` IS DELIBERATELY A NUMBER NOTHING HERE COULD HAVE COMPUTED. The
+    -- clock in this file is `fakeTime`, a few thousand milliseconds in by now,
+    -- and the deadline solver would answer something derived from the route --
+    -- so a client that quietly built its own countdown instead of keeping the
+    -- server's could not produce 777777 by accident.
+    local SERVER_DEADLINE = 777777
     chandlers[BR.Net.RESCUE_BEGIN]({
         pickup = { x = 100.0, y = 200.0, z = 30.0, heading = 90.0 },
         dest   = { id = 'dest', x = 900.0, y = 800.0, z = 30.0 },
+        endsAt = SERVER_DEADLINE,
     })
     frame(60)
 
@@ -1349,6 +1366,32 @@ do
         'and the CPR row is withdrawn in the same beat -- this file\'s one '
             .. 'notification has no surface left to be drawn on',
         ('%d call(s), first=%s'):format(#cpr, tostring(cpr[1])))
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- #191 STEP 6: THE ONE READOUT THE RIDE PUTS BACK (owner, 2026-08-28)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- "let's add an on-screen timer showing their time to revive please"
+    --
+    -- The issue asks for this in the same breath as "this is the only
+    -- notification in the entire cycle", and the two coexist: one governs
+    -- interruptions, the other a readout. What this block settles is the half
+    -- that can be settled here -- that the number the interface counts down to
+    -- is the SERVER's deadline, arriving with the flag, and leaving with it.
+
+    ok(rideEnds[1] == SERVER_DEADLINE,
+        'the deadline the interface counts to is the server\'s own -- carried '
+            .. 'verbatim off RESCUE_BEGIN, never re-derived on this side, '
+            .. 'because a second deadline is a clock that disagrees with the '
+            .. 'one that ends the ride',
+        ('published %s, server said %s')
+            :format(tostring(rideEnds[1]), tostring(SERVER_DEADLINE)))
+
+    ok(#riding == #rideEnds and #riding == 1,
+        'and it travels ON the flag rather than behind it: one call carries '
+            .. 'both, so there is no frame in which the readout knows it is on '
+            .. 'screen and does not yet know what to count',
+        ('%d flag(s), %d deadline(s)'):format(#riding, #rideEnds))
 
     frame(120)
     ok(#riding == 1,
@@ -1388,6 +1431,12 @@ do
     ok(BR.Rescue.riding() == false,
         'and the ride really is over, so a second sweep has nothing to do',
         tostring(BR.Rescue.riding()))
+
+    ok(rideEnds[2] == 0,
+        'and the deadline is taken back down with it -- a stale timestamp left '
+            .. 'on the payload is a countdown the interface could start again '
+            .. 'the next time anything re-pushes this envelope',
+        ('last deadline published was %s'):format(tostring(rideEnds[#rideEnds])))
 
     BR.State.me.state = BR.PlayerState.DBNO
     frame(2)
@@ -1473,6 +1522,60 @@ do
         'and the card itself has no opinion about the ride -- the whole card '
             .. 'goes with the HUD, so a second test inside it would be half a '
             .. 'switch with its other half in another file')
+
+    -- ═══ ...AND THE READOUT IS OUTSIDE THE TREE THAT RULE HIDES ═══
+    --
+    -- Same terms, same limits: text reads, guarding a SHAPE rather than a
+    -- render. The timer is an exception to a rule the owner also asked for, and
+    -- the only way the two do not fight is that `hudUp` never learned an
+    -- exception -- the readout is a SIBLING of `Hud`, the way DeathVerdict
+    -- already is, rather than a child of it that hides itself back in.
+    local timerFh = io.open('ui-src/src/hud/RescueTimer.tsx')
+    local timerSrc = timerFh and timerFh:read('a') or ''
+    if timerFh then timerFh:close() end
+
+    ok(#timerSrc > 0 and appSrc:find('<RescueTimer', 1, true) ~= nil,
+        'the ride draws a timer, and App.tsx is what mounts it',
+        #timerSrc == 0 and 'RescueTimer.tsx did not open'
+            or 'App.tsx does not mount it')
+
+    local hudFh = io.open('ui-src/src/hud/Hud.tsx')
+    local hudSrc = hudFh and hudFh:read('a') or ''
+    if hudFh then hudFh:close() end
+
+    ok(hudSrc:find('RescueTimer', 1, true) == nil,
+        'and it is mounted OUTSIDE the HUD, not inside it -- `hudUp` still '
+            .. 'hides every surface in that tree, with no "everything '
+            .. 'except..." list for the next one to join by accident',
+        'Hud.tsx renders it, so the ride now has a hole in it')
+
+    ok(appSrc:find('show={ridingAmbulance}', 1, true) ~= nil,
+        'gated on the SAME bit that hides the HUD, passed down rather than '
+            .. 'derived again, so the two can never disagree about whether a '
+            .. 'ride is happening')
+
+    ok(timerSrc:find('rideEndsAt', 1, true) ~= nil
+           and timerSrc:find('Date.now() + offset', 1, true) ~= nil,
+        'and it counts the SERVER\'s deadline against the shared clock offset '
+            .. '-- the rule every other countdown in this interface follows, '
+            .. 'and the only way a browser can read a server timestamp at all')
+
+    -- NO WORDS. The owner has been explicit and repeatedly annoyed about
+    -- invented UI copy, and a timer is a number: no cap, no caption, no unit.
+    -- `.panel-hot` is the placard the other clocks wear and it cannot be used
+    -- here -- it REQUIRES a `.cap`, which is a text label, and its border
+    -- breathes on an infinite animation. Neither is true of a ride whose
+    -- deadline delivers you.
+    --
+    -- MATCHED ON THE className AND NOT ON THE WORD, because the file's own
+    -- comments name `.panel-hot` while explaining why it is the wrong surface --
+    -- the same distinction check-ui R13 draws about `--safe-x`. A gate that
+    -- failed on the prose would be arguing with the reason.
+    ok(timerSrc:find('className="panel%-hot') == nil
+           and timerSrc:find('className="cap"', 1, true) == nil,
+        'drawn as a plain panel with no cap and no caption -- the placard the '
+            .. 'other clocks wear demands a text label and pulses its border, '
+            .. 'and neither belongs on a deadline that ends in a delivery')
 
     -- THE LOOP MUST STILL BE HEALTHY. A callback that throws five times running
     -- is suspended for the rest of the session -- which would present as

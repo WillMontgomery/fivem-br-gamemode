@@ -12,6 +12,7 @@ import DeathVerdict from './hud/DeathVerdict'
 import LeaveScreen from './screens/LeaveScreen'
 import InventoryPanel from './screens/InventoryPanel'
 import Notices from './hud/Notices'
+import RescueTimer from './hud/RescueTimer'
 import Settings from './screens/Settings'
 import Locker from './screens/Locker'
 import Market from './screens/Market'
@@ -291,6 +292,26 @@ export default function App() {
   // an ambulance has you, and a card reduced to a true heading over no content
   // would be furniture. There is deliberately no `hideTimer` prop and no branch
   // in DbnoOverlay: one flag, one rule, one thing to reason about.
+  //
+  // ═══ AND THE ONE THING THE RIDE PUTS BACK, WITHOUT TOUCHING THIS RULE ═══
+  //
+  // Owner, later the same day: "let's add an on-screen timer showing their time
+  // to revive please" -- #191 step 6, which the issue asks for in the same
+  // breath as "this is the only notification in the entire cycle". Those two
+  // lines are about different things (a readout versus an interruption) and
+  // both hold; hud/RescueTimer.tsx carries the argument in full.
+  //
+  // WHAT MATTERS HERE IS THAT `hudUp` DID NOT LEARN AN EXCEPTION. The obvious
+  // build is to keep the HUD up and teach the surfaces inside it which of them
+  // survive a ride -- and that turns the master switch into "everything
+  // except...", a list that the next surface added to the HUD joins by
+  // accident. So the readout is drawn OUTSIDE the hidden tree instead, as a
+  // sibling of `Hud` below, exactly the way DeathVerdict already is. Hiding the
+  // HUD still hides every part of the HUD.
+  //
+  // IT IS THE SAME BIT, NOT A SECOND TEST. `ridingAmbulance` is what turns the
+  // HUD off and what turns this on, passed down rather than re-derived, so the
+  // two can never end up disagreeing about whether a ride is happening.
   const ridingAmbulance = s.dbno.riding === true
 
   // Whether the vitals strip is on screen -- chat and notices fall back to
@@ -330,6 +351,19 @@ export default function App() {
           mount work mid-fight. Hidden under the pause menu -- the fullscreen
           map does not need our chrome floating over it. */}
       <Hud visible={hudUp && !s.hud.paused} />
+      {/* THE AMBULANCE CLOCK, AND IT IS A SIBLING OF THE HUD RATHER THAN A
+          CHILD OF IT ON PURPOSE (#191 step 6, owner 2026-08-28).
+
+          The ride hides the HUD -- also his call -- so this is an exception to
+          a rule he asked for, and the way the two are kept from fighting is
+          that the rule has no exception in it: `hudUp` still turns off
+          everything inside `Hud`, and this is not inside `Hud`. See the note on
+          `ridingAmbulance` above and the file itself.
+
+          IT DRAWS NOTHING UNLESS A RIDE IS RUNNING, so a `show` of false is not
+          an empty box in the clock slot; and it takes no props but that one bit
+          -- the deadline comes off the same payload the bit does. */}
+      <RescueTimer show={ridingAmbulance} />
       {/* Chat vanishes with the rest of the in-match chrome the instant the
           match is decided -- a lingering kill-chatter log under the verdict
           slam reads as UI debris -- and it does NOT render under the lobby

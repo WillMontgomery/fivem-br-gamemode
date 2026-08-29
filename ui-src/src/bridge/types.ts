@@ -373,6 +373,34 @@ export interface DbnoPayload {
    * Optional for the same reason `cpr` is: absent means no.
    */
   riding?: boolean
+  /**
+   * When the server will call time on that ride -- a SERVER timestamp, the same
+   * origin as `bleedEndsAt`, so it is only comparable to `Date.now() +
+   * clockOffset`.
+   *
+   * ═══ THE ONE READOUT THE RIDE PUTS BACK ON SCREEN (#191 step 6) ═══
+   *
+   * Owner, 2026-08-28: "let's add an on-screen timer showing their time to
+   * revive please". `riding` above takes the whole HUD away; this is the number
+   * that is drawn instead, by hud/RescueTimer.tsx -- which is mounted BESIDE
+   * `Hud` in App.tsx, not inside it, so the HUD's master switch keeps hiding
+   * everything without an exception in it.
+   *
+   * IT IS NOT A SECOND NOTIFICATION. #191 says both "this is the only
+   * notification in the entire cycle" (about interruptions) and "a timer is
+   * shown to the player" (about a readout); the two coexist. See the header of
+   * br_core/client/rescue.lua for the full argument -- it is written down there
+   * because that is the file a future reader would delete this from.
+   *
+   * IT IS THE SERVER'S DEADLINE AND NOTHING ELSE. `rec.deadlineAt` travels on
+   * RESCUE_BEGIN and client/rescue.lua parks it on the ride, so this is the
+   * number that actually ends the journey. Deriving a second one in the browser
+   * would give the player a clock that disagrees with the ride.
+   *
+   * AND ZERO MEANS NO CLOCK. Lua zeroes it the moment the ride ends and an older
+   * server may not send it at all; the component draws nothing either way.
+   */
+  rideEndsAt?: number
 }
 
 /**

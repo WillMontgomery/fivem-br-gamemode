@@ -29,12 +29,15 @@ local M = BR.Config.Match
 -- the UI envelope is sent whole -- REVIVE_PROGRESS merges into this and the
 -- merged copy goes across the bridge, so there is one shape and one writer.
 --
--- `cpr` AND `riding` ARE THE TWO FIELDS THE SERVER DOES NOT SEND. Both are
--- client/rescue.lua's answers -- "may I use my CPR kit right now" and "am I on
--- the ambulance" -- parked here because the placard is drawn from this one
--- payload. See BR.Dbno.setCpr and BR.Dbno.setRiding below.
+-- `cpr`, `riding` AND `rideEndsAt` ARE THE FIELDS THE SERVER DOES NOT SEND HERE.
+-- All three are client/rescue.lua's answers -- "may I use my CPR kit right now",
+-- "am I on the ambulance", and "when does the server say that ride is out of
+-- time" -- parked here because the placard is drawn from this one payload. The
+-- last of those DOES originate on the server (it is `rec.deadlineAt`, carried on
+-- RESCUE_BEGIN); it is not on THIS envelope's server half, so it arrives the
+-- same way the other two do. See BR.Dbno.setCpr and BR.Dbno.setRiding below.
 local mine = { downed = false, bleedEndsAt = 0, reviverName = nil,
-               revivePct = 0.0, cpr = false, riding = false }
+               revivePct = 0.0, cpr = false, riding = false, rideEndsAt = 0 }
 
 -- The revive we are performing on somebody else, or nil.
 local holding = nil   -- { target = src, from = ms }
@@ -122,6 +125,7 @@ local function pushMine()
         revivePct   = mine.revivePct or 0.0,
         cpr         = mine.cpr and true or false,
         riding      = mine.riding and true or false,
+        rideEndsAt  = mine.rideEndsAt or 0,
     })
 end
 
@@ -178,12 +182,39 @@ end
 --- placard -- the same argument that put `cpr` here. Routing it through
 --- BR.PushHud instead would mean a second writer for a fact one file knows.
 ---
---- Idempotent, because rescue.lua publishes it from a frame band.
+--- ═══ AND THE ONE THING THE RIDE DOES PUT BACK ON SCREEN ═══
+---
+--- Owner, 2026-08-28, after the HUD went away: "let's add an on-screen timer
+--- showing their time to revive please". So `endsAt` rides along with the flag.
+---
+--- IT IS NOT A CONTRADICTION OF THE LINE ABOVE. What the ride hides is the HUD:
+--- vitals, counters, kill feed, squad panel, inventory, and the bleed-out card
+--- with its four now-untrue rows. What it shows is ONE NUMBER, drawn by a
+--- surface that lives outside the HUD tree (ui-src/src/hud/RescueTimer.tsx,
+--- mounted beside `Hud` in App.tsx rather than inside it). `riding` still turns
+--- the whole HUD off and nothing about that rule has an exception in it -- see
+--- the note in App.tsx for why the readout was put outside the tree instead of
+--- carving a hole in it.
+---
+--- WHY BOTH ON ONE CALL. They are one fact seen twice, and a readout that knew
+--- it should be visible one frame before it knew what to count to would draw a
+--- placeholder for that frame. Pairing them makes that unrepresentable.
+---
+--- Idempotent ON THE PAIR, because rescue.lua publishes it from a frame band and
+--- either half moving is a real change. In practice the deadline is fixed for
+--- the whole ride (server/rescue.lua sets `deadlineAt` once), so this still
+--- costs exactly one envelope per rescue and one per ending.
 --- @param v boolean
-function BR.Dbno.setRiding(v)
+--- @param endsAt number|nil  server ms the ride is out of time; 0/nil for none
+function BR.Dbno.setRiding(v, endsAt)
     v = v and true or false
-    if v == mine.riding then return end
-    mine.riding = v
+    -- ZEROED WHEN THE RIDE IS OVER, not carried. A stale deadline left on the
+    -- payload is a number the interface could start counting again the next time
+    -- anything else re-pushes this envelope.
+    endsAt = v and (tonumber(endsAt) or 0) or 0
+    if v == mine.riding and endsAt == mine.rideEndsAt then return end
+    mine.riding     = v
+    mine.rideEndsAt = endsAt
     pushMine()
 end
 

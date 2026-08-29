@@ -17,10 +17,6 @@
 -- easier to keep than to restore: there is exactly one thing this file tells the
 -- interface, and no BR.Native.help, no notify, and no toast anywhere in it.
 --
--- #191 STEP 6 ASKED FOR A TIMER AND THERE IS NONE. The hard deadline is real and
--- does its whole job on the server; it simply is not drawn. A countdown is a
--- second notification, and there is only one.
---
 -- ═══ ...AND ONCE THE AMBULANCE HAS THEM, THERE IS NOT EVEN THAT ═══
 --
 -- Owner, 2026-08-28: "while in the ambulance, our HUD should be hidden just like
@@ -33,6 +29,39 @@
 -- NOTHING AT ALL. It is published as a second bit on the same payload
 -- (BR.Dbno.setRiding) and consumed by the rule that already hides the HUD for
 -- the Battle Bus -- see the note on setRiding in client/dbno.lua.
+--
+-- ═══ ...EXCEPT THE ONE READOUT, WHICH IS #191 STEP 6 AND NOT A NOTIFICATION ═══
+--
+-- Owner, 2026-08-28: "let's add an on-screen timer showing their time to
+-- revive please".
+--
+-- THIS FILE USED TO SAY "#191 STEP 6 ASKED FOR A TIMER AND THERE IS NONE", and
+-- that line has been deleted rather than argued with, because it was reading two
+-- sentences of the issue as one rule. #191 says BOTH of these and they are about
+-- different things:
+--
+--   "This is the only notification in the entire cycle. Nothing else may be
+--    shown at any point."          -- step 2, about NOTIFICATIONS
+--   "A timer is shown to the player: the timeout, derived from the estimated
+--    driving time for that route."  -- step 6, about a READOUT
+--
+-- A notification INTERRUPTS: it arrives on an event, says a sentence, and goes
+-- away. That is the thing there is exactly one of, and there still is -- nothing
+-- was added to dispatch, arrival, destruction or recovery, and this file still
+-- contains no BR.Native.help, no notify and no toast. A readout does not
+-- interrupt: it is a number that sits in one place for as long as the state it
+-- describes lasts, the way the storm clock and the warmup clock do. The two
+-- lines of the issue coexist; neither overrides the other.
+--
+-- NOTHING NEW IS COMPUTED FOR IT. The server already sends the deadline it will
+-- actually judge the ride against -- `endsAt` on RESCUE_BEGIN, which is
+-- `rec.deadlineAt` -- so the ride record simply keeps it and it rides the same
+-- envelope the HUD flag does. A second deadline derived on this side could
+-- disagree with the one that ends the ride, and the player would be watching
+-- the wrong clock.
+--
+-- IF YOU ARE HERE TO DELETE THE TIMER CITING "THE ONLY NOTIFICATION": read the
+-- two quotes above first. It is the readout the owner asked for by name.
 
 BR = BR or {}
 BR.Rescue = {}
@@ -210,7 +239,15 @@ BR.Loop.register(BR.Loop.FRAME, 'rescue.prompt', function()
     --
     -- setRiding refuses an unchanged answer, so sixty frames of a ride still
     -- cost exactly one envelope.
-    BR.Dbno.setRiding(ride ~= nil)
+    --
+    -- THE DEADLINE TRAVELS WITH THE FLAG, as the second argument, because it is
+    -- the same fact seen twice: "there is a ride" and "here is when the server
+    -- will call it". Sending it separately would let the two arrive out of order
+    -- and give the readout a frame in which it knows it should be on screen and
+    -- does not yet know what to count to. It is constant for the whole ride --
+    -- server/rescue.lua sets `deadlineAt` once at dispatch and never moves it --
+    -- so this pair changes exactly twice per rescue.
+    BR.Dbno.setRiding(ride ~= nil, ride and ride.endsAt or 0)
 end)
 
 --- WHY IS THE CPR PROMPT NOT THERE?
@@ -1441,6 +1478,20 @@ AddEventHandler(BR.Net.RESCUE_BEGIN, function(d)
         camYaw  = 0.0,
         camPitch = -12.0,
         reported = false,
+        -- THE SERVER'S DEADLINE, KEPT RATHER THAN RE-DERIVED (owner, 2026-08-28:
+        -- "let's add an on-screen timer showing their time to revive please").
+        --
+        -- This is `rec.deadlineAt` on the other side of the wire: the same
+        -- number server/rescue.lua's tick compares GetGameTimer() against, and
+        -- the only number that can end this ride on time. It is a SERVER
+        -- timestamp, so it is passed along untouched -- the interface holds the
+        -- clock offset that makes it comparable, the same way it already does
+        -- for `bleedEndsAt` and the storm.
+        --
+        -- 0 WHEN THE FIELD IS ABSENT, and the readout treats 0 as "no clock" and
+        -- draws nothing. An older server that does not send it gets the ride it
+        -- always had, silently, rather than a countdown to 1970.
+        endsAt  = tonumber(d.endsAt) or 0,
     }
     board(d)
 end)

@@ -63,8 +63,18 @@ BR = BR or {}
 --- The consequence is honest and worth stating: this over-estimates on a
 --- motorway and under-estimates through a hillside. `etaSlack` is what covers
 --- the second case, and the deadline it produces is a BACKSTOP rather than a
---- schedule -- nothing is shown to the player, and a rescue that arrives early
---- simply ends early.
+--- schedule -- a rescue that arrives early simply ends early.
+---
+--- AND THE PLAYER NOW SEES THAT BACKSTOP (owner, 2026-08-28: "let's add an
+--- on-screen timer showing their time to revive please"). This comment used to
+--- end "nothing is shown to the player", which is no longer true and is exactly
+--- the sort of stale claim that gets believed. What is drawn is the DEADLINE,
+--- not this estimate -- and reading it as "time to revive" is correct rather
+--- than a simplification, because server/rescue.lua DELIVERS a moving ambulance
+--- when the deadline lands (`if rec.everMoved then finish(src, true, ...)`).
+--- The countdown is therefore an upper bound on the wait, and beating it is the
+--- normal case: `etaSlack` is 1.8, so a drive that goes to plan ends with a
+--- little under half the clock still on it.
 ---
 --- @param distM number   straight-line metres
 --- @param cfg table|nil   BR.Config.Rescue
