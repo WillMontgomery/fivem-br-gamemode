@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useUi, selDbno } from '../store'
+import { HotCard, HotTime } from './HotCard'
 
 /**
  * How long the ambulance has (#191 step 6).
@@ -78,22 +79,62 @@ import { useUi, selDbno } from '../store'
  *
  * THAT IS WHY NOTHING HAPPENS IN THE LAST SECONDS. No red, no pulse, no growing
  * numeral. Escalation would be a lie about what zero means, and this project has
- * a standing rule against flourish nobody asked for. It is a `.panel`, not the
- * `.panel-hot` the other clocks wear, for the same reason: that placard has a
- * demanding cap and a border that breathes, and neither is true here.
+ * a standing rule against flourish nobody asked for.
  *
- * ═══ AND NO WORDS ═══
+ * ═══ IT IS THE BLEED-OUT CARD, AND THAT IS A CHANGE ═══
  *
- * A timer is a number. There is no cap, no caption and no unit -- m:ss is what
- * makes it read as a clock rather than as a score, and it is a format rather
- * than a sentence. It is held at m:ss BELOW a minute too, where the storm and
- * warmup clocks drop to bare seconds: those two have a cap saying what they are
- * and this one deliberately has nothing, so `0:07` is doing work that `7` would
- * not, and the width never jumps at the minute boundary.
+ * Owner, 2026-08-29: "Please rebuild the revive timer UI to be the same card as
+ * the bleed out card and timer."
+ *
+ * This shipped as a bare numeral on a `.panel` (d7272a6), and the argument for
+ * that is one paragraph up this file: `.panel-hot` demands a cap and breathes
+ * its border, and neither belongs on a deadline that ends in a delivery. He has
+ * looked at it and asked for the placard anyway, so the placard is what it is --
+ * `HotCard`, the same one DbnoOverlay draws, with DbnoOverlay's 2rem numeral in
+ * the body.
+ *
+ * NOT BY MOVING IT INTO THE HUD. It is still a sibling of `Hud` in App.tsx and
+ * Hud.tsx still must never render it -- the whole reason this component exists
+ * is that the ride hides the HUD and this is the one thing that survives that.
+ * What is shared is the appearance; hud/HotCard.tsx has the long version.
+ *
+ * ═══ THE COLOUR IS `--color-hp`, WHICH IS THE CARD'S OWN VOCABULARY ═══
+ *
+ * `.panel-hot` has no neutral: `--hot` drives the border and its pulse, and the
+ * default is `--color-danger`. Red is the one thing this readout must not say --
+ * zero is not a threat here, because a moving ambulance whose deadline lands
+ * DELIVERS (server/rescue.lua's tick). So it takes the other colour the same
+ * card already uses: DbnoOverlay flips to `--color-hp` when somebody is picking
+ * you up, and an ambulance with you in the back is that state. One card, the
+ * same two colours, meaning the same two things -- rather than a third colour
+ * invented for this surface.
+ *
+ * ═══ AND STILL NO WORDS ═══
+ *
+ * A timer is a number. No cap, no caption and no unit: the card's heading would
+ * have to say something, "YOU ARE DOWN" is false in an ambulance, and inventing
+ * a replacement is exactly the unsolicited copy this project bans. `HotCard`
+ * takes no `cap` here and draws no cap element at all.
+ *
+ * m:ss is a FORMAT rather than a sentence, which is why it is allowed to be the
+ * one thing that differs from the bleed clock's `93s`: a drive across the map is
+ * minutes, and `167s` is not a clock. It is held at m:ss BELOW a minute too --
+ * `0:07` reads as a clock where `7` reads as a score, and the width never jumps
+ * at the minute boundary.
  *
  * The digits are written straight to the node from one requestAnimationFrame
  * loop, like every other countdown in the HUD -- a re-render per frame for four
  * characters is the tax those rules exist to avoid.
+ *
+ * ═══ AND IT STANDS DOWN WHEN THE MATCH IS DECIDED ═══
+ *
+ * `show` is `ridingAmbulance && !tearingDown` in App.tsx, and the second half is
+ * not belt-and-braces -- see the note there. A ride does not end by a message:
+ * client/rescue.lua's `rescue.sanity` sweep tears it down at 1 Hz when the match
+ * stops being PLAYING, and the verdict screen mounts 500ms after the match ends.
+ * The match-state bit is on this client the instant the transition arrives, so
+ * gating on it is what stops this placard being on screen underneath
+ * VICTORY ROYALE for the second in between.
  */
 export default function RescueTimer({ show }: { show: boolean }) {
   const dbno = useUi(selDbno)
@@ -139,19 +180,15 @@ export default function RescueTimer({ show }: { show: boolean }) {
       style={{ top: 'var(--safe-y)' }}
       aria-hidden
     >
-      <div className="panel px-4 py-1.5">
-        <span
-          ref={timeRef}
-          className="font-display block leading-none tabular-nums text-white/95"
-          style={{ fontSize: '1.4rem', textShadow: 'var(--shadow-text)' }}
-        >
-          {/* The same placeholder the warmup and bleed-out countdowns ship,
-              for the same one frame before the first rAF lands -- and in
-              practice never seen, because a ride opens behind a screen fade.
-              `0:00` would be worse than a dash: it reads as expired. */}
-          --
-        </span>
-      </div>
+      {/* NO `cap`, so no cap element -- the card is the body alone. `14rem` is
+          DbnoOverlay's width, not a number picked for this content: the two are
+          meant to read as one object, and a placard that is narrower here
+          because it happens to hold fewer characters would read as a different
+          one. The placeholder `--` and the numeral's type, size and shadow all
+          come from `HotTime`, which is the bleed-out card's own numeral. */}
+      <HotCard hot="var(--color-hp)" minWidth="14rem">
+        <HotTime ref={timeRef} />
+      </HotCard>
     </div>
   )
 }

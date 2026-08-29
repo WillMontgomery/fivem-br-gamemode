@@ -1667,10 +1667,12 @@ do
             .. 'except..." list for the next one to join by accident',
         'Hud.tsx renders it, so the ride now has a hole in it')
 
-    ok(appSrc:find('show={ridingAmbulance}', 1, true) ~= nil,
+    ok(appSrc:find('show={ridingAmbulance && !tearingDown}', 1, true) ~= nil,
         'gated on the SAME bit that hides the HUD, passed down rather than '
             .. 'derived again, so the two can never disagree about whether a '
-            .. 'ride is happening')
+            .. 'ride is happening -- and on the match not being decided, so '
+            .. 'the placard is never under the verdict screen',
+        'the gate is not `ridingAmbulance && !tearingDown`')
 
     ok(timerSrc:find('rideEndsAt', 1, true) ~= nil
            and timerSrc:find('Date.now() + offset', 1, true) ~= nil,
@@ -1678,22 +1680,69 @@ do
             .. '-- the rule every other countdown in this interface follows, '
             .. 'and the only way a browser can read a server timestamp at all')
 
-    -- NO WORDS. The owner has been explicit and repeatedly annoyed about
-    -- invented UI copy, and a timer is a number: no cap, no caption, no unit.
-    -- `.panel-hot` is the placard the other clocks wear and it cannot be used
-    -- here -- it REQUIRES a `.cap`, which is a text label, and its border
-    -- breathes on an infinite animation. Neither is true of a ride whose
-    -- deadline delivers you.
+    -- ═══ IT IS THE BLEED-OUT CARD, AND THAT REPLACED THE OPPOSITE RULE ═══
     --
-    -- MATCHED ON THE className AND NOT ON THE WORD, because the file's own
-    -- comments name `.panel-hot` while explaining why it is the wrong surface --
-    -- the same distinction check-ui R13 draws about `--safe-x`. A gate that
-    -- failed on the prose would be arguing with the reason.
+    -- This block used to assert the other thing: no `.panel-hot`, no cap, a
+    -- plain `.panel` and a bare numeral -- because that placard demands a text
+    -- label and breathes its border, and neither is true of a deadline that
+    -- ends in a delivery. The reasoning is still in RescueTimer.tsx and it is
+    -- still sound. The owner has looked at the result and overruled it:
+    --
+    --   "Please rebuild the revive timer UI to be the same card as the bleed
+    --    out card and timer." -- 2026-08-29
+    --
+    -- Recorded rather than quietly swapped, because a future reader finding the
+    -- old argument in the file's history should be able to see that it was
+    -- answered rather than forgotten.
+    --
+    -- ═══ SHARED, NOT COPIED -- AND WITHOUT MOVING INTO THE HUD ═══
+    --
+    -- The two surfaces cannot be siblings in the tree: the assertion above is
+    -- that Hud.tsx never renders this one, and that has to keep holding, since
+    -- the entire reason it exists is that the ride hides the HUD. So what they
+    -- share is the APPEARANCE, lifted into hud/HotCard.tsx.
+    --
+    -- BOTH ENDS ARE PINNED. A timer that drew its own `.panel-hot` would look
+    -- right on the day and drift the moment the placard changed -- which is
+    -- this repository's signature bug, two representations of one fact -- so
+    -- the assertion is that the timer uses the shared card AND that the card it
+    -- uses is the one the bleed-out placard draws.
+    local sharedFh = io.open('ui-src/src/hud/HotCard.tsx')
+    local sharedSrc = sharedFh and sharedFh:read('a') or ''
+    if sharedFh then sharedFh:close() end
+
+    ok(sharedSrc:find('className="panel%-hot') ~= nil,
+        'the placard has one home -- hud/HotCard.tsx',
+        #sharedSrc == 0 and 'HotCard.tsx did not open'
+            or 'it does not draw `.panel-hot`')
+
+    ok(timerSrc:find('<HotCard', 1, true) ~= nil
+           and timerSrc:find('<HotTime', 1, true) ~= nil,
+        'the ride\'s clock is drawn as that card, with that card\'s numeral -- '
+            .. '"the same card as the bleed out card and timer"',
+        'RescueTimer.tsx does not use the shared card')
+
+    ok(cardSrc2:find('<HotCard', 1, true) ~= nil
+           and cardSrc2:find('<HotTime', 1, true) ~= nil,
+        'and the bleed-out card is drawn from the same two pieces, so "the '
+            .. 'same card" cannot quietly become two cards that agree by '
+            .. 'memory',
+        'DbnoOverlay.tsx no longer shares it')
+
     ok(timerSrc:find('className="panel%-hot') == nil
+           and timerSrc:find('className="hotbody"', 1, true) == nil,
+        'and it holds no second copy of the placard\'s markup')
+
+    -- ...AND STILL NO WORDS. The card treatment implies a heading, and there is
+    -- no heading to give it: DbnoOverlay's cap says "You are down", which is
+    -- false in an ambulance, and inventing a replacement is exactly the
+    -- unsolicited UI copy this project bans. `HotCard` draws no cap element
+    -- when it is given no `cap`, so the correct assertion is that this caller
+    -- passes none.
+    ok(timerSrc:find('cap=', 1, true) == nil
            and timerSrc:find('className="cap"', 1, true) == nil,
-        'drawn as a plain panel with no cap and no caption -- the placard the '
-            .. 'other clocks wear demands a text label and pulses its border, '
-            .. 'and neither belongs on a deadline that ends in a delivery')
+        'with no cap and no caption -- the card is the body alone until the '
+            .. 'owner gives it a heading to carry')
 
     -- THE LOOP MUST STILL BE HEALTHY. A callback that throws five times running
     -- is suspended for the rest of the session -- which would present as

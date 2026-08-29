@@ -13294,6 +13294,119 @@ do
         'and the disconnect clears it rather than freezing the ring')
 end
 
+describe('dbno.matchEndsUnderARide')
+do
+    -- ═══ THE SECOND VERDICT WAS A REAL DEATH, PUBLISHED AFTER THE MATCH ═══
+    --
+    -- Owner, 2026-08-29: "When one player is in the ambulance and the only
+    -- other remaining player(s) die, the verdict shown is 'VICTORY ROYALE'
+    -- along with ALSO the cause of DBNO on top of it."
+    --
+    -- Every link in the chain was individually correct. A rider is DBNO for the
+    -- whole journey, DBNO is `isInMatch`, so the last other player dying ends
+    -- the match and awardPlacements hands the rider first place. server/
+    -- rescue.lua's tick then drops the rescue record, because the match is no
+    -- longer PLAYING and finishing people is not that file's job -- and THAT
+    -- un-suspended a bleed clock whose deadline had expired somewhere on the
+    -- ride. The winner was eliminated for 'bledout' a quarter of a second after
+    -- winning, and the client put the death word back up over the verdict
+    -- screen it had already cleared its surfaces for.
+    --
+    -- So this drives the whole thing and asserts on the SERVER's tables and
+    -- wire, because that is where the second verdict is actually produced. The
+    -- UI half -- neither surface drawing once the match is decided -- is pinned
+    -- statically in tools/check_death_verdict.lua.
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'Rider', BR.Mode.SOLO.key)
+    queueUp(2, 'Chaser', BR.Mode.SOLO.key)
+    tick(300)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 0.0, 0.0, 30.0)
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).pos = { x = 0.0, y = 0.0, z = 30.0 }
+
+    local m = BR.Server.matchOf(1)
+    ok(m ~= nil, 'the two solos are in a match')
+    m.state = BR.MatchState.PLAYING
+    m.startSquads = 2
+
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'the kit carrier goes down rather than dying',
+        BR.Roster.get(1).state)
+
+    BR.Rescue.begin(1)
+    ok(BR.Roster.get(1).rescue ~= nil,
+        'an ambulance is dispatched and the ride is on the entry',
+        tostring(BR.Roster.get(1).rescue))
+
+    -- THE DEADLINE IS PUT IN THE PAST RATHER THAN WAITED OUT, and that is the
+    -- honest shape of the report rather than a shortcut: a bleed is
+    -- dbnoBleedBase seconds and a drive across the map is minutes, so on any
+    -- real rescue this clock expires somewhere in the back of the ambulance.
+    -- Waiting it out here would also run the RIDE's own deadline, which is a
+    -- different ending with a different test (tools/test_rescue.lua).
+    BR.Roster.get(1).dbnoUntil = fakeTime - 1
+
+    sent = {}
+    tick(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a deadline that lands while the ambulance has them does not finish '
+            .. 'them -- the ride suspends the clock, it does not clear it',
+        BR.Roster.get(1).state)
+
+    -- ...AND NOW THE MATCH ENDS UNDERNEATH THE RIDE.
+    BR.Combat.eliminate(2, 'test', 1)
+    tick(4000)   -- past WIN_GRACE_MS
+    ok(m.state == BR.MatchState.ENDED,
+        'the last other player dying ends the match', m.state)
+
+    -- WHAT HAPPENS TODAY, STATED RATHER THAN ASSUMED. A downed player being
+    -- declared the winner is a RULE question and not a UI one, and it is the
+    -- owner's to answer -- so this pins the current answer instead of quietly
+    -- changing it. If he decides a player in an ambulance may not win, this is
+    -- the assertion that has to move, and it will say so out loud.
+    ok(BR.Roster.get(1).placement == 1,
+        'and the player in the ambulance -- still DBNO -- takes first place, '
+            .. 'because DBNO is isInMatch and nothing else is left',
+        tostring(BR.Roster.get(1).placement))
+
+    sent = {}
+    tick(3000)
+
+    -- THE ASSERTION THE BUG WOULD FAIL. Three seconds is twelve passes of the
+    -- 250ms bleed tick and three of the 1Hz rescue tick -- long enough for the
+    -- rescue record to be dropped (which is what used to re-arm the clock) and
+    -- for that clock to fire a dozen times over.
+    ok(BR.Roster.get(1).state ~= BR.PlayerState.DEAD,
+        'and the bleed clock does NOT finish them after the match is over -- '
+            .. 'a second verdict, drawn over the first, for a player who had '
+            .. 'already won', BR.Roster.get(1).state)
+
+    local latecomer = nil
+    for _, s in ipairs(eventsOf(BR.Net.KILL_FEED)) do
+        if s.args[1] and s.args[1].victimSrc == 1 then latecomer = s.args[1] end
+    end
+    ok(latecomer == nil,
+        'nothing goes out on the kill feed naming the winner as a victim -- '
+            .. 'that message is what the client turns into the death word',
+        latecomer and tostring(latecomer.cause) or nil)
+
+    -- AND THEY ARE NOT STRANDED ON THE FLOOR EITHER, which is the obvious worry
+    -- about a clock that stops. ENDED's own sweep is what takes every remaining
+    -- participant home once their screen is black, or on its deadline if no
+    -- client ever says so -- and it does not care what state they were in.
+    tick((BR.Config.Match.coverSweepMs or 8000) + 1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'the ENDED sweep still takes them home, downed or not',
+        BR.Roster.get(1).state)
+end
+
 describe('loot.deathbox')
 do
     local m = lootMatch()

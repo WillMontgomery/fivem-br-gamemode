@@ -1084,10 +1084,58 @@ local function stepDowned(src, entry, now)
     end
 end
 
+-- ═══ A BLEED CLOCK BELONGS TO A LIVE MATCH, AND STOPS WITH IT ═══
+--
+-- Owner, 2026-08-29: "When one player is in the ambulance and the only other
+-- remaining player(s) die, the verdict shown is 'VICTORY ROYALE' along with
+-- ALSO the cause of DBNO on top of it."
+--
+-- THE SECOND VERDICT WAS A REAL ELIMINATION, PUBLISHED AFTER THE MATCH ENDED,
+-- and the chain is worth writing down because every link in it is correct on
+-- its own:
+--
+--   1. A player on the ambulance is DBNO for the whole ride -- deliberately;
+--      server/rescue.lua and the DBNO section above both turn on it -- and
+--      BR.Server.isInMatch counts DBNO. So they are a squad still standing, the
+--      last other player dying ends the match, and awardPlacements hands them
+--      placement 1. They win, and publishResults banks it, at ENDED.
+--   2. server/rescue.lua's tick sees a match that is no longer PLAYING and
+--      clears `rec`/`entry.rescue`. Correct: that ride is over and it is not
+--      that file's business to eliminate anybody.
+--   3. ...which un-suspends the clock below. The suspension is deliberately a
+--      GUARD on the flag rather than a cleared deadline (see the note in
+--      stepDowned), so `dbnoUntil` is still the timestamp it had when the
+--      ambulance picked them up -- long past. The very next 250ms tick
+--      eliminated the winner for 'bledout'.
+--   4. The client had already dismissed its match surfaces on the ENDED
+--      transition. The DEAD delta arrived after that, BR.NoteDeath put the word
+--      back up, and nothing was left to take it down -- so the death word sat
+--      over VICTORY ROYALE for the ~3.4s until the verdict screen's backdrop
+--      reached black and the roster swept the player home.
+--
+-- THE FIX IS AT (3) BECAUSE (3) IS THE ONLY WRONG LINK. Nothing should be
+-- finished by a clock belonging to a match that is over: the results are
+-- published, the placements are awarded, and an elimination after that point
+-- can only ever contradict something already written down.
+--
+-- THE SAME GATE combat.deathcheck ALREADY USES, in the same shape and for the
+-- same reason -- per player against THEIR match, because matches advance
+-- independently, and BUS is live because #144's held death runs through here
+-- (a player who bleeds out before PLAYING must still reach holdForStart, or
+-- they are never revived into the round).
+--
+-- IT STOPS THE REVIVE HALF TOO, and that is right rather than incidental: a
+-- hold that completed after the winner was decided would stand somebody up in
+-- a finished match.
 BR.Sched.every(250, 'combat.dbno', function()
     local now = GetGameTimer()
     BR.Roster.each(
-        function(e) return e.state == BR.PlayerState.DBNO end,
+        function(e)
+            if e.state ~= BR.PlayerState.DBNO then return false end
+            local m = e.matchId and BR.Server.matches[e.matchId]
+            return m ~= nil and (m.state == BR.MatchState.PLAYING
+                              or m.state == BR.MatchState.BUS)
+        end,
         function(src, entry) stepDowned(src, entry, now) end)
 end)
 

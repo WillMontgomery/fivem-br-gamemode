@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useUi } from '../store'
 import { KeyCap } from '../ui/KeyCap'
+import { HotCard, HotTime } from './HotCard'
 import type { DbnoPayload } from '../bridge/types'
 
 /**
@@ -13,6 +14,16 @@ import type { DbnoPayload } from '../bridge/types'
  * square placard with an inverted cap. It is also, by some distance, the most
  * urgent thing that can be on screen, which makes it the surface `.panel-hot`
  * was designed for.
+ *
+ * THE PLACARD ITSELF NOW COMES FROM `HotCard`, and the reason is #191's clock:
+ * "Please rebuild the revive timer UI to be the same card as the bleed out card
+ * and timer" (owner, 2026-08-29). The ride's readout cannot be moved next to
+ * this one -- it is a sibling of `Hud` precisely because the ride hides `Hud`,
+ * and this card goes with it -- so what the two share is the APPEARANCE, lifted
+ * into hud/HotCard.tsx with no position and no visibility rule in it. Nothing
+ * about the argument below changed; the markup for the box just stopped being
+ * written twice. The card's ARRANGEMENT -- what goes in the body, in what order
+ * -- is still entirely this file's.
  *
  * ONE SURFACE, TWO STATES, the same way StormBar is one placard for "moving in"
  * and "get out". Bleeding is danger-red with a countdown; somebody reaching you
@@ -95,35 +106,19 @@ export default function DbnoOverlay({ dbno }: { dbno: DbnoPayload }) {
 
   return (
     <div className="absolute inset-x-0 bottom-40 flex justify-center">
-      <div
+      <HotCard
         key={reviving ? 'up' : 'down'}
-        className="panel-hot"
-        style={{
-          minWidth: '14rem',
-          // --color-hp rather than a literal green: it is one of the four
-          // tokens the colourblind modes remap, so the one moment in a match
-          // where colour carries the whole message follows the setting.
-          ['--hot' as string]: reviving
-            ? 'var(--color-hp)'
-            : 'var(--color-danger)',
-        }}
+        minWidth="14rem"
+        // --color-hp rather than a literal green: it is one of the four
+        // tokens the colourblind modes remap, so the one moment in a match
+        // where colour carries the whole message follows the setting.
+        hot={reviving ? 'var(--color-hp)' : 'var(--color-danger)'}
+        cap={reviving
+          ? `${dbno.reviverName} is picking you up`
+          : 'You are down'}
       >
-        {/* NO `tscale` HERE, and that is deliberate rather than an omission:
-            `.panel-hot > .cap` is (0,2,0) and would beat it, so the class would
-            sit in the markup implying a behaviour it does not have. The text
-            slider is applied inside the .cap rule itself -- see index.css. */}
-        <div className="cap">
-          {reviving ? `${dbno.reviverName} is picking you up` : 'You are down'}
-        </div>
-
-        <div className="hotbody">
-          <span
-            ref={timeRef}
-            className="font-display block leading-none tabular-nums"
-            style={{ fontSize: '2rem', textShadow: 'var(--shadow-text)' }}
-          >
-            --
-          </span>
+        <>
+          <HotTime ref={timeRef} />
           <span className="text-[0.55rem] font-semibold uppercase tracking-[0.18em] text-white/50">
             {reviving ? 'hold on' : 'until you bleed out'}
           </span>
@@ -212,8 +207,8 @@ export default function DbnoOverlay({ dbno }: { dbno: DbnoPayload }) {
               </span>
             </div>
           )}
-        </div>
-      </div>
+        </>
+      </HotCard>
     </div>
   )
 }

@@ -362,8 +362,18 @@ export default function App() {
 
           IT DRAWS NOTHING UNLESS A RIDE IS RUNNING, so a `show` of false is not
           an empty box in the clock slot; and it takes no props but that one bit
-          -- the deadline comes off the same payload the bit does. */}
-      <RescueTimer show={ridingAmbulance} />
+          -- the deadline comes off the same payload the bit does.
+
+          ...AND NOT WHILE THE MATCH IS BEING DECIDED, which is the second half
+          of the 2026-08-29 double-verdict report. A ride does not end by a
+          message: client/rescue.lua's `rescue.sanity` sweep runs at 1 Hz and
+          nils the ride when the match stops being PLAYING, so `dbno.riding`
+          stays true for up to a second after the round is over -- and the
+          verdict screen mounts 500ms in. `tearingDown` is on this client the
+          instant the transition arrives, so this is the term that closes that
+          window. It is the same rule DeathVerdict is now under below: the
+          verdict is the end of the match and owns the screen. */}
+      <RescueTimer show={ridingAmbulance && !tearingDown} />
       {/* Chat vanishes with the rest of the in-match chrome the instant the
           match is decided -- a lingering kill-chatter log under the verdict
           slam reads as UI debris -- and it does NOT render under the lobby
@@ -383,17 +393,39 @@ export default function App() {
       {/* YOUR OWN DEATH, MID-MATCH -- the word only, over a world that is still
           running, for the ~10s before the spectator camera takes the screen.
 
-          MOUNTED ALONGSIDE THE VERDICT SCREEN AND NEVER WITH IT. The two are
-          the pair the owner asked to keep distinct, and they cannot coincide:
-          Lua takes this down on MatchState.ENDED, which is the same transition
-          that raises `showEnd`. Dying in the closing seconds of a round is
-          ordinary, and it is exactly the case that would otherwise put two
-          verdicts on screen at once.
+          MOUNTED ALONGSIDE THE VERDICT SCREEN AND NEVER WITH IT -- AND NOW
+          THAT IS ENFORCED HERE RATHER THAN ASSUMED.
 
-          OUTSIDE the `Hud` wrapper because it is not HUD chrome and must not
-          inherit its visibility: `hudUp` goes false the instant the match is
-          decided, and this has its own end. */}
-      <DeathVerdict />
+          It used to be assumed, in this comment, in these words: "they cannot
+          coincide -- Lua takes this down on MatchState.ENDED, which is the same
+          transition that raises `showEnd`". That is true of a death that has
+          already happened when the match ends. It says nothing about a death
+          that happens AFTER it, and one exists:
+
+          Owner, 2026-08-29: "When one player is in the ambulance and the only
+          other remaining player(s) die, the verdict shown is 'VICTORY ROYALE'
+          along with ALSO the cause of DBNO on top of it."
+
+          A player on the ambulance is DBNO, and DBNO is `isInMatch` -- so they
+          are the last squad standing, the match ends, and they are awarded the
+          win. Then server/rescue.lua's tick drops the rescue flag (the match is
+          no longer PLAYING), server/combat.lua's bleed clock is un-suspended
+          with a deadline that expired mid-ride, and they are eliminated a beat
+          LATER -- which raised this word over the verdict screen, after the one
+          dismissal that would have taken it down had already run. The cause is
+          fixed there, in server/combat.lua: a bleed clock belongs to a live
+          match and does not finish anybody after one is over.
+
+          This line is the rule the fix leaves behind, stated where the two
+          surfaces actually meet. `tearingDown` is "the match is decided", which
+          is precisely the moment the verdict screen becomes the surface for it.
+          Nothing that arrives after that gets to draw a second one.
+
+          STILL OUTSIDE the `Hud` wrapper, and this is NOT `hudUp` creeping in:
+          `hudUp` is four terms and would take this down for a ride, a bus and
+          the lobby as well. This is one of them, and it is the one that means
+          the thing this surface is about. */}
+      {!tearingDown && <DeathVerdict />}
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* The voluntary-leave interstitial covers EVERYTHING -- including
           the lobby that mounts underneath it mid-trip -- until Lua says

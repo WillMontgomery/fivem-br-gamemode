@@ -271,11 +271,101 @@ if dv then
     end
 end
 
+-- ------------------------------------------- exactly one verdict on screen ---
+--
+-- "When one player is in the ambulance and the only other remaining player(s)
+-- die, the verdict shown is 'VICTORY ROYALE' along with ALSO the cause of DBNO
+-- on top of it." -- the owner, 2026-08-29.
+--
+-- ═══ WHY THE DISMISSAL RULE ABOVE DID NOT COVER THIS ═══
+--
+-- Every edge in this file's first half is a dismissal: something happens, and
+-- the word comes down. That is complete for a word that is ALREADY UP when the
+-- match ends -- dying in the closing seconds, which is ordinary and which the
+-- DIGEST handler's `d.state ~= PLAYING` sweep handles.
+--
+-- It says nothing about a death that arrives AFTER the sweep has run, and one
+-- did: a player riding the ambulance is DBNO, DBNO counts as in the match, so
+-- they were the last team standing and won -- and then server/combat.lua's
+-- bleed clock, un-suspended when server/rescue.lua dropped the ride, finished
+-- them a quarter of a second into the teardown. BR.NoteDeath put the word back
+-- up over the verdict screen and nothing was left to take it down.
+--
+-- So there are two things to pin, and they are different in kind:
+--
+--   THE CAUSE, in server/combat.lua -- a bleed clock belongs to a live match.
+--     Driven for real in tools/test_roster.lua ('dbno.matchEndsUnderARide'),
+--     which fails on both counts with the gate removed. Pinned here as well
+--     because it is one predicate and deleting it is silent.
+--   THE RULE, in App.tsx -- once the match is decided, the verdict screen owns
+--     the screen. Nothing else the round raised may draw over it, whatever
+--     order the messages arrive in. That is what makes this robust against the
+--     NEXT thing that finds a way to raise a surface late.
+
+local combat = read(ROOT .. 'br_core/server/combat.lua', codeOfLua)
+if combat then
+    local tickAt = combat:find("BR%.Sched%.every%(250, 'combat%.dbno'")
+    if not tickAt then
+        fail('server/combat.lua has no DBNO tick to gate',
+             'the 250ms bleed job is where a downed player is finished')
+    else
+        local body = combat:sub(tickAt, tickAt + 700)
+        if not body:find('BR%.MatchState%.PLAYING') then
+            fail('the bleed clock is not scoped to a live match',
+                 'a match that has ENDED has already awarded placements and '
+                 .. 'published results; an elimination after that point can '
+                 .. 'only contradict something already written down -- and it '
+                 .. 'raises a second verdict over the first')
+        end
+        -- BUS STAYS LIVE, and this is not decoration: #144's held death runs
+        -- through this tick, so a player who bleeds out before PLAYING must
+        -- still reach holdForStart or they are never revived into the round.
+        if not body:find('BR%.MatchState%.BUS') then
+            fail('the bleed clock excludes BUS',
+                 "a death before the match starts is HELD, not published -- "
+                 .. 'gating BUS out means it never happens and the player is '
+                 .. 'left downed until the sweep')
+        end
+    end
+end
+
+local app = read('ui-src/src/App.tsx', codeOfTs)
+if app then
+    -- ONE MOUNT, AND IT IS GATED. Matched on the gate rather than on a comment:
+    -- App.tsx's prose has always SAID the two never coincide, and saying it is
+    -- exactly what turned out not to be true.
+    local _, mounts = app:gsub('<DeathVerdict', '')
+    if mounts ~= 1 then
+        fail(('App.tsx mounts the death word %d times'):format(mounts),
+             'one surface, one mount -- two would need two gates to agree')
+    end
+    if not app:find('!tearingDown && <DeathVerdict') then
+        fail('the death word is not gated on the match being decided',
+             'a death that lands AFTER the ENDED sweep -- the ambulance '
+             .. 'winner -- puts the word back up over the verdict screen with '
+             .. 'nothing left to dismiss it')
+    end
+
+    -- ...AND THE RIDE'S OWN CLOCK IS UNDER THE SAME RULE. It is the other
+    -- surface that can be up at the moment a match is decided, and it does not
+    -- end by a message: client/rescue.lua's sanity sweep nils the ride at 1 Hz
+    -- when the match stops being PLAYING, while the verdict screen mounts 500ms
+    -- in. Without this it is a placard under VICTORY ROYALE for the second in
+    -- between -- and it is a placard now (owner: "the same card as the bleed
+    -- out card"), not the bare numeral it used to be.
+    if not app:find('show={ridingAmbulance && !tearingDown}', 1, true) then
+        fail('the ambulance clock is not gated on the match being decided',
+             'the ride ends by a 1Hz client sweep, the verdict screen by a '
+             .. 'message -- the placard outlives the round it belongs to')
+    end
+end
+
 if failures > 0 then
     io.write(('\ncheck_death_verdict: %d problem(s)\n'):format(failures))
     os.exit(1)
 end
 
 io.write('ok   the death word and the verdict screen are two surfaces on one '
-    .. 'word table,\n     and one deadline drives both the word and the '
-    .. 'spectate camera\n')
+    .. 'word table,\n     one deadline drives both the word and the spectate '
+    .. 'camera, and nothing\n     the round raised draws once the match is '
+    .. 'decided\n')
