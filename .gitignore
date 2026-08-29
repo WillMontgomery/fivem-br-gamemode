@@ -81,3 +81,8 @@ desktop.ini
 # checkout carrying its own `.git` file, which `git add -A` happily commits as
 # an embedded repo. That has already happened here once.
 .claude/
+
+# Internal working notes. Not for a public repo -- this one is public, and the
+# agreement discusses failures, timings and process in detail that is nobody
+# else's business. Kept on disk, read by the coordinator, never committed.
+docs/working-agreement.md
