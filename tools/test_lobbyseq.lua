@@ -128,13 +128,52 @@ function TaskGoStraightToCoord(_p, x, y, z, speed, _timeout, heading)
     -- is what the ped is told to face on arrival, and the position is how early
     -- the next leg took over -- a handover that only happens once the ped is
     -- on top of the corner is a handover after it has already stopped there.
+    --
+    -- AND WHETHER THE SCREEN WAS COVERED WHEN IT ARRIVED, which is the whole of
+    -- "the ped doesn't do the full walk again": a leg tasked behind a fade or
+    -- behind br_ui's opaque curtain is a leg nobody watches. Recorded at the
+    -- moment of the call, because by the time an assertion runs the cover is
+    -- long gone and the question is unanswerable.
     note('task', {
         x = x, y = y, z = z, speed = speed, heading = heading,
         fromX = ped.x, fromY = ped.y,
+        covered = (BR.Spawn and BR.Spawn.curtainWanted == true)
+            or IsScreenFadedIn() == 0,
     })
 end
-function ClearPedTasks() ped.dest = nil note('cleartasks') end
-function ClearPedTasksImmediately() ped.dest = nil end
+function ClearPedTasks() ped.dest = nil ped.anim = nil note('cleartasks') end
+function ClearPedTasksImmediately() ped.dest = nil ped.anim = nil end
+
+-- ═══ THE EMOTES, AS AN ANIMATION THAT IS EITHER ON THE PED OR NOT ═══
+--
+-- Five gestures on five clocks (client/lobbyped.lua's own note), and what this
+-- suite can observe about them is exactly three things: WHICH clip was asked
+-- for, WHEN relative to everything else, and with what FLAGS -- 0 for a full
+-- body animation that stops the ped and 48 for the upper-body/secondary one
+-- that plays over a walk. The flag is the only part of an emote that is a
+-- claim about the engine rather than a name, so it is the part worth asserting.
+local animDicts = {}
+local dictsStream = true
+function RequestAnimDict(name) animDicts[name] = dictsStream end
+function HasAnimDictLoaded(name) return animDicts[name] and 1 or 0 end
+function DoesAnimDictExist() return 1 end
+function TaskPlayAnim(_p, dict, clip, _bi, _bo, dur, flags)
+    ped.anim = { dict = dict, clip = clip, until_ = (dur and dur > 0)
+        and (fakeTime + dur) or nil }
+    note('anim', { dict = dict, clip = clip, ms = dur, flags = flags })
+end
+function StopAnimTask(_p, dict, clip)
+    if ped.anim and ped.anim.dict == dict and ped.anim.clip == clip then ped.anim = nil end
+end
+--- A BOOL NATIVE ANSWERING NUMBERS, on purpose: the flip waits on this to know
+--- the clip is over, and a bare read of it is a wait that never ends.
+function IsEntityPlayingAnim(_p, dict, clip)
+    if not ped.anim then return 0 end
+    return (ped.anim.dict == dict and ped.anim.clip == clip) and 1 or 0
+end
+function TaskTurnPedToFaceCoord(_p, x, y, _z, ms)
+    note('turn', { x = x, y = y, ms = ms })
+end
 function RemoveAllPedWeapons() end
 function SetPedCanRagdoll() end
 function SetPedDefaultComponentVariation() end
@@ -179,16 +218,35 @@ function RequestCollisionAtCoord() end
 function HasCollisionLoadedAroundEntity() return 1 end
 function GetGroundZFor_3dCoord(_x, _y, z) return 1, z - 50.0 end
 
--- The screen.
+-- ═══ THE SCREEN, AND A FADE THAT TAKES TIME ═══
+--
+-- THIS USED TO BE INSTANTANEOUS AND THAT IS WHY THE SUITE COULD NOT SEE THE
+-- BUG THE OWNER REPORTED. DoScreenFadeIn(2000) set IsScreenFadedIn() true on
+-- the same frame, so the walk and the camera flight were never observably
+-- running behind a cover -- and "the ped doesn't do the full walk again" is
+-- ENTIRELY a fact about how much of the walk happened while the screen was
+-- still covered. A cover with no duration is a cover with no bug in it.
 local fadedOut, fadedIn = false, true
-function DoScreenFadeOut() fadedOut = true fadedIn = false end
--- NOTED, BECAUSE IT IS A DEADLINE. The entrance's first act is a teleport
--- thirty metres up the path, and on the trip home the only cover it has is the
--- black this call ends -- so "the ped was placed before the fade" is an
--- ORDERING, and orderings are what this suite exists to assert.
-function DoScreenFadeIn() fadedOut = false fadedIn = true note('fadein') end
+local fadeInAt = nil            -- when a fade-in will have finished
+function DoScreenFadeOut() fadedOut = true fadedIn = false fadeInAt = nil note('fadeout') end
+-- NOTED, BECAUSE IT IS A DEADLINE. The entrance's first act is a teleport up
+-- the path, and on the trip home the only cover it has is the black this call
+-- ends -- so "the ped was placed before the fade" is an ORDERING, and orderings
+-- are what this suite exists to assert.
+function DoScreenFadeIn(ms)
+    fadedOut = false
+    fadeInAt = fakeTime + (tonumber(ms) or 0)
+    note('fadein', { ms = ms })
+end
 function IsScreenFadedOut() return fadedOut and 1 or 0 end
-function IsScreenFadedIn() return fadedIn and 1 or 0 end
+function IsScreenFadedIn()
+    if fadeInAt then
+        if fakeTime < fadeInAt then return 0 end
+        fadedIn = true
+        fadeInAt = nil
+    end
+    return fadedIn and 1 or 0
+end
 function IsScreenFadingIn() return 0 end
 function IsScreenFadingOut() return 0 end
 function ShutdownLoadingScreen() end
@@ -220,6 +278,14 @@ function DoesCamExist(c) return (c and liveCams[c]) and 1 or 0 end
 function DestroyCam(c) liveCams[c] = nil note('camgone', { id = c }) end
 function SetCamActive() end
 function PointCamAtCoord(c, x, y, z) note('campoint', { id = c, x = x, y = y, z = z }) end
+--- Where the flight has actually got to. Read by the winner's flip, which turns
+--- the ped to face the camera before it plays -- "please make sure the flip
+--- happens facing the camera" (owner, 2026-08-29).
+function GetCamCoord(c)
+    local k = liveCams[c]
+    if not k then return { x = 0.0, y = 0.0, z = 0.0 } end
+    return { x = k.x, y = k.y, z = k.z }
+end
 function RenderScriptCams(on) note('render', { on = on == true }) end
 function SetCamCoord() error('the lobby camera must not write coordinates on a rendering camera', 2) end
 
@@ -340,6 +406,13 @@ local function pump(total)
     while fakeTime < target do
         fakeTime = fakeTime + 50
 
+        -- An emote with a duration comes off the ped when it runs out. The
+        -- looping ones (duration -1) stay until something clears them, which
+        -- is exactly what the game does with them.
+        if ped.anim and ped.anim.until_ and fakeTime >= ped.anim.until_ then
+            ped.anim = nil
+        end
+
         -- The ped walks toward whatever it was tasked with.
         if ped.dest then
             local dx, dy = ped.dest.x - ped.x, ped.dest.y - ped.y
@@ -411,15 +484,36 @@ local function ok(cond, what)
     end
 end
 
+--- Force the next entrance onto one of the four authored cases.
+---
+--- THE CASE IS DRAWN WITH math.random AND THE ASSERTIONS BELOW ARE ABOUT
+--- GEOMETRY, so a test that let the draw be a draw would be asserting about a
+--- path it did not know. `only` narrows the config to one case for the duration
+--- of a block; `allCases` puts them all back.
+local realCases = nil
+local function onlyCase(i)
+    realCases = realCases or BR.Config.Match.lobbyEntrance.pedCases
+    BR.Config.Match.lobbyEntrance.pedCases = { realCases[i] }
+end
+local function allCases()
+    if realCases then BR.Config.Match.lobbyEntrance.pedCases = realCases end
+end
+
 local function reset()
     order = {}
     logged = {}
     fadedOut, fadedIn = false, true
+    fadeInAt = nil
     ped.x, ped.y, ped.z = BR.Config.Match.lobbyPos.x, BR.Config.Match.lobbyPos.y,
                           BR.Config.Match.lobbyPos.z
     ped.dest, ped.clipset, ped.frozen = nil, nil, true
+    ped.anim = nil
     ped.male = true
     clipsetStreams = true
+    dictsStream = true
+    for k in pairs(animDicts) do animDicts[k] = nil end
+    BR.Spawn.curtainWanted = false
+    BR.State.party = nil
     for c in pairs(liveCams) do liveCams[c] = nil end
     -- The stored character too: a block that swaps one leaves it in kvp, and
     -- the next block's "picking a character changes it" would then be picking
@@ -463,9 +557,73 @@ do
     ok(C.walkClipsetFemale == 'anim@move_f@grooving@',
        'the female walk is the stock grooving clipset')
 
-    ok(C.pedStart.x == 5012.76 and C.pedStart.heading == 315.3,
-       'the walk starts on the surveyed mark')
-    ok(#C.pedPath == 3, 'three authored corners; the fourth leg is the lobby mark')
+    -- ═══ FOUR CASES, AS SURVEYED ═══
+    --
+    -- Re-surveyed by the owner on 2026-08-29; these numbers ARE the feature and
+    -- a transcription slip in any of them is a ped walking through a rock.
+    ok(type(C.pedCases) == 'table' and #C.pedCases == 4,
+        ('four spawn/walk cases are authored (%d)')
+            :format(type(C.pedCases) == 'table' and #C.pedCases or -1))
+
+    local surveyed = {
+        { spawn = { 5032.51, -5695.65, 19.88, 301.5 }, legs = 6,
+          first = { 5035.57, -5693.29 }, last = { 5036.33, -5717.66 } },
+        { spawn = { 5059.96, -5726.85, 15.67, 54.7 },  legs = 4,
+          first = { 5042.81, -5713.67 }, last = { 5036.33, -5717.66 } },
+        { spawn = { 5018.00, -5725.82, 17.68, 313.4 }, legs = 4,
+          first = { 5027.40, -5717.84 }, last = { 5036.33, -5717.66 } },
+        { spawn = { 5053.49, -5733.81, 15.88, 29.9 },  legs = 4,
+          first = { 5045.11, -5720.26 }, last = { 5036.33, -5717.66 } },
+    }
+    for i, want in ipairs(surveyed) do
+        local c = C.pedCases and C.pedCases[i]
+        local s = c and c.spawn
+        ok(s and s.x == want.spawn[1] and s.y == want.spawn[2]
+             and s.z == want.spawn[3] and s.heading == want.spawn[4],
+            ('case %d spawns on its surveyed mark'):format(i))
+        -- THE LEG COUNT IS THE CORNERS PLUS THE LOBBY MARK, which the client
+        -- appends. A case whose corners were miscounted is a case whose derived
+        -- speeds are solved for the wrong walk.
+        ok(c and (#c.path + 1) == want.legs,
+            ('case %d walks %d legs, the lobby mark included'):format(i, want.legs))
+        ok(c and c.path[1] and c.path[1].x == want.first[1]
+             and c.path[1].y == want.first[2],
+            ('case %d turns first at its surveyed corner'):format(i))
+        -- EVERY CASE CONVERGES ON THE SAME LAST CORNER, which is what makes the
+        -- final approach -- the part the player actually watches, and the part
+        -- the flip happens at -- identical whichever case was drawn.
+        local n = c and c.path[#c.path]
+        ok(n and n.x == want.last[1] and n.y == want.last[2],
+            ('case %d meets the others at the last corner'):format(i))
+    end
+
+    -- AND NO CASE REPEATS THE LOBBY MARK. The client appends it; a copy in a
+    -- case table is the drift this project is most scarred by, and it would
+    -- present as the ped walking the last two metres twice.
+    local dupes = 0
+    local L = BR.Config.Match.lobbyPos
+    for _, c in ipairs(C.pedCases or {}) do
+        for _, n in ipairs(c.path or {}) do
+            if math.abs(n.x - L.x) < 0.01 and math.abs(n.y - L.y) < 0.01 then
+                dupes = dupes + 1
+            end
+        end
+    end
+    ok(dupes == 0, 'no case repeats the lobby mark as a corner')
+
+    -- ...AND NO CORNER CARRIES A HEADING. They used to, and handing them to
+    -- TaskGoStraightToCoord as "the way to face on arrival" is what made the
+    -- ped turn eighty degrees the wrong way at every corner. The facing is
+    -- computed from where the path goes NEXT, so a heading here is a number
+    -- somebody will eventually try to use.
+    local headed = 0
+    for _, c in ipairs(C.pedCases or {}) do
+        for _, n in ipairs(c.path or {}) do
+            if n.heading ~= nil then headed = headed + 1 end
+        end
+    end
+    ok(headed == 0, 'a corner carries coordinates only -- the facing is derived')
+
     ok(#C.camPath == 3, 'three authored camera nodes; the fourth is the lobby frame')
     ok(C.camPath[1].x == 4919.50 and C.camPath[1].z == 98.80,
        'the first camera node is the one the focus leads to')
@@ -474,7 +632,10 @@ do
     -- a value that migrated into the client is a value he cannot reach.
     for _, k in ipairs({ 'camFlightMs', 'focusLeadMs', 'modelWaitMs',
                          'clipsetWaitMs', 'legTimeoutMs', 'armWaitMs',
-                         'arriveRadius', 'cornerRadius', 'markRadius' }) do
+                         'arriveRadius', 'cornerRadius', 'markRadius',
+                         'walkTargetMs', 'walkMps', 'walkBlendMin',
+                         'walkBlendMax', 'camSteps', 'camDecay',
+                         'revealWaitMs' }) do
         ok(type(C[k]) == 'number', ('lobbyEntrance.%s is tunable'):format(k))
     end
 
@@ -500,47 +661,88 @@ do
             .. '(cornerRadius %.2f vs arriveRadius %.2f)')
             :format(C.cornerRadius, C.arriveRadius))
 
-    -- ═══ AND THE SPEED IS A LIST NOW, ONE ENTRY PER LEG ═══
+    -- ═══ AND THERE IS NO AUTHORED SPEED LIST ANY MORE ═══
     --
-    -- Owner, 2026-08-29: "Set walk speed to 2.0 until the first point, 1.5
-    -- until the second point, then 1.0 for 3rd -> 4th point." It was a single
-    -- number until then, which is why this is not in the loop above.
-    ok(type(C.walkSpeeds) == 'table' and #C.walkSpeeds > 0,
-        'lobbyEntrance.walkSpeeds is a list rather than one number')
+    -- `walkSpeeds = { 2.0, 1.5, 1.0 }` was solved for ONE path. Four paths of
+    -- 41m, 59m, 29m and 34m cannot share it and land on the same clock, which
+    -- is what the owner asked for -- so a config that still carries it is a
+    -- config somebody restored by hand, and lobbyped.lua would ignore it
+    -- silently.
+    ok(C.walkSpeeds == nil,
+        'the flat walkSpeeds list is gone -- the speeds are derived per case')
 
-    local allNums = true
-    for _, v in ipairs(C.walkSpeeds or {}) do
-        if type(v) ~= 'number' then allNums = false end
-    end
-    ok(allNums, '...and every entry in it is tunable')
+    -- THE BLEND CEILING IS A SPRINT AND NOT MORE. The whole point of clamping
+    -- is that a case which cannot make the target inside a human pace runs long
+    -- instead of running at a ratio nobody would call a walk.
+    ok(C.walkBlendMin == 1.0,
+        ('the floor is a walk (%.2f)'):format(C.walkBlendMin or -1))
+    ok(C.walkBlendMax > 1.0 and C.walkBlendMax <= 3.0,
+        ('and the ceiling is a sprint at most, never a number like 12 (%.2f)')
+            :format(C.walkBlendMax or -1))
 
-    -- THE PED MUST ARRIVE AT A WALK. The last leg is the one the player is
-    -- actually looking at -- the camera has landed by then -- so a list that
-    -- ended fast would be a run into a dead stop on the mark.
-    local last = C.walkSpeeds and C.walkSpeeds[#C.walkSpeeds]
-    ok(last == 1.0,
-        ('the final leg is walked at 1.0, whatever precedes it (%s)')
-            :format(tostring(last)))
+    -- THE CAMERA FLIGHT AND THE WALK ARE THE SAME LENGTH. Owner, 2026-08-29:
+    -- "The camera flight and the walk should finish together." They also start
+    -- together -- both wait on the same reveal -- so equal durations is the
+    -- whole of it, and two numbers that have drifted apart is the one way to
+    -- get that wrong from config alone.
+    ok(C.camFlightMs == C.walkTargetMs,
+        ('the flight and the walk are given the same duration (%d vs %d)')
+            :format(C.camFlightMs or -1, C.walkTargetMs or -1))
 
-    -- AND IT ONLY EVER SLOWS DOWN. The owner's three numbers descend, and a
-    -- sequence that sped up mid-path would read as the ped noticing the camera.
-    local descends = true
-    for i = 2, #(C.walkSpeeds or {}) do
-        if C.walkSpeeds[i] > C.walkSpeeds[i - 1] then descends = false end
-    end
-    ok(descends, 'and the speeds never increase from one leg to the next')
-
-    -- A LIST SHORTER THAN THE PATH IS LEGAL -- lobbyped.lua clamps to the last
-    -- entry, which is how the 1.0 covers both the third leg and the walk onto
-    -- the mark -- but a list LONGER than the path means somebody tuned a leg
-    -- that does not exist, which is a silent no-op and worth catching here.
+    -- ═══ AND EVERY EMOTE NAMES A REAL DICTIONARY AND CLIP ═══
     --
-    -- THE LEG COUNT IS pedPath PLUS ONE: legs() finishes at BR.Config.Match
-    -- .lobbyPos, so the last authored corner is not the last thing walked.
-    ok(#(C.walkSpeeds or {}) <= #(C.pedPath or {}) + 1,
-        ('and there is no speed for a leg the path does not have '
-            .. '(%d speeds, %d legs)')
-            :format(#(C.walkSpeeds or {}), #(C.pedPath or {}) + 1))
+    -- Both halves, for every one of them: a dictionary with no clip is an
+    -- emote that silently does nothing, which is exactly how a copy-paste in
+    -- the source list would arrive here.
+    local E = C.emotes or {}
+    for _, k in ipairs({ 'win', 'idle', 'ready', 'wave' }) do
+        local e = E[k]
+        ok(type(e) == 'table' and type(e.dict) == 'string' and #e.dict > 0
+             and type(e.clip) == 'string' and #e.clip > 0,
+            ('the %s emote names a dictionary and a clip'):format(k))
+    end
+
+    -- THE WAVE IS THE ONE THAT PLAYS OVER A WALK, and 48 is what says so: 16
+    -- (upper body only) + 32 (secondary / allow movement). Anything else here
+    -- is a ped that stops walking to wave, which is not what was asked for.
+    ok(E.wave and E.wave.flags == 48,
+        ('the wave is an upper-body secondary animation (flags %s)')
+            :format(E.wave and tostring(E.wave.flags) or 'nil'))
+
+    -- AND THE FLIP IS NOT. It is a backflip; there is no upper-body version of
+    -- one, and the walk pauses for it rather than carrying it.
+    ok(E.win and E.win.flags == 0,
+        'the flip is a full-body animation -- the walk stops for it')
+
+    -- THE STRETCH IS THIRTY SECONDS AFTER PARKING, which is the owner's number
+    -- and the only part of (b) that is not a name.
+    ok(E.idle and E.idle.afterMs == 30000,
+        ('the parked stretch waits thirty seconds (%s)')
+            :format(E.idle and tostring(E.idle.afterMs) or 'nil'))
+
+    -- SIX HUNDRED MILLISECONDS, likewise: "play 'thumbs up 3' for 600ms then
+    -- clearpedtasks".
+    ok(E.ready and E.ready.ms == 600,
+        ('the ready-up thumbs up lasts 600ms (%s)')
+            :format(E.ready and tostring(E.ready.ms) or 'nil'))
+
+    -- ═══ THE WAIT FAMILY, MINUS THE ONE HE EXCLUDED ═══
+    --
+    -- "play any variation of 'wait*' emotes except 'wait 9'". wait9 is
+    -- `rcmjosh2` / `josh_2_intp1_base`, and the way that exclusion goes wrong
+    -- is somebody pasting the whole family back in.
+    local waits = E.waiting
+    ok(type(waits) == 'table' and type(waits.clips) == 'table'
+        and #waits.clips > 1,
+        'the squad-waiting emote is a list to vary between')
+
+    local hasWait9 = false
+    for _, w in ipairs((waits and waits.clips) or {}) do
+        if w.dict == 'rcmjosh2' and w.clip == 'josh_2_intp1_base' then
+            hasWait9 = true
+        end
+    end
+    ok(not hasWait9, 'and "wait 9" is not one of them')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -586,23 +788,28 @@ do
     reset()
     wearChosenModel()
 
+    onlyCase(1)
+
     ok(BR.LobbyPed.revealBlock() ~= nil,
        'the loading screen is held while the entrance is arming')
-    ok(BR.LobbyPed.revealMark() == BR.Config.Match.lobbyEntrance.pedStart,
-       'and it is told to expect the ped on the START mark, not the lobby one')
+    ok(BR.LobbyPed.revealMark() == nil,
+       'and it has no mark to name yet -- the case has not been drawn')
 
     pump(300)
     ok(BR.LobbyPed.entering(), 'the entrance starts on the lobby tick')
 
-    pump(500)
     local C = BR.Config.Match.lobbyEntrance
-    ok(math.abs(ped.x - C.pedStart.x) < 2.0,
+    ok(BR.LobbyPed.revealMark() == C.pedCases[1].spawn,
+       'once it is running it names the DRAWN case\'s spawn, not the lobby mark')
+
+    pump(500)
+    ok(math.abs(ped.x - C.pedCases[1].spawn.x) < 2.0,
        'the ped is placed on the start mark before anything else')
     ok(ped.clipset == 'anim@move_m@grooving@',
        'a male ped is given the male grooving clipset')
     ok(BR.LobbyPed.walking(), 'and then it walks')
     ok(BR.LobbyPed.revealBlock() == nil,
-       'once it is walking the loading screen may come down')
+       'once the ped is on its mark the loading screen may come down')
 
     -- The entrance's first shot went up at the authored node, with no
     -- interpolation INTO it -- it is raised under a black screen and there is
@@ -638,25 +845,39 @@ do
     ok(not BR.LobbyPed.lockerLocked(), 'the locker unlocks when the ped arrives')
 
     local _, arrival = firstOf('freeze', function(e) return e.on and e.at > 2000 end)
-    local homeAt, pedAt
-    for _, e in ipairs(order) do
-        if e.kind == 'campoint' and e.at > 2000 then homeAt = homeAt or e.at end
+
+    -- THE FLIGHT LANDS ON THE LOBBY FRAME EXACTLY. Not near it: the shot the
+    -- entrance ends on is the shot the locker and the ped picker were composed
+    -- against, and a camera half a metre off it is a differently framed
+    -- character every time somebody comes home.
+    local hx, hy, hz = BR.LobbyCam.lobbyFrame()
+    local landed = nil
+    for i = #order, 1, -1 do
+        local e = order[i]
+        if e.kind == 'cammade' and e.at > 2000 then landed = e break end
     end
+    ok(landed ~= nil and math.abs(landed.x - hx) < 0.01
+        and math.abs(landed.y - hy) < 0.01 and math.abs(landed.z - hz) < 0.01,
+       'the flight lands on the lobby frame exactly, not near it')
+
+    local pedAt
     for i = #order, 1, -1 do
         if order[i].kind == 'coords' then pedAt = order[i].at break end
     end
-    ok(homeAt ~= nil, 'the camera is aimed at the lobby frame at the end of the flight')
-    ok(homeAt ~= nil and pedAt ~= nil and homeAt <= pedAt,
-       'the camera starts its landing before the ped arrives')
+    ok(landed ~= nil and pedAt ~= nil and landed.at <= pedAt,
+       'and it gets there no later than the ped does')
     ok(arrival ~= nil, 'the arrival re-freezes the ped')
 
-    -- NO CAMERA IS LEFT BEHIND by a flight that ran to completion.
+    -- NO CAMERA IS LEFT BEHIND by a flight that ran to completion -- and after
+    -- the resampling that is two dozen moves rather than three, so a sweep that
+    -- only ran on the happy path would leak two dozen cameras.
     pump(2000)
     ok(liveCamCount() <= 1,
        ('a completed flight leaves one camera, not %d'):format(liveCamCount()))
 
     -- The focus was given back.
     ok(firstOf('focusback') ~= nil, 'the streaming focus is handed back at the end')
+    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -961,58 +1182,102 @@ do
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- 13. ONE SPEED PER LEG, AND READYING UP CANCELS IT
+-- 13. EVERY CASE TAKES THE SAME TIME, AND READYING UP CANCELS THE SPEED
 -- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-29: "Each walk should take the exact same amount of time, and
+-- be faster at the first steps when necessary, before slowing down to a normal
+-- pace for the last walk." Eighteen seconds, confirmed, for all four.
+--
+-- THE ASSERTION IS ABOUT THE FOUR CASES AGAINST EACH OTHER, which is the whole
+-- reason the speeds stopped being authored: the paths are 41m, 59m, 29m and 34m
+-- and one list of blend ratios cannot land all of them on one clock. Every case
+-- is walked in full, and what is measured is the wall time between the first
+-- task and the placement on the mark.
 
 do
-    -- Owner, 2026-08-29: "Set walk speed to 2.0 until the first point, 1.5
-    -- until the second point, then 1.0 for 3rd -> 4th point. Also remember if
-    -- the player readies up fast we need to cancel that walk speed now too."
-    reset()
-    wearChosenModel()
-
     local C = BR.Config.Match.lobbyEntrance
-    local want = C.walkSpeeds
+    local target = C.walkTargetMs / 1000.0
+    local took, opens = {}, {}
 
-    -- Run the whole walk out. The legs are timed by the fixture's own clock, so
-    -- this has to be long enough for the slowest configuration to finish.
-    pump(60000)
+    for ci = 1, #(C.pedCases or {}) do
+        onlyCase(ci)
+        reset()
+        wearChosenModel()
+        pump(70000)
 
-    -- EVERY TASK, IN ORDER. `firstOf` answers one; the whole point here is the
-    -- SEQUENCE of blend ratios, so they are collected by hand.
-    local got = {}
-    for _, e in ipairs(order) do
-        if e.kind == 'task' then got[#got + 1] = e.speed end
+        local tasks = {}
+        for _, e in ipairs(order) do
+            if e.kind == 'task' then tasks[#tasks + 1] = e end
+        end
+
+        local nLegs = #C.pedCases[1].path + 1
+        ok(#tasks == nLegs,
+            ('case %d is tasked once per leg, the lobby mark included '
+                .. '(%d tasks, %d legs)'):format(ci, #tasks, nLegs))
+
+        -- THE LAST LEG IS A WALK, WHATEVER PRECEDED IT. It is the leg the
+        -- player actually watches -- the camera has landed by then -- so a case
+        -- that arrived at a run would be the whole point missed.
+        ok(#tasks > 0 and math.abs(tasks[#tasks].speed - 1.0) < 0.001,
+            ('case %d arrives at a walk (%.2f)')
+                :format(ci, #tasks > 0 and tasks[#tasks].speed or -1))
+
+        -- AND IT ONLY EVER SLOWS DOWN. A ramp, not a step: a case that sped up
+        -- mid-path would read as the ped noticing the camera.
+        local descends = true
+        for i = 2, #tasks do
+            if tasks[i].speed > tasks[i - 1].speed + 0.001 then descends = false end
+        end
+        ok(descends, ('case %d never speeds up from one leg to the next'):format(ci))
+
+        -- INSIDE THE CLAMPS. "a ratio of 12 is not a walk."
+        local inRange = true
+        for _, t in ipairs(tasks) do
+            if t.speed < C.walkBlendMin - 0.001 or t.speed > C.walkBlendMax + 0.001 then
+                inRange = false
+            end
+        end
+        ok(inRange, ('case %d stays between the blend floor and ceiling'):format(ci))
+
+        local landed = nil
+        local L = BR.Config.Match.lobbyPos
+        for _, e in ipairs(order) do
+            if e.kind == 'coords' and e.at > 2000
+               and math.abs(e.x - L.x) < 0.01 and math.abs(e.y - L.y) < 0.01 then
+                landed = e break
+            end
+        end
+        took[ci] = (landed and #tasks > 0) and (landed.at - tasks[1].at) / 1000.0 or -1
+        opens[ci] = #tasks > 0 and tasks[1].speed or -1
+    end
+    allCases()
+
+    -- ═══ AND HERE IS THE NUMBER THE OWNER ASKED FOR ═══
+    --
+    -- Every case within a second of eighteen, EXCEPT any case whose geometry
+    -- cannot be walked that fast inside the blend ceiling. Case 2 is that case
+    -- -- 58.7m, of which 31.9m is a detour 14m north and 17.9m back south -- and
+    -- it is built exactly as surveyed and flagged rather than straightened, so
+    -- this allows it to run long while still refusing any case that runs SHORT
+    -- or that has quietly stopped being solved at all.
+    for ci, t in ipairs(took) do
+        local slack = (ci == 2) and 4.0 or 1.0
+        ok(t > 0 and t >= target - 1.0 and t <= target + slack,
+            ('case %d walks in %.1fs against a target of %.1fs'):format(ci, t, target))
     end
 
-    -- FOUR LEGS, NOT THREE. lobbyped.lua's legs() walks every pedPath corner
-    -- and then the lobby mark itself, so the positions the ped arrives at are
-    -- the owner's "first / second / 3rd / 4th point" exactly.
-    local nLegs = #(C.pedPath or {}) + 1
-    ok(#got == nLegs,
-        ('the ped is tasked once per leg, the lobby mark included '
-            .. '(%d tasks, %d legs)'):format(#got, nLegs))
-
-    local matched = #got > 0
-    for i = 1, #got do
-        local expect = want[math.min(i, #want)]
-        if got[i] ~= expect then matched = false end
+    -- THE OPENING SPEEDS GENUINELY DIFFER BETWEEN CASES, which is what fails if
+    -- somebody puts a flat list back: a 29m case and a 59m case cannot both
+    -- start at the same ratio and finish together.
+    local spread = 0.0
+    for _, s in ipairs(opens) do
+        for _, t in ipairs(opens) do
+            if math.abs(s - t) > spread then spread = math.abs(s - t) end
+        end
     end
-    ok(matched,
-        ('and each leg is walked at its own speed -- 2.0 in, then 1.5, '
-            .. 'arriving at 1.0 -- rather than one number for the whole path '
-            .. '(got %s)'):format((function()
-                local s = {}
-                for i, v in ipairs(got) do s[i] = tostring(v) end
-                return table.concat(s, ', ')
-            end)()))
-
-    -- THE SPEEDS ARE NOT ALL THE SAME, which is the assertion that fails if
-    -- someone collapses the list back to a scalar and the loop above starts
-    -- comparing one value against itself.
-    local varied = false
-    for i = 2, #got do if got[i] ~= got[1] then varied = true end end
-    ok(varied, 'and they genuinely differ from one leg to the next')
+    ok(spread > 0.25,
+        ('the cases open at genuinely different speeds (spread %.2f)'):format(spread))
 
     -- ═══ READYING UP MID-RUN CANCELS THE SPEED WITH THE TASK ═══
     --
@@ -1020,14 +1285,15 @@ do
     -- property written onto the ped -- unlike the movement clipset, which needs
     -- its own reset. So the thing to prove is that stop() clears the TASK, and
     -- that nothing re-tasks afterwards at the running speed.
+    onlyCase(1)
     reset()
     wearChosenModel()
     pump(1200)      -- inside the first leg, which is the fastest one
 
     local live = nil
     for _, e in ipairs(order) do if e.kind == 'task' then live = e.speed end end
-    ok(live == want[1],
-        ('precondition: the ped is mid-walk on the opening leg, at its speed '
+    ok(live ~= nil and live > 1.0,
+        ('precondition: the ped is mid-walk on the opening leg, above a walk '
             .. '(%s)'):format(tostring(live)))
     ok(ped.dest ~= nil, 'precondition: the task is live')
 
@@ -1044,37 +1310,22 @@ do
     pump(40000)
     ok(firstOf('task') == nil,
         'and nothing re-tasks afterwards at any speed')
+    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- 14. THE CAMERA FLIES AT ONE PACE, AND NEVER STOPS ON THE WAY
+-- 14. THE CAMERA IS A CURVE THAT SLOWS DOWN, AND IT NEVER STOPS ON THE WAY
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- Owner, 2026-08-29: "The camera movements and the walks should not wait on
--- each other. Right now once the camera reaches each point, there's a pause.
--- That shouldn't happen, it should be smooth movement all the way start to
--- finish with no pace change either."
+-- Owner, 2026-08-29, four complaints about one flight: "The speed is too slow
+-- at the beginning and too fast at the end. Over the course of the final move
+-- the camera should slow down exponentially. Also the camera facing direction
+-- changes too suddenly - it should be much smoother. When the camera gets to a
+-- position and changes direction that's also too sudden. I feel like we need
+-- more steps in this process which will smooth out the corners into curves."
 --
--- THREE SEPARATE THINGS WERE WRONG AND THEY NEED THREE SEPARATE ASSERTIONS.
--- The moves were EASED, so the camera arrived at rest at every node. They were
--- given the SAME DURATION over segments of wildly different lengths, so the
--- pace changed at every node even without the easing. And the last one WAITED
--- on the ped's measured arrival, which is the coupling the owner suspected.
-
---- The flight's segments, in metres, computed the way the client has to: the
---- last one ends at the lobby FRAME, which is not in camPath.
-local function camSegLengths()
-    local nodes = BR.Config.Match.lobbyEntrance.camPath
-    local out = {}
-    for i = 2, #nodes do
-        out[#out + 1] = BR.Dist3(nodes[i - 1].x, nodes[i - 1].y, nodes[i - 1].z,
-                                 nodes[i].x, nodes[i].y, nodes[i].z)
-    end
-    local last = nodes[#nodes]
-    local hx, hy, hz = BR.LobbyCam.lobbyFrame()
-    out[#out + 1] = BR.Dist3(last.x, last.y, last.z, hx, hy, hz)
-    return out
-end
+-- FOUR COMPLAINTS, FOUR ASSERTIONS, and one of them -- no stop between steps --
+-- is the property from the round before that must survive all of this.
 
 --- Every camera move of one entrance, in order.
 local function glides()
@@ -1085,80 +1336,139 @@ local function glides()
     return out
 end
 
+--- The cameras THE FLIGHT built, in flight order, with their rotations.
+---
+--- FOLLOWED THROUGH THE GLIDES RATHER THAN FILTERED BY TIME, because the lobby
+--- camera the follow tick raises before and after the entrance is a `cammade`
+--- too -- and it is built with a zero rotation and PointCamAtCoord, so letting
+--- one into this list turns every rotation assertion into nonsense.
+local function flightCams()
+    local byId = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'cammade' then byId[e.id] = e end
+    end
+    local out = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'camglide' then
+            if #out == 0 and byId[e.from] then out[1] = byId[e.from] end
+            if byId[e.to] then out[#out + 1] = byId[e.to] end
+        end
+    end
+    return out
+end
+
 do
     reset()
     wearChosenModel()
     pump(70000)
 
-    local lens = camSegLengths()
+    local C = BR.Config.Match.lobbyEntrance
     local moves = glides()
+    local made = flightCams()
 
-    ok(#moves == #lens,
-        ('the flight is one move per segment, ending on the lobby frame '
-            .. '(%d moves, %d segments)'):format(#moves, #lens))
-
-    -- ═══ NO EASE ON A SEGMENT OF A FLIGHT ═══
+    -- ═══ MORE STEPS, WHICH IS THE CORNERS BECOMING CURVES ═══
     --
-    -- This is the pause itself. An eased interpolation decelerates to a
-    -- standstill at its destination; three of them in a row is a camera that
-    -- stops at every node, and no amount of retiming the moves can fix it
-    -- because the stop is inside the engine's own curve.
+    -- Three moves between four authored positions is three straight lines and
+    -- two corners. The owner asked for this in as many words.
+    ok(#moves == C.camSteps,
+        ('the flight is cut into camSteps moves rather than one per authored '
+            .. 'node (%d moves, camSteps %d)'):format(#moves, C.camSteps))
+
+    -- ═══ NO EASE ON A STEP OF A FLIGHT ═══
+    --
+    -- This is the pause from the round before, and it must not come back to
+    -- deliver the deceleration. An eased interpolation decelerates to a
+    -- STANDSTILL at its destination; two dozen of those in a row is a camera
+    -- that stops two dozen times. The slowing down asked for here is in how
+    -- SHORT the last steps are, not in how they are interpolated.
     local eased = 0
     for _, m in ipairs(moves) do
         if m.easeLoc ~= 0 or m.easeRot ~= 0 then eased = eased + 1 end
     end
     ok(eased == 0,
-        ('no segment of the flight eases in or out -- an eased move arrives at '
-            .. 'rest, which is the pause at each node (%d of %d eased)')
+        ('no step of the flight eases in or out (%d of %d eased)')
             :format(eased, #moves))
 
-    -- ═══ ONE PACE, ALL THE WAY DOWN ═══
+    -- ═══ FAST AT THE START, EXPONENTIALLY SLOWER AT THE END ═══
     --
-    -- The segments are about 222m, 102m and 31m. A flat duration each -- which
-    -- is what camMoveMs was -- flies them at roughly 44, 20 and 6 metres per
-    -- second, so the camera changes speed at every node even once the easing is
-    -- gone. The ratio is what is asserted rather than any particular speed, so
-    -- retuning camFlightMs cannot break this.
-    if #moves == #lens then
-        local fast, slow = 0.0, math.huge
-        for i, m in ipairs(moves) do
-            local mps = lens[i] / ((m.ms or 1) / 1000.0)
-            if mps > fast then fast = mps end
-            if mps < slow then slow = mps end
-        end
-        ok(slow > 0.0 and fast / slow < 1.10,
-            ('the camera holds one pace across every segment '
-                .. '(%.1f m/s fastest, %.1f m/s slowest)'):format(fast, slow))
+    -- Measured as metres per second per step, which with equal durations is
+    -- just the step lengths. Three separate claims: it starts faster than it
+    -- averages, it ends slower, and it never speeds up on the way.
+    local speeds = {}
+    for i = 2, #made do
+        local a, b = made[i - 1], made[i]
+        local len = BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z)
+        local ms = moves[i - 1] and moves[i - 1].ms or 1
+        speeds[#speeds + 1] = len / (ms / 1000.0)
     end
 
-    -- ═══ AND NOTHING SITS BETWEEN TWO SEGMENTS ═══
+    local rising = 0
+    for i = 2, #speeds do
+        -- A little slack: the curve's own geometry wobbles the arc-length
+        -- resampling by a fraction of a percent, and that is not a pace change.
+        if speeds[i] > speeds[i - 1] * 1.02 then rising = rising + 1 end
+    end
+    ok(#speeds > 4 and rising == 0,
+        ('the camera never speeds up on the way down (%d of %d steps rose)')
+            :format(rising, #speeds))
+
+    ok(#speeds > 4 and speeds[1] > speeds[#speeds] * 2.0,
+        ('and it opens far faster than it lands -- %.1f m/s to %.1f m/s')
+            :format(speeds[1] or -1, speeds[#speeds] or -1))
+
+    -- EXPONENTIAL RATHER THAN MERELY DECREASING. A linear ramp-down would pass
+    -- the two assertions above and is not what was asked for. The signature of
+    -- exponential decay is a CONSTANT RATIO between consecutive steps, so the
+    -- ratio early in the flight and the ratio late in it should agree -- a
+    -- linear ramp's ratios grow without bound as the steps get small.
+    if #speeds >= 8 then
+        local early = speeds[3] / speeds[2]
+        local late  = speeds[#speeds] / speeds[#speeds - 1]
+        ok(math.abs(early - late) < 0.05,
+            ('the slowdown is exponential, not linear -- step ratio %.3f early, '
+                .. '%.3f late'):format(early, late))
+    end
+
+    -- ═══ AND THE FACING TURNS SMOOTHLY ═══
+    --
+    -- "the camera facing direction changes too suddenly". Three authored
+    -- headings meant three rotations; one moving aim point means one. The
+    -- assertion is the WORST single-step turn, because a smooth rotation with
+    -- one snap in it is still a snap.
+    local worstTurn, at = 0.0, 0
+    for i = 2, #made do
+        local d = math.abs((made[i].yaw - made[i - 1].yaw + 540.0) % 360.0 - 180.0)
+        if d > worstTurn then worstTurn, at = d, i end
+    end
+    ok(#made > 4 and worstTurn < 30.0,
+        ('no single step of the flight turns the camera sharply (worst %.1f '
+            .. 'degrees at step %d)'):format(worstTurn, at))
+
+    -- ═══ AND NOTHING SITS BETWEEN TWO STEPS ═══
     --
     -- Each move is issued when the one before it finishes. Anything else is a
-    -- camera parked at a node waiting for something -- which is what the last
-    -- move used to do, holding at the third node until the ped's measured
-    -- arrival came within camLeadMs of it.
+    -- camera parked waiting for something -- which is what the last move used
+    -- to do, holding until the ped's measured arrival came within camLeadMs.
     local worst = 0
     for i = 2, #moves do
         local gap = moves[i].at - (moves[i - 1].at + (moves[i - 1].ms or 0))
         if gap > worst then worst = gap end
     end
     ok(worst <= 100,
-        ('no segment waits for the one before it to be over '
-            .. '(worst gap %dms)'):format(worst))
+        ('no step waits for the one before it to be over (worst gap %dms)')
+            :format(worst))
 end
 
--- ...AND THE COUPLING IS GONE RATHER THAN MERELY DORMANT.
+-- ...AND THE FLIGHT DOES NOT READ THE PED AT ALL.
 --
--- At the walk speeds the owner authored the old code happened not to dwell:
--- the ped is quick enough that its estimated arrival was already inside the
--- lead by the time the second move ended. Slow the walk down -- which is one
--- config edit, and is exactly what the entrance did before walkSpeeds landed --
--- and the same code parks the camera in the sky for ten seconds. The property
--- worth having is that the flight does not read the ped AT ALL.
+-- The old code held at the last node until the ped's estimated arrival came
+-- within camLeadMs. At the speeds authored at the time it happened not to
+-- dwell, so the property worth having is not "it does not dwell today" -- it is
+-- that slowing the WALK right down changes nothing about the flight.
 do
     local C = BR.Config.Match.lobbyEntrance
-    local realSpeeds = C.walkSpeeds
-    C.walkSpeeds = { 1.0 }
+    local realMps = C.walkMps
+    C.walkMps = 0.35              -- a quarter pace: the walk runs minutes long
 
     reset()
     wearChosenModel()
@@ -1175,7 +1485,7 @@ do
             .. 'wait on the walk (worst gap %dms over %d moves)')
             :format(worst, #moves))
 
-    C.walkSpeeds = realSpeeds
+    C.walkMps = realMps
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1198,14 +1508,17 @@ end
 -- to stop on it.
 
 do
+    -- CASE 1, BECAUSE IT HAS THE MOST CORNERS. Five of them, which is five
+    -- chances to face the wrong way and five handovers to be late.
+    onlyCase(1)
     reset()
     wearChosenModel()
     pump(70000)
 
-    -- The legs, as the client builds them: the authored corners then the mark.
+    -- The legs, as the client builds them: the case's corners then the mark.
     local C = BR.Config.Match.lobbyEntrance
     local legs = {}
-    for _, n in ipairs(C.pedPath) do legs[#legs + 1] = n end
+    for _, n in ipairs(C.pedCases[1].path) do legs[#legs + 1] = n end
     legs[#legs + 1] = BR.Config.Match.lobbyPos
 
     local tasks = {}
@@ -1240,18 +1553,27 @@ do
         -- Measured where the ped was STANDING when each task arrived, against
         -- the corner the previous leg was aimed at. The whole fix is that this
         -- number is metres rather than centimetres.
-        local nearest, nearestLeg = math.huge, 0
+        -- AGAINST THE LEG'S OWN CLAMPED RADIUS, not the flat cornerRadius:
+        -- lobbyped.lua clamps the handover to 40% of the leg being walked so a
+        -- short leg cannot be swallowed whole by its own corner, and case 1's
+        -- opening leg is under four metres. Asserting the flat 2m against a leg
+        -- that legitimately hands over at 1.5m would be testing the clamp away.
+        local late, lateLeg, wanted = 1.0, 0, 0.0
         for i = 2, #tasks do
             local prev = legs[i - 1]
+            local raw = BR.Dist(tasks[i - 1].fromX, tasks[i - 1].fromY, prev.x, prev.y)
+            local want = math.min(C.cornerRadius, raw * 0.4)
+            if want < C.arriveRadius then want = C.arriveRadius end
             local d = BR.Dist(tasks[i].fromX, tasks[i].fromY, prev.x, prev.y)
-            if d < nearest then nearest, nearestLeg = d, i end
+            local ratio = want > 0.0 and (d / want) or 1.0
+            if ratio < late then late, lateLeg, wanted = ratio, i, want end
         end
-        ok(nearest >= C.cornerRadius * 0.75,
+        ok(late >= 0.75,
             ('each leg is handed over while the ped is still short of the '
-                .. 'corner and still moving (leg %d took over %.2fm out, '
-                .. 'cornerRadius %.2f)')
-                :format(nearestLeg, nearest, C.cornerRadius))
+                .. 'corner and still moving (leg %d took over at %.0f%% of its '
+                .. '%.2fm handover)'):format(lateLeg, late * 100.0, wanted))
     end
+    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1355,6 +1677,7 @@ end
 -- What has to hold is that NO CLOCK TIME passes between them at all.
 
 do
+    onlyCase(1)
     reset()
     wearChosenModel()
     pump(70000)
@@ -1369,8 +1692,9 @@ do
     pump(4000)
 
     local C = BR.Config.Match.lobbyEntrance
+    local spawn = C.pedCases[1].spawn
     local _, start = firstOf('coords',
-        function(e) return math.abs(e.x - C.pedStart.x) < 0.01 end)
+        function(e) return math.abs(e.x - spawn.x) < 0.01 end)
     local _, fade = firstOf('fadein')
 
     ok(start ~= nil, 'the trip home starts the entrance')
@@ -1382,8 +1706,567 @@ do
 
     -- AND THE ENTRANCE REALLY RAN, rather than the assertion above passing
     -- because nothing happened at all on this road.
-    ok(BR.LobbyPed.entering() or firstOf('task') ~= nil,
-        'and the walk itself is under way on the trip home')
+    ok(BR.LobbyPed.entering(),
+        'and the entrance itself is under way on the trip home')
+    allCases()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 17b. ...AND THE WALK DOES NOT START UNTIL THERE IS SOMEBODY WATCHING IT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-29, having played the round that added the re-arm: "when
+-- coming back from the warmup or another match, the ped doesn't do the full
+-- walk again. It should."
+--
+-- ═══ THE ENTRANCE DID RUN. THE OPENING OF IT WAS COVERED ═══
+--
+-- The re-arm above is not the bug, which is why every assertion in 17 was green
+-- and stayed green. What the owner watched is the TAIL of a walk: on the road
+-- home the ped is placed under the trip's cover -- correctly, that is the pop
+-- this whole feature removes -- and then the walk STARTED under it too, while
+-- the camera flight (which already waited for IsScreenFadedIn) did not.
+--
+-- THE LEAVING CURTAIN IS THE WORST OF IT and it is the road he named. The
+-- TO_LOBBY handler lowers it on a schedule about the ISLAND streaming in: a
+-- 3.5s floor, then collision, then two more seconds. BR.Spawn.toLobby starts the
+-- entrance about 450ms into that, so around five seconds of walk happened behind
+-- an opaque NUI layer -- and case 1's whole opening leg is shorter than that.
+--
+-- THIS SUITE COULD NOT SEE IT UNTIL NOW, and that is the other half of the bug:
+-- DoScreenFadeIn was instantaneous here, so no cover ever had a DURATION for a
+-- walk to hide inside. It does now, and this block drives the TO_LOBBY handler
+-- rather than BR.Spawn.toLobby directly so the curtain's own lifetime is real.
+
+do
+    onlyCase(1)
+    reset()
+    wearChosenModel()
+    pump(70000)      -- the boot entrance, out of the way
+
+    BR.State.me.state = BR.PlayerState.PLAYING
+    ped.x, ped.y = 1500.0, 2500.0
+    pump(500)
+
+    -- /brleave from a match: the server sets me LOBBY and sends TO_LOBBY, which
+    -- raises the curtain and takes the trip home.
+    BR.State.me.state = BR.PlayerState.LOBBY
+    order = {}
+    TriggerEvent(BR.Net.TO_LOBBY)
+    pump(30000)
+
+    local C = BR.Config.Match.lobbyEntrance
+    local spawn = C.pedCases[1].spawn
+
+    local _, placed = firstOf('coords',
+        function(e) return math.abs(e.x - spawn.x) < 0.01 end)
+    local _, firstTask = firstOf('task')
+
+    ok(placed ~= nil, 'precondition: the trip home placed the ped on its mark')
+    ok(firstTask ~= nil, 'precondition: and the walk ran')
+
+    -- ═══ THE CURTAIN CAME DOWN BEFORE THE FIRST STEP ═══
+    --
+    -- `curtainWanted` is br_ui's opaque layer, and the game's own fade natives
+    -- cannot see it -- which is precisely why the walk used to ignore it. The
+    -- assertion is about the FIRST leg specifically: it is the fast one, it is
+    -- the one the owner lost, and by the time the second leg starts the curtain
+    -- is always down anyway.
+    local curtainDown = nil
+    for _, e in ipairs(events) do
+        if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.LEAVING
+           and e.args[2] and e.args[2].show == false then
+            curtainDown = true
+        end
+    end
+    ok(curtainDown == true, 'precondition: and the leaving curtain was lowered')
+
+    ok(placed ~= nil and firstTask ~= nil and firstTask.at > placed.at,
+        'the ped is placed under the cover and only walks afterwards')
+
+    -- THE REAL ASSERTION: how much of the walk happened before the cover
+    -- lifted. None of it. The placement is under the cover; the WALK is not.
+    local coveredLegs = 0
+    for _, e in ipairs(order) do
+        if e.kind == 'task' and e.covered then coveredLegs = coveredLegs + 1 end
+    end
+    ok(coveredLegs == 0,
+        ('no leg of the walk is tasked while the screen is still covered '
+            .. '(%d of them were)'):format(coveredLegs))
+
+    -- ...AND THE WHOLE WALK IS VISIBLE, measured the way the owner would: the
+    -- distance from the start mark to where the ped was standing when it was
+    -- first tasked. It should be nothing -- the ped has not moved yet.
+    local moved = firstTask
+        and BR.Dist(firstTask.fromX, firstTask.fromY, spawn.x, spawn.y) or 999.0
+    ok(moved < 0.5,
+        ('the ped has covered none of its path when the walk begins (%.2fm)')
+            :format(moved))
+
+    -- AND THE FLIGHT STARTS ON THE SAME CUE, which is what makes "the camera
+    -- flight and the walk should finish together" a property of two equal
+    -- durations rather than of luck.
+    local _, firstGlide = firstOf('camglide')
+    ok(firstGlide ~= nil and firstTask ~= nil
+        and math.abs(firstGlide.at - firstTask.at) <= 100,
+        ('the camera flight starts on the same cue as the walk (%sms apart)')
+            :format(firstGlide and firstTask
+                and tostring(firstGlide.at - firstTask.at) or '?'))
+    allCases()
+end
+
+-- ...AND A COVER THAT NEVER LIFTS COSTS A WALK THAT STARTS ANYWAY.
+--
+-- Every wait in this file is bounded and this is no exception: a page that has
+-- crashed with the curtain up, or a fade that never lands, must cost a walk
+-- that begins in the open -- never an entrance that never happens, which is the
+-- failure the owner reported in the first place wearing different clothes.
+do
+    onlyCase(1)
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    BR.State.me.state = BR.PlayerState.PLAYING
+    ped.x, ped.y = 1500.0, 2500.0
+    pump(500)
+    BR.State.me.state = BR.PlayerState.LOBBY
+
+    order = {}
+    BR.Spawn.toLobby(false)
+    pump(200)
+    -- The curtain goes up and is never taken down again.
+    BR.Spawn.curtainWanted = true
+    pump(BR.Config.Match.lobbyEntrance.revealWaitMs + 5000)
+
+    ok(firstOf('task') ~= nil,
+        'a curtain that never lifts costs a walk that starts anyway')
+    BR.Spawn.curtainWanted = false
+    allCases()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 17c. THE EMOTES, ON FIVE DIFFERENT CLOCKS
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- All five are the owner's, 2026-08-29, and what makes them worth a suite
+-- rather than a playtest is that four of the five are ORDERINGS -- when the
+-- gesture happens relative to something else -- and the fifth is a conflict
+-- rule between two of them. None of that is visible in a screenshot.
+
+--- Every animation of one entrance, in order.
+local function anims()
+    local out = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'anim' then out[#out + 1] = e end
+    end
+    return out
+end
+
+--- Every go-to-coord task of one entrance, in order.
+local function taskList()
+    local out = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'task' then out[#out + 1] = e end
+    end
+    return out
+end
+
+-- (d) THE WAVE, CUED BY THE CAMERA AND PLAYED OVER THE WALK.
+do
+    onlyCase(1)
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    local E = BR.Config.Match.lobbyEntrance.emotes
+    local got = anims()
+    local tasks = taskList()
+
+    local wave = nil
+    for _, a in ipairs(got) do
+        if a.dict == E.wave.dict and a.clip == E.wave.clip then wave = a end
+    end
+    ok(wave ~= nil, 'the ped waves when the camera reaches its second-to-last node')
+
+    -- ═══ AND IT PLAYS OVER THE WALK RATHER THAN INSTEAD OF IT ═══
+    --
+    -- Flags 48 is 16 (upper body only) + 32 (secondary / allow movement), which
+    -- is what lets a walking ped wave. Flags 0 here would be a ped that stops
+    -- dead in the middle of its entrance to wave at a camera.
+    ok(wave ~= nil and wave.flags == 48,
+        ('and it is an upper-body secondary animation (flags %s)')
+            :format(wave and tostring(wave.flags) or 'nil'))
+
+    -- THE PROOF THAT IT DID NOT STOP THE PED: a leg was still being walked when
+    -- it fired, and no task was cleared to make room for it.
+    local during = false
+    for i = 1, #tasks do
+        local nxt = tasks[i + 1]
+        if wave and wave.at >= tasks[i].at and (not nxt or wave.at < nxt.at) then
+            during = (i < #tasks) or true
+        end
+    end
+    ok(during, 'and it happens mid-walk, with a leg live under it')
+
+    local clearedNear = false
+    for _, e in ipairs(order) do
+        if e.kind == 'cleartasks' and wave
+           and math.abs(e.at - wave.at) < 200 then clearedNear = true end
+    end
+    ok(not clearedNear, 'and nothing clears the ped task to make room for it')
+
+    -- ONCE. The cue is a latch, not a level, and a flight that crosses it on
+    -- every step would otherwise re-task the animation two dozen times.
+    local waves = 0
+    for _, a in ipairs(got) do
+        if a.dict == E.wave.dict and a.clip == E.wave.clip then waves = waves + 1 end
+    end
+    ok(waves == 1, ('and it plays exactly once (%d)'):format(waves))
+    allCases()
+end
+
+-- (a) THE WINNER'S FLIP, AND (a) BEATING (d) WHERE THEY MEET.
+do
+    onlyCase(1)
+    reset()
+    wearChosenModel()
+
+    -- The verdict screen's own payload is where "did I win" comes from.
+    TriggerEvent('br:ui:sendLocal', BR.Nui.SUMMARY, { won = true, placement = 1 })
+    BR.LobbyPed.rearm()
+    order = {}
+    pump(90000)
+
+    local E = BR.Config.Match.lobbyEntrance.emotes
+    local tasks = taskList()
+    local flip = nil
+    for _, a in ipairs(anims()) do
+        if a.dict == E.win.dict and a.clip == E.win.clip then flip = a end
+    end
+
+    ok(flip ~= nil, 'a winning return flips')
+
+    -- AT THE SECOND-TO-LAST WALK POINT: after the leg that arrives there has
+    -- been tasked, and before the final leg is. "then once the animation is
+    -- done, they walk to the final point."
+    ok(flip ~= nil and #tasks >= 2
+        and flip.at > tasks[#tasks - 1].at and flip.at < tasks[#tasks].at,
+        'at the second-to-last walk point, before the final leg is given')
+
+    -- FACING THE CAMERA. "please make sure the flip happens facing the camera"
+    -- -- and turning rather than snapping, which is why this is a task and not
+    -- a heading write.
+    local _, turn = firstOf('turn')
+    ok(turn ~= nil and flip ~= nil and turn.at <= flip.at,
+        'and the ped turns to face the camera before it starts')
+
+    -- FULL BODY: there is no upper-body backflip, and the walk stopping for it
+    -- is the point rather than a side effect.
+    ok(flip ~= nil and flip.flags == 0,
+        'the flip is full-body -- the walk stops for it')
+
+    -- AND THE WALK REALLY PAUSED. The gap between the second-to-last leg being
+    -- tasked and the last one is longer than it takes to walk that leg, by
+    -- about the length of the animation. Measured rather than assumed, because
+    -- "the animation played" and "the walk waited for it" are different claims
+    -- and only the second one is the feature.
+    local gap = (#tasks >= 2) and (tasks[#tasks].at - tasks[#tasks - 1].at) or 0
+    ok(gap > (E.win.ms or 3200) * 0.5,
+        ('and the walk waits for it -- %dms between the last two legs'):format(gap))
+
+    -- ═══ AND THE WAVE LOSES ═══
+    --
+    -- Owner, 2026-08-29: "If that overlap happens - prefer the flip." The flip
+    -- pauses the walk and the flight does not, so on this case the camera
+    -- reaches its second-to-last node while the ped is mid-backflip. The wave
+    -- is SKIPPED, not queued: there is no later moment at which it is the right
+    -- gesture, and firing it as the ped lands from a flip is the thing he ruled
+    -- out in as many words.
+    local waveAfter = false
+    for _, a in ipairs(anims()) do
+        if a.dict == E.wave.dict and a.clip == E.wave.clip
+           and flip and a.at >= flip.at then waveAfter = true end
+    end
+    ok(not waveAfter, 'and no wave is played during or after it')
+    allCases()
+end
+
+-- (c) READY UP: A THUMBS UP, THEN CLEARPEDTASKS, BEFORE ANY FADE.
+do
+    reset()
+    wearChosenModel()
+    pump(70000)     -- parked in the lobby
+
+    local E = BR.Config.Match.lobbyEntrance.emotes
+    order = {}
+    TriggerEvent('br:ui:action', BR.NuiCb.QUEUE, { mode = 'solo' })
+    pump(200)
+
+    local _, up = firstOf('anim', function(e)
+        return e.dict == E.ready.dict and e.clip == E.ready.clip
+    end)
+    ok(up ~= nil, 'readying up plays the thumbs up')
+    ok(up ~= nil and up.ms == 600,
+        ('for the 600ms the owner asked for (%s)')
+            :format(up and tostring(up.ms) or 'nil'))
+
+    pump(1500)
+    local _, cleared = firstOf('cleartasks')
+    ok(cleared ~= nil and up ~= nil and cleared.at - up.at >= 600,
+        'and the tasks are cleared when it is done, not before')
+
+    -- ═══ AND THE CLEAR BEATS THE FADE ═══
+    --
+    -- "Make sure clearpedtasks runs before fade to black if they are accepted
+    -- to warmup." A ped that fades out mid-emote and arrives in warmup still
+    -- playing it is the failure, so this is an ORDERING and nothing else.
+    --
+    -- THE STATE EDGE IS WHAT PROMISES IT, not the 600ms timer: a local server
+    -- can answer the queue in single-digit milliseconds. Accepted immediately
+    -- here, which is the worst case the timer alone would lose.
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    order = {}
+    TriggerEvent('br:ui:action', BR.NuiCb.QUEUE, { mode = 'solo' })
+    pump(100)                                   -- mid-emote, deliberately
+    ok(ped.anim ~= nil, 'precondition: the emote is on the ped')
+
+    BR.State.me.state = BR.PlayerState.WARMUP   -- the server names me at once
+    pump(200)
+    ok(ped.anim == nil,
+        'leaving the lobby takes the emote off the ped immediately')
+
+    -- The gather tick takes the trip from here, exactly as it does in game.
+    pump(20000)
+    ok(BR.LobbyPed.isNetworked(), 'the trip to warmup ran')
+
+    local _, cleared2 = firstOf('cleartasks')
+    local _, faded = firstOf('fadeout')
+    ok(cleared2 ~= nil, 'the ped task really was cleared on this road')
+    ok(cleared2 ~= nil and (faded == nil or cleared2.at <= faded.at),
+        'and it was cleared before the screen faded to black')
+end
+
+-- (b) PARKED FOR THIRTY SECONDS: ONE STRETCH, AND ONLY ONE.
+do
+    reset()
+    wearChosenModel()
+    -- JUST LONG ENOUGH TO PARK, and no longer: the thirty seconds is measured
+    -- from the ped reaching the mark, so a test that pumped a minute first
+    -- would have watched the stretch happen before it started looking.
+    pump(25000)
+    ok(not BR.LobbyPed.entering(), 'precondition: the entrance is over and parked')
+
+    local E = BR.Config.Match.lobbyEntrance.emotes
+    order = {}
+    pump(E.idle.afterMs - 10000)
+    ok(firstOf('anim', function(e) return e.clip == E.idle.clip end) == nil,
+        'the parked ped does not stretch before its thirty seconds are up')
+
+    pump(15000)
+    local n = 0
+    for _, a in ipairs(anims()) do
+        if a.dict == E.idle.dict and a.clip == E.idle.clip then n = n + 1 end
+    end
+    ok(n == 1, ('and then it stretches, once (%d)'):format(n))
+
+    -- ONCE PER LOBBY VIEW, WHICH IS NOT ONCE PER SESSION. Five more minutes of
+    -- standing there is still the same view of the lobby.
+    pump(300000)
+    n = 0
+    for _, a in ipairs(anims()) do
+        if a.dict == E.idle.dict and a.clip == E.idle.clip then n = n + 1 end
+    end
+    ok(n == 1, ('and never again while this lobby view lasts (%d)'):format(n))
+
+    -- ...AND NOT AT ALL WHILE THE LOCKER IS OPEN, because the locker is a shot
+    -- of the character being chosen and an emote is the ped leaving that frame.
+    reset()
+    wearChosenModel()
+    pump(25000)
+    TriggerEvent('br:ui:focusChanged', 'locker')
+    order = {}
+    pump(E.idle.afterMs + 10000)
+    ok(firstOf('anim', function(e) return e.clip == E.idle.clip end) == nil,
+        'a ped in the locker screen does not stretch')
+    TriggerEvent('br:ui:focusChanged', 'lobby')
+end
+
+-- (e) MY SQUAD HAS READIED AND IS WAITING ON ME.
+do
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    local E = BR.Config.Match.lobbyEntrance.emotes
+    local function isWait(a)
+        for _, w in ipairs(E.waiting.clips) do
+            if a.dict == w.dict and a.clip == w.clip then return true end
+        end
+        return false
+    end
+
+    -- A party of three: the other two have queued and I have not.
+    BR.State.party = { members = { { src = 1 }, { src = 2 }, { src = 3 } } }
+    order = {}
+    TriggerEvent(BR.Net.LOBBY_STATUS, { ids = { 2, 3 }, queued = 2, needed = 16 })
+    pump(500)
+
+    local waiting = nil
+    for _, a in ipairs(anims()) do if isWait(a) then waiting = a end end
+    ok(waiting ~= nil, 'a ped whose squad is waiting on them plays a wait emote')
+
+    -- ...AND STOPS WHEN THEY STOP WAITING. It describes something that is true
+    -- right now; a squad that dissolved is not still waiting.
+    order = {}
+    TriggerEvent(BR.Net.LOBBY_STATUS, { ids = {}, queued = 0, needed = 16 })
+    pump(500)
+    ok(firstOf('cleartasks') ~= nil,
+        'and it comes off the ped when they stop')
+
+    -- NOT IN SOLOS. "If they are in squads" -- a party of one is not a squad
+    -- and has nobody to be held up by.
+    reset()
+    wearChosenModel()
+    pump(70000)
+    BR.State.party = { members = { { src = 1 } } }
+    order = {}
+    TriggerEvent(BR.Net.LOBBY_STATUS, { ids = {}, queued = 0, needed = 16 })
+    pump(1000)
+    local solo = false
+    for _, a in ipairs(anims()) do if isWait(a) then solo = true end end
+    ok(not solo, 'a solo player never plays one')
+
+    -- AND NOT WHEN I HAVE ALREADY QUEUED, because then nobody is waiting on me.
+    reset()
+    wearChosenModel()
+    pump(70000)
+    BR.State.party = { members = { { src = 1 }, { src = 2 } } }
+    order = {}
+    TriggerEvent(BR.Net.LOBBY_STATUS, { ids = { 1, 2 }, queued = 2, needed = 16 })
+    pump(1000)
+    local mine = false
+    for _, a in ipairs(anims()) do if isWait(a) then mine = true end end
+    ok(not mine, 'nor when they have queued themselves')
+    BR.State.party = nil
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 17d. THE FAILSAFE IS THE CAMERA'S CLOCK, AND THE FLIP DOES NOT COUNT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-29: "if the ped doesn't get to the destination within 5
+-- seconds of the camera parking we fire that function and bring them to the
+-- position ourselves."
+
+--- Did the client say it placed a ped that had not arrived?
+local function forcedHome()
+    for _, l in ipairs(logged) do
+        if l:find('after the camera parked', 1, true) then return true end
+    end
+    return false
+end
+
+do
+    -- A PED THAT CANNOT KEEP UP. `walkMps` is what the plan believes the ped
+    -- covers per second; telling it five and giving it one and a half is a walk
+    -- that is solved for eighteen seconds and takes nearly thirty. This is the
+    -- shape of the real failure too -- a mis-tuned walkMps -- which is why it is
+    -- the knob the test turns rather than a stub that refuses to move.
+    onlyCase(1)
+    local C = BR.Config.Match.lobbyEntrance
+    local realMps = C.walkMps
+    C.walkMps = 5.0
+
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    ok(forcedHome(), 'a ped that is still walking when the grace runs out is placed')
+    ok(math.abs(ped.x - BR.Config.Match.lobbyPos.x) < 0.01
+        and math.abs(ped.y - BR.Config.Match.lobbyPos.y) < 0.01,
+        'and it ends on the mark rather than wherever it had got to')
+    ok(not BR.LobbyPed.entering() and not BR.LobbyPed.lockerLocked(),
+        'and the entrance ends properly rather than being abandoned')
+
+    C.walkMps = realMps
+    allCases()
+end
+
+-- ...AND IT DOES NOT FIRE DURING THE FLIP.
+--
+-- THE INTERACTION THAT MAKES THIS WORTH A TEST: the flip PAUSES the walk, on
+-- purpose, and a grace anchored to the camera parking would otherwise fire in
+-- the middle of it on every single win -- teleporting the player out of their
+-- own victory animation, which is the worst possible thing this failsafe could
+-- ever do. The clock does not start until the animation is over.
+--
+-- THE FLIP IS LENGTHENED HERE rather than the grace shortened, because the
+-- thing being tested is a flip that OUTLASTS the grace. At the authored lengths
+-- it does not, and a test that passed only because the numbers happened not to
+-- overlap would go green against the broken version too.
+do
+    onlyCase(1)
+    local E = BR.Config.Match.lobbyEntrance.emotes
+    local realMs = E.win.ms
+    E.win.ms = 12000
+
+    reset()
+    wearChosenModel()
+    TriggerEvent('br:ui:sendLocal', BR.Nui.SUMMARY, { won = true, placement = 1 })
+    BR.LobbyPed.rearm()
+    logged = {}
+    order = {}
+    pump(90000)
+
+    local flip = nil
+    for _, a in ipairs(anims()) do
+        if a.dict == E.win.dict and a.clip == E.win.clip then flip = a end
+    end
+    ok(flip ~= nil, 'precondition: a flip that outlasts the grace was played')
+
+    ok(not forcedHome(),
+        'the failsafe does not fire while the ped is deliberately paused for it')
+
+    -- AND THE PED STILL WALKED THE LAST LEG under its own power afterwards --
+    -- the placement at the end moves it a distance nobody can see, which is
+    -- what a walked arrival looks like and what a forced one does not.
+    local p = BR.Config.Match.lobbyPos
+    local landing = nil
+    for _, e in ipairs(order) do
+        if e.kind == 'coords' and e.at > 2000
+           and math.abs(e.x - p.x) < 0.01 and math.abs(e.y - p.y) < 0.01 then
+            landing = e break
+        end
+    end
+    ok(landing ~= nil and landing.jump <= 0.30,
+        ('and it walks the final leg after the flip rather than being placed '
+            .. '(%.2fm)'):format(landing and landing.jump or -1.0))
+
+    E.win.ms = realMs
+    allCases()
+end
+
+-- AND A DICTIONARY THAT NEVER STREAMS COSTS ITS GESTURE AND NOTHING ELSE.
+--
+-- Same trade as the walking clipset: bounded, and the walk finishes either way.
+-- An emote that could hang the entrance would be a far worse bug than a ped
+-- that does not wave.
+do
+    onlyCase(1)
+    reset()
+    wearChosenModel()
+    dictsStream = false
+    pump(70000)
+
+    ok(#anims() == 0, 'no emote plays when its dictionary never streams')
+    ok(math.abs(ped.x - BR.Config.Match.lobbyPos.x) < 0.01,
+        'and the ped still walks the whole way to the mark')
+    dictsStream = true
+    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

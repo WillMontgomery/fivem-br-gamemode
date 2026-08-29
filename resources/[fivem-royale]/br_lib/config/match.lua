@@ -190,40 +190,82 @@ BR.Config.Match = {
     -- when this sequence does what is written in the client -- the client
     -- reads these and /brlobbywalk replays the whole thing without a restart.
     --
-    -- THE PED'S PATH is four authored legs. `pedStart` is where the ped is
-    -- placed while the screen is still black; `pedPath` is the three corners
-    -- it walks through; the FOURTH and final leg is `lobbyPos` above, appended
-    -- by the client rather than repeated here -- the lobby mark has one
-    -- definition and the locker, the camera and the loading gate all read it.
+    -- THE PED'S PATH IS ONE OF FOUR, DRAWN AT RANDOM PER ENTRANCE. Each case
+    -- is a surveyed spawn plus the corners it walks through; the FINAL leg of
+    -- every case is `lobbyPos` above, appended by the client rather than
+    -- repeated here -- the lobby mark has one definition and the locker, the
+    -- camera and the loading gate all read it.
     --
     -- THE CAMERA'S PATH is three authored nodes and then the ordinary lobby
     -- frame, computed from `lobbyPos` and `lobbyCam` exactly as it always was.
     lobbyEntrance   = {
-        -- THE `heading` ON A pedPath CORNER IS NOT USED TO TURN THE PED, and
-        -- it was the reason the ped used to stop and pivot at every one. These
-        -- are where the surveyor was LOOKING when he stood on each point, and
-        -- two of the three face back the way he came -- handed to the walk as
-        -- "the way to be facing on arrival" they made the ped turn 80-odd
-        -- degrees the wrong way and then turn back. The client works the
-        -- facing out from where the path goes NEXT instead. They are kept
-        -- because they are the survey, and because pedStart's heading IS used
-        -- (it is where the ped is placed, before it has a leg to face along).
-        pedStart = { x = 5012.76, y = -5721.74, z = 19.48, heading = 315.3 },
-        pedPath  = {
-            { x = 5023.88, y = -5709.47, z = 19.88, heading = 206.3 },
-            { x = 5031.02, y = -5721.02, z = 17.68, heading = 218.7 },
-            { x = 5036.27, y = -5717.88, z = 17.08, heading = 304.5 },
+        -- ═══ FOUR SPAWNS AND FOUR PATHS, ONE PICKED AT RANDOM ═══
+        --
+        -- Re-surveyed by the owner on 2026-08-29 and REPLACING the single
+        -- `pedStart` / `pedPath` pair that preceded them. One case is drawn per
+        -- lobby entrance, so two trips home in a row do not walk the same line.
+        --
+        -- `spawn.heading` IS USED -- it is where the ped is placed, before it
+        -- has a leg to face along. The CORNERS carry no heading, and that is
+        -- deliberate: the old ones were where the surveyor happened to be
+        -- looking, and handing them to the walk as "the way to be facing on
+        -- arrival" made the ped turn most of a right angle the wrong way and
+        -- then turn back. A corner's facing is a consequence of where the path
+        -- goes NEXT, so the client computes it.
+        --
+        -- THE LAST LEG OF EVERY CASE IS `lobbyPos`. Do not repeat it here.
+        --
+        -- CASE 2 DOUBLES BACK, AND IT IS BUILT EXACTLY AS SURVEYED: its
+        -- A -> B -> C runs 14.0m north and then 17.9m back south, which is
+        -- 31.9m of that case's 58.7m and the whole reason it is the one case
+        -- that cannot make the 18s target inside `walkBlendMax`. Flagged to the
+        -- owner rather than quietly straightened.
+        pedCases = {
+            {   -- 1: six legs, in from the north
+                spawn = { x = 5032.51, y = -5695.65, z = 19.88, heading = 301.5 },
+                path  = {
+                    { x = 5035.57, y = -5693.29, z = 19.88 },
+                    { x = 5039.57, y = -5700.05, z = 19.88 },
+                    { x = 5034.75, y = -5703.60, z = 19.88 },
+                    { x = 5041.10, y = -5714.44, z = 17.68 },
+                    { x = 5036.33, y = -5717.66, z = 17.08 },
+                },
+            },
+            {   -- 2: four legs, in from the south-east by way of the north
+                spawn = { x = 5059.96, y = -5726.85, z = 15.67, heading = 54.7 },
+                path  = {
+                    { x = 5042.81, y = -5713.67, z = 17.68 },
+                    { x = 5039.57, y = -5700.05, z = 19.88 },
+                    { x = 5036.33, y = -5717.66, z = 17.08 },
+                },
+            },
+            {   -- 3: four legs, the short one, in from the west
+                spawn = { x = 5018.00, y = -5725.82, z = 17.68, heading = 313.4 },
+                path  = {
+                    { x = 5027.40, y = -5717.84, z = 17.68 },
+                    { x = 5030.91, y = -5720.96, z = 17.68 },
+                    { x = 5036.33, y = -5717.66, z = 17.08 },
+                },
+            },
+            {   -- 4: four legs, in from the south
+                spawn = { x = 5053.49, y = -5733.81, z = 15.88, heading = 29.9 },
+                path  = {
+                    { x = 5045.11, y = -5720.26, z = 17.68 },
+                    { x = 5041.37, y = -5714.45, z = 17.68 },
+                    { x = 5036.33, y = -5717.66, z = 17.08 },
+                },
+            },
         },
 
         -- THE WALKING STYLE, AND IT IS A STOCK GTA MOVEMENT CLIPSET.
         --
-        -- The owner named these from the rpemotes menu ("grooving male" /
-        -- "grooving female") and said he intends to remove that resource. They
-        -- are not rpemotes content: that menu's labels sit in front of the
-        -- game's own clipsets, and these two strings are what its own table
-        -- maps them to (client/AnimationList.lua, RP.Walks.Grooving and
-        -- .Grooving2). Nothing in this project references, requires or checks
-        -- for rpemotes -- SetPedMovementClipset takes the clipset directly.
+        -- The owner named these from a separate emote resource's menu
+        -- ("grooving male" / "grooving female") and said he intends to remove
+        -- that resource. They are not its content: that menu's labels sit in
+        -- front of the game's own clipsets, and these two strings are what its
+        -- own table maps them to (client/AnimationList.lua, RP.Walks.Grooving
+        -- and .Grooving2). Nothing in this project references, requires or
+        -- checks for it -- SetPedMovementClipset takes the clipset directly.
         --
         -- THE TRAILING @ IS PART OF THE NAME. `anim@move_m@grooving` without
         -- it is a different string and RequestAnimSet answers nothing for it,
@@ -242,32 +284,41 @@ BR.Config.Match = {
         -- deadline plus the tick that starts it.
         modelWaitMs = 8000,
 
-        -- ═══ ONE SPEED PER LEG, AND IT SLOWS DOWN ═══
+        -- ═══ EVERY WALK TAKES THE SAME TIME, AND THE SPEEDS ARE DERIVED ═══
         --
-        -- TaskGoStraightToCoord's move blend ratio. 1.0 is a walk; 2.0 is a
-        -- run. The clipset rides on top of whatever this is.
+        -- Owner, 2026-08-29: "Each walk should take the exact same amount of
+        -- time, and be faster at the first steps when necessary, before
+        -- slowing down to a normal pace for the last walk." Target confirmed
+        -- at eighteen seconds, for every case.
         --
-        -- Owner, 2026-08-29: "Set walk speed to 2.0 until the first point, 1.5
-        -- until the second point, then 1.0 for 3rd -> 4th point."
+        -- SO THERE IS NO AUTHORED LIST OF SPEEDS ANY MORE, and there cannot be
+        -- one. The four cases are 41.2m, 58.7m, 28.6m and 34.0m long; a single
+        -- list of blend ratios could not put all four on the same clock. The
+        -- client measures the case it drew and solves for the ramp that does --
+        -- see `blendPlan` in br_core/client/lobbyped.lua.
         --
-        -- THERE ARE FOUR LEGS, NOT THREE, and that is what makes the list read
-        -- oddly short. lobbyped.lua's legs() walks every `pedPath` corner and
-        -- then BR.Config.Match.lobbyPos, so the ped arrives at four positions:
-        -- the three below and the lobby mark itself -- exactly the owner's
-        -- "first / second / 3rd / 4th point". The list clamps to its last
-        -- entry, so "then 1.0" covers both the third leg and the walk onto the
-        -- mark: 2.0, 1.5, 1.0, 1.0.
+        -- THE LAST LEG IS ALWAYS 1.0, which is the owner's "normal pace for the
+        -- last walk", and the legs before it ramp DOWN to it in equal steps
+        -- from whatever the first leg needs. Nothing jumps.
         --
-        -- IT ALSO FIXES THE TIMING WITHOUT ANOTHER NUMBER. The path is about
-        -- 41m, which at a flat 1.0 took roughly 27 seconds against a camera
-        -- path implying about 20. Front-loading the speed closes that gap by
-        -- covering the long opening leg quickly rather than by hurrying the
-        -- arrival, which is the half the player actually looks at.
+        -- `walkMps` IS THE ONE NUMBER THAT CANNOT BE COMPUTED: how many metres
+        -- per second this ped actually covers at blend 1.0, wearing the
+        -- grooving clipset, on this ground. 1.4 is GTA's nominal walk.
         --
-        -- SHORTER THAN `pedPath` IS FINE: the last entry carries. Longer is
-        -- fine too and the extra entries are simply unused, so adding a corner
-        -- to the path cannot leave a leg with no speed to walk it at.
-        walkSpeeds = { 2.0, 1.5, 1.0 },
+        -- IF THE MEASURED WALK IS NOT 18 SECONDS, THIS IS THE KNOB. /brlobbywalk
+        -- prints what the last walk really took: a measured 20s against a
+        -- target of 18 means this number is about ten percent low.
+        walkTargetMs = 18000,
+        walkMps      = 1.4,
+
+        -- THE FLOOR AND THE CEILING ON A DERIVED BLEND RATIO. TaskGoStraight-
+        -- ToCoord's move blend ratio: 1.0 is a walk, 2.0 a run, 3.0 a sprint.
+        -- 3.0 is therefore as fast as a person moves, and a ratio above it is
+        -- not a walk arriving anywhere. A case that cannot make the target
+        -- inside this ceiling simply takes longer, and /brlobbywalk says by how
+        -- much rather than the ped sprinting at an impossible ratio.
+        walkBlendMin = 1.0,
+        walkBlendMax = 3.0,
 
         -- ═══ THREE DISTANCES, AND THEY ARE NOT THE SAME QUESTION ═══
         --
@@ -298,42 +349,102 @@ BR.Config.Match = {
         arriveRadius = 0.9,
 
         -- How long one leg may take before the sequence gives up on it and
-        -- moves to the next. The escape, not the plan: a ped stuck on geometry
-        -- must still reach the lobby mark.
+        -- moves to the next. The FLOOR under the grace below, not the plan: it
+        -- covers the window before the camera has landed, when there is nothing
+        -- else watching a ped stuck on geometry.
         legTimeoutMs = 15000,
 
-        -- THE CAMERA NODES. `heading` is the owner's; `pitch` is OPTIONAL and
-        -- absent on purpose. With no pitch the client tilts the node to look
-        -- at the lobby mark, which is the only thing worth framing from 99
-        -- metres up -- a flat 0.0 would point every one of these at the
-        -- horizon. Pin a number here to override that per node.
+        -- ═══ AND THE FAILSAFE IS ANCHORED TO THE CAMERA NOW ═══
+        --
+        -- Owner, 2026-08-29: "I see you implemented a failsafe in case the ped
+        -- doesn't get to the destination in time. It seem's that's firing
+        -- correctly, but takes too long. Can you make it so if the ped doesn't
+        -- get to the destination within 5 seconds of the camera parking we fire
+        -- that function and bring them to the position ourselves?"
+        --
+        -- So: the camera lands, the ped gets this long to arrive on its own
+        -- feet, and after that it is placed on the mark and the entrance ends.
+        --
+        -- IT SHOULD NEVER FIRE, AND THAT IS THE POINT. The flight and the walk
+        -- are given the same duration and start on the same cue, so the ped
+        -- arrives as the camera parks and this is slack. IF IT FIRES ROUTINELY,
+        -- `walkMps` is wrong -- the walk is taking longer than the plan thinks
+        -- and the number to change is that one, not this one.
+        --
+        -- THE FLIP DOES NOT COUNT AGAINST IT. A winning return stops at the
+        -- second-to-last point for the length of the animation, which is a
+        -- deliberate pause and not a ped that failed to arrive; the clock does
+        -- not start until the flip is over. Teleporting a winner out of their
+        -- own victory animation would be the worst possible way to spend this.
+        arriveGraceMs = 5000,
+
+        -- THE CAMERA NODES -- CONTROL POINTS FOR A CURVE, NOT STOPS ON A ROUTE.
+        --
+        -- The flight is a Catmull-Rom spline THROUGH these three and then the
+        -- ordinary lobby frame, resampled into `camSteps` short moves. So the
+        -- camera passes through each of them without a corner: owner,
+        -- 2026-08-29, "when the camera gets to a position and changes direction
+        -- that's also too sudden ... we need more steps in this process which
+        -- will smooth out the corners into curves."
+        --
+        -- `heading` IS NO LONGER READ ON A FLIGHT NODE, and that is the fix for
+        -- the other half of the same report ("the camera facing direction
+        -- changes too suddenly"). A per-node heading is a per-node ROTATION and
+        -- a chain of them is a chain of turns. Every step of the flight now
+        -- looks at ONE moving aim point -- the lobby mark, sliding onto the
+        -- locker's exact aim over the last of the path -- so the whole descent
+        -- is a single continuous rotation with nothing to snap between. The
+        -- headings are kept because they are the survey and because the three
+        -- of them are within 18 degrees of "look at the lobby" anyway.
+        --
+        -- `pitch` and `fov` per node are likewise unused by the flight now; the
+        -- pitch is whatever looking at the aim point requires.
         camPath = {
             { x = 4919.50, y = -6018.38, z = 98.80, heading = 349.5 },
             { x = 5038.11, y = -5834.56, z = 59.39, heading = 341.3 },
             { x = 5063.97, y = -5741.21, z = 27.80, heading =  48.0 },
         },
 
-        -- ═══ THE WHOLE FLIGHT, NOT ONE MOVE ═══
+        -- ═══ THE WHOLE FLIGHT, AND IT DECELERATES ═══
         --
         -- How long the camera takes to get from the first node above to the
-        -- lobby frame, start to finish, INCLUDING the landing. One number for
-        -- the lot, because the pace has to be the same everywhere.
+        -- lobby frame, start to finish, INCLUDING the landing.
         --
-        -- IT USED TO BE FIVE SECONDS A MOVE and that is what made it wrong.
-        -- The three segments are about 222m, 102m and 31m long, so a flat five
-        -- seconds each flew them at 44, then 20, then 6 metres per second --
-        -- owner, 2026-08-29: "it should be smooth movement all the way start
-        -- to finish with no pace change either." The client now shares this
-        -- total out BY LENGTH, so every segment runs at the same speed and
-        -- there is nothing to keep in step by hand.
+        -- MATCHED TO `walkTargetMs` ON PURPOSE: "The camera flight and the walk
+        -- should finish together" (owner, 2026-08-29). They also START together
+        -- -- both wait for the same reveal -- so equal durations is the whole
+        -- of keeping them in step. Change one and change the other.
         --
-        -- AND IT NO LONGER WATCHES THE PED. It used to hold at the last node
-        -- until the ped's measured arrival was two seconds away, which is the
-        -- pause in the same report. The camera lands wherever these two
-        -- durations leave it -- /brlobbywalk prints how long the last walk and
-        -- the last flight actually took and how far ahead the camera landed,
-        -- which is what to tune this against.
-        camFlightMs = 15000,
+        -- NOTE a winning return is LONGER than this by the length of the flip,
+        -- because the walk pauses for it and the flight does not. The camera
+        -- lands early on a win, by design; /brlobbywalk prints the gap.
+        camFlightMs = 18000,
+
+        -- HOW MANY MOVES THE FLIGHT IS CUT INTO. Each one is a linear
+        -- interpolation between two static cameras with NO ease at either end,
+        -- so the camera never stops -- the next move picks it up at the speed
+        -- the last one left it. More steps is a smoother curve and a smoother
+        -- rotation at the cost of two cameras built and one destroyed per step;
+        -- fewer is closer to straight lines between the authored nodes.
+        camSteps = 24,
+
+        -- ═══ HOW THE SPEED IS SHARED OUT ACROSS THOSE STEPS ═══
+        --
+        -- Owner, 2026-08-29: "The speed is too slow at the beginning and too
+        -- fast at the end. Over the course of the final move the camera should
+        -- slow down exponentially."
+        --
+        -- Every step lasts the same number of milliseconds; what changes is how
+        -- much of the path it covers. The distance covered by time `s` (0..1)
+        -- is (1 - e^-ks) / (1 - e^-k), so the SPEED is proportional to e^-ks --
+        -- exponential decay, from the first frame to the last. One curve
+        -- answers both halves of the report: it is fastest at the start and it
+        -- is still decelerating, exponentially, through the final move.
+        --
+        -- 0 would be the old flat pace. 2.0 opens at about 2.3x the average and
+        -- lands at about 0.3x it. Higher is a more violent swoop; lower is
+        -- flatter. THIS IS A LOOK, NOT A MEASUREMENT -- tune it by eye.
+        camDecay = 2.0,
 
         -- STREAMING LEADS THE REVEAL. SetFocusPosAndVel is pointed at the
         -- first camera node this long before the screen fades in, so the
@@ -347,6 +458,140 @@ BR.Config.Match = {
         -- other wait on that path: a boot that never shows the lobby is worse
         -- than a boot that skips a walk.
         armWaitMs = 4000,
+
+        -- ═══ THE WALK DOES NOT START UNTIL THERE IS SOMEBODY WATCHING ═══
+        --
+        -- Owner, 2026-08-29: "when coming back from the warmup or another
+        -- match, the ped doesn't do the full walk again."
+        --
+        -- IT DID THE FULL WALK. Most of it happened behind the cover the trip
+        -- home was still holding -- see the long note in
+        -- br_core/client/lobbyped.lua. Both the walk and the camera flight now
+        -- wait for the screen to be uncovered before they start, and this is
+        -- the ceiling on that wait: a cover that never lifts must cost a walk
+        -- that starts anyway, never an entrance that never happens.
+        --
+        -- Sized off the longest legitimate cover on any road home: the leaving
+        -- curtain's own 15s watchdog is the outer bound, and this sits inside
+        -- it so a stuck curtain still gets a walk.
+        revealWaitMs = 10000,
+
+        -- ====================================================================
+        -- THE EMOTES.
+        -- ====================================================================
+        --
+        -- STOCK GTA ANIMATION DICTIONARIES AND CLIPS, sourced the same way the
+        -- walk clipsets above were: the owner named them from a separate emote
+        -- resource's MENU, and these are the game's own animations that its
+        -- table maps those labels to. Nothing in this project requires,
+        -- references or checks for that resource.
+        --
+        -- Provenance, per entry, is the file/line comment beside it --
+        -- client/AnimationList.lua, blob 6868fc5, 23,862 lines.
+        --
+        -- `flags` IS TaskPlayAnim's animation flag field and it is the only
+        -- part of this that is not a name:
+        --     0  full body, plays once, the ped does nothing else
+        --    48  = 16 (upper body only) + 32 (secondary / allow movement):
+        --         plays OVER a walk without taking the legs
+        emotes = {
+            -- (a) A WINNING RETURN, at the second-to-last walk point, facing
+            -- the camera. The walk PAUSES for it, so a win is longer than a
+            -- loss by roughly `ms`.
+            --
+            -- FULL BODY, because it is a backflip. Its source entry carries no
+            -- options at all -- no loop, and notably no "moving" flag -- so
+            -- there is no version of this that plays over a walk.
+            -- AnimationList.lua:7966  ["flip"]
+            win = {
+                dict  = 'anim@arena@celeb@flat@solo@no_props@',
+                clip  = 'flip_a_player_a',
+                flags = 0,
+                ms    = 3200,   -- the cap; the clip's own end is watched for
+                turnMs = 500,   -- turning to face the camera before it starts
+            },
+
+            -- (b) PARKED IN THE LOBBY, ONCE. "once the ped is parked, if they
+            -- are not in the locker screen, play the 'stretch 3' emote after 30
+            -- seconds, and make sure it only plays once per lobby view."
+            --
+            -- FULL BODY: its source entry is a LOOPING idle with no moving
+            -- flag, so it holds the ped -- which is fine, the ped is parked.
+            -- `ms` is what stops it looping forever.
+            -- AnimationList.lua:8243  ["stretch3"]
+            idle = {
+                dict    = 'mini@triathlon',
+                clip    = 'idle_d',
+                flags   = 0,
+                ms      = 4500,
+                afterMs = 30000,
+            },
+
+            -- (c) READY UP. "play 'thumbs up 3' for 600ms then clearpedtasks.
+            -- Make sure clearpedtasks runs before fade to black if they are
+            -- accepted to warmup."
+            -- AnimationList.lua:7625  ["thumbsup3"]
+            ready = {
+                dict  = 'anim@mp_player_intincarthumbs_uplow@ds@',
+                clip  = 'enter',
+                flags = 48,
+                ms    = 600,
+            },
+
+            -- (d) THE CAMERA REACHING ITS SECOND-TO-LAST NODE. The ped is
+            -- still WALKING when that happens, so this is the one emote that
+            -- has to play over a walk -- flags 48. Its source entry is marked
+            -- as a moving emote, which is what says the game has an upper-body
+            -- version of it.
+            -- AnimationList.lua:7723  ["wave"]
+            wave = {
+                dict  = 'friends@frj@ig_1',
+                clip  = 'wave_a',
+                flags = 48,
+                ms    = 2500,
+            },
+
+            -- (e) MY SQUAD HAS READIED AND IS WAITING ON ME. "play any
+            -- variation of 'wait*' emotes except 'wait 9'".
+            --
+            -- THIRTEEN EXIST AND wait9 IS OMITTED HERE rather than filtered in
+            -- the client, so the exclusion is visible in the one place somebody
+            -- would come looking to add one back.
+            --
+            -- wait12 IS ALSO OMITTED, and that is a judgement rather than an
+            -- instruction: upstream pairs dictionary `rcmjosh1` with the clip
+            -- `keeper_base`, which belongs to a different dictionary in the
+            -- entry above it. It looks like a copy-paste and would present as
+            -- an emote that silently does nothing. Add it back if it works.
+            --
+            -- All of these loop, and all of them are marked as moving emotes;
+            -- the ped is parked while they play, so flags 0 is fine and `ms`
+            -- is what ends the loop.
+            -- AnimationList.lua:6341-6457  ["wait".."wait13"]
+            waiting = {
+                ms    = 4000,
+                flags = 0,
+                clips = {
+                    { dict = 'random@shop_tattoo',                                    clip = '_idle_a' },          -- 6341 wait
+                    { dict = 'missbigscore2aig_3',                                    clip = 'wait_for_van_c' },   -- 6350 wait2
+                    { dict = 'amb@world_human_hang_out_street@female_hold_arm@idle_a', clip = 'idle_a' },          -- 6359 wait3
+                    { dict = 'amb@world_human_hang_out_street@Female_arm_side@idle_a', clip = 'idle_a' },          -- 6368 wait4
+                    { dict = 'missclothing',                                          clip = 'idle_storeclerk' },  -- 6377 wait5
+                    { dict = 'timetable@amanda@ig_2',                                 clip = 'ig_2_base_amanda' }, -- 6386 wait6
+                    { dict = 'rcmnigel1cnmt_1c',                                      clip = 'base' },             -- 6395 wait7
+                    { dict = 'rcmjosh1',                                              clip = 'idle' },             -- 6404 wait8
+                    { dict = 'timetable@amanda@ig_3',                                 clip = 'ig_3_base_tracy' },  -- 6422 wait10
+                    { dict = 'misshair_shop@hair_dressers',                           clip = 'keeper_base' },      -- 6431 wait11
+                    { dict = 'rcmnigel1a',                                            clip = 'base' },             -- 6449 wait13
+                },
+            },
+
+            -- How long to wait for one animation dictionary to stream before
+            -- giving up on that emote. BOUNDED, like every other stream wait
+            -- here: a dictionary that will not arrive costs one gesture, never
+            -- a walk that stops halfway.
+            dictWaitMs = 2000,
+        },
     },
 
     -- Routing buckets. Lobby and warmup are fixed SHARED buckets; matches

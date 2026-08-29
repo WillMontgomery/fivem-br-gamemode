@@ -83,6 +83,42 @@
 -- And the fourth, which is the same story at the very end: the walk stopped
 -- 0.9m short of the lobby mark and standOnMark teleported the rest.
 --
+-- ═══ AND THE WALK WAITS FOR SOMEBODY TO BE WATCHING IT ═══
+--
+-- Owner, 2026-08-29, having played the round above: "when coming back from the
+-- warmup or another match, the ped doesn't do the full walk again. It should."
+--
+-- IT DID DO THE FULL WALK. Every road home re-arms and fires correctly -- the
+-- arming is not the bug and the green test that says so is telling the truth.
+-- What the owner was watching is the TAIL of a walk whose opening ran behind a
+-- cover that was still up:
+--
+--   * THE WARMUP ROAD. /brleave raises the leaving CURTAIN -- an opaque NUI
+--     layer -- and client/spawn.lua's TO_LOBBY handler lowers it on a schedule
+--     that is about the ISLAND STREAMING IN: a 3.5s floor, then collision, then
+--     two more seconds. BR.Spawn.toLobby starts the entrance about 450ms into
+--     that, so roughly five seconds of walk happened under the curtain. The
+--     opening leg is shorter than five seconds.
+--   * THE END-OF-MATCH ROAD. The WAITING handler calls startNow() and then
+--     DoScreenFadeIn(2000), so the first two seconds are behind a fade.
+--   * THE BOOT ROAD, WHICH IS WHY HE NAMED THE OTHER TWO. client/loading.lua
+--     holds the loading screen for this sequence and reveals on it, so the boot
+--     is the one road where the walk and the reveal were already in step.
+--
+-- flyCamera ALREADY WAITED for IsScreenFadedIn and run() did not, which is the
+-- asymmetry in one line. Both go through awaitReveal now: the ped is placed on
+-- its mark under the cover exactly as before -- that is still the pop this file
+-- exists to remove -- and then it stands there, frozen, until the screen is
+-- genuinely uncovered. Bounded by revealWaitMs, because a cover that never
+-- lifts has to cost a walk that starts anyway.
+--
+-- WHY THE SUITE COULD NOT SEE IT: tools/test_lobbyseq.lua models
+-- DoScreenFadeIn as instantaneous, acknowledges the curtain in the frame it is
+-- raised, and drives BR.Spawn.toLobby directly rather than through the TO_LOBBY
+-- handler that owns the curtain's lifetime. It has no concept of the walk being
+-- COVERED, so "a second arrival gets its own entrance" was both true and beside
+-- the point. It models the covers now.
+--
 -- ═══ ABANDONMENT IS A FIRST-CLASS ENDING ═══
 --
 -- "If the player readies up quickly and joins to warmup - drop everything
@@ -212,6 +248,54 @@ local camLanded = false
 -- The walk, snapshotted at the start rather than rebuilt per leg.
 local path = {}
 
+-- Which of BR.Config.Match.lobbyEntrance.pedCases this entrance drew, and the
+-- blend ratio for each of its legs. Both settled once, in begin(), so every
+-- reader -- the walk, the loading gate, /brlobbywalk -- is looking at the same
+-- draw. A case re-rolled per leg would be four different walks.
+local caseIndex = 0
+local blends = {}
+
+-- Whether the camera has reached its second-to-last node. See the wave: it is
+-- the CAMERA's clock, not the ped's, and the two do not coincide.
+local camNearHome = false
+
+-- When the winner's flip finished, or nil. THE FAILSAFE'S CLOCK DOES NOT START
+-- UNTIL THIS IS PAST: the flip is a deliberate pause in the walk and a ped
+-- standing still for it has not failed to arrive.
+local flipEnded = nil
+
+-- ═══ THE EMOTE STATE, DECLARED HERE RATHER THAN BESIDE THE EMOTES ═══
+--
+-- Only because stop() is above them and has to clear `emoting`: a local
+-- declared later would leave that line writing a GLOBAL of the same name, which
+-- is the quietest possible way for an ending to stop ending anything. The
+-- section that uses these is much further down and carries the reasoning.
+
+-- The emote playing right now, or nil. One ped, one animation.
+--
+-- AND WHEN IT WILL BE OVER, because nothing else would ever say so. An emote
+-- given a duration ends inside the engine and tells this file nothing, so a
+-- latch that only cleared on an explicit stop would read as "something is
+-- playing" for the rest of the session -- and every other emote here refuses to
+-- start while something is playing. The tick at the bottom expires it.
+local emoting = nil
+local emoteUntil = nil
+
+-- (b) the parked stretch is once per lobby VIEW; both are reset by begin().
+local idlePlayed = false
+local parkedAt = nil
+
+-- (d) fires at most once per entrance, and (a) is what can cancel it.
+local waved = false
+
+-- (e) whether my squad is currently waiting on me, off LOBBY_STATUS.
+local squadHolding = false
+
+-- Whether the locker screen is open. (b) and (e) both stand down for it: the
+-- locker is a shot of the character being chosen and an emote in the middle of
+-- it is the ped moving out of the frame the player is looking at.
+local inLocker = false
+
 -- ═══ WHAT THE LAST RUN ACTUALLY TOOK ═══
 --
 -- THE ONLY HONEST SOURCE FOR THE LEAD. The camera used to chase the ped's
@@ -231,6 +315,24 @@ local flightBegan, flightEnded = nil, nil
 --- @return table
 local function cfg()
     return BR.Config.Match.lobbyEntrance
+end
+
+--- The case this entrance is walking, or nil before one has been drawn.
+---
+--- HIGH IN THE FILE ONLY BECAUSE THE LOADING GATE ASKS FOR IT. Everything else
+--- that reads a case is down in the walk.
+--- @return table|nil
+local function drawnCase()
+    local cases = cfg().pedCases
+    if type(cases) ~= 'table' then return nil end
+    return cases[caseIndex]
+end
+
+--- Where this entrance's ped is placed, or nil before a case is drawn.
+--- @return table|nil
+local function startMark()
+    local c = drawnCase()
+    return c and c.spawn or nil
 end
 
 --- Is the entrance running? Read by client/lobbycam.lua, which stands down
@@ -320,6 +422,11 @@ function BR.LobbyPed.stop(why)
     phase = DONE
     walking = false
 
+    -- Whatever gesture was on the ped goes with the sequence. The ClearPedTasks
+    -- below is what actually takes it off; this only stops the emote bookkeeping
+    -- believing something is still playing.
+    emoting = nil
+
     releaseFocus()
     setLocked(false)
 
@@ -377,11 +484,13 @@ end
 --- lobby spot -- the owner's choreography has the screen fading in with the ped
 --- already moving. Nil means "the ordinary lobby mark", which is every other
 --- case.
+--- ...AND IT IS THE DRAWN CASE'S SPAWN, which is why it can answer nil while
+--- the entrance is merely ARMED: the case has not been drawn yet, and pointing
+--- the reveal at a coordinate this entrance may not use is worse than not
+--- answering. revealBlock below is what holds the screen in that window.
 --- @return table|nil
 function BR.LobbyPed.revealMark()
-    if phase == ARMED or phase == RUNNING then
-        return cfg().pedStart
-    end
+    if phase == RUNNING then return startMark() end
     return nil
 end
 
@@ -399,7 +508,22 @@ function BR.LobbyPed.revealBlock()
     if GetGameTimer() - askedAt > (cfg().armWaitMs or 4000) then return nil end
 
     if phase == ARMED then return 'the lobby entrance has not started yet' end
-    if not walking then return 'the lobby entrance ped is not walking yet' end
+
+    -- ═══ IT HOLDS FOR THE PED BEING PLACED, NOT FOR THE PED WALKING ═══
+    --
+    -- IT USED TO HOLD FOR `walking`, AND THAT IS NOW A DEADLOCK. The walk waits
+    -- for the screen (awaitReveal, which reads BR.State.worldReady) and this is
+    -- what decides when the screen may come down -- so "wait for the walk" and
+    -- "wait for the reveal" would be waiting for each other. Bounded, so it
+    -- would have resolved after armWaitMs: a four-second stall on every boot
+    -- with the ped standing on its mark behind a gag reel.
+    --
+    -- AND WHAT THIS GATE ACTUALLY NEEDS IS THE PLACEMENT ANYWAY. The reveal
+    -- must not happen while the ped is somewhere the shot does not expect --
+    -- that is the pop -- and the ped is on its mark from the frame begin() ran.
+    -- The walk starting is then the FIRST thing the player sees rather than
+    -- something that happened before they were looking, which is the whole of
+    -- the "doesn't do the full walk" fix read from this end.
     return nil
 end
 
@@ -431,20 +555,139 @@ end
 -- The walk
 -- ---------------------------------------------------------------------------
 
---- Every leg of the path, the authored corners plus the lobby mark.
+--- Every leg of the drawn case, its authored corners plus the lobby mark.
 ---
 --- THE LAST ONE IS NOT IN THE CONFIG and is deliberately not: the lobby mark
 --- has exactly one definition, which the camera, the locker and the loading
---- gate all read, and a second copy of it in a path table is the drift this
---- project is most scarred by.
+--- gate all read, and a second copy of it in four separate case tables is the
+--- drift this project is most scarred by.
 --- @return table
 local function legs()
     local out = {}
-    for _, n in ipairs(cfg().pedPath or {}) do
+    local c = drawnCase()
+    for _, n in ipairs(c and c.path or {}) do
         out[#out + 1] = n
     end
     out[#out + 1] = BR.Config.Match.lobbyPos
     return out
+end
+
+--- ═══ THE SPEEDS ARE DERIVED FROM THE GEOMETRY, NOT AUTHORED ═══
+---
+--- Owner, 2026-08-29: "Each walk should take the exact same amount of time, and
+--- be faster at the first steps when necessary, before slowing down to a normal
+--- pace for the last walk." Eighteen seconds, every case.
+---
+--- FOUR CASES OF 41m, 59m, 29m AND 34m CANNOT SHARE ONE AUTHORED LIST, which is
+--- what the flat `walkSpeeds = { 2.0, 1.5, 1.0 }` was and why it had to go: the
+--- shortest case would amble in and the longest would still be walking. So the
+--- pace is solved per draw.
+---
+--- THE SHAPE IS A RAMP, NOT A STEP. The last leg is 1.0 -- his "normal pace for
+--- the last walk", and it is the leg the player is actually looking at -- and
+--- the legs before it come down to it in equal increments from whatever the
+--- first one needs. A single fast speed for the early legs and then 1.0 would
+--- be a visible gear change at the last corner.
+---
+---   blend(i) = 1 + (r - 1) * (n - i) / (n - 1)
+---
+--- so blend(n) = 1.0 and blend(1) = r, and `r` is found by bisection: it is the
+--- opening ratio that makes sum(len(i) / (blend(i) * mps)) come out at the
+--- target. Bisection rather than algebra because the sum has one term per leg
+--- and the cases do not agree on how many.
+---
+--- CLAMPED AT BOTH ENDS. 1.0 is a walk and 3.0 is a sprint, so 3.0 is as fast
+--- as a person moves; a case that cannot make the target inside it (case 2,
+--- because of its detour north) simply runs long, and /brlobbywalk says by how
+--- much. The floor matters too: a case SHORTER than the target would otherwise
+--- be solved with a blend below a walk, which is a ped wading.
+--- @param from table   where the walk starts { x, y }
+--- @param pts table    the legs, in order
+--- @return table blends, number seconds  what those blends actually take
+local function blendPlan(from, pts)
+    local C = cfg()
+    local mps    = C.walkMps or 1.4
+    local target = (C.walkTargetMs or 18000) / 1000.0
+    local lo, hi = C.walkBlendMin or 1.0, C.walkBlendMax or 3.0
+
+    -- ═══ THE LENGTHS ARE THE ONES ACTUALLY WALKED, NOT THE SURVEYED ONES ═══
+    --
+    -- Every leg but the last ENDS EARLY, `cornerRadius` short of its corner --
+    -- that is what rounds the corner, and it is the leg loop's `want`. So the
+    -- ped never walks the full straight-line distance between two corners: it
+    -- walks to a point short of one and sets off from there toward the next.
+    --
+    -- SUMMING THE SURVEYED LENGTHS OVERSTATES THE WALK BY ABOUT A CORNER RADIUS
+    -- PER CORNER, and on case 1 -- five corners over forty-one metres -- that is
+    -- most of ten metres, a quarter of the path. Solved against that, the derived
+    -- speeds come out too fast and every case lands early. Same arithmetic as the
+    -- leg loop, so the plan and the walk agree.
+    local corner  = C.cornerRadius or 2.0
+    local radius  = C.arriveRadius or 0.9
+    local markRad = C.markRadius or 0.15
+
+    local lens = {}
+    local px, py = from.x, from.y
+    for i = 1, #pts do
+        local raw = BR.Dist(px, py, pts[i].x, pts[i].y)
+        local want
+        if i == #pts then
+            want = markRad
+        else
+            want = math.min(corner, raw * 0.4)
+            if want < radius then want = radius end
+        end
+        lens[i] = math.max(0.0, raw - want)
+
+        -- ...and the next leg starts from where this one stopped, which is
+        -- `want` back along the line just walked rather than on the corner.
+        if raw > 0.0001 and i < #pts then
+            local t = lens[i] / raw
+            px = px + (pts[i].x - px) * t
+            py = py + (pts[i].y - py) * t
+        else
+            px, py = pts[i].x, pts[i].y
+        end
+    end
+
+    local n = #lens
+    if n == 0 or mps <= 0.0 then return {}, 0.0 end
+
+    local function blendFor(r, i)
+        if n < 2 then return r end
+        return 1.0 + (r - 1.0) * (n - i) / (n - 1)
+    end
+
+    local function secondsFor(r)
+        local t = 0.0
+        for i = 1, n do
+            local b = blendFor(r, i)
+            if b < 0.1 then b = 0.1 end
+            t = t + lens[i] / (b * mps)
+        end
+        return t
+    end
+
+    -- Bisect on r. The time is strictly decreasing in r, so this converges from
+    -- the clamp range itself -- no solution outside it is wanted anyway.
+    local a, b = lo, hi
+    if secondsFor(a) > target and secondsFor(b) > target then
+        a = hi                        -- even the ceiling is too slow: take it
+    elseif secondsFor(b) < target and secondsFor(a) < target then
+        a = lo                        -- even the floor is too fast: take it
+    else
+        for _ = 1, 40 do
+            local mid = (a + b) * 0.5
+            if secondsFor(mid) > target then a = mid else b = mid end
+        end
+        a = (a + b) * 0.5
+    end
+    if a < lo then a = lo end
+    if a > hi then a = hi end
+
+    local out = {}
+    for i = 1, n do out[i] = blendFor(a, i) end
+    return out, secondsFor(a)
 end
 
 --- The clipset for this ped's walk.
@@ -461,97 +704,308 @@ local function clipsetFor(ped)
     return male and cfg().walkClipsetMale or cfg().walkClipsetFemale
 end
 
---- The flight, as a list of segments with their lengths in metres.
----
---- ONE ENTRY PER MOVE, AND THE LAST ONE IS THE LOBBY FRAME -- which is not in
---- `camPath` and deliberately is not: the shot the entrance ends on has to be
---- the SAME shot the locker was composed against, so it is computed from
---- lobbyPos and lobbyCam by BR.LobbyCam.lobbyFrame rather than surveyed twice.
----
---- MEASURED IN THREE DIMENSIONS, because this flight loses seventy metres of
---- altitude and a 2D length would price the first segment at two thirds of what
---- the camera actually has to travel.
---- @return table  { { node = table|nil, len = number }, ... }  nil node = home
-local function camSegments()
-    local nodes = cfg().camPath or {}
-    if #nodes == 0 then return {} end
+-- ---------------------------------------------------------------------------
+-- The emotes
+-- ---------------------------------------------------------------------------
+--
+-- ═══ FIVE GESTURES ON FIVE DIFFERENT CLOCKS ═══
+--
+-- All five are the owner's, 2026-08-29, and the only thing they have in common
+-- is the ped they run on. They are collected here rather than sprinkled through
+-- the sequence because the one rule that spans them is a rule about CONFLICT:
+-- two animations on one ped is the last one winning, silently.
+--
+--   (a) THE FLIP, on a winning return, at the second-to-last walk point,
+--       facing the camera. THE WALK PAUSES FOR IT, so a win is longer than a
+--       loss by the length of the animation -- the eighteen seconds is the
+--       WALK; this is on top.
+--   (b) THE STRETCH, thirty seconds after the ped is parked, once per lobby
+--       view, and not while the locker is open.
+--   (c) THE THUMBS UP, on readying up, for 600ms, and then ClearPedTasks --
+--       which MUST run before the fade if the ready is accepted. A ped that
+--       fades out mid-emote and arrives in warmup still playing it is the
+--       failure, so this is the one whose ordering is load-bearing.
+--   (d) THE WAVE, when the CAMERA reaches its second-to-last node. Different
+--       clock from (a) and they will usually not coincide: the ped is still
+--       walking when the camera gets there, so this is the one emote that has
+--       to play OVER a walk -- upper body plus the secondary flag (48).
+--   (e) THE WAIT, while my squad has readied up and is waiting on me.
+--
+-- AND (a) BEATS (d) WHERE THEY MEET. Owner, 2026-08-29: "If that overlap
+-- happens - prefer the flip." Because the flip PAUSES the walk, the camera can
+-- easily reach its second-to-last node while the flip is still playing -- so
+-- the wave is not queued and not played afterwards, it is SKIPPED. See waveNow.
 
-    local out = {}
-    local px, py, pz = nodes[1].x, nodes[1].y, nodes[1].z
-    for i = 2, #nodes do
-        local n = nodes[i]
-        out[#out + 1] = { node = n, len = BR.Dist3(px, py, pz, n.x, n.y, n.z) }
-        px, py, pz = n.x, n.y, n.z
+--- @return table
+local function emoteCfg()
+    return cfg().emotes or {}
+end
+
+--- Stream one animation dictionary, bounded.
+---
+--- SAME SHAPE AS client/attachtune.lua's ensureDict AND FOR THE SAME REASONS:
+--- HasAnimDictLoaded is a BOOL native that answers 1/0 on some builds (see
+--- isTrue at the top of this file -- a raw read here is a wait that does not
+--- wait, and then TaskPlayAnim on a dictionary that is not in memory, which
+--- does nothing at all and says nothing), and the wait has a ceiling because a
+--- dictionary that will not stream must cost one gesture rather than a walk
+--- that stops halfway up the path.
+--- @param dict string
+--- @param mine number|nil  the token, when called from a sequence thread
+--- @return boolean
+local function ensureDict(dict, mine)
+    if not dict or not RequestAnimDict or not HasAnimDictLoaded then return false end
+    if isTrue(HasAnimDictLoaded(dict)) then return true end
+
+    RequestAnimDict(dict)
+    local deadline = GetGameTimer() + (emoteCfg().dictWaitMs or 2000)
+    while GetGameTimer() < deadline do
+        if mine and token ~= mine then return false end
+        if isTrue(HasAnimDictLoaded(dict)) then return true end
+        Citizen.Wait(50)
+    end
+    if not isTrue(HasAnimDictLoaded(dict)) then
+        print(('[br_core] lobby emote: "%s" never streamed'):format(tostring(dict)))
+        return false
+    end
+    return true
+end
+
+--- Start one emote on the player ped. Must be called from a thread.
+--- @param e table       { dict, clip, flags, ms }
+--- @param mine number|nil
+--- @param ms number|nil  override the configured duration; -1 plays it out
+--- @return boolean
+local function playEmote(e, mine, ms)
+    if not e or not e.dict or not e.clip or not TaskPlayAnim then return false end
+    if not ensureDict(e.dict, mine) then return false end
+    if mine and token ~= mine then return false end
+
+    local dur = math.floor(ms or e.ms or 2000)
+    TaskPlayAnim(PlayerPedId(), e.dict, e.clip, 8.0, -8.0, dur,
+        e.flags or 0, 0.0, false, false, false)
+    emoting = e
+    emoteUntil = (dur > 0) and (GetGameTimer() + dur) or nil
+    return true
+end
+
+--- Take whatever emote is playing off the ped.
+---
+--- ClearPedTasks, WHICH IS ALSO WHAT ENDS A WALK -- so this is only ever called
+--- on a ped that is standing still, or by (c), where taking the walk with it is
+--- the point. The one emote that plays over a walk (the wave) is given an
+--- explicit duration instead and ends by itself, because clearing it here would
+--- clear the leg underneath it.
+local function clearEmote()
+    if not emoting then return end
+    emoting, emoteUntil = nil, nil
+    if ClearPedTasks then ClearPedTasks(PlayerPedId()) end
+end
+
+--- Is the ped standing on its mark with nothing to do?
+--- @return boolean
+local function parked()
+    return parkedAt ~= nil
+        and BR.State.me.state == BR.PlayerState.LOBBY
+        and phase ~= RUNNING
+end
+
+-- ═══ DID I WIN THE MATCH I HAVE JUST COME HOME FROM? ═══
+--
+-- TAKEN FROM THE VERDICT SCREEN'S OWN PAYLOAD rather than recomputed here, and
+-- that is the point: client/state.lua works "won" out as placement == 1 AND not
+-- having died, using a `diedThisMatch` flag that is private to that file and
+-- exists because a corpse can be first on the list when everyone else
+-- disconnects. Two definitions of winning would eventually disagree, and the
+-- one the player already read on their screen is the one they will expect the
+-- ped to celebrate.
+--
+-- A LATCH, CONSUMED BY THE ENTRANCE. The summary lands seconds after the match
+-- ends and the entrance starts twenty seconds after THAT, so it has to survive
+-- the gap; begin() takes it and clears it, so one win buys one flip.
+local wonLast = false
+local winThisRun = false
+
+AddEventHandler('br:ui:sendLocal', function(kind, d)
+    if kind ~= BR.Nui.SUMMARY then return end
+    wonLast = type(d) == 'table' and d.won == true
+end)
+
+--- Turn to face the camera and play the winner's flip. Pauses the walk.
+---
+--- "If the player is coming back to lobby from a match which they won - have
+--- the ped play the 'flip' emote at the 2nd to last walk point, then once the
+--- animation is done, they walk to the final point" -- and, separately, "please
+--- make sure the flip happens facing the camera :)" (owner, 2026-08-29).
+---
+--- FACING IS ASKED OF THE ENGINE, NOT COMPUTED FROM THE PLAN. The flight plan
+--- says where the camera is HEADED; the interpolation says where it actually
+--- is, and by the second-to-last walk point those differ by however far the
+--- walk and the flight have drifted. BR.LobbyCam.pos reads the live camera.
+---
+--- AND IT TURNS RATHER THAN SNAPPING. SetEntityHeading here would be a ped
+--- spinning on the spot one frame before a backflip, which is the same
+--- complaint as every other snap in this file.
+--- @param mine number
+local function doFlip(mine)
+    local e = emoteCfg().win
+    if not e or not e.dict then return end
+
+    -- ═══ AND THE WAVE IS SPENT THE MOMENT THIS STARTS ═══
+    --
+    -- Owner, 2026-08-29: "If that overlap happens - prefer the flip."
+    --
+    -- SET HERE RATHER THAN CHECKED LATER, and that is the whole of it. The walk
+    -- is paused for the length of this animation, so the camera's own cue
+    -- routinely lands DURING it -- and the leg loop, which is what polls that
+    -- cue, is not running to see it. Left unspent, the wave would fire on the
+    -- first poll after the flip finished, which is "immediately after it" and is
+    -- precisely what he ruled out. A wave that already played earlier in the
+    -- walk is unaffected; this only closes the door in front.
+    waved = true
+
+    local ped = PlayerPedId()
+    if ClearPedTasks then ClearPedTasks(ped) end
+
+    local cx, cy, cz = BR.LobbyCam.pos()
+    if cx then
+        if TaskTurnPedToFaceCoord then
+            local turn = math.floor(e.turnMs or 500)
+            TaskTurnPedToFaceCoord(ped, cx, cy, cz, turn)
+            local until_ = GetGameTimer() + turn
+            while token == mine and GetGameTimer() < until_ do Citizen.Wait(50) end
+        else
+            local c = GetEntityCoords(ped)
+            SetEntityHeading(ped, BR.GtaHeading(BR.Bearing(c.x, c.y, cx, cy)))
+        end
+    end
+    if token ~= mine then return end
+
+    -- -1 PLAYS THE CLIP OUT rather than cutting it at a number somebody guessed.
+    -- `ms` is the ceiling under that, because a clip that never reports itself
+    -- finished would park the ped one leg short of the lobby forever.
+    if playEmote(e, mine, -1) then
+        local cap = GetGameTimer() + math.floor(e.ms or 3200)
+        Citizen.Wait(200)   -- one beat for the task to actually be running
+        while token == mine and GetGameTimer() < cap do
+            -- IsEntityPlayingAnim IS A BOOL NATIVE. A bare read here is a wait
+            -- that never waits (0 is truthy) or one that never ends.
+            if not IsEntityPlayingAnim
+               or not isTrue(IsEntityPlayingAnim(PlayerPedId(), e.dict, e.clip, 3)) then
+                break
+            end
+            Citizen.Wait(50)
+        end
     end
 
-    local hx, hy, hz = BR.LobbyCam.lobbyFrame()
-    out[#out + 1] = { node = nil, len = BR.Dist3(px, py, pz, hx, hy, hz) }
-    return out
+    emoting, emoteUntil = nil, nil
+    if token == mine and ClearPedTasks then ClearPedTasks(PlayerPedId()) end
+end
+
+--- Wave, over the top of the walk, when the camera gets near home.
+---
+--- ═══ AND THE FLIP BEATS IT ═══
+---
+--- Owner, 2026-08-29: "If that overlap happens - prefer the flip." The flip
+--- pauses the walk and the flight does not, so on a winning return the camera
+--- will often reach its second-to-last node while the ped is mid-backflip.
+--- `waved` is set either way, so a wave that lost this race is SKIPPED rather
+--- than queued -- there is no later moment at which it would be the right
+--- gesture.
+--- @param mine number
+local function waveNow(mine)
+    waved = true
+    local e = emoteCfg().wave
+    if not e then return end
+    -- Anything already on the ped wins, which on a winning return is the flip.
+    if emoting then return end
+    playEmote(e, mine)
+end
+
+--- Is the screen genuinely showing the lobby yet?
+---
+--- ═══ THE ONE CUE BOTH HALVES OF THE ENTRANCE WAIT ON ═══
+---
+--- See the header: the walk used to start the instant begin() was called while
+--- the flight waited for the fade, and on every road home except the boot there
+--- is a cover still up at that moment -- a fade the trip started, or the leaving
+--- curtain, which is a NUI layer the game's own fade natives know nothing
+--- about. So the ped walked its opening leg where nobody could see it.
+---
+--- THREE THINGS, AND THE THIRD IS THE ONE THAT WAS MISSING. worldReady is the
+--- boot's loading screen; IsScreenFadedIn is the game fade; curtainWanted is
+--- br_ui's opaque layer, and it is the longest of the three by several seconds.
+--- @return boolean
+local function revealed()
+    if BR.State.worldReady == false then return false end
+    if not isTrue(IsScreenFadedIn()) then return false end
+    -- Asked-for rather than acknowledged: the curtain is lowered by a message
+    -- to the page, and waiting for the page to confirm it has FADED OUT would
+    -- hold the walk for a transition nothing reports the end of.
+    if BR.Spawn and BR.Spawn.curtainWanted then return false end
+    return true
+end
+
+--- Hold this thread until the screen is uncovered. Bounded.
+---
+--- A COVER THAT NEVER LIFTS MUST COST A WALK THAT STARTS ANYWAY, which is the
+--- same trade every other wait in this file makes. The ceiling sits inside
+--- br_ui's own 15s curtain watchdog, so a stuck curtain still gets its walk.
+--- @param mine number
+--- @return boolean  false when the sequence was abandoned while waiting
+local function awaitReveal(mine)
+    local deadline = GetGameTimer() + (cfg().revealWaitMs or 10000)
+    while token == mine and GetGameTimer() < deadline do
+        if revealed() then return true end
+        Citizen.Wait(50)
+    end
+    return token == mine
 end
 
 --- Fly the camera down to meet the ped. Runs alongside the walk.
 ---
---- ═══ ONE MOVE, ONE PACE, AND IT DOES NOT WATCH THE PED ═══
+--- ═══ ONE CURVE, DECELERATING, AND IT DOES NOT WATCH THE PED ═══
 ---
---- Owner, 2026-08-29: "The camera movements and the walks should not wait on
---- each other ... it should be smooth movement all the way start to finish with
---- no pace change either."
+--- The shape of the flight -- a Catmull-Rom spline through the authored nodes,
+--- resampled into equal-duration steps whose lengths decay exponentially -- is
+--- BR.LobbyCam.flightPlan, and the long note above it is why. All this does is
+--- issue the plan against a clock.
 ---
---- BOTH HALVES OF THAT WERE BROKEN, AND SEPARATELY.
+--- THE BOUNDARIES ARE ABSOLUTE, measured from t0 rather than from "now", so the
+--- frame each move is issued late is spent out of THAT move instead of being
+--- added to the flight. Two dozen steps of accumulated drift would be a visible
+--- hitch at the landing.
 ---
---- The PAUSE was the ease: every move was an ease-in-and-out interpolation, so
---- the camera decelerated to a standstill on arriving at each node and started
---- again from rest. See BR.LobbyCam.glide, which now flies segments linearly.
----
---- The PACE was `camMoveMs`: a flat five seconds per move over segments that
---- are 222m, 102m and 31m long, which is 44 m/s, then 20, then 6. So the
---- duration is now allocated BY LENGTH out of one total, `camFlightMs`, and the
---- camera covers the same metres per second from the first node to the lobby.
----
---- And it no longer reads the ped at all. It used to hold at the last node
---- until the ped's MEASURED remaining distance said it was `camLeadMs` from
---- arriving -- a genuine wait on the walk, invisible at today's walk speeds and
---- ten seconds long at a flat 1.0. The segment boundaries below are absolute
---- offsets from the flight's own start, so a late frame cannot accumulate into
---- a drift and nothing in here can stall.
+--- AND IT STILL DOES NOT READ THE PED. It used to hold at the last node until
+--- the ped's measured arrival came within camLeadMs, which was the pause the
+--- owner reported. The two are kept together by starting on the same cue and
+--- being given the same duration, not by watching each other.
 --- @param mine number  the token this thread belongs to
 local function flyCamera(mine)
     local C = cfg()
-    local segs = camSegments()
-    if #segs == 0 then return end
+    local plan, marks = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0)
+    if #plan < 2 then return end
 
-    local total = 0.0
-    for _, s in ipairs(segs) do total = total + s.len end
+    -- WHERE THE WAVE IS CUED. The camera's "second-to-last position" is the
+    -- last authored node -- the lobby frame is the last one -- and after the
+    -- resampling no single move ends there, so it is a fraction of the flight
+    -- rather than a move index.
+    local waveAt = marks[#marks - 1] or 1.0
 
-    -- THE FLIGHT IS CUED ON THE SCREEN, NOT ON A CLOCK. "As the screen fades in
-    -- (ped still walking): smoothly to ..." -- so this waits for the reveal
-    -- rather than starting a timer at the same moment and hoping. Bounded,
-    -- because a boot where the fade never lands must still end with a camera
-    -- pointing at the lobby.
-    local deadline = GetGameTimer() + 20000
-    while token == mine and GetGameTimer() < deadline do
-        if BR.State.worldReady ~= false and isTrue(IsScreenFadedIn()) then break end
-        Citizen.Wait(50)
-    end
+    if not awaitReveal(mine) then return end
     if token ~= mine then return end
 
-    local flight = C.camFlightMs or 15000
+    local flight = C.camFlightMs or 18000
+    local steps = #plan - 1
     local t0 = GetGameTimer()
     flightBegan = t0
-    local done = 0.0
-    for i, s in ipairs(segs) do
-        done = done + s.len
 
-        -- THE BOUNDARY IS ABSOLUTE. Measured from t0 rather than from "now", so
-        -- the ~one frame each move is issued late is spent out of THAT move
-        -- instead of being added to the flight -- three segments of drift would
-        -- otherwise be a visible hitch at the last node.
-        local frac = total > 0.0 and (done / total) or (i / #segs)
-        local boundary = t0 + math.floor(flight * frac)
+    for i = 2, #plan do
+        local boundary = t0 + math.floor(flight * (i - 1) / steps)
         local ms = boundary - GetGameTimer()
         if ms < 1 then ms = 1 end
 
-        if s.node then BR.LobbyCam.glide(s.node, ms) else BR.LobbyCam.glideHome(ms) end
+        BR.LobbyCam.glideTo(plan[i], ms)
 
         while token == mine do
             local left = boundary - GetGameTimer()
@@ -559,6 +1013,8 @@ local function flyCamera(mine)
             Citizen.Wait(left > 50 and 50 or left)
         end
         if token ~= mine then return end
+
+        if plan[i].at >= waveAt then camNearHome = true end
     end
 
     flightEnded = GetGameTimer()
@@ -569,17 +1025,21 @@ end
 ---
 --- ═══ SYNCHRONOUS, AND THAT IS THE POINT ═══
 ---
---- This is a teleport thirty metres up the path, and it has to happen under
---- cover -- it is the "arriving ped pops into the shot" this whole file exists
---- to remove. On the boot road the cover is the loading screen and there is all
---- the time in the world. On the TRIP HOME it is BR.Spawn.toLobby's fade, which
---- lifts a line after the trip lets go -- so the placement is done in the
---- caller's own frame rather than on the entrance thread's first resume, and
---- toLobby calls BR.LobbyPed.startNow() while it is still black.
+--- This is a teleport up the path, and it has to happen under cover -- it is
+--- the "arriving ped pops into the shot" this whole file exists to remove. On
+--- the boot road the cover is the loading screen and there is all the time in
+--- the world. On the TRIP HOME it is BR.Spawn.toLobby's fade, which lifts a
+--- line after the trip lets go -- so the placement is done in the caller's own
+--- frame rather than on the entrance thread's first resume, and toLobby calls
+--- BR.LobbyPed.startNow() while it is still black.
+---
+--- THE WALK THAT FOLLOWS IT DOES NOT START HERE. See awaitReveal: the ped is
+--- placed under the cover and then waits, frozen, for the cover to lift.
 local function placeOnStart()
     local C = cfg()
     local ped = PlayerPedId()
-    local s = C.pedStart
+    local s = startMark()
+    if not s then return end
 
     RequestCollisionAtCoord(s.x, s.y, s.z)
     SetEntityCoordsNoOffset(ped, s.x, s.y, s.z, false, false, false)
@@ -587,8 +1047,13 @@ local function placeOnStart()
     FreezeEntityPosition(ped, true)
 
     -- THE CAMERA'S FIRST SHOT, RAISED UNDER THE BLACK. No interpolation: there
-    -- is nothing to blend from.
-    if C.camPath and C.camPath[1] then BR.LobbyCam.place(C.camPath[1]) end
+    -- is nothing to blend from. Taken from the flight plan rather than from the
+    -- authored node so the raise and the first move agree about where the
+    -- camera is pointed -- built separately they disagreed by the difference
+    -- between the surveyed heading and the aim point, which is a snap on the
+    -- first frame of the flight.
+    local plan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0)
+    if plan[1] then BR.LobbyCam.placeAt(plan[1]) end
 end
 
 --- The whole entrance, from the black screen to the ped standing on its mark.
@@ -640,7 +1105,33 @@ local function run(mine)
         end
     end
 
-    -- 5. AND NOW IT MAY MOVE. client/natives.lua re-freezes a LOBBY ped every
+    -- 4b. THE EMOTE DICTIONARIES THIS ENTRANCE MIGHT NEED, STREAMED NOW.
+    --
+    --     UNDER THE COVER, WITH THE MODEL AND THE CLIPSET, and that is the
+    --     whole reason they are here rather than at the moment they are played.
+    --     The wave fires mid-walk off the camera's clock and the flip fires
+    --     between two legs; a two-second stream wait at either of those moments
+    --     is a ped standing still in plain sight. Bounded, and a dictionary
+    --     that does not arrive costs its gesture and nothing else.
+    do
+        local E = emoteCfg()
+        if E.wave then ensureDict(E.wave.dict, mine) end
+        if winThisRun and E.win then ensureDict(E.win.dict, mine) end
+    end
+    if token ~= mine then return end
+
+    -- 5. AND NOW IT WAITS FOR SOMEBODY TO BE LOOKING.
+    --
+    --    See awaitReveal and the header. The ped is standing on its mark under
+    --    whatever cover the road home was holding -- a fade, or the leaving
+    --    curtain -- and starting the walk here is how four or five seconds of
+    --    it were spent behind that cover. Bounded: a cover that never lifts
+    --    costs a walk that starts anyway.
+    if not awaitReveal(mine) then return end
+    if token ~= mine then return end
+    ped = PlayerPedId()
+
+    -- 6. AND NOW IT MAY MOVE. client/natives.lua re-freezes a LOBBY ped every
     --    frame, so `walking` is what stands that rule down -- setting it before
     --    the unfreeze rather than after is the difference between a walk and a
     --    single frame of one.
@@ -669,25 +1160,18 @@ local function run(mine)
     -- standOnMark to correct is under the width of a boot.
     local markRadius = C.markRadius or 0.15
 
-    -- ═══ A SPEED PER LEG, AND THE LAST ONE CARRIES ═══
+    -- ═══ A SPEED PER LEG, DERIVED, RAMPING DOWN TO A WALK ═══
     --
-    -- Owner, 2026-08-29: "Set walk speed to 2.0 until the first point, 1.5
-    -- until the second point, then 1.0 for 3rd -> 4th point." So the ped
-    -- arrives at a walk having covered the long opening leg at a run.
+    -- Owner, 2026-08-29: "Each walk should take the exact same amount of time,
+    -- and be faster at the first steps when necessary, before slowing down to a
+    -- normal pace for the last walk."
     --
-    -- THE LIST MAY BE SHORTER THAN THE PATH. A table indexed straight by `i`
-    -- would hand `nil` to TaskGoStraightToCoord the moment somebody added a
-    -- corner, which is a ped that stops dead with no error to read. Clamping to
-    -- the last entry means a longer path simply finishes at the arrival speed,
-    -- which is the one that was chosen for arriving.
-    --
-    -- `walkSpeed` STAYS AS THE SCALAR FALLBACK so a config that predates the
-    -- list still walks rather than defaulting to a number nobody wrote.
-    local speeds = C.walkSpeeds
-    local haveList = type(speeds) == 'table' and #speeds > 0
+    -- SOLVED IN begin(), NOT HERE, because the loading gate and /brlobbywalk
+    -- both want the answer and a second solve could differ from the one being
+    -- walked. See blendPlan for the shape of it and why it is not a list in
+    -- config any more.
     local function speedFor(i)
-        if haveList then return speeds[math.min(i, #speeds)] or 1.0 end
-        return C.walkSpeed or 1.0
+        return blends[i] or blends[#blends] or 1.0
     end
 
     -- ═══ WHICH WAY THE PED IS ASKED TO FACE AT EACH CORNER ═══
@@ -736,10 +1220,66 @@ local function run(mine)
     -- this can only ever hand over sooner than it used to.
     local corner = C.cornerRadius or 2.0
 
+    -- ═══ AND THE FAILSAFE IS THE CAMERA'S CLOCK, NOT THE LEG'S ═══
+    --
+    -- Owner, 2026-08-29: "if the ped doesn't get to the destination within 5
+    -- seconds of the camera parking we fire that function and bring them to the
+    -- position ourselves."
+    --
+    -- SO IT IS ONE DEADLINE FOR THE WHOLE REMAINING WALK rather than a per-leg
+    -- one. A ped that is behind is behind for the rest of the path, and the
+    -- thing the player is looking at is the landed shot with nobody in it --
+    -- which is a fact about the camera, so the camera is what it hangs off.
+    --
+    -- THE FLIP IS EXCLUDED BY NOT STARTING THE CLOCK. `flipEnded` is written
+    -- when the animation is genuinely over; until then this answers nil and
+    -- nothing can fire. A winning return pauses for several seconds at the
+    -- second-to-last point ON PURPOSE, and teleporting the winner out of their
+    -- own victory animation is the one outcome this must never produce.
+    --
+    -- legTimeoutMs AND THE STALL ESCAPE BOTH STAY, as the floor underneath:
+    -- they cover the window BEFORE the camera has landed, where this has
+    -- nothing to hang off and a ped wedged on geometry would otherwise wait out
+    -- the whole flight.
+    local grace = C.arriveGraceMs or 5000
+    local function graceExpired()
+        if not camLanded or not flightEnded then return false end
+        -- THE CLOCK RUNS FROM WHICHEVER CAME LATER. One line, and it is the
+        -- whole of the flip exclusion: a pause that ended after the camera
+        -- parked pushes the deadline out by exactly its own length.
+        local from = flightEnded
+        if flipEnded and flipEnded > from then from = flipEnded end
+        return (GetGameTimer() - from) > grace
+    end
+
+    -- Set when the failsafe fires, so the loop below abandons the REST of the
+    -- path rather than the leg it happened to be on -- the destination is the
+    -- mark, not the next corner.
+    local forced = false
+
     for i = 1, #path do
         if token ~= mine then return end
         local n = path[i]
         local last = (i == #path)
+
+        -- ═══ THE WINNER FLIPS AT THE SECOND-TO-LAST POINT ═══
+        --
+        -- Which is HERE: the ped has arrived at path[#path - 1] and has not yet
+        -- been given the last leg. "then once the animation is done, they walk
+        -- to the final point" -- so the walk genuinely stops for it, and a
+        -- winning return is longer than a losing one by the length of the clip.
+        -- The eighteen seconds is the WALK.
+        if last and winThisRun then
+            doFlip(mine)
+            if token ~= mine then return end
+            -- AND THE PAUSE IS RECORDED HERE RATHER THAN INSIDE doFlip, so it
+            -- is recorded even on the roads doFlip returns early on -- a missing
+            -- clip, a config with no `win` entry. A failsafe whose clock depends
+            -- on an animation having played is a failsafe that never fires for
+            -- a winner whose animation did not.
+            flipEnded = GetGameTimer()
+        end
+
         ped = PlayerPedId()
 
         local from = GetEntityCoords(ped)
@@ -780,6 +1320,26 @@ local function run(mine)
         local best, stuck = math.huge, 0
         local until_ = GetGameTimer() + legMs
         while token == mine and GetGameTimer() < until_ do
+            -- THE WAVE RIDES THE WALK, and this is the only place that can see
+            -- both clocks at once. Its cue is the CAMERA reaching its
+            -- second-to-last position (flyCamera sets the flag) while the ped
+            -- is still somewhere on its path -- the two will usually not line
+            -- up with any particular leg, which is why this is a poll and not
+            -- an event on a corner.
+            --
+            -- NO YIELD HERE: the dictionary was streamed under the cover, so
+            -- playEmote is one native and the leg's distance poll keeps its
+            -- 50ms cadence.
+            if camNearHome and not waved then waveNow(mine) end
+
+            if graceExpired() then
+                forced = true
+                print(('[br_core] lobby entrance: the ped was still %d leg(s) '
+                    .. 'out %dms after the camera parked -- placing it')
+                    :format(#path - i + 1, grace))
+                break
+            end
+
             local c = GetEntityCoords(PlayerPedId())
             local d = BR.Dist(c.x, c.y, n.x, n.y)
             if d <= want then break end
@@ -787,6 +1347,7 @@ local function run(mine)
             if last and d <= radius and stuck >= STALL_MS then break end
             Citizen.Wait(50)
         end
+        if forced then break end
     end
     if token ~= mine then return end
 
@@ -798,6 +1359,10 @@ local function run(mine)
     --    happy path and every other path.
     walking = false
     standOnMark()
+    -- THE CLOCK THE PARKED EMOTE RUNS ON starts here and only here: on the
+    -- ARRIVAL, not on any other ending. "once the ped is parked" means the walk
+    -- finished, not that it was abandoned halfway into a warmup.
+    parkedAt = GetGameTimer()
     BR.LobbyPed.stop('arrived')
 end
 
@@ -807,10 +1372,38 @@ local function begin()
     token = token + 1
     local mine = token
 
+    -- ═══ ONE OF FOUR, DRAWN HERE AND NOWHERE ELSE ═══
+    --
+    -- Owner, 2026-08-29: four surveyed spawns and paths, "one of the four is
+    -- chosen at random per lobby entrance". Drawn ONCE, into a file-local, so
+    -- the walk, the loading gate and /brlobbywalk are all looking at the same
+    -- draw -- a case re-rolled per reader is four different walks at once.
+    local cases = cfg().pedCases or {}
+    caseIndex = (#cases > 0) and math.random(#cases) or 0
+
     path = legs()
+    local first = startMark()
+    blends = first and (blendPlan(first, path)) or {}
+
     camLanded = false
+    camNearHome = false
     walkBegan, walkEnded = nil, nil
     flightBegan, flightEnded = nil, nil
+
+    -- THE EMOTE STATE IS PER LOBBY VIEW, AND THIS IS WHERE A LOBBY VIEW BEGINS.
+    -- "make sure it only plays once per lobby view" -- so the stretch's latch is
+    -- cleared by an ENTRANCE rather than by a timer or by the state changing:
+    -- an entrance is exactly the thing that makes this a new view of the lobby.
+    idlePlayed = false
+    parkedAt = nil
+    waved = false
+    flipEnded = nil
+    emoting, emoteUntil = nil, nil
+
+    -- The win is consumed rather than read: one win, one flip.
+    winThisRun = wonLast
+    wonLast = false
+
     setLocked(true)
 
     -- BEFORE THE THREADS, NOT ON THEM. See placeOnStart: the teleport onto the
@@ -821,7 +1414,8 @@ local function begin()
     Citizen.CreateThread(function() flyCamera(mine) end)
     Citizen.CreateThread(function() run(mine) end)
 
-    print('[br_core] lobby entrance begins')
+    print(('[br_core] lobby entrance begins (case %d, %d legs%s)')
+        :format(caseIndex, #path, winThisRun and ', winner' or ''))
 end
 
 --- Am I standing in the lobby, by the only test that cannot be argued with?
@@ -908,6 +1502,12 @@ BR.Loop.register(BR.Loop.TICK, 'lobbyped.entrance', function()
             phase = ARMED
             askedAt = nil
         end
+        -- AND THE PARKED CLOCK STOPS WITH THE LOBBY. `parkedAt` is "how long
+        -- the ped has been standing on the mark with nothing to do", and a
+        -- player in a match is not standing on the mark -- left running it
+        -- would come home expired and fire the stretch into the middle of the
+        -- next entrance.
+        parkedAt = nil
         return
     end
 
@@ -962,6 +1562,164 @@ BR.Loop.register(BR.Loop.TICK, 'lobbyped.latch', function()
     end
 end)
 
+-- ---------------------------------------------------------------------------
+-- The emotes that are not part of the walk
+-- ---------------------------------------------------------------------------
+
+-- WHETHER THE LOCKER SCREEN IS OPEN, off br_ui's focus stack.
+--
+-- br_ui owns the NUI focus and announces the top of the stack as an EDGE
+-- (`br:ui:focusChanged`); the locker pushes 'locker' when it opens and pops it
+-- when it closes. That is a better answer than anything br_core could work out
+-- for itself: the question the owner asked -- "if they are not in the locker
+-- screen" -- is about what is ON SCREEN, and the focus stack is the only thing
+-- that knows.
+AddEventHandler('br:ui:focusChanged', function(top)
+    local was = inLocker
+    inLocker = (top == 'locker')
+    -- Leaving the locker does not start anything; walking INTO it stops what is
+    -- running, because the emote and the locker are two things asking the ped
+    -- to be in different places.
+    if inLocker and not was and emoting and parked() then clearEmote() end
+end)
+
+-- WHETHER MY SQUAD HAS READIED UP AND IS WAITING ON ME.
+--
+-- Owner, 2026-08-29: "If they are in squads and their squad readies up and is
+-- waiting on them, (so long as they are not in locker) play any variation of
+-- 'wait*' emotes except 'wait 9'".
+--
+-- EVERYTHING THIS NEEDS IS ALREADY ON THE WIRE. LOBBY_STATUS carries the list
+-- of server ids that have queued and the client already holds its own party --
+-- client/state.lua resolves the same two facts into the "2/3 ready" the party
+-- panel shows. A SECOND handler on the same event rather than a change to that
+-- one: this is a different consumer of the same broadcast, and the departure
+-- path in client/state.lua is not this round's to edit.
+--
+-- "IS WAITING ON ME" IS THREE THINGS, and all three have to hold: I am in a
+-- party of more than one, every OTHER member has queued, and I have not.
+RegisterNetEvent(BR.Net.LOBBY_STATUS)
+AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
+    local members = BR.State.party and BR.State.party.members
+    if type(members) ~= 'table' or #members < 2 then
+        squadHolding = false
+        return
+    end
+
+    local ids = {}
+    for _, src in ipairs((d and d.ids) or {}) do ids[src] = true end
+
+    local others, ready = 0, 0
+    for _, m in ipairs(members) do
+        if m.src ~= BR.State.me.src then
+            others = others + 1
+            if ids[m.src] then ready = ready + 1 end
+        end
+    end
+
+    squadHolding = others > 0 and ready == others and not ids[BR.State.me.src]
+end)
+
+-- READYING UP: A THUMBS UP, 600ms, AND THEN THE TASK IS CLEARED.
+--
+-- Owner, 2026-08-29: "When they click ready up, play 'thumbs up 3' for 600ms
+-- then clearpedtasks. Make sure clearpedtasks runs before fade to black if they
+-- are accepted to warmup."
+--
+-- THE ORDERING IS THE LOAD-BEARING PART and it is guarded from BOTH ends.
+--
+--   * The clock. 600ms from the press, on a timer that does not care what the
+--     server says. Acceptance is a round trip plus client/state.lua's cover
+--     handshake plus BR.Spawn.toWarmupPad's own fade, so the emote is normally
+--     long gone before anything goes dark.
+--   * THE STATE EDGE, WHICH IS THE ONE THAT ACTUALLY PROMISES IT. A local
+--     server can answer in single-digit milliseconds, so the timer alone would
+--     be a race. The tick below clears on the frame my state stops reading
+--     LOBBY -- which is the moment the server names me a participant, and that
+--     is upstream of every cover: client/state.lua raises the curtain on that
+--     same edge and the fade is behind the curtain's acknowledgement.
+--
+-- A SECOND HANDLER ON `br:ui:action`, alongside client/state.lua's. Both run;
+-- this one only ever touches the ped.
+AddEventHandler('br:ui:action', function(name)
+    if name ~= BR.NuiCb.QUEUE then return end
+    if BR.State.me.state ~= BR.PlayerState.LOBBY then return end
+
+    local e = emoteCfg().ready
+    if not e then return end
+
+    Citizen.CreateThread(function()
+        if not playEmote(e, nil) then return end
+        Citizen.Wait(math.floor(e.ms or 600))
+        -- Guarded: the walk may have started under us (a ready that was
+        -- refused, an entrance the tick began), and clearing tasks then would
+        -- take the walk with the gesture.
+        if emoting == e and not walking then clearEmote() end
+    end)
+end)
+
+-- THE PARKED PED. Two emotes live here and they are on different clocks: the
+-- stretch is a timer and the wait is a live status.
+BR.Loop.register(BR.Loop.TICK, 'lobbyped.emotes', function()
+    -- LEAVING THE LOBBY TAKES THE GESTURE OFF THE PED IMMEDIATELY, and this is
+    -- the ordering guarantee for the ready-up emote above: my state stops
+    -- reading LOBBY the moment the server names me a participant, which is
+    -- before any cover this client raises.
+    if BR.State.me.state ~= BR.PlayerState.LOBBY then
+        if emoting then clearEmote() end
+        squadHolding = false
+        return
+    end
+
+    -- AN EMOTE WITH A DURATION ENDS IN THE ENGINE AND SAYS NOTHING, so this is
+    -- the only thing that can notice. Without it the latch sticks after the
+    -- first gesture of the session and every emote after it refuses to start --
+    -- silently, because "something is already playing" is not an error.
+    if emoting and emoteUntil and GetGameTimer() >= emoteUntil then
+        emoting, emoteUntil = nil, nil
+    end
+
+    if not parked() then return end
+
+    -- THE SQUAD IS WAITING: FIRST CLAIM ON THE PED, because it describes
+    -- something that is true RIGHT NOW and the stretch does not. It also stops
+    -- the moment it stops being true.
+    local E = emoteCfg()
+    local waits = E.waiting
+    if squadHolding and not inLocker then
+        if not emoting and waits and type(waits.clips) == 'table' and #waits.clips > 0 then
+            local pick = waits.clips[math.random(#waits.clips)]
+            Citizen.CreateThread(function()
+                playEmote({ dict = pick.dict, clip = pick.clip, waiting = true,
+                            flags = waits.flags or 0, ms = waits.ms or 4000 }, nil)
+            end)
+        end
+        return
+    end
+
+    -- ...and once the squad is no longer waiting, whatever was playing for that
+    -- reason comes off rather than running its duration out over a lobby that
+    -- has moved on.
+    if emoting and emoting.waiting then clearEmote() end
+
+    -- THE STRETCH: ONCE, THIRTY SECONDS IN, AND THAT IS ALL.
+    --
+    -- Owner, 2026-08-29: "once the ped is parked, if they are not in the locker
+    -- screen, play the 'stretch 3' emote after 30 seconds, and make sure it only
+    -- plays once per lobby view." Confirmed since: once and no rotation.
+    --
+    -- `idlePlayed` IS SET WHEN IT FIRES, NOT WHEN IT FINISHES, so a player who
+    -- opens the locker halfway through it does not get a second one on the way
+    -- out. The latch is reset by begin(), which is what a new lobby view is.
+    if idlePlayed or inLocker or emoting then return end
+    local e = E.idle
+    if not e then return end
+    if GetGameTimer() - parkedAt < (e.afterMs or 30000) then return end
+
+    idlePlayed = true
+    Citizen.CreateThread(function() playEmote(e, nil) end)
+end)
+
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
     BR.LobbyPed.stop('resource stopping')
@@ -976,34 +1734,42 @@ RegisterCommand('brlobbywalk', function()
     print(('  walking      %s'):format(tostring(walking)))
     print(('  locker       %s'):format(locked and 'LOCKED' or 'free'))
     print(('  ped          %s'):format(BR.LobbyPed.isNetworked() and 'networked' or 'local'))
-    print(('  camFlightMs  %d'):format(C.camFlightMs or 0))
+    print(('  camFlightMs  %d   (walkTargetMs %d)')
+        :format(C.camFlightMs or 0, C.walkTargetMs or 0))
+    print(('  camSteps     %d   camDecay %.2f'):format(C.camSteps or 0, C.camDecay or 0))
+    print(('  walkMps      %.2f  blend %.2f..%.2f')
+        :format(C.walkMps or 0, C.walkBlendMin or 0, C.walkBlendMax or 0))
     print(('  focusLeadMs  %d'):format(C.focusLeadMs or 0))
     print(('  cornerRadius %.2f'):format(C.cornerRadius or 0))
     print(('  markRadius   %.2f'):format(C.markRadius or 0))
+    print(('  arriveGrace  %dms after the camera parks'):format(C.arriveGraceMs or 0))
+    print(('  revealWaitMs %d   screen %s')
+        :format(C.revealWaitMs or 0, revealed() and 'uncovered' or 'COVERED'))
 
-    -- THE FLIGHT, SEGMENT BY SEGMENT, IN METRES AND MILLISECONDS. The whole
-    -- point of allocating camFlightMs by length is that the pace comes out the
-    -- same everywhere, so the column that matters is the last one: if those
-    -- numbers are not equal the camera is speeding up or slowing down at a node
-    -- and something has gone wrong in here rather than in config.
-    local segs = camSegments()
-    local total = 0.0
-    for _, s in ipairs(segs) do total = total + s.len end
-    local flight = C.camFlightMs or 15000
-    local done = 0.0
-    local prev = 0
-    for i, s in ipairs(segs) do
-        done = done + s.len
-        local at = math.floor(flight * (total > 0.0 and done / total or i / #segs))
-        local ms = at - prev
-        prev = at
-        print(('    seg %d      %6.1fm  %5dms  %5.1f m/s')
-            :format(i, s.len, ms, ms > 0 and (s.len / (ms / 1000.0)) or 0.0))
+    -- THE FLIGHT, STEP BY STEP, IN METRES PER SECOND. The whole point of the
+    -- decay is that these numbers COME DOWN -- fast at the top of the column,
+    -- slow at the bottom, and never back up. Printed sparsely because two dozen
+    -- steps is a screen of console: the first, the last, and every fourth.
+    local plan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0)
+    local flight = C.camFlightMs or 18000
+    if #plan > 1 then
+        local per = flight / (#plan - 1)
+        for i = 2, #plan do
+            local a, b = plan[i - 1], plan[i]
+            local len = BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z)
+            if i == 2 or i == #plan or (i % 4) == 0 then
+                local turn = math.abs((b.heading - a.heading + 540.0) % 360.0 - 180.0)
+                print(('    step %2d    %6.1fm  %5dms  %5.1f m/s  turn %4.1f deg')
+                    :format(i - 1, len, math.floor(per), len / (per / 1000.0), turn))
+            end
+        end
     end
 
-    -- AND WHAT THE LAST RUN ACTUALLY TOOK, which is the only way to see the
-    -- lead now that the camera no longer chases the ped for it: tune
-    -- camFlightMs against the walk figure until the gap reads how you want it.
+    -- AND WHAT THE LAST RUN ACTUALLY TOOK. The two durations are meant to be
+    -- equal now ("The camera flight and the walk should finish together"), so
+    -- the gap is the number to read: near zero on an ordinary return, and the
+    -- length of the flip early on a winning one, because the walk pauses for
+    -- the flip and the flight does not.
     if walkBegan and walkEnded and flightBegan and flightEnded then
         print(('  last run     walk %.1fs, flight %.1fs, camera landed %.1fs early')
             :format((walkEnded - walkBegan) / 1000.0,
@@ -1012,18 +1778,35 @@ RegisterCommand('brlobbywalk', function()
     else
         print('  last run     not measured yet')
     end
-    -- ONE LINE PER LEG, IN ORDER, because the whole point of the list is that
-    -- the legs differ -- a single averaged number would hide the thing being
-    -- tuned. Falls back to the scalar so a config without the list still says
-    -- something true.
-    local sp = C.walkSpeeds
-    if type(sp) == 'table' and #sp > 0 then
-        local parts = {}
-        for i, v in ipairs(sp) do parts[i] = ('%.2f'):format(v) end
-        print(('  walkSpeeds   %s'):format(table.concat(parts, ' -> ')))
+
+    -- ═══ THE CASE THAT WAS DRAWN, AND THE SPEEDS IT DERIVED ═══
+    --
+    -- ONE LINE PER LEG, IN ORDER, because the whole point is that they differ:
+    -- a single averaged number would hide the thing being tuned. The last
+    -- column is the leg's own predicted duration, and the total under it is
+    -- what walkTargetMs is being solved against -- so if the MEASURED walk
+    -- above and this total disagree, walkMps is wrong and nothing else is.
+    local cases = C.pedCases or {}
+    print(('  case         %d of %d'):format(caseIndex, #cases))
+    local first = startMark()
+    if first and #path > 0 and #blends > 0 then
+        local px, py = first.x, first.y
+        local secs = 0.0
+        for i = 1, #path do
+            local len = BR.Dist(px, py, path[i].x, path[i].y)
+            local b = blends[i] or 1.0
+            local t = len / (b * (C.walkMps or 1.4))
+            secs = secs + t
+            print(('    leg %d      %6.2fm  blend %.2f  %5.2fs'):format(i, len, b, t))
+            px, py = path[i].x, path[i].y
+        end
+        print(('    total                              %5.2fs  (target %.2fs)')
+            :format(secs, (C.walkTargetMs or 18000) / 1000.0))
     else
-        print(('  walkSpeed    %.2f'):format(C.walkSpeed or 0))
+        print('    legs         not planned yet -- nothing has been drawn')
     end
+    print(('  winner       %s'):format(winThisRun and 'yes -- the flip is on' or 'no'))
+
     if BR.State.me.state ~= BR.PlayerState.LOBBY then
         print('  not in the lobby -- nothing to replay')
         return
