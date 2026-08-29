@@ -1386,6 +1386,287 @@ do
         'and the walk itself is under way on the trip home')
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 18. THE DEPARTURE: BLACK, THEN THE FOCUS, THEN A SECOND, THEN THE PED
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-29: "when the lobby fades to black, before fading in, we need
+-- to move the focus to the selected warmup spawn area for at least 1 second
+-- before moving the ped, then we fade in once the ped is there."
+--
+-- FIVE CLAIMS, AND EVERY ONE OF THEM IS AN ORDERING OR AN ELAPSED TIME. A
+-- screenshot cannot see any of them and a playtest can only see the last one,
+-- so they are asserted here off the ordered native log and the stepped clock:
+-- black BEFORE the focus, the focus BEFORE the ped, at least a second BETWEEN
+-- those two, the fade-in AFTER the ped is there, and -- unchanged and asserted
+-- again from this side -- the networked flip AFTER the ped move.
+--
+-- THE FADE-OUT IS WRAPPED HERE rather than in the stub block at the top,
+-- because the ordering it belongs to is this one and nothing above needs it.
+
+local realFadeOut = DoScreenFadeOut
+DoScreenFadeOut = function(...)
+    note('fadeout')
+    return realFadeOut(...)
+end
+
+-- ═══ ONE TRIP PER BLOCK, AND THIS IS WHAT MAKES THAT TRUE ═══
+--
+-- spawn.gather re-arms on MY STATE, not on having tried: the moment a trip
+-- clears `traveling` it starts another one, because the state it watches still
+-- reads WARMUP. That is right in the game and ruinous here -- "the focus was
+-- handed back" would be answered by trip #2 having just taken it, and "nothing
+-- is left holding it" would depend on where the pump happened to stop.
+--
+-- The blocks below drive BR.Spawn.toWarmupPad directly, so the loop has nothing
+-- to contribute to them. It goes back on at the end of the file.
+ok(BR.Loop.setEnabled('spawn.gather', false),
+    'spawn.gather can be held off while the departure is driven by hand')
+
+do
+    reset()
+    wearChosenModel()
+    pump(3000)
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts')
+    -- SHORTER THAN departure.focusMaxMs ON PURPOSE: the safety net at the end
+    -- of that window also hands the focus back, so a test that ran past it would
+    -- pass whether landed() released the focus or not.
+    pump(12000)
+
+    local iBlack = firstOf('fadeout')
+    local iFocus, focus = firstOf('focus')
+    local iPed, pedMove = firstOf('resurrect')
+    local iNet = firstOf('networked', function(e) return e.on end)
+    local iIn = firstOf('fadein')
+
+    ok(iBlack ~= nil, 'the departure fades the world to black')
+    ok(iFocus ~= nil, 'and moves the streaming focus')
+    ok(iPed ~= nil, 'and moves the ped')
+
+    -- 1. BLACK FIRST.
+    ok(iBlack ~= nil and iFocus ~= nil and iBlack < iFocus,
+        ('the world goes black BEFORE the focus moves (black #%s, focus #%s)')
+            :format(tostring(iBlack), tostring(iFocus)))
+
+    -- 2. THE FOCUS IS THE SELECTED SPAWN, not the pad and not the camera node.
+    --    The ped ends up where the focus went, which is the only way to say
+    --    "the SELECTED warmup spawn area" about a spot chosen at random.
+    ok(focus ~= nil and isWarmupSpawn(focus.x, focus.y),
+        'the focus is put on one of the authored warmup spawns')
+    ok(focus ~= nil and pedMove ~= nil
+        and math.abs(focus.x - pedMove.x) < 0.01
+        and math.abs(focus.y - pedMove.y) < 0.01,
+        'and on the SAME spawn the ped is then moved to')
+
+    -- 3. THE FOCUS LEADS THE PED, AND BY AT LEAST THE CONFIGURED SECOND.
+    ok(iFocus ~= nil and iPed ~= nil and iFocus < iPed,
+        ('the focus moves BEFORE the ped (focus #%s, ped #%s)')
+            :format(tostring(iFocus), tostring(iPed)))
+
+    local held = (focus and pedMove) and (pedMove.at - focus.at) or -1
+    ok(held >= BR.Spawn.departure.focusHoldMs,
+        ('and is held there for at least the configured %dms before the ped '
+            .. 'moves (%dms)'):format(BR.Spawn.departure.focusHoldMs, held))
+
+    -- 4. AND THE LIGHT COMES BACK LAST, once the ped is genuinely there.
+    ok(iIn ~= nil and iPed ~= nil and iPed < iIn,
+        ('the screen fades back in AFTER the ped has moved (ped #%s, in #%s)')
+            :format(tostring(iPed), tostring(iIn)))
+
+    -- 5. AND THE ONE ORDERING THE FOCUS STEP MUST NOT HAVE DISTURBED.
+    --
+    -- Section 9 asserts this off the coordinate write; this asserts it off the
+    -- resurrection, which is the FIRST thing that moves the body and therefore
+    -- the earliest point a flip could have been made too early. The new step
+    -- goes in front of the teleport, never in front of the flip.
+    ok(iNet ~= nil and iPed ~= nil and iPed < iNet,
+        ('the ped is moved BEFORE it is networked (ped #%s, networked #%s)')
+            :format(tostring(iPed), tostring(iNet)))
+    ok(iFocus ~= nil and iNet ~= nil and iFocus < iNet,
+        'and the focus step is in front of the flip as well, not between')
+
+    -- AND IT IS GIVEN BACK ON THE HAPPY PATH.
+    local iBack = firstOf('focusback')
+    ok(iBack ~= nil, 'the streaming focus is handed back when the trip lands')
+    ok(iBack ~= nil and iPed ~= nil and iPed < iBack,
+        'after the placement, not before it -- the pad is what we were streaming')
+    ok(not BR.Spawn.focusHeld(), 'and the trip is not still holding it')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 18b. THE BLACK DOES NOT WAIT FOR THE PAGE
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-29: "occasionally I'll press ready up and the lobby UI doesn't
+-- go away and we don't fade to black on time. The ped transports to the warmup
+-- area, and the NUI only transitions when the inventory/HUD UI shows up."
+--
+-- The world fade used to sit BELOW the cover handshake, so a page that never
+-- acknowledged the curtain delayed the ONE thing that can black the world out
+-- unconditionally -- by coverWaitMs, every time. This is that case: the page
+-- says nothing at all, and the world must still be dark within its own fade.
+--
+-- Every other block here has the curtain acknowledged the instant it is raised
+-- (see the stub at the top), which is exactly why this one has to take it away.
+
+do
+    reset()
+    wearChosenModel()
+    pump(3000)
+
+    -- A FRESH PAGE HAS PAINTED NOTHING, so nothing is covered -- the same event
+    -- br_ui fires on a new document, and the only way to clear the mirror that
+    -- previous blocks in this file have left reading "black".
+    TriggerEvent('br:ui:ready')
+
+    -- ...and now it never answers.
+    local savedSend = handlers['br:ui:sendLocal']
+    handlers['br:ui:sendLocal'] = {}
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts with a page that never answers')
+
+    -- Comfortably inside coverWaitMs, so a fade that waited on the handshake
+    -- has not happened yet and a fade that did not is already done.
+    pump(600)
+    ok(firstOf('fadeout') ~= nil,
+        ('the world is black without waiting for the page (cover deadline is '
+            .. '%dms)'):format(BR.Config.Match.coverWaitMs or 2500))
+    ok(firstOf('focus') == nil,
+        'but nothing has moved yet -- the cover is still waited for')
+
+    handlers['br:ui:sendLocal'] = savedSend
+    pump(30000)
+    ok(not BR.Spawn.traveling, 'and the trip still finishes on its deadlines')
+    ok(not BR.Spawn.focusHeld(), 'with the focus handed back')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 19. THE FOCUS COMES BACK ON THE ENDINGS THAT ARE NOT THE HAPPY ONE
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A client left focused on a pad it never reached does not error and does not
+-- log. It presents, much later and somewhere else, as world geometry refusing
+-- to load around the player, with nothing pointing back here -- which is why
+-- the failure paths get their own block rather than a line in the one above.
+
+do
+    -- ═══ THE PLACEMENT NEVER REPORTS BACK ═══
+    --
+    -- placeAt refuses to start while another placement is running, so the
+    -- landing callback never fires and the 9s escape is the only ending. It
+    -- calls landed(), so the focus comes back on that road too.
+    reset()
+    wearChosenModel()
+    pump(3000)
+
+    -- Wedge a placement open: BR.Spawn.placeAt is serialised on a file-local
+    -- `placing`, and the way to set it from out here is to start a placement
+    -- whose collision wait we then never let finish.
+    --
+    -- ON THE LOBBY MARK, NOT AN ARBITRARY COORDINATE: spawn.lobbywatch sends a
+    -- LOBBY player standing more than 150m from the vista straight home, and a
+    -- trip home is itself a trip -- so wedging the placement anywhere else
+    -- starts the very thing this block is trying to keep out of the way.
+    local realCollision = HasCollisionLoadedAroundEntity
+    HasCollisionLoadedAroundEntity = function() return 0 end
+    local home = BR.Config.Match.lobbyPos
+    BR.Spawn.placeAt(home.x, home.y, home.z, home.heading)
+    pump(100)
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    ok(BR.Spawn.toWarmupPad(), 'the trip starts with a placement already running')
+    -- Inside departure.focusMaxMs, so the 9s escape is the only thing that can
+    -- be handing the focus back here.
+    pump(12000)
+
+    local escaped = false
+    for _, line in ipairs(logged) do
+        if line:find('did not report back', 1, true) then escaped = true end
+    end
+
+    ok(firstOf('focus') ~= nil, 'the focus is still taken')
+    ok(escaped,
+        'precondition: the placement was refused and the 9s escape is the ending')
+    ok(firstOf('focusback') ~= nil,
+        'and the escape hands the streaming focus back anyway')
+    ok(not BR.Spawn.focusHeld(), 'nothing is left holding it')
+    ok(firstOf('networked', function(e) return e.on end) ~= nil,
+        'and the escape still leaves the ped networked rather than invisible')
+
+    HasCollisionLoadedAroundEntity = realCollision
+end
+
+do
+    -- ═══ THE TRIP IS ABANDONED BETWEEN THE FOCUS AND THE LANDING ═══
+    --
+    -- The case landed() cannot cover: a bare Citizen thread that throws simply
+    -- stops. Modelled by taking the focus and then clearing `traveling` out
+    -- from under it, which is exactly the state such a thread would leave --
+    -- held, with nothing left running that would give it back.
+    reset()
+    wearChosenModel()
+    pump(3000)
+
+    order = {}
+    BR.State.me.state = BR.PlayerState.WARMUP
+    BR.Spawn.toWarmupPad()
+    -- INSIDE the focus hold, not past it: the whole trip -- fade, cover, hold,
+    -- placement -- is over in a little over a second here, and this block needs
+    -- to catch it while it still has the focus.
+    pump(600)
+
+    ok(BR.Spawn.focusHeld(), 'precondition: the trip is holding the focus')
+
+    threads = {}                     -- the thread dies where it stands
+    BR.Spawn.traveling = false
+
+    order = {}
+    BR.Loop.step(BR.Loop.SLOW)
+
+    ok(firstOf('focusback') ~= nil,
+        'the watchdog hands back a focus that outlived its trip')
+    ok(not BR.Spawn.focusHeld(), 'and it is not held afterwards')
+
+    order = {}
+    BR.Loop.step(BR.Loop.SLOW)
+    ok(firstOf('focusback') == nil,
+        'and it does not keep handing back a focus nobody holds')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 20. THE DEPARTURE'S NUMBERS ARE NUMBERS, IN ONE PLACE
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The owner tunes the hold himself and cannot read Lua, so it has to be a named
+-- value in a table rather than a literal somewhere in the middle of a thread.
+
+do
+    local D = BR.Spawn.departure
+    ok(type(D) == 'table', 'the departure has a tunable table')
+    for _, k in ipairs({ 'focusHoldMs', 'focusMaxMs' }) do
+        ok(type(D[k]) == 'number', ('departure.%s is tunable'):format(k))
+    end
+    ok(D.focusHoldMs >= 1000,
+        ('the focus hold is at least the second the owner asked for (%dms)')
+            :format(D.focusHoldMs or -1))
+
+    -- The net has to outlast the trip it is a net for, or it would fire on
+    -- healthy departures and take the focus off the pad mid-placement.
+    ok(D.focusMaxMs > D.focusHoldMs + 9000,
+        ('the focus net outlasts the hold plus the 9s placement escape (%dms)')
+            :format(D.focusMaxMs or -1))
+end
+
+-- And the gather loop goes back on, so nothing added after this inherits a
+-- disabled subsystem from a block that only wanted it quiet for itself.
+ok(BR.Loop.setEnabled('spawn.gather', true), 'spawn.gather is left enabled')
+
 -- ------------------------------------------------------------------ report ---
 
 if fail > 0 then
