@@ -140,6 +140,23 @@ BR.Config.Rescue = {
     -- until NetworkHasControlOfEntity agrees or this expires.
     controlMs = 3000,
 
+    -- HOW LONG TO KEEP ASKING AFTER THE GATE HAS GIVEN UP, which is a different
+    -- question from controlMs and is asked for a different reason.
+    --
+    -- controlMs gates the SETUP: the mods, the siren and the lock have to be
+    -- written at some point and cannot wait forever. This one runs alongside the
+    -- ride and exists to settle an argument -- a vehicle from
+    -- CreateVehicleServerSetter is created ORPHANED and only acquires an owning
+    -- client once one is in scope, so control being three seconds late and
+    -- control never coming look identical at controlMs and completely different
+    -- at fifteen. If it arrives, the drive is re-tasked and the ride works; if
+    -- it does not, the log says "refusal, not latency" with a number on it.
+    --
+    -- WELL INSIDE THE 300s DEADLINE and well outside the server's 5s stall
+    -- clock, so a late arrival still leaves a journey worth making and the
+    -- re-places are visible in the log either side of it.
+    controlWatchMs = 15000,
+
     -- WHAT COUNTS AS AN AMBULANCE, for the ambient-discovery blip (owner,
     -- 2026-08-23: "There will also be ambulances around the map which spawn
     -- naturally. If a player gets into one that we weren't aware of, add it to

@@ -565,6 +565,68 @@ local function applyExtras(veh)
     end
 end
 
+--- What the drive path actually looks like, in one line.
+---
+--- ═══ THREE FAULTS HAVE BEEN WEARING THE SAME SYMPTOM ═══
+---
+--- A stationary ambulance is one of: never tasked; tasked and the task dropped;
+--- or tasked, running, and going nowhere because every write this file makes is
+--- landing on an entity this machine does not own. From the outside all three
+--- are a van that does not move, and the server can only ever report the van.
+--- These are the values that separate them, and they are PRINTED RATHER THAN
+--- ACTED ON -- the same discipline that ended the netId round.
+---
+--- `owner` IS THE ONE THAT MATTERS, and it is the field this feature has never
+--- had. A vehicle from CreateVehicleServerSetter is created ORPHANED -- Cfx's
+--- own migration guide says exactly that, and says NETWORK_GET_ENTITY_OWNER
+--- answers -1 for as long as it stays that way -- and an orphaned entity has no
+--- owning client for a takeover to take it FROM. So:
+---
+---   owner = -1                     still orphaned; the control request had
+---                                  nobody to ask, which is not a refusal
+---   owner = some other player      it migrated, just not to us
+---   owner = us, control = false    a third thing, and a new one
+---
+--- @param r table
+--- @param when string   which moment this is, for the log
+local function reportDrive(r, when)
+    if not r or not r.veh or not isTrue(DoesEntityExist(r.veh)) then return end
+    local veh = r.veh
+
+    local owner = -1
+    if NetworkGetEntityOwner then
+        owner = math.tointeger(tonumber(NetworkGetEntityOwner(veh)) or -1) or -1
+    end
+
+    -- GET_ACTIVE_VEHICLE_MISSION_TYPE is the AI drive task from the VEHICLE's
+    -- side rather than the ped's, which is what makes it the right question
+    -- here: it answers even when the driver is a ped nobody else can see.
+    -- 0 is MISSION_NONE, so "tasked and dropped" reads as 0 while "never
+    -- tasked" reads as 0 too -- the pairing with driverInSeat is what splits
+    -- those, and the pairing with control is what splits both from the third.
+    local mission = -1
+    if GetActiveVehicleMissionType then
+        mission = math.tointeger(tonumber(GetActiveVehicleMissionType(veh)) or -1) or -1
+    end
+
+    local netd = 'n/a'
+    if NetworkGetEntityIsNetworked then
+        netd = tostring(isTrue(NetworkGetEntityIsNetworked(veh)))
+    end
+
+    local seated = false
+    if r.driver and isTrue(DoesEntityExist(r.driver)) then
+        seated = (GetPedInVehicleSeat(veh, -1) == r.driver)
+    end
+
+    print(('[br_core] rescue: drive state (%s) -- control=%s owner=%d me=%d '
+           .. 'networked=%s driverInSeat=%s mission=%d speed=%.2f')
+        :format(tostring(when),
+                tostring(isTrue(NetworkHasControlOfEntity(veh))),
+                owner, PlayerId(), netd, tostring(seated),
+                mission, GetEntitySpeed(veh)))
+end
+
 --- Point the AI at the destination.
 ---
 --- THE FIRST `TaskVehicleDriveToCoord` IN THIS TREE. Everything else that moves
@@ -588,7 +650,6 @@ local function taskDrive(r)
 
     SetDriverAbility(r.driver, R.driverAbility or 0.6)
     SetDriverAggressiveness(r.driver, R.driverAggression or 0.8)
-    SetPedKeepTask(r.driver, true)
 
     TaskVehicleDriveToCoord(r.driver, r.veh,
         r.dest.x, r.dest.y, r.dest.z,
@@ -606,6 +667,32 @@ local function taskDrive(r)
         true)
     SetDriveTaskDrivingStyle(r.driver, R.driveStyle or 786485)
     SetDriveTaskMaxCruiseSpeed(r.driver, R.driveSpeed or 30.0)
+
+    -- ═══ AFTER THE TASK, WHICH IS WHERE IT WAS NOT ═══
+    --
+    -- Owner, 2026-08-28: "are we using SetPedKeepTask(driver, true) anywhere for
+    -- the ambulance driver by chance?" We were, and it ran BEFORE the task.
+    --
+    -- WHAT I COULD ESTABLISH, AND WHAT I COULD NOT. SET_PED_KEEP_TASK sets a
+    -- persistent flag on the PED rather than a property of a task, and a flag
+    -- read at cleanup time should not care which side of the task it was set
+    -- on -- so the honest answer is that I could NOT show the order matters on
+    -- this build, and this is not being claimed as the fix. It moves because
+    -- every working reference in the survey (es_taxi and the rest) orders it
+    -- this way, because the flag is about making an EXISTING task persist, and
+    -- because it costs one line to remove a variable from a path that has cost
+    -- seven rounds. If it turns out to matter, it now matches the references.
+    SetPedKeepTask(r.driver, true)
+
+    -- AND THEN SAY WHAT HAPPENED, ONE SECOND LATER. Long enough for the task to
+    -- have been picked up and for a migration to have taken it away again;
+    -- short enough to land in the log before the server's 5s stall clock fires,
+    -- so the two can be read against each other.
+    Citizen.CreateThread(function()
+        Citizen.Wait(1000)
+        if ride ~= r then return end
+        reportDrive(r, 'one second after tasking')
+    end)
 end
 
 --- Stop here, open it up, and let the medic walk away from it.
@@ -948,11 +1035,20 @@ local function board(d)
             NetworkRequestControlOfEntity(r.veh)
             Citizen.Wait(50)
         end
-        if not isTrue(NetworkHasControlOfEntity(r.veh)) then
+        -- LATCHED, so the watcher below knows whether it is reporting an
+        -- arrival or just agreeing with a gate that already passed.
+        r.hadControl = isTrue(NetworkHasControlOfEntity(r.veh))
+        if not r.hadControl then
             print(('[br_core] rescue: no control of ambulance %d after %dms -- '
                    .. 'the drive may not take')
                 :format(r.veh, GetGameTimer() - tc))
         end
+
+        -- AND WHO DOES OWN IT. The line above says control was not obtained; it
+        -- has never said what the entity's ownership actually IS, which is the
+        -- difference between "refused" and "there was nobody to ask". See
+        -- reportDrive.
+        reportDrive(r, 'at the control gate')
 
         SetEntityAsMissionEntity(r.veh, true, true)
 
@@ -1288,6 +1384,50 @@ local function board(d)
         taskDrive(r)
         print(('[br_core] rescue: aboard (vehicle %d) bound for %s')
             :format(r.veh, tostring(r.dest.id)))
+
+        -- ═══ KEEP ASKING, AND SAY THE MOMENT IT ARRIVES ═══
+        --
+        -- The gate above asks for three seconds and then gives up, which was
+        -- enough to name the fault and not enough to tell refusal from latency.
+        -- A vehicle from CreateVehicleServerSetter is created ORPHANED and only
+        -- gets an owning client once one is in scope, so "not yet" and "never"
+        -- are genuinely different answers here and three seconds cannot tell
+        -- them apart.
+        --
+        -- THIS IS NOT BEING OFFERED AS THE FIX, and the distinction matters:
+        -- if control is truly never granted this changes nothing except that
+        -- the log finally says so with a number on it. If it was only late,
+        -- the re-task is the ride working. Either way the next run answers the
+        -- question instead of restating it.
+        --
+        -- ONE LOG LINE EITHER WAY. A watcher that printed every attempt would
+        -- bury the answer in its own noise.
+        Citizen.CreateThread(function()
+            local t0 = GetGameTimer()
+            local limit = R.controlWatchMs or 15000
+            while GetGameTimer() - t0 < limit do
+                if ride ~= r then return end
+                if not r.veh or not isTrue(DoesEntityExist(r.veh)) then return end
+                if isTrue(NetworkHasControlOfEntity(r.veh)) then
+                    -- Only interesting if the gate had already given up; a ride
+                    -- that got control on time has nothing to report here.
+                    if not r.hadControl then
+                        print(('[br_core] rescue: control of ambulance %d arrived '
+                               .. 'after %dms -- re-tasking the drive')
+                            :format(r.veh, GetGameTimer() - t0))
+                        taskDrive(r)
+                        reportDrive(r, 'after control arrived')
+                    end
+                    return
+                end
+                NetworkRequestControlOfEntity(r.veh)
+                Citizen.Wait(250)
+            end
+            if ride ~= r then return end
+            print(('[br_core] rescue: control of ambulance %d never arrived in '
+                   .. '%dms of asking -- this is a refusal, not latency')
+                :format(r.veh, limit))
+        end)
     end)
 end
 
