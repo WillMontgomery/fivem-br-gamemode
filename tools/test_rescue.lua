@@ -595,10 +595,27 @@ end
 describe('spawn.clearOfPlayers')
 do
     -- Owner, 2026-08-29: "make sure wherever the ambulance spawns there are no
-    -- other players within 500m." The spawn is where a rescued player
-    -- MATERIALISES -- board() fades out and teleports them in -- so this is the
-    -- rule that stops a kit dropping its owner into somebody's crosshair.
-    local clear = R.clearOfPlayersM or 500.0
+    -- other players within 500m", revised later the same day: "Please revise
+    -- that to 250m." The spawn is where a rescued player MATERIALISES --
+    -- board() fades out and teleports them in -- so this is the rule that stops
+    -- a kit dropping its owner into somebody's crosshair.
+    --
+    -- ═══ THE SHIPPED NUMBER IS PINNED, AND THE REST OF THIS BLOCK IS NOT ═══
+    --
+    -- Every case below reads the config, so the RULE is tested against whatever
+    -- the owner has set -- that is the RFAR argument at the top of this file
+    -- applied to a second knob, and it is why moving the number does not turn
+    -- this block red for reasons that have nothing to do with the rule.
+    --
+    -- Which leaves nothing at all watching the VALUE. He asked for a specific
+    -- number twice, and a config-reading suite would stay green through a
+    -- silent revert to 500 -- so exactly one assertion looks at it.
+    ok(R.clearOfPlayersM == 250.0,
+        'the shipped clearance is the 250m he revised it to, not the 500m he '
+            .. 'first asked for',
+        R.clearOfPlayersM)
+
+    local clear = R.clearOfPlayersM or 250.0
 
     ok(BR.RescueClearOfPlayers(0.0, 0.0, {}, clear) == true,
         'an empty world is clear')
@@ -677,7 +694,7 @@ do
         'and it stops on the first ring that works rather than walking on',
         ('%.0fm from the player'):format(walked))
 
-    -- ═══ THE 500m RULE IS OBEYED BY THE FALLBACK TOO ═══
+    -- ═══ THE CLEARANCE RULE IS OBEYED BY THE FALLBACK TOO ═══
     local blocked = {}
     if spot then blocked[1] = { x = spot.x, y = spot.y } end
     local spot2 = BR.RescueFreeSpawn(0.0, 0.0, blocked, { dest }, far, 0, R, nil)
@@ -792,7 +809,7 @@ do
             .. 'does not mean delivering into the storm',
         d2 and ('(%.0f, %.0f)'):format(d2.x, d2.y))
 
-    -- 3. THE SURVIVORS ARE PACKED AND NOTHING IS 500m CLEAR.
+    -- 3. THE SURVIVORS ARE PACKED AND NOTHING IS `clearOfPlayersM` CLEAR.
     --    The clearance is the rule that bends, because its failure is a worse
     --    rescue rather than a broken one.
     -- THE SEARCH IS PENNED IN so the crowd can actually cover it. With the
@@ -827,12 +844,12 @@ do
         end
     end
     ok(not anyClear,
-        'precondition: nothing inside the search radius is 500m clear, so the '
+        'precondition: nothing inside the search radius is clear enough, so the '
             .. 'fallback is the only thing that can answer')
 
     local s3, d3 = BR.RescueFreeSpawn(0.0, 0.0, crowd, {}, storm, 0, RPEN, nil)
     ok(s3 ~= nil and d3 ~= nil,
-        'a map with no 500m-clear spot on it STILL yields a ride rather than a '
+        'a map with no clear spot on it STILL yields a ride rather than a '
             .. 'refusal')
 
     -- AND IT SAYS SO. A crowded spot that pretended to be clean would hide the
@@ -855,6 +872,365 @@ do
             .. 'the first one that had a destination',
         s4 and ('nearest player %.0fm')
             :format(BR.RescueRoom(s4.x, s4.y, pair)))
+end
+-- ---------------------------------------------------------------------------
+describe('point.saysWhichKind')
+do
+    -- ═══ THE OWNER ASKED WHY THE DESTINATION WAS A POI ═══
+    --
+    -- 2026-08-29: "for some reason you set the destination as a POI?"
+    --
+    -- It never was. He was reading `dest=senora_n`, and `senora_n` is a row in
+    -- BR.Config.Map.AmbulanceSpawns -- a surveyed car park -- whose id was named
+    -- after the POI beside it. Nothing in this feature reads BR.Config.Map.POIs.
+    --
+    -- The kind is attached to the name now, so the id can stay the human handle
+    -- the surveyed data needs while the line says what sort of thing it names.
+    -- These cases exist so a later tidy-up cannot quietly drop the kind again
+    -- and put the question back.
+    local surveyed = { id = 'senora_n', x = 1.0, y = 2.0 }
+    local invented = { id = 'invented drop-off', free = true, x = 3.0, y = 4.0 }
+
+    local sl = BR.RescuePointLabel(surveyed)
+    ok(sl:find('senora_n', 1, true) ~= nil,
+        'a surveyed point still prints its own id -- that is the handle '
+            .. 'somebody would search config/map.lua for', sl)
+    ok(sl:find('surveyed', 1, true) ~= nil,
+        '...and now says it is a surveyed point rather than leaving a '
+            .. 'POI-shaped name to speak for itself', sl)
+    ok(sl:find('invented', 1, true) == nil,
+        'and it is not called invented', sl)
+
+    local il = BR.RescuePointLabel(invented)
+    ok(il:find('invented', 1, true) ~= nil,
+        'a built point says it was invented, which is the distinction the '
+            .. 'console could not make', il)
+    ok(il:find('surveyed', 1, true) == nil,
+        'and it is never called surveyed', il)
+
+    -- THE TWO LABELS MUST DIFFER. Asserted as a pair rather than only
+    -- separately: a label that named the kind for one and not the other would
+    -- still leave the reader guessing on half the lines.
+    ok(sl ~= il, 'the two kinds do not read alike', sl .. ' / ' .. il)
+
+    ok(BR.RescuePointLabel(nil) == 'nowhere',
+        'and nothing is still "nowhere" -- the log line for a refusal is not a '
+            .. 'crash')
+
+    -- A ROW WITH NO id IS STILL LEGAL (config/rescue.lua's own empty-config
+    -- `points` table has none) and coordinates are the honest identifier for
+    -- one -- but the KIND must survive the fallback, which is the half an
+    -- implementation would forget.
+    local bare = BR.RescuePointLabel({ x = 12.0, y = -34.0 })
+    ok(bare:find('12', 1, true) ~= nil and bare:find('-34', 1, true) ~= nil,
+        'a point with no id falls back to its coordinates', bare)
+    ok(bare:find('surveyed', 1, true) ~= nil,
+        '...and still carries its kind', bare)
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.snapLimit')
+do
+    -- ═══ THE PROBABLE CAUSE OF THE CIRCLING, AS ARITHMETIC ═══
+    --
+    -- client/rescue.lua steers the AI at a road NODE, because a target off the
+    -- path-node graph is one the router closes on and then orbits. It refused
+    -- to snap when the nearest node was further than `arriveM` (50m) away.
+    --
+    -- That rule was written for SURVEYED car parks and is right for them. Since
+    -- 2026-08-29 most late destinations are INVENTED -- a bearing off a ring
+    -- walk with no road under it -- and a random coordinate is rarely within
+    -- 50m of tarmac, so the snap never landed and the ambulance was tasked at a
+    -- point in a field. The two kinds now get two different permissions.
+    local surveyed = { id = 'senora_n', x = 0.0, y = 0.0 }
+    local invented = { id = 'invented drop-off', free = true, x = 0.0, y = 0.0 }
+
+    ok(BR.RescueSnapLimitM(surveyed, R) == R.arriveM,
+        'a surveyed point may only be snapped within the arrival radius -- '
+            .. 'moving a spot somebody stood on would betray the survey, and '
+            .. 'the offset has to stay inside arriveNearM',
+        BR.RescueSnapLimitM(surveyed, R))
+
+    ok(BR.RescueSnapLimitM(invented, R) == R.freeSnapM,
+        'an invented one may be moved as far as freeSnapM -- there is no '
+            .. 'authored intent to preserve and no tarmac to be near',
+        BR.RescueSnapLimitM(invented, R))
+
+    -- THE WHOLE FIX IN ONE ASSERTION. A single limit for both is the shipped
+    -- bug, and it passes every case above that reads only one of them.
+    ok(BR.RescueSnapLimitM(invented, R) > BR.RescueSnapLimitM(surveyed, R),
+        'and the invented point is allowed to move FURTHER -- one limit for '
+            .. 'both kinds is the defect this splits',
+        ('%.0f vs %.0f'):format(BR.RescueSnapLimitM(invented, R),
+                                BR.RescueSnapLimitM(surveyed, R)))
+
+    ok(BR.RescueSnapLimitM(nil, R) == R.arriveM,
+        'no destination at all falls back to the tighter of the two, which is '
+            .. 'the safe direction to be wrong in')
+
+    -- `free` IS A FLAG, NOT A TRUTHY VALUE. The server sends `free = true` and
+    -- nothing else; a point that merely HAS the key must not be treated as
+    -- invented, because `0` is truthy in Lua and this repository has shipped
+    -- that defect nine times.
+    ok(BR.RescueSnapLimitM({ free = false }, R) == R.arriveM,
+        'and `free = false` is a surveyed point, not an invented one')
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.roadDistance')
+do
+    -- The only road knowledge a server-side script on this platform has:
+    -- BR.Config.Map.Roads, six authored corridors that exist for the loot
+    -- filler. GetClosestVehicleNode and its family are client natives with no
+    -- server equivalent.
+    local straight = {
+        { id = 'flat', points = {
+            { x = -1000.0, y = 0.0 }, { x = 1000.0, y = 0.0 },
+        } },
+    }
+
+    ok(BR.RescueRoadDistance(0.0, 0.0, straight) < 0.001,
+        'a point on the corridor reads zero')
+    ok(math.abs(BR.RescueRoadDistance(0.0, 50.0, straight) - 50.0) < 0.001,
+        'and one beside it reads its perpendicular distance',
+        BR.RescueRoadDistance(0.0, 50.0, straight))
+
+    -- ═══ SEGMENT, NOT VERTEX, AND THIS IS THE CASE THAT SPLITS THEM ═══
+    --
+    -- These corridors are authored with legs kilometres long -- the Great Ocean
+    -- Highway has eight points across nine kilometres. A distance measured to
+    -- the nearest authored VERTEX answers ~1001m for the point below, which
+    -- sits fifty metres from the road; the preference it feeds would then rank
+    -- a spot on the tarmac below one in a field near a bend.
+    ok(BR.RescueRoadDistance(0.0, 50.0, straight) < 100.0,
+        'a point halfway along a two-kilometre leg is measured to the LEG, not '
+            .. 'to the far-away vertices that define it',
+        BR.RescueRoadDistance(0.0, 50.0, straight))
+
+    -- ...and past the END of a leg it is the endpoint that answers, which is
+    -- the other half of a segment test: an unclamped projection would run the
+    -- corridor off to infinity and call the whole map roadside.
+    ok(math.abs(BR.RescueRoadDistance(1300.0, 0.0, straight) - 300.0) < 0.001,
+        'and a point beyond the end of the corridor measures to its end rather '
+            .. 'than to the infinite line through it',
+        BR.RescueRoadDistance(1300.0, 0.0, straight))
+
+    ok(BR.RescueRoadDistance(0.0, 0.0, nil) == math.huge,
+        'no corridors means no opinion, not "everywhere is a road"')
+    ok(BR.RescueRoadDistance(0.0, 0.0, {}) == math.huge,
+        'and neither does an empty list')
+
+    -- The shipped data really does load and really does answer, so the
+    -- preference is not silently inert in play.
+    ok(BR.RescueRoadDistance(0.0, 0.0, BR.Config.Map.Roads) < math.huge,
+        'the shipped corridors answer for a point in the middle of the map',
+        BR.RescueRoadDistance(0.0, 0.0, BR.Config.Map.Roads))
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.prefersARoad')
+do
+    -- ═══ AN INVENTED DROP-OFF IN A FIELD IS ONE THE AI CANNOT ROUTE TO ═══
+    --
+    -- BR.RescueSynthDestination used to take the FIRST qualifying bearing on
+    -- the nearest workable ring, which is a uniformly arbitrary spot in
+    -- whatever the circle left -- and most of this map is not tarmac.
+    --
+    -- The ring still wins outright; the bearing is where the corridors get a
+    -- vote. Bearing 0 is due north (dy = fromY + cos(0) * r), so from the
+    -- origin the FIRST candidate is always the one at +minTripM on the y axis
+    -- -- which is what an implementation with no preference returns, and what
+    -- these cases are measured against.
+    local south = {
+        { id = 'south', points = {
+            { x = -2000.0, y = -150.0 }, { x = 2000.0, y = -150.0 },
+        } },
+    }
+
+    -- No storm and no boundary: every bearing qualifies, so the ONLY thing that
+    -- can decide between them is the corridor.
+    local d = BR.RescueSynthDestination(0.0, 0.0, nil, 0, R, nil, south)
+    ok(d ~= nil, 'a destination is still built', d and d.id)
+    ok(d ~= nil and d.y < 0.0,
+        'it walks round to the southern bearing, where the corridor is, rather '
+            .. 'than taking the northern one it reaches first',
+        d and ('(%.0f, %.0f)'):format(d.x, d.y))
+    ok(d ~= nil and (d.roadM or math.huge) < 20.0,
+        '...and the point it takes is within twenty metres of the corridor',
+        d and tostring(d.roadM))
+
+    -- ═══ AND WITHOUT CORRIDORS IT IS EXACTLY WHAT SHIPPED ═══
+    --
+    -- This is not a tidiness case. `math.huge < math.huge` is false, so a
+    -- best-of-ring written without an explicit first-candidate arm rejects
+    -- EVERY bearing when no corridor is in range and the function returns
+    -- nothing at all -- which is the kit refusing, the one outcome the owner
+    -- ruled out. That defect was written and eleven existing assertions caught
+    -- it; these two say so directly.
+    local none = BR.RescueSynthDestination(0.0, 0.0, nil, 0, R, nil, nil)
+    ok(none ~= nil,
+        'with no corridors configured a destination is still built -- an '
+            .. 'un-scored ring must not be an empty one', none and none.id)
+    ok(none ~= nil and none.y > 0.0,
+        '...and it is the first bearing, due north, which is the behaviour '
+            .. 'that shipped before the preference existed',
+        none and ('(%.0f, %.0f)'):format(none.x, none.y))
+
+    -- THE PREFERENCE MAY NOT OVERRULE THE CIRCLE. It ranks candidates that
+    -- already qualified; a corridor outside the arrival circle must not pull
+    -- the drop-off out of it, because delivering a player outside the purple
+    -- wall is the failure this whole solver exists to avoid.
+    local tight = {
+        phase = 1,
+        cx0 = 0.0, cy0 = 200.0, r0 = 220.0,
+        cx1 = 0.0, cy1 = 200.0, r1 = 220.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+    local pulled = BR.RescueSynthDestination(0.0, 0.0, tight, 0, R, nil, south)
+    ok(pulled ~= nil and BR.InCircle(pulled.x, pulled.y, 0.0, 200.0, 220.0),
+        'a corridor outside the arrival circle does not drag the drop-off out '
+            .. 'of it -- the preference ranks, it does not admit',
+        pulled and ('(%.0f, %.0f)'):format(pulled.x, pulled.y))
+
+    -- AND IT IS STILL MARKED, because the client resolves the height of one of
+    -- these and the delivery is wrong if it does not know to.
+    ok(d ~= nil and d.free == true,
+        'a built destination is still flagged as built')
+end
+
+-- ---------------------------------------------------------------------------
+describe('drive.verdict')
+do
+    -- ═══ WHAT THE OWNER GETS INSTEAD OF DESCRIBING WHAT HE SAW ═══
+    --
+    -- Seven rounds, eleven changes to this drive, zero measurements of it. The
+    -- six ways it can fail look identical from the stretcher and want
+    -- completely different fixes, so client/rescue.lua samples the ride and
+    -- this decides which one happened.
+    --
+    -- Driven here rather than in game for the reason the whole file exists: the
+    -- interesting cases are a vehicle circling a point it cannot reach and a
+    -- task that is silently dropped, and staging either one means dying in the
+    -- right place several minutes into a phase.
+    local function sample(t, d, opts)
+        opts = opts or {}
+        return {
+            atMs = t, distM = d,
+            speed = opts.speed or 13.0,
+            mission = opts.mission or 6,
+            control = opts.control ~= false,
+            snapped = opts.snapped == true,
+        }
+    end
+
+    local code = BR.RescueDriveVerdict({}, R)
+    ok(code == 'NO_SAMPLES', 'a ride with no samples says so', code)
+    ok(select(1, BR.RescueDriveVerdict(nil, R)) == 'NO_SAMPLES',
+        'and so does a nil list')
+
+    -- ARRIVED. The last sample is inside the arrival radius, which is the one
+    -- outcome that is not a fault.
+    local arrived = BR.RescueDriveVerdict({
+        sample(0, 900.0), sample(30000, 400.0), sample(60000, 20.0),
+    }, R)
+    ok(arrived == 'ARRIVED', 'a ride that ended near the point ARRIVED', arrived)
+
+    -- ═══ THE ORDER IS CAUSAL, AND THESE THREE PROVE IT ═══
+    --
+    -- Every set below is ALSO a set that made no progress, so a classifier that
+    -- asked "is it orbiting" first would answer ORBITING for all of them and
+    -- send the next round after the driving style for the eighth time.
+    local noctl = BR.RescueDriveVerdict({
+        sample(0, 900.0, { control = false }),
+        sample(30000, 900.0, { control = false }),
+        sample(60000, 900.0),
+    }, R)
+    ok(noctl == 'NO_CONTROL',
+        'a client that did not own the ambulance is told that, not told it is '
+            .. 'circling -- nothing it said to the driver could take', noctl)
+
+    local never = BR.RescueDriveVerdict({
+        sample(0, 900.0, { mission = 0 }),
+        sample(30000, 900.0, { mission = 0 }),
+        sample(60000, 900.0, { mission = 0 }),
+    }, R)
+    ok(never == 'NEVER_TASKED',
+        'a vehicle with no drive mission on any poll was never tasked at all',
+        never)
+
+    local dropped = BR.RescueDriveVerdict({
+        sample(0, 900.0, { mission = 6 }),
+        sample(30000, 900.0, { mission = 0 }),
+        sample(60000, 900.0, { mission = 6 }),
+    }, R)
+    ok(dropped == 'TASK_DROPPED',
+        'one that held a task and lost it is a DIFFERENT fault from one that '
+            .. 'never had it, and it is reported as one', dropped)
+
+    -- ═══ THE TWO THAT LOOK THE SAME ON A DISTANCE READING ═══
+    local orbiting = BR.RescueDriveVerdict({
+        sample(0, 900.0), sample(30000, 63.0),
+        sample(60000, 71.0), sample(90000, 66.0),
+    }, R)
+    ok(orbiting == 'ORBITING',
+        'closed to sixty metres, then drove at speed for a minute without '
+            .. 'beating it -- this is the circling the owner has watched',
+        orbiting)
+
+    local stuck = BR.RescueDriveVerdict({
+        sample(0, 900.0), sample(30000, 630.0, { speed = 0.2 }),
+        sample(60000, 631.0, { speed = 0.1 }),
+        sample(90000, 630.0, { speed = 0.0 }),
+    }, R)
+    ok(stuck == 'STUCK',
+        'the same lack of progress at a standstill is wedged rather than lost '
+            .. '-- one is the recovery ladder, the other is the route', stuck)
+
+    -- ═══ THE SUBTLE ONE: A CREEP IS NOT PROGRESS ═══
+    --
+    -- A vehicle nudging against an obstruction improves its own distance
+    -- reading by a metre or two on every poll. A classifier that took any
+    -- strict improvement as progress would call that CONVERGING for ever --
+    -- which is exactly the reading that has let seven rounds of this bug pass
+    -- for "it just needs a bit longer". `driveStallM` is the bar.
+    local creep = {}
+    for i = 0, 12 do
+        creep[#creep + 1] = sample(i * 5000, 700.0 - i * 1.0)
+    end
+    ok(BR.RescueDriveVerdict(creep, R) == 'ORBITING',
+        'a metre of improvement per poll for a minute is not progress -- it is '
+            .. 'a stall wearing a monotonic distance',
+        select(1, BR.RescueDriveVerdict(creep, R)))
+
+    -- ...while a real drive over the same window is not accused of anything.
+    local real = {}
+    for i = 0, 12 do
+        real[#real + 1] = sample(i * 5000, 900.0 - i * 60.0)
+    end
+    ok(BR.RescueDriveVerdict(real, R) == 'CONVERGING',
+        'and a drive that is actually closing is left alone',
+        select(1, BR.RescueDriveVerdict(real, R)))
+
+    -- ═══ AND THE SENTENCE NAMES THE TARGET, WHICH IS THE OTHER HALF ═══
+    --
+    -- "Is the target on a road node or not" is the single most useful field in
+    -- the report: an invented destination that never snapped is the mechanism
+    -- this round is fixing, and the verdict has to say when that happened.
+    local _, rawWhy = BR.RescueDriveVerdict({
+        sample(0, 900.0), sample(30000, 63.0), sample(90000, 66.0),
+    }, R)
+    ok(rawWhy:find('raw destination', 1, true) ~= nil,
+        'a ride that never snapped says the AI was steered at the raw '
+            .. 'destination', rawWhy)
+
+    local _, nodeWhy = BR.RescueDriveVerdict({
+        sample(0, 900.0, { snapped = true }),
+        sample(30000, 63.0, { snapped = true }),
+        sample(90000, 66.0, { snapped = true }),
+    }, R)
+    ok(nodeWhy:find('road node', 1, true) ~= nil
+           and nodeWhy:find('raw destination', 1, true) == nil,
+        '...and one that did says it was steered at a road node', nodeWhy)
 end
 -- ---------------------------------------------------------------------------
 describe('moved')

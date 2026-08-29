@@ -205,12 +205,21 @@ end
 --- own `points` table has no ids and is the empty-config path), and coordinates
 --- are the honest identifier for one: they are what somebody would search
 --- config/map.lua for.
+---
+--- ═══ AND IT NOW SAYS WHAT KIND OF POINT IT IS, BECAUSE THE NAME LIED ═══
+---
+--- Owner, 2026-08-29: "for some reason you set the destination as a POI?"
+---
+--- Nothing here has ever read BR.Config.Map.POIs. What he saw was this line
+--- printing `dest=senora_n`, and `senora_n` is a row in
+--- BR.Config.Map.AmbulanceSpawns whose id was named after the POI beside it --
+--- so a surveyed car park wore a POI's name with nothing to say it was not one.
+--- The kind is attached to the name now, in one shared place
+--- (BR.RescuePointLabel) so every line that names a point says it.
 --- @param p table|nil
 --- @return string
 local function pointName(p)
-    if not p then return 'nowhere' end
-    if p.id then return tostring(p.id) end
-    return ('(%.0f, %.0f)'):format(p.x or 0.0, p.y or 0.0)
+    return BR.RescuePointLabel(p)
 end
 
 --- Which slot holds a CPR kit, or nil.
@@ -436,9 +445,10 @@ function BR.Rescue.begin(src)
     -- ═══ EVERYBODY ELSE WHO IS PHYSICALLY ON THE MAP ═══
     --
     -- Owner, 2026-08-29: "make sure wherever the ambulance spawns there are no
-    -- other players within 500m". `board()` fades out and TELEPORTS the downed
-    -- player into the vehicle, so the spawn is where they materialise -- see
-    -- BR.RescueClearOfPlayers.
+    -- other players within 500m", revised the same day to 250m -- the number is
+    -- `clearOfPlayersM` and nothing here hard-codes it. `board()` fades out and
+    -- TELEPORTS the downed player into the vehicle, so the spawn is where they
+    -- materialise -- see BR.RescueClearOfPlayers.
     --
     -- ALIVE AND DBNO, nothing else. A spectator has no body to be surprised by
     -- an ambulance and a player still on the bus is not in the world yet;
@@ -475,7 +485,7 @@ function BR.Rescue.begin(src)
             pickup.x, pickup.y, others, R.clearOfPlayersM) then
         print(('[br_core] rescue: %d  surveyed pickup %s is inside %.0fm of '
                .. 'another player -- looking for a free spot')
-            :format(src, pointName(pickup), R.clearOfPlayersM or 500.0))
+            :format(src, pointName(pickup), R.clearOfPlayersM or 250.0))
         dest = nil
     end
 
@@ -496,9 +506,16 @@ function BR.Rescue.begin(src)
     -- the vehicle onto the nearest live road node behind the fade it already
     -- draws before anybody is put inside it.
     if not dest then
+        -- THE ROAD CORRIDORS GO IN WITH IT, and they are the only road knowledge
+        -- this process has: the pathfind natives are client-only, so a synthesised
+        -- destination is otherwise a uniformly random spot in whatever the circle
+        -- left. BR.Config.Map.Roads is coarse -- authored for loot filler, "being
+        -- roughly right is enough" -- so it is a PREFERENCE inside the ring the
+        -- walk had already chosen, never a filter. See BR.RescueSynthDestination.
         local spot, freeDest, freeDist =
             BR.RescueFreeSpawn(pos.x, pos.y, others, points, m.storm, now, R,
-                               BR.Config.Map and BR.Config.Map.Boundary)
+                               BR.Config.Map and BR.Config.Map.Boundary,
+                               BR.Config.Map and BR.Config.Map.Roads)
         if spot then
             pickup = {
                 id = 'free', free = true,
@@ -510,17 +527,26 @@ function BR.Rescue.begin(src)
             -- the player is told none of them -- this feature has one
             -- notification -- and a rescue that starts oddly is otherwise
             -- indistinguishable from one that started normally. `crowded` means
-            -- nothing on the map was 500m clear and this is the roomiest spot
-            -- there was; an `open ground` destination means no surveyed point
-            -- was legal and one had to be built.
+            -- nothing on the map was `clearOfPlayersM` clear and this is the
+            -- roomiest spot there was; an INVENTED destination means no surveyed
+            -- point was legal and one had to be built.
+            --
+            -- AND HOW FAR THAT INVENTED POINT IS FROM AUTHORED TARMAC, because
+            -- it is the number that predicts the circling: an invented drop-off
+            -- kilometres from any road corridor is one client/rescue.lua's snap
+            -- is least likely to rescue.
             print(('[br_core] rescue: %d  free spawn at (%.1f, %.1f), %.0fm from '
                    .. 'the player, %.0fm from %s%s%s')
                 :format(src, spot.x, spot.y,
                         BR.Dist(pos.x, pos.y, spot.x, spot.y),
-                        freeDist, tostring(freeDest.id),
+                        freeDist, pointName(freeDest),
                         spot.crowded and ('  <-- CROWDED, nearest player %.0fm')
                             :format(BR.RescueRoom(spot.x, spot.y, others)) or '',
-                        freeDest.free and '  <-- destination is open ground' or ''))
+                        freeDest.free and ('  <-- INVENTED drop-off, %s from the '
+                            .. 'nearest authored road corridor'):format(
+                                (freeDest.roadM or math.huge) < math.huge
+                                    and ('%.0fm'):format(freeDest.roadM)
+                                    or 'no corridor in range') or ''))
         end
     end
 
@@ -547,7 +573,7 @@ function BR.Rescue.begin(src)
     --   3. a SYNTHESISED destination on open ground inside the arrival circle,
     --      for the late-game case where no authored car park is legal;
     --   4. and, if the survivors are packed so tightly that nothing on the map
-    --      is 500m clear, the ROOMIEST spot that still had somewhere to drive
+    --      is `clearOfPlayersM` clear, the ROOMIEST spot that still had somewhere to drive
     --      to. The clearance is the rule that bends because it is the only one
     --      of the three whose failure is a worse rescue rather than a broken
     --      one: outside the map starts in the storm, and no destination has
@@ -584,9 +610,13 @@ function BR.Rescue.begin(src)
     -- two ids and the distance between them. If they are the same point the
     -- exclusion is not biting; if they differ, the fault is downstream of here
     -- and this line clears the solver in one glance.
+    --
+    -- AND EACH ID NOW CARRIES ITS KIND (owner, 2026-08-29: "for some reason you
+    -- set the destination as a POI?"). It never was one; this line was printing
+    -- a surveyed car park's id, which is named after the POI beside it.
     print(('[br_core] rescue: %d  pickup=%s (%.1f, %.1f)  dest=%s (%.1f, %.1f)  %.0fm apart%s')
-        :format(src, tostring(pickup.id), pickup.x, pickup.y,
-                tostring(dest.id), dest.x, dest.y,
+        :format(src, pointName(pickup), pickup.x, pickup.y,
+                pointName(dest), dest.x, dest.y,
                 BR.Dist(pickup.x, pickup.y, dest.x, dest.y),
                 (pickup == dest) and '  <-- SAME POINT' or ''))
 

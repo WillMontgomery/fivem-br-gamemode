@@ -625,6 +625,92 @@ BR.Config.Rescue = {
     -- all -- a different bug, which this cap makes visible instead of burying.
     retaskLogMax     = 5,
 
+    -- ═══════════════════════════════════════════════════════════════════
+    -- HOW FAR AN INVENTED DROP-OFF MAY BE MOVED ONTO A ROAD
+    -- ═══════════════════════════════════════════════════════════════════
+    --
+    -- ═══ THIS IS THE CIRCLING BUG'S MOST LIKELY CAUSE, AND IT WAS OURS ═══
+    --
+    -- "We should never reject a cprkit" (owner, 2026-08-29) is answered by
+    -- BR.RescueSynthDestination, which INVENTS a drop-off on open ground when no
+    -- surveyed car park is legal inside the circle. Late in a match that is the
+    -- normal case rather than the rare one -- 23 authored points against a
+    -- shrinking circle -- so most late rescues now drive at a point picked off a
+    -- ring walk, with no road under it and no ground under it either.
+    --
+    -- client/rescue.lua steers the AI at a road NODE rather than at the raw
+    -- coordinate, precisely because a target off the path-node graph is a target
+    -- the router closes on and then orbits. But `snapDest` refused to snap when
+    -- the nearest node was more than `arriveM` (50m) away -- a rule written for
+    -- SURVEYED car parks, where moving the delivery further would betray a spot
+    -- somebody chose. Applied to an invented point it does the opposite of its
+    -- job: a random coordinate in the Grand Senora is rarely within 50m of
+    -- tarmac, the snap never lands, and the ambulance is tasked at a spot in a
+    -- field. A driver steered at unreachable ground is a driver that circles.
+    --
+    -- SO THE TWO KINDS OF POINT GET TWO DIFFERENT PERMISSIONS -- see
+    -- BR.RescueSnapLimitM. A surveyed point keeps 50m. An invented one may be
+    -- REHOMED up to this far, node and all: there is no authored intent to
+    -- preserve, so the road node simply becomes the destination and the drive
+    -- target, the arrival test and the delivery all move with it.
+    --
+    -- 400 METRES, AND WHY IT IS NOT MORE. Most of this map is within a few
+    -- hundred metres of a road; the exceptions are deep wilderness. The real
+    -- ceiling is the STORM: the invented point was chosen for being inside the
+    -- circle on arrival, and dragging it far enough could drag it back out.
+    -- client/rescue.lua re-checks the circle before accepting any rehome, so
+    -- this number is a cost bound rather than a safety one -- but a snap that is
+    -- refused by the circle is a ride back on the raw coordinate, which is the
+    -- bug. Raise it if `/brride` reports "no road node was ever found near it"
+    -- with a big number beside it; lower it if deliveries land oddly far from
+    -- where the map marker was.
+    freeSnapM        = 400.0,
+
+    -- ═══════════════════════════════════════════════════════════════════
+    -- THE DRIVE DIAGNOSTIC (/brride)
+    -- ═══════════════════════════════════════════════════════════════════
+    --
+    -- ═══ WE HAVE CHANGED THIS DRIVE ELEVEN TIMES AND MEASURED IT NONE ═══
+    --
+    -- Three trip caps, five driving styles, a native swap, a stop range, road
+    -- snapping and an ability/aggression pair -- every one of them a guess at
+    -- which of six conditions was failing, because the only evidence available
+    -- was the owner describing what he saw from the stretcher. Six failures that
+    -- look identical from in there: never tasked, tasked and dropped, no entity
+    -- control, wedged, orbiting, and simply slow.
+    --
+    -- These three numbers drive a sampler in client/rescue.lua that records the
+    -- ride and a pure classifier (BR.RescueDriveVerdict) that says which of the
+    -- six happened, in one console line, at the end of every rescue. `/brride`
+    -- prints the same thing mid-ride.
+    --
+    -- IT IS CONSOLE OUTPUT ONLY. Nothing here reaches a player: this feature has
+    -- exactly one notification for its whole cycle and that is not negotiable.
+
+    -- How often the ride is sampled. Cheap -- an entity position, a speed, a
+    -- mission type -- but every sample is a line in the eventual dump, so this
+    -- also sets how long a report is: a four-minute ride at 3s is 80 rows.
+    drivePollMs      = 3000,
+
+    -- How much closer the ambulance has to get for the classifier to call it
+    -- progress. A vehicle nudging against an obstruction improves its own
+    -- distance reading by centimetres on every poll, which would read as a
+    -- healthy drive for ever; at `driveSpeed` a real drive covers a hundred
+    -- metres between polls, so anything under this is noise.
+    driveStallM      = 15.0,
+
+    -- ...and how long it may go without that improvement before the verdict
+    -- calls the ride failed rather than slow. Longer than `arriveGiveUpMs`
+    -- (6s) on purpose: that one ENDS the ride, this one only labels it, and a
+    -- label that fires on a long red light would cry wolf every run.
+    driveStallMs     = 20000,
+
+    -- The line between STUCK and ORBITING, in mph, read at the last sample. Both
+    -- are "not getting closer" and they want opposite fixes -- a wedged
+    -- ambulance is the recovery ladder's problem, a circling one is the route's
+    -- -- and no distance reading can tell them apart.
+    driveCrawlMph    = 5.0,
+
     -- The shortest journey worth making. Any surveyed point nearer than this to
     -- the pickup is refused as a destination, along with the pickup itself.
     --
@@ -725,7 +811,8 @@ BR.Config.Rescue = {
     -- ═══ NOBODY WATCHES A RESCUE MATERIALISE ═══
     --
     -- Owner, 2026-08-29: "make sure wherever the ambulance spawns there are no
-    -- other players within 500m".
+    -- other players within 500m" -- and, later the same day, "Please revise
+    -- that to 250m."
     --
     -- The spawn is where a rescued player physically appears -- `board()` fades
     -- out and teleports them in -- so without this a kit can drop its owner into
@@ -737,7 +824,19 @@ BR.Config.Rescue = {
     -- the ambulance spawns" has no exception in it, and the surveyed points are
     -- car parks next to hospitals -- exactly the sort of place two players end
     -- up in the same phase.
-    clearOfPlayersM  = 500.0,
+    --
+    -- ═══ WHAT HALVING IT BUYS, SO THE NEXT CHANGE IS MADE ON EVIDENCE ═══
+    --
+    -- This is the rule the free-spawn walk BENDS rather than obeys: when nowhere
+    -- on the map is clear of everybody, BR.RescueFreeSpawn returns the roomiest
+    -- spot it saw instead of refusing ("we should never reject a cprkit"). So
+    -- the number does not decide whether a rescue happens -- it decides how far
+    -- out the ring walk has to go before it stops looking, and therefore how far
+    -- from the downed player the ambulance is allowed to appear. 250m finds a
+    -- qualifying spot nearer to them, more often, and marks the answer `crowded`
+    -- less often. It also means a player 300m away is now a legal neighbour,
+    -- which at that range is a scoped rifle's business rather than a surprise.
+    clearOfPlayersM  = 250.0,
 
     -- ═══ THE STYLE WAS NEVER WHAT WAS HITTING THE CARS ═══
     --

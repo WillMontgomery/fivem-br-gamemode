@@ -719,13 +719,133 @@ end
 --- @return number y
 --- @return number z
 --- @return boolean snapped   true once the target is a road node
+--- ═══ AND AN INVENTED DESTINATION'S `z` IS SEA LEVEL UNTIL IT SNAPS ═══
+---
+--- BR.RescueSynthDestination ships `z = 0.0` and marks the point `free`,
+--- because the server has no GetGroundZFor_3dCoord any more than it has a road
+--- lookup -- see its header, and the RESCUE_END handler that resolves the
+--- delivery height for the same reason. Until the snap lands, that untouched
+--- 0.0 is what the drive task is handed as its target height, on a map whose
+--- terrain runs past 700m.
+---
+--- WHETHER THE ENGINE CARES IS UNVERIFIED and is not claimed here. I could not
+--- establish whether TaskVehicleDriveToCoordLongrange's stop range is measured
+--- in two dimensions or three; if it is three, a target 200m below the ground
+--- can never be reached and the driver never stops, which is the circling from
+--- yet another side. What IS certain is that sea level is not where the
+--- destination is, and that the vehicle's own height is a strictly better guess
+--- costing one native -- so the confound is removed rather than investigated.
+---
+--- ONLY FOR AN INVENTED POINT. A surveyed one carries a z somebody measured by
+--- standing on it, which beats this and everything else.
+--- @param r table
+--- @return number x
+--- @return number y
+--- @return number z
+--- @return boolean snapped   true once the target is a road node
 local function driveTarget(r)
     if r.nodeX then return r.nodeX, r.nodeY, r.nodeZ, true end
-    return r.dest.x, r.dest.y, r.dest.z, false
+
+    local z = r.dest.z
+    if r.dest.free == true and r.veh and isTrue(DoesEntityExist(r.veh)) then
+        z = GetEntityCoords(r.veh).z
+    end
+    return r.dest.x, r.dest.y, z, false
+end
+
+--- Redraw the map marker and the radar line after the destination has moved.
+---
+--- CALLED ONLY BY A REHOME. Both slots are set once in `board()` for the ride's
+--- whole life, and until an invented destination could move under them that was
+--- the end of it. A stale waypoint after a rehome would be a marker pointing at
+--- a field the ambulance is no longer driving to, which is the exact complaint
+--- ("the waypoint is actually the spawn point of the ambulance") wearing a new
+--- hat.
+--- @param r table
+local function redrawRoute(r)
+    if not r.dest or not r.dest.x then return end
+    SetNewWaypoint(r.dest.x + 0.0, r.dest.y + 0.0)
+    ClearGpsMultiRoute()
+    StartGpsMultiRoute((R.routeColour or 5), true, true)
+    AddPointToGpsMultiRoute(r.dest.x + 0.0, r.dest.y + 0.0,
+                            (r.dest.z or 0.0) + 0.0)
+    SetGpsMultiRouteRender(true)
+end
+
+--- Would a delivery here still be inside the storm by the time we reached it?
+---
+--- ═══ THE ONE THING A REHOME COULD BREAK, ASKED BEFORE IT IS ALLOWED ═══
+---
+--- An invented destination is arbitrary EXCEPT in one respect: the server chose
+--- it for being inside both circles at the estimated arrival
+--- (BR.RescueSynthDestination). Dragging it up to `freeSnapM` onto a road could
+--- drag it back out of a late, small circle -- and delivering a player outside
+--- the purple wall is the failure the owner reported on 2026-08-28 ("the
+--- destination was not inside the PURPLE storm circle, and it should have
+--- been"). Trading that for a shorter drive would not be a fix.
+---
+--- SAME QUESTION, SAME FUNCTIONS, DIFFERENT SIDE OF THE WIRE. BR.RescueCircles
+--- and BR.RescueInside are pure over (published record, timestamp), and the
+--- client holds the same published record the server solved from -- so this is
+--- the server's own test re-asked with a better road answer, not a second rule.
+---
+--- NO RECORD MEANS NO CONSTRAINT, which is BR.RescueInside's own convention for
+--- an empty circle list and the pre-storm case.
+--- @param r table
+--- @param x number
+--- @param y number
+--- @return boolean
+local function insideOnArrival(r, x, y)
+    local storm = BR.State and BR.State.storm
+    if not storm then return true end
+
+    local from = r.veh and isTrue(DoesEntityExist(r.veh))
+        and GetEntityCoords(r.veh) or nil
+    local left = from and BR.Dist(from.x, from.y, x, y) or 0.0
+    local eta = (BR.Clock and BR.Clock.now() or 0) + BR.RescueDriveMs(left, R)
+
+    return BR.RescueInside(BR.RescueCircles(storm, eta), x, y)
 end
 
 --- Try to put `driveTarget` on the road network. Cheap, idempotent, and silent
 --- until it changes something.
+---
+--- ═══ HOW FAR IT MAY MOVE DEPENDS ON WHO CHOSE THE POINT ═══
+---
+--- This refused every node further than `arriveM` (50m) from the destination,
+--- for both kinds of destination, and that is the likeliest cause of the
+--- circling the owner has been watching since the kit stopped refusing.
+---
+--- A SURVEYED point keeps the 50m rule and the arithmetic behind it:
+---
+---   When nothing near the destination is streamed the native can still answer
+---   with whatever it does have, and steering at a node on the far side of the
+---   map would be worse than steering at an unreachable forecourt. `arriveM`
+---   rather than `arriveNearM` because the AI stops up to `arriveM` (50m) SHORT
+---   of whatever it is steered at and BR.RescueArrived measures against
+---   `r.dest`, so the worst case is (snap offset + stop range):
+---
+---     50 offset + 50 stop = 100m worst case, inside `arriveNearM` (150). Safe.
+---     150 offset + 50 stop = 200m, outside 150. NOT safe.
+---
+---   A car park whose nearest road is further than 50m away keeps today's
+---   behaviour: steer at the forecourt and park as close as it gets.
+---
+--- AN INVENTED point (`free`) is a bearing off a ring walk with nothing under
+--- it -- see BR.RescueSnapLimitM. It may move up to `freeSnapM`, and it is
+--- REHOMED rather than merely aimed at: `r.dest` BECOMES the node. That is what
+--- keeps the arithmetic above true at any distance -- the offset is zero once
+--- the destination and the target are the same point, so `arriveNearM` is never
+--- at risk however far the point moved. It also moves the arrival test, the map
+--- marker and the delivery together, which is the only self-consistent answer:
+--- three of them measuring from a coordinate the ambulance was never going to
+--- reach is how this feature ends rides on the deadline.
+---
+--- THE SERVER IS NOT TOLD, and does not need to be. It sends the invented
+--- coordinates as the delivery fallback and marks them `free`; the RESCUE_END
+--- handler already prefers `r.nodeX/Y/Z` over them for exactly this reason. Its
+--- own log lines still name the coordinates it invented, which is the honest
+--- record of what IT decided -- the client's rehome is printed here.
 --- @param r table
 --- @return boolean gained   true only on the pass that first found a node
 local function snapDest(r)
@@ -733,36 +853,52 @@ local function snapDest(r)
 
     local ok, node = GetClosestVehicleNodeWithHeading(
         r.dest.x, r.dest.y, r.dest.z, 0, 3.0, 0)
-    if not isTrue(ok) or not node or not node.x then return false end
+    if not isTrue(ok) or not node or not node.x then
+        r.snapWhy = 'the road-node lookup has not answered yet'
+        return false
+    end
 
-    -- ═══ AND IT MUST BE THIS CAR PARK'S NODE, WHICH IS A TIGHTER TEST THAN
-    --     "SOMEWHERE NEAR" -- THE ARRIVAL RULE DEPENDS ON IT ═══
-    --
-    -- When nothing near the destination is streamed the native can still answer
-    -- with whatever it does have, and steering at a node on the far side of the
-    -- map would be worse than steering at an unreachable forecourt.
-    --
-    -- `arriveM` RATHER THAN `arriveNearM`, and the arithmetic is the reason. The
-    -- AI stops up to `arriveM` (50m) SHORT of whatever it is steered at, and
-    -- BR.RescueArrived measures against `r.dest` -- so the worst case is
-    -- (snap offset + stop range) metres from the surveyed point, and that total
-    -- has to stay inside `arriveNearM` (150m) or the ride ends parked in a place
-    -- neither arrival rule can see. It would then sit there until the recovery
-    -- ladder ran out and refuse to deliver a player who had actually arrived.
-    --
-    --   50 offset + 50 stop = 100m worst case, inside 150. Safe.
-    --   150 offset + 50 stop = 200m, outside 150. NOT safe -- which is what
-    --   `arriveNearM` here would have allowed.
-    --
-    -- A car park whose nearest road is further than 50m away simply keeps
-    -- today's behaviour: steer at the forecourt and park as close as it gets.
-    -- That case is the one this feature has always handled and still does.
     local d = BR.Dist(r.dest.x, r.dest.y, node.x, node.y)
-    if d > (R.arriveM or 50.0) then return false end
+    -- KEPT WHETHER OR NOT IT IS ACCEPTED. "How far the nearest road actually
+    -- was" is the number that decides whether `freeSnapM` is set sensibly, and
+    -- until now a refused snap was silent -- it printed nothing, and the ride
+    -- that followed looked exactly like one that had never had a road near it.
+    r.nodeAwayM = d
+
+    local limit = BR.RescueSnapLimitM(r.dest, R)
+    if d > limit then
+        r.snapWhy = ('the nearest road node is %.0fm away, past the %.0fm '
+                     .. 'limit for this kind of point'):format(d, limit)
+        return false
+    end
+
+    if r.dest.free == true then
+        if not insideOnArrival(r, node.x, node.y) then
+            r.snapWhy = ('the nearest road node (%.0fm away) would be outside '
+                         .. 'the storm circle on arrival'):format(d)
+            return false
+        end
+
+        r.nodeX, r.nodeY, r.nodeZ = node.x, node.y, node.z
+        r.dest.x, r.dest.y, r.dest.z = node.x, node.y, node.z
+        r.rehomedM = d
+        -- THE CLOSEST APPROACH IS MEASURED AGAINST A POINT THAT JUST MOVED, so
+        -- it is no longer a fact about this ride. Left standing it would be a
+        -- running minimum taken against the old coordinate, and `rescue.watch`
+        -- would read "no improvement" for ever and end the ride short.
+        r.bestM, r.bestAt = nil, nil
+        redrawRoute(r)
+        print(('[br_core] rescue: the invented drop-off was moved %.0fm onto a '
+               .. 'road node -- destination, map marker and delivery all follow '
+               .. 'it'):format(d))
+        r.snapWhy = nil
+        return true
+    end
 
     r.nodeX, r.nodeY, r.nodeZ = node.x, node.y, node.z
+    r.snapWhy = nil
     print(('[br_core] rescue: destination %s snapped to a road node %.0fm away')
-        :format(tostring(r.dest.id), d))
+        :format(BR.RescuePointLabel(r.dest), d))
     return true
 end
 
@@ -963,6 +1099,224 @@ local function routeWatch(r)
     end)
 end
 
+-- ---------------------------------------------------------------------------
+-- The drive diagnostic (/brride)
+-- ---------------------------------------------------------------------------
+--
+-- ═══ ELEVEN CHANGES TO THIS DRIVE AND NOT ONE MEASUREMENT OF IT ═══
+--
+-- The ambulance has failed to reach its destination across seven rounds. In that
+-- time the trip ceiling came down three times (4872m observed -> 2000 -> 1000),
+-- the driving style was changed five times (262144, 262460, 524415, 4980863,
+-- 524459), the short-range task native was swapped for the long-range one, the
+-- stop range went from 4m to 50m, road-node snapping was added, and the driver's
+-- ability and aggression were reversed. Every one of those was a GUESS at which
+-- condition was failing, because the only evidence was the owner describing what
+-- he could see from the stretcher.
+--
+-- Six failures look identical from in there -- the ambulance is somewhere it
+-- should not be -- and they want completely different fixes:
+--
+--   NEVER TASKED    the drive task never took at all
+--   TASK DROPPED    it took and was lost, repeatedly
+--   NO CONTROL      this machine never owned the entity, so no write landed
+--   STUCK           wedged, not moving, the recovery ladder's problem
+--   ORBITING        moving, on a road, not getting closer -- the route's problem
+--   CONVERGING      it was working and simply ran out of deadline
+--
+-- This is the /brcpr move applied to the drive: /brcpr found a three-round bug
+-- in one run by printing which of six identical-looking guards fired, and
+-- /brammo proved an ammo dupe that had survived five fixes. The classification
+-- itself is BR.RescueDriveVerdict, in shared/rescue_solve.lua, so it is pure and
+-- tools/test_rescue.lua can drive every one of the six outcomes.
+--
+-- CONSOLE ONLY. Nothing here reaches a player: this feature has exactly one
+-- notification for its whole cycle and that is not negotiable.
+
+--- One reading of the ride, taken now.
+---
+--- WHAT IS READ AND WHAT IS ONLY REMEMBERED, because the difference decides how
+--- much a line is worth:
+---
+---   READ FROM THE ENGINE: position, speed, the vehicle's own drive mission
+---   (GET_ACTIVE_VEHICLE_MISSION_TYPE -- asked of the VEHICLE rather than the
+---   ped, so it answers even though the medic exists only on this machine),
+---   entity control and the owning client.
+---
+---   REMEMBERED, NOT READ: the driving style, ability and aggression. I could
+---   not name a native that reads any of the three back -- SET_DRIVE_TASK_DRIVING_STYLE
+---   and SET_DRIVER_ABILITY have no getters I can point at, and that is recorded
+---   as UNVERIFIED rather than papered over. So the line prints what was last
+---   WRITTEN, and says `written` rather than `in force`. It is still worth
+---   printing: four style values in a row did nothing, and the first thing to
+---   rule out is that the number reaching the task is not the number in config.
+--- @param r table
+--- @return table
+local function driveSample(r)
+    local veh = r.veh
+    local live = veh and isTrue(DoesEntityExist(veh))
+
+    local c = live and GetEntityCoords(veh) or nil
+    local mission = -1
+    if live and GetActiveVehicleMissionType then
+        mission = math.tointeger(tonumber(GetActiveVehicleMissionType(veh)) or -1) or -1
+    end
+    local owner = -1
+    if live and NetworkGetEntityOwner then
+        owner = math.tointeger(tonumber(NetworkGetEntityOwner(veh)) or -1) or -1
+    end
+
+    return {
+        atMs    = GetGameTimer(),
+        distM   = c and BR.Dist(c.x, c.y, r.dest.x, r.dest.y) or math.huge,
+        speed   = live and (tonumber(GetEntitySpeed(veh)) or 0.0) or 0.0,
+        mission = mission,
+        control = live and isTrue(NetworkHasControlOfEntity(veh)) or false,
+        owner   = owner,
+        seated  = (live and r.driver and isTrue(DoesEntityExist(r.driver)))
+                    and (GetPedInVehicleSeat(veh, -1) == r.driver) or false,
+        snapped = r.nodeX ~= nil,
+    }
+end
+
+--- The one-line live readout, printed as the ride happens.
+---
+--- LIVE RATHER THAN ONLY AT THE END, because "is it converging, orbiting or
+--- stuck" is a shape over time and the owner watches this console while he
+--- rides. The delta against the previous sample is what makes the shape
+--- readable at a glance: a column of negative numbers is a drive, a column of
+--- noise around zero is the bug.
+--- @param r table
+--- @param k table   this sample
+--- @param prev table|nil  the one before it
+local function printSample(r, k, prev)
+    local delta = prev and (k.distM - prev.distM) or 0.0
+    print(('[br_core] rescue: drive +%.0fs  %.0fm to %s (%+.0f)  best=%s  '
+           .. 'mission=%d  %.1fmph  ctrl=%s owner=%d/me=%d  driver=%s  '
+           .. 'target=%s  written: style=%d ability=%.2f aggr=%.2f')
+        :format((k.atMs - (r.driveStartAt or k.atMs)) / 1000.0,
+                k.distM, tostring(r.dest.id), delta,
+                r.bestM and ('%.0fm'):format(r.bestM) or '-',
+                k.mission, k.speed / 0.44704,
+                tostring(k.control), k.owner, PlayerId(),
+                tostring(k.seated),
+                k.snapped and 'road node'
+                    or ('raw dest (' .. (r.snapWhy or 'not snapped yet') .. ')'),
+                R.driveStyle or 524459,
+                R.driverAbility or 1.0, R.driverAggression or 0.0))
+end
+
+--- Sample the ride until it ends.
+---
+--- ONE PER RIDE, started beside `routeWatch` for the same reason it is: a
+--- re-place that re-tasked must not leave a second sampler running against the
+--- same record.
+--- @param r table
+local function driveWatch(r)
+    r.samples = {}
+    r.driveStartAt = GetGameTimer()
+    Citizen.CreateThread(function()
+        while true do
+            Citizen.Wait(R.drivePollMs or 3000)
+            if ride ~= r or r.ending or r.parked then return end
+            if not r.veh or not isTrue(DoesEntityExist(r.veh)) then return end
+
+            local k = driveSample(r)
+            local prev = r.samples[#r.samples]
+            r.samples[#r.samples + 1] = k
+            printSample(r, k, prev)
+        end
+    end)
+end
+
+--- Say what happened on this drive, once, in words that name the failure.
+---
+--- THIS IS THE LINE THE NEXT ROUND IS DECIDED ON. It replaces "the ambulance
+--- still doesn't get to the destination" with one of six causes, each of which
+--- points at different code -- so the round after this one changes the thing
+--- that is broken rather than the thing that was easiest to change.
+---
+--- LATCHED, AND CALLED FROM FOUR ENDINGS. `park` (arrived, or got as close as
+--- it was going to), RESCUE_END (delivered, or the deadline landing on a drive
+--- that was going fine), and both of `rescue.watch`'s wreck reports. A delivered
+--- ride reaches two of those and prints once -- the first one wins, which is the
+--- arrival, which is the more informative `why`.
+---
+--- NOT FROM `cleanup`, and that is a real gap rather than an oversight: cleanup
+--- is a local declared six hundred lines above this, so calling it from there
+--- needs a forward declaration, and the endings it would add that the four above
+--- do not already cover are the sanity sweep and a match tearing down under a
+--- ride -- neither of which is a drive worth classifying.
+--- @param r table
+--- @param when string
+local function reportRide(r, when)
+    if not r or r.reportedRide then return end
+    r.reportedRide = true
+
+    -- A FINAL SAMPLE FIRST, so the verdict is measured at the moment the ride
+    -- ended rather than up to `drivePollMs` before it. The distance in the last
+    -- three seconds is exactly the interesting one on an arrival.
+    if r.veh and isTrue(DoesEntityExist(r.veh)) then
+        r.samples = r.samples or {}
+        r.samples[#r.samples + 1] = driveSample(r)
+    end
+
+    local code, why = BR.RescueDriveVerdict(r.samples, R)
+    print(('[br_core] rescue: === DRIVE VERDICT (%s): %s ===')
+        :format(tostring(when), code))
+    print('[br_core] rescue:     ' .. why)
+    print(('[br_core] rescue:     destination %s%s; %d samples over %.0fs; '
+           .. '%d re-tasks')
+        :format(BR.RescuePointLabel(r.dest),
+                r.rehomedM and (', rehomed %.0fm onto a road node')
+                    :format(r.rehomedM)
+                    or (r.nodeAwayM and (', nearest road node %.0fm away')
+                        :format(r.nodeAwayM) or ''),
+                #(r.samples or {}),
+                (GetGameTimer() - (r.driveStartAt or GetGameTimer())) / 1000.0,
+                r.retasks or 0))
+end
+
+--- WHAT IS THIS RIDE DOING RIGHT NOW?
+---
+--- The same report the ride prints when it ends, on demand, plus the tunables
+--- that shaped it -- so a ride that is going wrong can be read while it is going
+--- wrong rather than after the ambulance has been handed back to the engine.
+RegisterCommand('brride', function()
+    local r = ride
+    print('--- brride: the ambulance ride ---')
+    if not r then
+        print('  no rescue is running on this client')
+        return
+    end
+
+    print(('  destination   %s at (%.1f, %.1f, %.1f)')
+        :format(BR.RescuePointLabel(r.dest), r.dest.x, r.dest.y, r.dest.z or 0.0))
+    print(('  drive target  %s')
+        :format(r.nodeX and 'a road node' or
+            ('the raw destination -- ' .. (r.snapWhy or 'not snapped yet'))))
+    print(('  nearest road  %s')
+        :format(r.nodeAwayM and ('%.0fm from the destination'):format(r.nodeAwayM)
+            or 'never answered'))
+    print(('  rehomed       %s')
+        :format(r.rehomedM and ('%.0fm'):format(r.rehomedM) or 'no'))
+    print(('  re-tasks      %d'):format(r.retasks or 0))
+    print(('  tunables      freeSnapM=%.0f arriveM=%.0f arriveNearM=%.0f '
+           .. 'maxTripM=%.0f driveStyle=%d speed=%.1f')
+        :format(R.freeSnapM or 400.0, R.arriveM or 50.0,
+                R.arriveNearM or 150.0, R.maxTripM or 1000.0,
+                R.driveStyle or 524459, R.driveSpeed or 30.0))
+
+    for _, k in ipairs(r.samples or {}) do
+        print(('    +%5.0fs  %6.0fm  mission=%2d  %5.1fmph  ctrl=%s')
+            :format((k.atMs - (r.driveStartAt or k.atMs)) / 1000.0,
+                    k.distM, k.mission, k.speed / 0.44704, tostring(k.control)))
+    end
+
+    local code, why = BR.RescueDriveVerdict(r.samples, R)
+    print(('  => %s: %s'):format(code, why))
+end, false)
+
 --- Stop here, open it up, and let the medic walk away from it.
 ---
 --- ═══ THE OWNER DESIGNED THIS RATHER THAN ASKING FOR A BETTER RADIUS ═══
@@ -991,6 +1345,13 @@ end
 function park(r, why)
     if r.parked then return end
     r.parked = true
+
+    -- BEFORE THE EARLY RETURN AND BEFORE THE HALT. The verdict wants a final
+    -- sample of a vehicle that is still driving -- reading the speed after
+    -- BringVehicleToHalt would report every ride as STUCK -- and a ride whose
+    -- ambulance has already gone still has samples worth classifying.
+    reportRide(r, why)
+
     if not r.veh or not isTrue(DoesEntityExist(r.veh)) then return end
 
     -- 1. THE DRIVE ENDS, THEN THE VEHICLE STOPS, AND BOTH ARE NEEDED.
@@ -1060,7 +1421,7 @@ function park(r, why)
     end
 
     print(('[br_core] rescue: parked at %s -- %s')
-        :format(tostring(r.dest and r.dest.id), tostring(why)))
+        :format(BR.RescuePointLabel(r.dest), tostring(why)))
 end
 
 --- Where to actually park.
@@ -1719,9 +2080,13 @@ local function board(d)
         -- per RIDE, not once per task -- a re-place that re-tasked would
         -- otherwise leave a second watcher running against the same ride.
         routeWatch(r)
+        -- AND RECORD WHAT IT ACTUALLY DOES. Same placement and the same reason:
+        -- once per RIDE, not once per task, so a re-place cannot leave two
+        -- samplers writing into one record. See the diagnostic block above.
+        driveWatch(r)
 
         print(('[br_core] rescue: aboard (vehicle %d) bound for %s')
-            :format(r.veh, tostring(r.dest.id)))
+            :format(r.veh, BR.RescuePointLabel(r.dest)))
 
         -- ═══ KEEP ASKING, AND SAY THE MOMENT IT ARRIVES ═══
         --
@@ -1867,6 +2232,13 @@ AddEventHandler(BR.Net.RESCUE_END, function(d)
         -- the screen is still up. That reads as the world snapping a beat before
         -- the fade. The ending is this handler's to run.
         if ride then ride.ending = true end
+
+        -- AND SAY WHAT THE DRIVE DID, BEFORE `cleanup` HANDS THE AMBULANCE BACK.
+        -- Latched inside, so a delivery -- which reaches `park` through cleanup a
+        -- few lines below -- still prints exactly one verdict. This call is the
+        -- one that catches the ending nothing else does: the deadline landing on
+        -- a ride that was driving perfectly well and simply ran long.
+        if ride then reportRide(ride, 'the ride ended') end
 
         -- ═══ WHERE THE AMBULANCE ACTUALLY STOPPED, READ BEFORE IT IS RELEASED
         --     ═══
@@ -2178,6 +2550,10 @@ BR.Loop.register(BR.Loop.TICK, 'rescue.watch', function()
        or not isTrue(IsVehicleDriveable(r.veh, false)) then
         r.reported = true   -- latch: report once, whatever happens next
         print('[br_core] rescue: the ambulance is gone -- reporting it')
+        -- The drive is worth classifying even when it ended in a fireball: a
+        -- ride that had already been orbiting for a minute before somebody shot
+        -- it is a different story from one that was still closing.
+        reportRide(r, 'the ambulance was destroyed')
         TriggerServerEvent(BR.Net.RESCUE_LOST)
         return
     end
@@ -2228,6 +2604,7 @@ BR.Loop.register(BR.Loop.TICK, 'rescue.watch', function()
         if SetVehicleEngineHealth then SetVehicleEngineHealth(r.veh, 0.0) end
         print(('[br_core] rescue: the ambulance is a wreck (%.0f%%) -- reporting it')
             :format(pct))
+        reportRide(r, 'the ambulance was wrecked')
         TriggerServerEvent(BR.Net.RESCUE_LOST)
         return
     end

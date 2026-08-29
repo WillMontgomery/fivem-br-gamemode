@@ -458,7 +458,9 @@ end
 --- ═══ WHY AN AMBULANCE MAY NOT APPEAR NEXT TO SOMEBODY ═══
 ---
 --- Owner, 2026-08-29: "make sure wherever the ambulance spawns there are no
---- other players within 500m".
+--- other players within 500m", revised later the same day to "Please revise
+--- that to 250m." The number lives in config/rescue.lua's `clearOfPlayersM`;
+--- the default below is only what this answers with when nobody passes one.
 ---
 --- This is not politeness about immersion. `board()` in client/rescue.lua fades
 --- the screen out and TELEPORTS the downed player into the back of the vehicle
@@ -475,10 +477,10 @@ end
 --- @param x number
 --- @param y number
 --- @param others table  array of { x = number, y = number } -- everyone else
---- @param clearM number|nil  metres, default 500
+--- @param clearM number|nil  metres, default 250
 --- @return boolean
 function BR.RescueClearOfPlayers(x, y, others, clearM)
-    return BR.RescueRoom(x, y, others) >= (clearM or 500.0)
+    return BR.RescueRoom(x, y, others) >= (clearM or 250.0)
 end
 
 --- How much room this spot has: metres to the NEAREST other player.
@@ -486,8 +488,8 @@ end
 --- The measurement behind the rule above, exposed separately because
 --- BR.RescueFreeSpawn needs to RANK crowded spots rather than only reject them.
 --- "We should never reject a cprkit" (owner, 2026-08-29) means a late circle
---- with nowhere 500m-clear has to produce the roomiest spot available instead
---- of nothing, and a boolean cannot say which spot that is.
+--- with nowhere `clearOfPlayersM`-clear has to produce the roomiest spot
+--- available instead of nothing, and a boolean cannot say which spot that is.
 ---
 --- `math.huge` for an empty world, which is the honest answer -- a solo match
 --- has infinite room -- and it compares correctly against any threshold.
@@ -613,7 +615,8 @@ end
 --- @param poly table|nil the map boundary
 --- @return table|nil dest
 --- @return number dist
-function BR.RescueSynthDestination(fromX, fromY, storm, now, cfg, poly)
+--- @param roads table|nil  BR.Config.Map.Roads, the authored corridors
+function BR.RescueSynthDestination(fromX, fromY, storm, now, cfg, poly, roads)
     cfg = cfg or {}
     local minTrip = cfg.minTripM or 150.0
     local maxTrip = cfg.maxTripM or 1000.0
@@ -629,17 +632,64 @@ function BR.RescueSynthDestination(fromX, fromY, storm, now, cfg, poly)
         local circles = BR.RescueCircles(storm, now + BR.RescueDriveMs(r, cfg))
         local n = math.max(8, math.floor((2.0 * math.pi * r) / step))
 
+        -- ═══ THE RING STILL WINS; THE BEARING IS WHERE THE ROAD GETS A VOTE ═══
+        --
+        -- This used to take the FIRST qualifying bearing, which is a uniformly
+        -- random spot in whatever the circle left -- and most of this map is not
+        -- tarmac. An invented drop-off in a field is a drop-off the vehicle AI
+        -- cannot route to, which is the circling the owner has been watching.
+        --
+        -- The server has exactly one piece of road knowledge and this is it:
+        -- BR.Config.Map.Roads, six authored corridors that exist for the loot
+        -- filler. They are COARSE -- their own header says "being roughly right
+        -- is enough" -- so this is a PREFERENCE and never a filter: the nearest
+        -- ring still wins outright, and within a ring the qualifying bearing
+        -- closest to a corridor is taken. With no corridor anywhere near the
+        -- ring every candidate scores math.huge, the first one still wins, and
+        -- the behaviour is exactly what shipped before.
+        --
+        -- IT IS NOT A GUARANTEE AND MUST NOT BE READ AS ONE. Only ~11% of the
+        -- playable area is within 150m of one of these six lines. What makes an
+        -- invented destination reachable is client/rescue.lua's `snapDest`,
+        -- which moves it onto a real road node; this only shortens that move and
+        -- raises the odds it succeeds at all.
+        local best, bestScore = nil, math.huge
         for i = 0, n - 1 do
             local a  = (2.0 * math.pi * i) / n
             local dx = fromX + math.sin(a) * r
             local dy = fromY + math.cos(a) * r
             if (poly == nil or BR.PointInPolygon(dx, dy, poly))
                and BR.RescueInside(circles, dx, dy) then
-                return {
-                    id = 'open ground', free = true,
-                    x = dx, y = dy, z = 0.0, heading = 0.0,
-                }, r
+                -- `best == nil or` FIRST, AND IT IS NOT A TIDINESS GUARD. With
+                -- no corridors configured -- or none within reach of this ring
+                -- -- every candidate scores math.huge, and `math.huge <
+                -- math.huge` is false, so a bare comparison would reject the
+                -- whole ring and the function would return nothing at all. That
+                -- is the shipped behaviour deleted by an optimisation, and it
+                -- took eleven red assertions to say so.
+                local score = BR.RescueRoadDistance(dx, dy, roads)
+                if best == nil or score < bestScore then
+                    best, bestScore = { x = dx, y = dy }, score
+                end
             end
+        end
+
+        if best then
+            return {
+                -- NAMED FOR WHAT IT IS, NOT FOR WHERE IT IS. Owner, 2026-08-29:
+                -- "for some reason you set the destination as a POI?" -- asked
+                -- of a console line reading `dest=senora_n`, which was a
+                -- SURVEYED ambulance point whose id happens to be borrowed from
+                -- the nearest POI. Nothing here has ever been a POI. The two
+                -- kinds of destination now say which they are in their own name
+                -- so the question cannot be asked a second time.
+                id = 'invented drop-off', free = true,
+                x = best.x, y = best.y, z = 0.0, heading = 0.0,
+                -- Carried for the log only: how far the corridor preference
+                -- actually got, so a run where every candidate scored math.huge
+                -- is distinguishable from one where it found tarmac.
+                roadM = bestScore,
+            }, r
         end
 
         r = r + step
@@ -648,20 +698,22 @@ function BR.RescueSynthDestination(fromX, fromY, storm, now, cfg, poly)
     return nil, math.huge
 end
 
-function BR.RescueFreeSpawn(px, py, others, points, storm, now, cfg, poly)
+--- @param roads table|nil  BR.Config.Map.Roads; passed straight through to the
+---                         synthesised destination and used nowhere else here
+function BR.RescueFreeSpawn(px, py, others, points, storm, now, cfg, poly, roads)
     cfg = cfg or {}
     local reach   = cfg.spawnSearchM or 6000.0
     local ring    = cfg.spawnRingM or 100.0
-    local clearM  = cfg.clearOfPlayersM or 500.0
+    local clearM  = cfg.clearOfPlayersM or 250.0
 
     if ring <= 0 then return nil, nil, math.huge end
 
     -- ═══ THE FALLBACK'S FALLBACK ═══
     --
     -- "we should never reject a cprkit" (owner, 2026-08-29). A late circle with
-    -- the survivors packed into it can leave no spot on the map that is 500m
-    -- from all of them, and refusing there would be exactly the outcome he
-    -- ruled out. So the best-available spot is remembered as the walk goes:
+    -- the survivors packed into it can leave no spot on the map that is
+    -- `clearOfPlayersM` from all of them, and refusing there would be exactly
+    -- the outcome he ruled out. So the best spot is remembered as the walk goes:
     -- the one with the most room around it that still had somewhere to drive
     -- to. It is returned ONLY if nothing fully qualified.
     --
@@ -698,7 +750,8 @@ function BR.RescueFreeSpawn(px, py, others, points, storm, now, cfg, poly)
                 -- has left no authored point legal.
                 local dest, dist = BR.RescueDestination(points, cx, cy, storm, now, cfg)
                 if not dest then
-                    dest, dist = BR.RescueSynthDestination(cx, cy, storm, now, cfg, poly)
+                    dest, dist =
+                        BR.RescueSynthDestination(cx, cy, storm, now, cfg, poly, roads)
                 end
 
                 if dest then
@@ -718,4 +771,252 @@ function BR.RescueFreeSpawn(px, py, others, points, storm, now, cfg, poly)
     end
 
     return bestSpot, bestDest, bestDist
+end
+
+-- ---------------------------------------------------------------------------
+-- Saying which kind of point this is, and how far it may be moved
+-- ---------------------------------------------------------------------------
+
+--- What to call a point, in a way that says WHAT KIND OF POINT IT IS.
+---
+--- ═══ THE OWNER ASKED WHY THE DESTINATION WAS A POI. IT NEVER WAS ═══
+---
+--- Owner, 2026-08-29: "for some reason you set the destination as a POI?"
+---
+--- He was reading a console line that said `dest=senora_n`. `senora_n` is a row
+--- in BR.Config.Map.AmbulanceSpawns -- a surveyed car park somebody stood in --
+--- and its `id` was named after the POI it sits beside, because that is how a
+--- human names twenty-three car parks. So the log printed a POI's NAME for a
+--- thing that is not a POI, and there was nothing in the line to say otherwise.
+--- BR.Config.Map.POIs is a different table and no rescue has ever read it.
+---
+--- THE FIX IS THE LABEL, NOT THE ID. Renaming the rows would break the surveyed
+--- data's only human handle; what was missing is the KIND. Every log line that
+--- names a rescue point goes through this, so "surveyed" and "invented" are
+--- always attached to the name and the question cannot come back.
+---
+--- @param p table|nil
+--- @return string
+function BR.RescuePointLabel(p)
+    if not p then return 'nowhere' end
+
+    local name = p.id and tostring(p.id)
+        or ('(%.0f, %.0f)'):format(p.x or 0.0, p.y or 0.0)
+
+    -- `free` is the flag the server already sets on anything it built rather
+    -- than read out of the surveyed table -- a free SPAWN as well as an
+    -- invented DESTINATION -- and it is the same distinction this label is for.
+    -- THE TWO STRINGS SHARE NO WORD WITH EACH OTHER, deliberately. A label
+    -- reading "not a surveyed point" would contain the word "surveyed", and the
+    -- next person to grep a console dump for which kind a ride used would find
+    -- both kinds. tools/test_rescue.lua pins that they do not read alike.
+    if p.free == true then
+        return name .. ' [invented, not authored map data]'
+    end
+    return name .. ' [surveyed ambulance point]'
+end
+
+--- How far this destination may be dragged onto the road network.
+---
+--- ═══ TWO KINDS OF POINT, TWO DIFFERENT PERMISSIONS ═══
+---
+--- client/rescue.lua steers the AI at a road node rather than at the destination
+--- itself, because the vehicle router only knows the path-node graph and a
+--- target off that graph is a target it closes on and then orbits. The snap has
+--- always been refused when the nearest node was further than `arriveM` (50m).
+---
+--- THAT LIMIT IS RIGHT FOR A SURVEYED POINT AND WRONG FOR AN INVENTED ONE, and
+--- the reason is authorship rather than arithmetic:
+---
+---   A SURVEYED point is ground somebody chose and stood on. Moving the delivery
+---   150m off it would betray that choice, and the arithmetic agrees -- the AI
+---   stops up to `arriveM` short of what it is steered at, and BR.RescueArrived
+---   measures against the destination, so 50 offset + 50 stop = 100m has to stay
+---   inside `arriveNearM` (150m) or a ride ends parked where neither arrival
+---   rule can see it.
+---
+---   AN INVENTED point (BR.RescueSynthDestination) is a bearing off a ring walk.
+---   There is no authored intent to preserve, nothing was chosen, and the point
+---   is very unlikely to have tarmac under it -- so refusing to move it is
+---   refusing the only thing that would make it drivable. It is REHOMED rather
+---   than merely aimed at: the node becomes the destination, which is what keeps
+---   the arrival arithmetic above intact at any distance.
+---
+--- @param dest table|nil
+--- @param cfg table|nil
+--- @return number metres
+function BR.RescueSnapLimitM(dest, cfg)
+    cfg = cfg or {}
+    if dest and dest.free == true then return cfg.freeSnapM or 400.0 end
+    return cfg.arriveM or 50.0
+end
+
+--- Metres from (x, y) to the nearest authored road corridor.
+---
+--- The corridors are BR.Config.Map.Roads: polylines that exist for the loot
+--- filler and are the ONLY road knowledge a server-side script on this platform
+--- has. GetClosestVehicleNode and its family are client natives with no server
+--- equivalent, which is why this is a coarse authored answer rather than a real
+--- one -- see BR.RescueSynthDestination for what it is and is not allowed to
+--- decide.
+---
+--- math.huge FOR AN EMPTY LIST, so a caller ranking candidates by this treats
+--- "no corridors configured" as "no preference" rather than as "everywhere is
+--- equally on a road".
+---
+--- @param x number
+--- @param y number
+--- @param roads table|nil  array of { points = { { x, y }, ... } }
+--- @return number metres, or math.huge
+function BR.RescueRoadDistance(x, y, roads)
+    local best = math.huge
+
+    for _, road in ipairs(roads or {}) do
+        local pts = road.points or {}
+        for i = 2, #pts do
+            local a, b = pts[i - 1], pts[i]
+            -- Point-to-SEGMENT, not point-to-vertex. These corridors are
+            -- authored with legs kilometres long, so the distance to the
+            -- nearest authored vertex can be a kilometre out for a point
+            -- sitting directly on the road.
+            local vx, vy = b.x - a.x, b.y - a.y
+            local len2 = vx * vx + vy * vy
+            local t = 0.0
+            if len2 > 0.0 then
+                t = BR.Clamp(((x - a.x) * vx + (y - a.y) * vy) / len2, 0.0, 1.0)
+            end
+            local d = BR.Dist(x, y, a.x + vx * t, a.y + vy * t)
+            if d < best then best = d end
+        end
+    end
+
+    return best
+end
+
+-- ---------------------------------------------------------------------------
+-- What actually happened on the drive
+-- ---------------------------------------------------------------------------
+
+--- Read a ride's samples and say which condition failed.
+---
+--- ═══ WE HAVE NEVER ONCE INSTRUMENTED THIS DRIVE ═══
+---
+--- The ambulance has failed to arrive across seven rounds. In that time the trip
+--- was shortened three times (4872m -> 2000 -> 1000), the driving style was
+--- changed five times (262144, 262460, 524415, 4980863, 524459), the long-range
+--- native replaced the short one, and road-node snapping was added. Every one of
+--- those was a GUESS at which of half a dozen conditions was failing, because
+--- the only evidence was the owner describing what he saw.
+---
+--- This is the /brcpr move applied to the drive: /brcpr found a three-round bug
+--- in one run by printing which of six identical-looking guards fired. The ways
+--- a drive can fail also look identical from the passenger seat -- the ambulance
+--- is somewhere it should not be -- and they need completely different fixes.
+---
+--- PURE, over a list of samples, so the classification is testable rather than
+--- being asserted by a print statement nobody can run outside a match.
+--- client/rescue.lua collects the samples; this decides what they mean.
+---
+--- ═══ THE ORDER IS CAUSAL, AND FIRST MATCH WINS ═══
+---
+--- Each rule below can CAUSE the ones under it, so they are asked in the order
+--- that names the cause rather than the symptom. A client that never held the
+--- entity would also show mission=0 on every poll and no progress; reporting
+--- "orbiting" there would send the next round after the driving style again.
+---
+--- @param s table  array of samples, oldest first, each:
+---                 { atMs, distM, speed (m/s), mission, control, snapped }
+--- @param cfg table|nil
+--- @return string code   ARRIVED NO_CONTROL NEVER_TASKED TASK_DROPPED STUCK
+---                       ORBITING CONVERGING NO_SAMPLES
+--- @return string why    one sentence, for the console
+function BR.RescueDriveVerdict(s, cfg)
+    cfg = cfg or {}
+    local n = #(s or {})
+    if n == 0 then
+        return 'NO_SAMPLES',
+            'no samples were taken -- the ride ended before the first poll'
+    end
+
+    local first, last = s[1], s[n]
+    local elapsed = math.max(0, (last.atMs or 0) - (first.atMs or 0))
+
+    -- The closest it ever got, and when. A circling ambulance is moving, at
+    -- speed, on a road, and its closest approach stops falling the moment the
+    -- driving stops being progress -- the same signal BR.RescueArrived reads.
+    local bestM, bestAt = math.huge, first.atMs or 0
+    local noMission, anyMission, noControl = 0, 0, 0
+    local snapped = false
+    for _, k in ipairs(s) do
+        local d = k.distM or math.huge
+        -- A STRICT IMPROVEMENT IS NOT ENOUGH. A vehicle nudging back and forth
+        -- against an obstruction improves its own reading by centimetres every
+        -- poll, which would read as progress for ever -- `driveStallM` is how
+        -- much closer a drive that is actually going somewhere gets between two
+        -- polls.
+        if d < bestM - (cfg.driveStallM or 15.0) then
+            bestM, bestAt = d, k.atMs or bestAt
+        elseif d < bestM then
+            bestM = d
+        end
+        if k.mission == 0 then noMission = noMission + 1
+        elseif k.mission and k.mission > 0 then anyMission = anyMission + 1 end
+        if k.control == false then noControl = noControl + 1 end
+        if k.snapped == true then snapped = true end
+    end
+
+    local target = snapped and 'the AI was steered at a road node'
+        or 'the AI was steered at the raw destination -- no road node was ever '
+           .. 'found near it'
+
+    if (last.distM or math.huge) <= (cfg.arriveM or 50.0) then
+        return 'ARRIVED',
+            ('arrived: %.0fm from the destination after %.0fs (%s)')
+                :format(last.distM or 0.0, elapsed / 1000.0, target)
+    end
+
+    if noControl > 0 then
+        return 'NO_CONTROL',
+            ('this client did not have control of the ambulance on %d of %d '
+             .. 'polls -- nothing it told the driver could take. Suspect entity '
+             .. 'ownership, not the driving style.'):format(noControl, n)
+    end
+
+    if noMission == n then
+        return 'NEVER_TASKED',
+            ('the vehicle reported NO drive mission on all %d polls -- the task '
+             .. 'never took at all. Suspect the task call or the driver ped, '
+             .. 'not the route.'):format(n)
+    end
+
+    if noMission > 0 then
+        return 'TASK_DROPPED',
+            ('the vehicle lost its drive mission on %d of %d polls (it held one '
+             .. 'on %d) -- the task is being dropped and re-issued mid-ride.')
+                :format(noMission, n, anyMission)
+    end
+
+    local sinceBest = math.max(0, (last.atMs or 0) - bestAt)
+    if sinceBest >= (cfg.driveStallMs or 20000) then
+        -- Speed at the last poll, which is what splits a vehicle going ROUND
+        -- from one going NOWHERE. Both look identical to a distance reading and
+        -- want opposite fixes: one is the route, the other is the recovery
+        -- ladder.
+        local mph = (last.speed or 0.0) / 0.44704
+        if mph < (cfg.driveCrawlMph or 5.0) then
+            return 'STUCK',
+                ('it stopped making progress %.0fs ago at %.0fm out and is '
+                 .. 'barely moving (%.1f mph) -- wedged, not lost. %s.')
+                    :format(sinceBest / 1000.0, bestM, mph, target)
+        end
+        return 'ORBITING',
+            ('it closed to %.0fm and has made no further progress for %.0fs '
+             .. 'while still driving at %.1f mph -- this is the circling. %s.')
+                :format(bestM, sinceBest / 1000.0, mph, target)
+    end
+
+    return 'CONVERGING',
+        ('still closing when the ride ended: %.0fm out, best %.0fm, improving '
+         .. 'within the last %.0fs (%s)')
+            :format(last.distM or 0.0, bestM, sinceBest / 1000.0, target)
 end
