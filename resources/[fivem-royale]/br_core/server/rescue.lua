@@ -424,6 +424,31 @@ function BR.Rescue.begin(src)
     local m = BR.Server.matches[entry.matchId]
     local now = GetGameTimer()
 
+    -- ═══ EVERYBODY ELSE WHO IS PHYSICALLY ON THE MAP ═══
+    --
+    -- Owner, 2026-08-29: "make sure wherever the ambulance spawns there are no
+    -- other players within 500m". `board()` fades out and TELEPORTS the downed
+    -- player into the vehicle, so the spawn is where they materialise -- see
+    -- BR.RescueClearOfPlayers.
+    --
+    -- ALIVE AND DBNO, nothing else. A spectator has no body to be surprised by
+    -- an ambulance and a player still on the bus is not in the world yet;
+    -- counting either would refuse spawns for nobody being there. A DBNO player
+    -- IS counted -- they are on the ground, they can be picked up, and dropping
+    -- a rescue on top of a squad fight is exactly the case this rule is for.
+    --
+    -- These are the SERVER's own samples (roster.lua: "sampled server-side, not
+    -- reported by the client"), which is what lets this be a real check rather
+    -- than a poll of the people it is meant to hide from.
+    local others = {}
+    BR.Roster.each(
+        function(e) return e.matchId == entry.matchId and e.pos
+            and (e.state == BR.PlayerState.ALIVE
+                 or e.state == BR.PlayerState.DBNO) end,
+        function(osrc, e)
+            if osrc ~= src then others[#others + 1] = e.pos end
+        end)
+
     -- WHERE IT COMES FROM: nearest authored point to where they went down.
     local pickup = BR.RescueNearest(points, pos.x, pos.y)
     if not pickup then return false end
@@ -433,6 +458,51 @@ function BR.Rescue.begin(src)
     -- shared/rescue_solve.lua for why neither one implies the other.
     local dest, dist, inside =
         BR.RescueDestination(points, pickup.x, pickup.y, m.storm, now, R, pickup)
+
+    -- The surveyed pickup gets the same clearance test as a free one. "Wherever
+    -- the ambulance spawns" has no exception in it, and these points are car
+    -- parks beside hospitals -- exactly where two players end up in one phase.
+    if dest and not BR.RescueClearOfPlayers(
+            pickup.x, pickup.y, others, R.clearOfPlayersM) then
+        print(('[br_core] rescue: %d  surveyed pickup %s is inside %.0fm of '
+               .. 'another player -- looking for a free spot')
+            :format(src, pointName(pickup), R.clearOfPlayersM or 500.0))
+        dest = nil
+    end
+
+    -- ═══ AND IF THAT DID NOT WORK, THE SPAWN FLOATS ═══
+    --
+    -- Owner, 2026-08-29: "when not possible, start from a random point (nearest
+    -- to the DBNO location), <1000m from the destination, and make sure it
+    -- starts on a road node."
+    --
+    -- ONLY WHEN THE AUTHORED PATH FAILED. The 23 surveyed points are ground
+    -- somebody stood on and checked, and every ride that already works keeps
+    -- using them. This is what happens instead of a refusal -- see
+    -- BR.RescueFreeSpawn for why it is what makes the 1000m cap affordable.
+    --
+    -- NO `z` OF ITS OWN AND NO HEADING. The server cannot ask where a road is:
+    -- the pathfind natives are client-only. It hands over a coordinate at the
+    -- downed player's own height and `free = true`, and client/rescue.lua snaps
+    -- the vehicle onto the nearest live road node behind the fade it already
+    -- draws before anybody is put inside it.
+    if not dest then
+        local spot, freeDest, freeDist =
+            BR.RescueFreeSpawn(pos.x, pos.y, others, points, m.storm, now, R,
+                               BR.Config.Map and BR.Config.Map.Boundary)
+        if spot then
+            pickup = {
+                id = 'free', free = true,
+                x = spot.x, y = spot.y, z = pos.z, heading = 0.0,
+            }
+            dest, dist, inside = freeDest, freeDist, true
+            print(('[br_core] rescue: %d  free spawn at (%.1f, %.1f), %.0fm from '
+                   .. 'the player, %.0fm from %s')
+                :format(src, spot.x, spot.y,
+                        BR.Dist(pos.x, pos.y, spot.x, spot.y),
+                        freeDist, tostring(freeDest.id)))
+        end
+    end
 
     -- ═══ NO QUALIFYING POINT IS A REFUSAL, AND THE KIT SURVIVES IT ═══
     --
@@ -454,9 +524,11 @@ function BR.Rescue.begin(src)
     -- that declines to start is otherwise indistinguishable from a keypress that
     -- did not register, which is the report we would get back.
     if not dest then
-        print(('[br_core] rescue: %d refused -- no surveyed point is inside the '
-               .. 'next circle (pickup %s, %d points, storm phase %s)')
-            :format(src, pointName(pickup), #points,
+        print(('[br_core] rescue: %d refused -- no destination from the surveyed '
+               .. 'pickup NOR from any free spot within %.0fm (%d points, %d '
+               .. 'other players, trip band %.0f-%.0fm, storm phase %s)')
+            :format(src, R.spawnSearchM or 1200.0, #points, #others,
+                    R.minTripM or 150.0, R.maxTripM or 1000.0,
                     tostring(m.storm and m.storm.phase)))
         return false
     end

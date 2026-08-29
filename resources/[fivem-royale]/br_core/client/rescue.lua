@@ -1320,6 +1320,70 @@ local function board(d)
 
         SetEntityAsMissionEntity(r.veh, true, true)
 
+        -- ═══ ONTO A ROAD, WHEN THE SERVER COULD NOT PUT IT ON ONE ═══
+        --
+        -- Owner, 2026-08-29: "make sure it starts on a road node."
+        --
+        -- `p.free` marks a spawn the server solved by geometry rather than from
+        -- the surveyed table -- see BR.RescueFreeSpawn. The surveyed points are
+        -- authored car parks and are left exactly where they are; this only ever
+        -- touches a coordinate that was picked off a ring walk and could be in a
+        -- field, on a verge or halfway up a hill.
+        --
+        -- IT HAS TO HAPPEN HERE BECAUSE IT CANNOT HAPPEN THERE. The pathfind
+        -- natives are client-only -- there is no server-side road lookup at all,
+        -- which is why the server hands over a bare coordinate at the downed
+        -- player's own height and says so.
+        --
+        -- AFTER THE CONTROL GATE, NOT BEFORE. Every line above this one explains
+        -- why: a write to an entity this machine does not control is a local
+        -- change the owner's next sync undoes, and moving the ambulance is the
+        -- most visible write in this function. Behind the fade either way, and
+        -- before the medic is seated and before the player is attached, so both
+        -- arrive at the vehicle's final position rather than chasing it.
+        --
+        -- FLAG 0 FIRST, 1 AS A FALLBACK, which is the same sequence and the same
+        -- reasoning as the stuck recovery further down this file: bit 1 is
+        -- GCNF_INCLUDE_SWITCHED_OFF_NODES -- the driveways, service roads and
+        -- dirt tracks ambient traffic does not use -- and starting the ride on
+        -- exactly the surface the driving style forbids is a plausible mechanism
+        -- for the circling the owner has watched. An imperfect node still beats
+        -- no node, so 1 stays as the second answer rather than being removed.
+        if p.free and GetClosestVehicleNodeWithHeading then
+            local okN, node, heading =
+                GetClosestVehicleNodeWithHeading(px, py, pz, 0, 3.0, 0)
+            if not isTrue(okN) or not node then
+                okN, node, heading =
+                    GetClosestVehicleNodeWithHeading(px, py, pz, 1, 3.0, 0)
+            end
+            if isTrue(okN) and node then
+                -- MEASURED BEFORE THE WRITE. `p` IS `d.pickup` -- the same
+                -- table, not a copy -- so reading the old coordinate after
+                -- updating it below reports every snap as 0m.
+                local moved = BR.Dist(node.x, node.y, px, py)
+
+                SetEntityCoords(r.veh, node.x, node.y, node.z + 1.0,
+                                false, false, false, true)
+                SetEntityHeading(r.veh, heading or 0.0)
+                SetVehicleOnGroundProperly(r.veh)
+                -- The pickup the rest of this ride reads. Left in step with the
+                -- vehicle deliberately: `freeSpaceNear` already sited the medic
+                -- off the OLD coordinate, and the arrival and camera work below
+                -- both measure from `p`. Two positions for one spawn is the
+                -- shape of bug this file has shipped before.
+                px, py, pz = node.x, node.y, node.z + 1.0
+                p.x, p.y, p.z = px, py, pz
+                print(('[br_core] rescue: free spawn snapped to a road node %.0fm away')
+                    :format(moved))
+            else
+                -- Said out loud rather than swallowed: the ride still runs from
+                -- wherever the server put it, and a driver starting off-road is
+                -- the first thing to suspect if this one circles.
+                print('[br_core] rescue: free spawn found no road node -- '
+                      .. 'starting where the server placed it')
+            end
+        end
+
         -- NOT INVINCIBLE. There is no SetEntityInvincible here and there must
         -- never be one: #191 asked for godmode and the owner reversed it on
         -- 2026-08-23. The ambulance takes damage, burns and explodes like any

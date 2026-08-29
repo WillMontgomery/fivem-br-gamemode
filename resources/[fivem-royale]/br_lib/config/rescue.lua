@@ -639,12 +639,78 @@ BR.Config.Rescue = {
     minTripM         = 150.0,
 
     -- The longest ride worth taking. Owner, 2026-08-29: "let's cap it -- max
-    -- 2000m", after one solved at 4872m on a 432-second deadline.
+    -- 2000m", after one solved at 4872m on a 432-second deadline -- and then
+    -- 1000m the same day, after another round of the ambulance failing to reach
+    -- where it had been sent.
     --
     -- A destination must be inside the next circle, past minTripM and within
     -- this. Nothing qualifying means the kit refuses and is not consumed, so
     -- this can make the kit unusable in a late circle rather than merely slow.
-    maxTripM         = 2000.0,
+    --
+    -- ═══ AN EXPOSURE CUT, NOT A FIX, AND IT WAS CHOSEN AS ONE ═══
+    --
+    -- The failure this is aimed at is the driver not arriving, and a shorter
+    -- drive does not make the driver better -- it gives it fewer junctions,
+    -- fewer obstacles and less dirt to find. Halving the ceiling roughly halves
+    -- the chances to go wrong, and it buys that by making the kit REFUSE more
+    -- often: 23 surveyed points, filtered to inside the next circle AND inside a
+    -- 150-1000m band, is a thin set in a late phase.
+    --
+    -- The owner was given that trade and took it, over the other option on the
+    -- table: filtering candidates by ROAD-ROUTE distance rather than
+    -- straight-line, so a point 900m away whose only route is 2700m of hill
+    -- track stops out-ranking a 1400m run down a highway. That is still the
+    -- better lever and it is still unbuilt. This is the cheap half.
+    --
+    -- ═══ ON ITS OWN IT WOULD HAVE BROKEN THE FEATURE ═══
+    --
+    -- Both ends of a ride used to come from the same 23-row table, so a ride
+    -- only existed where two of those rows sat inside the trip band of each
+    -- other. Measured on the shipped data, at 1000m that is true for NINE of the
+    -- 23 pickups -- the other fourteen have no legal destination at all and the
+    -- kit refuses. The owner fixed that from the other end rather than by
+    -- raising the cap back: "when not possible, start from a random point
+    -- (nearest to the DBNO location), <1000m from the destination, and make sure
+    -- it starts on a road node." The three knobs below are that.
+    maxTripM         = 1000.0,
+
+    -- ═══ THE FREE SPAWN, WHICH IS WHAT MAKES 1000m AFFORDABLE ═══
+    --
+    -- Letting the SPAWN float rather than the cap rise: sampling the playable
+    -- area on a 100m lattice, 78.8% of the map has a surveyed destination inside
+    -- 1000m. That is the number this feature now runs on, and the remaining ~21%
+    -- is a real hole -- a player downed in the far corners still gets a refusal.
+    -- 1200m would make it 91.4% and 1500m 98.1%, so `maxTripM` is the knob to
+    -- reach for if those refusals are felt in play.
+    --
+    -- How far out to look before giving up. Generous, because the player is
+    -- TELEPORTED into the vehicle -- distance from them costs nothing but the
+    -- fiction, where a refusal costs the whole feature.
+    spawnSearchM     = 1200.0,
+
+    -- Ring spacing for that outward walk, and the arc spacing between probes on
+    -- each ring. 100m is the lattice the coverage above was measured on, so the
+    -- number the search is tuned to and the number quoted for it are the same
+    -- one rather than two that agree by memory.
+    spawnRingM       = 100.0,
+
+    -- ═══ NOBODY WATCHES A RESCUE MATERIALISE ═══
+    --
+    -- Owner, 2026-08-29: "make sure wherever the ambulance spawns there are no
+    -- other players within 500m".
+    --
+    -- The spawn is where a rescued player physically appears -- `board()` fades
+    -- out and teleports them in -- so without this a kit can drop its owner into
+    -- somebody's crosshair behind a fade they cannot see through. Checked at
+    -- dispatch, on the spawn only: the destination is minutes of driving away
+    -- and every position the check could use will be stale by then.
+    --
+    -- IT APPLIES TO THE SURVEYED PICKUP TOO, not just the free one. "Wherever
+    -- the ambulance spawns" has no exception in it, and the surveyed points are
+    -- car parks next to hospitals -- exactly the sort of place two players end
+    -- up in the same phase.
+    clearOfPlayersM  = 500.0,
+
     -- ═══ THE STYLE WAS NEVER WHAT WAS HITTING THE CARS ═══
     --
     -- Owner, 2026-08-28, after 262460 and then 4980863: "The driver still

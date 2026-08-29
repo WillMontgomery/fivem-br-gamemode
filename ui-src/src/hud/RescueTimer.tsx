@@ -77,50 +77,83 @@ import { HotCard, HotTime } from './HotCard'
  * ambulance that never moved at all, which is a ride that was already broken and
  * not a race the player could have run differently.
  *
- * THAT IS WHY NOTHING HAPPENS IN THE LAST SECONDS. No red, no pulse, no growing
- * numeral. Escalation would be a lie about what zero means, and this project has
- * a standing rule against flourish nobody asked for.
+ * THAT IS WHY NOTHING ESCALATES IN THE LAST SECONDS. No colour change, no
+ * quickening, no growing numeral. Escalation would be a lie about what zero
+ * means, and this project has a standing rule against flourish nobody asked for.
  *
- * ═══ IT IS THE BLEED-OUT CARD, AND THAT IS A CHANGE ═══
+ * ═══ IT IS THE BLEED-OUT CARD, IN FULL, AND THAT TOOK TWO PASSES ═══
  *
  * Owner, 2026-08-29: "Please rebuild the revive timer UI to be the same card as
  * the bleed out card and timer."
  *
- * This shipped as a bare numeral on a `.panel` (d7272a6), and the argument for
- * that is one paragraph up this file: `.panel-hot` demands a cap and breathes
- * its border, and neither belongs on a deadline that ends in a delivery. He has
- * looked at it and asked for the placard anyway, so the placard is what it is --
- * `HotCard`, the same one DbnoOverlay draws, with DbnoOverlay's 2rem numeral in
- * the body.
+ * It shipped first as a bare numeral on a `.panel` (d7272a6), then as a capless
+ * `HotCard` -- and the argument for holding back both times is two paragraphs up
+ * this file: `.panel-hot` demands a text cap, and a cap has to SAY something on
+ * a card whose whole point is that there is nothing to announce. He looked at
+ * the capless version and said so plainly:
+ *
+ *   "the revive timer is redone, but is not a proper card UI like the bleed out
+ *    timer..... I want you to make it look exactly like the bleed out timer, but
+ *    instead of RED use BLUE outlines."
+ *
+ * So it is the whole object now, in DbnoOverlay's own order: cap, numeral,
+ * sub-label, bar. "Exactly like" is the spec, and a card missing three of its
+ * four rows was the complaint.
  *
  * NOT BY MOVING IT INTO THE HUD. It is still a sibling of `Hud` in App.tsx and
  * Hud.tsx still must never render it -- the whole reason this component exists
  * is that the ride hides the HUD and this is the one thing that survives that.
  * What is shared is the appearance; hud/HotCard.tsx has the long version.
  *
- * ═══ THE COLOUR IS `--color-hp`, WHICH IS THE CARD'S OWN VOCABULARY ═══
+ * ═══ THE WORDS ARE HIS, BECAUSE THEY HAD TO BE ═══
  *
- * `.panel-hot` has no neutral: `--hot` drives the border and its pulse, and the
- * default is `--color-danger`. Red is the one thing this readout must not say --
- * zero is not a threat here, because a moving ambulance whose deadline lands
- * DELIVERS (server/rescue.lua's tick). So it takes the other colour the same
- * card already uses: DbnoOverlay flips to `--color-hp` when somebody is picking
- * you up, and an ambulance with you in the back is that state. One card, the
- * same two colours, meaning the same two things -- rather than a third colour
- * invented for this surface.
+ * "Medic en route" and "time to revive" were chosen by the owner from a list on
+ * 2026-08-29, and they are the only two strings on this surface. That is not
+ * ceremony: the standing rule here is that no helper copy, hint or caption gets
+ * invented -- "it comes across as 'AI slop'" -- and a `.panel-hot` cap cannot be
+ * left blank, so asking was the only way to give him the card he asked for
+ * without writing UI text he never approved. "time to revive" is his own phrase
+ * from the message that commissioned this timer.
  *
- * ═══ AND STILL NO WORDS ═══
+ * IF THESE STRINGS NEED TO CHANGE, that is an owner decision, not a tidy-up.
  *
- * A timer is a number. No cap, no caption and no unit: the card's heading would
- * have to say something, "YOU ARE DOWN" is false in an ambulance, and inventing
- * a replacement is exactly the unsolicited copy this project bans. `HotCard`
- * takes no `cap` here and draws no cap element at all.
+ * ═══ BLUE, AND `--color-shield` IS WHAT BLUE MEANS HERE ═══
  *
- * m:ss is a FORMAT rather than a sentence, which is why it is allowed to be the
- * one thing that differs from the bleed clock's `93s`: a drive across the map is
- * minutes, and `167s` is not a clock. It is held at m:ss BELOW a minute too --
- * `0:07` reads as a clock where `7` reads as a score, and the width never jumps
- * at the minute boundary.
+ * "instead of RED use BLUE outlines" (owner, 2026-08-29). `.panel-hot` has no
+ * neutral: `--hot` drives the border, the cap fill and the border's pulse
+ * together, so setting it once is what stops a blue edge ending up with a red
+ * cap.
+ *
+ * NOT A LITERAL #38bdf8. `--color-shield` is one of the four tokens the
+ * colourblind modes remap -- index.css re-declares it under both -- so the one
+ * readout a downed player is staring at follows the accessibility setting
+ * instead of quietly ignoring it. It also already means "blue" everywhere else
+ * in this interface, which is the other half of picking a token over a hex.
+ *
+ * AND IT REPLACES `--color-hp`, WHICH WAS A REASONED CHOICE AND IS NOW WRONG.
+ * The capless version used the health colour on the argument that green is what
+ * this card's OTHER state means -- DbnoOverlay flips to `--color-hp` when
+ * somebody is picking you up, and an ambulance with you in the back is that
+ * state. Recorded rather than quietly swapped: he asked for blue, blue is not
+ * red, and the reasoning it replaces was sound rather than forgotten.
+ *
+ * ═══ THE BAR MEASURES THE SAME THING THE NUMBER DOES ═══
+ *
+ * On the bleed-out card the bar earns its place by DISAGREEING with the
+ * countdown -- enemy fire shortens a bleed, so a burst visibly tears a chunk out
+ * of it. Nothing shortens a ride, so here it is the countdown drawn a second
+ * way, and on its own that would not be worth adding.
+ *
+ * It is here because "exactly like the bleed out timer" is the request and the
+ * bar is a row of that card. The denominator is the first reading of THIS ride,
+ * held in a ref, for the same reason DbnoOverlay holds one: recomputing the
+ * total from the time remaining refills the bar every frame.
+ *
+ * ═══ THE FORMAT IS m:ss, WHICH IS THE ONE THING THAT DIFFERS ═══
+ *
+ * The bleed clock reads `93s`. A drive across the map is minutes, and `167s` is
+ * not a clock. It is held at m:ss BELOW a minute too -- `0:07` reads as a clock
+ * where `7` reads as a score, and the width never jumps at the minute boundary.
  *
  * The digits are written straight to the node from one requestAnimationFrame
  * loop, like every other countdown in the HUD -- a re-render per frame for four
@@ -140,6 +173,12 @@ export default function RescueTimer({ show }: { show: boolean }) {
   const dbno = useUi(selDbno)
   const offset = useUi((s) => s.clockOffset)
   const timeRef = useRef<HTMLSpanElement>(null)
+  const barRef = useRef<HTMLDivElement>(null)
+
+  // Seeded on the first frame of THIS ride and then held. The component is
+  // mounted only while `show` is true, so a fresh ride brings a fresh ref --
+  // the same lifecycle the bleed-out card's denominator relies on.
+  const totalRef = useRef(0)
 
   // Zero means no clock: Lua zeroes it the instant the ride ends, and a server
   // that never sends it leaves it undefined. Either way there is nothing to
@@ -152,15 +191,21 @@ export default function RescueTimer({ show }: { show: boolean }) {
     let raf = 0
 
     const tick = () => {
+      // A SERVER timestamp. The browser's wall clock shares no origin with it,
+      // so `clockOffset` is what makes the comparison mean anything -- the rule
+      // StormBar, WarmupTimer and the bleed-out card all follow.
+      const left = Math.max(0, endsAt - (Date.now() + offset))
+      if (totalRef.current <= 0) totalRef.current = Math.max(1, left)
+
       const node = timeRef.current
       if (node) {
-        // A SERVER timestamp. The browser's wall clock shares no origin with
-        // it, so `clockOffset` is what makes the comparison mean anything --
-        // the rule StormBar, WarmupTimer and the bleed-out card all follow.
-        const left = Math.max(0, endsAt - (Date.now() + offset))
         const total = Math.ceil(left / 1000)
         const next = `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
         if (node.textContent !== next) node.textContent = next
+      }
+      if (barRef.current) {
+        barRef.current.style.transform =
+          `scaleX(${Math.min(1, left / totalRef.current)})`
       }
       raf = requestAnimationFrame(tick)
     }
@@ -180,14 +225,31 @@ export default function RescueTimer({ show }: { show: boolean }) {
       style={{ top: 'var(--safe-y)' }}
       aria-hidden
     >
-      {/* NO `cap`, so no cap element -- the card is the body alone. `14rem` is
-          DbnoOverlay's width, not a number picked for this content: the two are
-          meant to read as one object, and a placard that is narrower here
-          because it happens to hold fewer characters would read as a different
-          one. The placeholder `--` and the numeral's type, size and shadow all
-          come from `HotTime`, which is the bleed-out card's own numeral. */}
-      <HotCard hot="var(--color-hp)" minWidth="14rem">
-        <HotTime ref={timeRef} />
+      {/* `14rem` is DbnoOverlay's width, not a number picked for this content:
+          the two are meant to read as one object, and a placard that is
+          narrower here because it happens to hold fewer characters would read
+          as a different one. The cap's uppercasing and tracking come from
+          `.panel-hot > .cap`, so the string is written in sentence case here
+          exactly as the bleed-out card's is. */}
+      <HotCard hot="var(--color-shield)" cap="Medic en route" minWidth="14rem">
+        <>
+          <HotTime ref={timeRef} />
+          <span className="text-[0.55rem] font-semibold uppercase tracking-[0.18em] text-white/50">
+            time to revive
+          </span>
+
+          {/* SQUARE, and sized in rem, for the reason the bleed-out card's bar
+              is: the root font size is clamp(11px, 1.481vh * var(--ui-scale),
+              28px), and rem is the only unit the interface-size slider reaches.
+              One bar, because there is only ever one process running here. */}
+          <div className="mt-2 h-[0.2rem] w-full bg-black/60 overflow-hidden">
+            <div
+              ref={barRef}
+              className="bar-fill h-full"
+              style={{ width: '100%', background: 'var(--color-shield)' }}
+            />
+          </div>
+        </>
       </HotCard>
     </div>
   )

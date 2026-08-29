@@ -452,3 +452,146 @@ function BR.RescueArrived(distM, bestM, sinceBestMs, cfg)
     end
     return false, nil
 end
+
+--- Is this spot clear of everybody who is not the player being rescued?
+---
+--- ═══ WHY AN AMBULANCE MAY NOT APPEAR NEXT TO SOMEBODY ═══
+---
+--- Owner, 2026-08-29: "make sure wherever the ambulance spawns there are no
+--- other players within 500m".
+---
+--- This is not politeness about immersion. `board()` in client/rescue.lua fades
+--- the screen out and TELEPORTS the downed player into the back of the vehicle
+--- -- they never walk to it and it never drives to them -- so the spawn point is
+--- where a rescued player physically MATERIALISES. Without this rule a kit can
+--- drop its owner into somebody's crosshair, behind a fade they cannot see
+--- through, with no input for the second it takes to be shot.
+---
+--- It is checked at DISPATCH and against the spawn only. The destination gets no
+--- such test on purpose: it is minutes of driving away, every position this
+--- function was handed will be stale by then, and a check that cannot be true
+--- when it matters is worse than no check because it reads like a guarantee.
+---
+--- @param x number
+--- @param y number
+--- @param others table  array of { x = number, y = number } -- everyone else
+--- @param clearM number|nil  metres, default 500
+--- @return boolean
+function BR.RescueClearOfPlayers(x, y, others, clearM)
+    local need = clearM or 500.0
+    for _, o in ipairs(others or {}) do
+        if o and o.x and o.y and BR.Dist(x, y, o.x, o.y) < need then
+            return false
+        end
+    end
+    return true
+end
+
+--- Find somewhere to put the ambulance when no surveyed point will do.
+---
+--- ═══ THE SURVEYED POINTS ARE 23 CAR PARKS, AND THAT WAS THE WHOLE CEILING ═══
+---
+--- Owner, 2026-08-29, after the trip cap came down to 1000m: "when not possible,
+--- start from a random point (nearest to the DBNO location), <1000m from the
+--- destination, and make sure it starts on a road node."
+---
+--- The old rule spawned at the surveyed point nearest the downed player and drove
+--- to another surveyed point. Both ends came from the same 23-row table, so the
+--- ride only existed where two of those rows happened to sit within the trip
+--- band of each other. Measured on the shipped data, at a 1000m cap that is true
+--- for NINE of the 23 pickups -- the other fourteen have no legal destination at
+--- all and the kit refuses.
+---
+--- Letting the SPAWN float fixes it from the other end, and the measurement says
+--- so: sampling the playable area on a 100m lattice, 78.8% of it has a surveyed
+--- destination inside 1000m. The cap stayed where the owner put it and the
+--- coverage came from somewhere else.
+---
+--- ═══ THIS IS A FALLBACK, NOT A REPLACEMENT ═══
+---
+--- "when not possible" -- so server/rescue.lua tries the surveyed pickup first
+--- and only comes here when that yields no destination or lands too near
+--- somebody. The 39% of pickups that already work keep working exactly as they
+--- did, on authored ground somebody stood on and checked.
+---
+--- ═══ NEAREST, SEARCHED OUTWARD, AND THAT IS WHY IT IS A RING WALK ═══
+---
+--- "nearest to the DBNO location" is the requirement, so candidates are visited
+--- in order of increasing distance and the first one that passes wins. There is
+--- no scoring pass and no shortlist: a spiral that returns on first success IS
+--- the nearest qualifying point, and it stops doing work the moment it has one.
+---
+--- Bearings scale with the radius so the arc spacing stays roughly constant --
+--- eight probes on a 100m ring and eight on a 900m ring would sample the far
+--- ring nine times more sparsely and miss gaps the near one could not.
+---
+--- ═══ NO ROAD NODE IS CONSULTED HERE, BECAUSE NONE CAN BE ═══
+---
+--- "make sure it starts on a road node" is the other half of the request and it
+--- CANNOT be answered in this function or anywhere else on the server: the
+--- pathfind natives (GetClosestVehicleNodeWithHeading and its family) are client
+--- only, and there is no server-side equivalent. What this returns is a
+--- COORDINATE; client/rescue.lua's `board()` snaps it onto the nearest live road
+--- node behind the fade it already draws, using the same flag-0-then-1 sequence
+--- the stuck recovery uses -- and for the same reason, because bit 1 is
+--- GCNF_INCLUDE_SWITCHED_OFF_NODES and that is the dirt the ambulance must not
+--- start on if anything better exists.
+---
+--- THE CLIENT GAINS NOTHING IT DID NOT HAVE. It owns that vehicle either way and
+--- could move it regardless of what ships here, so the snap adds no capability
+--- and RESCUE_CALL stays payload-free -- "there is nothing about a rescue a
+--- client could tell the server that the server should believe" still holds,
+--- because the client is still told everything and asked nothing.
+---
+--- @param px number    where the player went down
+--- @param py number
+--- @param others table array of { x, y } -- every OTHER live player
+--- @param points table the surveyed destination candidates
+--- @param storm table|nil
+--- @param now number
+--- @param cfg table|nil
+--- @param poly table|nil the map boundary; candidates outside it are skipped
+--- @return table|nil spawn  { x, y } -- no z and no heading, both are the client's
+--- @return table|nil dest   the destination that spot unlocked
+--- @return number   dist    spawn-to-destination metres, or math.huge
+function BR.RescueFreeSpawn(px, py, others, points, storm, now, cfg, poly)
+    cfg = cfg or {}
+    local reach   = cfg.spawnSearchM or 1200.0
+    local ring    = cfg.spawnRingM or 100.0
+    local clearM  = cfg.clearOfPlayersM or 500.0
+
+    if ring <= 0 then return nil, nil, math.huge end
+
+    -- Ring 0 is the player's own spot, and it is tried first because "nearest"
+    -- has to mean nearest. It is only ever rejected by the two filters below,
+    -- never by a rule about standing too close to the person being rescued --
+    -- they are about to be teleported inside the vehicle regardless.
+    local r = 0.0
+    while r <= reach do
+        local n = (r <= 0.0) and 1
+            or math.max(8, math.floor((2.0 * math.pi * r) / ring))
+
+        for i = 0, n - 1 do
+            local a  = (2.0 * math.pi * i) / n
+            local cx = px + math.sin(a) * r
+            local cy = py + math.cos(a) * r
+
+            -- Inside the playable area first: it is the cheapest test and the
+            -- one that disqualifies most of a ring near the boundary. A spawn
+            -- outside the map is a rescue that begins in the storm.
+            local okHere = (poly == nil) or BR.PointInPolygon(cx, cy, poly)
+
+            if okHere and BR.RescueClearOfPlayers(cx, cy, others, clearM) then
+                local dest, dist, inside =
+                    BR.RescueDestination(points, cx, cy, storm, now, cfg)
+                if dest and inside then
+                    return { x = cx, y = cy }, dest, dist
+                end
+            end
+        end
+
+        r = r + ring
+    end
+
+    return nil, nil, math.huge
+end
