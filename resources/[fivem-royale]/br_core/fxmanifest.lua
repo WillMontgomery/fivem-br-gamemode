@@ -234,6 +234,23 @@ client_scripts {
     -- and nil-guarded -- BR.Config.Rescue deliberately, because #191's config is
     -- landing alongside this and the tool has to work with or without it.
     'client/attachtune.lua',
+    -- /brsurvey: pick the playable boundary off the pause map, one waypoint per
+    -- corner, and print it as a config table. Beside probe.lua and
+    -- attachtune.lua because it is the same kind of thing -- a command that
+    -- MEASURES what has to be written down -- and nothing in the gamemode calls
+    -- it.
+    --
+    -- AFTER client/markers.lua, and that is a READER'S order rather than the
+    -- loader's. The two want the same gesture: markers.place consumes any fresh
+    -- waypoint and turns it into a squad ping, so it stands down while
+    -- BR.Survey.active(). It reads that nil-guarded at call time -- exactly as
+    -- it reads BR.Rescue.riding() one line above -- so the file that yields is
+    -- declared above the file it yields to, and the loader does not care.
+    --
+    -- It needs client/main.lua for the loop registry and client/natives.lua for
+    -- BR.Native.radiusBlip and BR.Native.blipName; BR.Dist comes from
+    -- @br_lib/shared/geo.lua, already loaded above.
+    'client/survey.lua',
     'client/debug.lua',
 }
 

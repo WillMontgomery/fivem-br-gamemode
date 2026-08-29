@@ -101,6 +101,14 @@ BR.Loop.register(BR.Loop.TICK, 'markers.place', function()
     -- destination waypoint would be eaten on the tick after it was set.
     if BR.Rescue and BR.Rescue.riding and BR.Rescue.riding() then return end
 
+    -- AND A SURVEY'S WAYPOINT IS NOT A PING EITHER. /brsurvey
+    -- (client/survey.lua) authors the map boundary out of this exact gesture --
+    -- the owner clicks a dozen or two corners on the pause map and each one
+    -- becomes a vertex -- and the two cannot both consume it. Same precedent as
+    -- the ride above, same shape of guard, and for the same reason: the tool
+    -- that wants the gesture says so, and this pass stands down while it does.
+    if BR.Survey and BR.Survey.active and BR.Survey.active() then return end
+
     local st = BR.State.me.state
     if st == BR.PlayerState.LOBBY or st == BR.PlayerState.LEFT then return end
 
