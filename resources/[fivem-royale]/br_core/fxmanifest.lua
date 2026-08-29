@@ -21,6 +21,11 @@ shared_scripts {
     '@br_lib/shared/names.lua',   -- display-name rules; client and server share them
     '@br_lib/shared/rng.lua',
     '@br_lib/shared/geo.lua',
+    -- Point-in-polygon for the surveyed playable boundary. BEFORE
+    -- config/map.lua, which wraps it as BR.Config.Map.InBounds -- the wrapper
+    -- resolves at call time so the order is not load-bearing today, and putting
+    -- the definition above its only caller keeps it from becoming so.
+    '@br_lib/shared/polygon.lua',
     '@br_lib/shared/clock.lua',
     '@br_lib/config/match.lua',
     '@br_lib/config/storm.lua',

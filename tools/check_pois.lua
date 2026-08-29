@@ -40,7 +40,9 @@ local BACKCOUNTRY = {}
 for _, id in ipairs({
     'mtjosiah', 'baytree', 'tongva_v', 'pacific_r', 'banham_w', 'lagozancudo',
     'zancudo_r', 'hills_e', 'chaparral_n', 'harmony_n', 'zancudo_f',
-    'dryfields', 'paleto_f', 'graybeard', 'raton_n', 'calafia', 'chiliad_ridge',
+    -- `graybeard` and `calafia` were here until 2026-08-28, when the surveyed
+    -- boundary removed them (51m and 45m outside). Nothing else in the set moved.
+    'dryfields', 'paleto_f', 'raton_n', 'chiliad_ridge',
     'chiliad_e', 'alamo_n', 'procopio_n', 'mtgordo_w', 'gordo_s',
     'senora_n', 'mthaan', 'eastbeach',
 }) do BACKCOUNTRY[id] = true end

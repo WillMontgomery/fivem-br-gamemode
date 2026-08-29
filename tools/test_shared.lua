@@ -14,6 +14,9 @@ for _, f in ipairs({
     'shared/names.lua',
     'shared/rng.lua',
     'shared/geo.lua',
+    -- BEFORE config/map.lua, whose InBounds wraps it -- and before
+    -- shared/storm_solve.lua, which calls InBounds to keep a circle on the map.
+    'shared/polygon.lua',
     'shared/clock.lua',
     'shared/sched.lua',
     'shared/outbox.lua',
@@ -335,6 +338,152 @@ do
     end
     ok(allOn, 'chord endpoints sit on the circle')
     ok(allDistinct, 'chord endpoints are distinct')
+end
+
+-- ---------------------------------------------------------------- polygon ---
+
+describe('polygon')
+do
+    -- A UNIT SQUARE FIRST, because every answer in it can be checked by eye. If
+    -- the crossing rule is wrong, it is wrong here too, and here the expected
+    -- value is not a matter of opinion.
+    local sq = {
+        { x = 0.0, y = 0.0 }, { x = 10.0, y = 0.0 },
+        { x = 10.0, y = 10.0 }, { x = 0.0, y = 10.0 },
+    }
+    ok(BR.PointInPolygon(5.0, 5.0, sq), 'the middle of a square is inside')
+    ok(not BR.PointInPolygon(15.0, 5.0, sq), 'a point beside it is outside')
+    ok(not BR.PointInPolygon(5.0, -0.001, sq), 'a millimetre below the base is outside')
+    ok(BR.PointInPolygon(0.0, 0.0, sq), 'a corner is inside')
+    ok(BR.PointInPolygon(10.0, 10.0, sq), 'the opposite corner is inside')
+    ok(BR.PointInPolygon(5.0, 0.0, sq), 'the middle of an edge is inside')
+    ok(BR.PointInPolygon(0.0, 5.0, sq), 'and of a VERTICAL edge, which the ray runs along')
+
+    -- The vertex double-count. A ray cast through a vertex meets both edges
+    -- that share it; counting both flips the answer for a genuinely interior
+    -- point. `(a.y > y) ~= (b.y > y)` is what stops that, and a diamond puts a
+    -- vertex on the same horizontal as the point being tested.
+    local diamond = {
+        { x = 0.0, y = 0.0 }, { x = 10.0, y = -10.0 },
+        { x = 20.0, y = 0.0 }, { x = 10.0, y = 10.0 },
+    }
+    ok(BR.PointInPolygon(10.0, 0.0, diamond),
+        'the centre of a diamond is inside, with a vertex either side of it')
+    ok(not BR.PointInPolygon(-5.0, 0.0, diamond), 'and a point level with both is not')
+
+    -- Degenerate input degrades to false rather than erroring inside a match
+    -- transition, which is where BR.Config.Map.InBounds is called from.
+    ok(not BR.PointInPolygon(0.0, 0.0, nil), 'a nil polygon contains nothing')
+    ok(not BR.PointInPolygon(0.0, 0.0, {}), 'an empty polygon contains nothing')
+    ok(not BR.PointInPolygon(0.0, 0.0, { { x = 0.0, y = 0.0 }, { x = 1.0, y = 1.0 } }),
+        'two points are a line, not an area')
+
+    -- Shoelace and perimeter on the same square: 100 m^2 and 40m, counted on
+    -- fingers. The area is SIGNED, and this ring is counter-clockwise.
+    ok(near(BR.PolygonArea(sq), 100.0), 'square area', BR.PolygonArea(sq))
+    ok(near(BR.PolygonPerimeter(sq), 40.0), 'square perimeter', BR.PolygonPerimeter(sq))
+    local rev = { sq[4], sq[3], sq[2], sq[1] }
+    ok(near(BR.PolygonArea(rev), -100.0), 'walking it the other way flips the sign')
+    ok(BR.PointInPolygon(5.0, 5.0, rev), 'but not the containment answer')
+
+    -- A figure-eight must be REFUSED by the simplicity check rather than
+    -- silently answered. This is the shape a survey produces from two clicks in
+    -- the wrong order, and ray casting reports the crossed lobe as outside.
+    local bowtie = {
+        { x = 0.0, y = 0.0 }, { x = 10.0, y = 10.0 },
+        { x = 0.0, y = 10.0 }, { x = 10.0, y = 0.0 },
+    }
+    ok(BR.PolygonIsSimple(sq), 'a square is a simple ring')
+    ok(not BR.PolygonIsSimple(bowtie), 'a bow tie is not')
+
+    -- Distance to the outline is to the nearest SEGMENT, not the nearest
+    -- infinite line: past the end of an edge, the answer is the corner.
+    ok(near(BR.DistanceToPolygonEdge(5.0, 15.0, sq), 5.0),
+        'distance straight out from an edge')
+    ok(near(BR.DistanceToPolygonEdge(13.0, 14.0, sq), 5.0),
+        'distance past a corner is measured to the corner')
+    ok(near(BR.DistanceToPolygonEdge(5.0, 4.0, sq), 4.0),
+        'and it is unsigned -- an inside point still reports a positive distance')
+end
+
+describe('polygon.boundary')
+do
+    -- THE REAL SURVEYED RING, because that is the one POIs were deleted
+    -- against. A test on a square proves the algorithm; this proves the
+    -- algorithm against the data.
+    local B = BR.Config.Map.Boundary
+    ok(#B == 66, 'the boundary is the surveyed 66 points', #B)
+    ok(BR.PolygonIsSimple(B), 'and it does not cross itself')
+
+    -- CLEARLY INSIDE.
+    ok(BR.Config.Map.InBounds(0.0, 0.0), 'Los Santos is on the map')
+    ok(BR.Config.Map.InBounds(358.0, 1976.3), 'so is the survey centroid')
+    ok(BR.Config.Map.InBounds(1900.0, 3700.0), 'so is Sandy Shores')
+
+    -- CLEARLY OUTSIDE: the four corners of the old rectangle, which is the
+    -- whole reason this ring exists. Each is open ocean.
+    local A = BR.Config.Storm.mapAABB
+    local corners = 0
+    for _, c in ipairs({ { A.min.x, A.min.y }, { A.min.x, A.max.y },
+                         { A.max.x, A.min.y }, { A.max.x, A.max.y } }) do
+        if not BR.Config.Map.InBounds(c[1], c[2]) then corners = corners + 1 end
+    end
+    ok(corners == 4, 'every corner of mapAABB is off the map', ('%d of 4'):format(corners))
+
+    -- ON A VERTEX and ON AN EDGE. Both must answer INSIDE, deterministically:
+    -- a POI is deleted on this verdict, and the crossing count alone has no
+    -- defined answer for a point sitting on the line it is counting crossings
+    -- of. Every vertex is checked, not a sample -- there are only 66.
+    local onVertex, onEdge = 0, 0
+    for i = 1, #B do
+        local a = B[i]
+        local b = B[(i % #B) + 1]
+        if BR.Config.Map.InBounds(a.x, a.y) and BR.PointOnPolygonEdge(a.x, a.y, B) then
+            onVertex = onVertex + 1
+        end
+        local mx, my = (a.x + b.x) * 0.5, (a.y + b.y) * 0.5
+        if BR.Config.Map.InBounds(mx, my) and BR.PointOnPolygonEdge(mx, my, B) then
+            onEdge = onEdge + 1
+        end
+    end
+    ok(onVertex == #B, 'every vertex reads as on the outline and inside', onVertex)
+    ok(onEdge == #B, 'so does the midpoint of every edge', onEdge)
+
+    -- INSIDE THE BBOX, OUTSIDE THE SHAPE. The concave bits around the docks and
+    -- the airport are exactly this case, and they are the reason a bounding box
+    -- was never good enough: (-650, -2900) is 87m south of the shoreline the
+    -- owner drew between the LSIA approach and the container terminal, and sits
+    -- comfortably inside the bbox on both axes.
+    local minX, minY, maxX, maxY = BR.PolygonBounds(B)
+    local notch = { { -650.0, -2900.0 }, { -300.0, -3200.0 }, { -1500.0, -3400.0 } }
+    local inBox, outShape = 0, 0
+    for _, p in ipairs(notch) do
+        if p[1] > minX and p[1] < maxX and p[2] > minY and p[2] < maxY then
+            inBox = inBox + 1
+        end
+        if not BR.Config.Map.InBounds(p[1], p[2]) then outShape = outShape + 1 end
+    end
+    ok(inBox == #notch, 'the notch probes are inside the bounding box', inBox)
+    ok(outShape == #notch, 'and outside the shape', outShape)
+
+    -- The survey's own figures, so a silent edit to the table shows up in the
+    -- test suite as well as in tools/check_boundary.lua.
+    ok(near(BR.PolygonPerimeter(B), 34355.0, 10.0), 'perimeter matches the survey',
+        ('%.0fm'):format(BR.PolygonPerimeter(B)))
+    ok(near(math.abs(BR.PolygonArea(B)), 51057000.0, 10000.0),
+        'area matches the survey',
+        ('%.2f km^2'):format(math.abs(BR.PolygonArea(B)) / 1e6))
+
+    -- The rule the owner stated, asserted over the live tables.
+    local badPoi, badAmb = 0, 0
+    for _, p in ipairs(BR.Config.Map.POIs) do
+        if not BR.Config.Map.InBounds(p.x, p.y) then badPoi = badPoi + 1 end
+    end
+    for _, a in ipairs(BR.Config.Map.AmbulanceSpawns) do
+        if not BR.Config.Map.InBounds(a.x, a.y) then badAmb = badAmb + 1 end
+    end
+    ok(badPoi == 0, 'every POI is inside the surveyed boundary', badPoi)
+    ok(badAmb == 0, 'and every ambulance spawn is too', badAmb)
 end
 
 -- ------------------------------------------------------------------ storm ---
@@ -1685,6 +1834,90 @@ do
     local sx, sy = BR.NextStormCentre(BR.Rng(7), -3800.0, 0.0, 2000.0, 1000.0, 1.0, nil)
     ok(type(sx) == 'number' and type(sy) == 'number',
         'a centre already at sea still resolves rather than hanging')
+end
+
+describe('storm.bounds')
+do
+    -- THE OWNER'S ACTUAL REPORT, AS A TEST (2026-08-28): "we have too many
+    -- places where the storm can end outside the map and in the ocean."
+    --
+    -- storm.water above covers the five authored rectangles, which were never a
+    -- map outline -- they exist to stop LOOT generating in the Pacific, and the
+    -- gaps between them are where the storm went. This drives the WHOLE
+    -- sequence, anchor to phase 8, exactly as br_core/server/storm.lua drives
+    -- it, and asserts the final circle is somewhere a player can stand.
+    --
+    -- Before the surveyed boundary became the mask, this test failed on 20.2%
+    -- of seeds. That number is the reason it is a full-sequence simulation and
+    -- not a single call: one draw off a coastal anchor almost never lands in
+    -- the sea, and eight of them compounding is the bug.
+    local cfg = BR.Config.Storm
+    local pois = BR.Config.Map.POIs
+
+    local wps = {}
+    for _, options in ipairs(BR.Config.Bus.legs) do
+        for _, opt in ipairs(options) do
+            for _, wp in ipairs(opt) do wps[#wps + 1] = { x = wp.x, y = wp.y } end
+        end
+    end
+
+    local N = 400
+    local anchorsOut, endsOut, anyOut, worst = 0, 0, 0, 0.0
+    for seed = 1, N do
+        local rng = BR.Rng(seed * 7919 + 13)
+        local anchor = BR.PickStormAnchor(rng, wps, pois, cfg.anchorBand)
+        if not BR.Config.Map.InBounds(anchor.x, anchor.y) then
+            anchorsOut = anchorsOut + 1
+        end
+
+        -- The opening radius, computed the way server/storm.lua computes it:
+        -- far enough to cover every corner of the bounds, so nobody can land
+        -- outside circle 1.
+        local A = cfg.mapAABB
+        local r = cfg.radius0
+        for _, c in ipairs({ { A.min.x, A.min.y }, { A.min.x, A.max.y },
+                             { A.max.x, A.min.y }, { A.max.x, A.max.y } }) do
+            r = math.max(r, BR.Dist(anchor.x, anchor.y, c[1], c[2]))
+        end
+        r = r + cfg.openMargin
+
+        local cx, cy = anchor.x, anchor.y
+        local sawOut = false
+        for phase = 1, #cfg.phases do
+            local p = cfg.phases[phase]
+            local minDist = 0.0
+            if phase > #cfg.phases - cfg.edgeHugPhases then
+                minDist = math.max(0.0, (r - p.radius) - cfg.edgeHugM)
+            end
+            cx, cy = BR.NextStormCentre(rng, cx, cy, r, p.radius, cfg.edgeBiasMax,
+                cfg.mapAABB, minDist, BR.StormBreakoutFor(cfg, phase))
+            r = p.radius
+            if not BR.Config.Map.InBounds(cx, cy) then sawOut = true end
+        end
+
+        if sawOut then anyOut = anyOut + 1 end
+        if not BR.Config.Map.InBounds(cx, cy) then
+            endsOut = endsOut + 1
+            local d = BR.Config.Map.BoundaryDistance(cx, cy)
+            if d > worst then worst = d end
+        end
+    end
+
+    ok(anchorsOut == 0, 'every match anchor is inside the surveyed boundary',
+        ('%d of %d outside'):format(anchorsOut, N))
+    ok(endsOut == 0, 'and no match ends with its final circle off the map',
+        ('%d of %d, worst %.0fm out'):format(endsOut, N, worst))
+    ok(anyOut == 0, 'no phase of any match puts its centre off the map',
+        ('%d of %d matches'):format(anyOut, N))
+
+    -- The pull-back is a walk toward the PREVIOUS centre, and the previous
+    -- centre is on the map by induction from the anchor. A centre that is
+    -- already off the map breaks that induction and must still return rather
+    -- than loop -- brforce and the tests both reach it.
+    local ox, oy = BR.NextStormCentre(BR.Rng(11), 3900.0, 6900.0, 2000.0, 900.0,
+        1.0, nil)
+    ok(type(ox) == 'number' and type(oy) == 'number',
+        'a centre already off the map still resolves rather than hanging')
 end
 
 describe('storm.nesting')

@@ -2225,6 +2225,31 @@ do
     commands['brairdrop'](0, { 'now' }, '')
     eq(#m.airdrop.waiting, 3, 'a third and fourth are no different from the second')
 
+    -- ═══ AND NO TWO OF THEM ARE ON THE SAME POI ═══
+    --
+    -- Sited by an unmemoried uniform draw over the POI table, so two concurrent
+    -- drops COULD land on one point until 2026-08-28 -- two crates and two blips
+    -- on the same coordinates, and one player arming both, which is precisely
+    -- what the per-drop gate a dozen lines up says cannot happen. It survived
+    -- every seed this suite used and then stopped: trimming eight POIs out of
+    -- the table for the surveyed map boundary moved this block's seed onto a
+    -- collision, and both `now` drops came out on lsia_rw.
+    --
+    -- Asserted over the ids rather than over the distance, because "the same
+    -- POI" is the thing that is wrong. Two different POIs 300m apart are two
+    -- places; one POI twice is one place claimed twice.
+    local sites, dupe = {}, nil
+    for _, w in ipairs(m.airdrop.waiting) do
+        if sites[w.rec.poi] then dupe = w.rec.poi end
+        sites[w.rec.poi] = true
+    end
+    for _, l in ipairs(m.airdrop.live) do
+        if sites[l.rec.poi] then dupe = l.rec.poi end
+        sites[l.rec.poi] = true
+    end
+    ok(dupe == nil, 'and every concurrent drop is on a POI of its own',
+        dupe and ('two drops on %s'):format(tostring(dupe)) or nil)
+
     -- ═══ AND NOW THE HALF THAT MUST NOT HAVE MOVED ═══
     --
     -- The AUTOMATIC path is `perMatch` entries in `pending` and a tick that

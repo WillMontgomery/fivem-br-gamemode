@@ -248,7 +248,44 @@ local function trySite(m, p, now)
     -- nest. See the block over that function.
     local circles = BR.AirdropLandingCircles(m.storm, now, A, A.blipMaxMs or 240000)
 
-    local poi, seen = BR.AirdropPickSiteIn(m.airdrop.rng, BR.Config.Map.POIs,
+    -- ═══ NO TWO CONCURRENT DROPS ON THE SAME POI ═══
+    --
+    -- `brairdrop now` may be run any number of times in a match (owner,
+    -- 2026-08-23), and BR.AirdropPickSiteIn draws uniformly from the qualifying
+    -- POIs with no memory of what it drew last time. So two manual drops could
+    -- be sited on the SAME POI -- two crates on one point, two blips on top of
+    -- each other, and one player walking there arming both at once, which is
+    -- exactly what the block below the arm gate promises cannot happen.
+    --
+    -- IT WAS ALWAYS REACHABLE AND HAD SIMPLY NOT BEEN DRAWN. With a hundred-odd
+    -- candidates the collision is a fraction of a percent per pair of drops, so
+    -- it survived every seed the suite happened to use -- until the surveyed
+    -- boundary trimmed eight POIs out of the table on 2026-08-28 and moved one
+    -- of those seeds onto a collision. The table changed; the defect did not.
+    --
+    -- Filtered rather than retried, so no RNG is burned on a redraw -- and the
+    -- filter is SKIPPED ENTIRELY when nothing is out, which is every automatic
+    -- drop. `perMatch` is 1, so the ordinary path passes the identical table to
+    -- the identical rng and every existing seed still lands where it did.
+    local pois = BR.Config.Map.POIs
+    local taken = nil
+    for _, list in ipairs({ m.airdrop.waiting or {}, m.airdrop.live or {} }) do
+        for _, e in ipairs(list) do
+            if e.rec and e.rec.poi then
+                taken = taken or {}
+                taken[e.rec.poi] = true
+            end
+        end
+    end
+    if taken then
+        local free = {}
+        for _, p in ipairs(pois) do
+            if not taken[p.id] then free[#free + 1] = p end
+        end
+        pois = free
+    end
+
+    local poi, seen = BR.AirdropPickSiteIn(m.airdrop.rng, pois,
         circles, A.insideBy or 250.0, BR.LootPlaceable)
     if not poi then
         local _ = seen

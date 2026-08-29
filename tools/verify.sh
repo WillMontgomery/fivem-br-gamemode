@@ -273,6 +273,29 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# --- 3d-bis. nothing authored outside the surveyed map edge --------------------
+#
+# The owner walked the playable boundary on the pause map on 2026-08-28 -- 67
+# clicks, a closed ring, 51.06 km^2 -- and asked for everything outside it to be
+# removed. Eight POIs were. THIS is the half that keeps them removed.
+#
+# The failure it is aimed at has a long fuse. A POI authored six months from now
+# at coordinates nobody checks against a map does not error, does not look wrong
+# in a diff, and does not misbehave until it is drawn as a storm anchor and a
+# match ends over open water. That is the bug the owner reported, and it took a
+# hand survey to diagnose because nothing in the tree could say where the map was.
+# Now something can, so it is asserted every build.
+#
+# check_boundary.lua also pins the ring to the survey's own perimeter, area and
+# centroid, which is what stops this gate being circular: without it, a boundary
+# widened to admit a coordinate would still pass every check it makes.
+echo "${DIM}== map boundary ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_boundary.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # A spectator listens and does not talk -- the owner, unconditionally. The
 # CLIENT half of that rule is unit-tested (test_client drives the real key
 # through the real loop). This gate is for the SERVER half, which is not a
