@@ -989,6 +989,29 @@ BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
         return
     end
 
+    -- AND SO IS A RESCUE RIDE, which is the same fault as `traveling` wearing
+    -- a different feature's clothes (live repro, 2026-08-29: "screen is not
+    -- faded in -- recovering (watchdog)" with scriptCam true and playerState
+    -- dbno -- fired mid-ride).
+    --
+    -- board() fades out and then holds black across a model load, the vehicle
+    -- adoption gate, the control gate and a pose dictionary -- tens of seconds
+    -- against this watchdog's two. Every early return above reads false during
+    -- that window, so the watchdog reached reveal(), which fades IN on exactly
+    -- the condition rescue is holding, and lifted the curtain over the one
+    -- sequence it exists to hide: a vehicle appearing out of nothing and a ped
+    -- being teleported into the back of it.
+    --
+    -- IT STANDS DOWN RATHER THAN THE RIDE GIVING UP ITS FADE. A recovery
+    -- mechanism must never undo a deliberate fade, and the ride's own fades are
+    -- bounded at both ends -- board() fades in and cleanup() runs on every exit
+    -- -- so there is nothing here for the watchdog to rescue that the ride does
+    -- not already resolve itself.
+    if BR.Rescue and BR.Rescue.riding and BR.Rescue.riding() then
+        darkTicks = 0
+        return
+    end
+
     -- holdBlack is a deliberately dark screen (the end-of-match sequence);
     -- recovering from it would fade the aftermath in behind the result
     -- card. But the hold is only legitimate while that sequence is

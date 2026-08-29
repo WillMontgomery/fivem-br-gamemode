@@ -953,6 +953,31 @@ do
         culled[#culled + 1] = { ent = ent, radius = radius }
     end
 
+    -- ═══ AND THE TWO STUBS THAT PIN THE ORDERING THAT LINE NOW DEPENDS ON ═══
+    --
+    -- Widening the ENTITY at creation is what cost the 2026-08-29 round. OneSync
+    -- gives an unowned entity to the first client that finds it relevant
+    -- (ServerGameState.cpp Tick: "relevant entity owned by nobody... try to yoink
+    -- it", over that client's synced set), so a map-wide radius at creation makes
+    -- every client in the match a candidate to own the ambulance -- and the drive
+    -- task can only be issued by the ONE machine that holds the medic ped.
+    --
+    -- So relevancy is opened on the PLAYER first, which reaches exactly one
+    -- client and makes the claim uncontested, and the entity is opened to the map
+    -- only once the server has confirmed who owns it. That ordering has no
+    -- visible effect on a passing test server and costs a playtest round when it
+    -- regresses, which is the precise shape of thing that gets pinned here.
+    local playerCulled = {}
+    _G.SetPlayerCullingRadius = function(src, radius)
+        playerCulled[#playerCulled + 1] = { src = src, radius = radius }
+    end
+
+    -- Who the server thinks owns each vehicle. -1 is "nobody", which is what
+    -- NETWORK_GET_ENTITY_OWNER answers server-side for an entity with no owning
+    -- client -- and, unlike the client-side native, it is a SERVER ID.
+    local owners = {}
+    _G.NetworkGetEntityOwner = function(veh) return owners[veh] or -1 end
+
     BR.Roster = {
         get    = function(src) return roster[src] end,
         update = function(src, patch)
@@ -961,7 +986,10 @@ do
         each   = function() end,
     }
     BR.Server = { matches = matches, notify = function() end }
-    BR.Sched  = { every = function() end }
+    -- The schedules are KEPT rather than swallowed, because the ownership gate
+    -- is one of them and the widening it performs is the assertion below.
+    local sched = {}
+    BR.Sched  = { every = function(_, name, fn) sched[name] = fn end }
     BR.Broadcast = { toMatch = function() end }
     _G.RegisterNetEvent   = function() end
     _G.AddEventHandler    = function() end
@@ -1084,30 +1112,93 @@ do
     spawnOk = true
     ok(roster[2].rescue == true, 'and the storm exemption written for the ride')
 
-    -- ═══ ...AND THE AMBULANCE IS MADE VISIBLE BEYOND 424 UNITS ═══
-    ok(#culled == 1,
-        'the granted rescue widened the ambulance\'s culling radius exactly '
-            .. 'once -- without this the entity is created and never cloned to '
-            .. 'anybody, which is how a whole playtest round produced "net id '
-            .. '65534 never resolved"',
+    -- ═══ ...AND THE AMBULANCE IS MADE VISIBLE BEYOND 424 UNITS -- IN TWO
+    --     STAGES, AND THE ORDER IS THE POINT ═══
+    --
+    -- STAGE ONE: the rescued player's own scope, and NOT the entity's. Widening
+    -- the entity here is the regression this pins: it would put the ambulance in
+    -- reach of every client in the match on the tick it was created, and Tick
+    -- hands an unowned entity to whichever of them it walks first.
+    ok(#culled == 0,
+        'the granted rescue does NOT widen the entity yet -- doing that at '
+            .. 'creation makes every client in the match a candidate to own the '
+            .. 'ambulance, and only the rescued player holds the medic ped that '
+            .. 'issues the drive task',
         #culled)
-    -- THE ENTITY HANDLE, NOT THE NET ID. They are both integers, they arrive
-    -- from the same call one after the other, and a server native handed the
-    -- wrong one either throws "Tried to access invalid entity" or silently
-    -- widens somebody else's vehicle. The stub returns two clearly different
-    -- numbers so this can tell them apart.
-    ok(culled[1] and culled[1].ent ~= begun.d.netId,
-        'and it widened the ENTITY, not the net id that goes on the wire',
-        culled[1] and ('ent %s vs netId %s')
-            :format(tostring(culled[1].ent), tostring(begun.d.netId)))
-    ok(culled[1] and culled[1].radius and culled[1].radius > 424.0,
-        'and to more than the 424-unit default it exists to beat',
-        culled[1] and tostring(culled[1].radius))
+    -- Three players have been through `begin` in this block, so the log is read
+    -- per player rather than counted.
+    local function radiiFor(who)
+        local out = {}
+        for _, c in ipairs(playerCulled) do
+            if c.src == who then out[#out + 1] = c.radius end
+        end
+        return out
+    end
+
+    local mine = radiiFor(2)
+    ok(#mine == 1 and mine[1] >= 8000.0,
+        'it widens the RESCUED PLAYER\'s culling radius instead, which reaches '
+            .. 'exactly one client and makes the ownership claim uncontested -- '
+            .. 'and far enough to beat the 424-unit default the surveyed points '
+            .. 'average 825m past',
+        table.concat(mine, ','))
+
+    -- AND THE REFUSAL PATH PUTS IT BACK. Player 3's ambulance was refused after
+    -- the widening, which is the one exit between opening the scope and writing
+    -- the record -- so it is the one exit `finish` can never reach.
+    local refused = radiiFor(3)
+    ok(#refused == 2 and refused[1] >= 8000.0 and refused[2] == 0.0,
+        'and a rescue refused after the widening narrows the player again, '
+            .. 'because that exit writes no record for finish to clean up',
+        table.concat(refused, ','))
+
+    -- STAGE TWO: the gate fires only once the SERVER says the rescued player
+    -- owns it. Server-side NETWORK_GET_ENTITY_OWNER answers a server id, so this
+    -- is a real comparison -- the client-side native answers 31 for every
+    -- inbound clone whoever owns it, which is what made the failing round
+    -- unreadable.
+    ok(type(sched['rescue.own']) == 'function',
+        'and it registers an ownership gate to do the rest')
+
+    sched['rescue.own']()
+    ok(#culled == 0,
+        'which widens nothing while the ambulance is still unowned -- an '
+            .. 'unowned entity is exactly the one any client may take',
+        #culled)
+
+    owners[begun.d.netId] = 2          -- wrong key on purpose: the NET ID
+    sched['rescue.own']()
+    ok(#culled == 0,
+        'and it is keyed on the ENTITY, not the net id that goes on the wire -- '
+            .. 'a server native handed the wrong integer throws or silently '
+            .. 'widens somebody else\'s vehicle',
+        #culled)
+
+    -- The entity handle. spawnOwned's stub returns two clearly different numbers
+    -- so this can tell them apart.
+    local veh = BR.Rescue.live[2] and BR.Rescue.live[2].veh
+    owners[veh] = 2
+    sched['rescue.own']()
+    ok(#culled == 1 and culled[1].ent == veh,
+        'once the rescued player owns it, the entity is opened to the match -- '
+            .. 'and it cannot be taken away again, because the yoink fires only '
+            .. 'on an entity owned by nobody',
+        #culled)
     ok(culled[1] and culled[1].radius >= 8000.0,
-        'in fact map-wide, so "other players can see the ambulance" has no '
-            .. 'distance at which it quietly stops being true',
+        'map-wide, so "other players can see the ambulance" has no distance at '
+            .. 'which it quietly stops being true',
         culled[1] and tostring(culled[1].radius))
-    culled = {}
+    mine = radiiFor(2)
+    ok(#mine == 2 and mine[2] == 0.0,
+        'and the player\'s own radius goes straight back, so one client is not '
+            .. 'left streaming the whole map for the rest of the round',
+        table.concat(mine, ','))
+
+    sched['rescue.own']()
+    ok(#culled == 1,
+        'and the widening happens exactly once, not on every pass of the gate',
+        #culled)
+    culled, playerCulled = {}, {}
 end
 
 -- ---------------------------------------------------------------------------

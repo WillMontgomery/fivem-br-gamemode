@@ -131,7 +131,43 @@ BR.Config.Rescue = {
     -- another player being teleported back to its spawn point) cannot touch a
     -- vehicle whose owner is attached to it -- but it absolutely could touch an
     -- abandoned one, so the widening lasts exactly as long as the ride.
+    -- ═══ AND IT IS APPLIED IN TWO STAGES NOW, WHICH IS THE WHOLE OF THE
+    --     2026-08-29 FIX ═══
+    --
+    -- Setting this on the ENTITY at creation is what broke the drive. OneSync
+    -- hands an unowned entity to the first client that finds it relevant
+    -- (ServerGameState.cpp, Tick: "relevant entity owned by nobody... try to
+    -- yoink it", walking that client's synced set), so making the ambulance
+    -- relevant to the whole map made the whole map a candidate for owning it,
+    -- and the rescued player -- the one machine holding the medic ped that has
+    -- to issue the drive task -- won only by luck.
+    --
+    -- So this number is now applied to the PLAYER first (relevancy for one
+    -- client, an uncontested claim) and to the ENTITY only once the server has
+    -- confirmed the rescued player owns it. Once owned, no other client can take
+    -- it -- the yoink fires only on an entity owned by nobody -- so the map-wide
+    -- visibility the owner asked for and the ownership the drive needs stop
+    -- being in tension. See server/rescue.lua's `grant` and `rescue.own`.
     cullRadiusM = 10000.0,
+
+    -- HOW OFTEN THE OWNERSHIP GATE LOOKS, and it is the blip cadence rather than
+    -- the tick cadence on purpose: this is a read and a widen, it ends nothing
+    -- and it cannot eliminate anybody, so it is cheap to ask often and the
+    -- sooner it fires the sooner the rest of the match can see the ambulance.
+    ownMs = 250,
+
+    -- HOW LONG OWNERSHIP GETS BEFORE THE WIDENING HAPPENS ANYWAY.
+    --
+    -- adoptMs' number, for adoptMs' reason: the client is allowed ten seconds to
+    -- resolve the net id into an entity, and ownership cannot settle before the
+    -- clone has arrived. Shorter than that would widen the entity while the
+    -- rescued player is still waiting for it, which is precisely the race this
+    -- change exists to remove.
+    --
+    -- EXPIRY IS NOT A FAILURE MODE THAT HIDES. It prints, and it says the drive
+    -- will not take -- an ambulance nobody can see is worse than one nobody can
+    -- drive, so visibility wins the tie, loudly.
+    ownerMs = 10000,
 
     -- THE CONTROL. Every write the ride makes -- the mods, the siren, the lock,
     -- the drive task, the doors, the halt -- is a write to an entity this client

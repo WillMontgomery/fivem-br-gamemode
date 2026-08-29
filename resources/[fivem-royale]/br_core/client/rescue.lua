@@ -613,16 +613,34 @@ end
 --- These are the values that separate them, and they are PRINTED RATHER THAN
 --- ACTED ON -- the same discipline that ended the netId round.
 ---
---- `owner` IS THE ONE THAT MATTERS, and it is the field this feature has never
---- had. A vehicle from CreateVehicleServerSetter is created ORPHANED -- Cfx's
---- own migration guide says exactly that, and says NETWORK_GET_ENTITY_OWNER
---- answers -1 for as long as it stays that way -- and an orphaned entity has no
---- owning client for a takeover to take it FROM. So:
+--- ═══ `owner` IS PRINTED, AND IT IS NOT A PLAYER. DO NOT READ IT AS ONE ═══
 ---
----   owner = -1                     still orphaned; the control request had
----                                  nobody to ask, which is not a refusal
----   owner = some other player      it migrated, just not to us
----   owner = us, control = false    a third thing, and a new one
+--- This field cost a round on 2026-08-29. It read `owner=31` beside `me=128` and
+--- that was taken to mean "player 31 owns it and you are player 128", which
+--- killed the orphan theory and sent the fix off after a migration that had
+--- never happened. BOTH NUMBERS ARE NORMAL AND THEY ARE NOT THE SAME KIND OF
+--- NUMBER:
+---
+---   31 is not a player. It is GTA's reserved REMOTE physical player index, and
+---   CloneManager.cpp stamps it on every inbound clone at creation:
+---       // owner ID (forced to be remote so we can call ChangeOwner later)
+---       auto owner = 31;
+---   so a networked entity this machine did not create reads 31 no matter who
+---   owns it -- server, nobody, or another client. Cfx's own OneSync page calls
+---   31 "a player reserved for every individual client".
+---
+---   128 is not in that space at all. PlayerId() is a Cfx PLAYER INDEX (0-128)
+---   and 128 is the ordinary value for your own player under OneSync.
+---
+--- So `owner == me` is never true here and means nothing when it is false. The
+--- client CANNOT distinguish "unowned" from "owned by somebody else"; only the
+--- server can, because NETWORK_GET_ENTITY_OWNER is a different native on that
+--- side -- it answers `entity->GetClient()->GetNetId()`, a server id, or -1.
+--- server/rescue.lua's `rescue.own` is where that question is now asked.
+---
+--- IT IS STILL PRINTED, because a value that changes off 31 is real information
+--- (this machine took the entity), and because the next person to read this log
+--- needs the note above more than they need one less field.
 ---
 --- @param r table
 --- @param when string   which moment this is, for the log

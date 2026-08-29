@@ -292,6 +292,20 @@ local function finish(src, delivered, why)
     live[src] = nil
     if not rec then return end
 
+    -- ═══ THE PLAYER'S SCOPE COMES BACK FIRST, ON EVERY ENDING ═══
+    --
+    -- `grant` widens the RESCUED PLAYER's culling radius so the ambulance is
+    -- relevant to them and to nobody else, and `rescue.own` narrows it again the
+    -- moment ownership settles. A ride that ends before that -- a refusal, a
+    -- disconnect, a death, an expired deadline, a match ending under them --
+    -- never reaches that narrowing, and a player left at a ten-kilometre radius
+    -- is one client being sent every entity in the match for the rest of the
+    -- round. It is idempotent, so calling it on the rides that were already
+    -- narrowed costs nothing.
+    if not rec.widened and SetPlayerCullingRadius then
+        pcall(SetPlayerCullingRadius, src, 0.0)
+    end
+
     -- ═══ THE SERVER OWNS THE VEHICLE, SO THE SERVER DECIDES WHETHER IT STAYS
     --     ═══
     --
@@ -500,10 +514,57 @@ function BR.Rescue.begin(src)
     -- "leaves a window in which the same kit could start a second rescue".
     -- There is no window: nothing between the two lines yields, and `live[src]`
     -- -- which is what canCall tests -- is not written until below either.
+    -- ═══ THE RESCUED PLAYER'S SCOPE IS WIDENED FIRST, AND ONLY THEIRS ═══
+    --
+    -- THIS LINE IS WHY THE AMBULANCE ENDS UP OWNED BY THE RIGHT MACHINE, and it
+    -- has to run BEFORE the entity exists rather than after. ServerGameState's
+    -- Tick claims an unowned entity for whichever client reaches it first:
+    --
+    --   // relevant entity owned by nobody, or wants a reassign? try to yoink it
+    --   auto cl = entity->GetClientUnsafe().lock();
+    --   if (!cl || (entity->wantsReassign && cl->GetNetId() != client->GetNetId()))
+    --   { ReassignEntity(entity->handle, client, std::move(_)); }
+    --
+    -- and the set it walks is the client's SYNCED ENTITIES -- which is exactly
+    -- relevancy. So the candidates for first ownership are "every client this
+    -- entity is relevant to", and the winner is decided by the order Tick walks
+    -- clients in, not by who the ambulance was built for.
+    --
+    -- WHICH IS WHY THE 424-METRE FIX BROKE THE DRIVE. Widening the ENTITY's
+    -- culling radius to the whole map made the ambulance relevant to every
+    -- client in the match on the tick it was created, so every client became a
+    -- candidate and the rescued player -- the one machine that has the medic ped
+    -- and must issue the drive task -- was simply one of the field. The fix for
+    -- visibility was the cause of the ownership loss; they are the same line.
+    --
+    -- SO RELEVANCY IS OPENED ON THE PLAYER SIDE INSTEAD, where it reaches one
+    -- client. GetDistanceCullingRadius consults the entity override FIRST and
+    -- the player's radius only when there is no override:
+    --
+    --   if (overrideCullingRadius != 0.0f) return overrideCullingRadius;
+    --   else if (playerCullingRadius != 0.0f) return playerCullingRadius;
+    --   else return (424.0f * 424.0f);
+    --
+    -- so with no override set, this makes the ambulance relevant to the rescued
+    -- player and to nobody else -- and an uncontested yoink is not a race. It
+    -- squares its own argument, like the entity native, so this is plain metres.
+    --
+    -- IT COMES STRAIGHT BACK OFF once ownership has settled, below, because it
+    -- widens the player's scope for EVERY entity and not just this one.
+    if SetPlayerCullingRadius then
+        pcall(SetPlayerCullingRadius, src, R.cullRadiusM or 10000.0)
+    end
+
     local veh, netId, whyVeh = BR.Vehicles.spawnOwned(
         R.model or 'ambulance', 'automobile',
         pickup.x, pickup.y, pickup.z, pickup.heading or 0.0, src)
     if not veh then
+        -- AND IT COMES OFF ON THE REFUSAL PATH TOO. This is the one exit
+        -- between the widening above and the `live[src]` entry below, so it is
+        -- the one exit `finish` cannot reach -- there is no record to finish.
+        if SetPlayerCullingRadius then
+            pcall(SetPlayerCullingRadius, src, 0.0)
+        end
         print(('[br_core] rescue: %d refused -- no ambulance (%s)')
             :format(src, tostring(whyVeh)))
         return false
@@ -560,9 +621,22 @@ function BR.Rescue.begin(src)
     -- carries a creation token, `IsOwnedByServerScript()` is token ~= 0 and
     -- scriptHash ~= 0, and `ShouldServerKeepEntity()` is already true for it --
     -- so nothing relevancy-driven deletes this vehicle while nobody is near it.
-    if SetEntityDistanceCullingRadius then
-        pcall(SetEntityDistanceCullingRadius, veh, R.cullRadiusM or 10000.0)
-    end
+    -- ═══ AND IT IS NOT SET HERE ANY MORE. IT IS SET ONCE THE RIDE IS OWNED ═══
+    --
+    -- Setting it on this line is what cost the drive: see the block above
+    -- `spawnOwned`. The widening still happens and still reaches the whole map,
+    -- but it happens in `widenOnceOwned` below, after the rescued player has
+    -- actually taken the entity -- at which point no other client can take it,
+    -- because Tick's yoink fires only on an entity owned by NOBODY.
+    --
+    -- The deprecation this native carries (citizenfx/fivem #1828: an entity far
+    -- from its OWNER but near another player gets teleported back to its spawn
+    -- point) is what makes the ordering load-bearing rather than merely tidy.
+    -- The comment that used to be here said the trade was survivable "because
+    -- the owner is the rescued player and they are ATTACHED TO THE VEHICLE" --
+    -- which was an assumption, was never checked, and was false for the whole
+    -- of the failing round. Gating the widening on ownership is what finally
+    -- makes it true.
 
     -- THE KIT IS SPENT HERE, at the moment the rescue is granted and after every
     -- refusal above has already passed -- including the one immediately above,
@@ -642,6 +716,13 @@ function BR.Rescue.begin(src)
         lastMoveAt = now,
         recoveries = 0,
         everMoved  = false,
+        -- WHEN THE SCOPE WAS OPENED, so `rescue.own` can give ownership a bound
+        -- rather than widening the moment it looks away.
+        startedAt  = now,
+        -- WHETHER THE MAP-WIDE WIDENING HAS HAPPENED YET. False means the
+        -- rescued player's own culling radius is still carrying relevancy and
+        -- has to be put back; see `rescue.own` and `finish`.
+        widened    = false,
     }
 
     -- THE FLAG. Written here and read in exactly one place -- storm.lua's
@@ -744,6 +825,87 @@ BR.Sched.every(R and R.blipMs or 250, 'rescue.blip', function()
     end
 end)
 
+-- ═══ THE OWNERSHIP GATE, AND IT IS A THIRD SCHEDULE FOR THE SECOND REASON THE
+--     BLIP ONE IS A SECOND ═══
+--
+-- It reads an owner and widens a radius. It makes no decisions, ends nothing and
+-- cannot eliminate anybody, so it does not belong in `rescue.tick` beside the
+-- stall detector that can.
+--
+-- WHAT IT IS WAITING FOR is the rescued player to actually take the ambulance.
+-- `grant` opened relevancy on the PLAYER side so that they are the only client
+-- the entity is relevant to, which makes them the only candidate for Tick's
+-- yoink; this is where we confirm it landed and then open the entity to the rest
+-- of the match.
+--
+-- ═══ THE SERVER IS THE ONLY SIDE WHERE THE OWNER CAN BE READ ═══
+--
+-- NETWORK_GET_ENTITY_OWNER answers a different question on each side, and the
+-- client's answer cannot settle anything:
+--
+--   server (ServerGameState_Scripting.cpp):
+--       auto entry = entity->GetClient();
+--       if (entry) { retval = entry->GetNetId(); }     -- a SERVER ID, else -1
+--
+--   client (CloneManager.cpp, receiving any inbound clone):
+--       // owner ID (forced to be remote so we can call ChangeOwner later)
+--       auto owner = 31;
+--
+-- So `NetworkGetEntityOwner` on a client reads 31 for EVERY networked entity
+-- that client did not create, whoever owns it -- 31 is GTA's reserved "remote"
+-- physical player index, not a player. The client-side reading can never
+-- distinguish "unowned" from "owned by somebody else", which is exactly the
+-- distinction this gate turns on. The server's answer is a server id in the
+-- same space as `src`, so it can simply be compared.
+BR.Sched.every(R and R.ownMs or 250, 'rescue.own', function()
+    if not R or not R.enabled then return end
+    if not NetworkGetEntityOwner then return end
+    local now = GetGameTimer()
+
+    for src, rec in pairs(live) do
+        if not rec.widened and rec.veh then
+            local okO, raw = pcall(NetworkGetEntityOwner, rec.veh)
+            local owner = okO and (math.tointeger(tonumber(raw) or -1) or -1) or -1
+
+            -- BOUNDED, BECAUSE VISIBILITY IS NOT ALLOWED TO WAIT FOREVER ON
+            -- OWNERSHIP. If the player never takes it the drive is lost either
+            -- way, and an ambulance nobody can see is strictly worse than an
+            -- ambulance nobody can drive -- so the widening still happens and
+            -- says why.
+            local expired = (now - (rec.startedAt or now)) >= (R.ownerMs or 10000)
+
+            if owner == src or expired then
+                if owner ~= src then
+                    print(('[br_core] rescue: %d never took ownership of '
+                           .. 'ambulance %d within %dms (owner reads %s) -- '
+                           .. 'widening anyway; the drive will not take')
+                        :format(src, rec.veh, R.ownerMs or 10000,
+                                owner == -1 and 'unowned' or tostring(owner)))
+                else
+                    print(('[br_core] rescue: %d owns ambulance %d after %dms '
+                           .. '-- opening it to the match')
+                        :format(src, rec.veh, now - (rec.startedAt or now)))
+                end
+
+                if SetEntityDistanceCullingRadius then
+                    pcall(SetEntityDistanceCullingRadius, rec.veh,
+                          R.cullRadiusM or 10000.0)
+                end
+
+                -- AND THE PLAYER'S OWN RADIUS GOES STRAIGHT BACK. The entity
+                -- override takes priority over it, so the ambulance stays
+                -- relevant to them; everything ELSE in the world stops being
+                -- streamed to one player at ten kilometres.
+                if SetPlayerCullingRadius then
+                    pcall(SetPlayerCullingRadius, src, 0.0)
+                end
+
+                rec.widened = true
+            end
+        end
+    end
+end)
+
 BR.Sched.every(R and R.tickMs or 1000, 'rescue.tick', function()
     if not R or not R.enabled then return end
     local now = GetGameTimer()
@@ -765,6 +927,28 @@ BR.Sched.every(R and R.tickMs or 1000, 'rescue.tick', function()
                 BR.Roster.update(src, { rescue = nil })
                 entry.rescue = nil
             end
+
+            -- ═══ BUT THE AMBULANCE AND THE SCOPE ARE STILL THIS FILE'S ═══
+            --
+            -- This branch deliberately does not call `finish`, and until now it
+            -- also did not undo either of the two things `grant` sets up. That
+            -- left, on every rescue that ended by somebody else's decision, a
+            -- server-created ambulance nothing owns and nothing culls -- and,
+            -- since the scope change, a player still streaming the whole map.
+            --
+            -- Not delivered, so it is deleted rather than remembered: nobody
+            -- parked it, its doors are shut and the medic never walked away, so
+            -- there is nothing here for a player to find and take.
+            if rec.veh then
+                local okEx, exists = pcall(DoesEntityExist, rec.veh)
+                if okEx and (exists == true or exists == 1) then
+                    pcall(DeleteEntity, rec.veh)
+                end
+            end
+            if not rec.widened and SetPlayerCullingRadius then
+                pcall(SetPlayerCullingRadius, src, 0.0)
+            end
+
             publishBlip(src, entry, rec, true)
             goto continue
         end
