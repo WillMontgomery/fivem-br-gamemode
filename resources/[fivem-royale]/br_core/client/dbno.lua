@@ -260,6 +260,81 @@ local crawlMoving = nil
 -- it cannot say whether it is being met.
 local crawlTasks = 0
 
+-- ==========================================================================
+-- WHAT THE KNOCK ACTUALLY DID TO THE BODY, WRITTEN DOWN AS IT HAPPENS.
+-- ==========================================================================
+--
+-- "when in squads, a squadmate died to an explosion, wherein their ped did not
+--  properly emote when in DBNO, and the ped location wasn't synced. I need you
+--  to force their ped to that." (owner, 2026-08-29, playtested.)
+--
+-- THIS IS THE FIRST DELIVERABLE AND IT OUTRANKS THE FIX, for the reason
+-- docs/working-agreement section 2 gives: an explosion death cannot be staged
+-- on demand, and "the body is in the wrong pose" is a sentence that describes
+-- at least FOUR different faults which are pixel-identical from outside.
+--
+--   1. THE PHYSICS STILL HAVE THE BODY. A blast ragdolls the ped and throws
+--      it; a ragdoll outranks a task, so the crawl this file asks for is
+--      dropped on the floor and dbno.controls' own ragdoll branch clears the
+--      anchor for every frame of it. NOTHING IS WRONG WITH THE CODE -- it is
+--      being asked at a moment when nothing it says can land.
+--   2. THE POSE WAS NEVER ASKED FOR AT ALL, because `crawl` resolved to false
+--      on this build and the body is meant to lie still.
+--   3. THE POSE WAS ASKED FOR, THE BODY WAS AT REST, AND IT STILL DID NOT
+--      LAND. That is a different bug in a different place and none of the work
+--      below would touch it.
+--   4. IT LANDED LATE. The body posed, just not before anybody looked.
+--
+-- Reading cannot separate those and neither can guessing. So every knock
+-- records which one it took, and the record prints ITSELF once, KNOCK_REPORT_MS
+-- after the knock, on the DOWNED player's own console -- not behind a command.
+-- The player who can answer this question is the one lying on the floor in the
+-- middle of a firefight, and a diagnostic that needs them to type is a
+-- diagnostic that gets typed after the evidence has gone.
+--
+-- /brdbno reads the same record back afterwards.
+local KNOCK_REPORT_MS = 3000
+
+-- Counters and stamps, not a log: this is written from a frame band and a paste
+-- has to fit in a console. `spent` starts true so a client that is never
+-- knocked never prints anything.
+local knock = {
+    n = 0,                  -- knocks this session
+    at = nil,               -- when this one arrived
+    from = nil,             -- where the ped was standing when it did
+    looseFrames = 0,        -- frames the physics owned the body
+    ragdollFrames = 0,      -- ...of which IsPedRagdoll said so
+    airFrames = 0,          -- ...of which IsEntityInAir said so
+    looseLastAt = nil,      -- the last such frame
+    settles = 0,            -- forced re-poses on the frame physics let go
+    posedAt = nil,          -- when the crawl was first CONFIRMED on the ped
+    tasksAt = 0,            -- crawlTasks at the knock, so the delta is readable
+    spent = true,
+}
+
+-- PUBLISHED beside the revive ledger, and for the same two readers: /brdbno,
+-- and the suite that has to prove a fix bit. Read-only by convention.
+BR.Dbno.knock = knock
+
+--- A knock has just arrived. Start a fresh record.
+---
+--- Called SYNCHRONOUSLY from enterDowned, before anything yields, because
+--- `from` is the whole of the "how far was the body thrown" measurement and a
+--- position sampled after a 400ms streaming wait is a position the blast has
+--- already moved.
+local function noteKnock()
+    local c = GetEntityCoords(PlayerPedId())
+    knock.n    = knock.n + 1
+    knock.at   = GetGameTimer()
+    knock.from = { x = c.x, y = c.y, z = c.z }
+    knock.looseFrames, knock.ragdollFrames, knock.airFrames = 0, 0, 0
+    knock.looseLastAt = nil
+    knock.settles     = 0
+    knock.posedAt     = nil
+    knock.tasksAt     = crawlTasks
+    knock.spent       = false
+end
+
 -- THE SHORTEST INTERVAL BETWEEN TWO CRAWL TASKS, ms.
 --
 -- IT LIVES UP HERE NOW BECAUSE playCrawl NEEDS IT, and playCrawl not having it
@@ -316,6 +391,23 @@ local turnedSince = false
 -- Where the player last asked to be, while they are not asking to move. See
 -- the movement loop: this is what "stay put" is made of.
 local hold = nil      -- { x = number, y = number } or nil
+
+-- WHETHER THE PHYSICS CURRENTLY OWN THE BODY, and when the last time they gave
+-- it back was.
+--
+-- `loose` is a LEVEL sampled by dbno.controls' ragdoll branch and read one
+-- frame later as an EDGE -- see the settle block down there. It is not a
+-- second opinion about the ragdoll; it is the memory of last frame's, which is
+-- the only way to notice the moment physics let go.
+--
+-- `settleAt` is that edge's throttle, and it exists for one reason: a native
+-- that flickers between two frames would otherwise be an unforced re-task path
+-- with no limit on it, which is EXACTLY the shape of the 2026-08-19 regression
+-- (see RETASK_EVERY_MS above -- a re-task path nobody had put a limit on). It
+-- borrows RETASK_EVERY_MS rather than inventing a number: the property that
+-- matters is the same one, "longer than any frame".
+local loose    = false
+local settleAt = nil
 
 --- Pin the ped to where it is standing RIGHT NOW.
 ---
@@ -964,6 +1056,11 @@ local function enterDowned()
     RemoveAllPedWeapons(PlayerPedId(), true)
     SetCurrentPedWeapon(PlayerPedId(), GetHashKey('WEAPON_UNARMED'), true)
 
+    -- AND THE RECORD OPENS HERE, on the same frame and for the same reason the
+    -- anchor is taken here: everything below can yield, and a blast is still
+    -- moving the body while it does. See noteKnock.
+    noteKnock()
+
     -- AND THE SPOT IS TAKEN ON THE FRAME OF THE KNOCK, not on the first frame
     -- dbno.controls happens to like the look of. See anchorHere: everything
     -- below this line can yield, the clip has a mover in it, and the hold is
@@ -1100,6 +1197,11 @@ local function leaveDowned()
     -- indistinguishable from one who was never downed, which is the whole of
     -- the fourth report on this file.
     resyncPhase, resyncArmed, hiddenFrom, posedAt = 0, false, nil, nil
+    -- ...and the settle edge, which is downed-shaped in exactly the same way: a
+    -- player revived mid-ragdoll would otherwise carry `loose` into standing up
+    -- and spend the first frame of their NEXT knock re-posing for a ragdoll
+    -- that happened in the previous one.
+    loose, settleAt = false, nil
     -- ...and the turn watchdog with them: a body that stood up owes the clones
     -- nothing, and a stale taskHeading would re-task the first crawl of the
     -- NEXT knock for a turn that happened in a previous one.
@@ -1470,6 +1572,250 @@ local function resyncBody(ped, c)
     return true
 end
 
+-- ==========================================================================
+-- THE FRAME THE PHYSICS LET GO, AND WHY THE `fell` PATH DID NOT HAVE ONE.
+-- ==========================================================================
+--
+-- "a squadmate died to an explosion, wherein their ped did not properly emote
+--  when in DBNO, and the ped location wasn't synced. I need you to force their
+--  ped to that." (owner, 2026-08-29.)
+--
+-- THE ASYMMETRY IS ALREADY WRITTEN DOWN IN THIS FILE, in enterDowned, and it is
+-- an assumption rather than a rule. There are two knock paths:
+--
+--   A LIVE KNOCK ragdolls on purpose (BR.Native.knockdown) and this file waits
+--   the ragdoll out before it re-poses -- the KNOCKDOWN_LANDED beat, whose own
+--   comment says exactly why: "Let the ragdoll land before asking for an
+--   animation on top of it, or the clip is cancelled by a physics state that
+--   has not settled", and "a ped coming out of a ragdoll runs a GETUP -- which
+--   is the engine standing the body up, in front of everybody".
+--
+--   THE `fell` PATH HAS NO SUCH BEAT, and says so: "AND NO KNOCKDOWN ON THIS
+--   PATH. The ragdoll below is the knock INSTANT -- the moment of falling over
+--   -- and this player has already fallen". That sentence is TRUE OF A FALL,
+--   which ends with a body lying still on the ground it landed on. It is not
+--   true of an explosion, which is the same `fell` path -- the engine kills the
+--   ped down a route server/damage.lua never took over, exactly like a fall --
+--   with a blast impulse still on the body. A downed player who was blown up is
+--   tumbling through the air at the moment this file tells them to lie down.
+--
+-- SO THE BEAT IS GENERALISED FROM A BEAT NUMBER TO AN OBSERVATION. What the
+-- live path waits for is "the physics have finished"; KNOCKDOWN_LANDED spells
+-- that as `beat == 24`, which is 1200ms -- and 1200 is the MINIMUM of
+-- SetPedToRagdoll(1200, 1600), not the maximum, so even on the path it was
+-- written for it can land inside a ragdoll that is still running. Here it is
+-- spelled as the frame IsPedRagdoll and IsEntityInAir both stop being true,
+-- which is the same event for a fall (immediately -- nothing happens), for a
+-- knockdown (when the knockdown ends, whatever the roll of the dice was) and
+-- for a blast (when the body stops travelling, however long that takes).
+--
+-- ═══ WHY THIS IS NOT THE 21.8-METRE WATCHDOG COMING BACK ═══
+--
+-- That regression was an UNTHROTTLED PER-FRAME ARM: playCrawl(false) on the
+-- frame band with no limit, each task arming a resync, each arm abandoning the
+-- half of the pair that puts the body back and re-measuring the step from where
+-- the ped already was. Four properties made it unbounded, and this has none of
+-- them:
+--
+--   * IT IS AN EDGE, NOT A LEVEL. `loose` must have been true LAST frame and
+--     false THIS one. A body that is ragdolling does not fire it; a body that
+--     is at rest does not fire it. Only the transition does, and a transition
+--     needs a ragdoll to happen first -- and the first thing this does is turn
+--     ragdolls off (SetPedCanRagdoll false), so there is normally exactly one
+--     per knock.
+--   * IT IS THROTTLED ANYWAY, on RETASK_EVERY_MS, so a native that flickers
+--     between two frames cannot make it a per-frame path. A rate limit is not a
+--     bound, which is why it is not the only guard.
+--   * AND THE BOUND IS THE ONE ALREADY IN THE FILE, untouched. This adds no new
+--     way to move the body: it calls playCrawl, which arms the EXISTING
+--     one-shot pair, whose step is measured from `hold` and whose half-done
+--     pairs are finished rather than abandoned. Whatever this fires, the body
+--     is `hold` or `hold` plus one step -- the invariant dbno.quiet.body
+--     asserts, which this must leave green and does.
+--   * NO NEW CLOCK. There is no beat and no interval; the event is the event.
+--
+-- ═══ AND THIS IS WHAT "FORCE THEIR PED TO THAT" IS MADE OF ═══
+--
+-- Both halves of the owner's sentence, from one edge:
+--
+--   THE EMOTE. The getup is taken off and the clip is re-tasked -- see
+--   settleBody for why the first half is the load-bearing one. The unforced
+--   watchdog cannot do this job: it declines whenever IsEntityPlayingAnim says
+--   the clip is on the ped, and a task that was ACCEPTED and then overridden by
+--   a ragdoll or a getup is exactly the case where that answer cannot be
+--   trusted -- it is the reading under which nothing is ever re-posed at all.
+--   `force` on top of that is the throttle bypass, and it is worth 0 in the
+--   suite once the tasks are cleared (a cleared ped is not playing anything, so
+--   the unforced test would pass too). It is kept as insurance for the case the
+--   suite cannot produce: a settle landing within RETASK_EVERY_MS of a watchdog
+--   task, where the unforced path would decline and the body would wait a
+--   quarter of a second in a getup. Written down as insurance, not as a fix.
+--
+--   THE POSITION. anchorHere() re-takes the anchor at wherever the blast
+--   actually left the body -- the old one points at where they were standing
+--   when the grenade landed, which is metres away -- and playCrawl arms the
+--   clone resync, whose pair is two real SetEntityCoordsNoOffset writes on a
+--   networked entity. That pair IS the position force: it is the mechanism the
+--   owner has already watched work ("DBNO is kinda fixed ... they are synced",
+--   2026-08-18), reused rather than reinvented.
+--
+--   Ragdoll positions are known not to replicate reliably -- citizenfx/fivem
+--   #2436 (OPEN, read 2026-08-29): "the position of a player is completely
+--   different from player to player and the local player of course" -- so a
+--   body that travels under a blast is a clone left where the blast started
+--   until something writes a position. Nothing did, because dbno.controls drops
+--   `hold` for every loose frame and stayPut is the only other writer.
+--
+-- WHAT WAS CONSIDERED AND NOT DONE: AF_FORCE_START (131072 in
+-- eScriptedAnimFlags, citizenfx/natives TASK/TaskPlayAnim.md, read 2026-08-29)
+-- would ask the engine to start the clip DURING the ragdoll rather than after
+-- it. Two reasons it is not here. The flag's behaviour on a ragdolling ped is
+-- reported on forums and is NOT described in the native documentation, which
+-- lists the name and the value and nothing else -- unverified. And it would be
+-- wrong even if it worked: the knockdown ragdoll is deliberate, and this file
+-- says so ("falling over is the knock, and it is the one frame of this that is
+-- supposed to be watched"). A flag that poses a body mid-fall would take that
+-- away from every knock in the game to fix one.
+--- @param ped integer
+local function settleBody(ped)
+    local now = GetGameTimer()
+    if settleAt and now - settleAt < RETASK_EVERY_MS then return end
+    settleAt = now
+    knock.settles = knock.settles + 1
+
+    -- THE KNOCKDOWN BEAT'S FOUR CALLS, PLUS THE ONE THAT MAKES "FORCE" MEAN
+    -- ANYTHING -- and that fifth line is the fix rather than a tidy-up.
+    --
+    -- `force` is this file's own word and it only skips this file's own
+    -- reasons for not asking: the "already playing" test and the throttle. It
+    -- has no authority over the ENGINE, and the engine has something of its own
+    -- running here. A ped coming out of a ragdoll runs a GETUP, and this file
+    -- already carries the owner's observation of what that is worth: "the
+    -- collision ragdolls them and the getup task that follows OUTRANKS A
+    -- LOOPING ANIMATION" (enterDowned, owner in game). A TaskPlayAnim issued
+    -- underneath a getup is a task the getup wins.
+    --
+    -- So the getup is taken off first, with the verb floorTheBody already uses
+    -- against the same class of problem one line before its own playCrawl --
+    -- "The dying animation outlives the resurrection otherwise: the ped stands
+    -- up and then finishes collapsing over the top of the crawl." Same
+    -- sentence, different task.
+    --
+    -- ClearPedTasksImmediately AND NOT ClearPedTasks, for the reason the name
+    -- gives: the point is that the getup is gone before the pose is asked for,
+    -- inside this tick, rather than queued behind it.
+    --
+    -- IT IS SAFE HERE IN A WAY IT IS NOT IN cprStop, which declines to use it
+    -- for a stated reason: clearing a ped's tasks outright would take the CRAWL
+    -- off a reviver who has just been knocked down. This ped IS the downed
+    -- player, the only task it is supposed to have is the crawl, and the very
+    -- next line puts that back.
+    --
+    -- The cover is up first, because everything between here and the pose
+    -- landing is a body the engine is standing upright. `snap` for the same
+    -- reason floorTheBody uses it: the pose being blended FROM is one nobody
+    -- should see. And the ragdoll is turned off so nothing throws them again.
+    --
+    -- ═══ AND anchorHere() IS DELIBERATELY NOT HERE, WHICH IS THE ONE PLACE
+    --     THIS DIFFERS FROM THE KNOCKDOWN BEAT ═══
+    --
+    -- The beat calls it and gives a reason: "The anchor from before the ragdoll
+    -- points at where they were standing when they were shot -- metres away,
+    -- and pinning them to it would teleport them back." That reason needs an
+    -- anchor to have SURVIVED the ragdoll. Here one cannot have: the only way
+    -- to reach this line is through the branch above, which sets `loose` and
+    -- clears `hold` on every frame it runs. `hold` is nil by construction, and
+    -- stayPut's first call records rather than corrects -- so the anchor is
+    -- taken on this very frame anyway, one line further down, at the same
+    -- position and for free.
+    --
+    -- ADDING IT BACK IS NOT NEUTRAL, and this is the 2026-08-19 regression
+    -- trying to get in through a new door. resyncBody's phase 1 steps the body
+    -- ~9mm OUT and phase 2 puts it back on a LATER frame. An anchor taken here
+    -- would hand phase 1 a `hold` on the settle frame itself -- and if the
+    -- physics take the body again before phase 2 runs, the step back is lost
+    -- and the NEXT settle anchors at the stepped-out position. A native that
+    -- flickers between two frames would then bank 9mm every throttle interval,
+    -- for the whole bleed: the same compounding shape, arriving through the fix
+    -- for something else. MEASURED, not argued -- tools/test_shared.lua,
+    -- `dbno.blast.body`, ten seconds of a ragdoll native answering differently
+    -- on every frame:
+    --
+    --   anchorHere() in settleBody     0.176 m   twenty steps, still climbing
+    --   no anchor (shipped)            0.000 m   the pair is never handed one
+    --
+    -- Ten seconds is a twelfth of the longest bleed config/match.lua can
+    -- produce, so the first row is about two metres of body by the end of it.
+    coverPose()
+    ClearPedTasksImmediately(ped)
+    playCrawl(true, true)
+    SetPedCanRagdoll(ped, false)
+end
+
+--- Say, once, what this knock actually did to the body.
+---
+--- SPENT ON A DEADLINE RATHER THAN ON A SUCCESS, because "it never posed at
+--- all" is the reading the owner needs and a report that waited for a pose
+--- would be the one thing that never prints on the broken build.
+---
+--- Everything here is read off the record and off the ped; nothing is inferred.
+--- The verdict separates the four conditions named at the top of this file, and
+--- it is deliberately blunt: the reader is pasting a console into a chat.
+--- @param ped integer
+local function knockReport(ped)
+    if knock.spent or not knock.at then return end
+
+    local now = GetGameTimer()
+    -- Watched every frame, including loose ones -- the question is when the
+    -- pose landed, not when we got round to asking.
+    if not knock.posedAt and playingCrawl(ped) then knock.posedAt = now end
+    if now - knock.at < KNOCK_REPORT_MS then return end
+    knock.spent = true
+
+    local c  = GetEntityCoords(ped)
+    local f  = knock.from or { x = c.x, y = c.y, z = c.z }
+    local dx, dy, dz = c.x - f.x, c.y - f.y, c.z - f.z
+    local thrown = math.sqrt(dx * dx + dy * dy + dz * dz)
+    local looseFor = (knock.looseLastAt and (knock.looseLastAt - knock.at)) or 0
+
+    local verdict
+    if crawl == false then
+        verdict = 'NO DOWNED CLIP ON THIS BUILD -- nothing was ever asked for, '
+               .. 'and the body is meant to lie still. Run /brcrawl.'
+    elseif not knock.posedAt and knock.looseFrames > 0 then
+        verdict = ('NEVER POSED, AND THE PHYSICS STILL HAD THE BODY. A ragdoll '
+                .. 'outranks a task, so the crawl was asked for at a moment '
+                .. 'nothing this file says can land -- and the anchor is '
+                .. 'dropped for every one of those frames, which is the '
+                .. 'position half of the same sentence.')
+    elseif not knock.posedAt then
+        verdict = 'NEVER POSED WITH THE BODY AT REST -- the ragdoll is NOT the '
+               .. 'cause here. Something else is refusing or cancelling the '
+               .. 'clip; read "pose" on /brdbno and the tasks below.'
+    elseif knock.looseFrames > 0 then
+        verdict = ('posed %dms after the knock, and the physics held the body '
+                .. 'for %dms of that. The re-pose on the frame they let go is '
+                .. 'what put it back.')
+                :format(knock.posedAt - knock.at, looseFor)
+    else
+        verdict = ('posed %dms after the knock; the body was never loose. This '
+                .. 'knock was clean.'):format(knock.posedAt - knock.at)
+    end
+
+    print(('[br_core] dbno knock #%d: %s'):format(knock.n, verdict))
+    print(('  body   : loose on %d frames (%d ragdoll, %d in air), last %dms '
+           .. 'after the knock; moved %.2fm from where the knock found it')
+        :format(knock.looseFrames, knock.ragdollFrames, knock.airFrames,
+                looseFor, thrown))
+    print(('  pose   : %s, %d crawl task(s), %d forced re-pose(s) when the '
+           .. 'physics let go')
+        :format(knock.posedAt and ('confirmed after %dms')
+                    :format(knock.posedAt - knock.at) or 'NEVER CONFIRMED',
+                crawlTasks - knock.tasksAt, knock.settles))
+    print(('  clones : %d resync step(s) for %d task(s) this session -- one per '
+           .. 'task is the contract'):format(resyncs, crawlTasks))
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- ═══ THE AMBULANCE OWNS THE BODY, SO THIS FILE LETS GO OF IT ═══
     --
@@ -1506,6 +1852,12 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
         -- second -- which is the standing frame the cover exists to hide,
         -- reintroduced by the fix for something else.
         hiddenFrom, posedAt, turnedSince, taskAt = nil, nil, false, nil
+        -- ...and the settle edge with them. `loose` left standing would fire a
+        -- forced re-pose on the first frame of the NEXT knock -- before the
+        -- knock's own pose has had a chance to land -- and `settleAt` left
+        -- standing would throttle that knock's FIRST settle behind the last
+        -- one, which is the same mistake `taskAt` is cleared here to avoid.
+        loose, settleAt = false, nil
         return
     end
 
@@ -1520,6 +1872,11 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- input branches below both leave early -- so the one call that must not be
     -- skipped goes first. It does nothing at all unless a re-pose is in flight.
     holdCover(ped)
+
+    -- ...AND THE KNOCK IS WATCHED, BEFORE ANY BRANCH CAN RETURN. The one
+    -- reading it needs -- did the clip ever land -- has to be taken on loose
+    -- frames too, and the loose branch below returns.
+    knockReport(ped)
 
     -- The loop is the pose; if anything cancelled it -- a car, a blast, a
     -- scripted task -- put it straight back. Cheap: one IsEntityPlayingAnim
@@ -1542,9 +1899,37 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- ped that took this branch every frame could never reach the crawl at all.
     -- It is fixed here anyway, with the comparison this file already owns,
     -- because "the ped must not move without input" is exactly what it breaks.
-    if didHit(IsPedRagdoll(ped)) or didHit(IsEntityInAir(ped)) then
-        hold = nil
+    -- ...AND WHICH OF THE TWO SAID SO IS COUNTED SEPARATELY. A body a blast
+    -- threw reads BOTH for a while and then only IsPedRagdoll as it comes to
+    -- rest; a body that simply fell over reads only the ragdoll. The knock
+    -- report prints the pair, because "it was still tumbling" and "it was lying
+    -- there and the clip still would not land" are two different faults with
+    -- two different repairs and the owner can see neither of them.
+    local rag = didHit(IsPedRagdoll(ped))
+    local air = didHit(IsEntityInAir(ped))
+    if rag or air then
+        hold  = nil
+        loose = true
+        knock.looseFrames   = knock.looseFrames + 1
+        knock.ragdollFrames = knock.ragdollFrames + (rag and 1 or 0)
+        knock.airFrames     = knock.airFrames + (air and 1 or 0)
+        knock.looseLastAt   = GetGameTimer()
         return
+    end
+
+    -- ═══ THE FRAME THE PHYSICS LET GO -- SEE settleBody ═══
+    --
+    -- An EDGE off the level above, and the whole of the explosion fix: the
+    -- forced re-pose the `fell` path never had. It takes no anchor of its own
+    -- -- stayPut records one four lines down, at the same position and without
+    -- handing the resync pair a `hold` on this frame; see settleBody for why
+    -- that difference is worth a paragraph. The task it issues re-arms the
+    -- pair, and the pair is what tells the other machines where the body
+    -- actually ended up. It cannot fire on a body that never left the ground,
+    -- so a fall and a quiet knock pay nothing at all.
+    if loose then
+        loose = false
+        settleBody(ped)
     end
 
     -- Turn on the horizontal axis, inch forward on the vertical one. Both are
@@ -2636,6 +3021,33 @@ RegisterCommand('brdbno', function()
         :format(taskAt and ('%dms ago'):format(GetGameTimer() - taskAt)
                         or 'never -- nothing posed yet',
                 RETASK_EVERY_MS))
+    -- ...AND THE LAST KNOCK, WHICH IS THE EXPLOSION READOUT. The same record
+    -- the console printed for itself KNOCK_REPORT_MS after the knock -- this is
+    -- here so it can be asked for again afterwards, and so it can be read in
+    -- the same paste as the lines above it.
+    --
+    -- READ `loose` AGAINST `pose`. Loose frames with no pose is a body the
+    -- physics still had; NO loose frames with no pose is a different fault
+    -- entirely and none of the settle machinery would touch it. `thrown` is how
+    -- far the blast carried them, which is the outside of how wrong any clone
+    -- can be -- ragdoll positions do not replicate reliably (citizenfx/fivem
+    -- #2436, open).
+    if knock.at then
+        local kc = GetEntityCoords(PlayerPedId())
+        local kf = knock.from or { x = kc.x, y = kc.y, z = kc.z }
+        local kdx, kdy, kdz = kc.x - kf.x, kc.y - kf.y, kc.z - kf.z
+        print(('  knock #%-3d : %s; loose %d frames (%d ragdoll, %d air), '
+               .. 'last %dms in; %d settle re-pose(s); thrown %.2fm')
+            :format(knock.n,
+                    knock.posedAt and ('posed after %dms')
+                        :format(knock.posedAt - knock.at) or 'NEVER POSED',
+                    knock.looseFrames, knock.ragdollFrames, knock.airFrames,
+                    (knock.looseLastAt and (knock.looseLastAt - knock.at)) or 0,
+                    knock.settles,
+                    math.sqrt(kdx * kdx + kdy * kdy + kdz * kdz)))
+    else
+        print('  knock      : - (nothing has been knocked down this session)')
+    end
     -- READ `heading` AGAINST `clone sync` ABOVE. A turn that nothing re-tasked
     -- is the second half of #164: the gap is how far the body has turned since
     -- the last thing the clones were told, so a large gap sitting still while

@@ -6847,6 +6847,365 @@ do
 end
 
 -- ==========================================================================
+-- A BODY AN EXPLOSION THREW: NO EMOTE, AND A CLONE LEFT BEHIND.
+-- ==========================================================================
+--
+-- "when in squads, a squadmate died to an explosion, wherein their ped did not
+--  properly emote when in DBNO, and the ped location wasn't synced. I need you
+--  to force their ped to that." (owner, 2026-08-29, playtested.)
+--
+-- WHY EVERY RIG ABOVE IS BLIND TO THIS, said first, because it is the same
+-- confession dbno.quiet.body had to make one block up. All of them stub the
+-- engine as though a task always lands:
+--
+--     env.TaskPlayAnim = function(_, d, a) C.anim = d .. '/' .. a end
+--
+-- A ped that is being thrown by a blast does not take an animation, and a ped
+-- coming out of one runs a GETUP that outranks a looping clip -- which is not a
+-- guess here, it is the observation client/dbno.lua already carries in
+-- enterDowned's own words: "the collision ragdolls them and the getup task that
+-- follows outranks a looping animation (owner, in game)". With a stub that
+-- accepts everything, the whole class is unreachable.
+--
+-- ═══ WHICH PATH AN EXPLOSION TAKES, AND WHY IT IS THE UNGUARDED ONE ═══
+--
+-- server/damage.lua never takes explosion damage over -- the engine applies it
+-- on the victim's own machine and only `explosionEvent` reaches the server, for
+-- ATTRIBUTION ("Explosions and fire: attribution without ownership"). So the
+-- ped is genuinely DEAD when DBNO_SET arrives, exactly like a fall, and
+-- enterDowned takes the `fell` branch: resurrect, pose, no knockdown.
+--
+-- That branch's premise is written out in the file and it is only half true:
+-- "this player has already fallen". A FALL ends with a body lying still. A
+-- BLAST ends with a body still travelling -- and the `fell` branch is the one
+-- with NO re-pose beat, because it was written for the case where there is no
+-- ragdoll to wait out. The live-knock branch has one (KNOCKDOWN_LANDED) and
+-- says exactly why it needs it.
+--
+-- ═══ THE ONE THING THIS SUITE CANNOT KNOW, DRIVEN BOTH WAYS ═══
+--
+-- What does IsEntityPlayingAnim answer for a crawl task that was ACCEPTED and
+-- then overridden by physics? Nobody here has watched it. UNVERIFIED, and both
+-- answers are legitimate builds, so both are driven -- the same shape as the
+-- 1/0 BOOL pairs and dbno.quiet.body's confirmation latencies:
+--
+--   'the render'  -- it answers about the pose actually on the ped. The
+--                    unforced watchdog then re-tasks, and the fault is that
+--                    every one of those tasks is eaten by the getup, so the
+--                    body is upright for the whole of it.
+--   'the task'    -- it answers "a crawl task exists". The watchdog then
+--                    declines FOREVER, nothing is ever re-tasked, nothing
+--                    re-arms the clone resync, and both halves of the owner's
+--                    sentence are true at once.
+--
+-- Only a FORCED re-pose is right in both, because forcing is the only thing
+-- that does not ask. That is what the owner's "force their ped to that" buys
+-- and it is what is asserted here.
+--
+-- ═══ AND THE BODY IS THROWN IN TWO LEGS, WHICH IS NOT A CONTRIVANCE ═══
+--
+-- A body a grenade throws flies, hits the ground and tumbles again, so
+-- IsPedRagdoll and IsEntityInAir go quiet in the middle and come back. The lull
+-- matters: it is long enough for the clone-resync pair armed at the knock to
+-- run and SPEND itself, and after that nothing re-arms it -- so the second leg
+-- of the flight is carried by nothing at all and the clones keep the position
+-- from the middle of the throw. Ragdoll positions do not replicate reliably in
+-- their own right: citizenfx/fivem#2436 (OPEN, read 2026-08-29) -- "the
+-- position of a player is completely different from player to player and the
+-- local player of course".
+describe('dbno.blast.body')
+do
+    local CRAWL = 'move_injured_ground/front_loop'
+
+    -- HOW LONG A GETUP HOLDS THE BODY. It is a real task with a real length and
+    -- the number is not the point -- what matters is that it is longer than the
+    -- file's own retask interval, so an unforced watchdog cannot outlast it by
+    -- asking again. 1200ms is BR.Native.knockdown's own lower bound, reused
+    -- rather than invented.
+    local GETUP_MS = 1200
+
+    -- HOW SOON AFTER THE PHYSICS LET GO THE BODY MUST BE BACK IN THE POSE.
+    -- Deliberately NOT a tight frame count: this is the interval an enemy
+    -- across the street is looking at the body in, and the whole reason the
+    -- downed state looks different from death at a distance.
+    local POSE_BY_MS = 400
+
+    for _, ANSWER in ipairs({ 'the render', 'the task' }) do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        -- THE ENGINE, in the three states this fixture is about.
+        local dead       = true    -- the blast killed the ped outright
+        local loose      = true    -- ...and is still carrying it
+        local getupUntil = nil     -- the engine is standing the body up
+        local accepted   = false   -- a crawl task is on the ped
+        local pose       = nil     -- what the ped is ACTUALLY rendering
+        local pending    = nil
+        local tasks      = 0
+
+        env.IsEntityDead        = function() return dead end
+        env.IsPedFatallyInjured = function() return dead end
+        env.NetworkResurrectLocalPlayer = function() dead = false end
+        env.IsPedRagdoll  = function() return loose end
+        env.IsEntityInAir = function() return loose end
+        -- PREVENTATIVE, NOT INTERRUPTIVE -- it stops the NEXT ragdoll and does
+        -- nothing to the one in flight. Modelled as the no-op it is, which is
+        -- what makes the `fell` path's single call at the knock worth nothing
+        -- against a blast that is still going.
+        env.SetPedCanRagdoll = function() end
+
+        env.ClearPedTasksImmediately = function()
+            accepted, pose, pending, getupUntil = false, nil, nil, nil
+        end
+        env.ClearPedTasks = function() accepted, pose, pending = false, nil, nil end
+
+        env.TaskPlayAnim = function(_, d, a)
+            tasks = tasks + 1
+            if dead then return end          -- a corpse takes no animation
+            accepted = true
+            -- ...AND THE TWO STATES THAT SWALLOW IT. A ragdoll outranks a task
+            -- and so does a getup; the task is on the ped either way, which is
+            -- the whole of the ambiguity ANSWER exists to drive.
+            if loose then return end
+            if getupUntil and CLI.now < getupUntil then return end
+            pending = d .. '/' .. a          -- ...and lands on the NEXT frame
+        end
+        env.IsEntityPlayingAnim = function()
+            if ANSWER == 'the task' then return accepted end
+            return pose ~= nil
+        end
+
+        -- WHAT THE OTHER MACHINES HAVE BEEN TOLD. It moves on an explicit
+        -- position write and on nothing else -- which is client/dbno.lua's own
+        -- model of #164 ("from the network's point of view this ped is an
+        -- entity that has not changed position since the knock") plus #2436 for
+        -- the ragdoll half. A body carried by physics does not carry its clone
+        -- with it.
+        local clone = { x = 0.0, y = 0.0 }
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+            clone.x, clone.y = x, y
+        end
+
+        -- The blast carries the body a metre and a half a second, forward.
+        local DRAG = 1.5 * 0.016
+        local looseEndedAt, posedAt = nil, nil
+
+        local function run(ms)
+            local target = CLI.now + ms
+            while CLI.now < target do
+                if pending then pose, pending = pending, nil end
+                if loose then
+                    peds[5001].y = peds[5001].y + DRAG
+                    pose = nil          -- the physics own what is rendered
+                elseif getupUntil then
+                    if CLI.now >= getupUntil then getupUntil = nil
+                    else pose = nil end
+                end
+                if pose == CRAWL and looseEndedAt and not posedAt then
+                    posedAt = CLI.now
+                end
+                CLI.now = CLI.now + 16
+                CLI.frame()
+            end
+        end
+
+        local function letGo()
+            loose = false
+            getupUntil = CLI.now + GETUP_MS
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+        run(700)                 -- leg one: flying
+        letGo()
+        run(200)                 -- the lull: long enough to spend the armed pair
+        loose = true
+        run(900)                 -- leg two: tumbling again
+        letGo()
+        looseEndedAt = CLI.now
+        posedAt = nil
+        run(6000)                -- and the rest of the bleed, untouched
+
+        -- ═══ THE EMOTE ═══
+        ok(pose == CRAWL,
+            ('a body an explosion threw ends up in the downed pose, when the '
+             .. 'engine answers about %s -- BEFORE: the `fell` path has no '
+             .. 're-pose after a ragdoll (only the live-knock path does), so '
+             .. 'the pose was asked for once, mid-flight, where nothing could '
+             .. 'take it'):format(ANSWER),
+            ('rendering %s after %d task(s)'):format(tostring(pose), tasks))
+
+        ok(posedAt ~= nil and (posedAt - looseEndedAt) <= POSE_BY_MS,
+            ('and it is back in it within %dms of the physics letting go, not '
+             .. 'after a getup has finished standing it up (%s)')
+                :format(POSE_BY_MS, ANSWER),
+            posedAt and ('%dms later'):format(posedAt - looseEndedAt)
+                    or 'never posed at all')
+
+        -- ═══ THE POSITION ═══
+        local M    = env.BR.Config.Match
+        local STEP = (M.dbnoCrawlSpeed or 0.55) * 0.016
+        local body = peds[5001]
+        local gap  = math.sqrt((body.x - clone.x) ^ 2 + (body.y - clone.y) ^ 2)
+        ok(gap <= STEP * 1.5,
+            ('and the other machines have been told where it ended up (%s) -- '
+             .. 'BEFORE: the pair armed at the knock spends itself in the lull '
+             .. 'and nothing re-arms it, so the second leg of the throw is '
+             .. 'carried by nothing at all'):format(ANSWER),
+            ('%.2fm between the body and the last position the clones were '
+             .. 'given'):format(gap))
+
+        -- ═══ AND THE DIAGNOSTIC SAYS WHICH CONDITION IT WAS ═══
+        --
+        -- The record is the deliverable that survives a build where the fix is
+        -- wrong, so it is asserted rather than trusted: an explosion has to be
+        -- distinguishable from a fall in one paste, without the owner having to
+        -- describe what they saw.
+        local k = env.BR.Dbno.knock
+        ok(k.looseFrames > 0 and k.settles >= 2,
+            ('the knock record names the physics as the condition, and counts '
+             .. 'the re-poses that answered them (%s)'):format(ANSWER),
+            ('%d loose frames (%d ragdoll, %d air), %d settle re-pose(s)')
+                :format(k.looseFrames, k.ragdollFrames, k.airFrames, k.settles))
+    end
+
+    -- ═══ AND A KNOCK THE PHYSICS NEVER TOUCHED PAYS NOTHING FOR ANY OF IT ═══
+    --
+    -- The guard against the shape of the 2026-08-19 regression, and it is the
+    -- assertion that would catch this becoming a beat: the settle is an EDGE,
+    -- so a body that never leaves the ground must never fire it, whatever else
+    -- is happening. dbno.quiet.body already owns the excursion invariant across
+    -- forty seconds; this owns the count.
+    do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local tasks = 0
+        env.TaskPlayAnim = function() tasks = tasks + 1 end
+        env.IsEntityPlayingAnim = function() return false end
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+        for _ = 1, 20 * 62 do
+            CLI.now = CLI.now + 16
+            CLI.frame()
+        end
+
+        local k = env.BR.Dbno.knock
+        ok(k.settles == 0 and k.looseFrames == 0,
+            'a knock the physics never touched fires no settle re-pose at all, '
+            .. 'over twenty seconds of a clip that never confirms -- the settle '
+            .. 'is an edge off the ragdoll, not a beat',
+            ('%d settle(s), %d loose frames, %d tasks in 20s')
+                :format(k.settles, k.looseFrames, tasks))
+    end
+
+    -- ═══ AND A RAGDOLL NATIVE THAT FLICKERS IS THE 21.8-METRE SHAPE ═══
+    --
+    -- THE FAILURE THIS FIX HAD TO AVOID RE-INVENTING, driven rather than
+    -- argued. An EDGE is only as rare as the thing it is an edge off, and
+    -- IsPedRagdoll answering true/false on alternate frames turns one into a
+    -- per-frame path -- which is precisely what the 2026-08-19 regression was:
+    -- an unlimited arm on the frame band, sixty tasks a second, each one a
+    -- fresh mover on every clone and each one spending a step the body never
+    -- gave back.
+    --
+    -- A body settling out of a real ragdoll flickers. This is not a contrived
+    -- input.
+    --
+    -- TWO THINGS ARE PRICED HERE AND THEY ARE NOT THE SAME THING, which is the
+    -- lesson dbno.quiet.body paid for:
+    --
+    --   THE BOUND is that the settle takes no anchor. With one, phase 1 gets a
+    --   `hold` on the settle frame, the physics take the body before phase 2
+    --   can give the step back, and the next settle anchors on top of it --
+    --   0.176m over ten seconds, compounding, in the direction the body faces,
+    --   which is about two metres over the longest bleed config/match.lua can
+    --   produce. Without one, `hold` is nil on every settle frame and the pair
+    --   can never start, so the answer is exactly zero however often the edge
+    --   fires. Both rows driven, one revert at a time, against the real file.
+    --
+    --   THE RATE LIMIT is RETASK_EVERY_MS, and it owns the OTHER half of that
+    --   regression: the task storm. Thirty forced TaskPlayAnims a second is
+    --   thirty fresh movers a second on every clone, which is the "desync
+    --   between screens" half of the owner's 2026-08-19 sentence, whether or
+    --   not the local body moves a millimetre.
+    do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local frames, tasks = 0, 0
+        env.IsPedRagdoll  = function() return frames % 2 == 1 end
+        env.IsEntityInAir = function() return false end
+        env.TaskPlayAnim  = function() tasks = tasks + 1 end
+        -- The clip never confirms, so nothing here is held back by the "already
+        -- playing" test -- the worst case for both halves at once.
+        env.IsEntityPlayingAnim = function() return false end
+
+        local worst = 0.0
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+            local d = math.sqrt(x * x + y * y)
+            if d > worst then worst = d end
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+        local SECONDS = 10
+        for _ = 1, SECONDS * 62 do
+            frames = frames + 1
+            CLI.now = CLI.now + 16
+            CLI.frame()
+        end
+
+        local M    = env.BR.Config.Match
+        local STEP = (M.dbnoCrawlSpeed or 0.55) * 0.016
+        ok(worst <= STEP * 1.5,
+            'a ragdoll native that flickers cannot walk the body: the settle '
+            .. 'takes no anchor, so the resync pair is never handed a `hold` on '
+            .. 'the frame the edge fires and nothing can compound -- WITH an '
+            .. 'anchorHere() in settleBody, 0.365m in ten seconds and climbing',
+            ('%.3fm from the anchor over %ds of flicker, one step is %.4fm')
+                :format(worst, SECONDS, STEP))
+
+        -- Read out of the file rather than copied: copying a constant is how
+        -- this repo has produced green over broken code before.
+        local f = io.open(RES .. 'br_core/client/dbno.lua', 'r')
+        local src = f and f:read('a') or ''
+        if f then f:close() end
+        local every = tonumber(src:match('local RETASK_EVERY_MS%s*=%s*(%d+)'))
+        -- The watchdog gets its own allowance on the same interval, so two
+        -- paths at four a second is the ceiling, plus a couple for the knock.
+        local ceiling = 2 * math.ceil((SECONDS * 1000) / (every or 250)) + 4
+        ok(tasks <= ceiling,
+            'and it cannot storm the clones with tasks either: the settle is '
+            .. 'rate-limited on the file\'s own retask interval, so a native '
+            .. 'answering differently on every frame costs four re-poses a '
+            .. 'second and not thirty',
+            ('%d tasks in %ds, ceiling %d'):format(tasks, SECONDS, ceiling))
+
+        local k = env.BR.Dbno.knock
+        ok(k.settles <= math.ceil((SECONDS * 1000) / (every or 250)) + 2,
+            'and the record counts them, so a build where this starts storming '
+            .. 'says so in one line of /brdbno',
+            ('%d settle(s) over %d flickering frames')
+                :format(k.settles, k.looseFrames))
+    end
+end
+
+-- ==========================================================================
 -- #164, SECOND HALF: A CRAWLING BODY TURNS AND THE CLONES DO NOT.
 -- ==========================================================================
 --
