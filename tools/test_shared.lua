@@ -5180,10 +5180,36 @@ local function newReviver(mySrc, mateSrc, peds)
     env.GetPedCauseOfDeath = function() return 0 end
     env.NetworkGetNetworkIdFromEntity = function() return 0 end
     env.GetGamePool = function() return {} end
-    env.DoesAnimDictExist = function(d) return d == 'move_injured_ground' end
-    env.HasAnimDictLoaded = function(d) return d == 'move_injured_ground' end
+    -- TWO DICTIONARIES MATTER ON THIS PED NOW, and only these two exist: the
+    -- downed pose this player could end up in themselves, and the CPR clip they
+    -- play over a mate (owner, 2026-08-29). Anything else answers "no such
+    -- dictionary", which is what makes a typo in either name a failure here
+    -- rather than a silent no-op in the game.
+    local ANIMS = {
+        ['move_injured_ground']    = true,
+        ['mini@cpr@char_a@cpr_str'] = true,
+    }
+    env.DoesAnimDictExist = function(d) return ANIMS[d] == true end
+    env.HasAnimDictLoaded = function(d) return ANIMS[d] == true end
     env.RequestAnimDict = function() end
-    env.TaskPlayAnim = function() end
+
+    -- WHAT THIS PED IS PLAYING, BECAUSE THE EMOTE HAS NO OTHER OBSERVABLE.
+    -- It sends no message, pushes no envelope and writes no roster field --
+    -- the only evidence it exists is a task on a ped, so the rig keeps that
+    -- task. A fixture that threw it away could not tell a working emote from
+    -- no emote at all, which is the failure mode this project keeps shipping
+    -- green suites through.
+    --
+    -- StopAnimTask IS MODELLED AS THE NATIVE REALLY BEHAVES: it names the
+    -- dictionary and the clip, so it only clears the pose if that is what is
+    -- running. A stop aimed at the wrong clip therefore leaves the emote up
+    -- here, exactly as it would in the game.
+    C.anim = nil
+    env.TaskPlayAnim = function(_, d, a) C.anim = d .. '/' .. a end
+    env.StopAnimTask = function(_, d, a)
+        if C.anim == d .. '/' .. a then C.anim = nil end
+    end
+    env.ClearPedTasks = function() C.anim = nil end
     env.IsEntityPlayingAnim = function() return true end
     env.SetEntityAnimSpeed = function() end
     env.RequestClipSet = function() end
@@ -5619,6 +5645,314 @@ do
     ok(H.revived(6000),
         'and stepping back over them resumes it without letting go of the key')
     H.press(false)
+end
+
+-- ==========================================================================
+-- THE REVIVER'S CPR EMOTE, AND EVERY WAY A HOLD CAN END
+-- ==========================================================================
+--
+-- "Also, adding to our roll of emotes: in squads, while holding E to revive a
+--  squadmate, the one reviving should play the "CPR" emote and clear once the
+--  revive is processed, or after 10 seconds, whichever comes first."
+-- (owner, 2026-08-29.)
+--
+-- WHY IT IS TESTED HERE AND NOT BY LOOKING AT IT. The emote is one TaskPlayAnim
+-- on one ped; it sends nothing, pushes no envelope and writes no roster field,
+-- so the only thing a playtest can report about it is "it looked right" -- and
+-- the failure this is written against is not something a playtest ever sees.
+-- A hold can end in nine different ways and only one of them (the revive
+-- landing) happens in front of the player who was watching. The other eight are
+-- a refusal four times a second, a release, a switch to a nearer mate, the
+-- reviver being shot, the reviver being killed, the mate being picked up by
+-- somebody else, a match ending and a resource restart -- and an emote that
+-- survives ANY of them is a player performing chest compressions on thin air
+-- for the rest of the match, which is a bug the owner would report as
+-- "sometimes my ped gets stuck" a week later with nothing to reproduce.
+--
+-- SO EVERY ENDING IS DRIVEN, and the assertion is always the same one: the task
+-- is off the ped. The rig is the one the revive already uses -- the real
+-- client/dbno.lua and the real server/combat.lua over a real latency -- because
+-- most of these endings are the SERVER's decision and a client-only rig would
+-- have to invent them.
+describe('dbno.cpr')
+do
+    -- The pair taken from the emote list the owner browsed; see the block above
+    -- the constants in client/dbno.lua for the citation. Spelled out here
+    -- rather than read back out of the client, deliberately: a test that asked
+    -- the file under test what it was playing would pass for a typo.
+    local CPR = 'mini@cpr@char_a@cpr_str/cpr_pumpchest'
+
+    --- A knocked mate and a reviver standing over them with the key down.
+    --- @param rtt integer|nil
+    local function stoodOver(rtt)
+        local H = newReviveRig(rtt or 40)
+        H.knock()
+        H.pump(500)
+        H.press(true)
+        H.pump(200)
+        return H
+    end
+
+    -- ── 1. IT STARTS ON THE HOLD, AND ONLY ON THE HOLD ──────────────────────
+    do
+        local H = newReviveRig(40)
+        H.knock()
+        H.pump(500)
+        ok(H.cli.anim == nil,
+            'standing over a downed mate with nothing pressed plays no emote',
+            tostring(H.cli.anim))
+
+        H.press(true)
+        H.pump(200)
+        ok(H.cli.anim == CPR,
+            'and holding the interact key puts the reviver into CPR',
+            tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 2. IT CLEARS ONCE THE REVIVE IS PROCESSED ───────────────────────────
+    --
+    -- THE KEY IS STILL DOWN AT THE END OF THIS, which is the case worth having:
+    -- nobody lets go on the frame their mate stands up, and `holding` is
+    -- cleared by the server's `done` while the key is still held. An emote hung
+    -- off the KEY rather than off the hold would run until the player noticed.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up during the hold',
+           tostring(H.cli.anim))
+        ok(H.revived(6000), 'the revive lands')
+        ok(H.cli.anim == nil,
+            'and the emote clears once the revive is processed, without the '
+            .. 'player letting go of the key', tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 3. THE TEN-SECOND CEILING ───────────────────────────────────────────
+    --
+    -- A HOLD THAT IS ACCEPTED AND NEVER FINISHES. dbnoReviveTime is 2.8s, so
+    -- there is no such thing in a real match -- which is exactly why the
+    -- ceiling needs a rig to be observed at all. The server's copy of the
+    -- number is stretched to a minute; everything else is a perfectly ordinary
+    -- hold, progressing, with the reviver in reach and the key down throughout.
+    do
+        local H = newReviveRig(40)
+        H.srv.env.BR.Config.Match.dbnoReviveTime = 60.0
+        H.knock()
+        H.pump(500)
+        H.press(true)
+        H.pump(200)
+        ok(H.cli.anim == CPR, 'a hold that will not finish starts the emote',
+           tostring(H.cli.anim))
+
+        H.pump(9000)
+        ok(H.cli.anim == CPR,
+            'and it is STILL up at nine seconds -- the ceiling is a ceiling, '
+            .. 'not a duration the emote waits out', tostring(H.cli.anim))
+
+        H.pump(1500)
+        ok(H.cli.anim == nil,
+            'and it clears at ten seconds with the key still down and the '
+            .. 'hold still running', tostring(H.cli.anim))
+
+        -- ...AND IT DOES NOT COME STRAIGHT BACK. A ceiling that re-armed on the
+        -- next frame would be a stutter rather than a limit, and the ped would
+        -- be doing CPR again a sixtieth of a second later.
+        H.pump(3000)
+        ok(H.cli.anim == nil,
+            'and it stays cleared for as long as the key stays down',
+            tostring(H.cli.anim))
+
+        -- THE HOLD IS UNTOUCHED. The ceiling is on the ANIMATION; the revive is
+        -- the server's business and this number is not shared with it.
+        ok(H.srv.roster[1].reviverSrc == 2,
+            'and the revive itself is still running -- the ceiling ends the '
+            .. 'emote, never the hold',
+            tostring(H.srv.roster[1].reviverSrc))
+
+        -- ...AND A SPENT CEILING IS SPENT FOR THAT RUN AND NOT FOR THE MATCH.
+        -- The stamp the ceiling is measured from is dropped when the hold ends,
+        -- so the next hold gets its own ten seconds. Left standing, a player
+        -- who once held a key for ten seconds would never see the emote again.
+        H.press(false)
+        H.pump(400)
+        H.press(true)
+        H.pump(300)
+        ok(H.cli.anim == CPR,
+            'and letting go and pressing again starts a fresh emote -- the '
+            .. 'ceiling is per hold, not per match', tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 3b. THE CEILING UNDER A HOLD THE SERVER REFUSES FOUR TIMES A SECOND ─
+    --
+    -- THIS IS THE ONE THAT MATTERS, and it is the case an obvious
+    -- implementation gets wrong. `holding` is not a stable object: a refused
+    -- REVIVE_START clears it, and dbno.revive re-arms it from the key's LEVEL
+    -- on the very next frame with a brand new `from` stamp -- four times a
+    -- second, for as long as the player leans on the key. A ceiling measured
+    -- from `holding.from` is therefore reset four times a second and NEVER
+    -- FIRES, on precisely the interaction it was written for: one that is
+    -- failing silently and could otherwise run for the rest of the match.
+    --
+    -- The refusal is a squad the server does not agree with. The reviver's own
+    -- client still sees a squadmate on the floor at 0.8m, so it arms, asks, is
+    -- refused, and arms again -- forever.
+    do
+        local H = newReviveRig(40)
+        H.knock()
+        H.pump(300)
+        H.srv.roster[1].squadId = 'sq2'
+        H.press(true)
+        H.pump(200)
+        ok(H.cli.anim == CPR,
+            'a hold the server is refusing still starts the emote -- the '
+            .. 'client cannot tell yet, and neither can the ring',
+            tostring(H.cli.anim))
+
+        H.pump(11000)
+        local led = H.cli.env.BR.Dbno.ledger
+        ok(led.refusals > 20,
+            'the server refused it over and over, which is what rebuilds '
+            .. '`holding` under the emote', tostring(led.refusals))
+        ok(H.cli.anim == nil,
+            'AND THE EMOTE STILL CLEARED AT TEN SECONDS -- the ceiling '
+            .. 'survives `holding` being destroyed and rebuilt four times a '
+            .. 'second', tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 4. THE KEY COMES UP ─────────────────────────────────────────────────
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+        H.press(false)
+        H.pump(100)
+        ok(H.cli.anim == nil, 'letting go of the key clears it',
+           tostring(H.cli.anim))
+    end
+
+    -- ── 5. THE REVIVER WALKS OFF ────────────────────────────────────────────
+    --
+    -- Nobody let go of anything here: the SERVER ends this one, from its own
+    -- position samples, and the client hears about it a round trip later.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+        H.moveTo(40.0)
+        H.pump(2000)
+        ok(H.srv.roster[1].reviverSrc == nil, 'the server ended the hold',
+           tostring(H.srv.roster[1].reviverSrc))
+        ok(H.cli.anim == nil,
+            'and walking out of the server\'s reach clears the emote, with the '
+            .. 'key still down', tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 6. THE REVIVER IS KNOCKED DOWN MID-HOLD ─────────────────────────────
+    --
+    -- `holding` DELIBERATELY OUTLIVES THIS for up to a round trip plus the
+    -- server's 250ms step: #163 moved the authority over a hold to the server
+    -- on purpose, and this client no longer ends one for anything it is not the
+    -- sole witness to. That is right for the REQUEST and wrong for the
+    -- ANIMATION -- a body on the floor doing chest compressions is the exact
+    -- picture the whole block exists to prevent -- so the emote, and only the
+    -- emote, is gated on still being upright.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+        H.cli.env.BR.State.me.state = H.cli.env.BR.PlayerState.DBNO
+        H.pump(50)
+        ok(H.cli.anim == nil,
+            'a reviver knocked down mid-hold stops doing CPR on the frame '
+            .. 'their OWN client knows, not a round trip later',
+            tostring(H.cli.anim))
+        ok(H.srv.roster[1].reviverSrc == 2,
+            'and the hold itself is still the server\'s to end -- nothing here '
+            .. 'reached for it', tostring(H.srv.roster[1].reviverSrc))
+        H.press(false)
+    end
+
+    -- ── 7. THE MATCH ENDS MID-HOLD ──────────────────────────────────────────
+    --
+    -- ON THE EVENT AND NOT ON THE NEXT FRAME. A match ending is the one moment
+    -- a leftover frame of this is guaranteed to be looked at, so forgetAll
+    -- calls the same teardown by hand rather than waiting for the frame band.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+        H.cli.env.TriggerEvent(H.cli.env.BR.Net.STATE,
+                               { state = H.cli.env.BR.MatchState.ENDED })
+        ok(H.cli.anim == nil,
+            'a match that ends mid-hold takes the emote with it, on the event '
+            .. 'itself', tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 8. THE RESOURCE STOPS MID-HOLD ──────────────────────────────────────
+    --
+    -- THE ONE ENDING THE FRAME LOOP CANNOT COVER, because the frame loop is
+    -- what is being stopped. `restart br_core` while somebody is holding would
+    -- otherwise leave a tasked animation on a ped with nothing left running to
+    -- take it off -- the same class as the movement clipset two lines above it
+    -- in that handler.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+        H.cli.env.TriggerEvent('onClientResourceStop', 'br_core')
+        ok(H.cli.anim == nil,
+            'and stopping the resource mid-hold clears it too',
+            tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 9. NOTHING DOWN, NOTHING PLAYED ─────────────────────────────────────
+    --
+    -- WHICH IS EVERY FRAME OF A SOLO MATCH. BR.Mode.SOLO.dbno is false
+    -- (asserted at the top of this file), so no solo player is ever in the
+    -- state the emote is gated on, and every solo is their own squad besides.
+    -- The emote is unreachable there by construction rather than by a mode
+    -- check -- and this is the assertion that says so: the interact key held
+    -- down over nobody plays nothing at all, which is also the loot crate case
+    -- and the empty-hands case.
+    do
+        local H = newReviveRig(40)
+        H.press(true)
+        H.pump(1500)
+        ok(H.cli.anim == nil,
+            'holding the interact key with nobody down plays no emote',
+            tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 10. A DICTIONARY THAT IS NOT THERE ──────────────────────────────────
+    --
+    -- `0` IS TRUTHY IN LUA and HasAnimDictLoaded is declared BOOL, so a build
+    -- that hands numbers back answers the NUMBER ZERO for "not loaded" -- which
+    -- passes `if HasAnimDictLoaded(d) then`. Read raw, the emote would be
+    -- tasked on a dictionary that is not resident: nothing plays, and the
+    -- client believes it did, so it never asks the streamer again and the hold
+    -- runs its whole length with the ped standing there. This project has
+    -- shipped that read nine times.
+    do
+        local H = newReviveRig(40)
+        local asked = 0
+        H.cli.env.HasAnimDictLoaded = function() return 0 end
+        H.cli.env.RequestAnimDict = function(d)
+            if d == 'mini@cpr@char_a@cpr_str' then asked = asked + 1 end
+        end
+        H.knock()
+        H.pump(500)
+        H.press(true)
+        H.pump(300)
+        ok(H.cli.anim == nil,
+            'a build whose HasAnimDictLoaded answers the NUMBER 0 gets no '
+            .. 'emote tasked on a dictionary that is not there',
+            tostring(H.cli.anim))
+        ok(asked > 0,
+            'and it goes on asking the streamer for it instead of giving up',
+            tostring(asked))
+        H.press(false)
+    end
 end
 
 describe('dbno.refusal')

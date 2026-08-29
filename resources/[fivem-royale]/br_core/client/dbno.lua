@@ -1885,6 +1885,157 @@ local function setPrompt(src, holdMs)
     })
 end
 
+-- ==========================================================================
+-- THE REVIVER'S CPR EMOTE
+-- ==========================================================================
+--
+-- "Also, adding to our roll of emotes: in squads, while holding E to revive a
+--  squadmate, the one reviving should play the "CPR" emote and clear once the
+--  revive is processed, or after 10 seconds, whichever comes first."
+-- (owner, 2026-08-29.)
+--
+-- IT IS ON THE PERSON DOING THE PICKING UP, not on the body. The downed player
+-- already has a pose -- the crawl, several hundred lines above -- and it is the
+-- one thing that tells an enemy across the street "they are down" rather than
+-- "they are gone". Putting chest compressions on the reviver is what tells the
+-- same enemy that somebody is BUSY, which is the read the whole eight seconds
+-- of standing still in the open is supposed to have.
+--
+-- ═══ WHERE THE NAMES CAME FROM ═══
+--
+-- The owner picked "CPR" out of an emote menu he installed to browse with and
+-- intends to remove, and the underlying asset is a stock GTA V animation --
+-- the menu is a list of dictionary/clip pairs and nothing more. Taken from
+-- Daudeuf/rpemotes, client/AnimationList.lua (master, read 2026-08-29):
+--
+--   line 8176   RP.Emotes["cpr"]  = { "mini@cpr@char_a@cpr_str",
+--                                     "cpr_pumpchest", "CPR",
+--                                     AnimationOptions = { EmoteLoop = true } }
+--   line 1402   RP.Shared["cprs"] = { "mini@cpr@char_a@cpr_str",
+--                                     "cpr_pumpchest", "Give CPR", "cprs2", ... }
+--
+-- Both name the SAME pair, and the second one is the one that settles which
+-- side of the pair this is: "Give CPR" is char_a, "Get CPR" is char_b
+-- (`mini@cpr@char_b@cpr_str`, the same clip name). The reviver gives, so char_a.
+-- `EmoteLoop = true` in both entries is why the flags below are the looping
+-- ones -- a hold that outlasts one pass of the clip must not end with a ped
+-- standing back up in the middle of it.
+--
+-- NOTHING HERE REQUIRES, REFERENCES OR CHECKS FOR THAT RESOURCE, and nothing
+-- may: TaskPlayAnim takes the dictionary and the clip directly, exactly as
+-- client/lobbyped.lua's walk clipsets were sourced (see the note above
+-- clipsetFor there, which is the precedent this follows).
+local CPR_DICT = 'mini@cpr@char_a@cpr_str'
+local CPR_ANIM = 'cpr_pumpchest'
+
+--- THE OUTSIDE OF ONE EMOTE, ms -- A CEILING, NOT A DURATION.
+---
+--- dbnoReviveTime is 2.8 seconds, so nothing a player ever watches gets near
+--- this: a hold that is going to succeed is finished in a third of it and a
+--- hold that is refused, released or interrupted is torn down by the teardown
+--- below within a frame. What it exists for is the case nobody has thought of
+--- -- a hold that somehow never resolves at all -- because the cost of that is
+--- a player walking around performing chest compressions on thin air for the
+--- rest of the match, which is the shape of bug this file has shipped most.
+---
+--- IT DOES NOT END THE HOLD. The revive is the server's business and this
+--- number is not shared with it; a hold that outlives the ceiling goes on
+--- exactly as it did before, silently.
+local CPR_MAX_MS = 10000
+
+-- WHEN THE CURRENT UNBROKEN RUN OF HOLDING BEGAN, or nil when nothing is being
+-- held. Sampled once per pass of dbno.revive and AFTER `holding` has settled
+-- for that pass, which is the whole reason the ceiling means anything:
+-- `holding` is destroyed and rebuilt from scratch by a refuse-then-re-arm
+-- cycle -- four times a second, for as long as the player leans on the key --
+-- so a ceiling measured from `holding.from` would be reset four times a second
+-- and would never fire on the one interaction it is written for.
+local cprSince = nil
+
+-- Whether the clip has been tasked and not yet stopped.
+local cprPlaying = false
+
+--- Put the clip on our own ped. Idempotent, and never yields.
+---
+--- NO Citizen.Wait, BECAUSE THE ONLY CALLER IS A FRAME CALLBACK. A yield in
+--- there stalls every other callback in the band -- this file says so at length
+--- above resolveCrawl, having shipped exactly that once. The bounded wait is
+--- paid ONCE, at boot, by the thread below; here a dictionary that is somehow
+--- not resident is simply re-requested and picked up on a later pass.
+local function cprStart()
+    if cprPlaying then return end
+    if not TaskPlayAnim then return end
+
+    -- THROUGH didHit, LIKE EVERY OTHER BOOL NATIVE IN THIS FILE.
+    -- HasAnimDictLoaded is declared BOOL and answers 1/0 on a build that hands
+    -- numbers back, and `0` IS TRUTHY IN LUA -- read raw, this would task the
+    -- animation on a dictionary that is not there, which plays nothing and
+    -- leaves `cprPlaying` lying about it for the whole hold.
+    if not didHit(HasAnimDictLoaded(CPR_DICT)) then
+        if RequestAnimDict then RequestAnimDict(CPR_DICT) end
+        return
+    end
+
+    -- Flag 1 is LOOPING and -1 is "until something stops it", which together
+    -- are what make this a pose held for the length of a hold rather than one
+    -- pass of a clip. The three trailing `false`s are the position locks, left
+    -- off deliberately: this ped is standing on its own feet and nothing else
+    -- in this file is writing its position, so there is no second writer to
+    -- fight -- unlike the crawl, which is a locomotion clip with a mover in it.
+    TaskPlayAnim(PlayerPedId(), CPR_DICT, CPR_ANIM, 8.0, -8.0, -1, 1, 0.0,
+                 false, false, false)
+    cprPlaying = true
+end
+
+--- Take it off again. Safe to call when nothing is playing, and it is called
+--- that way on nearly every frame of the match.
+---
+--- ═══ THIS IS THE ONE TEARDOWN, AND THAT IS THE DESIGN ═══
+---
+--- A hold can end in nine ways -- the key coming up on the level and on the
+--- edge, the player switching to a nearer mate, the server refusing, the server
+--- completing, the reviver being knocked down, the reviver being killed, the
+--- match ending, and the resource stopping. Cleanup written once per ending is
+--- cleanup that will be missed in the tenth. So NOTHING above calls this
+--- directly on an ending: the frame loop reads `holding` as a LEVEL and tears
+--- down whenever it is not set, which means every one of those endings is
+--- covered by the fact that all of them clear `holding`. Only the two endings
+--- that can stop the frame loop itself -- the match teardown and the resource
+--- stop -- call it by hand, and both of them call THIS.
+---
+--- ClearPedTasks IS THE FALLBACK AND NOT THE FIRST CHOICE. StopAnimTask takes
+--- the dictionary and the clip, so it can only ever stop OUR clip; clearing the
+--- ped's tasks outright would also take the crawl off a reviver who has just
+--- been knocked down himself, which is the one path where the emote and the
+--- downed pose overlap. On a build with no StopAnimTask that happens and the
+--- watchdog in dbno.controls puts the crawl back within RETASK_EVERY_MS, which
+--- is what that watchdog is for -- an emote that cannot be stopped at all is
+--- the worse of the two.
+local function cprStop()
+    if not cprPlaying then return end
+    cprPlaying = false
+    if StopAnimTask then
+        StopAnimTask(PlayerPedId(), CPR_DICT, CPR_ANIM, 8.0)
+    elseif ClearPedTasks then
+        ClearPedTasks(PlayerPedId())
+    end
+end
+
+-- THE DICTIONARY IS STREAMED AT BOOT, for the same reason the downed pose is
+-- and with the same wait: the only thing that starts this emote is a FRAME
+-- callback, and the streaming wait is the one cost that cannot be paid there.
+-- Best-effort -- a build that fails here simply requests again from cprStart
+-- and picks the clip up a frame or two into the first hold.
+Citizen.CreateThread(function()
+    -- Not on the first frame of the resource; the streamer is still bringing
+    -- the world up, and nobody can be revived for a whole lobby yet.
+    Citizen.Wait(5000)
+    if not loadDict(CPR_DICT) then
+        print(('[br_core] dbno: %s did not load -- revives will have no CPR emote')
+            :format(CPR_DICT))
+    end
+end)
+
 BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     local target, dist = nearestDowned()
 
@@ -2021,6 +2172,48 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
         setPrompt(target, nil)
     end
 
+    -- ═══ THE EMOTE, DRIVEN OFF `holding` AND OFF NOTHING ELSE ═══
+    --
+    -- READ AS A LEVEL, AFTER EVERYTHING ABOVE HAS SETTLED, which is the whole
+    -- of the cleanup argument in cprStop. Every way a hold can end clears
+    -- `holding` -- the key coming up (both the level test above and the edge
+    -- listener below it), switching to a nearer mate, a REVIVE_PROGRESS that is
+    -- `cancelled` (the server refusing, the reviver being shot, the reviver
+    -- walking out of reach, somebody else already having the body, the mate
+    -- being picked up by a third player, the mate disconnecting) and a
+    -- REVIVE_PROGRESS that is `done`. Not one of them needs a line of its own
+    -- here, and none of them can be forgotten, because the teardown is not
+    -- hung off any of them.
+    --
+    -- ...AND ONLY WHILE WE ARE STILL ON OUR FEET. `holding` deliberately
+    -- outlives a frame in which this client cannot see the body (#163 -- the
+    -- SERVER is the authority on reach), and it therefore also outlives the
+    -- REVIVER being knocked down or killed, for up to a round trip plus the
+    -- server's 250ms step. That is right for the REQUEST and wrong for the
+    -- ANIMATION: a body on the floor performing chest compressions is exactly
+    -- the "CPR on thin air" this block exists to make unrepresentable. Nothing
+    -- here touches `holding`, so the revive itself is unaffected either way.
+    --
+    -- THE CEILING IS MEASURED FROM `cprSince` AND NOT FROM `holding.from`. See
+    -- the declaration: a refused hold rebuilds `holding` four times a second,
+    -- so a ceiling hung off that table would be re-armed by the very case it
+    -- exists to catch.
+    if holding and BR.State.me.state == BR.PlayerState.ALIVE then
+        if not cprSince then cprSince = GetGameTimer() end
+        if GetGameTimer() - cprSince >= CPR_MAX_MS then
+            -- SPENT, NOT RESTARTED. `cprSince` is deliberately left standing:
+            -- clearing it here would re-arm the emote on the very next frame
+            -- and the ceiling would be a stutter rather than a limit. A new run
+            -- begins when the hold genuinely ends, which is the `else` below.
+            cprStop()
+        else
+            cprStart()
+        end
+    else
+        cprSince = nil
+        cprStop()
+    end
+
     -- THE LABEL FOLLOWS THE HOLD, NOT THE REACH TEST. A hold that survives a
     -- frame of not seeing the body must still draw over it, or the prompt
     -- blinks every time the clone wanders past 1.5m.
@@ -2097,6 +2290,14 @@ local function forgetAll()
     camDown()
     holding, lastAsk = nil, 0
     setPrompt(nil)
+    -- BY HAND HERE, unlike every other ending. The frame loop's own teardown
+    -- would take the emote down on its next pass -- `holding` is nil one line
+    -- above -- and that is the reading that matters: this is not a second
+    -- cleanup, it is the SAME cprStop, called early because a match that has
+    -- ended is the one moment a leftover frame of chest compressions is
+    -- guaranteed to be looked at, over a body that is already gone.
+    cprSince = nil
+    cprStop()
 end
 
 RegisterNetEvent(BR.Net.STATE)
@@ -2120,6 +2321,12 @@ AddEventHandler('onClientResourceStop', function(res)
     -- knows this handle exists, so `restart br_core` while downed would leave
     -- the view welded to a dead camera with no code left to release it.
     camDown()
+    -- ...and so does a tasked animation. This is the ONE ending the frame loop
+    -- cannot cover, because the frame loop is what is being stopped: a
+    -- `restart br_core` in the middle of a hold would leave the reviver doing
+    -- chest compressions with nothing left running to stop them.
+    cprSince = nil
+    cprStop()
 end)
 
 -- --------------------------------------------------------------------------
@@ -2264,6 +2471,18 @@ RegisterCommand('brdbno', function()
     print(('  holding    : %s   key %s'):format(
         holding and tostring(holding.target) or '-',
         BR.Keys.isHeld('interact') and 'DOWN' or 'up'))
+    -- READ `emote` AGAINST `holding` ON THE LINE ABOVE. The pair is the whole
+    -- diagnosis: playing with nothing held is the leak, held with the clip not
+    -- running is either the dictionary never arriving or the ceiling having
+    -- already been spent, and the age says which.
+    print(('  emote      : %s   (%s / %s, dict %s; ceiling %dms)'):format(
+        cprPlaying and 'PLAYING' or 'not playing',
+        CPR_DICT, CPR_ANIM,
+        didHit(HasAnimDictLoaded(CPR_DICT)) and 'resident' or 'NOT LOADED',
+        CPR_MAX_MS))
+    print(('  emote run  : %s'):format(
+        cprSince and ('holding for %dms'):format(GetGameTimer() - cprSince)
+                 or '- (nothing held)'))
 
     -- ------------------------------------------------------------------ #163
     -- THE THREE FACTS, SEPARATED. Read the verdict line first; the counters
