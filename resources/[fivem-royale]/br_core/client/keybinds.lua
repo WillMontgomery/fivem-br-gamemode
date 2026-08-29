@@ -395,6 +395,17 @@ tap ('drop',        'brdrop',      'Royale: Drop selected item',         'G')
 -- something" -- and client/inventory.lua decides which, from what is in the
 -- hands rather than from anything about the key.
 --
+-- ═══ "IT HOLDS EXACTLY" WAS WRONG BY ONE STATE, AND #234 IS THAT STATE ═══
+--
+-- "every other state is a `use`" was the half that failed. A weapon in the hand
+-- with nothing to reload is not a `use` of anything the player is holding, and
+-- `use` reached three slots away for a consumable -- so pressing reload on a
+-- full gun put the gun away and drank a potion (owner, 2026-08-29: "strange").
+-- The binding is still one row and the argument below still stands; what
+-- changed is in client/inventory.lua, where the reach past the active slot now
+-- stops at a weapon. WITH A GUN IN THE HAND THIS KEY EITHER RELOADS IT OR DOES
+-- NOTHING, which is the sentence above being made true rather than abandoned.
+--
 -- WHY NOT A SECOND BINDING ALSO DEFAULTING TO R, which is the obvious shape and
 -- was written before this one. The raw layer would handle it -- it tracks edges
 -- per COMMAND, so two rows on 0x52 both fire -- but the ENGINE's half is an

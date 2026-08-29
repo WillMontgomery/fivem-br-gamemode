@@ -886,13 +886,42 @@ local function reloadable()
     return math.floor(inv.ammo[w.ammo] or 0) > 0
 end
 
--- THE USE KEY ALWAYS DOES SOMETHING IF THERE IS ANYTHING TO DO.
+-- THE USE KEY ALWAYS DOES SOMETHING IF THERE IS ANYTHING TO DO -- EXCEPT WITH A
+-- GUN IN THE HAND, WHERE IT IS THE RELOAD KEY AND NOTHING ELSE (#234).
 --
 -- Strictly, you use what is in your hand. But a player who has just picked up
 -- their first shield potion into slot 2 while a rifle sits in slot 1 presses
 -- the key, nothing happens, and the reasonable conclusion is that the item is
 -- broken (user, 2026-08-05: "there's no way to use it"). So: the active slot
 -- if it is consumable, otherwise the lowest slot that is.
+--
+-- ═══ AND THAT REACH IS WHAT #234 IS, ONCE R BECAME THE RELOAD KEY TOO ═══
+--
+-- Owner, 2026-08-29: "when holding a weapon (after reloading and no rounds
+-- shot), pressing the reload button switches to consumables when one is
+-- available..... strange."
+--
+-- Nothing about the reload was wrong. The press had no reload in it -- full
+-- magazine -- so it fell to the paragraph above, and the reach does not merely
+-- USE the far slot, it BRINGS IT UP. One press on a full gun took the gun out
+-- of his hands. The dry gun over an empty pool is the same press and is worse,
+-- because that is a player mid-fight pressing R by reflex.
+--
+-- WHICH CLAIM ACTUALLY BROKE. keybinds.lua put both meanings on one key on the
+-- strength of one sentence -- "reloading a shield potion means nothing, so the
+-- two never want the key at the same moment" -- and that sentence is false in
+-- exactly one state: a weapon in hand with nothing to reload. There the reload
+-- wants to do nothing and this reach wants to cross the inventory, so both are
+-- answerable and whichever is written first wins. The sentence is repaired
+-- HERE rather than by splitting the binding, because splitting it needs an
+-- engine assumption nobody in this repo can test (keybinds.lua says so at
+-- length) and because the sentence is nearly true: it only ever overreached.
+--
+-- SO THE REACH IS NARROWED TO HANDS THAT HOLD NO WEAPON. It is not removed --
+-- 2026-08-05 is still answered on fists, on an empty slot, and on a throwable,
+-- which is every hand for which R was never going to be a reload. What a gun in
+-- the hand now guarantees is that R can do one of two things: reload it, or
+-- nothing. It can no longer put the gun away.
 BR.Keys.on('use', function(pressed)
     if not pressed or not canArm() then return end
 
@@ -920,7 +949,13 @@ BR.Keys.on('use', function(pressed)
     local s = inv.slots[inv.active]
     if s and s.kind == BR.ItemKind.CONSUMABLE then
         slot = inv.active
-    else
+    elseif not (s and s.kind == BR.ItemKind.WEAPON) then
+        -- A WEAPON IN THE HAND STOPS HERE, and reaching this line at all means
+        -- reloadable() already said no. `kind == WEAPON` on purpose and not
+        -- reloadable()'s finer test: a machete and a gun over a dead pool are
+        -- both weapons the player is holding, and neither should answer the
+        -- reload key by putting itself away. Held open for the issue: whether a
+        -- throwable belongs on this side of the line too (it reaches, today).
         for i = 1, SLOTS do
             local c = inv.slots[i]
             if c and c.kind == BR.ItemKind.CONSUMABLE then slot = i break end

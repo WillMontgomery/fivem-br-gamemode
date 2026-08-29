@@ -14017,28 +14017,60 @@ do
        'and it does NOT also drink the shield in slot 2 -- one press, one thing',
        ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
 
-    -- ── 2. A FULL MAGAZINE IS NOT A RELOAD, so the press is a `use` again. This
-    --       is the assertion that keeps the key from swallowing the old
-    --       behaviour: the two are exclusive, not ordered.
+    -- ── 2. A FULL MAGAZINE IS NOT A RELOAD, AND IT IS NOT A `use` EITHER.
+    --
+    --       THIS ASSERTION USED TO SAY THE OPPOSITE AND IT WAS THE BUG (#234).
+    --       It read "and the press goes back to being the use key it always
+    --       was", asserted one INV_USE, and passed -- against a key that swapped
+    --       the rifle out of the player's hands to get to that USE. Owner,
+    --       2026-08-29: "when holding a weapon (after reloading and no rounds
+    --       shot), pressing the reload button switches to consumables when one
+    --       is available..... strange."
+    --
+    --       WHAT WAS WRONG WITH THE ARGUMENT, not just with the code. This block
+    --       opens by quoting keybinds.lua -- "the two never want the key at the
+    --       same moment" -- and that is false in exactly one state: a weapon in
+    --       hand with nothing to reload. The reload wants to do nothing and the
+    --       old `use` wanted to reach three slots away, so BOTH were answerable
+    --       and the ordering picked the wrong one. The claim is repaired by
+    --       narrowing `use`, not by moving the reload: WITH A WEAPON IN THE HAND
+    --       THE KEY IS THE RELOAD KEY AND ONLY THE RELOAD KEY.
+    --
+    --       INV_SELECT IS THE ASSERTION THAT MATTERS. INV_USE alone would have
+    --       been satisfied by a fix that drank the shield without bringing it
+    --       up, which is not what the owner watched happen -- what he watched
+    --       was his gun leave his hands.
     holding(rifle(RIFLE.clip), 100)
     sent = {}
     press()
     ok(asked(BR.Net.INV_RELOAD) == 0,
        'a full magazine is not a reload',
        ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
-    ok(asked(BR.Net.INV_USE) == 1,
-       'and the press goes back to being the use key it always was',
+    ok(asked(BR.Net.INV_SELECT) == 0,
+       'and a full magazine does NOT switch the hand to the shield in slot 2',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+    ok(asked(BR.Net.INV_USE) == 0,
+       'and does not drink it either -- a full gun means the key does nothing',
        ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
 
     -- ── 3. AN EMPTY POOL IS NOT A RELOAD EITHER, and this is the railgun's
     --       ordinary state -- the one every ammo bug this week was found in.
     --       Quietly: no message, no notification, nothing to answer.
+    --
+    --       IT IS ALSO THE SECOND HALF OF #234 and it is the worse half: a gun
+    --       that ran dry mid-fight over an empty pool is the moment the fall-
+    --       through fired, so the reflex press that used to do nothing swapped
+    --       the empty gun away for a shield potion instead.
     holding(rifle(0), 0)
     sent = {}
     press()
     ok(asked(BR.Net.INV_RELOAD) == 0,
        'A DRY GUN OVER AN EMPTY POOL ASKS FOR NOTHING',
        ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    ok(asked(BR.Net.INV_SELECT) == 0 and asked(BR.Net.INV_USE) == 0,
+       'and a dry gun does not become a switch to the shield either',
+       ('%d INV_SELECT, %d INV_USE'):format(asked(BR.Net.INV_SELECT),
+                                            asked(BR.Net.INV_USE)))
 
     -- ...AND SPAMMING IT IS THE SAME NOTHING. The server cannot mint a round
     -- here either (test_roster runs a hundred presses at zero pool through the
@@ -14066,6 +14098,29 @@ do
     ok(asked(BR.Net.INV_USE) == 1,
        'and R with empty hands still reaches the shield, as it always did',
        ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+    -- AND IT STILL BRINGS IT UP. #234 narrowed the reach to hands holding no
+    -- weapon; it did not remove it. The 2026-08-05 report this was built for
+    -- ("there's no way to use it") is still answered, and this is the assertion
+    -- that would catch a fix that went one step too far.
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       'and still brings it up first, so the thing drunk is the thing in hand',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- ── 4b. A CONSUMABLE ALREADY IN THE HAND. The plainest reading of the key,
+    --        and the one case that needs no reaching at all: use what is held,
+    --        and do not send a switch to the slot that is already active.
+    fire(BR.Net.INV_SET, {
+        slots = { rifle(0),
+                  { id = 'shield', label = 'Shield',
+                    kind = BR.ItemKind.CONSUMABLE, rarity = 2, count = 1 } },
+        ammo = { medium = 100 }, active = 2,
+    })
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_USE) == 1 and asked(BR.Net.INV_SELECT) == 0,
+       'R on a shield already in hand drinks it, with no switch',
+       ('%d INV_USE, %d INV_SELECT'):format(asked(BR.Net.INV_USE),
+                                            asked(BR.Net.INV_SELECT)))
 
     -- ── 5. A MACHETE HAS NO MAGAZINE. It is a WEAPON by kind, which is exactly
     --       why `kind == WEAPON` is not the whole test -- `w.clip` is nil here
@@ -14077,6 +14132,14 @@ do
     ok(asked(BR.Net.INV_RELOAD) == 0,
        'a machete cannot be reloaded',
        ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    -- AND IT IS STILL A WEAPON IN THE HAND, so #234 applies to it unchanged: a
+    -- key that can never reload here must not quietly become a swap instead.
+    -- Flagged to the owner as an open question on the issue -- if he wants a
+    -- machete to reach for a potion, this is the line that says so.
+    ok(asked(BR.Net.INV_SELECT) == 0 and asked(BR.Net.INV_USE) == 0,
+       'and holding one does not turn R into a switch to the shield',
+       ('%d INV_SELECT, %d INV_USE'):format(asked(BR.Net.INV_SELECT),
+                                            asked(BR.Net.INV_USE)))
 
     -- ── 6. A THROWABLE'S "MAGAZINE" IS ITS STACK. Nothing moves rounds into a
     --       grenade, and a reload that touched `count` would be inventing them.
