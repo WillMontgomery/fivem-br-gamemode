@@ -93,10 +93,19 @@ function GetEntityModel() return ped.model end
 function GetEntitySpeed() return ped.dest and ped.speed or 0.0 end
 function IsPedMale() return ped.male and 1 or 0 end   -- a BOOL native answering NUMBERS, on purpose
 
+--- HOW FAR THE WRITE MOVED THE PED, not just where it put them.
+---
+--- A coordinate write IS a teleport, and the only question that matters about
+--- the one at the end of the walk is how long it was -- owner, 2026-08-29: "the
+--- ped is getting close to the final coords, but then being teleported there."
+--- The destination was always the lobby mark and always correct; the bug was
+--- entirely in the metre before it. `jump` is that metre.
 function SetEntityCoordsNoOffset(_p, x, y, z)
+    local dx, dy = x - ped.x, y - ped.y
+    local jump = math.sqrt(dx * dx + dy * dy)
     ped.x, ped.y, ped.z = x, y, z
     ped.dest = nil
-    note('coords', { x = x, y = y, z = z })
+    note('coords', { x = x, y = y, z = z, jump = jump })
 end
 function SetEntityHeading(_p, h) ped.heading = h end
 function FreezeEntityPosition(_p, on)
@@ -112,7 +121,17 @@ function TaskGoStraightToCoord(_p, x, y, z, speed, _timeout, heading)
     -- per second. The owner tunes one speed per leg, so the assertion that
     -- matters is which NUMBER reached the native on which leg -- deriving it
     -- back out of ped.speed would be testing this mock's arithmetic.
-    note('task', { x = x, y = y, z = z, speed = speed })
+    --
+    -- AND SO ARE THE TARGET HEADING AND WHERE THE PED WAS STANDING WHEN THE
+    -- TASK ARRIVED. Both are the corner bug (owner, 2026-08-29: "the ped walks
+    -- to the point, stops, turns, then walks to the next point"): the heading
+    -- is what the ped is told to face on arrival, and the position is how early
+    -- the next leg took over -- a handover that only happens once the ped is
+    -- on top of the corner is a handover after it has already stopped there.
+    note('task', {
+        x = x, y = y, z = z, speed = speed, heading = heading,
+        fromX = ped.x, fromY = ped.y,
+    })
 end
 function ClearPedTasks() ped.dest = nil note('cleartasks') end
 function ClearPedTasksImmediately() ped.dest = nil end
@@ -163,7 +182,11 @@ function GetGroundZFor_3dCoord(_x, _y, z) return 1, z - 50.0 end
 -- The screen.
 local fadedOut, fadedIn = false, true
 function DoScreenFadeOut() fadedOut = true fadedIn = false end
-function DoScreenFadeIn() fadedOut = false fadedIn = true end
+-- NOTED, BECAUSE IT IS A DEADLINE. The entrance's first act is a teleport
+-- thirty metres up the path, and on the trip home the only cover it has is the
+-- black this call ends -- so "the ped was placed before the fade" is an
+-- ORDERING, and orderings are what this suite exists to assert.
+function DoScreenFadeIn() fadedOut = false fadedIn = true note('fadein') end
 function IsScreenFadedOut() return fadedOut and 1 or 0 end
 function IsScreenFadedIn() return fadedIn and 1 or 0 end
 function IsScreenFadingIn() return 0 end
@@ -204,10 +227,19 @@ function SetCamCoord() error('the lobby camera must not write coordinates on a r
 -- destroys the source camera is gated on IsCamInterpolating, so a stub that
 -- always answered "no" would prove the sweep works by never letting it be wrong,
 -- and one that always answered "yes" would hide every leak.
+--
+-- AND THE EASE FLAGS ARE RECORDED, because they are half of the stutter. The
+-- last two arguments are easeLocation and easeRotation, and a 1 is an
+-- ease-IN-AND-OUT: the camera arrives at rest and leaves from rest. One of
+-- those is a nice single move; a CHAIN of them stops dead at every node, which
+-- is what the owner saw on 2026-08-29. No duration in this fixture can observe
+-- that -- the moves were always back to back -- so the flags themselves are the
+-- only evidence there is.
 local interpUntil = {}
-function SetCamActiveWithInterp(dest, src, ms)
+function SetCamActiveWithInterp(dest, src, ms, easeLoc, easeRot)
     interpUntil[dest] = fakeTime + (ms or 0)
-    note('camglide', { from = src, to = dest, ms = ms })
+    note('camglide', { from = src, to = dest, ms = ms,
+                       easeLoc = easeLoc, easeRot = easeRot })
 end
 function IsCamInterpolating(c)
     return (c and interpUntil[c] and fakeTime < interpUntil[c]) and 1 or 0
@@ -440,11 +472,33 @@ do
 
     -- EVERY DURATION IS A NUMBER IN CONFIG. The owner offered to tune these, so
     -- a value that migrated into the client is a value he cannot reach.
-    for _, k in ipairs({ 'camMoveMs', 'camLeadMs', 'focusLeadMs', 'modelWaitMs',
+    for _, k in ipairs({ 'camFlightMs', 'focusLeadMs', 'modelWaitMs',
                          'clipsetWaitMs', 'legTimeoutMs', 'armWaitMs',
-                         'arriveRadius' }) do
+                         'arriveRadius', 'cornerRadius', 'markRadius' }) do
         ok(type(C[k]) == 'number', ('lobbyEntrance.%s is tunable'):format(k))
     end
+
+    -- ═══ AND THE THREE RADII HAVE TO STAND IN THE RIGHT ORDER ═══
+    --
+    -- They are not three spellings of "close enough", they are three different
+    -- questions, and a config that put them in any other order would silently
+    -- undo one of the two arrival bugs the owner reported on 2026-08-29.
+    --
+    -- markRadius is what is LEFT for standOnMark to teleport, so it has to be
+    -- far smaller than the ordinary radius -- at 0.9m the entrance ended by
+    -- snapping the ped almost a metre, face-on to a landed camera.
+    ok(C.markRadius < C.arriveRadius * 0.5,
+        ('the mark is walked onto rather than teleported onto '
+            .. '(markRadius %.2f vs arriveRadius %.2f)')
+            :format(C.markRadius, C.arriveRadius))
+
+    -- cornerRadius is how early the NEXT leg takes over, and the whole point is
+    -- that it happens before the ped has finished slowing down for the corner.
+    -- Anything at or under arriveRadius is the old late handover.
+    ok(C.cornerRadius > C.arriveRadius,
+        ('a corner is handed over early rather than on arrival '
+            .. '(cornerRadius %.2f vs arriveRadius %.2f)')
+            :format(C.cornerRadius, C.arriveRadius))
 
     -- ═══ AND THE SPEED IS A LIST NOW, ONE ENTRY PER LEG ═══
     --
@@ -583,10 +637,6 @@ do
     ok(ped.clipset == nil, 'and the walking style is cleared on arrival')
     ok(not BR.LobbyPed.lockerLocked(), 'the locker unlocks when the ped arrives')
 
-    -- THE CAMERA GOT THERE FIRST. The owner's number is two seconds; what is
-    -- asserted is the property rather than the number, so tuning camLeadMs does
-    -- not break the test -- but the lead has to be real and it has to be most of
-    -- what was asked for.
     local _, arrival = firstOf('freeze', function(e) return e.on and e.at > 2000 end)
     local homeAt, pedAt
     for _, e in ipairs(order) do
@@ -595,16 +645,9 @@ do
     for i = #order, 1, -1 do
         if order[i].kind == 'coords' then pedAt = order[i].at break end
     end
-    local C2 = BR.Config.Match.lobbyEntrance
     ok(homeAt ~= nil, 'the camera is aimed at the lobby frame at the end of the flight')
-    if homeAt and pedAt then
-        local landedAt = homeAt + C2.camMoveMs
-        ok(landedAt <= pedAt,
-           ('the camera lands before the ped (%dms vs %dms)'):format(landedAt, pedAt))
-        ok(pedAt - landedAt >= C2.camLeadMs * 0.5,
-           ('and by most of the authored lead (%dms of %dms)')
-               :format(pedAt - landedAt, C2.camLeadMs))
-    end
+    ok(homeAt ~= nil and pedAt ~= nil and homeAt <= pedAt,
+       'the camera starts its landing before the ped arrives')
     ok(arrival ~= nil, 'the arrival re-freezes the ped')
 
     -- NO CAMERA IS LEFT BEHIND by a flight that ran to completion.
@@ -1001,6 +1044,346 @@ do
     pump(40000)
     ok(firstOf('task') == nil,
         'and nothing re-tasks afterwards at any speed')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 14. THE CAMERA FLIES AT ONE PACE, AND NEVER STOPS ON THE WAY
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-29: "The camera movements and the walks should not wait on
+-- each other. Right now once the camera reaches each point, there's a pause.
+-- That shouldn't happen, it should be smooth movement all the way start to
+-- finish with no pace change either."
+--
+-- THREE SEPARATE THINGS WERE WRONG AND THEY NEED THREE SEPARATE ASSERTIONS.
+-- The moves were EASED, so the camera arrived at rest at every node. They were
+-- given the SAME DURATION over segments of wildly different lengths, so the
+-- pace changed at every node even without the easing. And the last one WAITED
+-- on the ped's measured arrival, which is the coupling the owner suspected.
+
+--- The flight's segments, in metres, computed the way the client has to: the
+--- last one ends at the lobby FRAME, which is not in camPath.
+local function camSegLengths()
+    local nodes = BR.Config.Match.lobbyEntrance.camPath
+    local out = {}
+    for i = 2, #nodes do
+        out[#out + 1] = BR.Dist3(nodes[i - 1].x, nodes[i - 1].y, nodes[i - 1].z,
+                                 nodes[i].x, nodes[i].y, nodes[i].z)
+    end
+    local last = nodes[#nodes]
+    local hx, hy, hz = BR.LobbyCam.lobbyFrame()
+    out[#out + 1] = BR.Dist3(last.x, last.y, last.z, hx, hy, hz)
+    return out
+end
+
+--- Every camera move of one entrance, in order.
+local function glides()
+    local out = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'camglide' then out[#out + 1] = e end
+    end
+    return out
+end
+
+do
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    local lens = camSegLengths()
+    local moves = glides()
+
+    ok(#moves == #lens,
+        ('the flight is one move per segment, ending on the lobby frame '
+            .. '(%d moves, %d segments)'):format(#moves, #lens))
+
+    -- ═══ NO EASE ON A SEGMENT OF A FLIGHT ═══
+    --
+    -- This is the pause itself. An eased interpolation decelerates to a
+    -- standstill at its destination; three of them in a row is a camera that
+    -- stops at every node, and no amount of retiming the moves can fix it
+    -- because the stop is inside the engine's own curve.
+    local eased = 0
+    for _, m in ipairs(moves) do
+        if m.easeLoc ~= 0 or m.easeRot ~= 0 then eased = eased + 1 end
+    end
+    ok(eased == 0,
+        ('no segment of the flight eases in or out -- an eased move arrives at '
+            .. 'rest, which is the pause at each node (%d of %d eased)')
+            :format(eased, #moves))
+
+    -- ═══ ONE PACE, ALL THE WAY DOWN ═══
+    --
+    -- The segments are about 222m, 102m and 31m. A flat duration each -- which
+    -- is what camMoveMs was -- flies them at roughly 44, 20 and 6 metres per
+    -- second, so the camera changes speed at every node even once the easing is
+    -- gone. The ratio is what is asserted rather than any particular speed, so
+    -- retuning camFlightMs cannot break this.
+    if #moves == #lens then
+        local fast, slow = 0.0, math.huge
+        for i, m in ipairs(moves) do
+            local mps = lens[i] / ((m.ms or 1) / 1000.0)
+            if mps > fast then fast = mps end
+            if mps < slow then slow = mps end
+        end
+        ok(slow > 0.0 and fast / slow < 1.10,
+            ('the camera holds one pace across every segment '
+                .. '(%.1f m/s fastest, %.1f m/s slowest)'):format(fast, slow))
+    end
+
+    -- ═══ AND NOTHING SITS BETWEEN TWO SEGMENTS ═══
+    --
+    -- Each move is issued when the one before it finishes. Anything else is a
+    -- camera parked at a node waiting for something -- which is what the last
+    -- move used to do, holding at the third node until the ped's measured
+    -- arrival came within camLeadMs of it.
+    local worst = 0
+    for i = 2, #moves do
+        local gap = moves[i].at - (moves[i - 1].at + (moves[i - 1].ms or 0))
+        if gap > worst then worst = gap end
+    end
+    ok(worst <= 100,
+        ('no segment waits for the one before it to be over '
+            .. '(worst gap %dms)'):format(worst))
+end
+
+-- ...AND THE COUPLING IS GONE RATHER THAN MERELY DORMANT.
+--
+-- At the walk speeds the owner authored the old code happened not to dwell:
+-- the ped is quick enough that its estimated arrival was already inside the
+-- lead by the time the second move ended. Slow the walk down -- which is one
+-- config edit, and is exactly what the entrance did before walkSpeeds landed --
+-- and the same code parks the camera in the sky for ten seconds. The property
+-- worth having is that the flight does not read the ped AT ALL.
+do
+    local C = BR.Config.Match.lobbyEntrance
+    local realSpeeds = C.walkSpeeds
+    C.walkSpeeds = { 1.0 }
+
+    reset()
+    wearChosenModel()
+    pump(80000)
+
+    local moves = glides()
+    local worst = 0
+    for i = 2, #moves do
+        local gap = moves[i].at - (moves[i - 1].at + (moves[i - 1].ms or 0))
+        if gap > worst then worst = gap end
+    end
+    ok(#moves > 1 and worst <= 100,
+        ('the flight is the same flight when the ped is slow -- it does not '
+            .. 'wait on the walk (worst gap %dms over %d moves)')
+            :format(worst, #moves))
+
+    C.walkSpeeds = realSpeeds
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 15. THE PED ROUNDS ITS CORNERS RATHER THAN STOPPING ON THEM
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-29: "it seems the ped walks to the point, stops, turns, then
+-- walks to the next point. Can we maybe smooth the corners to keep them
+-- walking?"
+--
+-- TWO CAUSES, AND THE FIRST ONE IS IN CONFIG RATHER THAN IN THE CLIENT. The
+-- seventh argument to TaskGoStraightToCoord is the heading to face ON ARRIVAL,
+-- and every leg was handing it the heading authored on the corner -- which is
+-- where the surveyor was looking, and for two of the three corners that is back
+-- the way he came. The ped was being told to arrive, turn eighty-odd degrees
+-- the wrong way, and only then given the next leg.
+--
+-- The second is that the next leg only arrived once the ped was within 0.9m of
+-- the corner, by which time a go-to-coord task has already slowed the ped down
+-- to stop on it.
+
+do
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    -- The legs, as the client builds them: the authored corners then the mark.
+    local C = BR.Config.Match.lobbyEntrance
+    local legs = {}
+    for _, n in ipairs(C.pedPath) do legs[#legs + 1] = n end
+    legs[#legs + 1] = BR.Config.Match.lobbyPos
+
+    local tasks = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'task' then tasks[#tasks + 1] = e end
+    end
+    ok(#tasks == #legs, ('precondition: one task per leg (%d)'):format(#tasks))
+
+    if #tasks == #legs then
+        -- ═══ EVERY CORNER IS FACED THE WAY THE PATH GOES NEXT ═══
+        local worstOff, worstLeg = 0.0, 0
+        for i = 1, #legs - 1 do
+            local want = BR.GtaHeading(BR.Bearing(legs[i].x, legs[i].y,
+                                                  legs[i + 1].x, legs[i + 1].y))
+            local off = math.abs((tasks[i].heading or 0.0) - want) % 360.0
+            if off > 180.0 then off = 360.0 - off end
+            if off > worstOff then worstOff, worstLeg = off, i end
+        end
+        ok(worstOff < 5.0,
+            ('a corner is faced toward the NEXT corner, not toward whatever the '
+                .. 'survey recorded (leg %d is %.1f degrees out)')
+                :format(worstLeg, worstOff))
+
+        -- ...AND THE LOBBY MARK KEEPS ITS AUTHORED HEADING, because it is not a
+        -- corner -- it is what the whole lobby shot is composed against.
+        ok(math.abs((tasks[#tasks].heading or 0.0)
+                    - BR.Config.Match.lobbyPos.heading) < 0.01,
+            'the final leg still faces the authored lobby heading')
+
+        -- ═══ AND THE HANDOVER HAPPENS BEFORE THE PED GETS THERE ═══
+        --
+        -- Measured where the ped was STANDING when each task arrived, against
+        -- the corner the previous leg was aimed at. The whole fix is that this
+        -- number is metres rather than centimetres.
+        local nearest, nearestLeg = math.huge, 0
+        for i = 2, #tasks do
+            local prev = legs[i - 1]
+            local d = BR.Dist(tasks[i].fromX, tasks[i].fromY, prev.x, prev.y)
+            if d < nearest then nearest, nearestLeg = d, i end
+        end
+        ok(nearest >= C.cornerRadius * 0.75,
+            ('each leg is handed over while the ped is still short of the '
+                .. 'corner and still moving (leg %d took over %.2fm out, '
+                .. 'cornerRadius %.2f)')
+                :format(nearestLeg, nearest, C.cornerRadius))
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 16. THE WALK ENDS ON THE MARK RATHER THAN A METRE SHORT OF IT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-29: "the ped is getting close to the final coords, but then
+-- being teleported there. Not sure why that is."
+--
+-- IT WAS arriveRadius, AND THERE WAS NO SECOND TELEPORT TO FIND. The leg loop
+-- stopped walking the moment the ped was within 0.9m of its target, and the
+-- target of the last leg is the lobby mark -- so standOnMark's exact placement
+-- had 0.9m left to cover, in plain sight, six feet from a landed camera.
+--
+-- The destination was never wrong, so asserting where the ped ends up proves
+-- nothing (the broken version passes that too, and did). What is asserted is
+-- HOW FAR THE WRITE MOVED THEM.
+
+do
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    local p = BR.Config.Match.lobbyPos
+    local landing = nil
+    for _, e in ipairs(order) do
+        if e.kind == 'coords' and e.at > 2000
+           and math.abs(e.x - p.x) < 0.01 and math.abs(e.y - p.y) < 0.01 then
+            landing = e
+            break
+        end
+    end
+
+    ok(landing ~= nil, 'precondition: the walk ends with a placement on the mark')
+    ok(landing ~= nil and landing.jump <= 0.30,
+        ('the ped WALKS onto the mark -- the placement at the end of it moves '
+            .. 'them a distance nobody can see (%.2fm)')
+            :format(landing and landing.jump or -1.0))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 17. THE ENTRANCE HAPPENS ON EVERY TRIP BACK TO THE LOBBY
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-29: "Also let's make that grand entry happen for every trip
+-- back to the lobby. That was my expectation."
+--
+-- It used to run once per br_core load. RE-ARMED ON LEAVING rather than on
+-- arriving, which is what makes it cover the roads nobody enumerated: an admin
+-- force, a stuck round being reset, the ordinary end of a match.
+
+do
+    reset()
+    wearChosenModel()
+    pump(70000)
+    ok(not BR.LobbyPed.entering(), 'precondition: the first entrance is over')
+    ok(not BR.LobbyPed.lockerLocked(), 'precondition: and it released the locker')
+
+    -- Away to a match, by a road that is not the choreographed one.
+    BR.State.me.state = BR.PlayerState.PLAYING
+    ped.x, ped.y = 1500.0, 2500.0
+    pump(500)
+
+    -- ...AND STILL NOT WHILE WE ARE ELSEWHERE. The re-arm must not be a start.
+    ok(not BR.LobbyPed.entering(),
+        'being out of the lobby re-arms the entrance but does not run it')
+
+    -- Home again.
+    local p = BR.Config.Match.lobbyPos
+    BR.State.me.state = BR.PlayerState.LOBBY
+    ped.x, ped.y, ped.z = p.x, p.y, p.z
+    order = {}
+    pump(500)
+
+    ok(BR.LobbyPed.entering(), 'a second arrival in the lobby gets its own entrance')
+    ok(BR.LobbyPed.lockerLocked(), 'and the locker is locked again for it')
+    ok(firstOf('task') ~= nil, 'and the ped really is walking a leg, not just flagged')
+
+    pump(70000)
+    ok(not BR.LobbyPed.entering(), 'the second entrance ends like the first')
+    ok(not BR.LobbyPed.lockerLocked(),
+        'and unlocks -- a lock that arms twice and clears once is worse than none')
+    ok(math.abs(ped.x - p.x) < 0.01 and math.abs(ped.y - p.y) < 0.01,
+        'and leaves the ped on the mark')
+end
+
+-- ...AND THE TRIP HOME HANDS IT THE BLACK RATHER THAN RACING IT.
+--
+-- The entrance opens with a teleport thirty metres up the path. On the boot
+-- road the loading screen covers that; on the trip home the cover ends inside
+-- BR.Spawn.respawn's exact path, which finishes with BR.Spawn.reveal() and
+-- therefore with DoScreenFadeIn. A fade renders nothing on the frame it is
+-- STARTED, so a placement in that same frame is still completely hidden -- and
+-- one Citizen.Wait later is not: the collision wait after it can be seconds
+-- long, and the entrance's own 10Hz tick is gated on `traveling`, which does
+-- not clear until the trip thread ends. Both of those put the teleport in front
+-- of the player, which is the arriving-ped pop this whole feature removes.
+--
+-- SO THE ASSERTION IS ABOUT ELAPSED TIME, NOT ABOUT ORDER. "The placement came
+-- after the fade started" is true of the broken version too -- seconds after.
+-- What has to hold is that NO CLOCK TIME passes between them at all.
+
+do
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    BR.State.me.state = BR.PlayerState.PLAYING
+    ped.x, ped.y = 1500.0, 2500.0
+    pump(500)
+
+    BR.State.me.state = BR.PlayerState.LOBBY
+    order = {}
+    BR.Spawn.toLobby(false)
+    pump(4000)
+
+    local C = BR.Config.Match.lobbyEntrance
+    local _, start = firstOf('coords',
+        function(e) return math.abs(e.x - C.pedStart.x) < 0.01 end)
+    local _, fade = firstOf('fadein')
+
+    ok(start ~= nil, 'the trip home starts the entrance')
+    ok(fade ~= nil, 'precondition: the trip home lifts its cover')
+    ok(start ~= nil and fade ~= nil and start.at == fade.at,
+        ('the ped is placed on the start mark in the same frame the cover '
+            .. 'lifts, not after it (%sms apart)')
+            :format(start and fade and tostring(start.at - fade.at) or '?'))
+
+    -- AND THE ENTRANCE REALLY RAN, rather than the assertion above passing
+    -- because nothing happened at all on this road.
+    ok(BR.LobbyPed.entering() or firstOf('task') ~= nil,
+        'and the walk itself is under way on the trip home')
 end
 
 -- ------------------------------------------------------------------ report ---

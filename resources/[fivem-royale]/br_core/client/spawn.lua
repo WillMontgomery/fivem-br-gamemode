@@ -530,6 +530,39 @@ function BR.Spawn.toLobby(holdBlack)
         local p = BR.Config.Match.lobbyPos
         BR.Spawn.respawn(p.x, p.y, p.z, p.heading, true)
 
+        -- ═══ THE GRAND ENTRANCE TAKES ITS MOMENT IN THIS FRAME ═══
+        --
+        -- Owner, 2026-08-29: "let's make that grand entry happen for every trip
+        -- back to the lobby." So the walk-in is not a boot sequence any more,
+        -- and THIS is the road home from everywhere -- the end of a match,
+        -- /brleave, the server's TO_LOBBY, the lobby watchdog.
+        --
+        -- HERE, AND WITH NO Citizen.Wait BETWEEN, because the line above is
+        -- where this trip's cover ends: respawn's exact path finishes with
+        -- BR.Spawn.reveal(), which is what calls DoScreenFadeIn. A fade renders
+        -- nothing on the frame it is started, so a placement in the SAME frame
+        -- is still completely hidden -- and one Citizen.Wait later is not: the
+        -- collision wait below can be seconds long, and the entrance's own
+        -- 10Hz tick is gated on `traveling`, which does not clear until the end
+        -- of this thread. Either of those would put the teleport thirty metres
+        -- up the path in front of the player, which is the arriving-ped pop
+        -- client/lobbyped.lua exists to remove.
+        --
+        -- NOT ON THE holdBlack ROAD, which is the end of a match: reveal()
+        -- deliberately does nothing there, the black lifts when the result
+        -- screen hands over to the lobby card, and starting a twenty-second
+        -- walk now would spend most of it behind a verdict. The STATE handler
+        -- starts it there instead, in the same breath as its own fade.
+        --
+        -- IT ANSWERS FOR ITSELF WHETHER IT WANTS THE MOMENT: it refuses when it
+        -- has already run, when this is not a lobby arrival, or when the ped is
+        -- not actually here. Guarded because client/lobbyped.lua loads after
+        -- this file.
+        if not BR.Spawn.holdBlack
+           and BR.LobbyPed and BR.LobbyPed.startNow then
+            BR.LobbyPed.startNow(true)
+        end
+
         -- Hold black until the island is actually under us; br_environment
         -- flips it on within a second of the state change.
         RequestCollisionAtCoord(p.x, p.y, p.z)
@@ -761,6 +794,17 @@ AddEventHandler(BR.Net.STATE, function(d)
         -- world may come back behind it.
         if BR.Spawn.holdBlack then
             BR.Spawn.holdBlack = false
+
+            -- AND THE GRAND ENTRANCE GOES UNDER THE LAST OF THIS BLACK. This
+            -- is the end-of-match half of the call in toLobby above -- same
+            -- reason, same ordering, different black. Asked with no argument
+            -- so its ordinary guards apply: by here the trip home has landed
+            -- and holdBlack has just been cleared, and if either were somehow
+            -- still true it must refuse rather than race them for the ped.
+            if BR.LobbyPed and BR.LobbyPed.startNow then
+                BR.LobbyPed.startNow()
+            end
+
             DoScreenFadeIn(2000)
         end
     end

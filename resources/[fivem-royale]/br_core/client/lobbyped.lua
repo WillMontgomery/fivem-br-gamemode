@@ -51,6 +51,38 @@
 -- Every coordinate and every duration is in BR.Config.Match.lobbyEntrance --
 -- the owner offered to tune the timing, so none of it is written down here.
 --
+-- AND IT IS NOT A BOOT SEQUENCE. "Also let's make that grand entry happen for
+-- every trip back to the lobby. That was my expectation." -- the owner,
+-- 2026-08-29. So it runs on the boot, on the trip home from a match, on
+-- /brleave, and on any other road that ends with a player standing on the mark.
+--
+-- RE-ARMED BY LEAVING, NOT BY ARRIVING, which is what makes that true of roads
+-- nobody enumerated -- an admin force, a stuck round being reset. The tick at
+-- the bottom of this file watches the one fact every arrival has in common: I
+-- was not here a moment ago. Arriving is what FIRES it, and the trip itself
+-- asks (BR.LobbyPed.startNow, called by BR.Spawn.toLobby) so that the opening
+-- teleport lands in the frame the trip's fade begins rather than somewhere
+-- inside it.
+--
+-- ═══ THE THREE THINGS THAT WERE WRONG WITH THE MOTION ═══
+--
+-- All reported on 2026-08-29, and they share a shape: every piece of the
+-- sequence was built as a self-contained move that ENDS AT REST, and a chain of
+-- those is a stop at every joint.
+--
+--   * The camera paused at each node -- eased interpolations (see
+--     BR.LobbyCam.glide) and, latently, a wait on the ped's measured arrival.
+--   * The camera changed pace at each node -- a flat camMoveMs per move over
+--     segments of 222m, 102m and 31m. It is one camFlightMs shared out by
+--     LENGTH now (see flyCamera).
+--   * The ped stopped and turned at each corner -- it was handed the surveyed
+--     heading of the corner as its arrival facing, and the next leg only
+--     arrived once it was 0.9m away, after it had finished slowing down for a
+--     stop it was never going to make (see the leg loop in run).
+--
+-- And the fourth, which is the same story at the very end: the walk stopped
+-- 0.9m short of the lobby mark and standOnMark teleported the rest.
+--
 -- ═══ ABANDONMENT IS A FIRST-CLASS ENDING ═══
 --
 -- "If the player readies up quickly and joins to warmup - drop everything
@@ -132,6 +164,19 @@ end
 
 local ARMED, RUNNING, DONE = 'armed', 'running', 'done'
 
+-- How long the ped may stop getting closer to the lobby mark before the last
+-- leg gives up on it. AN ESCAPE, NOT A KNOB -- nothing about how the entrance
+-- looks changes with this number, it only bounds a case the engine may never
+-- produce, so it is deliberately not in config with the durations the owner
+-- tunes. See the leg loop for what it is escaping.
+local STALL_MS = 400
+
+-- How far from the lobby mark still counts as standing in the lobby, for the
+-- purpose of deciding an entrance may start. The same 150m the latch below and
+-- client/spawn.lua's lobby watchdog both use, read the same way round: inside
+-- it means the trip home has landed and the mark is under our feet.
+local HERE_M = 150.0
+
 -- ARMED AT LOAD: the entrance is a thing that happens once, on the way into the
 -- lobby this session, and the tick below is what decides when the world is
 -- ready for it.
@@ -164,12 +209,24 @@ local askedAt = nil
 -- ALREADY landing would cancel it, which reads as a snap rather than an arrival.
 local camLanded = false
 
--- The walk, snapshotted at the start rather than rebuilt per poll: the camera
--- thread reads it at 20Hz to work out how far the ped still has to go.
+-- The walk, snapshotted at the start rather than rebuilt per leg.
 local path = {}
 
--- Which leg the ped is on. 1-based; #path+1 once the walk is over.
-local legIndex = 1
+-- ═══ WHAT THE LAST RUN ACTUALLY TOOK ═══
+--
+-- THE ONLY HONEST SOURCE FOR THE LEAD. The camera used to chase the ped's
+-- measured arrival so it could land `camLeadMs` early, and that chase was the
+-- pause the owner reported -- so the flight is a fixed duration now and the
+-- lead is whatever the two durations leave. Which means the owner is tuning one
+-- against the other by eye, and these are the numbers /brlobbywalk hands him to
+-- do it with: how long the walk took, how long the flight took, and therefore
+-- how far ahead of the ped the camera landed. Nothing reads them at runtime.
+-- Absolute game times rather than durations, because the number the owner is
+-- actually tuning is the GAP between the two endings -- how far ahead of the
+-- ped the camera landed -- and two independently measured durations that
+-- started at different moments cannot answer that.
+local walkBegan, walkEnded = nil, nil
+local flightBegan, flightEnded = nil, nil
 
 --- @return table
 local function cfg()
@@ -291,7 +348,10 @@ function BR.LobbyPed.stop(why)
         -- CANCELS it, and the view snaps to the destination instead of easing
         -- into it, which is precisely the two-seconds-early arrival the whole
         -- schedule exists to produce.
-        if not camLanded then BR.LobbyCam.glideHome(400) end
+        -- EASED, UNLIKE THE FLIGHT'S OWN MOVES. This is not a segment of a
+        -- constant-pace flight, it is a self-contained settle out of one that
+        -- was interrupted -- so it should start and end at rest.
+        if not camLanded then BR.LobbyCam.glideHome(400, true) end
     else
         BR.LobbyCam.stop()
     end
@@ -401,54 +461,69 @@ local function clipsetFor(ped)
     return male and cfg().walkClipsetMale or cfg().walkClipsetFemale
 end
 
---- How far the ped still has to walk, along the remaining path.
---- @param from number  index of the leg being walked
---- @return number  metres
-local function remaining(from)
-    local c = GetEntityCoords(PlayerPedId())
-    local total = 0.0
-    local px, py = c.x, c.y
-    for i = from, #path do
-        total = total + BR.Dist(px, py, path[i].x, path[i].y)
-        px, py = path[i].x, path[i].y
+--- The flight, as a list of segments with their lengths in metres.
+---
+--- ONE ENTRY PER MOVE, AND THE LAST ONE IS THE LOBBY FRAME -- which is not in
+--- `camPath` and deliberately is not: the shot the entrance ends on has to be
+--- the SAME shot the locker was composed against, so it is computed from
+--- lobbyPos and lobbyCam by BR.LobbyCam.lobbyFrame rather than surveyed twice.
+---
+--- MEASURED IN THREE DIMENSIONS, because this flight loses seventy metres of
+--- altitude and a 2D length would price the first segment at two thirds of what
+--- the camera actually has to travel.
+--- @return table  { { node = table|nil, len = number }, ... }  nil node = home
+local function camSegments()
+    local nodes = cfg().camPath or {}
+    if #nodes == 0 then return {} end
+
+    local out = {}
+    local px, py, pz = nodes[1].x, nodes[1].y, nodes[1].z
+    for i = 2, #nodes do
+        local n = nodes[i]
+        out[#out + 1] = { node = n, len = BR.Dist3(px, py, pz, n.x, n.y, n.z) }
+        px, py, pz = n.x, n.y, n.z
     end
 
-    -- AND THE WALK STOPS SHORT AT EVERY CORNER. `arriveRadius` is how close
-    -- counts as arrived, so the ped covers that much less than the
-    -- straight-line sum -- once per leg still to come. Left in, the estimate
-    -- runs long by a couple of seconds, the last camera move starts late, and
-    -- the camera lands with the ped instead of ahead of it, which is the one
-    -- thing this schedule exists to prevent.
-    total = total - (cfg().arriveRadius or 0.9) * math.max(0, #path - from + 1)
-    return total > 0.0 and total or 0.0
-end
-
---- Roughly how long until the ped reaches the lobby mark, in milliseconds.
----
---- MEASURED RATHER THAN ASSUMED, and it is what schedules the camera's last
---- move: distance still to cover over the speed the ped is ACTUALLY managing.
---- A guessed metres-per-second would be one more number to tune and would be
---- wrong the first time somebody changed walkSpeed or the clipset.
----
---- The floor on the speed is what stops a ped that has snagged on geometry
---- reading as "never arriving" and holding the camera up in the sky; the leg
---- timeout is the real escape from that, and this only has to not make it
---- worse.
---- @return number
-local function etaMs()
-    local speed = GetEntitySpeed and GetEntitySpeed(PlayerPedId()) or 0.0
-    if not speed or speed ~= speed or speed < 0.6 then speed = 0.6 end
-    return (remaining(legIndex) / speed) * 1000.0
+    local hx, hy, hz = BR.LobbyCam.lobbyFrame()
+    out[#out + 1] = { node = nil, len = BR.Dist3(px, py, pz, hx, hy, hz) }
+    return out
 end
 
 --- Fly the camera down to meet the ped. Runs alongside the walk.
+---
+--- ═══ ONE MOVE, ONE PACE, AND IT DOES NOT WATCH THE PED ═══
+---
+--- Owner, 2026-08-29: "The camera movements and the walks should not wait on
+--- each other ... it should be smooth movement all the way start to finish with
+--- no pace change either."
+---
+--- BOTH HALVES OF THAT WERE BROKEN, AND SEPARATELY.
+---
+--- The PAUSE was the ease: every move was an ease-in-and-out interpolation, so
+--- the camera decelerated to a standstill on arriving at each node and started
+--- again from rest. See BR.LobbyCam.glide, which now flies segments linearly.
+---
+--- The PACE was `camMoveMs`: a flat five seconds per move over segments that
+--- are 222m, 102m and 31m long, which is 44 m/s, then 20, then 6. So the
+--- duration is now allocated BY LENGTH out of one total, `camFlightMs`, and the
+--- camera covers the same metres per second from the first node to the lobby.
+---
+--- And it no longer reads the ped at all. It used to hold at the last node
+--- until the ped's MEASURED remaining distance said it was `camLeadMs` from
+--- arriving -- a genuine wait on the walk, invisible at today's walk speeds and
+--- ten seconds long at a flat 1.0. The segment boundaries below are absolute
+--- offsets from the flight's own start, so a late frame cannot accumulate into
+--- a drift and nothing in here can stall.
 --- @param mine number  the token this thread belongs to
 local function flyCamera(mine)
     local C = cfg()
-    local path = C.camPath or {}
-    local move = C.camMoveMs or 5000
+    local segs = camSegments()
+    if #segs == 0 then return end
 
-    -- MOVE 2 IS CUED ON THE SCREEN, NOT ON A CLOCK. "As the screen fades in
+    local total = 0.0
+    for _, s in ipairs(segs) do total = total + s.len end
+
+    -- THE FLIGHT IS CUED ON THE SCREEN, NOT ON A CLOCK. "As the screen fades in
     -- (ped still walking): smoothly to ..." -- so this waits for the reveal
     -- rather than starting a timer at the same moment and hoping. Bounded,
     -- because a boot where the fade never lands must still end with a camera
@@ -460,50 +535,68 @@ local function flyCamera(mine)
     end
     if token ~= mine then return end
 
-    for i = 2, #path do
-        BR.LobbyCam.glide(path[i], move)
-        local until_ = GetGameTimer() + move
-        while token == mine and GetGameTimer() < until_ do Citizen.Wait(50) end
+    local flight = C.camFlightMs or 15000
+    local t0 = GetGameTimer()
+    flightBegan = t0
+    local done = 0.0
+    for i, s in ipairs(segs) do
+        done = done + s.len
+
+        -- THE BOUNDARY IS ABSOLUTE. Measured from t0 rather than from "now", so
+        -- the ~one frame each move is issued late is spent out of THAT move
+        -- instead of being added to the flight -- three segments of drift would
+        -- otherwise be a visible hitch at the last node.
+        local frac = total > 0.0 and (done / total) or (i / #segs)
+        local boundary = t0 + math.floor(flight * frac)
+        local ms = boundary - GetGameTimer()
+        if ms < 1 then ms = 1 end
+
+        if s.node then BR.LobbyCam.glide(s.node, ms) else BR.LobbyCam.glideHome(ms) end
+
+        while token == mine do
+            local left = boundary - GetGameTimer()
+            if left <= 0 then break end
+            Citizen.Wait(left > 50 and 50 or left)
+        end
         if token ~= mine then return end
     end
 
-    -- AND IT LANDS BEFORE THE PED DOES, BY camLeadMs. The last move is started
-    -- when the ped is (move + lead) away from the mark, so it FINISHES a lead's
-    -- worth of time early -- which is the owner's "the camera should reach its
-    -- final position about 2 seconds before the ped does", expressed against
-    -- the ped rather than against a stopwatch that would drift the moment the
-    -- walk was slower than the estimate.
-    local lead = C.camLeadMs or 2000
-    local hard = GetGameTimer() + (C.legTimeoutMs or 15000) * 2
-    while token == mine and GetGameTimer() < hard do
-        if legIndex > #path then break end            -- the ped got there first
-        if etaMs() <= move + lead then break end
-        Citizen.Wait(50)
-    end
-    if token ~= mine then return end
-
-    BR.LobbyCam.glideHome(move)
+    flightEnded = GetGameTimer()
     camLanded = true
 end
 
---- The whole entrance, from the black screen to the ped standing on its mark.
---- @param mine number
-local function run(mine)
+--- Put the ped on the start mark and raise the first shot over it.
+---
+--- ═══ SYNCHRONOUS, AND THAT IS THE POINT ═══
+---
+--- This is a teleport thirty metres up the path, and it has to happen under
+--- cover -- it is the "arriving ped pops into the shot" this whole file exists
+--- to remove. On the boot road the cover is the loading screen and there is all
+--- the time in the world. On the TRIP HOME it is BR.Spawn.toLobby's fade, which
+--- lifts a line after the trip lets go -- so the placement is done in the
+--- caller's own frame rather than on the entrance thread's first resume, and
+--- toLobby calls BR.LobbyPed.startNow() while it is still black.
+local function placeOnStart()
     local C = cfg()
-
-    -- 1. THE PED GOES TO THE START MARK WHILE THE SCREEN IS STILL BLACK.
-    --    Frozen, and with collision requested: this is a teleport like any
-    --    other and the ground under it has to exist before the ped is released.
     local ped = PlayerPedId()
     local s = C.pedStart
+
     RequestCollisionAtCoord(s.x, s.y, s.z)
     SetEntityCoordsNoOffset(ped, s.x, s.y, s.z, false, false, false)
     SetEntityHeading(ped, s.heading + 0.0)
     FreezeEntityPosition(ped, true)
 
-    -- 2. THE CAMERA'S FIRST SHOT, RAISED UNDER THE BLACK. No interpolation:
-    --    there is nothing to blend from.
+    -- THE CAMERA'S FIRST SHOT, RAISED UNDER THE BLACK. No interpolation: there
+    -- is nothing to blend from.
     if C.camPath and C.camPath[1] then BR.LobbyCam.place(C.camPath[1]) end
+end
+
+--- The whole entrance, from the black screen to the ped standing on its mark.
+--- The ped is already on its start mark when this begins -- see placeOnStart.
+--- @param mine number
+local function run(mine)
+    local C = cfg()
+    local ped = PlayerPedId()
 
     -- 3. WAIT FOR THE MODEL. The owner called this out explicitly, and the
     --    failure it prevents is the one client/loading.lua already documents:
@@ -552,10 +645,29 @@ local function run(mine)
     --    the unfreeze rather than after is the difference between a walk and a
     --    single frame of one.
     walking = true
+    walkBegan = GetGameTimer()
     FreezeEntityPosition(ped, false)
 
     local radius = C.arriveRadius or 0.9
     local legMs = C.legTimeoutMs or 15000
+
+    -- ═══ AND THE LAST LEG IS WALKED ONTO THE MARK, NOT NEAR IT ═══
+    --
+    -- Owner, 2026-08-29: "the ped is getting close to the final coords, but then
+    -- being teleported there."
+    --
+    -- IT WAS `arriveRadius`, AND IT WAS DOING EXACTLY WHAT IT SAYS. Every leg
+    -- stopped being walked the moment the ped was within 0.9m of its corner --
+    -- fine at a corner, where the ped simply turns and carries on and the 0.9m
+    -- is walked off on the next leg. But the LAST corner is the lobby mark, and
+    -- what comes after it is standOnMark(): SetEntityCoordsNoOffset onto the
+    -- exact spot. So the entrance ended by snapping the ped the last 0.9m,
+    -- face-on, six feet from a camera that had already landed. There was no
+    -- second teleport to find -- the arrival WAS the teleport.
+    --
+    -- So the final leg gets its own radius, small enough that what is left for
+    -- standOnMark to correct is under the width of a boot.
+    local markRadius = C.markRadius or 0.15
 
     -- ═══ A SPEED PER LEG, AND THE LAST ONE CARRIES ═══
     --
@@ -578,11 +690,60 @@ local function run(mine)
         return C.walkSpeed or 1.0
     end
 
+    -- ═══ WHICH WAY THE PED IS ASKED TO FACE AT EACH CORNER ═══
+    --
+    -- Owner, 2026-08-29: "it seems the ped walks to the point, stops, turns,
+    -- then walks to the next point. Can we maybe smooth the corners to keep
+    -- them walking?"
+    --
+    -- HALF OF THAT TURN WAS ASKED FOR, IN WRITING, BY THIS CALL. The seventh
+    -- argument to TaskGoStraightToCoord is `targetHeading` -- the way the ped
+    -- faces once it gets there -- and every leg was handing it `n.heading`, the
+    -- heading authored on the corner in config. Those headings are where the
+    -- OWNER HAPPENED TO BE LOOKING when he surveyed each point, and two of the
+    -- three are the direction he had just walked IN from:
+    --
+    --   pedPath[2] heading 218.7  -- the next corner is 82 degrees off it
+    --   pedPath[3] heading 304.5  -- the next corner is 88 degrees off it
+    --
+    -- So the ped was being told to arrive, turn most of a right angle to face
+    -- backwards, and only then given its next leg -- which turned it back. The
+    -- facing at a corner is not a surveyed fact, it is a consequence of where
+    -- the path goes next, so it is COMPUTED from the path.
+    --
+    -- THE LAST ONE IS DIFFERENT AND KEEPS ITS AUTHORED HEADING. The lobby mark
+    -- is not a corner, it is the camera's subject: BR.Config.Match.lobbyPos's
+    -- heading is what the whole lobby shot is composed against.
+    local function headingFor(i)
+        if i >= #path then return path[i].heading + 0.0 end
+        local a, b = path[i], path[i + 1]
+        return BR.GtaHeading(BR.Bearing(a.x, a.y, b.x, b.y))
+    end
+
+    -- ═══ AND THE OTHER HALF OF THE TURN WAS THE HANDOVER BEING LATE ═══
+    --
+    -- Each leg is its own go-to-coord task, and a go-to-coord task ENDS AT
+    -- REST -- the ped slows down over the last couple of metres so that it
+    -- stops on the coordinate rather than overshooting it. The next leg was
+    -- only tasked once the ped was within `arriveRadius` (0.9m) of the corner,
+    -- by which point that deceleration has already happened: the ped had
+    -- finished stopping before it was told to keep going.
+    --
+    -- So an intermediate corner hands over EARLY, while the ped is still at
+    -- speed, and the corner gets rounded rather than touched. Clamped to a
+    -- fraction of the leg actually being walked, so a short leg can never be
+    -- swallowed whole by its own corner, and never later than arriveRadius so
+    -- this can only ever hand over sooner than it used to.
+    local corner = C.cornerRadius or 2.0
+
     for i = 1, #path do
         if token ~= mine then return end
-        legIndex = i
         local n = path[i]
+        local last = (i == #path)
         ped = PlayerPedId()
+
+        local from = GetEntityCoords(ped)
+        local legLen = BR.Dist(from.x, from.y, n.x, n.y)
 
         -- TaskGoStraightToCoord rather than a pathfinding walk: these are
         -- authored corners on open ground and the point is that the ped takes
@@ -596,18 +757,40 @@ local function run(mine)
         -- IS a ped property and needs its own reset there. A player who readies
         -- up during the 2.0 leg does not carry a run into warmup.
         TaskGoStraightToCoord(ped, n.x, n.y, n.z, speedFor(i),
-            legMs, n.heading + 0.0, 0.0)
+            legMs, headingFor(i), 0.0)
 
+        local want
+        if last then
+            want = markRadius
+        else
+            want = math.min(corner, legLen * 0.4)
+            if want < radius then want = radius end
+        end
+
+        -- AND A PED THAT HAS STOPPED SHORT IS NOT GOING TO GET CLOSER.
+        --
+        -- The tight final radius asks the engine for more precision than
+        -- TaskGoStraightToCoord is documented to promise -- unverified either
+        -- way, and the failure if it will not give it is the ugly one: the ped
+        -- standing on the mark for the whole legTimeoutMs before the sequence
+        -- notices. So the leg also ends when the ped has stopped IMPROVING
+        -- while already inside the ordinary radius. Measured off the distance
+        -- rather than off GetEntitySpeed, because a ped shuffling on the spot
+        -- has a speed and is still not arriving.
+        local best, stuck = math.huge, 0
         local until_ = GetGameTimer() + legMs
         while token == mine and GetGameTimer() < until_ do
             local c = GetEntityCoords(PlayerPedId())
-            if BR.Dist(c.x, c.y, n.x, n.y) <= radius then break end
+            local d = BR.Dist(c.x, c.y, n.x, n.y)
+            if d <= want then break end
+            if d < best - 0.01 then best, stuck = d, 0 else stuck = stuck + 50 end
+            if last and d <= radius and stuck >= STALL_MS then break end
             Citizen.Wait(50)
         end
     end
     if token ~= mine then return end
 
-    legIndex = #path + 1
+    walkEnded = GetGameTimer()
 
     -- 6. ARRIVED. The walking style is cleared here because the owner asked for
     --    it here ("On arrival, clear the walking style"), and stop() clears it
@@ -618,21 +801,80 @@ local function run(mine)
     BR.LobbyPed.stop('arrived')
 end
 
---- Begin. Called by the tick below when the world is ready for it.
+--- Begin. Called by the tick below, and by BR.LobbyPed.startNow.
 local function begin()
     phase = RUNNING
     token = token + 1
     local mine = token
 
     path = legs()
-    legIndex = 1
     camLanded = false
+    walkBegan, walkEnded = nil, nil
+    flightBegan, flightEnded = nil, nil
     setLocked(true)
+
+    -- BEFORE THE THREADS, NOT ON THEM. See placeOnStart: the teleport onto the
+    -- start mark has to be inside the caller's frame, because on the trip home
+    -- the caller is holding the black it needs.
+    placeOnStart()
 
     Citizen.CreateThread(function() flyCamera(mine) end)
     Citizen.CreateThread(function() run(mine) end)
 
     print('[br_core] lobby entrance begins')
+end
+
+--- Am I standing in the lobby, by the only test that cannot be argued with?
+---
+--- STATE IS NOT ENOUGH AND THIS IS THE GUARD THAT PROVES IT. The server sets a
+--- player to LOBBY the moment a match is decided -- seconds before
+--- BR.Spawn.toLobby has taken them anywhere -- so an entrance armed on state
+--- alone would fire while the ped was still standing in Los Santos over a
+--- verdict slam, and its first act would be a forty-kilometre teleport in plain
+--- sight. Asking where the ped IS costs one native and cannot be raced.
+--- @return boolean
+local function atTheLobby()
+    local p = BR.Config.Match.lobbyPos
+    local c = GetEntityCoords(PlayerPedId())
+    return BR.Dist(c.x, c.y, p.x, p.y) <= HERE_M
+end
+
+--- May the entrance start right now?
+--- @param allowTraveling boolean|nil  the caller IS the trip (see startNow)
+--- @return boolean
+local function mayBegin(allowTraveling)
+    if phase ~= ARMED then return false end
+    if BR.State.me.state ~= BR.PlayerState.LOBBY then return false end
+    if not atTheLobby() then return false end
+    if not allowTraveling then
+        -- A TRIP OWNS THE PED WHILE IT IS IN FLIGHT. BR.Spawn.toLobby is
+        -- routinely running underneath the loading screen on a fresh join
+        -- (client/loading.lua explains why), and starting a walk out of a
+        -- teleport that has not landed would race it for the ped's position.
+        if BR.Spawn and BR.Spawn.traveling then return false end
+        if BR.Spawn and BR.Spawn.holdBlack then return false end
+    end
+    return true
+end
+
+--- Take the entrance NOW, under the black the caller is holding.
+---
+--- CALLED BY BR.Spawn.toLobby, which is the one road home from anywhere: the
+--- end of a match, /brleave, the server's TO_LOBBY, and the lobby watchdog all
+--- go through it. The trip has already put the ped on the lobby mark and is
+--- about to fade in; the placement has to be finished before it does.
+---
+--- It refuses on every road where it is not wanted (already run, not in the
+--- lobby, ped nowhere near the mark) and the tick below is still the net under
+--- every other way of ending up standing here.
+--- @param fromTrip boolean|nil  true ONLY when the caller is the trip itself,
+---        which is the one caller allowed to be `traveling` -- anybody else
+---        asking while a trip is in flight is racing it for the ped.
+--- @return boolean  whether an entrance was started
+function BR.LobbyPed.startNow(fromTrip)
+    if not mayBegin(fromTrip == true) then return false end
+    begin()
+    return true
 end
 
 -- WHEN. The same shape as the lobby camera's own follow tick, and for the same
@@ -642,7 +884,33 @@ end
 -- IT WAITS FOR THE CHARACTER TO BE ON THE PLAYER, not merely for the state to
 -- say lobby -- see step 3 of run(), and client/loading.lua's own note on the
 -- four different moments "fully spawned in" could mean.
+--
+-- ═══ AND IT RE-ARMS, BECAUSE THE ENTRANCE IS NOT A BOOT SEQUENCE ═══
+--
+-- Owner, 2026-08-29: "Also let's make that grand entry happen for every trip
+-- back to the lobby. That was my expectation."
+--
+-- RE-ARMED ON LEAVING RATHER THAN ON ARRIVING, which is the same argument the
+-- latch below makes and it is the reason this is not a list of events. There
+-- are several ways to end up back on the lobby mark -- the end of a match,
+-- /brleave, an admin resetting a stuck round, br_core restarting under a player
+-- who is already standing there -- and every one of them is preceded by the one
+-- fact this can watch: I am not in the lobby. So leaving is what re-arms, and
+-- arriving is what fires, and no road has to be remembered.
+--
+-- askedAt GOES WITH IT. It is the loading screen's arm wait, which exists only
+-- on the boot road; left set from that boot it would expire during the first
+-- match and skip every entrance afterwards with "the reveal went ahead without
+-- it", on a road that has no reveal at all.
 BR.Loop.register(BR.Loop.TICK, 'lobbyped.entrance', function()
+    if BR.State.me.state ~= BR.PlayerState.LOBBY then
+        if phase == DONE then
+            phase = ARMED
+            askedAt = nil
+        end
+        return
+    end
+
     if phase ~= ARMED then return end
 
     -- AND IT GIVES UP IF THE SCREEN HAS ALREADY COME DOWN WITHOUT IT.
@@ -650,7 +918,7 @@ BR.Loop.register(BR.Loop.TICK, 'lobbyped.entrance', function()
     -- revealBlock() holds the loading screen for this sequence and then stops
     -- holding it, bounded, so a boot can never be parked on a walk that will
     -- not start. The other half of that bound is here: once the reveal has gone
-    -- ahead, starting is WORSE than not starting -- the first thing run() does
+    -- ahead, starting is WORSE than not starting -- the first thing begin() does
     -- is teleport the ped thirty metres up the path, and doing that in front of
     -- somebody is the pop this whole file exists to remove.
     if askedAt and GetGameTimer() - askedAt > (cfg().armWaitMs or 4000) then
@@ -659,14 +927,7 @@ BR.Loop.register(BR.Loop.TICK, 'lobbyped.entrance', function()
         return
     end
 
-    if BR.State.me.state ~= BR.PlayerState.LOBBY then return end
-
-    -- A TRIP OWNS THE PED WHILE IT IS IN FLIGHT. BR.Spawn.toLobby is routinely
-    -- running underneath the loading screen on a fresh join (client/loading.lua
-    -- explains why), and starting a walk out of a teleport that has not landed
-    -- would race it for the ped's position.
-    if BR.Spawn and BR.Spawn.traveling then return end
-    if BR.Spawn and BR.Spawn.holdBlack then return end
+    if not mayBegin(false) then return end
 
     begin()
 end)
@@ -715,9 +976,42 @@ RegisterCommand('brlobbywalk', function()
     print(('  walking      %s'):format(tostring(walking)))
     print(('  locker       %s'):format(locked and 'LOCKED' or 'free'))
     print(('  ped          %s'):format(BR.LobbyPed.isNetworked() and 'networked' or 'local'))
-    print(('  camMoveMs    %d'):format(C.camMoveMs or 0))
-    print(('  camLeadMs    %d'):format(C.camLeadMs or 0))
+    print(('  camFlightMs  %d'):format(C.camFlightMs or 0))
     print(('  focusLeadMs  %d'):format(C.focusLeadMs or 0))
+    print(('  cornerRadius %.2f'):format(C.cornerRadius or 0))
+    print(('  markRadius   %.2f'):format(C.markRadius or 0))
+
+    -- THE FLIGHT, SEGMENT BY SEGMENT, IN METRES AND MILLISECONDS. The whole
+    -- point of allocating camFlightMs by length is that the pace comes out the
+    -- same everywhere, so the column that matters is the last one: if those
+    -- numbers are not equal the camera is speeding up or slowing down at a node
+    -- and something has gone wrong in here rather than in config.
+    local segs = camSegments()
+    local total = 0.0
+    for _, s in ipairs(segs) do total = total + s.len end
+    local flight = C.camFlightMs or 15000
+    local done = 0.0
+    local prev = 0
+    for i, s in ipairs(segs) do
+        done = done + s.len
+        local at = math.floor(flight * (total > 0.0 and done / total or i / #segs))
+        local ms = at - prev
+        prev = at
+        print(('    seg %d      %6.1fm  %5dms  %5.1f m/s')
+            :format(i, s.len, ms, ms > 0 and (s.len / (ms / 1000.0)) or 0.0))
+    end
+
+    -- AND WHAT THE LAST RUN ACTUALLY TOOK, which is the only way to see the
+    -- lead now that the camera no longer chases the ped for it: tune
+    -- camFlightMs against the walk figure until the gap reads how you want it.
+    if walkBegan and walkEnded and flightBegan and flightEnded then
+        print(('  last run     walk %.1fs, flight %.1fs, camera landed %.1fs early')
+            :format((walkEnded - walkBegan) / 1000.0,
+                    (flightEnded - flightBegan) / 1000.0,
+                    (walkEnded - flightEnded) / 1000.0))
+    else
+        print('  last run     not measured yet')
+    end
     -- ONE LINE PER LEG, IN ORDER, because the whole point of the list is that
     -- the legs differ -- a single averaged number would hide the thing being
     -- tuned. Falls back to the scalar so a config without the list still says

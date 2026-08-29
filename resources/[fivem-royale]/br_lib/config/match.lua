@@ -199,6 +199,15 @@ BR.Config.Match = {
     -- THE CAMERA'S PATH is three authored nodes and then the ordinary lobby
     -- frame, computed from `lobbyPos` and `lobbyCam` exactly as it always was.
     lobbyEntrance   = {
+        -- THE `heading` ON A pedPath CORNER IS NOT USED TO TURN THE PED, and
+        -- it was the reason the ped used to stop and pivot at every one. These
+        -- are where the surveyor was LOOKING when he stood on each point, and
+        -- two of the three face back the way he came -- handed to the walk as
+        -- "the way to be facing on arrival" they made the ped turn 80-odd
+        -- degrees the wrong way and then turn back. The client works the
+        -- facing out from where the path goes NEXT instead. They are kept
+        -- because they are the survey, and because pedStart's heading IS used
+        -- (it is where the ped is placed, before it has a leg to face along).
         pedStart = { x = 5012.76, y = -5721.74, z = 19.48, heading = 315.3 },
         pedPath  = {
             { x = 5023.88, y = -5709.47, z = 19.88, heading = 206.3 },
@@ -260,11 +269,37 @@ BR.Config.Match = {
         -- to the path cannot leave a leg with no speed to walk it at.
         walkSpeeds = { 2.0, 1.5, 1.0 },
 
-        -- How close counts as arrived, per leg, and how long one leg may take
-        -- before the sequence gives up on it and moves to the next. The
-        -- timeout is the escape, not the plan: a ped stuck on geometry must
-        -- still reach the lobby mark.
+        -- ═══ THREE DISTANCES, AND THEY ARE NOT THE SAME QUESTION ═══
+        --
+        -- `cornerRadius` -- HOW EARLY THE NEXT LEG IS HANDED OVER at a corner,
+        -- in metres. Each leg is a go-to-coord task and a go-to-coord task
+        -- ENDS AT REST: the ped slows over the last couple of metres so it
+        -- stops ON the coordinate. Handing over at 0.9m meant the ped had
+        -- already finished stopping before it was told to keep going -- owner,
+        -- 2026-08-29: "it seems the ped walks to the point, stops, turns, then
+        -- walks to the next point." Bigger rounds the corners more and cuts
+        -- them wider; smaller is closer to the surveyed line and closer to
+        -- stopping at it. It is clamped in the client to a fraction of the leg
+        -- being walked, so a short leg cannot be swallowed by its own corner.
+        --
+        -- `markRadius` -- HOW CLOSE COUNTS AS ARRIVED at the lobby mark, and
+        -- it is small for a reason. The mark is the end of the walk and the
+        -- ped is placed exactly on it (the lobby is a camera shot), so
+        -- whatever is left when the walk stops is a TELEPORT the player
+        -- watches -- owner, 2026-08-29: "the ped is getting close to the final
+        -- coords, but then being teleported there." That is what this is: the
+        -- length of that teleport. Under a boot's width and nobody can see it.
+        --
+        -- `arriveRadius` -- the plain "close enough" the two above are
+        -- measured against: the floor under cornerRadius, and the window in
+        -- which a ped that has stopped improving is taken to have arrived.
+        cornerRadius = 2.0,
+        markRadius   = 0.15,
         arriveRadius = 0.9,
+
+        -- How long one leg may take before the sequence gives up on it and
+        -- moves to the next. The escape, not the plan: a ped stuck on geometry
+        -- must still reach the lobby mark.
         legTimeoutMs = 15000,
 
         -- THE CAMERA NODES. `heading` is the owner's; `pitch` is OPTIONAL and
@@ -278,16 +313,27 @@ BR.Config.Match = {
             { x = 5063.97, y = -5741.21, z = 27.80, heading =  48.0 },
         },
 
-        -- Roughly five seconds a move, the owner's number, and every move is
-        -- an engine interpolation rather than a per-frame write.
-        camMoveMs = 5000,
-
-        -- THE CAMERA GETS THERE FIRST, BY THIS MUCH. "the camera should reach
-        -- its final position about 2 seconds before the ped does" -- so the
-        -- last camera move is STARTED this long before the ped's own arrival
-        -- is expected, and the whole camera path is scheduled backwards from
-        -- the walk rather than run alongside it on its own clock.
-        camLeadMs = 2000,
+        -- ═══ THE WHOLE FLIGHT, NOT ONE MOVE ═══
+        --
+        -- How long the camera takes to get from the first node above to the
+        -- lobby frame, start to finish, INCLUDING the landing. One number for
+        -- the lot, because the pace has to be the same everywhere.
+        --
+        -- IT USED TO BE FIVE SECONDS A MOVE and that is what made it wrong.
+        -- The three segments are about 222m, 102m and 31m long, so a flat five
+        -- seconds each flew them at 44, then 20, then 6 metres per second --
+        -- owner, 2026-08-29: "it should be smooth movement all the way start
+        -- to finish with no pace change either." The client now shares this
+        -- total out BY LENGTH, so every segment runs at the same speed and
+        -- there is nothing to keep in step by hand.
+        --
+        -- AND IT NO LONGER WATCHES THE PED. It used to hold at the last node
+        -- until the ped's measured arrival was two seconds away, which is the
+        -- pause in the same report. The camera lands wherever these two
+        -- durations leave it -- /brlobbywalk prints how long the last walk and
+        -- the last flight actually took and how far ahead the camera landed,
+        -- which is what to tune this against.
+        camFlightMs = 15000,
 
         -- STREAMING LEADS THE REVEAL. SetFocusPosAndVel is pointed at the
         -- first camera node this long before the screen fades in, so the

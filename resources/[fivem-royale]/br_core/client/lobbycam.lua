@@ -195,17 +195,40 @@ function BR.LobbyCam.place(node)
     return true
 end
 
+-- ═══ EASE IS OFF BY DEFAULT, AND THAT IS THE FIX FOR THE STUTTER ═══
+--
+-- SET_CAM_ACTIVE_WITH_INTERP's last two arguments are easeLocation and
+-- easeRotation, and passing 1 for them is an ease-IN-and-OUT: the camera
+-- accelerates away from the source and DECELERATES TO A STANDSTILL at the
+-- destination. One interpolation of those is a nice single move. A CHAIN of
+-- them is a camera that stops dead at every node -- which is exactly what the
+-- owner reported on 2026-08-29 ("once the camera reaches each point, there's a
+-- pause ... it should be smooth movement all the way start to finish with no
+-- pace change either").
+--
+-- So every move that is a SEGMENT OF A LONGER FLIGHT passes 0: constant
+-- velocity, and the next segment picks the camera up at the speed the last one
+-- left it. Easing is kept for moves that really are one self-contained move --
+-- the settle in BR.LobbyPed.stop's abandoned flight -- where starting and
+-- ending at rest is what it should look like.
+--- @param ease boolean|nil  true to ease in and out; nil/false for constant pace
+--- @return number
+local function easeFlag(ease)
+    return ease == true and 1 or 0
+end
+
 --- Move smoothly from wherever the camera is to a node, over `ms`.
 ---
 --- ENGINE INTERPOLATION, NOT A PER-FRAME WRITE. Two static cameras and
---- SetCamActiveWithInterp between them: the engine eases both the position and
+--- SetCamActiveWithInterp between them: the engine blends both the position and
 --- the rotation, it survives a frame the script misses, and it leaves nothing
 --- to unwind if the sequence is abandoned mid-move -- the destination camera is
 --- already `cam`, so stop() destroys it like any other.
 --- @param node table    { x, y, z, heading, pitch? }
 --- @param ms number
+--- @param ease boolean|nil  see easeFlag; default is constant pace
 --- @return boolean
-function BR.LobbyCam.glide(node, ms)
+function BR.LobbyCam.glide(node, ms, ease)
     if not node then return false end
     sweepRetired()
 
@@ -226,7 +249,8 @@ function BR.LobbyCam.glide(node, ms)
 
     retiring = cam
     cam = dest
-    SetCamActiveWithInterp(cam, retiring, math.max(1, math.floor(ms or 1000)), 1, 1)
+    SetCamActiveWithInterp(cam, retiring, math.max(1, math.floor(ms or 1000)),
+        easeFlag(ease), easeFlag(ease))
     RenderScriptCams(true, false, 0, true, true)
     return true
 end
@@ -237,8 +261,9 @@ end
 --- ends on is the SAME shot the locker and the ped picker were composed
 --- against -- not an approximation of it built out of a heading.
 --- @param ms number
+--- @param ease boolean|nil  see easeFlag; default is constant pace
 --- @return boolean
-function BR.LobbyCam.glideHome(ms)
+function BR.LobbyCam.glideHome(ms, ease)
     sweepRetired()
 
     local cx, cy, cz, ax, ay, az = BR.LobbyCam.lobbyFrame()
@@ -253,7 +278,8 @@ function BR.LobbyCam.glideHome(ms)
     if cam and isTrue(DoesCamExist(cam)) then
         retiring = cam
         cam = dest
-        SetCamActiveWithInterp(cam, retiring, math.max(1, math.floor(ms or 1000)), 1, 1)
+        SetCamActiveWithInterp(cam, retiring, math.max(1, math.floor(ms or 1000)),
+            easeFlag(ease), easeFlag(ease))
     else
         cam = dest
         SetCamActive(cam, true)
