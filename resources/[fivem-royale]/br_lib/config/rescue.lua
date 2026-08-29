@@ -610,7 +610,30 @@ BR.Config.Rescue = {
     -- numbers it runs on.
 
     -- How often the server judges a rescue in flight.
+    --
+    -- THIS IS A JUDGEMENT CADENCE, NOT A REFRESH RATE, and the two were one
+    -- number until 2026-08-28. Lowering it to make the map smoother would also
+    -- make the stall detector twice as twitchy, because `moveM` is metres of
+    -- progress required BETWEEN judgements -- so a faster tick with the same
+    -- threshold declares a slow-moving ambulance stuck. They are separate now.
     tickMs = 1000,
+
+    -- How often the ambulance's position is published to the map.
+    --
+    -- Owner, 2026-08-28: "The ambulance location blips don't refresh fast
+    -- enough."
+    --
+    -- It rode the judgement tick at 1000ms, and an ambulance at driveSpeed
+    -- covers about 30 metres in that time -- so the blip was up to a block
+    -- behind the van it was pointing at, which on a map is the difference
+    -- between chasing something and guessing where it went.
+    --
+    -- 250ms MATCHES WHAT SQUADMATE BLIPS ALREADY DO. The roster samples
+    -- positions at 4Hz and squad blips are drawn from that, so this is the
+    -- cadence the rest of the map already moves at rather than a new one -- and
+    -- the position is a value the server already holds, so publishing it more
+    -- often costs a message, not a sample.
+    blipMs = 250,
 
     -- Metres of progress the server must SEE between judgements for the rescue
     -- to count as moving. Measured on the server's own position samples of the

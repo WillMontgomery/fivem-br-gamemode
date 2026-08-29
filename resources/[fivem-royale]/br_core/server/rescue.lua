@@ -713,6 +713,30 @@ end)
 -- The judgement
 -- ---------------------------------------------------------------------------
 
+-- ═══ THE MAP MOVES FASTER THAN THE JUDGEMENT DOES ═══
+--
+-- Owner, 2026-08-28: "The ambulance location blips don't refresh fast enough."
+--
+-- The blip used to be published by rescue.tick, so it inherited a cadence
+-- chosen for deciding whether a rescue has stalled. An ambulance at driveSpeed
+-- covers ~30m between judgements, so the icon trailed the vehicle by a block.
+--
+-- IT COULD NOT BE FIXED BY LOWERING tickMs. `moveM` is metres of progress
+-- required BETWEEN judgements; halving the interval without halving the
+-- threshold turns the stall detector on ambulances that are merely slow, and
+-- that detector has already eliminated this owner mid-rescue more than once.
+--
+-- So the two are separate schedules over the same `live` table. This one only
+-- reads a position the server already samples and sends it; it makes no
+-- decisions, ends nothing, and cannot eliminate anybody.
+BR.Sched.every(R and R.blipMs or 250, 'rescue.blip', function()
+    if not R or not R.enabled then return end
+    for src, rec in pairs(live) do
+        local entry = BR.Roster.get(src)
+        if entry then publishBlip(src, entry, rec, false) end
+    end
+end)
+
 BR.Sched.every(R and R.tickMs or 1000, 'rescue.tick', function()
     if not R or not R.enabled then return end
     local now = GetGameTimer()
