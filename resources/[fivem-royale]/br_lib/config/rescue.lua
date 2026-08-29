@@ -637,6 +637,14 @@ BR.Config.Rescue = {
     -- 150m rather than 1m because two car parks in one forecourt would produce
     -- the same non-journey with none of the obviousness.
     minTripM         = 150.0,
+
+    -- The longest ride worth taking. Owner, 2026-08-29: "let's cap it -- max
+    -- 2000m", after one solved at 4872m on a 432-second deadline.
+    --
+    -- A destination must be inside the next circle, past minTripM and within
+    -- this. Nothing qualifying means the kit refuses and is not consumed, so
+    -- this can make the kit unusable in a late circle rather than merely slow.
+    maxTripM         = 2000.0,
     -- ═══ THE STYLE WAS NEVER WHAT WAS HITTING THE CARS ═══
     --
     -- Owner, 2026-08-28, after 262460 and then 4980863: "The driver still

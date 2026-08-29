@@ -200,11 +200,14 @@ do
     -- Dispatch from just outside the wall, where the OUTSIDE point is nearer
     -- than either qualifying one. A weighted score would take it; a filter
     -- followed by a minimum cannot.
+    -- DISTANCES SIT UNDER maxTripM (2000m, owner 2026-08-29). They used to be
+    -- 3000 and 3100, which the cap now refuses -- so the case would have passed
+    -- or failed on the ceiling rather than on the rule it is here to test.
     local pts2 = {
         { id = 'inside',       x = 0.0,    y = 0.0 },
-        { id = 'closer_but_out', x = 3100.0, y = 0.0 },
+        { id = 'closer_but_out', x = 1900.0, y = 0.0 },
     }
-    local d2 = BR.RescueDestination(pts2, 3000.0, 0.0, storm, 0, R)
+    local d2 = BR.RescueDestination(pts2, 1800.0, 0.0, storm, 0, R)
     ok(d2 and d2.id == 'inside',
         'a NEARER point outside the circle never beats a further one inside it '
             .. '-- the rule is a filter, not a trade-off',
@@ -362,11 +365,13 @@ do
     local storm = {
         phase = 3,
         cx0 = 0.0,    cy0 = 0.0, r0 = 4000.0,
-        cx1 = 3000.0, cy1 = 0.0, r1 = 400.0,
+        -- Pulled in from 3000 so `purple` sits under maxTripM; the breakout
+        -- relationship this case tests is unchanged.
+        cx1 = 1800.0, cy1 = 0.0, r1 = 400.0,
         tStart = 0, tWait = 10 * 60 * 1000, tShrink = 60000, dps = 2.0,
     }
     local tempting = { id = 'tempting', x = 400.0,  y = 0.0 }
-    local purple   = { id = 'purple',   x = 2900.0, y = 0.0 }
+    local purple   = { id = 'purple',   x = 1750.0, y = 0.0 }
 
     -- Sanity, so a pass cannot be for the wrong reason: the tempting point
     -- really is inside the circle StormAt answers, at its own arrival time.

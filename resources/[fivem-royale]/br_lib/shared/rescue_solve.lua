@@ -300,9 +300,27 @@ function BR.RescueDestination(points, fromX, fromY, storm, now, cfg, exclude)
     -- car parks in the same forecourt would produce the same non-journey.
     local minTrip = (cfg and cfg.minTripM) or 150.0
 
+    -- ═══ AND A CEILING, BECAUSE SEVEN MINUTES IS NOT A RESCUE ═══
+    --
+    -- Owner, 2026-08-29, after a ride solved at 4872m with a 432-second
+    -- deadline: "let's cap it -- max 2000m".
+    --
+    -- The solver picks the NEAREST qualifying point, so distance was never
+    -- chosen -- it was whatever the storm left. A phase that clears the map
+    -- around the pickup produces a drive across most of it, and no amount of
+    -- pathfinding makes seven minutes of watching an ambulance feel good.
+    --
+    -- IT NARROWS AN ALREADY-NARROW SET, and that is the cost worth naming: a
+    -- destination must now be inside the next circle AND past minTripM AND
+    -- within this. When nothing qualifies the kit REFUSES -- it is not
+    -- consumed, no ambulance is built, the player stays down -- so a late
+    -- circle far from any surveyed point makes the kit unusable rather than
+    -- slow. That is the trade he asked for, stated rather than discovered.
+    local maxTrip = (cfg and cfg.maxTripM) or 2000.0
+
     for _, p in ipairs(points or {}) do
         local d = BR.Dist(fromX, fromY, p.x, p.y)
-        if (exclude and p == exclude) or d < minTrip then goto continue end
+        if (exclude and p == exclude) or d < minTrip or d > maxTrip then goto continue end
 
         -- This candidate's own arrival, the circle as it will be then, and the
         -- purple circle it is being asked to rotate to. An empty list is the
