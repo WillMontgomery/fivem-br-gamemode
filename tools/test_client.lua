@@ -5489,6 +5489,135 @@ do
         table.concat(talkingNames(), ','))
 end
 
+describe('this client tells its squad one bit about its voice, on the edge only')
+do
+    -- THE HOP THE OWNER ASKED FOR, 2026-08-29. He had just watched the panel
+    -- fail at the one thing he wanted from it -- "the squad panel works, but
+    -- doesn't accurately show when others in the squad have 'off' selected" --
+    -- and, told the fact was on no wire at all: "Why can't we build another
+    -- client -> server -> squad hop? It should only be processed at the start
+    -- of a squad in warmup and whenever changes occur."
+    --
+    -- "WHENEVER CHANGES OCCUR" IS THE HALF WITH TEETH, and it is what most of
+    -- this block is about. The publish sits on the 10 Hz band because that is
+    -- where the mode is already re-derived; what stops it being a 10 Hz
+    -- BROADCAST is a dedup one line long, and a dedup one line long is exactly
+    -- the kind of thing a later round deletes while "simplifying". Nothing else
+    -- in this suite would notice: every assertion about the panel would still
+    -- pass while 48 machines shouted their voice mode ten times a second.
+
+    --- Every voice-state push this client has made since the marker.
+    local function voicePushes()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.VOICE_STATE then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+
+    nobodyElse()
+    standAt(0, 0)
+
+    -- 1. THE FIRST TICK OF A SESSION ALWAYS SENDS, and it sends `false` rather
+    --    than nothing. An unstated bit and a bit stated as false are different
+    --    claims: a fresh Lua state -- a reconnect, br_core restarting -- must
+    --    not assume the server still holds one from last time.
+    sent = {}
+    voiceApply('nearby', nil, nil, 1)
+    local p = voicePushes()
+    ok(#p == 1 and p[1].off == false,
+        'a client on nearby states its voice bit once, as false',
+        ('%d push(es), first off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    -- 2. AND THEN SHUTS UP. THIS IS THE ASSERTION THAT ENFORCES THE OWNER'S
+    --    SENTENCE. Ten ticks is a full second of a band that re-derives the
+    --    mode every time; a publish without its dedup sends ten times here.
+    sent = {}
+    for _ = 1, 10 do BR.Loop.step(BR.Loop.TICK) end
+    ok(#voicePushes() == 0,
+        'and says nothing at all on the ticks that follow -- "whenever changes '
+            .. 'occur", not on a band',
+        ('%d push(es) over ten ticks'):format(#voicePushes()))
+
+    -- 3. THE CHANGE IS WHAT SPEAKS. The player picks Off on the settings
+    --    screen; the squad is entitled to know, and this is the moment.
+    sent = {}
+    voiceMode('off')
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == true,
+        'picking off sends exactly one push, saying so',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    sent = {}
+    for _ = 1, 10 do BR.Loop.step(BR.Loop.TICK) end
+    ok(#voicePushes() == 0, 'and then silence again',
+        ('%d push(es)'):format(#voicePushes()))
+
+    -- 4. AND BACK. The edge works in both directions or the squad is left
+    --    looking at a mate who came back an hour ago.
+    sent = {}
+    voiceMode('squad')
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == false,
+        'and coming back off it sends exactly one push, saying THAT',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    -- 5. IT IS THE MODE IN FORCE, NOT THE STORED PREFERENCE. A spectator is on
+    --    'off' for the length of the session (BR.Voice.mode()), and their squad
+    --    should see it -- reading BR.Voice.pref instead would draw a live
+    --    microphone beside a dead man for the rest of the match.
+    --
+    --    NOTHING HERE TEACHES THE PUBLISH ABOUT SPECTATING, which is the point:
+    --    it asks the same function every routing decision asks, so a rule added
+    --    to mode() later arrives here for free.
+    local realSpectate = BR.Spectate
+    local watching = false
+    BR.Spectate = { active = function() return watching end }
+
+    sent = {}
+    watching = true
+    BR.Loop.step(BR.Loop.TICK)
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == true,
+        'starting to spectate publishes off, with nothing here taught the word',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    sent = {}
+    watching = false
+    BR.Loop.step(BR.Loop.TICK)
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == false,
+        'and the session ending publishes the preference coming back',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    BR.Spectate = realSpectate
+
+    -- 6. A NEW SQUAD IS A NEW AUDIENCE. VOICE_SET is the server naming this
+    --    player's squad and radio -- the "start of a squad in warmup" half of
+    --    the instruction. The bit has not CHANGED, so a publish that only
+    --    watched the value would send nothing and the new squad would be told
+    --    about a mate it has never heard from.
+    sent = {}
+    fire(BR.Net.VOICE_SET, { radio = 30501, mates = { 2 },
+                             nearbyRange = VR.nearby })
+    BR.Loop.step(BR.Loop.TICK)
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == false,
+        'and a fresh squad assignment re-asserts the bit even though it has '
+            .. 'not changed -- the new squad has never been told',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    -- 7. AND THE PAYLOAD IS ONE BOOLEAN. The mode is still published to nobody,
+    --    and this is where that would first leak: a publish that helpfully sent
+    --    `mode = BR.Voice.mode()` alongside would pass every assertion above.
+    local keys = {}
+    for k in pairs(p[1] or {}) do keys[#keys + 1] = k end
+    ok(#keys == 1 and keys[1] == 'off',
+        'and the payload carries that boolean and nothing else -- the MODE is '
+            .. 'still published to nobody',
+        table.concat(keys, ','))
+end
+
 describe('the voice readout runs, and leads with the thing that matters')
 do
     -- #150 WAS A WEEK OF A READOUT THAT LOOKED RIGHT. The old one opened with a

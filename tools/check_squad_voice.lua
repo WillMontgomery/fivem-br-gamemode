@@ -138,27 +138,90 @@ end
 
 -- ------------------------------------------------ nothing new is published ---
 
+-- THE ONE VOICE FACT A SQUADMATE'S ROW MAY CARRY. Named once, here, because
+-- three checks below spell it and a gate whose permitted value drifts between
+-- its own assertions permits whatever the loosest one does.
+--
+-- ═══ WHY THIS GATE NARROWED INSTEAD OF BEING DELETED ═══
+--
+-- It used to fail on ANY voice field crossing this boundary, and the refusal it
+-- enforced is quoted in the block at the top of this file. The owner overruled
+-- it on 2026-08-29, having watched the panel fail to show him the one thing he
+-- wanted from it: "the squad panel works, but doesn't accurately show when
+-- others in the squad have 'off' selected" -- then, told the fact was on no
+-- wire at all, "Why can't we build another client -> server -> squad hop? It
+-- should only be processed at the start of a squad in warmup and whenever
+-- changes occur."
+--
+-- A DELETED GATE WOULD HAVE BEEN A DECISION NOBODY COULD FIND. Two of the three
+-- arguments it was built on still stand and are still about the thing that is
+-- still forbidden -- the MODE. 'nearby' and 'squad' differ only in the presence
+-- of a distance, so drawing which one a mate is on means comparing positions,
+-- which is a proximity oracle for players the client cannot see. `off` is the
+-- one mode with no distance in it: absolute, both directions, everybody. So the
+-- gate now permits exactly that boolean, by name, and fails on everything else
+-- exactly as it did -- which means widening it again is a line somebody has to
+-- write IN THIS FILE, next to the reasons, rather than a field they add
+-- somewhere else and nobody notices.
+local VOICE_BIT = 'voiceOff'
+
 local state = read(ROOT .. 'br_core/client/state.lua', codeOf)
 if state then
     -- THE SQUAD PAYLOAD'S SHAPE. pushSquadOrParty assembles one member table
-    -- and that table is the entire contract with the panel. A voice field here
-    -- would have to come from somewhere, and the only somewhere is a new
-    -- client -> server -> squad round trip publishing a player's own settings.
+    -- and that table is the entire contract with the panel.
     local push = state:match('function pushSquadOrParty.-\nend')
     if not push then
         fail('client/state.lua no longer defines pushSquadOrParty',
              'this gate reads the squad payload out of it')
-    elseif push:lower():find('voice', 1, true) then
-        fail('the squad payload has grown a voice field',
-             'the panel\'s mark is built from the voice envelope this client '
-             .. 'already receives about ITSELF, plus the talking list. A '
-             .. 'per-player voice mode would widen what a client is told about '
-             .. 'players it cannot see -- and would be wrong anyway, because a '
-             .. 'mate on nearby is not on your radio and is still audible '
-             .. 'standing next to you. See ui-src/src/hud/VoiceMark.tsx')
+    else
+        -- THE PERMITTED FIELD IS REMOVED AND THEN THE OLD TEST IS RUN
+        -- UNCHANGED. Subtracting the one exception rather than listing what is
+        -- allowed keeps the check's failure mode the same as it always was:
+        -- anything it does not recognise fails, including a field nobody has
+        -- thought of yet.
+        local rest = push:gsub(VOICE_BIT, '')
+        if rest:lower():find('voice', 1, true) then
+            fail('the squad payload has grown a voice field beyond `'
+                 .. VOICE_BIT .. '`',
+                 'exactly one voice fact about another player may cross this '
+                 .. 'boundary, and it is the boolean the owner asked for on '
+                 .. '2026-08-29. A per-player voice MODE is still refused: it '
+                 .. 'would be wrong half the time -- a mate on nearby is not '
+                 .. 'on your radio and is still audible standing next to you '
+                 .. '-- and the only honest version of it compares positions. '
+                 .. 'See ui-src/src/hud/VoiceMark.tsx')
+        end
+
+        -- AND THE BIT MUST STAY A BIT. A mode string reaching the payload under
+        -- any name at all is the thing being refused; this catches the spelling
+        -- that gets there without the word `voice` in it.
+        if push:find("'nearby'", 1, true) or push:find("'off'", 1, true) then
+            fail('the squad payload spells a voice mode out',
+                 'the wire carries a boolean, not a mode. See BR.Net.'
+                 .. 'VOICE_STATE in br_lib/shared/protocol.lua')
+        end
+
+        -- THE POSITIVE HALF, which the old gate did not need and this one does.
+        -- A check that only forbids is satisfied by a payload that carries
+        -- nothing -- which is exactly the state the owner reported as broken.
+        if not push:find(VOICE_BIT, 1, true) then
+            fail('the squad payload no longer carries `' .. VOICE_BIT .. '`',
+                 'without it a squadmate who has turned their voice off is '
+                 .. 'indistinguishable from one who is simply not speaking, '
+                 .. 'which is the playtest report this hop was built for')
+        end
     end
 end
 
+-- THIS ONE DID NOT NARROW, AND THAT IS THE POINT OF THE NARROWING ABOVE.
+--
+-- The owner approved a squad-only hop. PUBLIC_FIELDS is broadcast to EVERY
+-- client in the match, so the exception granted above buys nothing here: "that
+-- player cannot hear anything" is worth having about a teammate and worth
+-- exploiting about an enemy -- it is the difference between flanking somebody
+-- who can be warned and somebody who cannot. The bit rides the squad beacon
+-- instead, which is the same boundary `dbnoUntil` and the squad level already
+-- sit on for the same reason.
 local roster = read(ROOT .. 'br_core/server/roster.lua', codeOf)
 if roster then
     local public = roster:match('local PUBLIC_FIELDS = {.-}')
@@ -166,7 +229,30 @@ if roster then
         fail('server/roster.lua no longer defines PUBLIC_FIELDS')
     elseif public:lower():find('voice', 1, true) then
         fail('PUBLIC_FIELDS has grown a voice field',
-             'that list goes to every client in the match, not just a squad')
+             'that list goes to every client in the match, not just a squad. '
+             .. 'The one published voice bit is squad-only and rides the beacon '
+             .. 'in server/party.lua; see the block above `VOICE_BIT`')
+    end
+end
+
+-- ------------------------------------------------- and it comes off the beacon ---
+--
+-- WHERE THE BIT IS ALLOWED TO ENTER THE SERVER'S PAYLOADS, asserted from the
+-- other end. The client half above pins what may LEAVE the squad payload; this
+-- pins that the value it reads has a squad-only origin rather than having been
+-- quietly moved onto a broadcast on the way.
+
+local party = read(ROOT .. 'br_core/server/party.lua', codeOf)
+if party then
+    local beacon = party:match("BR%.Sched%.every%(250, 'party%.squadpos'.-\nend%)")
+    if not beacon then
+        fail('server/party.lua no longer defines the party.squadpos beacon',
+             'this gate reads the squad-only push out of it')
+    elseif not beacon:find(VOICE_BIT, 1, true) then
+        fail('the squad beacon no longer carries `' .. VOICE_BIT .. '`',
+             'it is the only channel this fact may travel on -- squad-only by '
+             .. 'construction, already carrying the bleed deadline and the '
+             .. 'level for the same reason')
     end
 end
 
@@ -274,9 +360,51 @@ if panel then
              .. '"no voice" mark belongs on that row alone')
     end
     if not panel:find('m%.src === mine') then
-        fail('the silence mark is not restricted to the viewer\'s own row',
-             'this client is told nothing about anybody else\'s voice mode; '
-             .. 'drawing one would be inventing it')
+        fail('the viewer\'s own row is no longer identified',
+             'the `fault` colour and the voice envelope\'s verdict belong to '
+             .. 'that row alone; without the comparison they land on four '
+             .. 'people')
+    end
+
+    -- A SQUADMATE'S ROW READS THE ONE PUBLISHED BIT AND NOTHING ELSE.
+    if not panel:find(VOICE_BIT, 1, true) then
+        fail('the panel no longer reads `' .. VOICE_BIT .. '`',
+             'a squadmate who has turned their voice off then looks exactly '
+             .. 'like one who is not speaking, which is the report of '
+             .. '2026-08-29 that the hop was built for')
+    end
+
+    -- AND IT READS IT AS A BOOLEAN. `m.voiceOff &&` would also swallow the
+    -- distinction this file cares about least and JavaScript gets wrong most:
+    -- absent is a real state on this field -- a mate the beacon has not covered
+    -- yet, an older server -- and it must render as nothing for that reason
+    -- rather than by falling through a truthiness test.
+    if not panel:find(VOICE_BIT .. ' === true', 1, true) then
+        fail('`' .. VOICE_BIT .. '` is not read as an explicit boolean',
+             'absent and false are different claims that happen to draw the '
+             .. 'same thing; a truthiness test collapses them by accident')
+    end
+
+    -- 'fault' IS THE VIEWER'S ALONE. It is --color-danger and it means "this is
+    -- wrong and you can fix it" -- true only of the player who can open the
+    -- settings screen. A mate's voice being off is reported, not alarmed about,
+    -- and painting it red teaches the player that the colour means nothing.
+    --
+    -- THE BRANCH, NOT THE FUNCTION AROUND IT. `silentFor` is annotated
+    -- `'chosen' | 'fault' | null`, so a search over the whole function finds
+    -- the word in its own type and reports the correct file -- which is how
+    -- this check failed on its first run. What is asked is narrower and is the
+    -- actual question: what does the line that reads the mate's bit RETURN.
+    local mateBranch = panel:match('return m%.' .. VOICE_BIT .. '[^\n]*')
+    if not mateBranch then
+        fail('the panel no longer resolves a squadmate\'s mark from `'
+             .. VOICE_BIT .. '` in one expression',
+             'this gate reads the mate branch off that return')
+    elseif mateBranch:find("'fault'", 1, true) then
+        fail("a squadmate's row can be painted as a voice FAULT",
+             'nothing published says a mate\'s silence is unwanted -- '
+             .. VOICE_BIT .. ' is a state they chose. Red is for the one '
+             .. 'player who can act on it')
     end
 
     -- THE OTHER HALF OF THE LAYOUT PAIR.
@@ -347,6 +475,16 @@ do
                  'nothing in ui-src should ever have held it -- the words are '
                  .. "Lua's -- so this means a copy was made")
         end
+
+        -- AND THE BIT REACHES THE PLAYER. `voiceOff` is a PROPERTY NAME read
+        -- off a payload, so the minifier cannot rename it -- unlike a local,
+        -- which is why this is checkable at all. Its absence means the source
+        -- grew the field and the bundle did not, which looks correct in every
+        -- diff and shows the owner exactly the panel he reported.
+        if not js:find(VOICE_BIT, 1, true) then
+            fail('the built bundle does not read `' .. VOICE_BIT .. '`',
+                 'the bundle is stale. Run: cd ui-src && npm run build')
+        end
     end
 end
 
@@ -355,6 +493,7 @@ if failures > 0 then
     os.exit(1)
 end
 
-io.write('ok   the squad panel marks voice state from what the client already\n'
-    .. '     knows -- talking on any row, "no voice" on the viewer\'s own, and\n'
-    .. '     nothing at all otherwise\n')
+io.write('ok   the squad panel marks voice state from what the client is told --\n'
+    .. '     talking on any row, "no voice" on the viewer\'s own and on a mate\n'
+    .. '     the beacon says is off, and nothing at all otherwise. One bit\n'
+    .. '     crosses the boundary; the mode still crosses nothing\n')

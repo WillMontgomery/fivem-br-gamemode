@@ -2331,6 +2331,30 @@ function pushSquadOrParty()
                 -- the wire" and the panel draws nothing rather than a 1 it
                 -- would have to take back.
                 level = b and b.level or nil,
+
+                -- THIS MATE'S VOICE CARRIES NOTHING -- ONE BIT, OFF THE SAME
+                -- SQUAD-ONLY BEACON, AND IT IS THE ONLY VOICE FACT ON HERE.
+                --
+                -- Owner, 2026-08-29: "the squad panel works, but doesn't
+                -- accurately show when others in the squad have 'off'
+                -- selected", and then "Why can't we build another client ->
+                -- server -> squad hop?"
+                --
+                -- WHAT MUST NOT FOLLOW IT IS THE MODE. 'nearby' and 'squad'
+                -- are one value away and they are the value this payload is
+                -- forbidden to carry: which of the two a mate is on is only
+                -- meaningful next to how far away they are, so a panel that
+                -- drew it would be a proximity sensor for players this client
+                -- cannot see. tools/check_squad_voice.lua permits `voiceOff`
+                -- here BY NAME and fails the build on any other voice field --
+                -- so widening this is a decision somebody has to make on
+                -- purpose, in that file, rather than one line of drift here.
+                --
+                -- ABSENT MEANS NOTHING TO DRAW, exactly as the two fields above
+                -- do. A mate whose voice is fine, a mate the beacon has not
+                -- covered yet and an older server all produce an empty slot,
+                -- which is the honest rendering of all three.
+                voiceOff = b and b.voiceOff or nil,
             }
         end
     end

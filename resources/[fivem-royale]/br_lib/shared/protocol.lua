@@ -128,6 +128,32 @@ BR.Net = {
     -- player the two numbers and nothing else.
     VOICE_SET       = 'br:voice:set',        -- S->C  { prox, mates, nearbyRange, squadRange }
 
+    -- ONE BIT ABOUT THIS PLAYER'S OWN VOICE, TO THEIR OWN SQUAD.
+    --
+    -- Owner, 2026-08-29, after a playtest: "the squad panel works, but doesn't
+    -- accurately show when others in the squad have 'off' selected"; and, when
+    -- told the client was never sent it: "Why can't we build another client ->
+    -- server -> squad hop? It should only be processed at the start of a squad
+    -- in warmup and whenever changes occur."
+    --
+    -- IT IS A BOOLEAN, NOT THE MODE, AND THAT IS THE WHOLE CONTRACT. `off`
+    -- means "my voice carries nothing in either direction" -- the state
+    -- BR.VoiceMode.OFF resolves to, whether the player chose it, is spectating
+    -- or is sat in the lobby. 'nearby' and 'squad' are indistinguishable on
+    -- this wire and must stay that way: which of the two a mate is on is a fact
+    -- about people a client cannot see, it changes with the distance between
+    -- them, and the honest version of it is a proximity oracle. The refusal is
+    -- argued in full in ui-src/src/hud/VoiceMark.tsx and pinned by
+    -- tools/check_squad_voice.lua, which now permits this one field and still
+    -- fails the build for anything wider.
+    --
+    -- EDGE-TRIGGERED. The client sends when the answer CHANGES and when its
+    -- squad assignment does, never on a band -- see the publish in
+    -- br_core/client/voice.lua. The server keeps it on the roster entry and it
+    -- reaches squadmates on the beacon that is already leaving (SQUAD_POS),
+    -- so nothing periodic was added at either end.
+    VOICE_STATE     = 'br:voice:state',      -- C->S  { off = boolean }
+
     -- Loot / inventory
     LOOT_CELL       = 'br:loot:cell',        -- C->S  { cx, cy } subscribe to a grid cell
     LOOT_ADD        = 'br:loot:add',         -- S->C  array of loot entries entering scope

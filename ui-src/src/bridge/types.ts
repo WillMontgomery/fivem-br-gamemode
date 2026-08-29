@@ -221,6 +221,38 @@ export interface SquadMember {
    * above.
    */
   level?: number
+  /**
+   * THIS MATE'S VOICE CARRIES NOTHING IN EITHER DIRECTION.
+   *
+   * Owner, 2026-08-29, from a playtest: "the squad panel works, but doesn't
+   * accurately show when others in the squad have 'off' selected." It did not,
+   * because until that day no wire carried it -- a squadmate's voice mode was
+   * published to nobody and the server never learned it either. He then
+   * approved the hop that now does: "Why can't we build another client ->
+   * server -> squad hop? It should only be processed at the start of a squad in
+   * warmup and whenever changes occur."
+   *
+   * SQUAD-ONLY, like `bleedEndsAt` and `level` above. It rides the squad beacon
+   * assembled in br_core's server/party.lua and is deliberately NOT on
+   * roster.lua's PUBLIC_FIELDS: "that player cannot hear anything" is worth
+   * having about a teammate and worth exploiting about an enemy.
+   *
+   * ═══ IT IS ONE BIT, AND THE MODE IS STILL NOT ON ANY WIRE ═══
+   *
+   * True means BR.VoiceMode.OFF is in force for them -- they chose it, they are
+   * spectating, or they are in the lobby. It does NOT distinguish 'nearby' from
+   * 'squad', and that refusal is the original design's and still stands: a mate
+   * on 'nearby' is not on your radio but IS audible standing next to you, so
+   * the only true version of "can I reach them" compares positions, and a panel
+   * that lit up at 25 m would be a proximity sensor for players this client
+   * cannot otherwise see. See hud/VoiceMark.tsx for the full argument.
+   *
+   * OPTIONAL, AND ABSENT IS NOT false. It means the beacon has not covered this
+   * mate yet, or the server is older than the field. Both render as nothing,
+   * which is also what a mate whose voice is fine renders as -- so the panel
+   * reads it with `=== true` and never as a truthiness test.
+   */
+  voiceOff?: boolean
 }
 
 export interface SquadPayload {

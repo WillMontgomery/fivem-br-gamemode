@@ -29,30 +29,51 @@
  *   `silent` means something narrow and absolute: NOTHING CAN REACH THIS PLAYER
  *   AND NOTHING THEY SAY CAN LEAVE.
  *
- * AND THAT IS THE COMPLETE LIST. A squadmate's own voice mode is not published
- * to anybody -- the server never learns it either, because nothing sends it --
- * so there is no field to read and no honest way to draw "Dave is muted". The
- * alternative was to invent one: a client -> server -> squad round trip
- * publishing every player's voice preference. That is refused here, for three
- * reasons and in this order:
+ *   AND, SINCE 2026-08-29, ONE BIT ABOUT EACH SQUADMATE. `SquadMember.voiceOff`
+ *   -- true when BR.VoiceMode.OFF is in force for them, whether they chose it,
+ *   are spectating or are in the lobby. It is published by that player's own
+ *   client on change, kept on their roster entry and carried to their squad and
+ *   nobody else on the beacon that already carries positions, bleed deadlines
+ *   and levels. See BR.Net.VOICE_STATE in br_lib/shared/protocol.lua.
  *
- *   IT WIDENS WHAT A CLIENT IS TOLD ABOUT PEOPLE IT CANNOT SEE. The squad panel
- *   describes players who may be anywhere on the map. Everything on it today is
- *   already public to the whole match (roster.lua's PUBLIC_FIELDS) with exactly
- *   one squad-only exception -- the bleed deadline, on the squad beacon, argued
- *   for at its own length. A settings field would be a second exception bought
- *   for a glyph.
+ * AND THAT IS THE COMPLETE LIST -- WHICH IS ONE ENTRY LONGER THAN IT WAS, AND
+ * THE PARAGRAPHS BELOW ARE WHY IT IS ONLY ONE.
  *
- *   IT WOULD BE WRONG HALF THE TIME ANYWAY. A squadmate on 'nearby' is not on
- *   your radio, but IS audible when they are standing next to you. So "not on
- *   the radio" is not "cannot be heard", and a mark that said so would be a
- *   confident lie in exactly the situation -- a squad regrouping -- where it
- *   would be read hardest.
+ * THIS FILE USED TO REFUSE THAT HOP OUTRIGHT. Owner, 2026-08-29, after
+ * playtesting: "the squad panel works, but doesn't accurately show when others
+ * in the squad have 'off' selected" -- and, on being told the fact was on no
+ * wire at all: "Why can't we build another client -> server -> squad hop? It
+ * should only be processed at the start of a squad in warmup and whenever
+ * changes occur." So it was built. What follows is the part of the old refusal
+ * that SURVIVES, because two of its three arguments were never about `off`:
+ *
+ *   IT WIDENS WHAT A CLIENT IS TOLD ABOUT PEOPLE IT CANNOT SEE, and this one
+ *   was real and was paid rather than dodged. The bill is one boolean, to one
+ *   squad, on a channel that already carries a teammate's exact position. It is
+ *   the third squad-only exception on that beacon, beside the bleed deadline
+ *   and the level, and it is argued where it is implemented.
+ *
+ *   IT WOULD BE WRONG HALF THE TIME ANYWAY -- AND THIS IS WHY THE MODE IS STILL
+ *   NOT PUBLISHED. A squadmate on 'nearby' is not on your radio, but IS audible
+ *   when they are standing next to you. So "not on the radio" is not "cannot be
+ *   heard", and a mark that said so would be a confident lie in exactly the
+ *   situation -- a squad regrouping -- where it would be read hardest. 'off' is
+ *   the one mode this does not apply to: it is absolute, at every distance,
+ *   in both directions, for everybody.
  *
  *   AND THE HONEST VERSION OF IT IS A POSITION ORACLE. The only way to make
  *   "can I hear this mate right now" true on 'nearby' is to compare positions,
  *   and a panel that lit up when a squadmate came within 25 m would be a
- *   proximity sensor for players the client cannot otherwise see.
+ *   proximity sensor for players the client cannot otherwise see. Nothing about
+ *   `voiceOff` needs a position, which is precisely what makes it publishable
+ *   when the mode is not.
+ *
+ * SO THE LINE MOVED BY ONE BIT AND IS NOW ENFORCED RATHER THAN DESCRIBED.
+ * tools/check_squad_voice.lua permits `voiceOff` by name across the boundary
+ * and fails the build on any other voice field, on the squad payload and on
+ * roster.lua's PUBLIC_FIELDS alike -- so publishing the mode is a change
+ * somebody has to make deliberately, in that file, rather than one line of
+ * drift in this one.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * SO: THREE STATES, AND THE THIRD ONE IS NOTHING AT ALL
@@ -62,17 +83,25 @@
  *                Drawn on ANY row. The accent speaker, on the slow pulse the
  *                talking indicator has always used.
  *
- *   NO VOICE     this client is in a state where nothing can reach it and
- *                nothing it says can leave: `silent`. Drawn ONLY on the
- *                viewer's own row, because that is the only player it is a
- *                fact about. It is the 'off' preference, squad-mode-with-no-
- *                squad, and -- the case that made this worth drawing -- being a
- *                SPECTATOR, where BR.Voice.mode() answers 'off' for the length
- *                of the session.
+ *   NO VOICE     this player is in a state where nothing can reach them and
+ *                nothing they say can leave. On the VIEWER'S OWN row that is
+ *                `silent` off the voice envelope: the 'off' preference,
+ *                squad-mode-with-no-squad, and being a SPECTATOR, where
+ *                BR.Voice.mode() answers 'off' for the length of the session.
+ *                On a SQUADMATE'S row it is `voiceOff` off the beacon, which is
+ *                the same claim narrowed to the one mode that can be published
+ *                honestly.
  *
- *   NOTHING      everybody else, all the time. Un-muted and simply not
- *                speaking is not a state; it is the absence of one, and the
- *                honest rendering of an absence is an empty slot.
+ *                THE TWO ARE ONE GLYPH AND TWO COLOURS. `chosen` is
+ *                --color-text-dim and is reachable on any row; `fault` is
+ *                --color-danger and is the viewer's alone, because "this is
+ *                wrong and you can fix it" is only ever true of the person who
+ *                can open the settings screen. A mate's off is reported, not
+ *                alarmed about.
+ *
+ *   NOTHING      a mate who is un-muted and simply not speaking, all the time.
+ *                That is not a state; it is the absence of one, and the honest
+ *                rendering of an absence is an empty slot.
  *
  * THAT LAST ROW IS THE ONE THIS FILE IS MOST OPINIONATED ABOUT. A mark on every
  * row for the whole of every match is furniture, and this project has now
@@ -204,10 +233,12 @@ export default function VoiceMark({ fs, talking, silent = null }: {
   fs: string
   /** This player is transmitting and it is reaching this machine. */
   talking: boolean
-  /** THE VIEWER'S OWN ROW ONLY. 'chosen' is a silence they asked for -- the
-   *  'off' preference, or spectating. 'fault' is one they did not: squad mode
-   *  with no squad. Null on every other row, and on this one whenever voice is
-   *  carrying. */
+  /** 'chosen' is a silence that player asked for -- the 'off' preference, or
+   *  spectating. On the viewer's own row it comes off the voice envelope; on a
+   *  squadmate's it comes off `SquadMember.voiceOff`. 'fault' is a silence they
+   *  did NOT ask for -- squad mode with no squad -- and is the VIEWER'S OWN ROW
+   *  ONLY, because nothing publishes that state about anybody else and it names
+   *  a fix only the viewer can apply. Null whenever voice is carrying. */
   silent?: 'chosen' | 'fault' | null
 }) {
   return (

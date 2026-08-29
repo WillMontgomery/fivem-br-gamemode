@@ -1655,6 +1655,14 @@ AddEventHandler(BR.Net.VOICE_SET, function(d)
     -- once at start.
     call('overrideProximityRange', s.nearby + 0.0, true)
     BR.Voice.apply()
+
+    -- A NEW SQUAD IS A NEW AUDIENCE, so this player re-asserts their voice bit
+    -- to it rather than assuming the server still holds one. This is the "at
+    -- the start of a squad in warmup" half of the owner's instruction, and it
+    -- is expressed as FORGETTING what was last sent rather than as a send: the
+    -- publish below is the only thing that talks to the server, so there is one
+    -- code path and one dedup, and this cannot double-send.
+    BR.Voice._sentOff = nil
 end)
 
 AddEventHandler('br:settings:changed', function(s)
@@ -1960,6 +1968,59 @@ local function pushVoice(talking, names, st)
     end
 end
 
+--- TELL THE SERVER ONE BIT ABOUT THIS PLAYER'S VOICE, SO THEIR SQUAD CAN SEE IT.
+---
+--- ═══ WHAT IS SENT, AND WHY IT IS ONE BOOLEAN AND NOT THE MODE ═══
+---
+--- Owner, 2026-08-29: "the squad panel works, but doesn't accurately show when
+--- others in the squad have 'off' selected" -- and, on being told the fact was
+--- never on any wire, "Why can't we build another client -> server -> squad
+--- hop? It should only be processed at the start of a squad in warmup and
+--- whenever changes occur."
+---
+--- SO `off` AND NOTHING ELSE. It is the one voice fact about a player that is
+--- ABSOLUTE: nothing they say leaves and nothing reaches them, at any distance,
+--- from anybody. 'nearby' and 'squad' are deliberately indistinguishable here
+--- and must stay so -- a mate on 'nearby' is not on your radio but IS audible
+--- standing next to you, so "which mode" is only answerable by comparing
+--- positions, and a panel that lit up when a squadmate came within 25 m is a
+--- proximity sensor for players this client cannot otherwise see. That refusal
+--- is argued at length in ui-src/src/hud/VoiceMark.tsx and is now PINNED rather
+--- than merely written down: tools/check_squad_voice.lua permits this one field
+--- across the boundary and fails the build for anything wider.
+---
+--- IT IS BR.Voice.mode(), NOT BR.Voice.pref. The mode in force is what is true
+--- of this player -- so a spectator and a player sat in the lobby both publish
+--- `off`, because both of them genuinely carry nothing, and neither has to be
+--- taught about this function. Reading the stored preference instead would have
+--- a spectator's squad drawn a live microphone beside a dead man.
+---
+--- ═══ EDGE-TRIGGERED, WHICH IS THE OWNER'S "WHENEVER CHANGES OCCUR" ═══
+---
+--- This runs on the 10 Hz band because that is where the mode is already
+--- re-derived, and it sends NOTHING on all but the handful of ticks where the
+--- answer has actually moved -- the player opening the settings screen, a
+--- spectate session starting or ending, the lobby. `_sentOff` starts nil rather
+--- than false, so the FIRST tick of a session always sends: an unstated bit and
+--- a bit stated as false are different claims, and a fresh Lua state (a
+--- reconnect, br_core restarting) must not assume the server still holds one.
+--- VOICE_SET clears it for the same reason -- see the handler above.
+---
+--- THE RETURN HALF IS NOT SYMMETRICAL AND THAT IS DELIBERATE. Nothing new comes
+--- back on its own event: the bit rides SQUAD_POS, the squad beacon that is
+--- already leaving the server four times a second carrying positions, states,
+--- bleed deadlines and levels. A second server -> squad event would be MORE
+--- traffic than the one it replaced, and -- the part that actually matters --
+--- it would be a second clock over one membership list, which is how this
+--- project has repeatedly ended up with two answers that drift. The beacon is
+--- rebuilt whole on every push, so a stale bit is unrepresentable.
+local function publishVoiceState()
+    local off = BR.Voice.mode() == BR.VoiceMode.OFF
+    if BR.Voice._sentOff == off then return end
+    BR.Voice._sentOff = off
+    TriggerServerEvent(BR.Net.VOICE_STATE, { off = off })
+end
+
 --- Sent on CHANGE, never on the tick.
 local lastKey = ''
 BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
@@ -1988,6 +2049,12 @@ BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
     -- on all but the handful of ticks where the answer has actually moved. It
     -- calls no export until the number changes.
     BR.Voice.apply()
+
+    -- AND THE SQUAD IS TOLD, ON THE EDGE ONLY. Placed here rather than inside
+    -- the dedup below because that one is keyed on the talking list and the
+    -- status code -- a different question, on a different clock. This has its
+    -- own, narrower dedup and answers to nothing else.
+    publishVoiceState()
 
     -- WHO WE DO NOT REFUSE, from the one function that decides it. On 'nearby'
     -- that is everybody -- proximity is the SPEAKER's decision and we do not

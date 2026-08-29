@@ -604,6 +604,52 @@ AddEventHandler('onResourceStart', function(name)
     end
 end)
 
+-- --------------------------------------------- one bit back from the client ---
+
+--- THIS PLAYER SAYS THEIR VOICE CARRIES NOTHING.
+---
+--- Owner, 2026-08-29: "Why can't we build another client -> server -> squad
+--- hop? It should only be processed at the start of a squad in warmup and
+--- whenever changes occur."
+---
+--- ═══ WHAT IS STORED, AND WHERE IT IS DELIBERATELY NOT STORED ═══
+---
+--- One boolean, on the roster entry, and NOT in roster.lua's PUBLIC_FIELDS.
+--- That list is broadcast to every client in the match; this goes only to the
+--- sender's own squad, on the beacon in server/party.lua, which is the same
+--- boundary `dbnoUntil` and the squad level already sit on and is argued at
+--- their length there. tools/check_squad_voice.lua pins both halves: the field
+--- is permitted on the squad beacon and still forbidden on the public list.
+---
+--- THE MODE ITSELF IS NEVER STORED AND NEVER ASKED FOR. The client sends a
+--- boolean; anything else on this payload is ignored rather than kept for
+--- later. A server that quietly learned every player's voice mode would be one
+--- `PUBLIC_FIELDS` edit away from being a proximity oracle, and the cheapest
+--- way to make that edit impossible is to not have the value.
+---
+--- ═══ `source` IS THE IDENTITY. THE PAYLOAD IS NOT ═══
+---
+--- The sender is taken from `source` and the payload carries no src, so a
+--- client cannot state anything about anybody but itself. The worst a modified
+--- client can do here is lie about its OWN microphone -- which it could already
+--- do by simply not talking, and which costs nothing but a glyph on its own
+--- squad's panel.
+---
+--- ═══ IT IS NORMALISED, NOT BELIEVED ═══
+---
+--- `d.off == true` rather than `if d.off then`: this arrives from a NUI-driven
+--- client over the network and may be a number, a string or a table. Everything
+--- that is not the boolean true is stored as false, so the field on the roster
+--- entry is always exactly a boolean and the beacon cannot ship a stray 0 -- in
+--- Lua a 0 is truthy, and this repository has now shipped that nine times.
+RegisterNetEvent(BR.Net.VOICE_STATE)
+AddEventHandler(BR.Net.VOICE_STATE, function(d)
+    local src = source
+    local e = BR.Roster.get(src)
+    if not e then return end
+    e.voiceOff = type(d) == 'table' and d.off == true
+end)
+
 -- ------------------------------------------------------------------- the push ---
 
 --- Send one player their squad radio and their squad, if either has changed.

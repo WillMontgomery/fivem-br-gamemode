@@ -1151,6 +1151,41 @@ BR.Sched.every(250, 'party.squadpos', function()
                 -- feature is written to avoid, and the cost is one closed-form
                 -- inversion per squadded player per quarter second.
                 level = levelOf(src),
+
+                -- WHETHER THIS MATE'S VOICE CARRIES ANYTHING, AND ONLY TO
+                -- THEIR SQUAD.
+                --
+                -- Owner, 2026-08-29: "the squad panel works, but doesn't
+                -- accurately show when others in the squad have 'off'
+                -- selected"; and then, approving the wire, "Why can't we build
+                -- another client -> server -> squad hop?"
+                --
+                -- IT RIDES THE BEACON FOR THE THIRD TIME, AND FOR THE THIRD
+                -- TIME THE ARGUMENT IS THE ONE ABOVE: roster.lua's
+                -- PUBLIC_FIELDS is the obvious home and it is the wrong one,
+                -- because that list reaches every client in the match. "That
+                -- player cannot hear anything" is a fact worth having about a
+                -- teammate and a fact worth EXPLOITING about an enemy -- it is
+                -- the difference between flanking someone who can be warned
+                -- and someone who cannot. The owner asked for it about his
+                -- squad, so his squad is who is told.
+                --
+                -- AND IT RIDES SOMETHING PERIODIC WITHOUT BEING PERIODIC
+                -- ITSELF. The expensive half of a hop like this is the
+                -- CLIENT->SERVER leg -- 48 machines with an opinion -- and that
+                -- leg is edge-triggered (br_core/client/voice.lua's
+                -- publishVoiceState). This push was already leaving four times
+                -- a second carrying four other fields; a fifth costs one
+                -- boolean and, because the list is rebuilt whole every time,
+                -- cannot go stale. A dedicated event would have been strictly
+                -- more traffic and a second clock over one membership list.
+                --
+                -- ABSENT RATHER THAN false, matching the two fields above:
+                -- nothing to draw travels as nothing at all, so an older client
+                -- and a mate whose voice is fine produce the same empty slot.
+                -- `== true` is the test because the entry's value arrives from
+                -- a client (see BR.Net.VOICE_STATE in server/voice.lua).
+                voiceOff = e.voiceOff == true or nil,
             }
         end
     end)

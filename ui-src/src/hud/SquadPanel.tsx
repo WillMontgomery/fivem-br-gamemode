@@ -14,8 +14,15 @@ import VoiceMark from './VoiceMark'
  * Owner, 2026-08-22: "how about instead of showing this text, we show something
  * in the top squad panel next to each player which shows if they are muted, not
  * listening, or talking." The model -- what the mark is allowed to claim about
- * whom, and why a squadmate's own mute state is not one of the things it can --
- * is argued in full in hud/VoiceMark.tsx. Nothing new is published for it.
+ * whom -- is argued in full in hud/VoiceMark.tsx.
+ *
+ * IT IS BUILT FROM WHAT THE CLIENT IS TOLD, AND IT IS TOLD EXACTLY THREE
+ * THINGS: who is talking, this client's own verdict, and -- since 2026-08-29 --
+ * one boolean per squadmate saying their voice carries nothing. The third is
+ * the owner's, from a playtest: "the squad panel works, but doesn't accurately
+ * show when others in the squad have 'off' selected." Nothing wider than that
+ * bit is published, and tools/check_squad_voice.lua fails the build if it ever
+ * is.
  *
  * A MATE DYING IS A SEQUENCE, NOT AN OPACITY CHANGE. Fading a row out is the
  * least legible thing a HUD can do: it reads as a render glitch rather than as
@@ -252,8 +259,11 @@ function LevelMark({ level }: { level: number }) {
 function Row({ m, talking, silent }: {
   m: SquadMember
   talking: boolean
-  /** Non-null on the VIEWER'S OWN ROW ONLY, and only while their voice carries
-   *  nothing at all. See VoiceMark for why it cannot be anybody else's. */
+  /** This player's voice carries nothing at all. 'fault' is a silence nobody
+   *  asked for and is the VIEWER'S OWN ROW ONLY -- squad mode with no squad is
+   *  a fact about this client and about nobody else. 'chosen' is reachable on
+   *  any row: the viewer's own, and a squadmate whose beacon says `voiceOff`.
+   *  See VoiceMark for what the one published bit is allowed to claim. */
   silent: 'chosen' | 'fault' | null
 }) {
   const { phase, flash } = useDeathSequence(m)
@@ -421,16 +431,41 @@ export default function SquadPanel({
 
   const talkingSet = new Set(talking)
 
-  // THE SILENCE MARK GOES ON ONE ROW AND ONLY ONE, and `you` is how the row is
-  // found. It rides on every squad payload precisely because the interface has
-  // no other way to know its own server id.
+  // THE VIEWER'S OWN ROW IS FOUND BY `you`, which rides on every squad payload
+  // precisely because the interface has no other way to know its own server id.
   //
-  // ABSENT `you` MARKS NOBODY, which is the safe failure: an older Lua, or the
-  // party payload standing in for a squad, produces a panel with no mark rather
-  // than one that has guessed.
+  // ABSENT `you` MARKS THE VIEWER NOBODY, which is the safe failure: an older
+  // Lua, or the party payload standing in for a squad, produces a panel with no
+  // OWN mark rather than one that has guessed. A squadmate's own bit is
+  // unaffected -- it is keyed on that member, not on this comparison.
   const mine = squad.you
   const silence: 'chosen' | 'fault' | null =
     voiceSilent ? (voiceChosen ? 'chosen' : 'fault') : null
+
+  // AND A SQUADMATE'S OWN ROW, WHICH IS NEW AND IS ONE BIT WIDE.
+  //
+  // Owner, 2026-08-29: "the squad panel works, but doesn't accurately show when
+  // others in the squad have 'off' selected." It could not: nothing published
+  // it. `voiceOff` now arrives on the squad beacon (br_core server/party.lua),
+  // and it is the ONLY voice fact about another player on this payload.
+  //
+  // IT IS ALWAYS 'chosen', NEVER 'fault'. The two differ by colour and the
+  // difference is a claim: 'fault' is --color-danger and means "this is wrong
+  // and you can fix it", which is only ever true of the viewer -- they are the
+  // one who can open the settings screen. A mate's voice being off is a state
+  // of theirs, reported, not an alarm to raise on their behalf; painting it red
+  // would teach the player that the colour means nothing, which is the rule
+  // VoiceNotice and VoiceMark already draw by.
+  //
+  // `=== true` RATHER THAN A TRUTHINESS TEST. Absent is a real and common state
+  // -- the beacon has not covered this mate yet, or the server predates the
+  // field -- and it means "nothing to draw", the same as false. Explicit here
+  // keeps those two collapsed onto the same rendering for the right reason
+  // instead of by accident.
+  const silentFor = (m: SquadMember): 'chosen' | 'fault' | null => {
+    if (mine !== undefined && m.src === mine) return silence
+    return m.voiceOff === true ? 'chosen' : null
+  }
 
   // No outer .panel: each row is its own plate now, so a shared box around
   // them was a second frame doing nothing but adding an edge.
@@ -441,7 +476,7 @@ export default function SquadPanel({
           key={m.src}
           m={m}
           talking={talkingSet.has(m.src)}
-          silent={mine !== undefined && m.src === mine ? silence : null}
+          silent={silentFor(m)}
         />
       ))}
     </div>

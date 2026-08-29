@@ -2406,6 +2406,74 @@ do
     ok(not leak, 'no payload ever contains a player from another squad')
     ok(not wrongTarget, 'every recipient is in a squad')
 
+    -- ═══ ONE VOICE BIT, TO ONE SQUAD, ON THIS PUSH ═══
+    --
+    -- Owner, 2026-08-29: "the squad panel works, but doesn't accurately show
+    -- when others in the squad have 'off' selected" -- and, once told the fact
+    -- was on no wire at all, "Why can't we build another client -> server ->
+    -- squad hop? It should only be processed at the start of a squad in warmup
+    -- and whenever changes occur."
+    --
+    -- THE NEGATIVE CASE IS ASSERTED FIRST AND IT IS THE ONE THAT MATTERS. A
+    -- test that only ever checks `off == true` passes against a server that
+    -- hard-codes it, and the field would then be furniture on every row in
+    -- every match -- which is the failure the panel's own design spent three
+    -- rounds removing.
+    local function beaconEntry(target, who)
+        for _, p in ipairs(eventsOf(BR.Net.SQUAD_POS)) do
+            if p.target == target then
+                for _, m in ipairs(p.args[1]) do
+                    if m.src == who then return m end
+                end
+            end
+        end
+        return nil
+    end
+
+    ok(beaconEntry(1, 2) ~= nil and beaconEntry(1, 2).voiceOff == nil,
+        'a squadmate who has said nothing about their voice carries no bit at '
+            .. 'all -- absent, not false, so the panel draws nothing',
+        tostring(beaconEntry(1, 2) and beaconEntry(1, 2).voiceOff))
+
+    -- WHAT THE HANDLER KEEPS, ASSERTED OFF THE ROSTER ENTRY AND WITH NO CLOCK.
+    --
+    -- NO EXTRA BEACON IS STEPPED FOR ANY OF THIS, deliberately. `fakeTime` is
+    -- shared by every block after this one and match.busDescent measures
+    -- elapsed time against the bus route's deadlines -- so a test that helps
+    -- itself to even 300ms here reddens something a thousand lines away for a
+    -- reason nobody would ever connect to it. (Measured: it does.) The bit is
+    -- set here and READ OFF THE PUSH THE BLOCK ALREADY MAKES, further down.
+    --
+    -- IT IS A BIT, NOT A MODE. A client that volunteers its whole preference
+    -- gets exactly the boolean stored and nothing else kept: the server has no
+    -- field for a mode, so PUBLIC_FIELDS is never one edit away from being the
+    -- proximity oracle ui-src/src/hud/VoiceMark.tsx refuses to build.
+    fire(BR.Net.VOICE_STATE, 2, { off = true, mode = 'nearby' })
+    ok(BR.Roster.get(2).voiceOff == true
+       and BR.Roster.get(2).voiceMode == nil
+       and BR.Roster.get(2).mode == nil,
+        'a client saying its voice is off is believed about THAT, and the '
+            .. 'voice mode it volunteered alongside is dropped on the floor',
+        ('off=%s mode=%s'):format(tostring(BR.Roster.get(2).voiceOff),
+                                  tostring(BR.Roster.get(2).voiceMode)))
+
+    -- AND A TRUTHY NON-BOOLEAN IS NOT A YES. This arrives over the network from
+    -- a client and may be a number; in Lua a 0 is truthy, which this repository
+    -- has now shipped nine times -- most recently in the very indicator this
+    -- panel draws (b292b0f). Anything that is not `true` is false.
+    fire(BR.Net.VOICE_STATE, 2, { off = 0 })
+    ok(BR.Roster.get(2).voiceOff == false,
+        'and a zero off the wire is stored as false rather than believed',
+        tostring(BR.Roster.get(2).voiceOff))
+
+    -- A PLAYER WHO IS NOT ON THE ROSTER IS NOT A PLAYER. The idler never
+    -- queued; a state write for them would be a table growing on an id the
+    -- server has no match for.
+    fire(BR.Net.VOICE_STATE, 999, { off = true })
+    ok(BR.Roster.get(999) == nil, 'a stranger writes nothing at all')
+
+    fire(BR.Net.VOICE_STATE, 2, { off = true })
+
     -- A DEAD SQUADMATE STAYS ON THE PUSH (user, 2026-08-05). The client's
     -- membership model IS this list, so dropping the dead took their blip and
     -- their overhead name with them -- and where a teammate fell is exactly
@@ -2431,6 +2499,38 @@ do
     ok(deadState == BR.PlayerState.DEAD,
         'the payload carries the dead state, so the client can mark the tag',
         tostring(deadState))
+
+    -- AND THE VOICE BIT SET ABOVE IS ON THAT SAME PUSH, which is the whole
+    -- server half of the owner's hop: a squadmate said their voice was off,
+    -- and their squad -- and only their squad -- is now told.
+    --
+    -- READ OFF THE PUSH RATHER THAN THE ROSTER, because the roster entry being
+    -- right proves only that the handler ran. What the panel draws is this
+    -- payload, and the two were separate edits in separate files.
+    ok(beaconEntry(1, 2) ~= nil and beaconEntry(1, 2).voiceOff == true,
+        'a squadmate who has turned their voice off is reported as such to '
+            .. 'their own squad -- and stays reported once they are dead',
+        tostring(beaconEntry(1, 2) and beaconEntry(1, 2).voiceOff))
+
+    -- THE PRIVACY BOUNDARY, WHICH IS THE WHOLE REASON IT RIDES THIS PUSH AND
+    -- NOT PUBLIC_FIELDS. "That player cannot hear anything" is worth having
+    -- about a teammate and worth EXPLOITING about an enemy -- it is the
+    -- difference between flanking somebody who can be warned and somebody who
+    -- cannot. The other squad is in the same match, on the same map, and is
+    -- told nothing by anybody.
+    local bitLeaked = false
+    for _, p in ipairs(after) do
+        local targetSquad = BR.Roster.get(p.target)
+        targetSquad = targetSquad and targetSquad.squadId
+        if targetSquad ~= sq1 then
+            for _, m in ipairs(p.args[1]) do
+                if m.voiceOff ~= nil then bitLeaked = true end
+            end
+        end
+    end
+    ok(not bitLeaked,
+        'and no other squad in the match learns it -- squad-only, exactly like '
+            .. 'the bleed deadline beside it')
 
     -- The privacy boundary is unchanged by that: a dead player is still only
     -- ever shown to their OWN squad, never to the other one.

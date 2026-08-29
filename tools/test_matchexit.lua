@@ -714,6 +714,104 @@ do
        tostring(seen[#seen]))
 end
 
+describe('the squad payload carries one voice bit off the beacon, and only one')
+do
+    -- THE CLIENT END OF THE HOP THE OWNER APPROVED ON 2026-08-29. He had
+    -- playtested and found the panel silent on the one thing he wanted from it
+    -- -- "the squad panel works, but doesn't accurately show when others in the
+    -- squad have 'off' selected" -- and, told the fact was on no wire at all:
+    -- "Why can't we build another client -> server -> squad hop?"
+    --
+    -- IT IS TESTED HERE RATHER THAN IN test_client BECAUSE THIS IS THE SUITE
+    -- THAT LOADS client/state.lua. test_client does not, and the assertions
+    -- were written there first: they passed nothing, because `BR.Squadmates`
+    -- does not exist in that state and `pushSquadOrParty` is not in it either.
+    -- A block that cannot reach the code it names is worse than no block.
+    --
+    -- THE BEACON IS THE STUB AT THE TOP OF THIS FILE, driven per case. That is
+    -- the right seam: `beaconOf` IS the whole of what state.lua is allowed to
+    -- read about another player, so a test that drives it is testing exactly
+    -- the boundary the gate pins.
+    local beacon = {}
+    BR.Squadmates.beaconOf = function(src) return beacon[src] end
+
+    BR.State.me.src     = 1
+    BR.State.me.state   = BR.PlayerState.ALIVE
+    BR.State.me.squadId = 'sq1'
+    BR.State.roster = {
+        [1] = { src = 1, name = 'Me',    squadId = 'sq1',
+                state = BR.PlayerState.ALIVE, hp = 100, armour = 0 },
+        [2] = { src = 2, name = 'Bravo', squadId = 'sq1',
+                state = BR.PlayerState.ALIVE, hp = 100, armour = 0 },
+    }
+
+    --- The mate's row on the newest squad envelope.
+    local function mateRow()
+        local from = 1
+        local all = envelopes(BR.Nui.SQUAD, from)
+        local last = all[#all]
+        for _, m in ipairs((last or {}).members or {}) do
+            if m.src == 2 then return m end
+        end
+        return nil
+    end
+
+    local function push()
+        events = {}
+        BR.Loop.step(BR.Loop.SLOW)
+    end
+
+    -- 1. NO BEACON FIELD, NO FIELD ON THE ROW. Absent is a real state -- an
+    --    older server, or a mate no beacon has covered yet -- and it travels as
+    --    absent rather than as a confident `false`. The panel reads the field
+    --    with `=== true` precisely so those two stay tellable apart by anybody
+    --    debugging this later, and that is only worth anything if Lua keeps
+    --    them apart on the way out.
+    beacon[2] = { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+                  state = BR.PlayerState.ALIVE }
+    push()
+    ok(mateRow() ~= nil and mateRow().voiceOff == nil,
+       'a mate the beacon says nothing about carries no voice field at all',
+       tostring(mateRow() and mateRow().voiceOff))
+
+    -- 2. AND WHEN IT DOES, THE ROW CARRIES IT. This is the whole of what the
+    --    owner could not see.
+    beacon[2].voiceOff = true
+    push()
+    ok(mateRow() ~= nil and mateRow().voiceOff == true,
+       'and a mate whose beacon says their voice is off reaches the panel '
+           .. 'saying so',
+       tostring(mateRow() and mateRow().voiceOff))
+
+    -- 3. AND IT GOES AWAY AGAIN, with nothing anywhere having to remember to
+    --    clear it: the membership list is rebuilt whole on every push, so a
+    --    stale mark is unrepresentable rather than merely unlikely.
+    beacon[2].voiceOff = nil
+    push()
+    ok(mateRow() ~= nil and mateRow().voiceOff == nil,
+       'and a mate who turns it back on stops being marked, with no clear '
+           .. 'anywhere that could be forgotten',
+       tostring(mateRow() and mateRow().voiceOff))
+
+    -- 4. THE ROW LEARNS NOTHING ELSE ABOUT THEIR VOICE. A beacon carrying a
+    --    MODE -- a later round widening the wire, a hand-fired event, an older
+    --    build -- must not have it folded through onto the payload the panel
+    --    reads. The refusal lives in what state.lua chooses to COPY, one field
+    --    at a time, so this is the assertion that notices somebody copying the
+    --    lot. Which mode a mate is on is the fact that stays unpublished:
+    --    'nearby' is not on your radio but IS audible standing next to you, so
+    --    the only honest version of it compares positions.
+    beacon[2].voiceOff  = true
+    beacon[2].voiceMode = 'nearby'
+    push()
+    local row = mateRow()
+    ok(row ~= nil and row.voiceOff == true and row.voiceMode == nil,
+       'and a voice MODE riding the beacon is not folded onto the row -- one '
+           .. 'bit crosses, and it is the only one',
+       ('off=%s mode=%s'):format(tostring(row and row.voiceOff),
+                                 tostring(row and row.voiceMode)))
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
