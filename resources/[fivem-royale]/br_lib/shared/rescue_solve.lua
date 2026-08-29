@@ -478,13 +478,33 @@ end
 --- @param clearM number|nil  metres, default 500
 --- @return boolean
 function BR.RescueClearOfPlayers(x, y, others, clearM)
-    local need = clearM or 500.0
+    return BR.RescueRoom(x, y, others) >= (clearM or 500.0)
+end
+
+--- How much room this spot has: metres to the NEAREST other player.
+---
+--- The measurement behind the rule above, exposed separately because
+--- BR.RescueFreeSpawn needs to RANK crowded spots rather than only reject them.
+--- "We should never reject a cprkit" (owner, 2026-08-29) means a late circle
+--- with nowhere 500m-clear has to produce the roomiest spot available instead
+--- of nothing, and a boolean cannot say which spot that is.
+---
+--- `math.huge` for an empty world, which is the honest answer -- a solo match
+--- has infinite room -- and it compares correctly against any threshold.
+---
+--- @param x number
+--- @param y number
+--- @param others table|nil  array of { x, y } -- everyone else
+--- @return number metres to the nearest, or math.huge
+function BR.RescueRoom(x, y, others)
+    local near = math.huge
     for _, o in ipairs(others or {}) do
-        if o and o.x and o.y and BR.Dist(x, y, o.x, o.y) < need then
-            return false
+        if o and o.x and o.y then
+            local d = BR.Dist(x, y, o.x, o.y)
+            if d < near then near = d end
         end
     end
-    return true
+    return near
 end
 
 --- Find somewhere to put the ambulance when no surveyed point will do.
@@ -554,22 +574,114 @@ end
 --- @return table|nil spawn  { x, y } -- no z and no heading, both are the client's
 --- @return table|nil dest   the destination that spot unlocked
 --- @return number   dist    spawn-to-destination metres, or math.huge
+--- A destination the surveyed table does not contain.
+---
+--- ═══ THE LAST REASON A KIT COULD BE REFUSED ═══
+---
+--- Owner, 2026-08-29: "we should never reject a cprkit."
+---
+--- Every other refusal has a fix that is only geometry -- move the spawn, widen
+--- the search. This one does not: late in a match the circle is small, and the
+--- odds that one of 23 authored car parks happens to sit inside it are poor.
+--- No amount of walking the spawn around helps, because the thing that is
+--- missing is a legal place to be PUT DOWN.
+---
+--- So one is constructed. Candidate points on rings around the spawn, at
+--- distances inside the trip band, taking the first that will be inside the
+--- circle when an ambulance could get there -- the same arrival-time question
+--- BR.RescueDestination asks of the authored points, asked of open ground.
+---
+--- NEAREST FIRST, ascending outward from minTripM, because a shorter drive is
+--- one the ambulance is likelier to finish -- which is the whole reason the
+--- owner capped the trip in the first place.
+---
+--- ═══ IT CARRIES NO USABLE `z`, AND THE CLIENT KNOWS THAT ═══
+---
+--- A surveyed point's z was measured by standing on it. This one is a pair of
+--- map coordinates with no ground under them that the server can find -- there
+--- is no server-side GetGroundZFor_3dCoord any more than there is a road
+--- lookup. It is marked `free` so client/rescue.lua resolves the height at
+--- delivery: the snapped road node first, a ground probe second, and only then
+--- the number below. Deliver on this z unresolved and the player lands inside
+--- a hillside.
+---
+--- @param fromX number  the spawn
+--- @param fromY number
+--- @param storm table|nil
+--- @param now number
+--- @param cfg table|nil
+--- @param poly table|nil the map boundary
+--- @return table|nil dest
+--- @return number dist
+function BR.RescueSynthDestination(fromX, fromY, storm, now, cfg, poly)
+    cfg = cfg or {}
+    local minTrip = cfg.minTripM or 150.0
+    local maxTrip = cfg.maxTripM or 1000.0
+    local step    = cfg.synthStepM or 100.0
+    if step <= 0 then return nil, math.huge end
+
+    local r = minTrip
+    while r <= maxTrip do
+        -- ONE ARRIVAL TIME PER RING, not per candidate: every point on a ring
+        -- is the same distance away, so the drive takes the same time and the
+        -- circle is the same circle. Computing it inside the bearing loop would
+        -- be the same answer several dozen times.
+        local circles = BR.RescueCircles(storm, now + BR.RescueDriveMs(r, cfg))
+        local n = math.max(8, math.floor((2.0 * math.pi * r) / step))
+
+        for i = 0, n - 1 do
+            local a  = (2.0 * math.pi * i) / n
+            local dx = fromX + math.sin(a) * r
+            local dy = fromY + math.cos(a) * r
+            if (poly == nil or BR.PointInPolygon(dx, dy, poly))
+               and BR.RescueInside(circles, dx, dy) then
+                return {
+                    id = 'open ground', free = true,
+                    x = dx, y = dy, z = 0.0, heading = 0.0,
+                }, r
+            end
+        end
+
+        r = r + step
+    end
+
+    return nil, math.huge
+end
+
 function BR.RescueFreeSpawn(px, py, others, points, storm, now, cfg, poly)
     cfg = cfg or {}
-    local reach   = cfg.spawnSearchM or 1200.0
+    local reach   = cfg.spawnSearchM or 6000.0
     local ring    = cfg.spawnRingM or 100.0
     local clearM  = cfg.clearOfPlayersM or 500.0
 
     if ring <= 0 then return nil, nil, math.huge end
 
-    -- Ring 0 is the player's own spot, and it is tried first because "nearest"
-    -- has to mean nearest. It is only ever rejected by the two filters below,
-    -- never by a rule about standing too close to the person being rescued --
-    -- they are about to be teleported inside the vehicle regardless.
+    -- ═══ THE FALLBACK'S FALLBACK ═══
+    --
+    -- "we should never reject a cprkit" (owner, 2026-08-29). A late circle with
+    -- the survivors packed into it can leave no spot on the map that is 500m
+    -- from all of them, and refusing there would be exactly the outcome he
+    -- ruled out. So the best-available spot is remembered as the walk goes:
+    -- the one with the most room around it that still had somewhere to drive
+    -- to. It is returned ONLY if nothing fully qualified.
+    --
+    -- THE CLEARANCE IS THE RULE THAT BENDS, and it is the right one of the
+    -- three. The boundary cannot bend -- a spawn outside the map starts the
+    -- rescue in the storm. The destination cannot bend -- there has to be
+    -- somewhere to drive to. Standing nearer to another player than the owner
+    -- would like is a worse rescue, not a broken one.
+    local bestSpot, bestDest, bestDist, bestRoom = nil, nil, math.huge, -1.0
+
     local r = 0.0
     while r <= reach do
+        -- RINGS COARSEN WITH DISTANCE. Near the player the spacing decides how
+        -- precisely "nearest" is answered and is worth paying for; four
+        -- kilometres out it only decides how long the search takes. Fixed
+        -- spacing over a map-wide reach is tens of thousands of candidates for
+        -- no better answer.
+        local stepHere = math.max(ring, r * 0.15)
         local n = (r <= 0.0) and 1
-            or math.max(8, math.floor((2.0 * math.pi * r) / ring))
+            or math.max(8, math.floor((2.0 * math.pi * r) / stepHere))
 
         for i = 0, n - 1 do
             local a  = (2.0 * math.pi * i) / n
@@ -579,19 +691,31 @@ function BR.RescueFreeSpawn(px, py, others, points, storm, now, cfg, poly)
             -- Inside the playable area first: it is the cheapest test and the
             -- one that disqualifies most of a ring near the boundary. A spawn
             -- outside the map is a rescue that begins in the storm.
-            local okHere = (poly == nil) or BR.PointInPolygon(cx, cy, poly)
+            if (poly == nil) or BR.PointInPolygon(cx, cy, poly) then
+                -- AUTHORED GROUND FIRST, ALWAYS. A surveyed point is somewhere
+                -- the owner stood; open ground is somewhere a ring walk
+                -- guessed. The synthesised one is only reached when the storm
+                -- has left no authored point legal.
+                local dest, dist = BR.RescueDestination(points, cx, cy, storm, now, cfg)
+                if not dest then
+                    dest, dist = BR.RescueSynthDestination(cx, cy, storm, now, cfg, poly)
+                end
 
-            if okHere and BR.RescueClearOfPlayers(cx, cy, others, clearM) then
-                local dest, dist, inside =
-                    BR.RescueDestination(points, cx, cy, storm, now, cfg)
-                if dest and inside then
-                    return { x = cx, y = cy }, dest, dist
+                if dest then
+                    local room = BR.RescueRoom(cx, cy, others)
+                    if room >= clearM then
+                        return { x = cx, y = cy }, dest, dist
+                    end
+                    if room > bestRoom then
+                        bestSpot, bestDest, bestDist, bestRoom =
+                            { x = cx, y = cy, crowded = true }, dest, dist, room
+                    end
                 end
             end
         end
 
-        r = r + ring
+        r = r + stepHere
     end
 
-    return nil, nil, math.huge
+    return bestSpot, bestDest, bestDist
 end

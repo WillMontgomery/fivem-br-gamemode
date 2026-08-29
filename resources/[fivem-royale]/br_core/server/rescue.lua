@@ -401,6 +401,15 @@ local function finish(src, delivered, why)
         delivered = true,
         x = rec.dest.x, y = rec.dest.y, z = rec.dest.z,
         heading = rec.dest.heading or 0.0,
+        -- ═══ AND WHETHER THAT `z` IS WORTH ANYTHING ═══
+        --
+        -- A surveyed destination's height was measured by standing on it. A
+        -- SYNTHESISED one (BR.RescueSynthDestination, for a late circle with no
+        -- authored point inside it) is a pair of map coordinates the server
+        -- guessed, and the server has no GetGroundZFor_3dCoord to improve it
+        -- with. Carried so the client knows to resolve the height itself rather
+        -- than trusting this number and burying the player in a hillside.
+        free = rec.dest.free == true,
     })
 end
 
@@ -496,39 +505,65 @@ function BR.Rescue.begin(src)
                 x = spot.x, y = spot.y, z = pos.z, heading = 0.0,
             }
             dest, dist, inside = freeDest, freeDist, true
+
+            -- EVERY WAY THIS ANSWER IS SECOND-BEST IS SAID OUT LOUD, because
+            -- the player is told none of them -- this feature has one
+            -- notification -- and a rescue that starts oddly is otherwise
+            -- indistinguishable from one that started normally. `crowded` means
+            -- nothing on the map was 500m clear and this is the roomiest spot
+            -- there was; an `open ground` destination means no surveyed point
+            -- was legal and one had to be built.
             print(('[br_core] rescue: %d  free spawn at (%.1f, %.1f), %.0fm from '
-                   .. 'the player, %.0fm from %s')
+                   .. 'the player, %.0fm from %s%s%s')
                 :format(src, spot.x, spot.y,
                         BR.Dist(pos.x, pos.y, spot.x, spot.y),
-                        freeDist, tostring(freeDest.id)))
+                        freeDist, tostring(freeDest.id),
+                        spot.crowded and ('  <-- CROWDED, nearest player %.0fm')
+                            :format(BR.RescueRoom(spot.x, spot.y, others)) or '',
+                        freeDest.free and '  <-- destination is open ground' or ''))
         end
     end
 
-    -- ═══ NO QUALIFYING POINT IS A REFUSAL, AND THE KIT SURVIVES IT ═══
+    -- ═══ THE ROUTING REFUSAL IS GONE, AND THAT REVERSES AN EARLIER RULE ═══
     --
     -- Owner, 2026-08-28: "If no destinations are available within the PURPLE
     -- storm circle - then cprkits are not available for use."
+    -- Owner, 2026-08-29: "we should never reject a cprkit. Find a place to spawn
+    -- which is nearest to the player but <1000m from the destination and on a
+    -- road, and no other players nearby, then spawn it and go."
     --
-    -- THE KIT IS SAFE HERE BY POSITION, NOT BY LUCK, and it is worth stating
-    -- because the item is ultra-rare and the failure would be unrecoverable:
-    -- BR.Inv.take is thirty lines BELOW this return, after every refusal in this
-    -- function. A `begin` that answers false has spent nothing, written nothing
-    -- to the roster and told no client anything -- the player is simply still
-    -- downed, still holding their kit, and still able to press the key again
-    -- when the circle moves. tools/test_rescue.lua asserts exactly that, because
-    -- "the refusal happens before the take" is a property of an ORDERING and
-    -- orderings are what edits change without noticing.
+    -- The later message supersedes the earlier one, and it is recorded here
+    -- rather than quietly dropped because the earlier rule was a real design
+    -- with a real reason: a kit is ultra-rare, and a ride that ends in the storm
+    -- is worse than a ride that never starts.
     --
-    -- IT SAYS SO IN THE CONSOLE. Nothing is shown to the PLAYER -- this feature
-    -- has one notification and a refusal toast would be a second -- but a rescue
-    -- that declines to start is otherwise indistinguishable from a keypress that
-    -- did not register, which is the report we would get back.
-    if not dest then
-        print(('[br_core] rescue: %d refused -- no destination from the surveyed '
-               .. 'pickup NOR from any free spot within %.0fm (%d points, %d '
-               .. 'other players, trip band %.0f-%.0fm, storm phase %s)')
-            :format(src, R.spawnSearchM or 1200.0, #points, #others,
+    -- WHAT MAKES "NEVER" ACHIEVABLE RATHER THAN A WISH, in the order the solver
+    -- tries them -- see shared/rescue_solve.lua for each:
+    --
+    --   1. the surveyed pickup, as it always was;
+    --   2. a FREE spawn, walked outward from the player to the first spot that
+    --      is inside the map, clear of everybody, and inside the trip band of a
+    --      surveyed destination -- reaching the whole map, not 1200m;
+    --   3. a SYNTHESISED destination on open ground inside the arrival circle,
+    --      for the late-game case where no authored car park is legal;
+    --   4. and, if the survivors are packed so tightly that nothing on the map
+    --      is 500m clear, the ROOMIEST spot that still had somewhere to drive
+    --      to. The clearance is the rule that bends because it is the only one
+    --      of the three whose failure is a worse rescue rather than a broken
+    --      one: outside the map starts in the storm, and no destination has
+    --      nowhere to go.
+    --
+    -- So `dest` is nil here only if the map has no boundary and no points at
+    -- all, which canCall already refused. The guard stays as an assertion
+    -- rather than a policy -- if it ever fires, the solver is broken, and
+    -- spawning an ambulance with nowhere to drive would hide that.
+    if not dest or not pickup then
+        print(('[br_core] rescue: %d COULD NOT BE ROUTED AT ALL -- this should '
+               .. 'be impossible since 2026-08-29 (%d points, %d other players, '
+               .. 'trip band %.0f-%.0fm, search %.0fm, storm phase %s)')
+            :format(src, #points, #others,
                     R.minTripM or 150.0, R.maxTripM or 1000.0,
+                    R.spawnSearchM or 6000.0,
                     tostring(m.storm and m.storm.phase)))
         return false
     end

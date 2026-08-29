@@ -1913,6 +1913,46 @@ AddEventHandler(BR.Net.RESCUE_END, function(d)
         -- stand wherever they stopped -- they are a scene, not a delivery.
         local px, py, pz, ph = dd.x, dd.y, dd.z, dd.heading or 0.0
 
+        -- ═══ AND IF THE SERVER COULD NOT KNOW THE HEIGHT, FIND IT HERE ═══
+        --
+        -- Owner, 2026-08-29: "we should never reject a cprkit." The last
+        -- refusal that removed was a late circle with no surveyed point inside
+        -- it, which BR.RescueSynthDestination answers by building a drop-off on
+        -- open ground. That point has real map coordinates and a MEANINGLESS z:
+        -- there is no server-side GetGroundZFor_3dCoord any more than there is a
+        -- road lookup, so the server sends 0.0 and says so with `free`.
+        --
+        -- Deliver on that unresolved and the player arrives inside a hillside or
+        -- under the sea, which is a worse outcome than the refusal this replaced
+        -- -- so the height is resolved here, in the order of what is trustworthy:
+        --
+        --   1. THE SNAPPED ROAD NODE. `snapDest` already put one within
+        --      arriveM (50m) of the destination during the drive and kept its z.
+        --      It is a real surface the game itself considers drivable, which is
+        --      the best answer available and the one the ambulance parked on.
+        --   2. A GROUND PROBE at the destination. The world here is streamed --
+        --      the ambulance drove to it -- so this normally answers.
+        --   3. The server's number, unchanged, so a failure to resolve is the
+        --      behaviour that shipped before rather than a new one.
+        --
+        -- SURVEYED DESTINATIONS ARE NOT TOUCHED. Their z was measured by
+        -- standing on the spot, which beats every option above.
+        if dd.free then
+            local r = ride
+            local was = pz
+            if r and r.nodeZ then
+                px, py, pz = r.nodeX, r.nodeY, r.nodeZ
+            elseif GetGroundZFor_3dCoord then
+                -- Probed from high up: the native searches DOWNWARD, so a start
+                -- height below the terrain answers nothing at all.
+                local okG, gz = GetGroundZFor_3dCoord(px, py, 1000.0, false)
+                if isTrue(okG) and gz then pz = gz + 1.0 end
+            end
+            print(('[br_core] rescue: open-ground delivery, z resolved %.1f -> '
+                   .. '%.1f (%s)'):format(was, pz,
+                    (r and r.nodeZ) and 'snapped road node' or 'ground probe'))
+        end
+
         -- FADE FIRST ON THE WAY OUT TOO (#191 step 7), and the fade is what the
         -- detach and the teleport hide.
         DoScreenFadeOut(400)

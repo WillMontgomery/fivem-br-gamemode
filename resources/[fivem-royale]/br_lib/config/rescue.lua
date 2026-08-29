@@ -683,16 +683,44 @@ BR.Config.Rescue = {
     -- 1200m would make it 91.4% and 1500m 98.1%, so `maxTripM` is the knob to
     -- reach for if those refusals are felt in play.
     --
-    -- How far out to look before giving up. Generous, because the player is
-    -- TELEPORTED into the vehicle -- distance from them costs nothing but the
-    -- fiction, where a refusal costs the whole feature.
-    spawnSearchM     = 1200.0,
+    -- ═══ HOW FAR OUT TO LOOK, AND IT IS THE WHOLE MAP ON PURPOSE ═══
+    --
+    -- Owner, 2026-08-29: "we should never reject a cprkit. Find a place to
+    -- spawn which is nearest to the player but <1000m from the destination and
+    -- on a road, and no other players nearby, then spawn it and go."
+    --
+    -- "Never reject" and a search ceiling are the same knob pointed in opposite
+    -- directions, so the ceiling is set past the map's own diagonal. A player
+    -- downed far outside a late circle needs the spawn to travel most of the way
+    -- to it; stopping at 1200m would refuse exactly that case.
+    --
+    -- IT COSTS NOTHING TO BE GENEROUS HERE. The player is TELEPORTED into the
+    -- vehicle behind a fade, so distance from them buys no waiting and breaks no
+    -- fiction -- and the walk stops at the first spot that works, so a rescue
+    -- with a nearby answer never pays for this number at all.
+    spawnSearchM     = 6000.0,
 
     -- Ring spacing for that outward walk, and the arc spacing between probes on
     -- each ring. 100m is the lattice the coverage above was measured on, so the
     -- number the search is tuned to and the number quoted for it are the same
     -- one rather than two that agree by memory.
     spawnRingM       = 100.0,
+
+    -- ═══ AND THE SPACING FOR A DESTINATION THAT HAD TO BE INVENTED ═══
+    --
+    -- The last refusal the owner ruled out is the one geometry alone cannot
+    -- reach: late in a match the circle is small, and the chance that one of 23
+    -- authored car parks sits inside it is poor. BR.RescueSynthDestination
+    -- builds a drop-off on open ground instead -- rings around the spawn inside
+    -- the trip band, first point that will be inside the circle on arrival.
+    --
+    -- AUTHORED POINTS STILL WIN. This is only consulted when the surveyed table
+    -- offers nothing legal, so a normal rescue never touches it.
+    --
+    -- The delivery height for such a point is resolved on the CLIENT -- snapped
+    -- road node, then a ground probe -- because the server has no way to ask
+    -- where the ground is. See client/rescue.lua's RESCUE_END handler.
+    synthStepM       = 100.0,
 
     -- ═══ NOBODY WATCHES A RESCUE MATERIALISE ═══
     --

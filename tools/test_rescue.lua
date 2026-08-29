@@ -634,72 +634,228 @@ do
     --
     -- The road node is NOT tested here and cannot be: the pathfind natives are
     -- client-only. This solves a coordinate; client/rescue.lua snaps it.
-    local storm = {
+
+    -- ═══ A CIRCLE THE PLAYER CANNOT REACH FROM WHERE THEY FELL ═══
+    --
+    -- Small and far: every point inside it is 1800-2200m from the origin, and
+    -- the trip ceiling is 1000m. So NO spawn at the player's feet can reach it
+    -- -- not the surveyed point, and not a synthesised one either, since those
+    -- have to be inside the circle too. The walk has to travel, which is the
+    -- property this case exists to prove and the one a search that gave up on
+    -- its first ring would fail.
+    local far = {
+        phase = 1,
+        cx0 = 2000.0, cy0 = 0.0, r0 = 200.0,
+        cx1 = 2000.0, cy1 = 0.0, r1 = 200.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+    local dest = { id = 'target', x = 2000.0, y = 0.0 }
+    local spot, got, dist =
+        BR.RescueFreeSpawn(0.0, 0.0, {}, { dest }, far, 0, R, nil)
+
+    ok(spot ~= nil,
+        'a spawn is found by walking outward until a destination comes into '
+            .. 'the trip band -- the whole point of the fallback',
+        spot and ('(%.0f, %.0f)'):format(spot.x, spot.y) or 'nothing found')
+    ok(spot ~= nil and dist <= R.maxTripM and dist >= (R.minTripM or 150.0),
+        '...and the spot it picks is inside the band, not merely nearer', dist)
+    ok(got ~= nil, 'with a destination to go with it', got and got.id)
+
+    -- ═══ NEAREST, WHICH IS THE HALF A RING WALK COULD GET WRONG ═══
+    --
+    -- "nearest to the DBNO location". The first ring that can reach the circle
+    -- at all sits about (2000 - maxTripM) out, so a walk that stopped there is
+    -- right and one that wandered further has overshot a closer answer.
+    local walked = spot and BR.Dist(0.0, 0.0, spot.x, spot.y) or math.huge
+    -- THE BOUND INCLUDES THE CIRCLE'S RADIUS. A spawn does not have to reach
+    -- the CENTRE, only the nearest point inside the wall, so the closest
+    -- workable ring is (2000 - r0 - maxTripM) rather than (2000 - maxTripM).
+    ok(walked >= (2000.0 - 200.0 - R.maxTripM) - 1.0,
+        'it does not claim a spot closer than the geometry allows',
+        ('%.0fm from the player'):format(walked))
+    ok(walked <= (2000.0 - 200.0 - R.maxTripM) + 400.0,
+        'and it stops on the first ring that works rather than walking on',
+        ('%.0fm from the player'):format(walked))
+
+    -- ═══ THE 500m RULE IS OBEYED BY THE FALLBACK TOO ═══
+    local blocked = {}
+    if spot then blocked[1] = { x = spot.x, y = spot.y } end
+    local spot2 = BR.RescueFreeSpawn(0.0, 0.0, blocked, { dest }, far, 0, R, nil)
+    ok(spot2 == nil
+           or BR.RescueClearOfPlayers(spot2.x, spot2.y, blocked,
+                                      R.clearOfPlayersM) == true
+           or spot2.crowded == true,
+        'a spot with somebody standing on it is never returned as a clean one '
+            .. '-- it is either avoided or flagged crowded')
+
+    -- ═══ AND IT STAYS INSIDE THE MAP, BOTH ENDS ═══
+    --
+    -- A boundary is passed in play (BR.Config.Map.Boundary). A spawn outside it
+    -- begins the rescue in the storm and a DESTINATION outside it ends there,
+    -- so the ring walk skips both rather than trusting the circle to catch them.
+    local box = {
+        { x = -2000.0, y = -2000.0 }, { x = 2000.0, y = -2000.0 },
+        { x =  2000.0, y =  2000.0 }, { x = -2000.0, y = 2000.0 },
+    }
+    local wide = {
         phase = 1,
         cx0 = 0.0, cy0 = 0.0, r0 = 99999.0,
         cx1 = 0.0, cy1 = 0.0, r1 = 99999.0,
         tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
     }
 
-    -- One destination, and a player standing far enough from it that no spot
-    -- at their own feet can reach it. The ring walk has to travel to succeed.
-    local dest = { id = 'target', x = 1600.0, y = 0.0 }
-    local spot, got, dist =
-        BR.RescueFreeSpawn(0.0, 0.0, {}, { dest }, storm, 0, R, nil)
-
-    ok(spot ~= nil and got == dest,
-        'a spawn is found by walking outward until the destination comes into '
-            .. 'the trip band -- the whole point of the fallback',
-        spot and ('(%.0f, %.0f)'):format(spot.x, spot.y) or 'nothing found')
-    ok(spot ~= nil and dist <= R.maxTripM and dist >= (R.minTripM or 150.0),
-        '...and the spot it picks is inside the band, not merely nearer', dist)
-
-    -- ═══ NEAREST, WHICH IS THE HALF A RING WALK COULD GET WRONG ═══
+    -- ═══ STOOD AGAINST THE NORTH EDGE, WHICH IS WHAT MAKES THIS BITE ═══
     --
-    -- "nearest to the DBNO location". A search that returned the first spot on
-    -- the first ring it found ANY hit on would pass the case above and fail
-    -- this one: the walk must not overshoot a closer ring.
-    local nearRing = math.huge
-    if spot then nearRing = BR.Dist(0.0, 0.0, spot.x, spot.y) end
-    ok(nearRing <= (1600.0 - R.maxTripM) + (R.spawnRingM or 100.0) * 1.5,
-        'and it is the NEAREST qualifying spot -- the walk stops on the first '
-            .. 'ring that works rather than the first one it likes',
-        ('%.0fm from the player'):format(nearRing))
-
-    -- ═══ THE 500m RULE IS OBEYED BY THE FALLBACK TOO ═══
+    -- The ring walk tries bearings in index order and bearing 0 is due north
+    -- (dy = fromY + cos(0) * r). From 1900 with a 150m floor, the FIRST
+    -- candidate it ever considers is (0, 2050) -- outside the box. So an
+    -- implementation that forgot the boundary test takes it, and one that
+    -- honours it walks round to another bearing.
     --
-    -- A wall of players parked on the spot the search would otherwise take. The
-    -- answer must be a DIFFERENT spot or none -- never that one.
-    local blocked = {}
-    if spot then blocked[1] = { x = spot.x, y = spot.y } end
-    local spot2 = BR.RescueFreeSpawn(0.0, 0.0, blocked, { dest }, storm, 0, R, nil)
-    ok(spot2 == nil
-           or BR.RescueClearOfPlayers(spot2.x, spot2.y, blocked,
-                                      R.clearOfPlayersM) == true,
-        'a spot with somebody standing on it is never returned -- the fallback '
-            .. 'obeys the clearance rule it was written alongside')
-
-    -- ═══ AND IT STAYS INSIDE THE MAP ═══
-    --
-    -- A boundary is passed in play (BR.Config.Map.Boundary). A spawn outside it
-    -- is a rescue that begins in the storm, so the ring walk skips those
-    -- candidates rather than trusting the circle to catch them later.
-    local box = {
-        { x = -200.0, y = -200.0 }, { x = 200.0, y = -200.0 },
-        { x =  200.0, y =  200.0 }, { x = -200.0, y = 200.0 },
-    }
-    local penned = BR.RescueFreeSpawn(0.0, 0.0, {}, { dest }, storm, 0, R, box)
-    ok(penned == nil,
-        'no spot inside the boundary can reach the destination, so the search '
-            .. 'refuses rather than stepping outside the map',
+    -- The earlier version of this case put the player in the middle of a large
+    -- box, where every candidate was inside and the assertion passed whether the
+    -- check existed or not. Mutation testing is what found that.
+    local penned, pennedDest =
+        BR.RescueFreeSpawn(0.0, 1900.0, {}, {}, wide, 0, R, box)
+    ok(penned ~= nil and BR.PointInPolygon(penned.x, penned.y, box),
+        'the spawn it chooses is inside the boundary it was given',
         penned and ('(%.0f, %.0f)'):format(penned.x, penned.y))
+    ok(pennedDest ~= nil
+           and BR.PointInPolygon(pennedDest.x, pennedDest.y, box),
+        'and so is the destination -- a synthesised drop-off cannot be off-map, '
+            .. 'even when the nearest one would be',
+        pennedDest and ('(%.0f, %.0f)'):format(pennedDest.x, pennedDest.y))
 
-    -- Nothing to drive to is still nothing to drive to.
-    ok(BR.RescueFreeSpawn(0.0, 0.0, {}, {}, storm, 0, R, nil) == nil,
-        'and with no destinations at all it finds no spawn rather than a spot '
-            .. 'with nowhere to go')
+    -- ═══ AND A PLAYER WHO WENT DOWN OUTSIDE THE MAP IS WALKED BACK IN ═══
+    --
+    -- "nearest to the DBNO location" starts the walk at the player's own feet,
+    -- and ring 0 is that spot exactly. Downed beyond the boundary -- in the
+    -- storm, off the edge, wherever the cull left no ground -- that first
+    -- candidate is off-map, and an implementation that only bounded the
+    -- DESTINATION would happily build the ambulance out there.
+    local outside, outsideDest =
+        BR.RescueFreeSpawn(0.0, 2100.0, {}, {}, wide, 0, R, box)
+    ok(outside ~= nil and BR.PointInPolygon(outside.x, outside.y, box),
+        'a player downed outside the boundary gets a spawn back inside it, not '
+            .. 'one at their feet',
+        outside and ('(%.0f, %.0f)'):format(outside.x, outside.y))
+    ok(outsideDest ~= nil,
+        '...and still gets somewhere to be driven to')
 end
 
+-- ---------------------------------------------------------------------------
+describe('spawn.neverRejects')
+do
+    -- ═══ THE RULE THAT REPLACED "cprkits are not available for use" ═══
+    --
+    -- Owner, 2026-08-29: "we should never reject a cprkit. Find a place to
+    -- spawn which is nearest to the player but <1000m from the destination and
+    -- on a road, and no other players nearby, then spawn it and go."
+    --
+    -- This reverses 2026-08-28's "If no destinations are available within the
+    -- PURPLE storm circle - then cprkits are not available for use", and the
+    -- block below is that reversal written down. Every case here USED to be a
+    -- refusal.
+
+    -- 1. NOT ONE SURVEYED POINT IN THE WHOLE CONFIG.
+    local storm = {
+        phase = 1,
+        cx0 = 0.0, cy0 = 0.0, r0 = 4000.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 4000.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+    local spot, dest = BR.RescueFreeSpawn(0.0, 0.0, {}, {}, storm, 0, R, nil)
+    ok(spot ~= nil and dest ~= nil,
+        'an empty surveyed table still yields a ride -- the destination is '
+            .. 'built rather than looked up',
+        spot and dest and dest.id)
+    ok(dest ~= nil and dest.free == true,
+        '...and it is MARKED as built, so the client knows its height is a '
+            .. 'guess and resolves the ground itself',
+        dest and tostring(dest.free))
+
+    -- 2. A LATE CIRCLE WITH NO AUTHORED POINT INSIDE IT. The real shape of the
+    --    refusal the owner hit: points exist, the storm has just left them all.
+    local late = {
+        phase = 8,
+        cx0 = 0.0, cy0 = 0.0, r0 = 300.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 300.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 10.0,
+    }
+    local miles = { { id = 'miles_away', x = 6000.0, y = 0.0 } }
+    local s2, d2 = BR.RescueFreeSpawn(0.0, 0.0, {}, miles, late, 0, R, nil)
+    ok(s2 ~= nil and d2 ~= nil,
+        'a circle with every surveyed point outside it still yields a ride',
+        s2 and d2 and d2.id)
+    ok(d2 ~= nil and BR.InCircle(d2.x, d2.y, 0.0, 0.0, 300.0),
+        '...and the built destination is INSIDE that circle -- never rejecting '
+            .. 'does not mean delivering into the storm',
+        d2 and ('(%.0f, %.0f)'):format(d2.x, d2.y))
+
+    -- 3. THE SURVIVORS ARE PACKED AND NOTHING IS 500m CLEAR.
+    --    The clearance is the rule that bends, because its failure is a worse
+    --    rescue rather than a broken one.
+    -- THE SEARCH IS PENNED IN so the crowd can actually cover it. With the
+    -- shipped 6000m reach the walk simply strolls past any crowd this fixture
+    -- could build and finds clean ground, which would make every assertion
+    -- below pass without the fallback existing at all -- checked by mutation,
+    -- and it did.
+    local RPEN = setmetatable({ spawnSearchM = 1000.0 }, { __index = R })
+
+    -- Rings every 250m out to the search limit, 72 bearings each: no point
+    -- inside 1000m of the origin is more than ~130m from somebody.
+    local crowd = {}
+    for i = 0, 71 do
+        local a = (2.0 * math.pi * i) / 72
+        for _, rad in ipairs({ 250.0, 500.0, 750.0, 1000.0 }) do
+            crowd[#crowd + 1] =
+                { x = math.sin(a) * rad, y = math.cos(a) * rad }
+        end
+    end
+    crowd[#crowd + 1] = { x = 0.0, y = 0.0 }
+
+    -- Sanity, so a pass cannot be for the wrong reason: the crowd really does
+    -- cover the whole searchable area.
+    local anyClear = false
+    for rad = 0, 1000, 100 do
+        for i = 0, 35 do
+            local a = (2.0 * math.pi * i) / 36
+            if BR.RescueRoom(math.sin(a) * rad, math.cos(a) * rad, crowd)
+                   >= R.clearOfPlayersM then
+                anyClear = true
+            end
+        end
+    end
+    ok(not anyClear,
+        'precondition: nothing inside the search radius is 500m clear, so the '
+            .. 'fallback is the only thing that can answer')
+
+    local s3, d3 = BR.RescueFreeSpawn(0.0, 0.0, crowd, {}, storm, 0, RPEN, nil)
+    ok(s3 ~= nil and d3 ~= nil,
+        'a map with no 500m-clear spot on it STILL yields a ride rather than a '
+            .. 'refusal')
+
+    -- AND IT SAYS SO. A crowded spot that pretended to be clean would hide the
+    -- one compromise this design makes. Asserted flatly rather than as
+    -- "clear OR flagged": the precondition above has established that clear is
+    -- impossible here, so the only correct answer is the flag.
+    local room = s3 and BR.RescueRoom(s3.x, s3.y, crowd) or 0.0
+    ok(s3 ~= nil and s3.crowded == true,
+        '...and a spot that had to bend the clearance rule is flagged crowded '
+            .. 'rather than passed off as clear',
+        ('nearest player %.0fm, crowded=%s')
+            :format(room, tostring(s3 and s3.crowded)))
+
+    -- ROOMIEST, NOT MERELY FIRST. Two players standing on the player's own
+    -- spot: whatever is taken must have put real distance between them.
+    local pair = { { x = 0.0, y = 0.0 }, { x = 300.0, y = 0.0 } }
+    local s4 = BR.RescueFreeSpawn(0.0, 0.0, pair, {}, storm, 0, R, nil)
+    ok(s4 ~= nil and BR.RescueRoom(s4.x, s4.y, pair) >= 150.0,
+        'and when it must bend, it takes the roomiest spot it saw rather than '
+            .. 'the first one that had a destination',
+        s4 and ('nearest player %.0fm')
+            :format(BR.RescueRoom(s4.x, s4.y, pair)))
+end
 -- ---------------------------------------------------------------------------
 describe('moved')
 do
