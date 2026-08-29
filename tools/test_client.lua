@@ -9912,6 +9912,77 @@ do
         ('invincible %s, gate %s')
             :format(tostring(invincible), tostring(gate.last)))
 
+    -- ═══ ...AND AN ALIVE PLAYER IN A PLAYING MATCH IS MORTAL, FULL STOP ═══
+    --
+    -- Owner, 2026-08-28, on healing in the back of an ambulance: "if someone
+    -- shoots me to death while in the ambulance healing, I should still take
+    -- damage and die completely."
+    --
+    -- THIS IS THE PROOF OF THAT REQUIREMENT AND IT IS DELIBERATELY HERE RATHER
+    -- THAN IN tools/test_ambheal.lua. The reason a healing player is killable is
+    -- NOT anything client/ambheal.lua does -- it is that `wantInvincible` in
+    -- client/natives.lua is derived from the PLAYER STATE and the MATCH STATE
+    -- and from nothing else. There is no term in it for a vehicle, an attach, a
+    -- camera or a subsystem, so a player attached to a stretcher is exactly as
+    -- mortal as a player standing in a field, and a suite that stood up the heal
+    -- to demonstrate it would be measuring the wrong file.
+    --
+    -- WHAT IT WOULD CATCH is somebody adding a term. The invincibility list has
+    -- grown three times (DBNO in M7, the decided match in #124, the drop grace)
+    -- and each was a good reason; a fourth reading "or the player is healing"
+    -- would look equally reasonable in a diff and would silently make the
+    -- ambulance a safe room. This line fails the build on it.
+    reset()
+    rules(1, mixed, BR.PlayerState.ALIVE)
+    ok(invincible == false,
+        'AN ALIVE PLAYER IN A PLAYING MATCH IS MORTAL -- which is what makes a '
+            .. 'player healing on an ambulance stretcher killable, since the '
+            .. 'latch has no term for the ambulance at all',
+        ('SetPlayerInvincible(%s)'):format(tostring(invincible)))
+
+    -- ═══ AND NOTHING IN THE HEAL RE-ARMS IT BEHIND THE LATCH'S BACK ═══
+    --
+    -- The latch is the whole of the invincibility rule ONLY IF nothing else
+    -- writes one. client/rescue.lua is allowed to -- it makes the NPC medic
+    -- invincible, deliberately -- so this cannot be a tree-wide ban; it is a
+    -- ban on the one file, and a text read is all a process outside the game
+    -- can do. Stated so a pass is not read as more than it is.
+    --
+    -- ALL THREE SPELLINGS, because they are three different natives with three
+    -- different scopes and any of them would break the requirement:
+    -- SetPlayerInvincible (the player), SetEntityInvincible (the ped) and
+    -- SetEntityProofs (bullets, fire, explosions, collisions and melee, which
+    -- is invincibility spelled out longhand and is the one somebody reaches for
+    -- when they have been told not to use the other two).
+    do
+        local fh = io.open('resources/[fivem-royale]/br_core/client/ambheal.lua')
+        local src = fh and fh:read('a') or ''
+        if fh then fh:close() end
+
+        ok(#src > 0, 'client/ambheal.lua opens for the invincibility read')
+
+        -- COMMENTS BLANKED FIRST, which is tools/bool_native_rules.lua's own
+        -- `blank` and is required rather than tidy: that file's header EXPLAINS
+        -- the rule by naming all three natives and quoting the call the latch
+        -- makes, so a raw text search finds its own documentation and fails. The
+        -- prose is the most valuable thing in the file and must not have to be
+        -- reworded to get past a gate.
+        local code = {}
+        for raw in (src .. '\n'):gmatch('(.-)\n') do
+            code[#code + 1] = raw:gsub('%-%-.*$', '')
+        end
+        code = table.concat(code, '\n')
+
+        for _, native in ipairs({ 'SetPlayerInvincible', 'SetEntityInvincible',
+                                  'SetEntityProofs' }) do
+            -- A CALL, not a mention: the name followed by a paren, in code.
+            ok(code:find(native .. '%s*%(') == nil,
+                ('client/ambheal.lua never calls %s -- the heal must not make '
+                    .. 'the player harder to kill'):format(native),
+                'it does now, and the owner\'s rule is broken')
+        end
+    end
+
     -- ==================================================================== --
     -- 7b. THE LATCHING RULES COME OFF THE FRAME PATH, AND STILL HOLD
     -- ==================================================================== --

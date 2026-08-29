@@ -68,6 +68,18 @@ shared_scripts {
     -- CALL time -- so the order here is about where somebody looks for the
     -- points, not about whether they resolve.
     '@br_lib/config/rescue.lua',
+    -- Healing in the back of an ambulance (owner, 2026-08-28). AFTER
+    -- config/rescue.lua, and this one IS a load order rather than a reader's
+    -- convenience in one direction and a reader's in the other:
+    --
+    --   AT LOAD it needs nothing -- every reader in it (stretcher(), models(),
+    --   label()) resolves BR.Config.Rescue at CALL time, deliberately, so the
+    --   owner can re-survey the stretcher with /brattach and both features move
+    --   together.
+    --   ON THE PAGE it must follow, because the whole file is written against
+    --   config/rescue.lua's decisions and the first thing a reader needs is the
+    --   table it borrows from.
+    '@br_lib/config/ambheal.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
     -- The catalogue. SHARED rather than server-only: the server decides what
     -- you own, and the client has to resolve an equipped id into the natives
@@ -112,6 +124,16 @@ shared_scripts {
     -- will be when the ambulance ARRIVES, which is the whole rule -- a point
     -- inside the wall at dispatch is routinely outside it on arrival.
     '@br_lib/shared/rescue_solve.lua',
+    -- BR.AmbHealSolve: the reach test, the rear arc, the door rule and the heal
+    -- ramp. PURE, with every threshold a parameter, so it has no load-order
+    -- requirement of its own beyond shared/geo.lua (BR.Clamp and BR.Dist, both
+    -- already loaded). SHARED because both halves call it and a solver only one
+    -- side can load is a solver only one side can be tested against -- and
+    -- because the geometry the client draws a prompt from and the geometry the
+    -- server grants a claim from must be the same arithmetic, not two copies of
+    -- it. It sits here beside rescue_solve.lua because they are the two
+    -- ambulance solvers.
+    '@br_lib/shared/ambheal_solve.lua',
     -- BR.FuelSolve. SHARED because both halves of the fuel model call it: the
     -- server drains and refills through it, the client converts metres to a
     -- tank level through it, and a solver only one side can load is a solver
@@ -187,6 +209,22 @@ client_scripts {
     -- argument rather than by construction, so the file that yields is declared
     -- after the file it yields to.
     'client/rescue.lua',
+    -- Healing in the back of any ambulance (owner, 2026-08-28). AFTER
+    -- client/rescue.lua, and that is a READER'S order rather than the loader's:
+    -- it borrows that file's stretcher, its pose and its two camera numbers
+    -- through the config, and every one of those is reached at call time. It
+    -- needs client/main.lua for the loop registry, client/keybinds.lua for
+    -- BR.Keys.on('interact'), client/dui.lua for the shared prompt page and
+    -- client/natives.lua for BR.Native.keyLabelForCommand -- all of which are
+    -- above.
+    --
+    -- IT IS BELOW client/loot.lua AND THAT IS FINE. loot.lua's canTake() asks
+    -- BR.AmbHeal.healing() so a player on the stretcher is not offered a crate,
+    -- and it asks it NIL-GUARDED AT CALL TIME -- the same shape in which
+    -- markers.lua, dbno.lua, bus.lua and survey.lua all ask BR.Rescue.riding()
+    -- from above the file that answers. A load order would only matter if the
+    -- table were read while loot.lua itself was loading, and it is not.
+    'client/ambheal.lua',
     -- The fuel gauge, the pump prompt and the station blips. AFTER dui.lua
     -- (it borrows the crate's prompt page) and AFTER keybinds.lua (it reads
     -- BR.Keys.isHeld('interact')); it reads BR.Native.blipName at call time, so
@@ -298,6 +336,21 @@ server_scripts {
     -- `BR.Rescue ~= nil`, because a lethal hit can land before this file has
     -- loaded and the honest answer during that window is "no kit".
     'server/rescue.lua',
+    -- The claim on an ambulance somebody is healing in (owner, 2026-08-28).
+    -- AFTER server/rescue.lua, AND THAT IS A REAL ORDER RATHER THAN A READER'S
+    -- -- but only just, and it is worth being precise about which:
+    --
+    --   AT LOAD it needs BR.Sched (already above, in shared) and nothing else.
+    --   AT CALL it asks BR.Rescue three questions -- isAmbulance, vehicleBusy
+    --   and noteVehicle -- and all three are nil-guarded, because a build
+    --   without the rescue half should heal nobody rather than throw. So the
+    --   order is what makes the guards never fire in a shipped server, and the
+    --   guards are what make the order not load-bearing.
+    --
+    -- IT IS DECLARED HERE, immediately after the file it borrows from, so the
+    -- two ambulance features read as a pair on this page the way they do in
+    -- br_lib/config.
+    'server/ambheal.lua',
     'server/loot.lua',      -- world loot: layout, streaming, claim arbitration
     -- Aerial supply drops. AFTER storm.lua and loot.lua for a reader rather
     -- than for the loader: it asks BR.StormAt where the circle will be when the

@@ -302,6 +302,46 @@ BR.Net = {
     -- the server has no such limit.
     RESCUE_BLIP     = 'br:rescue:blip',
 
+    -- Healing in the back of an ambulance (owner, 2026-08-28). A DIFFERENT
+    -- FEATURE FROM THE FOUR ABOVE and deliberately not folded into them: those
+    -- carry a DBNO player on a scripted journey, these carry an ALIVE player
+    -- standing still. Sharing an event would mean one handler branching on which
+    -- kind of ambulance moment it was, which is the shape of thing that ends up
+    -- reviving somebody by accident.
+    --
+    -- ═══ THE HEALTH ITSELF IS NOT ON THIS CHANNEL ═══
+    --
+    -- It goes out on INV_EFFECT, the med kit's own event, because it is the same
+    -- thing: a target the server issued and the client applies upward. That
+    -- reuse is worth more than a tidy name -- client/inventory.lua's handler
+    -- already caps, floors and refuses a downward write, and server/roster.lua's
+    -- health audit already excuses a rise inside `healUntil` as HEALING. A new
+    -- event would have needed its own copy of the first and its own excuse in
+    -- the second, and the audit crying wolf on the owner's own feature is
+    -- exactly the failure config/match.lua's healthAudit block warns about.
+    --
+    -- C->S  { n = netId } -- "I am standing at the open rear doors of that
+    -- ambulance and I pressed interact". EVERY CLAIM IN THAT SENTENCE EXCEPT THE
+    -- DOORS IS RE-DERIVED SERVER-SIDE: the model, the distance, the rear arc,
+    -- being alive and hurt, and whether anybody else already has that van. The
+    -- doors cannot be -- there is no server handler for the door angle -- and
+    -- BR.AmbHealSolve.doorsOpen states what a client gains by lying about them.
+    AMBHEAL_START   = 'br:ambheal:start',
+    -- C->S  (no payload) -- "stop". The interact key while healing, and also
+    -- what the client sends when it sees the doors shut, the van gone or its own
+    -- ped die. NO PAYLOAD because there is nothing to forge: a player may always
+    -- stop their own heal, and the server keeps whatever was granted.
+    AMBHEAL_STOP    = 'br:ambheal:stop',
+    -- S->C  { n = netId } to begin, `{ done = true }` / `{ done = false }` to
+    -- end. ONE EVENT FOR BOTH ENDINGS so a completion cannot be lost behind a
+    -- teardown that arrives after it -- the same argument SPECTATE_SET makes.
+    --
+    -- THE CLIENT BUILDS NOTHING UNTIL THIS ARRIVES. The prompt is local, the
+    -- press is a request, and the stretcher, the siren and the camera are all
+    -- downstream of the server having granted the claim -- so two players
+    -- pressing at one van in the same frame produce one attach, not two.
+    AMBHEAL_SET     = 'br:ambheal:set',
+
     -- Spectate / end
     --
     -- THE SERVER PICKS THE TARGET AND THE CLIENT DRAWS IT, and the split is a

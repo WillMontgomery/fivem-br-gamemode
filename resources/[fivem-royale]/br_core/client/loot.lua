@@ -552,6 +552,23 @@ end
 --- that looked empty.
 local function canTake()
     if suppressed then return false end
+    -- ...AND NOT FROM THE STRETCHER OF AN AMBULANCE.
+    --
+    -- A player healing in the back of a van (client/ambheal.lua) is ALIVE and
+    -- ATTACHED rather than seated, so every test in this function passes for
+    -- them -- including the vehicle test one line below, because
+    -- IsPedInAnyVehicle answers false for an attached ped. Left alone, a crate
+    -- lying on the tarmac behind the ambulance would prompt at somebody lying on
+    -- a stretcher, and the interact key that is supposed to be their ONLY way
+    -- out (the owner, 2026-08-28) would open it instead.
+    --
+    -- A NIL-GUARDED READER, which is the shape four files already use for
+    -- BR.Rescue.riding(). It is not BR.Loot.suppress, deliberately: that is a
+    -- single boolean latch that client/dbno.lua writes every frame, so a second
+    -- writer would spend the match undoing the first.
+    if BR.AmbHeal and BR.AmbHeal.healing and BR.AmbHeal.healing() then
+        return false
+    end
     if BR.Config.LootTakeStates[BR.State.me.state] ~= true
        and BR.State.landed ~= true then
         return false

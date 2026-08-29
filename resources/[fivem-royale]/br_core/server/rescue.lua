@@ -877,6 +877,57 @@ local function isAmbulanceModel(model)
     return modelSet[BR.NormHash(model)] == true
 end
 
+--- Is this model an ambulance? Published, because there is now a SECOND feature
+--- that has to agree with this one about the word.
+---
+--- server/ambheal.lua heals a player in the back of "any ambulance at all"
+--- (owner, 2026-08-28) and asks this rather than resolving
+--- BR.Config.Rescue.models itself. config/rescue.lua already argues for one list
+--- -- "a second, longer list for recognition is how a rescue ambulance ends up
+--- not counting as an ambulance" -- and one list with two resolvers is the same
+--- fault one step later: the lazy `modelSet` above would be built twice, from
+--- the same table, and would stay identical right up until somebody memoised one
+--- of them somewhere else.
+--- @param model integer|nil
+--- @return boolean
+function BR.Rescue.isAmbulance(model)
+    if not R or not R.enabled then return false end
+    if model == nil then return false end
+    return isAmbulanceModel(model)
+end
+
+--- Is a rescue in flight using this vehicle right now?
+---
+--- ═══ THE STRETCHER IS THE SAME POSITION, WHICH IS WHY THIS EXISTS ═══
+---
+--- A heal attaches an ALIVE player to BR.Config.Rescue.stretcher, and a rescue
+--- attaches a DBNO player to the identical offset on the identical bone. Two
+--- bodies at one offset is one body wearing another, and the second one to
+--- arrive would be riding to a car park it never asked to go to.
+---
+--- MOSTLY UNREACHABLE, AND WORTH HAVING ANYWAY. A rescue in flight runs
+--- `lockedState` with its rear doors SHUT -- client/rescue.lua only opens 2 and
+--- 3 in `park()` -- so the client's doors-open rule already refuses a moving
+--- one. What this closes is the window AFTER it parks and BEFORE the ride ends:
+--- about a second and a half in which the doors are open, the dome light is on,
+--- and the player it is delivering is still attached inside. Once `finish` has
+--- run, the vehicle is abandoned rather than live, this answers false, and the
+--- parked ambulance becomes an ordinary heal station -- which is the owner's
+--- "any ambulance at all" holding without an exception carved for it.
+---
+--- ONE WALK OVER `live`, WHICH IS AT MOST ONE ENTRY PER PLAYER IN A SOLO MATCH
+--- and in practice zero. Asked only when somebody presses interact at the back
+--- of an ambulance, never on a tick.
+--- @param veh integer|nil
+--- @return boolean
+function BR.Rescue.vehicleBusy(veh)
+    if not veh or veh == 0 then return false end
+    for _, rec in pairs(live) do
+        if rec.veh == veh then return true end
+    end
+    return false
+end
+
 --- A player is driving this vehicle. Is it an ambulance we did not know about?
 ---
 --- CALLED FROM server/vehicles.lua's EXISTING 4 Hz SEAT READ, with the handle it

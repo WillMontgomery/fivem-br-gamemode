@@ -197,7 +197,22 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # are two variables in that fixture and are NEVER both set, which is what
     # makes a file that only ever checks the seat fail rather than pass a second
     # late.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_bool_natives.lua; do
+    # test_ambheal.lua is the sixth suite to load a real SERVER file, and the
+    # fixture is the argument again. Four of the owner's rules for healing in an
+    # ambulance are effectively unobservable in a match: the doors-shut refusal
+    # looks identical to an unimplemented prompt, the "one heal per ambulance"
+    # race needs two players pressing within a few frames of each other, the
+    # partial-on-interrupt rule is INDISTINGUISHABLE from the wrong
+    # implementation on any heal that completes, and staging a death on the
+    # stretcher costs a playtest round whose bad outcome is a stuck ped. So the
+    # world is three stub vehicles and the clock is this file's.
+    #
+    # The one rule it does NOT test is the one that matters most -- that a
+    # healing player is killable -- and that is deliberate: it is a property of
+    # client/natives.lua's invincibility latch, so it is asserted against the
+    # real natives.lua in test_client.lua, which already drives it frame by
+    # frame. See the header of test_ambheal.lua.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
