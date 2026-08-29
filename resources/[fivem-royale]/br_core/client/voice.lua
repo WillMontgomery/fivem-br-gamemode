@@ -1853,6 +1853,39 @@ end)
 
 -- ------------------------------------------------------ the talking indicator ---
 
+--- Did the one Mumble native this file reads actually say yes?
+---
+--- IN LUA `0` IS TRUTHY, AND A FiveM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. `MumbleIsPlayerTalking` is one of them, and this file believed it
+--- raw -- so the probe below answered "talking" for every audible player it
+--- asked about, on every tick, forever. server/voice.lua carries the same
+--- normaliser under the name `isYes` and client/spectate.lua under `didHit`;
+--- this is the ninth instance of the same fault in this repository.
+---
+--- THE RETURN SHAPE IS NOT INFERRED FROM THE NAME. pma-voice -- the resource
+--- that owns this engine, vendored at resources/[voice]/pma-voice and running
+--- on the box -- reads the same native in its own proximity loop as
+---
+---     local curTalkingStatus = MumbleIsPlayerTalking(PlayerId()) == 1
+---                              -- client/init/proximity.lua
+---
+--- so upstream compares it to a NUMBER on the same builds we run.
+---
+--- WHY THE BOOL GATE NEVER SAW IT, which is worth naming because the gate is
+--- otherwise the thing that catches this class. tools/bool_native_rules.lua
+--- reports a native in TRUTH POSITION -- `if IsX(...) then` -- and deliberately
+--- does not report one that was stored in a local first, because storing it is
+--- how the fix is written. The call here is `pcall(MumbleIsPlayerTalking, ply)`,
+--- which is both at once: the native is an ARGUMENT, and its answer is a local
+--- that is tested a line later. It is invisible to the gate by construction,
+--- and it is not in tools/bool_natives.baseline for that reason rather than
+--- because anybody decided it was safe.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
 --- WHO IS TALKING -- AND ONLY PEOPLE WE CAN ACTUALLY HEAR.
 ---
 --- THIS READOUT IS NOW HONEST FOR FREE, which it never was before. It is driven
@@ -1996,8 +2029,11 @@ BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
             -- is fed by a server broadcast precisely because this cannot see it.
             local ply = GetPlayerFromServerId(src)  -- scope-ok: proximity talking only; radio is handled below
             if ply and ply ~= -1 then
+                -- NORMALISED, NOT BELIEVED. `isTalking` is the engine's 1 or 0
+                -- and a bare test on it reads every silent player as speaking;
+                -- see isTrue above for why the bool gate cannot see this line.
                 local okT, isTalking = pcall(MumbleIsPlayerTalking, ply)
-                if okT and isTalking then
+                if okT and isTrue(isTalking) then
                     seen[src] = true
                     talking[#talking + 1] = src
                 end

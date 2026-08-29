@@ -563,8 +563,32 @@ function NetworkSetVoiceActive(v) mumble.gameVoice = v and true or false end
 --- audio -- which is exactly why the indicator could name people the owner
 --- could not hear. Modelled as a fact about the network, not about volume, so
 --- that a client which filtered it by nothing would still fail the assertions.
+---
+--- ═══ IT ANSWERS 1 AND 0, NOT true AND false, AND THAT IS THE POINT ═══
+---
+--- This stub used to return a Lua boolean, and that single word made the whole
+--- of the block below unable to see the bug it was written to catch. IN LUA `0`
+--- IS TRUTHY: a caller that believes this native raw reads "not talking" as
+--- "talking" for every player it asks about, forever. The squad panel's voice
+--- mark is built off exactly that list, so every streamed squadmate wore the
+--- speaking glyph permanently -- including one who had picked 'off', which is
+--- how the owner found it.
+---
+--- THE RETURN SHAPE IS NOT A GUESS. The vendored pma-voice reads the same
+--- native in its own proximity loop as
+---
+---     local curTalkingStatus = MumbleIsPlayerTalking(PlayerId()) == 1
+---                              -- client/init/proximity.lua
+---
+--- so the resource that owns this engine, running on this box, compares it to a
+--- NUMBER. A fixture that answered `true`/`false` was not modelling the engine,
+--- it was agreeing with our misreading of it -- which is the shape of every bug
+--- this project has shipped through a green suite.
 --- @param ply integer player index; the stub's index IS the server id
-function MumbleIsPlayerTalking(ply) return mumble.talking[ply] == true end
+--- @return integer  1 or 0, as the engine answers
+function MumbleIsPlayerTalking(ply)
+    return mumble.talking[ply] == true and 1 or 0
+end
 function MumbleDoesChannelExist(ch) return mumble.channels[ch] == true end
 
 --- Which room the engine believes a player is in. -1 for "none I know of",
@@ -5393,6 +5417,29 @@ do
     local names = talkingNames()
     ok(#names == 1 and names[1] == 'p2',
         'somebody talking nearby is named', table.concat(names, ','))
+
+    -- AND SOMEBODY STANDING RIGHT THERE SAYING NOTHING IS NOT.
+    --
+    -- THE ASSERTION THIS BLOCK DID NOT HAVE, AND THE ONE THE OWNER FOUND FOR
+    -- US: "the squad panel works, but doesn't accurately show when others in
+    -- the squad have 'off' selected." A squadmate who is silent -- because
+    -- they picked 'off', or simply because they are not speaking -- must be
+    -- named by nothing, and every assertion above only ever checked the
+    -- POSITIVE case. p2 is audible, streamed and quiet, which is the state a
+    -- squad spends almost all of a match in and the one nothing measured.
+    --
+    -- IT IS ONLY MEANINGFUL BECAUSE THE STUB ANSWERS 0 RATHER THAN false (see
+    -- MumbleIsPlayerTalking above). Against a boolean fixture this line passes
+    -- on the broken code, which is exactly how the fault reached a playtest.
+    mumble.talking = {}
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#talkingNames() == 0,
+        'and an audible neighbour who is NOT talking is named by nobody -- the '
+            .. 'engine says no with a zero, and in Lua a zero is true',
+        table.concat(talkingNames(), ','))
+
+    mumble.talking = { [2] = true }
+    BR.Loop.step(BR.Loop.TICK)
 
     -- AND ON 'squad' THE SAME PERSON IS NOT, because squad does not hear them.
     -- THIS IS THE INDICATOR HALF OF THE EXCLUSIVITY RULE and it is the one that
