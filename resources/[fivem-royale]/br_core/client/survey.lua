@@ -25,8 +25,8 @@
 -- The playable shape cannot be derived from anything in this repository. It is a
 -- fact about the map, and the only person here who can see the map is the owner.
 -- So it gets AUTHORED, exactly the way BR.Config.Map.AmbulanceSpawns was
--- authored with /brcoords: he stands the tool up, makes the gesture, and the
--- tool prints something that can be pasted without retyping a number.
+-- authored with /brcoords: he makes the gesture, and the tool prints something
+-- that can be pasted without retyping a number.
 --
 -- IT DIFFERS FROM /brcoords IN ONE WAY THAT MATTERS. /brcoords reads the ped, so
 -- its points are places a player stood and its z values are real. A boundary
@@ -36,35 +36,55 @@
 -- and a boundary test has no use for it anyway: every POI test in this project
 -- is planar because the POI radius is.
 --
--- ═══ WHAT ACTUALLY DRAWS ON THE PAUSE MAP -- READ BEFORE "FIXING" THIS ═══
+-- ═══ THE LINE IS A GPS CUSTOM ROUTE, WHICH THIS CODEBASE ALREADY PROVED ═══
 --
--- He asked for LINES. There is no native that draws one on the pause map.
+-- He asked for lines, and asked the right follow-up when the first cut of this
+-- file beaded them out of radius blips instead: "Then how do we draw the lines
+-- for the bus route?"
 --
---   DrawLine          world space. It draws into the 3D scene, so it is invisible
---                     on a map screen. This is the obvious first guess and it is
---                     wrong.
---   DrawLine2d        screen space, drawn UNDER the pause menu rather than into
---                     the map. Same answer.
---   SetBlipRoute      GTA's own GPS line, and it FOLLOWS ROADS. A boundary runs
---                     over ocean, cliffs and open country, where the pathfinder
---                     either detours to the nearest highway or gives up -- so
---                     the line it drew would not be the line he authored, which
---                     is worse than drawing nothing. Its pause-map rendering is
---                     separately unreliable and unresolved upstream.
---   DUI -> runtime    the real answer, and how third-party map-overlay resources
---   texture ->        do it: render the polygon into an offscreen browser,
---   MINIMAP_LOADER    convert it to a game texture, hang it on the minimap
---   ADD_SCALED_       scaleform. That is a SUBSYSTEM, and it is one the gamemode
---   OVERLAY           would then own forever in exchange for one afternoon of
---                     map authoring.
+-- WE DRAW THEM WITH StartGpsCustomRoute, IN client/bus.lua, TODAY. The Battle
+-- Bus flight path is a real solid line on the map and the radar, and it is the
+-- RACE-CREATOR AIR-ROUTE line: straight point-to-point segments, drawn anywhere,
+-- over ocean and cliff alike, with no pathfinding whatsoever. Same natives here,
+-- same order, same thicknesses.
 --
--- SO THE LINE IS BEADED, AND THIS COMMENT WILL NOT PRETEND OTHERWISE. Each edge
--- is a run of small radius blips -- AddBlipForRadius, a filled circle that does
--- render on the pause map, and already how /brpois shades a POI's disc. Spaced
--- at 140m with a 45m radius they read as a dotted line at map zoom: enough to
--- see the shape, and enough to see a hole in it, which is the whole job.
+-- THE FOUR THAT DO NOT WORK, so nobody re-walks this:
 --
--- ═══ THE GESTURE IS ALREADY TAKEN, AND THAT IS THE HARD PART ═══
+--   DrawLine            world space. It draws into the 3D scene, so it is
+--                       invisible on a map screen.
+--   DrawLine2d          screen space, drawn UNDER the pause menu rather than
+--                       into the map.
+--   SetBlipRoute        GTA's GPS line, which FOLLOWS ROADS. Pause-map
+--                       rendering is separately unreliable upstream.
+--   the MULTI route     StartGpsMultiRoute. Looks like the answer and is not:
+--                       it still runs GPS pathfinding, so it snaps every
+--                       segment to the road network and draws NOTHING over open
+--                       country. bus.lua hit exactly this on 2026-08-04 and the
+--                       CUSTOM route is what it moved to.
+--
+-- ~90 points is proven fine in bus.lua with no documented native point cap, and
+-- a boundary is "a dozen or two", so there is no resampling here and no budget
+-- to respect. The earlier "point budget" theory is recorded there as a
+-- misdiagnosis of the multi-route's road-snapping.
+--
+-- ═══ THERE IS ONLY ONE CUSTOM ROUTE, AND THE BUS OWNS IT ═══
+--
+-- The natives take NO HANDLE -- StartGpsCustomRoute / AddPointToGpsCustomRoute /
+-- SetGpsCustomRouteRender / ClearGpsCustomRoute are all singular. So there is
+-- exactly one, a second Start REPLACES the first, and two consequences follow
+-- that this file has to handle rather than discover in a playtest:
+--
+--   1. THE SURVEY MUST NEVER CLOBBER THE BUS. /brsurvey REFUSES TO ARM while
+--      BR.BusLine.drawn(), and says so on the console. If a route arrives
+--      mid-survey -- a match starting under him -- the survey stands its own
+--      line down within a tick and puts it back when the bus line goes. The
+--      points and the numbered blips are untouched throughout: nothing he
+--      authored is ever lost to this, only the line is.
+--
+--   2. THE GAP CANNOT BE A SECOND ROUTE IN A SECOND COLOUR. One route means one
+--      colour. So the closing run is beaded instead -- see `gapBeads`.
+--
+-- ═══ THE GESTURE IS ALREADY TAKEN TOO ═══
 --
 -- client/markers.lua's `markers.place` consumes ANY fresh waypoint while the
 -- player is in a match, reads its coordinate, calls SetWaypointOff and turns it
@@ -108,42 +128,54 @@ BR.Survey = BR.Survey or {}
 --- have to land a pixel-perfect click to finish.
 local CLOSE_M = 250.0
 
---- The bead spacing and bead size, in metres. Spacing is the larger, so the dots
---- do not merge into a smear; the gap between them is 50m, which is under a
---- pixel of daylight at full pause-map zoom-out.
-local DOT_SPACING = 140.0
-local DOT_RADIUS  = 45.0
+--- The route's HUD colour, and its radar and map line thicknesses. ALL THREE ARE
+--- bus.lua's, UNCHANGED AND DELIBERATELY SO: 0 is pure white and 16/16 is what
+--- the flight path is drawn at, which makes them the only values in this project
+--- proven to render on this build. The HUD colour enum is not otherwise verified
+--- here, and guessing an index to get a prettier line risks landing on purple,
+--- which belongs to the storm alone (user call, 2026-08-04). The survey line and
+--- the bus line can never be up at the same time -- see the refusal above -- so
+--- sharing a colour costs nothing.
+local ROUTE_COLOUR    = 0
+local ROUTE_RADAR_W   = 16
+local ROUTE_MAP_W     = 16
 
---- A CEILING ON THE BLIP POOL, not a tuning knob. GTA's blip pool is finite and
---- shared with everything else on the map -- loot, squadmates, the storm ring,
---- petrol stations. If the perimeter is long enough that DOT_SPACING would blow
---- through this, the spacing widens instead and the line gets dashier. 500 dots
---- over a 40km perimeter is 80m apart, so in practice DOT_SPACING governs and
---- this never fires.
-local MAX_DOTS = 500
+--- The z every route point is given. The native demands one; a top-down map does
+--- not use it. bus.lua's own fallback rather than 0.0, for the same reason as
+--- the colour: it is the value already proven to draw here.
+local ROUTE_Z = 200.0
+
+--- The closing run's beads -- radius blips, the same thing /brpois shades a POI
+--- disc with. ONE EDGE ONLY, so this stays small; MAX_GAP_BEADS is a ceiling on
+--- the blip pool for the pathological case of two points at opposite corners of
+--- the map, not a tuning knob.
+local BEAD_SPACING   = 140.0
+local BEAD_RADIUS    = 45.0
+local BEAD_ALPHA     = 160
+local MAX_GAP_BEADS  = 120
 
 --- GTA blip colours. NEVER PURPLE, in any slot: purple belongs to the storm
---- alone (user call, 2026-08-04), and this overlay will be read on top of it.
-local COLOUR_EDGE   = 2   -- green:  an edge he has authored
+--- alone, and this overlay will be read on top of it.
 local COLOUR_GAP    = 1   -- red:    the run that would close the ring, still open
 local COLOUR_VERTEX = 5   -- yellow: a captured point
 local COLOUR_START  = 3   -- blue:   point 1, the one the ring has to come back to
-local DOT_ALPHA     = 160
 
 -- ───────────────────────────────────────────────────────────────────── state ---
 
-local armed = false     -- is the waypoint gesture ours right now
-local pts   = {}        -- ordered vertices: { { x = , y = }, ... }
-local blips = {}        -- every blip this file owns, vertices and beads alike
+local armed     = false   -- is the waypoint gesture ours right now
+local pts       = {}      -- ordered vertices: { { x = , y = }, ... }
+local blips     = {}      -- vertex blips and gap beads; everything we own
+local lineDrawn = false   -- have WE got the custom route right now
+local yielded   = false   -- our line is down because the bus took the route
 
---- Sprite-8 blips that are NOT the player's waypoint -- see `capture`.
+--- Sprite-8 blips that are NOT the player's waypoint -- see `resnapshot`.
 local known = {}
 
 -- ─────────────────────────────────────────────────────────────────── helpers ---
 
 --- A FiveM BOOL. `0` is truthy in Lua and this project has shipped that bug
 --- seven times; IsWaypointActive and DoesBlipExist are both declared BOOL, and
---- IsWaypointActive failed a commit on this repository earlier today.
+--- IsWaypointActive is the exact shape that failed a commit here on 2026-08-28.
 local function yes(v) return v == true or v == 1 end
 
 --- Call a native that may not be bound on this build, without taking the tool
@@ -155,6 +187,12 @@ local function safeCall(fn, ...)
     pcall(fn, ...)
 end
 
+--- Is the Battle Bus drawing its flight path right now? Nil-guarded at the call
+--- site, so load order between this file and client/bus.lua cannot matter.
+local function busOwnsRoute()
+    return (BR.BusLine and BR.BusLine.drawn and BR.BusLine.drawn()) and true or false
+end
+
 --- Distance from the last point back to the first, or nil below two points.
 local function gap()
     local n = #pts
@@ -162,16 +200,15 @@ local function gap()
     return BR.Dist(pts[n].x, pts[n].y, pts[1].x, pts[1].y)
 end
 
---- Is the ring closed? Nil-safe, and false below three points -- two points are
---- a line segment, and a line segment that doubles back on itself is not a shape
---- however close its ends are.
+--- Is the ring closed? False below three points -- two points are a line
+--- segment, and a segment that doubles back on itself is not a shape however
+--- close its ends are.
 local function closed()
     local g = gap()
     return (#pts >= 3) and g ~= nil and g <= CLOSE_M
 end
 
---- Total length of the ring INCLUDING the closing run, which is the number the
---- bead spacing has to be budgeted against.
+--- Total length of the ring INCLUDING the closing run.
 local function perimeter()
     local n = #pts
     if n < 2 then return 0.0 end
@@ -242,12 +279,63 @@ local function clearBlips()
     blips = {}
 end
 
---- Bead one edge. The ENDPOINTS ARE SKIPPED -- the vertex blips already sit
---- there, and a bead under a vertex only muddies which of the two he is looking
---- at.
-local function beadEdge(ax, ay, bx, by, spacing, colour)
+--- Take our line off the map.
+---
+--- GUARDED ON `lineDrawn`, exactly as bus.lua's clearCrumbs is guarded on
+--- `routeDrawn`: ClearGpsCustomRoute is global, so calling it when the route is
+--- somebody else's would erase the bus's flight path from a dev tool's teardown.
+local function clearLine()
+    if not lineDrawn then return end
+    ClearGpsCustomRoute()
+    lineDrawn = false
+end
+
+--- Draw the outline as a REAL LINE. Same four calls in the same order as
+--- bus.lua's drawCrumbs, which is the working reference on this build.
+---
+--- THE RING CLOSES ITSELF WHEN THE SHAPE DOES: point 1 is appended a second time
+--- once the ends are within CLOSE_M, so a finished boundary draws as a closed
+--- loop and an unfinished one draws as an open polyline with the missing span
+--- beaded red. That is the hole indicator, and it costs one `if`.
+local function drawLine()
+    clearLine()
+    if #pts < 2 then return end
+
+    -- The bus is the game and this is a dev tool. If its line is up, ours does
+    -- not go on the map at all -- see the one-route section at the top.
+    if busOwnsRoute() then
+        yielded = true
+        return
+    end
+    yielded = false
+
+    StartGpsCustomRoute(ROUTE_COLOUR, true, true)
+    for i = 1, #pts do
+        AddPointToGpsCustomRoute(pts[i].x, pts[i].y, ROUTE_Z)
+    end
+    if closed() then
+        AddPointToGpsCustomRoute(pts[1].x, pts[1].y, ROUTE_Z)
+    end
+    SetGpsCustomRouteRender(true, ROUTE_RADAR_W, ROUTE_MAP_W)
+    lineDrawn = true
+end
+
+--- Bead the closing run in red, because one custom route means one colour and
+--- the gap has to be distinguishable from the outline some other way.
+---
+--- Nothing is drawn once the ring is closed -- at that point the route itself
+--- closes and there is no gap left to mark. The ENDPOINTS ARE SKIPPED: the
+--- vertex blips already sit there.
+local function gapBeads()
+    local n = #pts
+    if n < 3 or closed() then return end
+
+    local ax, ay, bx, by = pts[n].x, pts[n].y, pts[1].x, pts[1].y
     local len = BR.Dist(ax, ay, bx, by)
     if len < 1.0 then return end
+
+    local spacing = BEAD_SPACING
+    if (len / spacing) > MAX_GAP_BEADS then spacing = len / MAX_GAP_BEADS end
 
     local steps = math.max(1, math.floor(len / spacing))
     for k = 1, steps - 1 do
@@ -255,54 +343,23 @@ local function beadEdge(ax, ay, bx, by, spacing, colour)
         -- UNNAMED, deliberately. BR.Native.blipName's standing rule is that
         -- every blip we make gets a name because the legend is where a blip
         -- explains itself -- but that rule is written for the handful of blips a
-        -- MATCH makes, and several hundred identical legend rows would bury the
-        -- legend rather than populate it. /brpois leaves its radius discs
-        -- unnamed for the same reason and has done since it landed.
+        -- MATCH makes, and a legend row per bead would bury the legend rather
+        -- than populate it. /brpois leaves its radius discs unnamed for the same
+        -- reason and has done since it landed.
         blips[#blips + 1] = BR.Native.radiusBlip(
             nil, ax + (bx - ax) * t, ay + (by - ay) * t,
-            DOT_RADIUS, colour, DOT_ALPHA, nil)
+            BEAD_RADIUS, COLOUR_GAP, BEAD_ALPHA, nil)
     end
 end
 
---- Rebuild every blip from `pts`.
----
---- A FULL REBUILD ON EVERY EDIT, rather than appending the one new edge. Two
---- reasons, and neither is laziness: radius blips cannot be moved or resized in
---- place (client/natives.lua says so at the top of its blip section), and the
---- bead spacing is derived from the WHOLE perimeter, so a point added at the far
---- end can change the spacing of every edge before it. A few hundred
---- AddBlipForRadius calls in one frame is a hitch he will not see on a pause
---- screen, and this is a dev command.
+--- Rebuild everything this file puts on the map, from `pts`.
 local function redraw()
     clearBlips()
-    local n = #pts
-    if n == 0 then return end
+    drawLine()
+    if #pts == 0 then return end
+    gapBeads()
 
-    -- Widen the spacing if -- and only if -- the honest spacing would overrun
-    -- the blip budget. See MAX_DOTS.
-    local spacing = DOT_SPACING
-    local p = perimeter()
-    if p > 0.0 and (p / spacing) > MAX_DOTS then
-        spacing = p / MAX_DOTS
-    end
-
-    -- The edges first, so the vertex blips sit on top of their own beads.
-    if n >= 2 then
-        for i = 1, n - 1 do
-            beadEdge(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y,
-                     spacing, COLOUR_EDGE)
-        end
-
-        -- THE CLOSING RUN IS THE HOLE INDICATOR. It is always drawn, so the ring
-        -- on the map is always a complete loop -- and it is RED until the ends
-        -- meet, so the red arc is precisely the span he has not authored yet.
-        -- Once the gap is inside CLOSE_M it goes green and all but disappears,
-        -- which is the shape being finished.
-        beadEdge(pts[n].x, pts[n].y, pts[1].x, pts[1].y, spacing,
-                 closed() and COLOUR_EDGE or COLOUR_GAP)
-    end
-
-    for i = 1, n do
+    for i = 1, #pts do
         local b = AddBlipForCoord(pts[i].x, pts[i].y, 0.0)
         -- SPRITE 1, NOT SPRITE 8, AND THAT IS LOAD-BEARING. markers.lua finds
         -- the player's waypoint by walking the sprite-8 blips, and its own squad
@@ -316,9 +373,9 @@ local function redraw()
         SetBlipAsShortRange(b, false)   -- a boundary is read zoomed out or not at all
         -- The number ON the blip, which is what makes the outline readable as an
         -- ORDER rather than a scatter -- he needs to see that 7 follows 6 to
-        -- spot a point entered out of sequence. Belt and braces: the legend name
-        -- carries the same number, so an unbound native costs the numbering on
-        -- the icons and nothing else.
+        -- spot a point entered out of sequence. The line does not give this for
+        -- free. Belt and braces: the legend name carries the same number, so an
+        -- unbound native costs the numbering on the icons and nothing else.
         safeCall(ShowNumberOnBlip, b, i)
         BR.Native.blipName(b, i == 1
             and 'Survey 1 (start)'
@@ -367,6 +424,21 @@ end
 
 BR.Loop.register(BR.Loop.TICK, 'survey.capture', function()
     if not armed then return end
+
+    -- ── THE BUS CAN TAKE THE ROUTE OUT FROM UNDER US MID-SURVEY ──
+    --
+    -- A match starting while he is surveying fires BUS_ROUTE, and bus.lua's
+    -- drawCrumbs would overwrite our line and then clear it as its own. So the
+    -- survey yields within a tick and takes itself back when the bus is done.
+    -- The points and the numbered blips never move; only the line does.
+    if lineDrawn and busOwnsRoute() then
+        clearLine()
+        yielded = true
+        print('[br_core] survey: the bus route took the map line -- points kept, line back when it clears')
+    elseif yielded and not busOwnsRoute() then
+        redraw()
+        if lineDrawn then print('[br_core] survey: map line restored') end
+    end
 
     if not yes(IsWaypointActive()) then
         resnapshot()
@@ -434,7 +506,7 @@ local function dump()
     else
         print(('  closed     no -- point %d is %.0fm from point 1 (threshold %.0fm)')
             :format(n, g, CLOSE_M))
-        print('             the RED run on the map is that gap')
+        print('             the RED beaded run on the map is that gap')
     end
 
     local cx, cy, area, weighted = centroid()
@@ -460,6 +532,9 @@ local function dump()
         print(('  vs mapAABB x %.1f .. %.1f    y %.1f .. %.1f')
             :format(aabb.min.x, aabb.max.x, aabb.min.y, aabb.max.y))
     end
+    if yielded then
+        print('  NOTE: the map line is down -- the bus route has it')
+    end
     rule()
 end
 
@@ -468,6 +543,17 @@ end
 --- Arm the survey. Idempotent, and it does NOT discard points -- running it
 --- again after /brsurveyoff resumes where he left off.
 RegisterCommand('brsurvey', function()
+    -- REFUSED WHILE THE BUS LINE IS UP, because arming would replace it. There
+    -- is one custom route; see the top of this file. Refusing loudly is the
+    -- honest version of a collision that would otherwise present as "the flight
+    -- path disappeared" in somebody else's playtest.
+    if busOwnsRoute() then
+        print('[br_core] survey REFUSED -- the Battle Bus route is on the map')
+        print('  There is only one GPS custom route and the bus has it. Arming now')
+        print('  would erase the flight path. Try again once the drop is over.')
+        return
+    end
+
     local was = armed
     armed = true
 
@@ -495,7 +581,7 @@ RegisterCommand('brsurvey', function()
     end
     print('  Set a waypoint on the pause map for each boundary corner, in order.')
     print('  WHILE THIS IS ON, A WAYPOINT DOES NOT PLACE A SQUAD MARKER.')
-    print('  Green beads = an edge. RED beads = the gap that would close the ring.')
+    print('  The white line is the outline. RED beads = the gap that would close it.')
     print('')
     print('  /brsurveyundo    drop the last point')
     print('  /brsurveydump    print the coords (keeps going)')
@@ -528,6 +614,7 @@ RegisterCommand('brsurveyclear', function()
     end
     pts = {}
     clearBlips()
+    clearLine()
     print(('[br_core] survey cleared%s'):format(armed and ' (still ON)' or ''))
 end, false)
 
@@ -542,8 +629,21 @@ RegisterCommand('brsurveyoff', function()
     end
     armed = false
     clearBlips()
+    clearLine()
+    yielded = false
     known = {}
     print(('[br_core] survey OFF -- %d point(s) kept; /brsurveydump to print, /brsurvey to resume')
         :format(#pts))
     print('  the waypoint places squad markers again')
 end, false)
+
+-- A ROUTE LEFT RENDERING OUTLIVES THE RESOURCE. bus.lua carries the same
+-- handler for the same reason: ClearGpsCustomRoute is the only way the line
+-- comes off, and a /restart br_core with a survey up would leave a white
+-- boundary drawn across everybody's map with nothing left alive to clear it.
+AddEventHandler('onResourceStop', function(res)
+    if res == GetCurrentResourceName() then
+        clearBlips()
+        clearLine()
+    end
+end)

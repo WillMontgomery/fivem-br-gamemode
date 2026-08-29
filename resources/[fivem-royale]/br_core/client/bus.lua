@@ -108,6 +108,25 @@ local function clearCrumbs()
     end
 end
 
+--- IS THE BUS LINE ON THE MAP RIGHT NOW?
+---
+--- READ BY client/survey.lua, WHICH DRAWS ON THE SAME SURFACE. There is exactly
+--- ONE gps custom route -- the natives take no handle -- so a second
+--- StartGpsCustomRoute REPLACES this one, and drawCrumbs would later clobber
+--- whatever replaced it. /brsurvey refuses to arm while this is true and stands
+--- its own line down if a route arrives mid-survey; the bus always wins,
+--- because the bus is the game and the survey is a dev tool.
+---
+--- A FUNCTION RATHER THAN A FLAG ON BR.State, for the same reason
+--- BR.Rescue.riding() is one: `routeDrawn` is this file's local and the only
+--- thing the other file needs is whether it is set. Nil-safe at the call site,
+--- so load order between the two cannot matter.
+--- @return boolean
+BR.BusLine = BR.BusLine or {}
+function BR.BusLine.drawn()
+    return routeDrawn
+end
+
 --- Draw the flight as a SOLID LINE on the map and minimap.
 ---
 --- A GPS CUSTOM ROUTE -- the race-creator air-route line. The first
