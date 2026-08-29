@@ -141,7 +141,28 @@ local function lobbyPedPending()
         return 'a spawn trip is still in flight'
     end
 
+    -- AND THE ENTRANCE HAS TO HAVE ITS PED ON ITS OWN MARK (owner, 2026-08-29).
+    --
+    -- The lobby ped walks in now, and the owner's choreography has that walk
+    -- STARTING under this screen -- the reveal happens partway through it, with
+    -- the camera already flying. So the two things this gate has to know are
+    -- both questions for client/lobbyped.lua rather than for this file: whether
+    -- the walk has begun, and where the ped is supposed to be standing when it
+    -- has (the START of the path, not the lobby spot).
+    --
+    -- IT FAILS OPEN LIKE EVERY OTHER HALF HERE. revealBlock() is bounded by its
+    -- own arm wait and answers nil once that expires, and the entrance tick
+    -- gives up in the same breath rather than starting a walk after the screen
+    -- has already come down.
+    if BR.LobbyPed and BR.LobbyPed.revealBlock then
+        local why = BR.LobbyPed.revealBlock()
+        if why then return why end
+    end
+
     local p = BR.Config and BR.Config.Match and BR.Config.Match.lobbyPos
+    if BR.LobbyPed and BR.LobbyPed.revealMark then
+        p = BR.LobbyPed.revealMark() or p
+    end
     if p then
         local c = GetEntityCoords(ped)
         -- Ten metres, against a placement that is EXACT: the lobby is a camera
@@ -244,6 +265,30 @@ Citizen.CreateThread(function()
             :format(GetGameTimer() - pStarted))
     end
 
+    -- STREAMING LEADS THE REVEAL, AND THE LEAD IS EXPLICIT (owner, 2026-08-29:
+    -- "please set the focus area to the first camera coords 1 second before
+    -- fading in").
+    --
+    -- The entrance's opening shot is three hundred metres from where the player
+    -- has been standing and a hundred metres above it, so nothing under it has
+    -- streamed. SET_FOCUS_POS_AND_VEL moves where the engine loads terrain and
+    -- assets -- that and nothing else; it has no bearing on which entities are
+    -- relevant to this client -- and pointing it there before anybody can see
+    -- the shot is exactly its job.
+    --
+    -- THE ORDER IS ENFORCED RATHER THAN HOPED FOR. `revealAt` is a floor the
+    -- flip below waits out, so the lead survives somebody retiming the fade cue
+    -- or the shutdown; without it the two calls would be a second apart only by
+    -- coincidence, which is the failure mode #124 was made of. pcall'd for the
+    -- same reason the fade cue is: this is the last stretch before the screen
+    -- comes down, and nothing here may be able to strand a player on it.
+    local lead = 0
+    if BR.LobbyPed and BR.LobbyPed.focusAhead then
+        local okf, ms = pcall(BR.LobbyPed.focusAhead)
+        if okf and type(ms) == 'number' then lead = ms end
+    end
+    local revealAt = GetGameTimer() + lead
+
     -- Text out (the glow stays). The result is LOGGED: if this channel ever
     -- fails the exit degrades to a cut, and the console should say which
     -- half was at fault rather than leaving it to timing forensics.
@@ -263,6 +308,13 @@ Citizen.CreateThread(function()
 
     -- One beat on pure purple, then the double fade: menu in, world in.
     Citizen.Wait(150)
+
+    -- ...AND NOT BEFORE THE STREAMING FOCUS HAS HAD ITS LEAD. Everything above
+    -- has already spent most of it; this is the remainder, and it is zero
+    -- whenever there is no entrance to lead.
+    local left = revealAt - GetGameTimer()
+    if left > 0 then Citizen.Wait(left) end
+
     BR.State.worldReady = true
     TriggerEvent('br:screen:refresh')
     print('[br_core] loading: world ready -- menu and world fade in')

@@ -1612,7 +1612,16 @@ function BR.Native.applyGameRules()
         SetEntityVisible(ped, wantVisible, false)
     end
 
-    if st == BR.PlayerState.LOBBY then
+    -- ...UNLESS THE ENTRANCE IS WALKING IT IN (owner, 2026-08-29). The lobby
+    -- ped now arrives on foot along an authored path, and this line is the one
+    -- thing in the project that can stop it: a per-frame freeze against a ped
+    -- task is not a fight the task wins, it is a ped standing still with a walk
+    -- animation nobody can see. client/lobbyped.lua owns that window and closes
+    -- it the moment the ped reaches the mark -- on every ending, including
+    -- abandonment -- so a walk that is dropped halfway is a ped this rule
+    -- freezes again on the very next frame.
+    if st == BR.PlayerState.LOBBY
+       and not (BR.LobbyPed and BR.LobbyPed.walking()) then
         -- The lobby freeze: the ped must not walk, fall or ragdoll out of a
         -- locked shot. It deliberately never RELEASES here -- spawn placement
         -- holds its own temporary freezes while collision loads, and stomping

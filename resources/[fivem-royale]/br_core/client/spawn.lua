@@ -585,6 +585,36 @@ end)
 --- the last one is still a corpse until something resurrects them. placeAt's
 --- own reveal() at the end of its collision wait IS the fade back in -- there
 --- is deliberately no second one here to race it.
+--- Which of the authored warmup spots this arrival lands on.
+---
+--- FIVE PLACES A PERSON STOOD, surveyed by the owner on 2026-08-29, replacing a
+--- random point in a 30m disc around the pad. The old scatter had to ground-snap
+--- wherever it landed; these are known ground, and four of the five are a
+--- cluster so a squad readying together still arrives together.
+---
+--- THE FALLBACK IS THE OLD SCATTER, not an error and not the pad itself. An
+--- empty table here -- a config edit, a tunable override that went wrong --
+--- would otherwise stack every player in the match on one coordinate, and that
+--- is a worse failure than the one the list was written to fix.
+--- @return table  { x, y, z, heading }
+function BR.Spawn.warmupSpawn()
+    local list = BR.Config.Match.warmupSpawns
+    if list and #list > 0 then
+        return list[math.random(#list)]
+    end
+
+    local pad = BR.Config.Match.warmupPos
+    local r = BR.Config.Match.warmupRadius * 0.5
+    local theta = math.random() * 2.0 * math.pi
+    local dist = r * math.sqrt(math.random())
+    return {
+        x = pad.x + math.cos(theta) * dist,
+        y = pad.y + math.sin(theta) * dist,
+        z = pad.z,
+        heading = pad.heading,
+    }
+end
+
 --- @return boolean  whether the trip actually started
 function BR.Spawn.toWarmupPad()
     -- REFUSED, NOT SWALLOWED. The caller latches on "I have gathered this
@@ -642,12 +672,23 @@ function BR.Spawn.toWarmupPad()
         -- far end, once there is ground to stand on.
         BR.Spawn.holdBlack = false
 
+        -- 3. DROP THE LOBBY ENTRANCE, WHATEVER IT WAS DOING.
+        --
+        -- "If the player readies up quickly and joins to warmup - drop
+        -- everything (camera motions, ped motions) and move to warmup
+        -- immediately." -- the owner, 2026-08-29.
+        --
+        -- BEFORE THE CAMERA IS RELEASED AND BEFORE THE TELEPORT, because the
+        -- sequence owns both: it has the ped on a walking task and the camera
+        -- somewhere over the island on an interpolation. Stopping it first
+        -- means the placement below is not writing coordinates onto a ped that
+        -- is being tasked to walk away from them. It is safe to call when
+        -- nothing is running, which is most of the time.
+        BR.LobbyPed.stop('readied up')
+
         BR.LobbyCam.stop()
 
-        local pad = BR.Config.Match.warmupPos
-        local r = BR.Config.Match.warmupRadius * 0.5
-        local theta = math.random() * 2.0 * math.pi
-        local dist = r * math.sqrt(math.random())
+        local spot = BR.Spawn.warmupSpawn()
 
         -- THE LAST THING TO LIFT IS THE CURTAIN, and it lifts on the world
         -- being ready rather than on a timer. placeAt waits for collision and
@@ -656,6 +697,27 @@ function BR.Spawn.toWarmupPad()
         -- the HUD is already drawn -- the player fades INTO the warmup, which
         -- is the whole point of the ordering.
         local function landed()
+            -- ═══ THE TELEPORT HAS HAPPENED; ONLY NOW IS THE PED NETWORKED ═══
+            --
+            -- "since we're transitioning the ped from local to networked, to
+            -- prevent players from seeing other peds in lobby ... we need to
+            -- first (after they fade to black) teleport the player to their new
+            -- spawn position in warmup - THEN convert their ped to networked."
+            -- -- the owner, 2026-08-29.
+            --
+            -- THIS LINE'S POSITION IS THE FEATURE. It is inside the callback
+            -- placeAt fires AFTER the coordinates are written and the collision
+            -- underneath has streamed -- not beside the respawn call below,
+            -- which returns while the placement thread is still waiting for
+            -- ground. Flip it any earlier and there is a window where a ped
+            -- standing on the lobby mark is one that every other lobby client
+            -- has stopped hiding, which is the bug in full.
+            --
+            -- AND IT IS ON THE FAILURE PATH TOO: the 9s escape below calls this
+            -- same function, so a placement that never reported back still ends
+            -- with a networked ped rather than an invisible player in a match.
+            BR.LobbyPed.setNetworked(true, 'placed at the warmup spawn')
+
             BR.Spawn.traveling = false
             -- One breath after the world fade so the two do not both move at
             -- once; the curtain then takes its own 600ms to clear.
@@ -664,13 +726,7 @@ function BR.Spawn.toWarmupPad()
             end)
         end
 
-        BR.Spawn.respawn(
-            pad.x + math.cos(theta) * dist,
-            pad.y + math.sin(theta) * dist,
-            pad.z,
-            pad.heading,
-            false,
-            landed)
+        BR.Spawn.respawn(spot.x, spot.y, spot.z, spot.heading, false, landed)
 
         -- placeAt refuses to start while another placement is running, in
         -- which case the callback above never fires -- and the curtain would

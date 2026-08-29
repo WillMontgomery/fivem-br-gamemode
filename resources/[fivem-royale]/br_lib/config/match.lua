@@ -153,7 +153,132 @@ BR.Config.Match = {
     warmupPos       = { x = 4449.0, y = -4482.0, z = 4.3, heading = 315.0 },
     -- Tighter than the old LSIA pad: the airstrip apron is generous but the
     -- island tip is not, and a wide scatter puts players in the surf.
+    --
+    -- STILL THE ANCHOR FOR THE WARMUP LOOT LAYOUT (shared/loot_gen.lua and
+    -- server/loot.lua both site the communal layout around it), which is why
+    -- these two survive `warmupSpawns` below taking over the PLAYER arrival.
     warmupRadius    = 60.0,
+
+    -- WHERE A PLAYER ACTUALLY LANDS WHEN THEY READY UP. Surveyed in game by
+    -- the owner on 2026-08-29, and picked from at random, one per arrival.
+    --
+    -- THEY REPLACE THE RANDOM SCATTER, and the reason is not tidiness. The
+    -- scatter drew a point in a 30m disc around `warmupPos` and dropped the
+    -- player on whatever ground was under it; these are five places a person
+    -- stood. The first four are a cluster (a group arriving together still
+    -- arrives together); the fifth is off on its own, which is what stops
+    -- five simultaneous readies looking like a formation.
+    --
+    -- THE TELEPORT ONTO ONE OF THESE IS THE ORDERING THE WHOLE FIX TURNS ON.
+    -- See BR.LobbyPed in br_core/client/lobbyped.lua: the ped is moved HERE
+    -- first and only becomes a networked, visible-to-everyone ped afterwards,
+    -- so it is never a stranger appearing on the lobby mark.
+    warmupSpawns    = {
+        { x = 4498.92, y = -4456.00, z = 4.37, heading = 193.3 },
+        { x = 4500.47, y = -4455.57, z = 4.37, heading = 167.1 },
+        { x = 4497.39, y = -4457.80, z = 4.37, heading = 227.2 },
+        { x = 4508.75, y = -4456.06, z = 4.35, heading = 149.0 },
+        { x = 4461.69, y = -4475.51, z = 4.27, heading = 261.1 },
+    },
+
+    -- ====================================================================
+    -- THE LOBBY ENTRANCE: THE WALK IN, AND THE CAMERA THAT MEETS IT.
+    -- ====================================================================
+    --
+    -- EVERY DURATION HERE IS A KNOB ON PURPOSE. The owner offered to tune the
+    -- timing himself ("He has offered to help tune this"), so nothing about
+    -- when this sequence does what is written in the client -- the client
+    -- reads these and /brlobbywalk replays the whole thing without a restart.
+    --
+    -- THE PED'S PATH is four authored legs. `pedStart` is where the ped is
+    -- placed while the screen is still black; `pedPath` is the three corners
+    -- it walks through; the FOURTH and final leg is `lobbyPos` above, appended
+    -- by the client rather than repeated here -- the lobby mark has one
+    -- definition and the locker, the camera and the loading gate all read it.
+    --
+    -- THE CAMERA'S PATH is three authored nodes and then the ordinary lobby
+    -- frame, computed from `lobbyPos` and `lobbyCam` exactly as it always was.
+    lobbyEntrance   = {
+        pedStart = { x = 5012.76, y = -5721.74, z = 19.48, heading = 315.3 },
+        pedPath  = {
+            { x = 5023.88, y = -5709.47, z = 19.88, heading = 206.3 },
+            { x = 5031.02, y = -5721.02, z = 17.68, heading = 218.7 },
+            { x = 5036.27, y = -5717.88, z = 17.08, heading = 304.5 },
+        },
+
+        -- THE WALKING STYLE, AND IT IS A STOCK GTA MOVEMENT CLIPSET.
+        --
+        -- The owner named these from the rpemotes menu ("grooving male" /
+        -- "grooving female") and said he intends to remove that resource. They
+        -- are not rpemotes content: that menu's labels sit in front of the
+        -- game's own clipsets, and these two strings are what its own table
+        -- maps them to (client/AnimationList.lua, RP.Walks.Grooving and
+        -- .Grooving2). Nothing in this project references, requires or checks
+        -- for rpemotes -- SetPedMovementClipset takes the clipset directly.
+        --
+        -- THE TRAILING @ IS PART OF THE NAME. `anim@move_m@grooving` without
+        -- it is a different string and RequestAnimSet answers nothing for it,
+        -- which presents as a ped that walks normally rather than as an error.
+        walkClipsetMale   = 'anim@move_m@grooving@',
+        walkClipsetFemale = 'anim@move_f@grooving@',
+
+        -- How long to wait for the clipset to stream before walking anyway.
+        -- A missed style costs a plain walk; a wait with no ceiling costs the
+        -- whole entrance.
+        clipsetWaitMs = 3000,
+
+        -- How long to wait for the ped MODEL before starting. The owner called
+        -- this one out explicitly ("Wait for the model to load before
+        -- proceeding"), and it is sized off client/locker.lua's own 5s request
+        -- deadline plus the tick that starts it.
+        modelWaitMs = 8000,
+
+        -- TaskGoStraightToCoord's move blend ratio. 1.0 is a walk; 2.0 is a
+        -- run. The clipset rides on top of whatever this is.
+        walkSpeed = 1.0,
+
+        -- How close counts as arrived, per leg, and how long one leg may take
+        -- before the sequence gives up on it and moves to the next. The
+        -- timeout is the escape, not the plan: a ped stuck on geometry must
+        -- still reach the lobby mark.
+        arriveRadius = 0.9,
+        legTimeoutMs = 15000,
+
+        -- THE CAMERA NODES. `heading` is the owner's; `pitch` is OPTIONAL and
+        -- absent on purpose. With no pitch the client tilts the node to look
+        -- at the lobby mark, which is the only thing worth framing from 99
+        -- metres up -- a flat 0.0 would point every one of these at the
+        -- horizon. Pin a number here to override that per node.
+        camPath = {
+            { x = 4919.50, y = -6018.38, z = 98.80, heading = 349.5 },
+            { x = 5038.11, y = -5834.56, z = 59.39, heading = 341.3 },
+            { x = 5063.97, y = -5741.21, z = 27.80, heading =  48.0 },
+        },
+
+        -- Roughly five seconds a move, the owner's number, and every move is
+        -- an engine interpolation rather than a per-frame write.
+        camMoveMs = 5000,
+
+        -- THE CAMERA GETS THERE FIRST, BY THIS MUCH. "the camera should reach
+        -- its final position about 2 seconds before the ped does" -- so the
+        -- last camera move is STARTED this long before the ped's own arrival
+        -- is expected, and the whole camera path is scheduled backwards from
+        -- the walk rather than run alongside it on its own clock.
+        camLeadMs = 2000,
+
+        -- STREAMING LEADS THE REVEAL. SetFocusPosAndVel is pointed at the
+        -- first camera node this long before the screen fades in, so the
+        -- terrain under that shot has begun loading before anybody can see it
+        -- (owner, 2026-08-29). It moves where the engine STREAMS and nothing
+        -- else; it has no bearing on which entities exist for this client.
+        focusLeadMs = 1000,
+
+        -- How long the loading screen will hold for this sequence to get its
+        -- ped onto the start mark before revealing anyway. Bounded like every
+        -- other wait on that path: a boot that never shows the lobby is worse
+        -- than a boot that skips a walk.
+        armWaitMs = 4000,
+    },
 
     -- Routing buckets. Lobby and warmup are fixed SHARED buckets; matches
     -- allocate upward from matchBase. The warmup pad is communal (user call,

@@ -212,7 +212,20 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # client/natives.lua's invincibility latch, so it is asserted against the
     # real natives.lua in test_client.lua, which already drives it frame by
     # frame. See the header of test_ambheal.lua.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_bool_natives.lua; do
+    #
+    # test_lobbyseq.lua is the fifth suite to load a CLIENT file and the first
+    # to MODEL Citizen rather than stub it away, and both are the same argument.
+    # The property it pins is an ORDER -- the ped is teleported to its warmup
+    # spawn and only then becomes a networked ped (owner, 2026-08-29) -- and an
+    # order is what neither a text gate nor a playtest can see: the window is one
+    # frame wide, on somebody else's screen, and the wrong version and the right
+    # version are identical in a screenshot. Both halves of it live inside
+    # threads with waits in them, so the no-op CreateThread every other client
+    # suite uses would make every assertion here vacuously true. Threads are
+    # coroutines, the clock is stepped, and the ped actually walks -- which is
+    # what lets the second claim be tested too: that the entrance can be
+    # abandoned at any point leaving no camera and no half-finished task.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

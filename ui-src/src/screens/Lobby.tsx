@@ -445,8 +445,15 @@ export default function Lobby({
               the push arrives within a frame of the interface being alive. */}
           {locker.peds.length > 0 && (
             <div className="flex-1">
+              {/* LOCKED WHILE THE PED IS WALKING IN. The lobby entrance has
+                  the character on an authored path and a model swap would take
+                  the ped handle out from under it, so the locker is simply
+                  unavailable until it arrives (owner, 2026-08-29). No
+                  explanation on purpose: this is the same disabled plate every
+                  other unavailable control on this screen uses. */}
               <Btn
                 variant="default" size="md" full cue="ui.select"
+                disabled={locker.locked === true}
                 onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
               >
                 Locker

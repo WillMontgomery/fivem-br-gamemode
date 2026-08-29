@@ -159,6 +159,16 @@ client_scripts {
     'client/spawn.lua',
     'client/lobbycam.lua',  -- reads BR.Spawn.traveling; must follow spawn.lua
     'client/locker.lua',    -- the ped in that shot; needs BR.Native (natives.lua)
+    -- Whether that ped is a LOBBY ped -- hidden from every other lobby client
+    -- -- and the walk-in that puts it in frame. AFTER lobbycam.lua and
+    -- locker.lua, and that is a READER'S order in one direction and the
+    -- loader's in the other: it drives BR.LobbyCam's flight and calls
+    -- BR.Locker.push at CALL time (both nil-guarded), but client/squadmates.lua
+    -- BELOW reads BR.LobbyPed.isLobbyPed() on a FRAME loop to decide whose ped
+    -- to hide, and a frame answered by a missing table is a frame where every
+    -- other lobby ped is visible. It needs client/main.lua for the loop
+    -- registry and BR.Dist (@br_lib/shared/geo.lua), both already above.
+    'client/lobbyped.lua',
     'client/gamerules.lua',
     'client/state.lua',
     'client/stamina.lua',   -- needs BR.State (state.lua) and the loops

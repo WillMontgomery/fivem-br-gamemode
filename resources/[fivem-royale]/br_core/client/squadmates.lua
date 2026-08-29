@@ -689,17 +689,32 @@ end)
 -- be re-asserted every frame, which is why every previous attempt on a TICK
 -- loop was structurally unable to work.
 --
--- FRAME, and gated on MY OWN STATE rather than on each other player's. If I
--- am in the lobby then everyone in my scope is in the lobby with me -- a
--- player in a match is in a different routing bucket and cannot be near me --
--- so "hide everyone else" is both simpler and more robust than consulting a
--- roster mirror that may be a beat behind. Outside the lobby the loop does
--- nothing but read one state field.
+-- FRAME, and gated on WHETHER MY OWN PED IS STILL A LOBBY PED rather than on
+-- each other player's state. If my ped is standing in the lobby then everyone
+-- in my scope is in the lobby with me -- a player in a match is in a different
+-- routing bucket and cannot be near me -- so "hide everyone else" is both
+-- simpler and more robust than consulting a roster mirror that may be a beat
+-- behind. Outside the lobby the loop does nothing but read one field.
+--
+-- IT USED TO ASK `BR.State.me.state == LOBBY`, AND THAT IS THE OTHER HALF OF
+-- THE OWNER'S 2026-08-29 REPORT. My state stops saying LOBBY the INSTANT the
+-- server names me a participant -- which is the moment the trip to warmup
+-- STARTS, a second or more before it has moved me anywhere. So a player who
+-- readied up stood on the lobby mark for the whole fade watching every other
+-- lobby ped pop into existence around them. BR.LobbyPed.isLobbyPed() is the
+-- same question asked of the PED instead of the paperwork: it stays true until
+-- the teleport has actually happened, which is exactly the ordering the fix
+-- turns on (see client/lobbyped.lua).
 --
 -- No bookkeeping and nothing to un-hide: the flag lasts one frame, so the
 -- moment this stops calling, they are visible again.
 BR.Loop.register(BR.Loop.FRAME, 'squadmates.lobbyhide', function()
-    if BR.State.me.state ~= BR.PlayerState.LOBBY then return end
+    -- Fails back to the old rule rather than to "hide nobody" if that file is
+    -- ever absent: an interface with a stranger in it is a bug, and an
+    -- interface with everybody in it is the bug this loop exists to prevent.
+    local mine = BR.LobbyPed and BR.LobbyPed.isLobbyPed()
+    if mine == nil then mine = BR.State.me.state == BR.PlayerState.LOBBY end
+    if not mine then return end
 
     local me = PlayerId()
     for _, player in ipairs(GetActivePlayers()) do -- scope-ok: presentation-only hiding of co-located lobby peds

@@ -129,7 +129,14 @@ export default function Locker() {
                   <button
                     key={p.id}
                     type="button"
-                    className={`btn plate px-3 py-2.5 text-left${on ? ' is-active' : ''}`}
+                    // The screen is not reachable while the entrance walk holds
+                    // the lock -- the button that opens it is disabled -- but a
+                    // page that was already up when the lock went on would
+                    // otherwise still take clicks. Lua refuses them either way;
+                    // this is so the plate agrees with what happens.
+                    disabled={locker.locked === true}
+                    className={`btn plate px-3 py-2.5 text-left${on ? ' is-active' : ''}`
+                      + `${locker.locked === true ? ' btn--off' : ''}`}
                     style={{
                       ['--edgec' as string]: on
                         ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',

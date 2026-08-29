@@ -766,6 +766,18 @@ export interface LockerPayload {
    *  in memory takes a moment, and until this existed the button looked like
    *  it had not registered the click. */
   loading?: string | null
+  /** The character may not be changed right now.
+   *
+   *  Set while the lobby ENTRANCE is walking the ped in along its authored
+   *  path (br_core/client/lobbyped.lua). SetPlayerModel hands Lua a NEW ped
+   *  handle and throws the old one away with its tasks, so a swap mid-walk
+   *  strands the character halfway up the hill -- the owner's answer was to
+   *  remove the case rather than survive it (2026-08-29).
+   *
+   *  IT IS A LOCK, NOT A HIDDEN CONTROL, AND IT EXPLAINS NOTHING. The button
+   *  takes the same disabled state every other unavailable control here has;
+   *  there is no caption and no tooltip. Lua refuses the action regardless. */
+  locked?: boolean
 }
 
 /**

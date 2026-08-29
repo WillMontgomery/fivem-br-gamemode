@@ -23,7 +23,6 @@
 5	resources/[fivem-royale]/br_core/client/inventory.lua	IsDisabledControlJustPressed
 2	resources/[fivem-royale]/br_core/client/inventory.lua	IsPauseMenuActive
 2	resources/[fivem-royale]/br_core/client/inventory.lua	IsPedReloading
-3	resources/[fivem-royale]/br_core/client/lobbycam.lua	DoesCamExist
 2	resources/[fivem-royale]/br_core/client/locker.lua	HasModelLoaded
 1	resources/[fivem-royale]/br_core/client/locker.lua	IsModelAPed
 2	resources/[fivem-royale]/br_core/client/locker.lua	IsModelInCdimage
