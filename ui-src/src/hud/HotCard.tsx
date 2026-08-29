@@ -45,12 +45,15 @@ import type { ReactNode, Ref } from 'react'
  * same object with its heading left off; a card with a heading nobody asked for
  * is a different bug.
  *
- * ═══ STORMBAR AND WARMUPTIMER ARE NOT CONVERTED, DELIBERATELY ═══
+ * ═══ ALL FOUR PLACARDS ARE THIS ONE ═══
  *
- * They are the same shape and they are obvious candidates. They are also two
- * surfaces nobody reported, in a round that is about the ride's clock and a
- * double verdict, and a diff that touches the storm placard is a diff the owner
- * has to look at in game. Left for their own change.
+ * StormBar and WarmupTimer were held back when this file was first extracted:
+ * the same shape and obvious candidates, but two surfaces nobody reported, in a
+ * round that was about the ride's clock and a double verdict, and a diff that
+ * touches the storm placard is a diff the owner has to look at in game. They
+ * were left for their own change, and this is that change -- both draw
+ * `HotCard` now, with nothing rendered differently on either surface. The
+ * markup for the box exists once.
  */
 
 /**
@@ -106,12 +109,17 @@ export function HotCard({
  * rAF lands. A zero reads as expired; a dash reads as not yet known, which is
  * what it is.
  *
- * THE FORMAT IS THE CALLER'S TOO, and the two callers legitimately differ: a
- * bleed runs 40-120s and reads as `93s`, while a drive across the map is
- * minutes and reads as `2:47`. Sharing the format would mean either `167s` on
- * an ambulance or a clock that jumps width at the minute boundary. What is
- * shared is the type, the size, the tracking and the shadow -- which is what
- * "the same timer" means when you are looking at the screen.
+ * THE FORMAT IS THE CALLER'S TOO, and the callers legitimately differ: a bleed
+ * runs 40-120s and reads as `93s`, while a drive across the map is minutes and
+ * reads as `2:47`. Sharing the format would mean either `167s` on an ambulance
+ * or a clock that jumps width at the minute boundary.
+ *
+ * SO IS THE SIZE, which is what `fs` is for. The bleed-out card and the ride's
+ * clock own the screen they are on and take the 2rem default. The two
+ * top-centre clocks sit in a narrower card, under a cap and above a caption,
+ * and run at 1.4rem. What is shared is the type, the tracking, the shadow and
+ * the placeholder -- which is what "the same timer" means when you are looking
+ * at the screen.
  */
 export function HotTime({
   ref,
