@@ -530,7 +530,100 @@ BR.Config.Rescue = {
     -- UseShortCutLinks -- which is precisely the permission to leave the road
     -- network for a shorter path. Every avoidance bit is kept; only the licence
     -- to take a dirt track is withdrawn.
-    driveStyle       = 524415,
+    --
+    -- ═══════════════════════════════════════════════════════════════════
+    -- ...AND THEN FOUR STYLES IN A ROW FAILED TO STOP THE COLLISIONS
+    -- ═══════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-08-29: "the ambulance is still running into other vehicles on
+    -- the road. Should we instead reset to some clean (calm) driving style and
+    -- ramp back up from there?"
+    --
+    -- YES, AND THE REASON IS THE PATTERN RATHER THAN ANY ONE VALUE. 262144,
+    -- 262460, 4980863, 786485 and 524415 have all been tried and the collisions
+    -- survived every one of them. Five hand-assembled numbers producing five
+    -- identical outcomes is the signature of tuning a variable that is not the
+    -- one in play -- so this stops being a number somebody built and becomes a
+    -- number Rockstar ships, changed one bit at a time from here on.
+    --
+    -- ═══ THE BASELINE IS `Normal`, MINUS THE DIRT ═══
+    --
+    -- Cfx's SET_DRIVE_TASK_DRIVING_STYLE page publishes R*'s own named presets.
+    -- `DrivingModeStopForVehicles` -- the one everything else is a variation of
+    -- -- is 786603, and the page spells out its own decomposition:
+    --
+    --        1  StopForVehicles                 BRAKE for traffic
+    --        2  StopForPeds                     brake for pedestrians
+    --        8  SteerAroundStationaryVehicles   go round parked cars
+    --       32  SteerAroundObjects
+    --      128  StopAtTrafficLights
+    --   262144  UseShortCutLinks                <-- the dirt roads
+    --   524288  ChangeLanesAroundObstructions
+    --                                          ----
+    --                                        786603
+    --
+    -- Minus 262144 is 524459, and that arithmetic was checked against the
+    -- published decomposition rather than taken on anybody's word.
+    --
+    -- ═══ WHAT CHANGES FROM 524415, IN BEHAVIOUR ═══
+    --
+    --   GAINS 2 and 128. It brakes for pedestrians and it stops at red lights.
+    --   Both were deliberately OFF before, on the argument that a siren does not
+    --   sit at a red and the deadline cannot afford junctions. That argument was
+    --   made when the deadline was tight; it is now derived from the route
+    --   length, and the ride that prompted this was 4872m with 432 seconds. A
+    --   van that stops is a van that is not in a collision, and "calm" is the
+    --   word the owner used.
+    --
+    --   SWAPS 4 FOR 8. This is the interesting one. The old value had
+    --   `SwerveAroundAllVehicles` (4) and not `SteerAroundStationaryVehicles`
+    --   (8); the comment above argued 4 subsumes 8. R* does not use them that
+    --   way. Its "stop for" presets pair 1 with 8 -- BRAKE for the moving car,
+    --   STEER around the parked one -- and its "avoid" presets use 4 with no
+    --   braking at all. 4 without a stopping bit is a van that answers every
+    --   hazard by swerving, which is a fair description of what the owner has
+    --   been watching. This is now R*'s pairing, not a hand-picked mixture.
+    --
+    --   KEEPS 262144 OFF. The dirt roads stay gone. That is not negotiable and
+    --   it is the one bit that must never come back without him asking.
+    --
+    --   LOSES 16 (SteerAroundPeds). It is not in R*'s preset. 2 replaces it with
+    --   a stronger behaviour -- braking rather than steering -- and the point of
+    --   a baseline is that it is the shipped value, not the shipped value plus
+    --   the bits we liked.
+    --
+    -- RAMP FROM HERE, ONE BIT AT A TIME. If it is too timid at junctions, drop
+    -- 128 (-> 524331). If it dithers behind pedestrians, drop 2 (-> 524457).
+    -- Do NOT add 256, 4194304 or 16777216 -- all three let the driver leave the
+    -- road network -- and do not add 262144.
+    driveStyle       = 524459,
+
+    -- ═══════════════════════════════════════════════════════════════════
+    -- HOW OFTEN THE DRIVE IS REVISITED
+    -- ═══════════════════════════════════════════════════════════════════
+    --
+    -- The ride used to be tasked once, at the start, and never looked at again
+    -- -- which was survivable when the reference scripts this feature was
+    -- modelled on drive 200 metres, and is not at 4872. client/rescue.lua's
+    -- `routeWatch` does two things at this cadence, both of which need the
+    -- vehicle to have got somewhere first:
+    --
+    --   1. Snaps the destination onto the road network once its path nodes are
+    --      streamed in. They are NOT streamed at the start of a long ride, so
+    --      the snap that fixes the end-of-journey circling can only be found
+    --      part-way through it.
+    --   2. Re-issues the task if the vehicle reports no mission at all.
+    --
+    -- TWO SECONDS IS SLOW ON PURPOSE. Both jobs are cheap, but a re-task is an
+    -- instruction to the AI and an instruction issued every frame is an AI that
+    -- never gets to act on one.
+    routeWatchMs     = 2000,
+
+    -- How many re-tasks get a log line before the watcher goes quiet. The COUNT
+    -- is the diagnosis, not the individual lines: one re-task on a ride is a
+    -- dropped task recovered, and thirty is a driver that cannot hold a task at
+    -- all -- a different bug, which this cap makes visible instead of burying.
+    retaskLogMax     = 5,
 
     -- The shortest journey worth making. Any surveyed point nearer than this to
     -- the pickup is refused as a destination, along with the pickup itself.
@@ -739,10 +832,16 @@ BR.Config.Rescue = {
     -- destination on my own". The server log said the same thing outright --
     -- "the deadline expired on a rescue that was driving".
     --
-    -- The destinations are CAR PARKS and TaskVehicleDriveToCoord routes to the
-    -- ROAD NETWORK. When the exact coordinate is not on it the vehicle gets as
+    -- The destinations are CAR PARKS and the vehicle AI routes over the ROAD
+    -- NETWORK. When the exact coordinate is not on it the vehicle gets as
     -- close as a road allows and then circles, so the old 8m test could not fire
     -- and layer 4 of the recovery ladder delivered every single ride.
+    --
+    -- (2026-08-29: the cause is now addressed at source as well as absorbed
+    -- here. client/rescue.lua's `snapDest` puts the DRIVE TARGET on the nearest
+    -- road node once that node streams in, while the surveyed point below stays
+    -- the thing arrival is measured against. Both rules stay: a snap that never
+    -- resolves leaves this file's behaviour exactly as it was.)
     --
     -- ═══ THE OWNER REPLACED THE TEST WITH A DESIGN ═══
     --
@@ -774,12 +873,14 @@ BR.Config.Rescue = {
     --     the road" is his answer to it. The two rules are two answers to one
     --     question and he asked for both.
     --
-    -- IT IS ALSO THE AI's OWN STOP RANGE. TaskVehicleDriveToCoord's tenth
-    -- argument was 4.0, and the native's documentation names small values as the
-    -- failure mode in as many words ("20.0 works fine"). A driver told to stop
-    -- within four metres of a point it can only reach within twenty is a driver
-    -- that never stops -- which is the circling, from the other side. Passing
-    -- this same number means the AI's idea of arriving and ours cannot drift.
+    -- IT IS ALSO THE AI's OWN STOP RANGE -- the last argument to
+    -- TaskVehicleDriveToCoordLongrange, and it was 4.0 back when the short-range
+    -- native was being used. Both natives' documentation names small values as
+    -- the failure mode in as many words ("20.0 works fine"). A driver told to
+    -- stop within four metres of a point it can only reach within twenty is a
+    -- driver that never stops -- which is the circling, from the other side.
+    -- Passing this same number means the AI's idea of arriving and ours cannot
+    -- drift.
     arriveM = 50.0,
 
     -- ...and how near it has to have got before "it has stopped getting closer"

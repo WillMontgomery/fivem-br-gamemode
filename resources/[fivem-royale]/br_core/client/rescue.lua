@@ -682,16 +682,133 @@ local function reportDrive(r, when)
                 mission, GetEntitySpeed(veh)))
 end
 
+--- Where the AI is actually steered, which is NOT where the ride ends.
+---
+--- ═══ THE DESTINATIONS ARE CAR PARKS AND THE ROUTER ONLY KNOWS ROADS ═══
+---
+--- This has been written down twice already -- in config/rescue.lua beside
+--- `arriveM` and in shared/rescue_solve.lua above `BR.RescueArrived` -- as the
+--- reason the ambulance circles at the end: the surveyed point is hand-authored
+--- forecourt, the vehicle AI routes over the path-node graph, and a target that
+--- is not ON that graph is a target the router closes on and then orbits.
+--- Both times it was described and worked around. This is the fix.
+---
+--- GET_CLOSEST_VEHICLE_NODE_WITH_HEADING, WITH NO FLAGS. Cfx documents the
+--- sixth argument as `eGetClosestNodeFlags`, not as the "nodeType" the older
+--- community tables call it, and bit 1 is `GCNF_INCLUDE_SWITCHED_OFF_NODES` --
+--- driveways, service tracks and the dirt the owner spent yesterday removing
+--- from the driving style. Passing 0 asks for the live road network only, which
+--- is the same network `driveStyle` now permits. The two agree on purpose.
+---
+--- ═══ AND IT IS RETRIED, BECAUSE THE ANSWER IS NOT AVAILABLE YET ═══
+---
+--- The native answers false for a node that is not STREAMED IN, and the first
+--- ride of this round was 4872m long. At the moment the drive is tasked the
+--- destination's nodes are several kilometres outside anything this client has
+--- loaded, so the snap CANNOT succeed at the start of a long journey and must
+--- be asked again as the vehicle closes. `routeWatch` below does the asking.
+---
+--- Until it succeeds the surveyed point is used unchanged, which is exactly the
+--- behaviour this feature already had -- so a failed snap is never worse than
+--- not snapping, and the arrival test never sees either: `BR.RescueArrived` is
+--- measured against `r.dest`, the point the player is delivered to, and that is
+--- deliberately not this.
+---
+--- @param r table
+--- @return number x
+--- @return number y
+--- @return number z
+--- @return boolean snapped   true once the target is a road node
+local function driveTarget(r)
+    if r.nodeX then return r.nodeX, r.nodeY, r.nodeZ, true end
+    return r.dest.x, r.dest.y, r.dest.z, false
+end
+
+--- Try to put `driveTarget` on the road network. Cheap, idempotent, and silent
+--- until it changes something.
+--- @param r table
+--- @return boolean gained   true only on the pass that first found a node
+local function snapDest(r)
+    if r.nodeX or not GetClosestVehicleNodeWithHeading then return false end
+
+    local ok, node = GetClosestVehicleNodeWithHeading(
+        r.dest.x, r.dest.y, r.dest.z, 0, 3.0, 0)
+    if not isTrue(ok) or not node or not node.x then return false end
+
+    -- ═══ AND IT MUST BE THIS CAR PARK'S NODE, WHICH IS A TIGHTER TEST THAN
+    --     "SOMEWHERE NEAR" -- THE ARRIVAL RULE DEPENDS ON IT ═══
+    --
+    -- When nothing near the destination is streamed the native can still answer
+    -- with whatever it does have, and steering at a node on the far side of the
+    -- map would be worse than steering at an unreachable forecourt.
+    --
+    -- `arriveM` RATHER THAN `arriveNearM`, and the arithmetic is the reason. The
+    -- AI stops up to `arriveM` (50m) SHORT of whatever it is steered at, and
+    -- BR.RescueArrived measures against `r.dest` -- so the worst case is
+    -- (snap offset + stop range) metres from the surveyed point, and that total
+    -- has to stay inside `arriveNearM` (150m) or the ride ends parked in a place
+    -- neither arrival rule can see. It would then sit there until the recovery
+    -- ladder ran out and refuse to deliver a player who had actually arrived.
+    --
+    --   50 offset + 50 stop = 100m worst case, inside 150. Safe.
+    --   150 offset + 50 stop = 200m, outside 150. NOT safe -- which is what
+    --   `arriveNearM` here would have allowed.
+    --
+    -- A car park whose nearest road is further than 50m away simply keeps
+    -- today's behaviour: steer at the forecourt and park as close as it gets.
+    -- That case is the one this feature has always handled and still does.
+    local d = BR.Dist(r.dest.x, r.dest.y, node.x, node.y)
+    if d > (R.arriveM or 50.0) then return false end
+
+    r.nodeX, r.nodeY, r.nodeZ = node.x, node.y, node.z
+    print(('[br_core] rescue: destination %s snapped to a road node %.0fm away')
+        :format(tostring(r.dest.id), d))
+    return true
+end
+
 --- Point the AI at the destination.
 ---
---- THE FIRST `TaskVehicleDriveToCoord` IN THIS TREE. Everything else that moves
---- -- the Battle Bus, the airdrop plane -- is flown by writing coordinates every
---- frame, which is exact and reproducible and completely unsuitable here: an
---- ambulance has to obey roads and traffic, and a coordinate write would slide
---- it through both.
+--- ═══ THE LONG-RANGE NATIVE, AND THE EVIDENCE FOR IT ═══
 ---
---- RE-TASKED RATHER THAN TASKED ONCE, because a re-place has to be able to start
---- the journey again from wherever the vehicle has been put.
+--- This was `TaskVehicleDriveToCoord` for nine rounds. It is the SHORT-range
+--- variant, and the rides it was being asked for are 550m to 4872m.
+---
+--- The reference the owner sent -- Taxisgr/taxisCallTaxi -- does use the short
+--- one, and he was right that this matters: its own Config caps the journey at
+--- `MaxDistance = 200` metres and says so in the file ("Dont type values lower
+--- than 1 and higher than 200"). It is a working script for the distance it
+--- drives. Surveying the rest of the family shows the split is the DISTANCE and
+--- not the feature:
+---
+---   taxisCallTaxi   <=200m to the player            TaskVehicleDriveToCoord
+---   pTaxi           spawn-to-player                 TaskVehicleDriveToCoord
+---   md-aitaxi       player to a map waypoint        ...Longrange
+---   citra-taxi      player to a map waypoint        ...Longrange
+---
+--- The two that carry a passenger somewhere -- our case -- both use the long
+--- one, and Cfx's own page for it is written around driving to a map mark,
+--- which is the same journey. Nothing in either native's documentation promises
+--- the short one degrades over distance, so that is NOT claimed here; what is
+--- claimed is that every surveyed script driving our distance uses the other
+--- one, and we were the only thing in the survey using the short native for a
+--- kilometres-long route.
+---
+--- ═══ WHAT THE SIGNATURE CHANGE TAKES AWAY, AND WHY THAT IS FINE ═══
+---
+--- LONGRANGE is (ped, veh, x, y, z, speed, drivingStyle, stopRange). It drops
+--- two arguments this file was passing:
+---
+---   vehicleModel        we passed GetEntityModel(r.veh); the AI reads the
+---                       vehicle it was handed, so this was never information.
+---   straightLineDistance the eleventh argument, which we passed as `true`.
+---                       Cfx types it `float` and its own note records somebody
+---                       getting away with a bool. A boolean in a float slot is
+---                       not a value anybody can reason about, and it governed
+---                       when the driver ABANDONS the road network and heads
+---                       straight at the target -- which is a live suspect for
+---                       driving at a car park through a fence. It is gone
+---                       rather than guessed at.
+---
 --- @param r table
 local function taskDrive(r)
     if not r.driver or not isTrue(DoesEntityExist(r.driver)) then return end
@@ -703,25 +820,50 @@ local function taskDrive(r)
     -- open, dome light on, no driver -- and send an empty ambulance off again.
     if r.parked then return end
 
-    SetDriverAbility(r.driver, R.driverAbility or 0.6)
-    SetDriverAggressiveness(r.driver, R.driverAggression or 0.8)
+    -- ATTRIBUTES OF THE PED, NOT PROPERTIES OF THE TASK, so these may sit either
+    -- side of it. The fallbacks are the CONFIGURED values rather than the older
+    -- 0.6/0.8 pair: a fallback that disagrees with the config is a second,
+    -- invisible setting that only appears the day the config fails to load.
+    SetDriverAbility(r.driver, R.driverAbility or 1.0)
+    SetDriverAggressiveness(r.driver, R.driverAggression or 0.0)
 
-    TaskVehicleDriveToCoord(r.driver, r.veh,
-        r.dest.x, r.dest.y, r.dest.z,
-        R.driveSpeed or 30.0,
-        0,                                  -- no special driving mode
-        GetEntityModel(r.veh),
-        R.driveStyle or 786485,
+    local style = R.driveStyle or 524459
+    local speed = R.driveSpeed or 30.0
+    local tx, ty, tz = driveTarget(r)
+
+    TaskVehicleDriveToCoordLongrange(r.driver, r.veh,
+        tx, ty, tz,
+        speed,
+        style,
         -- STOP RANGE, AND IT WAS 4.0 -- WHICH IS THE CIRCLING FROM THE ENGINE'S
         -- SIDE. The native's own documentation names small values as the failure
         -- mode ("20.0 works fine"), and a driver told to stop within four metres
         -- of a car park it can only reach within twenty simply never stops. It
         -- is BR.Config.Rescue.arriveM now, so the AI's idea of having arrived
         -- and this file's cannot drift apart.
-        R.arriveM or 50.0,
-        true)
-    SetDriveTaskDrivingStyle(r.driver, R.driveStyle or 786485)
-    SetDriveTaskMaxCruiseSpeed(r.driver, R.driveSpeed or 30.0)
+        R.arriveM or 50.0)
+
+    -- ═══ AFTER THE TASK, AND THAT IS THE DOCUMENTED ORDER ═══
+    --
+    -- Asked this round whether this call is inert because the style is also an
+    -- argument to the task. It is not. Cfx's page for SET_DRIVE_TASK_DRIVING_STYLE
+    -- opens "Sets the driving style for a ped CURRENTLY PERFORMING a driving
+    -- task", and its own worked example is task, then style, then keep-task --
+    -- the order below. The reference script has it the other way round, which is
+    -- why its 1074528293 never takes and its taxi actually drives on the 411 it
+    -- passes to the task; that is a bug in the reference, not a pattern to copy.
+    --
+    -- BOTH PATHS PASS `style`, so no style the owner has tried was ever applied
+    -- by one path and ignored by the other. The four values that did nothing did
+    -- nothing for some other reason.
+    SetDriveTaskDrivingStyle(r.driver, style)
+    -- THE THIRD ARGUMENT IS `updateBaseTask` and it was missing. alloc8or's
+    -- native database types this one (Ped, float, BOOL); Cfx's page still has it
+    -- as the unnamed two-parameter form. Passing the bool explicitly is correct
+    -- under the first and harmless under the second -- a native reads the
+    -- arguments it declares -- and without it the max was being written to the
+    -- sub-task while the base task kept its own.
+    SetDriveTaskMaxCruiseSpeed(r.driver, speed, true)
 
     -- ═══ AFTER THE TASK, WHICH IS WHERE IT WAS NOT ═══
     --
@@ -747,6 +889,77 @@ local function taskDrive(r)
         Citizen.Wait(1000)
         if ride ~= r then return end
         reportDrive(r, 'one second after tasking')
+    end)
+end
+
+--- Ask again, for the whole journey.
+---
+--- ═══ WE TASKED ONCE AT THE START OF A 4872m DRIVE AND NEVER REVISITED IT ═══
+---
+--- Two things make one visit insufficient, and neither is a guess:
+---
+---   1. THE SNAP CANNOT SUCCEED AT THE START. GET_CLOSEST_VEHICLE_NODE_WITH_HEADING
+---      answers false for a node that is not streamed in, and at tasking time
+---      the destination is kilometres outside anything this client has loaded.
+---      The road node that fixes the circling only becomes findable in the last
+---      stretch of the journey -- which is exactly where the circling happens.
+---
+---   2. A TASK CAN BE LOST. `reportDrive` already prints the vehicle's own
+---      mission type for this reason, and 0 (`MISSION_NONE`, from R*'s
+---      eVehicleMissionType) beside a seated driver is a task that was issued
+---      and dropped. Nothing acted on it before; the ride simply ran out its
+---      deadline coasting.
+---
+--- THE REFERENCE DOES NOT DO THIS and it is worth saying why, because the owner
+--- asked what to take from it. taxisCallTaxi tasks once and then polls raw
+--- distance to the player; over 200 metres, with the destination already in the
+--- streamed world, once is enough. Over four kilometres it is not.
+---
+--- IT ONLY EVER RE-ISSUES THE TASK IT WOULD HAVE ISSUED ANYWAY. There is no new
+--- decision here -- no new destination, no new style, no speed change -- so the
+--- worst this can do is task a driving ambulance to keep driving where it is
+--- already going. It stops at `parked`, like every other caller.
+---
+--- @param r table
+local function routeWatch(r)
+    Citizen.CreateThread(function()
+        local every = R.routeWatchMs or 2000
+        while true do
+            Citizen.Wait(every)
+            if ride ~= r or r.parked or r.ending then return end
+            if not r.veh or not isTrue(DoesEntityExist(r.veh)) then return end
+            if not r.driver or not isTrue(DoesEntityExist(r.driver)) then return end
+
+            -- The snap first: a pass that gains the node re-tasks on the node,
+            -- so the two reasons never fight over one re-task.
+            if snapDest(r) then
+                taskDrive(r)
+                goto continue
+            end
+
+            -- MISSION 0 IS THE ONLY VALUE ACTED ON, and the narrowness is the
+            -- point. `GetActiveVehicleMissionType` has a dozen values and this
+            -- code does not know what the engine's long-range goto reports under
+            -- every condition; it does know that MISSION_NONE means there is no
+            -- vehicle task at all. Re-tasking on "not the number I expected"
+            -- would fight the AI every two seconds on a healthy ride.
+            if GetActiveVehicleMissionType then
+                local m = math.tointeger(tonumber(GetActiveVehicleMissionType(r.veh)) or -1) or -1
+                if m == 0 then
+                    r.retasks = (r.retasks or 0) + 1
+                    -- ONE LINE PER RE-TASK, CAPPED. A watcher that printed every
+                    -- pass would bury its own answer, and the count is the thing
+                    -- worth reading: one is a hiccup, thirty is a driver that
+                    -- cannot hold a task and a different bug.
+                    if r.retasks <= (R.retaskLogMax or 5) then
+                        print(('[br_core] rescue: the drive task was gone (mission=0) '
+                               .. '-- re-tasking, %d so far'):format(r.retasks))
+                    end
+                    taskDrive(r)
+                end
+            end
+            ::continue::
+        end
     end)
 end
 
@@ -1437,6 +1650,12 @@ local function board(d)
         -- at. Tasking here means the first frame the player sees is the
         -- vehicle standing still with them in the back.
         taskDrive(r)
+        -- AND KEEP ASKING FOR THE WHOLE JOURNEY. Started here rather than inside
+        -- `taskDrive` because taskDrive has four callers and this must run once
+        -- per RIDE, not once per task -- a re-place that re-tasked would
+        -- otherwise leave a second watcher running against the same ride.
+        routeWatch(r)
+
         print(('[br_core] rescue: aboard (vehicle %d) bound for %s')
             :format(r.veh, tostring(r.dest.id)))
 
@@ -1540,7 +1759,25 @@ AddEventHandler(BR.Net.RESCUE_PLACE, function(d)
     local rad = math.rad(bearing)
     local tx, ty = c.x + math.sin(rad) * dist, c.y + math.cos(rad) * dist
 
-    local ok, node, heading = GetClosestVehicleNodeWithHeading(tx, ty, c.z, 1, 3.0, 0)
+    -- ═══ AND ON A LIVE ROAD, NOT A SWITCHED-OFF ONE ═══
+    --
+    -- The sixth argument asked for `1`, on the widely-copied community reading
+    -- that it is a "nodeType" where 1 means "any dry path". Cfx documents it as
+    -- `eGetClosestNodeFlags` and bit 1 is `GCNF_INCLUDE_SWITCHED_OFF_NODES` --
+    -- the driveways, service roads and dirt tracks the ambient traffic system
+    -- does not use. So the recovery was ALLOWED to drop the ambulance onto
+    -- exactly the surface the owner had just removed from the driving style,
+    -- and then tell a driver forbidden to use short-cut links to drive off it.
+    -- That is a plausible mechanism for "circling on dirt roads" that no style
+    -- value could have fixed, because the style was never what put it there.
+    --
+    -- 0 FIRST, 1 AS A FALLBACK. A recovery that finds no node is worse than one
+    -- that finds an imperfect node -- the vehicle is stuck NOW -- so the old
+    -- behaviour is kept as the second answer rather than removed.
+    local ok, node, heading = GetClosestVehicleNodeWithHeading(tx, ty, c.z, 0, 3.0, 0)
+    if not isTrue(ok) or not node then
+        ok, node, heading = GetClosestVehicleNodeWithHeading(tx, ty, c.z, 1, 3.0, 0)
+    end
     if isTrue(ok) and node then
         SetEntityCoords(r.veh, node.x, node.y, node.z + 1.0, false, false, false, true)
         SetEntityHeading(r.veh, heading or 0.0)

@@ -379,11 +379,17 @@ end
 --- agreed in as many words -- "the deadline expired on a rescue that was
 --- driving".
 ---
---- The destinations are CAR PARKS. TaskVehicleDriveToCoord routes to the nearest
---- road node and, when the exact coordinate is not on the network, circles it.
---- So the ambulance really did arrive, never came within eight metres of the
---- surveyed point, and every ride was resolved by layer 4 of the recovery ladder
---- instead of by arriving.
+--- The destinations are CAR PARKS. The vehicle AI routes to the nearest road
+--- node and, when the exact coordinate is not on the network, circles it. So the
+--- ambulance really did arrive, never came within eight metres of the surveyed
+--- point, and every ride was resolved by layer 4 of the recovery ladder instead
+--- of by arriving.
+---
+--- THIS RULE IS STILL THE BACKSTOP AND STILL EARNS ITS PLACE. client/rescue.lua
+--- now steers at a road node rather than at the forecourt, which should make
+--- "at the point" the common ending -- but the snap depends on path nodes being
+--- streamed in and can legitimately never resolve, and a car park genuinely
+--- unreachable by road is still a real case. Nothing below changes.
 ---
 --- ═══ THE OWNER REPLACED THE TEST WITH A DESIGN, WHICH IS THE BETTER FIX ═══
 ---
