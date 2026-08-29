@@ -5146,8 +5146,12 @@ local function newReviver(mySrc, mateSrc, peds)
     env.DoesEntityExist = function() return true end
     env.GetEntityCoords = function(p) local q = at(p) return vec(q.x, q.y, q.z) end
     env.GetPedBoneCoords = function(p) local q = at(p) return vec(q.x, q.y, q.z + 0.3) end
-    env.GetEntityHeading = function() return 0.0 end
-    env.SetEntityHeading = function() end
+    -- THE HEADING IS READ BACK, not thrown away, because the reviver now turns
+    -- to face the body (owner, 2026-08-29) and a stub that answered a constant
+    -- would agree with a file that never wrote one.
+    C.heading = 0.0
+    env.GetEntityHeading = function() return C.heading end
+    env.SetEntityHeading = function(_, h) C.heading = h end
     env.GetEntityHealth = function() return env.BR.Config.Match.maxHealth end
     env.IsEntityDead = function() return false end
     env.IsPedFatallyInjured = function() return false end
@@ -5170,7 +5174,17 @@ local function newReviver(mySrc, mateSrc, peds)
     -- guards the call -- and the tests that measure the cover replace this with
     -- a recorder.
     env.SetEntityLocallyInvisible = function() end
-    env.DisableControlAction = function() end
+    -- ═══ WHICH CONTROLS WERE HELD ON THE FRAME JUST RUN ═══
+    --
+    -- CLEARED PER FRAME, WHICH IS THE ENTIRE POINT OF THE FIXTURE. A reviver is
+    -- frozen by re-asserting DisableControlAction every frame and by nothing
+    -- else -- there is no start call and no stop call -- so "are they still
+    -- frozen" is a question that can only be asked of ONE frame. A recorder
+    -- that accumulated across frames would answer "yes" forever after the first
+    -- hold and could never fail, which is exactly how a freeze that is never
+    -- released gets shipped green.
+    C.disabled = {}
+    env.DisableControlAction = function(_, id) C.disabled[id] = true end
     env.GetDisabledControlNormal = function() return 0.0 end
     env.GetControlNormal = function() return 0.0 end
     env.GetFrameTime = function() return 0.016 end
@@ -5247,6 +5261,11 @@ local function newReviver(mySrc, mateSrc, peds)
     loadInto(env, { 'br_core/client/main.lua' })
 
     env.BR.State.me = { src = mySrc, state = env.BR.PlayerState.ALIVE, squadId = 'sq1' }
+    -- A LIVE MATCH, because BR.State defaults to WAITING and a revive is not a
+    -- thing that happens in a lobby. client/state.lua is what writes this in
+    -- the game and it is not loaded here, so the rig writes it -- and any test
+    -- that ENDS a match has to move it by hand for the same reason.
+    env.BR.State.match.state = env.BR.MatchState.PLAYING
     env.BR.State.roster = {
         [mateSrc] = { src = mateSrc, name = 'P' .. mateSrc, squadId = 'sq1',
                       state = env.BR.PlayerState.ALIVE },
@@ -5309,7 +5328,21 @@ local function newReviver(mySrc, mateSrc, peds)
                 else t.wake = C.now + (tonumber(err) or 0) end
             end
         end
+        C.disabled = {}
         env.BR.Loop.step(env.BR.Loop.FRAME)
+    end
+
+    --- Is this player unable to move and unable to shoot, RIGHT NOW?
+    ---
+    --- Four ids rather than the whole list: the two movement axes and the two
+    --- trigger controls are the owner's sentence ("they can't move, they can't
+    --- shoot") reduced to the smallest thing that can be false. The full list
+    --- is checked separately, against DOWNED_BLOCKED parsed out of the real
+    --- file, so this helper stays readable at the call sites where it is used
+    --- eleven times.
+    function C.frozen()
+        return C.disabled[30] == true and C.disabled[31] == true
+           and C.disabled[24] == true and C.disabled[25] == true
     end
     return C
 end
@@ -5701,12 +5734,98 @@ do
         ok(H.cli.anim == nil,
             'standing over a downed mate with nothing pressed plays no emote',
             tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and their controls are their own')
 
         H.press(true)
         H.pump(200)
         ok(H.cli.anim == CPR,
             'and holding the interact key puts the reviver into CPR',
             tostring(H.cli.anim))
+        ok(H.cli.frozen(),
+            'and takes their movement and their trigger away (owner: "they '
+            .. 'can\'t move, they can\'t shoot")')
+        H.press(false)
+    end
+
+    -- ── 1b. THE WHOLE LIST, AGAINST THE REAL DOWNED_BLOCKED ─────────────────
+    --
+    -- THE SAME INVARIANT tools/test_spectate.lua PINS, for the same reason and
+    -- in the same direction: a control a player with NO WEAPON is denied is one
+    -- an armed player kneeling over a body is certainly denied. Parsed out of
+    -- the real file so that adding an id to DOWNED_BLOCKED fails here until
+    -- this list catches up -- the drift that is allowed is the drift that is
+    -- safe.
+    do
+        local fh = io.open(RES .. 'br_core/client/dbno.lua', 'r')
+        local src = fh and fh:read('a') or ''
+        if fh then fh:close() end
+
+        local block = src:match('local DOWNED_BLOCKED = {(.-)}')
+        local ids = {}
+        for line in (block or ''):gmatch('[^\n]+') do
+            -- Comments first: these entries are annotated in prose, and a year
+            -- in a note would read as a control id.
+            for n in line:gsub('%-%-.*$', ''):gmatch('%d+') do
+                ids[#ids + 1] = tonumber(n)
+            end
+        end
+        ok(#ids >= 17,
+            'DOWNED_BLOCKED was found and parsed -- a pattern that matched '
+            .. 'nothing would make the subset check below vacuously true',
+            ('parsed %d id(s)'):format(#ids))
+
+        local H = newReviveRig(40)
+        H.knock()
+        H.pump(500)
+        H.press(true)
+        H.pump(200)
+
+        local gaps = {}
+        for _, id in ipairs(ids) do
+            if not H.cli.disabled[id] then gaps[#gaps + 1] = id end
+        end
+        ok(#gaps == 0,
+            'and every control a DOWNED player is denied, a REVIVING player is '
+            .. 'denied too',
+            'in DOWNED_BLOCKED but live while reviving: '
+                .. table.concat(gaps, ', '))
+
+        -- ...AND THE ONE ID THAT MUST NEVER BE IN THE LIST. 51 is INPUT_CONTEXT
+        -- -- the control the revive prompt draws its glyph from. Nothing about
+        -- the release actually depends on it (BR.Keys reads the raw keyboard,
+        -- and the engine fallback is a RegisterKeyMapping command with its own
+        -- id), but it is the single id whose suppression could plausibly be
+        -- confused with suppressing the key that ENDS this, and a hold that can
+        -- never end is a player frozen for the rest of the match.
+        ok(H.cli.disabled[51] ~= true,
+            'and INPUT_CONTEXT (51) is NOT among them -- nothing shaped like '
+            .. 'the interact key is ever suppressed by the freeze')
+        H.press(false)
+    end
+
+    -- ── 1c. THE REVIVER TURNS TO FACE THE BODY ──────────────────────────────
+    --
+    -- "Reviver should face the body if possible" (owner, 2026-08-29).
+    --
+    -- THE RIG PUTS THE MATE AT x=0 AND THE REVIVER AT x=0.8, so the body is due
+    -- WEST of them. A ped's forward vector in this file's own arithmetic is
+    -- (-sin h, cos h), which makes the heading that points at -x exactly 90
+    -- degrees. Written out rather than computed from the same expression the
+    -- file uses: a test that re-derived it would agree with a sign error.
+    do
+        local H = newReviveRig(40)
+        H.knock()
+        H.pump(500)
+        ok(math.abs(H.cli.heading - 0.0) < 0.001,
+            'the reviver starts facing north, which is not at the body',
+            tostring(H.cli.heading))
+
+        H.press(true)
+        H.pump(200)
+        ok(math.abs(H.cli.heading - 90.0) < 0.001,
+            'and holding turns them to face the body they are working on',
+            tostring(H.cli.heading))
         H.press(false)
     end
 
@@ -5724,6 +5843,9 @@ do
         ok(H.cli.anim == nil,
             'and the emote clears once the revive is processed, without the '
             .. 'player letting go of the key', tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'AND THEY HAVE THEIR CONTROLS BACK -- a player left frozen after a '
+            .. 'successful revive is the worst outcome this feature has')
         H.press(false)
     end
 
@@ -5768,6 +5890,15 @@ do
             'and the revive itself is still running -- the ceiling ends the '
             .. 'emote, never the hold',
             tostring(H.srv.roster[1].reviverSrc))
+
+        -- ...AND NEITHER DOES IT END THE FREEZE. The owner's rule is "frozen
+        -- until they release E", not "frozen for ten seconds": a player still
+        -- leaning on the key is still picking somebody up and still must not
+        -- walk off mid-hold. This is the one place the two rules part company
+        -- and it is the assertion that keeps them apart.
+        ok(H.cli.frozen(),
+            'and they are STILL frozen after the ceiling -- the ceiling is on '
+            .. 'the emote, not on the controls')
 
         -- ...AND A SPENT CEILING IS SPENT FOR THAT RUN AND NOT FOR THE MATCH.
         -- The stamp the ceiling is measured from is dropped when the hold ends,
@@ -5818,7 +5949,13 @@ do
             'AND THE EMOTE STILL CLEARED AT TEN SECONDS -- the ceiling '
             .. 'survives `holding` being destroyed and rebuilt four times a '
             .. 'second', tostring(H.cli.anim))
+        ok(H.cli.frozen(),
+            'while the freeze rides the rebuild too -- a hold that is being '
+            .. 'refused is still a hold, and the key is still down')
         H.press(false)
+        H.pump(100)
+        ok(not H.cli.frozen(),
+            'and letting go of a refused hold hands the controls straight back')
     end
 
     -- ── 4. THE KEY COMES UP ─────────────────────────────────────────────────
@@ -5829,22 +5966,43 @@ do
         H.pump(100)
         ok(H.cli.anim == nil, 'letting go of the key clears it',
            tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and hands the controls back on the same frame -- which is the '
+            .. 'whole of "until they release E"')
     end
 
-    -- ── 5. THE REVIVER WALKS OFF ────────────────────────────────────────────
+    -- ── 5. THE REVIVER ENDS UP OUT OF THE SERVER'S REACH ────────────────────
     --
-    -- Nobody let go of anything here: the SERVER ends this one, from its own
-    -- position samples, and the client hears about it a round trip later.
+    -- ═══ THIS TEST CHANGED MEANING WHEN THE FREEZE LANDED, AND IT IS KEPT ═══
+    --
+    -- It used to read "the reviver walks off", and a frozen reviver cannot walk
+    -- anywhere -- so the WALK is now unreachable while a hold is live. The
+    -- server's reach check is not: it is measured from the server's own
+    -- position samples and it must stay, because the server cannot trust a
+    -- freeze that runs on the client. A modified client, a teleport, a vehicle
+    -- carrying them, a shove, or simply this file's loop being suspended after
+    -- five throws all put a reviver out of reach with the key still down.
+    --
+    -- So the rig's moveTo -- which writes coordinates directly and does not go
+    -- anywhere near a control -- is now the RIGHT shape for it rather than a
+    -- convenience: it is precisely "they ended up out of reach by something
+    -- other than walking". The assertion is unchanged and the reason for it is
+    -- stronger.
     do
         local H = stoodOver(40)
         ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
         H.moveTo(40.0)
         H.pump(2000)
-        ok(H.srv.roster[1].reviverSrc == nil, 'the server ended the hold',
+        ok(H.srv.roster[1].reviverSrc == nil,
+           'a reviver who ends up out of reach still has the hold taken off '
+           .. 'them by the server, freeze or no freeze',
            tostring(H.srv.roster[1].reviverSrc))
         ok(H.cli.anim == nil,
-            'and walking out of the server\'s reach clears the emote, with the '
-            .. 'key still down', tostring(H.cli.anim))
+            'and the emote goes with it, with the key still down',
+            tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and so does the freeze -- a player the server has given up on is '
+            .. 'not held in place by this file')
         H.press(false)
     end
 
@@ -5866,6 +6024,10 @@ do
             'a reviver knocked down mid-hold stops doing CPR on the frame '
             .. 'their OWN client knows, not a round trip later',
             tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and gets their controls back at the same moment -- a downed '
+            .. 'player has their own control rules (DOWNED_BLOCKED) and must '
+            .. 'not be under two sets at once')
         ok(H.srv.roster[1].reviverSrc == 2,
             'and the hold itself is still the server\'s to end -- nothing here '
             .. 'reached for it', tostring(H.srv.roster[1].reviverSrc))
@@ -5880,11 +6042,30 @@ do
     do
         local H = stoodOver(40)
         ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+
+        -- BOTH HALVES, THE WAY THE REAL CLIENT DOES IT. One STATE envelope
+        -- reaches two handlers: client/state.lua writes the match mirror, and
+        -- client/dbno.lua runs forgetAll. Only the second is loaded here, so
+        -- the rig plays the part of the first.
+        --
+        -- AND THE MATE IS STILL DOWN AND THE KEY IS STILL HELD, deliberately.
+        -- That is the real shape of a match ending mid-revive -- the roster
+        -- sweep waits for the screen to go black (#124) -- and it is what makes
+        -- the frame band re-arm the hold a sixtieth of a second later.
+        H.cli.env.BR.State.match.state = H.cli.env.BR.MatchState.ENDED
         H.cli.env.TriggerEvent(H.cli.env.BR.Net.STATE,
                                { state = H.cli.env.BR.MatchState.ENDED })
         ok(H.cli.anim == nil,
             'a match that ends mid-hold takes the emote with it, on the event '
             .. 'itself', tostring(H.cli.anim))
+        H.pump(200)
+        ok(H.cli.anim == nil,
+            'and the frame band re-arming the hold underneath it does not '
+            .. 'bring the emote back', tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and the freeze is gone on the very next frame -- a winner who '
+            .. 'cannot move through their own results screen would be this '
+            .. 'feature\'s worst possible bug')
         H.press(false)
     end
 
@@ -5905,6 +6086,36 @@ do
         H.press(false)
     end
 
+    -- ── 8b. THE CALLBACK ITSELF STOPS RUNNING ───────────────────────────────
+    --
+    -- ═══ THE SAFETY ARGUMENT FOR THE FREEZE, DRIVEN RATHER THAN ASSERTED ═══
+    --
+    -- The emote is torn down by hand on a resource stop because a tasked
+    -- animation OUTLIVES the code that asked for it. The freeze deliberately is
+    -- NOT, and this is the test that says why that is safe rather than an
+    -- oversight: DisableControlAction lasts one frame, so the controls come
+    -- back the moment this loop stops asserting them -- whatever stopped it.
+    --
+    -- BR.Loop.setEnabled stands in for every one of those causes at once: a
+    -- resource stop, the registry suspending a callback after five consecutive
+    -- throws, `/brloop disable`, and the game being closed. `holding` is
+    -- deliberately left SET and the key deliberately left DOWN, so this is the
+    -- worst case -- the client still believes it is mid-revive -- and the
+    -- controls are live anyway.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.frozen(), 'the reviver is frozen mid-hold')
+
+        H.cli.env.BR.Loop.setEnabled('dbno.revive', false)
+        H.pump(50)
+        ok(not H.cli.frozen(),
+            'and a dbno.revive that stops running for ANY reason -- a resource '
+            .. 'stop, five throws, /brloop disable -- hands the controls back '
+            .. 'on the next frame, with the hold still armed and the key still '
+            .. 'down. There is no latch to leak.')
+        H.press(false)
+    end
+
     -- ── 9. NOTHING DOWN, NOTHING PLAYED ─────────────────────────────────────
     --
     -- WHICH IS EVERY FRAME OF A SOLO MATCH. BR.Mode.SOLO.dbno is false
@@ -5921,6 +6132,9 @@ do
         ok(H.cli.anim == nil,
             'holding the interact key with nobody down plays no emote',
             tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and does not take their controls away either -- a solo player '
+            .. 'leaning on the interact key must be able to run and shoot')
         H.press(false)
     end
 

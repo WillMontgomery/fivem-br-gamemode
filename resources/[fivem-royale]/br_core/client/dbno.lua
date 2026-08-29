@@ -1925,8 +1925,127 @@ end
 -- may: TaskPlayAnim takes the dictionary and the clip directly, exactly as
 -- client/lobbyped.lua's walk clipsets were sourced (see the note above
 -- clipsetFor there, which is the precedent this follows).
+--
+-- ═══ AND EVERY OTHER PLAYER SEES IT, WHICH IS CHECKED RATHER THAN HOPED ═══
+--
+-- "Make sure the revive animations are networked please!" (owner, 2026-08-29.)
+--
+-- THEY ALREADY ARE, AND THE PROOF IS IN THIS FILE. Nothing was added for it and
+-- nothing needed to be -- but "it should just work" is exactly the sentence
+-- this project has been burned by, so here is the evidence instead:
+--
+--   1. THE OWNER HAS WATCHED IT HAPPEN, on a TaskPlayAnim issued by this file
+--      on this player's own ped. #164, several hundred lines above: "When DBNO
+--      - the ped is not moving on the DBNO player's screen, but on others' they
+--      are" (2026-08-18). The whole clone-resync beat exists BECAUSE the crawl
+--      task replicates and is replayed on every other machine. That is the same
+--      native, on the same ped, from the same file.
+--   2. WHAT DOES *NOT* CROSS THE WIRE IS NAMED IN THAT SAME BLOCK, and neither
+--      applies here: TaskPlayAnim's LOCK FLAGS are arguments evaluated on this
+--      machine, and SetEntityAnimSpeed is a local playback-rate override. The
+--      clip itself, the dictionary and the looping flag are the task, and the
+--      task is what replicates. This emote sets no rate override, and its lock
+--      flags are false anyway -- `cpr_pumpchest` is an in-place kneel with no
+--      mover in it, which is the property the crawl notoriously lacks.
+--   3. THE ONE FLAG THAT BREAKS IT IS NOT ONE WE USE. citizenfx/fivem#3733
+--      (OPEN, area:OneSync) reports flag 1024 (OVERRIDE_PHYSICS) putting the
+--      ped in the wrong place for everybody else -- "This offset is applied
+--      twice for other players, but only once for the player playing the
+--      animation". Read the other way round, that is the platform confirming
+--      remote clients render this task at all. We pass flag 1.
+--   4. AN ENTIRE GENRE OF RESOURCE DEPENDS ON IT. The emote menu the owner took
+--      these names from plays every one of its emotes with a bare
+--      `TaskPlayAnim(PlayerPedId(), ...)` and nothing else (client/Emote.lua,
+--      line 908) -- and the only reason such a menu exists is for other people
+--      to see you.
+--
+-- WHAT IS *NOT* PROVEN HERE, said plainly rather than papered over: that
+-- StopAnimTask's END of the task reaches other machines as promptly as its
+-- start does. It travels on the same task-sync node and this file already
+-- leans on that -- leaveDowned() ends the crawl with ClearPedTasks and no
+-- report has ever come back about a revived player still crawling on somebody
+-- else's screen -- but it is an inference, not an observation. IF THE OWNER
+-- CHECKS ONE THING WITH TWO CLIENTS, IT IS THIS: watch the reviver on the
+-- OTHER player's screen and confirm the compressions stop when the key comes
+-- up, not just that they start.
 local CPR_DICT = 'mini@cpr@char_a@cpr_str'
 local CPR_ANIM = 'cpr_pumpchest'
+
+-- WHAT A REVIVER LOSES WHILE THEY ARE HOLDING.
+--
+-- "mid-CPR the ped movement controls should be frozen until they release E.
+--  They can't move, they can't shoot." (owner, 2026-08-29.)
+--
+-- ═══ DisableControlAction, AND *NOT* A FREEZE OR SetPlayerControl ═══
+--
+-- This is the most dangerous line in the feature and it is worth saying why in
+-- full. A stuck animation is cosmetic. A player left unable to move in a live
+-- match cannot recover without dying, and this file owns ELEVEN ways a hold can
+-- end -- so the mechanism has to be one that cannot be left on, rather than one
+-- that is carefully turned off in eleven places.
+--
+-- DisableControlAction LASTS EXACTLY ONE FRAME. There is no start call, no stop
+-- call, and therefore no exit path that can fail to make one: the key coming
+-- up, the server refusing, the revive landing, the reviver being shot, the
+-- match ending, a disconnect, a resource restart, an unhandled error suspending
+-- this callback after five throws, and the game being closed all end in the
+-- same place -- this loop stops asserting, and the controls are live on the
+-- next frame. client/spectate.lua makes exactly this argument at length above
+-- its own BLOCKED list, having been written after br_ui shipped a focus stack
+-- that returned early and left a screen nobody could raise. FreezeEntityPosition
+-- and SetPlayerControl are both LATCHES and both would have to be released by
+-- name on all eleven paths.
+--
+-- ═══ AND IT CANNOT BLIND THE RELEASE, WHICH IS THE FAILURE THAT WOULD MATTER ═
+--
+-- If disabling controls could stop this client seeing E come up, the hold could
+-- never end and the freeze would be permanent -- the exact bug the paragraph
+-- above is written against. It cannot, on either of the two paths keybinds.lua
+-- can be in:
+--
+--   * THE RAW PATH (BR.Keys.rawHolds). `BR.Keys.held.interact` is written every
+--     frame from IsRawKeyDown, which reads GTA's own keyboard array by WINDOWS
+--     VIRTUAL-KEY CODE -- `(*ioKeyboardKeys)[*ioKeyboardActive][key]`, per that
+--     file's own note on InputNatives.cpp. That is underneath the control
+--     system entirely; there is no control to disable.
+--   * THE ENGINE PATH (no level native). The release is delivered by the
+--     `-brinteract` command, which is a RegisterKeyMapping binding with its own
+--     engine-allocated id -- not one of GTA's numbered controls. Every id in
+--     the list below is a numbered control, so none of them is it.
+--
+-- ═══ A SUPERSET OF DOWNED_BLOCKED, AND NOT A SHARED COPY ═══
+--
+-- The same relationship, for the same reason, that client/spectate.lua's list
+-- has: a control a player with no weapon may not use is one an ARMED player
+-- standing over a body certainly may not. tools/test_shared.lua pins the
+-- subset, so adding to DOWNED_BLOCKED makes this list catch up. It is still a
+-- third list rather than a shared one, because DOWNED_BLOCKED is
+-- disabled-then-READ (dbno.controls drives the crawl off
+-- GetDisabledControlNormal on 30-35) and nothing here reads anything back.
+--
+-- 51 (INPUT_CONTEXT) IS DELIBERATELY ABSENT and must stay absent. It is the
+-- control the prompt draws its glyph from, and blocking it would be the one
+-- entry in this list that could plausibly interfere with the key that ends the
+-- hold. There is a test for its absence.
+local REVIVING_BLOCKED = {
+    -- ON FOOT. DOWNED_BLOCKED's seventeen, verbatim.
+    21, 22, 23, 24, 25,        -- SPRINT, JUMP, ENTER, ATTACK, AIM
+    30, 31, 32, 33, 34, 35,    -- MOVE_LR/UD, MOVE_UP/DOWN/LEFT/RIGHT_ONLY
+    44, 75,                    -- COVER, VEH_EXIT
+    140, 141, 142, 143,        -- MELEE_ATTACK_LIGHT/HEAVY/ALTERNATE, _BLOCK
+
+    -- THE REST OF THE TRIGGER, which a downed player never needed because
+    -- enterDowned takes the weapon off them first. A reviver is armed.
+    45, 47, 58,                -- RELOAD, DETONATE, THROW_GRENADE
+    257, 263, 264,             -- ATTACK2, MELEE_ATTACK1, MELEE_ATTACK2
+
+    -- FROM A SEAT. Nothing stops a player pulling up beside a downed mate and
+    -- holding the key from the driver's seat; 24 does not cover a drive-by.
+    68, 69, 70,                -- VEH_AIM, VEH_ATTACK, VEH_ATTACK2
+    91, 92,                    -- VEH_PASSENGER_AIM, VEH_PASSENGER_ATTACK
+    114, 331,                  -- VEH_FLY_ATTACK, VEH_FLY_ATTACK2
+    345, 346, 347,             -- VEH_MELEE_HOLD, VEH_MELEE_LEFT/RIGHT
+}
 
 --- THE OUTSIDE OF ONE EMOTE, ms -- A CEILING, NOT A DURATION.
 ---
@@ -1962,7 +2081,37 @@ local cprPlaying = false
 --- above resolveCrawl, having shipped exactly that once. The bounded wait is
 --- paid ONCE, at boot, by the thread below; here a dictionary that is somehow
 --- not resident is simply re-requested and picked up on a later pass.
-local function cprStart()
+---
+--- ═══ AND IT TURNS TO FACE THEM ═══
+---
+--- "Reviver should face the body if possible." (owner, 2026-08-29.)
+---
+--- ONCE, AT THE START OF THE RUN, AND AS A SNAP. Three choices were open and
+--- this is the simple one on purpose:
+---
+---   * ONCE rather than every frame. A downed player crawls, so a heading that
+---     tracked them would re-write this ped's rotation sixty times a second for
+---     a body moving at a third of a metre a second -- and #164 is the whole
+---     block above about what a stream of small rotations on a networked ped
+---     costs. At the ranges this happens (1.5m) the drift over a 2.8s hold is
+---     not worth a single extra write.
+---   * A SNAP rather than a turn. The emote's own blend (8.0) is already
+---     covering the transition, and the heading is written BEFORE the task so
+---     the clip starts out pointing the right way rather than swinging into it.
+---   * "IF POSSIBLE" IS THE OWNER'S HEDGE AND IT IS HONOURED LITERALLY. The
+---     mate's ped may not resolve on this machine at all -- #163's `blind`
+---     counter is frames where exactly that happened while a hold was live --
+---     so a ped handle of 0 means face nothing and play the emote anyway. The
+---     emote is the feature; the facing is the polish.
+---
+--- THE ARITHMETIC IS THIS FILE'S OWN. dbno.controls steps a crawl with
+--- `dx = -sin(h), dy = cos(h)`, so a ped's forward vector is (-sin h, cos h)
+--- and the heading that points at a delta (dx, dy) is atan2(-dx, dy). Derived
+--- rather than copied from a forum: getting it wrong by 90 degrees produces a
+--- reviver doing compressions on the grass beside the body, which reads as the
+--- animation being broken.
+--- @param target integer|nil  the downed mate's server id, for the facing
+local function cprStart(target)
     if cprPlaying then return end
     if not TaskPlayAnim then return end
 
@@ -1976,13 +2125,33 @@ local function cprStart()
         return
     end
 
+    local ped = PlayerPedId()
+
+    -- FACE THE BODY, BEFORE THE CLIP RATHER THAN AFTER IT. See the note above.
+    -- Guarded on the ped resolving AND on the two of them not being on exactly
+    -- the same spot: atan2(0, 0) is 0 in Lua, which is a real heading and would
+    -- silently spin a reviver to due north.
+    local mate = target and BR.Squadmates.pedOf(target) or 0
+    if mate ~= 0 and SetEntityHeading then
+        local me = GetEntityCoords(ped)
+        local it = GetEntityCoords(mate)
+        local dx, dy = it.x - me.x, it.y - me.y
+        if (dx * dx + dy * dy) > 0.0001 then
+            SetEntityHeading(ped, math.deg(math.atan(-dx, dy)) % 360.0)
+        end
+    end
+
     -- Flag 1 is LOOPING and -1 is "until something stops it", which together
     -- are what make this a pose held for the length of a hold rather than one
     -- pass of a clip. The three trailing `false`s are the position locks, left
     -- off deliberately: this ped is standing on its own feet and nothing else
     -- in this file is writing its position, so there is no second writer to
     -- fight -- unlike the crawl, which is a locomotion clip with a mover in it.
-    TaskPlayAnim(PlayerPedId(), CPR_DICT, CPR_ANIM, 8.0, -8.0, -1, 1, 0.0,
+    --
+    -- AND FLAG 1 IS NOT 1024. See the networking block above the constants:
+    -- 1024 (OVERRIDE_PHYSICS) is the one value citizenfx/fivem#3733 reports as
+    -- putting the ped somewhere else for every other player.
+    TaskPlayAnim(ped, CPR_DICT, CPR_ANIM, 8.0, -8.0, -1, 1, 0.0,
                  false, false, false)
     cprPlaying = true
 end
@@ -1992,11 +2161,12 @@ end
 ---
 --- ═══ THIS IS THE ONE TEARDOWN, AND THAT IS THE DESIGN ═══
 ---
---- A hold can end in nine ways -- the key coming up on the level and on the
+--- A hold can end in eleven ways -- the key coming up on the level and on the
 --- edge, the player switching to a nearer mate, the server refusing, the server
---- completing, the reviver being knocked down, the reviver being killed, the
+--- completing, the mate being picked up by somebody else, the mate
+--- disconnecting, the reviver being knocked down, the reviver being killed, the
 --- match ending, and the resource stopping. Cleanup written once per ending is
---- cleanup that will be missed in the tenth. So NOTHING above calls this
+--- cleanup that will be missed in the twelfth. So NOTHING above calls this
 --- directly on an ending: the frame loop reads `holding` as a LEVEL and tears
 --- down whenever it is not set, which means every one of those endings is
 --- covered by the fact that all of them clear `holding`. Only the two endings
@@ -2185,7 +2355,7 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- here, and none of them can be forgotten, because the teardown is not
     -- hung off any of them.
     --
-    -- ...AND ONLY WHILE WE ARE STILL ON OUR FEET. `holding` deliberately
+    -- ...AND ONLY WHILE THIS PLAYER CAN ACTUALLY ACT. `holding` deliberately
     -- outlives a frame in which this client cannot see the body (#163 -- the
     -- SERVER is the authority on reach), and it therefore also outlives the
     -- REVIVER being knocked down or killed, for up to a round trip plus the
@@ -2194,11 +2364,46 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- the "CPR on thin air" this block exists to make unrepresentable. Nothing
     -- here touches `holding`, so the revive itself is unaffected either way.
     --
+    -- ═══ AND BR.IsPlaying() RATHER THAN `me.state == ALIVE`, WHICH IS A BUG
+    --     THE FREEZE TURNED FROM HARMLESS INTO UNRECOVERABLE ═══
+    --
+    -- forgetAll() clears `holding` at ENDED, CLEANUP and WAITING -- and then
+    -- the frame band ARMS IT AGAIN on the very next pass, because arming needs
+    -- only a held key and a mate the mirror still calls DBNO, and neither of
+    -- those changes at a match boundary. The roster sweep to LOBBY waits for
+    -- the screen to go black (#124), so there are SECONDS of a finished match
+    -- in which this player is still ALIVE and their mate is still down.
+    --
+    -- That re-arm has always happened and has always been harmless: it sends a
+    -- REVIVE_START the server refuses. With a freeze hanging off it, it is a
+    -- player who cannot move through their own results screen -- and that is
+    -- exactly the class of bug the one-frame mechanism was chosen to make
+    -- impossible, arriving through the condition instead. BR.IsPlaying() is
+    -- main.lua's existing "this player can act" -- PLAYING and ALIVE, both --
+    -- so the emote and the freeze end at the match boundary whatever the key
+    -- and the mirror still say. Caught by tools/test_shared.lua, `dbno.cpr`.
+    --
     -- THE CEILING IS MEASURED FROM `cprSince` AND NOT FROM `holding.from`. See
     -- the declaration: a refused hold rebuilds `holding` four times a second,
     -- so a ceiling hung off that table would be re-armed by the very case it
     -- exists to catch.
-    if holding and BR.State.me.state == BR.PlayerState.ALIVE then
+    if holding and BR.IsPlaying() then
+        -- ═══ THE FREEZE ═══
+        --
+        -- KEYED ON THE HOLD AND NOT ON THE EMOTE, which is the one place these
+        -- two rules part company. The owner's sentence is "frozen until they
+        -- release E", and the ceiling below ends the ANIMATION at ten seconds;
+        -- a player still leaning on the key after that is still reviving and
+        -- still must not walk away mid-pick-up. So this sits above the ceiling
+        -- rather than inside the branch it guards.
+        --
+        -- Re-asserted every frame because that IS the mechanism: see the note
+        -- above REVIVING_BLOCKED for why one-frame writes are the only kind
+        -- that cannot be left on.
+        for i = 1, #REVIVING_BLOCKED do
+            DisableControlAction(0, REVIVING_BLOCKED[i], true)
+        end
+
         if not cprSince then cprSince = GetGameTimer() end
         if GetGameTimer() - cprSince >= CPR_MAX_MS then
             -- SPENT, NOT RESTARTED. `cprSince` is deliberately left standing:
@@ -2207,7 +2412,7 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
             -- begins when the hold genuinely ends, which is the `else` below.
             cprStop()
         else
-            cprStart()
+            cprStart(holding.target)
         end
     else
         cprSince = nil
@@ -2483,6 +2688,15 @@ RegisterCommand('brdbno', function()
     print(('  emote run  : %s'):format(
         cprSince and ('holding for %dms'):format(GetGameTimer() - cprSince)
                  or '- (nothing held)'))
+    -- THE FREEZE IS NOT A LATCH AND THIS LINE SAYS SO. It is derived from the
+    -- same condition the loop reads, every frame, so there is no stored flag
+    -- that could disagree with reality -- which is the whole reason a player
+    -- cannot be left stuck. If `holding` above is `-`, the controls are live.
+    print(('  controls   : %s   (%d ids, one frame each; 51 INPUT_CONTEXT is '
+           .. 'never among them)'):format(
+        (holding and BR.IsPlaying())
+            and 'HELD -- no movement, no trigger' or 'live',
+        #REVIVING_BLOCKED))
 
     -- ------------------------------------------------------------------ #163
     -- THE THREE FACTS, SEPARATED. Read the verdict line first; the counters
