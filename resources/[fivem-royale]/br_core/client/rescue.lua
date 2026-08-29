@@ -319,6 +319,24 @@ local function cleanup(keepVehicle)
 
     if not r then return end
 
+    -- ═══ THE STREAMING FOCUS IS NOT LEFT 800 METRES AWAY ═══
+    --
+    -- `board` moves it to the spawn point so the server's ambulance clones to
+    -- this machine, and clears it again once the player is attached to the
+    -- vehicle. That is the ordinary path. THIS is the one that cannot be
+    -- forgotten: a boarding that is superseded mid-assembly, a match that ends
+    -- under a ride, a resource stop, the sanity sweep -- none of them run the
+    -- line in `board`, and a client whose world streams in around a car park it
+    -- is not standing in is a worse bug than a rescue that failed.
+    --
+    -- GUARDED ON THE FLAG rather than called unconditionally, because focus is
+    -- shared: client/natives.lua's spectate holds it too, and a rescue teardown
+    -- must not take a spectator's world away.
+    if r.focused and ClearFocus then
+        ClearFocus()
+        r.focused = nil
+    end
+
     local ped = PlayerPedId()
     DetachEntity(ped, true, true)
     -- ...AND THE STRETCHER POSE GOES WITH THE STRETCHER.
@@ -359,13 +377,20 @@ local function cleanup(keepVehicle)
     -- this function runs and the vehicle stops existing. The player would fade
     -- in behind an ambulance that is not there.
     --
-    -- HANDED BACK TO THE ENGINE RATHER THAN KEPT. SetEntityAsNoLongerNeeded is
-    -- the documented release: "entities marked as no longer needed will be
-    -- deleted as the engine sees fit". So config/rescue.lua's promise that
-    -- NOTHING ACCUMULATES still holds -- it is now the population culler that
-    -- keeps it rather than this line, and a vehicle the player is standing next
-    -- to is not a candidate for culling, which is precisely the window that
-    -- matters.
+    -- RELEASED RATHER THAN DELETED, AND THE TWO ENTITIES ARE RELEASED TO
+    -- DIFFERENT OWNERS. SetEntityAsNoLongerNeeded is the documented giving-up of
+    -- a claim -- "entities marked as no longer needed will be deleted as the
+    -- engine sees fit" -- and what happens next depends on who made the thing:
+    --
+    --   THE MEDIC is local to this machine, so the population manager reclaims
+    --   him once nobody is near, exactly as it does every ambient ped.
+    --
+    --   THE AMBULANCE is the SERVER's, and this call only drops this client's
+    --   mission claim on it. It goes on existing for everybody, which is the
+    --   whole of "so players can take the ambulance". server/rescue.lua sweeps
+    --   the abandoned ones when the match ends, because a server-created entity
+    --   is not culled by anybody's population manager and would otherwise
+    --   outlive the match it belongs to.
     --
     -- ONLY ON A DELIVERY. Destroyed, out of time, match over, resource stopping
     -- -- every other ending still deletes, because on none of them is there a
@@ -714,8 +739,21 @@ local function board(d)
             return
         end
 
+        -- ═══ THE SERVER PLACED THE AMBULANCE; THIS IS WHERE TO GO AND LOOK ═══
+        --
+        -- `freeSpaceNear` USED TO SITE THE VEHICLE and cannot any more: the
+        -- vehicle is created on the server, which has no IsPositionOccupied to
+        -- ask. So the surveyed point is where it is, exactly, and the ring-walk
+        -- now only sites the MEDIC -- a position that lasts until he is put in
+        -- the driver's seat two dozen lines below.
+        --
+        -- WHAT THAT COSTS, NAMED: two rescues converging on one station can now
+        -- overlap where they used to step aside (#191 step 7). It is behind the
+        -- fade, the engine resolves the intersection by pushing one out, and
+        -- only a client can answer the question that would prevent it.
         local p = d.pickup
-        local px, py, pz = freeSpaceNear(p.x, p.y, p.z)
+        local px, py, pz = p.x, p.y, p.z
+        local mx, my, mz = freeSpaceNear(p.x, p.y, p.z)
 
         -- ═══ NETWORKED, AND THAT REVERSES WHAT THREE OTHER FILES EXPECTED ═══
         --
@@ -743,34 +781,148 @@ local function board(d)
         --   only on a REFUSED model, and that file already anticipated this
         --   exact vehicle: "An ambulance is not on that list." Nothing is
         --   exempted, because nothing needs to be.
-        -- ═══ LOCAL, LIKE THE BATTLE BUS ═══
+        -- ═══ THE CLIENT ADOPTS THE SERVER'S AMBULANCE, AND MOVES ITS STREAMING
+        --     FOCUS ACROSS THE MAP TO GO AND MEET IT ═══
         --
-        -- Networked first, then server-created and adopted. Both failed, and
-        -- the second one failed for a reason worth writing down: the ambulance
-        -- is built at a rescue point averaging 825m from where the player fell,
-        -- and an EMPTY vehicle is culled to any client past 424m. It was never
-        -- cloned here, so the net id never resolved -- correctly.
+        -- Owner, 2026-08-28: "Other players have to be able to see the
+        -- ambulance. Local is not acceptable." Only a networked entity exists on
+        -- anybody else's machine, so local is off the table and the two failures
+        -- that put it there have to be answered rather than avoided.
         --
-        -- client/bus.lua does this whole ride locally already and says why:
-        -- "Attaching own-local-ped to own-local-plane has none of the network
-        -- attach problems this design originally avoided; nothing here is
-        -- synced." The same is true of an ambulance.
+        -- THEY BOTH HAVE CAUSES, FROM THE PLATFORM'S OWN SOURCE:
         --
-        -- `false, false` IS THE WHOLE FIX. Not networked, so entityLockdown
-        -- cannot refuse it; not networked, so scope cannot cull it; not
-        -- networked, so no bucket, no clone, no ownership handoff.
-        r.veh = CreateVehicle(model, px, py, pz, p.heading or 0.0, false, false)
-        SetModelAsNoLongerNeeded(model)
-
-        -- 0 is truthy in Lua and a refused create answers 0 -- the fault that
-        -- cost round four, kept guarded now that the create is local.
-        if not r.veh or r.veh == 0 or not isTrue(DoesEntityExist(r.veh)) then
-            print(('[br_core] rescue: CreateVehicle refused (%s) at %.1f %.1f %.1f')
-                :format(tostring(r.veh), px, py, pz))
-            r.veh = nil
+        --   1. CLIENT-SIDE networked CreateVehicle was refused by
+        --      sv_entityLockdown relaxed -- a client script's entity is
+        --      POPTYPE_MISSION with no creation token, and ValidateEntity admits
+        --      only POPTYPE_RANDOM_* or a token carrying a scriptGuid. That is a
+        --      permanent dead end and nothing here goes near it.
+        --
+        --   2. SERVER-SIDE CreateVehicleServerSetter worked and the clone never
+        --      arrived. OneSync relevancy for an empty vehicle is pure 2D
+        --      distance with a 424-unit radius; the ambulance is built at a
+        --      surveyed point averaging 825m from where the player fell, and
+        --      81.7% of the map is further than 424m from the nearest one. The
+        --      net id was correct and NetworkDoesNetworkIdExist answered false
+        --      honestly for the full five seconds.
+        --
+        -- ═══ (2) IS FIXED ON THE SERVER, NOT HERE. THE FOCUS BELOW IS NOT THE
+        --     FIX AND MUST NOT BE MISTAKEN FOR IT ═══
+        --
+        -- THE FIX IS SetEntityDistanceCullingRadius, in server/rescue.lua, which
+        -- writes the very field the 424 default lives in. Relevancy is computed
+        -- entirely server-side from the player's SYNCED PED POSITION and the
+        -- CPlayerCameraDataNode sync node -- see ServerGameState.cpp's
+        -- `isRelevantViaPos` and `GetPlayerFocusPos`. SET_FOCUS_POS_AND_VEL
+        -- writes NEITHER of those: its own documentation is "override the area
+        -- where the camera will render the terrain", and it is a STREAMING
+        -- native, client-side, that the server never reads.
+        --
+        -- IT IS CALLED ANYWAY, FOR THE JOB IT REALLY DOES. The ambulance is up
+        -- to 2.4km away and the fade below will not lift until
+        -- HasCollisionLoadedAroundEntity answers for it -- so the world at the
+        -- pickup point has to stream in either way, and pulling the streaming
+        -- volume there is exactly how that is hurried along. It is the same call
+        -- client/natives.lua's spectate makes to load the world around a target
+        -- across the map, for the same reason, and no other.
+        --
+        -- BEHIND THE FADE, WHICH IS ALREADY DOWN. Moving the focus streams the
+        -- player's own surroundings out while it is elsewhere; the screen is
+        -- black across the whole of this window, so the visible cost is paid by
+        -- a fade that was already there for the vehicle appearing out of nothing.
+        --
+        -- AND IT IS GIVEN BACK ON EVERY PATH. `ClearFocus` runs after the attach
+        -- (by which point the player IS at the ambulance, so ordinary focus is
+        -- correct again) and from `cleanup`, which every ending reaches. A client
+        -- left with its streaming focus 800m away is a far worse bug than the one
+        -- this helps with, so it is not defended by remembering to call it here.
+        local netId = tonumber(d.netId)
+        if not netId then
+            print('[br_core] rescue: the server sent no ambulance id')
             TriggerServerEvent(BR.Net.RESCUE_LOST)
             return
         end
+
+        local me0 = GetEntityCoords(PlayerPedId())
+        local away = BR.Dist(me0.x, me0.y, px, py)
+        SetFocusPosAndVel(px + 0.0, py + 0.0, pz + 0.0, 0.0, 0.0, 0.0)
+        r.focused = true
+
+        -- THE DOCUMENTED SPELLING FIRST. NetworkDoesEntityExistWithNetworkId is
+        -- the one Cfx's reference names and declares BOOL;
+        -- NetworkDoesNetworkIdExist is a different native whose declaration
+        -- carries no description and no documented return, and it is what the
+        -- failed round asked. Both are read through isTrue either way -- a BOOL
+        -- native may answer 1, and 0 is truthy in Lua.
+        local existsFn = NetworkDoesEntityExistWithNetworkId
+                      or NetworkDoesNetworkIdExist
+
+        local tv, sawId = GetGameTimer(), false
+        repeat
+            -- SUPERSEDED. Give the focus back only if THIS record still holds
+            -- it: `ride ~= r` means cleanup has already run against this record
+            -- and a second rescue may have started and moved the focus to its
+            -- own pickup point, and a stale thread taking that away would strand
+            -- the live ride's world unstreamed.
+            if not ride or ride ~= r then
+                if r.focused then ClearFocus() r.focused = nil end
+                return
+            end
+            if isTrue(existsFn(netId)) then
+                sawId = true
+                r.veh = NetworkGetEntityFromNetworkId(netId)
+            end
+            if r.veh and r.veh ~= 0 and isTrue(DoesEntityExist(r.veh)) then break end
+            r.veh = nil
+            Citizen.Wait(50)
+        until GetGameTimer() - tv > (R.adoptMs or 10000)
+
+        -- ═══ AND IF IT STILL DOES NOT ARRIVE, IT SAYS WHICH HALF FAILED ═══
+        --
+        -- Six rounds have been spent on this feature and the last two were spent
+        -- because "no ambulance" and "an ambulance nobody could see" printed the
+        -- same nothing. `sawId` splits the two remaining failures: the net id
+        -- resolving and then not producing an entity is a DIFFERENT fault from
+        -- the id never resolving at all, and only the second one is scope.
+        if not r.veh then
+            print(('[br_core] rescue: net id %d never became an ambulance here '
+                   .. '(id seen: %s, spawn was %.0fm away at %.1f %.1f, '
+                   .. 'waited %dms)')
+                :format(netId, tostring(sawId), away, px, py,
+                        GetGameTimer() - tv))
+            ClearFocus()
+            r.focused = nil
+            TriggerServerEvent(BR.Net.RESCUE_LOST)
+            return
+        end
+        SetModelAsNoLongerNeeded(model)
+
+        -- ═══ CONTROL, BECAUSE EVERYTHING BELOW WRITES TO SOMEBODY ELSE'S
+        --     ENTITY ═══
+        --
+        -- The server made this vehicle, so this machine does not own it by
+        -- construction. Every line after this one -- the mods, the siren, the
+        -- lock, the driver task, and later the doors and the halt -- is a write,
+        -- and a write to an entity you do not control is a local-only change
+        -- that the owner's next sync undoes. Requested in a bounded loop because
+        -- the native ASKS: it returns whether the request was accepted, not
+        -- whether control has arrived, so one call is a coin flip.
+        --
+        -- NOT FATAL IF IT NEVER COMES. An ambulance nobody can task is a rescue
+        -- the deadline resolves, which is a worse ride and not a broken client --
+        -- and the same is true of an ambulance whose control migrates mid-drive.
+        -- It is logged rather than acted on.
+        local tc = GetGameTimer()
+        while not isTrue(NetworkHasControlOfEntity(r.veh))
+              and GetGameTimer() - tc < (R.controlMs or 3000) do
+            NetworkRequestControlOfEntity(r.veh)
+            Citizen.Wait(50)
+        end
+        if not isTrue(NetworkHasControlOfEntity(r.veh)) then
+            print(('[br_core] rescue: no control of ambulance %d after %dms -- '
+                   .. 'the drive may not take')
+                :format(r.veh, GetGameTimer() - tc))
+        end
+
         SetEntityAsMissionEntity(r.veh, true, true)
 
         -- NOT INVINCIBLE. There is no SetEntityInvincible here and there must
@@ -836,12 +988,38 @@ local function board(d)
         -- here, before it happens.
         local pedModel = loadModel(R.driverModel or 's_m_m_paramedic_01', 5000)
         if pedModel then
-            -- LOCAL, and the same reason as the vehicle above: a client script's
-            -- ped is POPTYPE_MISSION, which sv_entityLockdown relaxed refuses
-            -- outright. This was the next failure already queued behind the
-            -- vehicle one -- fixing scope alone would have bought an ambulance
-            -- with nobody driving it.
-            r.driver = CreatePed(4, pedModel, px, py, pz, p.heading or 0.0, false, false)
+            -- ═══ THE MEDIC STAYS LOCAL, AND IT IS NOT A CHOICE ═══
+            --
+            -- The vehicle went back to the server because only a networked one
+            -- can be seen, shot and taken by other players. The medic cannot
+            -- follow it, and the reason is that THERE IS NO PED SERVER SETTER:
+            -- citizenfx/fivem's ext/native-decls/server/ holds exactly one
+            -- creation native, CreateVehicleServerSetter, and citizenfx/fivem
+            -- #2787 ("Implement Server Setters; RPC are broken") is still open.
+            --
+            -- THE TWO ROUTES THAT REMAIN ARE BOTH CLOSED HERE:
+            --
+            --   * CLIENT-SIDE networked CreatePed is POPTYPE_MISSION, which
+            --     sv_entityLockdown relaxed refuses outright -- the same wall
+            --     that killed the client-side vehicle, and the failure that was
+            --     already queued behind it.
+            --   * SERVER-SIDE CreatePed is an RPC native, and citizenfx/fivem
+            --     #1407 is closed with the rule server/vehicles.lua already
+            --     obeys: RPC creation is inherently incompatible with routing
+            --     buckets. THIS GAMEMODE RUNS EVERY MATCH IN ONE. The ped would
+            --     land in the bucket of whichever client the engine picked to
+            --     build it, which is a coin flip on a feature that has already
+            --     cost six rounds.
+            --
+            -- WHAT IT COSTS IS EXACTLY ONE THING, AND IT IS COSMETIC: other
+            -- players see the ambulance and can find it, shoot it, be run over
+            -- by it and take it when it parks -- but they see it DRIVING
+            -- ITSELF, because the ped at the wheel exists only on this machine.
+            -- The vehicle's own visibility is not affected: it is relevant to
+            -- every client in the match by its culling radius rather than by
+            -- having an occupant the server can see.
+            r.driver = CreatePed(4, pedModel, mx, my, mz, p.heading or 0.0,
+                                 false, false)
             SetModelAsNoLongerNeeded(pedModel)
             SetEntityInvincible(r.driver, true)
             SetBlockingOfNonTemporaryEvents(r.driver, true)
@@ -900,6 +1078,20 @@ local function board(d)
             S.x or -0.010, S.y or -3.100, S.z or 1.690,
             S.pitch or 0.0, S.roll or 0.0, S.yaw or 1.0,
             false, false, false, false, 2, true)
+
+        -- ═══ AND THE STREAMING FOCUS COMES BACK, HERE, BECAUSE HERE IS WHERE IT
+        --     STOPS BEING A LIE ═══
+        --
+        -- The focus was moved to the spawn point so an ambulance 800m away would
+        -- clone to this machine at all. The player's ped is now ATTACHED to that
+        -- ambulance, so the player IS at the spawn point -- ordinary focus and
+        -- the moved focus are the same place, and from the next metre the
+        -- ambulance drives, only ordinary focus follows it.
+        --
+        -- ALSO CLEARED BY `cleanup`, which every ending reaches. This call is
+        -- the ordinary path; that one is the guarantee.
+        ClearFocus()
+        r.focused = nil
 
         -- ═══ AND THE POSE, WHICH THE OFFSET IS ONLY CORRECT FOR ═══
         --

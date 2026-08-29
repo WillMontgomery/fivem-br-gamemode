@@ -890,6 +890,42 @@ do
     -- _G.AddEventHandler and BR.Inv for its own purposes.
 
     local roster, matches, sent = {}, {}, {}
+
+    -- ═══ THE SPAWN IS A REFUSAL LIKE ANY OTHER, AND IT IS THE NEWEST ONE ═══
+    --
+    -- The ambulance is created on the SERVER now (owner, 2026-08-28: "Other
+    -- players have to be able to see the ambulance. Local is not acceptable"),
+    -- through BR.Vehicles.spawnOwned, which can answer nil -- a refused model, a
+    -- throw from the type argument, a handle of 0. That call sits between the
+    -- destination solver and BR.Inv.take, so it is the most likely refusal in
+    -- the function and the one most likely to be moved by a later edit.
+    local spawnOk, spawned = true, 0
+    BR.Vehicles = {
+        spawnOwned = function()
+            if not spawnOk then return nil, nil, 'the allowlist refuses that model' end
+            spawned = spawned + 1
+            return 900 + spawned, 65534 - spawned, nil
+        end,
+    }
+
+    -- ═══ THE ONE LINE THE WHOLE FEATURE HANGS ON ═══
+    --
+    -- OneSync clones an entity to a client only if it is RELEVANT, and relevancy
+    -- is 2D distance against `overrideCullingRadius` falling back to 424 * 424
+    -- (ServerGameState.h, GetDistanceCullingRadius). The surveyed points average
+    -- 825m from an arbitrary map position, so at the default the ambulance is
+    -- created and never sent -- which is exactly the round that failed, and it
+    -- failed silently on both sides.
+    --
+    -- SET_ENTITY_DISTANCE_CULLING_RADIUS is the only thing that writes that
+    -- field. It is one line with no visible effect on this server and no error
+    -- if it goes, and its absence costs a playtest round -- which is the precise
+    -- shape of thing that should be pinned rather than trusted.
+    local culled = {}
+    _G.SetEntityDistanceCullingRadius = function(ent, radius)
+        culled[#culled + 1] = { ent = ent, radius = radius }
+    end
+
     BR.Roster = {
         get    = function(src) return roster[src] end,
         update = function(src, patch)
@@ -994,7 +1030,57 @@ do
     ok(begun ~= nil, 'with a RESCUE_BEGIN on its way to the client', #sent)
     ok(begun and begun.d and begun.d.dest and begun.d.dest ~= begun.d.pickup,
         'carrying a destination that is not the pickup')
+    ok(begun and begun.d and type(begun.d.netId) == 'number',
+        'and the net id of the ambulance the SERVER built -- the client adopts '
+            .. 'that entity rather than making one of its own, which is the only '
+            .. 'creation path sv_entityLockdown admits',
+        begun and begun.d and tostring(begun.d.netId))
+
+    -- ═══ AND A FAILED SPAWN IS A REFUSAL, NOT A HALF-STARTED RESCUE ═══
+    --
+    -- This is the assertion that pins the ORDERING the block is named for. The
+    -- creation call used to sit BELOW BR.Inv.take, which would have made the
+    -- most failure-prone step in the function the one exception to "a refusal
+    -- costs the player nothing" -- an ultra-rare item spent on an ambulance that
+    -- was never built.
+    spawnOk = false
+    inv = downedAt(3, 1687.58, 4796.53, wide)
+    sent = {}
+    ok(BR.Rescue.begin(3) == false,
+        'a rescue whose ambulance cannot be created is refused')
+    ok(holdsKit(inv),
+        'and the kit survives THAT refusal too -- the spawn is above the take, '
+            .. 'not below it',
+        'the kit was taken for an ambulance that never existed')
+    ok(#sent == 0 and roster[3].rescue == nil,
+        'with nothing sent and no storm exemption written')
+    spawnOk = true
     ok(roster[2].rescue == true, 'and the storm exemption written for the ride')
+
+    -- ═══ ...AND THE AMBULANCE IS MADE VISIBLE BEYOND 424 UNITS ═══
+    ok(#culled == 1,
+        'the granted rescue widened the ambulance\'s culling radius exactly '
+            .. 'once -- without this the entity is created and never cloned to '
+            .. 'anybody, which is how a whole playtest round produced "net id '
+            .. '65534 never resolved"',
+        #culled)
+    -- THE ENTITY HANDLE, NOT THE NET ID. They are both integers, they arrive
+    -- from the same call one after the other, and a server native handed the
+    -- wrong one either throws "Tried to access invalid entity" or silently
+    -- widens somebody else's vehicle. The stub returns two clearly different
+    -- numbers so this can tell them apart.
+    ok(culled[1] and culled[1].ent ~= begun.d.netId,
+        'and it widened the ENTITY, not the net id that goes on the wire',
+        culled[1] and ('ent %s vs netId %s')
+            :format(tostring(culled[1].ent), tostring(begun.d.netId)))
+    ok(culled[1] and culled[1].radius and culled[1].radius > 424.0,
+        'and to more than the 424-unit default it exists to beat',
+        culled[1] and tostring(culled[1].radius))
+    ok(culled[1] and culled[1].radius >= 8000.0,
+        'in fact map-wide, so "other players can see the ambulance" has no '
+            .. 'distance at which it quietly stops being true',
+        culled[1] and tostring(culled[1].radius))
+    culled = {}
 end
 
 -- ---------------------------------------------------------------------------

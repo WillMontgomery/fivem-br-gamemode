@@ -82,18 +82,30 @@
 --
 -- ═══ #191's AMBULANCE IS NETWORKED, AND IT REACHES THIS HANDLER ═══
 --
--- This paragraph used to say the CPR ambulance was "meant to be local and
--- non-networked, so it should reach none of this". That expectation did not
--- survive the owner making it destructible (2026-08-23): other players can only
--- shoot a vehicle that exists on their machine, so the rescue ambulance is
--- created client-side with `isNetwork = true` and DOES arrive here up the clone
--- path, owned by the player being rescued.
+-- This paragraph has now been wrong twice, in opposite directions, and both
+-- corrections are kept because the thing they are about kept moving:
 --
--- NOTHING WAS EXEMPTED, AND NOTHING NEEDED TO BE. This handler files only on a
--- REFUSED model, and an ambulance is not on that list -- which is what the old
--- paragraph already said, for a different reason. It is counted like any other
--- client-created vehicle and opens no case. A rescue HELICOPTER would need the
--- exemption, and BR.Config.VehicleRefusalFor is still the one place to put it.
+--   IT SAID "meant to be local and non-networked, so it should reach none of
+--   this". That died when the owner made it destructible (2026-08-23) -- other
+--   players can only shoot a vehicle that exists on their machine.
+--
+--   THEN IT SAID the ambulance is "created client-side with isNetwork = true
+--   and DOES arrive here up the clone path". It never did: sv_entityLockdown
+--   relaxed refuses a client script's POPTYPE_MISSION entity before any Lua on
+--   this server runs, so the clone that would have raised `entityCreating` was
+--   deleted at the network layer. That was the failure, not a detector gap.
+--
+-- IT IS SERVER-CREATED NOW (2026-08-28), through BR.Vehicles.spawnOwned in this
+-- file, and it therefore REACHES NONE OF THIS after all -- for the third
+-- reason: `serverEntityCreated` is what a server setter raises, and this
+-- resource listens to no such event. The allowlist pre-check inside spawnOwned
+-- is the whole of the boundary for it, which is precisely what the gate in
+-- tools/verify.sh exists to keep true.
+--
+-- NOTHING WAS EXEMPTED, AND NOTHING NEEDED TO BE, on any of the three readings.
+-- This handler files only on a REFUSED model and an ambulance is not on that
+-- list. A rescue HELICOPTER would need the exemption, and
+-- BR.Config.VehicleRefusalFor is still the one place to put it.
 --
 -- ═══ NOTHING HERE TOUCHES THE PLAYER, AND NOTHING HERE CANCELS ═══
 --
@@ -1344,11 +1356,20 @@ local DEFAULT_MODEL = 'granger'
 --- no such event. Creation and the allowlist are reviewed on one screen or the
 --- backstop is gone.
 ---
---- #191's ambulance was the second caller to need this, and it tried to make
---- its own on the CLIENT instead -- CreateVehicle(..., networked), which the
---- owner's 2026-08-28 run showed answering 0 while every call after it no-opped
---- against entity 0. This is the route that works, so it stops being a private
---- trick of one debug verb.
+--- #191's ambulance IS the second caller, as of 2026-08-28, so this has stopped
+--- being a private trick of one debug verb. It got here the long way: a client
+--- CreateVehicle(..., networked) that answered 0 because lockdown refused it,
+--- then this route, then a retreat to a LOCAL vehicle when the clone did not
+--- arrive, and now this route again with the missing half supplied.
+---
+--- THE MISSING HALF WAS NEVER IN THIS FILE. A server-created entity is only
+--- cloned to a client it is RELEVANT to, and relevancy for an empty vehicle is
+--- 424 units of 2D distance from that client's streaming focus -- and the
+--- ambulance is built at a surveyed point averaging 825m from the player it is
+--- for. Nothing here can change that; client/rescue.lua moves its own focus with
+--- SET_FOCUS_POS_AND_VEL before it waits, and gives it back afterwards. This
+--- function's job is to create, bucket and report, and it did all three
+--- correctly the first time.
 ---
 --- THE BUCKET IS NOT OPTIONAL. Matches run in their own (server/roster.lua) and
 --- the setter defaults to bucket 0 -- a vehicle left there is one nobody in the

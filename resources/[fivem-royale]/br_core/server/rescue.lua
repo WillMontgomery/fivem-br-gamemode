@@ -127,6 +127,24 @@ local live = {}
 
 BR.Rescue.live = live
 
+--- Delivered ambulances nobody owns any more. [entity] = matchId.
+---
+--- ═══ "NOTHING ACCUMULATES" NEEDS A KEEPER NOW THAT SOMETHING IS LEFT ═══
+---
+--- The owner asked for the parked ambulance to survive the delivery -- "so
+--- players can take the ambulance" -- and a server-created entity is not
+--- reclaimed by any client's population manager the way a local one is. So the
+--- promise config/rescue.lua makes ("a station that is emptied and refilled
+--- repeatedly must not end a match with a queue of ambulances in it") stops
+--- being kept by `finish` and has to be kept here instead.
+---
+--- SWEPT ON THE MATCH, NOT ON A TIMER. An abandoned ambulance is a legitimate
+--- vehicle for the rest of the match -- deleting it out from under whoever is
+--- driving it would be worse than leaving it -- so the only safe moment is when
+--- the match it belongs to is over. That is the same rule `found` above uses for
+--- ambient ambulance blips, and it runs on the same tick.
+local abandoned = {}
+
 --- Publish where this rescue is, or that it is over.
 ---
 --- ═══ THE AMBULANCE IS THE PLAYER, AND THAT IS WHY THIS COSTS NOTHING ═══
@@ -274,17 +292,43 @@ local function finish(src, delivered, why)
     live[src] = nil
     if not rec then return end
 
-    -- THE SERVER OWNS THE VEHICLE NOW, so the server deletes it -- on every
-    -- ending, before anything below can fail or return early. The client used
-    -- to do this because the client used to create it; leaving it there would
-    -- mean a disconnect mid-ride abandons an ambulance nothing owns.
+    -- ═══ THE SERVER OWNS THE VEHICLE, SO THE SERVER DECIDES WHETHER IT STAYS
+    --     ═══
+    --
+    -- ON EVERY ENDING EXCEPT A DELIVERY it is deleted, here, before anything
+    -- below can fail or return early -- a disconnect mid-ride would otherwise
+    -- abandon an ambulance nothing owns.
+    --
+    -- A DELIVERY LEAVES IT STANDING, which is the owner's whole point: "doors
+    -- open, lights on, but nobody inside... so players can take the ambulance".
+    -- client/rescue.lua has just parked it, unlocked it and sent the medic
+    -- walking, and deleting it a second later would make all of that invisible.
+    --
+    -- BUT IT IS REMEMBERED. A server-created entity is not culled by anybody's
+    -- population manager, so an abandoned one outlives the match unless somebody
+    -- writes it down -- see `abandoned` and the sweep below it.
+    --
     -- `== true` rather than a truth test, the same reason this file already
     -- records where it sweeps destroyed ambulances: DoesEntityExist is a BOOL
     -- native, may answer 1 or 0, and 0 is truthy in Lua.
     if rec.veh then
         local okEx, exists = pcall(DoesEntityExist, rec.veh)
         if okEx and (exists == true or exists == 1) then
-            pcall(DeleteEntity, rec.veh)
+            if delivered then
+                -- THE WIDENED CULLING RADIUS COMES OFF WITH THE RIDE. It was
+                -- set so a client 825m away would be sent the clone at all, and
+                -- the deprecation it buys (citizenfx/fivem #1828: an entity far
+                -- from its OWNER but near another player gets teleported back to
+                -- its spawn point) was survivable only because the owner was
+                -- attached to it. Nobody is attached to it now, so the trade
+                -- stops being worth taking and it goes back to the ordinary 424.
+                if SetEntityDistanceCullingRadius then
+                    pcall(SetEntityDistanceCullingRadius, rec.veh, 0.0)
+                end
+                abandoned[rec.veh] = rec.matchId
+            else
+                pcall(DeleteEntity, rec.veh)
+            end
         end
     end
 
@@ -425,10 +469,104 @@ function BR.Rescue.begin(src)
                 BR.Dist(pickup.x, pickup.y, dest.x, dest.y),
                 (pickup == dest) and '  <-- SAME POINT' or ''))
 
+    -- ═══ THE SERVER MAKES THE AMBULANCE, AND IT IS MADE BEFORE THE KIT IS
+    --     SPENT ═══
+    --
+    -- Owner, 2026-08-28: "Other players have to be able to see the ambulance.
+    -- Local is not acceptable." A non-networked vehicle exists on exactly one
+    -- machine, so it cannot be seen, shot or taken by anybody else -- and the
+    -- only creation path this platform admits under sv_entityLockdown relaxed is
+    -- a server one, because a server script's entity carries a creation token
+    -- with a scriptGuid and a client script's does not.
+    --
+    -- CREATION LIVES IN server/vehicles.lua BESIDE THE ALLOWLIST and
+    -- tools/verify.sh refuses it anywhere else -- BR.Vehicles.spawnOwned does the
+    -- refused-model pre-check, puts the entity in this player's routing bucket
+    -- (matches run in their own, and the setter defaults to 0), and prints what
+    -- it built. CreateVehicleServerSetter raises `serverEntityCreated` rather
+    -- than `entityCreating`, so that pre-check is the whole of the boundary.
+    --
+    -- ═══ AND THIS IS ABOVE `BR.Inv.take` ON PURPOSE ═══
+    --
+    -- It used to be below. Every refusal in this function returns before the kit
+    -- is spent -- that is the property the owner's refusal rule rests on and
+    -- tools/test_rescue.lua asserts it -- and a failed spawn is a refusal like
+    -- any other. Leaving the creation after the take would have carved out one
+    -- exception to that rule, in the one place most likely to fail, and it would
+    -- have cost a player the rarest item in the game for an ambulance that never
+    -- existed.
+    --
+    -- The comment that used to be here worried that spending the kit later
+    -- "leaves a window in which the same kit could start a second rescue".
+    -- There is no window: nothing between the two lines yields, and `live[src]`
+    -- -- which is what canCall tests -- is not written until below either.
+    local veh, netId, whyVeh = BR.Vehicles.spawnOwned(
+        R.model or 'ambulance', 'automobile',
+        pickup.x, pickup.y, pickup.z, pickup.heading or 0.0, src)
+    if not veh then
+        print(('[br_core] rescue: %d refused -- no ambulance (%s)')
+            :format(src, tostring(whyVeh)))
+        return false
+    end
+
+    -- ═══ AND THIS LINE IS THE 424-METRE FIX. IT IS NOT THE ONE I WAS TOLD ═══
+    --
+    -- The brief for this change said the answer was SET_FOCUS_POS_AND_VEL on the
+    -- client. IT IS NOT, and the platform's own source says so plainly enough
+    -- that it was worth reading rather than repeating:
+    --
+    --   ServerGameState.cpp's `isRelevantViaPos` tests the entity against
+    --   `GetPlayerFocusPos(playerEntity)`, and that function reads exactly two
+    --   things -- the player's SYNCED PED POSITION, and the camera position out
+    --   of the CPlayerCameraDataNode sync node (camMode 1/2, the free-cam bit
+    --   and the camera offset, both written by GTA's own netcode).
+    --   SET_FOCUS_POS_AND_VEL is a STREAMING override -- "override the area
+    --   where the camera will render the terrain" -- and writes neither. It
+    --   cannot move relevancy, because relevancy never asks it anything.
+    --
+    --   The resource that was offered as the reference for the technique spawns
+    --   its vehicle by walking road nodes outward and STOPPING AT 200 UNITS. It
+    --   is always inside the 424 zone already and never tests the case at all.
+    --
+    -- WHAT DOES MOVE IT is one line, on this side, and it is the same field the
+    -- 424 default lives in:
+    --
+    --   inline float GetDistanceCullingRadius(float playerCullingRadius)
+    --   {
+    --       if (overrideCullingRadius != 0.0f) { return overrideCullingRadius; }
+    --       else if (playerCullingRadius != 0.0f) { return playerCullingRadius; }
+    --       else { return (424.0f * 424.0f); }
+    --   }
+    --
+    -- SET_ENTITY_DISTANCE_CULLING_RADIUS writes `overrideCullingRadius = radius
+    -- * radius`, which takes priority over both. Plain units in; the squaring is
+    -- the native's.
+    --
+    -- ═══ IT IS DEPRECATED, AND THE DEPRECATION IS SURVIVABLE HERE ═══
+    --
+    -- Cfx marks the culling natives "deprecated and have known, unfixable
+    -- issues", and the known issue (citizenfx/fivem #1828) is that an entity
+    -- with a widened radius can be TELEPORTED BACK TO ITS SPAWN POINT when it is
+    -- far from its OWNER while near another player.
+    --
+    -- That cannot happen during a ride: the owner is the rescued player and they
+    -- are ATTACHED TO THE VEHICLE, so the distance from owner to entity is zero
+    -- for the whole journey by construction. It could happen AFTERWARDS, to an
+    -- abandoned ambulance whose owner has walked away -- so `finish` puts the
+    -- radius back to 0.0 and the parked one goes back to being an ordinary
+    -- vehicle at the ordinary 424.
+    --
+    -- ORPHAN MODE IS NOT SET AND DOES NOT NEED TO BE. A server-script entity
+    -- carries a creation token, `IsOwnedByServerScript()` is token ~= 0 and
+    -- scriptHash ~= 0, and `ShouldServerKeepEntity()` is already true for it --
+    -- so nothing relevancy-driven deletes this vehicle while nobody is near it.
+    if SetEntityDistanceCullingRadius then
+        pcall(SetEntityDistanceCullingRadius, veh, R.cullRadiusM or 10000.0)
+    end
+
     -- THE KIT IS SPENT HERE, at the moment the rescue is granted and after every
-    -- refusal above has already passed. Spending it earlier would burn an
-    -- ultra-rare item on a call that then failed to route; spending it later
-    -- leaves a window in which the same kit could start a second rescue.
+    -- refusal above has already passed -- including the one immediately above,
+    -- which is the newest and the most likely.
     BR.Inv.take(src, slot)
     BR.Inv.push(src)
 
@@ -455,40 +593,48 @@ function BR.Rescue.begin(src)
     --
     -- THE TYPE ARGUMENT THROWS on an unrecognised value rather than answering
     -- 0, which is why the call is pcall'd rather than tested.
-    -- ═══ THE SERVER DOES NOT MAKE THE AMBULANCE, AND 424 METRES IS WHY ═══
+    -- ═══ 424 METRES WAS THE BUG, AND THE CLIENT'S FOCUS IS THE FIX ═══
     --
-    -- It did, for one round, with CreateVehicleServerSetter. The owner got:
-    -- "net id 65534 never resolved to an ambulance here".
+    -- The first server-side attempt created the vehicle correctly and the owner
+    -- got "net id 65534 never resolved to an ambulance here". Two things were
+    -- cleared then and stay cleared:
     --
-    -- 65534 WAS NOT THE BUG. The server allocates object ids DOWNWARD from
-    -- MaxObjectId - 1 under OneSync (ServerGameState.cpp CreateEntityFromTree),
-    -- so 65534 is exactly what the first server-created entity gets. Clients
-    -- count up from 1. The id was correct and so was the conversion.
+    --   65534 WAS NEVER THE BUG. The server allocates object ids DOWNWARD from
+    --   MaxObjectId - 1 under OneSync (ServerGameState.cpp CreateEntityFromTree),
+    --   so 65534 is exactly what the first server-created entity gets; clients
+    --   count up from 1. The id was correct and so was the conversion.
     --
-    -- THE BUG WAS SCOPE. Relevancy is per-client and, for an EMPTY vehicle, is
-    -- pure 2D distance -- default radius 424m, onesync_distanceCulling on. The
-    -- 23 surveyed rescue points average 825m from an arbitrary map position and
-    -- 81.7% of the map is further than 424m from the nearest one. So for about
-    -- four downed players in five the ambulance was created outside their
-    -- scope, never cloned to them, and NetworkDoesNetworkIdExist answered false
-    -- honestly for the full five seconds -- while the player lay where they
-    -- fell, up to 2.4km away, because they are only attached to it later.
+    --   THE BUG WAS SCOPE. Relevancy is per-client and, for an EMPTY vehicle, is
+    --   pure 2D distance -- default radius 424m, onesync_distanceCulling on. The
+    --   23 surveyed points average 825m from an arbitrary map position and 81.7%
+    --   of the map is further than 424m from the nearest one, so for about four
+    --   downed players in five the ambulance was created outside their scope and
+    --   never cloned to them. NetworkDoesNetworkIdExist answered false honestly
+    --   for the full five seconds.
     --
-    -- No platform bug was needed to explain it, and no amount of waiting would
-    -- have fixed it.
+    -- THE FIX IS THE CULLING RADIUS ABOVE, and it is on this side because that
+    -- is the side the number lives on. It is deliberately map-wide, so the
+    -- ambulance is relevant to EVERY client in the match for the whole ride --
+    -- which is the direct reading of "other players have to be able to see the
+    -- ambulance" rather than a distance at which it quietly stops being true.
     --
-    -- SO IT IS LOCAL NOW, LIKE EVERY OTHER VEHICLE THIS GAMEMODE MAKES.
-    -- client/bus.lua already performs this exact ride -- local vehicle, local
-    -- pilot, the player's own ped attached to it, scripted camera, driven by
-    -- the script -- and says why: "nothing here is synced". Scope, buckets,
-    -- cloning, ownership and entityLockdown all stop being able to fail.
+    -- ═══ WHAT IS STILL LOCAL, STATED RATHER THAN LEFT TO BE FOUND ═══
     --
-    -- THE COST, NAMED: only the rescued player can destroy their own ambulance.
-    -- The rule survives -- their own wreck and condition watch still fire
-    -- RESCUE_LOST -- but a third party cannot shoot it. That is the single
-    -- requirement that moved this feature off every path this codebase has
-    -- working, and it is now a deliberate trade rather than an inherited one.
+    -- The MEDIC. There is no ped server setter -- citizenfx/fivem ships exactly
+    -- one creation native under ext/native-decls/server/ and #2787 asking for
+    -- the rest is open -- and server-side CreatePed is an RPC native whose
+    -- target client is chosen by ServerRPC.cpp with NO ROUTING BUCKET CHECK AT
+    -- ALL, which for a gamemode that runs every match in its own bucket is a
+    -- coin flip on where the ped ends up.
+    --
+    -- SO OTHER PLAYERS SEE THE AMBULANCE DRIVING ITSELF. They can find it, shoot
+    -- it, be run over by it and take it when it parks; the paramedic at the
+    -- wheel exists only on the rescued player's machine. That is the one part of
+    -- the picture that could not be bought at any price this platform offers,
+    -- and it is the cosmetic half rather than the mechanical one.
     live[src] = {
+        veh        = veh,
+        netId      = netId,
         matchId    = entry.matchId,
         dest       = dest,
         deadlineAt = now + deadline,
@@ -512,6 +658,11 @@ function BR.Rescue.begin(src)
         pickup = pickup,
         dest   = dest,
         endsAt = now + deadline,
+        -- The client ADOPTS this vehicle rather than making one. It is the only
+        -- new field on this envelope and it is the whole of the change on the
+        -- wire; the medic carries no id because there is nothing to carry -- see
+        -- the block above.
+        netId  = netId,
     })
     return true
 end
@@ -786,6 +937,38 @@ BR.Sched.every(R and R.tickMs or 1000, 'rescue.found', function()
         end
     end
 end)
+
+--- Delete the delivered ambulances whose match is over.
+---
+--- ON THE SAME CADENCE AND THE SAME RULE as the ambient-ambulance sweep above.
+--- An entity that has already stopped existing -- somebody blew it up, which is
+--- a perfectly ordinary end for an abandoned vehicle -- is simply forgotten.
+BR.Sched.every(R and R.tickMs or 1000, 'rescue.abandoned', function()
+    if not R or not R.enabled then return end
+
+    for veh, matchId in pairs(abandoned) do
+        local m = matchId and BR.Server.matches[matchId]
+        local okExists, alive = pcall(DoesEntityExist, veh)
+
+        -- `== true` rather than a truth test. DoesEntityExist is a BOOL native
+        -- and may answer 1 or 0, and 0 is truthy in Lua -- a bare test would
+        -- keep every destroyed ambulance on this list for ever and then try to
+        -- delete a handle that has not existed for twenty minutes.
+        if not okExists or not (alive == true or alive == 1) then
+            abandoned[veh] = nil
+        elseif not m or m.state ~= BR.MatchState.PLAYING then
+            abandoned[veh] = nil
+            pcall(DeleteEntity, veh)
+        end
+    end
+end)
+
+--- @return integer
+function BR.Rescue.abandonedCount()
+    local n = 0
+    for _ in pairs(abandoned) do n = n + 1 end
+    return n
+end
 
 --- @return integer
 function BR.Rescue.foundCount()

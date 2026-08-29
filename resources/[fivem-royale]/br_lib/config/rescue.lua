@@ -89,6 +89,57 @@ BR.Config.Rescue = {
 
     model = 'ambulance',
 
+    -- ------------------------------------------------------------------
+    -- ...AND HOW LONG THE CLIENT WAITS FOR IT TO ARRIVE
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-28: "Other players have to be able to see the ambulance.
+    -- Local is not acceptable." So the vehicle is created on the SERVER and
+    -- cloned to the rescued player, and there are two waits on that path.
+    --
+    -- THE CLONE. The entity exists and is bucketed before RESCUE_BEGIN is sent,
+    -- but OneSync only clones what is RELEVANT to a client -- 424 units of
+    -- 2D distance for an empty vehicle -- and the ambulance is built an average
+    -- of 825m from where the player fell. client/rescue.lua moves the streaming
+    -- focus to the spawn point to make it relevant, and then waits here. Ten
+    -- seconds rather than five: the whole of it is behind a fade, and the round
+    -- that failed spent five seconds proving only that five was not enough to
+    -- distinguish "slow" from "never".
+    adoptMs = 10000,
+
+    -- ═══ AND THE NUMBER THAT ACTUALLY MAKES THE CLONE HAPPEN ═══
+    --
+    -- SET_ENTITY_DISTANCE_CULLING_RADIUS, server-side, on the ambulance. OneSync
+    -- decides relevancy with
+    --
+    --     if (overrideCullingRadius != 0.0f) return overrideCullingRadius;
+    --     ... else return (424.0f * 424.0f);
+    --
+    -- and this native is what writes `overrideCullingRadius` (it squares the
+    -- argument itself, so this is plain metres). 424 is what the failed round
+    -- was fighting; the surveyed points average 825m from an arbitrary map
+    -- position and 81.7% of the map is further than 424m from the nearest one.
+    --
+    -- TEN KILOMETRES IS "THE WHOLE MAP", DELIBERATELY. The map is roughly
+    -- 8 x 11.5 km, so this is every client in the match, always -- which is the
+    -- direct reading of the owner's "Other players have to be able to see the
+    -- ambulance". A tighter number would be a distance at which the requirement
+    -- quietly stops holding, and nobody would find out except in a firefight.
+    --
+    -- server/rescue.lua puts it back to 0.0 when the ride ends. The native is
+    -- deprecated and its known failure (an entity far from its OWNER but near
+    -- another player being teleported back to its spawn point) cannot touch a
+    -- vehicle whose owner is attached to it -- but it absolutely could touch an
+    -- abandoned one, so the widening lasts exactly as long as the ride.
+    cullRadiusM = 10000.0,
+
+    -- THE CONTROL. Every write the ride makes -- the mods, the siren, the lock,
+    -- the drive task, the doors, the halt -- is a write to an entity this client
+    -- did not create. NetworkRequestControlOfEntity returns whether the REQUEST
+    -- was accepted rather than whether control arrived, so it is asked in a loop
+    -- until NetworkHasControlOfEntity agrees or this expires.
+    controlMs = 3000,
+
     -- WHAT COUNTS AS AN AMBULANCE, for the ambient-discovery blip (owner,
     -- 2026-08-23: "There will also be ambulances around the map which spawn
     -- naturally. If a player gets into one that we weren't aware of, add it to
