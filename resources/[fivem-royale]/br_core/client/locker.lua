@@ -49,6 +49,20 @@ function BR.Locker.apply(id, cb)
     if applying then return end
     applying = true
 
+    -- ANY SWAP INVALIDATES THE PED HANDLE THE ENTRANCE WALK IS HOLDING, so the
+    -- walk is DROPPED rather than stranded halfway up the path.
+    --
+    -- The lock stops this arriving from the interface, and nothing server-side
+    -- can change a model -- SetPlayerModel below is the only call site in the
+    -- project and the locker is client-only by design (see the header). What is
+    -- left is /brlocker, a deliberate manual override that should still leave a
+    -- coherent lobby behind rather than a ped standing on a hillside with a task
+    -- nobody owns. Dropping the sequence is what makes that true, and it is the
+    -- same stop() every other ending goes through.
+    if BR.LobbyPed and BR.LobbyPed.entering() then
+        BR.LobbyPed.stop('the character was changed')
+    end
+
     local entry = BR.PedById(id or BR.Locker.chosen())
     local hash = GetHashKey(entry.model)
 

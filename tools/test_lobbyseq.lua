@@ -385,6 +385,10 @@ local function reset()
     ped.male = true
     clipsetStreams = true
     for c in pairs(liveCams) do liveCams[c] = nil end
+    -- The stored character too: a block that swaps one leaves it in kvp, and
+    -- the next block's "picking a character changes it" would then be picking
+    -- the one already on.
+    for k in pairs(kvp) do kvp[k] = nil end
     threads, timers = {}, {}
     BR.State.me.state = BR.PlayerState.LOBBY
     BR.Spawn.traveling = false
@@ -813,6 +817,31 @@ do
     BR.State.me.state = BR.PlayerState.LOBBY
     pump(300)
     ok(BR.LobbyPed.isLobbyPed(), 'returning to the lobby makes it local again')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 11b. A SWAP THAT GETS THROUGH ANYWAY DROPS THE WALK RATHER THAN STRANDING IT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The lock refuses the interface and nothing server-side can change a model --
+-- SetPlayerModel has one call site in the project. /brlocker is the remaining
+-- road, and it is a deliberate manual override: it should leave a coherent
+-- lobby behind rather than a ped on a hillside holding a task nobody owns.
+
+do
+    reset()
+    wearChosenModel()
+    pump(3000)
+    ok(BR.LobbyPed.entering(), 'precondition: the walk is running')
+
+    BR.Locker.apply('clown')
+    pump(2000)
+
+    ok(not BR.LobbyPed.entering(), 'a forced swap drops the entrance')
+    ok(ped.clipset == nil, 'and takes the walking style with it')
+    ok(not BR.LobbyPed.lockerLocked(), 'and unlocks, like every other ending')
+    ok(ped.model == GetHashKey(BR.PedById('clown').model),
+       'and the character really did change')
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
