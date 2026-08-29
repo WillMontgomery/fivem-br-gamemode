@@ -1118,6 +1118,12 @@ local function forgetAll()
     -- local referenced before its declaration silently resolves as a global.
     lastPrompt.id, lastPrompt.hold = nil, nil
     claimedByMe = {}
+    -- The tap rate-limiter, keyed by loot id. Left out of this wipe until now,
+    -- so it was the one registry table that survived every match boundary and
+    -- grew for the whole session -- one entry per distinct item ever picked
+    -- up. Small, but strictly monotonic, and there is no id here worth keeping
+    -- once the entries those ids name have been dropped.
+    claimedAt = {}
     -- The glow teaches the interaction again next match: whoever is here then
     -- may never have opened one.
     BR.Loot.openedCount = 0

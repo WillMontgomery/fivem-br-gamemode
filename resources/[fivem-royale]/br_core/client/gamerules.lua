@@ -267,6 +267,23 @@ BR.Loop.register(BR.Loop.TICK, 'gamerules.death', function()
     end
 end)
 
+-- Peds we have already turned into a drop, so one corpse pays once. Cleared
+-- with the match; a handful of entries at a time in practice.
+--
+-- DECLARED HERE, ABOVE THE HANDLER THAT CLEARS IT, AND THAT IS THE WHOLE
+-- POINT. It used to be declared further down with the pickup sweep that reads
+-- it -- so the `looted = {}` below resolved as a GLOBAL write, the local was
+-- never cleared, and the comment promising it was described a guarantee that
+-- had not held since it was written. The same trap loot.lua's forgetAll()
+-- already names in prose ("a local referenced before its declaration silently
+-- resolves as a global"), and one tools/check_forward_locals.lua does not
+-- catch: that gate finds CALLS above a declaration, not ASSIGNMENTS.
+--
+-- The cost was not really the table. Ped handles are recycled between
+-- matches, so a stale entry silently refused a legitimate drop later -- the
+-- exact failure the line below warns about.
+local looted = {}
+
 --- Clear the death latch when the server moves us somewhere new, so a respawn
 --- into the next match is not treated as still-dead.
 RegisterNetEvent(BR.Net.STATE)
@@ -303,9 +320,9 @@ end)
 -- only -- not over every object in the world.
 local PICKUP_SWEEP_RANGE = 120.0
 
--- Peds we have already turned into a drop, so one corpse pays once. Cleared
--- with the match; a handful of entries at a time in practice.
-local looted = {}
+-- `looted` -- the peds this client has already turned into a drop -- is
+-- declared above the BR.Net.STATE handler that clears it, not here beside the
+-- loop that reads it. See the note there.
 
 BR.Loop.register(BR.Loop.TICK, 'gamerules.pickups', function()
     local ped = PlayerPedId()
