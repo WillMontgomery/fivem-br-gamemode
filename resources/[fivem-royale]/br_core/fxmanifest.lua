@@ -81,6 +81,25 @@ shared_scripts {
     --   table it borrows from.
     '@br_lib/config/ambheal.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
+    -- The warmup vehicle shop's catalogue (#224). SHIPS EMPTY, on purpose --
+    -- the owner authors the models, coordinates and headings in game, and with
+    -- no rows the feature is inert rather than broken (BR.Config.Rescue.points'
+    -- rule, applied a second time).
+    --
+    -- SHARED, AND THAT IS THE WHOLE OF "EXACTLY AS SHOWN". The server arbitrates
+    -- the purchase from this table and the CLIENT rebuilds the car from it --
+    -- both the showroom copy and the one that comes out of the item -- so no
+    -- appearance ever has to cross the wire and there is nothing in flight that
+    -- could describe the car differently from the way it was described in
+    -- warmup.
+    --
+    -- IT HAS NO LOAD-ORDER REQUIREMENT AND THAT IS DELIBERATE. It registers its
+    -- rows into BR.Config.ConsumableById through a FUNCTION that br_core's own
+    -- shop files call at resource start, rather than at its own load -- because
+    -- config/loot.lua builds that table with a plain assignment and anything
+    -- registered before that line would be destroyed by it. Declared here, after
+    -- the other feature configs, for a reader.
+    '@br_lib/config/shop.lua',
     -- The catalogue. SHARED rather than server-only: the server decides what
     -- you own, and the client has to resolve an equipped id into the natives
     -- that actually put it on you. Both sides need the same definitions.
@@ -147,6 +166,20 @@ shared_scripts {
     -- a server; read by server/spectate.lua only, but SHARED because a solver
     -- that only the server can load is a solver only the server can test.
     '@br_lib/shared/spectate_solve.lua',
+    -- BR.ShopSolve (#224): the catalogue, the purchase condition, and the
+    -- canonical form of a car's appearance.
+    --
+    -- SHARED FOR A HARDER REASON THAN THE OTHER SOLVERS. The usual argument --
+    -- a solver only one side can load is a solver only one side can test --
+    -- applies, but the load-bearing one is BR.ShopSolve.appearance: the
+    -- showroom car and the car a player unpacks are dressed by ONE client
+    -- function over the output of that ONE solver, so they are not kept in sync,
+    -- they are the same computation run twice. A server-only copy would put the
+    -- car's description on the wire, which is precisely the second
+    -- representation this design exists to not have.
+    --
+    -- LAST, because it reads nothing at load and everything at call time.
+    '@br_lib/shared/shop_solve.lua',
 }
 
 -- main.lua must load first on both sides: it defines the loop registry (client)
@@ -235,6 +268,18 @@ client_scripts {
     -- from above the file that answers. A load order would only matter if the
     -- table were read while loot.lua itself was loading, and it is not.
     'client/ambheal.lua',
+    -- The warmup vehicle shop (#224): the showroom, the plate on the bonnet,
+    -- and the car that comes out of the item.
+    --
+    -- A REAL LOAD ORDER IN ONE RESPECT AND A READER'S IN THE REST. It needs
+    -- client/main.lua for the loop registry, client/keybinds.lua for
+    -- BR.Keys.on('interact'), client/dui.lua for the shared prompt page and
+    -- client/natives.lua for BR.Native.keyLabelForCommand -- the same four
+    -- client/ambheal.lua names, all of which are above.
+    --
+    -- IT IS THE FIFTH CONSUMER OF THE ONE PROMPT BROWSER and is declared beside
+    -- the fourth for that reason: crate, pump, revive, heal station, showroom.
+    'client/shop.lua',
     -- The fuel gauge, the pump prompt and the station blips. AFTER dui.lua
     -- (it borrows the crate's prompt page) and AFTER keybinds.lua (it reads
     -- BR.Keys.isHeld('interact')); it reads BR.Native.blipName at call time, so
@@ -386,6 +431,23 @@ server_scripts {
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',
     'server/market.lua',    -- inventory, purchases and equipped slots
+    -- The warmup vehicle shop (#224). AFTER market.lua, and that is a REAL
+    -- order rather than a reader's in one direction and a reader's in the
+    -- other:
+    --
+    --   AT CALL it charges through BR.Market.charge and reads
+    --   BR.Market.balanceOf -- the market owns the ledger and this file owns no
+    --   copy of it -- and it builds the car through BR.Vehicles.spawnOwned,
+    --   which tools/verify.sh requires to be the only server-side creation
+    --   path. Both are call-time, so the declaration order is the order of the
+    --   question.
+    --   AT LOAD it needs nothing but BR.Config, which is br_lib and is above
+    --   everything here.
+    --
+    -- server/match.lua CALLS INTO IT from onEnter(BUS) -- from ABOVE this line,
+    -- and nil-guarded, exactly as the rescue's own back-references are: a
+    -- server without a shop must start a bus flight rather than throw.
+    'server/shop.lua',
     -- Admin scopes, read from the same DynamoDB grants table the console
     -- authorises against, through br_ddb -- never from br_ringmaster, which the
     -- game must not depend on. players.lua and incident.lua both read it, and

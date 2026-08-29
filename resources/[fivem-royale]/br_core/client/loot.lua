@@ -704,6 +704,53 @@ local function modelOf(e)
     return nil
 end
 
+--- The marker an entry falls back to when its prop cannot be built (#224).
+---
+--- ═══ THIS EXISTS BECAUSE A VEHICLE IS NOT AN OBJECT, PROBABLY ═══
+---
+--- The warmup shop's item is a car, and the owner asked for its dropped token to
+--- be "that vehicle but as a prop and super small, like the same size as a
+--- weapon prop pickup. If that's not possible, use marker ID 34 instead."
+---
+--- WHETHER IT IS POSSIBLE IS NOT ESTABLISHED ANYWHERE IN THIS TREE.
+--- CreateObjectNoOffset takes an OBJECT archetype and a car is a VEHICLE
+--- archetype, so the likely answer is that it refuses -- but "likely" is not a
+--- thing to hardcode either way, and this project has been wrong twice about
+--- what a published native reference says versus what this build does.
+---
+--- SO IT IS NOT DECIDED HERE. The spawn pass below asks for the car as a prop
+--- like any other item; if the engine will not build it, the entry is marked and
+--- the render pass draws this marker in place of the rarity disc. The answer
+--- arrives from the running game, once, on the console, and the owner's stated
+--- fallback is what happens meanwhile.
+---
+--- NIL FOR EVERYTHING ELSE. A bandage whose prop failed to build is a bug and
+--- should look like the missing thing it is, not like a car token.
+--- @param e table
+--- @return integer|nil
+local function fallbackMarkerOf(e)
+    if e.kind ~= BR.ItemKind.CONSUMABLE then return nil end
+    local c = BR.Config.ConsumableById[e.item]
+    return c and tonumber(c.fallbackMarker) or nil
+end
+
+--- Mark an entry as having no prop, and say so ONCE.
+---
+--- ONCE PER ENTRY, because the spawn pass revisits an entry every time it
+--- streams back in and a line per pass is a console nobody can read. `noProp` is
+--- the latch and the render pass reads it.
+--- @param e table
+--- @param why string
+local function noProp(e, why)
+    if e.noProp then return end
+    e.noProp = true
+    print(('[br_core] loot: no prop for %s (%s)%s')
+        :format(tostring(e.item), why,
+                fallbackMarkerOf(e)
+                    and (' -- falling back to marker %d'):format(fallbackMarkerOf(e))
+                    or ''))
+end
+
 --- What this entry is called, for the label and the prompt.
 --- @param e table
 --- @return string
@@ -1190,6 +1237,23 @@ local function drain()
                     end
 
                     local model = modelOf(e)
+                    -- A MODEL THIS BUILD DOES NOT HAVE IS THE OTHER HALF OF
+                    -- #224's fallback, and it is checked before the stream
+                    -- rather than after: an entry whose prop name is a typo, or
+                    -- a car the game has never heard of, gets its marker here
+                    -- rather than three seconds of waiting and then nothing.
+                    --
+                    -- THROUGH isTrue, unlike the line below it. IS_MODEL_VALID
+                    -- is a BOOL native and 0 IS TRUTHY IN LUA, so `not
+                    -- IsModelValid(m)` is FALSE for a model the engine just said
+                    -- it does not have -- the marker would never appear and the
+                    -- console would never say why. (The raw read on the next
+                    -- line is the original and is in tools/bool_natives.baseline;
+                    -- it is left alone here so this change is one behaviour and
+                    -- not two.)
+                    if e.gzOk and model and not isTrue(IsModelValid(model)) then
+                        noProp(e, 'the model is not valid on this build')
+                    end
                     if e.gzOk and model and IsModelValid(model) then
                         RequestModel(model)
                         local waited = 0
@@ -1232,6 +1296,13 @@ local function drain()
 
                             local obj = CreateObjectNoOffset(model,
                                 sx, sy, sz, false, false, dynamic)
+                            -- AND A HANDLE OF 0 IS A REFUSAL, NOT AN OBJECT.
+                            -- The `else` is #224's: an entry whose model the
+                            -- engine will not build as an object falls back to a
+                            -- marker rather than being invisible on the ground.
+                            if not obj or obj == 0 then
+                                noProp(e, 'the engine refused to build it as an object')
+                            end
                             if obj and obj ~= 0 then
                                 -- CRATES KEEP THEIR COLLISION. You walk up to
                                 -- one and it is a box in the world; the ray
@@ -2324,15 +2395,44 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
             -- as the item rises and fades back in over exactly as long as the
             -- item takes to settle. Two curves would drift; one cannot.
             if not isContainer(e) then
-                local a = math.floor(120 * (1.0 - ease(e.lift or 0.0)))
-                if a > 0 then
-                    -- A flat disc rather than a sphere: it reads as "something
-                    -- is here" without swallowing the item itself.
-                    DrawMarker(1, e.x, e.y, gz - 0.05,
+                -- ═══ AND THE ONE ENTRY THAT IS *NOTHING BUT* A MARKER (#224)
+                --     ═══
+                --
+                -- A dropped warmup car whose prop the engine would not build has
+                -- no object to hover, so the disc is not a hint beside the item
+                -- -- it IS the item, and it has to be the marker the owner named
+                -- rather than the small flat disc. Drawn at full alpha and at
+                -- the entry's own height, because there is nothing to yield to:
+                -- the eased fade above exists so the disc dies as the prop rises
+                -- to meet you, and here nothing rises.
+                --
+                -- WHAT MARKER 34 ACTUALLY LOOKS LIKE IS NOT VERIFIED. It is the
+                -- number the owner asked for, passed through; two published
+                -- versions of this enum have disagreed with the game's own
+                -- parser on this project before, so nothing here claims to know
+                -- what it draws.
+                local mk = e.noProp and fallbackMarkerOf(e) or nil
+                if mk then
+                    DrawMarker(mk, e.x, e.y, gz + 0.05,
                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.45, 0.45, 0.12,
-                        c[1], c[2], c[3], a,
-                        false, false, 2, false, nil, nil, false)
+                        0.5, 0.5, 0.5,
+                        c[1], c[2], c[3], 200,
+                        -- Bobbing and camera-facing, which is what makes a
+                        -- SYMBOL marker readable where a flat disc is drawn on
+                        -- the ground and wants neither.
+                        true, true, 2, false, nil, nil, false)
+                else
+                    local a = math.floor(120 * (1.0 - ease(e.lift or 0.0)))
+                    if a > 0 then
+                        -- A flat disc rather than a sphere: it reads as
+                        -- "something is here" without swallowing the item
+                        -- itself.
+                        DrawMarker(1, e.x, e.y, gz - 0.05,
+                            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                            0.45, 0.45, 0.12,
+                            c[1], c[2], c[3], a,
+                            false, false, 2, false, nil, nil, false)
+                    end
                 end
             end
 

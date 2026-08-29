@@ -143,7 +143,10 @@ function BR.Market.push(src)
     end
 
     TriggerClientEvent(BR.Net.MARKET_STATE, src, {
-        balance  = entry.balance,
+        -- SPENDABLE, NOT THE ROW (#224). A player who has just bought a car in
+        -- warmup has committed those Volts; a screen still showing them is a
+        -- screen inviting them to be spent again. See BR.Market.balanceOf.
+        balance  = BR.Market.spendable(entry),
         owned    = owned,
         equipped = entry.equipped,
         progress = { level = level, xp = into, needed = needed, total = entry.xp },
@@ -177,10 +180,14 @@ function BR.Market.load(src)
     -- with just what the match paid. The window is short and the symptom is a
     -- level that reads wrong and then silently corrects itself, which is exactly
     -- the kind of thing that gets reported as "it took a while to update".
-    inv[lic] = withDefaults({ balance = 0, xp = 0, owned = {}, equipped = {}, loaded = false })
+    -- `spent = 0` IS THE SAME KIND OF NOT-DECORATION (#224): Volts committed to
+    -- a warmup car and not yet written down. It is only ever moved by
+    -- BR.Market.charge, which refuses while `loaded` is false -- so no spend can
+    -- exist before the fetch below replaces this table.
+    inv[lic] = withDefaults({ balance = 0, spent = 0, xp = 0, owned = {}, equipped = {}, loaded = false })
 
     ask('br:ddb:inventoryFetch', function(i, extra)
-        local entry = { balance = 0, xp = 0, owned = {}, equipped = {}, loaded = true }
+        local entry = { balance = 0, spent = 0, xp = 0, owned = {}, equipped = {}, loaded = true }
 
         if i then
             entry.balance = tonumber(i.balance) or 0
@@ -308,8 +315,14 @@ AddEventHandler(BR.Net.MARKET_BUY, function(data)
         refuse(src, 'You already own that.')
         return
     end
-    if entry.balance < item.price then
-        refuse(src, ('You need %d more to buy that.'):format(item.price - entry.balance))
+    -- SPENDABLE RATHER THAN THE ROW (#224). Volts already committed to a warmup
+    -- car are gone even though DynamoDB has not been told yet, and this is the
+    -- one condition on this side that could let them be spent twice. The
+    -- DynamoDB condition below still guards the row itself -- it just cannot
+    -- know about a debit that has not been written.
+    local have = BR.Market.spendable(entry)
+    if have < item.price then
+        refuse(src, ('You need %d more to buy that.'):format(item.price - have))
         return
     end
 
@@ -378,6 +391,146 @@ AddEventHandler(BR.Net.MARKET_EQUIP, function(data)
     local src = source
     BR.Market.equip(src, type(data) == 'table' and data.id or data)
 end)
+
+-- ---------------------------------------------------------------------------
+-- SPENDING VOLTS ON SOMETHING THAT IS NOT A COSMETIC (#224)
+-- ---------------------------------------------------------------------------
+--
+-- The warmup vehicle shop buys a CAR out of the saved balance, and a car is not
+-- a cosmetic: it is bought again every match, so it cannot go through
+-- MARKET_BUY. `br:ddb:purchase` is one conditional write that debits the balance
+-- AND adds the id to the profile's `owned` string set, refusing when the set
+-- already contains it -- which is exactly right for a canopy you own forever and
+-- exactly wrong for a repeatable spend.
+--
+-- ═══ SO THE DEBIT IS TAKEN HERE AND SETTLED WITH THE MATCH ═══
+--
+--   AT THE PURCHASE the session cache is decremented and the amount is
+--   remembered against the license. That is what makes the money real
+--   immediately: the balance on the lobby screen falls, a second car cannot be
+--   bought with the same Volts, and the market's own purchase condition sees
+--   the reduced number.
+--
+--   AT MATCH END br_stats folds the total into `deltas.balance`, so the ONE
+--   atomic ADD that already writes every match's payout writes the debit with
+--   it. No second writer, no new br_ddb verb, no change to the deployed bundle.
+--
+-- ═══ WHAT THAT COSTS, NAMED RATHER THAN DISCOVERED ═══
+--
+-- The debit is not durable until the match ends. Two consequences, both real:
+--
+--   * A PLAYER WHO DISCONNECTS BEFORE THE PAYOUT KEEPS THE VOLTS. They also
+--     lose the car and the match, so it is not an exploit worth building for,
+--     but it is not nothing either.
+--   * A SERVER RESTART MID-MATCH LOSES THE DEBIT for the same reason.
+--
+-- The durable fix is a `br:ddb:spend` verb -- one UpdateItem, `ADD #bal :neg`
+-- under `ConditionExpression: #bal >= :cost`, no `owned` set -- which is a
+-- rebuild of the committed br_ddb bundle and its fingerprint. That is a
+-- deployment change and it is deliberately not made here.
+--
+-- NOTHING BELOW CAN OVERDRAW THE REAL ROW BY MORE THAN THE CACHE IS STALE, and
+-- the cache is only ever written by this process: read once on connect, then
+-- moved by a purchase, a credit, or this. The market's own purchase remains
+-- DynamoDB-conditional and is unaffected either way.
+
+--- ═══ TWO NUMBERS, AND ONLY ONE OF THEM IS MONEY YOU CAN SPEND ═══
+---
+---   entry.balance  MIRRORS THE ROW. It moves only when the row moves: read on
+---                  connect, written by a DynamoDB purchase, added to by a
+---                  payout. Nothing here may touch it, because it is a claim
+---                  about what DynamoDB holds.
+---   entry.spent    IS COMMITTED AND NOT YET SETTLED. It grows when a car is
+---                  bought and is cleared by the payout that writes it down.
+---
+--- SPENDABLE IS THE DIFFERENCE, and every reader of "how much has this player
+--- got" goes through here rather than reading `balance`. Getting that wrong is
+--- how the same 750 Volts buys a car and a canopy in the same warmup.
+--- @param src integer
+--- @return integer
+function BR.Market.balanceOf(src)
+    local lic = licenseOf[src]
+    local entry = lic and inv[lic]
+    if not entry or not entry.loaded then return 0 end
+    return BR.Market.spendable(entry)
+end
+
+--- The spendable figure for one cached entry.
+--- @param entry table|nil
+--- @return integer
+function BR.Market.spendable(entry)
+    if not entry then return 0 end
+    return math.floor((tonumber(entry.balance) or 0)
+                      - (tonumber(entry.spent) or 0))
+end
+
+--- Say the market's existing "you cannot afford this" sentence.
+---
+--- THE MARKET'S WORDING, NOT A SECOND ONE. #224 shipped exactly three
+--- player-facing strings and none of them is a refusal; the owner's standing
+--- rule is that unrequested copy reads as slop. This is the sentence the
+--- storefront has always used for the same fact.
+--- @param src integer
+--- @param price number
+function BR.Market.tellShortfall(src, price)
+    local need = math.floor((tonumber(price) or 0) - BR.Market.balanceOf(src))
+    if need <= 0 then return end
+    refuse(src, ('You need %d more to buy that.'):format(need))
+end
+
+--- Take Volts for something that is not a cosmetic.
+---
+--- CONDITIONAL, AND THE CONDITION IS CHECKED HERE RATHER THAN BY THE CALLER --
+--- one place asks "can they afford it", so a second caller cannot ask it
+--- differently. Answers false and moves nothing when they cannot.
+--- @param src integer
+--- @param amount number
+--- @param reason string  for the console line only; never shown to a player
+--- @return boolean ok
+--- @return string|nil why
+function BR.Market.charge(src, amount, reason)
+    local lic = licenseOf[src]
+    local entry = lic and inv[lic]
+    if not entry or not entry.loaded then return false, 'profile not loaded' end
+
+    local cost = math.floor(tonumber(amount) or 0)
+    if cost <= 0 then return false, 'nothing to charge' end
+    if BR.Market.spendable(entry) < cost then
+        BR.Market.tellShortfall(src, cost)
+        return false, 'cannot afford it'
+    end
+
+    -- `spent` MOVES AND `balance` DOES NOT. See the note on balanceOf: `balance`
+    -- is a claim about what DynamoDB holds and DynamoDB has not been asked
+    -- anything yet.
+    entry.spent = (tonumber(entry.spent) or 0) + cost
+
+    -- THE LOBBY SEES THE NEW NUMBER AT ONCE. A balance that only falls at the
+    -- end of the match is a balance a player would spend twice.
+    BR.Market.push(src)
+
+    print(('[br_core] market: %s charged %d Volts (%s) -- %d spendable left')
+        :format(tostring(lic), cost, tostring(reason),
+                BR.Market.spendable(entry)))
+    return true, nil
+end
+
+--- Hand the accumulated spend to whoever is about to write the ledger, and
+--- forget it.
+---
+--- TAKE, NOT READ, AND THAT IS THE WHOLE OF THE ONCE-ONLY GUARANTEE. br_stats
+--- calls this exactly once per player per payout; clearing inside the read means
+--- a second call -- a retried payout, a match that ends twice -- charges
+--- nothing a second time.
+--- @param license string
+--- @return integer
+function BR.Market.takeSpent(license)
+    local entry = inv[license]
+    if not entry then return 0 end
+    local n = math.floor(tonumber(entry.spent) or 0)
+    entry.spent = 0
+    return n
+end
 
 --- A match paid out: mirror it into the cache the lobby reads.
 ---

@@ -383,6 +383,16 @@ function BR.Match.onEnter(m, state, from)
         -- island rule).
         BR.Inv.clearFor(m)
 
+        -- ...AND THE CARS BOUGHT IN THE SHOWROOM ARE HANDED OUT IMMEDIATELY
+        -- AFTER THAT WIPE, WHICH IS THE WHOLE OF THE ORDERING (#224).
+        --
+        -- "It will be available in your inventory once the match starts" is what
+        -- the purchase toast promised, and this is that moment. One line earlier
+        -- and BR.Inv.clearFor would delete the thing the player paid for; the
+        -- wipe is also what guarantees there is room for it, since every bag is
+        -- empty on the line above.
+        if BR.Shop and BR.Shop.deliver then BR.Shop.deliver(m) end
+
         -- The starting team count is taken HERE, before anyone can possibly
         -- be dead (warmup is invincible; the doors are still shut). Counting
         -- it at PLAYING was the bug where a player who died during the bus

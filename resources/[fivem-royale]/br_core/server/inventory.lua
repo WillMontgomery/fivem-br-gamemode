@@ -1261,6 +1261,41 @@ BR.Sched.every(250, 'inv.use', function()
             inv.using = nil
 
             local c = BR.Config.ConsumableById[u.item]
+
+            -- ═══ A CAR IS A CONSUMABLE THAT DOES NOT HEAL ANYTHING (#224) ═══
+            --
+            -- The warmup shop's item is an ordinary consumable in every respect
+            -- the inventory cares about -- it occupies a slot, it stacks to one,
+            -- it drops, it is channelled by `useMs` and cancelled by damage --
+            -- and its EFFECT is a vehicle rather than a number on the ped. So it
+            -- branches here, at the one line where an effect is issued, and
+            -- nowhere else in this file.
+            --
+            -- ONE `shopCar` FIELD IS THE WHOLE COUPLING. server/inventory.lua
+            -- does not know what a catalogue is; it knows that a consumable
+            -- carrying that field is spent by asking BR.Shop to build what it
+            -- names. A server with no shop (BR.Shop absent) consumes the item
+            -- and issues nothing, which is the same shape as every other guard
+            -- in this file.
+            --
+            -- THE ITEM IS ALREADY GONE BY THIS LINE, and that is deliberate.
+            -- Owner, 2026-08-29, answer 3: a purchase is never refunded, and
+            -- that includes the known fault where a server-created vehicle
+            -- vanishes. A use that put the item back on a failed spawn would be
+            -- a use a player could repeat until the engine cooperated, which is
+            -- a second car for one payment. BR.Shop.unpack logs every failure
+            -- instead.
+            if c and c.shopCar then
+                if BR.Shop and BR.Shop.unpack then
+                    BR.Shop.unpack(src, c.shopCar)
+                else
+                    print(('^1[br_core] inventory: %d used "%s" and there is no '
+                           .. 'shop to build it^7'):format(src, tostring(u.item)))
+                end
+                BR.Inv.push(src)
+                return
+            end
+
             if c then
                 -- ANCHORED ON WHERE THIS USE STARTED, exactly like the partials
                 -- above -- and NOT on the roster's current reading.

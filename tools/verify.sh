@@ -225,7 +225,27 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # coroutines, the clock is stepped, and the ped actually walks -- which is
     # what lets the second claim be tested too: that the entrance can be
     # abandoned at any point leaving no camera and no half-finished task.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_bool_natives.lua; do
+    #
+    # test_shop.lua is the seventh suite to load a real SERVER file, and the
+    # FIXTURE is the whole argument -- more so here than anywhere else, because
+    # the shipped catalogue is EMPTY ON PURPOSE. BR.Config.Shop.items is `{}`
+    # until the owner authors his models, coordinates and headings in game, so a
+    # suite that ran against the shipped table would assert nothing and would
+    # start passing for a different reason the day he pastes his rows in. Every
+    # behavioural test there builds its own three-car catalogue; exactly one
+    # reads the real table, and it asserts that it is empty.
+    #
+    # It also pins three things a playtest cannot see. "EXACTLY AS SHOWN WHEN
+    # THEY PURCHASED IT" is a structural property -- one dresser, one authored
+    # row, no appearance on the wire -- and the wrong version is invisible until
+    # somebody happens to notice a colour, by which time the showroom car has
+    # been gone for forty minutes. The DELIVERY ORDERING is one line: the item is
+    # handed out AFTER BR.Inv.clearFor(m), and one line earlier the wipe silently
+    # deletes what the player paid for. And NO REFUND (owner's answer 3) fails
+    # only under an engine fault nobody can reproduce on demand
+    # (citizenfx/fivem#2623), where the wrong version hands out a second car for
+    # one payment.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_shop.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

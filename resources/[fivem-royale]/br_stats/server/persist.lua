@@ -398,10 +398,57 @@ AddEventHandler('br:match:results', function(res)
                 })
             end
 
+            -- BUILT AFTER THE LEVEL BONUS AND BEFORE THE PURCHASE DEBIT, ON
+            -- PURPOSE. `deltas.balance` grows by the level-up payout a few lines
+            -- above, and that same figure is what the verdict screen just told
+            -- the player they EARNED -- so the record has to be taken here,
+            -- while `deltas.balance` still means "what this match paid" and not
+            -- "what this match moved your balance by".
+            --
+            -- (It used to be built after the writes below. It was moved up when
+            -- #224 gave `deltas.balance` a second meaning a few lines further
+            -- on; nothing else about it changed.)
+            history[#history + 1] =
+                historyRowFor(p, res, license, endedAt, deltas, xpEarned)
+
+            -- ═══ AND NOW THE WARMUP SHOP'S BILL (#224) ═══
+            --
+            -- A car bought during warmup was charged against the session cache
+            -- the moment it was bought -- so the player has already seen the
+            -- Volts go and could not spend them twice -- but DynamoDB has not
+            -- been told. THIS is where it is told, folded into the one atomic
+            -- ADD that already writes the match, because br_ddb has exactly one
+            -- verb that increases a balance and adding a second writer is the
+            -- thing config/market.lua's rule exists to prevent.
+            --
+            -- AFTER THE VERDICT SCREEN AND AFTER THE HISTORY ROW, so neither of
+            -- them reports a purchase as a smaller payout. From here down
+            -- `deltas.balance` means the NET movement.
+            --
+            -- IT MAY GO NEGATIVE, and that is correct: a 750-Volt car on a match
+            -- that paid 400 is a balance that falls by 350. The purchase was
+            -- affordability-checked when it was made.
+            --
+            -- `takeSpent` CLEARS AS IT READS, so a payout that somehow ran twice
+            -- would charge once. br_stats does not depend on br_core, hence the
+            -- guard: a server with no gamemode has no shop and no bill.
+            if BR.Market and BR.Market.takeSpent then
+                local billed = tonumber(BR.Market.takeSpent(license)) or 0
+                if billed > 0 then
+                    deltas.balance = deltas.balance - billed
+                    print(('[br_stats] %s settled %d Volts of warmup purchases '
+                           .. '(net %d)'):format(license, billed, deltas.balance))
+                end
+            end
+
             -- KEEP br_core's INVENTORY CACHE HONEST. It read the row once on
             -- connect and holds it for the session; without this the lobby
             -- would show the balance and level the player had when they joined
             -- until they reconnected -- so a match would appear to pay nothing.
+            --
+            -- THE NET FIGURE, because the cache mirrors THE ROW and the row is
+            -- about to move by exactly this much. The cache's own `spent` was
+            -- zeroed by takeSpent above, so the two halves land together.
             --
             -- An event rather than a call: br_stats does not depend on br_core
             -- and must keep working on a server with no gamemode loaded.
@@ -418,14 +465,6 @@ AddEventHandler('br:match:results', function(res)
             SetTimeout(8000, function() pending[req] = nil end)
 
             TriggerEvent('br:ddb:statsApply', req, license, deltas)
-
-            -- BUILT AFTER THE LEVEL BONUS, ON PURPOSE. `deltas.balance` grows by
-            -- the level-up payout a few lines above, and that same figure is
-            -- what the verdict screen just told the player they earned. Building
-            -- the row before it would file a record that contradicts what they
-            -- watched.
-            history[#history + 1] =
-                historyRowFor(p, res, license, endedAt, deltas, xpEarned)
 
             written = written + 1
             if p.left then left = left + 1 end
