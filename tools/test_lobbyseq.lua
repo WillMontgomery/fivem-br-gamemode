@@ -680,13 +680,17 @@ do
         ('and the ceiling is a sprint at most, never a number like 12 (%.2f)')
             :format(C.walkBlendMax or -1))
 
-    -- THE CAMERA FLIGHT AND THE WALK ARE THE SAME LENGTH. Owner, 2026-08-29:
-    -- "The camera flight and the walk should finish together." They also start
-    -- together -- both wait on the same reveal -- so equal durations is the
-    -- whole of it, and two numbers that have drifted apart is the one way to
-    -- get that wrong from config alone.
-    ok(C.camFlightMs == C.walkTargetMs,
-        ('the flight and the walk are given the same duration (%d vs %d)')
+    -- ═══ THE CAMERA LANDS FIRST, AND THE FAILSAFE HAS TO SURVIVE THAT ═══
+    --
+    -- They were equal, off "The camera flight and the walk should finish
+    -- together", until "Also the lobby camera moves too slow. Let's do 30%
+    -- faster" (owner, 2026-08-29). So the flight is now the shorter of the two
+    -- ON PURPOSE and the camera parks with the ped still walking.
+    --
+    -- WHAT MUST NOT HAPPEN IS THE FLIGHT BEING LONGER, which would leave the
+    -- ped standing on the mark waiting for its own shot to arrive.
+    ok(C.camFlightMs <= C.walkTargetMs,
+        ('the flight is no longer than the walk (%d vs %d)')
             :format(C.camFlightMs or -1, C.walkTargetMs or -1))
 
     -- ═══ AND EVERY EMOTE NAMES A REAL DICTIONARY AND CLIP ═══
@@ -1195,6 +1199,19 @@ end
 -- is walked in full, and what is measured is the wall time between the first
 -- task and the placement on the mark.
 
+--- Did the client say it placed a ped that had not arrived?
+---
+--- DECLARED UP HERE because the case sweep below is the first thing that needs
+--- it: "no case trips the failsafe on an ordinary return" is the assertion that
+--- would have caught the camera going thirty percent faster turning a failsafe
+--- into a teleport, and it belongs in the block that walks all four.
+local function forcedHome()
+    for _, l in ipairs(logged) do
+        if l:find('after the camera parked', 1, true) then return true end
+    end
+    return false
+end
+
 do
     local C = BR.Config.Match.lobbyEntrance
     local target = C.walkTargetMs / 1000.0
@@ -1205,6 +1222,18 @@ do
         reset()
         wearChosenModel()
         pump(70000)
+
+        -- ═══ AND IT GOT THERE ON ITS OWN FEET ═══
+        --
+        -- THE ASSERTION THAT WAS MISSING. The failsafe is a failsafe only while
+        -- it does not fire on an ordinary return, and nothing checked that --
+        -- so shortening the camera flight by thirty percent quietly put case 2
+        -- over the line on EVERY return, which would have reached the owner as
+        -- "the ped is being teleported again" rather than as a timing number.
+        -- Cheap to assert and it covers all four cases at once.
+        ok(not forcedHome(),
+            ('case %d arrives on its own feet -- the failsafe does not fire on '
+                .. 'an ordinary return'):format(ci))
 
         local tasks = {}
         for _, e in ipairs(order) do
@@ -1927,8 +1956,28 @@ do
 end
 
 -- (a) THE WINNER'S FLIP, AND (a) BEATING (d) WHERE THEY MEET.
+--
+-- ═══ THE OVERLAP HAS TO BE CONSTRUCTED NOW, AND THAT IS WORTH SAYING ═══
+--
+-- When "If that overlap happens - prefer the flip" was asked for, the flight and
+-- the walk were the same length and the camera reached its second-to-last node
+-- at about fourteen seconds -- right on top of the flip. Then the camera went
+-- thirty percent faster, so it gets there at about eleven seconds and the wave
+-- now fires BEFORE the ped starts flipping, every time. The two no longer meet
+-- at the authored numbers.
+--
+-- THE GUARD STILL HAS TO WORK, because the numbers that separated them are two
+-- config values the owner tunes by eye and either one can put them back on top
+-- of each other. So this block lengthens the flight until the camera's cue
+-- lands inside the flip, which is the only arrangement in which the rule has
+-- anything to decide. Without this the test passes against a build with no
+-- guard at all -- which is exactly what it did until this run.
 do
     onlyCase(1)
+    local Cc = BR.Config.Match.lobbyEntrance
+    local realFlight = Cc.camFlightMs
+    Cc.camFlightMs = 22000
+
     reset()
     wearChosenModel()
 
@@ -1978,17 +2027,22 @@ do
     -- ═══ AND THE WAVE LOSES ═══
     --
     -- Owner, 2026-08-29: "If that overlap happens - prefer the flip." The flip
-    -- pauses the walk and the flight does not, so on this case the camera
-    -- reaches its second-to-last node while the ped is mid-backflip. The wave
-    -- is SKIPPED, not queued: there is no later moment at which it is the right
-    -- gesture, and firing it as the ped lands from a flip is the thing he ruled
-    -- out in as many words.
-    local waveAfter = false
+    -- pauses the walk and the flight does not, so with the flight lengthened
+    -- above the camera reaches its second-to-last node while the ped is
+    -- mid-backflip. The wave is SKIPPED, not queued: there is no later moment
+    -- at which it is the right gesture, and firing it as the ped lands from a
+    -- flip is the thing he ruled out in as many words.
+    local waveBefore, waveAfter = false, false
     for _, a in ipairs(anims()) do
-        if a.dict == E.wave.dict and a.clip == E.wave.clip
-           and flip and a.at >= flip.at then waveAfter = true end
+        if a.dict == E.wave.dict and a.clip == E.wave.clip and flip then
+            if a.at >= flip.at then waveAfter = true else waveBefore = true end
+        end
     end
+    ok(not waveBefore,
+        'precondition: the camera had not already waved before the flip began')
     ok(not waveAfter, 'and no wave is played during or after it')
+
+    Cc.camFlightMs = realFlight
     allCases()
 end
 
@@ -2161,14 +2215,6 @@ end
 -- Owner, 2026-08-29: "if the ped doesn't get to the destination within 5
 -- seconds of the camera parking we fire that function and bring them to the
 -- position ourselves."
-
---- Did the client say it placed a ped that had not arrived?
-local function forcedHome()
-    for _, l in ipairs(logged) do
-        if l:find('after the camera parked', 1, true) then return true end
-    end
-    return false
-end
 
 do
     -- A PED THAT CANNOT KEEP UP. `walkMps` is what the plan believes the ped

@@ -259,10 +259,16 @@ local blends = {}
 -- the CAMERA's clock, not the ped's, and the two do not coincide.
 local camNearHome = false
 
--- When the winner's flip finished, or nil. THE FAILSAFE'S CLOCK DOES NOT START
--- UNTIL THIS IS PAST: the flip is a deliberate pause in the walk and a ped
--- standing still for it has not failed to arrive.
-local flipEnded = nil
+-- ═══ WHAT THE PLAN SAYS THIS WALK SHOULD TAKE, AND WHAT WAS SPENT NOT WALKING
+--
+-- The failsafe below is measured against these two rather than against the
+-- camera alone. `plannedMs` is blendPlan's own answer for the case that was
+-- drawn -- eighteen seconds for three of the four, longer for the one whose
+-- geometry will not fit inside a sprint -- and `pausedMs` is time the walk was
+-- deliberately stopped, which today means the winner's flip.
+local plannedMs = 0
+local pausedMs = 0
+local plannedLens = {}
 
 -- ═══ THE EMOTE STATE, DECLARED HERE RATHER THAN BESIDE THE EMOTES ═══
 --
@@ -687,7 +693,7 @@ local function blendPlan(from, pts)
 
     local out = {}
     for i = 1, n do out[i] = blendFor(a, i) end
-    return out, secondsFor(a)
+    return out, secondsFor(a), lens
 end
 
 --- The clipset for this ped's walk.
@@ -1228,14 +1234,34 @@ local function run(mine)
     --
     -- SO IT IS ONE DEADLINE FOR THE WHOLE REMAINING WALK rather than a per-leg
     -- one. A ped that is behind is behind for the rest of the path, and the
-    -- thing the player is looking at is the landed shot with nobody in it --
-    -- which is a fact about the camera, so the camera is what it hangs off.
+    -- thing the player is looking at is the landed shot with nobody in it.
     --
-    -- THE FLIP IS EXCLUDED BY NOT STARTING THE CLOCK. `flipEnded` is written
-    -- when the animation is genuinely over; until then this answers nil and
-    -- nothing can fire. A winning return pauses for several seconds at the
-    -- second-to-last point ON PURPOSE, and teleporting the winner out of their
-    -- own victory animation is the one outcome this must never produce.
+    -- ═══ BUT "THE CAMERA PARKED" IS NOT THE SAME AS "THE PED IS LATE" ═══
+    --
+    -- IT WAS WHEN HE SAID IT, and it stopped being so one message later. The
+    -- flight and the walk were both eighteen seconds when this was written, so
+    -- the camera parking and the ped arriving were the same moment and five
+    -- seconds after one WAS five seconds after the other. Then: "Also the lobby
+    -- camera moves too slow. Let's do 30% faster" -- and the camera now parks
+    -- about four seconds BEFORE the ped is due, by design. Five seconds from
+    -- the parking would leave every case under a second of slack and case 2,
+    -- which cannot make the target inside a sprint, over the line on every
+    -- single return. That is not a failsafe, it is a teleport with a delay, and
+    -- it would present as the arrival bug coming back.
+    --
+    -- SO THE DEADLINE IS WHEN THE WALK IS ACTUALLY DUE, plus the grace:
+    --
+    --     due   = walkBegan + plannedMs + pausedMs
+    --     fires = max(due, flightEnded) + arriveGraceMs
+    --
+    -- `plannedMs` is what blendPlan solved for THIS case, so a case that is
+    -- honestly 19.6s long gets 19.6s before the clock starts. `pausedMs` is the
+    -- flip, so a winner is not teleported out of their own victory animation.
+    -- And the camera parking stays in as a FLOOR, which is what keeps his
+    -- sentence true whenever the walk is the shorter of the two.
+    --
+    -- IT CANNOT BE SILENTLY INVALIDATED AGAIN. Every term is read at runtime:
+    -- retune camFlightMs, walkTargetMs or walkMps and the margin follows.
     --
     -- legTimeoutMs AND THE STALL ESCAPE BOTH STAY, as the floor underneath:
     -- they cover the window BEFORE the camera has landed, where this has
@@ -1244,11 +1270,9 @@ local function run(mine)
     local grace = C.arriveGraceMs or 5000
     local function graceExpired()
         if not camLanded or not flightEnded then return false end
-        -- THE CLOCK RUNS FROM WHICHEVER CAME LATER. One line, and it is the
-        -- whole of the flip exclusion: a pause that ended after the camera
-        -- parked pushes the deadline out by exactly its own length.
         local from = flightEnded
-        if flipEnded and flipEnded > from then from = flipEnded end
+        local due = (walkBegan or GetGameTimer()) + plannedMs + pausedMs
+        if due > from then from = due end
         return (GetGameTimer() - from) > grace
     end
 
@@ -1270,14 +1294,15 @@ local function run(mine)
         -- winning return is longer than a losing one by the length of the clip.
         -- The eighteen seconds is the WALK.
         if last and winThisRun then
+            -- MEASURED FROM OUT HERE RATHER THAN INSIDE doFlip, so the pause is
+            -- recorded even on the roads doFlip returns early on -- a missing
+            -- clip, a config with no `win` entry, a dictionary that would not
+            -- stream. A failsafe whose clock depends on an animation having
+            -- PLAYED is a failsafe that misjudges the winner whose did not.
+            local pausedFrom = GetGameTimer()
             doFlip(mine)
             if token ~= mine then return end
-            -- AND THE PAUSE IS RECORDED HERE RATHER THAN INSIDE doFlip, so it
-            -- is recorded even on the roads doFlip returns early on -- a missing
-            -- clip, a config with no `win` entry. A failsafe whose clock depends
-            -- on an animation having played is a failsafe that never fires for
-            -- a winner whose animation did not.
-            flipEnded = GetGameTimer()
+            pausedMs = pausedMs + (GetGameTimer() - pausedFrom)
         end
 
         ped = PlayerPedId()
@@ -1383,7 +1408,16 @@ local function begin()
 
     path = legs()
     local first = startMark()
-    blends = first and (blendPlan(first, path)) or {}
+    local secs = 0.0
+    if first then
+        blends, secs, plannedLens = blendPlan(first, path)
+    else
+        blends, plannedLens = {}, {}
+    end
+    -- WHAT THE PLAN SAYS THIS DRAW SHOULD TAKE, kept so the failsafe can ask
+    -- "is the ped LATE" rather than "has the camera parked". Case 2 honestly
+    -- needs longer than the target and is not late for taking it.
+    plannedMs = math.floor(secs * 1000.0)
 
     camLanded = false
     camNearHome = false
@@ -1397,7 +1431,7 @@ local function begin()
     idlePlayed = false
     parkedAt = nil
     waved = false
-    flipEnded = nil
+    pausedMs = 0
     emoting, emoteUntil = nil, nil
 
     -- The win is consumed rather than read: one win, one flip.
@@ -1788,20 +1822,23 @@ RegisterCommand('brlobbywalk', function()
     -- above and this total disagree, walkMps is wrong and nothing else is.
     local cases = C.pedCases or {}
     print(('  case         %d of %d'):format(caseIndex, #cases))
-    local first = startMark()
-    if first and #path > 0 and #blends > 0 then
-        local px, py = first.x, first.y
-        local secs = 0.0
-        for i = 1, #path do
-            local len = BR.Dist(px, py, path[i].x, path[i].y)
+    -- THE LENGTHS ARE THE PLAN'S OWN, NOT RE-MEASURED HERE.
+    --
+    -- This used to recompute them from the surveyed corners, which is a
+    -- DIFFERENT number: every leg but the last stops a corner radius short, so
+    -- the straight-line sum reads about three seconds long on case 1. That is
+    -- the number the owner would have tuned `walkMps` against -- a readout
+    -- saying 21s over a walk that measured 18s, and the honest conclusion from
+    -- it would have been that walkMps was wrong when it was not.
+    if #plannedLens > 0 and #blends > 0 then
+        for i = 1, #plannedLens do
             local b = blends[i] or 1.0
-            local t = len / (b * (C.walkMps or 1.4))
-            secs = secs + t
-            print(('    leg %d      %6.2fm  blend %.2f  %5.2fs'):format(i, len, b, t))
-            px, py = path[i].x, path[i].y
+            print(('    leg %d      %6.2fm  blend %.2f  %5.2fs')
+                :format(i, plannedLens[i], b,
+                        plannedLens[i] / (b * (C.walkMps or 1.4))))
         end
         print(('    total                              %5.2fs  (target %.2fs)')
-            :format(secs, (C.walkTargetMs or 18000) / 1000.0))
+            :format(plannedMs / 1000.0, (C.walkTargetMs or 18000) / 1000.0))
     else
         print('    legs         not planned yet -- nothing has been drawn')
     end

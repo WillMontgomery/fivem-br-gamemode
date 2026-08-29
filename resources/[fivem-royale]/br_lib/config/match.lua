@@ -362,20 +362,30 @@ BR.Config.Match = {
         -- get to the destination within 5 seconds of the camera parking we fire
         -- that function and bring them to the position ourselves?"
         --
-        -- So: the camera lands, the ped gets this long to arrive on its own
-        -- feet, and after that it is placed on the mark and the entrance ends.
+        -- ...AND IT IS MEASURED FROM WHEN THE WALK IS DUE, NOT FROM THE PARKING.
         --
-        -- IT SHOULD NEVER FIRE, AND THAT IS THE POINT. The flight and the walk
-        -- are given the same duration and start on the same cue, so the ped
-        -- arrives as the camera parks and this is slack. IF IT FIRES ROUTINELY,
-        -- `walkMps` is wrong -- the walk is taking longer than the plan thinks
-        -- and the number to change is that one, not this one.
+        -- Those were the same moment when he asked for it -- flight and walk
+        -- both eighteen seconds -- and stopped being the same moment one
+        -- message later, when the camera went thirty percent faster and started
+        -- parking four seconds early. Five seconds from the PARKING would now
+        -- leave under a second of slack, and case 2 (which honestly needs 19.6s)
+        -- would trip it on every single return: one lobby entrance in four
+        -- teleporting the ped, presenting as the arrival bug coming back.
+        --
+        -- So the client waits until the walk is genuinely overdue -- the drawn
+        -- case's own planned duration, plus anything the walk was deliberately
+        -- paused for -- and then gives it this long. The camera parking stays
+        -- in as a floor. See `graceExpired` in br_core/client/lobbyped.lua.
+        --
+        -- IT SHOULD NEVER FIRE, AND THAT IS THE POINT. IF IT FIRES ROUTINELY,
+        -- `walkMps` is wrong: the walk is taking longer than the plan thinks,
+        -- and that is the number to change rather than this one.
         --
         -- THE FLIP DOES NOT COUNT AGAINST IT. A winning return stops at the
         -- second-to-last point for the length of the animation, which is a
-        -- deliberate pause and not a ped that failed to arrive; the clock does
-        -- not start until the flip is over. Teleporting a winner out of their
-        -- own victory animation would be the worst possible way to spend this.
+        -- deliberate pause and not a ped that failed to arrive. Teleporting a
+        -- winner out of their own victory animation would be the worst possible
+        -- way to spend this.
         arriveGraceMs = 5000,
 
         -- THE CAMERA NODES -- CONTROL POINTS FOR A CURVE, NOT STOPS ON A ROUTE.
@@ -410,15 +420,25 @@ BR.Config.Match = {
         -- How long the camera takes to get from the first node above to the
         -- lobby frame, start to finish, INCLUDING the landing.
         --
-        -- MATCHED TO `walkTargetMs` ON PURPOSE: "The camera flight and the walk
-        -- should finish together" (owner, 2026-08-29). They also START together
-        -- -- both wait for the same reveal -- so equal durations is the whole
-        -- of keeping them in step. Change one and change the other.
+        -- ═══ IT NO LONGER MATCHES `walkTargetMs`, AND THAT IS DELIBERATE ═══
         --
-        -- NOTE a winning return is LONGER than this by the length of the flip,
-        -- because the walk pauses for it and the flight does not. The camera
-        -- lands early on a win, by design; /brlobbywalk prints the gap.
-        camFlightMs = 18000,
+        -- It was 18000, matched to the walk, off "The camera flight and the
+        -- walk should finish together". Then: "Also the lobby camera moves too
+        -- slow. Let's do 30% faster" (owner, 2026-08-29).
+        --
+        -- 18000 / 1.3 = 13846, which is SPEED thirty percent higher. The other
+        -- reading -- duration times 0.7, or 12600 -- is a bigger change than
+        -- the words ask for, so this is the conservative one; it is one number
+        -- to change if he meant the other.
+        --
+        -- SO THE CAMERA NOW PARKS ABOUT FOUR SECONDS BEFORE THE PED ARRIVES.
+        -- They still START together (both wait on the same reveal); they no
+        -- longer finish together, because he asked for the first thing more
+        -- recently than the second. /brlobbywalk prints the measured gap, and
+        -- `arriveGraceMs` below is measured from when the WALK is due rather
+        -- than from the parking precisely so this number can move again without
+        -- quietly turning the failsafe into a teleport.
+        camFlightMs = 13846,
 
         -- HOW MANY MOVES THE FLIGHT IS CUT INTO. Each one is a linear
         -- interpolation between two static cameras with NO ease at either end,
