@@ -233,9 +233,32 @@ BR.Config.Match = {
         -- deadline plus the tick that starts it.
         modelWaitMs = 8000,
 
+        -- ═══ ONE SPEED PER LEG, AND IT SLOWS DOWN ═══
+        --
         -- TaskGoStraightToCoord's move blend ratio. 1.0 is a walk; 2.0 is a
         -- run. The clipset rides on top of whatever this is.
-        walkSpeed = 1.0,
+        --
+        -- Owner, 2026-08-29: "Set walk speed to 2.0 until the first point, 1.5
+        -- until the second point, then 1.0 for 3rd -> 4th point."
+        --
+        -- THERE ARE FOUR LEGS, NOT THREE, and that is what makes the list read
+        -- oddly short. lobbyped.lua's legs() walks every `pedPath` corner and
+        -- then BR.Config.Match.lobbyPos, so the ped arrives at four positions:
+        -- the three below and the lobby mark itself -- exactly the owner's
+        -- "first / second / 3rd / 4th point". The list clamps to its last
+        -- entry, so "then 1.0" covers both the third leg and the walk onto the
+        -- mark: 2.0, 1.5, 1.0, 1.0.
+        --
+        -- IT ALSO FIXES THE TIMING WITHOUT ANOTHER NUMBER. The path is about
+        -- 41m, which at a flat 1.0 took roughly 27 seconds against a camera
+        -- path implying about 20. Front-loading the speed closes that gap by
+        -- covering the long opening leg quickly rather than by hurrying the
+        -- arrival, which is the half the player actually looks at.
+        --
+        -- SHORTER THAN `pedPath` IS FINE: the last entry carries. Longer is
+        -- fine too and the extra entries are simply unused, so adding a corner
+        -- to the path cannot leave a leg with no speed to walk it at.
+        walkSpeeds = { 2.0, 1.5, 1.0 },
 
         -- How close counts as arrived, per leg, and how long one leg may take
         -- before the sequence gives up on it and moves to the next. The

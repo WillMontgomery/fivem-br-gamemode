@@ -554,9 +554,29 @@ local function run(mine)
     walking = true
     FreezeEntityPosition(ped, false)
 
-    local speed = C.walkSpeed or 1.0
     local radius = C.arriveRadius or 0.9
     local legMs = C.legTimeoutMs or 15000
+
+    -- ═══ A SPEED PER LEG, AND THE LAST ONE CARRIES ═══
+    --
+    -- Owner, 2026-08-29: "Set walk speed to 2.0 until the first point, 1.5
+    -- until the second point, then 1.0 for 3rd -> 4th point." So the ped
+    -- arrives at a walk having covered the long opening leg at a run.
+    --
+    -- THE LIST MAY BE SHORTER THAN THE PATH. A table indexed straight by `i`
+    -- would hand `nil` to TaskGoStraightToCoord the moment somebody added a
+    -- corner, which is a ped that stops dead with no error to read. Clamping to
+    -- the last entry means a longer path simply finishes at the arrival speed,
+    -- which is the one that was chosen for arriving.
+    --
+    -- `walkSpeed` STAYS AS THE SCALAR FALLBACK so a config that predates the
+    -- list still walks rather than defaulting to a number nobody wrote.
+    local speeds = C.walkSpeeds
+    local haveList = type(speeds) == 'table' and #speeds > 0
+    local function speedFor(i)
+        if haveList then return speeds[math.min(i, #speeds)] or 1.0 end
+        return C.walkSpeed or 1.0
+    end
 
     for i = 1, #path do
         if token ~= mine then return end
@@ -567,7 +587,15 @@ local function run(mine)
         -- TaskGoStraightToCoord rather than a pathfinding walk: these are
         -- authored corners on open ground and the point is that the ped takes
         -- the line the owner surveyed, not one the navmesh preferred.
-        TaskGoStraightToCoord(ped, n.x, n.y, n.z, speed,
+        --
+        -- THE SPEED IS THE TASK'S, WHICH IS WHY ABANDONMENT NEEDS NOTHING NEW.
+        -- Owner, 2026-08-29: "if the player readies up fast we need to cancel
+        -- that walk speed now too." It is a blend ratio passed into this call
+        -- rather than a property written onto the ped, so `ClearPedTasks` in
+        -- stop() takes it with the task -- unlike the movement clipset, which
+        -- IS a ped property and needs its own reset there. A player who readies
+        -- up during the 2.0 leg does not carry a run into warmup.
+        TaskGoStraightToCoord(ped, n.x, n.y, n.z, speedFor(i),
             legMs, n.heading + 0.0, 0.0)
 
         local until_ = GetGameTimer() + legMs
@@ -690,7 +718,18 @@ RegisterCommand('brlobbywalk', function()
     print(('  camMoveMs    %d'):format(C.camMoveMs or 0))
     print(('  camLeadMs    %d'):format(C.camLeadMs or 0))
     print(('  focusLeadMs  %d'):format(C.focusLeadMs or 0))
-    print(('  walkSpeed    %.2f'):format(C.walkSpeed or 0))
+    -- ONE LINE PER LEG, IN ORDER, because the whole point of the list is that
+    -- the legs differ -- a single averaged number would hide the thing being
+    -- tuned. Falls back to the scalar so a config without the list still says
+    -- something true.
+    local sp = C.walkSpeeds
+    if type(sp) == 'table' and #sp > 0 then
+        local parts = {}
+        for i, v in ipairs(sp) do parts[i] = ('%.2f'):format(v) end
+        print(('  walkSpeeds   %s'):format(table.concat(parts, ' -> ')))
+    else
+        print(('  walkSpeed    %.2f'):format(C.walkSpeed or 0))
+    end
     if BR.State.me.state ~= BR.PlayerState.LOBBY then
         print('  not in the lobby -- nothing to replay')
         return

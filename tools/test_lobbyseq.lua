@@ -108,7 +108,11 @@ function TaskGoStraightToCoord(_p, x, y, z, speed, _timeout, heading)
     ped.dest = { x = x, y = y, z = z, heading = heading }
     -- 1.0 is the walk blend ratio; ~1.4 m/s is what a walking ped covers.
     ped.speed = (speed or 1.0) * 1.4
-    note('task', { x = x, y = y, z = z })
+    -- THE BLEND RATIO IS RECORDED, not just its effect on the fixture's metres
+    -- per second. The owner tunes one speed per leg, so the assertion that
+    -- matters is which NUMBER reached the native on which leg -- deriving it
+    -- back out of ped.speed would be testing this mock's arithmetic.
+    note('task', { x = x, y = y, z = z, speed = speed })
 end
 function ClearPedTasks() ped.dest = nil note('cleartasks') end
 function ClearPedTasksImmediately() ped.dest = nil end
@@ -438,9 +442,51 @@ do
     -- a value that migrated into the client is a value he cannot reach.
     for _, k in ipairs({ 'camMoveMs', 'camLeadMs', 'focusLeadMs', 'modelWaitMs',
                          'clipsetWaitMs', 'legTimeoutMs', 'armWaitMs',
-                         'walkSpeed', 'arriveRadius' }) do
+                         'arriveRadius' }) do
         ok(type(C[k]) == 'number', ('lobbyEntrance.%s is tunable'):format(k))
     end
+
+    -- ═══ AND THE SPEED IS A LIST NOW, ONE ENTRY PER LEG ═══
+    --
+    -- Owner, 2026-08-29: "Set walk speed to 2.0 until the first point, 1.5
+    -- until the second point, then 1.0 for 3rd -> 4th point." It was a single
+    -- number until then, which is why this is not in the loop above.
+    ok(type(C.walkSpeeds) == 'table' and #C.walkSpeeds > 0,
+        'lobbyEntrance.walkSpeeds is a list rather than one number')
+
+    local allNums = true
+    for _, v in ipairs(C.walkSpeeds or {}) do
+        if type(v) ~= 'number' then allNums = false end
+    end
+    ok(allNums, '...and every entry in it is tunable')
+
+    -- THE PED MUST ARRIVE AT A WALK. The last leg is the one the player is
+    -- actually looking at -- the camera has landed by then -- so a list that
+    -- ended fast would be a run into a dead stop on the mark.
+    local last = C.walkSpeeds and C.walkSpeeds[#C.walkSpeeds]
+    ok(last == 1.0,
+        ('the final leg is walked at 1.0, whatever precedes it (%s)')
+            :format(tostring(last)))
+
+    -- AND IT ONLY EVER SLOWS DOWN. The owner's three numbers descend, and a
+    -- sequence that sped up mid-path would read as the ped noticing the camera.
+    local descends = true
+    for i = 2, #(C.walkSpeeds or {}) do
+        if C.walkSpeeds[i] > C.walkSpeeds[i - 1] then descends = false end
+    end
+    ok(descends, 'and the speeds never increase from one leg to the next')
+
+    -- A LIST SHORTER THAN THE PATH IS LEGAL -- lobbyped.lua clamps to the last
+    -- entry, which is how the 1.0 covers both the third leg and the walk onto
+    -- the mark -- but a list LONGER than the path means somebody tuned a leg
+    -- that does not exist, which is a silent no-op and worth catching here.
+    --
+    -- THE LEG COUNT IS pedPath PLUS ONE: legs() finishes at BR.Config.Match
+    -- .lobbyPos, so the last authored corner is not the last thing walked.
+    ok(#(C.walkSpeeds or {}) <= #(C.pedPath or {}) + 1,
+        ('and there is no speed for a leg the path does not have '
+            .. '(%d speeds, %d legs)')
+            :format(#(C.walkSpeeds or {}), #(C.pedPath or {}) + 1))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -869,6 +915,92 @@ do
     end
     ok(seen ~= nil and seen.locked == false,
        'the locker payload carries `locked` so the button can be disabled')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 13. ONE SPEED PER LEG, AND READYING UP CANCELS IT
+-- ═══════════════════════════════════════════════════════════════════════════
+
+do
+    -- Owner, 2026-08-29: "Set walk speed to 2.0 until the first point, 1.5
+    -- until the second point, then 1.0 for 3rd -> 4th point. Also remember if
+    -- the player readies up fast we need to cancel that walk speed now too."
+    reset()
+    wearChosenModel()
+
+    local C = BR.Config.Match.lobbyEntrance
+    local want = C.walkSpeeds
+
+    -- Run the whole walk out. The legs are timed by the fixture's own clock, so
+    -- this has to be long enough for the slowest configuration to finish.
+    pump(60000)
+
+    -- EVERY TASK, IN ORDER. `firstOf` answers one; the whole point here is the
+    -- SEQUENCE of blend ratios, so they are collected by hand.
+    local got = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'task' then got[#got + 1] = e.speed end
+    end
+
+    -- FOUR LEGS, NOT THREE. lobbyped.lua's legs() walks every pedPath corner
+    -- and then the lobby mark itself, so the positions the ped arrives at are
+    -- the owner's "first / second / 3rd / 4th point" exactly.
+    local nLegs = #(C.pedPath or {}) + 1
+    ok(#got == nLegs,
+        ('the ped is tasked once per leg, the lobby mark included '
+            .. '(%d tasks, %d legs)'):format(#got, nLegs))
+
+    local matched = #got > 0
+    for i = 1, #got do
+        local expect = want[math.min(i, #want)]
+        if got[i] ~= expect then matched = false end
+    end
+    ok(matched,
+        ('and each leg is walked at its own speed -- 2.0 in, then 1.5, '
+            .. 'arriving at 1.0 -- rather than one number for the whole path '
+            .. '(got %s)'):format((function()
+                local s = {}
+                for i, v in ipairs(got) do s[i] = tostring(v) end
+                return table.concat(s, ', ')
+            end)()))
+
+    -- THE SPEEDS ARE NOT ALL THE SAME, which is the assertion that fails if
+    -- someone collapses the list back to a scalar and the loop above starts
+    -- comparing one value against itself.
+    local varied = false
+    for i = 2, #got do if got[i] ~= got[1] then varied = true end end
+    ok(varied, 'and they genuinely differ from one leg to the next')
+
+    -- ═══ READYING UP MID-RUN CANCELS THE SPEED WITH THE TASK ═══
+    --
+    -- The blend ratio is an argument to TaskGoStraightToCoord rather than a
+    -- property written onto the ped -- unlike the movement clipset, which needs
+    -- its own reset. So the thing to prove is that stop() clears the TASK, and
+    -- that nothing re-tasks afterwards at the running speed.
+    reset()
+    wearChosenModel()
+    pump(1200)      -- inside the first leg, which is the fastest one
+
+    local live = nil
+    for _, e in ipairs(order) do if e.kind == 'task' then live = e.speed end end
+    ok(live == want[1],
+        ('precondition: the ped is mid-walk on the opening leg, at its speed '
+            .. '(%s)'):format(tostring(live)))
+    ok(ped.dest ~= nil, 'precondition: the task is live')
+
+    order = {}
+    BR.LobbyPed.stop('readied up')
+
+    ok(firstOf('cleartasks') ~= nil,
+        'readying up clears the ped task, and the blend ratio goes with it -- '
+            .. 'a player who readies during the 2.0 leg does not carry a run '
+            .. 'into warmup')
+    ok(ped.dest == nil, 'so no destination survives the abandonment')
+
+    order = {}
+    pump(40000)
+    ok(firstOf('task') == nil,
+        'and nothing re-tasks afterwards at any speed')
 end
 
 -- ------------------------------------------------------------------ report ---
