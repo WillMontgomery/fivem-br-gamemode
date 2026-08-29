@@ -778,7 +778,12 @@ BR.Sched.every(R and R.tickMs or 1000, 'rescue.tick', function()
 
             local pos = entry.pos
             if pos then
-                if BR.RescueMoved(rec.lastPos, pos, R) then
+                -- Elapsed is measured from the last RESET, which is the same
+                -- moment `lastPos` was taken -- so the distance and the window
+                -- always describe one interval. Passing the tick length here
+                -- instead would ask about the last second while comparing
+                -- against a position from ten.
+                if BR.RescueMoved(rec.lastPos, pos, now - rec.lastMoveAt, R) then
                     rec.lastPos    = { x = pos.x, y = pos.y }
                     rec.lastMoveAt = now
                     rec.everMoved  = true

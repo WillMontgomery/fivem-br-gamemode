@@ -335,9 +335,37 @@ end
 --- @param pos table|nil    { x, y } now
 --- @param cfg table|nil
 --- @return boolean moved
-function BR.RescueMoved(prev, pos, cfg)
+--- ═══ A SPEED, NOT A DISTANCE PER TICK ═══
+---
+--- Owner, 2026-08-29: "please trigger the stuck fix if they are moving less
+--- than 10mph for over 10 seconds".
+---
+--- This used to ask whether the ambulance had covered `progressM` since the
+--- last time it was seen to move, which at a 1s judgement tick was an implicit
+--- ~18mph floor -- and, worse, an implicit one. Nothing named a speed, so
+--- nobody could reason about the threshold without also knowing the tick rate,
+--- and changing either silently changed the other.
+---
+--- `prev` is the position at the last RESET, not the previous tick, so elapsed
+--- is measured against the same moment as the distance and the two cannot
+--- drift apart. An ambulance crawling at 9mph for nine seconds is not yet
+--- stuck; the same ambulance at the eleventh second is.
+--- @param prev table|nil    position when the stall clock was last reset
+--- @param pos table|nil     position now
+--- @param elapsedMs number  ms since that reset
+--- @param cfg table|nil
+--- @return boolean
+function BR.RescueMoved(prev, pos, elapsedMs, cfg)
     if not prev or not pos then return false end
-    return BR.Dist(prev.x, prev.y, pos.x, pos.y) >= ((cfg or {}).progressM or 8.0)
+    local ms = tonumber(elapsedMs) or 0
+    if ms <= 0 then return false end
+
+    -- 1 mph = 0.44704 m/s, and the constant is written out rather than folded
+    -- into a metres-per-second config so the number in the file is the number
+    -- the owner said.
+    local mps  = ((cfg or {}).minSpeedMph or 10.0) * 0.44704
+    local need = mps * (ms / 1000.0)
+    return BR.Dist(prev.x, prev.y, pos.x, pos.y) >= need
 end
 
 --- Is this ride over -- either because the ambulance got there, or because it

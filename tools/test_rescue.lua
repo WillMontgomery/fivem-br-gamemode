@@ -519,24 +519,51 @@ end
 -- ---------------------------------------------------------------------------
 describe('moved')
 do
-    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 50.0, y = 0.0 }, R) == true,
-        'an ambulance that has driven 50m has moved')
-    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 0.5, y = 0.0 }, R) == false,
-        'one that has shuffled half a metre against a kerb has not')
+    -- ═══ IT IS A SPEED NOW, SO EVERY CASE CARRIES A WINDOW ═══
+    --
+    -- Owner, 2026-08-29: "trigger the stuck fix if they are moving less than
+    -- 10mph for over 10 seconds". BR.RescueMoved took (prev, pos, cfg) and now
+    -- takes (prev, pos, elapsedMs, cfg) -- the distance alone cannot answer a
+    -- question about speed, and these cases pinned an implicit ~18mph floor
+    -- that only existed because tickMs happened to be 1000.
+    --
+    -- 10 mph = 4.4704 m/s, so one second needs 4.4704m and ten need 44.704m.
 
-    -- THE NIL CASES ARE THE ONES THAT MATTER, and both answer "not moving".
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 50.0, y = 0.0 }, 10000, R) == true,
+        'fifty metres in ten seconds is over 10mph, so it is moving')
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 0.5, y = 0.0 }, 10000, R) == false,
+        'half a metre against a kerb in ten seconds is not')
+
+    -- THE CASE THE OLD RULE GOT WRONG, and the reason he asked. A van covering
+    -- forty metres of dirt track in ten seconds is doing ~9mph -- it IS moving,
+    -- and the per-tick distance test called that healthy forever while it drove
+    -- in circles. It is now stuck, which is what he watched and wanted caught.
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 40.0, y = 0.0 }, 10000, R) == false,
+        'forty metres in ten seconds is under 10mph, so it counts as stuck')
+
+    -- And the same distance over a shorter window is fine: this is a rate.
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 40.0, y = 0.0 }, 5000, R) == true,
+        'the same forty metres in five seconds is over 10mph and is not')
+
+    -- THE NIL CASES ARE THE ONES THAT MATTER, and all answer "not moving".
     -- `pos` is nil for a player the server has not sampled yet; treating an
     -- absent sample as movement would mean a rescue could never be judged stuck
     -- during the exact window in which it is most likely to be.
-    ok(BR.RescueMoved(nil, { x = 99.0, y = 0.0 }, R) == false,
+    ok(BR.RescueMoved(nil, { x = 99.0, y = 0.0 }, 10000, R) == false,
         'no previous sample is not evidence of movement')
-    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, nil, R) == false,
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, nil, 10000, R) == false,
         'and neither is a missing current one')
 
-    -- The boundary, explicitly: the threshold is inclusive, so a vehicle sitting
-    -- exactly on the bar counts as moving rather than being recovered forever.
-    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = R.progressM, y = 0.0 }, R) == true,
-        'the progress threshold is inclusive at the boundary')
+    -- A zero or absent window cannot be divided by, and answering "moving"
+    -- there would excuse a stall for free on the first tick of every ride.
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 99.0, y = 0.0 }, 0, R) == false,
+        'a zero-length window is not evidence of movement either')
+
+    -- The boundary, explicitly: inclusive, so a vehicle sitting exactly on the
+    -- bar counts as moving rather than being recovered forever.
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 },
+                      { x = R.minSpeedMph * 0.44704, y = 0.0 }, 1000, R) == true,
+        'the speed threshold is inclusive at the boundary')
 end
 
 -- ---------------------------------------------------------------------------

@@ -487,7 +487,14 @@ BR.Config.Rescue = {
     -- 16777216 -- all three let the driver leave the road network, and a
     -- grass-crossing ambulance is both wrong-looking and the most reliable way
     -- to wedge one.
-    driveStyle       = 4980863,
+    -- Owner, 2026-08-29: "it's going in circles on dirt roads, so I'd like to
+    -- see if we can take dirt roads out. Let's use 524415".
+    --
+    -- HE FOUND THE RIGHT BIT. 524415 is the previous value MINUS 262144,
+    -- UseShortCutLinks -- which is precisely the permission to leave the road
+    -- network for a shorter path. Every avoidance bit is kept; only the licence
+    -- to take a dirt track is withdrawn.
+    driveStyle       = 524415,
 
     -- The shortest journey worth making. Any surveyed point nearer than this to
     -- the pickup is refused as a destination, along with the pickup itself.
@@ -660,10 +667,18 @@ BR.Config.Rescue = {
     -- Metres of progress the server must SEE between judgements for the rescue
     -- to count as moving. Measured on the server's own position samples of the
     -- player's ped, never reported by the client.
-    progressM = 8.0,
+    -- ═══ THE STALL RULE, IN MILES PER HOUR ═══
+    --
+    -- Owner, 2026-08-29: "please trigger the stuck fix if they are moving less
+    -- than 10mph for over 10 seconds".
+    --
+    -- `progressM` used to carry this, as metres between judgements -- an
+    -- implicit ~18mph floor that only existed if you also knew tickMs, and that
+    -- changed silently whenever either number moved. These two say it outright.
+    minSpeedMph = 10.0,
 
     -- How long with no progress before the server orders a re-place.
-    stuckAfterMs = 5000,
+    stuckAfterMs = 10000,
 
     -- How far the re-place moves the ambulance. #191 says "~50ft"; that is 15m.
     replaceDistM = 15.0,
