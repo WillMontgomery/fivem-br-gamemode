@@ -22,6 +22,33 @@
 -- estimated arrival time, which is what BR.StormAt already does for every other
 -- consumer -- it is a pure function of a published record and a timestamp, and
 -- a timestamp in the future is as valid an input as one in the present.
+--
+-- ═══ AND SINCE 2026-08-28 IT IS RUN AGAINST THE PURPLE CIRCLE TOO ═══
+--
+-- Owner: "the destination was not inside the PURPLE storm circle, and it should
+-- have been. If no destinations are available within the PURPLE storm circle -
+-- then cprkits are not available for use."
+--
+-- Solving StormAt forward is NOT the same question. Through a hold -- which is
+-- most of a phase -- the circle at any arrival time inside it is the CURRENT
+-- one, so a destination could qualify against the wall the player is already
+-- standing in while sitting well outside the one they can see drawn ahead of
+-- them. BR.RescueCircles asks both, and the second one is read straight off the
+-- record's cx1/cy1/r1 exactly as shared/airdrop_solve.lua reads it.
+--
+-- THE OTHER HALF OF HIS SENTENCE IS A REFUSAL, and it replaces a fallback: there
+-- is no longer a "nearest to the centre" consolation drop. Nothing qualifying
+-- means no rescue, no ambulance, and -- checked rather than assumed -- no kit
+-- spent. See BR.RescueDestination.
+--
+-- ═══ ...AND THE THIRD QUESTION: WHEN IS THE RIDE OVER ═══
+--
+-- BR.RescueArrived. It used to be eight metres from the surveyed point, which a
+-- road-routed vehicle heading for a car park never reaches, so every ride was
+-- resolved by the deadline instead. It is now the owner's own design -- arrive,
+-- or park as close as it got -- and it is here rather than in the client for the
+-- same reason the destination rule is: it is arithmetic, and the case worth
+-- testing (a vehicle circling a point it cannot reach) is expensive to stage.
 
 BR = BR or {}
 
@@ -106,6 +133,87 @@ function BR.RescueNearest(points, x, y)
     return best, bestD
 end
 
+--- The circles a destination has to be inside, for an ambulance arriving at
+--- `eta`.
+---
+--- ═══ TWO CIRCLES, AND THE SECOND ONE IS THE OWNER'S ═══
+---
+--- Owner, 2026-08-28, on a ride that delivered him outside the wall he could
+--- see: "the destination was not inside the PURPLE storm circle, and it should
+--- have been."
+---
+--- THE PURPLE CIRCLE IS `cx1, cy1, r1` -- the circle the storm is SHRINKING
+--- TOWARD -- and it is NOT what BR.StormAt answers during a hold. StormAt is
+--- honest about the wall as it stands: through a hold it returns the CURRENT
+--- circle, `cx0, cy0, r0`, and only reaches the purple one once the sweep is
+--- over. A destination tested against StormAt alone therefore qualifies against
+--- the circle the player is standing in rather than the one they are being asked
+--- to rotate to, which is exactly the ride he watched.
+---
+--- READ STRAIGHT OFF THE RECORD, for the reason shared/airdrop_solve.lua's
+--- BR.AirdropLandingCircles gives for the same read: "BR.StormAt only reaches it
+--- once the shrink is over", so anything solved from the clock cannot see it
+--- during the hold that is precisely when it matters.
+---
+--- ═══ BOTH, NOT EITHER, AND BREAKOUT IS WHY ═══
+---
+--- Neither circle implies the other. config/storm.lua's BREAKOUT lets the next
+--- circle leave the current one entirely (owner, 2026-08-06: "this will force
+--- ALL players to move"), and the containment proof for "inside the next circle
+--- implies inside the one on the way to it" needs |C1 - C0| <= r0 - r1, which is
+--- precisely what a breakout violates. So a point can be deep inside the purple
+--- circle and in the middle of the wall on arrival, or safe on arrival and
+--- stranded thirty seconds later. airdrop_solve.lua reached this conclusion
+--- first, for a crate rather than a player, and asks both questions for it.
+---
+--- A ZERO RADIUS REFUSES EVERY POINT AND THAT IS THE HONEST ANSWER, not a case
+--- to guard against: config/storm.lua's phase 8 really is `radius = 0.0`, and a
+--- final circle nothing can be inside of is a match in which the kit does not
+--- work. See the refusal in BR.RescueDestination.
+---
+--- NO RECORD IS THE ONE CASE WITH NO CONSTRAINT -- an empty list. Before the
+--- server publishes a storm there is nothing to be inside of, and refusing every
+--- pre-storm rescue for that would be a rule with no circle behind it.
+--- @param storm table|nil   the published storm record
+--- @param eta number        server ms the ambulance is expected to arrive
+--- @return table[]  array of { x, y, r }; EMPTY when no storm is published
+function BR.RescueCircles(storm, eta)
+    if not storm then return {} end
+
+    local cx, cy, r = BR.StormAt(storm, eta)
+    local out = { { x = cx + 0.0, y = cy + 0.0, r = r + 0.0 } }
+
+    -- The purple one. Guarded on the FIELD rather than on its value, so a
+    -- collapsed final circle refuses everything instead of quietly dropping the
+    -- rule at the phase it matters most.
+    if type(storm.r1) == 'number' then
+        out[#out + 1] = {
+            x = (storm.cx1 or 0.0) + 0.0,
+            y = (storm.cy1 or 0.0) + 0.0,
+            r = storm.r1 + 0.0,
+        }
+    end
+    return out
+end
+
+--- Is (x, y) inside every one of these circles?
+---
+--- AN EMPTY LIST ANSWERS TRUE, which is what makes "no storm published" mean
+--- "no constraint" rather than "nothing qualifies" -- the same convention
+--- BR.AirdropInside uses, and for the same reason.
+--- @param circles table[]  array of { x, y, r }
+--- @param x number
+--- @param y number
+--- @return boolean
+function BR.RescueInside(circles, x, y)
+    for _, c in ipairs(circles or {}) do
+        if not BR.InCircle(x, y, c.x or 0.0, c.y or 0.0, c.r or 0.0) then
+            return false
+        end
+    end
+    return true
+end
+
 --- Choose where to take this player.
 ---
 --- ═══ THE ORDER OF THE TWO RULES IS THE WHOLE DESIGN ═══
@@ -126,17 +234,33 @@ end
 --- prediction would systematically over-qualify distant points, which are
 --- exactly the ones most likely to be outside the wall on arrival.
 ---
---- ═══ WHAT HAPPENS WHEN NOTHING QUALIFIES ═══
+--- ═══ WHEN NOTHING QUALIFIES THERE IS NO RESCUE. THE FALLBACK IS GONE ═══
 ---
---- It is a normal case, not an error: late in a match the circle can be smaller
---- than the gaps between authored points, and it is entirely possible that no
---- point on the list is inside it. Delivering the player somewhere is still much
---- better than the alternatives -- refusing the rescue after the kit has been
---- spent, or driving to a point in the middle of the wall -- so the fallback is
---- the point CLOSEST TO THE PREDICTED CENTRE, which is the least-bad drop
---- available and puts them pointed the right way with their health back.
---- `inside` is returned so the caller can log which of the two happened; nothing
---- is shown to the player either way.
+--- Owner, 2026-08-28: "If no destinations are available within the PURPLE storm
+--- circle - then cprkits are not available for use."
+---
+--- THIS REVERSES THE PARAGRAPH THAT USED TO STAND HERE, and the reversed
+--- argument is worth keeping so nobody re-derives it: the old fallback picked
+--- the point CLOSEST TO THE PREDICTED CENTRE on the reasoning that "delivering
+--- the player somewhere is still much better than refusing the rescue after the
+--- kit has been spent". The premise is false. The kit is NOT spent by the time
+--- this answers -- server/rescue.lua reaches BR.Inv.take only after this
+--- function has returned a destination -- so a refusal here costs the player
+--- nothing at all, and the fallback was buying a delivery into the wall with an
+--- item that was never at risk.
+---
+--- The remaining half of the old argument -- "driving to a point in the middle
+--- of the wall would be worse" -- is exactly what the refusal now avoids.
+---
+--- IT IS STILL A NORMAL CASE RATHER THAN AN ERROR. Late in a match the purple
+--- circle can be smaller than the gaps between twenty-three surveyed car parks,
+--- and a nil return says so. The caller refuses the call, the player stays
+--- downed with their kit, and nothing is shown to them.
+---
+--- `inside` IS THEREFORE ALWAYS TRUE FOR A NON-NIL ANSWER and is kept for the
+--- callers that log it: it is now the difference between "qualified against a
+--- circle" and "there was no circle to qualify against", which is still the
+--- thing a playtest wants named.
 ---
 --- @param points table[]        candidate drop-offs
 --- @param fromX number          where the ambulance starts
@@ -161,7 +285,6 @@ end
 --- nowhere. Every layer above worked perfectly; the route was zero-length.
 function BR.RescueDestination(points, fromX, fromY, storm, now, cfg, exclude)
     local best, bestD = nil, math.huge          -- best QUALIFYING
-    local fall, fallD = nil, math.huge          -- best by distance-to-centre
 
     -- A point closer than this is the pickup by another name -- two surveyed
     -- car parks in the same forecourt would produce the same non-journey.
@@ -171,31 +294,18 @@ function BR.RescueDestination(points, fromX, fromY, storm, now, cfg, exclude)
         local d = BR.Dist(fromX, fromY, p.x, p.y)
         if (exclude and p == exclude) or d < minTrip then goto continue end
 
-        -- This candidate's own arrival, and the circle as it will be then.
+        -- This candidate's own arrival, the circle as it will be then, and the
+        -- purple circle it is being asked to rotate to. An empty list is the
+        -- pre-storm case and lets every point through -- see BR.RescueCircles.
         local eta = now + BR.RescueDriveMs(d, cfg)
-        local cx, cy, r = BR.StormAt(storm, eta)
-
-        -- NO RECORD MEANS NO CONSTRAINT. Before the first circle is published
-        -- there is nothing to be inside of, BR.StormAt answers a zero circle,
-        -- and treating that as "nothing qualifies" would send every pre-storm
-        -- rescue to the fallback for no reason. A zero radius is the tell.
-        if not storm or r <= 0.0 then
+        if BR.RescueInside(BR.RescueCircles(storm, eta), p.x, p.y) then
             if d < bestD then best, bestD = p, d end
-        else
-            if BR.InCircle(p.x, p.y, cx, cy, r) then
-                if d < bestD then best, bestD = p, d end
-            end
-            local dc = BR.Dist(p.x, p.y, cx, cy)
-            if dc < fallD then fall, fallD = p, dc end
         end
         ::continue::
     end
 
     if best then
-        return best, bestD, true
-    end
-    if fall then
-        return fall, BR.Dist(fromX, fromY, fall.x, fall.y), false
+        return best, bestD, storm ~= nil
     end
     return nil, math.huge, false
 end
@@ -218,4 +328,65 @@ end
 function BR.RescueMoved(prev, pos, cfg)
     if not prev or not pos then return false end
     return BR.Dist(prev.x, prev.y, pos.x, pos.y) >= ((cfg or {}).progressM or 8.0)
+end
+
+--- Is this ride over -- either because the ambulance got there, or because it
+--- has stopped getting any closer?
+---
+--- ═══ EIGHT METRES WAS NEVER REACHABLE, AND THE DEADLINE WAS DELIVERING ═══
+---
+--- Owner, 2026-08-28, watching the first ride that drove the whole way: "when we
+--- got near the destination the driver just started driving around aimlessly,
+--- until eventually I was spawned at the destination on my own". The console
+--- agreed in as many words -- "the deadline expired on a rescue that was
+--- driving".
+---
+--- The destinations are CAR PARKS. TaskVehicleDriveToCoord routes to the nearest
+--- road node and, when the exact coordinate is not on the network, circles it.
+--- So the ambulance really did arrive, never came within eight metres of the
+--- surveyed point, and every ride was resolved by layer 4 of the recovery ladder
+--- instead of by arriving.
+---
+--- ═══ THE OWNER REPLACED THE TEST WITH A DESIGN, WHICH IS THE BETTER FIX ═══
+---
+--- "If it can't arrive, I don't want it to circle. I want it to park as close as
+--- it can get, even if that's on the road."
+---
+--- So there is no "cannot arrive" case left to detect. There is arriving, and
+--- there is HAVING GOT AS CLOSE AS IT IS GOING TO GET -- and the second one is
+--- what this function's second rule is. Both end the same way: the ambulance
+--- parks (client/rescue.lua's `park`), and the ride is reported.
+---
+--- ═══ THE CLOSEST APPROACH IS THE SIGNAL, NOT THE SPEED ═══
+---
+--- A circling ambulance is MOVING, at speed, on a road, making no progress. A
+--- speed test cannot see that and a stall test cannot either -- the server's own
+--- `everMoved` sampling reads a lap as a healthy drive, correctly. What a lap
+--- cannot do is IMPROVE ON ITS CLOSEST APPROACH: `bestM` is a running minimum,
+--- so it stops falling the moment the vehicle starts going round rather than in.
+--- A vehicle stopped in a car park has the same signature for the same reason,
+--- which is why one rule covers both and there is no separate "is it parked".
+---
+--- BOTH RULES REQUIRE BEING NEAR THE DESTINATION. `bestM <= arriveNearM` is what
+--- keeps a jam at eight hundred metres out of this: that is a stuck ambulance,
+--- it is the server's to judge, and the recovery ladder has always handled it.
+--- Only a vehicle that has reached the neighbourhood may declare the ride over
+--- short of the point.
+---
+--- @param distM number       metres from the vehicle to the destination NOW
+--- @param bestM number       the closest it has ever been on this ride
+--- @param sinceBestMs number  ms since `bestM` last improved
+--- @param cfg table|nil      BR.Config.Rescue
+--- @return boolean arrived
+--- @return string|nil why    for the log; nil when it has not
+function BR.RescueArrived(distM, bestM, sinceBestMs, cfg)
+    cfg = cfg or {}
+    if (distM or math.huge) <= (cfg.arriveM or 25.0) then
+        return true, 'at the point'
+    end
+    if (bestM or math.huge) <= (cfg.arriveNearM or 150.0)
+       and (sinceBestMs or 0.0) >= (cfg.arriveGiveUpMs or 6000) then
+        return true, 'as close as it got'
+    end
+    return false, nil
 end

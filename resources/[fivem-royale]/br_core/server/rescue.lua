@@ -177,10 +177,16 @@ end
 
 --- What to call a point in a log line.
 ---
---- THE OWNER'S SURVEYED POINTS CARRY NO `id` -- they are 23 rows of x/y/z/heading
---- taken with /brcoords -- and inventing one here would not match whatever he
---- named them later. The coordinates are the honest identifier: they are what he
---- would search config/map.lua for.
+--- THE SURVEYED POINTS CARRY AN `id` SINCE 2026-08-28 and this prints it. It
+--- said the opposite until then -- "inventing one here would not match whatever
+--- he named them later" -- and the cost of being right about that was a console
+--- line reading `pickup=nil  dest=nil` beside two pairs of coordinates on the
+--- first ride that ever worked.
+---
+--- THE FALLBACK STAYS. A row without an id is still legal (config/rescue.lua's
+--- own `points` table has no ids and is the empty-config path), and coordinates
+--- are the honest identifier for one: they are what somebody would search
+--- config/map.lua for.
 --- @param p table|nil
 --- @return string
 local function pointName(p)
@@ -364,12 +370,38 @@ function BR.Rescue.begin(src)
     local pickup = BR.RescueNearest(points, pos.x, pos.y)
     if not pickup then return false end
 
-    -- WHERE IT GOES: solved against the circle as it will be ON ARRIVAL, not as
-    -- it stands now. See shared/rescue_solve.lua for why that distinction is the
-    -- whole rule.
+    -- WHERE IT GOES: solved against the circle as it will be ON ARRIVAL *and*
+    -- against the purple circle the storm is shrinking toward. See
+    -- shared/rescue_solve.lua for why neither one implies the other.
     local dest, dist, inside =
         BR.RescueDestination(points, pickup.x, pickup.y, m.storm, now, R, pickup)
-    if not dest then return false end
+
+    -- ═══ NO QUALIFYING POINT IS A REFUSAL, AND THE KIT SURVIVES IT ═══
+    --
+    -- Owner, 2026-08-28: "If no destinations are available within the PURPLE
+    -- storm circle - then cprkits are not available for use."
+    --
+    -- THE KIT IS SAFE HERE BY POSITION, NOT BY LUCK, and it is worth stating
+    -- because the item is ultra-rare and the failure would be unrecoverable:
+    -- BR.Inv.take is thirty lines BELOW this return, after every refusal in this
+    -- function. A `begin` that answers false has spent nothing, written nothing
+    -- to the roster and told no client anything -- the player is simply still
+    -- downed, still holding their kit, and still able to press the key again
+    -- when the circle moves. tools/test_rescue.lua asserts exactly that, because
+    -- "the refusal happens before the take" is a property of an ORDERING and
+    -- orderings are what edits change without noticing.
+    --
+    -- IT SAYS SO IN THE CONSOLE. Nothing is shown to the PLAYER -- this feature
+    -- has one notification and a refusal toast would be a second -- but a rescue
+    -- that declines to start is otherwise indistinguishable from a keypress that
+    -- did not register, which is the report we would get back.
+    if not dest then
+        print(('[br_core] rescue: %d refused -- no surveyed point is inside the '
+               .. 'next circle (pickup %s, %d points, storm phase %s)')
+            :format(src, pointName(pickup), #points,
+                    tostring(m.storm and m.storm.phase)))
+        return false
+    end
 
     -- ═══ IT SAYS WHERE IT IS TAKING THEM, BECAUSE READING SAID IT CANNOT ═══
     --
@@ -472,7 +504,8 @@ function BR.Rescue.begin(src)
 
     print(('[br_core] rescue: %d picked up at %s, bound for %s (%.0fm, %s, deadline %.0fs)')
         :format(src, pointName(pickup), pointName(dest), dist,
-                inside and 'inside the circle on arrival' or 'NO POINT QUALIFIES -- nearest to centre',
+                inside and 'inside the arrival circle AND the next one'
+                    or 'no storm published, so no circle to be inside of',
                 deadline / 1000.0))
 
     TriggerClientEvent(BR.Net.RESCUE_BEGIN, src, {

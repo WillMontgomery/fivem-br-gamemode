@@ -68,10 +68,12 @@ BR.Config.Rescue = {
     -- owner can add, move or delete a point in the one place he authored them
     -- and nothing here has to be touched.
     --
-    -- THEY CARRY NO `id`, and nothing requires one: the id is only ever used in
-    -- a log line, and `pointName` in server/rescue.lua falls back to the
-    -- coordinates. An id invented here would not match the one the owner would
-    -- choose later.
+    -- THEY CARRY AN `id` SINCE 2026-08-28, derived from the nearest POI rather
+    -- than invented -- the owner's console read `pickup=nil  dest=nil` on the
+    -- first ride that worked, which is a rescue nobody can discuss without a map
+    -- open. `pointName` in server/rescue.lua still falls back to the coordinates
+    -- for a row without one, so the field stays optional. See the block above
+    -- the table in config/map.lua for where the names come from.
     --
     -- WITH NO POINTS THE FEATURE IS INERT RATHER THAN BROKEN: server/rescue.lua
     -- refuses to start a rescue it cannot route, logs the reason, and the kit
@@ -343,12 +345,81 @@ BR.Config.Rescue = {
     -- Deliberately the same shape as the ambient erratic-driver knobs in
     -- client/gamerules.lua, because it is the same engine behaviour being asked
     -- for and two different spellings of it would drift.
-    --
-    -- The driving STYLE is the part that keeps it on roads: 262144 is
-    -- "avoid obstacles, stop for vehicles, use roads" WITHOUT the shortcut bit
-    -- that lets an AI driver cut across open ground. A grass-crossing ambulance
-    -- is both wrong-looking and the single most reliable way to wedge one.
     driveSpeed       = 30.0,
+
+    -- ═══════════════════════════════════════════════════════════════════
+    -- THE DRIVING STYLE, AS A BITFIELD WITH MOST OF IT SWITCHED OFF
+    -- ═══════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-08-28: "a note on the driving style - the driver doesn't seem
+    -- to be aware of other vehicles on the road. Can that be changed?"
+    --
+    -- HE IS DESCRIBING THE VALUE EXACTLY. It was 262144 -- one bit,
+    -- `UseShortCutLinks`, and NOTHING ELSE. FiveM's own DrivingStyle enum has a
+    -- name for that value and the name is `PloughThrough`. Every avoidance bit
+    -- and every stopping bit was clear, so the driver was not failing to avoid
+    -- traffic; it had never been told traffic existed.
+    --
+    -- (The comment that used to sit here claimed 262144 was "avoid obstacles,
+    -- stop for vehicles, use roads". It is none of those three. It is recorded
+    -- rather than quietly deleted because the wrong reading is the reason the
+    -- value survived four rounds of playtesting unexamined.)
+    --
+    -- ═══ THE BITS, FROM R*'s OWN eVehicleDrivingFlags ═══
+    --
+    -- Named from the enum published in the Cfx native reference for
+    -- SET_DRIVE_TASK_DRIVING_STYLE, not from the community calculator -- three of
+    -- the widely-copied community labels are wrong (256 is
+    -- `GoOffRoadWhenAvoiding`, not "use blinkers"; 524288 is
+    -- `ChangeLanesAroundObstructions`, not "ignore roads"; 8 is
+    -- `SteerAroundStationaryVehicles`, not "avoid EMPTY vehicles").
+    --
+    --        1  StopForVehicles                 ON   brake, not only swerve
+    --        2  StopForPeds                     off
+    --        4  SwerveAroundAllVehicles         ON   moving AND stationary
+    --        8  SteerAroundStationaryVehicles   off  see below
+    --       16  SteerAroundPeds                 ON
+    --       32  SteerAroundObjects              ON
+    --      128  StopAtTrafficLights             off  see below
+    --      256  GoOffRoadWhenAvoiding           off  it must stay on roads
+    --      512  AllowGoingWrongWay              off
+    --   262144  UseShortCutLinks                ON   alleys and driveways
+    --   524288  ChangeLanesAroundObstructions   ON   go round, not just swerve
+    --                                          ----
+    --                                        786485
+    --
+    -- 786485 is a value Rockstar itself ships, which is worth more than a value
+    -- assembled by hand: it is a combination the game's own drivers are known to
+    -- cope with.
+    --
+    -- ═══ WHY NOT BIT 8, WHICH LOOKS LIKE THE ONE THIS MAP NEEDS ═══
+    --
+    -- BR.Config.Ambient runs `parked` at 1.0 against moving traffic at 0.45 --
+    -- parked cars are this gamemode's vehicle SUPPLY -- so "avoid empty
+    -- vehicles" sounds like the bit that matters most here. It is not that bit.
+    -- 8 is `SteerAroundStationaryVehicles`, and 4 (`SwerveAroundAllVehicles`)
+    -- ALREADY COVERS STATIONARY ONES: all vehicles includes parked ones. Setting
+    -- both would be a narrower rule stacked on a rule that contains it, and R*
+    -- ships them as ALTERNATIVES -- its "avoid" presets (786468, 786469, 786485)
+    -- use 4, its "stop for" presets (786475, 786603) use 8, and no shipped
+    -- preset uses both. There is no gap to close, so the safe move is the one
+    -- the engine's own presets take.
+    --
+    -- ═══ AND WHY NOT TRAFFIC LIGHTS ═══
+    --
+    -- The siren is on for the whole ride by the owner's explicit instruction,
+    -- and an ambulance running its siren does not sit at a red -- so realism
+    -- argues AGAINST 128 here rather than for it. The deadline argues the same
+    -- way and more strongly: a rescue that expires while the ambulance is
+    -- driving is the exact bug the arrival work above exists to fix, and every
+    -- junction spent idling is time taken off that budget.
+    --
+    -- IT IS THE NUMBER TO TURN. Add 128 for lights, 2 to brake for pedestrians,
+    -- 512 to allow overtakes into oncoming lanes. Do NOT add 256, 4194304 or
+    -- 16777216 -- all three let the driver leave the road network, and a
+    -- grass-crossing ambulance is both wrong-looking and the most reliable way
+    -- to wedge one.
+    driveStyle       = 786485,
 
     -- The shortest journey worth making. Any surveyed point nearer than this to
     -- the pickup is refused as a destination, along with the pickup itself.
@@ -362,9 +433,55 @@ BR.Config.Rescue = {
     -- 150m rather than 1m because two car parks in one forecourt would produce
     -- the same non-journey with none of the obviousness.
     minTripM         = 150.0,
-    driveStyle       = 262144,
     driverAbility    = 0.6,   -- not 1.0: "erratically" is the brief
     driverAggression = 0.8,
+
+    -- ------------------------------------------------------------------
+    -- THE CAMERA
+    -- ------------------------------------------------------------------
+    --
+    -- ═══ TWO NUMBERS, AND BOTH OF THEM ARE READ NOW ═══
+    --
+    -- Owner, 2026-08-28: "I don't think the camera is zoomed out enough" -- said
+    -- AFTER a commit that took the height from 3.0 to 4.83 ("zoom out our
+    -- scripted camera by like 6ft"). The reason he saw no change is that neither
+    -- number was ever reaching the camera:
+    --
+    --   1. `R.camHeight` DID NOT EXIST IN THIS FILE. client/rescue.lua read
+    --      `R.camHeight or 4.83`, the key was never added here, so the literal
+    --      default was the whole value -- a config knob with nothing behind it.
+    --   2. AND IT ONLY EVER TOUCHED THE CREATION FRAME. The camera is
+    --      repositioned every frame by `rescue.cam`, off HARDCODED 7.0 and 2.5,
+    --      so whatever CreateCamWithParams was handed was overwritten before
+    --      anybody saw it. The effective camera had not moved since it was
+    --      written.
+    --
+    -- BOTH ARE THE PER-FRAME NUMBERS NOW, which is the only place a camera value
+    -- can mean anything in this file. The distance is the half that was missing
+    -- from his complaint: raising a camera without pulling it back looks down at
+    -- the ambulance's roof rather than back at the ambulance, so height alone
+    -- could never have produced "zoomed out".
+
+    -- ═══ AND THE LINE ON THE MINIMAP ═══
+    --
+    -- Owner, 2026-08-28: "Curiously the route was not on the minimap."
+    --
+    -- A real engine gate rather than a bug of ours: GPS route rendering on the
+    -- RADAR is conditioned on the player being in a vehicle, and this player is
+    -- ATTACHED to the stretcher rather than seated -- the same property that
+    -- keeps them out of the fuel registry. START_GPS_MULTI_ROUTE's third
+    -- parameter exists precisely to override it ("Draws the GPS path regardless
+    -- if the player is in a vehicle or not"), so client/rescue.lua draws that
+    -- route alongside the waypoint. This is its HUD colour; 5 is yellow.
+    routeColour = 5,
+
+    -- The boom length -- how far behind the ambulance the camera sits, before
+    -- pitch. Was a hardcoded 7.0.
+    camBackM  = 11.0,
+
+    -- How high above the vehicle's own origin the camera sits at level pitch.
+    -- Was a hardcoded 2.5.
+    camHeight = 5.5,
 
     -- ------------------------------------------------------------------
     -- THE CLOCK, AND WHY IT IS NEVER SHOWN
@@ -448,7 +565,141 @@ BR.Config.Rescue = {
     maxRecoveries = 3,
 
     -- ------------------------------------------------------------------
-    -- ARRIVAL
+    -- ARRIVAL, AND THE PARKED AMBULANCE IT LEAVES BEHIND
+    -- ------------------------------------------------------------------
+    --
+    -- ═══ EIGHT METRES WAS NEVER REACHED ONCE ═══
+    --
+    -- Owner, 2026-08-28: "when we got near the destination the driver just
+    -- started driving around aimlessly, until eventually I was spawned at the
+    -- destination on my own". The server log said the same thing outright --
+    -- "the deadline expired on a rescue that was driving".
+    --
+    -- The destinations are CAR PARKS and TaskVehicleDriveToCoord routes to the
+    -- ROAD NETWORK. When the exact coordinate is not on it the vehicle gets as
+    -- close as a road allows and then circles, so the old 8m test could not fire
+    -- and layer 4 of the recovery ladder delivered every single ride.
+    --
+    -- ═══ THE OWNER REPLACED THE TEST WITH A DESIGN ═══
+    --
+    -- "If it can't arrive, I don't want it to circle. I want it to park as close
+    -- as it can get, even if that's on the road. And remember we want the back
+    -- left and right doors open when it parks. See if you can turn the dome
+    -- light on too so it's obvious someone got out of it - doors open, lights
+    -- on, but nobody inside. Then you can make the driver get out and run around
+    -- aimlessly so players can take the ambulance"
+    --
+    -- So there is no "failed to arrive" branch anywhere in this feature. There
+    -- is arriving and there is having got as close as it is going to get, and
+    -- both end in the same parked ambulance. BR.RescueArrived in
+    -- shared/rescue_solve.lua is the whole rule and carries the argument for
+    -- why the signal is the CLOSEST APPROACH rather than the speed.
+
+    -- Close enough to the surveyed point to call it arrived outright.
+    --
+    -- FIFTY METRES, THE OWNER'S NUMBER, 2026-08-28: "Let's also change the
+    -- arrival radius to 50m please". It needs no argument from here, but it is
+    -- worth writing down what it replaces and what it does NOT replace:
+    --
+    --   * IT REPLACES EIGHT METRES, which a vehicle routed to the nearest road
+    --     node never reached at a car park, so no ride ever ended by arriving.
+    --   * IT DOES NOT REPLACE `arriveNearM` BELOW. 50m ends most journeys well
+    --     before the drive task does, which is exactly what stops the circling
+    --     -- but a destination the router cannot get within 50m of at all is
+    --     still a real case, and "park as close as it can get, even if that's on
+    --     the road" is his answer to it. The two rules are two answers to one
+    --     question and he asked for both.
+    --
+    -- IT IS ALSO THE AI's OWN STOP RANGE. TaskVehicleDriveToCoord's tenth
+    -- argument was 4.0, and the native's documentation names small values as the
+    -- failure mode in as many words ("20.0 works fine"). A driver told to stop
+    -- within four metres of a point it can only reach within twenty is a driver
+    -- that never stops -- which is the circling, from the other side. Passing
+    -- this same number means the AI's idea of arriving and ours cannot drift.
+    arriveM = 50.0,
+
+    -- ...and how near it has to have got before "it has stopped getting closer"
+    -- is allowed to end the ride. THIS IS THE GUARD THAT KEEPS A TRAFFIC JAM OUT
+    -- OF THE ARRIVAL PATH: an ambulance wedged 800m out is a STUCK one, it is
+    -- the server's to judge, and stuckAfterMs/maxRecoveries above have always
+    -- handled it. Only a vehicle that reached the neighbourhood may park short.
+    arriveNearM = 150.0,
+
+    -- How long its closest approach may go without improving before the ride is
+    -- over. A lap of a car park is ~10s at driveSpeed, so this cannot be reached
+    -- by a vehicle still driving IN -- only by one going ROUND.
+    arriveGiveUpMs = 6000,
+
+    -- ------------------------------------------------------------------
+    -- ...AND WHAT THE PARKED AMBULANCE LOOKS LIKE
+    -- ------------------------------------------------------------------
+
+    -- ═══ HOW IT STOPS ═══
+    --
+    -- BringVehicleToHalt(vehicle, distance, duration, bControlVerticalVelocity)
+    -- -- "makes the vehicle stop immediately", `distance` being where it comes
+    -- to rest and `duration` HOW LONG IT IS HELD THERE, IN SECONDS. Seconds, not
+    -- milliseconds: this is the argument that looks like every other timeout in
+    -- this config and is not one.
+    --
+    -- ═══ AND WHY IT IS THIS NATIVE AND NOT THE TWO OBVIOUS ONES ═══
+    --
+    --   TaskVehiclePark would trade a circling task for a PARKING task -- an AI
+    --   that hunts for a bay and, when it cannot find one, does exactly the
+    --   thing being fixed. "Park as close as it can get, even if that's on the
+    --   road" is not a parking manoeuvre; it is stopping.
+    --
+    --   ClearPedTasks ALONE stops the DRIVER, not the vehicle. An ambulance at
+    --   driveSpeed carries its momentum and coasts on with nobody steering.
+    --
+    -- So the task is cleared (nothing may re-accelerate) AND the vehicle is
+    -- halted (it actually stops). The hold only has to outlast the fade that
+    -- ends the ride, and by the time it lapses the medic is out of the seat.
+    haltDistM = 8.0,
+    haltHoldS = 6,
+
+    -- ═══ THE TWO LOCK STATES, AND THE RIDE'S WAS WRONG ═══
+    --
+    -- `lockedState` is what the ambulance runs at while it is driving (#191 step
+    -- 4, "so no other player can get in"). IT WAS 4, and 4 is not that:
+    -- eVehicleLockState 4 is VEHICLELOCK_LOCKED_PLAYER_INSIDE -- "locked once a
+    -- player enters, preventing others from entering" -- and the rescued player
+    -- NEVER ENTERS. They are attached to the stretcher, not seated, which is the
+    -- property this whole feature is built on. So the condition that arms lock
+    -- state 4 never occurred and the doors were never locked at all.
+    --
+    -- 2 is VEHICLELOCK_LOCKED, "preventing entry by players and NPCs", which is
+    -- the sentence #191 asked for. It is also the state client/vehrefuse.lua
+    -- settled on for the same job, over 10 (CANNOT_ENTER) for a reason that
+    -- applies here too: 10 keeps out somebody already inside, and this ride has
+    -- produced enough stuck peds.
+    lockedState = 2,
+
+    -- ...and what it goes back to when it parks. 1 is VEHICLELOCK_UNLOCKED.
+    --
+    -- Owner, 2026-08-28: "That also means the doors need to unlock before the
+    -- driver gets out". He is right twice over: an ambulance with its doors
+    -- open, its dome light on and nobody in it THAT NOBODY CAN GET INTO is a
+    -- scene that contradicts itself, and a ped told to leave a vehicle locked
+    -- against entry is the kind of task that fails silently and strands him in
+    -- the seat.
+    --
+    -- Nothing else in this tree re-asserts a lock on this vehicle -- checked;
+    -- client/vehrefuse.lua is the only other writer of a door lock and it runs
+    -- only for a player ALIVE or in WARMUP who is entering a refused vehicle,
+    -- which a downed passenger is not. So unlocking once holds.
+    unlockedState = 1,
+
+    -- The dome light, so "somebody got out of it" is legible from outside.
+    interiorLight = true,
+
+    -- TaskLeaveVehicle flag 256: "normal exit but does not close the door". The
+    -- driver's own door left open is part of the same picture the rear two and
+    -- the dome light are painting.
+    driverExitFlag = 256,
+
+    -- ------------------------------------------------------------------
+    -- DELIVERY
     -- ------------------------------------------------------------------
     --
     -- "Health restored" (#191 step 7), and it is FULL rather than the squad
@@ -558,15 +809,25 @@ BR.Config.Rescue = {
 -- station's own ambulance, a returned stolen one, and a second rescue arriving
 -- at the same point -- the case #191 step 7 raises for the drop-off end.
 --
--- ═══ NOTHING ACCUMULATES ═══
+-- ═══ NOTHING ACCUMULATES -- BY TWO MECHANISMS SINCE 2026-08-28 ═══
 --
 -- A station that is emptied and refilled repeatedly must not end a match with a
--- queue of ambulances in it. Every rescue ambulance is deleted by
--- client/rescue.lua's `cleanup`, which runs on all five endings -- delivered,
--- destroyed, deadline, the match tearing down underneath the ride, and the
--- resource stopping. The vehicle is also created as a mission entity, so the
--- engine's own population culling never removes it while a rescue is live and
--- never has to be relied on to remove it afterwards.
+-- queue of ambulances in it. client/rescue.lua's `cleanup` runs on all five
+-- endings -- delivered, destroyed, deadline, the match tearing down underneath
+-- the ride, and the resource stopping -- and on four of them it deletes the
+-- vehicle outright.
+--
+-- THE DELIVERED ENDING IS THE EXCEPTION AND IT IS THE OWNER'S: "doors open,
+-- lights on, but nobody inside... so players can take the ambulance". An
+-- ambulance deleted a second and a half after it parks is a scene nobody sees,
+-- so a delivery RELEASES it instead -- SetEntityAsNoLongerNeeded, whose whole
+-- documented meaning is "delete this as the engine sees fit". The guarantee
+-- survives; what changed is who keeps it. The engine's population culler
+-- reclaims an abandoned vehicle once nobody is near it, which is exactly the
+-- moment it stops being the thing the owner asked for.
+--
+-- It is created as a mission entity for the ride itself, so nothing can cull it
+-- while a rescue is live.
 
 --- The pickup/drop-off points, from wherever they landed.
 ---

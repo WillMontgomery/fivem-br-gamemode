@@ -268,10 +268,17 @@ do
     -- the near one is still inside on ITS arrival and the far one is not on
     -- ITS. If both were judged against one prediction they would pass or fail
     -- together.
+    --
+    -- THE FINAL RADIUS MOVED 100 -> 500 WHEN THE PURPLE RULE LANDED. At 100
+    -- neither candidate was inside the circle the storm is shrinking toward, so
+    -- both were refused and this case stopped being able to express its own
+    -- property -- the same way it stopped expressing it when minTripM arrived.
+    -- At 500 the near one clears both circles and the far one is still refused
+    -- by its own later, smaller arrival circle, which is what is under test.
     local storm = {
         phase = 1,
         cx0 = 0.0, cy0 = 0.0, r0 = 3000.0,
-        cx1 = 0.0, cy1 = 0.0, r1 = 100.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 500.0,
         tStart = 0, tWait = 0, tShrink = 60000, dps = 5.0,
     }
     local near = { id = 'near', x = 400.0,  y = 0.0 }
@@ -293,13 +300,19 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('destination.fallback')
+describe('destination.refusesRatherThanFallsBack')
 do
-    -- NOTHING QUALIFIES IS A NORMAL CASE, NOT AN ERROR. Late in a match the
-    -- circle can be smaller than the gaps between authored points. Refusing the
-    -- rescue would burn an ultra-rare item for nothing, and driving into the
-    -- wall would be worse, so the fallback is the point nearest the predicted
-    -- CENTRE -- the least-bad drop available.
+    -- ═══ THE FALLBACK IS GONE, AND THIS BLOCK IS THE REVERSAL ═══
+    --
+    -- Owner, 2026-08-28: "If no destinations are available within the PURPLE
+    -- storm circle - then cprkits are not available for use."
+    --
+    -- This used to assert the OPPOSITE -- that nothing qualifying still yielded
+    -- a destination, the point nearest the predicted centre, on the reasoning
+    -- that refusing would burn an ultra-rare item for nothing. THAT PREMISE WAS
+    -- FALSE and the block below (`begin.refusalDoesNotSpendTheKit`) is what now
+    -- holds it to account: the kit is not spent until after this has answered,
+    -- so a refusal costs the player nothing.
     local storm = {
         phase = 4,
         cx0 = 0.0, cy0 = 0.0, r0 = 50.0,
@@ -311,21 +324,169 @@ do
         { id = 'closest',    x = 900.0,  y = 0.0 },
     }
 
-    local d, _, inside = BR.RescueDestination(pts, 5000.0, 0.0, storm, 0, R)
-    ok(d ~= nil, 'a rescue with no qualifying point still gets a destination')
-    ok(inside == false, 'and it is reported as NOT qualifying, so the log can '
-        .. 'say which of the two happened')
-    ok(d.id == 'closest',
-        'the fallback is the point nearest the circle centre, not the nearest '
-            .. 'to the ambulance -- being close to safety beats being close to '
-            .. 'the start',
-        d.id)
+    local d, dist, inside = BR.RescueDestination(pts, 5000.0, 0.0, storm, 0, R)
+    ok(d == nil,
+        'no point inside the circle means NO DESTINATION -- there is no '
+            .. 'consolation drop nearest the centre any more',
+        d and d.id)
+    ok(inside == false, 'and it is reported as not qualifying')
+    ok(dist == math.huge, 'with an infinite distance rather than a real one', dist)
 
     -- An empty list is the half-landed-config case: BR.Config.Rescue.points
     -- ships empty on purpose (the owner's 23 authored points had not reached dev
     -- when this was written), and the feature must be inert rather than broken.
     local none = BR.RescueDestination({}, 0.0, 0.0, storm, 0, R)
     ok(none == nil, 'and no points at all yields no destination rather than a crash')
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.thePurpleCircle')
+do
+    -- ═══ THE CASE THE OWNER WATCHED, AND IT ONLY EXISTS DURING A HOLD ═══
+    --
+    -- "the destination was not inside the PURPLE storm circle, and it should
+    -- have been."
+    --
+    -- A storm HOLDING: `tWait` has not elapsed, so BR.StormAt answers the
+    -- CURRENT circle for every arrival time inside the hold -- a huge one at the
+    -- origin. The purple circle (cx1/cy1/r1) has broken out to (3000, 0) with a
+    -- radius of 400, which config/storm.lua's BREAKOUT explicitly allows.
+    --
+    -- `tempting` is deep inside the current circle and nowhere near the purple
+    -- one. Solving StormAt forward -- the old rule, and a correct-looking one --
+    -- takes it every time, because through a hold "forward" is "now".
+    --
+    -- The current circle is WIDE enough to hold both candidates, which is what
+    -- makes the purple one the only thing that can separate them: if it also
+    -- refused the surviving point the case would pass for the wrong reason.
+    local storm = {
+        phase = 3,
+        cx0 = 0.0,    cy0 = 0.0, r0 = 4000.0,
+        cx1 = 3000.0, cy1 = 0.0, r1 = 400.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 60000, dps = 2.0,
+    }
+    local tempting = { id = 'tempting', x = 400.0,  y = 0.0 }
+    local purple   = { id = 'purple',   x = 2900.0, y = 0.0 }
+
+    -- Sanity, so a pass cannot be for the wrong reason: the tempting point
+    -- really is inside the circle StormAt answers, at its own arrival time.
+    local eta = BR.RescueDriveMs(BR.Dist(0.0, 0.0, tempting.x, tempting.y), R)
+    local cx, cy, r = BR.StormAt(storm, eta)
+    ok(BR.InCircle(tempting.x, tempting.y, cx, cy, r),
+        'the tempting point IS inside the circle BR.StormAt answers on arrival '
+            .. '-- during a hold that is the CURRENT circle',
+        ('r %.0f at (%.0f, %.0f)'):format(r, cx, cy))
+    ok(not BR.InCircle(tempting.x, tempting.y, storm.cx1, storm.cy1, storm.r1),
+        '...and is nowhere near the purple one, which has broken out')
+
+    local d = BR.RescueDestination({ tempting, purple }, 0.0, 0.0, storm, 0, R)
+    ok(d and d.id == 'purple',
+        'so the nearer point loses to the one inside the circle the storm is '
+            .. 'shrinking TOWARD -- this is the whole of the owner\'s rule',
+        d and d.id)
+
+    -- ...AND THE ARRIVAL CIRCLE IS STILL ASKED. Both, not either: a breakout
+    -- means neither implies the other, so a point deep inside the purple circle
+    -- can be in the middle of the wall when the ambulance gets there.
+    local onlyPurple = { id = 'only_purple', x = 2900.0, y = 0.0 }
+    local shrinking = {
+        phase = 3,
+        cx0 = 0.0, cy0 = 0.0, r0 = 3000.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 200.0,
+        tStart = 0, tWait = 0, tShrink = 30000, dps = 2.0,
+    }
+    local outThere = { id = 'out_there', x = 2900.0, y = 0.0 }
+    local dd = BR.RescueDestination({ outThere }, 0.0, 0.0, shrinking, 0, R)
+    ok(dd == nil,
+        'a point outside the circle ON ARRIVAL is refused even when the purple '
+            .. 'circle would have taken it -- both circles are asked',
+        dd and dd.id)
+    ok(onlyPurple ~= nil, 'fixture sanity')
+
+    -- THE CIRCLE LIST ITSELF, since two callers will want to reason about it.
+    local circles = BR.RescueCircles(storm, 0)
+    ok(#circles == 2, 'a storm record yields two circles: on arrival, and purple',
+        #circles)
+    ok(#BR.RescueCircles(nil, 0) == 0,
+        'and no record yields none at all -- an empty list is "no constraint"')
+    ok(BR.RescueInside({}, 99999.0, 99999.0) == true,
+        'which is why an empty list admits every point on the map')
+
+    -- A COLLAPSED FINAL CIRCLE REFUSES EVERYTHING, and that is the honest
+    -- answer rather than a case to guard against: config/storm.lua's phase 8
+    -- really is `radius = 0.0`, so late enough in a match the kit stops working.
+    local collapsed = {
+        phase = 8,
+        cx0 = 0.0, cy0 = 0.0, r0 = 40.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 0.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 6.7,
+    }
+    ok(BR.RescueDestination({ { id = 'anywhere', x = 300.0, y = 0.0 } },
+                            0.0, 0.0, collapsed, 0, R) == nil,
+        'a zero-radius purple circle refuses every point rather than quietly '
+            .. 'dropping the rule at the phase it matters most')
+end
+
+-- ---------------------------------------------------------------------------
+describe('arrived')
+do
+    -- ═══ EIGHT METRES WAS NEVER REACHED AND THE DEADLINE DELIVERED EVERY RIDE
+    --     ═══
+    --
+    -- Owner's console, 2026-08-28: "delivered to (2518, 4198) (the deadline
+    -- expired on a rescue that was driving)". The destinations are car parks and
+    -- TaskVehicleDriveToCoord routes to the road network, so the vehicle got
+    -- close, circled, and layer 4 resolved it.
+    --
+    -- The radius is the owner's own number: "Let's also change the arrival
+    -- radius to 50m please".
+    ok(R.arriveM == 50.0, 'the arrival radius is the owner\'s 50m', R.arriveM)
+
+    local arrived, why = BR.RescueArrived(40.0, 40.0, 0, R)
+    ok(arrived == true and why == 'at the point',
+        'inside the radius is arrival outright, with no waiting', why)
+
+    ok(BR.RescueArrived(R.arriveM, R.arriveM, 0, R) == true,
+        'and the radius is inclusive at the boundary')
+
+    ok(BR.RescueArrived(80.0, 80.0, 0, R) == false,
+        'a vehicle 80m out that only just got there has NOT arrived -- it may '
+            .. 'still be driving in')
+
+    -- ═══ ...AND THE CIRCLING CASE, WHICH IS WHAT THE SECOND RULE IS FOR ═══
+    --
+    -- A vehicle going round a car park is MOVING, at speed, on a road, making no
+    -- progress. What it cannot do is beat its own closest approach.
+    local a2, w2 = BR.RescueArrived(90.0, 80.0, R.arriveGiveUpMs, R)
+    ok(a2 == true and w2 == 'as close as it got',
+        'a vehicle that reached the neighbourhood and has stopped improving on '
+            .. 'its closest approach has arrived -- it is circling',
+        w2)
+
+    ok(BR.RescueArrived(90.0, 80.0, R.arriveGiveUpMs - 1, R) == false,
+        'but not before the give-up window has elapsed -- a lap of a car park '
+            .. 'takes less time than this, so a vehicle still driving IN cannot '
+            .. 'trip it')
+
+    -- ═══ THE GUARD THAT KEEPS A TRAFFIC JAM OUT OF THIS ═══
+    --
+    -- An ambulance wedged 800m from the destination is a STUCK one. That is the
+    -- server's judgement, on its own position samples, and the recovery ladder
+    -- has always owned it. Reporting arrival there would deliver a player half a
+    -- map from where they were promised.
+    ok(BR.RescueArrived(800.0, 800.0, 60000, R) == false,
+        'a vehicle that never got near the destination never arrives, however '
+            .. 'long it sits there -- that is the stuck ladder\'s case, not this '
+            .. 'one')
+    ok(R.arriveNearM > R.arriveM,
+        'and the neighbourhood is wider than the radius, or the second rule '
+            .. 'could never fire',
+        ('%s vs %s'):format(tostring(R.arriveNearM), tostring(R.arriveM)))
+
+    -- NIL-SAFE, on the same terms as BR.RescueMoved: the watch's first pass has
+    -- no closest approach yet.
+    ok(BR.RescueArrived(nil, nil, nil, R) == false,
+        'and nothing at all is not an arrival')
 end
 
 -- ---------------------------------------------------------------------------
@@ -341,7 +502,18 @@ do
     local d, _, inside = BR.RescueDestination(pts, 0.0, 0.0, nil, 0, R)
     ok(d and d.id == 'near',
         'with no storm record the shortest route simply wins', d and d.id)
-    ok(inside == true, 'and it counts as qualifying -- there is no constraint to fail')
+
+    -- ═══ AND `inside` NOW SAYS "THERE WAS A CIRCLE", NOT "IT QUALIFIED" ═══
+    --
+    -- This asserted `true` while the fallback existed, because the flag's job
+    -- then was to tell a qualifying pick from a consolation one. There are no
+    -- consolation picks any more -- a non-nil answer has cleared every circle it
+    -- was shown -- so the only thing left for the flag to distinguish is whether
+    -- there were any circles at all. The server prints it as "no storm
+    -- published, so no circle to be inside of", which is exactly this case.
+    ok(inside == false,
+        'and it reports that nothing constrained it, rather than claiming to '
+            .. 'have cleared a circle that was never published')
 end
 
 -- ---------------------------------------------------------------------------
@@ -408,6 +580,31 @@ do
         end
     end
     ok(bad == 0, 'every surveyed point carries x, y, z and a heading', bad)
+
+    -- ═══ ...AND AN ID, WHICH IS WHAT THE DIAGNOSTIC PRINTS ═══
+    --
+    -- The owner's console from the first successful ride read `pickup=nil
+    -- dest=nil` beside two pairs of coordinates. An id is only ever used in a
+    -- log line, which is exactly why the absence of one cost a playtest round to
+    -- notice: nothing else in the tree could tell.
+    --
+    -- UNIQUENESS IS THE HALF WORTH ASSERTING. Two points sharing a name is a
+    -- copy-paste that makes the log line actively misleading -- "picked up at
+    -- strawberry, bound for strawberry" naming two different car parks -- and
+    -- the ids are derived from nearest POI, which is a mapping that could
+    -- collide the day a point moves.
+    local seen, dupes, missing = {}, 0, 0
+    for _, p in ipairs(BR.Config.Rescue.Points()) do
+        if type(p.id) ~= 'string' or p.id == '' then
+            missing = missing + 1
+        elseif seen[p.id] then
+            dupes = dupes + 1
+        else
+            seen[p.id] = true
+        end
+    end
+    ok(missing == 0, 'every surveyed point carries a stable id', missing)
+    ok(dupes == 0, 'and no two of them share one', dupes)
 
     -- AND THE FEATURE IS INERT, NOT BROKEN, IF THAT TABLE EVER EMPTIES.
     local saved = BR.Config.Map.AmbulanceSpawns
@@ -670,6 +867,134 @@ do
     ok(BR.Config.CprKit.useMs == nil,
         'and the kit still declares no useMs, because it is not an inventory '
             .. 'item -- the fix is the guard, not a made-up duration')
+end
+
+-- ---------------------------------------------------------------------------
+describe('begin.refusalDoesNotSpendTheKit')
+do
+    -- ═══ THE ASSERTION THE OWNER'S REFUSAL RULE RESTS ON ═══
+    --
+    -- 2026-08-28: "If no destinations are available within the PURPLE storm
+    -- circle - then cprkits are not available for use."
+    --
+    -- The paragraph that used to justify the fallback said refusing "would burn
+    -- an ultra-rare item for nothing". It would not, and that is a property of
+    -- ONE ORDERING inside BR.Rescue.begin: every refusal returns before
+    -- BR.Inv.take is reached. Orderings are exactly what a later edit moves
+    -- without noticing, and the cost of getting this wrong is a player losing
+    -- the rarest item in the game and staying dead anyway.
+    --
+    -- So it is driven for real -- the shipped server module, the shipped
+    -- inventory model, the owner's own 23 surveyed points -- rather than argued
+    -- from the source. It runs BEFORE the client block below, which replaces
+    -- _G.AddEventHandler and BR.Inv for its own purposes.
+
+    local roster, matches, sent = {}, {}, {}
+    BR.Roster = {
+        get    = function(src) return roster[src] end,
+        update = function(src, patch)
+            for k, v in pairs(patch) do roster[src][k] = v end
+        end,
+        each   = function() end,
+    }
+    BR.Server = { matches = matches, notify = function() end }
+    BR.Sched  = { every = function() end }
+    BR.Broadcast = { toMatch = function() end }
+    _G.RegisterNetEvent   = function() end
+    _G.AddEventHandler    = function() end
+    _G.RegisterCommand    = function() end
+    _G.TriggerClientEvent = function(evt, src, d)
+        sent[#sent + 1] = { evt = evt, src = src, d = d }
+    end
+
+    loadCore('br_core/server/rescue.lua')
+
+    --- A downed solo holding one kit, at a real surveyed point.
+    --- @return table inv
+    local function downedAt(src, x, y, storm)
+        matches[1] = { id = 1, state = BR.MatchState.PLAYING,
+                       mode = BR.Mode.SOLO.key, storm = storm }
+        roster[src] = { src = src, matchId = 1,
+                        state = BR.PlayerState.DBNO,
+                        pos = { x = x, y = y, z = 30.0 } }
+        BR.Inv.reset(src)
+        BR.Inv.give(src, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                           rarity = BR.Rarity.LEGENDARY, count = 1 })
+        return BR.Inv.of(src)
+    end
+
+    local function holdsKit(inv)
+        for i = 1, (BR.Config.Loot.slots or 5) do
+            local s = inv.slots[i]
+            if s and s.item == 'cprkit' then return true end
+        end
+        return false
+    end
+
+    -- ═══ THE REFUSAL. A COLLAPSED PURPLE CIRCLE, WHICH REALLY HAPPENS ═══
+    --
+    -- config/storm.lua's phase 8 is `radius = 0.0`. Nothing on the map can be
+    -- inside it, so no surveyed point qualifies and there is no rescue to grant.
+    local collapsed = {
+        phase = 8,
+        cx0 = 0.0, cy0 = 0.0, r0 = 40.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 0.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 6.7,
+    }
+    local inv = downedAt(1, 1687.58, 4796.53, collapsed)
+    sent = {}
+    ok(holdsKit(inv), 'fixture: the player starts holding a kit')
+
+    local granted = BR.Rescue.begin(1)
+    ok(granted == false, 'a rescue with no qualifying destination is refused',
+        tostring(granted))
+    ok(holdsKit(inv),
+        'AND THE KIT IS STILL IN THE SLOT -- the refusal happens before '
+            .. 'BR.Inv.take, so an ultra-rare item is not spent on a call that '
+            .. 'never routed',
+        'the kit was taken')
+    ok(#sent == 0,
+        'nothing was sent to the client either -- no ambulance is built and no '
+            .. 'camera is taken over',
+        #sent)
+    ok(roster[1].rescue == nil,
+        'and the storm-damage exemption was never written, so a refused player '
+            .. 'is not quietly made immortal',
+        tostring(roster[1].rescue))
+    ok(roster[1].state == BR.PlayerState.DBNO,
+        'the player is simply still downed, and may press the key again when '
+            .. 'the circle moves')
+
+    -- ═══ THE CONTROL: THE SAME PLAYER, A CIRCLE THEY CAN BE DELIVERED INTO ═══
+    --
+    -- Without this the four assertions above would pass just as happily against
+    -- a `begin` that refused everything.
+    local wide = {
+        phase = 1,
+        cx0 = 1600.0, cy0 = 4700.0, r0 = 4000.0,
+        cx1 = 1600.0, cy1 = 4700.0, r1 = 4000.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+    inv = downedAt(2, 1687.58, 4796.53, wide)
+    sent = {}
+    ok(BR.Rescue.begin(2) == true,
+        'a rescue that CAN be routed is still granted -- the refusal is a rule, '
+            .. 'not a wall')
+    ok(not holdsKit(inv),
+        'and THAT one spends the kit, which is what makes the assertion above '
+            .. 'mean something')
+
+    -- Picked out of the traffic rather than counted: the grant also pushes the
+    -- inventory mirror (BR.Inv.push), so the client hears twice on this path
+    -- and exactly nothing on the refused one.
+    local begun = nil
+    for _, s in ipairs(sent) do
+        if s.evt == BR.Net.RESCUE_BEGIN then begun = s end
+    end
+    ok(begun ~= nil, 'with a RESCUE_BEGIN on its way to the client', #sent)
+    ok(begun and begun.d and begun.d.dest and begun.d.dest ~= begun.d.pickup,
+        'carrying a destination that is not the pickup')
+    ok(roster[2].rescue == true, 'and the storm exemption written for the ride')
 end
 
 -- ---------------------------------------------------------------------------

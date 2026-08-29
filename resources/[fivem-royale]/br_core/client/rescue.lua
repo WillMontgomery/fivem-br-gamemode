@@ -291,11 +291,24 @@ end)
 --- CALLED FROM cleanup SO EVERY ENDING GETS IT -- delivered, destroyed, lost,
 --- match over. A waypoint left behind is a route line to a car park the player
 --- has already been driven to, and it would outlive the match.
+--- BOTH SLOTS COME DOWN, and the second one is the reason this is not one line.
+--- The multi-route is drawn into a different eGpsSlotType from the waypoint --
+--- DeleteWaypoint does not touch it -- so a ride that ended would leave a line
+--- on the minimap pointing at a car park nobody is being driven to, for the rest
+--- of the match. Cleared unconditionally rather than behind a flag:
+--- ClearGpsMultiRoute on a slot with nothing in it is a no-op, and the flag
+--- would be the thing that goes stale.
 local function clearWaypoint()
     if isTrue(IsWaypointActive()) then DeleteWaypoint() end
+    if ClearGpsMultiRoute then
+        SetGpsMultiRouteRender(false)
+        ClearGpsMultiRoute()
+    end
 end
 
-local function cleanup()
+--- @param keepVehicle boolean|nil  leave the parked ambulance and its medic in
+---                                 the world instead of deleting them
+local function cleanup(keepVehicle)
     local r = ride
     ride = nil
 
@@ -333,6 +346,38 @@ local function cleanup()
     if r.cam and isTrue(DoesCamExist(r.cam)) then
         RenderScriptCams(false, false, 0, true, true)
         DestroyCam(r.cam, false)
+    end
+
+    -- ═══ A DELIVERED RIDE LEAVES ITS AMBULANCE STANDING ═══
+    --
+    -- Owner, 2026-08-28: "doors open, lights on, but nobody inside... so players
+    -- can take the ambulance".
+    --
+    -- DELETING IT HERE WOULD MAKE THAT WHOLE SCENE POINTLESS. `park` unlocks the
+    -- doors, opens the rear two, turns the dome light on and sends the medic
+    -- walking -- and every one of those lasts about a second and a half before
+    -- this function runs and the vehicle stops existing. The player would fade
+    -- in behind an ambulance that is not there.
+    --
+    -- HANDED BACK TO THE ENGINE RATHER THAN KEPT. SetEntityAsNoLongerNeeded is
+    -- the documented release: "entities marked as no longer needed will be
+    -- deleted as the engine sees fit". So config/rescue.lua's promise that
+    -- NOTHING ACCUMULATES still holds -- it is now the population culler that
+    -- keeps it rather than this line, and a vehicle the player is standing next
+    -- to is not a candidate for culling, which is precisely the window that
+    -- matters.
+    --
+    -- ONLY ON A DELIVERY. Destroyed, out of time, match over, resource stopping
+    -- -- every other ending still deletes, because on none of them is there a
+    -- parked ambulance worth leaving and on most of them the player is dead.
+    if keepVehicle then
+        if r.driver and isTrue(DoesEntityExist(r.driver)) then
+            SetEntityAsNoLongerNeeded(r.driver)
+        end
+        if r.veh and isTrue(DoesEntityExist(r.veh)) then
+            SetEntityAsNoLongerNeeded(r.veh)
+        end
+        return
     end
 
     if r.driver and isTrue(DoesEntityExist(r.driver)) then
@@ -477,6 +522,13 @@ end
 --- @param r table
 local function taskDrive(r)
     if not r.driver or not isTrue(DoesEntityExist(r.driver)) then return end
+    -- ...BUT NEVER ONCE IT HAS PARKED. The only caller left that could reach a
+    -- finished ride is RESCUE_PLACE, and the server can still send one: a client
+    -- whose RESCUE_ARRIVED is refused (`everMoved` false) stays in `live`, and
+    -- its stalled clock is now genuinely stalled because the ambulance really
+    -- has stopped. Re-tasking there would undo the whole parked scene -- doors
+    -- open, dome light on, no driver -- and send an empty ambulance off again.
+    if r.parked then return end
 
     SetDriverAbility(r.driver, R.driverAbility or 0.6)
     SetDriverAggressiveness(r.driver, R.driverAggression or 0.8)
@@ -487,11 +539,117 @@ local function taskDrive(r)
         R.driveSpeed or 30.0,
         0,                                  -- no special driving mode
         GetEntityModel(r.veh),
-        R.driveStyle or 262144,
-        4.0,                                -- stop within 4m of the point
+        R.driveStyle or 786485,
+        -- STOP RANGE, AND IT WAS 4.0 -- WHICH IS THE CIRCLING FROM THE ENGINE'S
+        -- SIDE. The native's own documentation names small values as the failure
+        -- mode ("20.0 works fine"), and a driver told to stop within four metres
+        -- of a car park it can only reach within twenty simply never stops. It
+        -- is BR.Config.Rescue.arriveM now, so the AI's idea of having arrived
+        -- and this file's cannot drift apart.
+        R.arriveM or 50.0,
         true)
-    SetDriveTaskDrivingStyle(r.driver, R.driveStyle or 262144)
+    SetDriveTaskDrivingStyle(r.driver, R.driveStyle or 786485)
     SetDriveTaskMaxCruiseSpeed(r.driver, R.driveSpeed or 30.0)
+end
+
+--- Stop here, open it up, and let the medic walk away from it.
+---
+--- ═══ THE OWNER DESIGNED THIS RATHER THAN ASKING FOR A BETTER RADIUS ═══
+---
+--- 2026-08-28: "If it can't arrive, I don't want it to circle. I want it to park
+--- as close as it can get, even if that's on the road. And remember we want the
+--- back left and right doors open when it parks. See if you can turn the dome
+--- light on too so it's obvious someone got out of it - doors open, lights on,
+--- but nobody inside. Then you can make the driver get out and run around
+--- aimlessly so players can take the ambulance"
+---
+--- ...and, in the same breath: "That also means the doors need to unlock before
+--- the driver gets out."
+---
+--- THE ORDER OF THESE FIVE STEPS IS THE INSTRUCTION. Unlocking is not a
+--- flourish at the end: it comes before the medic is told to leave, because a
+--- ped exiting a vehicle locked against entry either fails silently or strands
+--- him in the seat -- and because the scene it leaves behind is a lie
+--- otherwise. Doors open, dome light on, nobody inside, and nobody can get in.
+---
+--- CALLED EXACTLY ONCE PER RIDE, latched on `r.parked`, which `taskDrive` also
+--- reads: a re-place arriving after this would send an empty ambulance off again
+--- with its doors hanging open.
+--- @param r table
+--- @param why string   how it got here, for the log
+local function park(r, why)
+    if r.parked then return end
+    r.parked = true
+    if not r.veh or not isTrue(DoesEntityExist(r.veh)) then return end
+
+    -- 1. THE DRIVE ENDS, THEN THE VEHICLE STOPS, AND BOTH ARE NEEDED.
+    -- ClearPedTasks stops the driver and leaves a heavy van coasting;
+    -- BringVehicleToHalt stops the van and lapses after its hold, by which time
+    -- there must be no task left to re-accelerate it. Clearing first is what
+    -- makes the halt final rather than a pause.
+    if r.driver and isTrue(DoesEntityExist(r.driver)) then
+        ClearPedTasks(r.driver)
+    end
+    BringVehicleToHalt(r.veh, R.haltDistM or 8.0, R.haltHoldS or 6, false)
+
+    -- 2. UNLOCK, BEFORE ANYTHING ELSE TOUCHES A DOOR.
+    SetVehicleDoorsLocked(r.veh, R.unlockedState or 1)
+
+    -- 3. Rear doors open (#191 step 7, and the owner again). The siren is NOT
+    -- turned off -- he asked for it on the whole time, and "the whole time"
+    -- includes this moment.
+    SetVehicleDoorOpen(r.veh, 2, false, false)
+    SetVehicleDoorOpen(r.veh, 3, false, false)
+    -- ...and the dome light, which is the detail that makes the picture read.
+    -- Guarded on the native rather than assumed: it is undocumented beyond its
+    -- signature, and a build without it must still park the ambulance.
+    if R.interiorLight ~= false and SetVehicleInteriorlight then
+        SetVehicleInteriorlight(r.veh, true)
+    end
+
+    -- 4. THE MEDIC LEAVES AND DOES NOT COME BACK.
+    --
+    -- Mortal and unblocked first: he was invincible and deaf to events because
+    -- an NPC shot out of the driver's seat mid-rescue would strand the ambulance
+    -- in the recovery machinery. The rescue is over, so both come off -- an
+    -- invincible paramedic wandering Los Santos for the rest of the match is a
+    -- thing nobody could explain, and a ped blocked from non-temporary events
+    -- is a poor candidate for ambient behaviour.
+    if r.driver and isTrue(DoesEntityExist(r.driver)) then
+        local medic = r.driver
+        SetEntityInvincible(medic, false)
+        SetBlockingOfNonTemporaryEvents(medic, false)
+        SetPedCanBeDraggedOut(medic, true)
+        SetPedKeepTask(medic, true)
+        TaskLeaveVehicle(medic, r.veh, R.driverExitFlag or 256)
+
+        -- THE WANDER HAS TO FOLLOW THE EXIT, NOT REPLACE IT. Both are tasks and
+        -- the second one issued wins, so wandering him on this line would
+        -- cancel the exit and leave him sitting in the ambulance behaving
+        -- ambiently. client/vehrefuse.lua learned the same thing about this
+        -- native from the other end: it is queued, it takes frames, and it can
+        -- be refused outright -- so this waits for him to actually be out, and
+        -- gives up on a bound rather than looping forever.
+        --
+        -- WANDER RATHER THAN A FLEE TASK. "Run around aimlessly" is the effect
+        -- and a flee is not it: a fleeing ped runs in one direction and is over
+        -- the horizon in fifteen seconds, which empties the scene the doors and
+        -- the light were staged for. TaskWanderStandard(ped, 10.0, 10) is the
+        -- documented "walk anywhere without a duration".
+        Citizen.CreateThread(function()
+            local t0 = GetGameTimer()
+            while GetGameTimer() - t0 < 3000 do
+                if not isTrue(DoesEntityExist(medic)) then return end
+                if not isTrue(IsPedInAnyVehicle(medic, false)) then break end
+                Citizen.Wait(100)
+            end
+            if not isTrue(DoesEntityExist(medic)) then return end
+            TaskWanderStandard(medic, 10.0, 10)
+        end)
+    end
+
+    print(('[br_core] rescue: parked at %s -- %s')
+        :format(tostring(r.dest and r.dest.id), tostring(why)))
 end
 
 --- Where to actually park.
@@ -630,13 +788,30 @@ local function board(d)
         -- recovery machinery to run from outside.
         SetVehicleTyresCanBurst(r.veh, not (R.tyresBulletproof ~= false))
 
-        -- DOORS LOCKED so no other player can get in (#191 step 4). 4 is
-        -- "locked for everyone including the player". The passenger cannot get
-        -- out either -- but that is not what this line achieves, and it is worth
-        -- being precise: THE PLAYER CANNOT EXIT BECAUSE THEY ARE NOT IN A SEAT.
+        -- ═══ DOORS LOCKED SO NO OTHER PLAYER CAN GET IN (#191 step 4) -- AND
+        --     THE VALUE THAT WAS HERE DID NOT DO THAT ═══
+        --
+        -- It was `4`, with a comment calling it "locked for everyone including
+        -- the player". R*'s eVehicleLockState says otherwise: 4 is
+        -- VEHICLELOCK_LOCKED_PLAYER_INSIDE -- "locked once a player enters,
+        -- preventing others from entering" -- and the condition it waits for
+        -- NEVER HAPPENS HERE. The rescued player is ATTACHED to the stretcher,
+        -- not seated; no player ever enters this vehicle; so the lock never
+        -- armed and the ambulance drove the whole way unlocked.
+        --
+        -- 2 is VEHICLELOCK_LOCKED, "preventing entry by players and NPCs",
+        -- which is the sentence the issue asked for. client/vehrefuse.lua
+        -- reached the same value for the same job and its header carries the
+        -- argument for it over 10 (CANNOT_ENTER).
+        --
+        -- IT IS STILL NOT WHAT KEEPS THE PASSENGER IN, and that is worth being
+        -- precise about: THE PLAYER CANNOT EXIT BECAUSE THEY ARE NOT IN A SEAT.
         -- An attached ped has no vehicle to leave, so there is no exit control
         -- to fight and no "get out" state machine to lose a race against.
-        SetVehicleDoorsLocked(r.veh, 4)
+        --
+        -- IT COMES OFF WHEN THE AMBULANCE PARKS -- see `park`, which unlocks
+        -- before it opens a door or tells the medic to get out.
+        SetVehicleDoorsLocked(r.veh, R.lockedState or 2)
 
         -- Maximum upgrades except suspension (#191 step 4). Resolved against
         -- what this model actually HAS rather than a hardcoded tier, which is
@@ -765,13 +940,15 @@ local function board(d)
         -- welded in place and kills free look, and free look was the first thing
         -- missed. Third person on the vehicle, scenic, never first person, and
         -- the same behaviour at both ends of the journey.
-        -- PULLED BACK ON THE OWNER'S CALL, 2026-08-28: "can you zoom out our
-        -- scripted camera by like 6ft?". Six feet is 1.83m, so the height goes
-        -- 3.0 -> 4.83. It is a config value because a number arrived at by eye
-        -- is a number that gets adjusted by eye.
+        -- THE POSITION HERE LASTS ONE FRAME. `rescue.cam` below rewrites it from
+        -- BR.Config.Rescue.camBackM/camHeight on the next pass and every pass
+        -- after, which is where the zoom-out actually lives -- see the block
+        -- there for why a number written only at this line could never have been
+        -- what the owner was looking at. This one exists so the camera is not
+        -- created at the world origin for that one frame.
         local vc = GetEntityCoords(r.veh)
         r.cam = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
-            vc.x, vc.y, vc.z + (R.camHeight or 4.83), 0.0, 0.0, 0.0, 60.0, false, 2)
+            vc.x, vc.y, vc.z + (R.camHeight or 5.5), 0.0, 0.0, 0.0, 60.0, false, 2)
         SetCamActive(r.cam, true)
         RenderScriptCams(true, false, 0, true, true)
 
@@ -792,8 +969,47 @@ local function board(d)
         -- client/markers.lua consumes fresh waypoints and turns them into squad
         -- pings; it now stands down for the ride, or this would be eaten on the
         -- next tick.
+        --
+        -- ═══ ...AND THE MINIMAP, WHICH THE WAYPOINT ALONE DOES NOT REACH ═══
+        --
+        -- Owner, 2026-08-28: "we did drive to the waypoint, which was clearly on
+        -- my map. Curiously the route was not on the minimap."
+        --
+        -- HE IS DESCRIBING A REAL GATE AND IT IS NOT OURS. The engine keeps
+        -- three independent GPS route slots (eGpsSlotType: waypoint, blip,
+        -- discrete), and route rendering on the RADAR is conditioned on the
+        -- player being in a vehicle. The proof is in the natives themselves:
+        -- START_GPS_MULTI_ROUTE's third parameter is
+        --
+        --     displayOnFoot -- "Draws the GPS path regardless if the player is
+        --                       in a vehicle or not."
+        --
+        -- A flag that only exists because the default is the other way. And this
+        -- player is on the wrong side of it by construction: they are ATTACHED
+        -- to the stretcher rather than sitting in a seat, so IsPedInAnyVehicle
+        -- is false and GetVehiclePedIsIn answers 0 for the whole ride -- the same
+        -- property that exempts them from the fuel registry.
+        --
+        -- SO BOTH ARE DRAWN, AND THEY ARE DIFFERENT SLOTS RATHER THAN A
+        -- DUPLICATE. The waypoint is the owner's own suggestion and is what puts
+        -- the marker on the pause map; the multi-route is a second slot with the
+        -- on-foot flag set, and it is the one that reaches the radar he is
+        -- actually watching while he rides. `routeFromPlayer` is true so the
+        -- line starts at the ambulance rather than at wherever the previous
+        -- point was.
+        --
+        -- NOT SetGpsFlags, which was the other candidate: its own documentation
+        -- says the flags do not appear to be read, and it LOCKS OUT every other
+        -- resource until ClearGpsFlags is called by the same script -- a way to
+        -- break somebody else's GPS for no gain.
         if r.dest and r.dest.x then
             SetNewWaypoint(r.dest.x + 0.0, r.dest.y + 0.0)
+
+            ClearGpsMultiRoute()
+            StartGpsMultiRoute((R.routeColour or 5), true, true)
+            AddPointToGpsMultiRoute(r.dest.x + 0.0, r.dest.y + 0.0,
+                                    (r.dest.z or 0.0) + 0.0)
+            SetGpsMultiRouteRender(true)
         end
 
         -- ═══ DO NOT COME BACK UNTIL THE AMBULANCE IS REALLY THERE ═══
@@ -919,6 +1135,34 @@ AddEventHandler(BR.Net.RESCUE_END, function(d)
         -- the fade. The ending is this handler's to run.
         if ride then ride.ending = true end
 
+        -- ═══ WHERE THE AMBULANCE ACTUALLY STOPPED, READ BEFORE IT IS RELEASED
+        --     ═══
+        --
+        -- THE ARRIVAL RADIUS IS 50 METRES (owner, 2026-08-28) and the delivery
+        -- used to be placed behind the DESTINATION's coordinates, which is a
+        -- different place. At 8m nobody would have noticed; at 50m the player
+        -- fades in half a street away from an ambulance whose open doors, dome
+        -- light and departed driver are the whole point of the scene. And the
+        -- gap is not bounded by 50m either: the "park as close as it can get"
+        -- rule can end a ride up to `arriveNearM` out.
+        --
+        -- SO THE DELIVERY FOLLOWS THE VEHICLE. The server has always delegated
+        -- the placing to the client -- "the server says where, the client does
+        -- the placing", the same contract as BUS_JUMP_OK -- and the vehicle's
+        -- own position is a strictly better answer to the same question than the
+        -- point it was aiming at. The server's coordinates stay as the fallback
+        -- for a ride with no vehicle left to read.
+        --
+        -- READ NOW, because `cleanup` below hands the ambulance back to the
+        -- engine and the handle stops being ours a line later.
+        local dd = (type(d) == 'table') and d or {}
+        local px, py, pz, ph = dd.x, dd.y, dd.z, dd.heading or 0.0
+        local rr = ride
+        if delivered and rr and rr.veh and isTrue(DoesEntityExist(rr.veh)) then
+            local vc = GetEntityCoords(rr.veh)
+            px, py, pz, ph = vc.x, vc.y, vc.z, GetEntityHeading(rr.veh)
+        end
+
         -- FADE FIRST ON THE WAY OUT TOO (#191 step 7), and the fade is what the
         -- detach and the teleport hide.
         DoScreenFadeOut(400)
@@ -927,23 +1171,26 @@ AddEventHandler(BR.Net.RESCUE_END, function(d)
             Citizen.Wait(50)
         end
 
-        cleanup()
+        -- A DELIVERY LEAVES ITS AMBULANCE BEHIND; every other ending deletes it.
+        cleanup(delivered)
 
         if delivered then
             -- ON THE GROUND DIRECTLY BEHIND THE AMBULANCE (#191 step 7), which
-            -- is where the rear doors are. Health and weapons are the server's
-            -- business and are already restored by the time this runs.
+            -- is where the rear doors are -- and since 2026-08-28 that is the
+            -- REAL ambulance rather than the surveyed point it drove at.
+            -- Health and weapons are the server's business and are already
+            -- restored by the time this runs.
             -- BEHIND, and the sign matters. A GTA heading's FORWARD vector is
             -- (-sin h, cos h), so behind is its negation -- getting this
             -- backwards puts the player in front of the bonnet, which is both
             -- wrong and the one place a still-rolling ambulance can hit them.
             local ped = PlayerPedId()
-            local h = d.heading or 0.0
+            local h = ph
             local rad = math.rad(h)
-            local bx = d.x + math.sin(rad) * (R.dropBackM or 3.5)
-            local by = d.y - math.cos(rad) * (R.dropBackM or 3.5)
+            local bx = px + math.sin(rad) * (R.dropBackM or 3.5)
+            local by = py - math.cos(rad) * (R.dropBackM or 3.5)
 
-            SetEntityCoords(ped, bx, by, d.z, false, false, false, true)
+            SetEntityCoords(ped, bx, by, pz, false, false, false, true)
             SetEntityHeading(ped, h)
 
             -- Wait for the ground under them before showing it. Landing a ped
@@ -986,8 +1233,26 @@ BR.Loop.register(BR.Loop.FRAME, 'rescue.cam', function()
     local rad = math.rad(hdg)
     local pitchRad = math.rad(r.camPitch)
 
-    local back = 7.0 * math.cos(pitchRad)
-    local up   = 2.5 - 7.0 * math.sin(pitchRad)
+    -- ═══ THE TWO NUMBERS THAT DECIDE HOW ZOOMED OUT THIS IS, AND THEY ARE
+    --     CONFIG NOW ═══
+    --
+    -- Owner, 2026-08-28: "I don't think the camera is zoomed out enough" -- after
+    -- a commit that moved `camHeight` 3.0 -> 4.83. HE WAS RIGHT AND THE CAMERA
+    -- HAD NOT MOVED AT ALL. Two reasons, and both are the same mistake:
+    --
+    --   * `R.camHeight` was never added to config/rescue.lua, so `or 4.83` was
+    --     the entire value.
+    --   * and it was only ever passed to CreateCamWithParams, on the frame the
+    --     camera was made -- THIS LOOP overwrote it on the very next frame from
+    --     a hardcoded 7.0 and 2.5, and has done since it was written.
+    --
+    -- So the config values are read HERE, where the camera actually is. The
+    -- distance is the half his complaint needed: a camera that is only higher
+    -- looks down at the roof, and a van is long enough that it has to come back
+    -- as well to fit in the shot.
+    local boom = R.camBackM or 11.0
+    local back = boom * math.cos(pitchRad)
+    local up   = (R.camHeight or 5.5) - boom * math.sin(pitchRad)
 
     SetCamCoord(r.cam, c.x + math.sin(rad) * back,
                        c.y - math.cos(rad) * back,
@@ -1177,15 +1442,26 @@ BR.Loop.register(BR.Loop.TICK, 'rescue.watch', function()
         return
     end
 
-    -- ═══ ARRIVED ═══
+    -- ═══ ARRIVED -- OR AS CLOSE AS IT IS GOING TO GET ═══
+    --
+    -- THE CLOSEST APPROACH IS THE STATE THIS BAND KEEPS, and it is a running
+    -- MINIMUM rather than a distance. A circling ambulance is moving, at speed,
+    -- on a road, making no progress -- invisible to a speed test and invisible
+    -- to the server's own `everMoved` sampling, which reads a lap as a healthy
+    -- drive and is right to. What a lap cannot do is beat its own best, so
+    -- `bestM` stops falling the moment the driving stops being progress. See
+    -- BR.RescueArrived for the rule this feeds.
     local c = GetEntityCoords(r.veh)
-    if BR.Dist(c.x, c.y, r.dest.x, r.dest.y) <= 8.0 then
+    local d = BR.Dist(c.x, c.y, r.dest.x, r.dest.y)
+    local now = GetGameTimer()
+    if not r.bestM or d < r.bestM then
+        r.bestM, r.bestAt = d, now
+    end
+
+    local arrived, why = BR.RescueArrived(d, r.bestM, now - (r.bestAt or now), R)
+    if arrived then
         r.reported = true
-        -- Rear doors open on arrival (#191 step 7). The siren is NOT turned off
-        -- -- the owner asked for it on the whole time, and "the whole time"
-        -- includes this moment.
-        SetVehicleDoorOpen(r.veh, 2, false, false)
-        SetVehicleDoorOpen(r.veh, 3, false, false)
+        park(r, why)
         TriggerServerEvent(BR.Net.RESCUE_ARRIVED)
     end
 end)

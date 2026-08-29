@@ -432,9 +432,30 @@ BR.Config.Map.NoLoot = {
 --- (squad resurrection, where ambulances become "a tracked, map-wide resource"
 --- blipped for every squad) is still unbuilt and will want the same rows.
 ---
---- THE ROWS HAVE NO `id` AND DO NOT NEED ONE. #191 only ever uses an id in a log
---- line and falls back to printing the coordinates, which is the thing somebody
---- would search this table for anyway.
+--- ═══ THE ROWS CARRY AN `id` NOW, AND IT IS DERIVED RATHER THAN INVENTED ═══
+---
+--- This block said an id was not needed because #191 only ever uses one in a log
+--- line. That was true and it made the log line useless: the owner's own console
+--- from the first successful ride read `pickup=nil  dest=nil` beside two pairs
+--- of coordinates, which is a rescue nobody can talk about without a map open.
+---
+--- EACH ID IS THE NEAREST POI's ID, taken from BR.Config.Map.POIs above. Not a
+--- place name chosen by eye -- these coordinates are somewhere in Los Santos and
+--- guessing at what to call them is how a table ends up with two names for one
+--- car park. The nearest POI is a name this file already agrees on, it is what
+--- the paragraph below was ALREADY cross-checking the z values against, and the
+--- mapping is unique: no two spawns share a nearest POI except the two Davis
+--- ones, and the further of those takes the `_e` suffix this file already uses
+--- for exactly that (procopio_e, harmony_n, palmer_s, vinehills_e).
+---
+--- AN ID NAMES THE NEIGHBOURHOOD, NOT THE POINT. Several are a few hundred
+--- metres from the POI they are named for -- `terminal` is 406m from the dock
+--- and `strawberry` is 82m from the junction -- which is the honest reading of
+--- "the ambulance station near X" and is all a log line needs.
+---
+--- NOTHING WAS RENUMBERED, REORDERED OR MOVED. The owner surveyed all 23 by
+--- hand; the ids are a new field on unchanged rows, and the row order is still
+--- the order he walked them in.
 ---
 --- AUTHORED WITH /brcoords (br_core/client/debug.lua), which prints exactly
 --- these four numbers in exactly this order. So these are ped-standing
@@ -452,29 +473,29 @@ BR.Config.Map.NoLoot = {
 --- Galileo Observatory, whose walked z is 330, and (358.31, 786.37, 186.16) is
 --- 96m from Vinewood Hills East, whose walked z is 180.
 BR.Config.Map.AmbulanceSpawns = {
-    { x =  -357.57, y = 6134.72, z =  31.10, heading =  43.9 },
-    { x =  1686.21, y = 6434.23, z =  32.04, heading = 161.7 },
-    { x =  1687.58, y = 4796.53, z =  41.56, heading = 181.7 },
-    { x =  2518.10, y = 4198.01, z =  39.58, heading = 149.1 },
-    { x =  1866.94, y = 3698.16, z =  33.21, heading = 209.0 },
-    { x =   568.70, y = 2721.65, z =  41.71, heading =   3.9 },
-    { x =  1834.39, y = 2541.99, z =  45.53, heading = 268.5 },
-    { x =  2558.61, y = 2743.19, z =  42.21, heading = 326.9 },
-    { x =  2676.64, y = 1369.68, z =  24.18, heading = 270.5 },
-    { x =  3638.16, y = 3768.96, z =  28.19, heading =  22.5 },
-    { x =  1444.42, y = -2596.73, z = 47.89, heading = 345.4 },
-    { x =  2550.40, y =  342.59, z = 108.11, heading = 268.9 },
-    { x =    57.17, y = -1569.73, z = 29.11, heading =  49.1 },
-    { x =  -820.16, y = -2373.66, z = 14.22, heading = 149.6 },
-    { x =   411.83, y = -1433.28, z = 29.05, heading =  30.0 },
-    { x =   469.59, y =  247.19, z = 102.86, heading =  69.4 },
-    { x = -1679.92, y =   44.41, z =  63.30, heading = 160.8 },
-    { x = -3153.00, y = 1089.12, z =  20.36, heading = 280.4 },
-    { x =  -408.51, y = 1200.45, z = 325.30, heading = 163.3 },
-    { x = -1725.42, y = 2945.55, z =  32.46, heading =  62.1 },
-    { x =  -531.22, y = -323.49, z =  34.68, heading =  29.9 },
-    { x =   358.31, y =  786.37, z = 186.16, heading = 243.9 },
-    { x = -1491.27, y = 4963.30, z =  63.56, heading =   2.0 },
+    { id = 'paleto',       x =  -357.57, y = 6134.72, z =  31.10, heading =  43.9 },
+    { id = 'procopio',     x =  1686.21, y = 6434.23, z =  32.04, heading = 161.7 },
+    { id = 'grapeseed',    x =  1687.58, y = 4796.53, z =  41.56, heading = 181.7 },
+    { id = 'senora_n',     x =  2518.10, y = 4198.01, z =  39.58, heading = 149.1 },
+    { id = 'sandy',        x =  1866.94, y = 3698.16, z =  33.21, heading = 209.0 },
+    { id = 'harmony',      x =   568.70, y = 2721.65, z =  41.71, heading =   3.9 },
+    { id = 'penitentiary', x =  1834.39, y = 2541.99, z =  45.53, heading = 268.5 },
+    { id = 'dryfields',    x =  2558.61, y = 2743.19, z =  42.21, heading = 326.9 },
+    { id = 'palmer',       x =  2676.64, y = 1369.68, z =  24.18, heading = 270.5 },
+    { id = 'humane',       x =  3638.16, y = 3768.96, z =  28.19, heading =  22.5 },
+    { id = 'terminal',     x =  1444.42, y = -2596.73, z = 47.89, heading = 345.4 },
+    { id = 'noose_n',      x =  2550.40, y =  342.59, z = 108.11, heading = 268.9 },
+    { id = 'strawberry',   x =    57.17, y = -1569.73, z = 29.11, heading =  49.1 },
+    { id = 'arena_w',      x =  -820.16, y = -2373.66, z = 14.22, heading = 149.6 },
+    { id = 'strawberry_e', x =   411.83, y = -1433.28, z = 29.05, heading =  30.0 },
+    { id = 'hawick',       x =   469.59, y =  247.19, z = 102.86, heading =  69.4 },
+    { id = 'richman',      x = -1679.92, y =   44.41, z =  63.30, heading = 160.8 },
+    { id = 'chumash',      x = -3153.00, y = 1089.12, z =  20.36, heading = 280.4 },
+    { id = 'observatory',  x =  -408.51, y = 1200.45, z = 325.30, heading = 163.3 },
+    { id = 'lagozancudo',  x = -1725.42, y = 2945.55, z =  32.46, heading =  62.1 },
+    { id = 'westvinewood', x =  -531.22, y = -323.49, z =  34.68, heading =  29.9 },
+    { id = 'vinehills_e',  x =   358.31, y =  786.37, z = 186.16, heading = 243.9 },
+    { id = 'graybeard',    x = -1491.27, y = 4963.30, z =  63.56, heading =   2.0 },
 }
 
 --- Is this point somewhere loot is banned outright?
