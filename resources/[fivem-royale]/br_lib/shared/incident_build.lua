@@ -320,6 +320,53 @@ function BR.IncidentBuild.fromReport(ev, records)
     }
 end
 
+-- ---------------------------------------------------------------------------
+-- The chat screen's two constants
+-- ---------------------------------------------------------------------------
+--
+-- DECLARED HERE, ABOVE `fromChat`, AND NOT BESIDE THE OTHER TIMELINE CAPS FURTHER
+-- DOWN -- which is where they were, and it was a bug. `fromChat` builds a lobby
+-- case's one-row timeline itself, so it READS both; a Lua local is only in scope
+-- after its declaration, so from up here they resolved to nil globals and the
+-- row was written with `kind = nil` and no text. It failed no gate:
+-- tools/check_forward_locals.lua catches a forward-declared local being CALLED,
+-- not one being READ, so the entry was simply built empty and close.js would
+-- have dropped it in silence. tools/test_shared.lua is what caught it.
+--- The `kind` a refused chat line carries.
+---
+--- ONE SPELLING, NAMED ONCE, FOR THE REASON STRIP_KIND AND MATCH_CREATED_KIND
+--- ARE: js-src/br_ddb/src/close.js discriminates on this exact string and drops
+--- what it does not recognise, so a typo here fails no test on either side and
+--- simply means the entries never arrive. tools/verify.sh reads every `*_KIND`
+--- constant in this file and checks close.js names it.
+local CHAT_KIND = 'chat_block'
+
+--- The longest refused chat line that reaches a moderation record.
+---
+--- ═══ THIS IS THE FIRST PLAYER-AUTHORED PROSE ON AN INCIDENT'S TIMELINE ═══
+---
+--- js-src/br_ddb/src/incident.js says, of a player report's free-text note,
+--- "NO FREE-TEXT NOTE, EVER, FROM THE GAME ... there is no player-supplied prose
+--- anywhere in this row. That removes the injection surface rather than guarding
+--- it." The second sentence was already not quite true -- `evidence[].chat[]
+--- .text` has carried what players typed since the buffer shipped, capped at 512
+--- there -- and the owner has now asked for the refused line specifically, on the
+--- timeline. So the surface is real and is bounded here rather than argued away.
+---
+--- TWO HUNDRED, WHICH IS BR.ChatLimits.maxLength AND NOT A NEW NUMBER. The
+--- server already refuses to deliver more than that, so a cap above it could
+--- never be reached and a cap below it would store something the recipients did
+--- not see -- the same "record what was delivered" rule the chat evidence log is
+--- built on. Sixty entries of two hundred bytes is 12KB against DynamoDB's 400KB
+--- item, alongside the kills and the evidence log already spending from it.
+---
+--- IT IS TEXT ON THE CONSOLE, NEVER MARKUP. Ringmaster renders timeline entries
+--- as React text children -- there is no dangerouslySetInnerHTML anywhere on that
+--- path -- so the escaping is structural rather than a sanitiser somebody has to
+--- remember. Nothing on the game side should ever pre-escape it: that would
+--- double-encode on the page and put `&amp;` in a moderation record.
+local MAX_CHAT_TEXT = 200
+
 --- What each chat refusal reason is called on a moderation record.
 ---
 --- PROSE, KEYED ON THE REASON, mirroring how BR.ShotTier is keyed on
@@ -383,16 +430,46 @@ end
 --- conjured weapon would put advertising and aimbotting in the same tier and
 --- teach whoever reads the queue to trust the tier less.
 ---
---- NO MATCH, NO INCIDENT -- and the line is still shadowed. The evidence buffer
---- refuses to hold lobby chat at all (server/evidence.lua's metaFor: "Lobby
---- chatter is not evidence of anything"), so a case filed from the lobby would
---- carry a summary and an empty timeline -- a moderation record with the one
---- thing the owner asked for missing from it. server/strip.lua declines on the
---- same rule for the same reason. THE MESSAGE IS STILL NOT DELIVERED; what is
---- skipped is the paperwork, not the refusal.
+--- ═══ A LOBBY REFUSAL FILES TOO, AND CARRIES ITS LINE ON THE EVENT ═══
 ---
---- @param ev table  { license, name, matchId, reason, count, at }
---- @param records table|nil  evidence rows for the sender
+--- This used to decline a matchless event outright, which left lobby
+--- advertising invisible to moderation -- and the lobby is precisely where a bot
+--- can idle indefinitely without ever playing. The owner's words were "any post
+--- containing a link is refused and creates an incident", and a lobby post is a
+--- post.
+---
+--- ═══ THE BUFFER IS NOT THE ANSWER, AND THIS IS WHERE THAT GETS WRITTEN DOWN ═══
+---
+--- The obvious fix is to delete the `matchId == nil` guard in
+--- server/evidence.lua's `metaFor` and let lobby chat into the evidence buffer
+--- like everything else. DO NOT. The buffer's whole lifecycle is match-scoped:
+--- `BR.EvidenceBuf:clearMatch(matchId)` only drops records whose `r.matchId`
+--- EQUALS the match being torn down, and a lobby record's matchId is nil -- so
+--- no teardown ever matches it. `playerDropped` seals it into `self.sealed`,
+--- where it stays until `onResourceStart`. Allowing lobby chat in would leak one
+--- record plus up to `chatMax` lines per lobby player, per server uptime, which
+--- is exactly the leak `metaFor`'s comment already warns about.
+---
+--- SO A LOBBY CASE DOES NOT USE THE BUFFER AT ALL. It does not need to: a match
+--- case aggregates a whole round, and a lobby refusal is one line, which
+--- server/chat.lua has in its hand at the moment it refuses and puts on the
+--- event. The timeline is built from that, here, and the caller skips
+--- `attachTimeline` entirely for a matchless payload -- which would only
+--- overwrite this with an empty list.
+---
+--- ═══ THE LIMITATION, STATED SO IT IS NOT DISCOVERED IN A QUEUE ═══
+---
+--- LOBBY REPEATS ADD NOTHING. There is no match, so there is no match-end close,
+--- and the close is the only thing that appends to `matchTimeline` after filing.
+--- A bot that advertises a hundred times in the lobby produces ONE case with ONE
+--- line on it. `priorFor` dedupes the rest and they are dropped in silence.
+---
+--- That is far better than invisible and it is not complete. Capturing lobby
+--- repeats needs a second write path for a matchless case, which is a real
+--- change and the owner's call -- do not bolt one on here.
+---
+--- @param ev table  { license, name, matchId, reason, count, at, text, channel }
+--- @param records table|nil  evidence rows for the sender; empty in the lobby
 --- @return table|nil payload, string|nil why
 function BR.IncidentBuild.fromChat(ev, records)
     if type(ev) ~= 'table' then return nil, 'no event' end
@@ -403,7 +480,6 @@ function BR.IncidentBuild.fromChat(ev, records)
     if type(ev.license) ~= 'string' or ev.license == '' then
         return nil, 'no license'
     end
-    if ev.matchId == nil then return nil, 'not in a match' end
     if BR.IncidentBuild.CHAT_REASON[ev.reason] == nil then
         return nil, 'not a chat refusal reason'
     end
@@ -415,7 +491,7 @@ function BR.IncidentBuild.fromChat(ev, records)
 
     local newest = evidence[#evidence]
 
-    return {
+    local payload = {
         kind     = 'anticheat',
         category = 'system',
         state    = 'pending_review',
@@ -436,6 +512,42 @@ function BR.IncidentBuild.fromChat(ev, records)
         evidence = evidence,
         atGameMs = ev.at,
     }
+
+    -- ═══ THE LOBBY CASE BUILDS ITS OWN ONE-ROW TIMELINE ═══
+    --
+    -- A case filed inside a match gets its timeline from `attachTimeline`, out
+    -- of the evidence buffer. There is no buffer here (see the header), so the
+    -- single refused line is written straight onto the payload from the event.
+    --
+    -- IT IS A `matchTimeline` DESPITE THERE BEING NO MATCH, AND THAT IS THE
+    -- CHEAPEST HONEST SHAPE RATHER THAN A LOOPHOLE. The console merges
+    -- `events` and `matchTimeline` on `at` and gates NEITHER on `matchId` --
+    -- `mergeTimeline` never looks at it, `matchProgress` answers `none` so no
+    -- progress chip is drawn, and the match RECORD card is separately gated on
+    -- `matchId != null` so it stays hidden. The row therefore renders through
+    -- the `chat_block` path that already exists, with no console change at all.
+    -- Verified against the real functions rather than assumed.
+    --
+    -- COMPLETE, BECAUSE IT IS. One line was refused and one line is on the
+    -- record; nothing was dropped, so claiming otherwise would be the lie the
+    -- flag exists to prevent.
+    if ev.matchId == nil then
+        local text = BR.ChatScreen
+            and BR.ChatScreen.clamp(ev.text, MAX_CHAT_TEXT)
+            or tostring(ev.text or ''):sub(1, MAX_CHAT_TEXT)
+
+        payload.matchTimeline = { {
+            at      = ev.at,
+            kind    = CHAT_KIND,
+            text    = text,
+            reason  = ev.reason,
+            channel = ev.channel,
+        } }
+        payload.matchTimelineComplete = true
+        payload.matchKillsSeen = 0
+    end
+
+    return payload
 end
 
 --- The one line shown in the queue for a strip case.
@@ -817,14 +929,6 @@ local MATCH_CREATED_KIND = 'match_created'
 --- tools/test_shared.lua pins the two to the same number.
 local MAX_TIMELINE_STRIPS = 60
 
---- The `kind` a refused chat line carries.
----
---- ONE SPELLING, NAMED ONCE, FOR THE REASON STRIP_KIND AND MATCH_CREATED_KIND
---- ARE: js-src/br_ddb/src/close.js discriminates on this exact string and drops
---- what it does not recognise, so a typo here fails no test on either side and
---- simply means the entries never arrive. tools/verify.sh reads every `*_KIND`
---- constant in this file and checks close.js names it.
-local CHAT_KIND = 'chat_block'
 
 --- The most refused-chat entries one incident's timeline may carry.
 ---
@@ -832,32 +936,6 @@ local CHAT_KIND = 'chat_block'
 --- what MAX_TIMELINE_STRIPS is to `refusedMax`. tools/test_shared.lua pins the
 --- two to the same number.
 local MAX_TIMELINE_CHAT = 60
-
---- The longest refused chat line that reaches a moderation record.
----
---- ═══ THIS IS THE FIRST PLAYER-AUTHORED PROSE ON AN INCIDENT'S TIMELINE ═══
----
---- js-src/br_ddb/src/incident.js says, of a player report's free-text note,
---- "NO FREE-TEXT NOTE, EVER, FROM THE GAME ... there is no player-supplied prose
---- anywhere in this row. That removes the injection surface rather than guarding
---- it." The second sentence was already not quite true -- `evidence[].chat[]
---- .text` has carried what players typed since the buffer shipped, capped at 512
---- there -- and the owner has now asked for the refused line specifically, on the
---- timeline. So the surface is real and is bounded here rather than argued away.
----
---- TWO HUNDRED, WHICH IS BR.ChatLimits.maxLength AND NOT A NEW NUMBER. The
---- server already refuses to deliver more than that, so a cap above it could
---- never be reached and a cap below it would store something the recipients did
---- not see -- the same "record what was delivered" rule the chat evidence log is
---- built on. Sixty entries of two hundred bytes is 12KB against DynamoDB's 400KB
---- item, alongside the kills and the evidence log already spending from it.
----
---- IT IS TEXT ON THE CONSOLE, NEVER MARKUP. Ringmaster renders timeline entries
---- as React text children -- there is no dangerouslySetInnerHTML anywhere on that
---- path -- so the escaping is structural rather than a sanitiser somebody has to
---- remember. Nothing on the game side should ever pre-escape it: that would
---- double-encode on the page and put `&amp;` in a moderation record.
-local MAX_CHAT_TEXT = 200
 
 --- Turn one buffered kill row into a timeline entry.
 ---

@@ -213,19 +213,27 @@ AddEventHandler(BR.Net.CHAT_SEND, function(data)
         -- this match, so it is the one that decides between opening a case and
         -- corroborating one. Fire-and-forget: if nothing is listening the
         -- message still went nowhere, which is the half that protects the match.
-        -- THE LINE ITSELF IS NOT ON THIS EVENT, AND THAT IS DELIBERATE. It went
-        -- into the evidence buffer two lines above, which is where the timeline
-        -- is built from; putting a second copy on the wire would be a second
-        -- place for one string to live and to rot -- and this repository has the
-        -- scar for that already, in the `note` field that was carried through
-        -- five layers of plumbing to a hard-coded null. Every key below is read
-        -- by server/incident.lua. Nothing here is sent speculatively.
+        -- ═══ THE LINE ITSELF TRAVELS, AND ONLY THE LOBBY CASE READS IT ═══
+        --
+        -- It was deliberately absent at first, on the reasoning that the line is
+        -- already in the evidence buffer and a second copy on the wire is a
+        -- second place for one string to rot. That reasoning holds for a case
+        -- filed IN a match and does not reach the lobby: server/evidence.lua
+        -- refuses to buffer lobby chat, so for a refusal outside a match this
+        -- event is the ONLY carrier the text has. Without it a lobby case is a
+        -- record of a message nobody can read.
+        --
+        -- Both keys are read by server/incident.lua's handler. Nothing here is
+        -- sent speculatively -- see BR.IncidentBuild.fromChat, which uses them
+        -- on exactly one branch.
         TriggerEvent('br:core:chatrefused', {
             name    = msg.name,
             license = BR.Roster and BR.Roster.licenseOf
                 and BR.Roster.licenseOf(src) or nil,
             matchId = p.matchId,
             reason  = refusal,
+            text    = text,
+            channel = channel,
             at      = msg.at,
         })
         return

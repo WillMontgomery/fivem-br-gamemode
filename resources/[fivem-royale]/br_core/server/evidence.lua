@@ -43,6 +43,23 @@ local function metaFor(src)
     -- ONLY WHILE A MATCH IS LIVE. Lobby chatter is not evidence of anything and
     -- buffering it would mean holding the whole server's small talk between
     -- matches for no reader.
+    --
+    -- ═══ DO NOT DELETE THIS GUARD TO MAKE LOBBY CHAT FILEABLE ═══
+    --
+    -- It is the obvious fix for "a refused line in the lobby has no evidence to
+    -- attach", it has already been considered, and it LEAKS. This buffer's whole
+    -- lifecycle is match-scoped: BR.EvidenceBuf:clearMatch(matchId) drops only
+    -- the records whose `r.matchId` EQUALS the match being torn down, and a
+    -- lobby record's matchId is nil -- so no teardown ever matches one.
+    -- `playerDropped` seals it into `self.sealed`, where it stays until
+    -- `onResourceStart`. Letting lobby chat in costs one record plus up to
+    -- `chatMax` lines per lobby player, per server uptime, held for nobody.
+    --
+    -- THE LOBBY CASE ALREADY WORKS WITHOUT THIS. It does not need the buffer: a
+    -- match case aggregates a round, a lobby refusal is one line, and
+    -- server/chat.lua puts that line on `br:core:chatrefused` where
+    -- BR.IncidentBuild.fromChat builds a one-row timeline from it directly. See
+    -- that function's header.
     if e.matchId == nil then return nil end
 
     return {

@@ -579,20 +579,20 @@ AddEventHandler('br:core:chatrefused', function(ev)
     -- the wrong player's open cases.
     if type(ev.license) ~= 'string' or ev.license == '' then return end
 
-    -- NO MATCH, NO CASE AND NO COUNTER EITHER -- and the line was still not
-    -- delivered, which is the part that matters. `fromChat` declines a
-    -- matchless event anyway (the evidence buffer holds no lobby chat, so the
-    -- case would carry an empty timeline), and returning here rather than there
-    -- keeps `chatCount` free of a `nomatch` bucket that nothing would ever
-    -- read and no teardown would ever clear. `lastSaid` carries one of those on
-    -- purpose because a console `brrefuse` really does file outside a match;
-    -- this path never files, so it must not accumulate.
-    if ev.matchId == nil then return end
-
-    -- COUNTED HERE RATHER THAN IN chat.lua, because this is the file that
-    -- already knows what a match is and clears itself when one ends. The count
-    -- is cumulative, which is what lets the corroboration throttle below drop a
-    -- note without losing anything.
+    -- ═══ A LOBBY REFUSAL FILES TOO ═══
+    --
+    -- This used to return here, which left lobby advertising invisible to
+    -- moderation -- and the lobby is exactly where a bot can idle indefinitely
+    -- without ever playing. `fromChat` builds a one-row timeline from the event
+    -- for a matchless case; see its header for why the evidence buffer is
+    -- deliberately not involved, and for the limitation that comes with it.
+    --
+    -- THE `nomatch` BUCKET IS BOUNDED THE WAY `filed`'s ALREADY IS. `priorFor`
+    -- keys matchless cases under one sentinel and `onResourceStart` is what
+    -- empties it -- one small record per player who has drawn a lobby case, per
+    -- uptime, which is the cost a console `brrefuse` already accepts. The count
+    -- below joins it on the same terms, and for a lobby case it is always 1:
+    -- the first refusal files and `priorFor` drops every repeat above.
     local k = key(ev.matchId)
     local byLicense = chatCount[k]
     if not byLicense then
@@ -654,6 +654,11 @@ AddEventHandler('br:core:chatrefused', function(ev)
         reason  = ev.reason,
         count   = n,
         at      = ev.at,
+        -- READ ONLY ON THE LOBBY BRANCH, where the event is the text's only
+        -- carrier. In a match `attachTimeline` builds the timeline out of the
+        -- evidence buffer and these are ignored.
+        text    = ev.text,
+        channel = ev.channel,
     }, records)
     if not payload then
         print(('^3[br_core] chat incident NOT filed for %s: %s^7')
@@ -661,11 +666,23 @@ AddEventHandler('br:core:chatrefused', function(ev)
         return
     end
 
-    print(('[br_core] CHAT: %s -- message held back (%s), %d this match')
-        :format(tostring(ev.name), tostring(ev.reason), n))
+    print(('[br_core] CHAT: %s -- message held back (%s), %d this %s')
+        :format(tostring(ev.name), tostring(ev.reason), n,
+            ev.matchId ~= nil and 'match' or 'session (lobby)'))
 
     payload.priorIncidentIds = prior
-    BR.Incident.attachTimeline(payload, records)
+
+    -- ═══ SKIPPED ENTIRELY FOR A LOBBY CASE, NOT CALLED AND IGNORED ═══
+    --
+    -- `attachTimeline` would overwrite `payload.matchTimeline` with the empty
+    -- list `timelineOpen` returns for a matchless payload -- deleting the one
+    -- row `fromChat` just built, which is the whole record. The other two things
+    -- it does are no-ops here anyway: `BR.Evidence.retain` promotes a buffer
+    -- record that will never exist for a lobby player, and the close
+    -- registration already declines a payload with no match.
+    if payload.matchId ~= nil then
+        BR.Incident.attachTimeline(payload, records)
+    end
 
     TriggerEvent('br:ringmaster:incident', payload)
 end)
