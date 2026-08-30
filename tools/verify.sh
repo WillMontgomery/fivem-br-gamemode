@@ -261,7 +261,27 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # seconds is what comes out, from a ground truth (IsEntityInAir) that no ped
     # task owns. Its stubs answer 1/0 rather than true/false, so a sampler that
     # loses its isTrue() wrapper fails here rather than in a playtest.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_shop.lua tools/test_bool_natives.lua; do
+    #
+    # test_revivekey.lua is the eighth suite to load a real SERVER file, and it
+    # is deliberately NOT where the feature's central rule is proved. "The key
+    # is minted on the same edge that spills the inventory" (owner, 2026-08-30)
+    # is a property of server/combat.lua, so it is asserted in test_roster.lua's
+    # `combat.revivekey` against the real eliminate(), the real loot table and
+    # the real #144 hold -- a sandbox that called BR.ReviveKey.onEliminated by
+    # hand would only be testing that the module does what it is told.
+    #
+    # What IS here is everything a playtest cannot reach cheaply: a three-minute
+    # expiry, the last 2.5 metres of a squadmate's walk, a DynamoDB round trip
+    # with another elimination landing inside it, and two squadmates pressing
+    # buy in the same second. Its BOOL stubs answer 1/0 rather than true/false,
+    # so a refusal that loses its isTrue() wrapper fails here rather than
+    # selling a revive key at a burnt-out ambulance.
+    #
+    # Its `source` block runs BEFORE the module is loaded, on purpose: the
+    # BR.Server stub has no `notify`, so unrequested player copy would otherwise
+    # throw three hundred lines later and report a nil call instead of the rule
+    # it broke (#219 Q20 is unanswered and no wording may be invented).
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_shop.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

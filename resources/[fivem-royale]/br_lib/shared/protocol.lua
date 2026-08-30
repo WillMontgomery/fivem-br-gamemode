@@ -368,6 +368,30 @@ BR.Net = {
     -- pressing at one van in the same frame produce one attach, not two.
     AMBHEAL_SET     = 'br:ambheal:set',
 
+    -- Revive keys (#219 step 4)
+    --
+    -- C->S  { n = netId } -- "I am standing at that ambulance and I want my
+    -- squad's revive keys". ONE EVENT AND NO REPLY, because there is nothing to
+    -- reply with: the only thing a player is ever told about this purchase is
+    -- the market's own shortfall sentence, which BR.Market.charge already
+    -- speaks, and #219 Q20 -- what the squad is told and when -- is unanswered.
+    --
+    -- EVERY CLAIM IN THAT SENTENCE IS RE-DERIVED SERVER-SIDE: the model, the
+    -- distance, being alive in a playing match, having a squad, and there being
+    -- an outstanding key to buy. See BR.ReviveKey.canBuy.
+    --
+    -- ⚠ IT HAS NO CLIENT SENDER YET. The press needs an on-screen affordance and
+    -- the affordance needs a word the owner has not given, so the player-facing
+    -- half is deliberately absent and /brkey drives this in the meantime -- the
+    -- same arrangement /brrescue has with BR.Rescue.begin. When the wording
+    -- arrives the client is a prompt and one TriggerServerEvent into here.
+    --
+    -- THERE IS NO COLLECTION EVENT AND THERE MUST NOT BE ONE. Walking over a
+    -- dead mate's key is decided by the server off its own position samples --
+    -- see server/revivekey.lua's header -- so there is nothing for a client to
+    -- send and nothing for it to lie about.
+    REVIVEKEY_BUY   = 'br:revivekey:buy',
+
     -- Spectate / end
     --
     -- THE SERVER PICKS THE TARGET AND THE CLIENT DRAWS IT, and the split is a

@@ -297,6 +297,33 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         BR.Loot.deathBox(m, src)
     end
 
+    -- ═══ AND THE KEY IS MINTED ON THE SAME EDGE, WHICH IS THE WHOLE RULE ═══
+    --
+    -- Owner, 2026-08-30: "The moment that bleed out timer ends and they go to
+    -- spectate - their key is created and their inventory is spilled on the
+    -- ground" -- and, of the other branch, "if they are revived in-person there,
+    -- they can keep their inventory, which is no different from today."
+    --
+    -- ONE EVENT, NOT TWO. The two halves are stated as one moment, so they get
+    -- ONE CALL SITE rather than two rules that happen to agree today: same `if
+    -- m` guard, same `src`, same `entry.pos`, one line apart and above the state
+    -- change. A squadmate who reaches them during the bleed-out never arrives
+    -- here at all, so they keep their kit AND leave no key, with no branch
+    -- written anywhere to say so.
+    --
+    -- IT IS BELOW THE #144 HOLD AND THAT IS LOAD-BEARING. `holdForStart` returns
+    -- long before this line, so a player who died before the match started gets
+    -- no key -- which is right, because they lost no inventory and are about to
+    -- be revived for free. Moving this above that guard would hand their squad a
+    -- 25-Volt entitlement for a death that is never recorded.
+    --
+    -- NOT GUARDED ON WHAT THE DEATH BOX RETURNED. It returns nil for a player
+    -- who was carrying nothing, and an empty-handed player must still be
+    -- recoverable -- the invariant is the EDGE, not the spill.
+    if m and BR.ReviveKey and BR.ReviveKey.onEliminated then
+        BR.ReviveKey.onEliminated(m, src)
+    end
+
     -- A BLEED-OUT IS A DEATH THE PED HAS NOT HEARD ABOUT.
     --
     -- Every other route into this function arrives because something already

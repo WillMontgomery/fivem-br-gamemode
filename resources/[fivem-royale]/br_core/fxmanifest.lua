@@ -80,6 +80,12 @@ shared_scripts {
     --   config/rescue.lua's decisions and the first thing a reader needs is the
     --   table it borrows from.
     '@br_lib/config/ambheal.lua',
+    -- The squad's revive key (#219 step 4). AFTER config/rescue.lua, for the
+    -- same reason config/ambheal.lua is: `models()` resolves BR.Config.Rescue at
+    -- CALL time, so this is a reader's order and not the loader's. It is the
+    -- third file to ask that one list what an ambulance is, and it is declared
+    -- beside the other two so the three read as a set.
+    '@br_lib/config/revivekey.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
     -- The warmup vehicle shop's catalogue (#224). SHIPS EMPTY, on purpose --
     -- the owner authors the models, coordinates and headings in game, and with
@@ -418,6 +424,18 @@ server_scripts {
     -- two ambulance features read as a pair on this page the way they do in
     -- br_lib/config.
     'server/ambheal.lua',
+    -- The squad's revive key (#219 step 4). AFTER server/rescue.lua and for the
+    -- same reason server/ambheal.lua is -- it asks BR.Rescue.isAmbulance what an
+    -- ambulance is, nil-guarded, so the order is what keeps the guard from ever
+    -- firing rather than a load requirement.
+    --
+    -- ITS OWN CALLER IS ABOVE IT, WHICH IS THE ORDER THAT DOES NOT MATTER.
+    -- server/combat.lua calls BR.ReviveKey.onEliminated at elimination, guarded
+    -- on `BR.ReviveKey ~= nil` -- the same arrangement it has with BR.Loot and
+    -- with BR.Rescue, and for the same reason: a lethal hit can land before this
+    -- file has loaded, and the honest behaviour in that window is a death with
+    -- no key rather than a throw inside the elimination path.
+    'server/revivekey.lua',
     'server/loot.lua',      -- world loot: layout, streaming, claim arbitration
     -- Aerial supply drops. AFTER storm.lua and loot.lua for a reader rather
     -- than for the loader: it asks BR.StormAt where the circle will be when the

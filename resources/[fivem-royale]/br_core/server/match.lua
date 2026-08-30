@@ -795,6 +795,19 @@ function BR.Match.resetPlayer(src, e)
     -- counter left standing follows the player into their NEXT match and is
     -- banked a second time there. One airdrop, paid twice.
     e.voltsPickedUp = 0
+
+    -- THE SQUAD'S REVIVE KEY FOR THIS PLAYER (#219). Per-match like everything
+    -- around it, and here for the reason #161 spells out above: this is the one
+    -- function BOTH the CLEANUP sweep and BR.Match.leaveMatch go through, so
+    -- clearing it here is what stops a key minted in one match being found by
+    -- the sweep in the next -- where the squad ids have been reissued and it
+    -- would belong to strangers.
+    --
+    -- server/revivekey.lua stores the record on the roster entry precisely so
+    -- that this line is the whole of its teardown; a disconnect needs no line at
+    -- all, because BR.Roster.remove takes the entry and the key with it.
+    e.reviveKey = nil
+
     e.lastDamageBy, e.lastDamageAt = nil, 0
     e.stormHp, e.lastStormAt = nil, nil
     e.hp, e.armour = 100.0, 0.0

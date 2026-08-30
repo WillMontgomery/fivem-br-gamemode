@@ -429,6 +429,9 @@ for _, f in ipairs({
     -- calls to solve the circle forward to the ambulance's arrival, and AFTER
     -- config/loot.lua, which registers the `cprkit` item the death fork reads.
     'br_lib/config/rescue.lua',
+    -- The squad's revive key (#219 step 4). AFTER config/rescue.lua, whose
+    -- `models` list it reads at call time to know what an ambulance is.
+    'br_lib/config/revivekey.lua',
     'br_lib/shared/rescue_solve.lua',
     'br_lib/shared/loot_gen.lua',
     'br_lib/shared/combat_solve.lua',
@@ -455,6 +458,13 @@ for _, f in ipairs({
     -- and that call is guarded on `BR.Rescue ~= nil`, so a suite that omitted
     -- this file would exercise the guard forever and never the rule.
     'br_core/server/rescue.lua',
+    -- The squad's revive key (#219 step 4). LOADING IT AT ALL IS THE POINT OF
+    -- PUTTING IT HERE, exactly as it is for rescue.lua one line above:
+    -- server/combat.lua calls BR.ReviveKey.onEliminated guarded on
+    -- `BR.ReviveKey ~= nil`, so a suite that omitted this file would exercise
+    -- the guard for ever and never the rule. `combat.revivekey` asserts the
+    -- module is present before it asserts anything about it, for that reason.
+    'br_core/server/revivekey.lua',
     'br_core/server/loot.lua',
     'br_core/server/markers.lua',
     'br_core/server/voice.lua',
@@ -18109,6 +18119,163 @@ do
     BR.Inv.push(1, { quiet = 0 })
     ok(eventsOf(BR.Net.INV_SET)[1].args[1].quiet == nil,
         'and a 0 does not buy silence at either end -- 0 is truthy in Lua')
+
+    if m then end
+end
+
+-- ---------------------------------------------------------------------------
+describe('combat.revivekey')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE KEY AND THE INVENTORY ARE ONE EDGE (#219, owner 2026-08-30)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- "The moment that bleed out timer ends and they go to spectate - their key
+    --  is created and their inventory is spilled on the ground" -- and, of the
+    -- other branch, "if they are revived in-person there, they can keep their
+    -- inventory, which is no different from today."
+    --
+    -- THIS IS THE BLOCK THAT PROVES IT AGAINST THE REAL PATH. tools/
+    -- test_revivekey.lua drives BR.ReviveKey in a sandbox and can assert every
+    -- rule about a key EXCEPT the one that matters most: that it is minted on
+    -- the same code path that forfeits an inventory and on no other. That is a
+    -- property of server/combat.lua, so it is asserted here, where the real
+    -- eliminate() runs against the real roster, the real loot table and the real
+    -- #144 hold.
+    --
+    -- WHY IT IS THE EDGE AND NOT THE OUTCOME. `BR.Loot.deathBox` returns early
+    -- for a player carrying nothing, and an empty-handed player must still be
+    -- recoverable -- so "a key exists exactly when items are on the floor" is
+    -- FALSE and is not what is tested. What is tested is that the two run
+    -- together on the elimination path and that neither runs on the hold path.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local m = theMatch()
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+    end
+    -- A SQUAD, SET DIRECTLY. The formation path is BR.Party's and is tested at
+    -- length elsewhere; what this block needs is the field eliminate() reads.
+    BR.Roster.get(1).squadId = 'sq_key'
+    BR.Roster.get(2).squadId = 'sq_key'
+    BR.Roster.get(3).squadId = 'sq_other'
+
+    ok(BR.ReviveKey ~= nil,
+        'server/revivekey.lua is loaded -- a suite that omitted it would '
+            .. 'exercise combat.lua\'s nil guard for ever and never the rule')
+
+    -- ═══ THE ELIMINATION PATH: BOTH HALVES, TOGETHER ═══
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local before = m.loot.nextId
+    BR.Combat.eliminate(2, 'weapon', 1)
+
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT, 'the player is OUT')
+    ok(m.loot.nextId > before,
+        'their inventory spilled -- the death box laid entries on the ground',
+        ('nextId %d -> %d'):format(before, m.loot.nextId))
+    local k2 = BR.Roster.get(2).reviveKey
+    ok(k2 ~= nil,
+        'AND the same edge minted a revive key -- one moment, not two')
+    ok(k2 and k2.held == false,
+        'which nobody holds yet: it is lying where they fell')
+    ok(k2 and k2.x == 402.0 and k2.y == 400.0,
+        'at the body, from the server\'s own position sample',
+        k2 and ('(%.1f, %.1f)'):format(k2.x, k2.y))
+    ok(k2 and k2.expiresAt == k2.mintedAt + BR.Config.ReviveKey.expiryMs,
+        'with the owner\'s three-minute clock on the pickup',
+        k2 and tostring((k2.expiresAt or 0) - (k2.mintedAt or 0)))
+
+    -- ═══ AN EMPTY-HANDED DEATH STILL MINTS ONE ═══
+    --
+    -- The case that makes "the edge, not the outcome" load-bearing:
+    -- BR.Loot.deathBox returns early with nothing to scatter, and the key must
+    -- not be conditional on what it returned.
+    BR.Inv.reset(1)
+    local beforeEmpty = m.loot.nextId
+    BR.Combat.eliminate(1, 'storm', nil)
+    ok(m.loot.nextId == beforeEmpty,
+        'a player carrying nothing scatters nothing',
+        ('nextId %d -> %d'):format(beforeEmpty, m.loot.nextId))
+    ok(BR.Roster.get(1).reviveKey ~= nil,
+        'and STILL gets a key -- the mint follows the edge, not the spill')
+
+    -- ═══ A SOLO GETS NONE. The gate is `squadId`, which they do not have ═══
+    BR.Roster.get(3).squadId = nil
+    BR.Combat.eliminate(3, 'fall', nil)
+    ok(BR.Roster.get(3).reviveKey == nil,
+        'a player with no squad leaves no key -- there is nobody to own it')
+
+    -- ═══ THE #144 HELD DEATH MINTS NOTHING, AND NEITHER DOES THE DEATH BOX ═══
+    --
+    -- The other half of the owner's table, and the reason the call site is BELOW
+    -- the `beforeTheMatch` guard rather than above it. A player who dies before
+    -- the match starts keeps their inventory and is revived for free; handing
+    -- their squad a 25-Volt entitlement for that would be paying them for a
+    -- death that is never recorded anywhere.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = mendsAt() + 1
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.BUS, 'a match on the bus, before it is live')
+
+    local m2 = theMatch()
+
+    -- OUT OF THE PLANE AND ON THE GROUND, because `beforeTheMatch` is not
+    -- "the match is in BUS" alone -- it is a player in FREEFALL, GLIDE, ALIVE or
+    -- DBNO while the match is. Somebody still aboard cannot die at all
+    -- (`canDie`), so a test that skipped the jump would prove nothing about the
+    -- hold and would pass for the wrong reason.
+    local r2 = BR.Bus.active(m2)
+    fakeTime = r2.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 2)
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'a player who jumped and landed while the match is still on the bus')
+
+    BR.Roster.get(2).squadId = 'sq_held'
+    BR.Roster.get(2).pos = { x = 500.0, y = 500.0, z = 30.0 }
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local heldBefore = m2.loot.nextId
+    BR.Combat.eliminate(2, 'fall', nil)
+
+    ok(BR.Roster.get(2).revivePending == true,
+        'the death is HELD for the start rather than banked (#144)')
+    ok(m2.loot.nextId == heldBefore,
+        'so their inventory stayed on their person',
+        ('nextId %d -> %d'):format(heldBefore, m2.loot.nextId))
+    ok(BR.Roster.get(2).reviveKey == nil,
+        'AND no key was minted -- the two halves agree on the branch they did '
+            .. 'NOT take, which is the half a second rule would get wrong')
+
+    -- ═══ AND A MATCH LEAVES NO KEY BEHIND IT ═══
+    --
+    -- BR.Match.resetPlayer is the one function both CLEANUP and leaveMatch go
+    -- through (#161). A key that survived it would be found by the next match's
+    -- sweep, where the squad ids have been reissued and it would belong to
+    -- strangers.
+    local e2 = BR.Roster.get(2)
+    e2.reviveKey = { x = 1.0, y = 2.0, z = 3.0, held = true }
+    BR.Match.resetPlayer(2, e2)
+    ok(e2.reviveKey == nil,
+        'BR.Match.resetPlayer clears the key, so nothing outlives the round')
 
     if m then end
 end
