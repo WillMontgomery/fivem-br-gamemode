@@ -725,7 +725,27 @@ BR.Config.VehicleDamage = {
     ---     Insurgent is still the toughest thing on the road, it just is not
     ---     immortal any more.
     ---
-    --- WHY 5.0, AND IT IS A STARTING POINT RATHER THAN AN ANSWER.
+    --- ═══ WHY 2.5: IT WAS 5.0, AND THE PLAYTEST HALVED IT (#242) ═══
+    ---
+    --- Owner, 2026-08-30: "Vehicles are too fragile. Please make them twice as
+    --- durable, or in other words, half as sensitive to damage."
+    ---
+    --- THAT IS THE MEASUREMENT THE 5.0 BELOW WAS WAITING FOR. #213 shipped 5.0
+    --- with the paragraph that used to stand here saying so in as many words --
+    --- "a defensible place to start and it is not a measurement; the measurement
+    --- is somebody driving into a wall and saying whether that felt right". He
+    --- drove into a wall. Half is the answer, and because this key is a MULTIPLE
+    --- of each model's own value rather than an absolute, "half as sensitive" is
+    --- literally half of this number and nothing else in the feature moves.
+    ---
+    --- IT IS STILL 2.5x BASE GTA, AND THAT IS THE POINT OF NOT GOING FURTHER.
+    --- #213's complaint has not been withdrawn -- "damaging vehicles to a point
+    --- of total failure is nearly impossible in base GTA V. That should not be
+    --- the case here" -- so the direction of travel is unchanged and only the
+    --- distance moved. A car is twice as durable as last night's playtest and
+    --- still two and a half times as breakable as Rockstar ships it. Reading
+    --- "twice as durable" against BASE GTA instead would mean 0.5, which is a
+    --- car TOUGHER than stock: the opposite of the standing request.
     ---
     --- Sampled stock values across a spread of models are roughly:
     ---
@@ -733,16 +753,27 @@ BR.Config.VehicleDamage = {
     ---     fDeformationDamageMult    0.7 .. 0.8
     ---     fEngineDamageMult         1.5
     ---
-    --- and the handling mods that exist to fix precisely this complaint converge
-    --- on an ABSOLUTE 4 to 5 for collision and 5 to 8.75 for deformation. So 5x
-    --- puts an ordinary car at 3.5-5.0 collision (in that band), 3.5-4.0
-    --- deformation (just under it) and 7.5 engine -- which is the aggressive one
-    --- on purpose, because the engine is what "total failure" means and it is
-    --- the half of the complaint that a dented immortal car does not answer.
+    --- so 2.5x puts an ordinary car at 1.75-2.5 collision, 1.75-2.0 deformation
+    --- and 3.75 engine. The handling mods that exist to fix #213's complaint
+    --- converge on an ABSOLUTE 4 to 5 for collision and 5 to 8.75 for
+    --- deformation, which is where 5.0 sat; this is deliberately BELOW that
+    --- band, because that band is other people's taste and the owner's own
+    --- playtest is evidence and outranks it.
     ---
-    --- THAT IS ARITHMETIC ABOUT SOMEBODY ELSE'S TASTE. It is a defensible place
-    --- to start and it is not a measurement; the measurement is somebody driving
-    --- into a wall and saying whether that felt right.
+    --- ═══ WHAT MOVES WITH IT, WHICH IS THREE FIELDS AND NOT "DAMAGE" ═══
+    ---
+    --- Three rows of `fields` read this key, so halving it halves all three
+    --- together: collision, DEFORMATION and engine. The middle one is worth
+    --- saying out loud because it is not durability -- panels now bend half as
+    --- far as they did, which is a look rather than a lifetime. #213 asked for
+    --- "collision/cosmetic" as one request and this file has answered them with
+    --- one number ever since; if the owner ever wants a car that survives twice
+    --- as long and still crumples like it did, that is a SECOND key here and a
+    --- fourth row in `fields`, not a different value for this one.
+    ---
+    --- Nothing else changes at all. `weaponMultiplier` is absolute and stays at
+    --- 1.0, so a car is exactly as good as cover as it was; tyres are not part
+    --- of this system in any form; and no health POOL is ever written.
     ---
     --- IT IS THE NUMBER TO TURN. "More" is a bigger one, "less" is a smaller
     --- one, and nothing else in this feature has to move with it. Below 1.0
@@ -751,16 +782,17 @@ BR.Config.VehicleDamage = {
     --- invulnerable, because a config typo must cost the feature and never
     --- reverse it.
     ---
-    --- ═══ IT HAS ABOUT 6.6 OF HEADROOM BEFORE `ceiling` STARTS DECIDING ═══
+    --- ═══ IT NOW HAS ABOUT 4.2 MORE BEFORE `ceiling` STARTS DECIDING ═══
     ---
     --- The engine field starts highest, so it meets the 10.0 cap first: 1.5 x
-    --- 6.67 is 10.0. Past that, turning this number up stops moving the engine
-    --- multiplier on an ordinary car and only moves the other two, which is a
-    --- knob that has quietly half stopped working. `/brvehdamage` counts every
-    --- clamped write and prints it, so this is visible rather than deduced -- but
-    --- if the answer to a playtest is genuinely "much more than this", the
-    --- honest edit is `ceiling` and not another turn of this.
-    multiplier = 5.0,
+    --- 6.67 is 10.0, which this is now comfortably under. Past 6.67, turning
+    --- this number up stops moving the engine multiplier on an ordinary car and
+    --- only moves the other two, which is a knob that has quietly half stopped
+    --- working. `/brvehdamage` counts every clamped write and prints it, so this
+    --- is visible rather than deduced -- but if the answer to a playtest is ever
+    --- genuinely "much more than this", the honest edit is `ceiling` and not
+    --- another turn of this.
+    multiplier = 2.5,
 
     --- Bullet damage to a vehicle. DELIBERATELY 1.0, WHICH IS NO CHANGE.
     ---

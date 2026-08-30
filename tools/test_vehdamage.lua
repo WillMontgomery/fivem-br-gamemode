@@ -174,12 +174,34 @@ for _, f in ipairs({
     -- to build its hash-keyed lookup.
     'br_lib/shared/geo.lua',
     'br_lib/config/vehicles.lua',
+    -- FOR ONE STRING, AND IT IS THE RIGHT WAY TO GET IT (#242). The CPR
+    -- ambulance block near the bottom asks whether THE RESCUE'S OWN vehicle can
+    -- ever be reached by this feature, and the only honest way to ask that is
+    -- with the model the rescue actually spawns rather than the word
+    -- 'ambulance' typed into a test. It loads clean in a bare state: its
+    -- `Points()` reads config/map.lua at CALL time, not at load.
+    'br_lib/config/rescue.lua',
     'br_core/client/main.lua',      -- the loop registry; must precede the file
     'br_core/client/vehdamage.lua',
 }) do load(f) end
 
 local C = BR.Config.VehicleDamage
 local V = BR.VehDamage
+
+--- THE SHIPPED MULTIPLIER, TAKEN BEFORE ANYTHING CAN MOVE IT.
+---
+--- `C` IS the live config table rather than a copy of it, so reset() below --
+--- which pins `C.multiplier = 5.0` so the applier blocks do not move when a
+--- balance number does -- OVERWRITES the shipped value on its first call. Any
+--- later read of C.multiplier is reading the pin. The one block that has to
+--- drive the real applier at the number the game actually ships therefore has
+--- to have taken it here, at load, and nowhere else.
+--- ...and the ceiling with it, for the same reason and one more: the clamp
+--- claim below ("the number, not the ceiling, decided all three") is a claim
+--- about the SHIPPED PAIR. Taken against reset()'s pinned 10.0 it would agree
+--- happily with a ceiling that had been lowered underneath the multiplier,
+--- which is the one way this feature can half stop working in silence.
+local SHIPPED_MULT, SHIPPED_CEILING = C.multiplier, C.ceiling
 
 -- ---------------------------------------------------------------------------
 
@@ -231,12 +253,32 @@ describe('the numbers')
 -- the feature doing nothing at all -- and doing nothing is indistinguishable in
 -- game from the bug #213 is about.
 
+--- What #213 shipped, and what #242 halved. NAMED rather than written into the
+--- assertions below as a bare 2.5, because the owner's sentence is a RATIO --
+--- "twice as durable, or in other words, half as sensitive" -- and a test that
+--- pinned only the answer would let the next tuning round move the number
+--- without anybody noticing the relationship it was chosen for had gone.
+local SHIPPED_213 = 5.0
+
 ok(C.enabled == true, 'the feature ships switched on', tostring(C.enabled))
-ok(C.multiplier == 5.0, 'a car takes five times the damage GTA gives it',
-   C.multiplier)
+
+-- ═══ HALF OF WHAT THE PLAYTEST HATED, WHICH IS THE WHOLE OF #242 ═══
+--
+-- Owner, 2026-08-30: "Vehicles are too fragile. Please make them twice as
+-- durable, or in other words, half as sensitive to damage."
+--
+-- The key is a MULTIPLE of each model's own value, so "half as sensitive" is
+-- arithmetic on this one number and on nothing else. Asserted as the halving
+-- rather than as the value.
+ok(near(C.multiplier, SHIPPED_213 / 2.0),
+   'a car is half as sensitive to damage as the playtest found it -- #242',
+   ('%s, where #213 shipped %s'):format(C.multiplier, SHIPPED_213))
 ok(C.multiplier > 1.0,
-   'and that is strictly more than stock -- the whole request',
-   'a multiplier at or below 1.0 makes vehicles no more breakable than base GTA')
+   'and that is STILL strictly more than stock -- #213 was not withdrawn',
+   'a multiplier at or below 1.0 makes vehicles no more breakable than base '
+       .. 'GTA, which is the opposite of the standing request. "Twice as '
+       .. 'durable" is measured against the last playtest, not against '
+       .. 'Rockstar -- against Rockstar it would read 0.5.')
 ok(C.weaponMultiplier == 1.0,
    'bullet damage is deliberately unchanged -- it was not what was asked for',
    C.weaponMultiplier)
@@ -390,6 +432,59 @@ do
        'and leaves bullets exactly where GTA had them',
        held(10, 'fWeaponDamageMult'))
     ok(V.stats().models == 1, 'one model baseline is held', V.stats().models)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('the applier, driven at the SHIPPED multiplier')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- EVERY OTHER APPLIER BLOCK IN THIS FILE RUNS AT reset()'s PINNED 5.0, and that
+-- is right: those blocks are about compounding, idempotence, streaming and
+-- ownership, and none of them should move when a balance number does. But it
+-- leaves the shipped value proved only in `describe('the numbers')`, against
+-- the config table -- and #242 is a change to the config table. A config
+-- assertion cannot tell "the number is 2.5" from "the number is 2.5 and the
+-- applier writes something else".
+--
+-- So this one block deliberately does NOT pin the multiplier, and asserts the
+-- numbers an ordinary car ends up holding after the real applier has run: each
+-- one exactly half of what #213 put there.
+
+do
+    reset()
+    -- Undo reset()'s pins; see the note beside SHIPPED_MULT.
+    C.multiplier, C.ceiling = SHIPPED_MULT, SHIPPED_CEILING
+    spawn(10, MODEL_A)
+    myVeh = 10
+    tick()
+
+    -- MODEL_A's stock values are the middle of the sampled band config/vehicles
+    -- .lua quotes: 1.0 collision, 0.8 deformation, 1.5 engine. #213 wrote
+    -- 5.0 / 4.0 / 7.5 -- the three numbers the block above still asserts.
+    ok(near(held(10, 'fCollisionDamageMult'), 2.5),
+       'collision comes out at half of #213\'s 5.0',
+       held(10, 'fCollisionDamageMult'))
+    ok(near(held(10, 'fDeformationDamageMult'), 2.0),
+       'and deformation at half of its 4.0 -- the panels bend half as far, '
+           .. 'which is a look and not a lifetime',
+       held(10, 'fDeformationDamageMult'))
+    ok(near(held(10, 'fEngineDamageMult'), 3.75),
+       'and the engine at half of its 7.5', held(10, 'fEngineDamageMult'))
+
+    -- ...AND NOT ONE OF THEM WAS DECIDED BY THE CEILING. At 5.0 the engine
+    -- field sat at 7.5 with 2.5 of headroom; halving it cannot start clamping,
+    -- and if a later "more" ever does, this counter is what says so out loud
+    -- rather than leaving a knob that has quietly half stopped working.
+    ok(V.stats().clamped == 0,
+       'with nothing clamped -- the number, not the ceiling, decided all three',
+       V.stats().clamped)
+
+    -- THE ONE THAT IS NOT HALVED, and it is not halved because it was never
+    -- multiplied: `weaponMultiplier` is absolute and reads its own key. A car
+    -- is exactly as good as cover after #242 as it was before it.
+    ok(near(held(10, 'fWeaponDamageMult'), 1.0),
+       'and bullets still do exactly what GTA had them do',
+       held(10, 'fWeaponDamageMult'))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -807,6 +902,102 @@ do
     ok(near(held(10, 'fWeaponDamageMult'), 1.0),
        'and bullet damage comes out exactly as GTA had it',
        held(10, 'fWeaponDamageMult'))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('the CPR ambulance is out of reach, and stays out of reach -- #191')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ THE QUESTION #242 HAD TO ASK BEFORE IT COULD MOVE A NUMBER ═══
+--
+-- Owner, 2026-08-23, reversing #191's own issue body: "the ambulance vehicle
+-- must deliberately not be invincible (not sure if we said before). If the
+-- vehicle blows up (most likely other players shot it) then the dead player
+-- inside is out."
+--
+-- Its destructibility is a MECHANIC HE DESIGNED ON PURPOSE. So "make vehicles
+-- twice as durable" has to be answered for that one vehicle before it is
+-- answered for the rest, and the answer had better not be a promise.
+--
+-- ═══ AND THE ANSWER IS THAT THIS FEATURE HAS NEVER BEEN ABLE TO REACH IT ═══
+--
+-- Not by exemption, not by a model list, and not by anything added for #242.
+-- client/vehdamage.lua applies to exactly two vehicles: the one the local
+-- player is ENTERING, and the one the local player is IN. The rescued player is
+-- neither -- client/rescue.lua attaches them to a stretcher rather than seating
+-- them, and says so in as many words: "this player is ATTACHED to the stretcher
+-- rather than in a seat -- GetVehiclePedIsIn answers 0 for an attached ped".
+-- That is the SAME sentence, about the same native, that already keeps the
+-- ambulance out of server/fuel.lua's registry. Nobody else can be aboard
+-- either: the doors are VEHICLELOCK_LOCKED, "preventing entry by players and
+-- NPCs", and the driver is an NPC medic this file never asks about.
+--
+-- So the ambulance runs on Rockstar's own handling multipliers on every machine
+-- in the match, before #242 and after it, and #191's mechanic is untouched.
+--
+-- ═══ WHY THE TEST DOES NOT NAME A MODEL, WHICH IS THE POINT ═══
+--
+-- There is no ambulance-shaped hole in the applier and there must never be one:
+-- it is MODEL-BLIND, it consults no list, and an exemption keyed on a model
+-- would be a second place for the rescue's vehicle choice to live. What keeps
+-- the ambulance out is OCCUPANCY and nothing else, so that is what is asserted.
+-- The handle below stands in for it; the identity is deliberately irrelevant,
+-- and a test that used the real hash would imply the opposite.
+
+do
+    reset()
+    local R = BR.Config.Rescue
+
+    -- The two config facts the exemption rests on, pinned HERE because this is
+    -- the file that depends on them and nothing else pins them. A rescue that
+    -- ever seated its passenger, or unlocked its doors to other players, would
+    -- put the ambulance inside this feature -- silently, with no line in either
+    -- file changing.
+    ok(R and R.model == 'ambulance',
+       'the rescue still spawns an ambulance', R and tostring(R.model))
+    ok(R and R.lockedState == 2,
+       'whose doors are VEHICLELOCK_LOCKED -- no player ever takes a seat in '
+           .. 'it, which is half of why this feature cannot see it',
+       R and tostring(R.lockedState))
+
+    -- THE AMBULANCE, IN THE WORLD, WITH THE PLAYER ON THE STRETCHER. An
+    -- attached ped is a ped in no vehicle: both natives answer 0, which is what
+    -- the fixture's `myVeh = 0` IS.
+    local AMB = 40
+    spawn(AMB, MODEL_A)
+    myVeh, entering, asks = 0, 0, 0
+    tick(30)
+
+    ok(#writes == 0,
+       'three seconds of the ride writes nothing to the ambulance -- the '
+           .. 'passenger is attached, not seated',
+       ('%d write(s)'):format(#writes))
+    ok(asks == 0,
+       'and it is never even asked about: the occupancy gate refuses before '
+           .. 'the vehicle is looked up',
+       ('%d ask(s)'):format(asks))
+    ok(near(held(AMB, 'fCollisionDamageMult'), 1.0)
+       and near(held(AMB, 'fEngineDamageMult'), 1.5),
+       'so it is still holding Rockstar\'s own numbers, and blows up exactly '
+           .. 'as fast as #191 decided it should',
+       ('collision %s  engine %s'):format(
+           tostring(held(AMB, 'fCollisionDamageMult')),
+           tostring(held(AMB, 'fEngineDamageMult'))))
+    ok(V.stats().models == 0,
+       'and no baseline was taken for it either', V.stats().models)
+
+    -- THE POSITIVE CONTROL, WITHOUT WHICH THE FOUR ABOVE PROVE NOTHING. A
+    -- fixture that had simply failed to run the applier would produce exactly
+    -- the same four answers, so the same handle is now SAT IN and must be
+    -- written to at once. This is what makes the absence above an absence
+    -- rather than an oversight.
+    myVeh = AMB
+    tick()
+    ok(#writes > 0 and not near(held(AMB, 'fCollisionDamageMult'), 1.0),
+       'while a player who actually gets INTO that same vehicle is written to '
+           .. 'immediately -- so the silence above is occupancy, not a dead test',
+       ('%d write(s), collision %s'):format(#writes,
+           tostring(held(AMB, 'fCollisionDamageMult'))))
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

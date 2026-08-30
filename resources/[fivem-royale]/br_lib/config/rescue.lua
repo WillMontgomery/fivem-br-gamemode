@@ -299,27 +299,44 @@ BR.Config.Rescue = {
     --
     -- ═══ WHY 25, AND WHY IT CANNOT FIRE ON A NORMAL DRIVE ═══
     --
-    -- #213 made vehicles roughly five times more fragile than stock -- see
-    -- config/vehicles.lua's BR.Config.VehicleDamage -- so this had to be argued
-    -- against the POST-#213 world rather than GTA's.
+    -- ═══ AND FIRST: #213 NEVER TOUCHED THIS VEHICLE. THE PARAGRAPH THAT USED
+    --     TO STAND HERE SAID IT DID, AND IT WAS WRONG ═══
+    --
+    -- It argued this threshold "against the POST-#213 world", on the basis that
+    -- the ambulance's engine multiplier "scales to ~7.5". It does not, and it
+    -- never has. br_core/client/vehdamage.lua applies to exactly two vehicles --
+    -- the one the local player is ENTERING and the one they are IN -- and the
+    -- rescued player is neither: they are ATTACHED TO THE STRETCHER, which is
+    -- the same fact, about the same native, that already keeps this vehicle out
+    -- of server/fuel.lua's registry (see client/rescue.lua, where the attach is
+    -- made, and `lockedState` below, which is why nobody else takes a seat in it
+    -- either). The ambulance runs on Rockstar's own handling multipliers on
+    -- every machine in the match. tools/test_vehdamage.lua pins that now, in
+    -- both directions, so this cannot quietly stop being true.
+    --
+    -- CORRECTED RATHER THAN DELETED, AND RE-CHECKED IN 2026-08-30 WHEN #242
+    -- HALVED THAT MULTIPLIER (5.0 -> 2.5). The halving would have moved this
+    -- threshold's argument if the argument had been sound; it was not, and the
+    -- honest note is that this number was ALWAYS being argued against stock GTA,
+    -- because stock GTA is what the ambulance has always had.
     --
     -- A quarter is chosen because of what the three pools do at that depth. The
-    -- engine pool is the one that moves fastest under #213 (its stock multiplier
-    -- is the highest of the three, 1.5, so it scales to ~7.5), and an engine at
-    -- a quarter is already smoking and losing power -- GTA starts the engine
-    -- fire well under half. So by the time the WORST of the three is at 25 the
-    -- ambulance is visibly finished, which is exactly the state the owner
-    -- described and could not previously report.
+    -- engine pool is the one that moves fastest, its stock multiplier being the
+    -- highest of the three at 1.5, and an engine at a quarter is already smoking
+    -- and losing power -- GTA starts the engine fire well under half. So by the
+    -- time the WORST of the three is at 25 the ambulance is visibly finished,
+    -- which is exactly the state the owner described and could not previously
+    -- report.
     --
     -- And it is a long way from a scrape. The NPC drives on roads at
     -- `driveSpeed` with `driverAbility`/`driverAggression` set below; clipping a
-    -- lamppost or grazing a wall costs single-digit percent even at 5x, and
-    -- the pool it costs it from is the BODY, which starts at the same 1000 as
-    -- the others. Three quarters of the toughest pool is not a kerb, a bollard
-    -- or a parked car -- it is a head-on at speed, which is the case being asked
-    -- for. A rescue that failed because the NPC clipped a lamppost would be a
-    -- worse bug than the one this fixes, so the number is deliberately set where
-    -- a survivable knock cannot reach it.
+    -- lamppost or grazing a wall costs single-digit percent on a vehicle taking
+    -- GTA's own damage, and the pool it costs it from is the BODY, which starts
+    -- at the same 1000 as the others. Three quarters of the toughest pool is not
+    -- a kerb, a bollard or a parked car -- it is a head-on at speed, which is the
+    -- case being asked for. A rescue that failed because the NPC clipped a
+    -- lamppost would be a worse bug than the one this fixes, so the number is
+    -- deliberately set where a survivable knock cannot reach it.
     --
     -- IT IS THE NUMBER TO TURN, and the direction is plain: raise it to fail
     -- rescues on lighter crashes, lower it to demand a bigger one. At or below
