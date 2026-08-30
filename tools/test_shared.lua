@@ -11352,11 +11352,36 @@ do
     for _, s in ipairs({
         '3.5', '12.30', '1.2.3', 'v1.2.3', '2.5:1', 'my k/d is 2.5',
         'the storm is at 4.5km', 'he has 1,000 hp', 'score 10 - 7',
-        -- A DOTTED QUAD WITH NO PORT, which is also a four-part version number.
-        -- Caught would be a link; here it is deliberately not.
-        '1.2.3.4', 'build 10.0.22631.1',
+        -- ═══ DOTTED NUMBERS THE OCTET RULE RESCUES ═══
+        --
+        -- A bare quad IS refused now (see chat.screen.ipv4). These are not
+        -- quads: an octet over 255, more than four parts, or more than three
+        -- digits. Validating 0-255 is what keeps a Windows build number and a
+        -- long version string out of a moderation queue.
+        '1.2.3.400', '999.1.1.1', '256.1.1.1', '1.2.3.256',
+        'build 10.0.22631.1', '1.2.3.4.5', '1.2.3.4567',
+        'build 22631.4890.1.2',
     }) do
         ok(S.screen(s) == nil, ('a number is not a link: %q'):format(s))
+    end
+
+    -- ═══ COORDINATES, WHICH IS THE FALSE POSITIVE THAT WOULD BITE THE OWNER ═══
+    --
+    -- He authors the map with /brcoords and /brsurveydump and pastes their
+    -- output constantly. Every position this project prints is comma-separated
+    -- -- `%.1f, %.1f, %.1f` in client/debug.lua, survey.lua, probe.lua,
+    -- rescue.lua -- so a coordinate has commas between its numbers and cannot
+    -- satisfy a rule that requires dots. These are real output lines copied from
+    -- those files' format strings.
+    for _, s in ipairs({
+        '[br_core] -1234.56, 789.01, 25.30   heading 178.5',
+        '  survey: point 3 at -455.1, 1204.8',
+        '  centroid   102.4, -55.9   (polygon, area-weighted)',
+        '     1250.0, -3096.4, 12.9,',
+        '  destination   Hospital at (295.8, -1446.2, 29.9)',
+        'im at 1234.5 678.9', 'x 100.5 y 200.5 z 30.1',
+    }) do
+        ok(S.screen(s) == nil, ('a pasted coordinate is not a link: %q'):format(s))
     end
 
     -- File names, including three whose extension IS a real country-code
@@ -11672,6 +11697,55 @@ do
     ok(S.screen('threads.net/@x') == S.SOCIAL, 'and so is the one it replaced')
     ok(S.screen('invites.gg/x') == S.INVITE, 'the live invite service is caught')
     ok(S.screen('invite.gg/x') == S.INVITE, 'and the spelling people misremember')
+end
+
+describe('chat.screen.ipv4')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ THE PORT WAS REQUIRED UNTIL THE OWNER OVERRULED IT ON 2026-08-30 ═══
+    --
+    -- "Can we also make it block IP addresses?" The original rule wanted
+    -- `1.2.3.4:30120`, because a bare `1.2.3.4` is also a plausible four-part
+    -- version number. `1.2.3.4` was asserted SAFE in the round before this one.
+    --
+    -- IT IS INVERTED RATHER THAN DELETED, like `definite.ly` before it. A player
+    -- typing a bare quad is now shadowed, and that is a known and accepted cost
+    -- written down as a passing assertion rather than left to be rediscovered as
+    -- a bug by whoever finds it.
+    ok(S.screen('1.2.3.4') == S.LINK,
+        'ACCEPTED COST: a bare quad that is also a version number is shadowed')
+    ok(S.screen('v1.2.3.4') == S.LINK,
+        'ACCEPTED COST: and so is the same thing with a v in front')
+
+    for _, s in ipairs({
+        '10.0.0.1', '127.0.0.1', '192.168.1.1', '8.8.8.8', '0.0.0.0',
+        '255.255.255.255', 'connect 1.2.3.4:30120', 'join 51.68.204.11 now',
+        'connect to 51.68.204.11:30120 for the good server',
+    }) do
+        ok(S.screen(s) == S.LINK, ('an address is caught: %q'):format(s))
+    end
+
+    -- A SENTENCE THAT ENDS ON AN ADDRESS still ends on an address. The
+    -- right-hand boundary rejects a dot only when a DIGIT follows it, which is
+    -- what tells `1.2.3.4.5` from `192.168.1.1.` at the end of a line.
+    ok(S.screen('the server is 192.168.1.1.') == S.LINK,
+        'a full stop after an address does not hide it')
+    ok(S.screen('1.2.3.4.5') == nil,
+        'but a fifth part means it was never an address')
+
+    -- ═══ THE OCTETS ARE VALIDATED, AND THAT IS A DELIBERATE CHOICE ═══
+    --
+    -- `%d+` alone would call all of these addresses. Requiring 0-255 in at most
+    -- three digits costs nothing in true positives -- an address somebody can
+    -- connect to is a valid one -- and it keeps long version strings out of a
+    -- moderation queue.
+    for _, s in ipairs({
+        '1.2.3.400', '999.1.1.1', '256.0.0.1', '1.1.1.256', '1234.1.1.1',
+        '10.0.22631.1',
+    }) do
+        ok(S.screen(s) == nil, ('not an address, so not a link: %q'):format(s))
+    end
 end
 
 describe('chat.screen.scheme')

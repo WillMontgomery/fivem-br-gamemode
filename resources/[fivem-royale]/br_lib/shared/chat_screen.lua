@@ -137,6 +137,78 @@ local function hasDomain(s)
     end
 end
 
+--- Is there a digit at this byte index?
+local function digitAt(s, i)
+    if i < 1 or i > #s then return false end
+    local c = s:sub(i, i)
+    return c >= '0' and c <= '9'
+end
+
+--- Is there a bare IPv4 address in this line?
+---
+--- ═══ THE PORT USED TO BE REQUIRED. THE OWNER OVERRULED THAT ON 2026-08-30 ═══
+---
+--- "Can we also make it block IP addresses?" -- so a bare dotted quad now
+--- counts. The original rule wanted `1.2.3.4:30120`, on the reasoning that a
+--- bare `1.2.3.4` is indistinguishable from a four-part version number, which
+--- is a thing people type; requiring the port meant only a thing that looks
+--- like a server address was refused.
+---
+--- THE ACCEPTED COST, STATED SO IT IS NOT REDISCOVERED AS A BUG: a player who
+--- types `1.2.3.4` -- or `v1.2.3.4`, the same digits with a letter in front --
+--- is now shadowed. tools/test_shared.lua asserts that this happens rather than
+--- pretending it does not. It is the same trade the owner made for `.ly`.
+---
+--- ═══ THE OCTETS ARE VALIDATED, WHICH BUYS BACK PART OF THE COST ═══
+---
+--- `%d+` alone would call `1.2.3.400` and `999.1.1.1` addresses when neither is
+--- one. Requiring 0-255 in at most three digits makes this mean "an IP" rather
+--- than "four numbers with dots between them", and it costs nothing in true
+--- positives: an address somebody can actually connect to is a valid one. It
+--- rescues the long version strings -- `10.0.22631.1`, a Windows build, has an
+--- octet of 22631 and is left alone. It does NOT rescue `1.2.3.4`, which is a
+--- valid address and a plausible version at the same time; nothing can, which
+--- is why that one went to the owner.
+---
+--- ═══ AND IT MUST NOT MATCH INSIDE A LONGER CHAIN OF DOTTED NUMBERS ═══
+---
+--- `1.2.3.4.5` is a five-part version, not an address with something after it.
+--- So a match is rejected when the character beyond either end is a digit, or a
+--- dot with a digit beyond THAT -- which is what tells `1.2.3.4.5` from
+--- `192.168.1.1.` at the end of a sentence.
+---
+--- COORDINATES ARE SAFE AND THAT IS CHECKED RATHER THAN ASSUMED. Every position
+--- this project prints is comma-separated -- `%.1f, %.1f, %.1f` in
+--- client/debug.lua's /brcoords, survey.lua, probe.lua and the rest -- so a
+--- pasted coordinate triple has commas between its numbers and cannot satisfy a
+--- pattern that requires dots. The suite pins several real ones.
+--- @param s string
+--- @return boolean
+local function ipv4In(s)
+    local from = 1
+    while true do
+        local a, b, o1, o2, o3, o4 =
+            s:find('(%d+)%.(%d+)%.(%d+)%.(%d+)', from)
+        if not a then return false end
+
+        local octetsOk = true
+        for _, o in ipairs({ o1, o2, o3, o4 }) do
+            if #o > 3 or (tonumber(o) or 256) > 255 then octetsOk = false end
+        end
+
+        local leftClear = not digitAt(s, a - 1)
+            and not (s:sub(a - 1, a - 1) == '.' and digitAt(s, a - 2))
+        local rightClear = not digitAt(s, b + 1)
+            and not (s:sub(b + 1, b + 1) == '.' and digitAt(s, b + 2))
+
+        if octetsOk and leftClear and rightClear then return true end
+
+        -- KEEP LOOKING FROM THE NEXT CHARACTER, for the reason `hostIn` does:
+        -- one rejected candidate does not make the line clean.
+        from = a + 1
+    end
+end
+
 --- Is a NAMED host in this line, and what kind of host is it?
 ---
 --- ═══ A SECOND SIGNAL, NOT A WIDER TLD LIST ═══
@@ -200,17 +272,18 @@ end
 
 --- Is there a link in this line?
 ---
---- FOUR SIGNALS, IN DESCENDING ORDER OF HOW UNAMBIGUOUS THEY ARE.
+--- FIVE SIGNALS, IN DESCENDING ORDER OF HOW UNAMBIGUOUS THEY ARE.
 ---
----   1. an explicit scheme -- `http://` or `https://`. Nothing else spells that.
----   2. a `www.` followed by anything alphanumeric.
----   3. a bare `label.tld` against the curated list above.
----   4. a dotted quad WITH A PORT.
+---   1. a connect scheme -- `fivem://`, `redm://` -- from the config.
+---   2. a NAMED host from the config, matched whole.
+---   3. an explicit scheme -- `http://` or `https://`. Nothing else spells that.
+---   4. a `www.` followed by anything alphanumeric.
+---   5. a bare IPv4 address, or a `label.tld` against the curated TLD list.
 ---
---- THE PORT IN (4) IS REQUIRED AND THAT IS THE POINT. A bare `1.2.3.4` is
---- indistinguishable from a four-part version number, which is a thing people
---- type; `1.2.3.4:30120` is a FiveM server address and is not. Advertising an
---- address without its port is a false negative this accepts on purpose.
+--- THE PORT USED TO BE REQUIRED ON THE ADDRESS AND NO LONGER IS -- the owner,
+--- 2026-08-30, "can we also make it block IP addresses?". See `ipv4In` for the
+--- reasoning that was overruled, the cost that was accepted, and the octet
+--- validation that buys part of it back.
 --- @param text string
 --- @return boolean
 function BR.ChatScreen.linkIn(text)
@@ -247,7 +320,7 @@ function BR.ChatScreen.linkReason(text)
 
     if s:find('https?://') then return BR.ChatScreen.LINK end
     if s:find('www%.%w') then return BR.ChatScreen.LINK end
-    if s:find('%d+%.%d+%.%d+%.%d+:%d') then return BR.ChatScreen.LINK end
+    if ipv4In(s) then return BR.ChatScreen.LINK end
 
     if hasDomain(s) then return BR.ChatScreen.LINK end
     return nil
