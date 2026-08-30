@@ -530,10 +530,12 @@ local function setPrompt(show, row)
                                        BR.Config.Market and BR.Config.Market.currency),
         key   = BR.Native.keyLabelForCommand('brinteract', 51),
         ring  = false,
-        -- ═══ THE PRICE, LARGE AND GREEN ═══
+        -- ═══ THE PRICE, LARGE AND IN THE CURRENCY'S OWN COLOUR ═══
         --
         -- Owner, 2026-08-29: "the price text needs to be increased in font size
         -- and make it green. It should be large."
+        -- Owner, 2026-08-30: "the volts text should be orange - the same color
+        -- we show in the market page."
         --
         -- SENT AS A FLAG, NOT AS A STYLE. `hintBig` asks the page for its price
         -- treatment and the page owns what that means; a font size sent from
@@ -541,24 +543,48 @@ local function setPrompt(show, row)
         -- line is shared with the crate, the pump, the revive and the heal
         -- station -- none of which asked to grow.
         --
-        -- THE COLOUR IS --color-hp, RESOLVED BY THE HUD'S OWN CASCADE. It
-        -- arrives from br_ui (see BR.Dui.hp) rather than being written here,
-        -- because that token is remapped by the colourblind modes and a hex in
-        -- this file would be the one green in the game that ignored the
-        -- setting.
+        -- THE COLOUR IS THE MARKET PAGE'S OWN TOKEN, RESOLVED BY THE HUD'S OWN
+        -- CASCADE. `--color-royale-accent2` is what Market.tsx paints the
+        -- balance plate and every affordable price button with, so this is
+        -- literally "the same color we show in the market page" rather than a
+        -- hex that matches it today. It arrives from br_ui (see BR.Dui.volts)
+        -- for the same reason the green did: index.css is the only place a
+        -- colour in this game is written down, and a DUI is a separate document
+        -- that cannot read it.
+        --
+        -- THE GREEN IS GONE FROM HERE ENTIRELY, and BR.Dui.hp with it. It is
+        -- still the right colour for a HOLD prompt and the other four consumers
+        -- of this page are untouched; it was never right for a price, and the
+        -- owner has now said which colour a price is.
         --
         -- NIL IS A LEGITIMATE ANSWER and the page falls back to its own colour.
         -- A br_core restart mid-session sits here until br_ui next applies its
         -- settings, and a price in the default colour is a far better failure
         -- than no price.
         hintBig    = true,
-        hintColour = (BR.Dui.hp and BR.Dui.hp()) or nil,
+        hintColour = (BR.Dui.volts and BR.Dui.volts()) or nil,
+
+        -- ═══ AND THE CAR'S NAME, A BIT LARGER ═══
+        --
+        -- Owner, 2026-08-30: "the title of the vehicle should be a bit larger."
+        -- A FLAG for the same reason `hintBig` is one: the page decides what
+        -- "larger" is in pixels, and the four other prompts sharing this browser
+        -- keep the size they have.
+        labelBig   = true,
     })
 end
 
---- The point on the front of a car where its plate hangs.
+--- Where on a car its sign stands, IN THE CAR'S OWN COORDINATES.
 ---
---- READ OFF THE MODEL rather than hardcoded, IN BOTH AXES NOW. It always was
+--- ═══ LOCAL OFFSETS RATHER THAN A WORLD POINT, WHICH IS #236 ═══
+---
+--- This used to return world x/y/z, because BR.Dui.drawWorld took a point and
+--- squared a sprite to the camera there. A sign has to know the car's axes, not
+--- just one of its points -- so the two offsets go to BR.Dui.drawFace and it
+--- resolves all four corners against the entity. Nothing here computes a world
+--- coordinate any more, and the plate cannot drift off the bodywork as a result.
+---
+--- READ OFF THE MODEL rather than hardcoded, IN BOTH AXES. It always was
 --- forwards -- `front` is the box's nose, so a Sanchez and a Bison each get
 --- their plate clear of their own bumper -- and the height was one authored
 --- 1.15 above the car's origin, which is a saloon's number applied to a monster
@@ -573,10 +599,9 @@ end
 --- not the derived height, so re-tuning the two config numbers takes effect on
 --- a br_lib reload rather than surviving in a cache keyed by model.
 --- @param veh integer
---- @return number x
---- @return number y
---- @return number z
-local function signPoint(veh)
+--- @return number|nil oy  entity-local Y: clear of the model's own nose
+--- @return number|nil oz  entity-local Z: the model's own bumper height
+local function signOffsets(veh)
     local model = GetEntityModel(veh)
     local d = DIMS[model]
     if not d then
@@ -585,10 +610,8 @@ local function signPoint(veh)
         d = { front = b.y, bottom = a.z, top = b.z }
         DIMS[model] = d
     end
-    local v = GetOffsetFromEntityInWorldCoords(
-        veh, 0.0, d.front + (tonumber(S.signForwardM) or 0.4),
-        BR.ShopSolve.signHeight(d.bottom, d.top, S.signBumperFrac, S.signLift))
-    return v.x, v.y, v.z
+    return d.front + (tonumber(S.signForwardM) or 0.4),
+           BR.ShopSolve.signHeight(d.bottom, d.top, S.signBumperFrac, S.signLift)
 end
 
 --- Is this row's car actually standing on the pad on THIS client?
@@ -634,9 +657,23 @@ BR.Loop.register(BR.Loop.TICK, 'shop.prompt', function()
     setPrompt(true, best)
 end)
 
---- ...and drawing it, which has to be per frame: BR.Dui.drawWorld is a
---- DrawSprite and a sprite lasts exactly one frame. The TICK pass decides
---- WHETHER; this decides WHERE.
+--- ...and drawing it, which has to be per frame: BR.Dui.drawFace is a pair of
+--- DrawSpritePoly calls and a poly lasts exactly one frame. The TICK pass
+--- decides WHETHER; this decides WHERE.
+---
+--- ═══ drawFace, NOT drawWorld (#236) ═══
+---
+--- Owner, 2026-08-30: "The store DUIs are dynamically sized and face the player.
+--- I want them to be stationary, with the DUI displayed on the front face of the
+--- vehicle, akin to a yard sign."
+---
+--- Both complaints are one native pair. drawWorld is SetDrawOrigin +
+--- DrawSprite: the origin projects a world point to the screen and the sprite is
+--- sized in SCREEN fractions, so it is a billboard AND it holds a constant share
+--- of the display at every distance. Neither is a parameter on that function.
+--- drawFace builds the quad in the world from the CAR'S OWN AXES instead, in
+--- metres -- so it turns with the car, stays put, and gets smaller as you walk
+--- away because that is what a thing in the world does.
 BR.Loop.register(BR.Loop.FRAME, 'shop.draw', function()
     if not promptShown or not candidate then return end
     local veh = cars[candidate.id]
@@ -644,9 +681,10 @@ BR.Loop.register(BR.Loop.FRAME, 'shop.draw', function()
     -- in a frame callback five of those cost the whole band.
     if not veh or veh == 0 or not isTrue(DoesEntityExist(veh)) then return end
 
-    local x, y, z = signPoint(veh)
-    if not x then return end
-    BR.Dui.drawWorld(promptPage(), x, y, z, tonumber(S.signScale) or 1.6)
+    local oy, oz = signOffsets(veh)
+    if not oy then return end
+    BR.Dui.drawFace(promptPage(), veh, oy, oz,
+                    tonumber(S.signWidthM) or 0.75)
 end)
 
 -- ---------------------------------------------------------------------------

@@ -79,8 +79,20 @@ export function applySettings(s: SettingsPayload): void {
   // FIRE AND FORGET. A failed post leaves the prompt on its existing colour,
   // which is a price in the wrong green rather than no price at all -- and this
   // runs on every settings apply, so the next one corrects it.
-  const hp = getComputedStyle(root).getPropertyValue('--color-hp').trim()
-  if (hp) {
-    void fetchNui(CB.PALETTE, { hp }).catch(() => {})
+  //
+  // ...AND THE CURRENCY ORANGE ALONGSIDE IT (owner, 2026-08-30: "the volts text
+  // should be orange - the same color we show in the market page"). That colour
+  // is --color-royale-accent2 -- the token Market.tsx paints the balance plate
+  // and every affordable price button with -- so the world plate's price and the
+  // Store screen's prices are one authored value rather than two.
+  //
+  // ONE getComputedStyle PASS AND ONE POST. Both are read here, at the one
+  // moment the cascade is known to be settled, and travel together; a second
+  // call would open a window where the plate had one of its two colours.
+  const style = getComputedStyle(root)
+  const hp = style.getPropertyValue('--color-hp').trim()
+  const volts = style.getPropertyValue('--color-royale-accent2').trim()
+  if (hp || volts) {
+    void fetchNui(CB.PALETTE, { hp, volts }).catch(() => {})
   }
 }

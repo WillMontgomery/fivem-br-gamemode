@@ -21,6 +21,18 @@ BR.Dui = BR.Dui or {}
 
 local pages = {}   -- [name] = { dui, txd, tex, w, h }
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 OR 0
+--- RATHER THAN true OR false. Ten shipped bugs on this project and a ratchet in
+--- tools/verify.sh to stop the eleventh. Same helper, same spelling, as
+--- br_core/client/loot.lua's.
+---
+--- drawOnEntity's own raw read below is deliberately LEFT AS IT IS -- it is in
+--- tools/bool_natives.baseline, and tightening a ratchet is a change of its own
+--- rather than a rider on a shop fix.
+--- @param v any
+--- @return boolean
+local function isTrue(v) return v == true or v == 1 end
+
 --- Model bounding boxes, cached by model hash. A model's dimensions never
 --- change, and drawOnEntity would otherwise ask the engine for them on every
 --- frame the player is looking at a crate.
@@ -223,6 +235,107 @@ function BR.Dui.drawWorld(page, x, y, z, scale, dist)
     SetDrawOrigin(x, y, z, 0)
     DrawSprite(page.txd, page.tex, 0.0, 0.0, w, h, 0.0, 255, 255, 255, 255)
     ClearDrawOrigin()
+end
+
+--- Draw a page as a FIXED SIGN STANDING ON AN ENTITY'S FRONT FACE (#236).
+---
+--- ═══ THIS IS THE OPPOSITE OF drawWorld, DELIBERATELY ═══
+---
+--- Owner, 2026-08-30: "The store DUIs are dynamically sized and face the player.
+--- I want them to be stationary, with the DUI displayed on the front face of the
+--- vehicle, akin to a yard sign."
+---
+--- BOTH HALVES OF THAT COMPLAINT ARE ONE CALL. `drawWorld` is
+--- SetDrawOrigin + DrawSprite: the origin projects a world point to the screen
+--- and the sprite is then sized in SCREEN fractions, so the plate is a billboard
+--- (always square to the camera) AND a constant fraction of the display (so
+--- walking away makes it grow relative to the car). Neither is a knob on that
+--- function -- they are what the two natives do.
+---
+--- SO THIS DRAWS THE QUAD IN THE WORLD INSTEAD, in metres, welded to the
+--- entity's own axes. Walk round the car and the sign turns with the car,
+--- because its four corners are entity-local offsets and nothing here reads the
+--- camera except to decide which way to wind the triangles.
+---
+--- THE SAME GEOMETRY AS drawOnEntity, STOOD UP. That one lays a label FLAT on a
+--- crate's roof (local X by local Y at a fixed Z); this one stands it UPRIGHT in
+--- front of a bumper (local X by local Z at a fixed Y). Everything downstream of
+--- the corners -- the normal, the camera-side test, the two triangles and their
+--- UVs -- is the same proven arrangement and is deliberately not re-derived.
+---
+--- WHICH WAY ROUND "TOP-LEFT" IS, BECAUSE MIRRORED TEXT IS THE FAILURE HERE. A
+--- player reading the sign stands IN FRONT of the car looking back along the
+--- car's -Y. Facing that way, the car's +X is on their LEFT -- so the texture's
+--- left edge is at +hw and not at -hw. Get this backwards and the sign renders
+--- perfectly, in mirror writing, from the only side anybody stands on.
+---
+--- NO ASPECT CORRECTION AND NO DISTANCE TERM. Both exist in drawWorld only
+--- because a screen-space sprite needs them; a quad measured in metres has one
+--- unit, and perspective is the renderer's job. `prefs.ui` still applies: the
+--- interface-size preference is the player's, and a sign is interface.
+---
+--- @param page table
+--- @param entity integer  the vehicle the sign is bolted to
+--- @param oy number       entity-local Y of the sign's centre, in metres
+--- @param oz number       entity-local Z of the sign's centre, in metres
+--- @param widthM number   how wide the sign is, in metres; height follows the
+---                        page's own aspect
+--- @param alpha number|nil
+function BR.Dui.drawFace(page, entity, oy, oz, widthM, alpha)
+    if not BR.Dui.ready(page) then return end
+    if not entity or entity == 0 or not isTrue(DoesEntityExist(entity)) then
+        return
+    end
+
+    local hw = ((tonumber(widthM) or 0.75) * 0.5) * prefs.ui
+    if hw <= 0.0 then return end
+    local hh = hw * (page.h / page.w)
+
+    local function corner(sx, sz)
+        local v = GetOffsetFromEntityInWorldCoords(entity, sx, oy, oz + sz)
+        return v.x, v.y, v.z
+    end
+
+    -- Left and right are the READER'S, standing in front of the car. See above.
+    local ax, ay, az = corner( hw,  hh)   -- top-left
+    local bx, by, bz = corner(-hw,  hh)   -- top-right
+    local cx, cy, cz = corner( hw, -hh)   -- bottom-left
+    local dx, dy, dz = corner(-hw, -hh)   -- bottom-right
+
+    -- WHICH SIDE THE CAMERA IS ON. DrawSpritePoly is single-sided, so a quad
+    -- wound for one side is invisible from the other -- and at a five-metre
+    -- reach on a four-metre car the player is regularly behind the bumper. The
+    -- winding swaps; the vertex-to-UV mapping does NOT, so the sign reads
+    -- correctly from the front and (as any real sign does) backwards from
+    -- behind, rather than vanishing.
+    local ux, uy, uz = bx - ax, by - ay, bz - az
+    local vx, vy, vz = cx - ax, cy - ay, cz - az
+    local nx = uy * vz - uz * vy
+    local ny = uz * vx - ux * vz
+    local nz = ux * vy - uy * vx
+
+    local cam = GetGameplayCamCoord()
+    local mx, my, mz = (ax + dx) * 0.5, (ay + dy) * 0.5, (az + dz) * 0.5
+    local flip = (nx * (cam.x - mx) + ny * (cam.y - my) + nz * (cam.z - mz)) < 0.0
+
+    local a = alpha or 255
+    local txd, tex = page.txd, page.tex
+
+    if flip then
+        DrawSpritePoly(ax, ay, az, cx, cy, cz, bx, by, bz,
+            255, 255, 255, a, txd, tex,
+            0.0, 0.0, 1.0,  0.0, 1.0, 1.0,  1.0, 0.0, 1.0)
+        DrawSpritePoly(cx, cy, cz, dx, dy, dz, bx, by, bz,
+            255, 255, 255, a, txd, tex,
+            0.0, 1.0, 1.0,  1.0, 1.0, 1.0,  1.0, 0.0, 1.0)
+    else
+        DrawSpritePoly(ax, ay, az, bx, by, bz, cx, cy, cz,
+            255, 255, 255, a, txd, tex,
+            0.0, 0.0, 1.0,  1.0, 0.0, 1.0,  0.0, 1.0, 1.0)
+        DrawSpritePoly(cx, cy, cz, bx, by, bz, dx, dy, dz,
+            255, 255, 255, a, txd, tex,
+            0.0, 1.0, 1.0,  1.0, 0.0, 1.0,  1.0, 1.0, 1.0)
+    end
 end
 
 --- Draw a page FLAT ON THE SCREEN, at a fixed spot, like a HUD element.
@@ -458,14 +571,35 @@ end)
 --- falls back to its own default when the field is absent.
 local hpColour = nil
 
+--- ...AND THE CURRENCY'S ORANGE, BY THE SAME ROUTE AND FOR THE SAME REASON.
+---
+--- Owner, 2026-08-30: "the volts text should be orange - the same color we show
+--- in the market page." That colour is `--color-royale-accent2`, which is what
+--- ui-src/src/screens/Market.tsx paints both the balance plate and every price
+--- button with -- so the shop plate's price and the Store screen's prices are
+--- now one token rather than two decisions that happen to agree.
+---
+--- READ OUT OF THE DOCUMENT, NOT WRITTEN DOWN HERE, exactly as the green above
+--- is. `--color-royale-accent2` is not one of the four tokens the colourblind
+--- modes remap today, and that is not a reason to hardcode it: the whole point
+--- of resolving through getComputedStyle is that index.css stays the only place
+--- a colour is authored, so the day accent2 is retuned -- or the day a
+--- colourblind mode starts remapping it -- nothing here goes stale in silence.
+local voltsColour = nil
+
 AddEventHandler('br:settings:palette', function(p)
     if type(p) ~= 'table' then return end
     if type(p.hp) == 'string' and p.hp ~= '' then hpColour = p.hp end
+    if type(p.volts) == 'string' and p.volts ~= '' then voltsColour = p.volts end
 end)
 
 --- The interface's green, or nil if br_ui has not reported one yet.
 --- @return string|nil
 function BR.Dui.hp() return hpColour end
+
+--- The interface's currency orange, or nil if br_ui has not reported one yet.
+--- @return string|nil
+function BR.Dui.volts() return voltsColour end
 
 --- ASK, RATHER THAN WAIT (#131's lesson, in the small).
 ---

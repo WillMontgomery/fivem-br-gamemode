@@ -570,6 +570,42 @@ BR.Config.Shop = {
     signForwardM = 0.4,    -- metres in front of the bumper, so the plate does
                            -- not z-fight with the bodywork
 
+    -- ═══ HOW WIDE THE SIGN IS, IN METRES -- WHICH IS A NEW UNIT HERE ═══
+    --
+    -- Owner, 2026-08-30: "The store DUIs are dynamically sized and face the
+    -- player. I want them to be stationary, with the DUI displayed on the front
+    -- face of the vehicle, akin to a yard sign... The overall DUI size is good."
+    --
+    -- `signScale` USED TO LIVE HERE AND IT IS GONE, because it was not a size.
+    -- It was the multiplier on BR.Dui.drawWorld's SCREEN fraction: a billboard
+    -- pinned to a world point but measured in display width, which is both
+    -- halves of what he is complaining about -- it squared itself to the camera
+    -- (that is what SetDrawOrigin + DrawSprite IS) and it held a constant share
+    -- of the screen however far away he stood. BR.Dui.drawFace draws a quad in
+    -- the world instead, so the number that describes it has to be metres.
+    --
+    -- ═══ 0.75 IS "THE OVERALL DUI SIZE IS GOOD", CONVERTED ═══
+    --
+    -- The old plate was 0.09 x 1.6 = 0.144 of the screen's width. At the game's
+    -- default field of view a 16:9 screen spans about 79 degrees, so the world
+    -- width the screen covers at distance d is roughly 1.66 x d metres, and the
+    -- plate occupied 0.144 of that: about 0.72m across at three metres, which is
+    -- the distance somebody stands at to read a price off a car.
+    --
+    -- SO THE SIZE HE APPROVED IS PRESERVED AT ONE DISTANCE AND ONLY ONE, and
+    -- that is not a defect -- it is the instruction. A fixed sign is smaller
+    -- from across the lot and bigger up close, which is what every real object
+    -- does and what "stationary" asks for.
+    --
+    -- 0.75m x 0.375m, because the page is 512x256 and the height follows the
+    -- texture's own aspect rather than being a second number to keep in step.
+    -- That is a yard sign, which is the shape he named.
+    --
+    -- THE INTERFACE-SIZE PREFERENCE STILL MULTIPLIES IT (BR.Dui.drawFace applies
+    -- `prefs.ui` exactly as drawWorld did), so a player at 1.30 gets a sign 30%
+    -- wider. It is the one scaling left, and it is the player's.
+    signWidthM = 0.75,
+
     -- ═══ HOW HIGH THE PLATE HANGS -- DERIVED, WITH ONE NUDGE ═══
     --
     -- Owner, 2026-08-29: "change the DUI to draw at the elevation of the
@@ -593,7 +629,6 @@ BR.Config.Shop = {
     -- adding one, not a reason to abandon the derivation for the other twelve.
     signBumperFrac = 0.35,
     signLift     = 0.0,    -- metres added on top, to nudge every plate at once
-    signScale    = 1.6,    -- the same figure ambheal's plate uses
 
     -- ------------------------------------------------------------------
     -- UNPACKING THE ITEM

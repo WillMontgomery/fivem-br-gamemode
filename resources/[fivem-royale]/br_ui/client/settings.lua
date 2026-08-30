@@ -293,10 +293,24 @@ end)
 --- property in a texture-backed document with no DOM anybody can reach. A
 --- garbage value paints a prompt wrong until the next settings apply, which is
 --- the same failure as no value at all.
+--- TWO COLOURS NOW, AND THE SECOND ONE IS NOT AN ACCESSIBILITY TOKEN.
+---
+--- Owner, 2026-08-30: "the volts text should be orange - the same color we show
+--- in the market page." The Store screen paints its balance and its prices with
+--- `--color-royale-accent2`, so `volts` carries that token down the same wire
+--- the green already travels on. It is reported for the reason above -- one
+--- authored place for a colour -- and not because anything remaps it today.
+---
+--- ONE MESSAGE CARRYING BOTH, rather than a second callback: the page resolves
+--- them in the same breath (one getComputedStyle pass, one apply), and a reader
+--- that got a green and then a colour later would have a window where the plate
+--- was half-repainted.
 RegisterNUICallback('br/ui/palette', function(data, cb)
-    local hp = type(data) == 'table' and data.hp or nil
-    if type(hp) == 'string' and hp ~= '' then
-        TriggerEvent('br:settings:palette', { hp = hp })
+    local d = type(data) == 'table' and data or {}
+    local hp = type(d.hp) == 'string' and d.hp ~= '' and d.hp or nil
+    local volts = type(d.volts) == 'string' and d.volts ~= '' and d.volts or nil
+    if hp or volts then
+        TriggerEvent('br:settings:palette', { hp = hp, volts = volts })
     end
     cb({ ok = true })
 end)

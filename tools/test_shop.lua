@@ -1800,16 +1800,26 @@ do
     -- ═══ THE PRICE: A FLAG, AND A COLOUR THAT IS NOT A HEX ═══
     --
     -- Owner: "the price text needs to be increased in font size and make it
-    -- green. It should be large." The green must be --color-hp, which the
-    -- colourblind modes remap -- so a literal here would be the one green in
-    -- the game that ignored the accessibility setting.
+    -- green. It should be large." -- and then, 2026-08-30, "the volts text
+    -- should be orange - the same color we show in the market page". The colour
+    -- must be a TOKEN resolved by the HUD's cascade either way, so a literal
+    -- here would be the one colour in the game that ignored index.css.
     -- THE VALUE, NOT JUST THE FIELD. `hintBig = false` still contains the word
     -- "hintBig", and the plate would quietly go back to a 19px grey price with
     -- every other assertion here still green.
     ok(cli:find('hintBig%s*=%s*true') ~= nil,
         'the price asks the plate for its large treatment, and asks for it TRUE')
-    ok(cli:find('BR%.Dui%.hp') ~= nil,
-        'and takes its green from the interface palette, resolved by br_ui')
+    ok(cli:find('BR%.Dui%.volts') ~= nil,
+        'and takes its orange from the interface palette, resolved by br_ui')
+    -- COMMENTS STRIPPED FIRST. The note above the field explains that the green
+    -- went and names it while doing so; prose about a removed call is exactly
+    -- what this file should contain, and matching it would make the assertion a
+    -- ban on explaining the change.
+    local cliCode = (cli:gsub('%-%-[^\n]*', ''))
+    ok(cliCode:find('BR%.Dui%.hp') == nil,
+        'and no longer CALLS the green, which is what it asked for until he '
+            .. 'said otherwise -- a file that read both would paint whichever '
+            .. 'one the last edit left in place')
     ok(cli:find('#%x%x%x%x%x%x') == nil,
         'with no hex colour written in this file at all')
 
@@ -1851,6 +1861,297 @@ do
     for _ in cli:gmatch('BR%.Dui%.page%(') do pages = pages + 1 end
     ok(pages == 1 and cli:find("'lootprompt'", 1, true) ~= nil,
         'and the plate borrows the one shared prompt page', pages)
+end
+
+-- ---------------------------------------------------------------------------
+describe('the plate is a yard sign: stationary, welded to the car, in metres')
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THIS BLOCK RUNS THE GEOMETRY RATHER THAN GREPPING FOR IT ═══
+--
+-- Owner, 2026-08-30: "The store DUIs are dynamically sized and face the player.
+-- I want them to be stationary, with the DUI displayed on the front face of the
+-- vehicle, akin to a yard sign."
+--
+-- Both faults were properties of BR.Dui.drawWorld, which is SetDrawOrigin +
+-- DrawSprite: the origin projects a world point to the screen and the sprite is
+-- then measured in SCREEN fractions. So it always squared itself to the camera
+-- and it always held the same share of the display at every distance -- and
+-- NEITHER of those is a parameter anybody could have passed differently. A
+-- source assertion could only ever have checked that the call was still there.
+--
+-- So client/dui.lua is LOADED here, with a GetOffsetFromEntityInWorldCoords that
+-- performs a real GTA heading rotation, and the four corners it produces are
+-- read back out of the DrawSpritePoly calls. Every assertion below fails against
+-- the old drawWorld path -- there are no polys at all to read.
+do
+    -- --- the browser, exactly as tools/test_client.lua stubs it ------------
+    json = { encode = function() return '{}' end }
+    function CreateDui() return 7 end
+    function CreateRuntimeTxd(n) return n end
+    function CreateRuntimeTextureFromDuiHandle() end
+    function GetDuiHandle() return 'h' end
+    function IsDuiAvailable() return true end
+    function SendDuiMessage() end
+    function DestroyDui() end
+
+    -- --- one car, at a known place, facing a known way --------------------
+    --
+    -- GTA HEADING IS COUNTER-CLOCKWISE DEGREES FROM NORTH, so forward is
+    -- (-sin h, cos h) and right is (cos h, sin h). Written out rather than
+    -- taken from the code under test: a stub that shared the implementation's
+    -- convention would agree with it however wrong both were.
+    local CAR = { x = 100.0, y = 200.0, z = 30.0, h = 0.0 }
+    local VEH = 4242
+
+    function DoesEntityExist(e) return e == VEH end
+    function GetOffsetFromEntityInWorldCoords(e, lx, ly, lz)
+        local r = math.rad(CAR.h)
+        local cs, sn = math.cos(r), math.sin(r)
+        return {
+            x = CAR.x + lx * cs - ly * sn,
+            y = CAR.y + lx * sn + ly * cs,
+            z = CAR.z + lz,
+        }
+    end
+
+    local cam = { x = 100.0, y = 210.0, z = 31.0 }
+    function GetGameplayCamCoord() return cam end
+
+    --- Every triangle drawn since the last clear, as { v = {3 vertices},
+    --- uv = {3 pairs} }.
+    local polys = {}
+    function DrawSpritePoly(x1, y1, z1, x2, y2, z2, x3, y3, z3,
+                            _r, _g, _b, _a, _txd, _tex,
+                            u1, v1, _w1, u2, v2, _w2, u3, v3, _w3)
+        polys[#polys + 1] = {
+            v  = { { x1, y1, z1 }, { x2, y2, z2 }, { x3, y3, z3 } },
+            uv = { { u1, v1 }, { u2, v2 }, { u3, v3 } },
+        }
+    end
+
+    -- THE BILLBOARD NATIVES ARE DEFINED AND MUST NEVER FIRE. If drawFace ever
+    -- reaches for SetDrawOrigin it is a billboard again, whatever else it does.
+    local originDraws = 0
+    function SetDrawOrigin() originDraws = originDraws + 1 end
+    function DrawSprite() originDraws = originDraws + 1 end
+    function ClearDrawOrigin() end
+    function GetAspectRatio() return 1.7778 end
+    function GetActiveScreenResolution() return 1920, 1080 end
+
+    loadCore('br_core/client/dui.lua')
+
+    local page = BR.Dui.page('signprobe', 'nui://br_ui/dui/prompt.html', 512, 256)
+    -- `shipped`, NOT BR.Config.Shop: the fixture catalogue was swapped in above
+    -- and carries no geometry. These numbers are the ones the owner will reach
+    -- for, so they are the ones under test.
+    local W = shipped.signWidthM
+
+    local function draw(oy, oz)
+        polys = {}
+        BR.Dui.drawFace(page, VEH, oy, oz, W)
+        return polys
+    end
+
+    --- The vertex carrying a given UV, from whichever triangle holds it.
+    local function at(uv0, uv1)
+        for _, p in ipairs(polys) do
+            for i = 1, 3 do
+                if p.uv[i][1] == uv0 and p.uv[i][2] == uv1 then return p.v[i] end
+            end
+        end
+        return nil
+    end
+
+    local function near(a, b, tol)
+        return math.abs(a - b) <= (tol or 0.0005)
+    end
+    local function samePoint(p, q)
+        return p ~= nil and q ~= nil
+            and near(p[1], q[1]) and near(p[2], q[2]) and near(p[3], q[3])
+    end
+
+    -- ═══ 1. IT DRAWS AT ALL, AND IT DRAWS A QUAD ═══
+    local OY, OZ = 3.0, 0.6
+    draw(OY, OZ)
+    ok(#polys == 2, 'the sign is two triangles of world geometry', #polys)
+    ok(originDraws == 0,
+        'and not one SetDrawOrigin or DrawSprite -- the screen-space path, '
+            .. 'which is what made it a billboard, is not reached at all',
+        originDraws)
+
+    local tl, tr = at(0.0, 0.0), at(1.0, 0.0)
+    local bl, br = at(0.0, 1.0), at(1.0, 1.0)
+    ok(tl and tr and bl and br,
+        'and all four texture corners are placed')
+
+    -- ═══ 2. IT IS MEASURED IN METRES ═══
+    --
+    -- The old plate was 0.144 of the SCREEN's width, which is not a length. The
+    -- new one is signWidthM across and half that tall, because the page is
+    -- 512x256 -- so the shape follows the texture and is not a second number.
+    local function dist(p, q)
+        local dx, dy, dz = p[1] - q[1], p[2] - q[2], p[3] - q[3]
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+    end
+    ok(near(dist(tl, tr), W, 0.001),
+        ('the sign is exactly signWidthM (%.3fm) across'):format(W),
+        ('%.4f'):format(dist(tl, tr)))
+    ok(near(dist(tl, bl), W * 0.5, 0.001),
+        'and half that tall, which is the 512x256 page\'s own aspect',
+        ('%.4f'):format(dist(tl, bl)))
+
+    -- ═══ 3. IT IS STATIONARY -- THE CAMERA CANNOT MOVE IT ═══
+    --
+    -- THE ASSERTION THE WHOLE ISSUE IS ABOUT. Walk right round the car and the
+    -- four corners must not shift by a millimetre. A billboard fails this on
+    -- every corner; so does anything that scales with distance.
+    local before = { tl, tr, bl, br }
+    cam = { x = 40.0, y = 90.0, z = 80.0 }      -- far away, and behind
+    draw(OY, OZ)
+    local after = { at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), at(1.0, 1.0) }
+    local moved = 0
+    for i = 1, 4 do
+        if not samePoint(before[i], after[i]) then moved = moved + 1 end
+    end
+    ok(moved == 0,
+        'moving the camera 130m and round to the far side moves no corner at '
+            .. 'all -- the sign is stationary and is not dynamically sized',
+        moved)
+    ok(#polys == 2,
+        'and it is still drawn from behind rather than vanishing -- the winding '
+            .. 'swaps, the geometry does not', #polys)
+    cam = { x = 100.0, y = 210.0, z = 31.0 }
+
+    -- ═══ 4. IT IS WELDED TO THE CAR'S OWN AXES ═══
+    --
+    -- Turn the car and the sign turns with it, because its corners are entity
+    -- offsets. At heading 0 the sign stands across the world's X axis, in front
+    -- of the car's nose; at heading 90 the same sign stands across Y.
+    draw(OY, OZ)
+    local flat0 = math.abs(at(0.0, 0.0)[2] - at(1.0, 0.0)[2])
+    ok(near(flat0, 0.0, 0.001),
+        'facing north, the sign\'s width lies along world X and its two top '
+            .. 'corners share a Y', ('%.4f'):format(flat0))
+    ok(near(at(0.0, 0.0)[2], CAR.y + OY, 0.001),
+        'and it stands OY metres in front of the car, on the car\'s own nose '
+            .. 'line', ('%.3f'):format(at(0.0, 0.0)[2]))
+
+    CAR.h = 90.0
+    draw(OY, OZ)
+    local flat90 = math.abs(at(0.0, 0.0)[1] - at(1.0, 0.0)[1])
+    ok(near(flat90, 0.0, 0.001),
+        'turn the car ninety degrees and the sign turns with it -- now the top '
+            .. 'corners share an X instead', ('%.4f'):format(flat90))
+    ok(near(at(0.0, 0.0)[1], CAR.x - OY, 0.001),
+        'and it is still off the nose, which now points west',
+        ('%.3f'):format(at(0.0, 0.0)[1]))
+    CAR.h = 0.0
+
+    -- ═══ 5. THE CENTRE IS THE POINT THE CALLER ASKED FOR ═══
+    draw(OY, OZ)
+    local cx = (at(0.0, 0.0)[1] + at(1.0, 1.0)[1]) * 0.5
+    local cy = (at(0.0, 0.0)[2] + at(1.0, 1.0)[2]) * 0.5
+    local cz = (at(0.0, 0.0)[3] + at(1.0, 1.0)[3]) * 0.5
+    ok(near(cx, CAR.x, 0.001) and near(cy, CAR.y + OY, 0.001)
+           and near(cz, CAR.z + OZ, 0.001),
+        'the sign is centred on exactly the offset the shop hands over -- the '
+            .. 'bumper height derivation is not quietly shifted by half a plate',
+        ('%.3f %.3f %.3f'):format(cx, cy, cz))
+
+    -- ═══ 6. AND IT IS NOT MIRROR WRITING ═══
+    --
+    -- THE ONE FAULT THAT RENDERS PERFECTLY. A reader stands in FRONT of the car
+    -- looking back along its -Y; facing that way the car's +X is on their LEFT.
+    -- So the texture's u=0 edge has to be at +X. Reverse it and the sign is
+    -- flawless, legible, correctly placed, and back to front -- and no
+    -- structural assertion anywhere can tell.
+    draw(OY, OZ)
+    ok(at(0.0, 0.0)[1] > at(1.0, 0.0)[1],
+        'the texture\'s left edge sits on the reader\'s left, which is the '
+            .. 'car\'s +X -- so the sign is not mirror writing',
+        ('u0 at x=%.3f, u1 at x=%.3f'):format(at(0.0, 0.0)[1],
+                                              at(1.0, 0.0)[1]))
+    ok(at(0.0, 0.0)[3] > at(0.0, 1.0)[3],
+        'and the texture\'s top edge is the higher one, so it is not upside '
+            .. 'down either')
+
+    -- ═══ 7. THE CONFIG KNOB IS A LENGTH, AND THE SCREEN FRACTION IS GONE ═══
+    ok(type(shipped.signWidthM) == 'number' and shipped.signWidthM > 0.0,
+        'signWidthM is a width in metres', tostring(shipped.signWidthM))
+    ok(shipped.signScale == nil,
+        'and signScale -- a multiplier on a SCREEN fraction, which is the unit '
+            .. 'that made the plate grow as he backed away -- no longer exists',
+        tostring(shipped.signScale))
+
+    local cli4 = readFile(RES .. 'br_core/client/shop.lua')
+    ok(cli4:find('BR%.Dui%.drawFace%(') ~= nil,
+        'the shop draws its plate with drawFace')
+    ok(cli4:find('BR%.Dui%.drawWorld%(') == nil,
+        'and never with drawWorld, which is the billboard it is replacing')
+
+    -- ...AND THE OTHER FOUR CONSUMERS ARE UNTOUCHED. drawWorld is right for a
+    -- prompt hanging over a crate; it was only ever wrong for a sign on a car.
+    local dui = readFile(RES .. 'br_core/client/dui.lua')
+    ok(dui:find('function BR%.Dui%.drawWorld') ~= nil,
+        'drawWorld still exists for the crate, the pump, the revive and the '
+            .. 'heal station')
+
+    -- ═══ 8. THE TITLE, AND THE CURRENCY WORD'S CASE ═══
+    ok(cli4:find('labelBig%s*=%s*true') ~= nil,
+        'the plate asks for the vehicle name\'s larger treatment')
+
+    local pg = readFile(RES .. 'br_ui/dui/prompt.html')
+    ok(pg:find('#label%.big') ~= nil,
+        'and the page defines it')
+    ok(pg:find("label.classList.remove('big')", 1, true) ~= nil,
+        'and clears it on every message, so it cannot leak into the four other '
+            .. 'prompts sharing this browser')
+
+    -- ═══ "VOLTS DOESN'T NEED TO BE ALL CAPS" ═══
+    --
+    -- #hint is `text-transform: uppercase`, and `.price` INHERITED it -- which
+    -- is how config/market.lua's "Volts" reached his screen as "VOLTS". The
+    -- fix is one declaration on the price rule, and it is the whole of it.
+    local priceRule = pg:match('#hint%.price%s*{(.-)}')
+    ok(priceRule ~= nil and priceRule:find('text%-transform:%s*none'),
+        'the price line turns the uppercasing back off, so the currency word '
+            .. 'is spelled the way config/market.lua spells it',
+        priceRule and priceRule:gsub('%s+', ' ') or 'no rule')
+    ok(BR.Config.Market.currency == 'Volts',
+        'which is "Volts", in sentence case, and is still the only place it '
+            .. 'is written', BR.Config.Market.currency)
+
+    -- ═══ 9. THE ORANGE IS THE MARKET PAGE'S OWN TOKEN, END TO END ═══
+    --
+    -- Owner: "the same color we show in the market page". That is a claim about
+    -- ONE TOKEN reaching two documents, and every link in the chain is checked
+    -- here -- the Store screen paints with it, the settings apply reads it out
+    -- of the resolved cascade, br_ui forwards it, br_core holds it, the shop
+    -- sends it. A hex anywhere in that chain would satisfy "it looks orange"
+    -- and fail this.
+    local mkt = readFile('ui-src/src/screens/Market.tsx')
+    local apply = readFile('ui-src/src/settings/apply.ts')
+    local voltsToken = apply:match(
+        "const volts = style%.getPropertyValue%('(%-%-[%w%-]+)'%)")
+    ok(voltsToken ~= nil,
+        'settings/apply.ts reads a named token for the currency colour',
+        tostring(voltsToken))
+    ok(voltsToken ~= nil and mkt:find('var(' .. voltsToken .. ')', 1, true) ~= nil,
+        'and it is the very token the Store screen paints its balance and its '
+            .. 'prices with -- "the same color we show in the market page", '
+            .. 'proved rather than matched by eye', tostring(voltsToken))
+    ok(apply:find('CB.PALETTE, { hp, volts }', 1, true) ~= nil,
+        'both colours travel in one post, so the plate is never half repainted')
+
+    local set = readFile(RES .. 'br_ui/client/settings.lua')
+    ok(set:find('volts = volts', 1, true) ~= nil,
+        'br_ui forwards it on br:settings:palette')
+    ok(dui:find('function BR%.Dui%.volts') ~= nil
+           and dui:find('p%.volts') ~= nil,
+        'br_core holds it and offers it to the plate')
+    ok(dui:find('#%x%x%x%x%x%x') == nil,
+        'and client/dui.lua still writes no colour of its own')
 end
 
 print(('\n\27[32m%d passed\27[0m'):format(pass))

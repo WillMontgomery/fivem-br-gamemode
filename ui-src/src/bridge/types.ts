@@ -1240,13 +1240,16 @@ export const CB = {
    * the page can know.
    *
    * The world prompts are a separate document (br_ui/dui/prompt.html) rendered
-   * into a runtime texture, sharing no stylesheet with this page -- and the
-   * warmup shop's price line has to be --color-hp, which is one of the four
-   * tokens the colourblind modes remap. The alternatives both duplicate
-   * index.css: a hex in Lua, or a second copy of the :root[data-cb] blocks
-   * inside the prompt page. So the cascade is asked what it resolved to, one
-   * line after the attribute that decides it, and index.css stays the only
-   * place a green is written. See settings/apply.ts.
+   * into a runtime texture, sharing no stylesheet with this page. The
+   * alternatives both duplicate index.css: a hex in Lua, or a second copy of
+   * the :root[data-cb] blocks inside the prompt page. So the cascade is asked
+   * what it resolved to, one line after the attribute that decides it, and
+   * index.css stays the only place a colour is written. See settings/apply.ts.
+   *
+   * TWO COLOURS TRAVEL: `hp` (--color-hp, one of the four tokens the
+   * colourblind modes remap) and `volts` (--color-royale-accent2, which
+   * Market.tsx paints the balance and every price with, and which the shop
+   * plate's price line has read since 2026-08-30).
    *
    * DELIBERATELY NOT IN BR.NuiCb. This is not a setting -- it is never stored,
    * never validated against a range and never sent back -- and br_ui's Lua side
