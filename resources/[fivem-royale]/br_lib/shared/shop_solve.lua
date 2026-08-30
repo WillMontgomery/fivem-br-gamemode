@@ -185,6 +185,74 @@ function BR.ShopSolve.rowById(rows, id)
     return nil
 end
 
+--- WHICH CAR IS THE PLAYER STANDING AT? THE NEAREST ONE IN REACH, NEVER "ONE OF
+--- THE ONES IN REACH".
+---
+--- ═══ AT THE OWNER'S SPACING NO RADIUS CAN TELL TWO CARS APART, SO DISTANCE
+---     ORDER HAS TO ═══
+---
+--- The surveyed showroom (2026-08-29) puts its tightest pair -- `sanchez` and
+--- `outlaw` -- 3.25m apart, and nine other pairs are inside 4.5m. The midpoint
+--- between two cars 3.25m apart is 1.63m from each, so a reach small enough to
+--- put only ONE of them in range would have to be under 1.63m: inside the
+--- bodywork of both, and unusable. THERE IS NO VALUE OF `reachM` THAT MAKES
+--- "in reach" MEAN "the one car I am at" on this pad.
+---
+--- So the radius is not what picks the car. It answers one question -- am I at
+--- the showroom at all -- and the ORDERING answers the other. Standing between
+--- two cars is then not a coin flip but the obvious answer: the nearer one.
+--- #128 is the same defect one system over (two crates in reach, a press that
+--- claimed the other), and the fix there was the same fix: resolve once, to the
+--- nearest.
+---
+--- ═══ A FLAT SWEEP, AND NO ASSUMPTION THAT THE SHOWROOM IS ONE CLUSTER ═══
+---
+--- Every row is measured, every call. There is no spatial index, no "start from
+--- the last answer and walk outwards", and no early exit on the first row in
+--- range -- all three would be an assumption that the catalogue is contiguous,
+--- and it is not: `veto` stands 154m from the other twelve, exactly where the
+--- owner put it. At thirteen rows on the tick band a full sweep is free, and it
+--- is correct for a catalogue of any shape.
+---
+--- 2-D, LIKE EVERY OTHER REACH IN THIS PROJECT. The pad is flat (his z values
+--- span one metre) and a player on a kerb beside a car is still at that car.
+---
+--- TIES GO TO THE EARLIER ROW. `<` rather than `<=`, so two cars at the same
+--- distance resolve to the one written first in the catalogue -- an arbitrary
+--- rule, but a STABLE one, and a stable answer is what stops the plate flipping
+--- between two cars while a player stands still.
+---
+--- @param rows table          the resolved catalogue
+--- @param px number           the player, x
+--- @param py number           the player, y
+--- @param reachM number|nil   how far "at a car" reaches; nil is no reach at all
+--- @param present fun(row:table):boolean|nil  optional: is this car actually
+---        standing? The client passes its DoesEntityExist check, so a row whose
+---        model never streamed cannot be offered for sale.
+--- @return table|nil row      the nearest row in reach, or nil
+--- @return number|nil dist    how far away it is
+function BR.ShopSolve.nearest(rows, px, py, reachM, present)
+    if type(rows) ~= 'table' then return nil, nil end
+    px, py = tonumber(px), tonumber(py)
+    if not px or not py then return nil, nil end
+    local reach = tonumber(reachM)
+    if not reach or reach <= 0.0 then return nil, nil end
+
+    local best, bestD = nil, nil
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == 'table'
+           and type(row.x) == 'number' and type(row.y) == 'number'
+           and (present == nil or present(row) == true) then
+            local d = BR.Dist(px, py, row.x, row.y)
+            if d <= reach and (bestD == nil or d < bestD) then
+                best, bestD = row, d
+            end
+        end
+    end
+    return best, bestD
+end
+
 --- The name this car is sold under.
 ---
 --- `label` IF THE OWNER WROTE ONE, THE MODEL OTHERWISE. The DUI says

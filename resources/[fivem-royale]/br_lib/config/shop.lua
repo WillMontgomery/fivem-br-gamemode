@@ -80,19 +80,91 @@ BR.Config.Shop = {
     enabled = true,
 
     -- ------------------------------------------------------------------
-    -- THE CATALOGUE, AND WHY THIS TABLE IS EMPTY
+    -- THE CATALOGUE, AS THE OWNER SURVEYED IT ON 2026-08-29
     -- ------------------------------------------------------------------
     --
-    -- WITH NO ROWS THE FEATURE IS INERT RATHER THAN BROKEN. This is
-    -- BR.Config.Rescue.points' rule, applied a second time and for the same
-    -- reason: the owner authors this data in game and it is not written yet.
-    -- An empty catalogue produces a warmup with no shop in it -- no display
-    -- cars, no plate, no prompt, and a purchase handler that refuses every
-    -- request. Not an error, not a crash, and no hardcoded fallback row that
-    -- would put a car nobody chose on the pad.
+    -- Thirteen cars, and every model, coordinate and heading below is HIS,
+    -- transcribed from his survey without adjustment. This table shipped empty
+    -- until he authored it; the "inert rather than broken" behaviour that
+    -- covered that is still in BR.ShopSolve.enabled and still correct if the
+    -- rows are ever removed.
     --
-    -- Owner, 2026-08-29: "I will give you vehicle models, coords, and headings
-    -- when ready."
+    -- ═══ HIS SURVEY NUMBERS ARE ONE-BASED. THIS CONFIG IS ZERO-BASED. ═══
+    --
+    -- READ THIS BEFORE YOU "FIX" A COLOUR. He surveyed the paint in a menu and
+    -- wrote down the row he clicked, and the menu counts from one:
+    --
+    --   Owner, 2026-08-29: "It's the menu's row number (1st entry = GTA index 0)."
+    --
+    -- Every `primary`/`secondary` below is therefore HIS NUMBER MINUS ONE, and
+    -- the same conversion is applied to `livery`:
+    --
+    --     his note            this file
+    --     ----------------    ---------------
+    --     Preset Color 1      primary = 0
+    --     Preset Color 2      primary = 1
+    --     Preset Color 4      primary = 3
+    --     Preset Color 5      primary = 4
+    --     Preset Color 6      primary = 5
+    --     Preset Color 7      primary = 6
+    --     Livery 5            livery  = 4
+    --
+    -- His original note is quoted verbatim on each row, so the two can always be
+    -- checked against each other. IF A CAR COMES OUT THE WRONG COLOUR THE BUG IS
+    -- ONE OF THESE SUBTRACTIONS, NOT THE CONVENTION -- do not "correct" the
+    -- table back to his row numbers, or all thirteen shift by one.
+    --
+    -- ═══ THE FAIRNESS CONSTRAINT: REVIEWED, RAISED, AND ACCEPTED ═══
+    --
+    -- The header of this file says the catalogue is what keeps "a bought car
+    -- must be transport, not an advantage" true, and that this list is where the
+    -- rule is enforced or broken. THIS LIST WAS CHECKED AGAINST THAT RULE AND
+    -- THE OWNER OVERRODE IT, KNOWINGLY. He was told, by name, that:
+    --
+    --     voltic2     has a rocket boost
+    --     riot        is armoured
+    --     mesa3       is armoured
+    --     marshall    drives over other cars
+    --     formula2    is the fastest thing in the game
+    --
+    -- -- i.e. that several of these rows are bought advantages rather than
+    -- transport, which is the condition he set when he agreed the cars could be
+    -- paid for out of the saved balance. His answer, 2026-08-29:
+    --
+    --     "Ship all 13 -- I know what they are."
+    --
+    -- So this is a decision on the record and not an oversight. IT IS WRITTEN
+    -- DOWN HERE SO THAT NOBODY LATER READS THE HEADER, LOOKS AT `voltic2`, AND
+    -- CONCLUDES THAT THE RULE WAS SIMPLY MISSED. It was not missed. It was
+    -- raised, and it was overruled by the person whose rule it is.
+    --
+    -- ═══ THE PRICES ARE A FIRST PASS, PROPOSED, AND HIS TO TUNE ═══
+    --
+    -- He asked for a tier to be proposed and said he would adjust it: "propose a
+    -- tier and I'll adjust." NONE OF THESE NUMBERS IS HIS. They are a first cut
+    -- that sorts the catalogue by what a car actually does -- novelty and cheap
+    -- mobility at the bottom, armour and the two 1500s at the top -- and
+    -- `mesa3` sits at 750 because that is the one figure #224 named. Every one
+    -- of them is meant to be edited.
+    --
+    -- ═══ WHY EVERY ROW AUTHORS BOTH COLOURS ═══
+    --
+    -- He gave ONE colour per car. Both `primary` and `secondary` are written
+    -- with it anyway, and that is not padding.
+    --
+    -- A -1 in this table means "leave it", and BR.Shop.dress honours that by
+    -- READING the value off the vehicle it is dressing. For a freshly created
+    -- vehicle the value it reads is the RANDOM colour combination the engine
+    -- just rolled -- so an unwritten `secondary` is not a default, it is a
+    -- different random number on the showroom car and on the car that comes out
+    -- of the item. That is precisely the drift "exactly as shown when they
+    -- purchased it" cannot have, and it is invisible until somebody notices
+    -- their car has the wrong trim forty minutes into a match.
+    --
+    -- `pearl` and `wheelColour` are rolled in the same combination and are
+    -- written for the same reason. 0 IS A DETERMINISM PLACEHOLDER AND NOT A
+    -- TASTE DECISION -- he did not specify them, and any fixed number beats a
+    -- random one. If he wants a different trim, these are the fields.
     --
     -- ═══ THE SHAPE OF A ROW ═══
     --
@@ -147,29 +219,168 @@ BR.Config.Shop = {
     --     },
     --   },
     --
-    -- ═══ A COMPLETE, PASTEABLE EXAMPLE ═══
-    --
-    -- This is a real row, valid today, and it is COMMENTED OUT rather than
-    -- shipped -- an example that ships is a car nobody chose standing on the
-    -- pad at coordinates nobody surveyed.
-    --
-    --   {
-    --     id = 'sultan', model = 'sultan', label = 'Sultan',
-    --     price = 750, vtype = 'automobile',
-    --     x = -1035.6, y = -2733.4, z = 20.2, heading = 328.0,
-    --     appearance = {
-    --       primary = 27, secondary = 27, pearl = 0, wheelColour = 0,
-    --       windowTint = 1, wheelType = 0, dirt = 0.0,
-    --       plate = 'BR SHOP', plateIndex = 0,
-    --       mods = { [11] = 2, [12] = 2, [13] = 2, [23] = 4 },
-    --       toggles = { [18] = true },
-    --     },
-    --   },
-    --
     -- Coordinates come from /brcoords, which is what the 23 ambulance points
     -- were surveyed with -- a ped-standing position, so the z can be trusted
     -- and the heading is the way a vehicle put there should face.
-    items = {},
+    --
+    -- ═══ NO ROW CARRIES A `label`, AND THAT IS DELIBERATE ═══
+    --
+    -- The plate reads "<name> for sale", and with no `label` the name is the
+    -- MODEL STRING he typed -- "drifttampa for sale", "caracara2 for sale". A
+    -- label is player-facing copy, this project's standing rule is that no
+    -- player-facing text is invented, and he has not written any. If he wants
+    -- "Drift Tampa" on the plate, `label` is the field and the words have to be
+    -- his.
+    --
+    -- ═══ THE ORDER IS HIS SURVEY ORDER ═══
+    --
+    -- Not sorted by price or by position. Two cars at exactly equal distance
+    -- resolve to the one written FIRST (BR.ShopSolve.nearest), so the row order
+    -- is a tie-break rule as well as a reading order, and his order is the one
+    -- that matches the notes he will check this against.
+    items = {
+        -- `veto` STANDS 154m FROM THE OTHER TWELVE, AND THAT IS WHERE HE PUT IT.
+        -- Its x is 4665.97 where every other car is between 4468 and 4512. That
+        -- was queried as a possible transposed digit (4465.97 would set it at
+        -- the head of the line, 2.5m from `sanchez`) and he answered on
+        -- 2026-08-29: "No those coords are very specifically placed. Don't
+        -- change them." So it is a deliberate outlier, it is not a typo, and
+        -- nothing in the code assumes the showroom is one cluster because of it.
+        {
+            id = 'veto', model = 'veto', price = 250,
+            x = 4665.97, y = -4478.9, z = 3.3, heading = 198.1,
+            appearance = {  -- his note: Preset Color 1
+                primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            -- THE ONE MOTORCYCLE IN THE CATALOGUE, so the one row that needs a
+            -- `vtype`. It picks the sync tree the server builds when the item is
+            -- unpacked and it is NOT checked against the model -- an `automobile`
+            -- tree under a bike is the kind of mismatch that desyncs quietly.
+            id = 'sanchez', model = 'sanchez', price = 350, vtype = 'bike',
+            x = 4468.09, y = -4478.40, z = 3.68, heading = 197.7,
+            appearance = {  -- his note: Preset Color 6
+                primary = 5, secondary = 5, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            id = 'outlaw', model = 'outlaw', price = 500,
+            x = 4471.23, y = -4477.56, z = 4.02, heading = 199.8,
+            appearance = {  -- his note: Preset Color 4
+                primary = 3, secondary = 3, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            -- 750 IS #224's OWN NUMBER, kept on the row the issue described.
+            id = 'mesa3', model = 'mesa3', price = 750,
+            x = 4474.67, y = -4477.09, z = 3.99, heading = 199.3,
+            appearance = {  -- his note: Preset Color 2
+                primary = 1, secondary = 1, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            id = 'caracara2', model = 'caracara2', price = 750,
+            x = 4478.54, y = -4476.13, z = 3.93, heading = 199.8,
+            appearance = {  -- his note: Preset Color 4
+                primary = 3, secondary = 3, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            id = 'nightshade', model = 'nightshade', price = 600,
+            x = 4481.98, y = -4474.05, z = 3.63, heading = 201.4,
+            appearance = {  -- his note: Preset Color 1
+                primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            id = 'infernus', model = 'infernus', price = 900,
+            x = 4485.30, y = -4472.56, z = 3.73, heading = 200.8,
+            appearance = {  -- his note: Preset Color 7
+                primary = 6, secondary = 6, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            id = 'drifttampa', model = 'drifttampa', price = 600,
+            x = 4492.41, y = -4470.39, z = 3.59, heading = 199.8,
+            appearance = {  -- his note: Preset Color 1
+                primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            id = 'voltic2', model = 'voltic2', price = 1500,
+            x = 4495.90, y = -4468.74, z = 3.78, heading = 201.9,
+            appearance = {  -- his note: Preset Color 1
+                primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            id = 'formula2', model = 'formula2', price = 1500,
+            x = 4499.17, y = -4467.59, z = 3.46, heading = 201.0,
+            appearance = {  -- his note: Preset Color 1
+                primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            id = 'ambulance', model = 'ambulance', price = 500,
+            x = 4503.87, y = -4468.23, z = 3.89, heading = 198.4,
+            appearance = {  -- his notes: Preset Color 1, Livery 5
+                primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
+                -- HIS "Livery 5", THROUGH THE SAME MINUS-ONE AS THE COLOURS. He
+                -- read it off a one-based menu row; SetVehicleLivery counts
+                -- from zero.
+                livery = 4,
+            },
+        },
+        {
+            id = 'riot', model = 'riot', price = 1250,
+            x = 4507.97, y = -4465.96, z = 3.85, heading = 200.3,
+            appearance = {  -- his note: Preset Color 1
+                primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
+            },
+        },
+        {
+            id = 'marshall', model = 'marshall', price = 1250,
+            x = 4512.49, y = -4463.92, z = 4.30, heading = 198.7,
+            appearance = {  -- his notes: Preset Color 5, Livery American Flag
+                primary = 4, secondary = 4, pearl = 0, wheelColour = 0,
+                -- ═══ UNVERIFIED. THIS ONE NUMBER IS A RESEARCHED GUESS. ═══
+                --
+                -- He wrote a NAME here rather than a menu row -- "Livery
+                -- American Flag" -- so the minus-one convention has nothing to
+                -- subtract from and the index had to be looked up.
+                --
+                -- WHAT IS ESTABLISHED: the marshall carries 25 flag liveries,
+                -- one per country, drawn from `flag_sign_1`..`flag_sign_25` in
+                -- marshall.ytd (GTAMods Wiki, Carvariations.ymt; GTA Wiki,
+                -- "Marshall"). So the valid indices are 0..24 and an American
+                -- flag is certainly among them.
+                --
+                -- WHAT IS NOT ESTABLISHED: the ORDER. The only ordered list
+                -- found is the GTA Wiki's country list, in which "United States
+                -- of America" is the 24th of 25 entries -- which by his own
+                -- one-based convention gives index 23, written below. That list
+                -- is a wiki's prose, NOT a datamined livery order, and it is
+                -- internally suspect: it runs Japan before Jamaica, so it is
+                -- neither reliably alphabetical nor demonstrably the game's own
+                -- index order. No carvariations dump confirming the order was
+                -- found.
+                --
+                -- SO HE SHOULD CHECK IT, AND IT COSTS HIM ONE GLANCE. The
+                -- marshall stands at the end of the line in the showroom wearing
+                -- whatever this index is. If the flag is not the Stars and
+                -- Stripes, count the American Flag's row in the same menu he
+                -- surveyed from, subtract one, and put that here.
+                --
+                -- IF THIS INDEX IS OUT OF RANGE the native is ignored and the
+                -- car keeps the RANDOM livery the engine rolled -- which means
+                -- the showroom marshall and the delivered marshall would wear
+                -- different flags. That is the loud failure and it is the one to
+                -- watch for.
+                livery = 23,  -- unverified: see above
+            },
+        },
+    },
 
     -- ------------------------------------------------------------------
     -- HOW MANY
@@ -213,14 +424,64 @@ BR.Config.Shop = {
                        -- entry that never happens. client/rescue.lua shipped 4
                        -- and drove the whole way unlocked.
 
-    -- How far the player has to be from a display car for its plate to come up
-    -- and the interact key to act on it, in metres.
-    reachM = 4.0,
+    -- ------------------------------------------------------------------
+    -- REACH, AND WHY IT NO LONGER PICKS THE CAR
+    -- ------------------------------------------------------------------
+    --
+    -- ═══ AT THE SURVEYED SPACING, NO RADIUS CAN TELL TWO CARS APART ═══
+    --
+    -- The owner's showroom (2026-08-29) stands its cars in a line with the
+    -- tightest pair -- `sanchez` and `outlaw` -- 3.25m apart, and nine other
+    -- pairs inside 4.5m. The midpoint between two cars 3.25m apart is 1.63m from
+    -- each of them, so a reach that put ONE of them in range and not the other
+    -- would have to be under 1.63m: a radius that ends inside both cars' own
+    -- bodywork and that nobody could stand in. There is no value of this number
+    -- that makes "in reach" mean "the one car I am at".
+    --
+    -- So it stopped being asked to. BR.ShopSolve.nearest resolves the plate and
+    -- the purchase to the NEAREST car in reach, and `reachM` now answers only
+    -- one question: am I at the showroom at all? Two cars in range is the normal
+    -- case on this pad and is no longer ambiguous.
+    --
+    -- ═══ WHICH IS WHY THIS WENT UP RATHER THAN DOWN ═══
+    --
+    -- 4.0 was chosen when a smaller radius still bought disambiguation. It
+    -- cannot, and 4.0 was too small for the catalogue that arrived: the plate
+    -- hangs off the front of the MODEL (see `signForwardM`, which reads
+    -- GetModelDimensions), so on the longest cars here -- `marshall`, `riot`,
+    -- `ambulance` -- it sits roughly three and a half metres in front of the
+    -- car's own origin. A player who walks up to that plate to read it is
+    -- four-and-a-half to five metres from the origin the reach is measured from,
+    -- and at 4.0 the plate blinked out exactly where he stopped to read it.
+    --
+    -- 5.0 clears the biggest model in the catalogue with room to stand, and
+    -- costs nothing anywhere else: a wider radius can only ever add FURTHER cars
+    -- to the candidate set, and a further car never wins a nearest.
+    reachM = 5.0,
 
-    -- ...and how far apart two display cars have to be before this number stops
-    -- being able to tell them apart. Purely a console warning at load: two cars
-    -- inside one reach radius means a press is a coin flip.
-    minSpacingM = 6.0,
+    -- ...and the load-time warning, which now means something else.
+    --
+    -- ═══ 6.0 WAS A COIN-FLIP THRESHOLD AND IT FIRED ON TEN PAIRS ═══
+    --
+    -- This used to be "closer together than the reach radius", i.e. "a press
+    -- between them is a coin flip". Against the surveyed pad that was true of
+    -- TEN OF THE SEVENTY-EIGHT PAIRS and printed ten yellow lines at every
+    -- boot -- a warning about the showroom being a showroom. Nearest-wins made
+    -- the statement false as well as noisy.
+    --
+    -- ═══ 3.0 IS A PHYSICAL FACT INSTEAD ═══
+    --
+    -- Below three metres, two parked cars are not close together, they are
+    -- INSIDE ONE ANOTHER: a `riot` is about 2.6m wide and a `marshall` about
+    -- 3.4m, so two of anything car-shaped whose origins are under 3m apart have
+    -- overlapping bodywork and certainly no gap for a player to stand in and
+    -- read a plate. That is a defect in the coordinates, it is not something
+    -- nearest-wins can rescue, and it is worth a line on the console.
+    --
+    -- Against his thirteen rows it fires on NOTHING, which is the point of
+    -- picking it: the tightest real pair is 3.25m, so there are 25cm of headroom
+    -- and the next line printed will be about a row that deserves one.
+    minSpacingM = 3.0,
 
     -- THE PLATE. Owner: "draw DUIs on the front of the vehicles which says
     -- '[model name] for sale' and the price."

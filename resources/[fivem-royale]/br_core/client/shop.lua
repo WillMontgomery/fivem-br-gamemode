@@ -370,12 +370,31 @@ end
 --- The key cap is the player's OWN binding, asked for by COMMAND rather than by
 --- control -- client/loot.lua's fix, without which every prompt in the game said
 --- E after a rebind.
+--- ═══ SENT WHEN THE CAR CHANGES, NOT ONLY WHEN THE PLATE APPEARS ═══
+---
+--- This used to return early on `show == promptShown`, which is right for a
+--- prompt that is only ever about ONE thing and wrong for a showroom. On the
+--- owner's pad the cars are 3.25m apart and the reach is five, so walking down
+--- the line NEVER drops the plate: `candidate` moved to the next car, the sprite
+--- moved to the next car's bumper -- and the words on it still named the first
+--- car and quoted the first car's price, because the only send happened when the
+--- plate came up.
+---
+--- The player would then have read one price, pressed, and been charged another.
+--- Both ends of that were "correct" in isolation, which is why it survived
+--- review: the purchase resolved to the nearest car and so did the position. The
+--- TEXT was the one thing that did not.
+---
+--- So the guard is on the PAIR -- shown, and shown FOR WHICH ROW -- and a row
+--- change re-sends. Still a send on change rather than per tick; it is just that
+--- the change that matters is not only up-versus-down.
 --- @param show boolean
 --- @param row table|nil
 local function setPrompt(show, row)
     show = (show == true)
+    local was = candidate
     candidate = show and row or nil
-    if show == promptShown then return end
+    if show == promptShown and candidate == was then return end
     promptShown = show
 
     local page = promptPage()
@@ -419,25 +438,44 @@ local function signPoint(veh)
     return v.x, v.y, v.z
 end
 
+--- Is this row's car actually standing on the pad on THIS client?
+---
+--- A row whose model never streamed has no entity, and a plate on a car that is
+--- not there is a price for something a player cannot see. Handed to
+--- BR.ShopSolve.nearest as its `present` filter so the SELECTION skips it,
+--- rather than being checked after the fact -- picking the nearest row and then
+--- discovering it has no car would offer nothing while a perfectly good car
+--- stood two metres further on.
+--- @param row table
+--- @return boolean
+local function standing(row)
+    local veh = cars[row.id]
+    return (veh ~= nil and veh ~= 0 and isTrue(DoesEntityExist(veh)))
+end
+
 --- Which car is the player standing at?
 ---
+--- THE NEAREST ONE IN REACH, AND THE ARITHMETIC IS BR.ShopSolve.nearest's
+--- RATHER THAN THIS FILE'S. It used to be a loop here, which meant the one rule
+--- that decides which car somebody's Volts are spent on lived in a client file
+--- no test can execute. It is a pure function over the catalogue now, and
+--- tools/test_shop.lua stands a player between the owner's two closest cars and
+--- checks which one comes back.
+---
+--- WHY NEAREST AND NOT "ANY IN REACH": on the surveyed pad the tightest pair is
+--- 3.25m apart, so there is no reach radius that puts one car in range and not
+--- its neighbour -- it would have to be under 1.63m, which is inside both cars.
+--- The full argument is in the header of BR.ShopSolve.nearest.
+---
 --- ON THE TICK BAND, NOT THE FRAME BAND. Walking speed is about two metres a
---- second and the reach is four; ten passes a second is already finer than the
---- question can change, and this walks the whole catalogue.
+--- second; ten passes a second is already finer than the question can change,
+--- and this walks the whole catalogue.
 BR.Loop.register(BR.Loop.TICK, 'shop.prompt', function()
     if spent or not built or not wantScene() then setPrompt(false) return end
 
     local c = GetEntityCoords(PlayerPedId())
-    local reach = tonumber(S.reachM) or 4.0
-    local best, bestD = nil, reach
-
-    for _, row in ipairs(rows) do
-        local veh = cars[row.id]
-        if veh and veh ~= 0 and isTrue(DoesEntityExist(veh)) then
-            local d = BR.Dist(c.x, c.y, row.x, row.y)
-            if d <= bestD then best, bestD = row, d end
-        end
-    end
+    local best = BR.ShopSolve.nearest(rows, c.x, c.y,
+                                      tonumber(S.reachM) or 4.0, standing)
 
     if not best then setPrompt(false) return end
     setPrompt(true, best)

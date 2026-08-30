@@ -66,10 +66,25 @@ local function resolve()
         return
     end
 
-    -- TWO CARS INSIDE ONE REACH RADIUS IS A COIN FLIP, and it is a coin flip
-    -- the owner would experience as "the wrong car got bought". #128 is the
-    -- same defect one system over: two crates in reach, a press that took the
-    -- other one. Reported rather than corrected -- the coordinates are his.
+    -- ═══ THIS WARNING NO LONGER MEANS "A PRESS BETWEEN THEM IS A COIN FLIP" ═══
+    --
+    -- It used to compare spacing against `reachM`, and against the owner's
+    -- surveyed pad it fired on TEN PAIRS at every boot -- the showroom's whole
+    -- point is that the cars stand close together. A warning that is true of
+    -- almost every row is a warning nobody reads, and it would have buried the
+    -- one row that ever genuinely needed reporting.
+    --
+    -- Two cars inside one reach radius is now the DESIGNED case, not a fault:
+    -- BR.ShopSolve.nearest resolves the plate and the purchase to the nearer of
+    -- them, deterministically, so the press is not a coin flip and reach is not
+    -- the quantity to measure against. See that function's header for why no
+    -- radius could have done this job at 3.25m spacing.
+    --
+    -- WHAT IS LEFT TO WARN ABOUT IS PHYSICAL. Below `minSpacingM` two cars are
+    -- not close, they are INTERSECTING -- there is no room for both sets of
+    -- bodywork, let alone for a player to stand between them and read a plate --
+    -- and that is a fact about the coordinates that no amount of nearest-wins
+    -- can fix. Reported rather than corrected: the coordinates are his.
     local spacing = tonumber(S.minSpacingM) or 0.0
     if spacing > 0.0 then
         for i = 1, #rows do
@@ -77,11 +92,10 @@ local function resolve()
                 local a, b = rows[i], rows[j]
                 local d = BR.Dist(a.x, a.y, b.x, b.y)
                 if d < spacing then
-                    print(('^3[br_core] shop: "%s" and "%s" are %.1fm apart '
-                           .. '(reach is %.1fm) -- a press between them is a '
-                           .. 'coin flip^7')
-                        :format(tostring(a.id), tostring(b.id), d,
-                                tonumber(S.reachM) or 0.0))
+                    print(('^3[br_core] shop: "%s" and "%s" are %.2fm apart '
+                           .. '-- closer than %.2fm is two cars standing in one '
+                           .. 'another, with nowhere to stand between them^7')
+                        :format(tostring(a.id), tostring(b.id), d, spacing))
                 end
             end
         end

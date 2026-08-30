@@ -46,19 +46,33 @@ function GetGameTimer() return fakeTime end
 -- Natives and engine stubs
 -- ---------------------------------------------------------------------------
 
---- ONE MODEL IS BANNED AND ITS HASH IS THE REAL ONE. `lazer` is row 17 of
---- BR.Config.RefusedVehicles with hash 0xB39B0AE6, so the refusal below is the
---- shipped table refusing a shipped model rather than a stub agreeing with
---- itself. Everything else hashes to something that is in no row.
-local HASHES = { lazer = 0xB39B0AE6 }
-local nextHash = 0x10000000
+--- ═══ THE REAL JENKINS HASH, NOT A COUNTER ═══
+---
+--- This used to hand out `0x10000001`, `0x10000002`... to every model except
+--- `lazer`, which was pinned to its real hash so that ONE refusal was genuine.
+--- That was fine while the shipped catalogue was empty. It stopped being fine
+--- the moment thirteen real models landed in it: "none of the owner's thirteen
+--- cars is on the refused list" is the assertion that matters most in this file,
+--- and against invented hashes it could not fail. It would have agreed with the
+--- catalogue no matter what was in it -- including `hydra`.
+---
+--- So the stub computes GTA's actual `joaat` (lowercased, 32-bit), and the
+--- refusal check below is the shipped refused table run against the shipped
+--- model names with the hashes the engine itself would produce.
+--- @param s string
+--- @return integer
 function GetHashKey(s)
-    s = tostring(s or '')
-    if not HASHES[s] then
-        nextHash = nextHash + 1
-        HASHES[s] = nextHash
+    s = tostring(s or ''):lower()
+    local h = 0
+    for i = 1, #s do
+        h = (h + s:byte(i)) & 0xFFFFFFFF
+        h = (h + (h << 10)) & 0xFFFFFFFF
+        h = h ~ (h >> 6)
     end
-    return HASHES[s]
+    h = (h + (h << 3)) & 0xFFFFFFFF
+    h = h ~ (h >> 11)
+    h = (h + (h << 15)) & 0xFFFFFFFF
+    return h
 end
 
 local handlers = {}
@@ -131,36 +145,297 @@ local function readFile(p)
 end
 
 -- ---------------------------------------------------------------------------
-describe('the shipped catalogue')
+describe("the shipped catalogue -- the owner's survey of 2026-08-29")
 -- ---------------------------------------------------------------------------
+
+--- ═══ HIS SURVEY, RETYPED FROM HIS MESSAGE AND NOT FROM THE CONFIG ═══
+---
+--- This is DOUBLE ENTRY and it is the whole point of the block below. These
+--- numbers were typed out of the owner's own note; config/shop.lua was written
+--- from the same note independently. A transcription slip in either one -- a
+--- transposed digit, a colour off by one, a heading on the wrong row -- makes
+--- the two disagree and fails a test. Copying these values out of the config
+--- would assert nothing whatsoever.
+---
+--- `preset` IS HIS NUMBER, ONE-BASED, EXACTLY AS HE WROTE IT ("Preset Color 6").
+--- The minus-one to GTA's zero-based index is applied HERE, in the assertion,
+--- so the conversion itself is what is under test and not just its output.
+---
+---   model, x, y, z, heading, his Preset Color row, his livery index (or nil)
+local SURVEY = {
+    { 'veto',       4665.97, -4478.9,  3.30, 198.1, 1 },
+    { 'sanchez',    4468.09, -4478.40, 3.68, 197.7, 6 },
+    { 'outlaw',     4471.23, -4477.56, 4.02, 199.8, 4 },
+    { 'mesa3',      4474.67, -4477.09, 3.99, 199.3, 2 },
+    { 'caracara2',  4478.54, -4476.13, 3.93, 199.8, 4 },
+    { 'nightshade', 4481.98, -4474.05, 3.63, 201.4, 1 },
+    { 'infernus',   4485.30, -4472.56, 3.73, 200.8, 7 },
+    { 'drifttampa', 4492.41, -4470.39, 3.59, 199.8, 1 },
+    { 'voltic2',    4495.90, -4468.74, 3.78, 201.9, 1 },
+    { 'formula2',   4499.17, -4467.59, 3.46, 201.0, 1 },
+    -- "Livery 5" on his note, which is row five and therefore index four.
+    { 'ambulance',  4503.87, -4468.23, 3.89, 198.4, 1, 4 },
+    { 'riot',       4507.97, -4465.96, 3.85, 200.3, 1 },
+    -- "Livery American Flag" is a NAME, not a row, so the minus-one has nothing
+    -- to subtract from. 23 is a researched, UNVERIFIED index; see the long note
+    -- on the row in config/shop.lua. Pinned here so it cannot drift silently --
+    -- when he corrects it, this number moves with it.
+    { 'marshall',   4512.49, -4463.92, 4.30, 198.7, 5, 23 },
+}
+
+--- His prices, as proposed to him and as he has yet to tune them.
+local PRICES = {
+    veto = 250, sanchez = 350, outlaw = 500, ambulance = 500,
+    nightshade = 600, drifttampa = 600, mesa3 = 750, caracara2 = 750,
+    infernus = 900, riot = 1250, marshall = 1250, voltic2 = 1500,
+    formula2 = 1500,
+}
+
 do
-    -- THE ONE TEST THAT READS THE REAL TABLE. Everything after this uses a
-    -- fixture.
-    ok(type(BR.Config.Shop.items) == 'table' and #BR.Config.Shop.items == 0,
-        'ships EMPTY -- the owner has not authored his models yet',
-        #BR.Config.Shop.items)
+    -- ═══ THE HASH STUB IS THE REAL ONE, PROVED AGAINST THE SHIPPED TABLE ═══
+    --
+    -- Every refusal assertion in this file rests on GetHashKey being GTA's
+    -- joaat rather than a counter. Four hashes authored in config/vehicles.lua
+    -- by hand are re-derived here from their model names; if the stub were
+    -- fake, all four would miss.
+    ok(GetHashKey('lazer') == 0xB39B0AE6 and GetHashKey('titan') == 0x761E2AD3
+           and GetHashKey('hydra') == 0x39D6E83F
+           and GetHashKey('blimp') == 0xF7004C86,
+        'the hash stub reproduces four hashes the refused table authored by '
+            .. 'hand -- so a refusal in this file is the real table refusing a '
+            .. 'real model')
 
-    ok(BR.ShopSolve.enabled(BR.Config.Shop) == false,
-        'so the shop does not exist, rather than existing and being broken')
+    local items = BR.Config.Shop.items
+    ok(type(items) == 'table' and #items == #SURVEY,
+        'ships his thirteen cars', #items)
 
+    ok(BR.ShopSolve.enabled(BR.Config.Shop) == true,
+        'so the shop exists -- there is a showroom, a plate and a purchase')
+
+    -- ═══ NOT ONE OF THE THIRTEEN IS REFUSED ═══
+    --
+    -- The catalogue is put through BR.Config.IsAllowedVehicle at load and a
+    -- refused model is DROPPED -- which would be a car he surveyed, priced and
+    -- expects to see, silently missing from the pad. Zero rejects is the
+    -- assertion; thirteen survivors is the same fact from the other side.
     local rows, rejects = BR.ShopSolve.catalogue(BR.Config.Shop,
                                                  BR.Config.Shop.refusedReason)
-    ok(#rows == 0 and #rejects == 0,
-        'and resolving an empty catalogue is not an error -- no rows, no '
-            .. 'complaints')
+    ok(#rejects == 0,
+        'and NOT ONE of them is on the refused-vehicle list -- nothing he '
+            .. 'surveyed is dropped from the pad',
+        #rejects > 0 and rejects[1].id .. ': ' .. rejects[1].why or nil)
+    ok(#rows == #SURVEY,
+        'so all thirteen survive the load', #rows)
 
-    -- INERT MEANS INERT ON BOTH ENDS. `enabled` is what the purchase handler
-    -- and the client scene both ask first, so a false here is the whole of "no
-    -- showroom, no plate, no purchase".
-    local can, why = BR.ShopSolve.canBuy({
-        on = BR.ShopSolve.enabled(BR.Config.Shop),
-        matchState = BR.MatchState.WARMUP,
-        playerState = BR.PlayerState.WARMUP,
-        row = { id = 'x', price = 1 }, bought = 0, limit = 1,
-        balance = 999999, price = 1,
-    })
-    ok(can == false and why == BR.ShopSolve.Refusal.OFF,
-        'and nothing can be bought from it whatever else is true')
+    -- ═══ EVERY ROW, AGAINST HIS NOTE ═══
+    for _, s in ipairs(SURVEY) do
+        local model, x, y, z, heading, preset, livery = table.unpack(s)
+        local row = BR.ShopSolve.rowById(rows, model)
+
+        ok(row ~= nil, model .. ' is on the pad')
+        if row then
+            ok(row.model == model and row.id == model,
+                model .. ': the catalogue id and the model are his one word')
+
+            -- HIS COORDINATES, TO THE DIGIT. He confirmed on 2026-08-29 that
+            -- they are deliberate -- "those coords are very specifically
+            -- placed. Don't change them" -- including `veto`, which stands
+            -- 154m from the other twelve.
+            ok(row.x == x and row.y == y and row.z == z,
+                model .. ': stands exactly where he surveyed it',
+                ('%s,%s,%s'):format(row.x, row.y, row.z))
+            ok(row.heading == heading,
+                model .. ': faces the way he surveyed it', row.heading)
+
+            ok(row.price == PRICES[model],
+                model .. ': carries the proposed price', row.price)
+
+            local a = BR.ShopSolve.appearance(row)
+
+            -- ═══ THE MINUS-ONE, WHICH IS THE THING MOST LIKELY TO BE
+            --     "CORRECTED" BACK ═══
+            ok(a.primary == preset - 1,
+                ('%s: his Preset Color %d is paint index %d'):format(
+                    model, preset, preset - 1), a.primary)
+
+            -- BOTH COLOURS AUTHORED. An unwritten `secondary` is not a
+            -- default -- BR.Shop.dress reads it off the vehicle, and a freshly
+            -- created vehicle carries the engine's RANDOM colour. That is a
+            -- different answer on the showroom car and on the delivered one,
+            -- which is exactly what "exactly as shown when they purchased it"
+            -- forbids.
+            ok(a.secondary == a.primary and a.pearl >= 0 and a.wheelColour >= 0,
+                model .. ': every colour in the combination is authored, so '
+                    .. 'none of them is left to the engine to randomise')
+
+            if livery then
+                ok(a.livery == livery,
+                    ('%s: livery index %d'):format(model, livery), a.livery)
+            end
+        end
+    end
+
+    ok(BR.ShopSolve.rowById(rows, 'sanchez').vtype == 'bike',
+        'the one motorcycle declares the bike sync tree; nothing else needs to')
+
+    -- ═══ THE PRICES SPAN A REAL TIER ═══
+    local lo, hi = math.huge, 0
+    for _, r in ipairs(rows) do
+        lo = math.min(lo, r.price)
+        hi = math.max(hi, r.price)
+        ok(r.price > 0 and r.price == math.floor(r.price), r.id ..
+            ': the price is a positive whole number of Volts', r.price)
+    end
+    ok(lo == 250 and hi == 1500,
+        'and they run from 250 to 1500 rather than being one flat number')
+end
+
+-- ---------------------------------------------------------------------------
+describe('which car a press resolves to, at his spacing')
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THIS IS THE BLOCK HIS COORDINATES MADE NECESSARY ═══
+--
+-- Twelve of his thirteen cars have a neighbour closer than the old 6.0m
+-- `minSpacingM`, and the tightest pair -- `sanchez` and `outlaw` -- stand 3.25m
+-- apart. There is no reach radius that puts one of those two in range without
+-- the other: it would have to be under 1.63m, which is inside both cars. So
+-- "the car in reach" is not a well-defined thing on this pad and never can be,
+-- and the only correct answer is THE NEAREST ONE.
+--
+-- Every assertion below runs against the SHIPPED catalogue rather than a
+-- fixture, because the property under test is a property of his geometry.
+do
+    local SROWS = BR.ShopSolve.catalogue(BR.Config.Shop,
+                                         BR.Config.Shop.refusedReason)
+    local reach = BR.Config.Shop.reachM
+    local function row(id) return BR.ShopSolve.rowById(SROWS, id) end
+    local function d(a, b) return BR.Dist(a.x, a.y, b.x, b.y) end
+
+    -- ═══ THE TWO CLOSEST CARS HE SURVEYED ═══
+    local A, B = row('sanchez'), row('outlaw')
+    local sep = d(A, B)
+    ok(sep > 3.2 and sep < 3.3,
+        'his two closest cars are 3.25m apart -- the case the old code called '
+            .. 'a coin flip', ('%.4f'):format(sep))
+
+    -- Stand on the line between them, four tenths of the way across: 1.30m from
+    -- the sanchez and 1.95m from the outlaw.
+    local function between(p, q, t)
+        return p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t
+    end
+
+    for _, c in ipairs({
+        { t = 0.40, near = A, far = B, name = 'sanchez' },
+        { t = 0.60, near = B, far = A, name = 'outlaw'  },
+    }) do
+        local px, py = between(A, B, c.t)
+        local dn = BR.Dist(px, py, c.near.x, c.near.y)
+        local df = BR.Dist(px, py, c.far.x,  c.far.y)
+
+        -- THE AMBIGUITY HAS TO BE REAL FOR THE TEST TO MEAN ANYTHING. If the
+        -- further car were out of reach the resolver would be picking between
+        -- one candidate and none, and a broken resolver would pass.
+        ok(dn <= reach and df <= reach and df > dn,
+            ('standing here BOTH cars are in reach (%.2fm and %.2fm) -- the '
+             .. 'ambiguity is real'):format(dn, df))
+
+        local got = BR.ShopSolve.nearest(SROWS, px, py, reach)
+        ok(got == c.near,
+            'and the press resolves to the NEARER one, ' .. c.name ..
+                ' -- never the further one',
+            got and got.id or 'nil')
+    end
+
+    -- ═══ AND FROM EVERY CAR ON THE PAD, NOT JUST THAT PAIR ═══
+    --
+    -- Standing on a car's own coordinates must resolve to that car. Thirteen
+    -- assertions; an ordering or tie-break slip anywhere in the sweep shows up
+    -- as the wrong id here.
+    local overlapping = 0
+    for _, r in ipairs(SROWS) do
+        local got = BR.ShopSolve.nearest(SROWS, r.x, r.y, reach)
+        ok(got == r, 'standing at ' .. r.id .. ' resolves to ' .. r.id,
+            got and got.id or 'nil')
+
+        for _, other in ipairs(SROWS) do
+            if other ~= r and d(r, other) <= reach then
+                overlapping = overlapping + 1
+                break
+            end
+        end
+    end
+    ok(overlapping >= 12,
+        'and twelve of the thirteen have a neighbour inside the reach radius '
+            .. '-- two cars in range is the NORMAL case here, not the edge one',
+        overlapping)
+
+    -- ═══ THE CATALOGUE IS NOT ONE CLUSTER, AND NOTHING MAY ASSUME IT IS ═══
+    --
+    -- `veto` stands 154m from the other twelve, where he put it. A resolver
+    -- that walked outwards from the last answer, or stopped at the first row in
+    -- range, would work perfectly on the line and fail on the outlier.
+    local V = row('veto')
+    ok(d(V, row('marshall')) > 150.0,
+        'veto stands 154m from its nearest neighbour -- deliberately',
+        ('%.1f'):format(d(V, row('marshall'))))
+    ok(BR.ShopSolve.nearest(SROWS, V.x, V.y, reach) == V,
+        'and standing at it resolves to it, from the far side of the survey')
+    ok(BR.ShopSolve.nearest(SROWS, A.x, A.y, reach) ~= V,
+        'while standing in the line never reaches it')
+
+    -- ═══ REACH IS A GATE, NOT A CHOOSER ═══
+    ok(BR.ShopSolve.nearest(SROWS, V.x + reach + 1.0, V.y, reach) == nil,
+        'past the reach radius there is no car and no plate')
+    ok(BR.ShopSolve.nearest(SROWS, V.x, V.y, 0.0) == nil
+           and BR.ShopSolve.nearest(SROWS, V.x, V.y, nil) == nil,
+        'and a reach of zero or none offers nothing rather than everything')
+
+    -- A ROW WHOSE CAR NEVER STREAMED IS NOT FOR SALE. The client passes its
+    -- DoesEntityExist check in here; skipping it after the fact would offer
+    -- nothing while a good car stood two metres further on.
+    local px, py = between(A, B, 0.40)
+    local got = BR.ShopSolve.nearest(SROWS, px, py, reach,
+                                     function(r) return r.id ~= 'sanchez' end)
+    ok(got == B,
+        'a car that is not standing is skipped, and the next nearest is '
+            .. 'offered instead of nothing', got and got.id or 'nil')
+
+    -- TIES GO TO THE EARLIER ROW, so a player standing exactly between two cars
+    -- gets a stable answer rather than a plate that flickers.
+    local T = {
+        { id = 'first',  model = 'blista', price = 1, x = 0.0, y = 0.0, z = 0.0 },
+        { id = 'second', model = 'blista', price = 1, x = 4.0, y = 0.0, z = 0.0 },
+    }
+    ok(BR.ShopSolve.nearest(T, 2.0, 0.0, 5.0) == T[1],
+        'and an exact tie resolves to the earlier row, every time')
+
+    -- ═══ THE TUNING ═══
+    --
+    -- `minSpacingM` warns about cars standing inside one another. Against his
+    -- pad it must fire on NOTHING -- it used to print ten lines at every boot,
+    -- which is a warning nobody reads.
+    local tight, closest = 0, math.huge
+    for i = 1, #SROWS do
+        for j = i + 1, #SROWS do
+            local dd = d(SROWS[i], SROWS[j])
+            closest = math.min(closest, dd)
+            if dd < BR.Config.Shop.minSpacingM then tight = tight + 1 end
+        end
+    end
+    ok(tight == 0,
+        'minSpacingM is quiet on his thirteen rows -- the console warning is a '
+            .. 'signal again rather than ten lines of noise', tight)
+    ok(BR.Config.Shop.minSpacingM < closest,
+        'because it sits below his tightest pair rather than above it',
+        ('%.2f < %.2f'):format(BR.Config.Shop.minSpacingM, closest))
+
+    -- ...and `reachM` must clear HALF the tightest gap, or there is a dead spot
+    -- between two cars where a player is at neither of them.
+    ok(reach > closest / 2.0,
+        'and reachM covers the midpoint of the tightest pair, so walking the '
+            .. 'line never drops the plate into a gap',
+        ('%.2f > %.2f'):format(reach, closest / 2.0))
 end
 
 -- ---------------------------------------------------------------------------
@@ -902,6 +1177,29 @@ do
     ok(BR.Config.Shop.lockedState == 2,
         'lock state 2 (LOCKED), not 4 (LOCKED_PLAYER_INSIDE) -- 4 waits for an '
             .. 'entry that never happens and client/rescue.lua shipped it once')
+
+    -- ═══ THE PLATE, AND THE BUG HIS SPACING TURNED FROM RARE INTO NORMAL ═══
+    --
+    -- `setPrompt` used to return early on `show == promptShown`, so the DUI
+    -- payload -- the car's NAME and its PRICE -- was sent only when the plate
+    -- came up. On a pad where the cars are 3.25m apart and the reach is five,
+    -- walking down the line never drops the plate, so those words never changed:
+    -- the sprite tracked the nearest car's bumper while the text still named the
+    -- first car and quoted the first car's price. A player would read one price
+    -- and be charged another.
+    --
+    -- The guard has to be on the PAIR -- shown, and shown for WHICH ROW.
+    ok(cli:find('if show == promptShown and candidate == was then return end',
+                1, true) ~= nil,
+        'the plate re-sends when the nearest car changes, not only when it '
+            .. 'appears -- otherwise the words name the car you walked away from')
+
+    -- ...AND THE CHOICE OF CAR IS THE SHARED FUNCTION'S, NOT A LOOP IN HERE.
+    -- The rule that decides whose Volts buy which car belongs somewhere a test
+    -- can execute it; it used to be a private loop in this client file.
+    ok(cli:find('BR%.ShopSolve%.nearest%(') ~= nil,
+        'and the car is chosen by BR.ShopSolve.nearest, which this suite runs '
+            .. 'against his real coordinates')
 
     -- ═══ LOCAL, NEVER NETWORKED ═══
     --
