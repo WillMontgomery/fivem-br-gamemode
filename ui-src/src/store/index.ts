@@ -151,6 +151,11 @@ export interface UiState {
 
   /** The store catalogue and the player's balance. Also synthetic. */
   market: MarketPayload
+  /** Is the warmup shop's plate up? While it is, the ammo slot shows the
+   *  player's Volts instead of being empty (owner, 2026-08-29). Only the
+   *  FLAG travels; the figure itself is `market.balance`, which is already
+   *  here -- see the `shopplate` envelope. */
+  shopPlate: boolean
   /** The in-game player list, and the report rules that came with it. */
   players: PlayersPayload
   /** The admin console (#23): where it is, and the last mint answer.
@@ -266,6 +271,7 @@ export interface UiState {
   setAdmin: (a: AdminPayload) => void
   setReportResult: (r: ReportResult | null) => void
   setMarket: (m: MarketPayload) => void
+  setShopPlate: (up: boolean) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
   openChat: (channel: ChatMessage['channel']) => void
   closeChat: () => void
@@ -532,6 +538,7 @@ export const useUi = create<UiState>((set, get) => {
   earned: null,
   earnedStaged: false,
   market: { balance: 0, items: [] },
+  shopPlate: false,
   players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
   admin: {},
   reportResult: null,
@@ -735,6 +742,7 @@ export const useUi = create<UiState>((set, get) => {
   },
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
+  setShopPlate: (shopPlate) => set({ shopPlate }),
   setPlayers: (players) => set({ players }),
   setAdmin: (admin) => set({ admin }),
   setReportResult: (reportResult) => set({ reportResult }),

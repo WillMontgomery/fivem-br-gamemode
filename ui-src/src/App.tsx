@@ -106,6 +106,9 @@ export default function App() {
   useNuiEvent('locker',   (d) => s.setLocker(d))
   useNuiEvent('progress', (d) => s.setProgress(d))
   useNuiEvent('market',   (d) => s.setMarket(d))
+  // The warmup shop's plate, which is the ONLY thing that puts a Volts figure
+  // on the HUD. A flag, not a balance -- see the envelope's note.
+  useNuiEvent('shopplate', (d) => s.setShopPlate(d.show === true))
   useNuiEvent('players',  (d) => s.setPlayers(d))
   useNuiEvent('report',   (d) => s.setReportResult(d))
   // The Admin tab's availability, and any mint answer. Sent to one player, only

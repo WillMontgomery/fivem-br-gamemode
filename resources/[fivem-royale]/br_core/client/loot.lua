@@ -734,6 +734,29 @@ local function fallbackMarkerOf(e)
     return c and tonumber(c.fallbackMarker) or nil
 end
 
+--- How big that fallback marker is drawn, as a radius in metres.
+---
+--- ═══ A DIFFERENT KNOB FROM `propScale`, IN DIFFERENT UNITS ═══
+---
+--- `propScale` is a MULTIPLE OF THE MODEL'S OWN SIZE and only ever reaches an
+--- entry whose prop the engine actually built. This is METRES and is what gets
+--- drawn when it did not, so the two can never be the same number and turning
+--- one does nothing to the other.
+---
+--- IT WAS A LITERAL 0.5 UNTIL 2026-08-29 and the value has not changed; it is
+--- named now because the owner asked for a bigger dropped token and it is not
+--- yet established which of the two knobs his cars are actually using -- see
+--- BR.Config.Shop.tokenMarkerScale, which explains how to tell from the console.
+--- @param e table
+--- @return number
+local function fallbackMarkerScaleOf(e)
+    local c = (e.kind == BR.ItemKind.CONSUMABLE)
+        and BR.Config.ConsumableById[e.item] or nil
+    local k = c and tonumber(c.fallbackMarkerScale) or nil
+    if not k or k <= 0.0 then return 0.5 end
+    return k
+end
+
 --- Mark an entry as having no prop, and say so ONCE.
 ---
 --- ONCE PER ENTRY, because the spawn pass revisits an entry every time it
@@ -2413,9 +2436,10 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
                 -- what it draws.
                 local mk = e.noProp and fallbackMarkerOf(e) or nil
                 if mk then
+                    local ms = fallbackMarkerScaleOf(e)
                     DrawMarker(mk, e.x, e.y, gz + 0.05,
                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.5, 0.5, 0.5,
+                        ms, ms, ms,
                         c[1], c[2], c[3], 200,
                         -- Bobbing and camera-facing, which is what makes a
                         -- SYMBOL marker readable where a flat disc is drawn on

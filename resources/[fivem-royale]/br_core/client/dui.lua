@@ -438,6 +438,35 @@ AddEventHandler('br:settings:changed', function(s)
     end
 end)
 
+--- THE INTERFACE'S GREEN, AS THE HUD'S OWN CASCADE RESOLVED IT.
+---
+--- A DUI is a separate document with no access to index.css, so a page that
+--- wants a palette colour has to be told one. br_ui/client/settings.lua explains
+--- at length why the value travels from the page rather than being written down
+--- a second time here; the short version is that `--color-hp` is remapped by the
+--- colourblind modes, and a hex in this file would be the one green in the game
+--- that ignored the setting.
+---
+--- HELD RATHER THAN PUSHED. Unlike the text scale, no page needs this the moment
+--- it changes: it is read by the CALLER at the moment it builds a message
+--- (BR.Shop's price line), so a page showing nothing has nothing to correct. One
+--- fewer message on a path that runs while the player is walking.
+---
+--- NIL UNTIL br_ui HAS APPLIED ITS SETTINGS ONCE, which is a real state and not
+--- an error -- a br_core restart mid-session lands here with nothing until the
+--- next apply. Every reader must treat nil as "no colour", and the prompt page
+--- falls back to its own default when the field is absent.
+local hpColour = nil
+
+AddEventHandler('br:settings:palette', function(p)
+    if type(p) ~= 'table' then return end
+    if type(p.hp) == 'string' and p.hp ~= '' then hpColour = p.hp end
+end)
+
+--- The interface's green, or nil if br_ui has not reported one yet.
+--- @return string|nil
+function BR.Dui.hp() return hpColour end
+
 --- ASK, RATHER THAN WAIT (#131's lesson, in the small).
 ---
 --- br_ui pushes settings on `br:ui:ready`, which is the NUI page coming up.

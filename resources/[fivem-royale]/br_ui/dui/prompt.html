@@ -160,6 +160,33 @@
     letter-spacing: 0.16em; text-transform: uppercase;
     color: rgba(255,255,255,0.62); margin-top: 3px;
   }
+  /* THE PRICE. Added by the shop's prompt only (`hintBig`), and removed on
+     every message so it cannot leak into the four other consumers of this page.
+
+     LARGER THAN THE LABEL ABOVE IT, WHICH IS THE POINT. The owner asked for the
+     price to be "large" and the vehicle name is 34px, so 44px makes the number
+     the thing you read first -- the label answers "what is this" and the price
+     answers "can I have it", and on the pad the second question is the live
+     one. It scales with --text-scale like the two prose lines it sits with, and
+     `.plate` still caps at 460px so a five-digit price shortens rather than
+     escaping the 512px texture.
+
+     THE LETTER-SPACING GOES BACK DOWN. 0.16em is right for a small uppercase
+     hint and reads as gappy at 44px.
+
+     THE COLOUR HERE IS A FALLBACK, NOT THE PALETTE. The real one is --color-hp
+     as the HUD resolved it, sent per message and applied inline -- see the
+     handler. This value only paints in the window before br_ui has applied its
+     settings once, so it is deliberately the plain white the rest of the plate
+     uses rather than a green that would be a second, drifting copy of a token
+     the colourblind modes remap. */
+  #hint.price {
+    font-size: calc(44px * var(--text-scale));
+    letter-spacing: 0.02em;
+    color: #ffffff;
+    line-height: 1.05;
+    margin-top: 1px;
+  }
 </style>
 </head>
 <body>
@@ -243,6 +270,27 @@
     label.textContent = d.label || '';
     hint.textContent  = d.hint || '';
     label.style.color = d.colour || '#ffffff';
+
+    // THE PRICE TREATMENT, ASKED FOR BY FLAG AND DEFINED HERE.
+    //
+    // The shop's second line is a PRICE, not a hint, and the owner wants it
+    // read from across the pad: "the price text needs to be increased in font
+    // size and make it green. It should be large" (2026-08-29).
+    //
+    // CLEARED ON EVERY MESSAGE, NOT ONLY SET. This one page is shared by five
+    // consumers -- the crate, the pump, the revive, the heal station and the
+    // shop -- and a browser that is never reloaded would otherwise carry the
+    // shop's green into the next crate prompt it drew. `.price` is removed
+    // first, every time, so the treatment cannot leak between consumers.
+    hint.classList.remove('price');
+    hint.style.color = '';
+    if (d.hintBig) {
+      hint.classList.add('price');
+      // --color-hp, resolved by the HUD's own cascade and passed down. Absent
+      // when br_ui has not applied its settings yet, in which case .price's own
+      // colour stands -- see the rule for what that is and why.
+      if (d.hintColour) { hint.style.color = d.hintColour; }
+    }
 
     if (d.ring) {
       ring.classList.remove('hidden');

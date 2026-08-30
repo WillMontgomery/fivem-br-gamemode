@@ -228,6 +228,29 @@ export default function Hud({ visible }: { visible: boolean }) {
   const inv   = useUi(selInv)
   // The car under this player, in any seat. Null on foot.
   const vehicle = useUi(selVehicle)
+  // ═══ THE VOLTS READOUT, AND WHY IT IS A NUMBER-OR-NULL RATHER THAN TWO
+  //     PROPS ═══
+  //
+  // Owner, 2026-08-29: "when a DUI is shown at the shop, please show their
+  // current volts balance with NUI where the bullet rounds show."
+  //
+  // "While a plate is up, and only then" is one condition and one value, so it
+  // is resolved to one thing HERE rather than passed down as a flag plus a
+  // balance for InventoryBar to recombine. A component given both would be
+  // free to render a balance with the flag false, and that is the bug this
+  // shape cannot have.
+  //
+  // THE FIGURE IS THE STORE'S OWN. `market.balance` is what the Store screen
+  // renders and it is refreshed on every MARKET_STATE, so the HUD and the shop
+  // screen cannot disagree about how many Volts somebody has.
+  const shopVolts = useUi((s) => (s.shopPlate ? s.market.balance : null))
+  // THE CURRENCY'S NAME, FROM THE ONE PLACE IT IS WRITTEN. Lua sends it with
+  // the market state (BR.Config.Market.currency) so the word lives in config
+  // rather than in two languages; the Store screen reads the same field. A
+  // SEPARATE primitive selector rather than one object with the balance, for
+  // the reason stated two blocks up about `voice`: a fresh object every render
+  // re-renders the whole HUD.
+  const currency = useUi((s) => s.market.currency ?? 'Volts')
 
   // Applies the game's resolution and safe zone to CSS variables.
   useScreenMetrics()
@@ -450,7 +473,7 @@ export default function Hud({ visible }: { visible: boolean }) {
                 RENDERS null WHEN THERE IS NO VEHICLE, so the column is exactly
                 what it was before for a player on foot -- see VehicleBars. */}
             <VehicleBars vehicle={vehicle} />
-            <InventoryBar inv={inv} />
+            <InventoryBar inv={inv} volts={shopVolts} currency={currency} />
           </div>
         )}
 

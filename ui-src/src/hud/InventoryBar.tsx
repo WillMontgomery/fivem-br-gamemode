@@ -154,12 +154,55 @@ function Slot({
   )
 }
 
-export default function InventoryBar({ inv }: { inv: InvPayload }) {
+export default function InventoryBar({ inv, volts, currency }: {
+  inv: InvPayload
+  /** The player's Volts while the warmup shop's plate is up; null otherwise.
+   *  ONE VALUE, ALREADY RESOLVED -- Hud.tsx combines "is the plate up" with
+   *  "what is the balance" so this component cannot render one without the
+   *  other. */
+  volts?: number | null
+  /** What the currency is called, from BR.Config.Market.currency by way of the
+   *  market payload. Not a string written here. */
+  currency?: string
+}) {
   const active = inv.slots[inv.active - 1] ?? null
   const reserve = active?.pool ? (inv.ammo[active.pool] ?? 0) : 0
 
   return (
     <div className="flex flex-col items-end gap-1">
+      {/* ═══ THE VOLTS YOU HAVE, WHILE YOU ARE STANDING AT A CAR ═══
+
+          Owner, 2026-08-29: "when a DUI is shown at the shop, please show their
+          current volts balance with NUI where the bullet rounds show."
+
+          THE SAME PANEL AS THE AMMO READOUT, NOT A SECOND ONE BESIDE IT. Same
+          shell, same padding, same Anton numerals at the same size, same column
+          and same corner. A price you are about to pay and a magazine you are
+          about to spend are the same kind of number -- the one you check before
+          you commit -- so this is that readout showing a different figure
+          rather than a new surface.
+
+          STACKED RATHER THAN SUBSTITUTED. There is loot on the warmup pad, so a
+          player at the shop may well be holding a gun, and hiding a magazine
+          count to show a balance would take away live information to show
+          standing information. When both apply they sit one above the other;
+          the ammo panel is simply absent for anyone empty-handed, which on the
+          pad is most people.
+
+          THE WORD IS THE ONE THE INTERFACE ALREADY USES. `micro-label` with
+          the currency name is exactly how screens/Market.tsx renders a balance,
+          and the name comes from config rather than from here -- no wording is
+          invented for this. */}
+      {volts != null && (
+        <div className="panel px-2.5 py-1 flex items-baseline gap-1.5">
+          <span className="font-display text-2xl tabular-nums leading-none"
+                style={{ textShadow: 'var(--shadow-text)' }}>
+            {volts.toLocaleString()}
+          </span>
+          <span className="micro-label">{currency ?? 'Volts'}</span>
+        </div>
+      )}
+
       {/* Ammo for the weapon actually in hand. Nothing is shown for an empty
           hand or a consumable -- a "0 / 0" under a bandage is noise. */}
       {/* MELEE HAS NO AMMO PANEL. A machete carries no clip, and `clip == null`

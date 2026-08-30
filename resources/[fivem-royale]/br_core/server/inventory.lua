@@ -185,10 +185,37 @@ function BR.Inv.publicFor(src)
 end
 
 --- Send a player their inventory. Every mutation ends in one of these.
+---
+--- ═══ `opts.quiet` SUPPRESSES THE PICKUP CUE, AND ONLY THE CUE ═══
+---
+--- client/inventory.lua plays GTA's PICK_UP whenever an INV_SET shows the
+--- inventory GAINED something. That is right for every ordinary arrival -- the
+--- sound is the feedback that separates a pickup from a pickup that was refused
+--- -- and it is wrong for a grant the player did not just perform.
+---
+--- The warmup shop is the case that found it (owner, 2026-08-29: "when
+--- transitioning to state BUS, the pickup sound is heard again by anyone who has
+--- purchased an item"). The car token is handed out at wheels-up, minutes after
+--- the purchase, and everyone who bought one heard a pickup sound for something
+--- they could not see arriving.
+---
+--- A FLAG ON THE PUSH RATHER THAN A GUESS ON THE CLIENT. The client cannot tell
+--- a delivery from a pickup by looking at the payload -- both are simply "a slot
+--- gained an item" -- and any rule it invented (was I entering BUS? is the item
+--- a car?) would be a second, drifting answer to a question the server already
+--- knows. The server is the only thing that knows WHY the inventory changed, so
+--- it is what says whether it made a noise.
+---
+--- IT DOES NOT SUPPRESS ANYTHING ELSE. The slots still arrive, the panel still
+--- updates, the toast the shop already sends still speaks. Silence here means
+--- silence, not invisibility.
 --- @param src integer
-function BR.Inv.push(src)
+--- @param opts table|nil  { quiet = true } to deliver without the pickup cue
+function BR.Inv.push(src, opts)
     local payload = BR.Inv.publicFor(src)
-    if payload then TriggerClientEvent(BR.Net.INV_SET, src, payload) end
+    if not payload then return end
+    if type(opts) == 'table' and opts.quiet == true then payload.quiet = true end
+    TriggerClientEvent(BR.Net.INV_SET, src, payload)
 end
 
 --- Wipe an inventory back to empty and tell the owner.
@@ -436,7 +463,7 @@ end
 --- @return boolean ok
 --- @return table|nil displaced
 --- @return string|nil reason
-function BR.Inv.give(src, stack)
+function BR.Inv.give(src, stack, opts)
     local inv = BR.Inv.of(src)
     if not inv or not stack then return false, nil, 'noinv' end
 
@@ -444,7 +471,7 @@ function BR.Inv.give(src, stack)
     if stack.kind == BR.ItemKind.AMMO then
         local taken = addAmmo(inv, stack.item, stack.count or 0)
         if taken <= 0 then return false, nil, 'ammofull' end
-        BR.Inv.push(src)
+        BR.Inv.push(src, opts)
         return true, nil, nil
     end
 
@@ -544,11 +571,11 @@ function BR.Inv.give(src, stack)
                 item = stack.item, kind = stack.kind,
                 rarity = stack.rarity, count = math.min(max, left),
             }
-            BR.Inv.push(src)
+            BR.Inv.push(src, opts)
             return true, released(displaced), nil
         end
 
-        BR.Inv.push(src)
+        BR.Inv.push(src, opts)
         -- Partially taken: hand the remainder back so it stays in the world.
         if left > 0 then
             local rest = {}
@@ -643,7 +670,7 @@ function BR.Inv.give(src, stack)
         addAmmo(inv, w.ammo, (w.clip or 0) * (L.weaponReserveClips or 1))
     end
 
-    BR.Inv.push(src)
+    BR.Inv.push(src, opts)
     return true, released(displaced), nil
 end
 

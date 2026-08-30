@@ -764,7 +764,26 @@ local function adopt(d)
         -- event, it fires while shooting, and the engine cue ducks correctly
         -- against gunfire. Rarity is carried by the slot's colour and its
         -- rarityPop, which is where it belongs.
-        if L.pickupSound then
+        --
+        -- ═══ UNLESS THE SERVER SAID THIS ARRIVAL IS SILENT ═══
+        --
+        -- `gained` answers "did a slot fill", which is NOT the same question as
+        -- "did this player just pick something up". The warmup shop found the
+        -- difference: the car somebody bought is handed out at wheels-up, so
+        -- every buyer heard PICK_UP at the BUS transition for an item that
+        -- arrived minutes after they paid for it and that they never saw land
+        -- (owner, 2026-08-29).
+        --
+        -- THE SERVER SAYS WHICH IT IS, because only the server knows WHY the
+        -- inventory changed -- see BR.Inv.push. Deciding it here would mean
+        -- inventing a rule (am I entering BUS? is this item a car?) that is a
+        -- second answer to a question already answered upstream, and this file
+        -- would be wrong about it the first time a second system granted
+        -- something.
+        --
+        -- `~= true` RATHER THAN `not`: this is a field off the wire, and the
+        -- only value that buys silence is a real boolean true.
+        if L.pickupSound and d.quiet ~= true then
             PlaySoundFrontend(-1, L.pickupSound.name, L.pickupSound.set, true)
         end
     end

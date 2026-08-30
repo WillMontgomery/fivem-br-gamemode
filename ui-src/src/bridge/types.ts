@@ -1151,6 +1151,17 @@ export type Envelope =
    *  wire because the sender already had them, not because anything wants them.
    */
   | { k: 'squadcue'; d: { cue: Cue; src?: number; name?: string } }
+  /** THE WARMUP SHOP'S PLATE IS UP, OR IT IS NOT (#224).
+   *
+   *  It carries NO BALANCE, and that is the point. The Volts figure is already
+   *  in this store -- `market.balance`, pushed on every MARKET_STATE -- so
+   *  sending it again would put a second copy of one number on the wire, free
+   *  to disagree with the store screen about how much money the player has.
+   *  Lua says only WHETHER to show it; the number comes from where it already
+   *  lived.
+   *
+   *  A RAW KIND STRING RATHER THAN A BR.Nui CONSTANT, like `squadcue` above. */
+  | { k: 'shopplate'; d: { show: boolean } }
 
 export type EnvelopeKind = Envelope['k']
 
@@ -1221,6 +1232,27 @@ export const CB = {
   COVERED:        'br/cover',
   ERROR:        'br/err',
   ENV:          'br/ui/env',
+  /**
+   * "This is what --color-hp resolved to."
+   *
+   * REPORTED UPWARD, WHICH NOTHING ELSE IN THIS TABLE DOES. Every other name
+   * here is the page asking Lua for something; this one tells Lua a fact only
+   * the page can know.
+   *
+   * The world prompts are a separate document (br_ui/dui/prompt.html) rendered
+   * into a runtime texture, sharing no stylesheet with this page -- and the
+   * warmup shop's price line has to be --color-hp, which is one of the four
+   * tokens the colourblind modes remap. The alternatives both duplicate
+   * index.css: a hex in Lua, or a second copy of the :root[data-cb] blocks
+   * inside the prompt page. So the cascade is asked what it resolved to, one
+   * line after the attribute that decides it, and index.css stays the only
+   * place a green is written. See settings/apply.ts.
+   *
+   * DELIBERATELY NOT IN BR.NuiCb. This is not a setting -- it is never stored,
+   * never validated against a range and never sent back -- and br_ui's Lua side
+   * registers it as a raw name for that reason.
+   */
+  PALETTE:      'br/ui/palette',
 } as const
 
 export type CallbackName = (typeof CB)[keyof typeof CB]

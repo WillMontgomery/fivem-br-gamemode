@@ -1,5 +1,6 @@
-import type { SettingsPayload } from '../bridge/types'
+import { CB, type SettingsPayload } from '../bridge/types'
 import { setUiVolume } from '../audio/cues'
+import { fetchNui } from '../bridge/nui'
 
 /**
  * Settings -> the document.
@@ -55,4 +56,31 @@ export function applySettings(s: SettingsPayload): void {
   else root.setAttribute('data-cb', s.colourblind)
 
   setUiVolume(s.volUi)
+
+  // ═══ AND THE RESOLVED GREEN, BACK TO LUA, FOR THE DUI PROMPTS ═══
+  //
+  // The world prompts are a SEPARATE DOCUMENT (br_ui/dui/prompt.html) rendered
+  // into a runtime texture. It shares no stylesheet with this page, so it
+  // cannot read a custom property off this `:root` -- and the shop's price line
+  // has to be --color-hp (owner, 2026-08-29: the price "needs to be increased
+  // in font size and make it green").
+  //
+  // WHY THIS IS READ BACK OUT OF THE DOCUMENT RATHER THAN LOOKED UP. The
+  // obvious alternatives both duplicate the palette: a hex in Lua, or a second
+  // copy of the :root[data-cb] blocks inside prompt.html. Either one is a
+  // second representation of index.css's four accessibility tokens, and the day
+  // somebody retunes the green, one of the two goes stale in silence.
+  //
+  // getComputedStyle asks the browser what --color-hp IS, one line after the
+  // attribute that decides it -- so deuteranopia's teal, protanopia's teal and
+  // the default green all arrive here without this file knowing any of them.
+  // index.css stays the only place a green is written.
+  //
+  // FIRE AND FORGET. A failed post leaves the prompt on its existing colour,
+  // which is a price in the wrong green rather than no price at all -- and this
+  // runs on every settings apply, so the next one corrects it.
+  const hp = getComputedStyle(root).getPropertyValue('--color-hp').trim()
+  if (hp) {
+    void fetchNui(CB.PALETTE, { hp }).catch(() => {})
+  }
 }

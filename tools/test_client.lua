@@ -14339,6 +14339,82 @@ do
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
 end
 
+-- ---------------------------------------------------------------------------
+describe('a silent delivery, and a noisy pickup')
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THE OWNER'S BUG, AT THE LINE THAT MADE THE SOUND ═══
+--
+-- Owner, 2026-08-29: "when transitioning to state BUS, the pickup sound is
+-- heard again by anyone who has purchased an item."
+--
+-- The warmup shop hands out the car somebody bought at wheels-up, and every
+-- arrival in an inventory plays GTA's PICK_UP -- so every buyer heard a pickup
+-- cue in the plane for an item they neither saw land nor had just picked up.
+--
+-- The cue is right for a pickup and wrong for a delivery, and the two are
+-- indistinguishable from inside this file: both are "a slot gained something".
+-- So the SERVER says which, with `quiet` on the push, and this asserts that the
+-- client obeys it -- and, just as importantly, that it still makes a noise when
+-- nobody said otherwise.
+do
+    local plays = {}
+    local savedPlay = PlaySoundFrontend
+    PlaySoundFrontend = function(id, name, set, p3)
+        plays[#plays + 1] = { id = id, name = name, set = set, p3 = p3 }
+    end
+
+    local function gain(n, extra)
+        local d = { slots = {}, ammo = {}, active = 1 }
+        for i = 1, 5 do d.slots[i] = false end
+        for i = 1, n do
+            d.slots[i] = { id = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                           rarity = 1, count = 1 }
+        end
+        for k, v in pairs(extra or {}) do d[k] = v end
+        return d
+    end
+
+    -- Start from empty, so the first push below is unambiguously a GAIN.
+    fire(BR.Net.INV_SET, gain(0))
+    plays = {}
+
+    -- ═══ AN ORDINARY PICKUP STILL SPEAKS ═══
+    --
+    -- Asserted FIRST and deliberately: a "fix" that silenced every arrival
+    -- would pass a test that only checked the quiet case, and it would take the
+    -- pickup cue out of the whole game.
+    fire(BR.Net.INV_SET, gain(1))
+    local noisy = #plays
+    ok(noisy > 0,
+        'a gain with nothing said about it plays the pickup cue, exactly as it '
+            .. 'always has', noisy)
+
+    -- ═══ ...AND A DELIVERY THE SERVER MARKED QUIET DOES NOT ═══
+    plays = {}
+    fire(BR.Net.INV_SET, gain(2, { quiet = true }))
+    ok(#plays == 0,
+        'a gain the server marked quiet is silent -- the shop car arriving at '
+            .. 'wheels-up makes no pickup noise', #plays)
+
+    -- ═══ ONLY A REAL `true` BUYS SILENCE ═══
+    --
+    -- The field comes off the wire. `not d.quiet` would be wrong for the same
+    -- reason every bool-native test in this project is wrong: 0 is truthy in
+    -- Lua, and a 0 arriving here must NOT silence a genuine pickup.
+    plays = {}
+    fire(BR.Net.INV_SET, gain(3, { quiet = 0 }))
+    ok(#plays > 0,
+        'and a 0 is not silence -- 0 is truthy in Lua and would have muted '
+            .. 'every pickup in the game', #plays)
+
+    plays = {}
+    fire(BR.Net.INV_SET, gain(4, { quiet = false }))
+    ok(#plays > 0, 'nor is an explicit false')
+
+    PlaySoundFrontend = savedPlay
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

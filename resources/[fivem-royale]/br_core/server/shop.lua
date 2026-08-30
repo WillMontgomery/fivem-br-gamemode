@@ -260,7 +260,25 @@ function BR.Shop.deliver(m)
                 count  = 1,
             }
 
-            local ok, displaced, reason = BR.Inv.give(src, stack)
+            -- ═══ SILENTLY, BECAUSE THIS IS A DELIVERY AND NOT A PICKUP ═══
+            --
+            -- Owner, 2026-08-29: "when transitioning to state BUS, the pickup
+            -- sound is heard again by anyone who has purchased an item."
+            --
+            -- Everything that lands in an inventory plays GTA's PICK_UP
+            -- (client/inventory.lua), which is right for something you just
+            -- walked over and wrong for a car you paid for during warmup and
+            -- that the match hands you at wheels-up. The player is standing in
+            -- a plane; nothing is visibly arriving; the sound has no referent.
+            --
+            -- THE PURCHASE ALREADY MADE THE NOISE. `br:shop:bought` plays the
+            -- same cue at the moment the Volts leave the balance, which is when
+            -- something actually happened, and the toast already promised this
+            -- delivery in the owner's own words -- "it will be available in your
+            -- inventory once the match starts". A second cue here is the same
+            -- event announced twice, minutes apart, the second time with no
+            -- cause the player can see.
+            local ok, displaced, reason = BR.Inv.give(src, stack, { quiet = true })
             buy.delivered = true
 
             if ok then

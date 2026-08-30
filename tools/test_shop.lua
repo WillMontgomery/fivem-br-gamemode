@@ -291,6 +291,124 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe("the plates say Rockstar's names, not the model strings")
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-08-29: "the vehicle names on the DUI should be their proper
+-- names, not the model names. These are publicly documented if you don't have
+-- them."
+--
+-- ═══ WHY THIS IS A TABLE OF THIRTEEN LITERALS AND NOT A RULE ═══
+--
+-- There is no transformation from `drifttampa` to "Declasse Drift Tampa" -- the
+-- names come out of the game's own vehicles.meta and GXT labels, and half of
+-- them are actively counterintuitive. So the assertion is a second copy typed
+-- from the source dump, and its whole job is to fail when somebody "tidies" one
+-- of the surprising ones into the obvious wrong answer.
+--
+-- The five that are commonly got wrong are commented, because a bare table of
+-- names does not tell the next reader which entries are load-bearing.
+local NAMES = {
+    veto       = 'Dinka Veto Classic',   -- NOT "Veto"; `veto2` is Veto Modern
+    sanchez    = 'Maibatsu Sanchez',
+    outlaw     = 'Nagasaki Outlaw',
+    mesa3      = 'Canis Mesa',           -- the game gives all three Mesas one label
+    caracara2  = 'Vapid Caracara 4x4',   -- NOT "Caracara"; that is `caracara`
+    nightshade = 'Imponte Nightshade',
+    infernus   = 'Pegassi Infernus',
+    drifttampa = 'Declasse Drift Tampa',
+    voltic2    = 'Coil Rocket Voltic',   -- NOT "Voltic"; that is `voltic`
+    formula2   = 'Ocelot R88',           -- NOT "Formula 2"; `formula` is the PR4
+    ambulance  = 'Ambulance',            -- no manufacturer in the game files
+    riot       = 'Police Riot',          -- NOT "Riot"; `riot2` is the RCV
+    marshall   = 'Cheval Marshall',
+}
+
+do
+    -- REGISTERED HERE, ON THE SHIPPED CATALOGUE. Everything after the fixture is
+    -- installed runs against three invented cars; this block is about his
+    -- thirteen, so it registers them itself. register() is idempotent and is the
+    -- real function br_core calls at load -- so the inventory items asserted
+    -- below are built the way the game builds them.
+    local rows = BR.Config.Shop.register(BR.Config.Shop.refusedReason)
+    for _, s in ipairs(SURVEY) do
+        local model = s[1]
+        local row = BR.ShopSolve.rowById(rows, model)
+        ok(row ~= nil and BR.ShopSolve.nameOf(row) == NAMES[model],
+            ('%s sells as "%s"'):format(model, NAMES[model]),
+            row and BR.ShopSolve.nameOf(row) or 'no row')
+    end
+
+    -- ═══ AND NOT ONE PLATE STILL SHOWS A SPAWN CODE ═══
+    --
+    -- BR.ShopSolve.nameOf falls back to the MODEL STRING when a row has no
+    -- label, which is what shipped first and is what the owner was looking at
+    -- when he asked for this. A row that lost its label would quietly go back
+    -- to "drifttampa for sale" and every per-name assertion above would still
+    -- have to be edited to hide it; this one cannot be satisfied that way.
+    local bare = {}
+    for _, r in ipairs(rows) do
+        if BR.ShopSolve.nameOf(r) == r.model then bare[#bare + 1] = r.id end
+    end
+    ok(#bare == 0,
+        'no plate falls back to the spawn code -- every row carries a label',
+        table.concat(bare, ', '))
+
+    -- THE ITEM IN THE INVENTORY IS NAMED THE SAME WAY, so the car in the bag
+    -- and the car on the pad are one thing to a player rather than two.
+    local reg = BR.Config.ConsumableById['car_formula2']
+    ok(reg ~= nil and reg.label == 'Ocelot R88' and reg.plural == 'Ocelot R88',
+        'and the inventory item wears the same name as the plate',
+        reg and reg.label or 'unregistered')
+end
+
+-- ---------------------------------------------------------------------------
+describe('the dropped token, and which knob actually reaches it')
+-- ---------------------------------------------------------------------------
+do
+    -- Owner, 2026-08-29: "when dropped, the item prop should be 5x the size."
+    -- 0.1 -> 0.5. His earlier "super small, like the same size as a weapon prop
+    -- pickup" is superseded rather than contradicted.
+    ok(BR.Config.Shop.tokenScale == 0.5,
+        'the car token is five times the size it was', BR.Config.Shop.tokenScale)
+
+    local reg = BR.Config.ConsumableById['car_marshall']
+    ok(reg ~= nil and reg.propScale == 0.5,
+        'and that reaches the registered item rather than stopping at config',
+        reg and reg.propScale or 'unregistered')
+
+    -- ═══ THE OTHER KNOB, WHICH IS PROBABLY THE LIVE ONE ═══
+    --
+    -- CREATE_OBJECT takes an OBJECT archetype and a car is a VEHICLE archetype,
+    -- so the engine may well refuse to build any of these as props -- in which
+    -- case `propScale` above is inert and marker 34 is what a player sees. That
+    -- marker's size was a hard-coded 0.5 in client/loot.lua and is now carried
+    -- on the item beside the marker id, so the two travel together and the
+    -- fallback is tunable in one line once the console says which path is live.
+    ok(reg ~= nil and reg.fallbackMarker == 34
+           and tonumber(reg.fallbackMarkerScale) == 0.5,
+        'the fallback marker carries its own size, in metres, beside its id',
+        reg and tostring(reg.fallbackMarkerScale) or 'unregistered')
+
+    -- THEY ARE NOT THE SAME NUMBER AND MUST NOT BE READ AS ONE. propScale is a
+    -- multiple of the model's size; the marker scale is metres. This asserts
+    -- they are separate FIELDS -- if a future edit collapsed them, raising one
+    -- would silently move the other.
+    --
+    -- COUNTED, NOT MERELY FOUND. `fallbackMarkerScaleOf` appearing once is a
+    -- function that is DEFINED AND NEVER CALLED -- which is exactly what
+    -- reverting the draw site to a literal leaves behind, and a bare `find`
+    -- passes it happily. Two occurrences is the definition plus the call.
+    local loot = readFile(RES .. 'br_core/client/loot.lua')
+    local uses = 0
+    for _ in loot:gmatch('fallbackMarkerScaleOf') do uses = uses + 1 end
+    ok(uses >= 2,
+        'and client/loot.lua CALLS it rather than merely defining it', uses)
+    ok(loot:find('%f[%w]0%.5, 0%.5, 0%.5') == nil,
+        'so no literal marker size is left at the draw site')
+end
+
+-- ---------------------------------------------------------------------------
 describe('which car a press resolves to, at his spacing')
 -- ---------------------------------------------------------------------------
 --
@@ -852,8 +970,15 @@ BR.Vehicles = {
         return 500 + #spawned, 9000 + #spawned, nil
     end,
 }
+--- WHAT THE LAST give WAS ASKED FOR, options included.
+---
+--- The third argument is the whole of the owner's pickup-sound fix, so the stub
+--- has to record it. A stub that swallowed it would let the delivery go back to
+--- being noisy with every test in this file still green.
+local lastGive = nil
 BR.Inv = {
-    give = function(src, stack)
+    give = function(src, stack, opts)
+        lastGive = { src = src, stack = stack, opts = opts }
         inv[src] = inv[src] or {}
         if #inv[src] >= 5 then return false, nil, 'carrymax' end
         inv[src][#inv[src] + 1] = stack
@@ -975,6 +1100,25 @@ do
            and inv[20][1].count == 1,
         'the buyer gets exactly one car item when the match starts')
     ok(inv[21] == nil, 'and the player who bought nothing gets nothing')
+
+    -- ═══ AND IT ARRIVES SILENTLY ═══
+    --
+    -- Owner, 2026-08-29: "when transitioning to state BUS, the pickup sound is
+    -- heard again by anyone who has purchased an item."
+    --
+    -- Every arrival in an inventory plays GTA's PICK_UP, which is right for
+    -- something you walked over and wrong for a car you paid for during warmup
+    -- and that the match hands you in the plane. The purchase already made that
+    -- noise, at the moment the Volts left the balance.
+    --
+    -- ASSERTED ON THE OPTIONS PASSED TO give, which is where the decision is.
+    -- The client's half of it -- that a marked push is actually silent, and
+    -- that an unmarked one is not -- is tools/test_client.lua's.
+    ok(lastGive ~= nil and type(lastGive.opts) == 'table'
+           and lastGive.opts.quiet == true,
+        'the car is delivered QUIETLY -- no pickup cue at wheels-up for '
+            .. 'something bought minutes earlier',
+        lastGive and tostring(lastGive.opts) or 'never called')
 
     -- ONCE. A delivery that ran twice would be two cars for one payment.
     BR.Shop.deliver(matches[1])
@@ -1200,6 +1344,77 @@ do
     ok(cli:find('BR%.ShopSolve%.nearest%(') ~= nil,
         'and the car is chosen by BR.ShopSolve.nearest, which this suite runs '
             .. 'against his real coordinates')
+
+    -- ═══ THE FLOATING CARS: THE RIGHT NATIVE, IN THE RIGHT ORDER ═══
+    --
+    -- Owner, 2026-08-29: "sometimes the vehicles appear floating off the
+    -- ground. Can we use PlaceObjectOnGroundProperly?"
+    --
+    -- That is the OBJECT native -- client/loot.lua settles crates with it and it
+    -- does nothing to a vehicle. SET_VEHICLE_ON_GROUND_PROPERLY is the
+    -- neighbouring one, and client/rescue.lua already uses it on the ambulance.
+    local ground = cli:find('SetVehicleOnGroundProperly', 1, true)
+    ok(ground ~= nil,
+        'the showroom cars are settled with the VEHICLE grounding native')
+    ok(cli:find('PlaceObjectOnGroundProperly%s*%(') == nil,
+        'and not with the object one, which would silently do nothing to a car')
+
+    -- ═══ AND THIS ORDERING TEST IS THE ONE THAT MATTERS ═══
+    --
+    -- A frozen entity does not move, so grounding AFTER the freeze pins every
+    -- car at the height it was floating at and reports success -- the symptom
+    -- is identical to not having called it at all, and it would be invisible to
+    -- every other assertion in this file. client/loot.lua carries the same
+    -- warning about its own props.
+    local freeze = cli:find('FreezeEntityPosition', 1, true)
+    ok(ground ~= nil and freeze ~= nil and ground < freeze,
+        'and it runs BEFORE the freeze -- after it, the native is a no-op that '
+            .. 'still returns true',
+        ('ground@%s freeze@%s'):format(tostring(ground), tostring(freeze)))
+
+    -- IT RETURNS A BOOL, SO IT GOES THROUGH isTrue. Ten shipped instances of
+    -- reading a native's 0 as truth on this project; this one would invert the
+    -- fallback and leave a failed grounding unreported.
+    ok(cli:find('isTrue(landed)', 1, true) ~= nil,
+        'the grounding result is read through isTrue, because 0 is truthy')
+
+    -- ═══ THE VOLTS READOUT: A FLAG, NEVER A BALANCE ═══
+    --
+    -- Owner: "show their current volts balance with NUI where the bullet rounds
+    -- show." br_ui already holds the figure -- it is what the Store screen
+    -- renders -- so this side sends only whether the plate is up. A balance on
+    -- this wire would be a second copy of one number, free to disagree with the
+    -- shop screen.
+    ok(cli:find("'shopplate'", 1, true) ~= nil,
+        'the HUD is told when a plate goes up, so the Volts readout can follow')
+    ok(cli:find("'shopplate', { show = show }", 1, true) ~= nil,
+        'and no balance travels with it -- the payload is the flag and nothing '
+            .. 'else, because the number is already in br_ui')
+
+    -- ═══ THE PRICE: A FLAG, AND A COLOUR THAT IS NOT A HEX ═══
+    --
+    -- Owner: "the price text needs to be increased in font size and make it
+    -- green. It should be large." The green must be --color-hp, which the
+    -- colourblind modes remap -- so a literal here would be the one green in
+    -- the game that ignored the accessibility setting.
+    -- THE VALUE, NOT JUST THE FIELD. `hintBig = false` still contains the word
+    -- "hintBig", and the plate would quietly go back to a 19px grey price with
+    -- every other assertion here still green.
+    ok(cli:find('hintBig%s*=%s*true') ~= nil,
+        'the price asks the plate for its large treatment, and asks for it TRUE')
+    ok(cli:find('BR%.Dui%.hp') ~= nil,
+        'and takes its green from the interface palette, resolved by br_ui')
+    ok(cli:find('#%x%x%x%x%x%x') == nil,
+        'with no hex colour written in this file at all')
+
+    -- ...AND THE PAGE CLEARS THE TREATMENT ON EVERY MESSAGE. One browser serves
+    -- five prompts; a page that only ever ADDED the price class would carry the
+    -- shop's green into the next crate it drew, forever, because the DUI is
+    -- never reloaded.
+    local dui = readFile(RES .. 'br_ui/dui/prompt.html')
+    ok(dui:find("hint.classList.remove('price')", 1, true) ~= nil,
+        'and the shared prompt page clears the price treatment before each '
+            .. 'message, so it cannot leak into the other four consumers')
 
     -- ═══ LOCAL, NEVER NETWORKED ═══
     --

@@ -271,6 +271,47 @@ local function build()
                         -- shipped it and drove the whole way unlocked.
                         nat(SetVehicleDoorsLocked, veh, tonumber(S.lockedState) or 2)
                         nat(SetEntityInvincible, veh, true)
+
+                        -- ═══ ON THE GROUND BEFORE IT IS FROZEN, AND THE ORDER
+                        --     IS THE ENTIRE FIX ═══
+                        --
+                        -- Owner, 2026-08-29: "sometimes the vehicles appear
+                        -- floating off the ground. Can we use
+                        -- PlaceObjectOnGroundProperly?"
+                        --
+                        -- ALMOST. PlaceObjectOnGroundProperly is the OBJECT
+                        -- native -- it is what client/loot.lua settles crates
+                        -- with -- and it does nothing to a vehicle. The
+                        -- neighbouring one is SET_VEHICLE_ON_GROUND_PROPERLY,
+                        -- which client/rescue.lua already uses twice on the
+                        -- ambulance. Same idea, right archetype.
+                        --
+                        -- FREEZING FIRST WOULD HAVE MADE THIS A NO-OP. A frozen
+                        -- entity does not move, so grounding after the freeze
+                        -- would pin each car at exactly the height it was
+                        -- floating at and report success. client/loot.lua
+                        -- carries the same warning about its own props ("is
+                        -- frozen by now, so PlaceObjectOnGroundProperly would do
+                        -- nothing"), which is how this order was chosen rather
+                        -- than discovered.
+                        --
+                        -- IT RETURNS A BOOL, SO IT GOES THROUGH isTrue. Reading
+                        -- a native's 0 as a truth value is this project's most
+                        -- shipped defect and it would silently invert this test.
+                        --
+                        -- AND IF IT FAILS, THE AUTHORED HEIGHT IS THE FALLBACK.
+                        -- A car left wherever a failed grounding put it can be
+                        -- under the pad; the surveyed z is a height a person
+                        -- stood at, so it is never underground.
+                        local okG, landed = pcall(SetVehicleOnGroundProperly, veh)
+                        if not (okG and isTrue(landed)) then
+                            pcall(SetEntityCoords, veh, row.x + 0.0, row.y + 0.0,
+                                  row.z + 0.0, false, false, false, false)
+                            print(('[br_core] shop: "%s" would not settle on the '
+                                   .. 'ground -- left at its surveyed z (%.2f)')
+                                :format(tostring(row.id), row.z + 0.0))
+                        end
+
                         nat(FreezeEntityPosition, veh, true)
                         -- ...and the two that make "frozen" mean what a player
                         -- would expect it to mean: a frozen car can still be
@@ -395,7 +436,29 @@ local function setPrompt(show, row)
     local was = candidate
     candidate = show and row or nil
     if show == promptShown and candidate == was then return end
+    local appeared = (show ~= promptShown)
     promptShown = show
+
+    -- ═══ THE HUD'S VOLTS READOUT, WHICH IS UP FOR EXACTLY AS LONG AS A PLATE
+    --     IS ═══
+    --
+    -- Owner, 2026-08-29: "when a DUI is shown at the shop, please show their
+    -- current volts balance with NUI where the bullet rounds show."
+    --
+    -- ON THE SHOW EDGE ONLY, NOT ON EVERY ROW CHANGE. Walking from one car to
+    -- the next re-sends the PLATE (its words change) and must not re-send this
+    -- (its answer does not) -- the balance is the same number at every car on
+    -- the pad, and pushing it thirteen times as somebody walks the line is
+    -- thirteen HUD renders for one unchanged figure.
+    --
+    -- NO BALANCE ON THE WIRE. This carries a boolean. br_ui already holds the
+    -- player's Volts -- it is what the Store screen renders, refreshed on every
+    -- MARKET_STATE -- so sending it from here would be a second copy of one
+    -- number, free to disagree with the shop screen. This side knows WHETHER;
+    -- the side that already knows the figure supplies it.
+    if appeared then
+        TriggerEvent('br:ui:sendLocal', 'shopplate', { show = show })
+    end
 
     local page = promptPage()
     if not show then
@@ -410,6 +473,29 @@ local function setPrompt(show, row)
         hint  = tostring(math.floor(tonumber(row.price) or 0)),
         key   = BR.Native.keyLabelForCommand('brinteract', 51),
         ring  = false,
+        -- ═══ THE PRICE, LARGE AND GREEN ═══
+        --
+        -- Owner, 2026-08-29: "the price text needs to be increased in font size
+        -- and make it green. It should be large."
+        --
+        -- SENT AS A FLAG, NOT AS A STYLE. `hintBig` asks the page for its price
+        -- treatment and the page owns what that means; a font size sent from
+        -- Lua would put the plate's typography in two files, and the same hint
+        -- line is shared with the crate, the pump, the revive and the heal
+        -- station -- none of which asked to grow.
+        --
+        -- THE COLOUR IS --color-hp, RESOLVED BY THE HUD'S OWN CASCADE. It
+        -- arrives from br_ui (see BR.Dui.hp) rather than being written here,
+        -- because that token is remapped by the colourblind modes and a hex in
+        -- this file would be the one green in the game that ignored the
+        -- setting.
+        --
+        -- NIL IS A LEGITIMATE ANSWER and the page falls back to its own colour.
+        -- A br_core restart mid-session sits here until br_ui next applies its
+        -- settings, and a price in the default colour is a far better failure
+        -- than no price.
+        hintBig    = true,
+        hintColour = (BR.Dui.hp and BR.Dui.hp()) or nil,
     })
 end
 

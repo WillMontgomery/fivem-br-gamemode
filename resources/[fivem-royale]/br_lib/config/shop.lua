@@ -223,14 +223,70 @@ BR.Config.Shop = {
     -- were surveyed with -- a ped-standing position, so the z can be trusted
     -- and the heading is the way a vehicle put there should face.
     --
-    -- ═══ NO ROW CARRIES A `label`, AND THAT IS DELIBERATE ═══
+    -- ═══ THE `z` BELOW IS A STARTING HEIGHT, NOT THE FINAL ONE ═══
     --
-    -- The plate reads "<name> for sale", and with no `label` the name is the
-    -- MODEL STRING he typed -- "drifttampa for sale", "caracara2 for sale". A
-    -- label is player-facing copy, this project's standing rule is that no
-    -- player-facing text is invented, and he has not written any. If he wants
-    -- "Drift Tampa" on the plate, `label` is the field and the words have to be
-    -- his.
+    -- READ THIS BEFORE "RESTORING" A z. His x and y are exact and must never be
+    -- touched -- "those coords are very specifically placed. Don't change
+    -- them" -- and until 2026-08-29 the same was true of z. It no longer is,
+    -- BECAUSE HE ASKED FOR IT: "sometimes the vehicles appear floating off the
+    -- ground."
+    --
+    -- br_core/client/shop.lua now calls SetVehicleOnGroundProperly on each car
+    -- as it is built, BEFORE freezing it, so the engine settles every model onto
+    -- the actual surface under it -- which it must, because a z surveyed by a
+    -- PERSON STANDING is the height of that person's feet and a car's origin is
+    -- not at its wheels. A Marshall and a Sanchez need different numbers for the
+    -- same patch of ground, and no single surveyed figure can be right for both.
+    --
+    -- So these numbers are the height the settle STARTS from, and the height it
+    -- FALLS BACK TO if the engine refuses (it says so on the console when that
+    -- happens). A car that looks a few centimetres off from the surveyed figure
+    -- is this working, not drift -- do not re-survey the z to match what you
+    -- see, or the floating comes back for whichever model is dropped in next.
+    --
+    -- ═══ EVERY ROW CARRIES A `label`, AND EVERY ONE IS ROCKSTAR'S OWN WORD ═══
+    --
+    -- The plate reads "<name> for sale". Without a `label` that name is the
+    -- MODEL STRING -- "drifttampa for sale", "caracara2 for sale" -- which is
+    -- what shipped first, because inventing display copy is exactly what this
+    -- project's standing rule forbids.
+    --
+    -- Owner, 2026-08-29: "the vehicle names on the DUI should be their proper
+    -- names, not the model names. These are publicly documented if you don't
+    -- have them." THAT IS WHAT MAKES THESE ALLOWED. They are not invented text
+    -- and they are not our preference; they are the strings the game itself
+    -- displays, so the plate now says what a player would read anywhere else.
+    --
+    -- SOURCE, FOR ALL THIRTEEN: the game's own vehicles.meta and GXT text
+    -- labels, as dumped in DurtyFree/gta-v-data-dumps `vehicles.json` -- keyed
+    -- by the exact model string, giving ManufacturerDisplayName.English and
+    -- DisplayName.English. Manufacturer + name, in that order, is the form the
+    -- game uses. Each was read out of that dump directly rather than from a
+    -- wiki, because the variants are the whole difficulty here:
+    --
+    --     formula2   is "Ocelot R88" and NOT "Formula 2" -- and the pairing is
+    --                inverted from the guess: `formula` is the Progen PR4.
+    --     voltic2    is "Rocket Voltic", not "Voltic".
+    --     caracara2  is "Caracara 4x4"; plain `caracara` is "Caracara".
+    --     veto       is "Veto Classic"; `veto2` is "Veto Modern".
+    --     riot       is "Police Riot"; `riot2` is a different vehicle, the RCV.
+    --
+    -- TWO OF THEM ARE JUDGEMENT CALLS AND HE SHOULD KNOW WHICH:
+    --
+    --   `mesa3` -- the game gives ALL THREE Mesas the same GXT label, `mesa`
+    --     -> "Mesa", so the armoured Merryweather variant has NO distinct
+    --     Rockstar name. "Canis Mesa" is therefore the true one. Vehicle sites
+    --     write "Canis Mesa (Merryweather)" to disambiguate, but that
+    --     parenthetical is theirs, not the game's, so it is not used here.
+    --
+    --   `sanchez` -- the game's label is literally "Sanchez (livery)" (GXT
+    --     SANCHEZ01), with `sanchez2` holding the plain "Sanchez". The
+    --     "(livery)" is a data-file disambiguator rather than a name anybody
+    --     reads, so the plate says "Maibatsu Sanchez".
+    --
+    -- `ambulance` and `riot` carry NO manufacturer in the game files, so they
+    -- are the bare "Ambulance" and "Police Riot". GTA Wiki attributes both to
+    -- Brute from in-game badging; that is not a Rockstar string and is not used.
     --
     -- ═══ THE ORDER IS HIS SURVEY ORDER ═══
     --
@@ -247,7 +303,8 @@ BR.Config.Shop = {
         -- change them." So it is a deliberate outlier, it is not a typo, and
         -- nothing in the code assumes the showroom is one cluster because of it.
         {
-            id = 'veto', model = 'veto', price = 250,
+            id = 'veto', model = 'veto', label = 'Dinka Veto Classic',
+            price = 250,
             x = 4665.97, y = -4478.9, z = 3.3, heading = 198.1,
             appearance = {  -- his note: Preset Color 1
                 primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
@@ -258,14 +315,16 @@ BR.Config.Shop = {
             -- `vtype`. It picks the sync tree the server builds when the item is
             -- unpacked and it is NOT checked against the model -- an `automobile`
             -- tree under a bike is the kind of mismatch that desyncs quietly.
-            id = 'sanchez', model = 'sanchez', price = 350, vtype = 'bike',
+            id = 'sanchez', model = 'sanchez', label = 'Maibatsu Sanchez',
+            price = 350, vtype = 'bike',
             x = 4468.09, y = -4478.40, z = 3.68, heading = 197.7,
             appearance = {  -- his note: Preset Color 6
                 primary = 5, secondary = 5, pearl = 0, wheelColour = 0,
             },
         },
         {
-            id = 'outlaw', model = 'outlaw', price = 500,
+            id = 'outlaw', model = 'outlaw', label = 'Nagasaki Outlaw',
+            price = 500,
             x = 4471.23, y = -4477.56, z = 4.02, heading = 199.8,
             appearance = {  -- his note: Preset Color 4
                 primary = 3, secondary = 3, pearl = 0, wheelColour = 0,
@@ -273,56 +332,64 @@ BR.Config.Shop = {
         },
         {
             -- 750 IS #224's OWN NUMBER, kept on the row the issue described.
-            id = 'mesa3', model = 'mesa3', price = 750,
+            id = 'mesa3', model = 'mesa3', label = 'Canis Mesa',
+            price = 750,
             x = 4474.67, y = -4477.09, z = 3.99, heading = 199.3,
             appearance = {  -- his note: Preset Color 2
                 primary = 1, secondary = 1, pearl = 0, wheelColour = 0,
             },
         },
         {
-            id = 'caracara2', model = 'caracara2', price = 750,
+            id = 'caracara2', model = 'caracara2', label = 'Vapid Caracara 4x4',
+            price = 750,
             x = 4478.54, y = -4476.13, z = 3.93, heading = 199.8,
             appearance = {  -- his note: Preset Color 4
                 primary = 3, secondary = 3, pearl = 0, wheelColour = 0,
             },
         },
         {
-            id = 'nightshade', model = 'nightshade', price = 600,
+            id = 'nightshade', model = 'nightshade', label = 'Imponte Nightshade',
+            price = 600,
             x = 4481.98, y = -4474.05, z = 3.63, heading = 201.4,
             appearance = {  -- his note: Preset Color 1
                 primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
             },
         },
         {
-            id = 'infernus', model = 'infernus', price = 900,
+            id = 'infernus', model = 'infernus', label = 'Pegassi Infernus',
+            price = 900,
             x = 4485.30, y = -4472.56, z = 3.73, heading = 200.8,
             appearance = {  -- his note: Preset Color 7
                 primary = 6, secondary = 6, pearl = 0, wheelColour = 0,
             },
         },
         {
-            id = 'drifttampa', model = 'drifttampa', price = 600,
+            id = 'drifttampa', model = 'drifttampa', label = 'Declasse Drift Tampa',
+            price = 600,
             x = 4492.41, y = -4470.39, z = 3.59, heading = 199.8,
             appearance = {  -- his note: Preset Color 1
                 primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
             },
         },
         {
-            id = 'voltic2', model = 'voltic2', price = 1500,
+            id = 'voltic2', model = 'voltic2', label = 'Coil Rocket Voltic',
+            price = 1500,
             x = 4495.90, y = -4468.74, z = 3.78, heading = 201.9,
             appearance = {  -- his note: Preset Color 1
                 primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
             },
         },
         {
-            id = 'formula2', model = 'formula2', price = 1500,
+            id = 'formula2', model = 'formula2', label = 'Ocelot R88',
+            price = 1500,
             x = 4499.17, y = -4467.59, z = 3.46, heading = 201.0,
             appearance = {  -- his note: Preset Color 1
                 primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
             },
         },
         {
-            id = 'ambulance', model = 'ambulance', price = 500,
+            id = 'ambulance', model = 'ambulance', label = 'Ambulance',
+            price = 500,
             x = 4503.87, y = -4468.23, z = 3.89, heading = 198.4,
             appearance = {  -- his notes: Preset Color 1, Livery 5
                 primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
@@ -333,14 +400,16 @@ BR.Config.Shop = {
             },
         },
         {
-            id = 'riot', model = 'riot', price = 1250,
+            id = 'riot', model = 'riot', label = 'Police Riot',
+            price = 1250,
             x = 4507.97, y = -4465.96, z = 3.85, heading = 200.3,
             appearance = {  -- his note: Preset Color 1
                 primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
             },
         },
         {
-            id = 'marshall', model = 'marshall', price = 1250,
+            id = 'marshall', model = 'marshall', label = 'Cheval Marshall',
+            price = 1250,
             x = 4512.49, y = -4463.92, z = 4.30, heading = 198.7,
             appearance = {  -- his notes: Preset Color 5, Livery American Flag
                 primary = 4, secondary = 4, pearl = 0, wheelColour = 0,
@@ -564,9 +633,47 @@ BR.Config.Shop = {
     -- Either way the token is COLLISION-FREE, exactly like every other loose
     -- floor item, so a shrunken car cannot leave a full-size invisible hull in
     -- the road -- a matrix scale never touches a collision box.
-    tokenScale  = 0.1,
+    -- ═══ 0.5, NOT 0.1: FIVE TIMES BIGGER, AND HIS ORIGINAL SPEC IS SUPERSEDED
+    --     RATHER THAN CONTRADICTED ═══
+    --
+    -- The quote above -- "super small, like the same size as a weapon prop
+    -- pickup" -- is what he asked for BEFORE seeing one on the ground. Having
+    -- seen it, 2026-08-29: "when dropped, the item prop should be 5x the size."
+    -- The later instruction wins; the earlier one is kept above because it is
+    -- still the reason the marker fallback exists at all.
+    tokenScale  = 0.5,
+
     tokenMarker = 34,   -- the owner's stated fallback, used only if the prop
                         -- cannot be created
+
+    -- ...AND HOW BIG THAT FALLBACK MARKER IS DRAWN, IN METRES.
+    --
+    -- ═══ THIS EXISTS BECAUSE `tokenScale` ABOVE MAY WELL BE CHANGING NOTHING ═══
+    --
+    -- The two are NOT the same knob and are not in the same units. `tokenScale`
+    -- is a multiple of the model's own size and only reaches a car that the
+    -- engine agreed to build as a PROP. This is a radius in metres and is what
+    -- gets drawn when it did not.
+    --
+    -- WHICH ONE IS LIVE IS STILL AN OPEN QUESTION, and the honest answer from
+    -- outside a running client is that the prop probably is not: CREATE_OBJECT
+    -- takes an OBJECT archetype, a car is a VEHICLE archetype, and the
+    -- documented advice for a vehicle model is CreateVehicle instead
+    -- (citizenfx/natives, OBJECT/CreateObject.md). If that is what happens here
+    -- then every dropped car token is marker 34, `tokenScale` is inert, and
+    -- raising it to 0.5 changed nothing a player can see.
+    --
+    -- THE CONSOLE ANSWERS IT IN ONE LINE. client/loot.lua prints
+    -- "no prop for car_<id> (...) -- falling back to marker 34" exactly once per
+    -- entry whose prop the engine refused. If that line appears, this is the
+    -- number to turn and the one above is not.
+    --
+    -- LEFT AT 0.5, WHICH IS THE SIZE IT HAS ALWAYS BEEN DRAWN AT. It was a
+    -- hard-coded literal in client/loot.lua until now; naming it changes no
+    -- behaviour and costs one line to retune once we know which path is live.
+    -- It is deliberately NOT pre-multiplied by five: a 2.5m symbol hovering over
+    -- the pad is a guess at what he meant, and he asked about a prop.
+    tokenMarkerScale = 0.5,
 
     -- ------------------------------------------------------------------
     -- SOUND
@@ -692,6 +799,10 @@ function BR.Config.Shop.register(refusedReason)
             -- owner's own fallback, read by client/loot.lua at the moment a
             -- prop fails rather than decided here -- see `tokenMarker`.
             fallbackMarker = tonumber(S.tokenMarker) or 34,
+            -- ...AND HOW BIG TO DRAW IT. See `tokenMarkerScale`: this is the
+            -- knob that matters if the engine will not build a car as a prop,
+            -- which is the likely case and is the one `propScale` cannot reach.
+            fallbackMarkerScale = tonumber(S.tokenMarkerScale) or 0.5,
             -- WHAT MAKES THIS A CAR RATHER THAN A POTION, and the only field
             -- server/inventory.lua's use pass looks for. Its VALUE is the
             -- catalogue id, so the item knows which row built it and the

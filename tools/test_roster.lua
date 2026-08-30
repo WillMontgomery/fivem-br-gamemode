@@ -18022,6 +18022,97 @@ do
 end
 
 
+describe('inv.quiet -- a delivery that makes no noise')
+-- ---------------------------------------------------------------------------
+--
+-- ═══ WHERE THE OWNER'S PICKUP-SOUND BUG IS ACTUALLY FIXED ═══
+--
+-- Owner, 2026-08-29: "when transitioning to state BUS, the pickup sound is
+-- heard again by anyone who has purchased an item."
+--
+-- The client plays GTA's PICK_UP whenever an INV_SET shows a slot gained
+-- something, which is right for a pickup and wrong for the warmup shop's car
+-- being handed out at wheels-up. Only the SERVER knows which of the two just
+-- happened, so it is the server that says so -- and this is the assertion that
+-- it does, and that it stays silent about it by default.
+do
+    local m = lootMatch()
+
+    -- ═══ AN ORDINARY GIVE SAYS NOTHING ABOUT NOISE ═══
+    --
+    -- Asserted first, because the failure that matters most is not "the shop is
+    -- loud" but "everything went quiet". `quiet` must be ABSENT rather than
+    -- false: every other caller of BR.Inv.give in the tree passes no options at
+    -- all, and if the default were to mark the push, the pickup cue would be
+    -- gone from the whole game.
+    BR.Inv.reset(1)
+    sent = {}
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 1 })
+    local pushes = eventsOf(BR.Net.INV_SET)
+    ok(#pushes > 0, 'an ordinary give pushes the inventory', #pushes)
+    ok(pushes[#pushes].args[1].quiet == nil,
+        'and says nothing about noise -- so the pickup cue still fires for '
+            .. 'everything that is actually picked up',
+        tostring(pushes[#pushes].args[1].quiet))
+
+    -- ═══ ...AND ONE ASKED FOR QUIETLY IS MARKED ═══
+    sent = {}
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 1 }, { quiet = true })
+    pushes = eventsOf(BR.Net.INV_SET)
+    ok(#pushes > 0 and pushes[#pushes].args[1].quiet == true,
+        'a give asked for quietly marks the push, which is what the shop '
+            .. 'delivery uses at wheels-up',
+        #pushes > 0 and tostring(pushes[#pushes].args[1].quiet) or 'no push')
+
+    -- ═══ THE ITEM STILL ARRIVES. SILENT IS NOT INVISIBLE ═══
+    --
+    -- The cue is the only thing suppressed. A "fix" that skipped the push
+    -- entirely would also be silent, and would lose the player their car.
+    local inv = BR.Inv.of(1)
+    local held = 0
+    for i = 1, 5 do
+        local s = inv.slots[i]
+        if s and s.item == 'bandage' then held = held + s.count end
+    end
+    ok(held >= 2,
+        'and the goods are in the inventory either way -- quiet suppresses a '
+            .. 'sound, not a delivery', held)
+
+    -- ═══ THE FLAG DOES NOT STICK ═══
+    --
+    -- One push is marked, not the connection. A player who is handed a car at
+    -- wheels-up must still hear the next crate they walk over.
+    sent = {}
+    BR.Inv.give(1, { item = 'minishield', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 2, count = 1 })
+    pushes = eventsOf(BR.Net.INV_SET)
+    ok(#pushes > 0 and pushes[#pushes].args[1].quiet == nil,
+        'the very next ordinary give is loud again -- the flag is a property '
+            .. 'of one push, not of the player')
+
+    -- And the bare push, which is the primitive the whole thing rests on.
+    sent = {}
+    BR.Inv.push(1)
+    ok(eventsOf(BR.Net.INV_SET)[1].args[1].quiet == nil,
+        'BR.Inv.push with no options is loud')
+    sent = {}
+    BR.Inv.push(1, { quiet = true })
+    ok(eventsOf(BR.Net.INV_SET)[1].args[1].quiet == true,
+        'BR.Inv.push with quiet is not')
+
+    -- ANYTHING THAT IS NOT `true` IS NOT QUIET, checked on the server side too:
+    -- the client refuses to be silenced by a 0, and nothing should be sending
+    -- one in the first place.
+    sent = {}
+    BR.Inv.push(1, { quiet = 0 })
+    ok(eventsOf(BR.Net.INV_SET)[1].args[1].quiet == nil,
+        'and a 0 does not buy silence at either end -- 0 is truthy in Lua')
+
+    if m then end
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))
