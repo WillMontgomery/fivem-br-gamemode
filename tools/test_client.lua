@@ -12470,6 +12470,314 @@ do
 end
 
 -- ======================================================================== --
+-- THE ROCKSTAR EDITOR. A FRONTEND THAT WILL NOT CLOSE IS NOT A LEAKED ESCAPE
+-- ======================================================================== --
+--
+-- "Also, when opening rockstar editor our pause menu opens and cannot be
+-- dismissed." (owner, 2026-08-29.)
+--
+-- WHAT THE FIXTURE HAS THAT EVERY EARLIER ONE LACKED: a frontend that does not
+-- go down when it is asked to. Every stub of SET_FRONTEND_ACTIVE in this file
+-- before now -- #207's included -- models a frontend that obeys, and against an
+-- obedient frontend the code under test is CORRECT: it asks once, the menu
+-- goes, our menu comes up, done. The entire bug lives in the case where the ask
+-- does nothing, which is what a frontend the engine is holding for its own
+-- reasons (the Rockstar Editor being the concrete one) looks like from Lua.
+--
+-- So `frontendYields` is the dimension, and it is the only one that matters. A
+-- suite that could not set it to false could only ever agree with the bug.
+--
+-- WHAT IS MODELLED AND WHAT IS NOT, STATED. That the Editor makes
+-- IsPauseMenuActive read true is NOT verified here or anywhere -- no source
+-- found says what the Editor does to pause state, and this block does not
+-- pretend to know. It asserts the conditional the owner's report establishes:
+-- IF the engine says a frontend is up that we did not raise and cannot close,
+-- our pause menu must not open and must not re-open itself. The report is the
+-- evidence that the antecedent happens; this is the consequent.
+
+describe('a frontend that outlives the ask is left alone')
+do
+    --- HOW THIS BUILD SHAPES A BOOL, the same dimension #207 runs above.
+    local shape = { yes = true, no = false }
+    local function B(v) return v and shape.yes or shape.no end
+
+    --- What the ENGINE says, and whether it can be argued with.
+    local frontendUp, frontendYields = false, true
+    local deactivates, frontendDisables = 0, 0
+
+    IsPauseMenuActive = function() return B(frontendUp) end
+    -- THE ASK IS MODELLED BY ITS EFFECT, NOT COUNTED. A counter alone would
+    -- pass against a retake that never took anything down, which is precisely
+    -- the state this block exists to tell apart -- so the yielding frontend
+    -- really goes away and the stubborn one really does not.
+    SetFrontendActive = function(on)
+        deactivates = deactivates + 1
+        if on == false and frontendYields then frontendUp = false end
+    end
+    DisableFrontendThisFrame = function() frontendDisables = frontendDisables + 1 end
+
+    --- One frame of the per-frame rules, with the clock actually moving.
+    ---
+    --- #199's rulesFrame above does not advance `fakeTime`, which would make the
+    --- whole of the give-up window unreachable: it is measured in milliseconds.
+    local function rulesFrame(ms)
+        fakeTime = fakeTime + (ms or 16)
+        BR.Native.applyGameRules()
+    end
+    local function rulesFrames(n, ms)
+        for _ = 1, (n or 1) do rulesFrame(ms) end
+    end
+
+    --- How many times our pause menu has been RAISED, by the honest observable.
+    ---
+    --- `open` is a file-local in br_ui/client/pause.lua and there is no reader
+    --- for it, which is right: what the rest of the game sees is the focus
+    --- envelope. BR.Pause.open() emits exactly one push per raise -- its own
+    --- `if open then return end` sees to that -- so counting them counts menus.
+    local function opens(from)
+        local n = 0
+        for i = from + 1, #events do
+            if events[i].name == 'br:ui:pushFocus'
+               and events[i].args[1] == 'pause' then n = n + 1 end
+        end
+        return n
+    end
+
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
+    BR.State.roster = {}
+    BR.State.match = { state = BR.MatchState.PLAYING }
+    BR.Native.frontendMap = false
+    BR.Keys.reset('brpausemenu')
+
+    --- Back to nothing at all, and by the honest road: tell the game the
+    --- frontend has gone and let the code reconcile, exactly as #207's reset
+    --- does. A block that could only start by reaching into the retake's own
+    --- state would be evidence the reconciliation does not work.
+    local function reset()
+        frontendUp, frontendYields = false, true
+        BR.Native.frontendMap = false
+        rulesFrames(4)
+        -- AND ANY MAP br_ui STILL BELIEVES IN. `br:ui:pauseToggle` closes a map
+        -- before it toggles a menu and RETURNS -- one press, one thing -- so a
+        -- map flag left standing by an earlier block would eat the first retake
+        -- of every case here and read as "the retake did nothing".
+        while BR.Pause.closeMap() do end
+        BR.Pause.close()
+        -- AFTER the close, not before it. BR.Pause.close() stamps the toggle
+        -- guard on its way out -- one press must not count twice -- so a reset
+        -- that closed the menu and then handed straight over would leave the
+        -- next 220ms of frames unable to open anything, and every case would
+        -- read as "the retake did nothing".
+        fakeTime = fakeTime + 400
+        deactivates, frontendDisables = 0, 0
+    end
+
+    -- THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. Every case below is
+    -- inside `ownsEscape() and not frontendMap`, so a harness in which that
+    -- gate is shut would run every assertion against a block that never ran --
+    -- and they would all pass.
+    ok(BR.Keys.ownsEscape() == true,
+       'the suppression is live in this harness, so the cases below reach it')
+
+    -- ------------------------------------------------------------------- --
+    -- 1. THE LEAK THIS BLOCK HAS ALWAYS BEEN FOR. Escape got through, GTA's
+    --    menu is up, and the player asked for OURS. Unchanged, and it is the
+    --    regression the fix could most easily have caused.
+    -- ------------------------------------------------------------------- --
+    reset()
+    local m = #events
+    frontendUp = true
+    rulesFrame()
+    ok(deactivates >= 1, 'a leaked frontend is asked to go down')
+    ok(frontendUp == false, 'and it goes')
+    rulesFrame()
+    ok(opens(m) == 1,
+       'and our pause menu comes up in its place -- one frame late, which is '
+       .. 'what the retake has always promised', ('%d opens'):format(opens(m)))
+
+    rulesFrames(60)
+    ok(opens(m) == 1,
+       'once, and not again -- a menu raised and then toggled shut by the next '
+       .. 'frame is the report', ('%d opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 2. AND THE FRONTEND br_ui RAISED ON PURPOSE IS STILL UNTOUCHED. This is
+    --    the guard that was already here -- the map route drives GTA's own menu
+    --    deliberately -- and it is the one a rewrite of this block is most
+    --    likely to drop.
+    -- ------------------------------------------------------------------- --
+    reset()
+    m = #events
+    BR.Native.frontendMap = true
+    frontendUp, frontendYields = true, false
+    rulesFrames(30)
+    ok(deactivates == 0 and frontendDisables == 0 and opens(m) == 0,
+       'while br_ui is deliberately holding the frontend open, the retake '
+       .. 'keeps its hands off it entirely',
+       ('%d asks, %d disables, %d opens'):format(
+           deactivates, frontendDisables, opens(m)))
+
+    -- AND AN ASK IN FLIGHT IS DROPPED AT THAT BOUNDARY rather than carried
+    -- across it. The frontend that comes down after the map route takes over is
+    -- the MAP being dismissed, and answering that with our pause menu is #207's
+    -- report wearing this ticket's clothes.
+    BR.Native.frontendMap = false
+    frontendYields = true
+    m = #events
+    rulesFrame()                       -- we see a frontend and ask it to go
+    BR.Native.frontendMap = true       -- br_ui takes the frontend over
+    rulesFrame()
+    BR.Native.frontendMap = false
+    frontendUp = false                 -- and what comes down is br_ui's map
+    rulesFrames(3)
+    ok(opens(m) == 0,
+       'and a deactivate abandoned when br_ui took the frontend over is not '
+       .. 'redeemed by the map closing later',
+       ('%d opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 3. THE ROCKSTAR EDITOR. A frontend that does not answer the ask.
+    -- ------------------------------------------------------------------- --
+    reset()
+    m = #events
+    frontendUp, frontendYields = true, false
+    rulesFrames(120)                   -- ~2s, well past the give-up window
+    ok(opens(m) == 0,
+       'a frontend that outlives SetFrontendActive(false) never opens our '
+       .. 'pause menu at all', ('%d opens'):format(opens(m)))
+
+    -- AND WE STOP ASKING. Sixty deactivates a second aimed at somebody else's
+    -- screen is a thing this gamemode does to the Editor, not a thing the
+    -- Editor does to it -- and DisableFrontendThisFrame over a frontend that is
+    -- already up can only take away the toggle that would have closed it.
+    local asksAtGiveUp = deactivates
+    local disablesAtGiveUp = frontendDisables
+    rulesFrames(60)
+    ok(deactivates == asksAtGiveUp,
+       'and it stops being asked once we have accepted it is not ours',
+       ('%d -> %d'):format(asksAtGiveUp, deactivates))
+    ok(frontendDisables == disablesAtGiveUp,
+       'and the frontend suppression stands down with it, so the engine keeps '
+       .. 'whatever way out it has',
+       ('%d -> %d'):format(disablesAtGiveUp, frontendDisables))
+    -- BOUNDED, NOT ZERO. One frame of trying is what tells a leak from an
+    -- Editor; a retake that never asked at all would fail case 1.
+    ok(asksAtGiveUp >= 1 and asksAtGiveUp <= 60,
+       'the attempt was bounded rather than abandoned or endless',
+       ('%d asks'):format(asksAtGiveUp))
+
+    -- ------------------------------------------------------------------- --
+    -- 4. "AND CANNOT BE DISMISSED", WHICH IS THE HALF THAT MADE IT A SOFT
+    --    LOCK. The toggle is throttled to one action per 220ms, so with the
+    --    old line firing every frame, every dismissal -- the page's Escape,
+    --    the raw key, the menu's own close button -- was undone a fifth of a
+    --    second later, forever.
+    -- ------------------------------------------------------------------- --
+    --
+    -- INSIDE THE GIVE-UP WINDOW, WHICH IS THE WHOLE OF WHY THIS IS ITS OWN
+    -- SCENARIO. Run after case 3 it asserted nothing: the retake had already
+    -- stood down, so a build with the old toggle line passed it. Twenty frames
+    -- is ~320ms -- past one 220ms toggle window and short of the 500ms give-up
+    -- -- so this is the code at its most alive, which is the only place the
+    -- claim means anything.
+    reset()
+    fakeTime = fakeTime + 400
+    BR.Pause.open()                    -- the player has our menu up...
+    fakeTime = fakeTime + 400
+    frontendUp, frontendYields = true, false
+    m = #events
+    BR.Pause.close()                   -- ...and dismisses it
+    rulesFrames(20)
+    ok(opens(m) == 0,
+       'a pause menu the player dismissed stays dismissed while the engine '
+       .. 'holds a frontend we cannot close', ('%d re-opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 5. LEAVING THE EDITOR IS THE PLAYER LEAVING, NOT US SUCCEEDING. The
+    --    deactivate we gave up on must not be redeemed half a minute later by
+    --    a frontend going down for an entirely different reason.
+    -- ------------------------------------------------------------------- --
+    reset()
+    frontendUp, frontendYields = true, false
+    rulesFrames(120)                   -- the retake tries, and gives up
+    disablesAtGiveUp = frontendDisables
+    m = #events
+    frontendUp = false                 -- the player quits the Editor
+    rulesFrames(4)
+    ok(opens(m) == 0,
+       'quitting the frontend we gave up on does not open our menu either',
+       ('%d opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 6. AND NORMAL SERVICE RESUMES ON THE SAME FRAME. A give-up that latched
+    --    for the session would trade a soft lock for a pause menu that never
+    --    came back, which is the worse of the two.
+    -- ------------------------------------------------------------------- --
+    ok(frontendDisables > disablesAtGiveUp,
+       'the frontend is suppressed again the moment the engine says the '
+       .. 'screen is ours',
+       ('%d -> %d'):format(disablesAtGiveUp, frontendDisables))
+    m = #events
+    frontendUp, frontendYields = true, true
+    rulesFrame()
+    rulesFrame()
+    ok(opens(m) == 1,
+       'and the next leaked Escape is taken back exactly as before',
+       ('%d opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 7. ALL OF IT AGAIN ON A BUILD WHOSE BOOL NATIVES ANSWER NUMBERS.
+    -- ------------------------------------------------------------------- --
+    --
+    -- IS_PAUSE_MENU_ACTIVE is a BOOL native. Unnormalised, a build answering
+    -- `0` for "no" makes `if IsPauseMenuActive() then` TRUE on every frame of
+    -- every session -- `0` is truthy in Lua -- so the retake would fire at a
+    -- frontend that is not there and the pause menu would toggle itself every
+    -- 220ms forever. That is this ticket's symptom arriving with no Editor
+    -- involved at all, and it is the tenth time this project would have shipped
+    -- the class.
+    shape = { yes = 1, no = 0 }
+
+    reset()
+    m = #events
+    rulesFrames(60)
+    -- ONE ASSERTION AND NOT TWO. `deactivates == 0` and `opens == 0` are the
+    -- same claim read at two depths -- nothing is asked, so nothing is
+    -- redeemed -- and splitting them leaves the second one unfalsifiable: every
+    -- mutation that lets a `0` through fails the first and then, having asked
+    -- an absent frontend to close, still opens nothing.
+    ok(opens(m) == 0 and deactivates == 0,
+       'a 0 from IsPauseMenuActive is read as "no frontend": nothing is asked '
+       .. 'to close and no menu opens',
+       ('%d opens, %d asks'):format(opens(m), deactivates))
+
+    m = #events
+    frontendUp = true
+    rulesFrame()
+    rulesFrame()
+    ok(opens(m) == 1,
+       'a 1 is still read as a frontend, and the leak is still taken back',
+       ('%d opens'):format(opens(m)))
+
+    reset()
+    m = #events
+    frontendUp, frontendYields = true, false
+    rulesFrames(120)
+    ok(opens(m) == 0,
+       'and the Editor case holds on a numeric build too',
+       ('%d opens'):format(opens(m)))
+
+    shape = { yes = true, no = false }
+    reset()
+
+    -- PUT THE ENGINE BACK for the blocks below, which drive applyGameRules for
+    -- reasons of their own and must not inherit this one's frontend.
+    IsPauseMenuActive = function() return false end
+    SetFrontendActive = function() end
+    DisableFrontendThisFrame = function() end
+end
+
+-- ======================================================================== --
 -- #208. GTA'S OWN VEHICLE NAME DOES NOT DRAW OVER OURS
 -- ======================================================================== --
 --

@@ -249,6 +249,49 @@ AddEventHandler('br:map:frontend', function(on)
     BR.Native.frontendMap = on == true
 end)
 
+--- Is this BOOL native true?
+---
+--- In Lua `0` IS TRUTHY and a FiveM native declared BOOL may answer `1`/`0`
+--- rather than `true`/`false`, so a bare `if X() then` is true for a `0` and a
+--- bare `not X()` is false for one. This repository has shipped that mistake
+--- ten times; client/spawn.lua, client/inventory.lua and br_ui/client/pause.lua
+--- all keep a local of exactly this shape and this is br_core/client/natives
+--- .lua's.
+---
+--- IT IS NOT WHAT THE ROCKSTAR EDITOR REPORT WAS, AND THAT IS WORTH
+--- RECORDING RATHER THAN IMPLYING.
+--- IsPauseMenuActive demonstrably does NOT answer `0` for "no" on this build:
+--- the retake below reads it, and a `0` there would have fired
+--- SetFrontendActive + a pause-menu toggle on every frame of every session
+--- since the day it landed. The game is playable, so the native is answering
+--- something falsy. Normalised anyway, because "it answers booleans today" is a
+--- fact about this build and not a property of the API -- which is the sentence
+--- br_ui/client/pause.lua already carries over its own copy of this.
+--- @param v any
+--- @return boolean
+local function isTrue(v) return v == true or v == 1 end
+
+--- TAKING BACK A FRONTEND WE DID NOT RAISE, AND KNOWING WHEN TO STOP.
+--- (owner, 2026-08-29 -- the Rockstar Editor.)
+---
+--- `asked`  we called SetFrontendActive(false) and are owed a menu going down.
+--- `since`  when this frontend first appeared, so the attempt can be bounded.
+--- `gaveUp` it outlived the attempt, so it is not ours and we let go of it.
+---
+--- See the retake itself, inside applyGameRules beside DisableFrontendThisFrame,
+--- for what each of the three is for.
+local retake = { asked = false, since = 0, gaveUp = false }
+
+--- How long a frontend may resist SetFrontendActive(false) before we accept it
+--- is not ours to close.
+---
+--- FIVE HUNDRED MILLISECONDS BECAUSE THAT IS ALREADY THIS PROJECT'S ANSWER to
+--- "how long do you insist a frontend goes down" -- br_ui/client/pause.lua's
+--- MAP_SETTLE_MS is the same number for the same question, and the map route
+--- reaches it after a single press. A leaked Escape is answered in one frame;
+--- anything still up thirty frames later is a different kind of thing.
+local RETAKE_MS = 500
+
 -- BR.Native.worldToScreen was deleted with the NUI loot prompt.
 --
 -- It existed to tell the UI where a crate was on screen, which is the thing
@@ -1688,8 +1731,6 @@ function BR.Native.applyGameRules()
     --     inside the map with no way out.
     if BR.Keys and BR.Keys.ownsEscape and BR.Keys.ownsEscape()
        and not BR.Native.frontendMap then
-        DisableFrontendThisFrame()
-
         -- AND IF IT GETS THROUGH ANYWAY, take it back. The disable is the
         -- documented route and it is not the only path into the frontend --
         -- a controller, another resource, a frame we lost -- and "Escape
@@ -1699,10 +1740,81 @@ function BR.Native.applyGameRules()
         --
         -- The raw layer cannot see Escape while CEF holds the cursor, so this
         -- doubles as the path that works with a menu already open.
-        if IsPauseMenuActive() then
-            SetFrontendActive(false)
-            TriggerEvent('br:ui:pauseToggle')
+        --
+        -- ═══ AND SOME FRONTENDS ARE NOT LEAKS ═══════════════════════════════
+        --
+        -- "when opening rockstar editor our pause menu opens and cannot be
+        -- dismissed" (owner, 2026-08-29). Both halves of that are this block,
+        -- and they are ONE fault rather than two.
+        --
+        -- The Rockstar Editor is reached through GTA's pause menu, which on
+        -- this gamemode means through br_ui's handOverToFrontend -- and THAT
+        -- route's watcher (openFrontendPlain) ends on a single poll of
+        -- IsPauseMenuActive() reading false. Entering the Editor is such a
+        -- poll: the pause menu goes, so the watcher declares the player back in
+        -- the game, lowers `frontendMap`, and hands the suppression here back.
+        -- The `not BR.Native.frontendMap` guard above was the ONLY thing
+        -- holding this block off, and from that frame it is open for business
+        -- while the player is still inside a frontend they never left.
+        --
+        -- What this block then did, every frame the engine said a frontend was
+        -- up: deactivate it, and fire `br:ui:pauseToggle`. That handler
+        -- TOGGLES, throttled to one action per 220ms -- so the first fire
+        -- opened our menu and every fire after it undid whatever the player had
+        -- just done. Dismiss it and it is back a fifth of a second later,
+        -- forever, for as long as the engine keeps saying a frontend is up.
+        -- Opening and un-dismissable are the same line firing twice.
+        --
+        -- SO THE TOGGLE IS THE REWARD FOR THE DEACTIVATE HAVING WORKED, not a
+        -- companion to attempting it. A leaked Escape closes on the frame we
+        -- ask and our menu comes up on the next one -- which is the "one frame
+        -- late" the paragraph above already promised. A frontend that outlives
+        -- the ask is not a leaked keypress, so nothing is owed and our menu
+        -- never opens at all.
+        --
+        -- AND WE STOP ASKING. Hammering SET_FRONTEND_ACTIVE at somebody else's
+        -- screen sixty times a second is its own hazard, and DisableFrontend-
+        -- ThisFrame over a frontend that is already up can only take away the
+        -- toggle that would have closed it. After RETAKE_MS this block goes
+        -- silent -- no disable, no deactivate, no toggle -- until the engine
+        -- says the frontend has gone, which is the moment the player is ours
+        -- again and everything resumes on that same frame.
+        local frontendUp = isTrue(IsPauseMenuActive())
+
+        if not frontendUp then
+            -- IT CAME DOWN, AND ONLY A DEACTIVATE WE ASKED FOR EARNS THE MENU.
+            -- A frontend the player closed themselves is not a press we are
+            -- owed, and answering it with our own menu is the report.
+            if retake.asked then
+                retake.asked = false
+                TriggerEvent('br:ui:pauseToggle')
+            end
+            retake.since, retake.gaveUp = 0, false
+        elseif not retake.gaveUp then
+            if retake.since == 0 then retake.since = now end
+            if (now - retake.since) >= RETAKE_MS then
+                -- `asked` is dropped with it: when this frontend eventually
+                -- goes -- the player quitting the Editor -- that is them
+                -- leaving, not us succeeding, and it must not open our menu.
+                retake.asked, retake.gaveUp = false, true
+                print('[br_core] a frontend outlived SetFrontendActive(false) '
+                    .. '-- leaving it alone until it closes')
+            end
         end
+
+        if not retake.gaveUp then
+            DisableFrontendThisFrame()
+            if frontendUp then
+                SetFrontendActive(false)
+                retake.asked = true
+            end
+        end
+    else
+        -- NOT OUR QUESTION THIS FRAME -- the map route is deliberately holding
+        -- the frontend open, or the player has moved our menu off Escape. Any
+        -- attempt in flight is abandoned rather than carried across the gap: it
+        -- describes a frontend that is now somebody else's.
+        retake.asked, retake.since, retake.gaveUp = false, 0, false
     end
 
     -- AND THE MAP KEY GETS THE SAME TREATMENT, FOR THE SAME REASON (#199).

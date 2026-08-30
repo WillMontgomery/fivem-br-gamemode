@@ -38,7 +38,6 @@
 2	resources/[fivem-royale]/br_core/client/natives.lua	DoesBlipExist
 1	resources/[fivem-royale]/br_core/client/natives.lua	DoesEntityExist
 1	resources/[fivem-royale]/br_core/client/natives.lua	IsEntityDead
-1	resources/[fivem-royale]/br_core/client/natives.lua	IsPauseMenuActive
 1	resources/[fivem-royale]/br_core/client/natives.lua	NetworkIsInSpectatorMode
 1	resources/[fivem-royale]/br_core/client/probe.lua	DoesEntityExist
 2	resources/[fivem-royale]/br_core/client/probe.lua	HasModelLoaded
