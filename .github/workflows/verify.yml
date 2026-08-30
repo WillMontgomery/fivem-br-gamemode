@@ -49,6 +49,28 @@ jobs:
         working-directory: js-src/br_ddb
         run: npm ci
 
+      # THE ONE CHECK THAT CANNOT LIVE IN verify.sh (#235). On 2026-08-29 a
+      # refactor left `buildStatsUpdate(d)` in src/index.js where the parameter
+      # is `deltas`. esbuild treats an unbound identifier as a global and says
+      # nothing, so the bundle, the fingerprint gate and every suite went green
+      # while the live server threw `ReferenceError: d is not defined` on every
+      # match end and quietly stopped persisting XP, Volts and balances.
+      #
+      # IT GOES HERE AND NOT IN verify.sh BECAUSE OF #218. That script's whole
+      # design is "no toolchain, runs on every machine" — it is why the bundle
+      # rebuild became a hash. A lint gate there would need node_modules, which
+      # nobody has locally, so it would either skip (a gate nobody notices is
+      # gone) or false-red (indistinguishable from a real finding). CI is the
+      # one place the deps are guaranteed, because npm ci runs directly above.
+      #
+      # THE EXCEPTION IS DELIBERATE, and it is the only step that states its own
+      # check rather than delegating. Keep it to no-undef: eslint.config.mjs
+      # turns on one rule, and a gate that also prints style opinions is a gate
+      # someone switches off.
+      - name: Lint br_ddb for undefined identifiers
+        working-directory: js-src/br_ddb
+        run: npx eslint src scripts
+
       # ONE ENTRY POINT, ON PURPOSE. Everything — syntax, the six test suites,
       # the scope gate, manifest coverage, the secret scan, the bundle check —
       # runs from this script, which is the same command run locally and the
