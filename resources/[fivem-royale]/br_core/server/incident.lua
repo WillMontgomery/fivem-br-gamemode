@@ -602,29 +602,48 @@ AddEventHandler('br:core:chatrefused', function(ev)
     local n = (byLicense[ev.license] or 0) + 1
     byLicense[ev.license] = n
 
+    -- ═══ A REPEAT GROWS THE TIMELINE AND ANNOUNCES NOTHING (#244) ═══
+    --
+    -- THIS IS THE ONE PRODUCER THAT DOES NOT CORROBORATE, and the asymmetry is
+    -- the point rather than an oversight. The owner, after the first playtest
+    -- with this live: "Chat blocks work but shows corroborated AND chat block.
+    -- Ideally I'd just like to see chat block in the timeline, and the content
+    -- of said blocked message."
+    --
+    -- WHY IT IS SAFE TO DROP IT HERE AND NOWHERE ELSE. A corroboration feeds
+    -- exactly two things, and neither is a grade:
+    --
+    --   1. A ROW OF TEXT on the console's `events` list -- "3 refusals this
+    --      match · last: an invite · worst: low", built by the ingest route and
+    --      stored by incidents.corroborate(). It is a STRING. Nothing on the
+    --      console reads a corroboration count, and src/lib/incidents.ts does
+    --      not mention severity at all -- so there is no escalation, no
+    --      threshold and no grading behind it to lose. `worst: low` was this
+    --      path sending a hard-coded 'low' every time, which graded nothing.
+    --   2. ONE ARTIFACT FRAME, in server/artifacts.lua. The THREE TIMED frames
+    --      taken when the case is filed are unaffected, so a chat case still
+    --      carries pictures; what goes is an extra frame per repeat. A
+    --      screenshot of somebody's game view at the moment they typed a URL is
+    --      worth much less than the URL, and the URL is now on the row.
+    --
+    -- AND THE AGGREGATE IS NOT LOST, IT IS IMPROVED. Every refused line is
+    -- already in the evidence buffer and becomes its own `chat_block` entry with
+    -- its own timestamp and its own text. Three rows saying what was said and
+    -- when is strictly more than one row saying "3 refusals this match". The
+    -- queue summary is unchanged either way -- it is written once at filing and
+    -- no corroboration ever updated it.
+    --
+    -- THE ONE THING THAT GOES: repeats now reach the record on the match-end
+    -- close rather than live, because `matchTimeline` is only appended by that
+    -- write. Mid-match the case shows the line that opened it. Filing still
+    -- happens on the FIRST offence, so a moderator still learns about the player
+    -- immediately -- they learn the full list at the end of the round.
+    --
+    -- The other three producers still corroborate, and must: a refused shot, a
+    -- stripped weapon and a refused vehicle all carry a severity that VARIES,
+    -- and their repeats are the finding.
     local prior = BR.Incident.priorFor(ev.matchId, ev.license)
-    if #prior > 0 then
-        -- THE THROTTLE APPLIES AND `reason` IS WHAT MAKES IT USEFUL HERE. A run
-        -- of adverts is a run of notes differing only in a counter, which is the
-        -- shape CORROBORATE_MIN_INTERVAL_MS exists for -- but a player who
-        -- switches from links to a non-Latin script changes `reason`, and a
-        -- change of finding is never held. Both lines are on the timeline
-        -- either way; the throttle only bounds how often the case repeats
-        -- itself.
-        corroborate({
-            incidentId = prior[#prior],
-            matchId    = ev.matchId,
-            license    = ev.license,
-            name       = ev.name,
-            seq        = n,
-            count      = n,
-            reason     = BR.IncidentBuild.CHAT_REASON[ev.reason]
-                or tostring(ev.reason),
-            severity   = 'low',
-            at         = ev.at,
-        })
-        return
-    end
+    if #prior > 0 then return end
 
     local records = BR.Evidence and BR.Evidence.forLicense(ev.license) or {}
 

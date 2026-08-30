@@ -2046,6 +2046,8 @@ local function newTimelineWorld()
         incidents = {},   -- br:ringmaster:incident payloads
         closes = {},      -- br:ringmaster:incidentClose payloads
         corroborations = {},
+        -- Every TriggerClientEvent this world has seen: { name, target, payload }.
+        toClients = {},
         -- The SERVER's inventories, which server/strip.lua cross-checks a
         -- reported hash against. [src] = { slots = { { item = 'id' }, ... } }
         invs = {},
@@ -2065,7 +2067,15 @@ local function newTimelineWorld()
     env.TriggerEvent = function(name, ...)
         for _, fn in ipairs(h[name] or {}) do fn(...) end
     end
-    env.TriggerClientEvent = function() end
+    -- RECORDED RATHER THAN DISCARDED, so a test can ask WHO was sent something.
+    -- It was a no-op until the chat screen needed it, and the thing that needed
+    -- it could not be tested without it: a shadowed message is defined entirely
+    -- by its RECIPIENTS -- the sender gets the ordinary message and nobody else
+    -- gets anything -- so a world that throws client sends away cannot tell the
+    -- feature working from the feature broadcasting the advert to the match.
+    env.TriggerClientEvent = function(name, target, payload)
+        S.toClients[#S.toClients + 1] = { name = name, target = target, payload = payload }
+    end
     env.RegisterNetEvent = function() end
     env.RegisterCommand  = function() end
     -- CONTROLLABLE, because every assertion below is about WHEN something was
@@ -2075,6 +2085,10 @@ local function newTimelineWorld()
     env.print = function() end
     env.GetNumPlayerIdentifiers = function(src) return S.licenses[src] and 1 or 0 end
     env.GetPlayerIdentifier = function(src) return S.licenses[src] end
+    -- server/chat.lua falls back to this for a roster entry with no name.
+    env.GetPlayerName = function(src)
+        return S.roster[src] and S.roster[src].name or nil
+    end
 
     for _, f in ipairs({
         'br_lib/shared/enums.lua',
@@ -2095,6 +2109,12 @@ local function newTimelineWorld()
         -- geo.lua because it calls BR.NormHash at load time.
         'br_lib/config/vehicles.lua',
         'br_lib/shared/evidence_buf.lua',
+        -- THE REAL DOMAIN AND SHORTENER LISTS, for the reason the weapon table
+        -- and the refusal words are real: a stub would let the chat cases below
+        -- pass against a filter shaped the way this file imagined, and the
+        -- shipped one is what shadows a player.
+        'br_lib/config/chat.lua',
+        'br_lib/shared/chat_screen.lua',
         'br_lib/shared/incident_build.lua',
     }) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
@@ -2121,7 +2141,28 @@ local function newTimelineWorld()
         end,
     }
     -- The match registry, which is where `startedAt` lives.
-    BRs.Server = { matches = S.matches }
+    --
+    -- `roster`, `matchOf` and `audience` are what server/chat.lua routes on. It
+    -- delivers global chat to the sender's MATCH rather than to everybody -- two
+    -- concurrent matches must not hear each other -- so `audience` is the set
+    -- the shadow post has to be measured against: the test for "nobody else
+    -- received it" is only meaningful when somebody else WOULD have.
+    BRs.Server = {
+        matches = S.matches,
+        roster = S.roster,
+        matchOf = function(src)
+            local e = S.roster[src]
+            return e and e.matchId or nil
+        end,
+        audience = function(m)
+            local out = {}
+            for src, e in pairs(S.roster) do
+                if e.matchId == m then out[#out + 1] = src end
+            end
+            table.sort(out)
+            return out
+        end,
+    }
     -- EXTENDED, NOT REPLACED, AND THAT IS LOAD-BEARING. A bare assignment here
     -- threw away everything config/weapons.lua had just put on BR.Config --
     -- the real weapon tables weaponFacts() classifies kills against. Every kill
@@ -2158,6 +2199,11 @@ local function newTimelineWorld()
     -- empty one.
     for _, f in ipairs({
         'br_core/server/evidence.lua',
+        -- chat.lua sits between them in br_core/fxmanifest.lua and so it sits
+        -- between them here. It is the DETECTOR for the chat screen, the way
+        -- strip.lua is for an unissued weapon, and loading the real one is what
+        -- makes the shadow post testable rather than described.
+        'br_core/server/chat.lua',
         'br_core/server/incident.lua',
         'br_core/server/strip.lua',
     }) do
@@ -2249,6 +2295,31 @@ local function newTimelineWorld()
         env.source = src
         env.TriggerEvent(BRs.Net.INV_STRIPPED, weapon)
         env.source = nil
+    end
+
+    --- One chat message, through the REAL server/chat.lua.
+    ---
+    --- `source` IS SET RATHER THAN PASSED, for the reason W.strip sets it: that
+    --- is how FiveM delivers it, and a helper that passed it as an argument
+    --- would be testing a function this project does not have.
+    --- @param channel string|nil  defaults to global
+    function W.say(src, text, channel)
+        env.source = src
+        env.TriggerEvent(BRs.Net.CHAT_SEND, { text = text, channel = channel })
+        env.source = nil
+    end
+
+    --- Who received a CHAT_MSG since the marker, and what they got.
+    --- @return table[] { target, payload }
+    function W.chatSends(fromIndex)
+        local out = {}
+        for i = fromIndex or 1, #S.toClients do
+            local c = S.toClients[i]
+            if c.name == BRs.Net.CHAT_MSG then
+                out[#out + 1] = { target = c.target, payload = c.payload }
+            end
+        end
+        return out
     end
 
     --- One elimination, through the REAL BR.Evidence.noteKill, in the shape
@@ -4135,6 +4206,183 @@ do
     -- time.
     ok(after:find('dynamodb:Attributes', 1, true) ~= nil,
         'along with where to look when it is not zero', after)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The chat screen, end to end (#244)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- WHAT THESE COVER THAT NOTHING ELSE DOES. tools/test_shared.lua exercises the
+-- SCREEN -- which strings are links, which alphabets are refused -- against the
+-- shipped lists, and that is the false-positive surface. It cannot see any of
+-- the behaviour, because the behaviour is in two server files: who receives a
+-- refused message, and what a repeat does to the case. Both were described in a
+-- commit message and asserted by nothing until now.
+--
+-- THE SHADOW POST IS DEFINED ENTIRELY BY ITS RECIPIENTS. "The experience to the
+-- sender should look like it posted just fine" is not a property of the text --
+-- it is the claim that the sender got the ordinary message and the rest of the
+-- match got nothing. A world that discarded client sends could not tell that
+-- from broadcasting the advert to everybody, so `TriggerClientEvent` is
+-- recorded now and these are the cases that needed it.
+
+describe('chat.shadow')
+do
+    local W = newTimelineWorld()
+    W.startMatch(3, 1000)
+    W.join(1, 3, 'license:talker', 'Rae')
+    W.join(2, 3, 'license:other', 'Sam')
+    -- A THIRD PLAYER IN A DIFFERENT MATCH, so "delivered to the match" is
+    -- distinguishable from "delivered to everybody".
+    W.startMatch(4, 1000)
+    W.join(5, 4, 'license:far', 'Kai')
+
+    -- ═══ AN ORDINARY MESSAGE REACHES THE MATCH ═══
+    W.at(2000)
+    local mark = #W.S.toClients
+    W.say(1, 'rotate north now')
+    local clean = W.chatSends(mark + 1)
+
+    local gotClean = {}
+    for _, c in ipairs(clean) do gotClean[c.target] = c.payload end
+    ok(gotClean[1] ~= nil and gotClean[2] ~= nil,
+        'an ordinary message reaches the sender and their match', #clean)
+    ok(gotClean[5] == nil,
+        'and NOT the other match, which is the bucket rule chat.lua already had')
+    ok(gotClean[2] and gotClean[2].text == 'rotate north now',
+        'with the text intact')
+
+    -- ═══ A REFUSED MESSAGE REACHES THE SENDER AND NOBODY ELSE ═══
+    W.at(3000)
+    mark = #W.S.toClients
+    W.say(1, 'come to evilserver.com')
+    local shadow = W.chatSends(mark + 1)
+
+    ok(#shadow == 1, 'a refused message produces exactly one client send', #shadow)
+    ok(shadow[1] and shadow[1].target == 1,
+        'and its only recipient is the sender', shadow[1] and shadow[1].target)
+
+    -- ═══ AND IT IS INDISTINGUISHABLE FROM THE REAL THING ═══
+    --
+    -- A DIFFERENT SHAPE WOULD BE A TELL. Same event, same channel, same name,
+    -- same text, and a `System` sender would give it away instantly -- the
+    -- refusals chat.lua already had (the slash prefix, the rate limit) all
+    -- answer as System, and a player who has seen those would recognise one.
+    local p = shadow[1] and shadow[1].payload or {}
+    ok(p.text == 'come to evilserver.com', 'the sender sees their own words')
+    ok(p.name == 'Rae' and p.from == 1,
+        'under their own name, not System', tostring(p.name))
+    ok(p.channel == W.BR.ChatChannel.GLOBAL,
+        'on the channel they sent it on', tostring(p.channel))
+    ok(p.channel ~= W.BR.ChatChannel.SYSTEM,
+        'and never on the system channel, which is what a refusal looks like')
+
+    -- SQUAD CHAT SHADOWS TO THE SENDER TOO, not to the squad.
+    W.S.roster[1].squadId = 9
+    W.S.roster[2].squadId = 9
+    W.at(4000)
+    mark = #W.S.toClients
+    W.say(1, 'discord.gg/abcdef', W.BR.ChatChannel.SQUAD)
+    local sq = W.chatSends(mark + 1)
+    ok(#sq == 1 and sq[1].target == 1,
+        'a refused SQUAD message reaches the sender alone, not the squad', #sq)
+    W.S.roster[1].squadId = nil
+    W.S.roster[2].squadId = nil
+end
+
+describe('chat.incident.one-row-per-refusal')
+do
+    -- ═══ THE OWNER'S REPORT, #244 ═══
+    --
+    -- "Chat blocks work but shows corroborated AND chat block. Ideally I'd just
+    -- like to see chat block in the timeline, and the content of said blocked
+    -- message." His timeline read:
+    --
+    --   Chat block            +0:00
+    --   Chat block            +0:09
+    --   Corroborated -- 2 refusals this match · last: a shortened link · worst: low
+    --   Chat block            +0:36
+    --   Corroborated -- 3 refusals this match · last: an invite to another community
+    local W = newTimelineWorld()
+    W.startMatch(3, 1000)
+    W.join(1, 3, 'license:talker', 'Rae')
+
+    W.at(4000)
+    W.say(1, 'come to evilserver.com')
+
+    ok(#W.S.incidents == 1, 'the FIRST refusal opens a case', #W.S.incidents)
+    W.ack(3, 'license:talker', 'inc-chat')
+
+    -- Two more, well outside the corroboration throttle's window, so a
+    -- suppressed note cannot be mistaken for a removed one.
+    W.at(13000); W.say(1, 'bit.ly/abcdef')
+    W.at(40000); W.say(1, 'discord.gg/abcdef')
+
+    ok(#W.S.incidents == 1, 'repeats do not open a second case', #W.S.incidents)
+    ok(#W.S.corroborations == 0,
+        'AND THEY RAISE NO CORROBORATION AT ALL -- the row the owner does not '
+            .. 'want is not written, rather than written and hidden',
+        #W.S.corroborations)
+
+    -- ═══ EVERY REFUSAL IS STILL ON THE RECORD, WITH ITS TEXT ═══
+    --
+    -- This is what replaces the corroboration row, and it carries strictly more:
+    -- the message and the moment, rather than a running count.
+    W.at(50000)
+    W.endMatch(3)
+
+    ok(#W.S.closes == 1, 'the case is closed at match end', #W.S.closes)
+    local rows = {}
+    for _, e in ipairs(W.S.closes[1].matchTimeline or {}) do
+        if e.kind == W.BR.IncidentBuild.CHAT_KIND then rows[#rows + 1] = e end
+    end
+    ok(#rows == 2,
+        'the two refusals AFTER the filing reach the timeline', #rows)
+    ok(rows[1] and rows[1].text == 'bit.ly/abcdef',
+        'carrying what was actually typed', rows[1] and rows[1].text)
+    ok(rows[2] and rows[2].text == 'discord.gg/abcdef', 'each of them')
+    ok(rows[1] and rows[1].reason == 'shortener',
+        'and which rule refused it', rows[1] and rows[1].reason)
+    ok(rows[2] and rows[2].reason == 'invite', 'per row, not per case')
+    ok(rows[1].at < rows[2].at, 'in the order they were said')
+
+    -- THE ONE THAT OPENED THE CASE IS ON THE FILING, not repeated here -- the
+    -- same `> filedAtGameMs` rule that keeps a strip from being written twice.
+    local opened = {}
+    for _, e in ipairs(W.S.incidents[1].matchTimeline or {}) do
+        if e.kind == W.BR.IncidentBuild.CHAT_KIND then opened[#opened + 1] = e end
+    end
+    ok(#opened == 1 and opened[1].text == 'come to evilserver.com',
+        'the line that opened the case rides the filing, once', #opened)
+end
+
+describe('chat.incident.the-other-producers-still-corroborate')
+do
+    -- ═══ THE ASYMMETRY IS THE POINT AND MUST NOT SPREAD ═══
+    --
+    -- Dropping the corroboration is right for chat because its severity is a
+    -- constant and its repeats carry their own content. A strip has neither
+    -- property: `worst:` actually varies there, and a strip row is a timestamp
+    -- and a hash, so the aggregate IS the finding. A change that silenced all
+    -- four producers would pass every case in the block above.
+    local W = newTimelineWorld()
+    W.startMatch(3, 1000)
+    W.join(1, 3, 'license:mixed', 'Rae')
+
+    W.at(4000); W.say(1, 'come to evilserver.com')
+    W.ack(3, 'license:mixed', 'inc-mixed')
+    ok(#W.S.corroborations == 0, 'chat still raises none')
+
+    -- A strip onto the SAME case: one player, one round, one record.
+    W.at(9000);  W.strip(1, 0xDEADBEEF)
+    W.at(10000); W.strip(1, 0xDEADBEEF)
+
+    ok(#W.S.incidents == 1, 'the strip appends to the case chat opened')
+    ok(#W.S.corroborations == 1,
+        'and a STRIP still corroborates, which chat no longer does',
+        #W.S.corroborations)
+    ok(W.S.corroborations[1].incidentId == 'inc-mixed',
+        'onto the case that already exists')
 end
 
 -- ----------------------------------------------------------------- result ---
