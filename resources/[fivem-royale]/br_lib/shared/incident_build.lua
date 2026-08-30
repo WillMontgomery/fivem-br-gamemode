@@ -320,6 +320,110 @@ function BR.IncidentBuild.fromReport(ev, records)
     }
 end
 
+--- What each chat refusal reason is called on a moderation record.
+---
+--- PROSE, KEYED ON THE REASON, mirroring how BR.ShotTier is keyed on
+--- BR.ShotRefusal's values. These strings reach the console as a corroboration's
+--- `reason` and are read by a person, so they are sentences rather than symbols.
+BR.IncidentBuild.CHAT_REASON = {
+    link   = 'a link, which this server does not carry',
+    script = 'characters from a script this server does not accept',
+}
+
+--- The one line shown in the queue for a chat case.
+---
+--- ═══ NO PLAYER TEXT IN THE SUMMARY, DELIBERATELY ═══
+---
+--- The refused line itself is on the timeline, where a reviewer opens the case to
+--- read it. It is NOT in this sentence, and the reason is the one
+--- `stripSummaryOf` already gives: this field's contract on the console side is
+--- "displayed and nothing else", it is what the QUEUE shows, and the queue is a
+--- list of cases about people. Putting an advert in it would publish the advert
+--- to the one page every admin reads, which is a smaller version of exactly what
+--- the shadow post exists to prevent.
+---
+--- BUILT FROM SERVER FACTS ONLY -- one integer and one of two fixed reasons.
+--- @param count integer
+--- @param reason string
+--- @return string
+function BR.IncidentBuild.chatSummaryOf(count, reason)
+    local n = math.floor(tonumber(count) or 0)
+    return ('%d chat message%s held back this match -- %s')
+        :format(n, n == 1 and '' or 's',
+            BR.IncidentBuild.CHAT_REASON[reason] or tostring(reason))
+end
+
+--- Build an incident from a chat line the server refused to deliver.
+---
+--- THE FOURTH SOURCE, and the shape is the anticheat's rather than the report's:
+--- the server MEASURED something (this line contains a link; this line is not in
+--- an alphabet we take) rather than repeating a human's accusation. So it carries
+--- no reporter, and br_ddb writes the reporter fields as explicit nulls, which is
+--- what makes the console read it as system-filed.
+---
+--- SEVERITY IS `low`, AND THAT IS A DELIBERATE FLOOR RATHER THAN A SHRUG.
+--- `severityOf` grades what a refused SHOT means, where `high` says the server
+--- never issued the means and there is no honest path to it. A chat line has no
+--- equivalent: the overwhelming majority of these are a player pasting a Discord
+--- invite, which is against the rules and is not cheating. Grading it beside a
+--- conjured weapon would put advertising and aimbotting in the same tier and
+--- teach whoever reads the queue to trust the tier less.
+---
+--- NO MATCH, NO INCIDENT -- and the line is still shadowed. The evidence buffer
+--- refuses to hold lobby chat at all (server/evidence.lua's metaFor: "Lobby
+--- chatter is not evidence of anything"), so a case filed from the lobby would
+--- carry a summary and an empty timeline -- a moderation record with the one
+--- thing the owner asked for missing from it. server/strip.lua declines on the
+--- same rule for the same reason. THE MESSAGE IS STILL NOT DELIVERED; what is
+--- skipped is the paperwork, not the refusal.
+---
+--- @param ev table  { license, name, matchId, reason, count, at }
+--- @param records table|nil  evidence rows for the sender
+--- @return table|nil payload, string|nil why
+function BR.IncidentBuild.fromChat(ev, records)
+    if type(ev) ~= 'table' then return nil, 'no event' end
+
+    -- NO LICENSE, NO INCIDENT. A case keyed to a server id is a case about
+    -- whoever holds that slot next; the same rule the other three builders open
+    -- with.
+    if type(ev.license) ~= 'string' or ev.license == '' then
+        return nil, 'no license'
+    end
+    if ev.matchId == nil then return nil, 'not in a match' end
+    if BR.IncidentBuild.CHAT_REASON[ev.reason] == nil then
+        return nil, 'not a chat refusal reason'
+    end
+
+    local evidence = {}
+    for _, r in ipairs(records or {}) do
+        evidence[#evidence + 1] = evidenceRow(r)
+    end
+
+    local newest = evidence[#evidence]
+
+    return {
+        kind     = 'anticheat',
+        category = 'system',
+        state    = 'pending_review',
+        severity = 'low',
+
+        subjectLicense = ev.license,
+        subjectName    = ev.name,
+        subjects = { {
+            license = ev.license,
+            name    = ev.name,
+            squadId = newest and newest.squadId or nil,
+            left    = newest and newest.left or false,
+        } },
+
+        matchId = ev.matchId,
+        summary = BR.IncidentBuild.chatSummaryOf(ev.count, ev.reason),
+
+        evidence = evidence,
+        atGameMs = ev.at,
+    }
+end
+
 --- The one line shown in the queue for a strip case.
 ---
 --- ITS OWN SENTENCE RATHER THAN `summaryOf`'s, because that one says "%d shots
@@ -699,6 +803,48 @@ local MATCH_CREATED_KIND = 'match_created'
 --- tools/test_shared.lua pins the two to the same number.
 local MAX_TIMELINE_STRIPS = 60
 
+--- The `kind` a refused chat line carries.
+---
+--- ONE SPELLING, NAMED ONCE, FOR THE REASON STRIP_KIND AND MATCH_CREATED_KIND
+--- ARE: js-src/br_ddb/src/close.js discriminates on this exact string and drops
+--- what it does not recognise, so a typo here fails no test on either side and
+--- simply means the entries never arrive. tools/verify.sh reads every `*_KIND`
+--- constant in this file and checks close.js names it.
+local CHAT_KIND = 'chat_block'
+
+--- The most refused-chat entries one incident's timeline may carry.
+---
+--- SIXTY, AND IT IS THE BUFFER'S PROMOTED CAP RESTATED AS A BACKSTOP -- exactly
+--- what MAX_TIMELINE_STRIPS is to `refusedMax`. tools/test_shared.lua pins the
+--- two to the same number.
+local MAX_TIMELINE_CHAT = 60
+
+--- The longest refused chat line that reaches a moderation record.
+---
+--- ═══ THIS IS THE FIRST PLAYER-AUTHORED PROSE ON AN INCIDENT'S TIMELINE ═══
+---
+--- js-src/br_ddb/src/incident.js says, of a player report's free-text note,
+--- "NO FREE-TEXT NOTE, EVER, FROM THE GAME ... there is no player-supplied prose
+--- anywhere in this row. That removes the injection surface rather than guarding
+--- it." The second sentence was already not quite true -- `evidence[].chat[]
+--- .text` has carried what players typed since the buffer shipped, capped at 512
+--- there -- and the owner has now asked for the refused line specifically, on the
+--- timeline. So the surface is real and is bounded here rather than argued away.
+---
+--- TWO HUNDRED, WHICH IS BR.ChatLimits.maxLength AND NOT A NEW NUMBER. The
+--- server already refuses to deliver more than that, so a cap above it could
+--- never be reached and a cap below it would store something the recipients did
+--- not see -- the same "record what was delivered" rule the chat evidence log is
+--- built on. Sixty entries of two hundred bytes is 12KB against DynamoDB's 400KB
+--- item, alongside the kills and the evidence log already spending from it.
+---
+--- IT IS TEXT ON THE CONSOLE, NEVER MARKUP. Ringmaster renders timeline entries
+--- as React text children -- there is no dangerouslySetInnerHTML anywhere on that
+--- path -- so the escaping is structural rather than a sanitiser somebody has to
+--- remember. Nothing on the game side should ever pre-escape it: that would
+--- double-encode on the page and put `&amp;` in a moderation record.
+local MAX_CHAT_TEXT = 200
+
 --- Turn one buffered kill row into a timeline entry.
 ---
 --- BOTH SIDES OF THE KILL, NOT JUST THE SUBJECT'S HALF. The buffer records a kill
@@ -943,6 +1089,65 @@ local function stripEntries(records, afterGameMs, cap)
     return out, offered, seen
 end
 
+--- Every refused chat line in `records`, oldest first, optionally windowed.
+---
+--- NO DEDUPLICATION, LIKE THE STRIPS AND UNLIKE THE KILLS. A refused line is
+--- noted against one player's own record and nobody else's, so two rows are two
+--- events -- and the same advert sent twice is the thing this is evidence OF.
+---
+--- @param records table|nil  BR.Evidence.forLicense(license)
+--- @param afterGameMs number|nil  keep only lines strictly later than this
+--- @param cap integer|nil
+--- @return table[] entries, integer offered, integer seen
+local function chatEntries(records, afterGameMs, cap)
+    cap = cap or MAX_TIMELINE_CHAT
+
+    local rows, seen = {}, 0
+    for _, r in ipairs(records or {}) do
+        seen = seen + (r.refusedSeen or #(r.refused or {}))
+        for _, c in ipairs(r.refused or {}) do
+            local at = tonumber(c.at)
+            -- nil MEANS EVERYTHING, and that is not the same as 0 -- the same
+            -- explicit comparison the kills and strips make.
+            if at ~= nil and (afterGameMs == nil or at > afterGameMs) then
+                rows[#rows + 1] = c
+            end
+        end
+    end
+
+    table.sort(rows, function(a, b) return a.at < b.at end)
+
+    local offered = #rows
+    -- OVERFLOW DROPS THE OLDEST, matching everything else here.
+    while #rows > cap do table.remove(rows, 1) end
+
+    local out = {}
+    for _, c in ipairs(rows) do
+        out[#out + 1] = {
+            at   = c.at,
+            kind = CHAT_KIND,
+            -- WHAT THEY TRIED TO SAY, WHICH IS THE WHOLE POINT OF THE ENTRY
+            -- (owner, 2026-08-29: "specifically save the chat content to the DDB
+            -- entry and display on the timeline in the incident"). Clamped on a
+            -- character boundary rather than with `sub`, so a line ending in an
+            -- accent does not reach the console as a broken sequence -- see
+            -- BR.ChatScreen.clamp and the note at MAX_CHAT_TEXT.
+            text = BR.ChatScreen
+                and BR.ChatScreen.clamp(c.text, MAX_CHAT_TEXT)
+                or tostring(c.text or ''):sub(1, MAX_CHAT_TEXT),
+            -- WHICH RULE REFUSED IT: `link` or `script`. A reviewer reading
+            -- "Chat blocked -- <text>" needs to know whether the finding was the
+            -- domain in it or the alphabet it is written in, and for a non-Latin
+            -- line the text alone will not tell them.
+            reason = c.reason,
+            -- Global or squad. A rival server advertised to the whole lobby and
+            -- one whispered to three squadmates are different facts.
+            channel = c.channel,
+        }
+    end
+    return out, offered, seen
+end
+
 --- Two already-sorted entry lists into one, oldest first.
 ---
 --- A MERGE RATHER THAN A CONCATENATION-AND-SORT, because the order of this list
@@ -1016,6 +1221,7 @@ function BR.IncidentBuild.timelineOpen(opts)
             matchKillsSeen        = 0,
             matchKillsWritten     = 0,
             matchStripsWritten    = 0,
+            matchChatWritten      = 0,
         }
     end
 
@@ -1024,7 +1230,16 @@ function BR.IncidentBuild.timelineOpen(opts)
     local kills, offered, seen = killEntries(opts.records, nil, MAX_TIMELINE_KILLS)
     local strips, stripsOffered, stripsSeen =
         stripEntries(opts.records, nil, MAX_TIMELINE_STRIPS)
-    for _, e in ipairs(mergeByTime(kills, strips)) do entries[#entries + 1] = e end
+    local chat, chatOffered, chatSeen =
+        chatEntries(opts.records, nil, MAX_TIMELINE_CHAT)
+    -- THREE LISTS THROUGH A TWO-WAY MERGE, FOLDED RATHER THAN CONCATENATED. The
+    -- order of this list is not cosmetic: close.js takes the LAST n entries when
+    -- a close overflows, so a list that appended one kind after another would
+    -- truncate by KIND rather than by age. `mergeByTime` is stable, so nesting
+    -- it keeps that property.
+    for _, e in ipairs(mergeByTime(mergeByTime(kills, strips), chat)) do
+        entries[#entries + 1] = e
+    end
 
     return {
         -- STILL ABSENT UNTIL THE MATCH ACTUALLY STARTS. Nothing here invents one
@@ -1057,11 +1272,13 @@ function BR.IncidentBuild.timelineOpen(opts)
         -- below already carries: something was dropped, which is what a reader
         -- needs to know.
         matchTimelineComplete = (#kills == offered) and (offered == seen)
-            and (#strips == stripsOffered) and (stripsOffered == stripsSeen),
+            and (#strips == stripsOffered) and (stripsOffered == stripsSeen)
+            and (#chat == chatOffered) and (chatOffered == chatSeen),
         matchKillsSeen = seen,
         -- What the close write must not double-count.
         matchKillsWritten = #kills,
         matchStripsWritten = #strips,
+        matchChatWritten = #chat,
     }
 end
 
@@ -1095,6 +1312,10 @@ function BR.IncidentBuild.timelineClose(opts)
     local stripBudget = MAX_TIMELINE_STRIPS - priorStrips
     if stripBudget < 0 then stripBudget = 0 end
 
+    local priorChat = tonumber(opts.priorChat) or 0
+    local chatBudget = MAX_TIMELINE_CHAT - priorChat
+    if chatBudget < 0 then chatBudget = 0 end
+
     -- STRICTLY AFTER THE FILING INSTANT. The kills up to that moment are already
     -- on the row, written by timelineOpen; re-sending them would show an admin
     -- the same elimination twice.
@@ -1107,9 +1328,17 @@ function BR.IncidentBuild.timelineClose(opts)
         killEntries(opts.records, opts.filedAtGameMs, budget)
     local strips, stripsOffered, stripsSeen =
         stripEntries(opts.records, opts.filedAtGameMs, stripBudget)
+    -- THE LINE THAT OPENED THE CASE IS EXCLUDED BY THE SAME COMPARISON that
+    -- excludes the strip that opened one: server/chat.lua notes the refusal and
+    -- THEN announces it, so its `at` equals the filing instant exactly and
+    -- `> filedAtGameMs` drops it. It is already on the row.
+    local chat, chatOffered, chatSeen =
+        chatEntries(opts.records, opts.filedAtGameMs, chatBudget)
 
     local entries = {}
-    for _, e in ipairs(mergeByTime(kills, strips)) do entries[#entries + 1] = e end
+    for _, e in ipairs(mergeByTime(mergeByTime(kills, strips), chat)) do
+        entries[#entries + 1] = e
+    end
     entries[#entries + 1] = { at = opts.matchEndedAt, kind = 'match_end' }
 
     -- COMPLETE MEANS COMPLETE END TO END. The filing may already have truncated,
@@ -1120,12 +1349,15 @@ function BR.IncidentBuild.timelineClose(opts)
     -- comparison honest.
     local wrote = priorKills + #kills
     local stripsWrote = priorStrips + #strips
+    local chatWrote = priorChat + #chat
     local complete =
         (opts.complete ~= false)
         and (#kills == offered)
         and (seen <= wrote)
         and (#strips == stripsOffered)
         and (stripsSeen <= stripsWrote)
+        and (#chat == chatOffered)
+        and (chatSeen <= chatWrote)
 
     return {
         matchEndedAt          = opts.matchEndedAt,
@@ -1145,6 +1377,8 @@ end
 BR.IncidentBuild.TIMELINE_LIMITS = {
     MAX_TIMELINE_KILLS  = MAX_TIMELINE_KILLS,
     MAX_TIMELINE_STRIPS = MAX_TIMELINE_STRIPS,
+    MAX_TIMELINE_CHAT   = MAX_TIMELINE_CHAT,
+    MAX_CHAT_TEXT       = MAX_CHAT_TEXT,
     MATCH_ENDS_BY_MS    = MATCH_ENDS_BY_MS,
 }
 
@@ -1153,3 +1387,6 @@ BR.IncidentBuild.STRIP_KIND = STRIP_KIND
 
 --- The `kind` a formed-but-not-started match carries, for the same two readers.
 BR.IncidentBuild.MATCH_CREATED_KIND = MATCH_CREATED_KIND
+
+--- The `kind` a refused chat line carries, for the same two readers.
+BR.IncidentBuild.CHAT_KIND = CHAT_KIND

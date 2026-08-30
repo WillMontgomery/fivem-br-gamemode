@@ -268,6 +268,22 @@ local CORROBORATE_MIN_INTERVAL_MS = 30000
 --- a `brrefuse` from the console -- and `onResourceStart` is what empties it.
 local lastSaid = {}
 
+--- How many chat lines this server has held back, per player, per match.
+---
+--- [matchKey] = { [license] = count }
+---
+--- KEYED BY LICENCE RATHER THAN BY `src`, unlike server/strip.lua's own counter.
+--- A strip is reported by a client and the throttle that bounds it has to be
+--- keyed on the connection; this count is only ever read to fill in "N messages
+--- held back this match", and a player who disconnects and reconnects mid-round
+--- should carry their total with them rather than starting again -- the licence
+--- is what the case is keyed on either way.
+---
+--- COUNTED HERE RATHER THAN IN server/chat.lua so that the detector stays a
+--- detector. chat.lua's job ends at "this line does not go out"; how many times
+--- that has happened is a question about a case, and cases live in this file.
+local chatCount = {}
+
 --- Send a corroboration, unless it would only repeat the one before it.
 ---
 --- THE ONE CALLER SHAPE: every corroboration this file raises goes through here,
@@ -519,6 +535,115 @@ AddEventHandler('br:core:stripped', function(ev)
             :format(tostring(ev.name), tostring(why)))
         return
     end
+
+    payload.priorIncidentIds = prior
+    BR.Incident.attachTimeline(payload, records)
+
+    TriggerEvent('br:ringmaster:incident', payload)
+end)
+
+-- ---------------------------------------------------------------------------
+-- A chat line the server would not carry
+-- ---------------------------------------------------------------------------
+--
+-- THE FOURTH SOURCE, AND IT REACHES THIS FILE THE WAY THE OTHER THREE DO.
+-- server/chat.lua screens and decides, exactly as damage.lua, strip.lua and
+-- vehicles.lua do; this file turns the announcement into a case or into a
+-- corroboration. It knows nothing about links, alphabets or who received what.
+--
+-- ONE CASE PER PLAYER PER MATCH, GROWING A TIMELINE -- the owner's rule for this
+-- one, 2026-08-29: "First offence opens an incident; repeats corroborate it. One
+-- case per player, growing a timeline of every shadowed message." That is
+-- `priorFor` plus the evidence buffer, which is the same pair the strip path
+-- uses, so a chat refusal after a strip case appends to the strip case and a
+-- strip after a chat case appends to the chat case. Whichever thing they did
+-- first opened it.
+--
+-- IT OPENS ON THE FIRST, NOT THE SECOND, AND THAT DIFFERS FROM A STRIP ON
+-- PURPOSE. A strip stays quiet until the second because one weapon appearing in
+-- one hand has an innocent shape -- a race between our own two inventory
+-- mirrors. A link does not: server/chat.lua's screen is a judgement about the
+-- text itself, and there is no version of "they typed a domain by accident"
+-- that a second one makes more true.
+--
+-- WHERE THE REPEATS LAND, exactly as they do for strips: every refused line is
+-- written into the evidence buffer by server/chat.lua BEFORE it gets here, so
+-- the first rides the PutItem this handler triggers and every one after it rides
+-- the match-end close. A player who advertises fifty times costs the same two
+-- writes as one who does it once.
+AddEventHandler('br:core:chatrefused', function(ev)
+    if type(ev) ~= 'table' then return end
+
+    -- NO LICENSE, NOTHING TO FILE AGAINST, AND NOTHING TO CORROBORATE EITHER.
+    -- Checked before `priorFor`, which keys on it: a nil license would look up
+    -- the wrong player's open cases.
+    if type(ev.license) ~= 'string' or ev.license == '' then return end
+
+    -- NO MATCH, NO CASE AND NO COUNTER EITHER -- and the line was still not
+    -- delivered, which is the part that matters. `fromChat` declines a
+    -- matchless event anyway (the evidence buffer holds no lobby chat, so the
+    -- case would carry an empty timeline), and returning here rather than there
+    -- keeps `chatCount` free of a `nomatch` bucket that nothing would ever
+    -- read and no teardown would ever clear. `lastSaid` carries one of those on
+    -- purpose because a console `brrefuse` really does file outside a match;
+    -- this path never files, so it must not accumulate.
+    if ev.matchId == nil then return end
+
+    -- COUNTED HERE RATHER THAN IN chat.lua, because this is the file that
+    -- already knows what a match is and clears itself when one ends. The count
+    -- is cumulative, which is what lets the corroboration throttle below drop a
+    -- note without losing anything.
+    local k = key(ev.matchId)
+    local byLicense = chatCount[k]
+    if not byLicense then
+        byLicense = {}
+        chatCount[k] = byLicense
+    end
+    local n = (byLicense[ev.license] or 0) + 1
+    byLicense[ev.license] = n
+
+    local prior = BR.Incident.priorFor(ev.matchId, ev.license)
+    if #prior > 0 then
+        -- THE THROTTLE APPLIES AND `reason` IS WHAT MAKES IT USEFUL HERE. A run
+        -- of adverts is a run of notes differing only in a counter, which is the
+        -- shape CORROBORATE_MIN_INTERVAL_MS exists for -- but a player who
+        -- switches from links to a non-Latin script changes `reason`, and a
+        -- change of finding is never held. Both lines are on the timeline
+        -- either way; the throttle only bounds how often the case repeats
+        -- itself.
+        corroborate({
+            incidentId = prior[#prior],
+            matchId    = ev.matchId,
+            license    = ev.license,
+            name       = ev.name,
+            seq        = n,
+            count      = n,
+            reason     = BR.IncidentBuild.CHAT_REASON[ev.reason]
+                or tostring(ev.reason),
+            severity   = 'low',
+            at         = ev.at,
+        })
+        return
+    end
+
+    local records = BR.Evidence and BR.Evidence.forLicense(ev.license) or {}
+
+    local payload, why = BR.IncidentBuild.fromChat({
+        license = ev.license,
+        name    = ev.name,
+        matchId = ev.matchId,
+        reason  = ev.reason,
+        count   = n,
+        at      = ev.at,
+    }, records)
+    if not payload then
+        print(('^3[br_core] chat incident NOT filed for %s: %s^7')
+            :format(tostring(ev.name), tostring(why)))
+        return
+    end
+
+    print(('[br_core] CHAT: %s -- message held back (%s), %d this match')
+        :format(tostring(ev.name), tostring(ev.reason), n))
 
     payload.priorIncidentIds = prior
     BR.Incident.attachTimeline(payload, records)
@@ -909,6 +1034,7 @@ AddEventHandler('br:match:destroyed', function(ev)
     -- would cost anything.
     flushAndForget(ev.matchId)
     filed[ev.matchId] = nil
+    chatCount[key(ev.matchId)] = nil
 end)
 
 AddEventHandler('onResourceStart', function(name)
@@ -918,6 +1044,10 @@ AddEventHandler('onResourceStart', function(name)
         -- INCLUDING THE `nomatch` BUCKET, which nothing else empties. See
         -- `lastSaid`: it is the only bucket a teardown never reaches.
         lastSaid = {}
+        -- AND THE SAME BUCKET IN `chatCount`, for the same reason: a refusal
+        -- outside a match files nothing but is still counted, and no teardown
+        -- ever comes for the match it is not in.
+        chatCount = {}
     end
 end)
 
@@ -1052,6 +1182,7 @@ function BR.Incident.attachTimeline(payload, records)
             at            = payload.atGameMs,
             killsWritten  = t.matchKillsWritten or 0,
             stripsWritten = t.matchStripsWritten or 0,
+            chatWritten   = t.matchChatWritten or 0,
         }
     end
 
@@ -1084,6 +1215,7 @@ AddEventHandler('br:incident:filed', function(ack)
         filedAt       = pend.at,
         killsWritten  = pend.killsWritten,
         stripsWritten = pend.stripsWritten,
+        chatWritten   = pend.chatWritten,
     }
 end)
 
@@ -1124,6 +1256,7 @@ AddEventHandler('br:evidence:closing', function(ev)
             records       = records,
             priorKills    = c.killsWritten,
             priorStrips   = c.stripsWritten,
+            priorChat     = c.chatWritten,
         })
 
         -- EMITTED, NOT CALLED. br_ringmaster listens; if it is not running,

@@ -48,6 +48,9 @@ for _, f in ipairs({
     -- BR.PlayerState the tests below build their views from.
     'shared/spectate_solve.lua',
     'shared/evidence_buf.lua',
+    -- BEFORE incident_build.lua, which calls BR.ChatScreen.clamp when it builds
+    -- a refused-chat timeline entry.
+    'shared/chat_screen.lua',
     -- AFTER combat_solve, not before: it builds its severity table from
     -- BR.ShotRefusal's values at load time, so loading it first would leave every
     -- key nil and classify nothing -- silently, since a missing severity reads as
@@ -11321,6 +11324,414 @@ do
             .. 'crosses the bar on EVERY sample after the first, and four console '
             .. 'lines a second is the same as no detector')
     ok(not BR.HealthShouldReport(nil, A), 'and an untouched player is not reported')
+end
+
+-- ------------------------------------------------------------ chat screen ---
+--
+-- ═══ THE FALSE-POSITIVE TABLE IS THE POINT OF THIS BLOCK ═══
+--
+-- A refused message is SHADOWED: the sender sees it post and nobody else ever
+-- receives it. So a player wrongly caught here is never told and cannot adapt,
+-- which makes a false positive strictly worse than a false negative and makes a
+-- suite that only feeds this obvious URLs worth nothing at all. The first table
+-- below is every shape that LOOKS like a domain and is not -- decimals, times,
+-- version numbers, file names, ratios, English sentences whose full stop has no
+-- space after it -- and it is longer than the table of things that must be
+-- caught, deliberately.
+
+describe('chat.screen.safe')
+do
+    local S = BR.ChatScreen
+
+    -- Numbers, which is where the naive `%a+%.%a+` rule dies first.
+    for _, s in ipairs({
+        '3.5', '12.30', '1.2.3', 'v1.2.3', '2.5:1', 'my k/d is 2.5',
+        'the storm is at 4.5km', 'he has 1,000 hp', 'score 10 - 7',
+        -- A DOTTED QUAD WITH NO PORT, which is also a four-part version number.
+        -- Caught would be a link; here it is deliberately not.
+        '1.2.3.4', 'build 10.0.22631.1',
+    }) do
+        ok(S.screen(s) == nil, ('a number is not a link: %q'):format(s))
+    end
+
+    -- File names, including three whose extension IS a real country-code
+    -- domain. This repository is made of these strings.
+    for _, s in ipairs({
+        'config.lua', 'main.ts', 'README.md', 'check.sh', 'server.cfg',
+        'look at incident_build.lua', 'the file is chat.lua',
+    }) do
+        ok(S.screen(s) == nil, ('a filename is not a link: %q'):format(s))
+    end
+
+    -- English whose full stop has no space after it. Every one of these reaches
+    -- a two-letter country domain, and every one of those is off the list.
+    for _, s in ipairs({
+        'let me know.it works', 'i.win', 'definite.ly', 'actual.ly',
+        'call.me', 'log.in', 'on.top of the hill', 'that.is the one',
+        'over.at the tower', 'trust.me on this', 'we.are ready',
+    }) do
+        ok(S.screen(s) == nil, ('an English sentence is not a link: %q'):format(s))
+    end
+
+    -- Abbreviations and ordinary chat.
+    for _, s in ipairs({
+        'e.g. the storm', 'U.S.A.', 'Mr. Smith', 'gg wp', 'nice shot!',
+        'player.name', 'im at the barn', 'rotate north now',
+    }) do
+        ok(S.screen(s) == nil, ('ordinary chat is not a link: %q'):format(s))
+    end
+
+    -- ═══ LATIN WITH ITS ACCENTS, WHICH IS THE OWNER'S SECOND ANSWER ═══
+    --
+    -- "Latin including accents. Allow é ñ ü å and friends -- European players
+    -- must be able to write normally, and to type their own names."
+    for _, s in ipairs({
+        'ça va, café, jalapeño',            -- French, Spanish
+        'Grüße aus München',                  -- German, including the eszett
+        'Zoë and Håkan and Æsir',            -- diaeresis, ring, ligature
+        'Łódź Kraków Poznań',               -- Polish
+        'Příliš žluťoučký kůň',        -- Czech
+        'Ngô Đình Diệm',                    -- Vietnamese (Latin Extended Add.)
+        'Şişli İstanbul',                     -- Turkish
+        'așezare română',                     -- Romanian (Latin Extended-B)
+        'naïve résumé — “quoted”',        -- curly quotes and an em dash
+        '€50 for the car',                     -- the euro sign
+    }) do
+        ok(S.screen(s) == nil, ('Latin with accents is accepted: %q'):format(s))
+    end
+
+    -- SYMBOLS AND EMOJI ARE NOT A SCRIPT. An interpretation, flagged as one in
+    -- chat_screen.lua -- but a chosen one, so it is pinned rather than left to
+    -- be discovered by a player who gets shadow-banned for typing "gg".
+    for _, s in ipairs({ 'gg 🔥', 'nice ✔', 'go → north', '☠ dead' }) do
+        ok(S.screen(s) == nil, ('an emoji is not a script: %q'):format(s))
+    end
+end
+
+describe('chat.screen.caught')
+do
+    local S = BR.ChatScreen
+
+    for _, s in ipairs({
+        'join https://evil.example/now', 'HTTP://SHOUTY.COM',
+        'go to http://a.b', 'www.evil.co.uk', 'WWW.EVIL.COM',
+        'discord.gg/abcdef', 'come to evilserver.com', 'best.xyz now',
+        'my server 1.2.3.4:30120', 'try mysite.online today',
+        'x.io', 'shop.store', 'a.click here',
+    }) do
+        ok(S.screen(s) == S.LINK, ('a link is caught: %q'):format(s))
+    end
+
+    for _, s in ipairs({
+        'привет всем', 'Привет', '你好', 'こんにちは', '안녕',
+        'مرحبا', 'שלום', 'สวัสดี', 'Γειά σου', 'გამარჯობა',
+    }) do
+        ok(S.screen(s) == S.SCRIPT, ('a non-Latin script is caught: %q'):format(s))
+    end
+
+    -- ONE LATIN LETTER SWAPPED FOR A CYRILLIC LOOKALIKE. The owner chose the
+    -- simple rule over mixed-script detection, and this still catches it --
+    -- not because anything understands the substitution, but because a
+    -- character outside Latin is refused wherever it appears.
+    local homo = 'disc' .. string.char(0xD0, 0xBE) .. 'rd.com'
+    ok(S.screen(homo) ~= nil, 'a Cyrillic lookalike inside a Latin word is caught')
+
+    -- INVISIBLE CHARACTERS ARE NOT PUNCTUATION. Zero-width and
+    -- direction-override codepoints live in the same Unicode block as the
+    -- quotes and dashes that ARE allowed, which is why that allowance is a
+    -- list of individual characters rather than a range.
+    ok(S.screen('a' .. string.char(0xE2, 0x80, 0x8B) .. 'b') == S.SCRIPT,
+        'a zero-width space is refused')
+    ok(S.screen('a' .. string.char(0xE2, 0x80, 0xAE) .. 'b') == S.SCRIPT,
+        'a right-to-left override is refused')
+
+    -- MALFORMED UTF-8 IS NOT TEXT. A lone continuation byte, and an overlong
+    -- encoding of '/' -- the oldest way there is to smuggle a character past a
+    -- reader that decodes and a check that does not.
+    ok(S.screen('ok' .. string.char(0x80)) == S.SCRIPT,
+        'a stray continuation byte is refused')
+    ok(S.screen(string.char(0xC0, 0xAF)) == S.SCRIPT,
+        'an overlong encoding is refused rather than decoded')
+
+    ok(S.screen('') == nil and S.screen(nil) == nil,
+        'an empty or absent line is not a refusal')
+
+    -- THE LINK IS REPORTED IN PREFERENCE TO THE SCRIPT when a line is both.
+    local both = 'привет evilserver.com'
+    ok(S.screen(both) == S.LINK,
+        'a Cyrillic advert reads as a link, which is the finding a reviewer wants')
+end
+
+describe('chat.screen.clamp')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ THE SERVER MUST NOT BE THE THING THAT BREAKS THE ENCODING ═══
+    --
+    -- `text:sub(1, 200)` counts BYTES. A message at the length limit whose 200th
+    -- byte is the first half of an accent used to truncate mid-character, which
+    -- rendered as a replacement glyph and nothing worse. With the screen above
+    -- reading the result it becomes malformed UTF-8, which is refused -- so the
+    -- player who wrote two hundred bytes of accented French would be silently
+    -- talking to nobody. This is the assertion that says so out loud.
+    local long = string.rep('a', 199) .. 'é'
+    ok(#long == 201, 'the fixture really is over the limit')
+    ok(S.screen(long:sub(1, 200)) == S.SCRIPT,
+        'a BYTE-wise truncation of accented text produces a refusal')
+    ok(S.screen(S.clamp(long, 200)) == nil,
+        '...and clamping on a character boundary does not')
+    ok(#S.clamp(long, 200) == 199, 'the clamp drops the whole character, not half of it')
+
+    ok(S.clamp('abc', 200) == 'abc', 'a short line is untouched')
+    ok(S.clamp('abcdef', 3) == 'abc', 'an ASCII line cuts exactly')
+    ok(S.clamp('', 200) == '', 'an empty line survives')
+    ok(S.clamp('éé', 3) == 'é', 'the cut lands between characters, never inside one')
+    ok(S.clamp('a🔥b', 3) == 'a', 'a four-byte character is dropped whole')
+    ok(S.clamp('abc', 0) == '', 'a zero budget yields nothing rather than erroring')
+end
+
+-- ------------------------------------------------- refused chat as evidence ---
+
+describe('evidence.refused')
+do
+    local buf = BR.EvidenceBuf.new({ chatMax = 3, refusedMax = 2 })
+    local meta = { license = 'lic:a', name = 'Ana', matchId = 1, now = 10 }
+
+    for i = 1, 5 do
+        buf:noteChat(1, { text = 'chatter ' .. i, at = i }, meta)
+    end
+    for i = 1, 4 do
+        buf:noteRefusedChat(1, { text = 'ad ' .. i, at = 100 + i, reason = 'link' }, meta)
+    end
+
+    local r = buf:get(1)
+    ok(#r.chat == 3 and r.chatSeen == 5, 'the chat window drops the oldest and counts what it dropped')
+    ok(#r.refused == 2 and r.refusedSeen == 4,
+        'the refused list has its own cap and its own counter')
+    ok(r.refused[1].text == 'ad 3' and r.refused[2].text == 'ad 4',
+        'and it keeps the most recent, like everything else here')
+    ok(r.refused[1].reason == 'link', 'the reason travels with the line')
+
+    -- ═══ THE SEPARATION IS THE WHOLE DESIGN, SO IT GETS ITS OWN CASE ═══
+    --
+    -- If refused lines lived in `chat` behind a flag, a player could push their
+    -- own evidence out of the buffer by carrying on talking -- and the volume is
+    -- chosen by the offender, which makes it exactly the wrong place to store a
+    -- finding. Here: one advert, then a flood of ordinary chat.
+    local b2 = BR.EvidenceBuf.new({ chatMax = 3, refusedMax = 5 })
+    b2:noteRefusedChat(2, { text = 'joinmy.server', at = 1, reason = 'link' }, meta)
+    for i = 1, 50 do
+        b2:noteChat(2, { text = 'noise ' .. i, at = 10 + i }, meta)
+    end
+    local r2 = b2:get(2)
+    ok(#r2.refused == 1 and r2.refused[1].text == 'joinmy.server',
+        'fifty lines of ordinary chat cannot evict the one that was refused')
+
+    -- Promotion raises this cap with the others, and never downward.
+    local b3 = BR.EvidenceBuf.new({ refusedMax = 2 })
+    b3:noteRefusedChat(3, { text = 'a', at = 1, reason = 'link' }, meta)
+    b3:promote('lic:a')
+    ok(b3:get(3).refusedMax == BR.EvidenceBuf.PROMOTED.refusedMax,
+        'a case opening raises the refused cap with the rest')
+    b3:promote('lic:a', { refusedMax = 1 })
+    ok(b3:get(3).refusedMax == BR.EvidenceBuf.PROMOTED.refusedMax,
+        'and a second, smaller promotion never lowers it')
+
+    local st = b2:stats()
+    ok(st.refusedRows == 1 and st.refusedSeen == 1 and st.refusedDropped == 0,
+        'the counters reach stats(), where a non-zero value is the only signal '
+            .. 'this server produces that a message was delivered to nobody')
+end
+
+-- ---------------------------------------------- refused chat on the timeline ---
+
+describe('incident.chat')
+do
+    local LIC = 'license:talker'
+    local CLEAR = {}
+    local function ev(over)
+        local e = {
+            name = 'Rae', license = LIC, matchId = 3,
+            reason = 'link', count = 1, at = 4000,
+        }
+        for k, v in pairs(over or {}) do
+            e[k] = (v ~= CLEAR) and v or nil
+        end
+        return e
+    end
+
+    ok(select(1, BR.IncidentBuild.fromChat(nil, {})) == nil,
+        'no event files nothing rather than throwing')
+
+    local p, why = BR.IncidentBuild.fromChat(ev({ license = CLEAR }), {})
+    ok(p == nil and why == 'no license', 'no license files nothing, and says why')
+
+    p, why = BR.IncidentBuild.fromChat(ev({ matchId = CLEAR }), {})
+    ok(p == nil and why == 'not in a match',
+        'a refusal in the LOBBY files nothing -- the evidence buffer holds no '
+            .. 'lobby chat, so the case would carry an empty timeline')
+
+    p, why = BR.IncidentBuild.fromChat(ev({ reason = 'vibes' }), {})
+    ok(p == nil and why == 'not a chat refusal reason',
+        'an unknown reason files nothing rather than a case saying "vibes"')
+
+    local out = BR.IncidentBuild.fromChat(ev(), {})
+    ok(out ~= nil, 'a licensed, in-match refusal files')
+    ok(out.kind == 'anticheat' and out.category == 'system',
+        'it is system-filed, not a report')
+    ok(out.reporterLicense == nil and out.reporterName == nil,
+        'and carries no reporter, which is what makes the console read it as ours')
+    ok(out.severity == 'low',
+        'severity is the floor: advertising is against the rules and is not cheating')
+    ok(out.subjectLicense == LIC and out.matchId == 3 and out.atGameMs == 4000,
+        'the subject, the match and the GAME clock ride along')
+
+    -- ═══ NO PLAYER TEXT IN THE SUMMARY ═══
+    --
+    -- The summary is the QUEUE row. Putting the advert in it would publish the
+    -- advert to the one page every admin reads.
+    local ad = 'join evilserver.com now'
+    local withText = BR.IncidentBuild.fromChat(ev(), {
+        { license = LIC, refused = { { at = 4000, text = ad, reason = 'link' } },
+          refusedSeen = 1, chat = {}, kills = {}, strips = {} },
+    })
+    ok(not withText.summary:find('evilserver', 1, true),
+        'the refused text never reaches the queue summary')
+    ok(withText.summary:find('held back', 1, true) ~= nil,
+        'which still says what happened')
+    ok(BR.IncidentBuild.chatSummaryOf(1, 'link'):find('1 chat message ', 1, true),
+        'one message is singular')
+    ok(BR.IncidentBuild.chatSummaryOf(3, 'link'):find('3 chat messages', 1, true),
+        'and three are plural')
+    ok(BR.IncidentBuild.chatSummaryOf(2, 'script')
+        :find(BR.IncidentBuild.CHAT_REASON.script, 1, true) ~= nil,
+        'the reason is the taxonomy sentence, not the symbol')
+end
+
+describe('incident.chat.timeline')
+do
+    local LIC = 'license:talker'
+    local function records(refused, extra)
+        local r = {
+            license = LIC, name = 'Rae', matchId = 3, squadId = nil,
+            openedAt = 0, chat = {}, kills = {}, strips = {},
+            refused = refused, refusedSeen = (extra or {}).seen or #refused,
+            chatSeen = 0, killsSeen = 0, stripsSeen = 0,
+        }
+        return { r }
+    end
+
+    local KIND = BR.IncidentBuild.CHAT_KIND
+    ok(KIND == 'chat_block',
+        'the kind is the literal close.js discriminates on -- verify.sh compares them')
+
+    local t = BR.IncidentBuild.timelineOpen({
+        matchId = 3, matchStartedAt = 1000,
+        records = records({
+            { at = 2000, text = 'first.com', reason = 'link', channel = 'global' },
+            { at = 3000, text = 'привет', reason = 'script', channel = 'squad' },
+        }),
+    })
+
+    local rows = {}
+    for _, e in ipairs(t.matchTimeline) do
+        if e.kind == KIND then rows[#rows + 1] = e end
+    end
+    ok(#rows == 2, 'both refused lines reach the timeline the case is filed with')
+    ok(rows[1].text == 'first.com' and rows[2].text == 'привет',
+        'CARRYING THE CHAT CONTENT, which is the thing the owner asked for')
+    ok(rows[1].reason == 'link' and rows[2].reason == 'script',
+        'and which rule refused it -- for a non-Latin line the text will not say')
+    ok(rows[1].channel == 'global' and rows[2].channel == 'squad',
+        'and whether it went to the lobby or to three squadmates')
+    ok(t.matchTimeline[1].kind == 'match_start',
+        'the anchor is still first')
+    ok(t.matchTimelineComplete == true, 'and nothing was dropped')
+    ok(t.matchChatWritten == 2, 'the close is told what not to write twice')
+
+    -- CHRONOLOGICAL ACROSS ALL THREE KINDS. close.js takes the LAST n entries
+    -- when a close overflows, so a list that appended one kind after another
+    -- would truncate by KIND rather than by age -- an offender who kept talking
+    -- would push their own kills off the record.
+    local mixed = BR.IncidentBuild.timelineOpen({
+        matchId = 3, matchStartedAt = 0,
+        records = {{
+            license = LIC, name = 'Rae', matchId = 3, openedAt = 0,
+            chat = {}, kills = {}, chatSeen = 0, killsSeen = 0,
+            strips = { { at = 200, weapon = 42 } }, stripsSeen = 1,
+            refused = {
+                { at = 100, text = 'a.com', reason = 'link' },
+                { at = 300, text = 'b.com', reason = 'link' },
+            },
+            refusedSeen = 2,
+        }},
+    })
+    local order = {}
+    for _, e in ipairs(mixed.matchTimeline) do order[#order + 1] = e.at end
+    local sorted = true
+    for i = 2, #order do
+        if order[i] < order[i - 1] then sorted = false end
+    end
+    ok(sorted, 'refused chat merges into the timeline by TIME, not appended after it',
+        table.concat(order, ','))
+
+    -- TRUNCATION IS REPORTED, NEVER SILENT.
+    local over = {}
+    for i = 1, 70 do
+        over[i] = { at = 1000 + i, text = 'ad ' .. i, reason = 'link' }
+    end
+    local big = BR.IncidentBuild.timelineOpen({
+        matchId = 3, matchStartedAt = 0, records = records(over, { seen = 90 }),
+    })
+    local kept = 0
+    for _, e in ipairs(big.matchTimeline) do
+        if e.kind == KIND then kept = kept + 1 end
+    end
+    ok(kept == BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_CHAT,
+        'the timeline caps refused lines', tostring(kept))
+    ok(big.matchTimelineComplete == false,
+        'and SAYS it is incomplete rather than reading as the whole story')
+
+    ok(BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_CHAT
+        == BR.EvidenceBuf.PROMOTED.refusedMax,
+        'the timeline cap and the buffer cap are one number, not two opinions')
+
+    -- ═══ THE LINE THAT OPENED THE CASE IS NOT WRITTEN TWICE ═══
+    --
+    -- server/chat.lua notes the refusal and THEN announces it, so its `at`
+    -- equals the filing instant exactly; the close keeps only what came later.
+    local rs = records({
+        { at = 4000, text = 'opened.com', reason = 'link' },
+        { at = 9000, text = 'again.com', reason = 'link' },
+    })
+    local close = BR.IncidentBuild.timelineClose({
+        matchEndedAt = 20000, matchStartedAt = 0,
+        filedAtGameMs = 4000, records = rs, priorChat = 1,
+    })
+    local later = {}
+    for _, e in ipairs(close.matchTimeline) do
+        if e.kind == KIND then later[#later + 1] = e.text end
+    end
+    ok(#later == 1 and later[1] == 'again.com',
+        'the close carries only the lines that came after the filing')
+    ok(close.matchTimelineComplete == true,
+        'and counts the one already on the row as written')
+
+    -- The text is clamped on a character boundary here too, so a line that
+    -- somehow arrives over length cannot reach DynamoDB malformed.
+    local MAXT = BR.IncidentBuild.TIMELINE_LIMITS.MAX_CHAT_TEXT
+    local huge = string.rep('a', MAXT - 1) .. 'é'
+    local clamped = BR.IncidentBuild.timelineOpen({
+        matchId = 3, matchStartedAt = 0,
+        records = records({ { at = 5, text = huge, reason = 'link' } }),
+    })
+    for _, e in ipairs(clamped.matchTimeline) do
+        if e.kind == KIND then
+            ok(#e.text <= MAXT, 'the stored line is capped', tostring(#e.text))
+            ok(BR.ChatScreen.nonLatinIn(e.text) == false,
+                'and is never cut through the middle of a character')
+        end
+    end
 end
 
 -- ----------------------------------------------------------------- result ---

@@ -366,6 +366,12 @@ server_scripts {
     -- at load time -- and incident_build after combat_solve (in shared_scripts
     -- above), whose enum values it keys its severity table on.
     '@br_lib/shared/evidence_buf.lua',
+    -- BEFORE incident_build.lua, which calls BR.ChatScreen.clamp when it builds
+    -- a refused-chat timeline entry, and before server/chat.lua, whose sanitise
+    -- calls it on every message. SERVER-ONLY like the two beside it: what the
+    -- server will not carry is a moderation rule, and shipping the domain list
+    -- to clients would hand every player the exact shape of the filter.
+    '@br_lib/shared/chat_screen.lua',
     '@br_lib/shared/incident_build.lua',
     -- SERVER-ONLY for the same reason as the two above: how many screenshots a
     -- case gets, and when, is a moderation rule. server/artifacts.lua calls

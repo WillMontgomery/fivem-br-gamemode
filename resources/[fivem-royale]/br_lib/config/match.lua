@@ -1083,6 +1083,12 @@ BR.Config.Evidence = {
     -- row says what the second already said, and it is the PATTERN that is
     -- evidence. See BR.EvidenceBuf.DEFAULTS, which this mirrors.
     stripMax = 20,
+    -- Chat lines the server accepted and delivered to nobody -- a link, or a
+    -- script this gamemode does not take. Sized like `stripMax` and for the same
+    -- reason, and kept in a list of its own so that a player who keeps talking
+    -- after a refused line cannot push it out of `chatMax` above. See
+    -- BR.EvidenceBuf.DEFAULTS, which this mirrors.
+    refusedMax = 20,
 }
 
 BR.Config.Combat = {

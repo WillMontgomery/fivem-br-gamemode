@@ -24,6 +24,7 @@ local buf = BR.EvidenceBuf.new({
     chatMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.chatMax,
     killMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.killMax,
     stripMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.stripMax,
+    refusedMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.refusedMax,
 })
 
 BR.Evidence.buf = buf
@@ -71,6 +72,30 @@ function BR.Evidence.noteChat(src, msg)
         text    = msg.text,
         channel = msg.channel,
         at      = msg.at,
+    }, meta)
+end
+
+--- Record one chat line the server accepted and then delivered to nobody.
+---
+--- CALLED IN ADDITION TO `noteChat`, NOT INSTEAD OF IT. The line is still part of
+--- what this player said this match and still belongs in the chat log; this is
+--- the second, shorter list that says the server refused to pass it on. See
+--- BR.EvidenceBuf:noteRefusedChat for why the two are not one list with a flag.
+---
+--- THE DELIVERED TEXT, LIKE `noteChat` -- what the screen actually judged, after
+--- sanitising. A record of the raw input would be a record of something the
+--- server never formed an opinion about.
+--- @param src integer
+--- @param msg table   the shadowed message { channel, name, text, at }
+--- @param reason string  BR.ChatScreen.LINK or BR.ChatScreen.SCRIPT
+function BR.Evidence.noteRefusedChat(src, msg, reason)
+    local meta = metaFor(src)
+    if not meta then return end
+    buf:noteRefusedChat(src, {
+        text    = msg.text,
+        channel = msg.channel,
+        at      = msg.at,
+        reason  = reason,
     }, meta)
 end
 

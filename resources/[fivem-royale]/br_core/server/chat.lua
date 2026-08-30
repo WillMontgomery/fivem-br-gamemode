@@ -39,7 +39,15 @@ local function sanitise(text)
     text = text:gsub('[%c]', ' ')
     text = text:gsub('%s+', ' ')
     text = text:gsub('^%s*(.-)%s*$', '%1')
-    return text:sub(1, BR.ChatLimits.maxLength)
+
+    -- NOT `text:sub(1, max)`, WHICH COUNTS BYTES AND CUTS THROUGH CHARACTERS.
+    -- That was harmless while the truncated tail only had to render -- a
+    -- replacement glyph on a very long message. It stopped being harmless the
+    -- moment the screen below started reading the result: half of an `é` is
+    -- malformed UTF-8, malformed UTF-8 is refused, and the player who wrote two
+    -- hundred bytes of accented French would be silently talking to nobody for
+    -- the rest of the round. See BR.ChatScreen.clamp.
+    return BR.ChatScreen.clamp(text, BR.ChatLimits.maxLength)
 end
 
 --- Deliver a message to a set of recipients.
@@ -156,6 +164,72 @@ AddEventHandler(BR.Net.CHAT_SEND, function(data)
         text    = text,
         at      = GetGameTimer(),
     }
+
+    -- ═══ A LINK OR A NON-LATIN SCRIPT IS SHADOWED, NOT REFUSED ═══
+    --
+    -- The owner, 2026-08-29: a post containing a link is refused and opens an
+    -- incident; so is any non-Latin script. And then, superseding what "refused"
+    -- means: "the experience to the sender should look like it posted just
+    -- fine".
+    --
+    -- SO THE SENDER STILL RECEIVES THEIR OWN MESSAGE AND NOBODY ELSE DOES. The
+    -- echo has to be indistinguishable from the real thing or it is a tell, and
+    -- the only way to be sure of that is not to build a second one: `msg` below
+    -- is the exact table the honest path delivers, sent on the exact event, so
+    -- the sender's client cannot tell the difference because there is none. Same
+    -- name, same channel, same colour, same ordering.
+    --
+    -- NOTHING IS SAID TO ANYBODY. No refusal sentence, no toast, no console
+    -- line for the player -- this feature adds no player-facing text at all,
+    -- which is both what the owner asked for and the standing rule. It is also
+    -- what server/incident.lua's header already promises: "the offender learns
+    -- nothing at any point".
+    --
+    -- WHY IT SITS HERE AND NOT HIGHER UP. Both refusals above -- the slash
+    -- prefix and the rate limit -- answer the sender with a System line and
+    -- deliver nothing. Screening before them would have to either suppress those
+    -- replies (a tell, and a worse one because it is a change in behaviour the
+    -- player has seen before) or file a case about a message that never went
+    -- anywhere. A `/`-prefixed link is therefore refused by the existing rule
+    -- and files nothing, which is the honest outcome: it was not posted.
+    local refusal = BR.ChatScreen and BR.ChatScreen.screen(text) or nil
+    if refusal then
+        deliver({ src }, msg)
+
+        -- BOTH NOTES, AND THE ORDER MATTERS. `noteChat` keeps the chat log a
+        -- complete record of what this player said; `noteRefusedChat` is the
+        -- short list the timeline is built from. Both happen BEFORE the incident
+        -- is announced, so the line that opened the case is on the timeline the
+        -- case is created with -- the same ordering server/strip.lua depends on.
+        if BR.Evidence then
+            BR.Evidence.noteChat(src, msg)
+            if BR.Evidence.noteRefusedChat then
+                BR.Evidence.noteRefusedChat(src, msg, refusal)
+            end
+        end
+
+        -- HANDED OVER, NOT FILED HERE, exactly as server/strip.lua hands over.
+        -- server/incident.lua is the file that knows what has already been filed
+        -- this match, so it is the one that decides between opening a case and
+        -- corroborating one. Fire-and-forget: if nothing is listening the
+        -- message still went nowhere, which is the half that protects the match.
+        -- THE LINE ITSELF IS NOT ON THIS EVENT, AND THAT IS DELIBERATE. It went
+        -- into the evidence buffer two lines above, which is where the timeline
+        -- is built from; putting a second copy on the wire would be a second
+        -- place for one string to live and to rot -- and this repository has the
+        -- scar for that already, in the `note` field that was carried through
+        -- five layers of plumbing to a hard-coded null. Every key below is read
+        -- by server/incident.lua. Nothing here is sent speculatively.
+        TriggerEvent('br:core:chatrefused', {
+            name    = msg.name,
+            license = BR.Roster and BR.Roster.licenseOf
+                and BR.Roster.licenseOf(src) or nil,
+            matchId = p.matchId,
+            reason  = refusal,
+            at      = msg.at,
+        })
+        return
+    end
 
     if channel == BR.ChatChannel.SQUAD then
         deliver(squadTargets(src), msg)

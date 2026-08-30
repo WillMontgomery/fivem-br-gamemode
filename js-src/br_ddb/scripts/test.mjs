@@ -946,11 +946,11 @@ const entryOf = (extra) =>
   // THE BACKSTOP HAS TO SIT ABOVE WHAT THE LUA SIDE CAN LEGITIMATELY SEND, or
   // it is not a backstop -- it is this file deleting the oldest rows of every
   // large close. The Lua ceiling is MAX_TIMELINE_KILLS + MAX_TIMELINE_STRIPS +
-  // the match_end; those two constants live in
-  // br_lib/shared/incident_build.lua and are 250 and 60.
+  // MAX_TIMELINE_CHAT + the match_end; those three constants live in
+  // br_lib/shared/incident_build.lua and are 250, 60 and 60.
   check(
     'and the bound is above the largest close the game can build',
-    CLOSE_LIMITS.MAX_CLOSE_ENTRIES >= 250 + 60 + 1,
+    CLOSE_LIMITS.MAX_CLOSE_ENTRIES >= 250 + 60 + 60 + 1,
     true,
   )
 }
@@ -996,6 +996,121 @@ const entryOf = (extra) =>
     'a timeline of strips is still complete when nothing was dropped',
     p.ExpressionAttributeValues[':complete'],
     true,
+  )
+}
+
+// --- a chat line the server would not carry ---------------------------------
+//
+// THE ENTRY KIND ADDED FOR THE CHAT SCREEN, and the same silence applies:
+// `timelineEntry` drops what it does not know, so a spelling that disagrees with
+// br_lib/shared/incident_build.lua's CHAT_KIND fails nothing here or there and
+// simply means no refused line ever reaches a moderation record.
+//
+// THIS IS THE FIRST PLAYER-AUTHORED PROSE ON THIS LIST. Everything else is a
+// fact the server measured; `text` is what somebody typed, which is why it is
+// capped and why what it does with hostile input is asserted rather than assumed.
+
+{
+  const p = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [
+      {
+        at: 6000,
+        kind: 'chat_block',
+        text: 'join evilserver.com now',
+        reason: 'link',
+        channel: 'global',
+      },
+      { at: 7000, kind: 'chat_block', text: 'привет', reason: 'script', channel: 'squad' },
+      { at: 9000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  const entries = p.ExpressionAttributeValues[':entries']
+
+  check('a refused chat entry survives the projection', entries.length, 3)
+  check('and keeps its kind', entries[0].kind, 'chat_block')
+  check(
+    'THE CHAT CONTENT REACHES THE ROW -- the whole point of the feature',
+    entries[0].text,
+    'join evilserver.com now',
+  )
+  check('which rule refused it travels too', entries[0].reason, 'link')
+  check('and the channel it was sent on', entries[0].channel, 'global')
+  check('a non-Latin line is stored as it was written', entries[1].text, 'привет')
+  check('with its own reason', entries[1].reason, 'script')
+  // A rival server advertised to the whole lobby and one whispered to three
+  // squadmates are different facts about intent.
+  check('a squad whisper is distinguishable from a lobby advert', entries[1].channel, 'squad')
+
+  // NO SECOND-PARTY FIELDS, like a strip: a refused line is a fact about the
+  // subject's own message and the row already names them.
+  check('a refused line names nobody but the subject', entries[0].victimLicense, undefined)
+  check(
+    'and carries no weaponIssued, which would paint it red on the console',
+    Object.prototype.hasOwnProperty.call(entries[0], 'weaponIssued'),
+    false,
+  )
+}
+
+// --- what the text field does with input chosen to break something -----------
+//
+// A PLAYER PICKS THIS STRING. The console renders timeline entries as React text
+// children and escapes structurally, so the job here is a bound and a type --
+// not an escape, which would double-encode on the page.
+
+{
+  const long = 'x'.repeat(500)
+  const p = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [
+      { at: 1000, kind: 'chat_block', text: long, reason: 'link' },
+      { at: 2000, kind: 'chat_block', text: '<script>alert(1)</script>', reason: 'link' },
+      { at: 3000, kind: 'chat_block', text: '', reason: 'link' },
+      { at: 4000, kind: 'chat_block', reason: 'link' },
+      { at: 5000, kind: 'chat_block', text: { evil: true }, reason: 'link' },
+      { at: 6000, kind: 'chat_block', text: 'ok', reason: 'made up by a client' },
+      { at: 9000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  const e = p.ExpressionAttributeValues[':entries']
+
+  // 200 IS BR.ChatLimits.maxLength -- the length the server already refuses to
+  // deliver past -- rather than a new number invented for storage.
+  check('an over-long line is capped at the length chat itself allows', e[0].text.length, 200)
+  check(
+    'markup is stored verbatim as TEXT, never escaped here',
+    e[1].text,
+    '<script>alert(1)</script>',
+  )
+  check('an empty line stores null rather than a blank accusation', e[2].text, null)
+  check('an absent line stores null too', e[3].text, null)
+  check('a non-string cannot become "[object Object]"', e[4].text, null)
+  check('an unrecognised reason is stored, bounded, for a human to read', e[5].reason.length <= 32, true)
+
+  // THE KIND IS STILL DROPPED IF IT IS NOT ONE OF OURS -- the property the whole
+  // discrimination rests on, asserted beside the kind that was just added.
+  const q = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [
+      { at: 1000, kind: 'chat_blocked', text: 'nearly right' },
+      { at: 9000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  check(
+    'a kind one letter off is dropped, silently, exactly as designed',
+    q.ExpressionAttributeValues[':entries'].length,
+    1,
+  )
+  check(
+    'and the close then reports itself INCOMPLETE rather than whole',
+    q.ExpressionAttributeValues[':complete'],
+    false,
   )
 }
 
