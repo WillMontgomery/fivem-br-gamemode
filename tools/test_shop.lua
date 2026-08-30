@@ -385,30 +385,32 @@ do
         'and that reaches the registered item rather than stopping at config',
         reg and reg.propScale or 'unregistered')
 
-    -- ═══ THE OTHER KNOB, WHICH IS PROBABLY THE LIVE ONE ═══
+    -- ═══ THE OTHER KNOB, AND BOTH OF THEM ARE LIVE ═══
     --
-    -- CREATE_OBJECT takes an OBJECT archetype and a car is a VEHICLE archetype,
-    -- so the engine may well refuse to build any of these as props -- in which
-    -- case `propScale` above is inert and marker 34 is what a player sees. That
-    -- marker's size was a hard-coded 0.5 in client/loot.lua and is now carried
-    -- on the item beside the marker id, so the two travel together and the
-    -- fallback is tunable in one line once the console says which path is live.
-    ok(reg ~= nil and reg.fallbackMarker == 34
+    -- This file used to say the prop path was "probably" dead -- CREATE_OBJECT
+    -- takes an OBJECT archetype and a car is a VEHICLE archetype -- and that
+    -- `propScale` was therefore inert. OBSERVATION HAS ANSWERED IT, and the
+    -- answer is both. On 2026-08-30 the owner reported, in one sitting, dropped
+    -- car tokens that are PROPS ("the vehicle pickup props are floating above
+    -- the ground at waist-level" -- a marker is drawn at a ground height every
+    -- frame and cannot float) and one model, `marshall`, that fell back to the
+    -- marker instead. So the marker's size matters for whatever the engine turns
+    -- down and the prop's scale matters for the rest.
+    ok(reg ~= nil and reg.fallbackMarker == 36
            and tonumber(reg.fallbackMarkerScale) == 0.375,
         'the fallback marker carries its own size, in metres, beside its id',
         reg and tostring(reg.fallbackMarkerScale) or 'unregistered')
 
-    -- ═══ AND THE TWO MOVE TOGETHER UNTIL SOMEBODY READS A CONSOLE ═══
+    -- ═══ AND THE TWO STILL MOVE TOGETHER, FOR A BETTER REASON THAN BEFORE ═══
     --
-    -- He resized ONE thing he can see. Nothing here knows which of these two
-    -- numbers draws it, so his 75% went on both -- and they must stay equal, or
-    -- the day the question is answered the pickup changes size again on its own.
-    -- This is not a claim that they are the same knob (they are not: one is a
-    -- multiple of the model, the other is metres) -- it is a claim that they are
-    -- currently carrying one instruction between them.
+    -- They used to be kept equal as a hedge: nobody knew which one drew the
+    -- pickup, so his 75% went on both. Now that both paths are known to be live,
+    -- equality is a REQUIREMENT rather than a hedge -- the marshall's token and
+    -- the caracara2's are one thing to a player, and one of them being a
+    -- different size from the other is a bug he would report as such.
     ok(BR.Config.Shop.tokenScale == BR.Config.Shop.tokenMarkerScale,
-        'both knobs carry the same 75%, because which one is live is still an '
-            .. 'open question',
+        'both knobs carry the same 75%, so the token a player picks up is the '
+            .. 'same size whichever path drew it',
         ('prop %s, marker %s'):format(tostring(BR.Config.Shop.tokenScale),
                                       tostring(BR.Config.Shop.tokenMarkerScale)))
 
@@ -1586,10 +1588,86 @@ do
     ok(lootsrc:find('e%.noProp and fallbackMarkerOf%(e%)') ~= nil,
         'and the renderer draws that marker in place of the rarity disc')
 
-    -- THE NUMBER IS THE OWNER'S, PASSED THROUGH. Nothing in this tree claims to
-    -- know what marker 34 draws.
-    ok(BR.Config.Shop.tokenMarker == 34,
-        'and the number is 34, which is the one he named')
+    -- ═══ 34 WAS A HELICOPTER, AND HE READ IT OFF HIS OWN SCREEN ═══
+    --
+    -- Owner, 2026-08-30: "When I drop the marshall why does it use a 3dmarker
+    -- instead of the model of the prop? It's also a helicopter marker, not a
+    -- vehicle...." and "Also the marker 34 issue, yeah. That should be marker
+    -- 36."
+    --
+    -- 34 was his own number, taken on trust, and this suite used to assert only
+    -- that it was the one he named -- which is exactly how a wrong number
+    -- survives a test. It is 36 now, MarkerTypeCarSymbol, and it is his number
+    -- again; what changed is that one of them has been seen.
+    ok(shipped.tokenMarker == 36,
+        'the fallback marker is 36, the car glyph -- 34 was a helicopter and he '
+            .. 'saw it', shipped.tokenMarker)
+    ok(shipped.tokenMarker ~= 34,
+        'and specifically not 34 any more, which is the value a revert puts back')
+
+    -- AND IT REACHES THE ITEM, not just the config. The registered entry is
+    -- what client/loot.lua actually reads at the moment a prop fails.
+    local mk = BR.Config.ConsumableById['car_marshall']
+    ok(mk ~= nil and mk.fallbackMarker == 36,
+        'and it reaches the registered item, which is what the renderer reads',
+        mk and mk.fallbackMarker or 'unregistered')
+
+    -- ═══ AND THE FLOATING TOKEN IS LOWERED BY A NAMED NUMBER ═══
+    --
+    -- Owner, 2026-08-30: "At rest, the vehicle pickup props are floating above
+    -- the ground at waist-level... The prop pickup should be lowered by maybe
+    -- 0.5m." "Maybe" is an estimate by eye, so it is a knob he can turn rather
+    -- than a literal at the draw site.
+    ok(type(shipped.tokenDropM) == 'number' and shipped.tokenDropM > 0.0,
+        'the dropped token has a lowering, in metres', tostring(shipped.tokenDropM))
+    ok(shipped.tokenDropM == 0.5, 'and it is the 0.5m he named', shipped.tokenDropM)
+    ok(mk ~= nil and mk.propDrop == 0.5,
+        'which reaches the registered item beside its scale',
+        mk and tostring(mk.propDrop) or 'unregistered')
+
+    -- ═══ AND IT REACHES NOTHING ELSE ON THE MAP, WHICH IS THE POINT OF IT
+    --     BEING PER-ITEM ═══
+    --
+    -- The same PlaceObjectOnGroundProperly settles every rifle, bandage and
+    -- ammo box in the world. None of those is floating and none was reported
+    -- as such; a lowering that reached them would bury about 1300 items.
+    local buried = {}
+    for id, c in pairs(BR.Config.ConsumableById) do
+        if tonumber(c.propDrop or 0) > 0.0 and not id:find('^car_') then
+            buried[#buried + 1] = id
+        end
+    end
+    table.sort(buried)
+    ok(#buried == 0,
+        'and not one non-vehicle consumable is lowered with it',
+        table.concat(buried, ', '))
+
+    -- ...AND THE CLIENT APPLIES IT PER ENTRY, THROUGH THE LOOKUP. A literal in
+    -- the spawn pass would be the same drop on every prop in the game.
+    ok(lootsrc:find('local function propDropOf') ~= nil,
+        'client/loot.lua looks the lowering up per entry')
+    local drops = 0
+    for _ in lootsrc:gmatch('propDropOf') do drops = drops + 1 end
+    ok(drops >= 2, 'and CALLS it rather than merely defining it', drops)
+
+    -- THE BODY, NOT JUST THE NAME. A propDropOf that returned a constant would
+    -- satisfy both assertions above and lower every rifle on the map with it --
+    -- which is the failure the per-item design exists to prevent, and it is
+    -- invisible from the config side because the config would still be right.
+    local dropBody = lootsrc:match('local function propDropOf%(e%)(.-)\nend')
+    ok(dropBody ~= nil and dropBody:find('ConsumableById', 1, true) ~= nil
+           and dropBody:find('c%.propDrop') ~= nil,
+        'and answers from the ITEM rather than from a constant, so a rifle and '
+            .. 'a car token cannot share a correction',
+        dropBody and dropBody:gsub('%s+', ' ') or 'no body')
+
+    -- THE RESTING HEIGHT MOVES WITH IT, which is the half that would otherwise
+    -- put the float straight back: restZ is what the hover animation rises from
+    -- and returns to, so lowering the object without lowering restZ would last
+    -- until the first time somebody walked past.
+    ok(lootsrc:find('e%.restZ = c%.z %- drop') ~= nil,
+        'and the remembered resting height is the lowered one, so the hover '
+            .. 'does not put the float back on its way down')
 end
 
 -- ---------------------------------------------------------------------------
@@ -2014,6 +2092,69 @@ do
     -- fallback and leave a failed grounding unreported.
     ok(cli:find('isTrue(landed)', 1, true) ~= nil,
         'the grounding result is read through isTrue, because 0 is truthy')
+
+    -- ═══ AND THE CARS START LOWER THAN HE SURVEYED THEM (#243) ═══
+    --
+    -- Owner, 2026-08-30: "After seeing the shop once in warmup, and going
+    -- outside its focus area (cell/culling radius), then coming back, all the
+    -- vehicles are floating off the ground again at waist level." And: "the same
+    -- is true for the vehicles. That's all we need."
+    ok(type(shipped.groundDropM) == 'number' and shipped.groundDropM == 0.5,
+        'the showroom cars carry a 0.5m drop, the number he named',
+        tostring(shipped.groundDropM))
+    -- TWO FIELDS, TWO READERS. They hold the same 0.5 today, so no assertion on
+    -- their VALUES can tell whether they are one knob or two -- what can is that
+    -- each is read at its own site under its own name. Collapse them and the
+    -- day he nudges the car and not the token, both move.
+    ok(cli:find('S%.groundDropM') ~= nil,
+        'the showroom reads its drop under its own name')
+    ok(cli:find('tokenDropM') == nil,
+        'and never the token\'s, so nudging one cannot move the other')
+
+    -- ═══ APPLIED TO THE STARTING HEIGHT, AND NEVER TO HIS SURVEY ═══
+    --
+    -- "those coords are very specifically placed. Don't change them." The rows
+    -- are untouched: the drop is subtracted at CreateVehicle, on top of the
+    -- authored z, which this config has always called a starting height.
+    ok(cli:find('local startZ = row%.z %+ 0%.0 %- %(tonumber%(S%.groundDropM%)')
+           ~= nil,
+        'the drop is subtracted from his authored z at spawn rather than edited '
+            .. 'into the catalogue')
+    for _, r in ipairs(SURVEY) do
+        local model, _, _, z = table.unpack(r)
+        local row = BR.ShopSolve.rowById(
+            BR.ShopSolve.catalogue(shipped, shipped.refusedReason), model)
+        ok(row ~= nil and row.z == z,
+            model .. ': still stands at the z he surveyed, to the digit',
+            row and row.z or 'no row')
+    end
+
+    -- ═══ AND IT IS SUBTRACTED BEFORE THE GROUNDING, NOT AFTER ═══
+    --
+    -- THE ORDERING THAT DECIDES WHETHER THIS FIXES ANYTHING OR BURIES
+    -- EVERYTHING. SetVehicleOnGroundProperly puts the wheels on the surface;
+    -- a drop applied AFTER a successful grounding would sink every car half a
+    -- metre into the pad. Applied to the starting height it loses to the
+    -- grounding whenever the grounding works -- which is what makes a first
+    -- spawn unchanged -- and decides where a car comes back to when it does not.
+    -- ON A COMMENT-STRIPPED COPY. The file explains the ordering at length and
+    -- names the grounding native while doing so, hundreds of lines above the
+    -- call -- so a raw search finds the prose and compares the wrong two
+    -- positions.
+    local cliCode2 = (cli:gsub('%-%-[^\n]*', ''))
+    local dropAt = cliCode2:find('local startZ = row%.z')
+    local groundAt = cliCode2:find('SetVehicleOnGroundProperly', 1, true)
+    ok(dropAt ~= nil and groundAt ~= nil and dropAt < groundAt,
+        'and it happens BEFORE the grounding -- after it, every car would be '
+            .. 'buried half a metre rather than floating half a metre',
+        ('drop@%s ground@%s'):format(tostring(dropAt), tostring(groundAt)))
+
+    -- ...AND THE FALLBACK USES THE SAME NUMBER. If the grounding refuses, the
+    -- drop is the only thing positioning the car, so putting the raw survey back
+    -- there would undo this in exactly the case nothing else covers.
+    ok(cli:find('row%.y %+ 0%.0,\n%s*startZ, false, false, false, false%)') ~= nil,
+        'the un-settled fallback places the car at the same starting height, '
+            .. 'not back at the raw surveyed z')
 
     -- ═══ THE VOLTS READOUT: A FLAG, NEVER A BALANCE ═══
     --

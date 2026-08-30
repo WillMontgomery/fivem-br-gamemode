@@ -704,6 +704,35 @@ local function modelOf(e)
     return nil
 end
 
+--- How far below where it settled this entry's prop should rest, in metres.
+---
+--- ═══ "THE PROP PICKUP SHOULD BE LOWERED BY MAYBE 0.5M" (owner, 2026-08-30,
+---     #240) ═══
+---
+--- "At rest, the vehicle pickup props are floating above the ground at
+--- waist-level." PlaceObjectOnGroundProperly settles the prop at its AUTHORED
+--- size and the matrix scale is applied afterwards (see the spawn pass, where
+--- the ordering is load-bearing for a different reason), so a car drawn at
+--- 0.375 keeps the origin height a full-size car was given and hangs there.
+---
+--- HE ASKED FOR A NUMBER RATHER THAN A DERIVATION and he is right to: the
+--- arithmetic would need the model's own box and the pose it settled in, and
+--- 0.5m by eye is a knob he can turn in one line after seeing it.
+---
+--- NIL FOR EVERYTHING ELSE, AND THAT IS THE ENTIRE REASON THIS IS PER-ITEM. The
+--- same settle puts about 1300 rifles, bandages and ammo boxes on the ground
+--- across the map. None of those is floating and none of them is scaled down far
+--- enough to; a global drop would bury every one of them.
+--- @param e table
+--- @return number
+local function propDropOf(e)
+    local c = (e.kind == BR.ItemKind.CONSUMABLE)
+        and BR.Config.ConsumableById[e.item] or nil
+    local d = c and tonumber(c.propDrop) or nil
+    if not d or d <= 0.0 then return 0.0 end
+    return d
+end
+
 --- The marker an entry falls back to when its prop cannot be built (#224).
 ---
 --- ═══ THIS EXISTS BECAUSE A VEHICLE IS NOT AN OBJECT, PROBABLY ═══
@@ -1429,7 +1458,35 @@ local function drain()
                                     -- ground + 0.35 -- buried it and then
                                     -- floated it (user, 2026-08-08).
                                     local c = GetEntityCoords(obj)
-                                    e.restZ = c.z
+
+                                    -- ...AND THEN LOWERED, FOR THE ITEMS THAT
+                                    -- ASK TO BE (#240).
+                                    --
+                                    -- Owner, 2026-08-30: "At rest, the vehicle
+                                    -- pickup props are floating above the ground
+                                    -- at waist-level... The prop pickup should
+                                    -- be lowered by maybe 0.5m."
+                                    --
+                                    -- The native settles the model at its
+                                    -- AUTHORED size and the matrix scale is
+                                    -- applied further down, so a car token drawn
+                                    -- at 0.375 keeps the origin height a
+                                    -- full-size car was given. propDropOf is
+                                    -- zero for every other item on the map and
+                                    -- this is a no-op for all of them.
+                                    --
+                                    -- WRITTEN INTO restZ, NOT JUST INTO THE
+                                    -- ENTITY. restZ is the height the hover
+                                    -- animation rises from and settles back to;
+                                    -- moving the object without moving that
+                                    -- number would put the float back the first
+                                    -- time anybody walked past.
+                                    local drop = propDropOf(e)
+                                    if drop > 0.0 then
+                                        SetEntityCoordsNoOffset(obj, c.x, c.y,
+                                            c.z - drop, false, false, false)
+                                    end
+                                    e.restZ = c.z - drop
                                 end
 
                                 -- CRATES ARE PHYSICAL. Drive into one and it

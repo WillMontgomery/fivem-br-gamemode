@@ -249,10 +249,39 @@ local function build()
                 if mine ~= gen then return end
 
                 if isTrue(HasModelLoaded(model)) then
+                    -- ═══ THE STARTING HEIGHT, WHICH IS HIS SURVEYED z LESS A
+                    --     TUNABLE DROP (#243) ═══
+                    --
+                    -- Owner, 2026-08-30: "After seeing the shop once in warmup,
+                    -- and going outside its focus area (cell/culling radius),
+                    -- then coming back, all the vehicles are floating off the
+                    -- ground again at waist level." And: "the same is true for
+                    -- the vehicles. That's all we need."
+                    --
+                    -- HIS COORDINATES ARE NOT EDITED. "those coords are very
+                    -- specifically placed. Don't change them" -- the row is
+                    -- untouched and this is applied on top of it, which
+                    -- config/shop.lua has always described the authored z as
+                    -- being: a starting height rather than a final one.
+                    --
+                    -- IT LOSES TO THE GROUNDING BELOW, DELIBERATELY. When
+                    -- SetVehicleOnGroundProperly succeeds it puts the wheels on
+                    -- the surface and where the car started stops mattering, so
+                    -- on a first spawn this is very likely invisible -- which is
+                    -- the correct outcome and not a defect. A drop applied AFTER
+                    -- a successful grounding would bury every car half a metre
+                    -- into the pad.
+                    --
+                    -- IT SHOWS WHERE HE IS COMPLAINING. The grounding runs once,
+                    -- before the freeze, and a frozen entity is not re-settled --
+                    -- so whatever height a streamed-back car comes back at is
+                    -- derived from where it was CREATED, and this lowers that.
+                    local startZ = row.z + 0.0 - (tonumber(S.groundDropM) or 0.0)
+
                     -- LOCAL. NEVER NETWORKED. See the header, and client/bus.lua
                     -- for the same two `false`s in the same positions.
                     local veh = CreateVehicle(model, row.x + 0.0, row.y + 0.0,
-                                              row.z + 0.0,
+                                              startZ,
                                               tonumber(row.heading) or 0.0,
                                               false, false)
                     SetModelAsNoLongerNeeded(model)
@@ -418,11 +447,18 @@ local function build()
                         -- stood at, so it is never underground.
                         local okG, landed = pcall(SetVehicleOnGroundProperly, veh)
                         if not (okG and isTrue(landed)) then
+                            -- THE SAME STARTING HEIGHT, NOT THE RAW SURVEY. If
+                            -- this branch is taken the drop is the only thing
+                            -- positioning the car, so putting his untouched z
+                            -- back here would undo #243 in exactly the case
+                            -- where nothing else is going to fix it.
                             pcall(SetEntityCoords, veh, row.x + 0.0, row.y + 0.0,
-                                  row.z + 0.0, false, false, false, false)
+                                  startZ, false, false, false, false)
                             print(('[br_core] shop: "%s" would not settle on the '
-                                   .. 'ground -- left at its surveyed z (%.2f)')
-                                :format(tostring(row.id), row.z + 0.0))
+                                   .. 'ground -- left at its starting z (%.2f, '
+                                   .. 'surveyed %.2f less a %.2fm drop)')
+                                :format(tostring(row.id), startZ, row.z + 0.0,
+                                        tonumber(S.groundDropM) or 0.0))
                         end
 
                         nat(FreezeEntityPosition, veh, true)

@@ -631,6 +631,47 @@ BR.Config.Shop = {
     signLift     = 0.0,    -- metres added on top, to nudge every plate at once
 
     -- ------------------------------------------------------------------
+    -- HOW FAR THE SHOWROOM CARS START BELOW THEIR SURVEYED HEIGHT
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-30 (#243): "After seeing the shop once in warmup, and going
+    -- outside its focus area (cell/culling radius), then coming back, all the
+    -- vehicles are floating off the ground again at waist level." And then, on
+    -- what to do about it: "The prop pickup should be lowered by maybe 0.5m and
+    -- the same is true for the vehicles. That's all we need."
+    --
+    -- ═══ IT IS SUBTRACTED FROM THE STARTING HEIGHT, NOT FROM HIS SURVEY ═══
+    --
+    -- "those coords are very specifically placed. Don't change them" still
+    -- holds, and the rows above are untouched. This is applied at
+    -- CreateVehicle, on top of the authored `z`, which config/shop.lua has
+    -- always described as a STARTING height rather than a final one.
+    --
+    -- ═══ AND IT DELIBERATELY LOSES TO THE GROUNDING, WHICH IS THE POINT ═══
+    --
+    -- br_core/client/shop.lua calls SetVehicleOnGroundProperly a few lines after
+    -- the create and before the freeze. When that native succeeds it puts the
+    -- car's wheels on the surface and this number stops mattering: the car has
+    -- been told where the ground is, and 0.5m either side of the start makes no
+    -- difference to where it lands. So ON FIRST SPAWN THIS PROBABLY CHANGES
+    -- NOTHING VISIBLE, and that is the correct behaviour rather than a defect --
+    -- a drop applied AFTER a successful grounding would bury every car half a
+    -- metre into the pad, which is the one outcome nobody asked for.
+    --
+    -- WHERE IT DOES SHOW is exactly where he is complaining: whatever puts a
+    -- streamed-back car at waist height is not the grounding, because the
+    -- grounding ran once, before the freeze, and a frozen entity is not
+    -- re-settled. The height it comes back at is derived from where the car was
+    -- CREATED, and this lowers that.
+    --
+    -- SO IT IS A DIAL AND NOT A DERIVATION. "maybe 0.5m" is his estimate and he
+    -- will want to nudge it after seeing it; that is the whole reason it is a
+    -- named value here rather than a literal in the client. If the cars come
+    -- back correct but sit low on first spawn, the grounding is not succeeding
+    -- and the console says so on the line below it.
+    groundDropM = 0.5,
+
+    -- ------------------------------------------------------------------
     -- UNPACKING THE ITEM
     -- ------------------------------------------------------------------
     --
@@ -706,54 +747,90 @@ BR.Config.Shop = {
     -- fallback exists at all.
     tokenScale  = 0.375,
 
-    tokenMarker = 34,   -- the owner's stated fallback, used only if the prop
-                        -- cannot be created
+    -- ------------------------------------------------------------------
+    -- HOW FAR THE DROPPED TOKEN SITS BELOW WHERE IT SETTLED
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-30 (#240): "At rest, the vehicle pickup props are floating
+    -- above the ground at waist-level." And, on what to do: "The prop pickup
+    -- should be lowered by maybe 0.5m and the same is true for the vehicles.
+    -- That's all we need."
+    --
+    -- SUBTRACTED FROM THE HEIGHT PlaceObjectOnGroundProperly ARRIVED AT, in
+    -- br_core/client/loot.lua, and remembered as the entry's resting height so
+    -- the hover animation rises from and returns to the lowered figure rather
+    -- than putting the float back every time somebody walks past.
+    --
+    -- ═══ IT IS ON THE CAR TOKEN AND ON NOTHING ELSE, WHICH IS THE WHOLE
+    --     REASON IT LIVES HERE AND NOT IN config/loot.lua ═══
+    --
+    -- The same settle puts ~1300 rifles, bandages and ammo boxes on the ground
+    -- across the map, and they are not floating -- he has never said they are.
+    -- A global 0.5m drop would bury every one of them. So this rides on the
+    -- catalogue entry, next to `propScale`, and reaches exactly the items this
+    -- config creates.
+    --
+    -- HE WILL WANT TO NUDGE IT. "maybe 0.5m" is an estimate made by eye, which
+    -- is why it is a named value rather than a literal at the draw site -- and
+    -- why it is a SEPARATE number from `groundDropM` above even though both are
+    -- 0.5 today. A shrunken car prop and a full-size showroom car are not the
+    -- same object and there is no reason their corrections must match.
+    tokenDropM = 0.5,
+
+    -- ═══ THE FALLBACK MARKER: 34 WAS A HELICOPTER ═══
+    --
+    -- Owner, 2026-08-30: "When I drop the marshall why does it use a 3dmarker
+    -- instead of the model of the prop? It's also a helicopter marker, not a
+    -- vehicle...." And: "Also the marker 34 issue, yeah. That should be marker
+    -- 36."
+    --
+    -- 34 WAS HIS OWN NUMBER, taken on trust when he first named it -- "if that's
+    -- not possible, use marker ID 34 instead" -- and this file said at the time
+    -- that "nothing in this tree claims to know what marker 34 draws". He has
+    -- now read one off his own screen: it is MarkerTypeHelicopterSymbol. 36 is
+    -- MarkerTypeCarSymbol, the next-but-one entry in the same run of vehicle
+    -- glyphs (33 plane, 34 helicopter, 35 boat, 36 car, 37 motorcycle), and it
+    -- is the one he asked for.
+    --
+    -- ONE MARKER FOR THE WHOLE CATALOGUE, INCLUDING THE BIKE. `sanchez` is a
+    -- motorcycle and would read more exactly as 37, and that is not worth a
+    -- per-row field: he asked for "a vehicle" rather than for the right vehicle,
+    -- the fallback is what a player sees only when the prop could not be built,
+    -- and a car glyph says "there is a vehicle in this box" for all thirteen.
+    tokenMarker = 36,
 
     -- ...AND HOW BIG THAT FALLBACK MARKER IS DRAWN, IN METRES.
     --
-    -- ═══ THIS EXISTS BECAUSE `tokenScale` ABOVE MAY WELL BE CHANGING NOTHING ═══
+    -- ═══ A DIFFERENT KNOB FROM `tokenScale`, IN DIFFERENT UNITS ═══
     --
-    -- The two are NOT the same knob and are not in the same units. `tokenScale`
-    -- is a multiple of the model's own size and only reaches a car that the
-    -- engine agreed to build as a PROP. This is a radius in metres and is what
-    -- gets drawn when it did not.
+    -- The two are NOT the same knob. `tokenScale` is a multiple of the model's
+    -- own size and only reaches a car the engine agreed to build as a PROP. This
+    -- is a radius in metres and is what gets drawn when it did not.
     --
-    -- WHICH ONE IS LIVE IS STILL AN OPEN QUESTION, and the honest answer from
-    -- outside a running client is that the prop probably is not: CREATE_OBJECT
-    -- takes an OBJECT archetype, a car is a VEHICLE archetype, and the
-    -- documented advice for a vehicle model is CreateVehicle instead
-    -- (citizenfx/natives, OBJECT/CreateObject.md). If that is what happens here
-    -- then every dropped car token is marker 34, `tokenScale` is inert, and
-    -- raising it to 0.5 changed nothing a player can see.
+    -- ═══ AND WHICH ONE IS LIVE IS NO LONGER AN OPEN QUESTION ═══
     --
-    -- THE CONSOLE ANSWERS IT IN ONE LINE. client/loot.lua prints
-    -- "no prop for car_<id> (...) -- falling back to marker 34" exactly once per
-    -- entry whose prop the engine refused. If that line appears, this is the
-    -- number to turn and the one above is not.
+    -- This file used to argue at length that the prop path probably did not work
+    -- at all -- CREATE_OBJECT takes an OBJECT archetype, a car is a VEHICLE
+    -- archetype -- and that `tokenScale` was therefore likely inert. OBSERVATION
+    -- HAS ANSWERED IT, and the answer is BOTH. On 2026-08-30 the owner reported,
+    -- in one sitting, dropped car tokens that are PROPS ("the vehicle pickup
+    -- props are floating above the ground at waist-level" -- a marker cannot
+    -- float, it is drawn at a ground height every frame) and one model,
+    -- `marshall`, that fell back to the marker instead.
     --
-    -- ═══ SO WHEN HE RESIZES THE PICKUP, BOTH KNOBS MOVE TOGETHER ═══
+    -- SO THE ENGINE BUILDS MOST OF THEM AND REFUSES AT LEAST ONE, and both knobs
+    -- are live -- `tokenScale` for the twelve, this one for whatever the engine
+    -- turns down. WHY `marshall` SPECIFICALLY IS REFUSED IS NOT ESTABLISHED and
+    -- is not guessed at here; client/loot.lua names the entry and the reason on
+    -- the console, once, and that line is what will settle it.
+    --
+    -- ═══ WHICH IS WHY THEY STILL MOVE TOGETHER WHEN HE RESIZES THE PICKUP ═══
     --
     -- Owner, 2026-08-29: "please make the vehicle prop pickups 75% the current
-    -- size. The ones that spawn when dropping a vehicle." He is describing ONE
-    -- thing he can see, and this file still cannot say which of these two
-    -- numbers draws it -- so 75% is applied to both: 0.5 x 0.75 = 0.375, the
-    -- same arithmetic on the same starting value, and the instruction lands
-    -- whichever path is live.
-    --
-    -- KEEPING THEM IN STEP IS THE POINT. Turning only the one we guessed was
-    -- live would leave the other at its old value, and the day the question is
-    -- answered the pickup would silently change size again.
-    --
-    -- HIS WORDING IS EVIDENCE AND IT IS NOT PROOF. "vehicle prop pickups" reads
-    -- like somebody looking at a car-shaped object rather than at a chevron, and
-    -- if that is what he sees then CreateObject does build a vehicle archetype
-    -- on this build and the paragraph above is answered. It is still not written
-    -- down as answered, because the console line names it in one word and nobody
-    -- has read one yet -- and "he called it a prop" is exactly how an open
-    -- question gets closed wrongly. `brloot` and the fallback line settle it.
-    --
-    -- IT WAS A HARD-CODED LITERAL in client/loot.lua before it was named here;
-    -- naming it changed no behaviour, and this is the first time it has moved.
+    -- size." Applied to both, 0.5 x 0.75 = 0.375 -- and now that both paths are
+    -- known to be live, keeping them in step is not a hedge but a requirement:
+    -- the marshall's token and the caracara2's are the same thing to a player
+    -- and must not be different sizes.
     tokenMarkerScale = 0.375,
 
     -- ------------------------------------------------------------------
@@ -897,17 +974,25 @@ function BR.Config.Shop.register(refusedReason)
             maxStack = 1, carryMax = 1,
             useMs    = tonumber(S.useMs) or 3000,
             -- THE GROUND PROP IS THE CAR ITSELF, at a fraction of its size --
-            -- see `tokenScale` above for what is and is not established about
-            -- that, and for the marker fallback when it does not work.
+            -- see `tokenScale` above. The engine builds most of these and has
+            -- been observed refusing at least one (`marshall`), which is what
+            -- the marker fallback below is for.
             prop      = row.model,
             propScale = BR.ShopSolve.tokenScale(row, S),
-            -- ...AND WHAT TO DRAW IF THE ENGINE WILL NOT BUILD THAT PROP. The
-            -- owner's own fallback, read by client/loot.lua at the moment a
-            -- prop fails rather than decided here -- see `tokenMarker`.
-            fallbackMarker = tonumber(S.tokenMarker) or 34,
-            -- ...AND HOW BIG TO DRAW IT. See `tokenMarkerScale`: this is the
-            -- knob that matters if the engine will not build a car as a prop,
-            -- which is the likely case and is the one `propScale` cannot reach.
+            -- ...AND HOW FAR TO LOWER IT ONCE IT HAS SETTLED. Owner: "The prop
+            -- pickup should be lowered by maybe 0.5m." On the ITEM rather than
+            -- on the loot config, because the same settle puts every rifle and
+            -- bandage on the map down and none of those is floating -- see
+            -- `tokenDropM`.
+            propDrop  = tonumber(S.tokenDropM) or 0.0,
+            -- ...AND WHAT TO DRAW IF THE ENGINE WILL NOT BUILD THAT PROP. Read
+            -- by client/loot.lua at the moment a prop fails rather than decided
+            -- here -- see `tokenMarker`, which is a car glyph since the owner
+            -- read the old 34 off his screen as a helicopter.
+            fallbackMarker = tonumber(S.tokenMarker) or 36,
+            -- ...AND HOW BIG TO DRAW IT. See `tokenMarkerScale`: metres, not a
+            -- multiple of the model, so it is a different knob from `propScale`
+            -- and neither reaches the other's case.
             fallbackMarkerScale = tonumber(S.tokenMarkerScale) or 0.5,
             -- WHAT MAKES THIS A CAR RATHER THAN A POTION, and the only field
             -- server/inventory.lua's use pass looks for. Its VALUE is the
