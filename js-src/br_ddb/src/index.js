@@ -361,7 +361,7 @@ on('br:ddb:statsApply', (req, license, deltas) => {
   // that accumulate -- and a SET field the caller did not supply is not written
   // at all, which is what lets a second caller (brvolts) use this same atomic
   // ADD without claiming the player just finished a match.
-  const built = buildStatsUpdate(d)
+  const built = buildStatsUpdate(deltas)
 
   withTimeout(
     ddb().send(

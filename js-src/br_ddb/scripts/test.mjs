@@ -6,6 +6,14 @@ import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
 import { buildStatsUpdate } from '../src/stats.js'
 import { projectVerdict, verdictWord } from '../src/verdict.js'
 
+// NOT `../src/`. These two drive src/index.js itself -- the twenty handlers,
+// which until 2026-08-30 nothing here ran. See scripts/bridge.mjs.
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+import { unmarshall } from './aws_stub.mjs'
+import { loadBridge, lastEmit } from './bridge.mjs'
+
 /**
  * Tests for the decisions in br_ddb that are pure arithmetic on data, and
  * therefore the ones that can be wrong for weeks without anybody noticing.
@@ -1426,26 +1434,39 @@ console.log('\nspend: the condition refuses an overspend')
 // the payout's own write must not have moved, and a caller that does not claim
 // to be a match must not blank the fields a match sets.
 
+/**
+ * A whole match result, in the shape br_stats/server/persist.lua builds it.
+ *
+ * NAMED RATHER THAN INLINE because the handler block at the bottom of this file
+ * sends this exact payload through `br:ddb:statsApply` and pins the same
+ * expression coming out the other side. Two payloads that were meant to be the
+ * same and drifted would make the second block agree with a bug in the first.
+ */
+const MATCH_PAYOUT = {
+  xp: 1048, balance: 1200, matches: 1, wins: 1, top10s: 1, kills: 3,
+  deaths: 0, downs: 1, revives: 2, damageDealt: 450, playtimeSec: 900,
+  soloMatches: 1, squadMatches: 0,
+  level: 12, name: 'Epyc', at: 1_700_000_000_000,
+}
+
+/** What that payload must become, byte for byte. */
+const PAYOUT_EXPRESSION =
+  'SET #lvl = :lvl, #nm = :nm, #ls = :ls ADD #xp :xp, #balance :balance,'
+  + ' #matches :matches, #wins :wins, #top10s :top10s, #kills :kills,'
+  + ' #deaths :deaths, #downs :downs, #revives :revives,'
+  + ' #damageDealt :damageDealt, #playtimeSec :playtimeSec,'
+  + ' #soloMatches :soloMatches, #squadMatches :squadMatches'
+
 console.log('\nstats: the match payout writes what it always wrote')
 {
-  // A whole match result, in the shape br_stats/server/persist.lua builds.
-  const payout = buildStatsUpdate({
-    xp: 1048, balance: 1200, matches: 1, wins: 1, top10s: 1, kills: 3,
-    deaths: 0, downs: 1, revives: 2, damageDealt: 450, playtimeSec: 900,
-    soloMatches: 1, squadMatches: 0,
-    level: 12, name: 'Epyc', at: 1_700_000_000_000,
-  })
+  const payout = buildStatsUpdate(MATCH_PAYOUT)
 
   // PINNED AS A STRING, because this is the one assertion that says "the money
   // path did not move when the SET clause became conditional".
   check(
     'the expression is byte for byte the one it shipped with',
     payout.UpdateExpression,
-    'SET #lvl = :lvl, #nm = :nm, #ls = :ls ADD #xp :xp, #balance :balance,'
-      + ' #matches :matches, #wins :wins, #top10s :top10s, #kills :kills,'
-      + ' #deaths :deaths, #downs :downs, #revives :revives,'
-      + ' #damageDealt :damageDealt, #playtimeSec :playtimeSec,'
-      + ' #soloMatches :soloMatches, #squadMatches :squadMatches',
+    PAYOUT_EXPRESSION,
   )
   check('the level it derived is written', payout.ExpressionAttributeValues[':lvl'], 12)
   check('the name it saw is written', payout.ExpressionAttributeValues[':nm'], 'Epyc')
@@ -1494,6 +1515,322 @@ console.log('\nstats: a grant is not a match')
   const blank = buildStatsUpdate({ balance: 1, name: '' })
   check('but an empty name is an absent one', blank.ExpressionAttributeValues[':nm'], undefined)
 }
+
+// -------------------------------------------------------------- handlers ---
+//
+// ═══ EVERYTHING ABOVE THIS LINE TESTS A FUNCTION. NOTHING ABOVE IT RAN A
+//     HANDLER, AND THAT COST THE OWNER A NIGHT OF PLAYER DATA ═══
+//
+// On 2026-08-29, aafe22a moved the stats expression out of src/index.js into
+// src/stats.js, where `deltas` is rebound as a local `d`. The CALL SITE kept the
+// old name:
+//
+//     on('br:ddb:statsApply', (req, license, deltas) => {
+//       ...
+//       const built = buildStatsUpdate(d)      // `d` is not in this scope
+//
+// Every check in this file went green, `verify.sh` went green, the fingerprint
+// gate went green, and the bundle built without a murmur -- esbuild treats an
+// unbound identifier as a global and says nothing. The first thing that
+// noticed was a live server, where every match end threw
+//
+//     ReferenceError: d is not defined   @br_ddb/dist/server.js:60
+//
+// BEFORE the UpdateItem was sent, so XP, Volts, balance and every career
+// counter stopped persisting entirely -- while `br:market:credited` had already
+// moved br_core's session cache, so the players were shown numbers the database
+// never received.
+//
+// The gap was not "no test for statsApply". It was that a file which is
+// twenty event registrations and nothing else had never been IMPORTED here,
+// because importing it means importing the AWS SDK. scripts/bridge.mjs and
+// scripts/aws_stub.mjs remove that reason. The handlers run now.
+
+const bridge = await loadBridge()
+
+/**
+ * The nth command a handler sent, or an empty stand-in.
+ *
+ * A HANDLER THAT SENT NOTHING MUST NOT CRASH THE SUITE. That is not
+ * hypothetical politeness -- it is what the 2026-08-30 bug does: it throws
+ * before the send, so `calls[0]` is undefined and every assertion after it
+ * would die on a TypeError instead of reporting. The failures below are the
+ * evidence; losing eighty of them to the first one is how a suite stops being
+ * read.
+ */
+const sent = (i) => bridge.calls[i] ?? { kind: null, input: {} }
+
+/**
+ * A throw, as a line worth reading.
+ *
+ * `check` compares with JSON.stringify and an Error stringifies to `{}` -- so
+ * the one assertion that mattered on 2026-08-30 would have reported "got {}".
+ * The message IS the finding here: it is the sentence the live server printed.
+ */
+const why = (e) => (e === null ? null : `${e.name}: ${e.message}`)
+
+/** What a verb answered on its result channel, in the three parts it has. */
+const answer = (verb) => {
+  const e = lastEmit(verb)
+  return { req: e?.args[0], ok: e?.args[1], extra: e?.args[2] ?? {} }
+}
+
+console.log('\nstats: the handler, not just the expression it builds')
+{
+  bridge.reset()
+  bridge.reply({}) // DynamoDB accepts the write
+
+  const threw = bridge.call('br:ddb:statsApply', 41, LIC, MATCH_PAYOUT)
+
+  // ═══ THE ASSERTION THIS BLOCK EXISTS FOR ═══
+  //
+  // Red against the bug, with the production message in the `got` line.
+  check(
+    'the handler runs -- no free variable in its body',
+    why(threw),
+    null,
+  )
+
+  // ...and red against a "fix" that made it run without carrying anything.
+  check('one UpdateItem reached DynamoDB', bridge.calls.length, 1)
+
+  const cmd = sent(0)
+  check('it is an UpdateItem', cmd.kind, 'UpdateItemCommand')
+  // The GAME's table, not the console's. Defaulting the prefix is how the first
+  // version of profileFetch read `ringmaster-players`.
+  check('against the game table', cmd.input.TableName, 'br-players')
+  check('keyed on the profile row for that licence', cmd.input.Key, {
+    pk: { S: LIC },
+    sk: { S: 'profile' },
+  })
+
+  // THE SAME PIN AS THE BLOCK ABOVE, TAKEN OFF THE WIRE INSTEAD OF OFF THE
+  // BUILDER. That is the whole difference: this one can only pass if the
+  // handler actually passed the caller's deltas to the builder.
+  check(
+    'the expression on the wire is the payout expression',
+    cmd.input.UpdateExpression,
+    PAYOUT_EXPRESSION,
+  )
+
+  const values = unmarshall(cmd.input.ExpressionAttributeValues)
+  // `buildStatsUpdate({})` would still produce a valid ADD of thirteen zeroes,
+  // which is a shape a passing test could easily accept and a player would
+  // experience as a match that paid nothing. So the NUMBERS are asserted, and
+  // they are the caller's.
+  check("the caller's XP is on the wire", values[':xp'], 1048)
+  check('and the Volts the match paid', values[':balance'], 1200)
+  check('and the level br_stats derived', values[':lvl'], 12)
+  check('and the name it saw', values[':nm'], 'Epyc')
+
+  // End to end: the command the handler built, applied to a profile row.
+  // Guarded, because `fakeUpdate` throws on an expression it cannot read and a
+  // handler that sent nothing has no expression at all.
+  const applied = typeof cmd.input.UpdateExpression === 'string'
+    ? fakeUpdate({ balance: 300, kills: 40 }, {
+      UpdateExpression: cmd.input.UpdateExpression,
+      ExpressionAttributeNames: cmd.input.ExpressionAttributeNames,
+      ExpressionAttributeValues: values,
+    })
+    : { row: {} }
+  check('a profile row moves by exactly the match', applied.row.balance, 1500)
+  check('and every other counter with it', applied.row.kills, 43)
+
+  await bridge.settle()
+  // The `req` must come back untouched: br_stats keys `pending[req]` on it and
+  // an answer under the wrong number is an answer nobody is listening for.
+  check('br_stats is told the write landed', lastEmit('br:ddb:statsResult')?.args, [41, true, {}])
+}
+
+console.log('\nstats: a failed write answers and never throws into the match')
+{
+  bridge.reset()
+  bridge.reply(new Error('ProvisionedThroughputExceededException'))
+
+  // "A STATS FAILURE MUST NEVER STOP A MATCH" is stated at the handler and was
+  // true of every path it could reach -- except the one that threw before the
+  // send, which is exactly the one that happened.
+  const threw = bridge.call('br:ddb:statsApply', 42, LIC, MATCH_PAYOUT)
+  check('nothing is thrown back at br_stats', why(threw), null)
+
+  await bridge.settle()
+  const res = answer('br:ddb:statsResult')
+  check('the failure is reported rather than swallowed', res.ok, false)
+  check('with the reason attached', res.extra.error, 'ProvisionedThroughputExceededException')
+  check(
+    'and logged against the licence',
+    bridge.logs.some((l) => l.includes('stats write failed for ' + LIC)),
+    true,
+  )
+}
+
+console.log('\nstats: brvolts rides the same handler')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  // What br_core/server/debug.lua sends: an amount, and no claim about a match.
+  const threw = bridge.call('br:ddb:statsApply', 43, LIC, { balance: 5000 })
+  check('the grant runs too', why(threw), null)
+
+  const cmd = sent(0)
+  check(
+    'a grant sends no SET clause',
+    String(cmd.input.UpdateExpression ?? '').startsWith('ADD '),
+    true,
+  )
+
+  const values = unmarshall(cmd.input.ExpressionAttributeValues)
+  check('so no name is blanked on the row', values[':nm'], undefined)
+  check('and no level is claimed', values[':lvl'], undefined)
+  check('while the Volts are on the wire', values[':balance'], 5000)
+}
+
+console.log('\nspend: the debit reaches DynamoDB with its condition intact')
+{
+  bridge.reset()
+  bridge.reply({ Attributes: { balance: { N: '250' } } })
+
+  const threw = bridge.call('br:ddb:spend', 44, LIC, 750)
+  check('the handler runs', why(threw), null)
+
+  const cmd = sent(0)
+  // THE CONDITION IS THE WHOLE FEATURE (src/spend.js). A handler that built it
+  // and forgot to put it on the command would debit unconditionally, and every
+  // assertion in the spend block above would still pass.
+  check('the condition is on the command', cmd.input.ConditionExpression, '#bal >= :cost')
+  check('and so is the debit', cmd.input.UpdateExpression, 'ADD #bal :neg')
+  check('the balance after is asked for', cmd.input.ReturnValues, 'UPDATED_NEW')
+
+  await bridge.settle()
+  const res = answer('br:ddb:spendResult')
+  check('the buyer is told what it cost', res.extra.spent, 750)
+  check('and what is left', res.extra.balance, 250)
+}
+
+console.log('\nspend: a refusal is not a failure')
+{
+  bridge.reset()
+  const refused = new Error('The conditional request failed')
+  refused.name = 'ConditionalCheckFailedException'
+  bridge.reply(refused)
+  bridge.reply({ Item: { balance: { N: '700' } } }) // the follow-up read
+
+  bridge.call('br:ddb:spend', 45, LIC, 750)
+  await bridge.settle()
+  await bridge.settle()
+
+  const res = answer('br:ddb:spendResult')
+  check('an overspend is refused, not errored', res.extra.refused, 'not enough currency')
+  check('and no error is reported for it', res.extra.error, undefined)
+  check('the real balance is read back for the message', res.extra.balance, 700)
+}
+
+// ------------------------------------------------- no free variables, ever ---
+//
+// The block above pins one verb because one verb broke. This one is the ratchet
+// for the CLASS: every handler in src/index.js is invoked with a payload that
+// gets past its guards, and a name that is not in scope becomes a named failure
+// instead of a live incident.
+//
+// IT IS A SMOKE TEST AND IT IS NOT ASHAMED OF THAT. It does not assert what any
+// of these verbs write -- only that their bodies run. That is precisely the
+// property the suite was missing, and it is the property an extract-a-function
+// refactor breaks.
+//
+// A VERB WITH NO PAYLOAD HERE IS A FAILURE, not a quiet gap: the check below
+// compares this table against what src/index.js actually registered, so adding
+// a verb and not driving it goes red naming the verb.
+
+console.log('\nevery verb runs: no free variables anywhere in the bridge')
+{
+  // A REAL v4, unlike the `ID` the incident cases use: src/artifacts.js pins
+  // the version and variant nibbles, so a made-up id turns artifactBegin and
+  // artifactPut round at their first guard and this block would be driving two
+  // verbs that never leave their preludes.
+  const UUID = '11111111-2222-4333-8444-555555555555'
+  const MATCH_ROW = {
+    license: LIC, sk: 'match#0001700000000#7', matchId: 7,
+    endedAt: 1_700_000_000_000, mode: 'solo', placement: 3, total: 48,
+    kills: 2, downs: 1, revives: 0, damage: 400, survivedMs: 90_000,
+    xpEarned: 100, voltsEarned: 200, won: false,
+  }
+
+  // artifactPut reads the frame off the spool before uploading it, so put one
+  // there -- otherwise the verb turns round at its first `stat` and the S3 half
+  // of it goes unexercised.
+  const frame = artifactNames(UUID, 1, 'png')
+  writeFileSync(join(bridge.spoolDir, frame.file), Buffer.from('not really a png'))
+
+  const PAYLOADS = {
+    'br:ddb:banCheck': [1, LIC],
+    'br:ddb:grantsFetch': [2, LIC],
+    'br:ddb:maintenance': [3],
+    'br:ddb:profileFetch': [4, LIC],
+    'br:ddb:statsApply': [5, LIC, MATCH_PAYOUT],
+    'br:ddb:historyPut': [6, [MATCH_ROW]],
+    'br:ddb:inventoryFetch': [7, LIC],
+    'br:ddb:purchase': [8, LIC, 'chute_azure', 750],
+    'br:ddb:spend': [9, LIC, 750],
+    'br:ddb:equip': [10, LIC, 'chute', 'chute_azure', false],
+    'br:ddb:putIncident': [11, 'token-1', refusalPayload()],
+    'br:ddb:incidentClose': [12, {
+      incidentId: UUID,
+      matchEndedAt: 1_700_000_500_000,
+      matchStartedAt: 1_700_000_000_000,
+      verdict: 'upheld',
+      byName: 'Admin',
+      byLicense: LIC,
+    }],
+    'br:ddb:incidentVerdict': [13, UUID],
+    'br:ddb:artifactBegin': [14, UUID, 1, 'png'],
+    'br:ddb:artifactPut': [15, UUID, 1, 'png', 1_700_000_000_000],
+    'br:ddb:awardClaim': [16, UUID, LIC],
+    'br:ddb:awardQueue': [17],
+    'br:ddb:awardPay': [18, LIC, UUID, 500],
+    'br:ddb:awardSettle': [19, UUID],
+    'br:ddb:selftest': [20],
+  }
+
+  check(
+    'every verb src/index.js registers is driven here',
+    [...bridge.handlers.keys()].filter((n) => !Object.hasOwn(PAYLOADS, n)),
+    [],
+  )
+  check(
+    'and nothing here drives a verb that no longer exists',
+    Object.keys(PAYLOADS).filter((n) => !bridge.handlers.has(n)),
+    [],
+  )
+
+  // ONE reset, before the loop. The answers accumulate on purpose -- the last
+  // assertion in this block reads all of them at once.
+  bridge.reset()
+
+  for (const [verb, args] of Object.entries(PAYLOADS)) {
+    const threw = bridge.call(verb, ...args)
+    check(verb, why(threw), null)
+  }
+
+  await bridge.settle()
+  await bridge.settle()
+
+  // ═══ AND THE ASYNCHRONOUS HALF ═══
+  //
+  // A free variable inside a `.then` does NOT throw where the loop above can
+  // see it: every one of these handlers ends in a `.catch` that turns any
+  // failure into an answer. So the answers are where a late ReferenceError
+  // surfaces, and this is the only place it would ever have been visible.
+  check(
+    'no verb answered with a ReferenceError',
+    bridge.emitted
+      .filter((e) => /is not defined/.test(JSON.stringify(e.args)))
+      .map((e) => e.name),
+    [],
+  )
+}
+
+bridge.cleanup()
 
 if (failed) {
   console.error(`\nbr_ddb: ${failed} of ${ran} case(s) failed`)
