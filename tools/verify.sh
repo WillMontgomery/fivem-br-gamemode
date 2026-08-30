@@ -450,10 +450,16 @@ fi
 # TRUNCATES an ipairs list -- a suite that covered four states quietly covers two
 # and stays green. #233 renamed DEAD to OUT across ~30 files and the whole suite
 # passed with a site still on the old name; this is what noticed.
+# AND IT COVERS tools/ AS WELL AS resources/, which is where the next one was
+# already hiding: tools/test_lobbyseq.lua set a player's state to
+# PlayerState.PLAYING in five places -- PLAYING is a MatchState -- so five cases
+# had been exercising a nil state and passing. A test file is the WORST place
+# for this to sit, because a suite that quietly stops testing something is the
+# one thing that cannot be caught by another suite.
 echo "${DIM}== player states ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     # shellcheck disable=SC2046
-    "$LUA" tools/check_player_states.lua $(find resources -name '*.lua' | sort) || rc=1
+    "$LUA" tools/check_player_states.lua $(find resources tools -name '*.lua' | sort) || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi

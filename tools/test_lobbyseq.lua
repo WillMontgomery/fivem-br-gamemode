@@ -1216,7 +1216,27 @@ do
     reset()
     ok(BR.LobbyPed.isLobbyPed(), 'precondition: local, in the lobby')
 
-    BR.State.me.state = BR.PlayerState.PLAYING
+    -- ═══ ALIVE, AND IT SAID PlayerState.PLAYING UNTIL 2026-08-30 ═══
+    --
+    -- PLAYING IS A MatchState, NOT A PlayerState. The player list is LOBBY,
+    -- WARMUP, BUS, FREEFALL, GLIDE, ALIVE, DBNO, OUT, LEFT -- so the old line
+    -- read nil and set the state to nothing at all, here and at four other
+    -- sites in this file.
+    --
+    -- WHY IT PASSED FOR WEEKS, AND WHY CORRECTING IT CHANGED NOTHING: every
+    -- consumer on these paths compares against LOBBY, and one against WARMUP.
+    -- Not one reads ALIVE. `nil ~= 'lobby'` is true exactly as `'alive' ~=
+    -- 'lobby'` is, so the blocks really were exercising "the player is not in
+    -- the lobby" -- the property they claim -- but reaching it through an
+    -- absent value rather than a state.
+    --
+    -- WHAT IT WAS COSTING WAS THE FUTURE. The day one of these paths grows a
+    -- rule keyed on a SPECIFIC match state -- an emote that differs for DBNO, a
+    -- latch that only fires for ALIVE -- all five would have taken the wrong
+    -- branch and stayed green. tools/check_player_states.lua is what noticed,
+    -- and verify.sh now runs it over tools/ as well as resources/ so the next
+    -- one cannot hide here either.
+    BR.State.me.state = BR.PlayerState.ALIVE
     pump(300)
     ok(BR.LobbyPed.isLobbyPed(),
        'a state change alone does not flip it -- the ped is still on the mark')
@@ -2004,7 +2024,7 @@ do
     ok(not BR.LobbyPed.lockerLocked(), 'precondition: and it released the locker')
 
     -- Away to a match, by a road that is not the choreographed one.
-    BR.State.me.state = BR.PlayerState.PLAYING
+    BR.State.me.state = BR.PlayerState.ALIVE
     ped.x, ped.y = 1500.0, 2500.0
     pump(500)
 
@@ -2052,7 +2072,7 @@ do
     wearChosenModel()
     pump(70000)
 
-    BR.State.me.state = BR.PlayerState.PLAYING
+    BR.State.me.state = BR.PlayerState.ALIVE
     ped.x, ped.y = 1500.0, 2500.0
     pump(500)
 
@@ -2112,7 +2132,7 @@ do
     wearChosenModel()
     pump(70000)      -- the boot entrance, out of the way
 
-    BR.State.me.state = BR.PlayerState.PLAYING
+    BR.State.me.state = BR.PlayerState.ALIVE
     ped.x, ped.y = 1500.0, 2500.0
     pump(500)
 
@@ -2193,7 +2213,7 @@ do
     wearChosenModel()
     pump(70000)
 
-    BR.State.me.state = BR.PlayerState.PLAYING
+    BR.State.me.state = BR.PlayerState.ALIVE
     ped.x, ped.y = 1500.0, 2500.0
     pump(500)
     BR.State.me.state = BR.PlayerState.LOBBY
