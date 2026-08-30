@@ -2,6 +2,8 @@ import { artifactNames, ARTIFACT_PREFIX, isSpoolFile } from '../src/artifacts.js
 import { isActive } from '../src/ban.js'
 import { buildIncidentClose, CLOSE_LIMITS } from '../src/close.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
+import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
+import { buildStatsUpdate } from '../src/stats.js'
 import { projectVerdict, verdictWord } from '../src/verdict.js'
 
 /**
@@ -1170,6 +1172,212 @@ const entryOf = (extra) =>
   // records carry chat and kills, and a strip is neither.
   check('and the strip that opened the case is on it', item.matchTimeline[1].kind, 'weapon_strip')
   check('with the hash the client reported', item.matchTimeline[1].weapon, '2210333304')
+}
+
+// ------------------------------------------------------------------ spend ---
+//
+// ═══ A FAKE DYNAMODB, AND WHY THERE IS ONE HERE ═══
+//
+// `br:ddb:spend`'s whole feature is a ConditionExpression -- "DynamoDB must
+// refuse an overspend, not our code" -- and a test that only inspected the
+// string would prove that a string exists. So the block below EVALUATES the
+// expression the source produced, against a row, and asserts what happens to
+// the row. An overspend has to actually be refused for these to pass.
+//
+// THE FAKE IS IN THE TEST AND MUST NEVER MIGRATE INTO src/. A second
+// implementation of a rule is this repository's signature defect when it ships;
+// in a test it is the standard way to drive a database that is not present, and
+// tools/test_stats.lua already stubs br_ddb the same way for the award sweep.
+//
+// IT UNDERSTANDS `>` AS WELL AS `>=` ON PURPOSE. If it only knew the operator
+// the source happens to use, weakening `>=` to `>` would make the evaluator
+// throw and the failure would be about the fake rather than about the rule.
+// Knowing both means the boundary case -- spending a balance down to exactly
+// zero -- is what tells the two apart, which is the discrimination that matters.
+
+/**
+ * Apply one UpdateItem-shaped command to a plain row.
+ *
+ * Supports exactly the two clause forms this file's verbs produce: a condition
+ * `#name <op> :value`, and an `ADD #a :x, #b :y` update. Anything else throws,
+ * loudly, rather than being silently ignored -- a clause the fake cannot read is
+ * a clause the assertions below are not really testing.
+ *
+ * @returns {{ ok: boolean, row: object }}  ok=false is ConditionalCheckFailed
+ */
+function fakeUpdate(row, cmd) {
+  const names = cmd.ExpressionAttributeNames || {}
+  const values = cmd.ExpressionAttributeValues || {}
+  const out = { ...row }
+
+  if (cmd.ConditionExpression) {
+    const m = /^\s*(#\w+)\s*(>=|>|<=|<|=)\s*(:\w+)\s*$/.exec(cmd.ConditionExpression)
+    if (!m) throw new Error(`fakeUpdate cannot read condition: ${cmd.ConditionExpression}`)
+    const attr = names[m[1]]
+    const want = values[m[3]]
+    if (attr === undefined || want === undefined) {
+      throw new Error(`fakeUpdate: unbound placeholder in ${cmd.ConditionExpression}`)
+    }
+    const have = out[attr]
+    // DYNAMODB'S OWN RULE: a comparison against an attribute that is not there
+    // is FALSE, not zero. A row that never earned anything cannot spend.
+    let pass = false
+    if (have !== undefined && have !== null) {
+      if (m[2] === '>=') pass = have >= want
+      else if (m[2] === '>') pass = have > want
+      else if (m[2] === '<=') pass = have <= want
+      else if (m[2] === '<') pass = have < want
+      else pass = have === want
+    }
+    if (!pass) return { ok: false, row }
+  }
+
+  const add = /(?:^|\s)ADD\s+(.+)$/.exec(cmd.UpdateExpression || '')
+  if (!add) throw new Error(`fakeUpdate cannot read update: ${cmd.UpdateExpression}`)
+  for (const term of add[1].split(',')) {
+    const t = /^\s*(#\w+)\s+(:\w+)\s*$/.exec(term)
+    if (!t) throw new Error(`fakeUpdate cannot read ADD term: ${term}`)
+    const attr = names[t[1]]
+    const delta = values[t[2]]
+    if (attr === undefined || delta === undefined) {
+      throw new Error(`fakeUpdate: unbound placeholder in ADD ${term}`)
+    }
+    out[attr] = (out[attr] ?? 0) + delta
+  }
+  return { ok: true, row: out }
+}
+
+console.log('\nspend: the amount')
+check('a plain cost is taken', spendCost(750), 750)
+check('a string from Lua still coerces', spendCost('750'), 750)
+// THE MINT THAT MUST NOT EXIST. A debit verb that accepted a negative amount
+// would ADD to the balance, and "the currency is earned, never bought" would
+// stop being a property of the system.
+check('a negative amount is refused outright', spendCost(-750), null)
+check('and so is zero -- charging nothing is a caller bug', spendCost(0), null)
+check('a fraction is refused rather than rounded', spendCost(12.5), null)
+check('NaN is refused', spendCost('nonsense'), null)
+check('and so is an absurd amount', spendCost(SPEND_MAX + 1), null)
+check('but the ceiling itself is allowed', spendCost(SPEND_MAX), SPEND_MAX)
+
+console.log('\nspend: the condition refuses an overspend')
+{
+  const cmd = spendUpdate(750)
+
+  // THE HAPPY PATH, so the failures below mean something.
+  const rich = fakeUpdate({ balance: 1000, owned: new Set(['chute_azure']) }, cmd)
+  check('an affordable spend applies', rich.ok, true)
+  check('and debits exactly the cost', rich.row.balance, 250)
+
+  // ═══ THE CASE THIS VERB EXISTS FOR ═══
+  const poor = fakeUpdate({ balance: 700 }, cmd)
+  check('a balance short of the cost is REFUSED', poor.ok, false)
+  check('and nothing is taken from it', poor.row.balance, 700)
+
+  // The boundary, which is also what tells `>=` from `>`. Spending your last
+  // Volt on a car is a purchase, not an overdraft -- the same rule
+  // BR.ShopSolve.canBuy states on the cache side.
+  const exact = fakeUpdate({ balance: 750 }, cmd)
+  check('a balance of exactly the cost is allowed', exact.ok, true)
+  check('and lands on zero', exact.row.balance, 0)
+
+  // A row that has never earned anything. Absent is not zero.
+  const fresh = fakeUpdate({}, cmd)
+  check('a row with no balance attribute cannot spend', fresh.ok, false)
+  check('and no balance is invented for it', fresh.row.balance, undefined)
+
+  // Twice over is twice charged -- this verb is deliberately NOT idempotent,
+  // which is the whole difference from `purchase`.
+  const once = fakeUpdate({ balance: 1600 }, cmd)
+  const twice = fakeUpdate(once.row, cmd)
+  check('a repeatable spend is repeatable', twice.ok, true)
+  check('and charges again', twice.row.balance, 100)
+  check('a third refuses on the remainder', fakeUpdate(twice.row, cmd).ok, false)
+
+  // ═══ NO `owned` SET, WHICH IS WHY `purchase` COULD NOT BE REUSED ═══
+  check('the debit touches one attribute', Object.keys(cmd.ExpressionAttributeNames), ['#bal'])
+  check('and that attribute is the balance', cmd.ExpressionAttributeNames['#bal'], 'balance')
+  check('nothing is marked owned', /own/i.test(JSON.stringify(cmd)), false)
+
+  // The two placeholders, which must not be collapsed into one.
+  check('the update adds the negative', cmd.ExpressionAttributeValues[':neg'], -750)
+  check('the condition compares the positive', cmd.ExpressionAttributeValues[':cost'], 750)
+}
+
+// ------------------------------------------------------------ stats writes ---
+//
+// The payout's expression is load-bearing and this file had no opinion about it
+// until `brvolts` became a second caller of the same verb. Two properties:
+// the payout's own write must not have moved, and a caller that does not claim
+// to be a match must not blank the fields a match sets.
+
+console.log('\nstats: the match payout writes what it always wrote')
+{
+  // A whole match result, in the shape br_stats/server/persist.lua builds.
+  const payout = buildStatsUpdate({
+    xp: 1048, balance: 1200, matches: 1, wins: 1, top10s: 1, kills: 3,
+    deaths: 0, downs: 1, revives: 2, damageDealt: 450, playtimeSec: 900,
+    soloMatches: 1, squadMatches: 0,
+    level: 12, name: 'Epyc', at: 1_700_000_000_000,
+  })
+
+  // PINNED AS A STRING, because this is the one assertion that says "the money
+  // path did not move when the SET clause became conditional".
+  check(
+    'the expression is byte for byte the one it shipped with',
+    payout.UpdateExpression,
+    'SET #lvl = :lvl, #nm = :nm, #ls = :ls ADD #xp :xp, #balance :balance,'
+      + ' #matches :matches, #wins :wins, #top10s :top10s, #kills :kills,'
+      + ' #deaths :deaths, #downs :downs, #revives :revives,'
+      + ' #damageDealt :damageDealt, #playtimeSec :playtimeSec,'
+      + ' #soloMatches :soloMatches, #squadMatches :squadMatches',
+  )
+  check('the level it derived is written', payout.ExpressionAttributeValues[':lvl'], 12)
+  check('the name it saw is written', payout.ExpressionAttributeValues[':nm'], 'Epyc')
+  check('and the match end is stamped', payout.ExpressionAttributeValues[':ls'], 1_700_000_000_000)
+
+  // Applied to a row, it is still an ADD and still atomic in the sense that
+  // matters here: it composes with whatever was already there.
+  const after = fakeUpdate({ balance: 300, kills: 40 }, payout)
+  check('the balance accumulates rather than replacing', after.row.balance, 1500)
+  check('and so does every other counter', after.row.kills, 43)
+}
+
+console.log('\nstats: a grant is not a match')
+{
+  // What `brvolts` sends: an amount, and no claim about anything else.
+  const grant = buildStatsUpdate({ balance: 5000 })
+
+  check(
+    'a caller that names no match fields writes no SET clause at all',
+    grant.UpdateExpression.startsWith('ADD '),
+    true,
+  )
+  // ═══ THE THREE FIELDS A GRANT MUST NOT TOUCH ═══
+  //
+  // The first version of this wrote all three unconditionally with `num()` and
+  // `String()` fallbacks, so THIS payload would have set the player to level 0,
+  // blanked their name, and stamped lastMatchAt 0 -- silently, on a live
+  // profile row, every time somebody granted themselves Volts to test the shop.
+  check('no level is claimed', grant.ExpressionAttributeValues[':lvl'], undefined)
+  check('no name is written', grant.ExpressionAttributeValues[':nm'], undefined)
+  check('and no match end is stamped', grant.ExpressionAttributeValues[':ls'], undefined)
+
+  const before = { balance: 120, level: 12, name: 'Epyc', lastMatchAt: 1_700_000_000_000 }
+  const after = fakeUpdate(before, grant).row
+  check('the grant lands on the balance', after.balance, 5120)
+  check('the level survives it', after.level, 12)
+  check('the name survives it', after.name, 'Epyc')
+  check('and so does the last match', after.lastMatchAt, 1_700_000_000_000)
+
+  // Present-and-zero is a value, not an absence. A caller that means level 0
+  // has a bug of its own and this function is not the place to hide it.
+  const explicit = buildStatsUpdate({ balance: 1, level: 0 })
+  check('an explicit zero is still written', explicit.ExpressionAttributeValues[':lvl'], 0)
+  // ...and the empty string is treated as absent, because '' is exactly what
+  // the old unconditional write produced from a missing name.
+  const blank = buildStatsUpdate({ balance: 1, name: '' })
+  check('but an empty name is an absent one', blank.ExpressionAttributeValues[':nm'], undefined)
 }
 
 if (failed) {

@@ -43,6 +43,14 @@ local S = BR.Config.Shop
 --- state and is a shop that simply does not exist.
 local rows = {}
 
+--- src -> true while a debit for that player is waiting on DynamoDB.
+---
+--- THE ONLY STATE THIS FILE KEEPS BETWEEN TWO EVENTS, and it is bounded by the
+--- request timeout inside BR.Market.charge: the callback always runs, so an
+--- entry cannot outlive one round trip. Keyed by src rather than by license
+--- because the press it refuses is a press from that connection.
+local inflight = {}
+
 --- Build the catalogue and register every row as an inventory item.
 ---
 --- SAID OUT LOUD, ALWAYS. A shop with no rows is the shipped state and prints
@@ -124,20 +132,80 @@ function BR.Shop.rows() return rows end
 -- Buying
 -- ---------------------------------------------------------------------------
 
---- What this player bought in THIS match, or nil.
+--- ═══ WHAT A PLAYER HAS PAID FOR, AND WHICH MATCH IT BELONGS TO ═══
 ---
---- KEYED ON THE MATCH ID RATHER THAN CLEARED BY A HOOK. A purchase is a fact
---- about one match; stamping the match on it means a new match is a clean slate
---- with no teardown to remember and no state to leak between rounds. The same
---- shape roster entries already use for `matchId`.
+--- A LIST RATHER THAN ONE RECORD, since the owner's report of 2026-08-29. It
+--- was `e.shopBuy`, one slot, stamped with the match id -- "a purchase is a fact
+--- about one match, so a new match is a clean slate with no teardown to
+--- remember". The stamp is still the right idea and the single slot was not: a
+--- player who leaves warmup with a car still owed and buys another in the next
+--- match would have had the first record OVERWRITTEN, which is a paid car
+--- vanishing with nothing in any log. Two entries cost a table; the alternative
+--- cost somebody a purchase.
+---
+--- `matchId = nil` MEANS OWED AND UNBOUND -- paid for, not yet received, and no
+--- longer tied to the match that sold it. `BR.Shop.release` puts entries into
+--- that state when their owner walks out of a match, and `BR.Shop.deliver`
+--- hands them over at the next wheels-up their owner attends. Nothing paid for
+--- is ever discarded.
+--- @param e table  a roster entry
+--- @return table
+local function buysOf(e)
+    e.shopBuys = e.shopBuys or {}
+    return e.shopBuys
+end
+
+--- How many cars this player has bought FOR THIS MATCH.
+---
+--- ═══ THE OWNER'S BUG, 2026-08-29: "I bought a thing, left the match with it
+---     (and still in warmup), then joined a new match and couldn't buy anything
+---     else" ═══
+---
+--- The count was right and its LIFETIME was not. Readying up while a warmup of
+--- your mode is still open does not form a new match -- BR.Lobby.ready hands you
+--- to BR.Party.lateJoin, which puts you back into the SAME instance with the
+--- SAME id (server/lobby.lua). So a player who bought a car, left the pad and
+--- readied up again re-entered the match his purchase was stamped with, and the
+--- ceiling refused him for a car he had walked away from. From his seat that was
+--- a new match; from the roster's it was the same one, and both are correct.
+---
+--- So leaving now RELEASES the binding (see BR.Shop.release) and only entries
+--- still bound to the match being asked about are counted. Re-entering, whether
+--- it is the same instance or the next one, is a fresh allowance.
 --- @param src integer
 --- @param m table|nil
---- @return table|nil
-local function purchaseOf(src, m)
+--- @return integer
+local function boughtIn(src, m)
     local e = BR.Roster.get(src)
-    if not e or not e.shopBuy or not m then return nil end
-    if e.shopBuy.matchId ~= m.id then return nil end
-    return e.shopBuy
+    if not e or not m then return 0 end
+    local n = 0
+    for _, buy in ipairs(buysOf(e)) do
+        if buy.matchId == m.id then n = n + 1 end
+    end
+    return n
+end
+
+--- Release a player's undelivered purchases from the match they were bought in.
+---
+--- CALLED WHEN THEY LEAVE ONE. The car is not forfeited -- answer 3 says a
+--- purchase is never refunded and it would be a strange reading of that to also
+--- make it never delivered -- it becomes OWED, and the next wheels-up this
+--- player attends hands it over.
+---
+--- A DELIVERED ENTRY IS DROPPED HERE, because its only remaining job was to say
+--- "already bought this match" and the match is behind them.
+--- @param src integer
+function BR.Shop.release(src)
+    local e = BR.Roster.get(src)
+    if not e or not e.shopBuys then return end
+    local kept = {}
+    for _, buy in ipairs(e.shopBuys) do
+        if not buy.delivered then
+            buy.matchId = nil
+            kept[#kept + 1] = buy
+        end
+    end
+    e.shopBuys = kept
 end
 
 RegisterNetEvent('br:shop:buy')
@@ -150,16 +218,24 @@ AddEventHandler('br:shop:buy', function(d)
     if not m or not e then return end
 
     local row = BR.ShopSolve.rowById(rows, id)
-    local prior = purchaseOf(src, m)
 
-    -- THE WHOLE CONDITION IN ONE CALL, and the same call tools/test_shop.lua
-    -- exercises. Nothing is re-decided below it.
+    -- ═══ A CHARGE IN FLIGHT COUNTS AS BOUGHT ═══
+    --
+    -- The debit is a DynamoDB round trip now, so two presses inside it would
+    -- both find `boughtIn` at zero and both be allowed -- one allowance, two
+    -- cars. BR.Market.charge reserves the Volts against the session cache, so
+    -- the money cannot be spent twice either way; this is the SECOND press's
+    -- refusal, and it is the one that says `alreadyone` rather than `afford`.
+    --
+    -- CLEARED BY THE ANSWER, WHICH ALWAYS ARRIVES: BR.Market.charge's request
+    -- carries its own six-second timeout, so a bridge that never replies costs
+    -- one refused press and not the rest of the warmup.
     local ok, why = BR.ShopSolve.canBuy({
         on          = BR.ShopSolve.enabled(S),
         matchState  = m.state,
         playerState = e.state,
         row         = row,
-        bought      = prior and 1 or 0,
+        bought      = boughtIn(src, m) + (inflight[src] and 1 or 0),
         limit       = tonumber(S.limit) or 1,
         -- THE BALANCE IS THE MARKET'S, ASKED FOR RATHER THAN CACHED HERE. One
         -- ledger, one reader; a second copy of a balance is a second thing that
@@ -182,38 +258,125 @@ AddEventHandler('br:shop:buy', function(d)
         return
     end
 
-    -- ═══ THE CHARGE IS THE POINT OF NO RETURN, AND IT IS TAKEN FIRST ═══
+    -- ═══ THE CHARGE IS THE POINT OF NO RETURN, AND NOTHING EXISTS BEFORE IT
+    --     LANDS ═══
     --
     -- Everything above this line is a refusal that costs nothing. Everything
-    -- below it has been paid for. server/rescue.lua orders itself the same way
-    -- and for the same reason -- "every refusal in this function returns before
-    -- the kit is spent" -- and here it matters more, because there is no refund
-    -- path to fall back on by instruction.
-    local paid, why2 = BR.Market.charge(src, row.price, 'shop:' .. row.id)
-    if not paid then
-        print(('[br_core] shop: %d could not be charged for "%s" -- %s')
-            :format(src, row.id, tostring(why2)))
-        return
-    end
+    -- inside the callback has been paid for -- and "paid for" now means DynamoDB
+    -- accepted a conditional debit against the real row, not that a number in
+    -- this process moved. server/rescue.lua orders itself the same way and for
+    -- the same reason ("every refusal in this function returns before the kit is
+    -- spent"), and here it matters more, because there is no refund path to fall
+    -- back on by instruction.
+    --
+    -- THE RECORD IS WRITTEN IN THE CALLBACK, NOT BEFORE IT. A record written
+    -- optimistically and rolled back on a refusal is a car that briefly existed;
+    -- the ordering below means it never does.
+    inflight[src] = true
+    BR.Market.charge(src, row.price, 'shop:' .. row.id, function(paid, why2)
+        inflight[src] = nil
 
-    e.shopBuy = { matchId = m.id, row = row.id, paid = row.price, delivered = false }
+        if not paid then
+            -- SILENT TO THE PLAYER, except where BR.Market.charge has already
+            -- spoken the market's own shortfall sentence. Same rule as the
+            -- refusals above: the owner gave three strings for this feature and
+            -- none of them is a refusal.
+            print(('[br_core] shop: %d could not be charged for "%s" -- %s')
+                :format(src, row.id, tostring(why2)))
+            return
+        end
 
-    -- THE OWNER'S SENTENCE, VERBATIM, AND THE ONLY ONE THIS PATH SPEAKS.
-    BR.Server.notify(src, S.boughtToast, 'success')
-    -- ...and the pickup cue, which the CLIENT plays because a frontend sound is
-    -- a client thing. The existing one: see config/shop.lua on why there is no
-    -- new cue.
-    TriggerClientEvent('br:shop:bought', src, { row = row.id })
+        -- THE MATCH IS RE-READ RATHER THAN CLOSED OVER. A round trip is long
+        -- enough for warmup to end, and stamping the record with a match the
+        -- player has since left would bind a paid car to a match that will never
+        -- deliver it. Absent means unbound, which is the OWED state -- the next
+        -- wheels-up they attend hands it over.
+        local now = BR.Server.matchOf(src)
+        local buys = buysOf(e)
+        buys[#buys + 1] = {
+            matchId   = (now and now.state == BR.MatchState.WARMUP) and now.id or nil,
+            row       = row.id,
+            paid      = row.price,
+            delivered = false,
+        }
 
-    print(('[br_core] shop: %d bought "%s" for %d Volts')
-        :format(src, row.id, row.price))
+        -- THE OWNER'S SENTENCE, VERBATIM, AND THE ONLY ONE THIS PATH SPEAKS.
+        BR.Server.notify(src, S.boughtToast, 'success')
+        -- ...and the pickup cue, which the CLIENT plays because a frontend sound
+        -- is a client thing. The existing one: see config/shop.lua on why there
+        -- is no new cue.
+        TriggerClientEvent('br:shop:bought', src, { row = row.id })
+
+        print(('[br_core] shop: %d bought "%s" for %d Volts')
+            :format(src, row.id, row.price))
+    end)
 end)
 
 -- ---------------------------------------------------------------------------
 -- Delivery
 -- ---------------------------------------------------------------------------
 
---- Hand out every car bought during this match's warmup.
+--- Hand ONE paid-for car to its buyer, whichever match it was bought in.
+--- @param src integer
+--- @param buy table
+local function deliverOne(src, buy)
+    local row = BR.ShopSolve.rowById(rows, buy.row)
+    if not row then
+        -- A ROW THAT WAS SOLD AND HAS SINCE STOPPED EXISTING. Only
+        -- reachable across a br_lib reload mid-match. Answer 3 applies:
+        -- nothing is refunded, and the console says so rather than the
+        -- player silently getting nothing.
+        print(('^3[br_core] shop: %d paid for "%s" and it is no longer '
+               .. 'in the catalogue -- nothing delivered^7')
+            :format(src, tostring(buy.row)))
+        buy.delivered = true
+        return
+    end
+
+    local itemId = BR.ShopSolve.itemIdFor(row)
+    local stack = {
+        item   = itemId,
+        kind   = BR.ItemKind.CONSUMABLE,
+        rarity = BR.Rarity.LEGENDARY,
+        count  = 1,
+    }
+
+    -- ═══ SILENTLY, BECAUSE THIS IS A DELIVERY AND NOT A PICKUP ═══
+    --
+    -- Owner, 2026-08-29: "when transitioning to state BUS, the pickup
+    -- sound is heard again by anyone who has purchased an item."
+    --
+    -- Everything that lands in an inventory plays GTA's PICK_UP
+    -- (client/inventory.lua), which is right for something you just
+    -- walked over and wrong for a car you paid for during warmup and
+    -- that the match hands you at wheels-up. The player is standing in
+    -- a plane; nothing is visibly arriving; the sound has no referent.
+    --
+    -- THE PURCHASE ALREADY MADE THE NOISE. `br:shop:bought` plays the
+    -- same cue at the moment the Volts leave the balance, which is when
+    -- something actually happened, and the toast already promised this
+    -- delivery in the owner's own words -- "it will be available in your
+    -- inventory once the match starts". A second cue here is the same
+    -- event announced twice, minutes apart, the second time with no
+    -- cause the player can see.
+    local ok, displaced, reason = BR.Inv.give(src, stack, { quiet = true })
+    buy.delivered = true
+
+    if ok then
+        -- ANSWER 4: an ordinary item in every way, including the part
+        -- where something it pushed out lands on the floor.
+        if displaced then BR.Loot.dropForPlayer(src, displaced) end
+        print(('[br_core] shop: %d received "%s"'):format(src, itemId))
+    else
+        -- ...AND IF IT WOULD NOT FIT AT ALL, IT GOES ON THE GROUND AT
+        -- THEIR FEET rather than evaporating. Owner, answer 4.
+        BR.Loot.dropForPlayer(src, stack)
+        print(('[br_core] shop: %d had no room for "%s" (%s) -- dropped '
+               .. 'at their feet'):format(src, itemId, tostring(reason)))
+    end
+end
+
+--- Hand out every car this match's players have paid for and not received.
 ---
 --- ═══ CALLED FROM match.onEnter(BUS), IMMEDIATELY AFTER BR.Inv.clearFor(m),
 ---     AND THE ORDER IS THE WHOLE OF IT ═══
@@ -234,65 +397,23 @@ function BR.Shop.deliver(m)
     if not m then return end
 
     BR.Roster.each(
-        function(e) return e.matchId == m.id and e.shopBuy ~= nil end,
+        function(e) return e.matchId == m.id and e.shopBuys ~= nil end,
         function(src, e)
-            local buy = e.shopBuy
-            if buy.matchId ~= m.id or buy.delivered then return end
-
-            local row = BR.ShopSolve.rowById(rows, buy.row)
-            if not row then
-                -- A ROW THAT WAS SOLD AND HAS SINCE STOPPED EXISTING. Only
-                -- reachable across a br_lib reload mid-match. Answer 3 applies:
-                -- nothing is refunded, and the console says so rather than the
-                -- player silently getting nothing.
-                print(('^3[br_core] shop: %d paid for "%s" and it is no longer '
-                       .. 'in the catalogue -- nothing delivered^7')
-                    :format(src, tostring(buy.row)))
-                buy.delivered = true
-                return
+            -- ═══ EVERYTHING THEY HAVE PAID FOR AND NOT RECEIVED ═══
+            --
+            -- Bound to THIS match, or OWED from an earlier one they walked out
+            -- of before its wheels-up (BR.Shop.release). Delivering only the
+            -- bound ones would mean a car somebody paid for could never arrive
+            -- at all, which is a worse reading of "purchases cannot be refunded"
+            -- than the owner can possibly have meant.
+            local kept = {}
+            for _, buy in ipairs(buysOf(e)) do
+                if not buy.delivered then deliverOne(src, buy) end
+                -- A DELIVERED ENTRY IS DROPPED. Its only remaining job was to
+                -- say "already bought this match", and warmup is over.
+                if not buy.delivered then kept[#kept + 1] = buy end
             end
-
-            local itemId = BR.ShopSolve.itemIdFor(row)
-            local stack = {
-                item   = itemId,
-                kind   = BR.ItemKind.CONSUMABLE,
-                rarity = BR.Rarity.LEGENDARY,
-                count  = 1,
-            }
-
-            -- ═══ SILENTLY, BECAUSE THIS IS A DELIVERY AND NOT A PICKUP ═══
-            --
-            -- Owner, 2026-08-29: "when transitioning to state BUS, the pickup
-            -- sound is heard again by anyone who has purchased an item."
-            --
-            -- Everything that lands in an inventory plays GTA's PICK_UP
-            -- (client/inventory.lua), which is right for something you just
-            -- walked over and wrong for a car you paid for during warmup and
-            -- that the match hands you at wheels-up. The player is standing in
-            -- a plane; nothing is visibly arriving; the sound has no referent.
-            --
-            -- THE PURCHASE ALREADY MADE THE NOISE. `br:shop:bought` plays the
-            -- same cue at the moment the Volts leave the balance, which is when
-            -- something actually happened, and the toast already promised this
-            -- delivery in the owner's own words -- "it will be available in your
-            -- inventory once the match starts". A second cue here is the same
-            -- event announced twice, minutes apart, the second time with no
-            -- cause the player can see.
-            local ok, displaced, reason = BR.Inv.give(src, stack, { quiet = true })
-            buy.delivered = true
-
-            if ok then
-                -- ANSWER 4: an ordinary item in every way, including the part
-                -- where something it pushed out lands on the floor.
-                if displaced then BR.Loot.dropForPlayer(src, displaced) end
-                print(('[br_core] shop: %d received "%s"'):format(src, itemId))
-            else
-                -- ...AND IF IT WOULD NOT FIT AT ALL, IT GOES ON THE GROUND AT
-                -- THEIR FEET rather than evaporating. Owner, answer 4.
-                BR.Loot.dropForPlayer(src, stack)
-                print(('[br_core] shop: %d had no room for "%s" (%s) -- dropped '
-                       .. 'at their feet'):format(src, itemId, tostring(reason)))
-            end
+            e.shopBuys = kept
         end)
 end
 

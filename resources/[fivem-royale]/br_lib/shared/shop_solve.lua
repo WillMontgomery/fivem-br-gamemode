@@ -267,6 +267,82 @@ function BR.ShopSolve.nameOf(row)
     return tostring(row.model or '')
 end
 
+--- The plate's second line: the price, then what the currency is called.
+---
+--- ═══ THE WORD COMES FROM CONFIG, NOT FROM HERE ═══
+---
+--- Owner, 2026-08-29: 'Change the green line to say "x Volts"'. It used to be a
+--- bare number, and the note that said so was right at the time -- "adding a
+--- word to it would be copy nobody asked for" -- so the word is now asked for
+--- and the number is no longer bare.
+---
+--- `BR.Config.Market.currency` IS THE ONE PLACE THAT STRING LIVES, and its own
+--- comment says renaming the currency is that line plus the matching constant in
+--- Ringmaster. Writing "Volts" here would make it that line, the Ringmaster
+--- constant, AND a client file nobody would think to grep -- so the caller
+--- passes it in and this function never spells it.
+---
+--- NO CURRENCY, NO WORD. A caller that cannot resolve the name gets the bare
+--- number back rather than the price followed by nothing or by a placeholder.
+--- @param price number|nil
+--- @param currency string|nil
+--- @return string
+function BR.ShopSolve.priceLine(price, currency)
+    local n = math.floor(tonumber(price) or 0)
+    local word = type(currency) == 'string' and currency or ''
+    if word == '' then return tostring(n) end
+    return ('%d %s'):format(n, word)
+end
+
+--- How high up the car its price plate hangs, in metres from the model origin.
+---
+--- ═══ "CHANGE THE DUI TO DRAW AT THE ELEVATION OF THE VEHICLE'S BUMPER"
+---     (owner, 2026-08-29) ═══
+---
+--- IT USED TO BE ONE AUTHORED NUMBER, `signLift = 1.15`, measured from the
+--- model's own origin -- which is a height that suits a saloon and nothing else.
+--- The catalogue runs from a `sanchez` to a `marshall`, and a monster truck's
+--- bumper is more than a metre above a dirt bike's: one constant cannot be at
+--- both, so at 1.15 the plate floated over the bike and sat inside the truck.
+---
+--- ═══ SO IT IS READ OFF THE MODEL, AND THE ONLY AUTHORED NUMBER IS A SHAPE ═══
+---
+--- GetModelDimensions hands back the model's bounding box, and the bumper's
+--- height is a FRACTION of that box rather than a distance from anything: the
+--- box's floor is where the tyres meet the road, its ceiling is the roof, and
+--- every road vehicle wears its bumper low in that span. One fraction is
+--- thirteen fewer numbers for the owner to tune, and it scales with the model
+--- instead of being contradicted by it.
+---
+--- `lift` IS THE NUDGE HE KEEPS. It is added after the derivation, in metres, so
+--- moving every plate up or down is still one number -- it is just no longer the
+--- number that has to know how tall a marshall is.
+---
+--- NOT CLAMPED INTO THE BOX. A negative `lift` large enough to put the plate
+--- underground is a value somebody typed on purpose while tuning, and silently
+--- refusing it would look exactly like the setting not working.
+---
+--- @param minZ number|nil  the model box's floor, from GetModelDimensions
+--- @param maxZ number|nil  its ceiling
+--- @param frac number|nil  where the bumper sits in that span, 0 = floor
+--- @param lift number|nil  metres added afterwards
+--- @return number
+function BR.ShopSolve.signHeight(minZ, maxZ, frac, lift)
+    local lo = tonumber(minZ)
+    local hi = tonumber(maxZ)
+    local f  = tonumber(frac) or 0.35
+    local l  = tonumber(lift) or 0.0
+
+    -- NO BOX, NO DERIVATION. GetModelDimensions answers zeroes for a model that
+    -- is not loaded, and a plate at the origin is better than a plate at nan.
+    if not lo or not hi then return l end
+    -- A box the wrong way up is a model table this code cannot reason about;
+    -- the span is taken as a magnitude so the answer stays inside it either way.
+    if hi < lo then lo, hi = hi, lo end
+
+    return lo + (hi - lo) * f + l
+end
+
 --- THE APPEARANCE, CANONICALISED. One row in, one fully-populated table out.
 ---
 --- ═══ THIS FUNCTION IS THE "EXACTLY AS SHOWN" GUARANTEE ═══

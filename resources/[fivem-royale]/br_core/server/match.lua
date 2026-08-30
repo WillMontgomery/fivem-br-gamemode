@@ -1397,6 +1397,21 @@ function BR.Match.leaveMatch(src)
     local entry = BR.Roster.get(src)
     if not entry then return end
 
+    -- ═══ WALKING OUT RELEASES THE WARMUP SHOP'S ONE-PER-MATCH ALLOWANCE ═══
+    --
+    -- Owner, 2026-08-29: "I bought a thing, left the match with it (and still in
+    -- warmup), then joined a new match and couldn't buy anything else." Readying
+    -- up while a warmup of your mode is still open does not form a new match --
+    -- BR.Lobby.ready hands you to BR.Party.lateJoin and you re-enter the SAME
+    -- instance -- so a purchase stamped with that match id was still binding
+    -- somebody who had left it. Nothing is forfeited: the car becomes OWED and
+    -- the next wheels-up this player attends delivers it. See BR.Shop.release.
+    --
+    -- BEFORE THE BRANCHES BELOW, so it covers every way out of a match and not
+    -- only the warmup one. Guarded because br_core is allowed to run without the
+    -- shop having resolved a catalogue.
+    if BR.Shop and BR.Shop.release then BR.Shop.release(src) end
+
     if entry.state == BR.PlayerState.LOBBY then
         -- Already home. If they still carry a matchId (the ENDED summary),
         -- leaving just detaches them from the last of its traffic -- no

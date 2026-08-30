@@ -1944,7 +1944,20 @@ else
     out_="$(ask_)"
     says_ 'a deployed pair reports its manifest' "$out_" "\"scheme\":\"br_ddb-source-fingerprint-1\""
     says_ 'and the bundle digest beside it'      "$out_" "\"onDisk\":\"$want_\""
-    says_ 'with the byte count as a NUMBER'      "$out_" '"bundleBytes":713416'
+    # THE COUNT IS READ OUT OF THE MANIFEST, NOT TYPED HERE. It used to be the
+    # literal 713416, which made every legitimate rebuild of the bundle fail
+    # this gate in a section that is about a DEPLOY going wrong -- a red that
+    # says nothing about the thing it is checking and is fixed by editing the
+    # test, which is how a gate stops being read. The property under test is
+    # that the count reaches the console as a JSON NUMBER rather than a quoted
+    # string; the surrounding `":` and the absence of a quote after it are what
+    # assert that, and the value only has to agree with the manifest beside it.
+    bytes_="$(sed -n 's/.*"bundleBytes"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$mf_" | head -1)"
+    if [ -z "$bytes_" ]; then
+        echo "${RED}FAIL${RST} status bundle: the manifest has no numeric bundleBytes"
+        bfail_=1
+    fi
+    says_ 'with the byte count as a NUMBER'      "$out_" "\"bundleBytes\":$bytes_"
 
     # The whole line has to parse. This object is interpolated into the one
     # response the console polls; malformed here is not a wrong bundle reading,

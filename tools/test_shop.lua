@@ -122,6 +122,10 @@ for _, f in ipairs({
     'config/audio.lua',      -- BR.Config.Audio.cues, which the shop cue lands in
     'config/vehicles.lua',   -- the refused list the catalogue is checked against
     'shared/shop_solve.lua',
+    -- THE CURRENCY'S NAME, which the plate's price line now reads. Loaded here
+    -- rather than stubbed so the assertion about what the plate says is made
+    -- against the shipped string and not against a copy of it.
+    'config/market.lua',
     'config/shop.lua',
 }) do load(f) end
 
@@ -366,14 +370,18 @@ end
 describe('the dropped token, and which knob actually reaches it')
 -- ---------------------------------------------------------------------------
 do
-    -- Owner, 2026-08-29: "when dropped, the item prop should be 5x the size."
-    -- 0.1 -> 0.5. His earlier "super small, like the same size as a weapon prop
-    -- pickup" is superseded rather than contradicted.
-    ok(BR.Config.Shop.tokenScale == 0.5,
-        'the car token is five times the size it was', BR.Config.Shop.tokenScale)
+    -- ═══ TWO INSTRUCTIONS ON ONE DAY, APPLIED IN ORDER ═══
+    --
+    -- Owner, 2026-08-29: "when dropped, the item prop should be 5x the size"
+    -- took it 0.1 -> 0.5. Later the same day, having seen that: "please make the
+    -- vehicle prop pickups 75%% the current size" -- 75%% of what SHIPS, so
+    -- 0.5 x 0.75 = 0.375. His earlier "super small, like the same size as a
+    -- weapon prop pickup" is superseded rather than contradicted.
+    ok(BR.Config.Shop.tokenScale == 0.375,
+        'the car token is three quarters of what it was', BR.Config.Shop.tokenScale)
 
     local reg = BR.Config.ConsumableById['car_marshall']
-    ok(reg ~= nil and reg.propScale == 0.5,
+    ok(reg ~= nil and reg.propScale == 0.375,
         'and that reaches the registered item rather than stopping at config',
         reg and reg.propScale or 'unregistered')
 
@@ -386,9 +394,23 @@ do
     -- on the item beside the marker id, so the two travel together and the
     -- fallback is tunable in one line once the console says which path is live.
     ok(reg ~= nil and reg.fallbackMarker == 34
-           and tonumber(reg.fallbackMarkerScale) == 0.5,
+           and tonumber(reg.fallbackMarkerScale) == 0.375,
         'the fallback marker carries its own size, in metres, beside its id',
         reg and tostring(reg.fallbackMarkerScale) or 'unregistered')
+
+    -- ═══ AND THE TWO MOVE TOGETHER UNTIL SOMEBODY READS A CONSOLE ═══
+    --
+    -- He resized ONE thing he can see. Nothing here knows which of these two
+    -- numbers draws it, so his 75% went on both -- and they must stay equal, or
+    -- the day the question is answered the pickup changes size again on its own.
+    -- This is not a claim that they are the same knob (they are not: one is a
+    -- multiple of the model, the other is metres) -- it is a claim that they are
+    -- currently carrying one instruction between them.
+    ok(BR.Config.Shop.tokenScale == BR.Config.Shop.tokenMarkerScale,
+        'both knobs carry the same 75%, because which one is live is still an '
+            .. 'open question',
+        ('prop %s, marker %s'):format(tostring(BR.Config.Shop.tokenScale),
+                                      tostring(BR.Config.Shop.tokenMarkerScale)))
 
     -- THEY ARE NOT THE SAME NUMBER AND MUST NOT BE READ AS ONE. propScale is a
     -- multiple of the model's size; the marker scale is metres. This asserts
@@ -953,13 +975,58 @@ BR.Market = {
     tellShortfall = function(src, price)
         notices[#notices + 1] = { src = src, text = 'shortfall', tone = 'warn' }
     end,
-    charge = function(src, amount, reason)
-        if (BR.Market.balances[src] or 0) < amount then return false, 'poor' end
-        BR.Market.balances[src] = BR.Market.balances[src] - amount
-        charged[#charged + 1] = { src = src, amount = amount, reason = reason }
-        return true, nil
+    -- ═══ THE CHARGE IS A DYNAMODB ROUND TRIP AND THE STUB CAN HOLD IT OPEN ═══
+    --
+    -- `BR.Market.charge` answers through a CALLBACK now, because the debit is a
+    -- conditional write against the real row rather than a number moving in this
+    -- process. Everything the purchase does -- the record, the toast, the cue --
+    -- happens inside that callback, so a stub that answered by RETURNING would
+    -- test a shape the server no longer has.
+    --
+    -- `hold` DEFERS THE ANSWER instead of refusing it, which is the only way to
+    -- stand a second keypress inside the round trip. Without it the in-flight
+    -- refusal below cannot be reached at all, and "two presses buy two cars" is
+    -- exactly the bug an async charge introduces if nothing guards it.
+    hold = false,
+    held = {},
+    -- ═══ THE ROW SAYING NO WHILE THE CACHE SAID YES ═══
+    --
+    -- The one case the cache cannot produce on its own, and the reason the
+    -- authority moved to DynamoDB: a report award, a console grant or a second
+    -- server can move the row between the read on connect and the press. Set
+    -- this and the charge is refused with the money apparently there.
+    refuseNext = false,
+    charge = function(src, amount, reason, done)
+        done = done or function() end
+        local function settle()
+            if BR.Market.refuseNext then
+                BR.Market.refuseNext = false
+                done(false, 'not enough currency')
+                return
+            end
+            if (BR.Market.balances[src] or 0) < amount then
+                BR.Market.tellShortfall(src, amount)
+                done(false, 'poor')
+                return
+            end
+            BR.Market.balances[src] = BR.Market.balances[src] - amount
+            charged[#charged + 1] = { src = src, amount = amount, reason = reason }
+            done(true, nil)
+        end
+        if BR.Market.hold then
+            BR.Market.held[#BR.Market.held + 1] = settle
+        else
+            settle()
+        end
     end,
 }
+
+--- Let every held charge answer, oldest first.
+local function settleCharges()
+    local due = BR.Market.held
+    BR.Market.held = {}
+    for _, fn in ipairs(due) do fn() end
+end
 BR.Vehicles = {
     spawnOwned = function(model, vtype, x, y, z, heading, forSrc)
         if spawnFails then return nil, nil, 'the engine refused it (handle 0)' end
@@ -1006,7 +1073,14 @@ local function reset()
     sent, notices, charged, spawned, dropped = {}, {}, {}, {}, {}
     inv, roster, matches, peds = {}, {}, {}, {}
     BR.Market.balances = {}
+    BR.Market.hold, BR.Market.held = false, {}
+    BR.Market.refuseNext = false
     spawnFails = false
+end
+
+--- The purchases a player is currently carrying, in order.
+local function buysOf(src)
+    return (roster[src] and roster[src].shopBuys) or {}
 end
 
 local function player(src, opts)
@@ -1037,8 +1111,8 @@ do
     ok(#charged == 1 and charged[1].amount == 750,
         'the purchase charges the price off the ROW, not off anything the '
             .. 'client sent', charged[1] and charged[1].amount)
-    ok(roster[10].shopBuy ~= nil and roster[10].shopBuy.row == 'runner'
-           and roster[10].shopBuy.matchId == 1,
+    ok(#buysOf(10) == 1 and buysOf(10)[1].row == 'runner'
+           and buysOf(10)[1].matchId == 1,
         'and the purchase is recorded against this match')
 
     -- ═══ THE OWNER'S SENTENCE, VERBATIM ═══
@@ -1054,14 +1128,14 @@ do
     -- A SECOND CAR IS REFUSED AND COSTS NOTHING.
     buy(10, 'hauler')
     ok(#charged == 1, 'a second purchase charges nothing at all', #charged)
-    ok(roster[10].shopBuy.row == 'runner',
+    ok(#buysOf(10) == 1 and buysOf(10)[1].row == 'runner',
         'and does not overwrite the first')
 
     -- A CLIENT NAMING A CAR THAT IS NOT FOR SALE.
     reset()
     player(11)
     buy(11, 'cheat')          -- the banned row
-    ok(#charged == 0 and roster[11].shopBuy == nil,
+    ok(#charged == 0 and #buysOf(11) == 0,
         'the banned model cannot be bought even by naming it directly')
     buy(11, 'nonesuch')
     ok(#charged == 0, 'nor can a car that was never in the catalogue')
@@ -1070,7 +1144,7 @@ do
     reset()
     player(12, { balance = 749 })
     buy(12, 'runner')
-    ok(#charged == 0 and roster[12].shopBuy == nil,
+    ok(#charged == 0 and #buysOf(12) == 0,
         'a player one Volt short buys nothing')
     ok(#notices == 1 and notices[1].text == 'shortfall',
         'and is told in the market\'s own words rather than in invented ones')
@@ -1081,6 +1155,181 @@ do
     matches[1].state = BR.MatchState.PLAYING
     buy(13, 'runner')
     ok(#charged == 0, 'and the shop is shut once the bus has gone')
+end
+
+-- ---------------------------------------------------------------------------
+describe('the debit is DynamoDB\'s answer, not this process\'s')
+-- ---------------------------------------------------------------------------
+do
+    -- ═══ NOTHING EXISTS UNTIL THE WRITE LANDS ═══
+    --
+    -- The debit used to be a number moving in memory, settled into the match's
+    -- payout at the end. It is a conditional write now (`br:ddb:spend`), so
+    -- there is a window between the press and the answer -- and everything the
+    -- purchase produces has to be on the far side of it. A record, a toast or a
+    -- cue emitted early is a car that briefly existed and then did not.
+    reset()
+    player(30)
+    BR.Market.hold = true
+    buy(30, 'runner')
+
+    ok(#buysOf(30) == 0, 'a charge in flight has bought nothing yet')
+    ok(#notices == 0 and #sent == 0,
+        'and has promised the player nothing yet either')
+
+    -- ═══ AND A SECOND PRESS INSIDE THAT WINDOW BUYS NOTHING ═══
+    --
+    -- The refusal that an async charge makes possible and that nothing else
+    -- catches: both presses see zero purchases recorded, because the first has
+    -- not finished. It is `alreadyone` rather than `afford`.
+    buy(30, 'hauler')
+    settleCharges()
+    ok(#charged == 1 and charged[1].amount == 750,
+        'two presses inside one round trip are charged once', #charged)
+    ok(#buysOf(30) == 1 and buysOf(30)[1].row == 'runner',
+        'and produce one car, the one that was pressed first')
+    ok(#notices == 1, 'and one toast', #notices)
+
+    -- ...AND THE WINDOW CLOSES. The guard must not outlive the answer.
+    reset()
+    player(31)
+    BR.Market.hold = true
+    buy(31, 'runner')
+    settleCharges()
+    ok(#buysOf(31) == 1, 'the first purchase lands once the write answers')
+    buy(31, 'hauler')
+    ok(#charged == 1,
+        'and the ceiling -- not a stuck in-flight flag -- is what refuses the '
+            .. 'next one', #charged)
+
+    -- ═══ A REFUSED WRITE LEAVES NOTHING BEHIND ═══
+    --
+    -- ROW-SIDE, NOT CACHE-SIDE, AND THAT IS THE WHOLE POINT OF THE TEST. A
+    -- player who obviously cannot afford the car is turned away by
+    -- BR.ShopSolve.canBuy before any charge is attempted, so that case never
+    -- reaches the callback. This one has the money as far as this process knows
+    -- and is refused by DynamoDB anyway -- which is the case the old design
+    -- could not even represent, and the only one that exercises what the
+    -- callback does with a "no".
+    reset()
+    player(32, { balance = 5000 })
+    BR.Market.refuseNext = true
+    buy(32, 'runner')
+    ok(#buysOf(32) == 0, 'a refused charge records no purchase', #buysOf(32))
+    ok(#sent == 0 and #notices == 0,
+        'and neither promises the player a car nor plays them a cue',
+        ('%d events, %d toasts'):format(#sent, #notices))
+
+    buy(32, 'runner')
+    ok(#buysOf(32) == 1,
+        'and does not consume the allowance -- the same player can try again',
+        #buysOf(32))
+
+    -- ═══ AND THE MATCH-END SETTLE IS GONE, WHICH IS THE OTHER HALF ═══
+    --
+    -- The debit used to ride br_core's session ledger and be folded into
+    -- `deltas.balance` at match end. Now that the row is debited at the
+    -- purchase, subtracting it again at match end would charge for the car
+    -- TWICE -- and the two halves live in different resources, so nothing but
+    -- this pins them together.
+    --
+    -- `takeSpent` WAS DELETED RATHER THAN LEFT RETURNING ZERO. A function that
+    -- exists and answers 0 is one somebody re-wires.
+    --
+    -- COMMENTS STRIPPED FIRST. Both files explain at length what the settle
+    -- USED to do and name the function while doing it; prose about a deleted
+    -- call is exactly what these files should contain, and matching it would
+    -- make this assertion a ban on explaining the change.
+    local function code(s) return (s:gsub('%-%-[^\n]*', '')) end
+    local mkt = code(readFile(RES .. 'br_core/server/market.lua'))
+    local prs = code(readFile(RES .. 'br_stats/server/persist.lua'))
+    ok(mkt:find("ask%('br:ddb:spend'") ~= nil,
+        'BR.Market.charge writes the debit through br_ddb\'s spend verb')
+    ok(mkt:find('takeSpent') == nil,
+        'and the session ledger\'s hand-off no longer exists')
+    ok(prs:find('takeSpent') == nil,
+        'so br_stats cannot settle a purchase that DynamoDB already took')
+end
+
+-- ---------------------------------------------------------------------------
+describe('the one-per-match ceiling means one per MATCH')
+-- ---------------------------------------------------------------------------
+do
+    -- ═══ THE OWNER'S BUG, 2026-08-29 ═══
+    --
+    -- "I bought a thing, left the match with it (and still in warmup), then
+    -- joined a new match and couldn't buy anything else because:
+    -- [br_core] shop: 1 refused "ambulance" -- alreadyone"
+    --
+    -- THE RECORD WAS ALWAYS KEYED ON THE MATCH ID and the id was always right --
+    -- which is why "a new match reused an identity" is not what happened. What
+    -- happened is that HIS NEW MATCH WAS NOT A NEW MATCH: BR.Lobby.ready hands a
+    -- ready-up to BR.Party.lateJoin whenever a warmup of that mode is still
+    -- open, so leaving the pad and readying up again re-enters the SAME instance
+    -- with the SAME id. The purchase he had walked away from was still binding
+    -- him.
+    --
+    -- So leaving RELEASES the binding, and re-entering -- same instance or the
+    -- next one -- is a fresh allowance.
+    reset()
+    -- Enough for both cars, so that a refusal below can only be the CEILING and
+    -- never the money. A player who cannot afford the second one would fail
+    -- these assertions for a reason that has nothing to do with his bug.
+    player(40, { balance = 5000 })
+    buy(40, 'runner')
+    ok(#buysOf(40) == 1 and buysOf(40)[1].matchId == 1,
+        'a purchase starts out bound to the match that sold it')
+
+    BR.Shop.release(40)
+    ok(#buysOf(40) == 1 and buysOf(40)[1].matchId == nil,
+        'walking out unbinds it -- the car is still owed, it is just no longer '
+            .. 'this match\'s business')
+
+    -- ...AND BACK IN, TO THE VERY SAME MATCH, WHICH IS HIS CASE EXACTLY.
+    buy(40, 'hauler')
+    ok(#charged == 2,
+        'so re-entering the same warmup is a fresh allowance and the second '
+            .. 'car is sold', #charged)
+    ok(#buysOf(40) == 2,
+        'and the first purchase is not overwritten by it -- he paid for both',
+        #buysOf(40))
+
+    -- ═══ AND NOTHING PAID FOR IS LOST ═══
+    --
+    -- An owed car is delivered at the next wheels-up its buyer attends.
+    -- Delivering only the bound ones would mean a purchase that could never
+    -- arrive, which is a much worse reading of "purchases cannot be refunded"
+    -- than the owner can have meant.
+    BR.Shop.deliver(matches[1])
+    ok(inv[40] ~= nil and #inv[40] == 2,
+        'both arrive at wheels-up, the owed one included',
+        inv[40] and #inv[40] or 0)
+    ok(#buysOf(40) == 0,
+        'and a delivered record is dropped rather than lingering to refuse the '
+            .. 'next match')
+
+    -- A DELIVERED PURCHASE DOES NOT SURVIVE A RELEASE EITHER: its only job was
+    -- to say "already bought this match".
+    reset()
+    player(41)
+    buy(41, 'runner')
+    BR.Shop.deliver(matches[1])
+    BR.Shop.release(41)
+    ok(#buysOf(41) == 0, 'nothing is carried out of a match that delivered it')
+
+    -- RELEASING SOMEBODY WHO NEVER BOUGHT ANYTHING IS A NO-OP, not an error --
+    -- BR.Match.leaveMatch calls this on every exit from every state.
+    reset()
+    player(42)
+    BR.Shop.release(42)
+    BR.Shop.release(43)          -- not on the roster at all
+    ok(#buysOf(42) == 0, 'and a player who bought nothing releases nothing')
+
+    -- ═══ THE CALL SITE, WHICH IS THE HALF A UNIT TEST CANNOT REACH ═══
+    local mtc2 = readFile(RES .. 'br_core/server/match.lua')
+    ok(mtc2:find('BR%.Shop%.release%(src%)') ~= nil,
+        'and BR.Match.leaveMatch is what releases it -- the fix is wired to '
+            .. 'the door he actually walked out of')
 end
 
 -- ---------------------------------------------------------------------------
@@ -1290,10 +1539,34 @@ do
     ok(BR.Config.Shop.signLabel:format('Sultan') == 'Sultan for sale',
         'which with a name in it reads the way he wrote it')
 
-    -- THE PRICE IS A BARE NUMBER on the second line -- no unit, no verb, no
-    -- "press E to buy" of our own invention.
-    ok(cli:find('hint%s*=%s*tostring%(math%.floor') ~= nil,
-        'the price is rendered as a bare number and nothing else')
+    -- ═══ THE PRICE, AND THE ONE WORD HE ASKED FOR ═══
+    --
+    -- Owner, 2026-08-29: 'Change the green line to say "x Volts"'. It was a bare
+    -- number until he said that, and the word is the ONLY thing added -- no
+    -- verb, no "press E to buy" of our own invention.
+    ok(BR.ShopSolve.priceLine(750, 'Volts') == '750 Volts',
+        'the plate\'s second line is the amount and then the currency word')
+    ok(BR.ShopSolve.priceLine(750.9, 'Volts') == '750 Volts',
+        'floored, because a balance is an integer everywhere it is shown')
+    ok(BR.ShopSolve.priceLine(750, nil) == '750',
+        'and with no currency name to be had it stays a bare number rather '
+            .. 'than trailing an empty word')
+
+    -- ═══ THE WORD IS NOT IN THE CLIENT FILE ═══
+    --
+    -- config/market.lua's `currency` is where that string lives, and its own
+    -- comment says renaming the currency is that line plus the matching constant
+    -- in Ringmaster. A literal in client/shop.lua would make it three places,
+    -- and the third would be the one nobody greps.
+    ok(cli:find("'Volts'", 1, true) == nil and cli:find('"Volts"', 1, true) == nil,
+        'client/shop.lua contains no Volts STRING LITERAL -- the owner\'s '
+            .. 'quoted instruction in a comment is not one')
+    ok(cli:find('hint%s*=%s*BR%.ShopSolve%.priceLine') ~= nil,
+        'the plate\'s second line is built by br_lib, from the row\'s price')
+    ok(cli:find('BR%.Config%.Market') ~= nil,
+        'and the word itself comes out of config, where it lives once')
+    ok(BR.Config.Market.currency == 'Volts',
+        'and config still calls it Volts, which is what the plate will read')
 
     -- NOTHING ELSE IS SPOKEN. Every notify/refuse this feature can reach is
     -- either the toast or the market's own existing sentence.
@@ -1303,6 +1576,101 @@ do
     ok(speaks == 1,
         'server/shop.lua says exactly one thing to a player, and it is his '
             .. 'sentence', speaks)
+end
+
+-- ---------------------------------------------------------------------------
+describe('the plate hangs at the bumper, and the bumper is the model\'s')
+-- ---------------------------------------------------------------------------
+do
+    -- ═══ TWO BOXES, AND THEY ARE THE REASON ONE NUMBER COULD NOT WORK ═══
+    --
+    -- Owner, 2026-08-29: "change the DUI to draw at the elevation of the
+    -- vehicle's bumper."
+    --
+    -- THESE FIGURES ARE REPRESENTATIVE, NOT MEASURED. GetModelDimensions needs a
+    -- running game, so what is under test here is the ARITHMETIC over a box, and
+    -- the boxes below are a small bike and a large truck to within a few
+    -- centimetres. The property being asserted is not "the sanchez lands at
+    -- 0.41" -- it is that a taller model gets a higher plate, that both land low
+    -- on their own body, and that no single constant could have done either.
+    local SANCHEZ_LO, SANCHEZ_HI = -0.55, 0.63   -- a dirt bike, ~1.18m tall
+    local MARSHALL_LO, MARSHALL_HI = -1.55, 1.75 -- a monster truck, ~3.3m tall
+
+    -- THE SHIPPED CONFIG, not the fixture standing in for it above: these two
+    -- numbers are the tuning the owner will actually reach for.
+    local F = shipped.signBumperFrac
+    local L = shipped.signLift
+
+    local sanchez  = BR.ShopSolve.signHeight(SANCHEZ_LO, SANCHEZ_HI, F, L)
+    local marshall = BR.ShopSolve.signHeight(MARSHALL_LO, MARSHALL_HI, F, L)
+
+    -- Heights ABOVE THE GROUND THE TYRES STAND ON, which is what "the elevation
+    -- of the bumper" means to a person looking at the car. The function answers
+    -- in model-origin space because that is what the native offset wants.
+    local sanchezUp  = sanchez - SANCHEZ_LO
+    local marshallUp = marshall - MARSHALL_LO
+
+    ok(sanchezUp > 0.3 and sanchezUp < 0.6,
+        'a sanchez wears its plate about 40cm off the ground',
+        ('%.3f'):format(sanchezUp))
+    ok(marshallUp > 0.9 and marshallUp < 1.4,
+        'and a marshall wears its own more than a metre up',
+        ('%.3f'):format(marshallUp))
+    ok(marshallUp - sanchezUp > 0.5,
+        'which is most of a metre apart -- the gap no single authored lift '
+            .. 'could straddle',
+        ('%.3f'):format(marshallUp - sanchezUp))
+
+    -- ═══ THE DEFECT, STATED AS AN ASSERTION ═══
+    --
+    -- `signLift` was 1.15 above the ORIGIN. On a sanchez that is above the roof
+    -- by half a metre: the plate floated in the air over the bike.
+    ok(1.15 > SANCHEZ_HI,
+        'the old fixed 1.15 was above a sanchez\'s roof outright',
+        ('roof %.2f'):format(SANCHEZ_HI))
+    ok(sanchez < SANCHEZ_HI and sanchez > SANCHEZ_LO,
+        'and the derived height is inside the bike\'s own body')
+    ok(marshall < MARSHALL_HI and marshall > MARSHALL_LO,
+        'as it is inside the truck\'s')
+
+    -- LOW ON THE BODY, not halfway up it. A bumper is not a windscreen.
+    ok(F > 0.0 and F < 0.5,
+        'the fraction puts it in the lower half of the model', F)
+
+    -- ═══ THE NUDGE HE KEEPS ═══
+    ok(BR.ShopSolve.signHeight(SANCHEZ_LO, SANCHEZ_HI, F, 0.25) - sanchez > 0.249
+       and BR.ShopSolve.signHeight(SANCHEZ_LO, SANCHEZ_HI, F, 0.25) - sanchez < 0.251,
+        'and signLift still moves every plate by exactly its own metres')
+    ok(L == 0.0,
+        'shipping at zero, because the derivation is meant to be the answer',
+        L)
+
+    -- ═══ A MODEL THAT NEVER LOADED ═══
+    --
+    -- GetModelDimensions answers zeroes -- or the caller answers nil -- for a
+    -- model that is not in memory. A plate at the origin is a plate somebody can
+    -- see and report; a plate at nan is an invisible sprite and a silent bug.
+    ok(BR.ShopSolve.signHeight(nil, nil, F, 0.0) == 0.0,
+        'no box means no derivation, and the answer is the lift alone')
+    ok(BR.ShopSolve.signHeight(nil, nil, F, 1.15) == 1.15,
+        'which is still exactly the nudge and nothing else')
+    ok(BR.ShopSolve.signHeight(MARSHALL_HI, MARSHALL_LO, F, L) == marshall,
+        'and a box handed over upside down produces the same height as the '
+            .. 'right way up')
+
+    -- THE CLIENT ASKS br_lib FOR IT rather than doing the arithmetic itself --
+    -- the same rule that moved `nearest` out of client/shop.lua.
+    local cli3 = readFile(RES .. 'br_core/client/shop.lua')
+    ok(cli3:find('BR%.ShopSolve%.signHeight') ~= nil,
+        'client/shop.lua derives the height through br_lib')
+    ok(cli3:find('GetModelDimensions', 1, true) ~= nil,
+        'off GetModelDimensions, which is the model\'s own box')
+    -- THE VALUE, NOT THE WORD. The comment above signPoint quotes the old 1.15
+    -- to say why it went; what must not survive is a fallback that reinstates it
+    -- the moment config is missing a key.
+    ok(cli3:find('signLift[^\n]*1%.15') == nil
+           and cli3:find('or%s+1%.15') == nil,
+        'and no fallback in the client puts the old fixed 1.15 back')
 end
 
 -- ---------------------------------------------------------------------------
@@ -1318,6 +1686,44 @@ do
         'are invincible')
     ok(cli:find('FreezeEntityPosition', 1, true) ~= nil,
         'and have their position frozen')
+
+    -- ═══ ...AND INVINCIBLE DOES NOT COVER THE GLASS ═══
+    --
+    -- Owner, 2026-08-29: "we can break windshields by shooting them at the
+    -- store. I thought they were [invincible]."
+    --
+    -- SET_ENTITY_INVINCIBLE is a health flag. Windows, deformation and scratches
+    -- are the separate visible-damage system and tyres are a third one -- which
+    -- this repository already knew from the other direction, since
+    -- client/rescue.lua has to call SetVehicleTyresCanBurst explicitly on an
+    -- ambulance that is deliberately NOT invincible.
+    ok(cli:find('SetVehicleCanBeVisiblyDamaged') ~= nil,
+        'so the display cars also refuse VISIBLE damage -- the glass, which is '
+            .. 'the thing he shot')
+    ok(cli:find('SetVehicleCanBeVisiblyDamaged,%s*veh,%s*false') ~= nil,
+        'and refuse it FALSE, because the value is the whole of the fix')
+    ok(cli:find('SetEntityProofs') ~= nil,
+        'with the damage proofs on top, so nothing flinches or catches fire')
+    ok(cli:find('SetVehicleTyresCanBurst,%s*veh,%s*false') ~= nil,
+        'and tyres that cannot be shot out, which is a third system again')
+
+    -- ═══ AND NONE OF IT REACHES THE CAR HE BUYS ═══
+    --
+    -- #224: "After that it is an ordinary car: it burns fuel, it can be
+    -- destroyed, anyone can steal it." BR.Shop.dress is the ONE function both
+    -- the showroom car and the delivered car go through, so a protection that
+    -- landed in it would follow the purchase into the match -- an indestructible
+    -- car in a battle royale, which is a far worse bug than breakable glass.
+    local dressFrom = cli:find('function BR%.Shop%.dress')
+    local dressTo = cli:find('\nlocal ', dressFrom or 1) or #cli
+    local dress = cli:sub(dressFrom or 1, dressTo)
+    for _, native in ipairs({ 'SetVehicleCanBeVisiblyDamaged', 'SetEntityProofs',
+                              'SetVehicleTyresCanBurst', 'SetEntityInvincible',
+                              'FreezeEntityPosition', 'SetVehicleDoorsLocked' }) do
+        ok(dress:find(native, 1, true) == nil,
+            ('BR.Shop.dress does not call %s -- it dresses, it does not '
+             .. 'protect'):format(native))
+    end
     ok(BR.Config.Shop.lockedState == 2,
         'lock state 2 (LOCKED), not 4 (LOCKED_PLAYER_INSIDE) -- 4 waits for an '
             .. 'entry that never happens and client/rescue.lua shipped it once')

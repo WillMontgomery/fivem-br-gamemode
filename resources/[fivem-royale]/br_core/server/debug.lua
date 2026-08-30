@@ -155,6 +155,7 @@ RegisterCommand('brhelp', function()
     print('  brweapons [filter]   list every grantable item id')
     print('  brarm <id|all> <item> [rarity]  weapon + FULL reserve (dev mode)')
     print('  brgive <id> <item> [n]  put an item straight into a player\'s hands')
+    print('  brvolts <id> <amount>   grant (or take) Volts on the stored profile')
     print('  brcrate <id> [item]  drop a crate (or one item) at a player\'s feet')
     print('  brlootseed <n|off>   pin the loot layout so it repeats between matches')
     print('  brdbno               every downed player: time left, knocker, reviver')
@@ -1488,6 +1489,139 @@ RegisterCommand('brprofile', function(src, args)
         TriggerEvent('br:ddb:profileFetch', req, p.license)
     end
 end, true)
+
+--- Put Volts into a connected player's real profile row.
+---
+--- ═══ WHY THIS HAD TO EXIST ═══
+---
+--- There was NO way to grant Volts, which made the shop untestable without
+--- playing matches to completion. The two commands that look like they would do
+--- it do not: `brgive` is inventory items only, and `brxpsim` is a client-side
+--- animation preview that deliberately writes nothing at all -- it reports Volts
+--- as 0 on purpose, because "claiming a payout that nothing paid is the precise
+--- lie that issue was about".
+---
+--- ═══ IT WRITES THROUGH `br:ddb:statsApply`, WHICH IS THE PAYOUT'S OWN WRITE ═══
+---
+--- Not through a new br_ddb verb, and not into the session cache. The cache
+--- would show a number that cannot be SPENT: br_ddb's purchase and spend
+--- conditions are evaluated by DynamoDB against the real row, so a granted
+--- balance that never reached the row would be refused at the till and would
+--- look exactly like a bug in the shop.
+---
+--- `statsApply` is the atomic `ADD #bal :balance` that every match payout uses.
+--- Sending it a delta carrying nothing but `balance` writes nothing but the
+--- balance -- js-src/br_ddb/src/stats.js only SETs the level, name and
+--- lastMatchAt when the caller supplies them, precisely so a grant cannot claim
+--- the player just finished a match. A second, grant-only br_ddb verb was the
+--- alternative and was rejected: config/market.lua's promise is that the
+--- currency is earned, and a mint sitting in the shipped bundle would end that
+--- whether or not the Lua in front of it was gated.
+---
+--- ═══ NEGATIVE AMOUNTS ARE ALLOWED, DELIBERATELY ═══
+---
+--- `brvolts 3 -500` is how the SPEND path gets tested: taking a balance down to
+--- just under a car's price is the only way to make `br:ddb:spend`'s condition
+--- refuse on demand, and the alternative is buying cars until the money runs
+--- out. It is an unconditional ADD, so a large enough negative WILL drive a row
+--- below zero -- which is a legitimate state to test with (every affordability
+--- check reads `balance < price`) and is not a state the game can otherwise
+--- reach. Zero is refused, because it is a typo rather than an instruction.
+---
+---   brvolts 3 5000      give player 3 five thousand Volts
+---   brvolts 3 -500      take five hundred off them
+---
+--- DEV MODE AND THE SERVER CONSOLE, BOTH. The dev gate is `brgive`'s, for
+--- `brgive`'s reason -- one switch for "this box is not a real match". The
+--- console check is `brprofile`'s, and it is here because this one writes to a
+--- persistent row rather than to a match that is about to end.
+RegisterCommand('brvolts', function(src, args)
+    if tonumber(src) ~= 0 then
+        print('  brvolts is server-console only -- it writes a stored profile.')
+        return
+    end
+    if not devOnly('brvolts') then return end
+
+    local target = tonumber(args[1])
+    local amount = tonumber(args[2])
+    if not target or not amount then
+        print('  usage: brvolts <serverId> <amount>')
+        print('    a positive amount grants, a negative one takes away')
+        print('    written to the real profile row through the same atomic ADD')
+        print('    a match payout uses, so the Volts can actually be spent')
+        return
+    end
+
+    -- THE ROSTER-ENTRY CHECK IS brgive'S, and it answers the same question:
+    -- is this a player the server knows about, rather than a number.
+    if not BR.Roster.get(target) then
+        print(('  no roster entry for %d'):format(target))
+        return
+    end
+
+    if GetResourceState('br_ddb') ~= 'started' then
+        print('  brvolts: br_ddb is not started, so there is nothing to write to.')
+        return
+    end
+
+    amount = math.floor(amount)
+    if amount == 0 then
+        print('  brvolts: 0 grants nothing. Say what you mean.')
+        return
+    end
+
+    local byKind = BR.Identity.ofPlayer(target)
+    local license = byKind and byKind.license
+        and BR.Identity.qualified('license', byKind.license)
+    if not license then
+        print(('  brvolts: %d has no license, so there is no row to write.')
+            :format(target))
+        return
+    end
+
+    local req = BR.Server.nextDbgReq or 1
+    BR.Server.nextDbgReq = req + 1
+
+    -- The handle, not the function -- brprofile's note applies here too: passing
+    -- the function to RemoveEventHandler silently removes nothing.
+    local ref
+    local answered = false
+
+    ref = AddEventHandler('br:ddb:statsResult', function(gotReq, ok, extra)
+        if gotReq ~= req or answered then return end
+        answered = true
+        if ref then RemoveEventHandler(ref) end
+
+        if not ok then
+            print(('^1[br_core] brvolts: %s was NOT credited %d -- %s^7')
+                :format(license, amount,
+                        tostring(extra and extra.error or 'no reason given')))
+            return
+        end
+
+        -- THE CACHE IS TOLD THE SAME WAY A PAYOUT TELLS IT, so the lobby's
+        -- balance moves without a reconnect. `xpEarned` is 0: this granted
+        -- Volts and nothing else, and inventing XP here would put a level-up
+        -- animation on a console command.
+        TriggerEvent('br:market:credited', license, 0, amount)
+
+        print(('[br_core] brvolts: %s %+d Volts (%s) -- run brprofile to read '
+               .. 'the row back'):format(license, amount,
+                                         GetPlayerName(target) or '?'))
+    end)
+
+    SetTimeout(8000, function()
+        if answered then return end
+        answered = true
+        if ref then RemoveEventHandler(ref) end
+        print(('^3[br_core] brvolts: no answer from br_ddb for %s -- the write '
+               .. 'may or may not have landed^7'):format(license))
+    end)
+
+    -- ONE FIELD. Every other key in this table would be a claim about a match
+    -- that did not happen; see the note above and src/stats.js.
+    TriggerEvent('br:ddb:statsApply', req, license, { balance = amount })
+end, RESTRICTED)
 
 --- Pose a match-end award at a connected player without writing anything.
 ---

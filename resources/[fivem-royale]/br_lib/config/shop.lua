@@ -569,7 +569,30 @@ BR.Config.Shop = {
     -- row, drawn per car through DrawSpritePoly's UVs) and it is not built here.
     signForwardM = 0.4,    -- metres in front of the bumper, so the plate does
                            -- not z-fight with the bodywork
-    signLift     = 1.15,   -- metres above the car's origin
+
+    -- ═══ HOW HIGH THE PLATE HANGS -- DERIVED, WITH ONE NUDGE ═══
+    --
+    -- Owner, 2026-08-29: "change the DUI to draw at the elevation of the
+    -- vehicle's bumper."
+    --
+    -- `signLift` USED TO BE 1.15 AND USED TO MEAN "metres above the car's
+    -- origin", which is the whole of why it had to change: it was one height for
+    -- thirteen models that range from a `sanchez` to a `marshall`, so it could
+    -- only ever be right for the middle of them. The height comes off
+    -- GetModelDimensions now (BR.ShopSolve.signHeight), and these two numbers
+    -- are the shape of that derivation rather than the answer to it.
+    --
+    -- `signBumperFrac` IS WHERE THE BUMPER SITS IN THE MODEL'S OWN HEIGHT, with
+    -- 0 the ground the tyres stand on and 1 the roof. 0.35 puts it low on the
+    -- body: about 0.42m off the ground on an `infernus`, about 1.1m on a
+    -- `marshall`, which is the whole point of expressing it as a fraction.
+    --
+    -- ONE NUMBER RATHER THAN THIRTEEN. A per-row height would be exact and would
+    -- also be thirteen more things to tune every time a car is added; if a
+    -- single model ever needs its own, that is a row field and an argument for
+    -- adding one, not a reason to abandon the derivation for the other twelve.
+    signBumperFrac = 0.35,
+    signLift     = 0.0,    -- metres added on top, to nudge every plate at once
     signScale    = 1.6,    -- the same figure ambheal's plate uses
 
     -- ------------------------------------------------------------------
@@ -633,15 +656,20 @@ BR.Config.Shop = {
     -- Either way the token is COLLISION-FREE, exactly like every other loose
     -- floor item, so a shrunken car cannot leave a full-size invisible hull in
     -- the road -- a matrix scale never touches a collision box.
-    -- ═══ 0.5, NOT 0.1: FIVE TIMES BIGGER, AND HIS ORIGINAL SPEC IS SUPERSEDED
-    --     RATHER THAN CONTRADICTED ═══
+    -- ═══ 0.1 -> 0.5 -> 0.375, AND HIS ORIGINAL SPEC IS SUPERSEDED RATHER THAN
+    --     CONTRADICTED ═══
     --
     -- The quote above -- "super small, like the same size as a weapon prop
     -- pickup" -- is what he asked for BEFORE seeing one on the ground. Having
-    -- seen it, 2026-08-29: "when dropped, the item prop should be 5x the size."
-    -- The later instruction wins; the earlier one is kept above because it is
-    -- still the reason the marker fallback exists at all.
-    tokenScale  = 0.5,
+    -- seen it, 2026-08-29: "when dropped, the item prop should be 5x the size",
+    -- which took 0.1 to 0.5. Having seen THAT, later the same day: "please make
+    -- the vehicle prop pickups 75% the current size. The ones that spawn when
+    -- dropping a vehicle."
+    --
+    -- 75% OF WHAT IS SHIPPED, NOT OF THE ORIGINAL: 0.5 x 0.75 = 0.375. The
+    -- earlier quote is kept above because it is still the reason the marker
+    -- fallback exists at all.
+    tokenScale  = 0.375,
 
     tokenMarker = 34,   -- the owner's stated fallback, used only if the prop
                         -- cannot be created
@@ -668,12 +696,30 @@ BR.Config.Shop = {
     -- entry whose prop the engine refused. If that line appears, this is the
     -- number to turn and the one above is not.
     --
-    -- LEFT AT 0.5, WHICH IS THE SIZE IT HAS ALWAYS BEEN DRAWN AT. It was a
-    -- hard-coded literal in client/loot.lua until now; naming it changes no
-    -- behaviour and costs one line to retune once we know which path is live.
-    -- It is deliberately NOT pre-multiplied by five: a 2.5m symbol hovering over
-    -- the pad is a guess at what he meant, and he asked about a prop.
-    tokenMarkerScale = 0.5,
+    -- ═══ SO WHEN HE RESIZES THE PICKUP, BOTH KNOBS MOVE TOGETHER ═══
+    --
+    -- Owner, 2026-08-29: "please make the vehicle prop pickups 75% the current
+    -- size. The ones that spawn when dropping a vehicle." He is describing ONE
+    -- thing he can see, and this file still cannot say which of these two
+    -- numbers draws it -- so 75% is applied to both: 0.5 x 0.75 = 0.375, the
+    -- same arithmetic on the same starting value, and the instruction lands
+    -- whichever path is live.
+    --
+    -- KEEPING THEM IN STEP IS THE POINT. Turning only the one we guessed was
+    -- live would leave the other at its old value, and the day the question is
+    -- answered the pickup would silently change size again.
+    --
+    -- HIS WORDING IS EVIDENCE AND IT IS NOT PROOF. "vehicle prop pickups" reads
+    -- like somebody looking at a car-shaped object rather than at a chevron, and
+    -- if that is what he sees then CreateObject does build a vehicle archetype
+    -- on this build and the paragraph above is answered. It is still not written
+    -- down as answered, because the console line names it in one word and nobody
+    -- has read one yet -- and "he called it a prop" is exactly how an open
+    -- question gets closed wrongly. `brloot` and the fallback line settle it.
+    --
+    -- IT WAS A HARD-CODED LITERAL in client/loot.lua before it was named here;
+    -- naming it changed no behaviour, and this is the first time it has moved.
+    tokenMarkerScale = 0.375,
 
     -- ------------------------------------------------------------------
     -- SOUND

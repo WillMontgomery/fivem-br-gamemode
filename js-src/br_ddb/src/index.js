@@ -17,6 +17,8 @@ import { artifactNames, isSpoolFile } from './artifacts.js'
 import { isActive } from './ban.js'
 import { buildIncidentClose } from './close.js'
 import { buildIncidentItem } from './incident.js'
+import { spendCost, spendUpdate } from './spend.js'
+import { buildStatsUpdate } from './stats.js'
 import { projectVerdict } from './verdict.js'
 
 /**
@@ -354,55 +356,21 @@ on('br:ddb:statsApply', (req, license, deltas) => {
     return
   }
 
-  const d = deltas || {}
-
-  /**
-   * An ALLOWLIST, not a loop over the payload. This runs on data that crossed
-   * a runtime boundary, and a typo'd key should be dropped rather than quietly
-   * creating an attribute nobody reads and nobody knows is there.
-   */
-  const adds = {
-    xp: num(d.xp),
-    // CURRENCY IS EARNED HERE AND NOWHERE ELSE, which is what keeps the market
-    // honest: there is no path that adds balance except finishing a match. The
-    // moment a second writer exists, "the currency is earned, never bought" is
-    // a claim rather than a property.
-    balance: num(d.balance),
-    matches: num(d.matches),
-    wins: num(d.wins),
-    top10s: num(d.top10s),
-    kills: num(d.kills),
-    deaths: num(d.deaths),
-    downs: num(d.downs),
-    revives: num(d.revives),
-    damageDealt: num(d.damageDealt),
-    playtimeSec: num(d.playtimeSec),
-    soloMatches: num(d.soloMatches),
-    squadMatches: num(d.squadMatches),
-  }
-
-  const names = { '#lvl': 'level', '#nm': 'name', '#ls': 'lastMatchAt' }
-  const values = {
-    ':lvl': num(d.level),
-    ':nm': String(d.name || ''),
-    ':ls': num(d.at),
-  }
-  const addParts = []
-  for (const [k, v] of Object.entries(adds)) {
-    names[`#${k}`] = k
-    values[`:${k}`] = v
-    addParts.push(`#${k} :${k}`)
-  }
+  // THE ALLOWLIST AND THE EXPRESSION BOTH LIVE IN src/stats.js, where they can
+  // be run by scripts/test.mjs. SET for values that replace, ADD for values
+  // that accumulate -- and a SET field the caller did not supply is not written
+  // at all, which is what lets a second caller (brvolts) use this same atomic
+  // ADD without claiming the player just finished a match.
+  const built = buildStatsUpdate(d)
 
   withTimeout(
     ddb().send(
       new UpdateItemCommand({
         TableName: `${TABLE_PREFIX_GAME}players`,
         Key: marshall({ pk: license, sk: 'profile' }),
-        // SET for values that replace, ADD for values that accumulate.
-        UpdateExpression: `SET #lvl = :lvl, #nm = :nm, #ls = :ls ADD ${addParts.join(', ')}`,
-        ExpressionAttributeNames: names,
-        ExpressionAttributeValues: marshall(values),
+        UpdateExpression: built.UpdateExpression,
+        ExpressionAttributeNames: built.ExpressionAttributeNames,
+        ExpressionAttributeValues: marshall(built.ExpressionAttributeValues),
       }),
     ),
     TIMEOUT_MS,
@@ -765,6 +733,86 @@ on('br:ddb:purchase', (req, license, itemId, price) => {
         return
       }
       console.log('[br_ddb] purchase failed for ' + license + ': ' + e.message)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * Spend Volts on something that is not a cosmetic.
+ *
+ * ONE UpdateItem, `ADD #bal :neg`, conditioned on `#bal >= :cost`, and NO
+ * `owned` set -- src/spend.js carries the whole argument for why that last
+ * clause is what makes this a different verb from `purchase` rather than a
+ * parameter of it.
+ *
+ * ═══ WHY IT EXISTS AT ALL (#224 follow-up) ═══
+ *
+ * The warmup vehicle shop used to debit a SESSION LEDGER -- a number in
+ * br_core's memory -- and settle it into the atomic ADD br_stats writes at match
+ * end. That worked and it lost money in two real ways, both named in
+ * server/market.lua when it was written: a player who disconnected before the
+ * payout kept the Volts, and a server restarted mid-match lost the debit. Both
+ * are the same fact, which is that the debit was not durable until something
+ * else happened later.
+ *
+ * It is durable now: the row moves at the moment of the purchase, and nothing
+ * later has to remember.
+ *
+ * A REFUSAL IS NOT A FAILURE and the two must not read alike to the caller --
+ * `purchase`'s rule, applied here. The condition rejecting means "the row does
+ * not hold that much", which is an answer; anything else means the database is
+ * unhappy, which is an error. The refusal path spends one extra read so the
+ * caller can say what the balance actually is.
+ */
+on('br:ddb:spend', (req, license, amount) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:spendResult', req, ok, extra ?? {})
+  }
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+
+  const cost = spendCost(amount)
+  if (cost === null) {
+    answer(false, { error: 'bad amount' })
+    return
+  }
+
+  const built = spendUpdate(cost)
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: license, sk: 'profile' }),
+        UpdateExpression: built.UpdateExpression,
+        ConditionExpression: built.ConditionExpression,
+        ExpressionAttributeNames: built.ExpressionAttributeNames,
+        ExpressionAttributeValues: marshall(built.ExpressionAttributeValues),
+        ReturnValues: 'UPDATED_NEW',
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then((out) => {
+      const after = out.Attributes ? unmarshall(out.Attributes) : {}
+      answer(true, { spent: cost, balance: Number(after.balance ?? 0) })
+    })
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        getByKey('players', { pk: license, sk: 'profile' }, TABLE_PREFIX_GAME)
+          .then((row) =>
+            answer(false, {
+              refused: 'not enough currency',
+              balance: Number(row?.balance ?? 0),
+            }),
+          )
+          .catch(() => answer(false, { refused: 'not enough currency' }))
+        return
+      }
+      console.log('[br_ddb] spend failed for ' + license + ': ' + e.message)
       answer(false, { error: e.message })
     })
 })

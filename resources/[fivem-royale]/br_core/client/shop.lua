@@ -272,6 +272,55 @@ local function build()
                         nat(SetVehicleDoorsLocked, veh, tonumber(S.lockedState) or 2)
                         nat(SetEntityInvincible, veh, true)
 
+                        -- ═══ AND INVINCIBLE DOES NOT COVER THE GLASS ═══
+                        --
+                        -- Owner, 2026-08-29: "we can break windshields by
+                        -- shooting them at the store. I thought they were
+                        -- [invincible]".
+                        --
+                        -- HE IS RIGHT AND SO IS THE CODE ABOVE.
+                        -- SET_ENTITY_INVINCIBLE is a HEALTH flag: the car's body
+                        -- and engine health stop falling, so it cannot be
+                        -- destroyed. Windows, deformation and scratches are the
+                        -- separate VISIBLE-DAMAGE system, and tyres are a third
+                        -- one again -- which this repository already knew from
+                        -- the other direction: client/rescue.lua has to call
+                        -- SetVehicleTyresCanBurst explicitly on an ambulance
+                        -- that is deliberately NOT invincible, and
+                        -- config/rescue.lua's `tyresBulletproof` block is an
+                        -- argument about exactly that separation.
+                        --
+                        -- So three more natives, and each covers a system
+                        -- SetEntityInvincible does not:
+                        --
+                        --   VISIBLY DAMAGED -- the windows, the deformation and
+                        --     the scratches. This is the one his bug is about.
+                        --   PROOFS -- bullet, fire, explosion, collision, melee,
+                        --     steam, p7, water, in that argument order. Belt to
+                        --     the invincibility's braces: a proof refuses the
+                        --     damage EVENT rather than absorbing its result, so
+                        --     the car does not flinch, smoke or catch fire while
+                        --     its health sits pinned.
+                        --   TYRES -- the third system. A showroom car standing
+                        --     on four flats is the same complaint as a broken
+                        --     windshield.
+                        --
+                        -- ═══ NONE OF THIS FOLLOWS THE CAR HE BUYS ═══
+                        --
+                        -- It is applied HERE, to the display entity, and never
+                        -- in BR.Shop.dress -- which is the one function both
+                        -- cars go through. #224 is explicit: "After that it is
+                        -- an ordinary car: it burns fuel, it can be destroyed,
+                        -- anyone can steal it." A showroom protection that
+                        -- reached the delivered car would be an indestructible
+                        -- car in a match, which is a far worse bug than
+                        -- breakable glass. tools/test_shop.lua asserts the
+                        -- separation rather than trusting it.
+                        nat(SetVehicleCanBeVisiblyDamaged, veh, false)
+                        nat(SetEntityProofs, veh, true, true, true, true, true,
+                            true, true, true)
+                        nat(SetVehicleTyresCanBurst, veh, false)
+
                         -- ═══ ON THE GROUND BEFORE IT IS FROZEN, AND THE ORDER
                         --     IS THE ENTIRE FIX ═══
                         --
@@ -404,9 +453,16 @@ end
 --- says "[model name] for sale" and the price.'
 ---
 --- `label` is the subject and `hint` is the second line -- client/loot.lua's
---- split, which every other prompt in the game follows. The price is a bare
---- number because that is how every Volts figure in this game is written; adding
---- a word to it would be copy nobody asked for.
+--- split, which every other prompt in the game follows.
+---
+--- THE PRICE WAS A BARE NUMBER AND HE HAS NOW ASKED FOR THE WORD. Owner,
+--- 2026-08-29: 'Change the green line to say "x Volts"'. The note that used to
+--- sit here said a bare number was right because "adding a word to it would be
+--- copy nobody asked for" -- which was true until he asked for it, and is the
+--- reason the word arrives from BR.Config.Market.currency rather than being
+--- typed into this file. That config line is where the currency's name lives and
+--- its own comment says renaming it is that line plus the Ringmaster constant; a
+--- literal here would quietly make it three places.
 ---
 --- The key cap is the player's OWN binding, asked for by COMMAND rather than by
 --- control -- client/loot.lua's fix, without which every prompt in the game said
@@ -470,7 +526,8 @@ local function setPrompt(show, row)
         t     = 'prompt',
         show  = true,
         label = (S.signLabel or '%s for sale'):format(BR.ShopSolve.nameOf(row)),
-        hint  = tostring(math.floor(tonumber(row.price) or 0)),
+        hint  = BR.ShopSolve.priceLine(row.price,
+                                       BR.Config.Market and BR.Config.Market.currency),
         key   = BR.Native.keyLabelForCommand('brinteract', 51),
         ring  = false,
         -- ═══ THE PRICE, LARGE AND GREEN ═══
@@ -501,10 +558,20 @@ end
 
 --- The point on the front of a car where its plate hangs.
 ---
---- READ OFF THE MODEL rather than hardcoded, so a Sanchez and a Bison both wear
---- theirs at their own bumper. GetModelDimensions is a model-table lookup and
---- this runs every frame the plate is up, so the answer is cached per model --
---- client/dui.lua's drawOnEntity caches its own for the same reason.
+--- READ OFF THE MODEL rather than hardcoded, IN BOTH AXES NOW. It always was
+--- forwards -- `front` is the box's nose, so a Sanchez and a Bison each get
+--- their plate clear of their own bumper -- and the height was one authored
+--- 1.15 above the car's origin, which is a saloon's number applied to a monster
+--- truck. Owner, 2026-08-29: "change the DUI to draw at the elevation of the
+--- vehicle's bumper." BR.ShopSolve.signHeight is that derivation, and it is in
+--- br_lib because a height a test can evaluate is worth more than one only a
+--- playtest can see.
+---
+--- GetModelDimensions is a model-table lookup and this runs every frame the
+--- plate is up, so the answer is cached per model -- client/dui.lua's
+--- drawOnEntity caches its own for the same reason. The cache holds the BOX and
+--- not the derived height, so re-tuning the two config numbers takes effect on
+--- a br_lib reload rather than surviving in a cache keyed by model.
 --- @param veh integer
 --- @return number x
 --- @return number y
@@ -515,12 +582,12 @@ local function signPoint(veh)
     if not d then
         local a, b = GetModelDimensions(model)
         if not a or not b then return nil end
-        d = { front = b.y, top = b.z }
+        d = { front = b.y, bottom = a.z, top = b.z }
         DIMS[model] = d
     end
     local v = GetOffsetFromEntityInWorldCoords(
         veh, 0.0, d.front + (tonumber(S.signForwardM) or 0.4),
-        tonumber(S.signLift) or 1.15)
+        BR.ShopSolve.signHeight(d.bottom, d.top, S.signBumperFrac, S.signLift))
     return v.x, v.y, v.z
 end
 

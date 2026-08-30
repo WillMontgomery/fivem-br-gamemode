@@ -308,11 +308,34 @@ do
         'and finishing last with nothing pays exactly that and no more',
         tostring(BR.Config.marketPayout({ placement = 16, total = 16 })))
 
+    -- ═══ AND THE WIN DOMINATES, WHICH IS THE 2026-08-29 TABLE'S OWN SHAPE ═══
+    --
+    -- `win` and `placementTop` never both pay: the surviving winner takes the
+    -- first and everybody else takes the second, scaled by where they finished.
+    -- So the ratio between them IS the decision, and at 1000 against 200 the win
+    -- is the thing worth playing for.
     ok(p.win > p.placementTop,
         'a win is worth more than the best placement scale',
         ('win %d, placementTop %d'):format(p.win, p.placementTop))
-    ok(p.placementTop > p.perKill * 4,
-        'placement outweighs a good gunfight -- kills are chased, not farmed',
+
+    -- ═══ AND THIS ONE CHANGED DIRECTION ON 2026-08-29, WHICH IS WHY IT SAYS
+    --     `>=` ═══
+    --
+    -- It read `p.placementTop > p.perKill * 4` and was called "placement
+    -- outweighs a good gunfight -- kills are chased, not farmed", which was true
+    -- of the old table (35 against 20) and is not true of the owner's. He set
+    -- all five weights himself, and at 200 against 4x50 placing second of sixty
+    -- earns about 197 -- ROUGHLY FOUR KILLS, deliberately. Placement is a real
+    -- but modest bonus now and the win is the headline term.
+    --
+    -- WEAKENED RATHER THAN INVERTED. Asserting that placement is worth LESS than
+    -- four kills would pin the new table exactly as hard as the old assertion
+    -- pinned the old one, and would go red the day he raises placementTop --
+    -- which is a retune this file must not punish. `>=` keeps the floor that
+    -- matters (a gunfight never outpays finishing well) and lets the value move.
+    ok(p.placementTop >= p.perKill * 4,
+        'placement is worth at least a good gunfight -- kills are chased, not '
+            .. 'farmed',
         ('placementTop %d, four kills %d'):format(p.placementTop, p.perKill * 4))
     ok(p.perKill > p.perRevive,
         'a kill pays more than a revive, and a revive pays',
@@ -857,6 +880,197 @@ do
     ok(commands.brawards ~= nil, 'brawards is registered')
     ok(commands.brawards and commands.brawards.restricted == true,
         'and it is restricted -- it names licenses')
+end
+
+-- ---------------------------------------------------------------------------
+-- brvolts -- THE ONLY WAY TO PUT VOLTS ON A PROFILE WITHOUT PLAYING A MATCH
+--
+-- ═══ WHY IT IS TESTED HERE AND NOT WITH THE SHOP ═══
+--
+-- The thing worth checking about this command is not that it prints something,
+-- it is WHICH WRITE IT MAKES. A grant that only moved br_core's session cache
+-- would show a balance that cannot be SPENT -- br_ddb evaluates the purchase and
+-- spend conditions against the real row -- and the symptom would be a shop that
+-- refuses money the lobby says you have. This file already stubs br_ddb and
+-- already owns "what a match writes", so it is where that question belongs.
+--
+-- br_core/server/debug.lua LOADS CLEANLY INTO A HARNESS because every one of its
+-- BR.* reads is inside a command body; the file's only top-level statement is a
+-- local. So the real command is driven here, not a copy of it.
+-- ---------------------------------------------------------------------------
+
+--- Everything br_core/server/debug.lua needs in order to run `brvolts`, and
+--- nothing it does not. A stub per system, so a command that started reaching
+--- for something new would fail loudly rather than quietly reading nil.
+local rosterEntries = {}
+BR = BR or {}
+BR.Server = BR.Server or {}
+BR.Server.devMode = true
+BR.Roster = { get = function(src) return rosterEntries[src] end }
+function GetPlayerName(src) return 'Player' .. tostring(src) end
+function RemoveEventHandler() end
+
+do
+    local chunk, err = loadfile(ROOT .. 'br_core/server/debug.lua')
+    if not chunk then
+        realPrint('\27[31mload error\27[0m br_core/server/debug.lua: ' .. tostring(err))
+        os.exit(1)
+    end
+    chunk()
+end
+
+--- Run brvolts as the server console (src 0) and hand back the request it made.
+local function brvolts(...)
+    local before = #askedFor('br:ddb:statsApply')
+    commands.brvolts.fn(0, { ... }, '')
+    local all = askedFor('br:ddb:statsApply')
+    if #all == before then return nil end
+    return all[#all]
+end
+
+describe('brvolts.registration')
+do
+    ok(commands.brvolts ~= nil, 'brvolts is registered')
+    ok(commands.brvolts and commands.brvolts.restricted == true,
+        'and it is restricted, exactly as brgive is')
+    ok(commands.brgive ~= nil and commands.brgive.restricted == true,
+        'which is the gate it was asked to copy')
+end
+
+describe('brvolts.gates')
+do
+    online[3] = { 'license:aaaaaaaa' }
+    rosterEntries[3] = { state = 'WARMUP' }
+
+    -- ═══ THE SERVER CONSOLE ONLY ═══
+    --
+    -- brgive's dev gate PLUS brprofile's console check, because this one writes
+    -- to a row that outlives the match rather than to a match about to end.
+    local n0 = #askedFor('br:ddb:statsApply')
+    commands.brvolts.fn(7, { '3', '500' }, '')
+    ok(#askedFor('br:ddb:statsApply') == n0,
+        'a client cannot run it even holding the ACE')
+
+    -- ═══ AND DEV MODE ═══
+    BR.Server.devMode = false
+    ok(brvolts('3', '500') == nil, 'and it does nothing on a live box')
+    BR.Server.devMode = true
+
+    -- ═══ THE USAGE PRINT AND THE ROSTER CHECK, WHICH ARE brgive's ═══
+    ok(brvolts() == nil, 'no arguments writes nothing')
+    ok(brvolts('3') == nil, 'and neither does an amount-less call')
+    ok(brvolts('nobody', '500') == nil, 'nor a target that is not a number')
+
+    -- ═══ brgive's ROSTER CHECK, AND IT HAS TO BE THE THING THAT REFUSES ═══
+    --
+    -- 9 is CONNECTED and has a licence -- so the license lookup further down
+    -- would happily find a row to write to. Testing against a src with no
+    -- identifiers either would pass with the roster check deleted, which is a
+    -- test that asserts nothing.
+    online[9] = { 'license:bbbbbbbb' }
+    ok(brvolts('9', '500') == nil,
+        'nor a connected player with no roster entry -- brgive\'s check, '
+            .. 'verbatim')
+    online[9] = nil
+    ok(brvolts('3', '0') == nil, 'and 0 is refused rather than written as a no-op')
+
+    resourceState.br_ddb = 'missing'
+    ok(brvolts('3', '500') == nil, 'with br_ddb absent there is nothing to write to')
+    resourceState.br_ddb = 'started'
+end
+
+describe('brvolts.write')
+do
+    online[3] = { 'license:aaaaaaaa' }
+    rosterEntries[3] = { state = 'WARMUP' }
+
+    local req = brvolts('3', '5000')
+    ok(req ~= nil, 'a good call reaches br_ddb')
+
+    -- ═══ THE PAYOUT'S OWN VERB, NOT A NEW ONE ═══
+    --
+    -- `statsApply` is the atomic `ADD #bal :balance` that every match payout
+    -- goes through. A grant-only br_ddb verb was the alternative and was
+    -- rejected: config/market.lua's promise is that the currency is earned, and
+    -- a mint in the shipped bundle would end that whether or not the Lua in
+    -- front of it was gated.
+    ok(req and req.name == 'br:ddb:statsApply',
+        'through the same verb a match payout uses', req and req.name)
+    ok(req and req.args[2] == 'license:aaaaaaaa',
+        'against that player\'s real license', req and tostring(req.args[2]))
+
+    local deltas = req and req.args[3] or {}
+    ok(deltas.balance == 5000, 'carrying the amount as a balance delta',
+        tostring(deltas.balance))
+
+    -- ═══ AND NOTHING ELSE, WHICH IS THE HALF THAT COULD CORRUPT A ROW ═══
+    --
+    -- js-src/br_ddb/src/stats.js SETs `level`, `name` and `lastMatchAt` only
+    -- when the caller supplies them -- so a delta carrying nothing but a balance
+    -- writes nothing but a balance. A command that filled those in would stamp
+    -- a match end that never happened and, before the SET clause became
+    -- conditional, would have set the player to level 0 with a blank name.
+    local extra = {}
+    for k in pairs(deltas) do
+        if k ~= 'balance' then extra[#extra + 1] = k end
+    end
+    table.sort(extra)
+    ok(#extra == 0,
+        'and NOTHING else -- a grant makes no claim about a match',
+        table.concat(extra, ', '))
+
+    -- ═══ NEGATIVE AMOUNTS ARE THE POINT, NOT AN OVERSIGHT ═══
+    --
+    -- Taking a balance down to just under a car's price is the only way to make
+    -- `br:ddb:spend`'s condition refuse on demand. It is an unconditional ADD,
+    -- so a big enough negative drives the row below zero -- which is a state
+    -- worth being able to test with and one the game cannot otherwise reach.
+    local down = brvolts('3', '-500')
+    ok(down and down.args[3].balance == -500,
+        'a negative amount is sent as a negative delta',
+        down and tostring(down.args[3].balance))
+
+    ok(brvolts('3', '250.7') and brvolts('3', '250.7').args[3].balance == 250,
+        'and a fractional amount is floored -- a balance is an integer')
+end
+
+describe('brvolts.cache')
+do
+    online[3] = { 'license:aaaaaaaa' }
+    rosterEntries[3] = { state = 'WARMUP' }
+
+    local seen = nil
+    AddEventHandler('br:market:credited', function(lic, xp, volts)
+        seen = { lic = lic, xp = xp, volts = volts }
+    end)
+
+    local req = brvolts('3', '5000')
+    -- The write answers the way br_ddb's JS half would.
+    TriggerEvent('br:ddb:statsResult', req.args[1], true, {})
+
+    -- ═══ THE LOBBY MOVES WITHOUT A RECONNECT ═══
+    --
+    -- br_core's inventory cache is one read taken on connect. The payout tells
+    -- it through this event and so does this, for the same reason and by the
+    -- same route -- otherwise the granted Volts are spendable and invisible.
+    ok(seen ~= nil, 'a successful write updates br_core\'s session cache')
+    ok(seen and seen.lic == 'license:aaaaaaaa' and seen.volts == 5000,
+        'with the licence and the amount that were written',
+        seen and ('%s %s'):format(tostring(seen.lic), tostring(seen.volts)))
+    ok(seen and seen.xp == 0,
+        'and no XP -- this granted Volts, and inventing XP here would put a '
+            .. 'level-up animation on a console command',
+        seen and tostring(seen.xp))
+
+    -- ═══ A FAILED WRITE MOVES NOTHING ═══
+    --
+    -- The cache mirrors the row. Crediting it after a write that did not land
+    -- would show a balance that cannot be spent -- the exact failure this
+    -- command exists to avoid.
+    seen = nil
+    local bad = brvolts('3', '5000')
+    TriggerEvent('br:ddb:statsResult', bad.args[1], false, { error = 'throttled' })
+    ok(seen == nil, 'a refused write leaves the cache alone')
 end
 
 print = realPrint

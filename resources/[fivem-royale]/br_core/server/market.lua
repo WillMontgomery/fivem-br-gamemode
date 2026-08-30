@@ -48,6 +48,7 @@ end
 AddEventHandler('br:ddb:inventoryResult', function(req, i, extra) reply(req, i, extra or {}) end)
 AddEventHandler('br:ddb:purchaseResult',  function(req, ok, extra) reply(req, ok, extra or {}) end)
 AddEventHandler('br:ddb:equipResult',     function(req, ok, extra) reply(req, ok, extra or {}) end)
+AddEventHandler('br:ddb:spendResult',     function(req, ok, extra) reply(req, ok, extra or {}) end)
 
 --- Issue one br_ddb request with a timeout, so a bridge that never answers
 --- cannot leak a pending closure per attempt for the life of the server.
@@ -180,8 +181,8 @@ function BR.Market.load(src)
     -- with just what the match paid. The window is short and the symptom is a
     -- level that reads wrong and then silently corrects itself, which is exactly
     -- the kind of thing that gets reported as "it took a while to update".
-    -- `spent = 0` IS THE SAME KIND OF NOT-DECORATION (#224): Volts committed to
-    -- a warmup car and not yet written down. It is only ever moved by
+    -- `spent = 0` IS THE SAME KIND OF NOT-DECORATION (#224): Volts reserved
+    -- against a charge that is in flight to DynamoDB. It is only ever moved by
     -- BR.Market.charge, which refuses while `loaded` is false -- so no spend can
     -- exist before the fetch below replaces this table.
     inv[lic] = withDefaults({ balance = 0, spent = 0, xp = 0, owned = {}, equipped = {}, loaded = false })
@@ -403,45 +404,53 @@ end)
 -- already contains it -- which is exactly right for a canopy you own forever and
 -- exactly wrong for a repeatable spend.
 --
--- ═══ SO THE DEBIT IS TAKEN HERE AND SETTLED WITH THE MATCH ═══
+-- ═══ IT WAS A SESSION LEDGER, AND IT IS A DYNAMODB WRITE NOW ═══
 --
---   AT THE PURCHASE the session cache is decremented and the amount is
---   remembered against the license. That is what makes the money real
---   immediately: the balance on the lobby screen falls, a second car cannot be
---   bought with the same Volts, and the market's own purchase condition sees
---   the reduced number.
+-- THE FIRST SHAPE, KEPT HERE BECAUSE THE COST OF IT IS THE REASON THIS CHANGED:
+-- the session cache was decremented at the purchase and the total was folded
+-- into `deltas.balance` at match end, so the ONE atomic ADD that writes every
+-- match's payout wrote the debit with it. No second writer and no new br_ddb
+-- verb -- and the debit was not durable until the match ended, which cost two
+-- real things:
 --
---   AT MATCH END br_stats folds the total into `deltas.balance`, so the ONE
---   atomic ADD that already writes every match's payout writes the debit with
---   it. No second writer, no new br_ddb verb, no change to the deployed bundle.
+--   * A PLAYER WHO DISCONNECTED BEFORE THE PAYOUT KEPT THE VOLTS. They also
+--     lost the car and the match, so it was not an exploit worth building for,
+--     but it was not nothing either.
+--   * A SERVER RESTARTED MID-MATCH LOST THE DEBIT for the same reason.
 --
--- ═══ WHAT THAT COSTS, NAMED RATHER THAN DISCOVERED ═══
+-- Both were the same fact: the money moved in memory and something else had to
+-- remember to write it down later.
 --
--- The debit is not durable until the match ends. Two consequences, both real:
+-- ═══ SO THE DEBIT IS A CONDITIONAL WRITE, TAKEN AT THE PURCHASE ═══
 --
---   * A PLAYER WHO DISCONNECTS BEFORE THE PAYOUT KEEPS THE VOLTS. They also
---     lose the car and the match, so it is not an exploit worth building for,
---     but it is not nothing either.
---   * A SERVER RESTART MID-MATCH LOSES THE DEBIT for the same reason.
+-- `br:ddb:spend` is one UpdateItem -- `ADD #bal :neg` under
+-- `ConditionExpression: #bal >= :cost`, and NO `owned` set, which is the clause
+-- that makes it a different verb from `br:ddb:purchase` rather than a parameter
+-- of it. js-src/br_ddb/src/spend.js carries the whole argument.
 --
--- The durable fix is a `br:ddb:spend` verb -- one UpdateItem, `ADD #bal :neg`
--- under `ConditionExpression: #bal >= :cost`, no `owned` set -- which is a
--- rebuild of the committed br_ddb bundle and its fingerprint. That is a
--- deployment change and it is deliberately not made here.
+-- DYNAMODB DECIDES, NOT THIS FILE. The affordability test below still runs and
+-- is still worth running -- it refuses instantly, it can say how short somebody
+-- is, and it stops an obvious no from costing a round trip -- but it is a
+-- CONVENIENCE and never the authority. The cache is one read taken on connect;
+-- a report award, a console grant or a second server can move the row
+-- underneath it, and a debit that trusted a stale cache would overdraw a real
+-- balance. The same rule `br:market:credited` states at the bottom of this
+-- file, now enforced on the way out as well as on the way in.
 --
--- NOTHING BELOW CAN OVERDRAW THE REAL ROW BY MORE THAN THE CACHE IS STALE, and
--- the cache is only ever written by this process: read once on connect, then
--- moved by a purchase, a credit, or this. The market's own purchase remains
--- DynamoDB-conditional and is unaffected either way.
+-- NOTHING IS DELIVERED BEFORE THE ROW MOVES. `charge` answers through a
+-- callback, and every caller does its bookkeeping inside it.
 
 --- ═══ TWO NUMBERS, AND ONLY ONE OF THEM IS MONEY YOU CAN SPEND ═══
 ---
 ---   entry.balance  MIRRORS THE ROW. It moves only when the row moves: read on
----                  connect, written by a DynamoDB purchase, added to by a
----                  payout. Nothing here may touch it, because it is a claim
----                  about what DynamoDB holds.
----   entry.spent    IS COMMITTED AND NOT YET SETTLED. It grows when a car is
----                  bought and is cleared by the payout that writes it down.
+---                  connect, written by a DynamoDB purchase or spend, added to
+---                  by a payout. It is a claim about what DynamoDB holds.
+---   entry.spent    IS RESERVED AND IN FLIGHT. It grows the moment a charge is
+---                  asked for and shrinks again when the answer arrives --
+---                  downward on a refusal, or by moving into `balance` on a
+---                  success. It is never larger than the charges currently
+---                  waiting on DynamoDB, and it is what stops two presses
+---                  inside one round trip spending the same Volts twice.
 ---
 --- SPENDABLE IS THE DIFFERENCE, and every reader of "how much has this player
 --- got" goes through here rather than reading `balance`. Getting that wrong is
@@ -478,58 +487,105 @@ function BR.Market.tellShortfall(src, price)
     refuse(src, ('You need %d more to buy that.'):format(need))
 end
 
---- Take Volts for something that is not a cosmetic.
+--- Take Volts for something that is not a cosmetic, durably.
 ---
---- CONDITIONAL, AND THE CONDITION IS CHECKED HERE RATHER THAN BY THE CALLER --
---- one place asks "can they afford it", so a second caller cannot ask it
---- differently. Answers false and moves nothing when they cannot.
+--- ═══ IT ANSWERS THROUGH A CALLBACK, AND THAT IS THE POINT ═══
+---
+--- This used to return a boolean, synchronously, off the session cache -- so
+--- the caller could deliver the goods on the same line it took the money, and
+--- the row was only told at match end. It is a DynamoDB write now, and the
+--- caller does not learn the answer until DynamoDB gives one. Every caller does
+--- its bookkeeping inside `done` for exactly that reason: the goods must not
+--- exist before the debit does.
+---
+--- THREE THINGS HAPPEN IN ORDER, AND THE MIDDLE ONE IS WHY `spent` EXISTS:
+---
+---   1. the cache is asked whether this is obviously unaffordable, which
+---      refuses instantly and speaks the market's existing shortfall sentence;
+---   2. the amount is RESERVED against the cache and the lobby is pushed the
+---      new figure -- so a second press arriving during the round trip sees the
+---      money already gone and cannot spend it again;
+---   3. `br:ddb:spend` asks the row, and the row decides.
+---
+--- A refusal releases the reservation and pushes again, so a player who was
+--- refused is looking at the number they actually have.
+---
 --- @param src integer
 --- @param amount number
 --- @param reason string  for the console line only; never shown to a player
---- @return boolean ok
---- @return string|nil why
-function BR.Market.charge(src, amount, reason)
+--- @param done fun(ok:boolean, why:string|nil)|nil
+function BR.Market.charge(src, amount, reason, done)
+    done = done or function() end
+
     local lic = licenseOf[src]
     local entry = lic and inv[lic]
-    if not entry or not entry.loaded then return false, 'profile not loaded' end
-
-    local cost = math.floor(tonumber(amount) or 0)
-    if cost <= 0 then return false, 'nothing to charge' end
-    if BR.Market.spendable(entry) < cost then
-        BR.Market.tellShortfall(src, cost)
-        return false, 'cannot afford it'
+    if not entry or not entry.loaded then
+        done(false, 'profile not loaded')
+        return
     end
 
-    -- `spent` MOVES AND `balance` DOES NOT. See the note on balanceOf: `balance`
-    -- is a claim about what DynamoDB holds and DynamoDB has not been asked
-    -- anything yet.
+    local cost = math.floor(tonumber(amount) or 0)
+    if cost <= 0 then
+        done(false, 'nothing to charge')
+        return
+    end
+
+    -- THE CONVENIENCE CHECK, NOT THE AUTHORITY. See the block above: this
+    -- exists to refuse the obvious case without a round trip and to say how
+    -- short they are. The row is still asked below whenever this passes.
+    if BR.Market.spendable(entry) < cost then
+        BR.Market.tellShortfall(src, cost)
+        done(false, 'cannot afford it')
+        return
+    end
+
+    -- RESERVED, NOT SPENT. `balance` is a claim about what DynamoDB holds and
+    -- DynamoDB has not answered yet, so the reservation lives in `spent` and
+    -- the two are reconciled when it does.
     entry.spent = (tonumber(entry.spent) or 0) + cost
 
-    -- THE LOBBY SEES THE NEW NUMBER AT ONCE. A balance that only falls at the
-    -- end of the match is a balance a player would spend twice.
+    -- THE LOBBY SEES THE NEW NUMBER AT ONCE. A balance that only falls when the
+    -- write lands is a balance a player would try to spend twice while it is in
+    -- flight.
     BR.Market.push(src)
 
-    print(('[br_core] market: %s charged %d Volts (%s) -- %d spendable left')
-        :format(tostring(lic), cost, tostring(reason),
-                BR.Market.spendable(entry)))
-    return true, nil
-end
+    ask('br:ddb:spend', function(ok, extra)
+        extra = extra or {}
 
---- Hand the accumulated spend to whoever is about to write the ledger, and
---- forget it.
----
---- TAKE, NOT READ, AND THAT IS THE WHOLE OF THE ONCE-ONLY GUARANTEE. br_stats
---- calls this exactly once per player per payout; clearing inside the read means
---- a second call -- a retried payout, a match that ends twice -- charges
---- nothing a second time.
---- @param license string
---- @return integer
-function BR.Market.takeSpent(license)
-    local entry = inv[license]
-    if not entry then return 0 end
-    local n = math.floor(tonumber(entry.spent) or 0)
-    entry.spent = 0
-    return n
+        -- The reservation is released either way; on success the same amount
+        -- leaves `balance` instead, so `spendable` does not move and the lobby
+        -- does not flicker.
+        entry.spent = math.max(0, (tonumber(entry.spent) or 0) - cost)
+
+        if ok then
+            -- THE ROW'S OWN FIGURE WHERE THERE IS ONE. `UPDATED_NEW` hands back
+            -- the balance after the debit, which is better than arithmetic on a
+            -- cache that another writer may have moved.
+            entry.balance = tonumber(extra.balance) or ((tonumber(entry.balance) or 0) - cost)
+            BR.Market.push(src)
+            print(('[br_core] market: %s charged %d Volts (%s) -- %d left')
+                :format(tostring(lic), cost, tostring(reason),
+                        BR.Market.spendable(entry)))
+            done(true, nil)
+            return
+        end
+
+        -- ═══ REFUSED BY THE ROW, WHICH THE CACHE THOUGHT COULD AFFORD IT ═══
+        --
+        -- Reachable whenever the cache is stale -- a report award, a console
+        -- grant, or this license connected somewhere else. The cache is
+        -- corrected from the answer where the answer carries one, so the second
+        -- attempt is refused by this side instantly rather than by another
+        -- round trip.
+        if extra.balance then entry.balance = tonumber(extra.balance) or entry.balance end
+        BR.Market.push(src)
+
+        local why = extra.refused or extra.error or 'the write did not land'
+        if extra.refused then BR.Market.tellShortfall(src, cost) end
+        print(('^3[br_core] market: %s was NOT charged %d Volts (%s) -- %s^7')
+            :format(tostring(lic), cost, tostring(reason), tostring(why)))
+        done(false, why)
+    end, lic, cost)
 end
 
 --- A match paid out: mirror it into the cache the lobby reads.
