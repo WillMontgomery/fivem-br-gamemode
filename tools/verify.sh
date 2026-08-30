@@ -245,7 +245,23 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # only under an engine fault nobody can reproduce on demand
     # (citizenfx/fivem#2623), where the wrong version hands out a second car for
     # one payment.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_shop.lua tools/test_bool_natives.lua; do
+    #
+    # test_landtime.lua is the sixth suite to load a CLIENT file, and the only
+    # one whose subject is a MEASURING INSTRUMENT rather than a behaviour. That
+    # is why it is not a block inside test_client.lua, whose descent section
+    # loads the same file: every assertion there is about what the prompt SAID,
+    # and none is about when anything happened.
+    #
+    # An instrument has a failure mode ordinary code does not -- it can agree
+    # with the thing it measures by accident. A landing timer that took its own
+    # "the feet are down" from one of the clauses of the landing test would read
+    # zero for exactly the landing #245 is about: the clause lies, the contact
+    # time lies with it, and the readout exonerates the code it is pointing at.
+    # So the suite holds one clause false for five seconds and asserts that five
+    # seconds is what comes out, from a ground truth (IsEntityInAir) that no ped
+    # task owns. Its stubs answer 1/0 rather than true/false, so a sampler that
+    # loses its isTrue() wrapper fails here rather than in a playtest.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_shop.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
