@@ -190,71 +190,47 @@ BR.Config.Match = {
     -- when this sequence does what is written in the client -- the client
     -- reads these and /brlobbywalk replays the whole thing without a restart.
     --
-    -- THE PED'S PATH IS ONE OF FOUR, DRAWN AT RANDOM PER ENTRANCE. Each case
-    -- is a surveyed spawn plus the corners it walks through; the FINAL leg of
-    -- every case is `lobbyPos` above, appended by the client rather than
-    -- repeated here -- the lobby mark has one definition and the locker, the
+    -- THE PED'S PATH is four legs: `pedStart`, three surveyed corners, and then
+    -- `lobbyPos` above -- which the client appends rather than this file
+    -- repeating, because the lobby mark has one definition and the locker, the
     -- camera and the loading gate all read it.
     --
     -- THE CAMERA'S PATH is three authored nodes and then the ordinary lobby
     -- frame, computed from `lobbyPos` and `lobbyCam` exactly as it always was.
     lobbyEntrance   = {
-        -- ═══ FOUR SPAWNS AND FOUR PATHS, ONE PICKED AT RANDOM ═══
+        -- ═══ ONE SURVEYED PATH, AND IT IS NOT A DRAW ANY MORE ═══
         --
-        -- Re-surveyed by the owner on 2026-08-29 and REPLACING the single
-        -- `pedStart` / `pedPath` pair that preceded them. One case is drawn per
-        -- lobby entrance, so two trips home in a row do not walk the same line.
+        -- Re-surveyed by the owner on 2026-08-30, REPLACING the four random
+        -- cases that preceded it. There is one way in again, so there is no
+        -- choosing: `pedStart` is where the ped is placed under the cover and
+        -- `pedPath` is the corners it walks through.
         --
-        -- `spawn.heading` IS USED -- it is where the ped is placed, before it
-        -- has a leg to face along. The CORNERS carry no heading, and that is
-        -- deliberate: the old ones were where the surveyor happened to be
-        -- looking, and handing them to the walk as "the way to be facing on
-        -- arrival" made the ped turn most of a right angle the wrong way and
-        -- then turn back. A corner's facing is a consequence of where the path
-        -- goes NEXT, so the client computes it.
+        -- THE MACHINERY WENT WITH THEM rather than being left as a table of
+        -- one, which would have been a draw that always drew the same card and
+        -- read, to the next person, as a feature still in use.
         --
-        -- THE LAST LEG OF EVERY CASE IS `lobbyPos`. Do not repeat it here.
+        -- `pedStart.heading` IS USED -- it is where the ped is placed, before it
+        -- has a leg to face along. THE HEADINGS ON THE CORNERS ARE NOT, and are
+        -- kept only because they are the survey. They are where the surveyor
+        -- was standing and looking; handing them to TaskGoStraightToCoord as
+        -- "the way to face on arrival" is what used to make the ped turn most of
+        -- a right angle the wrong way at every corner and then turn back. A
+        -- corner's facing is a consequence of where the path goes NEXT, and the
+        -- client computes it -- see headingFor in br_core/client/lobbyped.lua,
+        -- and the assertion in tools/test_lobbyseq.lua that would catch anyone
+        -- wiring these back in.
         --
-        -- CASE 2 DOUBLES BACK, AND IT IS BUILT EXACTLY AS SURVEYED: its
-        -- A -> B -> C runs 14.0m north and then 17.9m back south, which is
-        -- 31.9m of that case's 58.7m and the whole reason it is the one case
-        -- that cannot make the 18s target inside `walkBlendMax`. Flagged to the
-        -- owner rather than quietly straightened.
-        pedCases = {
-            {   -- 1: six legs, in from the north
-                spawn = { x = 5032.51, y = -5695.65, z = 19.88, heading = 301.5 },
-                path  = {
-                    { x = 5035.57, y = -5693.29, z = 19.88 },
-                    { x = 5039.57, y = -5700.05, z = 19.88 },
-                    { x = 5034.75, y = -5703.60, z = 19.88 },
-                    { x = 5041.10, y = -5714.44, z = 17.68 },
-                    { x = 5036.33, y = -5717.66, z = 17.08 },
-                },
-            },
-            {   -- 2: four legs, in from the south-east by way of the north
-                spawn = { x = 5059.96, y = -5726.85, z = 15.67, heading = 54.7 },
-                path  = {
-                    { x = 5042.81, y = -5713.67, z = 17.68 },
-                    { x = 5039.57, y = -5700.05, z = 19.88 },
-                    { x = 5036.33, y = -5717.66, z = 17.08 },
-                },
-            },
-            {   -- 3: four legs, the short one, in from the west
-                spawn = { x = 5018.00, y = -5725.82, z = 17.68, heading = 313.4 },
-                path  = {
-                    { x = 5027.40, y = -5717.84, z = 17.68 },
-                    { x = 5030.91, y = -5720.96, z = 17.68 },
-                    { x = 5036.33, y = -5717.66, z = 17.08 },
-                },
-            },
-            {   -- 4: four legs, in from the south
-                spawn = { x = 5053.49, y = -5733.81, z = 15.88, heading = 29.9 },
-                path  = {
-                    { x = 5045.11, y = -5720.26, z = 17.68 },
-                    { x = 5041.37, y = -5714.45, z = 17.68 },
-                    { x = 5036.33, y = -5717.66, z = 17.08 },
-                },
-            },
+        -- THE FINAL LEG IS `lobbyPos`, appended by the client. Do not repeat it.
+        --
+        -- FOUR LEGS: 7.0m, 13.0m, 5.8m, 5.0m -- 30.8m in all, against 41m for
+        -- the longest of the old cases. At the 18s target that is 1.71 m/s
+        -- average, comfortably inside the blend clamp, so nothing is pinned at
+        -- the ceiling the way case 2 used to be.
+        pedStart = { x = 5040.08, y = -5699.77, z = 19.88, heading = 118.5 },
+        pedPath  = {
+            { x = 5034.35, y = -5703.75, z = 19.88, heading = 139.2 },
+            { x = 5041.32, y = -5714.51, z = 17.68, heading = 212.0 },
+            { x = 5036.56, y = -5717.71, z = 17.08, heading = 120.4 },
         },
 
         -- THE WALKING STYLE, AND IT IS A STOCK GTA MOVEMENT CLIPSET.
@@ -410,9 +386,9 @@ BR.Config.Match = {
         -- `pitch` and `fov` per node are likewise unused by the flight now; the
         -- pitch is whatever looking at the aim point requires.
         camPath = {
-            { x = 4919.50, y = -6018.38, z = 98.80, heading = 349.5 },
-            { x = 5038.11, y = -5834.56, z = 59.39, heading = 341.3 },
-            { x = 5063.97, y = -5741.21, z = 27.80, heading =  48.0 },
+            { x = 5550.24, y = -5555.91, z = 175.34, heading = 132.4 },
+            { x = 5189.63, y = -5747.61, z =  66.61, heading =  99.5 },
+            { x = 5072.10, y = -5738.05, z =  31.77, heading =  64.8 },
         },
 
         -- ═══ THE WHOLE FLIGHT, AND IT DECELERATES ═══
@@ -466,31 +442,66 @@ BR.Config.Match = {
         -- allocations and the same number of LIVE cameras: two.
         camSteps = 96,
 
+        -- THE SHORTEST A SINGLE MOVE MAY BE, IN MILLISECONDS.
+        --
+        -- NOT A KNOB, A FLOOR. The step spacing puts boundaries where the shot
+        -- moves fastest, and on a path whose sharpest bend is its final approach
+        -- that clusters very short steps at the landing -- 11ms on the current
+        -- survey. A move shorter than a frame has no frame to interpolate
+        -- across, so the engine resolves it as a cut, and several in a row is a
+        -- stutter arriving exactly where the smoothing was aimed.
+        --
+        -- 17ms is one frame at 60fps. Raising it past about a tenth of
+        -- camFlightMs / camSteps stops being a floor and starts being the
+        -- schedule; the client ignores it entirely if there is no room for it.
+        camStepMinMs = 17,
+
         -- ═══ AND THIS IS HOW WIDE IT SWINGS THROUGH EACH CORNER ═══
         --
-        -- "And round the corners once more."
+        -- "And round the corners once more." -- the owner, 2026-08-29, about the
+        -- path he had then.
         --
         -- The flight is a spline through the authored nodes, and this scales the
         -- TANGENT it carries through each one: bigger tangents mean the camera
         -- commits to a turn earlier and leaves it later, spreading the direction
-        -- change over a longer arc instead of pivoting near the node.
+        -- change over a longer arc instead of pivoting near the node. 0.5 is a
+        -- plain Catmull-Rom, which is what the flight was before this was a knob.
         --
-        -- 0.5 is a plain Catmull-Rom, which is what the flight was before this
-        -- was a knob. THE CORNER THAT MATTERS IS THE LAST ONE -- the authored
-        -- path turns 17 degrees at node 2 and 69 at node 3, so node 3 is the
-        -- one being asked about -- and measured there:
+        -- ═══ IT WAS 0.75, AND THE NEW SURVEY TURNED IT UPSIDE DOWN ═══
         --
-        --   0.50   20.1 deg/m, the turn spread over 10.7m of path
-        --   0.75   15.4 deg/m, spread over 17.8m     <-- here
-        --   1.00   12.6 deg/m, spread over 27.8m
-        --   1.25   39.9 deg/m  -- WORSE THAN 0.50
+        -- ON THE OLD PATH IT HELPED, because that path had a 69-degree corner at
+        -- its last node and rounding is what a 69-degree corner needs. The path
+        -- surveyed on 2026-08-30 does not: it turns 32.6 degrees at node 2 and
+        -- 19.7 at node 3. There is far less corner to soften, and the cost of
+        -- reaching for it did not go down with it. Measured on THIS path:
         --
-        -- THERE IS A CLIFF AND IT IS JUST PAST 1.0. Past that the tangents are
-        -- long enough that the curve swings wide of a node and has to come back,
-        -- which puts a NEW and sharper bend in the path somewhere else -- at
-        -- 1.25 it is twice as sharp as the corner it was sent to soften, and it
-        -- reads as the camera changing its mind. Raise this if he wants more,
-        -- but not past 1.0 without looking at it.
+        --   rounding   sharpest bend    worst per-step turn
+        --     0.30       8.40 deg/m
+        --     0.50       7.23 deg/m           1.53 deg   <-- recommended
+        --     0.60       7.16 deg/m
+        --     0.75      13.13 deg/m           2.36 deg   <-- shipped
+        --     1.00      42.59 deg/m           3.91 deg
+        --
+        -- WHY THE CLIFF MOVED DOWN, in one number: a node's tangent is scaled
+        -- from the chord between its NEIGHBOURS, and the last two control
+        -- segments here are 123m and 37.8m. So the tangent steering that final
+        -- 37.8m stretch spans 159m of chord -- 2.1 times the segment at 0.50,
+        -- 3.2 at 0.75, 4.2 at 1.00. A tangent several times longer than the
+        -- segment it steers is a curve that swings wide and has to come back,
+        -- and the bend it puts in on the way back is sharper than the corner it
+        -- was sent to soften.
+        --
+        -- SO 0.75 IS NOW PAST THE CLIFF RATHER THAN BELOW IT. IT IS LEFT AT 0.75
+        -- ANYWAY, deliberately: it is his knob, he has not asked for it to move,
+        -- and 2.36 degrees per step is still better than the 3.32 he accepted
+        -- last round -- so this is a free improvement available rather than a
+        -- regression to fix. 0.50 is the recommendation whenever he wants it;
+        -- it is one character.
+        --
+        -- THE EARLIER ADVICE THAT THIS COULD SAFELY GO TO 1.0 IS WITHDRAWN. On
+        -- this path 1.0 is six times the bend of 0.5 and nearly three times the
+        -- per-step turn. Raising it is a decision to make against a fresh
+        -- measurement, never from the last one.
         --
         -- IT MOVES THE PATH, NOT THE PACE. The flight still takes camFlightMs
         -- whatever this is -- a rounder corner is a slightly longer path flown

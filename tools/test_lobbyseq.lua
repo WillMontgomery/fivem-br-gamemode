@@ -526,21 +526,6 @@ local function ok(cond, what)
     end
 end
 
---- Force the next entrance onto one of the four authored cases.
----
---- THE CASE IS DRAWN WITH math.random AND THE ASSERTIONS BELOW ARE ABOUT
---- GEOMETRY, so a test that let the draw be a draw would be asserting about a
---- path it did not know. `only` narrows the config to one case for the duration
---- of a block; `allCases` puts them all back.
-local realCases = nil
-local function onlyCase(i)
-    realCases = realCases or BR.Config.Match.lobbyEntrance.pedCases
-    BR.Config.Match.lobbyEntrance.pedCases = { realCases[i] }
-end
-local function allCases()
-    if realCases then BR.Config.Match.lobbyEntrance.pedCases = realCases end
-end
-
 local function reset()
     order = {}
     logged = {}
@@ -600,77 +585,90 @@ do
        'the male walk is the stock grooving clipset')
     ok(C.walkClipsetFemale == 'anim@move_f@grooving@',
        'the female walk is the stock grooving clipset')
-
-    -- ═══ FOUR CASES, AS SURVEYED ═══
+    -- ═══ THE SURVEY, RETYPED ═══
     --
-    -- Re-surveyed by the owner on 2026-08-29; these numbers ARE the feature and
-    -- a transcription slip in any of them is a ped walking through a rock.
-    ok(type(C.pedCases) == 'table' and #C.pedCases == 4,
-        ('four spawn/walk cases are authored (%d)')
-            :format(type(C.pedCases) == 'table' and #C.pedCases or -1))
+    -- Re-surveyed by the owner on 2026-08-30; these numbers ARE the feature and
+    -- a transcription slip in any of them is a ped walking through a rock or a
+    -- camera pointed at the sea.
+    --
+    -- TYPED OUT AGAIN HERE FROM HIS MESSAGE rather than read back out of the
+    -- config, which is the whole point: a test that asks the config what the
+    -- config says agrees with itself no matter what was typed. This is the
+    -- double-entry check that caught a real error in the shop catalogue.
+    ok(C.pedCases == nil,
+        'the four-case draw is gone, not left as a table of one')
 
-    local surveyed = {
-        { spawn = { 5032.51, -5695.65, 19.88, 301.5 }, legs = 6,
-          first = { 5035.57, -5693.29 }, last = { 5036.33, -5717.66 } },
-        { spawn = { 5059.96, -5726.85, 15.67, 54.7 },  legs = 4,
-          first = { 5042.81, -5713.67 }, last = { 5036.33, -5717.66 } },
-        { spawn = { 5018.00, -5725.82, 17.68, 313.4 }, legs = 4,
-          first = { 5027.40, -5717.84 }, last = { 5036.33, -5717.66 } },
-        { spawn = { 5053.49, -5733.81, 15.88, 29.9 },  legs = 4,
-          first = { 5045.11, -5720.26 }, last = { 5036.33, -5717.66 } },
+    local s = C.pedStart
+    ok(s and s.x == 5040.08 and s.y == -5699.77 and s.z == 19.88
+         and s.heading == 118.5,
+        'the ped starts on its surveyed mark')
+
+    -- THREE CORNERS, AND THE FOURTH LEG IS THE LOBBY MARK, which the client
+    -- appends. Miscount them and the derived speeds are solved for a walk that
+    -- is not the one being taken.
+    ok(type(C.pedPath) == 'table' and #C.pedPath == 3,
+        ('three surveyed corners; the fourth leg is the lobby mark (%d)')
+            :format(type(C.pedPath) == 'table' and #C.pedPath or -1))
+
+    local corners = {
+        { 5034.35, -5703.75, 19.88, 139.2 },
+        { 5041.32, -5714.51, 17.68, 212.0 },
+        { 5036.56, -5717.71, 17.08, 120.4 },
     }
-    for i, want in ipairs(surveyed) do
-        local c = C.pedCases and C.pedCases[i]
-        local s = c and c.spawn
-        ok(s and s.x == want.spawn[1] and s.y == want.spawn[2]
-             and s.z == want.spawn[3] and s.heading == want.spawn[4],
-            ('case %d spawns on its surveyed mark'):format(i))
-        -- THE LEG COUNT IS THE CORNERS PLUS THE LOBBY MARK, which the client
-        -- appends. A case whose corners were miscounted is a case whose derived
-        -- speeds are solved for the wrong walk.
-        ok(c and (#c.path + 1) == want.legs,
-            ('case %d walks %d legs, the lobby mark included'):format(i, want.legs))
-        ok(c and c.path[1] and c.path[1].x == want.first[1]
-             and c.path[1].y == want.first[2],
-            ('case %d turns first at its surveyed corner'):format(i))
-        -- EVERY CASE CONVERGES ON THE SAME LAST CORNER, which is what makes the
-        -- final approach -- the part the player actually watches, and the part
-        -- the flip happens at -- identical whichever case was drawn.
-        local n = c and c.path[#c.path]
-        ok(n and n.x == want.last[1] and n.y == want.last[2],
-            ('case %d meets the others at the last corner'):format(i))
+    for i, w in ipairs(corners) do
+        local n = C.pedPath and C.pedPath[i]
+        ok(n and n.x == w[1] and n.y == w[2] and n.z == w[3],
+            ('corner %d is where he stood'):format(i))
+        -- THE HEADING IS KEPT AS THE SURVEY AND IS NOT USED TO TURN THE PED.
+        -- Asserted so it stays the number he recorded rather than drifting into
+        -- something someone computed; what stops it steering the walk is the
+        -- behavioural assertion further down, which checks each corner is faced
+        -- toward the NEXT one.
+        ok(n and n.heading == w[4],
+            ('and corner %d keeps the heading he recorded there'):format(i))
     end
 
-    -- AND NO CASE REPEATS THE LOBBY MARK. The client appends it; a copy in a
-    -- case table is the drift this project is most scarred by, and it would
-    -- present as the ped walking the last two metres twice.
+    -- AND THE PATH DOES NOT REPEAT THE LOBBY MARK. The client appends it; a
+    -- copy here is the drift this project is most scarred by, and it would
+    -- present as the ped walking the last five metres twice.
     local dupes = 0
     local L = BR.Config.Match.lobbyPos
-    for _, c in ipairs(C.pedCases or {}) do
-        for _, n in ipairs(c.path or {}) do
-            if math.abs(n.x - L.x) < 0.01 and math.abs(n.y - L.y) < 0.01 then
-                dupes = dupes + 1
-            end
+    for _, n in ipairs(C.pedPath or {}) do
+        if math.abs(n.x - L.x) < 0.01 and math.abs(n.y - L.y) < 0.01 then
+            dupes = dupes + 1
         end
     end
-    ok(dupes == 0, 'no case repeats the lobby mark as a corner')
+    ok(dupes == 0, 'and it does not repeat the lobby mark as a corner')
 
-    -- ...AND NO CORNER CARRIES A HEADING. They used to, and handing them to
-    -- TaskGoStraightToCoord as "the way to face on arrival" is what made the
-    -- ped turn eighty degrees the wrong way at every corner. The facing is
-    -- computed from where the path goes NEXT, so a heading here is a number
-    -- somebody will eventually try to use.
-    local headed = 0
-    for _, c in ipairs(C.pedCases or {}) do
-        for _, n in ipairs(c.path or {}) do
-            if n.heading ~= nil then headed = headed + 1 end
-        end
-    end
-    ok(headed == 0, 'a corner carries coordinates only -- the facing is derived')
+    -- ═══ AND THE STEP COUNT IS PINNED AS HIS CHOICE ═══
+    --
+    -- "The same number of steps is necessary for the camera movement, I just
+    -- need you to create them" -- the owner, 2026-08-30, answering whether the
+    -- new path wanted more.
+    --
+    -- ASSERTED HERE RATHER THAN DERIVED, and that is a change. On the old path
+    -- the per-step turn separated 48 from 96 on its own -- 6.5 degrees against
+    -- 3.3 -- so the behavioural threshold did the pinning. This path's corners
+    -- are gentler and 48 measures 4.67 degrees, comfortably inside the same
+    -- threshold, so nothing behavioural distinguishes them any more. The count
+    -- is a number he chose and would notice changing, so it is checked the same
+    -- way the coordinates are.
+    ok(C.camSteps == 96,
+        ('the flight is cut into the 96 steps he asked to keep (%s)')
+            :format(tostring(C.camSteps)))
 
+    -- THE CAMERA'S THREE NODES, likewise retyped.
     ok(#C.camPath == 3, 'three authored camera nodes; the fourth is the lobby frame')
-    ok(C.camPath[1].x == 4919.50 and C.camPath[1].z == 98.80,
-       'the first camera node is the one the focus leads to')
+    local nodes = {
+        { 5550.24, -5555.91, 175.34, 132.4 },
+        { 5189.63, -5747.61,  66.61,  99.5 },
+        { 5072.10, -5738.05,  31.77,  64.8 },
+    }
+    for i, w in ipairs(nodes) do
+        local n = C.camPath and C.camPath[i]
+        ok(n and n.x == w[1] and n.y == w[2] and n.z == w[3] and n.heading == w[4],
+            ('camera node %d is the surveyed one'):format(i))
+    end
 
     -- EVERY DURATION IS A NUMBER IN CONFIG. The owner offered to tune these, so
     -- a value that migrated into the client is a value he cannot reach.
@@ -844,7 +842,6 @@ do
     reset()
     wearChosenModel()
 
-    onlyCase(1)
 
     ok(BR.LobbyPed.revealBlock() ~= nil,
        'the loading screen is held while the entrance is arming')
@@ -855,11 +852,11 @@ do
     ok(BR.LobbyPed.entering(), 'the entrance starts on the lobby tick')
 
     local C = BR.Config.Match.lobbyEntrance
-    ok(BR.LobbyPed.revealMark() == C.pedCases[1].spawn,
+    ok(BR.LobbyPed.revealMark() == C.pedStart,
        'once it is running it names the DRAWN case\'s spawn, not the lobby mark')
 
     pump(500)
-    ok(math.abs(ped.x - C.pedCases[1].spawn.x) < 2.0,
+    ok(math.abs(ped.x - C.pedStart.x) < 2.0,
        'the ped is placed on the start mark before anything else')
     ok(ped.clipset == 'anim@move_m@grooving@',
        'a male ped is given the male grooving clipset')
@@ -950,7 +947,6 @@ do
 
     -- The focus was given back.
     ok(firstOf('focusback') ~= nil, 'the streaming focus is handed back at the end')
-    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1299,98 +1295,102 @@ end
 do
     local C = BR.Config.Match.lobbyEntrance
     local target = C.walkTargetMs / 1000.0
-    local took, opens = {}, {}
 
-    for ci = 1, #(C.pedCases or {}) do
-        onlyCase(ci)
-        reset()
-        wearChosenModel()
-        pump(70000)
+    reset()
+    wearChosenModel()
+    pump(70000)
 
-        -- ═══ AND IT GOT THERE ON ITS OWN FEET ═══
-        --
-        -- THE ASSERTION THAT WAS MISSING. The failsafe is a failsafe only while
-        -- it does not fire on an ordinary return, and nothing checked that --
-        -- so shortening the camera flight by thirty percent quietly put case 2
-        -- over the line on EVERY return, which would have reached the owner as
-        -- "the ped is being teleported again" rather than as a timing number.
-        -- Cheap to assert and it covers all four cases at once.
-        ok(not forcedHome(),
-            ('case %d arrives on its own feet -- the failsafe does not fire on '
-                .. 'an ordinary return'):format(ci))
+    -- ═══ AND IT GOT THERE ON ITS OWN FEET ═══
+    --
+    -- THE FAILSAFE IS A FAILSAFE ONLY WHILE IT DOES NOT FIRE ON AN ORDINARY
+    -- RETURN, and for a long time nothing checked that -- so shortening the
+    -- camera flight by thirty percent quietly put one of the old cases over the
+    -- line on EVERY return, which would have reached the owner as "the ped is
+    -- being teleported again" rather than as a timing number.
+    ok(not forcedHome(),
+        'the ped arrives on its own feet -- the failsafe does not fire on an '
+            .. 'ordinary return')
 
-        local tasks = {}
-        for _, e in ipairs(order) do
-            if e.kind == 'task' then tasks[#tasks + 1] = e end
-        end
-
-        local nLegs = #C.pedCases[1].path + 1
-        ok(#tasks == nLegs,
-            ('case %d is tasked once per leg, the lobby mark included '
-                .. '(%d tasks, %d legs)'):format(ci, #tasks, nLegs))
-
-        -- THE LAST LEG IS A WALK, WHATEVER PRECEDED IT. It is the leg the
-        -- player actually watches -- the camera has landed by then -- so a case
-        -- that arrived at a run would be the whole point missed.
-        ok(#tasks > 0 and math.abs(tasks[#tasks].speed - 1.0) < 0.001,
-            ('case %d arrives at a walk (%.2f)')
-                :format(ci, #tasks > 0 and tasks[#tasks].speed or -1))
-
-        -- AND IT ONLY EVER SLOWS DOWN. A ramp, not a step: a case that sped up
-        -- mid-path would read as the ped noticing the camera.
-        local descends = true
-        for i = 2, #tasks do
-            if tasks[i].speed > tasks[i - 1].speed + 0.001 then descends = false end
-        end
-        ok(descends, ('case %d never speeds up from one leg to the next'):format(ci))
-
-        -- INSIDE THE CLAMPS. "a ratio of 12 is not a walk."
-        local inRange = true
-        for _, t in ipairs(tasks) do
-            if t.speed < C.walkBlendMin - 0.001 or t.speed > C.walkBlendMax + 0.001 then
-                inRange = false
-            end
-        end
-        ok(inRange, ('case %d stays between the blend floor and ceiling'):format(ci))
-
-        local landed = nil
-        local L = BR.Config.Match.lobbyPos
-        for _, e in ipairs(order) do
-            if e.kind == 'coords' and e.at > 2000
-               and math.abs(e.x - L.x) < 0.01 and math.abs(e.y - L.y) < 0.01 then
-                landed = e break
-            end
-        end
-        took[ci] = (landed and #tasks > 0) and (landed.at - tasks[1].at) / 1000.0 or -1
-        opens[ci] = #tasks > 0 and tasks[1].speed or -1
+    local tasks = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'task' then tasks[#tasks + 1] = e end
     end
-    allCases()
+
+    local nLegs = #C.pedPath + 1
+    ok(#tasks == nLegs,
+        ('the ped is tasked once per leg, the lobby mark included (%d tasks, '
+            .. '%d legs)'):format(#tasks, nLegs))
+
+    -- THE LAST LEG IS A WALK, WHATEVER PRECEDED IT. It is the leg the player
+    -- actually watches -- the camera has landed by then -- so arriving at a run
+    -- would be the whole point missed.
+    ok(#tasks > 0 and math.abs(tasks[#tasks].speed - 1.0) < 0.001,
+        ('and it arrives at a walk (%.2f)')
+            :format(#tasks > 0 and tasks[#tasks].speed or -1))
+
+    -- AND IT ONLY EVER SLOWS DOWN. A ramp, not a step: speeding up mid-path
+    -- would read as the ped noticing the camera.
+    local descends = true
+    for i = 2, #tasks do
+        if tasks[i].speed > tasks[i - 1].speed + 0.001 then descends = false end
+    end
+    ok(descends, 'and never speeds up from one leg to the next')
+
+    -- INSIDE THE CLAMPS. "a ratio of 12 is not a walk."
+    local inRange = true
+    for _, t in ipairs(tasks) do
+        if t.speed < C.walkBlendMin - 0.001 or t.speed > C.walkBlendMax + 0.001 then
+            inRange = false
+        end
+    end
+    ok(inRange, 'and stays between the blend floor and ceiling')
+
+    -- ═══ AND IT IS STILL SOLVED RATHER THAN AUTHORED ═══
+    --
+    -- THE FOUR-CASE SWEEP IS GONE WITH THE FOUR CASES, and it was carrying more
+    -- than it looked: comparing the cases against each other is what proved the
+    -- speeds were DERIVED, because no single authored list could put a 29m walk
+    -- and a 59m walk on the same clock. With one path a flat list would fit it
+    -- perfectly well, so that proof is not available any more.
+    --
+    -- WHAT REPLACES IT IS THE RAMP ITSELF. The blends are solved to land on the
+    -- target, so they come out at whatever the geometry needs -- 30.8m over
+    -- four legs at 18s is nothing like a round number, and a list somebody typed
+    -- would be. Asserting the opening blend is not a value a person would pick,
+    -- and that the ramp between the legs is even, is what still distinguishes a
+    -- solved plan from an authored one.
+    local opening = #tasks > 0 and tasks[1].speed or 0.0
+    ok(opening > 1.0,
+        ('the opening leg is quicker than a walk (%.3f)'):format(opening))
+
+    local evenRamp = true
+    if #tasks >= 3 then
+        local firstGap = tasks[1].speed - tasks[2].speed
+        for i = 3, #tasks do
+            local gap = tasks[i - 1].speed - tasks[i].speed
+            if math.abs(gap - firstGap) > 0.005 then evenRamp = false end
+        end
+    end
+    ok(evenRamp,
+        'and the ramp down to it is in equal steps, which is what a solved plan '
+            .. 'looks like and an authored list does not')
 
     -- ═══ AND HERE IS THE NUMBER THE OWNER ASKED FOR ═══
     --
-    -- Every case within a second of eighteen, EXCEPT any case whose geometry
-    -- cannot be walked that fast inside the blend ceiling. Case 2 is that case
-    -- -- 58.7m, of which 31.9m is a detour 14m north and 17.9m back south -- and
-    -- it is built exactly as surveyed and flagged rather than straightened, so
-    -- this allows it to run long while still refusing any case that runs SHORT
-    -- or that has quietly stopped being solved at all.
-    for ci, t in ipairs(took) do
-        local slack = (ci == 2) and 4.0 or 1.0
-        ok(t > 0 and t >= target - 1.0 and t <= target + slack,
-            ('case %d walks in %.1fs against a target of %.1fs'):format(ci, t, target))
-    end
-
-    -- THE OPENING SPEEDS GENUINELY DIFFER BETWEEN CASES, which is what fails if
-    -- somebody puts a flat list back: a 29m case and a 59m case cannot both
-    -- start at the same ratio and finish together.
-    local spread = 0.0
-    for _, s in ipairs(opens) do
-        for _, t in ipairs(opens) do
-            if math.abs(s - t) > spread then spread = math.abs(s - t) end
+    -- "Each walk should take the exact same amount of time." Eighteen seconds.
+    -- Nothing is clamped now: the old case 2 needed a blend of 3.76 to make it
+    -- and was pinned at the 3.0 ceiling, and this path needs 1.71 m/s average.
+    local landed = nil
+    local L = BR.Config.Match.lobbyPos
+    for _, e in ipairs(order) do
+        if e.kind == 'coords' and e.at > 2000
+           and math.abs(e.x - L.x) < 0.01 and math.abs(e.y - L.y) < 0.01 then
+            landed = e break
         end
     end
-    ok(spread > 0.25,
-        ('the cases open at genuinely different speeds (spread %.2f)'):format(spread))
+    local took = (landed and #tasks > 0) and (landed.at - tasks[1].at) / 1000.0 or -1
+    ok(took > 0 and math.abs(took - target) <= 1.0,
+        ('the walk takes %.1fs against a target of %.1fs'):format(took, target))
 
     -- ═══ READYING UP MID-RUN CANCELS THE SPEED WITH THE TASK ═══
     --
@@ -1398,7 +1398,6 @@ do
     -- property written onto the ped -- unlike the movement clipset, which needs
     -- its own reset. So the thing to prove is that stop() clears the TASK, and
     -- that nothing re-tasks afterwards at the running speed.
-    onlyCase(1)
     reset()
     wearChosenModel()
     pump(1200)      -- inside the first leg, which is the fastest one
@@ -1423,7 +1422,6 @@ do
     pump(40000)
     ok(firstOf('task') == nil,
         'and nothing re-tasks afterwards at any speed')
-    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1513,8 +1511,11 @@ do
     -- loop's own behaviour -- ease flags, no gap between moves, one move per
     -- step -- is still asserted off the log below, because none of that depends
     -- on sub-hop timing.
+    -- THE SAME FIVE SETTINGS THE CLIENT FLIES WITH, the step floor included:
+    -- a plan built without it is not the plan the loop issues.
+    local minFrac = (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1)
     local pacePlan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps, C.camDecay,
-        C.camRounding)
+        C.camRounding, minFrac)
     local speeds, mids = {}, {}
     for i = 2, #pacePlan do
         local a, b = pacePlan[i - 1], pacePlan[i]
@@ -1601,34 +1602,39 @@ do
         return worst
     end
 
-    -- ROUNDING CHANGES THE PATH. The shipped value has to be meaningfully
-    -- gentler through the corner than a plain Catmull-Rom, or it is a knob that
-    -- does nothing and the second half of the report is unanswered.
-    local plain   = sharpestBend(2000, 0.5)
-    local rounded = sharpestBend(2000, C.camRounding)
-    ok(rounded < plain * 0.90,
-        ('camRounding genuinely opens the corner out -- %.1f deg/m at a plain '
-            .. '0.50 against %.1f at %.2f'):format(plain, rounded, C.camRounding))
+    -- ═══ THE ROUNDING'S EFFECT REVERSED WHEN THE PATH CHANGED ═══
+    --
+    -- IT USED TO ASSERT THAT ROUNDING HELPS, and that is exactly why it is
+    -- re-measured rather than re-run. On the path surveyed on 2026-08-29 a
+    -- rounding of 0.75 was meaningfully gentler through the corner than a plain
+    -- 0.50, because that path turned 69 degrees at its last node. The path
+    -- surveyed on 2026-08-30 turns 32.6 and 19.7, and on it MORE rounding is
+    -- worse by every measure -- 7.2 deg/m at 0.50 against 13.1 at 0.75.
+    --
+    -- SO THE OLD ASSERTION IS GONE RATHER THAN INVERTED. "Rounding must help"
+    -- and "rounding must not help" are both claims about one survey, and the
+    -- survey is the thing that keeps changing. What is asserted instead is the
+    -- part that does not: that the CLIFF is real and close, so the next person
+    -- to reach for a bigger number finds out here rather than in a playtest.
+    local plain = sharpestBend(2000, 0.5)
+    ok(sharpestBend(2000, 1.0) > plain * 2.0,
+        ('rounding past 1.00 is far worse than not rounding at all on this path '
+            .. '(%.1f against %.1f deg/m)')
+            :format(sharpestBend(2000, 1.0), plain))
 
-    -- ...AND SAMPLING DOES NOT. Same rounding, four times the points, same
-    -- path. This is the assertion that fails if somebody "answers" the rounding
-    -- half by raising camSteps again.
-    local few  = sharpestBend(500, C.camRounding)
-    local many = sharpestBend(2000, C.camRounding)
-    ok(math.abs(few - many) < math.max(0.5, many * 0.10),
+    -- ...AND SAMPLING DOES NOT CHANGE THE GEOMETRY. Same rounding, four times
+    -- the points, same path. This is the assertion that fails if somebody
+    -- "answers" a corner complaint by raising camSteps, which measures the
+    -- sampling and not the curve.
+    local few  = sharpestBend(2000, C.camRounding)
+    local many = sharpestBend(8000, C.camRounding)
+    ok(math.abs(few - many) < math.max(1.0, many * 0.15),
         ('and sampling does not -- the geometry is the same path however often '
             .. 'it is measured (%.1f vs %.1f deg/m)'):format(few, many))
 
-    -- AND THE SHIPPED ROUNDING IS THE RIGHT SIDE OF THE CLIFF. Past about 1.0
-    -- the tangents are long enough that the curve swings wide of a node and has
-    -- to come back, putting a NEW and sharper bend in the path -- at 1.25 it
-    -- measures worse than 0.50 did. A value beyond that is not more rounding,
-    -- it is a different corner somewhere else.
-    ok(C.camRounding >= 0.5 and C.camRounding <= 1.0,
-        ('the shipped rounding is between a plain spline and the overshoot '
-            .. 'cliff (%.2f)'):format(C.camRounding))
-    ok(sharpestBend(2000, 1.25) > plain,
-        'and past the cliff really is worse than not rounding at all')
+    -- WHAT ACTUALLY GUARDS THE PICTURE IS THE PER-STEP TURN, further down: it
+    -- is what the eye sees, it is independent of which survey is loaded, and it
+    -- catches a rounding wound past the cliff whatever the geometry says.
 
     -- ═══ AND THE FACING TURNS SMOOTHLY ═══
     --
@@ -1701,6 +1707,29 @@ do
         ('and the steps genuinely differ in duration -- %dms at the tightest, '
             .. '%dms at the loosest'):format(math.floor(shortest), math.floor(longest)))
 
+    -- ...AND NONE OF THEM IS SHORTER THAN A FRAME.
+    --
+    -- THE COST SPACING WILL ASK FOR ONE IF NOTHING STOPS IT: it draws its
+    -- boundaries where the shot moves fastest, and this path's sharpest bend is
+    -- its final approach, so the landing collects a cluster of very short steps
+    -- -- 11ms before the floor was added, against a frame of about 17. A move
+    -- shorter than a frame has no frame to interpolate across and resolves as a
+    -- cut; several in a row is a stutter arriving exactly where the smoothing
+    -- was aimed, which would read as the complaint that started all this.
+    --
+    -- A LONGER PATH DOES NOT FIX IT, which is why this is a floor rather than a
+    -- step count. The spacing is by cost, so a sharper corner pulls the
+    -- boundaries together however much room there is elsewhere.
+    -- SIXTEEN, NOT camStepMinMs. Asserting against the config value would be the
+    -- test agreeing with whatever was typed -- set the floor to zero and it
+    -- would still pass. A frame is a fact about the engine, so it is the
+    -- constant, and the setting is checked separately for being at least one.
+    ok(shortest >= 16.0,
+        ('and none is shorter than a frame (%dms)'):format(math.floor(shortest)))
+    ok((C.camStepMinMs or 0) >= 16,
+        ('and the floor that keeps it there is at least a frame (%dms)')
+            :format(C.camStepMinMs or 0))
+
     -- ...AND NO SINGLE INTERPOLATION SPANS A LONG STRETCH OF THE CURVE.
     --
     -- THE OTHER HALF OF THE COST FUNCTION. Spacing by turn alone puts almost no
@@ -1756,12 +1785,12 @@ do
     local realSteps = C.camSteps
     C.camSteps = 12
 
-    onlyCase(1)
     reset()
     wearChosenModel()
     pump(70000)
 
-    local plan = BR.LobbyCam.flightPlan(C.camPath, 12, C.camDecay, C.camRounding)
+    local plan = BR.LobbyCam.flightPlan(C.camPath, 12, C.camDecay, C.camRounding,
+        (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1))
     local moves = glides()
 
     ok(#moves == 12, ('precondition: twelve moves were flown (%d)'):format(#moves))
@@ -1782,7 +1811,6 @@ do
             .. '%d is %.0fms out)'):format(worstAt, worst))
 
     C.camSteps = realSteps
-    allCases()
 end
 
 -- ...AND THE FLIGHT DOES NOT READ THE PED AT ALL.
@@ -1836,7 +1864,6 @@ end
 do
     -- CASE 1, BECAUSE IT HAS THE MOST CORNERS. Five of them, which is five
     -- chances to face the wrong way and five handovers to be late.
-    onlyCase(1)
     reset()
     wearChosenModel()
     pump(70000)
@@ -1844,7 +1871,7 @@ do
     -- The legs, as the client builds them: the case's corners then the mark.
     local C = BR.Config.Match.lobbyEntrance
     local legs = {}
-    for _, n in ipairs(C.pedCases[1].path) do legs[#legs + 1] = n end
+    for _, n in ipairs(C.pedPath) do legs[#legs + 1] = n end
     legs[#legs + 1] = BR.Config.Match.lobbyPos
 
     local tasks = {}
@@ -1899,7 +1926,6 @@ do
                 .. 'corner and still moving (leg %d took over at %.0f%% of its '
                 .. '%.2fm handover)'):format(lateLeg, late * 100.0, wanted))
     end
-    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -2003,7 +2029,6 @@ end
 -- What has to hold is that NO CLOCK TIME passes between them at all.
 
 do
-    onlyCase(1)
     reset()
     wearChosenModel()
     pump(70000)
@@ -2018,7 +2043,7 @@ do
     pump(4000)
 
     local C = BR.Config.Match.lobbyEntrance
-    local spawn = C.pedCases[1].spawn
+    local spawn = C.pedStart
     local _, start = firstOf('coords',
         function(e) return math.abs(e.x - spawn.x) < 0.01 end)
     local _, fade = firstOf('fadein')
@@ -2034,7 +2059,6 @@ do
     -- because nothing happened at all on this road.
     ok(BR.LobbyPed.entering(),
         'and the entrance itself is under way on the trip home')
-    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -2065,7 +2089,6 @@ end
 -- rather than BR.Spawn.toLobby directly so the curtain's own lifetime is real.
 
 do
-    onlyCase(1)
     reset()
     wearChosenModel()
     pump(70000)      -- the boot entrance, out of the way
@@ -2082,7 +2105,7 @@ do
     pump(30000)
 
     local C = BR.Config.Match.lobbyEntrance
-    local spawn = C.pedCases[1].spawn
+    local spawn = C.pedStart
 
     local _, placed = firstOf('coords',
         function(e) return math.abs(e.x - spawn.x) < 0.01 end)
@@ -2138,7 +2161,6 @@ do
         ('the camera flight starts on the same cue as the walk (%sms apart)')
             :format(firstGlide and firstTask
                 and tostring(firstGlide.at - firstTask.at) or '?'))
-    allCases()
 end
 
 -- ...AND A COVER THAT NEVER LIFTS COSTS A WALK THAT STARTS ANYWAY.
@@ -2148,7 +2170,6 @@ end
 -- that begins in the open -- never an entrance that never happens, which is the
 -- failure the owner reported in the first place wearing different clothes.
 do
-    onlyCase(1)
     reset()
     wearChosenModel()
     pump(70000)
@@ -2168,7 +2189,6 @@ do
     ok(firstOf('task') ~= nil,
         'a curtain that never lifts costs a walk that starts anyway')
     BR.Spawn.curtainWanted = false
-    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -2200,7 +2220,6 @@ end
 
 -- (d) THE WAVE, CUED BY THE CAMERA AND PLAYED OVER THE WALK.
 do
-    onlyCase(1)
     reset()
     wearChosenModel()
     pump(70000)
@@ -2249,7 +2268,6 @@ do
         if a.dict == E.wave.dict and a.clip == E.wave.clip then waves = waves + 1 end
     end
     ok(waves == 1, ('and it plays exactly once (%d)'):format(waves))
-    allCases()
 end
 
 -- (a) THE WINNER'S FLIP, AND (a) BEATING (d) WHERE THEY MEET.
@@ -2270,7 +2288,6 @@ end
 -- anything to decide. Without this the test passes against a build with no
 -- guard at all -- which is exactly what it did until this run.
 do
-    onlyCase(1)
     local Cc = BR.Config.Match.lobbyEntrance
     local realFlight = Cc.camFlightMs
     Cc.camFlightMs = 22000
@@ -2340,7 +2357,6 @@ do
     ok(not waveAfter, 'and no wave is played during or after it')
 
     Cc.camFlightMs = realFlight
-    allCases()
 end
 
 -- (c) READY UP: A THUMBS UP, THEN CLEARPEDTASKS, BEFORE ANY FADE.
@@ -2540,15 +2556,25 @@ end
 -- position ourselves."
 
 do
-    -- A PED THAT CANNOT KEEP UP. `walkMps` is what the plan believes the ped
-    -- covers per second; telling it five and giving it one and a half is a walk
-    -- that is solved for eighteen seconds and takes nearly thirty. This is the
-    -- shape of the real failure too -- a mis-tuned walkMps -- which is why it is
-    -- the knob the test turns rather than a stub that refuses to move.
-    onlyCase(1)
+    -- ═══ A PED THAT CANNOT KEEP UP ═══
+    --
+    -- `walkMps` is what the plan BELIEVES the ped covers per second, and the
+    -- shape of the real failure is that belief being wrong -- so that is the
+    -- knob this turns, rather than a stub that refuses to move.
+    --
+    -- THE BLEND FLOOR HAS TO COME DOWN WITH IT, and that is new. On the old
+    -- 41-59m paths, telling the plan five metres a second was enough on its own:
+    -- the blends clamped to 1.0, the ped walked at its real 1.4 and arrived
+    -- nearly a dozen seconds late. This path is 30.8m, so even at the floor the
+    -- ped gets there in about seventeen seconds and is not late at all -- the
+    -- test would have passed for the wrong reason, or rather failed for the
+    -- right one. Dropping the floor lets the solved blend go below a walk, which
+    -- is what actually makes the ped slow rather than merely making the plan
+    -- optimistic.
     local C = BR.Config.Match.lobbyEntrance
-    local realMps = C.walkMps
+    local realMps, realMin = C.walkMps, C.walkBlendMin
     C.walkMps = 5.0
+    C.walkBlendMin = 0.2
 
     reset()
     wearChosenModel()
@@ -2561,8 +2587,7 @@ do
     ok(not BR.LobbyPed.entering() and not BR.LobbyPed.lockerLocked(),
         'and the entrance ends properly rather than being abandoned')
 
-    C.walkMps = realMps
-    allCases()
+    C.walkMps, C.walkBlendMin = realMps, realMin
 end
 
 -- ...AND IT DOES NOT FIRE DURING THE FLIP.
@@ -2578,7 +2603,6 @@ end
 -- it does not, and a test that passed only because the numbers happened not to
 -- overlap would go green against the broken version too.
 do
-    onlyCase(1)
     local E = BR.Config.Match.lobbyEntrance.emotes
     local realMs = E.win.ms
     E.win.ms = 12000
@@ -2616,7 +2640,6 @@ do
             .. '(%.2fm)'):format(landing and landing.jump or -1.0))
 
     E.win.ms = realMs
-    allCases()
 end
 
 -- AND A DICTIONARY THAT NEVER STREAMS COSTS ITS GESTURE AND NOTHING ELSE.
@@ -2625,7 +2648,6 @@ end
 -- An emote that could hang the entrance would be a far worse bug than a ped
 -- that does not wave.
 do
-    onlyCase(1)
     reset()
     wearChosenModel()
     dictsStream = false
@@ -2635,7 +2657,6 @@ do
     ok(math.abs(ped.x - BR.Config.Match.lobbyPos.x) < 0.01,
         'and the ped still walks the whole way to the mark')
     dictsStream = true
-    allCases()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

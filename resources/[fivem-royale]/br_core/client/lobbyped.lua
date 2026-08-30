@@ -248,11 +248,8 @@ local camLanded = false
 -- The walk, snapshotted at the start rather than rebuilt per leg.
 local path = {}
 
--- Which of BR.Config.Match.lobbyEntrance.pedCases this entrance drew, and the
--- blend ratio for each of its legs. Both settled once, in begin(), so every
--- reader -- the walk, the loading gate, /brlobbywalk -- is looking at the same
--- draw. A case re-rolled per leg would be four different walks.
-local caseIndex = 0
+-- The blend ratio for each leg of the walk, solved once in begin() so every
+-- reader -- the walk itself, /brlobbywalk -- is looking at the same plan.
 local blends = {}
 
 -- Whether the camera has reached its second-to-last node. See the wave: it is
@@ -323,22 +320,13 @@ local function cfg()
     return BR.Config.Match.lobbyEntrance
 end
 
---- The case this entrance is walking, or nil before one has been drawn.
+--- Where the ped is placed for its walk in.
 ---
 --- HIGH IN THE FILE ONLY BECAUSE THE LOADING GATE ASKS FOR IT. Everything else
---- that reads a case is down in the walk.
---- @return table|nil
-local function drawnCase()
-    local cases = cfg().pedCases
-    if type(cases) ~= 'table' then return nil end
-    return cases[caseIndex]
-end
-
---- Where this entrance's ped is placed, or nil before a case is drawn.
+--- that reads the path is down in the walk.
 --- @return table|nil
 local function startMark()
-    local c = drawnCase()
-    return c and c.spawn or nil
+    return cfg().pedStart
 end
 
 --- Is the entrance running? Read by client/lobbycam.lua, which stands down
@@ -570,8 +558,7 @@ end
 --- @return table
 local function legs()
     local out = {}
-    local c = drawnCase()
-    for _, n in ipairs(c and c.path or {}) do
+    for _, n in ipairs(cfg().pedPath or {}) do
         out[#out + 1] = n
     end
     out[#out + 1] = BR.Config.Match.lobbyPos
@@ -928,6 +915,19 @@ local function waveNow(mine)
     playEmote(e, mine)
 end
 
+--- The flight, built from config. ONE CALL SITE FOR FIVE SETTINGS: placeOnStart
+--- needs its first shot, flyCamera needs the whole thing, and /brlobbywalk
+--- prints it -- and three copies of the argument list is three chances for the
+--- shot that is RAISED to be built from different numbers than the one that is
+--- FLOWN, which reads as a snap on the first frame.
+--- @return table plan, table marks
+local function camPlan()
+    local C = cfg()
+    return BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0,
+        C.camRounding or 0.5,
+        (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1))
+end
+
 --- Is the screen genuinely showing the lobby yet?
 ---
 --- ═══ THE ONE CUE BOTH HALVES OF THE ENTRANCE WAIT ON ═══
@@ -989,8 +989,7 @@ end
 --- @param mine number  the token this thread belongs to
 local function flyCamera(mine)
     local C = cfg()
-    local plan, marks = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0,
-        C.camRounding or 0.5)
+    local plan, marks = camPlan()
     if #plan < 2 then return end
 
     -- WHERE THE WAVE IS CUED. The camera's "second-to-last position" is the
@@ -1065,8 +1064,7 @@ local function placeOnStart()
     -- camera is pointed -- built separately they disagreed by the difference
     -- between the surveyed heading and the aim point, which is a snap on the
     -- first frame of the flight.
-    local plan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0,
-        C.camRounding or 0.5)
+    local plan = camPlan()
     if plan[1] then BR.LobbyCam.placeAt(plan[1]) end
 end
 
@@ -1421,15 +1419,6 @@ local function begin()
     token = token + 1
     local mine = token
 
-    -- ═══ ONE OF FOUR, DRAWN HERE AND NOWHERE ELSE ═══
-    --
-    -- Owner, 2026-08-29: four surveyed spawns and paths, "one of the four is
-    -- chosen at random per lobby entrance". Drawn ONCE, into a file-local, so
-    -- the walk, the loading gate and /brlobbywalk are all looking at the same
-    -- draw -- a case re-rolled per reader is four different walks at once.
-    local cases = cfg().pedCases or {}
-    caseIndex = (#cases > 0) and math.random(#cases) or 0
-
     path = legs()
     local first = startMark()
     local secs = 0.0
@@ -1472,8 +1461,8 @@ local function begin()
     Citizen.CreateThread(function() flyCamera(mine) end)
     Citizen.CreateThread(function() run(mine) end)
 
-    print(('[br_core] lobby entrance begins (case %d, %d legs%s)')
-        :format(caseIndex, #path, winThisRun and ', winner' or ''))
+    print(("[br_core] lobby entrance begins (%d legs%s)")
+        :format(#path, winThisRun and ", winner" or ""))
 end
 
 --- Am I standing in the lobby, by the only test that cannot be argued with?
@@ -1809,8 +1798,7 @@ RegisterCommand('brlobbywalk', function()
     -- decay is that these numbers COME DOWN -- fast at the top of the column,
     -- slow at the bottom, and never back up. Printed sparsely because two dozen
     -- steps is a screen of console: the first, the last, and every fourth.
-    local plan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0,
-        C.camRounding or 0.5)
+    local plan = camPlan()
     local flight = C.camFlightMs or 18000
     if #plan > 1 then
         -- THE DURATIONS DIFFER NOW, so the milliseconds column is per step
@@ -1855,8 +1843,6 @@ RegisterCommand('brlobbywalk', function()
     -- column is the leg's own predicted duration, and the total under it is
     -- what walkTargetMs is being solved against -- so if the MEASURED walk
     -- above and this total disagree, walkMps is wrong and nothing else is.
-    local cases = C.pedCases or {}
-    print(('  case         %d of %d'):format(caseIndex, #cases))
     -- THE LENGTHS ARE THE PLAN'S OWN, NOT RE-MEASURED HERE.
     --
     -- This used to recompute them from the surveyed corners, which is a

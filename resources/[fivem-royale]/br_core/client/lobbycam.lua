@@ -390,7 +390,7 @@ end
 --- @param decay number   see BR.LobbyCam.pace
 --- @return table plan  { { x, y, z, pitch, heading, ax, ay, az, at }, ... }
 --- @return table marks  one 0..1 per control point, the lobby frame included
-function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding)
+function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding, minStepFrac)
     nodes = nodes or {}
     if #nodes == 0 then return {} end
     steps = math.max(1, math.floor(steps or 24))
@@ -549,11 +549,48 @@ function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding)
         return ss[lo - 1] + (ss[lo] - ss[lo - 1]) * t
     end
 
-    local out = {}
+    local times = {}
     for j = 0, steps do
-        local s = (j == 0) and 0.0
+        times[j + 1] = (j == 0) and 0.0
             or (j == steps) and 1.0
             or timeAtCost(totCost * j / steps)
+    end
+
+    -- ═══ AND NO STEP MAY BE SHORTER THAN A FRAME ═══
+    --
+    -- THE COST SPACING WILL HAPPILY ASK FOR ONE. It puts boundaries where the
+    -- shot moves fastest, and on a path whose sharpest bend is its final
+    -- approach that means a cluster of very short steps at the landing -- 11ms
+    -- on the path surveyed on 2026-08-30, against a frame of about 17.
+    --
+    -- A MOVE SHORTER THAN A FRAME IS NOT A MOVE. SetCamActiveWithInterp has no
+    -- frame to interpolate across, so it resolves as a cut; several in a row is
+    -- a stutter arriving in the middle of the landing, which is the exact
+    -- opposite of what the resampling is for. Longer paths do not fix it: the
+    -- spacing is by cost, so a sharper corner just draws the boundaries closer
+    -- together however much room there is elsewhere.
+    --
+    -- TWO PASSES, FORWARDS THEN BACKWARDS, which is what makes the result
+    -- monotone rather than merely spaced: pushing a boundary forward can shove
+    -- it past the next one, and the backward pass pulls those back. It needs
+    -- steps * minStepFrac <= 1 to have room, which at 96 steps and a 17ms floor
+    -- over 13.8s is 12% of the flight -- so the floor bends the schedule
+    -- slightly at the landing and leaves the rest of it alone.
+    local minFrac = minStepFrac or 0.0
+    if minFrac > 0.0 and steps * minFrac < 1.0 then
+        for j = 2, steps do
+            local floorAt = times[j - 1] + minFrac
+            if times[j] < floorAt then times[j] = floorAt end
+        end
+        for j = steps, 2, -1 do
+            local ceilAt = times[j + 1] - minFrac
+            if times[j] > ceilAt then times[j] = ceilAt end
+        end
+    end
+
+    local out = {}
+    for j = 0, steps do
+        local s = times[j + 1]
         local x, y, z, ax, ay, az, pitch, heading, f = shotAt(s)
         out[#out + 1] = { x = x, y = y, z = z, pitch = pitch, heading = heading,
                           ax = ax, ay = ay, az = az, at = f, t = s }
