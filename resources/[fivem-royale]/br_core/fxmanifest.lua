@@ -366,6 +366,12 @@ server_scripts {
     -- at load time -- and incident_build after combat_solve (in shared_scripts
     -- above), whose enum values it keys its severity table on.
     '@br_lib/shared/evidence_buf.lua',
+    -- THE ONLY config/*.lua THIS RESOURCE LOADS SERVER-SIDE, and the exception
+    -- is deliberate: every other config file is in shared_scripts above and goes
+    -- to clients with them. This one is the domain and shortener lists, and a
+    -- player holding those knows exactly which host still gets through. Read
+    -- lazily by chat_screen.lua, so this ordering is belt to that braces.
+    '@br_lib/config/chat.lua',
     -- BEFORE incident_build.lua, which calls BR.ChatScreen.clamp when it builds
     -- a refused-chat timeline entry, and before server/chat.lua, whose sanitise
     -- calls it on every message. SERVER-ONLY like the two beside it: what the

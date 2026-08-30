@@ -325,9 +325,23 @@ end
 --- PROSE, KEYED ON THE REASON, mirroring how BR.ShotTier is keyed on
 --- BR.ShotRefusal's values. These strings reach the console as a corroboration's
 --- `reason` and are read by a person, so they are sentences rather than symbols.
+--- FIVE, AND THE FOUR LINK TIERS ARE NOT THE SAME FINDING. A moderator reading
+--- a case wants to know which rule fired: a shortener is somebody hiding where
+--- they are sending people, an invite is a named rival community, and a bare
+--- domain is very often a player linking a clip of their own kill. Grading them
+--- into one sentence would throw that away and leave the text as the only clue --
+--- which for a non-Latin line says nothing at all.
+---
+--- A REASON WITH NO SENTENCE HERE CANNOT FILE A CASE. `fromChat` checks this
+--- table and declines an unknown value, so a sixth reason added to
+--- BR.ChatScreen and forgotten here fails loudly at the point of filing rather
+--- than reaching a moderation record as a bare symbol.
 BR.IncidentBuild.CHAT_REASON = {
-    link   = 'a link, which this server does not carry',
-    script = 'characters from a script this server does not accept',
+    link      = 'a link, which this server does not carry',
+    shortener = 'a shortened link, which hides where it leads',
+    invite    = 'an invite to another community',
+    social    = 'a link to a social or streaming site',
+    script    = 'characters from a script this server does not accept',
 }
 
 --- The one line shown in the queue for a chat case.

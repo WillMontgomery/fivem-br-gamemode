@@ -59,6 +59,11 @@ local FILES = {
     -- not exist and comes out `(unreadable)` -- a verify.sh failure rather than
     -- a quiet one, by design.
     'config/community.lua',
+    -- The chat screen's two lists. A CONFIG FILE br_core LOADS SERVER-SIDE
+    -- rather than in shared_scripts, so the domain list never reaches a client
+    -- -- see the header of config/chat.lua. It is pure data and loads in a bare
+    -- Lua state like the rest.
+    'config/chat.lua',
     -- AFTER match.lua, because it names keys inside it. In this bare Lua state
     -- it applies nothing -- it only reads convars when IsDuplicityVersion and
     -- GetConvar both exist, which on a server they do and here they do not --
@@ -98,6 +103,7 @@ end
 BR = BR or {}
 BR.Config = BR.Config or {}
 BR.Config.Match = BR.Config.Match or {}
+BR.Config.ChatScreen = BR.Config.ChatScreen or { tlds = {}, hosts = {}, schemes = {} }
 BR.Config.Storm = BR.Config.Storm or {}
 BR.Config.Loot = BR.Config.Loot or {}
 BR.Config.Market = BR.Config.Market or {}
@@ -413,6 +419,32 @@ try('Payout', MARKET, 'placementTop', function()
 end)
 try('Payout', MARKET, 'perKill', function() return num(BR.Config.Market.payout.perKill) end)
 try('Payout', MARKET, 'perRevive', function() return num(BR.Config.Market.payout.perRevive) end)
+
+-- -------------------------------------------------------------- chat screen --
+--
+-- COUNTS RATHER THAN THE LISTS THEMSELVES. The owner maintains these by hand,
+-- so what he needs from a console report is confirmation that the file he just
+-- edited was read and how many entries it now has -- not fifty domains wrapped
+-- across a page. If a number here is not the one he expects, the edit did not
+-- land, and `loadErrors` above says why.
+
+local CHATCFG = 'br_lib/config/chat.lua'
+
+try('Chat screen', CHATCFG, 'link TLDs', function()
+    return num(#BR.Config.ChatScreen.tlds) .. ' treated as a link'
+end)
+try('Chat screen', CHATCFG, 'named hosts', function()
+    local n = 0
+    for _, g in ipairs(BR.Config.ChatScreen.hosts) do n = n + #g.domains end
+    return num(n) .. ' across ' .. num(#BR.Config.ChatScreen.hosts) .. ' groups'
+end)
+try('Chat screen', CHATCFG, 'connect schemes', function()
+    local n = 0
+    for _, g in ipairs(BR.Config.ChatScreen.schemes or {}) do
+        n = n + #(g.prefixes or {})
+    end
+    return num(n) .. ' (fivem:// and the like, which carry no hostname)'
+end)
 
 -- ------------------------------------------------------------------ output --
 

@@ -26,57 +26,81 @@ BR = BR or {}
 BR.ChatScreen = {}
 
 --- Why a line was refused. These strings reach a moderation record.
-BR.ChatScreen.LINK   = 'link'
-BR.ChatScreen.SCRIPT = 'script'
+---
+--- FIVE RATHER THAN TWO, BECAUSE A MODERATOR IS READING THEM. "A link" and "a
+--- link to a URL shortener" are not the same finding: the second is somebody
+--- hiding where they are sending people, which is advertising almost by
+--- definition, while the first is often a player pasting a YouTube clip of their
+--- own kill. The reason rides the timeline entry, so the case says which rule
+--- fired without a human having to re-derive it from the text.
+---
+--- WIDENING THIS DID NOT TOUCH close.js, WHICH IS WORTH SAYING BECAUSE IT LOOKS
+--- LIKE IT SHOULD HAVE. `reason` is stored there as `str(e?.reason, 32)` -- a
+--- bounded free string, not a discriminator -- so only `kind` crosses the
+--- two-language contract that tools/verify.sh pins. The Lua side is where a new
+--- reason has to be declared, in BR.IncidentBuild.CHAT_REASON, which
+--- `fromChat` refuses an unknown value against.
+BR.ChatScreen.LINK      = 'link'
+BR.ChatScreen.SHORTENER = 'shortener'
+BR.ChatScreen.INVITE    = 'invite'
+BR.ChatScreen.SOCIAL    = 'social'
+BR.ChatScreen.SCRIPT    = 'script'
 
 -- ---------------------------------------------------------------------------
 -- Links
 -- ---------------------------------------------------------------------------
 
---- The top-level domains a bare `something.tld` is treated as a link for.
+--- ═══ THE TWO LISTS LIVE IN br_lib/config/chat.lua, NOT HERE ═══
 ---
---- A CURATED LIST RATHER THAN "TWO OR MORE LETTERS AFTER A DOT", AND THE LIST IS
---- THE WHOLE DESIGN. The obvious rule -- a word, a dot, a word -- flags
---- `config.lua`, `main.ts`, `README.md`, `player.name` and half of what people
---- type about the game itself. This project's own tree is full of strings that
---- rule would refuse.
+--- The RULES are code and belong in this file; the LISTS are a thing somebody
+--- has to keep up to date as new shorteners appear, and the owner should not
+--- need a developer to add one (coordinator, 2026-08-30). So the domains sit in
+--- config beside every other maintained table in this project, and this file
+--- reads them.
 ---
---- WHAT IS DELIBERATELY MISSING, AND WHY. Every one of these was considered and
---- dropped because a real English phrase reaches it through an ordinary full
---- stop with no space after it -- "let me know.it works", "i.win", "a.pro",
---- "call.me", "log.in", "on.top of the hill":
----
----     it is at me in us uk so no be to do on or as by my we he ai
----
---- and three that collide with file extensions this repository is made of --
---- `md`, `sh` and `ts` are all real country-code domains and all far more likely
---- to arrive as a filename in a message about the server.
----
---- TWO ARE ABSENT THAT COST SOMETHING, AND BOTH WERE FOUND BY THE TEST TABLE
---- RATHER THAN BY READING THE LIST:
----
----   `ly`   bit.ly is a common way to hide a destination. Left out because
----          "definite.ly" and "actual.ly" are things people type on purpose.
----   `top`  a cheap gTLD that turns up in adverts. Left out because
----          "get on.top of the hill" is a sentence, and tools/test_shared.lua
----          failed on exactly that string while `top` was on this list.
----
---- Both are known false negatives, chosen with the rule at the top of this file.
---- A player who wants to advertise through a `.top` domain will succeed; a
---- player who wants to say "on.top" will not be silently talking to nobody.
-local TLD = {}
-for _, t in ipairs({
-    -- The generic domains an advert actually arrives on.
-    'com', 'net', 'org', 'info', 'biz',
-    -- The cheap ones, which is why they are the ones abused.
-    'xyz', 'club', 'shop', 'store', 'site', 'online', 'click', 'link',
-    'live', 'space', 'website', 'app', 'dev',
-    -- Two-letter domains, and ONLY these six. `gg` is Discord's, and Discord is
-    -- what a rival server's invite is nearly always on; the rest are either
-    -- shorteners or the country domains this server's advertisers use. None of
-    -- them is an English word that follows a full stop.
-    'co', 'io', 'gg', 'cc', 'ru', 'cn', 'tv',
-}) do TLD[t] = true end
+--- BUILT LAZILY AND CACHED ONLY ONCE POPULATED -- the same shape as
+--- `knownWeapons` in incident_build.lua, and for the same reason. br_lib's
+--- config and shared files load in an order this file must not assume, and an
+--- empty result means "the config is not up yet", never "there is nothing to
+--- match". Caching an empty table would leave the filter dead for the life of
+--- the process, silently, which is the failure mode this whole subsystem keeps
+--- being written to avoid.
+local lists = nil
+local function screenLists()
+    if lists then return lists end
+
+    local cfg = BR.Config and BR.Config.ChatScreen
+    if cfg == nil then return nil end
+
+    local tld = {}
+    for _, t in ipairs(cfg.tlds or {}) do tld[t] = true end
+
+    -- AN ORDERED ARRAY, NOT A MAP, AND THAT IS NOT A STYLE CHOICE. A line may
+    -- match two groups at once -- `youtu.be` is a social host and a shortener
+    -- by shape -- and `pairs` over a map would pick whichever the hash order
+    -- happened to reach first. The stored reason would then differ between two
+    -- servers running identical code, and between two runs of the same test.
+    -- The config's group order IS the precedence, written down where the owner
+    -- can see it.
+    local hosts = {}
+    for _, group in ipairs(cfg.hosts or {}) do
+        for _, h in ipairs(group.domains or {}) do
+            hosts[#hosts + 1] = { host = h, reason = group.reason }
+        end
+    end
+
+    local schemes = {}
+    for _, group in ipairs(cfg.schemes or {}) do
+        for _, p in ipairs(group.prefixes or {}) do
+            schemes[#schemes + 1] = { prefix = p, reason = group.reason }
+        end
+    end
+
+    if next(tld) == nil and #hosts == 0 then return nil end
+
+    lists = { tld = tld, hosts = hosts, schemes = schemes }
+    return lists
+end
 
 --- Is there a `label.tld` anywhere in this (already lowercased) string?
 ---
@@ -91,6 +115,9 @@ for _, t in ipairs({
 --- @param s string  lowercased
 --- @return boolean
 local function hasDomain(s)
+    local L = screenLists()
+    if not L then return false end
+
     local i = 1
     while true do
         -- A PLAIN SEARCH FOR A LITERAL DOT, so the third argument is `.` and not
@@ -104,10 +131,71 @@ local function hasDomain(s)
         local before = d > 1 and s:sub(d - 1, d - 1) or ''
         if before:match('%w') then
             local run = s:match('^([%w%-]+)', d + 1)
-            if run and TLD[run] then return true end
+            if run and L.tld[run] then return true end
         end
         i = d + 1
     end
+end
+
+--- Is a NAMED host in this line, and what kind of host is it?
+---
+--- ═══ A SECOND SIGNAL, NOT A WIDER TLD LIST ═══
+---
+--- The owner, 2026-08-30: "any common link shorteners and discord invites should
+--- trigger the refusal as well as well as social links". The tempting fix is to
+--- add the shorteners' TLDs -- `.gd`, `.gl`, `.gy`, `.be`, `.me` -- and it is
+--- wrong: those are ordinary country domains carrying ordinary traffic, and
+--- `.me` in particular is the exclusion that keeps "call.me" safe. A host list
+--- catches `is.gd` without touching `something.gd`, and `t.co` without touching
+--- `taco.co`.
+---
+--- ═══ MATCHED ON HOST BOUNDARIES, WHICH IS THE ENTIRE DIFFICULTY ═══
+---
+--- A plain substring search would flag `notbit.ly` and `bit.lyrics`. So the
+--- character on each side of the match must not be one a hostname label is made
+--- of:
+---
+---   LEFT    anything that is not `[a-z0-9-]`, which deliberately INCLUDES a
+---           dot -- `www.bit.ly` and `cdn.youtu.be` are the same host with a
+---           subdomain in front, and both should match. `notbit.ly` has a `t`
+---           there and does not.
+---   RIGHT   anything that is not `[a-z0-9-]`, so `/`, `:`, a space or the end
+---           of the line all qualify and `bit.lyrics` does not.
+---
+--- IT NEVER FIRES ON A BARE WORD, and that falls out of matching the whole host
+--- rather than its first label: "meet me on twitch" contains no `twitch.tv` and
+--- "check discord" contains no `discord.com`. Nothing here needs a special case
+--- for the English word.
+---
+--- SCHEME AND `www.` NEED NO HANDLING EITHER. `https://bit.ly/x` contains
+--- `bit.ly` with `/` on the left and `/` on the right; `www.bit.ly` contains it
+--- with `.` on the left. Both are boundaries, so both match without this
+--- function knowing what a scheme is.
+--- @param s string  lowercased
+--- @return string|nil  the group's reason, or nil
+local function hostIn(s)
+    local L = screenLists()
+    if not L then return nil end
+
+    for _, h in ipairs(L.hosts) do
+        local from = 1
+        while true do
+            local a, b = s:find(h.host, from, true)
+            if not a then break end
+
+            local before = a > 1 and s:sub(a - 1, a - 1) or ''
+            local after  = s:sub(b + 1, b + 1)
+            if not before:match('[%w%-]') and not after:match('[%w%-]') then
+                return h.reason
+            end
+            -- KEEP LOOKING FROM THE NEXT CHARACTER. One rejected occurrence does
+            -- not mean the line is clean: "bit.lyrics and bit.ly" is one string
+            -- whose first match fails the right-hand boundary and whose second
+            -- passes it.
+            from = a + 1
+        end
+    end
+    return nil
 end
 
 --- Is there a link in this line?
@@ -127,17 +215,42 @@ end
 --- @return boolean
 function BR.ChatScreen.linkIn(text)
     if type(text) ~= 'string' or text == '' then return false end
+    return BR.ChatScreen.linkReason(text) ~= nil
+end
+
+--- The same question, answered with WHICH rule fired.
+---
+--- THE NAMED HOST WINS OVER THE GENERIC DOMAIN, and the order is the whole
+--- reason this function exists. `discord.gg/x` satisfies both the host list and
+--- the `.gg` TLD; recording it as `link` would throw away the more specific and
+--- more useful finding. So the host list is asked first, and only a line that no
+--- named host explains falls through to the generic signals.
+--- @param text string
+--- @return string|nil  one of the reason constants, or nil
+function BR.ChatScreen.linkReason(text)
+    if type(text) ~= 'string' or text == '' then return nil end
 
     -- LOWERCASED ONCE, FOR ASCII ONLY. Lua's `lower` leaves every byte above
     -- 0x7F alone, which is exactly right here: the domain rules are ASCII and
     -- the accented text this must not disturb is somebody's name.
     local s = text:lower()
 
-    if s:find('https?://') then return true end
-    if s:find('www%.%w') then return true end
-    if s:find('%d+%.%d+%.%d+%.%d+:%d') then return true end
+    -- A SCHEME FIRST OF ALL. `fivem://connect/<code>` names no host and has no
+    -- dot in it, so nothing else in this function can see it.
+    local L = screenLists()
+    for _, sc in ipairs(L and L.schemes or {}) do
+        if s:find(sc.prefix, 1, true) then return sc.reason end
+    end
 
-    return hasDomain(s)
+    local named = hostIn(s)
+    if named then return named end
+
+    if s:find('https?://') then return BR.ChatScreen.LINK end
+    if s:find('www%.%w') then return BR.ChatScreen.LINK end
+    if s:find('%d+%.%d+%.%d+%.%d+:%d') then return BR.ChatScreen.LINK end
+
+    if hasDomain(s) then return BR.ChatScreen.LINK end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -305,8 +418,9 @@ end
 --- Why this line may not go out, or nil if it may.
 ---
 --- THE LINK IS TESTED FIRST, so a Cyrillic advert with a domain in it reads as
---- `link` rather than `script`. Both are true of that message and the link is
---- the one a reviewer is looking for.
+--- a link tier rather than `script`. Both are true of that message and the link
+--- is the one a reviewer is looking for. Within the link tiers a NAMED host
+--- beats the generic domain rule -- see `linkReason`.
 ---
 --- ═══ WHAT THIS DOES NOT CATCH, STATED SO NOBODY MISTAKES IT FOR COVERAGE ═══
 ---
@@ -321,10 +435,24 @@ end
 --- @return string|nil  BR.ChatScreen.LINK, BR.ChatScreen.SCRIPT, or nil
 function BR.ChatScreen.screen(text)
     if type(text) ~= 'string' or text == '' then return nil end
-    if BR.ChatScreen.linkIn(text) then return BR.ChatScreen.LINK end
+
+    local link = BR.ChatScreen.linkReason(text)
+    if link then return link end
+
     if BR.ChatScreen.nonLatinIn(text) then return BR.ChatScreen.SCRIPT end
     return nil
 end
 
---- The refusal reasons, for the tests and for whoever adds a third.
-BR.ChatScreen.REASONS = { BR.ChatScreen.LINK, BR.ChatScreen.SCRIPT }
+--- The refusal reasons, for the tests and for whoever adds a sixth.
+---
+--- EVERY ONE OF THESE MUST HAVE A SENTENCE IN BR.IncidentBuild.CHAT_REASON, or
+--- `fromChat` refuses to file the case it was raised for -- deliberately, so a
+--- reason nobody has written English for cannot reach a moderation record.
+--- tools/test_shared.lua walks this list against that table.
+BR.ChatScreen.REASONS = {
+    BR.ChatScreen.LINK,
+    BR.ChatScreen.SHORTENER,
+    BR.ChatScreen.INVITE,
+    BR.ChatScreen.SOCIAL,
+    BR.ChatScreen.SCRIPT,
+}

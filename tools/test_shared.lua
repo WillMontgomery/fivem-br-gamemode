@@ -48,6 +48,11 @@ for _, f in ipairs({
     -- BR.PlayerState the tests below build their views from.
     'shared/spectate_solve.lua',
     'shared/evidence_buf.lua',
+    -- The domain and shortener lists chat_screen.lua reads. Loaded here for the
+    -- same reason br_core loads it: the module is the rules, this is the data,
+    -- and the suite below exercises the SHIPPED lists rather than a fixture --
+    -- a false positive in the real table is the failure that matters.
+    'config/chat.lua',
     -- BEFORE incident_build.lua, which calls BR.ChatScreen.clamp when it builds
     -- a refused-chat timeline entry.
     'shared/chat_screen.lua',
@@ -11366,11 +11371,102 @@ do
     -- English whose full stop has no space after it. Every one of these reaches
     -- a two-letter country domain, and every one of those is off the list.
     for _, s in ipairs({
-        'let me know.it works', 'i.win', 'definite.ly', 'actual.ly',
+        'let me know.it works', 'i.win',
         'call.me', 'log.in', 'on.top of the hill', 'that.is the one',
         'over.at the tower', 'trust.me on this', 'we.are ready',
     }) do
         ok(S.screen(s) == nil, ('an English sentence is not a link: %q'):format(s))
+    end
+
+    -- ═══ A BARE WORD IS NOT A HOST ═══
+    --
+    -- The host list names `twitch.tv` and `discord.com`, never `twitch` or
+    -- `discord`, so an ordinary sentence about either is untouched. This falls
+    -- out of matching the whole host rather than its first label; it is asserted
+    -- because the tempting shortcut -- a keyword list -- would silently eat all
+    -- of these.
+    for _, s in ipairs({
+        'meet me on twitch', 'check discord', 'the discord is dead',
+        'streaming on twitch later', 'reddit is down', 'my steam name is bob',
+        'telegram me later', 'x marks the spot', 'i got a kick from that',
+        'medal of honor', 'im on youtube sometimes',
+    }) do
+        ok(S.screen(s) == nil, ('a bare word is not a host: %q'):format(s))
+    end
+
+    -- ═══ THE HOST BOUNDARY, WHICH IS THE WHOLE DIFFICULTY OF A HOST LIST ═══
+    --
+    -- A plain substring search for `bit.ly` would flag `bit.lyrics`. The right
+    -- boundary rejects it: the character after the match is a letter.
+    for _, s in ipairs({
+        'bit.lyrics', 'the bit.lyrics site', 'is.gdi', 't.mex', 'youtu.beam',
+        'redd.itch', 'x.commander', 'box.commander',
+    }) do
+        ok(S.screen(s) == nil,
+            ('a host followed by more letters is not that host: %q'):format(s))
+    end
+
+    -- ...and the LEFT boundary, which must still allow a subdomain. The short
+    -- official domains are where this earns its keep: `s.team` is Steam's
+    -- shortener and "his.team" is two words somebody typed.
+    for _, s in ipairs({
+        'shirt.me', 'meet.me', 'at.me', 'this.gd', 'gods.id', 'ov.gd',
+        'his.team', 'vs.team', 'from.me', 'team.me', 'big.me',
+    }) do
+        ok(S.screen(s) == nil,
+            ('a host preceded by more letters is not that host: %q'):format(s))
+    end
+
+    -- The same pair from the other side, for the hosts added after a live
+    -- probe: a letter on either end and it is not the host.
+    for _, s in ipairs({
+        'm.method', 'ig.member', 's.teams', 'dis.gdi', 'gg.ggg',
+        'discord.men', 'threads.network',
+    }) do
+        ok(S.screen(s) == nil, ('a short host inside a word is not it: %q'):format(s))
+    end
+end
+
+describe('chat.screen.boundary')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ CAUGHT, BUT NOT BY THE HOST RULE -- AND THE DIFFERENCE IS THE TEST ═══
+    --
+    -- `notbit.ly` and `taco.co` were put forward as strings the host list must
+    -- not fire on, and it does not. They are still REFUSED, because both are
+    -- genuine domain shapes and the generic TLD rule catches them: `notbit.ly`
+    -- is a registrable `.ly` domain and `taco.co` a registrable `.co` one.
+    --
+    -- SO THE ASSERTION IS ABOUT ATTRIBUTION, NOT ABOUT PASSING. If the host
+    -- boundary were broken these would come back as `shortener` -- the case
+    -- would tell a moderator the player posted a bit.ly link when they did not.
+    -- That is the failure worth pinning, and "it was refused" cannot see it.
+    ok(S.screen('notbit.ly') == S.LINK,
+        'notbit.ly is refused as a plain domain, NOT attributed to bit.ly')
+    ok(S.screen('taco.co') == S.LINK,
+        'taco.co is refused as a plain domain, NOT attributed to t.co')
+    ok(S.screen('somewhere.gg') == S.LINK,
+        'and a .gg domain that is not Discord is not called an invite')
+
+    -- The same string with a real boundary IS the host.
+    ok(S.screen('bit.ly/x') == S.SHORTENER, 'bit.ly with a path is the shortener')
+    ok(S.screen('go to bit.ly now') == S.SHORTENER, 'and so is bit.ly between spaces')
+
+    -- ONE REJECTED OCCURRENCE MUST NOT END THE SEARCH. The first `bit.ly` here
+    -- fails the right-hand boundary and the second passes it; a matcher that
+    -- gave up on the first would miss the advert sitting next to it.
+    ok(S.screen('bit.lyrics and bit.ly/x') == S.SHORTENER,
+        'a rejected match does not stop the scan')
+
+    -- Scheme and `www.` need no special handling -- both leave a boundary
+    -- character on the left of the host.
+    for _, s in ipairs({
+        'bit.ly/x', 'www.bit.ly/x', 'https://bit.ly/x', 'HTTPS://BIT.LY/X',
+        'http://www.bit.ly/x', 'sub.bit.ly/x', '(bit.ly/x)', 'see: bit.ly/x',
+    }) do
+        ok(S.screen(s) == S.SHORTENER,
+            ('the host is found with or without a scheme: %q'):format(s))
     end
 
     -- Abbreviations and ordinary chat.
@@ -11415,11 +11511,28 @@ do
     for _, s in ipairs({
         'join https://evil.example/now', 'HTTP://SHOUTY.COM',
         'go to http://a.b', 'www.evil.co.uk', 'WWW.EVIL.COM',
-        'discord.gg/abcdef', 'come to evilserver.com', 'best.xyz now',
+        'come to evilserver.com', 'best.xyz now',
         'my server 1.2.3.4:30120', 'try mysite.online today',
         'x.io', 'shop.store', 'a.click here',
     }) do
         ok(S.screen(s) == S.LINK, ('a link is caught: %q'):format(s))
+    end
+
+    -- ═══ `.ly` -- THE OWNER OVERRULED THE ORIGINAL CALL ON 2026-08-30 ═══
+    --
+    -- These two were asserted SAFE in the first round of this feature, on the
+    -- reasoning that "definite.ly" and "actual.ly" are things people type. The
+    -- owner reversed it: new shorteners appearing is a certainty, a host list
+    -- only catches the ones somebody has named, and Libya's ccTLD is used almost
+    -- entirely by shorteners.
+    --
+    -- THEY ARE INVERTED RATHER THAN DELETED. A player typing "definite.ly" is
+    -- now shadowed, and that is a known and accepted cost rather than an
+    -- oversight -- so it is written down as a passing assertion. If somebody
+    -- later wonders whether anybody thought about it, this is the answer.
+    for _, s in ipairs({ 'definite.ly', 'actual.ly', 'friend.ly', 'simp.ly' }) do
+        ok(S.screen(s) == S.LINK,
+            ('ACCEPTED COST: an English word ending in .ly is shadowed: %q'):format(s))
     end
 
     for _, s in ipairs({
@@ -11460,6 +11573,250 @@ do
     local both = 'привет evilserver.com'
     ok(S.screen(both) == S.LINK,
         'a Cyrillic advert reads as a link, which is the finding a reviewer wants')
+end
+
+describe('chat.screen.hosts')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ THE HOSTS NO TLD RULE REACHES, WHICH IS WHY THE LIST EXISTS ═══
+    --
+    -- Every one of these lives on a country domain that carries ordinary
+    -- traffic and must NOT be blanket-blocked -- `.gd`, `.gy`, `.at`, `.id`,
+    -- `.be`, `.me`, `.it`, `.re`, `.am`, `.ee`, `.de`, `.watch`, `.new`.
+    -- Without a host list they all go straight through.
+    local byTld = {
+        ['is.gd/x'] = S.SHORTENER, ['v.gd/x'] = S.SHORTENER,
+        ['rb.gy/x'] = S.SHORTENER, ['shorturl.at/x'] = S.SHORTENER,
+        ['s.id/x'] = S.SHORTENER, ['shrtco.de/x'] = S.SHORTENER,
+        ['surl.li/x'] = S.SHORTENER, ['linktr.ee/me'] = S.SHORTENER,
+        ['goo.gl/x'] = S.SHORTENER,
+        ['cfx.re/join/abcd'] = S.INVITE, ['discord.new'] = S.INVITE,
+        ['youtu.be/abc'] = S.SOCIAL, ['t.me/joinchat'] = S.SOCIAL,
+        ['wa.me/123'] = S.SOCIAL, ['fb.me/x'] = S.SOCIAL,
+        ['redd.it/x'] = S.SOCIAL, ['instagr.am/x'] = S.SOCIAL,
+        ['fb.watch/x'] = S.SOCIAL,
+    }
+    for s, want in pairs(byTld) do
+        ok(S.screen(s) == want,
+            ('a host no TLD rule reaches is caught: %q -> %s'):format(s, want))
+    end
+
+    -- ═══ THE ONE THAT MATTERS MOST ON A FiveM SERVER ═══
+    --
+    -- `cfx.re/join/<id>` is the link the FiveM client itself opens to connect,
+    -- which makes it exactly how a rival GTA RP server gets advertised in this
+    -- gamemode's chat. `.re` is on no TLD list and never will be.
+    ok(S.screen('come play cfx.re/join/9k2mvp') == S.INVITE,
+        'a cfx.re join link is an invite to another server')
+
+    -- ═══ A NAMED HOST BEATS THE GENERIC DOMAIN RULE ═══
+    --
+    -- All of these would be refused anyway by their TLD. Naming them changes
+    -- what the incident SAYS, which is the whole reason the reason exists: a
+    -- shortener is somebody hiding a destination, an invite is a named rival
+    -- community, and a bare domain is often a player linking their own clip.
+    local refined = {
+        ['discord.gg/abcdef'] = S.INVITE,   -- would be `link` via .gg
+        ['top.gg/x'] = S.INVITE,
+        ['guilded.gg/x'] = S.INVITE,
+        ['discord.com/invite/x'] = S.INVITE, -- would be `link` via .com
+        ['discordapp.com/invite/x'] = S.INVITE,
+        ['bit.ly/x'] = S.SHORTENER,          -- would be `link` via .ly
+        ['tinyurl.com/x'] = S.SHORTENER,
+        ['t.co/x'] = S.SHORTENER,            -- would be `link` via .co
+        ['twitch.tv/x'] = S.SOCIAL,          -- would be `link` via .tv
+        ['x.com/x'] = S.SOCIAL,
+        ['twitter.com/x'] = S.SOCIAL,
+        ['youtube.com/watch?v=x'] = S.SOCIAL,
+        ['steamcommunity.com/id/x'] = S.SOCIAL,
+        ['kick.com/x'] = S.SOCIAL,
+        ['medal.tv/x'] = S.SOCIAL,
+    }
+    for s, want in pairs(refined) do
+        ok(S.screen(s) == want,
+            ('a named host outranks the generic rule: %q -> %s'):format(s, want))
+    end
+
+    -- A SUBDOMAIN NEEDS NO ENTRY OF ITS OWN, because the left boundary allows a
+    -- dot. This is what keeps the config list short enough to maintain, and it
+    -- is why the official share hosts below need no lines in the config.
+    for _, s in ipairs({
+        'chat.whatsapp.com/x', 'vm.tiktok.com/x', 'vt.tiktok.com/x',
+        'clips.twitch.tv/x', 'api.whatsapp.com/send?phone=1',
+    }) do
+        ok(S.screen(s) == S.SOCIAL, ('a subdomain resolves to its host: %q'):format(s))
+    end
+    ok(S.screen('maps.app.goo.gl/x') == S.SHORTENER,
+        'and Google Maps share links resolve to goo.gl, which is still issued')
+
+    -- ═══ THE HOSTS THAT NEEDED A LIVE PROBE TO GET RIGHT ═══
+    --
+    -- Each of these was wrong in the first draft of the config, and each was
+    -- corrected against an HTTP request rather than a headline:
+    --
+    --   goo.gl        NOT dead. Google announced a total shutdown for
+    --                 2025-08-25 and then reversed it on 2025-08-01, keeping
+    --                 every link that was still being used.
+    --   adf.ly        NOT dead, despite the widely-used public shortener
+    --                 blocklists filing it as inactive: it was folded into
+    --                 Linkvertise and its paths still redirect.
+    --   threads.com   the primary Threads domain since April 2025;
+    --                 `threads.net` is now only a redirect to it.
+    --   invites.gg    the live service. `invite.gg` -- the spelling that gets
+    --                 remembered -- has had its origin down.
+    for _, s in ipairs({ 'goo.gl/x', 'adf.ly/1abcde', 'linkvertise.com/x' }) do
+        ok(S.screen(s) == S.SHORTENER, ('a live shortener is caught: %q'):format(s))
+    end
+    ok(S.screen('threads.com/@x') == S.SOCIAL, 'the current Threads domain is caught')
+    ok(S.screen('threads.net/@x') == S.SOCIAL, 'and so is the one it replaced')
+    ok(S.screen('invites.gg/x') == S.INVITE, 'the live invite service is caught')
+    ok(S.screen('invite.gg/x') == S.INVITE, 'and the spelling people misremember')
+end
+
+describe('chat.screen.scheme')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ THE ONE FORM NO HOST LIST CAN CATCH ═══
+    --
+    -- `fivem://connect/<code>` is the protocol handler the FiveM client
+    -- registers. It joins a server in one click and it contains no hostname and
+    -- no dot -- so it satisfies neither the TLD rule nor the host rule, and a
+    -- filter built entirely out of domains would pass the single most direct
+    -- "come play over here" a player can type in this gamemode.
+    for _, s in ipairs({
+        'fivem://connect/abcdef', 'redm://connect/xyz',
+        'join fivem://connect/9k2mvp now', 'FIVEM://CONNECT/ABC',
+        'fivem://connect/127.0.0.1:30120',
+    }) do
+        ok(S.screen(s) == S.INVITE, ('a connect scheme is an invite: %q'):format(s))
+    end
+
+    -- AND IT MUST NOT FIRE ON THE WORD. "i play fivem" is a sentence; the
+    -- scheme needs its `://`.
+    for _, s in ipairs({
+        'i play fivem', 'fivem is great', 'redm too', 'connect to the server',
+        'fivem servers are busy',
+    }) do
+        ok(S.screen(s) == nil, ('the bare word is not a scheme: %q'):format(s))
+    end
+end
+
+describe('chat.screen.config')
+do
+    local S = BR.ChatScreen
+    local C = BR.Config.ChatScreen
+
+    -- ═══ THE LISTS ARE CONFIG, AND THE SUITE READS THE SHIPPED ONES ═══
+    --
+    -- The owner maintains these without a developer, so the thing worth pinning
+    -- is that the module actually READS them -- a module that had quietly kept
+    -- its own copy would pass every case above while ignoring anything he added.
+    ok(type(C) == 'table', 'the shipped config exists')
+    ok(#C.tlds > 0, 'and names some TLDs', tostring(#C.tlds))
+    ok(#C.hosts > 0, 'and some host groups', tostring(#C.hosts))
+
+    local total = 0
+    for _, g in ipairs(C.hosts) do total = total + #g.domains end
+    ok(total > 40, 'the host list is populated', tostring(total))
+
+    -- EVERY GROUP'S REASON MUST BE ONE THE REST OF THE SYSTEM KNOWS. A typo in
+    -- the config would otherwise reach `fromChat`, which refuses to file a case
+    -- for a reason with no sentence -- so the refusal would work and the
+    -- INCIDENT would silently not exist.
+    local known = {}
+    for _, r in ipairs(S.REASONS) do known[r] = true end
+    for _, g in ipairs(C.hosts) do
+        ok(known[g.reason] == true,
+            ('config group reason %q is a known reason'):format(tostring(g.reason)))
+        ok(BR.IncidentBuild.CHAT_REASON[g.reason] ~= nil,
+            ('config group reason %q has a sentence for the console'):format(
+                tostring(g.reason)))
+    end
+
+    -- AND EVERY REASON THE SCREEN CAN RETURN HAS ONE TOO, which is the same
+    -- contract from the other end.
+    for _, r in ipairs(S.REASONS) do
+        ok(BR.IncidentBuild.CHAT_REASON[r] ~= nil,
+            ('reason %q has a sentence in CHAT_REASON'):format(r))
+    end
+
+    -- NO BARE WORDS IN THE HOST LIST. An entry without a dot would match a
+    -- whole English word -- `twitch` would eat "meet me on twitch" -- and it
+    -- would do it silently, to every player who used that word, forever.
+    for _, g in ipairs(C.hosts) do
+        for _, h in ipairs(g.domains) do
+            ok(h:find('.', 1, true) ~= nil and h == h:lower(),
+                ('host %q is a dotted lowercase hostname'):format(h))
+        end
+    end
+
+    -- ═══ EVERY SHIPPED HOST IS ACTUALLY CAUGHT, GENERATED FROM THE CONFIG ═══
+    --
+    -- THIS EXISTS BECAUSE A HAND-WRITTEN TABLE MISSED ONE. Deleting `s.team`
+    -- from the config left the whole suite green -- the entry was in the config,
+    -- in the report count and in nobody's assertion, which is the same
+    -- "finished code nobody calls" this project keeps shipping. A list of
+    -- examples can only ever cover the examples somebody thought of.
+    --
+    -- GENERATED, SO THE NEXT ENTRY THE OWNER ADDS IS COVERED THE MOMENT HE ADDS
+    -- IT -- and an entry that cannot be matched at all (a typo, a stray space, a
+    -- leading dot) fails here rather than sitting in the file looking effective.
+    for _, g in ipairs(C.hosts) do
+        for _, h in ipairs(g.domains) do
+            ok(S.screen(h .. '/x') == g.reason,
+                ('shipped host %q is caught as %s'):format(h, g.reason),
+                tostring(S.screen(h .. '/x')))
+            -- ...and bare, with no path, which is how somebody types it in chat.
+            ok(S.screen('come to ' .. h) == g.reason,
+                ('shipped host %q is caught mid-sentence'):format(h))
+        end
+    end
+
+    -- The same for the schemes.
+    for _, g in ipairs(C.schemes or {}) do
+        for _, p in ipairs(g.prefixes or {}) do
+            ok(S.screen(p .. 'connect/abc') == g.reason,
+                ('shipped scheme %q is caught as %s'):format(p, g.reason))
+        end
+    end
+
+    -- ═══ AND A FIXED LIST, BECAUSE THE GENERATED ONE ABOVE IS BLIND IN EXACTLY
+    -- ONE DIRECTION ═══
+    --
+    -- A test that walks the config cannot notice an entry LEAVING it. Deleting
+    -- `s.team` from the config deletes its assertion along with it, and the
+    -- suite stays green -- which is precisely what happened when this was
+    -- mutated. The generated block still earns its place: it catches a typo, a
+    -- wrong reason, and an entry that cannot be matched at all, and it covers
+    -- whatever the owner adds next without anybody editing this file.
+    --
+    -- THIS BLOCK IS THE OTHER HALF. These are the hosts whose removal would
+    -- matter most -- the connect link, the invite hosts, the shorteners nothing
+    -- else reaches -- written down by hand so that taking one out of the config
+    -- is a decision somebody makes here as well as there.
+    local canaries = {
+        ['cfx.re/join/abc'] = S.INVITE,
+        ['discord.gg/x'] = S.INVITE, ['discord.com/invite/x'] = S.INVITE,
+        ['discordapp.com/invite/x'] = S.INVITE, ['dis.gd/x'] = S.INVITE,
+        ['dsc.gg/x'] = S.INVITE, ['invites.gg/x'] = S.INVITE,
+        ['bit.ly/x'] = S.SHORTENER, ['t.co/x'] = S.SHORTENER,
+        ['is.gd/x'] = S.SHORTENER, ['goo.gl/x'] = S.SHORTENER,
+        ['rb.gy/x'] = S.SHORTENER, ['tinyurl.com/x'] = S.SHORTENER,
+        ['linktr.ee/x'] = S.SHORTENER, ['linkvertise.com/x'] = S.SHORTENER,
+        ['youtu.be/x'] = S.SOCIAL, ['t.me/x'] = S.SOCIAL,
+        ['twitch.tv/x'] = S.SOCIAL, ['x.com/x'] = S.SOCIAL,
+        ['s.team/x'] = S.SOCIAL, ['ig.me/x'] = S.SOCIAL, ['m.me/x'] = S.SOCIAL,
+        ['redd.it/x'] = S.SOCIAL, ['wa.me/x'] = S.SOCIAL,
+        ['fb.me/x'] = S.SOCIAL, ['instagr.am/x'] = S.SOCIAL,
+        ['threads.com/x'] = S.SOCIAL,
+    }
+    for s, want in pairs(canaries) do
+        ok(S.screen(s) == want,
+            ('CANARY: %q must stay caught as %s'):format(s, want),
+            tostring(S.screen(s)))
+    end
 end
 
 describe('chat.screen.clamp')
