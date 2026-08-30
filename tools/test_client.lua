@@ -4778,7 +4778,7 @@ do
     fire('br:settings:changed',
          { voiceModeSolo = BR.VoiceMode.NEARBY, voiceModeSquad = BR.VoiceMode.SQUAD })
     BR.State.match.mode = BR.Mode.SQUAD.key
-    beState(BR.PlayerState.SPECTATING)
+    beState(BR.PlayerState.OUT)
     spectating2 = true
     settle()
     ok(BR.Voice.mode() == BR.VoiceMode.OFF, 'watching: off', tostring(BR.Voice.mode()))
@@ -7058,7 +7058,7 @@ do
     --    body, so a corpse or a lobby ped holding something reports nothing --
     --    and, more to the point, is not stripped either, because
     --    RemoveAllPedWeapons would take a parachute with it.
-    BR.State.me.state = BR.PlayerState.DEAD
+    BR.State.me.state = BR.PlayerState.OUT
     BR.State.landed = false
     reset()
     fakeTime = fakeTime + 5000
@@ -7776,9 +7776,9 @@ do
 
     -- A DEAD mate is the owner's second sentence: "the playernames thing is
     -- also true for dead players".
-    BR.State.roster[2].state = BR.PlayerState.DEAD
+    BR.State.roster[2].state = BR.PlayerState.OUT
     fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
-                              state = BR.PlayerState.DEAD } })
+                              state = BR.PlayerState.OUT } })
     tagsMade = 0
     tickBand()
     drawn = {}
@@ -9481,7 +9481,7 @@ ok(mercyToasts() == 0,
     ('toasts after a knock and revive: %d'):format(mercyToasts()))
 
 events = {}
-BR.State.me.state = BR.PlayerState.DEAD
+BR.State.me.state = BR.PlayerState.OUT
 BR.Loop.step(BR.Loop.SLOW)
 BR.State.me.state = BR.PlayerState.LOBBY
 BR.Loop.step(BR.Loop.SLOW)
@@ -9534,7 +9534,7 @@ do
     -- client/inventory.lua admits a landed player. So the inventory panel really
     -- does open over a corpse, and the control below asserts it -- which is what
     -- makes the "did not open" assertion afterwards worth anything.
-    BR.State.me.state = BR.PlayerState.DEAD
+    BR.State.me.state = BR.PlayerState.OUT
     BR.State.landed = true
 
     --- The most recent toast with a given key.
@@ -10124,7 +10124,7 @@ do
     -- state DEAD until the match ends, and the gate stays shut over them: a
     -- corpse does not need shooting, and a gate that opened and closed as
     -- teammates died would be a gate that is wrong for a frame every time.
-    dwindling[2].state = BR.PlayerState.DEAD
+    dwindling[2].state = BR.PlayerState.OUT
     ok(select(2, seat(1, dwindling)) == true,
         'a DEAD squadmate does not reopen the gate -- no flapping mid-fight',
         pairDetail(1, 2, dwindling))
@@ -11910,7 +11910,7 @@ do
     for _, st in ipairs({
         BR.PlayerState.WARMUP, BR.PlayerState.BUS, BR.PlayerState.FREEFALL,
         BR.PlayerState.GLIDE, BR.PlayerState.ALIVE, BR.PlayerState.DBNO,
-        BR.PlayerState.DEAD, BR.PlayerState.SPECTATING,
+        BR.PlayerState.OUT,
     }) do
         BR.State.me.state = st
         local m = #events
@@ -13043,8 +13043,7 @@ do
     local held = true
     for _, st in ipairs({ BR.PlayerState.LOBBY, BR.PlayerState.WARMUP,
                           BR.PlayerState.BUS, BR.PlayerState.ALIVE,
-                          BR.PlayerState.DBNO, BR.PlayerState.DEAD,
-                          BR.PlayerState.SPECTATING }) do
+                          BR.PlayerState.DBNO, BR.PlayerState.OUT }) do
         BR.State.me.state = st
         hidden = {}
         BR.Native.applyGameRules()

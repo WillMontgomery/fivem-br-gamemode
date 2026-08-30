@@ -112,8 +112,8 @@
 --
 -- So the gate is on player state and is deliberately narrow: ALIVE or WARMUP.
 -- BUS, FREEFALL and GLIDE are the states in which this gamemode is carrying the
--- player somewhere, and it is never right to fight it. LOBBY, DEAD, DBNO and
--- SPECTATING have no player who can take a vehicle.
+-- player somewhere, and it is never right to fight it. LOBBY, OUT and DBNO have
+-- no player who can take a vehicle -- and a spectator is OUT.
 
 BR = BR or {}
 BR.VehRefuse = BR.VehRefuse or {}

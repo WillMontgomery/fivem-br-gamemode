@@ -897,12 +897,30 @@ do
         ok(can == false and why == BR.ShopSolve.Refusal.STATE,
             ('the shop is shut once the match is %s'):format(s))
     end
-    for _, s in ipairs({ BR.PlayerState.ALIVE, BR.PlayerState.LOBBY,
-                         BR.PlayerState.SPECTATING, BR.PlayerState.DEAD }) do
+    -- ═══ COUNTED, BECAUSE A SHORT ipairs IS A SILENT ONE ═══
+    --
+    -- This list used to name four states, two of which were SPECTATING and
+    -- DEAD. #233 deleted the first and renamed the second, and a table
+    -- constructor holding a nil is where that gets dangerous: `ipairs` STOPS
+    -- at the first nil rather than skipping it, so a stale name here would
+    -- have quietly cut this loop from four iterations to two AND STILL PASSED.
+    -- Measured, not reasoned about -- that is exactly what it did.
+    --
+    -- So the count is asserted. Any future rename that leaves a name behind
+    -- goes red here instead of silently testing less than it claims to.
+    local shutStates = { BR.PlayerState.ALIVE, BR.PlayerState.LOBBY,
+                         BR.PlayerState.OUT }
+    local shutSeen = 0
+    for _, s in ipairs(shutStates) do
+        shutSeen = shutSeen + 1
         local can, why = BR.ShopSolve.canBuy(st({ playerState = s }))
         ok(can == false and why == BR.ShopSolve.Refusal.STATE,
             ('and shut to a player who is %s during one'):format(s))
     end
+    ok(shutSeen == 3,
+        'and all three of those states were actually reached -- a nil from a '
+            .. 'stale PlayerState name would truncate this loop, not skip it',
+        shutSeen)
 
     -- ═══ ONE VEHICLE PER PLAYER PER MATCH ═══
     local can, why = BR.ShopSolve.canBuy(st({ bought = 1 }))
@@ -1127,8 +1145,9 @@ do
         'the purchase charges the price off the ROW, not off anything the '
             .. 'client sent', charged[1] and charged[1].amount)
     ok(#buysOf(10) == 1 and buysOf(10)[1].row == 'runner'
-           and buysOf(10)[1].matchId == 1,
-        'and the purchase is recorded against this match')
+           and buysOf(10)[1].paid == 750,
+        'and the purchase is recorded against the player, with what it cost -- '
+            .. 'which is what the forfeit line quotes back')
 
     -- ═══ THE OWNER'S TWO SENTENCES, VERBATIM, IN ONE TOAST ═══
     --
@@ -1323,95 +1342,232 @@ do
     -- It made leaving a fresh allowance, which is how two paid-for cars came to
     -- exist at once.
     --
-    -- HE WAS NEVER SHORT OF A CAR. He was refused a SECOND one, which is the
-    -- rule. So the ceiling counts what a player is HOLDING rather than what a
-    -- match sold him, and this block is the previous one inverted.
+    -- ═══ AND THEN HE OVERRULED THE FIX, THE SAME DAY ═══
+    --
+    -- "#238 if you buy a car, then leave the match, you forfeit your purchase.
+    -- It should not be persistent or carry over to another round ever."
+    --
+    -- The first remedy made leaving a fresh allowance (two cars). The second
+    -- declined the second sale and kept the first owed (one car, nothing lost).
+    -- He wants the third: leaving DESTROYS the purchase. He is content for the
+    -- car to be lost and does not want purchases surviving a round under any
+    -- circumstances, which settles the refund question in the same breath --
+    -- forfeit, not refund, so no Volts come back.
     reset()
     -- Enough for both cars, so a refusal below can only be the CEILING and
     -- never the money. A player who cannot afford the second would pass these
     -- assertions for a reason that has nothing to do with the rule.
     player(40, { balance = 5000 })
     buy(40, 'runner')
-    ok(#buysOf(40) == 1 and buysOf(40)[1].matchId == 1,
-        'a purchase starts out bound to the match that sold it')
-
-    BR.Shop.release(40)
-    ok(#buysOf(40) == 1 and buysOf(40)[1].matchId == nil,
-        'walking out unbinds it -- the car is still owed, it is just no longer '
-            .. 'this match\'s business')
-
-    -- ...AND BACK IN, WHICH IS THE CASE THAT PRODUCED TWO CARS.
-    buy(40, 'hauler')
-    ok(#charged == 1,
-        'coming back while a car is still owed buys NOTHING -- one car at '
-            .. 'wheels-up, ever, and the second sale is declined rather than '
-            .. 'taken and then argued about', #charged)
     ok(#buysOf(40) == 1 and buysOf(40)[1].row == 'runner',
-        'so he is still holding exactly the one he paid for', #buysOf(40))
+        'a purchase is recorded against the player who made it')
 
-    -- ═══ NOTHING IS FORFEITED AND NOTHING IS REFUNDED ═══
+    -- ═══ THE STAMP IS GONE, AND ITS ABSENCE IS ASSERTED ═══
     --
-    -- Which is the whole of the answer to "does the older purchase get
-    -- forfeited or refunded": neither, because there is never a second one.
-    -- "Purchases cannot be refunded" is the owner's standing rule, and the way
-    -- to honour it alongside "one car at wheels-up" is not to sell the second.
-    ok(#notices == 1,
-        'and the refused second press produces no toast of its own -- the '
-            .. 'purchase toast is still the only thing this feature says',
-        #notices)
+    -- `matchId` fed the carry-over accounting and nothing else. With carry-over
+    -- gone it would be written and never read -- dead bookkeeping, which is the
+    -- defect this project ships most often. It must not come back as a field
+    -- that quietly means nothing.
+    ok(buysOf(40)[1].matchId == nil,
+        'and carries no match stamp -- the record cannot outlive its match, so '
+            .. 'there is nothing for a stamp to distinguish',
+        tostring(buysOf(40)[1].matchId))
 
-    BR.Shop.deliver(matches[1])
-    ok(inv[40] ~= nil and #inv[40] == 1 and inv[40][1].item == 'car_runner',
-        'the one he owns arrives at wheels-up, alone',
-        inv[40] and #inv[40] or 0)
+    -- ═══ THE CONSOLE IS THE ONLY WITNESS, SO THE CONSOLE IS CAPTURED ═══
+    --
+    -- A forfeit is invisible from inside the game: no toast, no car, a balance
+    -- that simply went down. The owner asked for a line he can point at if this
+    -- turns out to feel wrong in play, and a line nobody asserts is a line that
+    -- gets deleted in a tidy-up. `print` is swapped out so the emission itself
+    -- is under test rather than its source text.
+    local printed = {}
+    local function capture(fn)
+        local real = print
+        print = function(...)
+            local parts = {}
+            for i = 1, select('#', ...) do
+                parts[#parts + 1] = tostring((select(i, ...)))
+            end
+            printed[#printed + 1] = table.concat(parts, ' ')
+        end
+        local okRun, err = pcall(fn)
+        print = real
+        if not okRun then error(err, 0) end
+    end
+    local function saidThat(pat)
+        for _, line in ipairs(printed) do
+            if line:find(pat) then return line end
+        end
+        return nil
+    end
+
+    printed = {}
+    capture(function() BR.Shop.release(40) end)
     ok(#buysOf(40) == 0,
-        'and a delivered record is dropped rather than lingering to refuse the '
-            .. 'next match')
+        'LEAVING THE MATCH DESTROYS IT -- he forfeits the car, and no record '
+            .. 'survives to be handed over in a later round', #buysOf(40))
+    ok(#charged == 1,
+        'and nothing is given back: forfeit, not refund', #charged)
+    ok(BR.Market.balances[40] == 5000 - 750,
+        'the Volts stay spent -- 750 gone for a car he will never receive',
+        BR.Market.balances[40])
 
-    -- ═══ AND HE CAN BUY AGAIN THE MOMENT HE IS NOT HOLDING ONE ═══
-    --
-    -- The ceiling must not become a lifetime ban, which is the failure mode on
-    -- the other side of it. Once the car has been handed over and the match it
-    -- was bought in is behind him, the next warmup sells him another.
-    reset()
-    player(44, { balance = 5000 })
-    buy(44, 'runner')
+    -- THE LINE, WITH THE CAR AND THE PRICE ON IT. Both matter: "somebody
+    -- forfeited something" is not evidence, and the price is the number he
+    -- would be weighing up if he decides this is too harsh.
+    ok(saidThat('FORFEITED') ~= nil,
+        'and it says so on the console, which is the only place it is visible '
+            .. 'at all', table.concat(printed, ' | '))
+    ok(saidThat('runner') ~= nil and saidThat('750') ~= nil,
+        'naming the car and what it cost', table.concat(printed, ' | '))
+
+    -- ...AND WHEELS-UP HANDS HIM NOTHING, which is the whole point of the
+    -- ruling: the previous behaviour delivered this car in the next round.
     BR.Shop.deliver(matches[1])
-    BR.Shop.release(44)                      -- he leaves; the record is gone
-    buy(44, 'hauler')
-    ok(#charged == 2 and #buysOf(44) == 1 and buysOf(44)[1].row == 'hauler',
-        'a player who has received his car and moved on buys another next '
-            .. 'warmup -- the ceiling is one AT A TIME, not one forever',
-        #charged)
+    ok(inv[40] == nil,
+        'so the next wheels-up he attends hands him nothing at all',
+        inv[40] and #inv[40] or 'no inventory')
 
-    -- ═══ A SURPLUS WAITS RATHER THAN BEING DESTROYED ═══
+    -- ...AND HE MAY BUY AGAIN, because he is holding nothing. The ceiling must
+    -- not become a lifetime ban on the strength of a car that no longer exists.
+    reset()
+    player(46, { balance = 5000 })
+    buy(46, 'runner')
+    BR.Shop.release(46)
+    buy(46, 'hauler')
+    ok(#charged == 2 and #buysOf(46) == 1 and buysOf(46)[1].row == 'hauler',
+        'and having forfeited it he can buy another -- the ceiling is one at a '
+            .. 'time, not one forever', #charged)
+
+    -- ═══ FORFEIT ON LEAVING, NEVER FORFEIT WHILE STILL IN THE MATCH ═══
     --
-    -- Unreachable through the handler now, so it is built by hand: two owed
-    -- entries on one roster entry, which is the state the previous fix could
-    -- produce. Wheels-up hands over ONE. The other is not deleted -- a
-    -- paid-for car destroyed is the forfeit the owner never asked for -- it
-    -- stays owed and the next wheels-up delivers it.
+    -- THE BOUNDARY THAT MATTERS MOST, and the failure the owner reported first:
+    -- a paid car disappearing while he still had every right to it. Walking off
+    -- the pad, driving to the far end of it, standing still for a minute -- none
+    -- of those is leaving the match, and none of them may cost him the car.
+    --
+    -- What makes that true is that BR.Shop.release is reached from
+    -- BR.Match.leaveMatch and from nowhere else: nothing in server/shop.lua
+    -- reads a position or a distance, so there is no path from "moved" to
+    -- "forfeited". This drives everything a player can do SHORT of leaving and
+    -- then checks the car still arrives.
+    reset()
+    player(47)
+    buy(47, 'runner')
+    peds[47].x, peds[47].y = 900.0, -900.0    -- wandered right off the pad
+    roster[47].pos = { x = 900.0, y = -900.0, z = 30.0 }
+    ok(#buysOf(47) == 1,
+        'wandering off the pad costs him nothing -- he is still in the match',
+        #buysOf(47))
+    BR.Shop.deliver(matches[1])
+    ok(inv[47] ~= nil and #inv[47] == 1 and inv[47][1].item == 'car_runner',
+        'and the car he paid for still arrives at wheels-up',
+        inv[47] and #inv[47] or 0)
+
+    -- ...AND THE FORFEIT ITSELF CANNOT LEARN WHERE ANYBODY IS STANDING. A
+    -- distance check inside BR.Shop.release is exactly how "forfeit on leaving"
+    -- would become "forfeit while standing in the match", so its absence is the
+    -- assertion. Scoped to the FUNCTION: this file legitimately measures
+    -- elsewhere -- the load-time spacing warning compares two catalogue rows,
+    -- and BR.Shop.unpack reads a ped to know where to put a car -- and a
+    -- file-wide ban would be a false positive on both.
+    local srvF = (readFile(RES .. 'br_core/server/shop.lua')
+                    :gsub('%-%-[^\n]*', ''))
+    local releaseBody = srvF:match('function BR%.Shop%.release%(src%)(.-)\nend')
+    ok(releaseBody ~= nil,
+        'BR.Shop.release is findable, so the assertion below means something')
+    ok(releaseBody ~= nil and releaseBody:find('BR%.Dist') == nil
+           and releaseBody:find('GetEntityCoords') == nil
+           and releaseBody:find('%.pos') == nil,
+        'the forfeit reads no position and no distance, so there is no path '
+            .. 'from "moved" to "forfeited"',
+        releaseBody and releaseBody:gsub('%s+', ' ') or 'no body')
+
+    -- ═══ AND IT IS REACHED FROM EXACTLY ONE DOOR ═══
+    --
+    -- The call site IS the rule. If a second caller ever appears -- a storm
+    -- tick, a cull sweep, a disconnect handler that fires on a timeout -- then
+    -- "leaving forfeits" silently becomes something else, and no assertion
+    -- inside this file would notice.
+    local callers = {}
+    for _, f in ipairs({ 'br_core/server/match.lua', 'br_core/server/shop.lua',
+                         'br_core/server/roster.lua', 'br_core/server/party.lua',
+                         'br_core/server/players.lua', 'br_core/server/lobby.lua',
+                         'br_core/server/main.lua' }) do
+        -- THE DEFINITION IS NOT A CALL. `function BR.Shop.release(src)` matches
+        -- the same pattern, so it is removed before counting -- otherwise
+        -- server/shop.lua declaring the function reads as a second door.
+        local body = (readFile(RES .. f):gsub('%-%-[^\n]*', '')
+                                        :gsub('function%s+BR%.Shop%.release', ''))
+        for _ in body:gmatch('BR%.Shop%.release%(') do
+            callers[#callers + 1] = f
+        end
+    end
+    ok(#callers == 1 and callers[1] == 'br_core/server/match.lua',
+        'and BR.Shop.release is called from server/match.lua alone -- leaving '
+            .. 'the match is the only door to a forfeit',
+        table.concat(callers, ', '))
+    local mtc3 = readFile(RES .. 'br_core/server/match.lua')
+    ok(mtc3:find('function BR%.Match%.leaveMatch') ~= nil
+           and mtc3:find('BR%.Shop%.release%(src%)') ~= nil,
+        'and that call is inside BR.Match.leaveMatch')
+
+    -- ═══ A SURPLUS IS DESTROYED RATHER THAN CARRIED ═══
+    --
+    -- Unreachable through the handler, so it is built by hand: two undelivered
+    -- entries on one roster entry, which is the state the FIRST fix could
+    -- produce. Wheels-up hands over ONE. The other is not kept for later -- that
+    -- was the reading the owner overruled -- it is destroyed with the rest.
     reset()
     player(45)
     roster[45].shopBuys = {
-        { matchId = nil, row = 'runner', paid = 750, delivered = false },
-        { matchId = nil, row = 'hauler', paid = 400, delivered = false },
+        { row = 'runner', paid = 750, delivered = false },
+        { row = 'hauler', paid = 400, delivered = false },
     }
     BR.Shop.deliver(matches[1])
     ok(inv[45] ~= nil and #inv[45] == 1 and inv[45][1].item == 'car_runner',
-        'two owed cars produce ONE car at this wheels-up, the older of them',
+        'two undelivered cars produce ONE car at wheels-up, the older of them',
         inv[45] and #inv[45] or 0)
-    ok(#buysOf(45) == 1 and buysOf(45)[1].row == 'hauler',
-        'and the other is still owed -- not forfeited, not refunded, waiting',
+    ok(#buysOf(45) == 0,
+        'and the other is destroyed rather than waiting for the next round',
         #buysOf(45))
     ok(#dropped == 0,
         'and nothing was quietly dropped on the floor to make the count work')
 
     BR.Shop.deliver(matches[1])
-    ok(inv[45] ~= nil and #inv[45] == 2,
-        'the next wheels-up hands over the one that waited',
+    ok(inv[45] ~= nil and #inv[45] == 1,
+        'so a second wheels-up hands over nothing -- there is nothing left',
         inv[45] and #inv[45] or 0)
-    ok(#buysOf(45) == 0, 'and then there is nothing left owed')
+
+    -- ═══ A CHARGE THAT LANDS AFTER ITS MATCH IS FORFEITED, NOT BANKED ═══
+    --
+    -- THE ONE PATH BY WHICH "LEAVING FORFEITS" COULD BE TRUE EVERYWHERE ELSE AND
+    -- STILL LEAK A CAR ACROSS ROUNDS. A DynamoDB round trip is up to six seconds
+    -- and BR.Shop.release runs the instant a player leaves -- so a write that
+    -- answers afterwards would write a record into an empty list, with nothing
+    -- left to destroy it, and the next match's wheels-up would hand it over.
+    -- That is precisely what he forbade.
+    reset()
+    player(48, { balance = 5000 })
+    BR.Market.hold = true
+    buy(48, 'runner')
+    BR.Shop.release(48)                      -- he walks out mid-round-trip
+    matches[1].state = BR.MatchState.PLAYING  -- ...and the warmup is over
+    printed = {}
+    capture(settleCharges)
+    ok(#charged == 1, 'the money still left the row -- the write had landed',
+        #charged)
+    ok(saidThat('FORFEITED') ~= nil and saidThat('750') ~= nil,
+        'and this forfeit is on the console too, with its price -- it is the '
+            .. 'quietest one of the lot and the easiest to never notice',
+        table.concat(printed, ' | '))
+    ok(#buysOf(48) == 0,
+        'but no record is written for a purchase that can no longer belong to a '
+            .. 'live warmup -- it is forfeited on the spot rather than banked '
+            .. 'for the next round', #buysOf(48))
+    ok(#sent == 0 and #notices == 0,
+        'and he is promised neither a car nor a toast for it',
+        ('%d events, %d toasts'):format(#sent, #notices))
 
     -- A DELIVERED PURCHASE DOES NOT SURVIVE A RELEASE EITHER: its only job was
     -- to say "already bought this match".

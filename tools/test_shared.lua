@@ -2870,7 +2870,7 @@ do
     -- take -- there is nothing to stand on.
     ok(vis[BR.PlayerState.FREEFALL] == true, 'a falling player is streamed loot')
     ok(take[BR.PlayerState.FREEFALL] == nil, 'but cannot pick it up mid-air')
-    ok(take[BR.PlayerState.DEAD] == nil, 'and a corpse takes nothing')
+    ok(take[BR.PlayerState.OUT] == nil, 'and a corpse takes nothing')
 
     -- Anything takeable must be visible, or the gates contradict each other.
     local contradiction = {}
@@ -3980,7 +3980,7 @@ do
     -- DECLINING IS NOT IMMORTALITY, said with the clock rather than with a
     -- promise. The bleed clock owns this ending and still delivers it.
     S.tick(2000 + S.env.BR.Config.Match.dbnoBleedBase * 1000 + 500)
-    ok(S.roster[1].state == PS.DEAD,
+    ok(S.roster[1].state == PS.OUT,
         'the bleed clock still finishes them on time',
         tostring(S.roster[1].state))
 
@@ -3988,7 +3988,7 @@ do
     -- is the thing a lazy guard would trade away.
     ok(S.roster[2].state == PS.ALIVE, 'the mate is still standing')
     S.died(2, { cause = 'fall' })
-    ok(S.roster[2].state == PS.DEAD,
+    ok(S.roster[2].state == PS.OUT,
         'a live player with no standing mate left is still eliminated by their '
         .. 'own report',
         tostring(S.roster[2].state))
@@ -5098,7 +5098,7 @@ do
         tostring(S.roster[1].state))
 
     S.tick(M.dbnoBleedBase * 1000 + 500)
-    ok(S.roster[1].state == PS.DEAD,
+    ok(S.roster[1].state == PS.OUT,
         'and the clock still finishes them, on the new number',
         tostring(S.roster[1].state))
 end
@@ -7916,7 +7916,7 @@ do
     S.tick(S.roster[1].dbnoUntil + 500)
     local out = cues()
 
-    ok(S.roster[1].state == PS.DEAD, 'the bleed clock finishes them')
+    ok(S.roster[1].state == PS.OUT, 'the bleed clock finishes them')
     ok(out[2] ~= nil and out[2].phase == 'out',
         'and DBNO -> out is its own cue to the squad',
         out[2] and tostring(out[2].phase) or 'nothing was sent')
@@ -8328,7 +8328,7 @@ do
         ok(C.toasts() == 1, 'offered once, and expired',
             ('%d'):format(C.toasts()))
 
-        C.be(PS.DEAD)
+        C.be(PS.OUT)
         C.slow(1000)
         C.be(PS.ALIVE)
         C.slow(1000)
@@ -8342,7 +8342,7 @@ do
 
         C.be(PS.DBNO)
         C.slow(1000)
-        C.be(PS.DEAD)                       -- bled out
+        C.be(PS.OUT)                       -- bled out
         C.slow(1000)
         C.be(PS.LOBBY)                      -- and back to the menu
         C.slow(1000)
@@ -10260,7 +10260,7 @@ do
             active = function() return true end,
             watchPoint = function() return vec(900.0, 0.0, 0.0) end,
         }
-        C.env.BR.State.me.state = C.env.BR.PlayerState.SPECTATING
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
 
         local S = C.pass()
 
@@ -10581,7 +10581,7 @@ do
     -- standing in the sun.
     do
         local C = newStormClient()
-        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
         C.pedAt = pt(900.0, 0.0)          -- the corpse, out in the storm
         C.spectate(pt(0.0, 0.0))          -- the squadmate, dead centre
         C.tick(3)
@@ -10607,7 +10607,7 @@ do
     -- spectator's storm off -- the effects have to move, not vanish.
     do
         local C = newStormClient()
-        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
         C.pedAt = pt(0.0, 0.0)            -- the corpse, safe in the middle
         C.spectate(pt(900.0, 0.0))        -- the squadmate, out in it
         C.tick(3)
@@ -10626,30 +10626,47 @@ do
 
     -- ═══ THE EFFECTS GATE IS THE SESSION, NOT THE PLAYER STATE ═══
     --
-    -- Today a spectator falls through storm.state's `affected` test as DEAD,
-    -- because BR.PlayerState.SPECTATING is read in six places and assigned in
-    -- none (client/state.lua:503 says so, and grep agrees). #233 is the rework
-    -- that finally assigns it -- and on the day it lands, a gate spelled
-    -- "ALIVE or DBNO or DEAD" would silently switch the spectator's sky and
-    -- grade back off, re-filing half of #225 with nothing to point at.
+    -- THIS CASE USED TO BE PINNED ON BR.PlayerState.SPECTATING, on the stated
+    -- premise that #233 was "the rework that finally assigns it". That premise
+    -- was backwards: #233 DELETED that state, because spectating is a session
+    -- and is possible WHILE a player is OUT rather than instead of it.
     --
-    -- So the case is pinned NOW, against the state #233 will produce. It is
-    -- the assertion that makes gating on the session load-bearing rather than
-    -- merely better-worded.
+    -- The premise was wrong; the case it protected is real, so it is re-pinned
+    -- rather than deleted. What it guards is somebody replacing the `from ==
+    -- 'spectate'` gate in client/storm.lua with a list of player states, which
+    -- would re-file half of #225 with nothing to point at.
+    --
+    -- SO IT IS RE-PINNED ON OUT, WHICH IS THE STATE A DEAD SPECTATOR IS REALLY
+    -- IN, and the teeth move to the GEOMETRY rather than to the state:
+    --
+    --   * The viewer's own ped is INSIDE the circle (0,0 against r=200).
+    --   * The shot is OUTSIDE it, 900m out.
+    --
+    -- So the two assertions below can only be satisfied by reading the WATCHED
+    -- player. Anyone who replaces `viewpoint()`'s session test with a player
+    -- state gets edge from the viewer's own ped, which is inside, which makes
+    -- `caught` false -- and the sky goes clear while the shot is in the storm.
+    -- That is #225's second half exactly, and it goes red here.
+    --
+    -- LOBBY WOULD HAVE BEEN THE SHARPER STATE and it does not work: storm.lua's
+    -- activeRecord() returns nil for a LOBBY player by design (a vista-menu
+    -- bystander shares match.state but not the match), so such a viewer has no
+    -- storm record to read at all. Checked, not assumed -- it fails outright.
     do
         local C = newStormClient()
-        C.env.BR.State.me.state = C.env.BR.PlayerState.SPECTATING
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
         C.pedAt = pt(0.0, 0.0)
         C.spectate(pt(900.0, 0.0))
         C.tick(3)
 
         local e = C.last()
         ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
-           'a viewer already carrying #233 state reads the watched player',
+           'an OUT viewer in a session reads the WATCHED player, not their own '
+           .. 'ped, which is safely inside the circle',
            e and e.edgeDistance)
         ok(C.weather[#C.weather] == 'THUNDER',
-           'and keeps the sky over the shot -- the session decides this, not '
-           .. 'a list of player states that SPECTATING is not on',
+           'and keeps the sky over the shot -- the session decides this, and no '
+           .. 'list of player states can stand in for it',
            tostring(C.weather[#C.weather]))
         ok(C.tc.name == REDMIST, 'and the grade with it', tostring(C.tc.name))
     end
@@ -10661,7 +10678,7 @@ do
     -- taken from.
     do
         local C = newStormClient()
-        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
         C.pedAt = pt(900.0, 0.0)          -- corpse: due EAST of the circle
         C.spectate(pt(0.0, 900.0))        -- watched: due NORTH of it
         C.tick(3)
@@ -10697,7 +10714,7 @@ do
     -- The first frames of a session, before the 4Hz feed has landed a point.
     do
         local C = newStormClient()
-        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
         C.pedAt = pt(900.0, 0.0)
         C.spectate(nil)
         C.tick(3)
@@ -10717,7 +10734,7 @@ do
     -- applied only to the 10Hz band would be overwritten by the next frame.
     do
         local C = newStormClient()
-        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
         C.pedAt = pt(0.0, 0.0)
         local watched = pt(900.0, 0.0)
         C.spectate(watched)
@@ -10751,7 +10768,7 @@ do
     -- wall that could disagree.
     do
         local C = newStormClient()
-        C.env.BR.State.me.state = C.env.BR.PlayerState.DEAD
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
         C.env.BR.Storm.wallStyle = 'columns'
         -- Wide enough that the arc is a slice of the ring rather than all of
         -- it: at r=200 every slot is drawn and centring cannot be observed.
@@ -11253,7 +11270,7 @@ do
     -- Only a player who can be SHOT is worth defending. A dead player's ped gets
     -- resurrected for the spectator camera; a lobby ped is whatever the lobby
     -- left it on. Both would read high forever and neither means anything.
-    for _, st in ipairs({ BR.PlayerState.DEAD, BR.PlayerState.LOBBY,
+    for _, st in ipairs({ BR.PlayerState.OUT, BR.PlayerState.LOBBY,
                           BR.PlayerState.BUS, BR.PlayerState.DBNO }) do
         gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
             ctx({ state = st }), A)
@@ -11997,10 +12014,65 @@ do
     local p, why = BR.IncidentBuild.fromChat(ev({ license = CLEAR }), {})
     ok(p == nil and why == 'no license', 'no license files nothing, and says why')
 
-    p, why = BR.IncidentBuild.fromChat(ev({ matchId = CLEAR }), {})
-    ok(p == nil and why == 'not in a match',
-        'a refusal in the LOBBY files nothing -- the evidence buffer holds no '
-            .. 'lobby chat, so the case would carry an empty timeline')
+    -- ═══ A LOBBY REFUSAL FILES, AND CARRIES ITS LINE ═══
+    --
+    -- This used to decline outright, which left lobby advertising invisible to
+    -- moderation -- and the lobby is exactly where a bot can idle indefinitely
+    -- without ever playing. The evidence buffer is deliberately NOT involved:
+    -- `clearMatch` only drops records whose matchId matches, so a matchless one
+    -- is never torn down and holding lobby chat would leak. The line rides the
+    -- event instead.
+    local lob = BR.IncidentBuild.fromChat(
+        ev({ matchId = CLEAR, text = 'come to evilserver.com', channel = 'global' }), {})
+    ok(lob ~= nil, 'a refusal in the LOBBY files a case')
+    ok(lob.matchId == nil, 'with no match on it, because there was none')
+    ok(#lob.matchTimeline == 1,
+        'and a timeline of exactly one row', lob and #lob.matchTimeline)
+
+    local row = lob.matchTimeline[1]
+    ok(row.kind == BR.IncidentBuild.CHAT_KIND, 'which is a chat_block row')
+    ok(row.text == 'come to evilserver.com',
+        'CARRYING THE LINE, which the event is the only source of here', row.text)
+    ok(row.reason == 'link' and row.channel == 'global',
+        'with its reason and channel')
+    ok(row.at == 4000, 'stamped at the moment of the refusal')
+    ok(lob.matchTimelineComplete == true,
+        'and COMPLETE, because one line was refused and one line is recorded')
+
+    -- The console gates the match RECORD card on matchId and gates the TIMELINE
+    -- on nothing, so this row renders with no console change. Pinned here
+    -- because the shape is what makes that true.
+    ok(lob.matchStartedAt == nil and lob.matchCreatedAt == nil,
+        'no match times are invented for a case that had no match')
+
+    -- IT IS STILL AN ANTICHEAT CASE, not a second kind of record.
+    ok(lob.kind == 'anticheat' and lob.category == 'system' and lob.severity == 'low',
+        'a lobby case is shaped like every other chat case')
+
+    -- THE TEXT IS CLAMPED ON A CHARACTER BOUNDARY HERE TOO. A line arriving
+    -- over length must not reach DynamoDB as a broken sequence.
+    local MAXT = BR.IncidentBuild.TIMELINE_LIMITS.MAX_CHAT_TEXT
+    local huge = BR.IncidentBuild.fromChat(
+        ev({ matchId = CLEAR, text = string.rep('a', MAXT - 1) .. 'é' }), {})
+    ok(#huge.matchTimeline[1].text <= MAXT,
+        'an over-long lobby line is capped', #huge.matchTimeline[1].text)
+    ok(BR.ChatScreen.nonLatinIn(huge.matchTimeline[1].text) == false,
+        'and is never cut through the middle of a character')
+
+    -- A lobby refusal with no text at all still files -- the case is the record
+    -- that it happened -- and stores an empty string rather than a nil that
+    -- would make the row unrenderable.
+    local notext = BR.IncidentBuild.fromChat(ev({ matchId = CLEAR }), {})
+    ok(notext ~= nil and notext.matchTimeline[1].text == '',
+        'a lobby refusal with no text still files, with an empty line')
+
+    -- AND A MATCH CASE IS UNTOUCHED BY ALL OF THIS. It gets its timeline from
+    -- `attachTimeline` out of the evidence buffer, so `fromChat` must NOT build
+    -- one -- two writers for one field is how the buffer's rows get overwritten.
+    local inMatch = BR.IncidentBuild.fromChat(
+        ev({ text = 'come to evilserver.com' }), {})
+    ok(inMatch.matchTimeline == nil,
+        'a case filed IN a match builds no timeline here -- attachTimeline owns it')
 
     p, why = BR.IncidentBuild.fromChat(ev({ reason = 'vibes' }), {})
     ok(p == nil and why == 'not a chat refusal reason',

@@ -815,8 +815,7 @@ BR.Config.LootVisibleStates = {
     [BR.PlayerState.GLIDE]      = true,
     [BR.PlayerState.ALIVE]      = true,
     [BR.PlayerState.DBNO]       = true,
-    [BR.PlayerState.DEAD]       = true,
-    [BR.PlayerState.SPECTATING] = true,
+    [BR.PlayerState.OUT]        = true,   -- and so a spectator, who is OUT
     -- LOBBY is absent: the vista is a menu with a view, not a place.
 }
 

@@ -1164,7 +1164,7 @@ do
     ok(mstate() == BR.MatchState.PLAYING, 'starting from PLAYING')
     ok(BR.Server.squadsAlive() == 2, 'two solos are two teams')
 
-    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
 
@@ -1195,14 +1195,14 @@ do
 
     ok(BR.Server.squadsAlive() == 2, 'four players in two squads are two teams')
 
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
     ok(BR.Server.squadsAlive() == 2, 'a squad with a survivor is still up')
 
     -- A downed player is not out: their squad is still contesting the match.
     BR.Roster.setState(2, BR.PlayerState.DBNO)
     ok(BR.Server.squadsAlive() == 2, 'a downed player still counts for their squad')
 
-    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.ENDED, 'wiping a squad ends the match')
@@ -1728,7 +1728,7 @@ do
     -- Placement counts teams still standing INCLUDING the one dying, so the
     -- first of four to die finishes 4th, not 1st.
     BR.Combat.eliminate(1, 'fall', nil)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD, 'eliminating marks the player dead')
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT, 'eliminating marks the player dead')
     ok(BR.Roster.get(1).placement == 4, 'first death of four takes last place',
         ('got %s'):format(tostring(BR.Roster.get(1).placement)))
 
@@ -1786,7 +1786,7 @@ do
     fakeTime = fakeTime + 2000
     BR.Sched.step(fakeTime)
 
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'the server eliminates on its own health reading, with no client report')
     ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
         'and leaves the healthy player alone')
@@ -2496,7 +2496,7 @@ do
     end
     ok(deadSeen, 'a dead squadmate is still broadcast to their squad')
     ok(survivorGot, 'the survivor keeps receiving the push')
-    ok(deadState == BR.PlayerState.DEAD,
+    ok(deadState == BR.PlayerState.OUT,
         'the payload carries the dead state, so the client can mark the tag',
         tostring(deadState))
 
@@ -3013,7 +3013,7 @@ do
     -- this block. It is now the opposite: the server still sees them go down --
     -- which is the original regression, and still covered -- but a death before
     -- the match reaches PLAYING is held rather than banked.
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
         'the server still observes a death during BUS')
     ok(BR.Roster.get(2).revivePending == true,
         'but it is HELD for the start rather than banked (#144)')
@@ -3066,7 +3066,7 @@ do
     fakeTime = r2.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 2)
     fire(BR.Net.PLAYER_DIED, 2, { cause = 'fall' })
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD, 'a freefall death drops them too')
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT, 'a freefall death drops them too')
     ok(BR.Roster.get(2).revivePending == true, 'and is held just the same')
 
     fakeTime = r2.tEnd + 600
@@ -3326,7 +3326,7 @@ do
         fakeTime = fakeTime + 1000
         BR.Sched.step(fakeTime)
         local e = BR.Roster.get(2)
-        if e and e.state == BR.PlayerState.DEAD and not deadAt then deadAt = i end
+        if e and e.state == BR.PlayerState.OUT and not deadAt then deadAt = i end
     end
     ok(deadAt ~= nil,
         'the LEDGER eliminates a client that never applies its storm damage')
@@ -4472,7 +4472,7 @@ do
         fakeTime = fakeTime + 250
         BR.Sched.step(fakeTime)
     end
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
         'a death on the ground is observed while others still fly')
     ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL,
         'a genuinely descending glider is never promoted')
@@ -4506,7 +4506,7 @@ do
         fakeTime = fakeTime + 250
         BR.Sched.step(fakeTime)
     end
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
         'a death once PLAYING is observed and kept')
     pedHealth[1002] = nil
     fakeTime = fakeTime + 3100
@@ -5232,7 +5232,7 @@ do
 
     -- A dead player cannot loot.
     standOn(1, far)
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
     fire(BR.Net.LOOT_CLAIM, 1, { id = far.id })
     ok(m.loot.items[far.id] ~= nil, 'a corpse cannot pick things up')
 end
@@ -8523,7 +8523,7 @@ do
     -- is the server half of "arming is suspended in the air".
     inv = armed(0, 60)
     for _, st in ipairs({ BR.PlayerState.DBNO, BR.PlayerState.FREEFALL,
-                          BR.PlayerState.GLIDE, BR.PlayerState.DEAD }) do
+                          BR.PlayerState.GLIDE, BR.PlayerState.OUT }) do
         BR.Roster.setState(1, st)
         fire(BR.Net.INV_RELOAD, 1, {})
         ok(inv.slots[1].clip == 0 and inv.ammo[MED] == 60,
@@ -9799,7 +9799,7 @@ do
     local function killedBy(victimSrc, killerSrc)
         local v = BR.Roster.get(victimSrc)
         v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
-        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+        BR.Roster.setState(victimSrc, BR.PlayerState.OUT)
     end
 
     local function tokenFor(src, name)
@@ -10050,7 +10050,7 @@ do
     local function killedBy(victimSrc, killerSrc)
         local v = BR.Roster.get(victimSrc)
         v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
-        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+        BR.Roster.setState(victimSrc, BR.PlayerState.OUT)
     end
 
     --- Three solo players on the licenses named, in a live match.
@@ -10337,7 +10337,7 @@ do
     local function killedBy(victimSrc, killerSrc)
         local v = BR.Roster.get(victimSrc)
         v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
-        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+        BR.Roster.setState(victimSrc, BR.PlayerState.OUT)
     end
 
     local function three(a, b, c)
@@ -11177,13 +11177,13 @@ do
     -- The last standing mate is what makes it possible; without one it is a
     -- death however many bodies the squad still has on the floor.
     BR.Combat.defeat(2, 'gunshot', 1)
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
         'the last player of a squad dies rather than joining the pile',
         BR.Roster.get(2).state)
 
     -- Already down: running out of health again is the end of it.
     BR.Combat.defeat(1, 'gunshot', 2)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'defeating a player who is already down eliminates them')
 
     -- Solo has no downed state at all.
@@ -11195,7 +11195,7 @@ do
     BR.Roster.setState(1, BR.PlayerState.ALIVE)
     BR.Roster.setState(2, BR.PlayerState.ALIVE)
     BR.Combat.defeat(1, 'gunshot', 2)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'a solo player is never downed -- nobody could pick them up')
 
     -- A mate who is still on canopy counts: they can land and revive.
@@ -11212,7 +11212,7 @@ do
     ok(BR.Roster.get(2).state == BR.PlayerState.DBNO
        and BR.Roster.get(3).state == BR.PlayerState.DBNO, 'two of three are down')
     BR.Combat.defeat(1, 'gunshot', nil)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'the last one standing dies: two downed mates cannot revive anybody',
         BR.Roster.get(1).state)
 end
@@ -11243,7 +11243,7 @@ do
 
     soloMatch()
     BR.Combat.defeat(1, 'gunshot', 2)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'a solo carrying nothing still dies outright -- the mode default is '
             .. 'untouched', BR.Roster.get(1).state)
 
@@ -11382,7 +11382,7 @@ do
     -- the ending and still delivers it, which is what makes the check above safe
     -- to give up rather than a hole to hide in.
     tick(BR.Config.Match.dbnoBleedBase * 1000 + 500)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'the bleed clock still finishes them on time',
         BR.Roster.get(1).state)
     ok(BR.Roster.get(1).placement ~= nil,
@@ -11464,7 +11464,7 @@ do
 
     -- ...and once they are out, the corpse is real.
     BR.Combat.eliminate(2, 'admin', nil)
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD, 'the mate is eliminated')
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT, 'the mate is eliminated')
 
     -- WHY THE GUARD IS ON THE STATE AND NOT ON THE NUMBER. An eliminated
     -- player's ledger health is never zeroed -- a knock parks it on the downed
@@ -12232,7 +12232,7 @@ do
         ok(C.alive(), 'the watch stands a falsely-dead mate up', C.describe())
 
         -- ...and now they are killed for real, by somebody else.
-        cenv.BR.State.roster[2].state = cenv.BR.PlayerState.DEAD
+        cenv.BR.State.roster[2].state = cenv.BR.PlayerState.OUT
         C.lethal(26)
         C.pump(2500)
         ok(not C.alive(),
@@ -12617,7 +12617,7 @@ do
         -- 2. A REAL CORPSE STAYS A CORPSE.
         local D = newClient(3, { settle = 100, src = 3 })
         D.env.BR.State.roster[3] =
-            { state = D.env.BR.PlayerState.DEAD, hp = 0.0 }
+            { state = D.env.BR.PlayerState.OUT, hp = 0.0 }
         D.lethal(0)
         D.pump(3000)
         ok(not D.alive() and D.calls.resurrect == 0,
@@ -12950,7 +12950,7 @@ do
         C.recv(B.Net.ROSTER_DELTA, {
             seq = seq or 2,
             deltas = { { op = 'update', src = 1,
-                         e = { state = B.PlayerState.DEAD, hp = 0.0 } } },
+                         e = { state = B.PlayerState.OUT, hp = 0.0 } } },
         })
     end
 
@@ -13109,7 +13109,7 @@ do
 
     -- Enough damage finishes them, and it is the FINISHER who is credited.
     BR.Damage.applyHit(3, 1, 500.0, { weapon = 0 })
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'running the clock out with gunfire finishes them')
     ok(BR.Roster.get(3).kills == 1,
         'and the kill goes to whoever finished them, not whoever knocked them',
@@ -13162,7 +13162,7 @@ do
 
     sent = {}
     tick(BR.Config.Match.dbnoBleedBase * 1000)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'the clock running out is the death', BR.Roster.get(1).state)
     ok(BR.Roster.get(2).kills == 1,
         'and the knocker is still credited, long past the assist window',
@@ -13483,7 +13483,7 @@ do
     -- 250ms bleed tick and three of the 1Hz rescue tick -- long enough for the
     -- rescue record to be dropped (which is what used to re-arm the clock) and
     -- for that clock to fire a dozen times over.
-    ok(BR.Roster.get(1).state ~= BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state ~= BR.PlayerState.OUT,
         'and the bleed clock does NOT finish them after the match is over -- '
             .. 'a second verdict, drawn over the first, for a player who had '
             .. 'already won', BR.Roster.get(1).state)
@@ -14738,7 +14738,7 @@ do
     fire(BR.Net.PLAYER_DIED, 1, { cause = 'fall' })
 
     local e1 = BR.Roster.get(1)
-    ok(e1.state == BR.PlayerState.DEAD, 'the death is observed')
+    ok(e1.state == BR.PlayerState.OUT, 'the death is observed')
     ok(e1.revivePending == true, 'and held for the start')
     ok(e1.diedAt == nil, 'no diedAt -- `died` and the survival clock both hang '
         .. 'off this one field')
@@ -15589,7 +15589,7 @@ do
     local function killedBy(victimSrc, killerSrc)
         local v = BR.Roster.get(victimSrc)
         v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
-        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+        BR.Roster.setState(victimSrc, BR.PlayerState.OUT)
     end
 
     --- Four players in a live match, on licenses this block names itself.
@@ -16184,7 +16184,7 @@ end
 describe('spectate.squadOnly')
 do
     squadMatch()
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
 
     -- THE HEADLINE. A dead player asks for a camera and is given their
     -- squadmate. Asking repeatedly must never walk off the squad, because there
@@ -16212,14 +16212,14 @@ end
 describe('spectate.widensOnlyWhenTheSquadIsGone')
 do
     squadMatch()
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
     ok(watching(1) == 2, 'watching the mate to begin with')
 
     -- The mate dies. With the widening REFUSED, the session ends rather than
     -- silently becoming a view of the enemy team.
     sent = {}
-    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
     fakeTime = fakeTime + BR.Config.Spectate.feedMs
     BR.Sched.step(fakeTime)
     ok(stopped(1), 'the squad is gone and the camera stops', tostring(watching(1)))
@@ -16228,12 +16228,12 @@ do
     -- With it ALLOWED, the same moment opens the wider set -- and not before.
     squadMatch()
     BR.Config.Spectate.freeAfterSquadOut = true
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
     ok(watching(1) == 2, 'still the mate while the mate is alive')
 
     sent = {}
-    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
     fakeTime = fakeTime + BR.Config.Spectate.feedMs
     BR.Sched.step(fakeTime)
     local now = watching(1)
@@ -16407,7 +16407,7 @@ do
     squadMatch()
     BR.Config.Spectate.freeAfterSquadOut = true
     BR.Combat.eliminate(1, 'headshot', 4)
-    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
     sent = {}
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
     ok(watching(1) == 3,
@@ -16418,7 +16418,7 @@ do
     -- up a killer-cam through the solos branch.
     squadMatch()
     BR.Combat.eliminate(1, 'headshot', 4)
-    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
     sent = {}
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
     ok(watching(1) == nil,
@@ -16455,7 +16455,7 @@ do
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
     ok(watching(1) == nil, 'and so is a downed one -- they are still in the fight')
 
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
     ok(watching(1) == 2, 'only once they are out')
 
@@ -16506,7 +16506,7 @@ do
         tostring(watching(1)))
 
     -- A DEAD TARGET IS STILL A TARGET for a moderator.
-    BR.Roster.setState(3, BR.PlayerState.DEAD)
+    BR.Roster.setState(3, BR.PlayerState.OUT)
     fakeTime = fakeTime + BR.Config.Spectate.feedMs
     BR.Sched.step(fakeTime)
     ok(watching(1) == 3, 'a target who dies is still watched', tostring(watching(1)))
@@ -16562,7 +16562,7 @@ do
         BR.Roster.update(s, { squadId = 'sq1' })
         BR.Roster.setState(s, BR.PlayerState.ALIVE)
     end
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
     sent = {}
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
     local first = watching(1)
@@ -16654,7 +16654,7 @@ do
         BR.Roster.update(s, { squadId = 'sq1' })
         BR.Roster.setState(s, BR.PlayerState.ALIVE)
     end
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
     sent = {}
 
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })

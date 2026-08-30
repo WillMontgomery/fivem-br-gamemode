@@ -273,7 +273,7 @@ describe('a death mid-match raises the word and holds the camera')
 do
     inMatch()
     local m = mark()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
 
     local d = lastDeath(m)
     ok(d ~= nil and d.show == true, 'the word goes up on the death', d and d.show)
@@ -303,8 +303,13 @@ do
 
     -- STAYING TO SPECTATE CHANGES NOTHING. This is the flow the owner called
     -- "works great"; the fix must be invisible to it.
+    --
+    -- SPECTATING IS NOT A STATE (#233): a player who stays to watch is OUT and
+    -- STAYS OUT. So what actually arrives while they spectate is the roster
+    -- RE-ASSERTING the state they are already in -- which is a truer push than
+    -- the transition this used to send, because it is the one the game makes.
     local m3 = mark()
-    deltas(meState(BR.PlayerState.SPECTATING))
+    deltas(meState(BR.PlayerState.OUT))
     ok(#envelopes(BR.Nui.DEATH, m3) == 0,
        'moving into spectate does not take the word down',
        #envelopes(BR.Nui.DEATH, m3))
@@ -335,7 +340,7 @@ do
     -- them in the LOBBY. Both deltas are queued and flushed together, so this is
     -- one batch -- which is why the bug is instant rather than a race.
     local m = mark()
-    deltas(meState(BR.PlayerState.DEAD), meState(BR.PlayerState.LOBBY))
+    deltas(meState(BR.PlayerState.OUT), meState(BR.PlayerState.LOBBY))
 
     local sent = envelopes(BR.Nui.DEATH, m)
     ok(#sent == 2, 'the word goes up on the death and comes back down on the leave',
@@ -357,7 +362,7 @@ end
 describe('#204 -- die first, then use Leave Match inside the window')
 do
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     advance(2000)
 
     -- A separate batch this time: the player watched for two seconds and then
@@ -374,7 +379,7 @@ end
 describe('#204 -- the match ends underneath the player')
 do
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
 
     local m = mark()
     matchState(BR.MatchState.ENDED)
@@ -408,7 +413,7 @@ do
     -- WITHOUT the ENDED transition. From this client the only signal is the
     -- digest settling to WAITING, which the digest handler replays locally.
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
 
     local m = mark()
     fire(BR.Net.DIGEST, { alive = 0, squadsAlive = 0,
@@ -423,7 +428,7 @@ describe('#204 -- a new round must never open with last round\'s word on it')
 do
     for _, next_ in ipairs({ BR.MatchState.WARMUP, BR.MatchState.BUS }) do
         inMatch()
-        deltas(meState(BR.PlayerState.DEAD))
+        deltas(meState(BR.PlayerState.OUT))
         local m = mark()
         matchState(next_)
         local d = lastDeath(m)
@@ -439,7 +444,7 @@ do
     -- health check eliminates them a second time), so the word genuinely goes up
     -- for somebody who is about to be stood back up.
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     ok(BR.DeathVerdictUp() == true, 'the held death does raise the word')
 
     local m = mark()
@@ -471,7 +476,7 @@ do
     -- failure that is worse than the reported one: not a word that lingers ten
     -- seconds, but one that never comes down at all.
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     advance(WINDOW + 1)          -- this client now believes nothing is up
     ok(BR.DeathVerdictUp() == false, 'precondition: nothing is up locally')
 
@@ -499,7 +504,7 @@ do
     -- if it seats them in the lobby.
     inMatch()
     local m = mark()
-    snapshot(BR.PlayerState.DEAD, BR.MatchState.PLAYING)
+    snapshot(BR.PlayerState.OUT, BR.MatchState.PLAYING)
     ok(#envelopes(BR.Nui.DEATH, m) == 0,
        'a snapshot is not a death edge and raises no word',
        #envelopes(BR.Nui.DEATH, m))
@@ -507,7 +512,7 @@ do
     -- And one that seats them in the lobby dismisses, because that snapshot is
     -- the client learning the match is over for it.
     deltas(meState(BR.PlayerState.ALIVE))
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     ok(BR.DeathVerdictUp() == true, 'precondition: the word is up')
     local m2 = mark()
     snapshot(BR.PlayerState.LOBBY, BR.MatchState.PLAYING)
@@ -539,7 +544,7 @@ end
 describe('spectating takes the death word down')
 do
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     ok(BR.DeathVerdictUp() == true, 'precondition: the word is up')
 
     local m = mark()
@@ -553,7 +558,7 @@ do
     -- AND THE MATCH IS STILL RUNNING AND I AM STILL DEAD, which is the whole
     -- difference from every other edge in this file: nothing about my match
     -- state changed, so nothing else would have fired.
-    ok(BR.State.me.state == BR.PlayerState.DEAD,
+    ok(BR.State.me.state == BR.PlayerState.OUT,
        'without my own state having moved', BR.State.me.state)
 end
 
@@ -563,7 +568,7 @@ do
     -- must still see it exactly as now."
     inMatch()
     local m = mark()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     local d = lastDeath(m)
     ok(d ~= nil and d.show == true, 'the word still goes up on death', d and d.show)
 
@@ -590,7 +595,7 @@ do
     -- new edge must be a no-op there rather than a second `show = false` chasing
     -- the first one down the wire.
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     advance(WINDOW + 1)
     ok(BR.DeathVerdictUp() == false, 'precondition: the window has expired')
 
@@ -608,7 +613,7 @@ do
     -- "the match is over for me" would tear down surfaces underneath a living
     -- player. `admin` is the server's flag and it is the discriminator.
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     ok(BR.DeathVerdictUp() == true, 'precondition: the word is up')
 
     local m = mark()
@@ -629,7 +634,7 @@ do
     BR.MatchSurface('feed counter', function() hits = hits + 1 end)
 
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
 
     local before = hits
     spectatePush({ targetSrc = 7, name = 'Kestrel' })
@@ -670,7 +675,7 @@ do
     spectatePush({ targetSrc = 9, name = 'Vandal' })
     ok(hits == before2, 'precondition: the latch is up and holding')
     deltas(meState(BR.PlayerState.ALIVE))
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     local afterDeath = hits
     spectatePush({ targetSrc = 9, name = 'Vandal' })
     ok(hits == afterDeath + 1,
@@ -680,7 +685,7 @@ end
 describe('a malformed spectate push is not a crash')
 do
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     spectatePush(nil)
     spectatePush('nonsense')
     spectatePush(42)
@@ -699,7 +704,7 @@ do
     BR.MatchSurface('test surface', function(force) seen[#seen + 1] = force end)
 
     inMatch()
-    deltas(meState(BR.PlayerState.DEAD))
+    deltas(meState(BR.PlayerState.OUT))
     deltas(meState(BR.PlayerState.LOBBY))
     ok(#seen >= 1, 'a newly registered surface is dismissed on the leave edge',
        #seen)

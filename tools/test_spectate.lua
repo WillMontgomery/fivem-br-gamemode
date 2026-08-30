@@ -190,7 +190,7 @@ BR.Native = {
 }
 
 BR.State = BR.State or {}
-BR.State.me = { src = 1, state = BR.PlayerState.DEAD }
+BR.State.me = { src = 1, state = BR.PlayerState.OUT }
 
 -- The key layer, captured rather than driven through keybinds.lua. What matters
 -- here is that a subscriber exists and that a press reaches the server; WHICH
@@ -878,7 +878,7 @@ do
     -- produce a session.
     local S = newServer()
     local PS = S.env.BR.PlayerState
-    S.add(1, PS.DEAD)          -- genuinely out: died in a live match
+    S.add(1, PS.OUT)          -- genuinely out: died in a live match
     S.add(2, PS.ALIVE)
     S.cycle(1, 0)
     ok(S.watching(1),
@@ -901,7 +901,7 @@ do
     -- DEAD IS NOT isInMatch, so the shipped gate admitted them.
     local S = newServer()
     local PS = S.env.BR.PlayerState
-    S.add(1, PS.DEAD, { revivePending = true })   -- died on the drop, held
+    S.add(1, PS.OUT, { revivePending = true })   -- died on the drop, held
     S.add(2, PS.ALIVE)
 
     S.cycle(1, 0)
@@ -958,7 +958,7 @@ do
     -- also covers the route somebody adds next year.
     local S = newServer()
     local PS = S.env.BR.PlayerState
-    S.add(1, PS.DEAD)
+    S.add(1, PS.OUT)
     S.add(2, PS.ALIVE)
     S.cycle(1, 0)
     ok(S.watching(1), 'a dead player is watching')
@@ -1018,7 +1018,7 @@ do
     -- to behave like one.
     local S = newServer()
     local PS = S.env.BR.PlayerState
-    S.add(1, PS.DEAD, { revivePending = true })
+    S.add(1, PS.OUT, { revivePending = true })
     S.add(2, PS.ALIVE)
     S.cycle(1, 0)
     ok(not S.watching(1), 'held before the start: no camera')
@@ -1030,7 +1030,7 @@ do
 
     -- Killed for real, twenty minutes later. BR.Combat.eliminate writes the
     -- state and touches `revivePending` not at all -- it was already nil.
-    S.roster[1].state = PS.DEAD
+    S.roster[1].state = PS.OUT
     S.cycle(1, 0)
     ok(S.watching(1),
        'and a real death later in the SAME match gets the camera it always '

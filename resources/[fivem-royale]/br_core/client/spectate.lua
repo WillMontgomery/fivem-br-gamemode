@@ -382,7 +382,7 @@ BR.Loop.register(BR.Loop.SLOW, 'spectate.open', function()
     end
 
     if session or asks >= OPEN_TRIES then return end
-    if st ~= BR.PlayerState.DEAD and st ~= BR.PlayerState.SPECTATING then return end
+    if st ~= BR.PlayerState.OUT then return end
 
     -- YOUR OWN DEATH GETS THE SCREEN FIRST.
     --
@@ -485,7 +485,7 @@ end)
 --
 --   * A DOWNED PED HOLDS NOTHING. dbno.lua takes the weapon away before it
 --     disables anything, so the seat and trigger ids below would be dead weight
---     there -- while a SPECTATING ped may be an admin who is alive, armed, and
+--     there -- while a spectating ped may be an admin who is alive, armed, and
 --     mid-match. Widening DOWNED_BLOCKED to cover this would be a behaviour
 --     change to the file that owns the #164 clone-sync beat, bought for nothing.
 --

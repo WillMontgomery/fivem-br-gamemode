@@ -349,10 +349,12 @@ end
 --- It is bounded in three places (the revive, walking out, CLEANUP), so no
 --- player can be locked out of spectating by a flag nothing clears.
 ---
---- NOT GATED ON BR.PlayerState.SPECTATING, which is ASSIGNED NOWHERE in this
---- project -- client/state.lua:503 spells that out, and client/storm.lua took
---- the same turning today. The session is the fact that gets written, and the
---- session is what this file already holds.
+--- NOT GATED ON A SPECTATING PLAYER STATE, because there is none. There was a
+--- `BR.PlayerState.SPECTATING` that was assigned nowhere in this project, and
+--- #233 deleted it -- spectating is possible while a player is OUT rather than
+--- instead of it. client/state.lua and client/storm.lua took the same turning.
+--- The session is the fact that gets written, and the session is what this file
+--- already holds.
 --- @param entry table|nil
 --- @return boolean
 local function mayWatch(entry)

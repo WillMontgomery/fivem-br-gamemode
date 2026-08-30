@@ -1066,18 +1066,17 @@ BR.Sched.every(250, 'party.squadpos', function()
 
     -- Group squad members. Solos have no squadId and are never sent.
     --
-    -- DEAD MATES STAY ON THE LIST. They used to drop off it the instant they
+    -- OUT MATES STAY ON THE LIST. They used to drop off it the instant they
     -- were eliminated, which took their blip and their overhead name with them
     -- ("in squads I can't see the names of dead players in my squad", user,
     -- 2026-08-05) -- the client's membership model IS this push, so going
     -- quiet about someone reads as "no longer in the squad". Where a
     -- teammate fell is information their squad is entitled to, and it is the
     -- same privacy boundary either way: still squad-only, still their own
-    -- match. SPECTATING rides along for the same reason.
+    -- match. A squadmate spectating is OUT, so they ride along on that key.
     local visibleStates = {
-        [BR.PlayerState.DEAD]       = true,
-        [BR.PlayerState.SPECTATING] = true,
-        [BR.PlayerState.DBNO]       = true,
+        [BR.PlayerState.OUT]  = true,
+        [BR.PlayerState.DBNO] = true,
     }
 
     -- NOBODY IS BEACONED FROM THE PLANE. Everyone aboard is at the same

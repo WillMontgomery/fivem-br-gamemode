@@ -1367,7 +1367,7 @@ do
     nextSecond()
     local crate = firstSealed(theMatch, 2)
     walkTo(101, crate)
-    BR.Roster.setState(101, BR.PlayerState.DEAD)
+    BR.Roster.setState(101, BR.PlayerState.OUT)
     local was, at = worldOf(theMatch), mark()
     fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
     ok(sameWorld(was, worldOf(theMatch)), 'a DEAD player cannot open a crate')
@@ -1914,7 +1914,7 @@ describe('report.killedBy')
 do
     -- #169: killed by somebody who ALREADY has a case open, and only then.
     local W = newIncidentWorld()
-    W.join(1, 7, 'license:victim', W.BR.PlayerState.DEAD)
+    W.join(1, 7, 'license:victim', W.BR.PlayerState.OUT)
     W.join(2, 7, 'license:suspect')
     W.join(3, 7, 'license:clean')
     W.killedBy(1, 2)
@@ -1975,7 +1975,7 @@ do
     ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
         'and neither is one who is only downed -- being knocked is not being killed')
 
-    W.BR.Roster.get(1).state = W.BR.PlayerState.DEAD
+    W.BR.Roster.get(1).state = W.BR.PlayerState.OUT
     W.fromClient(W.BR.Net.REPORT_KILLED, 1)
     ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 1, 'a dead player is')
 
@@ -1988,7 +1988,7 @@ do
     -- THE STORM, A FALL, A FIRE. No attributed killer means no prompt, and the
     -- server decides that from its own damage records rather than from a claim.
     local X = newIncidentWorld()
-    X.join(1, 7, 'license:victim', X.BR.PlayerState.DEAD)
+    X.join(1, 7, 'license:victim', X.BR.PlayerState.OUT)
     X.join(2, 7, 'license:suspect')
     X.filed('inc-1', 7, 'license:suspect')
     X.clear()
@@ -4354,6 +4354,101 @@ do
     end
     ok(#opened == 1 and opened[1].text == 'come to evilserver.com',
         'the line that opened the case rides the filing, once', #opened)
+end
+
+describe('chat.lobby')
+do
+    -- ═══ THE LOBBY IS WHERE A BOT CAN SIT FOREVER WITHOUT PLAYING ═══
+    --
+    -- A refusal outside a match used to file nothing at all, so lobby
+    -- advertising -- the cheapest kind there is, because it costs the
+    -- advertiser no round -- was invisible to moderation. The owner's words
+    -- were "any post containing a link is refused and creates an incident", and
+    -- a lobby post is a post.
+    --
+    -- THE EVIDENCE BUFFER IS NOT INVOLVED, DELIBERATELY. `metaFor` refuses to
+    -- buffer lobby chat and must keep refusing: `clearMatch` only drops records
+    -- whose matchId EQUALS the match being torn down, so a matchless record is
+    -- never torn down and holding lobby chat would leak one record plus its
+    -- lines per lobby player per uptime. The line rides the event instead.
+    local W = newTimelineWorld()
+    -- NO MATCH. `W.join` with a nil matchId is a player sitting in the lobby,
+    -- which is the whole fixture.
+    W.join(1, nil, 'license:lobbybot', 'Rae')
+    W.join(2, nil, 'license:bystander', 'Sam')
+
+    W.at(4000)
+    local mark = #W.S.toClients
+    W.say(1, 'come to evilserver.com')
+
+    -- THE SHADOW STILL HOLDS OUTSIDE A MATCH. The lobby is a delivery audience
+    -- like any other and the bystander must not receive the advert.
+    local sends = W.chatSends(mark + 1)
+    ok(#sends == 1 and sends[1].target == 1,
+        'a refused lobby line reaches the sender alone', #sends)
+
+    ok(#W.S.incidents == 1, 'and it FILES, which it used not to', #W.S.incidents)
+
+    local p = W.S.incidents[1]
+    ok(p.matchId == nil, 'the case carries no match, because there was none')
+    ok(p.matchStartedAt == nil and p.matchCreatedAt == nil,
+        'and no match times are invented for it')
+    ok(type(p.matchTimeline) == 'table' and #p.matchTimeline == 1,
+        'it carries a timeline of exactly one row',
+        p.matchTimeline and #p.matchTimeline)
+
+    local row = p.matchTimeline and p.matchTimeline[1] or {}
+    ok(row.kind == W.BR.IncidentBuild.CHAT_KIND, 'which is a chat_block row',
+        tostring(row.kind))
+    ok(row.text == 'come to evilserver.com',
+        'CARRYING THE LINE -- the event is its only source here', tostring(row.text))
+    ok(row.reason == 'link', 'with the rule that refused it')
+    -- THE CHANNEL TRAVELS FROM chat.lua, and this is the only case that proves
+    -- it: every other assertion about `channel` calls `fromChat` directly with
+    -- one already in hand, so dropping it from the event was invisible until
+    -- this line existed. A lobby advert shouted at everyone and one whispered to
+    -- a squad are different facts about intent.
+    ok(row.channel == 'global', 'and the channel it was sent on',
+        tostring(row.channel))
+    ok(p.matchTimelineComplete == true,
+        'and the record says it is complete, because one line was refused and '
+            .. 'one line is on it')
+
+    -- THE BUFFER REALLY IS UNTOUCHED. If a future change lets lobby chat in,
+    -- this is what will notice.
+    local st = W.BR.Evidence.stats()
+    ok(st.refusedRows == 0 and st.chatRows == 0,
+        'nothing was buffered for a lobby player', st.refusedRows)
+
+    -- ═══ THE LIMITATION, ASSERTED RATHER THAN DESCRIBED ═══
+    --
+    -- There is no match, so there is no match-end close, and the close is the
+    -- only thing that appends to a timeline after filing. A bot advertising a
+    -- hundred times produces ONE case with ONE line; `priorFor` drops the rest
+    -- in silence. Far better than invisible, and not complete -- capturing lobby
+    -- repeats needs a second write path and is the owner's call.
+    W.ack(nil, 'license:lobbybot', 'inc-lobby')
+    W.at(9000);  W.say(1, 'bit.ly/abcdef')
+    W.at(20000); W.say(1, 'discord.gg/abcdef')
+
+    ok(#W.S.incidents == 1,
+        'ACCEPTED LIMITATION: lobby repeats open no second case', #W.S.incidents)
+    ok(#W.S.corroborations == 0,
+        'and raise no corroboration either -- chat does not corroborate at all',
+        #W.S.corroborations)
+    ok(#W.S.incidents[1].matchTimeline == 1,
+        'so the record still shows the one line, not three',
+        #W.S.incidents[1].matchTimeline)
+
+    -- AN ORDINARY LOBBY MESSAGE IS UNTOUCHED, which is the false-positive half.
+    W.at(30000)
+    mark = #W.S.toClients
+    W.say(2, 'anyone want to squad up')
+    local clean = W.chatSends(mark + 1)
+    local seen = {}
+    for _, c in ipairs(clean) do seen[c.target] = true end
+    ok(seen[1] and seen[2], 'clean lobby chat reaches the lobby')
+    ok(#W.S.incidents == 1, 'and files nothing')
 end
 
 describe('chat.incident.the-other-producers-still-corroborate')

@@ -350,9 +350,8 @@ local lastNoted = nil
 -- States where the gamemode's own full-screen UI takes the screen: the death
 -- verdict, the spectator handoff, the lobby menu.
 local OUR_SCREEN = {
-    [BR.PlayerState.DEAD]       = true,
-    [BR.PlayerState.SPECTATING] = true,
-    [BR.PlayerState.LOBBY]      = true,
+    [BR.PlayerState.OUT]   = true,
+    [BR.PlayerState.LOBBY] = true,
 }
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -500,13 +499,17 @@ end
 -- player who presses Left or Right inside the window gets a camera on somebody
 -- else with their own verdict still written across it. That is the report.
 --
--- ═══ WHY THE EDGE IS HERE AND NOT KEYED ON PlayerState.SPECTATING ═══
+-- ═══ WHY THE EDGE IS HERE AND NOT KEYED ON A SPECTATING PLAYER STATE ═══
 --
--- Because nothing ever writes that state. `BR.PlayerState.SPECTATING` is read in
--- six places across this client and the server and ASSIGNED IN NONE -- grep it.
--- A rule hung on it would be a rule that never fires, tested green by a suite
--- that sets the state by hand and dead in the game. The fact that actually
--- changes is the session, and the session arrives on this wire.
+-- Because there is no such state, and there never usefully was. There used to
+-- be a `BR.PlayerState.SPECTATING` that was READ in nine places and ASSIGNED IN
+-- NONE, so a rule hung on it was a rule that never fires -- tested green by a
+-- suite that sets the state by hand, and dead in the game.
+--
+-- #233 DELETED IT rather than giving it a writer, which is the owner's own
+-- reading: spectating is possible WHILE a player is OUT, not instead of it. So
+-- there is no state test to go back to here. The fact that actually changes is
+-- the session, and the session arrives on this wire.
 --
 -- ═══ ONLY THE OPENING EDGE, AND NOT FOR AN ADMIN ═══
 --
@@ -740,7 +743,7 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
             -- while a match runs (left it) must summon the lobby and its
             -- focus, and leaving LOBBY must release them.
             if S.me.state ~= wasState then
-                if S.me.state == BR.PlayerState.DEAD then
+                if S.me.state == BR.PlayerState.OUT then
                     diedThisMatch = true
                     BR.NoteDeath()
                 end

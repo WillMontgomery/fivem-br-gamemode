@@ -1037,7 +1037,7 @@ do
     -- else's vehicle and must not spend their fuel.
     reset()
     enrol(1, 1001, 7)
-    roster[1].state = BR.PlayerState.DEAD
+    roster[1].state = BR.PlayerState.OUT
     makeVehicle(500, 900, 0.0, 0.0)
     seat(1, 500, -1)
     tick()
@@ -1542,7 +1542,7 @@ do
     tick()
 
     -- Applied AFTER the drive, so the ledger arithmetic above is ordinary.
-    roster[2].state   = BR.PlayerState.DEAD
+    roster[2].state   = BR.PlayerState.OUT
     roster[4].matchId = 8
 
     clearSent()

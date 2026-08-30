@@ -266,8 +266,7 @@ local S = nil
 ---   FREEFALL    } client/skydive.lua owns the whole descent, and the ped is
 ---   GLIDE       } holding a canopy.
 ---   DBNO        client/dbno.lua is playing the crawl and holding the position.
----   DEAD        } client/spectate.lua's camera is somebody else's fight.
----   SPECTATING  }
+---   OUT         client/spectate.lua's camera is somebody else's fight.
 ---   LEFT        not in the match at all.
 ---
 --- WARMUP and ALIVE are the two where the ped is an ordinary ped standing on

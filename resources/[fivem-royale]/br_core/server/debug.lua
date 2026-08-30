@@ -249,9 +249,8 @@ RegisterCommand('brroster', function(_, args)
 
     local rows = {}
     for src, p in pairs(BR.Server.roster) do
-        local living = p.state ~= BR.PlayerState.DEAD
+        local living = p.state ~= BR.PlayerState.OUT
                    and p.state ~= BR.PlayerState.LEFT
-                   and p.state ~= BR.PlayerState.SPECTATING
         if not aliveOnly or living then
             rows[#rows + 1] = {
                 src    = src,

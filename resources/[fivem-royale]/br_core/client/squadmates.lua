@@ -225,15 +225,14 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
                 SetBlipCoords(b, m.x + 0.0, m.y + 0.0, 0.0)
             end
 
-            -- A dead mate's blip STAYS, dimmed. Where they went down is the
+            -- An OUT mate's blip STAYS, dimmed. Where they went down is the
             -- whole reason to keep it; a full-brightness dot would read as a
             -- live teammate to rotate to. Set unconditionally rather than on
             -- the state edge -- four native calls a second is nothing, and an
-            -- edge test cannot cover the blip that was born dead (a mate who
-            -- died while this client was out of the squad push).
-            local dead = m.state == BR.PlayerState.DEAD
-                or m.state == BR.PlayerState.SPECTATING
-            SetBlipAlpha(blips[m.src], dead and 120 or 255)
+            -- edge test cannot cover the blip that was born out (a mate who
+            -- was eliminated while this client was out of the squad push).
+            local out = m.state == BR.PlayerState.OUT
+            SetBlipAlpha(blips[m.src], out and 120 or 255)
         end
     end
 
@@ -353,23 +352,27 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- the flight, and a tag on an invisible rider rendered as a name
         -- floating over the fuselage. Pre-drop there is nothing to label.
         --
-        -- DEAD AND DOWNED MATES ARE STILL LABELLED. Nothing hides faster in a
+        -- OUT AND DOWNED MATES ARE STILL LABELLED. Nothing hides faster in a
         -- firefight than the question "where did my teammate go down", and the
         -- corpse is the answer. The state is written into the tag so it reads
         -- at a glance rather than being a name that mysteriously stopped
         -- moving (user report, 2026-08-05: could not see dead squadmates).
+        --
+        -- THE TAG STILL READS [DEAD], and that is deliberate rather than a
+        -- missed rename: the word on screen is the owner's, and #219 Q1 asks
+        -- him whether he wants a different one. A state renamed in the enum is
+        -- not a licence to rewrite what a player reads.
         local e = BR.State.roster[src]
         local st = e and e.state
         local jumped = st == BR.PlayerState.FREEFALL
             or st == BR.PlayerState.GLIDE
             or st == BR.PlayerState.ALIVE
             or st == BR.PlayerState.DBNO
-            or st == BR.PlayerState.DEAD
-            or st == BR.PlayerState.SPECTATING
+            or st == BR.PlayerState.OUT
 
         local mark = ''
         if st == BR.PlayerState.DBNO then mark = ' [DOWN]'
-        elseif st == BR.PlayerState.DEAD or st == BR.PlayerState.SPECTATING then
+        elseif st == BR.PlayerState.OUT then
             mark = ' [DEAD]'
         end
 
@@ -391,8 +394,7 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- at the head bone, in the loop below. The seam is deliberate: the
         -- common case is not being rewritten to fix the uncommon one.
         local onFloor = st == BR.PlayerState.DBNO
-            or st == BR.PlayerState.DEAD
-            or st == BR.PlayerState.SPECTATING
+            or st == BR.PlayerState.OUT
 
         if ped ~= 0 and jumped and not onFloor then
             low[src] = nil

@@ -1367,8 +1367,8 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     --   DBNO       client/dbno.lua blocks attack, aim and melee for a downed
     --              player and has never blocked 37, so the wheel opened while
     --              crawling. Left to that file to keep or not; this covers it.
-    --   DEAD /     the spectator camera is somebody else's fight; the local
-    --   SPECTATING ped's wheel has no business over it.
+    --   OUT        the spectator camera is somebody else's fight; the local
+    --              ped's wheel has no business over it.
     --
     -- There is no phase in this gamemode that wants the engine's weapon UI --
     -- see the SUPPRESS table's own note -- so the correct gate is no gate.
@@ -1402,14 +1402,14 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- goes away by adding another id to a list somewhere else.
     --
     -- IT IS AN ADMIN-ONLY PATH, WHICH IS WHY IT SURVIVED THE FIRST READING. A
-    -- dead player never reaches this line -- canArm() below is false for DEAD
-    -- and SPECTATING -- but the console's Spectate button requires only that an
-    -- admin be in game, so an admin watching a suspect is ALIVE, is holding
-    -- their own loadout, and falls straight through.
+    -- dead player never reaches this line -- canArm() below is false for OUT --
+    -- but the console's Spectate button requires only that an admin be in game,
+    -- so an admin watching a suspect is ALIVE, is holding their own loadout,
+    -- and falls straight through.
     --
     -- ABOVE canArm() AND BELOW THE SUPPRESSION, deliberately, and both halves
     -- of that matter. The weapon wheel is suppressed in EVERY phase (#134) and
-    -- its own note names DEAD/SPECTATING as one of them, so returning before
+    -- its own note names OUT as one of them, so returning before
     -- that loop would bring GTA's wheel back over the spectate camera. And
     -- closing the panel is the same call the canArm() branch makes below, for
     -- the same reason: a panel left open is a cursor over a shot.

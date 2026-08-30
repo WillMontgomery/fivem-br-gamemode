@@ -274,7 +274,7 @@ do
     BR.Server.roster = {
         [1] = { src = 1, state = BR.PlayerState.ALIVE, squadId = 'a' },
         [2] = { src = 2, state = BR.PlayerState.DBNO,  squadId = 'a' },
-        [3] = { src = 3, state = BR.PlayerState.DEAD,  squadId = 'a' },
+        [3] = { src = 3, state = BR.PlayerState.OUT,  squadId = 'a' },
         [4] = { src = 4, state = BR.PlayerState.ALIVE, squadId = 'b' },
         [5] = { src = 5, state = BR.PlayerState.ALIVE, squadId = nil },
     }
@@ -288,10 +288,10 @@ do
     ok(BR.Server.squadsAlive() == 3, 'squadsAlive counts teams, and solos as their own',
         ('got %d'):format(BR.Server.squadsAlive()))
 
-    BR.Server.roster[2].state = BR.PlayerState.DEAD
+    BR.Server.roster[2].state = BR.PlayerState.OUT
     ok(BR.Server.squadsAlive() == 3, 'a squad with one member left is still up')
 
-    BR.Server.roster[1].state = BR.PlayerState.DEAD
+    BR.Server.roster[1].state = BR.PlayerState.OUT
     ok(BR.Server.squadsAlive() == 2, 'a fully eliminated squad drops out',
         ('got %d'):format(BR.Server.squadsAlive()))
 

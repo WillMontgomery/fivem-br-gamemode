@@ -27,9 +27,17 @@ export const ENVELOPE_VERSION = 1
 export type MatchState =
   | 'waiting' | 'warmup' | 'bus' | 'playing' | 'ended' | 'cleanup'
 
+// `'dead'` IS THE WIRE VALUE OF `BR.PlayerState.OUT`, and the mismatch is
+// deliberate -- br_lib/shared/enums.lua carries the reasoning. The state is
+// named OUT in Lua and spelled 'dead' on the wire because `state` also travels
+// to the Ringmaster admin console, which is a separate repo on a separate
+// deploy. Do not "fix" this to 'out' on its own; that is a two-repo release.
+//
+// THERE IS NO 'spectating'. It was deleted in #233 -- nothing ever assigned it,
+// and spectating is a session that happens WHILE a player is OUT.
 export type PlayerState =
   | 'lobby' | 'warmup' | 'bus' | 'freefall' | 'glide'
-  | 'alive' | 'dbno' | 'dead' | 'spectating' | 'left'
+  | 'alive' | 'dbno' | 'dead' | 'left'
 
 export type StormPhaseState = 'pre' | 'holding' | 'shrinking' | 'finished'
 

@@ -445,6 +445,19 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# A reference to a BR.PlayerState member that does not exist. It is nil, not an
+# error, so a half-finished rename reads as always-false in a comparison and
+# TRUNCATES an ipairs list -- a suite that covered four states quietly covers two
+# and stays green. #233 renamed DEAD to OUT across ~30 files and the whole suite
+# passed with a site still on the old name; this is what noticed.
+echo "${DIM}== player states ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    # shellcheck disable=SC2046
+    "$LUA" tools/check_player_states.lua $(find resources -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # --- 3e. a BOOL native read as a Lua truth value ------------------------------
 #
 # THE MOST-SHIPPED DEFECT IN THIS REPOSITORY. Seven instances, and the seventh

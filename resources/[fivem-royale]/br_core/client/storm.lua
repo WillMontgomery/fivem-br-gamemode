@@ -434,19 +434,17 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- ═══ GATED ON THE SESSION, NOT ON A PLAYER STATE ═══
     --
     -- The comment that used to sit here read "Spectate will re-gate this when
-    -- it exists". Spectating shipped and it never did, because there is no
-    -- state to gate on: BR.PlayerState.SPECTATING is READ in six places across
-    -- this client and the server and ASSIGNED IN NONE -- client/state.lua:503
-    -- says so in as many words, and grep agrees. A spectator therefore fell
-    -- through this test as DEAD and got the full REDMIST grade and a
-    -- thunderstorm driven by their corpse's position.
+    -- it exists". Spectating shipped and it never did, because there was no
+    -- state to gate on: BR.PlayerState.SPECTATING was READ in nine places
+    -- across this client and the server and ASSIGNED IN NONE. A spectator
+    -- therefore fell through this test as an eliminated player and got the full
+    -- REDMIST grade and a thunderstorm driven by their corpse's position.
     --
     -- So the gate asks the thing that is actually written: `from`, which is a
-    -- running spectate session and nothing else. #233 is the state rework that
-    -- would let this be a state test again -- it is queued behind the CPR kit
-    -- and is deliberately NOT being done here, where it would collide with the
-    -- rescue state landing in the same enum. This is not an oversight; it is
-    -- the only true fact available today.
+    -- running spectate session and nothing else. #233 has since DELETED that
+    -- state rather than giving it a writer -- spectating is possible WHILE a
+    -- player is OUT, not instead of it -- so there is no state test to go back
+    -- to. This is the gate, not a stopgap standing in for one.
     local me = BR.State.me.state
     local affected
     if from == 'spectate' then
@@ -478,7 +476,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         -- (live report, 2026-08-04 -- this becomes the DBNO view later).
         affected = me == BR.PlayerState.ALIVE
             or me == BR.PlayerState.DBNO
-            or me == BR.PlayerState.DEAD
+            or me == BR.PlayerState.OUT
     end
     local caught = edge > 0 and dps > 0 and affected
     fxSet(caught)

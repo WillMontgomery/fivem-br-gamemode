@@ -654,7 +654,7 @@ do
 
     -- SHOT DEAD. This is exactly what server/combat.lua's elimination leaves
     -- behind: the roster entry moves to DEAD and everything else has to notice.
-    roster[6].state = BR.PlayerState.DEAD
+    roster[6].state = BR.PlayerState.OUT
     sent = {}
     fakeTime = fakeTime + 250
     tick()

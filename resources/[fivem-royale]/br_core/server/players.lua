@@ -1232,7 +1232,7 @@ local function corroborationFor(src)
     -- there is no killer to resolve and no occasion for the prompt. DBNO is
     -- excluded too: being knocked is not being killed, and the player who
     -- knocked you may yet be the one who revives nobody.
-    if me.state == BR.PlayerState.DEAD then
+    if me.state == BR.PlayerState.OUT then
         -- THE SERVER'S OWN ATTRIBUTION, not the client's claim -- the same
         -- function combat.lua uses to decide who gets the kill, so the player
         -- named here is exactly the player named in the kill feed. It already

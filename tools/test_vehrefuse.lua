@@ -559,9 +559,8 @@ do
 end
 
 do
-    for _, st in ipairs({ BR.PlayerState.LOBBY, BR.PlayerState.DEAD,
-                          BR.PlayerState.DBNO, BR.PlayerState.SPECTATING,
-                          BR.PlayerState.LEFT }) do
+    for _, st in ipairs({ BR.PlayerState.LOBBY, BR.PlayerState.OUT,
+                          BR.PlayerState.DBNO, BR.PlayerState.LEFT }) do
         reset()
         BR.State.me.state = st
         spawn(10, BUZZARD, 15, 'heli')

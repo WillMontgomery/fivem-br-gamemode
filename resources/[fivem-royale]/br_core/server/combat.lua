@@ -138,7 +138,7 @@ local function holdForStart(src, entry, m)
     entry.reviveBeat, entry.reviveTickAt = nil, nil
 
     entry.revivePending = true
-    BR.Roster.setState(src, BR.PlayerState.DEAD)
+    BR.Roster.setState(src, BR.PlayerState.OUT)
 
     if wasDowned then
         TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
@@ -317,7 +317,7 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- dbnoCount deliberately survives: it is per MATCH and resets at CLEANUP,
     -- so being finished does not hand the next knock a fresh 45 seconds.
 
-    BR.Roster.setState(src, BR.PlayerState.DEAD)
+    BR.Roster.setState(src, BR.PlayerState.OUT)
     entry.placement = placement
     -- WHEN THEIR MATCH STOPPED, for the survival term in the XP curve. Written
     -- here because this is the only place a player stops surviving, and read

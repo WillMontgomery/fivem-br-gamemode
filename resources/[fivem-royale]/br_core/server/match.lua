@@ -1143,7 +1143,7 @@ local function matchTick(m, now)
        and BR.Server.aliveCount(m) == 0
        and heldForStart(m) == 0 then
         local anyDead = BR.Server.countIn(m, function(p)
-            return p.state == BR.PlayerState.DEAD
+            return p.state == BR.PlayerState.OUT
         end) > 0
         if anyDead then
             print(('[br_core] match %d: everyone is down -- ending'):format(m.id))
@@ -1429,8 +1429,8 @@ function BR.Match.leaveMatch(src)
         or entry.state == BR.PlayerState.DBNO then
         BR.Combat.eliminate(src, 'left', nil)
     end
-    -- DEAD and SPECTATING players fall through: already out of the fight, they
-    -- only need the trip back to the lobby.
+    -- OUT players fall through: already out of the fight, they only need the
+    -- trip back to the lobby. A spectator is one of them.
 
     -- ...AND A HELD DEATH IS CANCELLED BY WALKING OUT (#144). Someone who died
     -- before the match started and then decided not to wait for the revive is
@@ -1460,8 +1460,8 @@ function BR.Match.leaveMatch(src)
     -- is the field that answers it. It is the one every results row turns on --
     -- `died`, and the end of the survival clock -- and the branches above are
     -- exactly the ones that set it: a player who was alive or downed has just
-    -- been through eliminate('left'), and a player who was already DEAD or
-    -- SPECTATING went through it earlier. So the two cases it excludes are the
+    -- been through eliminate('left'), and a player who was already OUT went
+    -- through it earlier. So the two cases it excludes are the
     -- two that must be excluded, and neither needs its own clause:
     --
     --   * WARMUP -- they stepped off the pad. "The match has not started; there
