@@ -321,6 +321,70 @@ local function build()
                             true, true, true)
                         nat(SetVehicleTyresCanBurst, veh, false)
 
+                        -- ═══ AND THE GLASS IS A FOURTH SYSTEM, WHICH IS WHY
+                        --     ALL THREE OF THOSE MISSED IT ═══
+                        --
+                        -- Owner, 2026-08-30, having played the fix above:
+                        -- "showroom glass STILL shatters."
+                        --
+                        -- THE PREVIOUS ATTEMPT (aafe22a) WAS A REASONED GUESS
+                        -- AND IT SAID SO AT THE TIME -- no primary source, one
+                        -- working in-the-wild implementation. The reasoning was
+                        -- that windows belong to the visible-damage system, and
+                        -- that is what SET_VEHICLE_CAN_BE_VISIBLY_DAMAGED
+                        -- governs: deformation, scratches, dirt, the paint. It
+                        -- does not govern the windows, and the proofs do not
+                        -- either -- a proof refuses a damage event against the
+                        -- ENTITY, and a pane of glass shattering is not damage
+                        -- to the entity.
+                        --
+                        -- ═══ THE MECHANISM, CITED THIS TIME ═══
+                        --
+                        -- Vehicle glass is its own collision, with its own
+                        -- native to switch off:
+                        --
+                        --   _SET_DISABLE_VEHICLE_WINDOW_COLLISIONS
+                        --   0x1087BC8EC540DAEB
+                        --   void (Vehicle vehicle, BOOL toggle)
+                        --   citizenfx/natives,
+                        --     VEHICLE/SetDisableVehicleWindowCollisions.md
+                        --
+                        -- and that reference states the effect in the words the
+                        -- bug is written in: with it enabled you cannot break
+                        -- the vehicle's glass, bullets pass straight through it,
+                        -- and it cannot be broken any other way either --
+                        -- hitting included. Rockstar's own use is the NIGHTSHARK
+                        -- with its armour-plate window mod fitted, which is
+                        -- exactly this case: a car whose windows are not
+                        -- supposed to break.
+                        --
+                        -- TRUE DISABLES THE COLLISION, which is the direction
+                        -- that stops the breakage. `false` would restore it and
+                        -- read as the fix while undoing it, so the value is the
+                        -- whole of this line and the suite asserts the value.
+                        --
+                        -- ═══ AND IT DOES NOT FOLLOW THE CAR HE BUYS ═══
+                        --
+                        -- Same rule as the three above and for the same #224
+                        -- sentence: it is applied here, to the display entity,
+                        -- and never in BR.Shop.dress. A purchased car with
+                        -- unbreakable windows is a fighting advantage bought
+                        -- with Volts, which is the one thing the catalogue's
+                        -- whole safety argument exists to prevent.
+                        --
+                        -- ═══ IF THIS ONE ALSO MISSES ═══
+                        --
+                        -- The console cannot answer it and neither can a test:
+                        -- the native returns nothing and there is no read-back.
+                        -- One playtest settles it -- shoot a windscreen on the
+                        -- pad. If it still breaks, the remaining candidate is
+                        -- that this build's glass is driven by the vehicle's own
+                        -- damage model rather than by the window collision, and
+                        -- the next thing to try is per-frame FIX_VEHICLE_WINDOW
+                        -- on the display cars, which is a repair rather than a
+                        -- prevention and is why it is not what shipped here.
+                        nat(SetDisableVehicleWindowCollisions, veh, true)
+
                         -- ═══ ON THE GROUND BEFORE IT IS FROZEN, AND THE ORDER
                         --     IS THE ENTIRE FIX ═══
                         --

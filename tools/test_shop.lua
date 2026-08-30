@@ -1707,6 +1707,56 @@ do
     ok(cli:find('SetVehicleTyresCanBurst,%s*veh,%s*false') ~= nil,
         'and tyres that cannot be shot out, which is a third system again')
 
+    -- ═══ AND THE GLASS IS A FOURTH SYSTEM, WHICH IS THE ASSERTION aafe22a
+    --     DID NOT MAKE ═══
+    --
+    -- Owner, 2026-08-30: "showroom glass STILL shatters." The previous fix
+    -- reasoned that windows belong to the visible-damage system and stopped
+    -- there; every assertion in this block stayed green while he shot a
+    -- windscreen out, because they all agreed with the belief rather than
+    -- testing it.
+    --
+    -- SO THE BELIEF IS WRITTEN DOWN AS A REQUIREMENT NOW. Vehicle glass has its
+    -- own collision and its own native
+    -- (_SET_DISABLE_VEHICLE_WINDOW_COLLISIONS, 0x1087BC8EC540DAEB), and this
+    -- suite requires a call to it. Delete the call in the belief that
+    -- SetVehicleCanBeVisiblyDamaged covers the windows -- which is precisely
+    -- the mistake that shipped -- and the suite says so instead of the owner.
+    --
+    -- COMMENTS STRIPPED, AND THAT MATTERS MORE HERE THAN ANYWHERE ELSE IN THIS
+    -- FILE. The note above the call cites the native by name, by hash and by
+    -- source file -- which is the whole point of it -- so a bare match would go
+    -- on passing with the call itself deleted and only the prose left behind.
+    local code = (cli:gsub('%-%-[^\n]*', ''))
+    ok(code:find('SetDisableVehicleWindowCollisions') ~= nil,
+        'the glass has a system and a native of its own, and the showroom '
+            .. 'CALLS it -- visible damage is deformation and paint, and '
+            .. 'believing it covered the windows is what shipped twice')
+    -- THE VALUE, BECAUSE true DISABLES THE COLLISION AND false RESTORES IT.
+    -- `false` reads as the fix and undoes it, and no other assertion here can
+    -- tell the two apart.
+    ok(code:find('SetDisableVehicleWindowCollisions,%s*veh,%s*true') ~= nil,
+        'and disables it TRUE, which is the direction that stops the breakage')
+
+    -- ═══ FOUR SYSTEMS, FOUR CALLS, AND NONE OF THEM STANDING IN FOR ANOTHER
+    --     ═══
+    --
+    -- The failure this whole issue is made of is one native being trusted to
+    -- cover a system it does not own. So the four are listed once, here, and
+    -- each is required in its own right: a future edit that drops one because
+    -- "the proofs already do that" fails on the name it dropped.
+    local SYSTEMS = {
+        { native = 'SetEntityInvincible',           system = 'health' },
+        { native = 'SetVehicleCanBeVisiblyDamaged', system = 'deformation and paint' },
+        { native = 'SetVehicleTyresCanBurst',       system = 'tyres' },
+        { native = 'SetDisableVehicleWindowCollisions', system = 'glass' },
+    }
+    for _, s in ipairs(SYSTEMS) do
+        ok(code:find(s.native, 1, true) ~= nil,
+            ('the showroom answers the %s system with a call of its own (%s)')
+                :format(s.system, s.native))
+    end
+
     -- ═══ AND NONE OF IT REACHES THE CAR HE BUYS ═══
     --
     -- #224: "After that it is an ordinary car: it burns fuel, it can be
@@ -1717,12 +1767,44 @@ do
     local dressFrom = cli:find('function BR%.Shop%.dress')
     local dressTo = cli:find('\nlocal ', dressFrom or 1) or #cli
     local dress = cli:sub(dressFrom or 1, dressTo)
-    for _, native in ipairs({ 'SetVehicleCanBeVisiblyDamaged', 'SetEntityProofs',
-                              'SetVehicleTyresCanBurst', 'SetEntityInvincible',
-                              'FreezeEntityPosition', 'SetVehicleDoorsLocked' }) do
+    local PROTECTIONS = {
+        'SetVehicleCanBeVisiblyDamaged', 'SetEntityProofs',
+        'SetVehicleTyresCanBurst', 'SetEntityInvincible',
+        'SetDisableVehicleWindowCollisions',
+        'FreezeEntityPosition', 'SetVehicleDoorsLocked',
+    }
+    for _, native in ipairs(PROTECTIONS) do
         ok(dress:find(native, 1, true) == nil,
             ('BR.Shop.dress does not call %s -- it dresses, it does not '
              .. 'protect'):format(native))
+    end
+
+    -- ═══ AND NEITHER DOES THE DELIVERY, WHICH IS THE OTHER HALF OF THAT DOOR
+    --     ═══
+    --
+    -- BR.Shop.dress is not the only code that touches the car a player drives
+    -- away in: `br:shop:dress` adopts the net id, takes control and puts the
+    -- buyer in the seat, and anything applied THERE follows the purchase into
+    -- the match just as surely. An unbreakable, bulletproof car in a battle
+    -- royale is a fighting advantage bought with Volts, which is the one thing
+    -- the catalogue's entire safety argument exists to prevent -- and it is a
+    -- far worse bug than the breakable glass this round is fixing.
+    --
+    -- COMMENTS STRIPPED, because that handler explains at length why the
+    -- showroom's protections are not repeated in it, and naming them while
+    -- saying so is exactly what this file should do.
+    local delivFrom = cli:find("RegisterNetEvent('br:shop:dress')", 1, true)
+    local delivTo = cli:find("AddEventHandler('onClientResourceStart'",
+                             delivFrom or 1, true) or #cli
+    local deliv = (cli:sub(delivFrom or 1, delivTo):gsub('%-%-[^\n]*', ''))
+    ok(delivFrom ~= nil and delivTo > delivFrom,
+        'the delivery handler is findable, so the assertions below mean '
+            .. 'something', ('%s..%s'):format(tostring(delivFrom),
+                                              tostring(delivTo)))
+    for _, native in ipairs(PROTECTIONS) do
+        ok(deliv:find(native, 1, true) == nil,
+            ('nor does the delivery handler call %s -- once unpacked it is an '
+             .. 'ordinary destructible car (#224)'):format(native))
     end
     ok(BR.Config.Shop.lockedState == 2,
         'lock state 2 (LOCKED), not 4 (LOCKED_PLAYER_INSIDE) -- 4 waits for an '
