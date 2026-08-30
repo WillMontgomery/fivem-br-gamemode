@@ -1397,15 +1397,27 @@ function BR.Match.leaveMatch(src)
     local entry = BR.Roster.get(src)
     if not entry then return end
 
-    -- ═══ WALKING OUT RELEASES THE WARMUP SHOP'S ONE-PER-MATCH ALLOWANCE ═══
+    -- ═══ WALKING OUT FORFEITS THE WARMUP SHOP'S PURCHASE ═══
     --
-    -- Owner, 2026-08-29: "I bought a thing, left the match with it (and still in
-    -- warmup), then joined a new match and couldn't buy anything else." Readying
-    -- up while a warmup of your mode is still open does not form a new match --
-    -- BR.Lobby.ready hands you to BR.Party.lateJoin and you re-enter the SAME
-    -- instance -- so a purchase stamped with that match id was still binding
-    -- somebody who had left it. Nothing is forfeited: the car becomes OWED and
-    -- the next wheels-up this player attends delivers it. See BR.Shop.release.
+    -- Owner, 2026-08-30: "if you buy a car, then leave the match, you forfeit
+    -- your purchase. It should not be persistent or carry over to another round
+    -- ever."
+    --
+    -- THIS LINE USED TO MEAN THE OPPOSITE. It released the purchase's binding so
+    -- the car became OWED and the next wheels-up its buyer attended handed it
+    -- over -- which is how somebody landed after the bus holding a car from the
+    -- previous warmup and a car from this one (#238). Nothing is owed now:
+    -- BR.Shop.release destroys the record, the Volts stay spent, and the console
+    -- carries a line naming the car and its price.
+    --
+    -- ═══ AND THIS CALL SITE IS THE WHOLE OF THE RULE ═══
+    --
+    -- "Forfeit on leaving" must never become "forfeit while still in the match",
+    -- which is the complaint that started all of this. Nothing in server/shop.lua
+    -- reads a position, a distance or a timer -- so leaving THROUGH THIS
+    -- FUNCTION is the only path to a forfeit, and a second caller appearing
+    -- anywhere would silently change the rule. tools/test_shop.lua asserts that
+    -- there is exactly one.
     --
     -- BEFORE THE BRANCHES BELOW, so it covers every way out of a match and not
     -- only the warmup one. Guarded because br_core is allowed to run without the

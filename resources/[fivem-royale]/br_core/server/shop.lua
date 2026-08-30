@@ -132,22 +132,27 @@ function BR.Shop.rows() return rows end
 -- Buying
 -- ---------------------------------------------------------------------------
 
---- ═══ WHAT A PLAYER HAS PAID FOR, AND WHICH MATCH IT BELONGS TO ═══
+--- ═══ WHAT A PLAYER HAS PAID FOR IN THE MATCH THEY ARE STANDING IN ═══
 ---
---- A LIST RATHER THAN ONE RECORD, since the owner's report of 2026-08-29. It
---- was `e.shopBuy`, one slot, stamped with the match id -- "a purchase is a fact
---- about one match, so a new match is a clean slate with no teardown to
---- remember". The stamp is still the right idea and the single slot was not: a
---- player who leaves warmup with a car still owed and buys another in the next
---- match would have had the first record OVERWRITTEN, which is a paid car
---- vanishing with nothing in any log. Two entries cost a table; the alternative
---- cost somebody a purchase.
+--- A LIST RATHER THAN ONE RECORD, since the owner's report of 2026-08-29. It was
+--- `e.shopBuy`, one slot, and a second purchase overwrote the first -- a paid
+--- car vanishing with nothing in any log. Two entries cost a table; the
+--- alternative cost somebody a purchase, and the list is what lets a surplus be
+--- SEEN and reported rather than silently replaced.
 ---
---- `matchId = nil` MEANS OWED AND UNBOUND -- paid for, not yet received, and no
---- longer tied to the match that sold it. `BR.Shop.release` puts entries into
---- that state when their owner walks out of a match, and `BR.Shop.deliver`
---- hands them over at the next wheels-up their owner attends. Nothing paid for
---- is ever discarded.
+--- ═══ AND EVERY ENTRY BELONGS TO ONE MATCH, WITHOUT A STAMP TO SAY SO ═══
+---
+--- Entries used to carry `matchId`, with nil meaning OWED -- paid for, not yet
+--- received, no longer tied to the match that sold it -- and BR.Shop.deliver
+--- handed those over at the next wheels-up their owner attended. The owner
+--- ended that on 2026-08-30: "It should not be persistent or carry over to
+--- another round ever."
+---
+--- So there are exactly two ways out of this list and both are terminal:
+--- BR.Shop.deliver empties it at wheels-up, and BR.Shop.release destroys it when
+--- its owner leaves the match. Nothing survives either, which is what makes the
+--- stamp unnecessary -- and it was removed rather than left to go stale, because
+--- a field nothing reads is this project's signature defect.
 --- @param e table  a roster entry
 --- @return table
 local function buysOf(e)
@@ -174,39 +179,34 @@ end
 --- could hold two paid-for cars at once and both arrived at the next wheels-up.
 ---
 --- He was never short of a car. He was refused a SECOND one, which is the rule.
---- So the ceiling stops counting per match id and counts what he is HOLDING:
---- every purchase paid for and NOT YET RECEIVED, whether it is still bound to a
---- match or was unbound by walking out of one (BR.Shop.release).
 ---
---- ═══ AND THAT IS THE WHOLE CONDITION -- A DELIVERED ENTRY IS NOT COUNTED
----     BECAUSE IT CANNOT EXIST TO BE COUNTED ═══
+--- ═══ AND COUNTING UNDELIVERED PURCHASES *IS* COUNTING THIS MATCH'S ═══
 ---
---- The obvious extra clause is "...plus anything already received FOR THIS
---- MATCH", to stop a second purchase after a delivery inside one warmup. It was
---- written, and it was DEAD: the only two functions that mutate this list --
---- BR.Shop.release and BR.Shop.deliver -- both drop a delivered entry, so one
---- never outlives the loop that set the flag. A mutation test proved the clause
---- unreachable, and unreachable code that looks like a safety net is this
---- project's signature defect rather than a safety net.
+--- This deliberately does not compare a match id, and since the owner's second
+--- ruling (2026-08-30: "if you buy a car, then leave the match, you forfeit your
+--- purchase") it does not need to. BR.Shop.release destroys every record when
+--- its owner leaves, and BR.Shop.deliver clears the list at wheels-up, so a
+--- purchase cannot outlive the match it was made in -- which makes "undelivered"
+--- and "bought in the match I am standing in" the same set, reached without a
+--- stamp to keep in step.
 ---
---- NOTHING IS LOST BY LEAVING IT OUT. Delivery happens on the BUS transition,
---- and BR.ShopSolve.canBuy already refuses every press outside WARMUP -- so the
---- window this clause was guarding is one the shop is shut in.
+--- THE STAMP IS GONE ENTIRELY. `buy.matchId` was written at purchase and, once
+--- the carry-over accounting it fed was removed, read by nothing -- dead
+--- bookkeeping that would have gone stale in silence. The one thing it really
+--- guarded, a charge that lands after its match, is now a GATE in the buy
+--- handler rather than a field: a purchase that cannot belong to a live warmup
+--- is refused a record and forfeited on the spot.
 ---
---- ═══ NOTHING IS FORFEITED AND NOTHING IS REFUNDED, BECAUSE NOTHING IS SOLD
----     TWICE ═══
+--- ═══ A SECOND PURCHASE IN THE SAME MATCH IS STILL REFUSED ═══
 ---
---- The owner asked which of those two a stockpiled purchase gets. The honest
---- answer is neither: "purchases cannot be refunded" is his rule, and the way to
---- honour it while also honouring "one car at wheels-up, ever" is to decline the
---- second sale rather than to take the money and then decide what to do with it.
---- A player who already owes himself a car keeps it; he simply cannot buy
---- another until it has been handed over.
+--- Which is the half of his complaint that has not changed. A player holding an
+--- undelivered car cannot buy another, and the refusal is
+--- BR.ShopSolve.Refusal.BOUGHT.
 ---
---- HE IS NOT TOLD, and that is deliberate rather than an omission. The refusal
---- is BR.ShopSolve.Refusal.BOUGHT, which has never produced a toast -- the
---- standing rule on this project is that unrequested copy is slop, and the
---- second press is already answered by the plate not disappearing.
+--- HE IS NOT TOLD, and that is deliberate rather than an omission. That refusal
+--- has never produced a toast -- the standing rule on this project is that
+--- unrequested copy is slop, and the second press is already answered by the
+--- plate not disappearing.
 --- @param src integer
 --- @return integer
 local function heldBy(src)
@@ -219,27 +219,50 @@ local function heldBy(src)
     return n
 end
 
---- Release a player's undelivered purchases from the match they were bought in.
+--- Destroy a player's purchases when they leave the match that sold them.
 ---
---- CALLED WHEN THEY LEAVE ONE. The car is not forfeited -- answer 3 says a
---- purchase is never refunded and it would be a strange reading of that to also
---- make it never delivered -- it becomes OWED, and the next wheels-up this
---- player attends hands it over.
+--- ═══ THE OWNER'S RULING, 2026-08-30: LEAVING FORFEITS ═══
 ---
---- A DELIVERED ENTRY IS DROPPED HERE, because its only remaining job was to say
---- "already bought this match" and the match is behind them.
+--- "#238 if you buy a car, then leave the match, you forfeit your purchase. It
+--- should not be persistent or carry over to another round ever."
+---
+--- THIS FUNCTION USED TO DO THE OPPOSITE and the reasoning was defensible: a
+--- purchase is never refunded, so making it never delivered either reads like
+--- taking the money twice. It unbound the record instead -- OWED -- and the next
+--- wheels-up the player attended handed it over. He has decided against that. He
+--- is content for the car to be lost, and he does not want purchases surviving a
+--- round under any circumstances.
+---
+--- SO EVERYTHING GOES, delivered and undelivered alike. There is no state a
+--- purchase can be in that outlives its owner's participation in the match.
+---
+--- ═══ FORFEIT ON LEAVING, NEVER FORFEIT WHILE STILL IN THE MATCH ═══
+---
+--- The failure this must not become is the one he reported first: a paid car
+--- disappearing while he still had every right to it. The whole of the guard is
+--- the CALL SITE -- BR.Match.leaveMatch and nothing else -- so walking off the
+--- pad, driving to the other end of it, going AFK or being culled do not reach
+--- this at all. Nothing in this file polls a position or a distance, and nothing
+--- should ever be added that does.
+---
+--- ═══ IT IS LOUD, BECAUSE IT IS THE HARSHEST THING THE FEATURE DOES ═══
+---
+--- A player can lose 1500 Volts by stepping out of a warmup, and from inside the
+--- game it is silent: no toast, no car, a balance that went down. If that turns
+--- out to feel wrong in play, this line is the evidence -- one per forfeited
+--- car, naming the car and what it cost.
 --- @param src integer
 function BR.Shop.release(src)
     local e = BR.Roster.get(src)
     if not e or not e.shopBuys then return end
-    local kept = {}
     for _, buy in ipairs(e.shopBuys) do
         if not buy.delivered then
-            buy.matchId = nil
-            kept[#kept + 1] = buy
+            print(('^3[br_core] shop: %d left the match holding an undelivered '
+                   .. '"%s" (%d Volts) -- FORFEITED, no refund^7')
+                :format(src, tostring(buy.row), tonumber(buy.paid) or 0))
         end
     end
-    e.shopBuys = kept
+    e.shopBuys = nil
 end
 
 RegisterNetEvent('br:shop:buy')
@@ -320,15 +343,42 @@ AddEventHandler('br:shop:buy', function(d)
             return
         end
 
-        -- THE MATCH IS RE-READ RATHER THAN CLOSED OVER. A round trip is long
-        -- enough for warmup to end, and stamping the record with a match the
-        -- player has since left would bind a paid car to a match that will never
-        -- deliver it. Absent means unbound, which is the OWED state -- the next
-        -- wheels-up they attend hands it over.
+        -- ═══ THE MATCH IS RE-READ, AND IT IS NOW A GATE RATHER THAN A STAMP
+        --     ═══
+        --
+        -- A DynamoDB round trip is up to six seconds and a player can walk out
+        -- of the match inside it. That used to be handled by stamping the record
+        -- with `matchId = nil` -- the OWED state -- and delivering it at the
+        -- next wheels-up they attended. The owner has forbidden that
+        -- (2026-08-30): a purchase must never carry over to another round.
+        --
+        -- SO A PURCHASE THAT LANDS AFTER ITS MATCH IS FORFEITED HERE, and the
+        -- alternative is the exact bug he ruled against: BR.Shop.release has
+        -- already run for this player, so a record written now would survive
+        -- into whatever match they join next and be handed over there. This is
+        -- the one path by which "leaving forfeits" could be true everywhere else
+        -- and still leak a car across rounds.
+        --
+        -- WARMUP SPECIFICALLY, not merely "still in a match". Past warmup the
+        -- delivery for this match has already run or is running, so a record
+        -- written now is one nothing will ever hand over -- the same forfeit,
+        -- reached by a different door.
+        --
+        -- IT COSTS THE PLAYER THE VOLTS AND IT SAYS SO. Loudly, with the price,
+        -- because this is the harshest thing the feature does and it is
+        -- invisible from the game: the toast never appears, the car never
+        -- arrives, and the balance simply went down.
         local now = BR.Server.matchOf(src)
+        if not now or now.state ~= BR.MatchState.WARMUP
+           or e.state ~= BR.PlayerState.WARMUP then
+            print(('^3[br_core] shop: %d was charged %d Volts for "%s" and left '
+                   .. 'the warmup before the write landed -- FORFEITED, no car '
+                   .. 'and no refund^7'):format(src, row.price, row.id))
+            return
+        end
+
         local buys = buysOf(e)
         buys[#buys + 1] = {
-            matchId   = (now and now.state == BR.MatchState.WARMUP) and now.id or nil,
             row       = row.id,
             paid      = row.price,
             delivered = false,
@@ -457,43 +507,42 @@ function BR.Shop.deliver(m)
             -- at all, which is a worse reading of "purchases cannot be refunded"
             -- than the owner can possibly have meant.
             --
-            -- ═══ ONE CAR AT WHEELS-UP, EVER (owner, 2026-08-30) ═══
+            -- ═══ ONE CAR AT WHEELS-UP, AND NOTHING SURVIVES IT ═══
             --
             -- He landed after the bus holding a car from the previous warmup
             -- and a car from this one, because this loop handed over everything
-            -- owed. The ceiling in `heldBy` now makes a second purchase
-            -- impossible in the first place, so `given` should never reach the
-            -- limit with anything left in the list -- and it is written anyway,
-            -- because "unreachable today" and "cannot happen" are different
-            -- claims and only the first is true. The same paragraph is above
-            -- the full-bag path below it, for the same reason.
+            -- owed. Two rulings answer that now and they compose: `heldBy`
+            -- refuses a second purchase while one is undelivered, and
+            -- BR.Shop.release destroys the lot when its owner leaves -- so at
+            -- this point the list holds at most one entry.
             --
-            -- WHAT HAPPENS TO A SURPLUS: it WAITS. It is not forfeited (that is
-            -- a paid-for car destroyed) and it is not refunded (the owner's
-            -- standing rule, and a credit that mints currency in a game whose
-            -- market rule is that Volts are earned and never bought). It stays
-            -- owed and unbound, exactly as BR.Shop.release leaves one, and the
-            -- NEXT wheels-up hands it over. That is the owner's sentence read
-            -- literally -- one car at each wheels-up -- and it is the only
-            -- reading under which nobody loses anything.
+            -- THE LIMIT IS KEPT ANYWAY, because "unreachable today" and "cannot
+            -- happen" are different claims and only the first one is true. It is
+            -- the guard on the exact thing he reported.
+            --
+            -- AND A SURPLUS IS DESTROYED RATHER THAN CARRIED. It used to WAIT
+            -- for the next wheels-up, which was the kinder reading and is the
+            -- one the owner overruled: "It should not be persistent or carry
+            -- over to another round ever." So the list is emptied whatever
+            -- happened to it, and anything that did not fit says so with the
+            -- price attached.
             local limit = tonumber(S.limit) or 1
             local given = 0
-            local kept = {}
             for _, buy in ipairs(buysOf(e)) do
                 if not buy.delivered and given < limit then
                     deliverOne(src, buy)
                     given = given + 1
+                elseif not buy.delivered then
+                    print(('^3[br_core] shop: %d had a second undelivered "%s" '
+                           .. '(%d Volts) at wheels-up -- FORFEITED, one car per '
+                           .. 'match and nothing carries over^7')
+                        :format(src, tostring(buy.row), tonumber(buy.paid) or 0))
                 end
-                -- A DELIVERED ENTRY IS DROPPED. Its only remaining job was to
-                -- say "already bought this match", and warmup is over.
-                if not buy.delivered then kept[#kept + 1] = buy end
             end
-            if #kept > 0 then
-                print(('^3[br_core] shop: %d is owed %d more car(s) after this '
-                       .. 'wheels-up -- one is handed over per match and the '
-                       .. 'rest wait^7'):format(src, #kept))
-            end
-            e.shopBuys = kept
+            -- NOTHING SURVIVES A WHEELS-UP EITHER. A delivered entry's only
+            -- remaining job was to say "already bought this match" and warmup is
+            -- over; an undelivered one has just been forfeited above.
+            e.shopBuys = nil
         end)
 end
 
