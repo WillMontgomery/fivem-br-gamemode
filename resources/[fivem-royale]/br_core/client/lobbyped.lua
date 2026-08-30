@@ -294,6 +294,28 @@ local waved = false
 -- (e) whether my squad is currently waiting on me, off LOBBY_STATUS.
 local squadHolding = false
 
+-- Whether br_ui's curtain is fully opaque right now.
+--
+-- ═══ THE ONLY HONEST "THE SCREEN IS BLACK" THIS FILE CAN GET ═══
+--
+-- The ready-up gesture has to finish AND be cleared before the screen actually
+-- goes dark, and those two facts live in different files: client/state.lua
+-- raises the curtain on the LOBBY -> WARMUP edge and br_ui's page fades it over
+-- its own 600ms, reporting back when it is genuinely opaque. The
+-- `br:ui:covered` event is that report -- a broadcast, so listening to it here
+-- costs nothing and takes nothing from client/spawn.lua, which listens to the
+-- same event for its own reasons.
+--
+-- WITHOUT IT THE CHOICE WOULD BE A GUESS between cutting the gesture at the
+-- state edge (what this did, and what the owner reported) and letting it run on
+-- a timer that might outlive the cover (the failure he named first).
+local screenCovered = false
+
+AddEventHandler('br:ui:covered', function(kind, on)
+    if kind ~= 'curtain' then return end
+    screenCovered = on == true
+end)
+
 -- Whether the locker screen is open. (b) and (e) both stand down for it: the
 -- locker is a shot of the character being chosen and an emote in the middle of
 -- it is the ped moving out of the frame the player is looking at.
@@ -416,15 +438,30 @@ function BR.LobbyPed.stop(why)
     phase = DONE
     walking = false
 
-    -- Whatever gesture was on the ped goes with the sequence. The ClearPedTasks
-    -- below is what actually takes it off; this only stops the emote bookkeeping
-    -- believing something is still playing.
-    emoting = nil
+    -- ═══ WHATEVER GESTURE WAS ON THE PED COMES OFF HERE, RUNNING OR NOT ═══
+    --
+    -- THIS USED TO NULL THE BOOKKEEPING AND LEAVE THE ANIMATION, and it was a
+    -- real hole that only stayed shut by accident. The ClearPedTasks below is
+    -- guarded by `wasRunning` -- it belongs to the WALK -- so a stop that
+    -- arrives while the ped is merely parked took the emote out of this
+    -- file's records and left it playing on the ped. The one caller that matters is
+    -- BR.Spawn.toWarmupPad's stop('readied up'), which is exactly the parked
+    -- case, and the ped it leaves is the one about to be teleported into warmup.
+    --
+    -- IT NEVER BIT BECAUSE THE EMOTES TICK GOT THERE FIRST, clearing on the
+    -- state edge a tick earlier. Now that a ready-up gesture is deliberately
+    -- allowed to outlive that edge, this is the race it would lose -- so the
+    -- backstop this file has always claimed to have is actually written down.
+    local hadEmote = emoting ~= nil
+    emoting, emoteUntil = nil, nil
 
     releaseFocus()
     setLocked(false)
 
-    if not wasRunning then return end
+    if not wasRunning then
+        if hadEmote and ClearPedTasks then ClearPedTasks(PlayerPedId()) end
+        return
+    end
 
     local ped = PlayerPedId()
     ClearPedTasks(ped)
@@ -1695,9 +1732,16 @@ AddEventHandler('br:ui:action', function(name)
     local e = emoteCfg().ready
     if not e then return end
 
+    -- THE ANIMATION IS ASKED FOR ITS FULL WINDOW, ms PLUS holdMs, and that is
+    -- what makes the deferral above worth anything: TaskPlayAnim stops on the
+    -- duration it was given, so letting the CLEAR run later would otherwise just
+    -- leave a finished animation on the ped for longer. The cover is what ends
+    -- it early, and on every ordinary ready-up the cover gets there first.
+    local window = math.floor((e.ms or 600) + (e.holdMs or 0))
+
     Citizen.CreateThread(function()
-        if not playEmote(e, nil) then return end
-        Citizen.Wait(math.floor(e.ms or 600))
+        if not playEmote(e, nil, window) then return end
+        Citizen.Wait(window)
         -- Guarded: the walk may have started under us (a ready that was
         -- refused, an entrance the tick began), and clearing tasks then would
         -- take the walk with the gesture.
@@ -1708,15 +1752,48 @@ end)
 -- THE PARKED PED. Two emotes live here and they are on different clocks: the
 -- stretch is a timer and the wait is a live status.
 BR.Loop.register(BR.Loop.TICK, 'lobbyped.emotes', function()
-    -- LEAVING THE LOBBY TAKES THE GESTURE OFF THE PED IMMEDIATELY, and this is
-    -- the ordering guarantee for the ready-up emote above: my state stops
-    -- reading LOBBY the moment the server names me a participant, which is
-    -- before any cover this client raises.
+    -- ═══ LEAVING THE LOBBY TAKES THE GESTURE OFF THE PED -- BUT NOT AT ONCE ═══
+    --
+    -- IT USED TO CLEAR ON THE EDGE, AND THAT WAS THE BUG THE OWNER REPORTED.
+    -- "When pressing ready up, the thumbs up emote doesn't have enough time to
+    -- complete before we fade to black" (2026-08-29). My state stops reading
+    -- LOBBY the moment the server names me a participant -- a round trip after
+    -- the press -- so clearing here gave a 600ms gesture the round trip plus one
+    -- tick of this loop. Roughly a sixth of it.
+    --
+    -- IT WAS NOT AN ARBITRARY CHOICE. The state edge is upstream of every cover
+    -- this client raises, so it was the one moment that could PROMISE his other
+    -- constraint: "Make sure clearpedtasks runs before fade to black if they are
+    -- accepted to warmup." A ped that fades out mid-emote and arrives in warmup
+    -- still playing it is the failure he named first.
+    --
+    -- SO THE TWO HALVES ARE SPLIT RATHER THAN TRADED. The gesture runs until
+    -- EITHER its own window is up OR the screen is genuinely black, whichever
+    -- comes first -- and the screen going black is a fact the page REPORTS
+    -- (screenCovered, above) rather than a moment guessed at from a clock.
+    -- Nothing can outlive the cover, so the ordering holds; nothing is cut at
+    -- the edge, so the gesture gets everything the cover leaves it.
+    --
+    -- WHAT THAT BUYS, IN MILLISECONDS: the curtain starts on this same edge and
+    -- takes its own 600ms to reach opaque, so the gesture gets the round trip
+    -- plus about 600ms instead of the round trip plus one tick. Its full window
+    -- is longer than that (emotes.ready.holdMs) and the COVER is what ends it --
+    -- so more than this needs the curtain to wait, which is client/state.lua's
+    -- enterMatchBehindCurtain and not this file's to change.
     if BR.State.me.state ~= BR.PlayerState.LOBBY then
-        if emoting then clearEmote() end
+        if emoting then
+            local ready = emoteCfg().ready
+            local spent = (not emoteUntil) or GetGameTimer() >= emoteUntil
+            if emoting ~= ready or spent or screenCovered then clearEmote() end
+        end
         squadHolding = false
         return
     end
+
+    -- AND THE COVER LATCH RESETS WITH THE LOBBY. It is only ever read on the way
+    -- out; left set from a previous departure it would cut the next ready-up at
+    -- the edge again, which is the bug this block exists to remove.
+    screenCovered = false
 
     -- AN EMOTE WITH A DURATION ENDS IN THE ENGINE AND SAYS NOTHING, so this is
     -- the only thing that can notice. Without it the latch sticks after the

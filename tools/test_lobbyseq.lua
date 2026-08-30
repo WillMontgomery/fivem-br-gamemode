@@ -508,11 +508,30 @@ do
     end
 end
 
--- The curtain is acknowledged immediately: awaitCover's timeout is a real
--- 2500ms and every test here would otherwise spend it.
+-- ═══ THE CURTAIN TAKES ITS OWN 600ms TO REACH OPAQUE ═══
+--
+-- IT USED TO BE ACKNOWLEDGED IN THE FRAME IT WAS RAISED, which made the whole
+-- of the ready-up ordering unobservable: the screen was "already black" before
+-- any gesture could play, so a build that cut the emote at the state edge and
+-- one that let it run until the cover looked identical from here.
+--
+-- It is a CSS opacity transition inside CEF (br_ui), and br_core learns it has
+-- landed from the page saying so -- `br:ui:covered`, which is what
+-- BR.Spawn.awaitCover blocks on and what client/lobbyped.lua now reads to know
+-- when a gesture has to stop. 600ms is the figure client/spawn.lua's own note
+-- carries for it.
+--
+-- STILL FAR INSIDE awaitCover's 2500ms ceiling, so nothing waits out a timeout.
+local curtainMs = 600
 AddEventHandler('br:ui:sendLocal', function(kind, d)
-    if kind == BR.Nui.LEAVING and d and d.show then
-        TriggerEvent('br:ui:covered', 'curtain', true)
+    if kind ~= BR.Nui.LEAVING or not d then return end
+    if d.show then
+        Citizen.SetTimeout(curtainMs, function()
+            note('covered')
+            TriggerEvent('br:ui:covered', 'curtain', true)
+        end)
+    else
+        TriggerEvent('br:ui:covered', 'curtain', false)
     end
 end)
 
@@ -2400,47 +2419,113 @@ do
         ('and it starts on the press rather than after a stream wait (%sms '
             .. 'late, against a 400ms dictionary)')
             :format(up and tostring(up.at - pressedAt) or '?'))
-    ok(up ~= nil and up.ms == 600,
-        ('for the 600ms the owner asked for (%s)')
-            :format(up and tostring(up.ms) or 'nil'))
+    ok(up ~= nil and up.ms == (E.ready.ms + E.ready.holdMs),
+        ('and it is asked for its full ms + holdMs window (%s of %d)')
+            :format(up and tostring(up.ms) or 'nil',
+                    E.ready.ms + E.ready.holdMs))
 
-    pump(1500)
+    pump(2000)
     local _, cleared = firstOf('cleartasks')
-    ok(cleared ~= nil and up ~= nil and cleared.at - up.at >= 600,
-        'and the tasks are cleared when it is done, not before')
+    ok(cleared ~= nil and up ~= nil
+        and cleared.at - up.at >= (E.ready.ms + E.ready.holdMs),
+        'and with nobody readying it, the tasks are cleared when it is done')
 
-    -- ═══ AND THE CLEAR BEATS THE FADE ═══
+    -- ═══ AND ON A REAL READY-UP, THE COVER IS WHAT ENDS IT ═══
     --
-    -- "Make sure clearpedtasks runs before fade to black if they are accepted
-    -- to warmup." A ped that fades out mid-emote and arrives in warmup still
-    -- playing it is the failure, so this is an ORDERING and nothing else.
+    -- Both of his constraints are live at once here and they pull opposite
+    -- ways: "play 'thumbs up 3' for 600ms" (and, later, 500ms more) against
+    -- "make sure clearpedtasks runs before fade to black if they are accepted
+    -- to warmup". A ped that fades out mid-emote and arrives in warmup still
+    -- playing it is the failure he named first.
     --
-    -- THE STATE EDGE IS WHAT PROMISES IT, not the 600ms timer: a local server
-    -- can answer the queue in single-digit milliseconds. Accepted immediately
-    -- here, which is the worst case the timer alone would lose.
+    -- THE STATE EDGE USED TO SETTLE IT BY CUTTING THE GESTURE, which is what he
+    -- then reported: the server names the player a participant a round trip
+    -- after the press, and the gesture died there with a sixth of its window
+    -- spent. What settles it now is the page saying the screen is genuinely
+    -- black -- so the gesture runs until the cover, and the cover is by
+    -- definition the last moment at which clearing is still invisible.
+    --
+    -- ACCEPTED IMMEDIATELY, which is the worst case: a local server answers in
+    -- single-digit milliseconds, so nothing but the cover is holding the
+    -- gesture up.
     reset()
     wearChosenModel()
     pump(70000)
 
     order = {}
+    local pressed2 = fakeTime
     TriggerEvent('br:ui:action', BR.NuiCb.QUEUE, { mode = 'solo' })
     pump(100)                                   -- mid-emote, deliberately
     ok(ped.anim ~= nil, 'precondition: the emote is on the ped')
 
     BR.State.me.state = BR.PlayerState.WARMUP   -- the server names me at once
     pump(200)
-    ok(ped.anim == nil,
-        'leaving the lobby takes the emote off the ped immediately')
+    ok(ped.anim ~= nil,
+        'the state edge alone no longer cuts the gesture short')
 
     -- The gather tick takes the trip from here, exactly as it does in game.
     pump(20000)
     ok(BR.LobbyPed.isNetworked(), 'the trip to warmup ran')
 
     local _, cleared2 = firstOf('cleartasks')
-    local _, faded = firstOf('fadeout')
+    local _, covered = firstOf('covered')
     ok(cleared2 ~= nil, 'the ped task really was cleared on this road')
-    ok(cleared2 ~= nil and (faded == nil or cleared2.at <= faded.at),
-        'and it was cleared before the screen faded to black')
+
+    -- THE ORDERING, AGAINST THE COVER RATHER THAN THE ENGINE FADE. The fade is
+    -- not what the player sees go dark: client/state.lua raises br_ui's opaque
+    -- curtain on the same edge, ~100ms before BR.Spawn.toWarmupPad is even
+    -- reached, so the engine fade happens underneath something already black.
+    -- The cover landing is the moment the screen is actually dark, and it is
+    -- the one this has to beat.
+    ok(cleared2 ~= nil and covered ~= nil and cleared2.at <= covered.at,
+        ('and it was cleared no later than the screen going black (%dms before)')
+            :format((covered and cleared2) and (covered.at - cleared2.at) or -1))
+
+    -- AND IT GOT MEANINGFULLY MORE THAN THE ROUND TRIP. Four times what the
+    -- state-edge clear left it, and more than the 600ms he first asked for --
+    -- the rest of the 1100 needs the curtain to wait, which is not this file.
+    ok(cleared2 ~= nil and (cleared2.at - pressed2) >= 500,
+        ('and the gesture ran for %dms rather than a round trip')
+            :format(cleared2 and (cleared2.at - pressed2) or -1))
+
+    -- ═══ AND THE COVER ENDS IT EVEN WHEN NOTHING ELSE WILL ═══
+    --
+    -- ON THE ORDINARY ROAD BR.LobbyPed.stop('readied up') ALSO CLEARS, and it
+    -- runs the moment BR.Spawn.toWarmupPad's awaitCover returns -- which is the
+    -- cover landing. So on that road the two agree and either would do.
+    --
+    -- THEY DO NOT AGREE WHEN THE TRIP IS REFUSED. toWarmupPad returns false
+    -- while another trip is still in flight -- a walk home that has not finished
+    -- when the player readies up again -- and then nothing calls stop() at all.
+    -- The gesture would run its full window with the screen already black behind
+    -- it, and the ped would carry it into warmup: the failure the owner named
+    -- first, arrived at from the one direction the happy path cannot show.
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    order = {}
+    TriggerEvent('br:ui:action', BR.NuiCb.QUEUE, { mode = 'solo' })
+    pump(100)
+    ok(ped.anim ~= nil, 'precondition: the gesture is on the ped')
+
+    -- A trip home still finishing, so the gather tick's toWarmupPad refuses.
+    BR.Spawn.traveling = true
+    BR.State.me.state = BR.PlayerState.WARMUP
+    pump(300)
+    ok(ped.anim ~= nil,
+        'precondition: with the trip refused, nothing has cleared it yet')
+
+    -- client/state.lua raises the curtain on that same state edge and br_ui
+    -- reports when it is opaque. That file is not loaded here, so the report is
+    -- made directly -- it is the page's message either way.
+    TriggerEvent('br:ui:covered', 'curtain', true)
+    pump(200)
+
+    ok(ped.anim == nil,
+        'the screen going black ends the gesture even when no trip clears it')
+
+    BR.Spawn.traveling = false
 end
 
 -- (b) PARKED FOR THIRTY SECONDS: ONE STRETCH, AND ONLY ONE.
@@ -2889,10 +2974,17 @@ do
     order = {}
     BR.State.me.state = BR.PlayerState.WARMUP
     BR.Spawn.toWarmupPad()
-    -- INSIDE the focus hold, not past it: the whole trip -- fade, cover, hold,
-    -- placement -- is over in a little over a second here, and this block needs
-    -- to catch it while it still has the focus.
-    pump(600)
+    -- INSIDE the focus hold, not past it: this block needs to catch the trip
+    -- while it still has the focus.
+    --
+    -- IT WAS 600ms UNTIL THE FIXTURE LEARNED THAT A CURTAIN TAKES TIME. The
+    -- cover used to be acknowledged in the frame it was asked for, so the trip
+    -- reached its focus almost at once; br_ui's curtain really takes its own
+    -- 600ms to reach opaque, and awaitCover blocks on it. So the focus is now
+    -- taken around 950ms in and held for focusHoldMs after that, and 600 landed
+    -- before it rather than inside it. The assertion is unchanged -- only the
+    -- moment it has to be made at.
+    pump(1200)
 
     ok(BR.Spawn.focusHeld(), 'precondition: the trip is holding the focus')
 

@@ -617,27 +617,32 @@ BR.Config.Match = {
                 flags = 48,
                 ms    = 600,
 
-                -- ═══ HOW LONG THE DEPARTURE WAITS BEFORE IT FADES ═══
+                -- ═══ AND HOW MUCH LONGER IT MAY RUN IF THERE IS ROOM ═══
                 --
                 -- Owner, 2026-08-29: "When pressing ready up, the thumbs up
                 -- emote doesn't have enough time to complete before we fade to
                 -- black. Add 500ms there please."
                 --
-                -- THE 600ms ABOVE IS THE EMOTE; THIS IS THE ROOM IT NEEDS. The
-                -- window between the press and the fade is not set here -- it is
-                -- a server round trip plus br_ui's curtain reaching solid black,
-                -- and it can be shorter than the emote. Making the EMOTE longer
-                -- would not help: it would run further past a fade that has
-                -- already started, which is the failure he named the first time
-                -- round ("a ped that fades out mid-emote and arrives in warmup
-                -- still playing it"). The only thing that gives an animation
-                -- more time before a fade is the fade waiting.
+                -- SO THE GESTURE'S WINDOW IS ms + holdMs, 1100ms, AND THE
+                -- SCREEN GOING BLACK IS WHAT ENDS IT EARLY. Both of his
+                -- constraints are live at once -- the animation must finish AND
+                -- ClearPedTasks must run before the screen is dark -- and they
+                -- are only compatible because the client can ask the page when
+                -- the screen is ACTUALLY dark rather than guess. See the
+                -- `br:ui:covered` listener in br_core/client/lobbyped.lua.
                 --
-                -- READ BY br_core/client/spawn.lua's toWarmupPad, immediately
-                -- before its DoScreenFadeOut -- which is the one line that can
-                -- hold it, and is not this round's file to edit. IF NOTHING
-                -- READS THIS, the emote is still cut short and the number is
-                -- doing nothing; see the report that landed with it.
+                -- WHAT IT ACTUALLY GETS TODAY IS ABOUT 600ms OF THAT 1100.
+                -- br_ui's curtain goes up on the same edge the server names the
+                -- player a participant, and takes its own 600ms to reach
+                -- opaque; the gesture is cut when it does. That is four times
+                -- what it had before this number existed and a little more than
+                -- the 600ms he originally asked for -- but it is not 1100.
+                --
+                -- GOING PAST THAT NEEDS THE CURTAIN TO WAIT, which is
+                -- client/state.lua's enterMatchBehindCurtain, and that curtain
+                -- exists (#124) to hide the cut this would then uncover. It is
+                -- a real trade and it is the owner's to make; raising this
+                -- number alone will not do it.
                 holdMs = 500,
             },
 
