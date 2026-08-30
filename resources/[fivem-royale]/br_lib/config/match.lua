@@ -464,7 +464,7 @@ BR.Config.Match = {
         -- retiring camera is destroyed on every move rather than deferred (see
         -- dropRetiring in lobbycam.lua), so twice the steps is twice the
         -- allocations and the same number of LIVE cameras: two.
-        camSteps = 48,
+        camSteps = 96,
 
         -- ═══ AND THIS IS HOW WIDE IT SWINGS THROUGH EACH CORNER ═══
         --
@@ -605,6 +605,29 @@ BR.Config.Match = {
                 clip  = 'enter',
                 flags = 48,
                 ms    = 600,
+
+                -- ═══ HOW LONG THE DEPARTURE WAITS BEFORE IT FADES ═══
+                --
+                -- Owner, 2026-08-29: "When pressing ready up, the thumbs up
+                -- emote doesn't have enough time to complete before we fade to
+                -- black. Add 500ms there please."
+                --
+                -- THE 600ms ABOVE IS THE EMOTE; THIS IS THE ROOM IT NEEDS. The
+                -- window between the press and the fade is not set here -- it is
+                -- a server round trip plus br_ui's curtain reaching solid black,
+                -- and it can be shorter than the emote. Making the EMOTE longer
+                -- would not help: it would run further past a fade that has
+                -- already started, which is the failure he named the first time
+                -- round ("a ped that fades out mid-emote and arrives in warmup
+                -- still playing it"). The only thing that gives an animation
+                -- more time before a fade is the fade waiting.
+                --
+                -- READ BY br_core/client/spawn.lua's toWarmupPad, immediately
+                -- before its DoScreenFadeOut -- which is the one line that can
+                -- hold it, and is not this round's file to edit. IF NOTHING
+                -- READS THIS, the emote is still cut short and the number is
+                -- doing nothing; see the report that landed with it.
+                holdMs = 500,
             },
 
             -- (d) THE CAMERA REACHING ITS SECOND-TO-LAST NODE. The ped is

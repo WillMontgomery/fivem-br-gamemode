@@ -324,6 +324,62 @@ end
 ---
 --- Pure: no natives, no state. That is deliberate -- it is the half of this
 --- feature that can be asserted in a test rather than looked at.
+--- The flight's control points: the authored nodes, then the lobby frame.
+--- @param nodes table
+--- @return table
+local function controlPoints(nodes)
+    local pts = {}
+    for _, n in ipairs(nodes or {}) do
+        pts[#pts + 1] = { x = n.x + 0.0, y = n.y + 0.0, z = n.z + 0.0 }
+    end
+    local hx, hy, hz = BR.LobbyCam.lobbyFrame()
+    pts[#pts + 1] = { x = hx, y = hy, z = hz }
+    return pts
+end
+
+--- `n + 1` points along the flight's curve, spaced EVENLY BY ARC LENGTH.
+---
+--- FOR MEASURING THE GEOMETRY, and it exists because flightPlan stopped being
+--- able to answer that question. Its steps are spaced by how far the shot
+--- moves, so its points bunch up exactly where the curve bends hardest --
+--- which is the right thing for flying and useless for asking how hard the
+--- curve bends, since the answer would depend on its own sampling. Evenly
+--- spaced points give a curvature that is a fact about the PATH.
+--- @param nodes table
+--- @param n number
+--- @param rounding number|nil
+--- @return table  { { x, y, z }, ... }
+function BR.LobbyCam.curveSamples(nodes, n, rounding)
+    local pts = controlPoints(nodes)
+    if #pts < 2 then return pts end
+    local tang = rounding or 0.5
+    n = math.max(1, math.floor(n or 200))
+
+    local fine = math.max(2000, n * 4)
+    local us, cum = { 0.0 }, { 0.0 }
+    local px, py, pz = curveAt(pts, 0.0, tang)
+    for i = 1, fine do
+        local u = i / fine
+        local x, y, z = curveAt(pts, u, tang)
+        us[i + 1] = u
+        cum[i + 1] = cum[i] + BR.Dist3(px, py, pz, x, y, z)
+        px, py, pz = x, y, z
+    end
+    local total = cum[#cum]
+
+    local out, k = {}, 2
+    for j = 0, n do
+        local want = total * j / n
+        while k < #cum and cum[k] < want do k = k + 1 end
+        local span = cum[k] - cum[k - 1]
+        local t = span > 0.0 and (want - cum[k - 1]) / span or 0.0
+        local u = us[k - 1] + (us[k] - us[k - 1]) * t
+        local x, y, z = curveAt(pts, u, tang)
+        out[#out + 1] = { x = x, y = y, z = z }
+    end
+    return out
+end
+
 --- SECOND RETURN: where each authored control point sits along the flight, as
 --- a fraction of its LENGTH. The wave is cued on the camera reaching its
 --- second-to-last position (owner, 2026-08-29) and after the resampling there
@@ -346,11 +402,7 @@ function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding)
     local hx, hy, hz, aimX, aimY, aimZ = BR.LobbyCam.lobbyFrame()
 
     -- The control points: the authored nodes, then the lobby frame itself.
-    local pts = {}
-    for _, n in ipairs(nodes) do
-        pts[#pts + 1] = { x = n.x + 0.0, y = n.y + 0.0, z = n.z + 0.0 }
-    end
-    pts[#pts + 1] = { x = hx, y = hy, z = hz }
+    local pts = controlPoints(nodes)
 
     -- Measure the curve so the steps can be cut by LENGTH rather than by
     -- parameter: an evenly-parametrised Catmull-Rom runs fast through straight
@@ -368,17 +420,27 @@ function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding)
     local total = cum[#cum]
 
     --- The curve parameter at arc-length fraction `f`.
+    ---
+    --- BINARY SEARCH, AND IT HAD TO BECOME ONE. This was a scan from the start
+    --- of the table on every call, which is fine when the table is 240 long and
+    --- something asks 25 times. The step count is the multiplier on BOTH: at 96
+    --- steps the table is 1152 long and the measuring pass alone asks 768 times,
+    --- so the linear version was three quarters of a million comparisons and
+    --- flightPlan measured 7ms -- called synchronously by placeOnStart, in the
+    --- caller's own frame, which is a dropped frame on the trip home. 0.6ms
+    --- now. The cost of a smoother camera should be allocations, not a hitch.
     local function paramAt(f)
         if total <= 0.0 then return f end
         local want = f * total
-        for i = 2, #cum do
-            if cum[i] >= want then
-                local span = cum[i] - cum[i - 1]
-                local t = span > 0.0 and (want - cum[i - 1]) / span or 0.0
-                return us[i - 1] + (us[i] - us[i - 1]) * t
-            end
+        local lo, hi = 2, #cum
+        while lo < hi do
+            local mid = (lo + hi) // 2
+            if cum[mid] >= want then hi = mid else lo = mid + 1 end
         end
-        return 1.0
+        if cum[lo] < want then return 1.0 end
+        local span = cum[lo] - cum[lo - 1]
+        local t = span > 0.0 and (want - cum[lo - 1]) / span or 0.0
+        return us[lo - 1] + (us[lo] - us[lo - 1]) * t
     end
 
     -- THE AIM POINT MOVES, AND IT MOVES ALMOST NOWHERE. It starts on the lobby
@@ -386,28 +448,115 @@ function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding)
     -- slides onto the locker's exact aim as the camera lands. Under a metre of
     -- travel over the whole flight, which is why the rotation reads as one slow
     -- continuous turn instead of three.
-    local out = {}
-    for j = 0, steps do
-        local s = j / steps
-        local f = BR.LobbyCam.pace(s, decay)
-        local u = paramAt(f)
-        local x, y, z = curveAt(pts, u, tang)
 
+    --- The whole shot at time fraction `s`. One definition, used by the dense
+    --- measuring pass and by the plan it produces, so the boundaries cannot be
+    --- chosen against one curve and flown along another.
+    local function shotAt(s)
+        local f = BR.LobbyCam.pace(s, decay)
+        local x, y, z = curveAt(pts, paramAt(f), tang)
         local ax = p.x + (aimX - p.x) * f
         local ay = p.y + (aimY - p.y) * f
         local az = p.z + (aimZ - p.z) * f
-
-        -- The last one is the lobby frame EXACTLY, not the curve's opinion of
-        -- where the lobby frame is: floating point along 350 metres of spline
-        -- is not something the locker's composition should depend on.
-        if j == steps then
+        if s >= 1.0 then
+            -- The end is the lobby frame EXACTLY, not the curve's opinion of
+            -- where the lobby frame is: floating point along 360 metres of
+            -- spline is not something the locker's composition should rest on.
             x, y, z = hx, hy, hz
             ax, ay, az = aimX, aimY, aimZ
         end
-
         local pitch, heading = BR.LobbyCam.aimAt(x, y, z, ax, ay, az)
+        return x, y, z, ax, ay, az, pitch, heading, f
+    end
+
+    -- ═══ THE STEPS ARE SPACED BY HOW FAR THE SHOT MOVES, NOT BY THE CLOCK ═══
+    --
+    -- Owner, 2026-08-29, having watched the 48-step version: "Please double the
+    -- resolution of those camera movement steps in lobby once again. It's
+    -- smoother, but still appears stepped."
+    --
+    -- MEASURED BEFORE DOUBLING ANYTHING, and the stepping turned out to be in
+    -- two steps out of forty-eight. Uniformly spaced in TIME, the per-step turn
+    -- ran 0.6 degrees at the top of the descent up to 12.8 at the very bottom:
+    -- forty-six invisible steps and two visible ones, with sixteen percent of
+    -- the flight's whole rotation packed into the last four percent of its time.
+    --
+    -- THAT IS GEOMETRY, NOT RESOLUTION. The flight ends 1.83m from its subject
+    -- (lobbyCam.dist), and the angle to a thing you are two metres from changes
+    -- enormously for a small move. Doubling the count halves all forty-eight --
+    -- paying everywhere for a problem that lives in two places -- so the
+    -- boundaries are placed by COST instead: each step covers an equal share of
+    -- the flight's total turn plus an equal share of its total length.
+    --
+    -- BOTH TERMS, AND THE SECOND ONE EARNS ITS PLACE MORE NARROWLY THAN IT
+    -- LOOKS. Spacing by turn alone puts almost no boundaries through the long
+    -- descent: the longest single interpolation goes from 6.9m to 34.2m.
+    --
+    -- MEASURED, THAT COSTS NOTHING TODAY -- the flown polyline strays 0.16m from
+    -- the curve either way, because the stretch it lengthens happens to be
+    -- straight. What the term buys is that the sampling does not DEPEND on that
+    -- being true. A chord is a straight line and the path is a curve; 34m of
+    -- straight line is only safe while those 34 metres are, which is a fact
+    -- about the coordinates the owner surveyed and not about the design. It
+    -- also keeps any one constant-velocity step down to under three percent of
+    -- the flight, so no stretch of the exponential slowdown is flattened.
+    --
+    -- Summing the two normalised costs bounds the rotation AND the chord in one
+    -- pass, with nothing to tune.
+    --
+    -- THE MOTION IS UNCHANGED. This moves where the curve is SAMPLED, not where
+    -- it goes or how fast: `pace` still maps time to distance exactly as before,
+    -- and every step is still handed its own duration out of camFlightMs. What
+    -- changes is that a step near the landing is short in time and a step in the
+    -- descent is long, which is what the eye was asking for.
+    local DENSE = math.max(600, steps * 8)
+    local ss, cost = { 0.0 }, { 0.0 }
+    local turns, dists = {}, {}
+    local totTurn, totDist = 0.0, 0.0
+    do
+        local lx, ly, lz, _, _, _, lp, lh = shotAt(0.0)
+        for i = 1, DENSE do
+            local s = i / DENSE
+            local x, y, z, _, _, _, pitch, heading = shotAt(s)
+            local dh = math.abs((heading - lh + 540.0) % 360.0 - 180.0)
+            local dp = math.abs(pitch - lp)
+            turns[i] = dh + dp
+            dists[i] = BR.Dist3(lx, ly, lz, x, y, z)
+            totTurn = totTurn + turns[i]
+            totDist = totDist + dists[i]
+            ss[i + 1] = s
+            lx, ly, lz, lp, lh = x, y, z, pitch, heading
+        end
+        for i = 1, DENSE do
+            local a = totTurn > 0.0 and (turns[i] / totTurn) or 0.0
+            local b = totDist > 0.0 and (dists[i] / totDist) or 0.0
+            cost[i + 1] = cost[i] + a + b
+        end
+    end
+    local totCost = cost[#cost]
+
+    --- The time fraction at which `want` of the total cost has been spent.
+    --- Binary search for the same reason as paramAt above.
+    local function timeAtCost(want)
+        local lo, hi = 2, #cost
+        while lo < hi do
+            local mid = (lo + hi) // 2
+            if cost[mid] >= want then hi = mid else lo = mid + 1 end
+        end
+        if cost[lo] < want then return 1.0 end
+        local span = cost[lo] - cost[lo - 1]
+        local t = span > 0.0 and (want - cost[lo - 1]) / span or 0.0
+        return ss[lo - 1] + (ss[lo] - ss[lo - 1]) * t
+    end
+
+    local out = {}
+    for j = 0, steps do
+        local s = (j == 0) and 0.0
+            or (j == steps) and 1.0
+            or timeAtCost(totCost * j / steps)
+        local x, y, z, ax, ay, az, pitch, heading, f = shotAt(s)
         out[#out + 1] = { x = x, y = y, z = z, pitch = pitch, heading = heading,
-                          ax = ax, ay = ay, az = az, at = f }
+                          ax = ax, ay = ay, az = az, at = f, t = s }
     end
 
     -- Where each control point fell along the measured curve. The first is

@@ -152,10 +152,26 @@ function ClearPedTasksImmediately() ped.dest = nil ped.anim = nil end
 -- body animation that stops the ped and 48 for the upper-body/secondary one
 -- that plays over a walk. The flag is the only part of an emote that is a
 -- claim about the engine rather than a name, so it is the part worth asserting.
+-- ═══ AND A DICTIONARY TAKES TIME TO ARRIVE ═══
+--
+-- Modelled, because the whole point of streaming an emote's dictionary AHEAD of
+-- the moment it is needed is that the request is not free. Answered instantly,
+-- the fixture could not tell a gesture that was pre-streamed under the cover
+-- from one that requests its dictionary at the instant of the press and spends
+-- part of its own window waiting -- which is exactly what the owner reported
+-- about the ready-up emote on 2026-08-29.
 local animDicts = {}
 local dictsStream = true
-function RequestAnimDict(name) animDicts[name] = dictsStream end
-function HasAnimDictLoaded(name) return animDicts[name] and 1 or 0 end
+local dictDelayMs = 0
+function RequestAnimDict(name)
+    if animDicts[name] == nil then
+        animDicts[name] = dictsStream and (fakeTime + dictDelayMs) or false
+    end
+end
+function HasAnimDictLoaded(name)
+    local at = animDicts[name]
+    return (at and fakeTime >= at) and 1 or 0
+end
 function DoesAnimDictExist() return 1 end
 function TaskPlayAnim(_p, dict, clip, _bi, _bo, dur, flags)
     ped.anim = { dict = dict, clip = clip, until_ = (dur and dur > 0)
@@ -537,6 +553,7 @@ local function reset()
     ped.male = true
     clipsetStreams = true
     dictsStream = true
+    dictDelayMs = 0
     for k in pairs(animDicts) do animDicts[k] = nil end
     BR.Spawn.curtainWanted = false
     BR.State.party = nil
@@ -756,6 +773,14 @@ do
     ok(E.ready and E.ready.ms == 600,
         ('the ready-up thumbs up lasts 600ms (%s)')
             :format(E.ready and tostring(E.ready.ms) or 'nil'))
+
+    -- AND FIVE HUNDRED MORE FOR THE DEPARTURE TO WAIT: "the thumbs up emote
+    -- doesn't have enough time to complete before we fade to black. Add 500ms
+    -- there please." The number lives here; the line that reads it is in
+    -- spawn.lua's toWarmupPad, which this round does not own.
+    ok(E.ready and E.ready.holdMs == 500,
+        ('and the departure is asked to wait 500ms for it (%s)')
+            :format(E.ready and tostring(E.ready.holdMs) or 'nil'))
 
     -- ═══ THE WAIT FAMILY, MINUS THE ONE HE EXCLUDED ═══
     --
@@ -1479,15 +1504,26 @@ do
 
     -- ═══ FAST AT THE START, EXPONENTIALLY SLOWER AT THE END ═══
     --
-    -- Measured as metres per second per step, which with equal durations is
-    -- just the step lengths. Three separate claims: it starts faster than it
-    -- averages, it ends slower, and it never speeds up on the way.
-    local speeds = {}
-    for i = 2, #made do
-        local a, b = made[i - 1], made[i]
+    -- READ OFF THE PLAN RATHER THAN OFF THE LOGGED MOVES, and that is a change
+    -- forced by the step count. The pace is a property of flightPlan, which is
+    -- pure arithmetic; the LOG is a property of the fixture's clock, which
+    -- advances in 50ms hops and therefore cannot resolve a step that is 34ms
+    -- long. At 96 steps half of them are shorter than one hop, so the logged
+    -- durations clamp to 1ms and every speed read from them is fiction. The
+    -- loop's own behaviour -- ease flags, no gap between moves, one move per
+    -- step -- is still asserted off the log below, because none of that depends
+    -- on sub-hop timing.
+    local pacePlan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps, C.camDecay,
+        C.camRounding)
+    local speeds, mids = {}, {}
+    for i = 2, #pacePlan do
+        local a, b = pacePlan[i - 1], pacePlan[i]
         local len = BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z)
-        local ms = moves[i - 1] and moves[i - 1].ms or 1
-        speeds[#speeds + 1] = len / (ms / 1000.0)
+        local secs = (b.t - a.t) * (C.camFlightMs / 1000.0)
+        if secs > 0.0 then
+            speeds[#speeds + 1] = len / secs
+            mids[#mids + 1] = (a.t + b.t) * 0.5
+        end
     end
 
     local rising = 0
@@ -1505,16 +1541,23 @@ do
             :format(speeds[1] or -1, speeds[#speeds] or -1))
 
     -- EXPONENTIAL RATHER THAN MERELY DECREASING. A linear ramp-down would pass
-    -- the two assertions above and is not what was asked for. The signature of
-    -- exponential decay is a CONSTANT RATIO between consecutive steps, so the
-    -- ratio early in the flight and the ratio late in it should agree -- a
-    -- linear ramp's ratios grow without bound as the steps get small.
+    -- the two assertions above and is not what was asked for.
+    --
+    -- THE OLD TEST COMPARED CONSECUTIVE STEP RATIOS, which only works while
+    -- every step lasts the same length of time -- and they deliberately do not
+    -- any more. The property itself is unchanged and does not depend on the
+    -- spacing: speed is proportional to e^(-k*t), so ln(speed) + k*t is the
+    -- same number at every point of the flight, wherever it is sampled.
     if #speeds >= 8 then
-        local early = speeds[3] / speeds[2]
-        local late  = speeds[#speeds] / speeds[#speeds - 1]
-        ok(math.abs(early - late) < 0.05,
-            ('the slowdown is exponential, not linear -- step ratio %.3f early, '
-                .. '%.3f late'):format(early, late))
+        local lo, hi = math.huge, -math.huge
+        for i = 1, #speeds do
+            local v = math.log(speeds[i]) + C.camDecay * mids[i]
+            if v < lo then lo = v end
+            if v > hi then hi = v end
+        end
+        ok(hi - lo < 0.15,
+            ('the slowdown is exponential in time, not linear -- ln(speed) + '
+                .. 'k*t spans %.3f across the flight'):format(hi - lo))
     end
 
     -- ═══ THE RESOLUTION AND THE ROUNDING ARE DIFFERENT SETTINGS ═══
@@ -1533,8 +1576,15 @@ do
     --
     -- The measure is the path's own bend: degrees of TRAVEL direction per
     -- metre, densely sampled so it cannot be an artefact of the step count.
-    local function sharpestBend(steps, rounding)
-        local pl = BR.LobbyCam.flightPlan(C.camPath, steps, 0.0, rounding)
+    --
+    -- MEASURED OFF EVENLY-SPACED POINTS, WHICH flightPlan NO LONGER GIVES. Its
+    -- steps are spaced by how far the shot moves, so its points bunch up
+    -- exactly where the curve bends hardest -- fine for flying, useless for
+    -- asking how hard it bends, because the answer would then depend on its own
+    -- sampling. BR.LobbyCam.curveSamples is evenly spaced by arc length, so
+    -- degrees per metre out of it is a fact about the PATH.
+    local function sharpestBend(n, rounding)
+        local pl = BR.LobbyCam.curveSamples(C.camPath, n, rounding)
         local worst, prevB = 0.0, nil
         for i = 2, #pl do
             local a, b = pl[i - 1], pl[i]
@@ -1560,14 +1610,14 @@ do
         ('camRounding genuinely opens the corner out -- %.1f deg/m at a plain '
             .. '0.50 against %.1f at %.2f'):format(plain, rounded, C.camRounding))
 
-    -- ...AND STEPS DO NOT. Same rounding, four times the samples, same path.
-    -- This is the assertion that fails if somebody "answers" the rounding half
-    -- by raising camSteps again.
+    -- ...AND SAMPLING DOES NOT. Same rounding, four times the points, same
+    -- path. This is the assertion that fails if somebody "answers" the rounding
+    -- half by raising camSteps again.
     local few  = sharpestBend(500, C.camRounding)
     local many = sharpestBend(2000, C.camRounding)
     ok(math.abs(few - many) < math.max(0.5, many * 0.10),
-        ('and camSteps does not -- the geometry is the same path however often '
-            .. 'it is sampled (%.1f vs %.1f deg/m)'):format(few, many))
+        ('and sampling does not -- the geometry is the same path however often '
+            .. 'it is measured (%.1f vs %.1f deg/m)'):format(few, many))
 
     -- AND THE SHIPPED ROUNDING IS THE RIGHT SIDE OF THE CLIFF. Past about 1.0
     -- the tangents are long enough that the curve swings wide of a node and has
@@ -1605,10 +1655,72 @@ do
     -- single move starts reading as a jump rather than as motion. The worst is
     -- always the LAST step, where the camera is under two metres from its
     -- subject and a small move is a large angle.
-    ok(#made > 4 and worstTurn < 15.0,
+    ok(#made > 4 and worstTurn < 5.0,
         ('no single step of the flight turns the camera far enough to read as a '
             .. 'jump (worst %.1f degrees at step %d of %d)')
             :format(worstTurn, at, #made - 1))
+
+    -- ═══ AND NO STEP CARRIES MUCH MORE OF THE TURN THAN ANY OTHER ═══
+    --
+    -- Owner, 2026-08-29, having watched 48 steps: "It's smoother, but still
+    -- appears stepped."
+    --
+    -- THE STEPPING WAS IN TWO STEPS OUT OF FORTY-EIGHT. Spaced evenly in TIME,
+    -- the per-step turn ran 0.6 degrees at the top of the descent and 12.8 at
+    -- the bottom -- the camera ends 1.83m from its subject, and the angle to a
+    -- thing you are two metres from changes enormously for a small move. Forty
+    -- six invisible steps and two visible ones.
+    --
+    -- SO WHAT IS ASSERTED IS FLATNESS, not the count. Doubling the count halves
+    -- every step and leaves the LAST one still four times the average, which is
+    -- paying everywhere for a problem that lives in two places. Spacing the
+    -- steps by how far the shot actually moves is what flattens it, and this is
+    -- the number that says whether that is switched on: uniform-in-time spacing
+    -- puts the worst step at four-odd times the mean however many steps there
+    -- are, and cost spacing holds it near two.
+    local sum = 0.0
+    for i = 2, #made do
+        sum = sum + math.abs((made[i].yaw - made[i - 1].yaw + 540.0) % 360.0 - 180.0)
+    end
+    local mean = (#made > 1) and (sum / (#made - 1)) or 0.0
+    ok(mean > 0.0 and worstTurn / mean < 3.0,
+        ('and the turn is shared evenly across them rather than piled into the '
+            .. 'landing (worst %.1f deg against a mean of %.1f)')
+            :format(worstTurn, mean))
+
+    -- ...WHICH MEANS THE STEPS DO NOT ALL LAST THE SAME LENGTH OF TIME. A step
+    -- through the landing is short and one down the long descent is long. If
+    -- these were equal the spacing above would be back to uniform-in-time.
+    local shortest, longest = math.huge, 0.0
+    for i = 2, #pacePlan do
+        local d = (pacePlan[i].t - pacePlan[i - 1].t) * C.camFlightMs
+        if d < shortest then shortest = d end
+        if d > longest then longest = d end
+    end
+    ok(longest > shortest * 3.0,
+        ('and the steps genuinely differ in duration -- %dms at the tightest, '
+            .. '%dms at the loosest'):format(math.floor(shortest), math.floor(longest)))
+
+    -- ...AND NO SINGLE INTERPOLATION SPANS A LONG STRETCH OF THE CURVE.
+    --
+    -- THE OTHER HALF OF THE COST FUNCTION. Spacing by turn alone puts almost no
+    -- boundaries through the long descent -- the longest chord goes from 6.9m
+    -- to 34.2m -- and a chord is a straight line where the path is a curve.
+    -- Measured on today's coordinates that costs nothing, because the stretch
+    -- it lengthens happens to be straight; the point is that the sampling must
+    -- not DEPEND on it being straight, which is a fact about one survey and not
+    -- about the design. Re-survey camPath with a bend there and turn-only
+    -- spacing would fly straight through it.
+    local pathLen, longestChord = 0.0, 0.0
+    for i = 2, #pacePlan do
+        local a, b = pacePlan[i - 1], pacePlan[i]
+        local d = BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z)
+        pathLen = pathLen + d
+        if d > longestChord then longestChord = d end
+    end
+    ok(pathLen > 0.0 and longestChord < pathLen * 0.04,
+        ('and no one step flies a long chord across the curve (%.1fm, of a '
+            .. '%.0fm path)'):format(longestChord, pathLen))
 
     -- ═══ AND NOTHING SITS BETWEEN TWO STEPS ═══
     --
@@ -1623,6 +1735,54 @@ do
     ok(worst <= 100,
         ('no step waits for the one before it to be over (worst gap %dms)')
             :format(worst))
+end
+
+-- ...AND EVERY STEP IS FLOWN FOR ITS OWN SHARE OF THE CLOCK.
+--
+-- THE PLAN AND THE LOOP HAVE TO AGREE, and after the redistribution they can
+-- disagree silently. The plan's steps are spaced by how far the shot moves, so
+-- they no longer last equal lengths of time -- a loop still slicing the flight
+-- into equal durations would fly the same POSITIONS at the wrong SPEEDS, which
+-- is the pace complaint from two rounds ago arriving by a new road. Nothing
+-- caught that: the pacing assertions above read the plan, and the plan is right
+-- either way.
+--
+-- RUN AT TWELVE STEPS, deliberately. The fixture's clock advances in 50ms hops
+-- and at 96 steps half the durations are shorter than one hop, so the logged
+-- values are dominated by rounding. At twelve every step is hundreds of
+-- milliseconds and the log can be read honestly.
+do
+    local C = BR.Config.Match.lobbyEntrance
+    local realSteps = C.camSteps
+    C.camSteps = 12
+
+    onlyCase(1)
+    reset()
+    wearChosenModel()
+    pump(70000)
+
+    local plan = BR.LobbyCam.flightPlan(C.camPath, 12, C.camDecay, C.camRounding)
+    local moves = glides()
+
+    ok(#moves == 12, ('precondition: twelve moves were flown (%d)'):format(#moves))
+
+    -- Each logged duration against the one the plan asked for. Generous, because
+    -- the loop measures its boundaries off a real clock and spends a hop of
+    -- lateness out of the move it belongs to -- but nowhere near generous enough
+    -- to hide equal slices, which would be 1154ms every time.
+    local worst, worstAt = 0.0, 0
+    for i = 2, #plan do
+        local want = (plan[i].t - plan[i - 1].t) * C.camFlightMs
+        local got = moves[i - 1] and moves[i - 1].ms or 0
+        local off = math.abs(got - want)
+        if off > worst then worst, worstAt = off, i - 1 end
+    end
+    ok(#moves == 12 and worst < 120.0,
+        ('and each is flown for the duration its own step asked for (worst step '
+            .. '%d is %.0fms out)'):format(worstAt, worst))
+
+    C.camSteps = realSteps
+    allCases()
 end
 
 -- ...AND THE FLIGHT DOES NOT READ THE PED AT ALL.
@@ -2187,10 +2347,15 @@ end
 do
     reset()
     wearChosenModel()
-    pump(70000)     -- parked in the lobby
+    -- A DICTIONARY THAT TAKES A MOMENT TO ARRIVE, which is the condition the
+    -- pre-streaming exists for. Set before the entrance so the walk streams the
+    -- ready-up gesture under the cover, exactly as it does in a real session.
+    dictDelayMs = 400
+    pump(70000)     -- the entrance, ending parked in the lobby
 
     local E = BR.Config.Match.lobbyEntrance.emotes
     order = {}
+    local pressedAt = fakeTime
     TriggerEvent('br:ui:action', BR.NuiCb.QUEUE, { mode = 'solo' })
     pump(200)
 
@@ -2198,6 +2363,27 @@ do
         return e.dict == E.ready.dict and e.clip == E.ready.clip
     end)
     ok(up ~= nil, 'readying up plays the thumbs up')
+
+    -- ═══ AND IT STARTS IN THE FRAME OF THE PRESS, NOT AFTER A STREAM WAIT ═══
+    --
+    -- Owner, 2026-08-29: "the thumbs up emote doesn't have enough time to
+    -- complete before we fade to black."
+    --
+    -- HALF OF THAT WAS THE DICTIONARY. The emote used to request its animation
+    -- dictionary at the moment of the press, inside a bounded wait of up to two
+    -- seconds -- so the FIRST ready-up of a session spent part of its window
+    -- streaming rather than playing. Every playtest is a fresh session and the
+    -- first ready-up is the one that gets watched. It is streamed during the
+    -- entrance now, under the cover, where waiting is free.
+    --
+    -- ASSERTED AS ELAPSED TIME AGAINST A DICTIONARY THAT TAKES 400ms, because
+    -- "the animation played" is true of the late version too -- just later. One
+    -- tick is the thread the handler starts; anything approaching the stream
+    -- delay means it is paying for the dictionary out of its own window.
+    ok(up ~= nil and (up.at - pressedAt) <= 50,
+        ('and it starts on the press rather than after a stream wait (%sms '
+            .. 'late, against a 400ms dictionary)')
+            :format(up and tostring(up.at - pressedAt) or '?'))
     ok(up ~= nil and up.ms == 600,
         ('for the 600ms the owner asked for (%s)')
             :format(up and tostring(up.ms) or 'nil'))

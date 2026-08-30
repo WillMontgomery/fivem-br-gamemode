@@ -1003,12 +1003,18 @@ local function flyCamera(mine)
     if token ~= mine then return end
 
     local flight = C.camFlightMs or 18000
-    local steps = #plan - 1
     local t0 = GetGameTimer()
     flightBegan = t0
 
     for i = 2, #plan do
-        local boundary = t0 + math.floor(flight * (i - 1) / steps)
+        -- EACH STEP CARRIES ITS OWN SHARE OF THE CLOCK. The boundaries used to
+        -- be (i-1)/steps -- equal slices -- because the plan was sampled at
+        -- equal times. It is sampled by how far the shot MOVES now, so a step
+        -- through the landing is short in time and a step down the long descent
+        -- is long, and `t` is where each one ends. Still absolute offsets from
+        -- t0, so a late frame is spent out of its own step rather than added to
+        -- the flight.
+        local boundary = t0 + math.floor(flight * plan[i].t)
         local ms = boundary - GetGameTimer()
         if ms < 1 then ms = 1 end
 
@@ -1125,6 +1131,22 @@ local function run(mine)
         local E = emoteCfg()
         if E.wave then ensureDict(E.wave.dict, mine) end
         if winThisRun and E.win then ensureDict(E.win.dict, mine) end
+
+        -- ...AND THE READY-UP GESTURE, WHICH IS NOT PART OF THE WALK AT ALL.
+        --
+        -- Owner, 2026-08-29: "When pressing ready up, the thumbs up emote
+        -- doesn't have enough time to complete before we fade to black."
+        --
+        -- IT WAS STARTING LATE, AND THIS IS HALF OF WHY. That emote streams its
+        -- dictionary at the moment of the press -- inside a bounded wait of up
+        -- to two seconds -- so the FIRST ready-up of a session paid for the
+        -- stream out of the window it then had to play in. Every playtest is a
+        -- fresh session and the first ready-up is the one he watches.
+        --
+        -- Streamed here with the others, under the cover, where a wait costs
+        -- nothing: the dictionary stays resident afterwards, so the press then
+        -- starts the animation in its own frame.
+        if E.ready then ensureDict(E.ready.dict, mine) end
     end
     if token ~= mine then return end
 
@@ -1791,16 +1813,25 @@ RegisterCommand('brlobbywalk', function()
         C.camRounding or 0.5)
     local flight = C.camFlightMs or 18000
     if #plan > 1 then
-        local per = flight / (#plan - 1)
+        -- THE DURATIONS DIFFER NOW, so the milliseconds column is per step
+        -- rather than one number for all of them -- a short step through the
+        -- landing and a long one down the descent is the whole point. If the
+        -- TURN column is not roughly flat, the cost spacing is not doing its
+        -- job and something has gone wrong in here rather than in config.
+        local worst = 0.0
         for i = 2, #plan do
             local a, b = plan[i - 1], plan[i]
             local len = BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z)
-            if i == 2 or i == #plan or (i % 4) == 0 then
-                local turn = math.abs((b.heading - a.heading + 540.0) % 360.0 - 180.0)
+            local ms = flight * (b.t - a.t)
+            local turn = math.abs((b.heading - a.heading + 540.0) % 360.0 - 180.0)
+            if turn > worst then worst = turn end
+            if i == 2 or i == #plan or (i % 8) == 0 then
                 print(('    step %2d    %6.1fm  %5dms  %5.1f m/s  turn %4.1f deg')
-                    :format(i - 1, len, math.floor(per), len / (per / 1000.0), turn))
+                    :format(i - 1, len, math.floor(ms),
+                            ms > 0 and (len / (ms / 1000.0)) or 0.0, turn))
             end
         end
+        print(('    worst step turn %.1f deg over %d steps'):format(worst, #plan - 1))
     end
 
     -- AND WHAT THE LAST RUN ACTUALLY TOOK. The two durations are meant to be
