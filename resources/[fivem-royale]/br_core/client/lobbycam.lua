@@ -207,21 +207,40 @@ end
 --- rather than by inventing tangents: a phantom point in front of the first
 --- node would swing the camera the wrong way out of a shot that is raised
 --- under a black screen and has to be exactly where the survey put it.
-local function crSample(p0, p1, p2, p3, t, key)
+--- @param s number  tangent scale -- see BR.LobbyCam.rounding
+local function crSample(p0, p1, p2, p3, t, key, s)
     local a, b, c, d = p0[key], p1[key], p2[key], p3[key]
+
+    -- ═══ THE HERMITE FORM, BECAUSE THE TANGENT IS THE KNOB ═══
+    --
+    -- This was the expanded Catmull-Rom polynomial with its 0.5 baked into the
+    -- front of it, which is the same curve and hides the one number the owner
+    -- asked for: "round the corners once more."
+    --
+    -- A CORNER IS ROUNDED BY THE TANGENT AT THE POINT, NOT BY SAMPLING IT MORE
+    -- OFTEN. `s` scales the tangent the curve carries THROUGH each control
+    -- point: bigger tangents mean the curve commits to the turn earlier and
+    -- leaves it later, so the direction change is spread over a longer arc.
+    -- 0.5 is a plain Catmull-Rom. More samples along the same curve is smoother
+    -- MOTION over identical GEOMETRY -- which is why camSteps could not answer
+    -- this half of the report and why they are two settings.
+    local m1 = s * (c - a)
+    local m2 = s * (d - b)
+
     local t2 = t * t
     local t3 = t2 * t
-    return 0.5 * ((2.0 * b)
-        + (-a + c) * t
-        + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
-        + (-a + 3.0 * b - 3.0 * c + d) * t3)
+    return (2.0 * t3 - 3.0 * t2 + 1.0) * b
+         + (t3 - 2.0 * t2 + t) * m1
+         + (-2.0 * t3 + 3.0 * t2) * c
+         + (t3 - t2) * m2
 end
 
 --- Walk a control-point list as one curve, parametrised 0..1 over the whole
 --- thing, and answer the point at `u`.
 --- @param pts table  list of { x, y, z }, at least two
+--- @param s number   tangent scale
 --- @return number, number, number
-local function curveAt(pts, u)
+local function curveAt(pts, u, s)
     local segs = #pts - 1
     if segs < 1 then return pts[1].x, pts[1].y, pts[1].z end
     if u <= 0.0 then return pts[1].x, pts[1].y, pts[1].z end
@@ -236,15 +255,32 @@ local function curveAt(pts, u)
     local p1 = pts[i]
     local p2 = pts[math.min(#pts, i + 1)]
     local p3 = pts[math.min(#pts, i + 2)]
-    return crSample(p0, p1, p2, p3, t, 'x'),
-           crSample(p0, p1, p2, p3, t, 'y'),
-           crSample(p0, p1, p2, p3, t, 'z')
+    return crSample(p0, p1, p2, p3, t, 'x', s),
+           crSample(p0, p1, p2, p3, t, 'y', s),
+           crSample(p0, p1, p2, p3, t, 'z', s)
 end
 
--- How finely the curve is measured before it is cut into steps. Not a knob:
--- it only has to be much larger than camSteps for the arc-length mapping to be
--- accurate, and 240 samples over a 350m path is a metre and a half.
-local ARC_SAMPLES = 240
+--- How finely the curve is measured before it is cut into steps.
+---
+--- NOT A KNOB. The samples are what the arc-length mapping is built from, and
+--- there has to be a comfortable number of them per step or the steps come out
+--- uneven -- which would be a stutter wearing the clothes of the smoothness the
+--- step count is meant to deliver.
+---
+--- IT IS HEADROOM RATHER THAN A FIX, AND THAT IS WORTH SAYING PLAINLY. Going to
+--- camSteps 48 was measured against a flat 240 and against this: worst
+--- step-to-step deviation from the ideal exponential ratio was 0.80% either way.
+--- 240 samples over a 360m path is a point every metre and a half, which is
+--- already far finer than the shortest step. So this changes nothing today and
+--- exists because the threshold is real -- at a few hundred steps a flat 240
+--- would be about one sample per step and the mapping would genuinely break
+--- down. Cheap insurance, computed once per entrance, claiming nothing it does
+--- not deliver.
+--- @param steps number
+--- @return number
+local function arcSamples(steps)
+    return math.max(240, math.floor(steps) * 12)
+end
 
 --- The pitch and GTA heading that make a camera at (x,y,z) look at (tx,ty,tz).
 ---
@@ -298,10 +334,13 @@ end
 --- @param decay number   see BR.LobbyCam.pace
 --- @return table plan  { { x, y, z, pitch, heading, ax, ay, az, at }, ... }
 --- @return table marks  one 0..1 per control point, the lobby frame included
-function BR.LobbyCam.flightPlan(nodes, steps, decay)
+function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding)
     nodes = nodes or {}
     if #nodes == 0 then return {} end
     steps = math.max(1, math.floor(steps or 24))
+    -- 0.5 is a plain Catmull-Rom, which is what this was before it was a knob.
+    local tang = rounding or 0.5
+    local samples = arcSamples(steps)
 
     local p = BR.Config.Match.lobbyPos
     local hx, hy, hz, aimX, aimY, aimZ = BR.LobbyCam.lobbyFrame()
@@ -318,10 +357,10 @@ function BR.LobbyCam.flightPlan(nodes, steps, decay)
     -- stretches and slow through bends, which is a pace change nobody asked for
     -- sitting underneath the one that was.
     local us, cum = { 0.0 }, { 0.0 }
-    local px, py, pz = curveAt(pts, 0.0)
-    for i = 1, ARC_SAMPLES do
-        local u = i / ARC_SAMPLES
-        local x, y, z = curveAt(pts, u)
+    local px, py, pz = curveAt(pts, 0.0, tang)
+    for i = 1, samples do
+        local u = i / samples
+        local x, y, z = curveAt(pts, u, tang)
         us[#us + 1]  = u
         cum[#cum + 1] = cum[#cum] + BR.Dist3(px, py, pz, x, y, z)
         px, py, pz = x, y, z
@@ -352,7 +391,7 @@ function BR.LobbyCam.flightPlan(nodes, steps, decay)
         local s = j / steps
         local f = BR.LobbyCam.pace(s, decay)
         local u = paramAt(f)
-        local x, y, z = curveAt(pts, u)
+        local x, y, z = curveAt(pts, u, tang)
 
         local ax = p.x + (aimX - p.x) * f
         local ay = p.y + (aimY - p.y) * f
@@ -382,7 +421,7 @@ function BR.LobbyCam.flightPlan(nodes, steps, decay)
             marks[i] = 1.0
         else
             local u = (i - 1) / segs
-            local k = math.floor(u * ARC_SAMPLES) + 1
+            local k = math.floor(u * samples) + 1
             if k > #cum then k = #cum end
             marks[i] = total > 0.0 and (cum[k] / total) or (u)
         end

@@ -989,7 +989,8 @@ end
 --- @param mine number  the token this thread belongs to
 local function flyCamera(mine)
     local C = cfg()
-    local plan, marks = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0)
+    local plan, marks = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0,
+        C.camRounding or 0.5)
     if #plan < 2 then return end
 
     -- WHERE THE WAVE IS CUED. The camera's "second-to-last position" is the
@@ -1058,7 +1059,8 @@ local function placeOnStart()
     -- camera is pointed -- built separately they disagreed by the difference
     -- between the surveyed heading and the aim point, which is a snap on the
     -- first frame of the flight.
-    local plan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0)
+    local plan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0,
+        C.camRounding or 0.5)
     if plan[1] then BR.LobbyCam.placeAt(plan[1]) end
 end
 
@@ -1770,7 +1772,8 @@ RegisterCommand('brlobbywalk', function()
     print(('  ped          %s'):format(BR.LobbyPed.isNetworked() and 'networked' or 'local'))
     print(('  camFlightMs  %d   (walkTargetMs %d)')
         :format(C.camFlightMs or 0, C.walkTargetMs or 0))
-    print(('  camSteps     %d   camDecay %.2f'):format(C.camSteps or 0, C.camDecay or 0))
+    print(('  camSteps     %d   camDecay %.2f   camRounding %.2f')
+        :format(C.camSteps or 0, C.camDecay or 0, C.camRounding or 0))
     print(('  walkMps      %.2f  blend %.2f..%.2f')
         :format(C.walkMps or 0, C.walkBlendMin or 0, C.walkBlendMax or 0))
     print(('  focusLeadMs  %d'):format(C.focusLeadMs or 0))
@@ -1784,7 +1787,8 @@ RegisterCommand('brlobbywalk', function()
     -- decay is that these numbers COME DOWN -- fast at the top of the column,
     -- slow at the bottom, and never back up. Printed sparsely because two dozen
     -- steps is a screen of console: the first, the last, and every fourth.
-    local plan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0)
+    local plan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0,
+        C.camRounding or 0.5)
     local flight = C.camFlightMs or 18000
     if #plan > 1 then
         local per = flight / (#plan - 1)

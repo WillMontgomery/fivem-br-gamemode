@@ -440,13 +440,62 @@ BR.Config.Match = {
         -- quietly turning the failsafe into a teleport.
         camFlightMs = 13846,
 
-        -- HOW MANY MOVES THE FLIGHT IS CUT INTO. Each one is a linear
-        -- interpolation between two static cameras with NO ease at either end,
-        -- so the camera never stops -- the next move picks it up at the speed
-        -- the last one left it. More steps is a smoother curve and a smoother
-        -- rotation at the cost of two cameras built and one destroyed per step;
-        -- fewer is closer to straight lines between the authored nodes.
-        camSteps = 24,
+        -- ═══ TWO SETTINGS FOR SMOOTHNESS, AND THEY ARE NOT THE SAME THING ═══
+        --
+        -- Owner, 2026-08-29: "the camera movements in the lobby should be 2x
+        -- smoother please. And round the corners once more. I mean like 2x the
+        -- resolution of points."
+        --
+        -- `camSteps` IS THE RESOLUTION -- how many moves the flight is cut into.
+        -- Each one is a linear interpolation between two static cameras with NO
+        -- ease at either end, so the camera never stops: the next move picks it
+        -- up at the speed the last one left it. Doubling it halves both the time
+        -- and the distance per move, which halves how far the shot turns in any
+        -- one of them. That is his "2x the resolution of points", and it was 24.
+        --
+        -- IT DOES NOT ROUND ANYTHING. More samples along the same curve is
+        -- smoother MOTION over identical GEOMETRY -- the path still turns
+        -- exactly as tightly as the spline says. `camRounding` below is the
+        -- other half of the sentence.
+        --
+        -- THE COST IS TWO CAMERAS BUILT AND ONE DESTROYED PER STEP. At 48 over
+        -- a 13.8s flight that is one move every 288ms, which is far longer than
+        -- a frame -- there is no per-step work that does not scale, and the
+        -- retiring camera is destroyed on every move rather than deferred (see
+        -- dropRetiring in lobbycam.lua), so twice the steps is twice the
+        -- allocations and the same number of LIVE cameras: two.
+        camSteps = 48,
+
+        -- ═══ AND THIS IS HOW WIDE IT SWINGS THROUGH EACH CORNER ═══
+        --
+        -- "And round the corners once more."
+        --
+        -- The flight is a spline through the authored nodes, and this scales the
+        -- TANGENT it carries through each one: bigger tangents mean the camera
+        -- commits to a turn earlier and leaves it later, spreading the direction
+        -- change over a longer arc instead of pivoting near the node.
+        --
+        -- 0.5 is a plain Catmull-Rom, which is what the flight was before this
+        -- was a knob. THE CORNER THAT MATTERS IS THE LAST ONE -- the authored
+        -- path turns 17 degrees at node 2 and 69 at node 3, so node 3 is the
+        -- one being asked about -- and measured there:
+        --
+        --   0.50   20.1 deg/m, the turn spread over 10.7m of path
+        --   0.75   15.4 deg/m, spread over 17.8m     <-- here
+        --   1.00   12.6 deg/m, spread over 27.8m
+        --   1.25   39.9 deg/m  -- WORSE THAN 0.50
+        --
+        -- THERE IS A CLIFF AND IT IS JUST PAST 1.0. Past that the tangents are
+        -- long enough that the curve swings wide of a node and has to come back,
+        -- which puts a NEW and sharper bend in the path somewhere else -- at
+        -- 1.25 it is twice as sharp as the corner it was sent to soften, and it
+        -- reads as the camera changing its mind. Raise this if he wants more,
+        -- but not past 1.0 without looking at it.
+        --
+        -- IT MOVES THE PATH, NOT THE PACE. The flight still takes camFlightMs
+        -- whatever this is -- a rounder corner is a slightly longer path flown
+        -- in the same time, so the effect on speed is a percent or two.
+        camRounding = 0.75,
 
         -- ═══ HOW THE SPEED IS SHARED OUT ACROSS THOSE STEPS ═══
         --

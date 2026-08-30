@@ -303,7 +303,16 @@ function SetCamCoord() error('the lobby camera must not write coordinates on a r
 -- only evidence there is.
 local interpUntil = {}
 function SetCamActiveWithInterp(dest, src, ms, easeLoc, easeRot)
-    interpUntil[dest] = fakeTime + (ms or 0)
+    -- ONE FRAME LONGER THAN ASKED FOR, AND THAT IS THE HONEST MODEL. An engine
+    -- interpolation does not finish on a sub-frame boundary: it runs to the end
+    -- of the frame that carries its last millisecond. Modelled as exactly `ms`,
+    -- the fixture's clock landed each move precisely on the previous one's
+    -- expiry, so IsCamInterpolating was always false when the next move was
+    -- issued -- which quietly made the whole retiring-camera path untestable.
+    -- The leak it guards against is a REAL one that showed up in a live count
+    -- last round; with this it is reproducible, and dropRetiring is exercised on
+    -- every step of every flight rather than never.
+    interpUntil[dest] = fakeTime + (ms or 0) + 16
     note('camglide', { from = src, to = dest, ms = ms,
                        easeLoc = easeLoc, easeRot = easeRot })
 end
@@ -316,6 +325,17 @@ local function liveCamCount()
     for _ in pairs(liveCams) do n = n + 1 end
     return n
 end
+
+-- ═══ THE HIGH-WATER MARK, SAMPLED EVERY STEP OF THE CLOCK ═══
+--
+-- A count taken AFTER a flight cannot see a leak that the teardown then tidies
+-- up, and "no camera survives" was the only thing asserted for a long time. The
+-- number that matters while the flight is running is how many are alive AT ONCE:
+-- the retiring camera is destroyed on every move rather than deferred, so it
+-- should be two -- the one rendering and the one being blended away from -- no
+-- matter how many steps the flight is cut into. Doubling camSteps doubles the
+-- allocations and must not move this at all.
+local peakCams = 0
 
 -- Events and the rest of the runtime.
 local handlers = {}
@@ -409,6 +429,12 @@ local function pump(total)
         -- An emote with a duration comes off the ped when it runs out. The
         -- looping ones (duration -1) stay until something clears them, which
         -- is exactly what the game does with them.
+        do
+            local n = 0
+            for _ in pairs(liveCams) do n = n + 1 end
+            if n > peakCams then peakCams = n end
+        end
+
         if ped.anim and ped.anim.until_ and fakeTime >= ped.anim.until_ then
             ped.anim = nil
         end
@@ -528,6 +554,7 @@ local function reset()
     -- rearm() bumps the token and lands the camera; sweep the ledger again so a
     -- test starts from nothing.
     for c in pairs(liveCams) do liveCams[c] = nil end
+    peakCams = 0
     order = {}
 end
 
@@ -873,11 +900,28 @@ do
     ok(arrival ~= nil, 'the arrival re-freezes the ped')
 
     -- NO CAMERA IS LEFT BEHIND by a flight that ran to completion -- and after
-    -- the resampling that is two dozen moves rather than three, so a sweep that
-    -- only ran on the happy path would leak two dozen cameras.
+    -- the resampling that is four dozen moves rather than three, so a sweep
+    -- that only ran on the happy path would leak four dozen cameras.
     pump(2000)
     ok(liveCamCount() <= 1,
        ('a completed flight leaves one camera, not %d'):format(liveCamCount()))
+
+    -- ═══ AND IT NEVER HELD MORE THAN TWO AT ONCE ═══
+    --
+    -- THE ASSERTION THAT SCALES WITH camSteps, which the one above does not: a
+    -- count taken after the flight cannot tell a build that leaked nothing from
+    -- one that leaked forty-seven cameras and then tidied up. Two is the whole
+    -- budget -- the camera rendering and the one being blended away from -- and
+    -- it is two whether the flight is cut into three moves or fifty, because
+    -- dropRetiring destroys the retiring camera on every move instead of
+    -- deferring while the current one interpolates.
+    --
+    -- THIS IS THE COST CHECK FOR DOUBLING THE STEP COUNT. Twice the steps is
+    -- twice the allocations and the same two live cameras; if that stopped
+    -- being true, raising camSteps would be buying smoothness with a leak.
+    ok(peakCams <= 2,
+        ('and never held more than two at once across %d steps (peak %d)')
+            :format(BR.Config.Match.lobbyEntrance.camSteps, peakCams))
 
     -- The focus was given back.
     ok(firstOf('focusback') ~= nil, 'the streaming focus is handed back at the end')
@@ -984,6 +1028,21 @@ do
     ok(liveCamCount() <= camsAfter,
        ('no camera is created afterwards (%d then, %d now)')
            :format(camsAfter, liveCamCount()))
+
+    -- ═══ AND THE SETTLE OUT OF AN ABANDONED FLIGHT LEAVES NOTHING EITHER ═══
+    --
+    -- THE ONE PATH WHERE A DEFERRED SWEEP REALLY DOES LEAK. Abandoning
+    -- mid-flight means the current move IS still interpolating, so sweepRetired
+    -- declines to tidy -- and glideHome then overwrites the only reference to
+    -- that camera on its way to landing the shot. "No camera was CREATED
+    -- afterwards" above cannot see it: the leak happened during the stop, not
+    -- after it. The count once the settle has run is what can.
+    ok(liveCamCount() <= 1,
+       ('and the settle out of an abandoned flight leaves one camera, not %d')
+           :format(liveCamCount()))
+    ok(peakCams <= 2,
+       ('with never more than two alive at once through the whole abandonment '
+            .. '(peak %d)'):format(peakCams))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1458,6 +1517,69 @@ do
                 .. '%.3f late'):format(early, late))
     end
 
+    -- ═══ THE RESOLUTION AND THE ROUNDING ARE DIFFERENT SETTINGS ═══
+    --
+    -- Owner, 2026-08-29: "the camera movements in the lobby should be 2x
+    -- smoother please. And round the corners once more. I mean like 2x the
+    -- resolution of points."
+    --
+    -- TWO CLAIMS, AND CONFLATING THEM IS THE EASY MISTAKE: more sample points
+    -- is smoother MOTION over identical GEOMETRY. Doubling camSteps halves how
+    -- far the shot turns in any one move and changes the PATH not at all, so a
+    -- build that answered the whole sentence with camSteps would look smoother
+    -- and still corner exactly as tightly. These assertions are pure
+    -- flightPlan arithmetic -- no fixture clock -- and they pin each knob to
+    -- the half of the report it actually answers.
+    --
+    -- The measure is the path's own bend: degrees of TRAVEL direction per
+    -- metre, densely sampled so it cannot be an artefact of the step count.
+    local function sharpestBend(steps, rounding)
+        local pl = BR.LobbyCam.flightPlan(C.camPath, steps, 0.0, rounding)
+        local worst, prevB = 0.0, nil
+        for i = 2, #pl do
+            local a, b = pl[i - 1], pl[i]
+            local d = BR.Dist(a.x, a.y, b.x, b.y)
+            if d > 0.02 then
+                local bg = BR.Bearing(a.x, a.y, b.x, b.y)
+                if prevB then
+                    local turn = math.abs((bg - prevB + 540.0) % 360.0 - 180.0)
+                    if turn / d > worst then worst = turn / d end
+                end
+                prevB = bg
+            end
+        end
+        return worst
+    end
+
+    -- ROUNDING CHANGES THE PATH. The shipped value has to be meaningfully
+    -- gentler through the corner than a plain Catmull-Rom, or it is a knob that
+    -- does nothing and the second half of the report is unanswered.
+    local plain   = sharpestBend(2000, 0.5)
+    local rounded = sharpestBend(2000, C.camRounding)
+    ok(rounded < plain * 0.90,
+        ('camRounding genuinely opens the corner out -- %.1f deg/m at a plain '
+            .. '0.50 against %.1f at %.2f'):format(plain, rounded, C.camRounding))
+
+    -- ...AND STEPS DO NOT. Same rounding, four times the samples, same path.
+    -- This is the assertion that fails if somebody "answers" the rounding half
+    -- by raising camSteps again.
+    local few  = sharpestBend(500, C.camRounding)
+    local many = sharpestBend(2000, C.camRounding)
+    ok(math.abs(few - many) < math.max(0.5, many * 0.10),
+        ('and camSteps does not -- the geometry is the same path however often '
+            .. 'it is sampled (%.1f vs %.1f deg/m)'):format(few, many))
+
+    -- AND THE SHIPPED ROUNDING IS THE RIGHT SIDE OF THE CLIFF. Past about 1.0
+    -- the tangents are long enough that the curve swings wide of a node and has
+    -- to come back, putting a NEW and sharper bend in the path -- at 1.25 it
+    -- measures worse than 0.50 did. A value beyond that is not more rounding,
+    -- it is a different corner somewhere else.
+    ok(C.camRounding >= 0.5 and C.camRounding <= 1.0,
+        ('the shipped rounding is between a plain spline and the overshoot '
+            .. 'cliff (%.2f)'):format(C.camRounding))
+    ok(sharpestBend(2000, 1.25) > plain,
+        'and past the cliff really is worse than not rounding at all')
+
     -- ═══ AND THE FACING TURNS SMOOTHLY ═══
     --
     -- "the camera facing direction changes too suddenly". Three authored
@@ -1469,9 +1591,24 @@ do
         local d = math.abs((made[i].yaw - made[i - 1].yaw + 540.0) % 360.0 - 180.0)
         if d > worstTurn then worstTurn, at = d, i end
     end
-    ok(#made > 4 and worstTurn < 30.0,
-        ('no single step of the flight turns the camera sharply (worst %.1f '
-            .. 'degrees at step %d)'):format(worstTurn, at))
+
+    -- ═══ AND THIS IS WHERE THE RESOLUTION IS ACTUALLY ASSERTED ═══
+    --
+    -- "the camera movements in the lobby should be 2x smoother please ... 2x
+    -- the resolution of points." Doubling camSteps halves the time and the
+    -- distance in each move, so what it buys is a shot that turns LESS far in
+    -- any one of them -- which is the thing he will judge by eye and the only
+    -- honest place to pin the number.
+    --
+    -- Measured: 20.4 degrees at the old 24 steps, 12.8 at 48. Fifteen is the
+    -- line between them, and it is not an arbitrary one -- above about that a
+    -- single move starts reading as a jump rather than as motion. The worst is
+    -- always the LAST step, where the camera is under two metres from its
+    -- subject and a small move is a large angle.
+    ok(#made > 4 and worstTurn < 15.0,
+        ('no single step of the flight turns the camera far enough to read as a '
+            .. 'jump (worst %.1f degrees at step %d of %d)')
+            :format(worstTurn, at, #made - 1))
 
     -- ═══ AND NOTHING SITS BETWEEN TWO STEPS ═══
     --
