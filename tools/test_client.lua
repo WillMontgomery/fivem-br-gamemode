@@ -6644,6 +6644,217 @@ do
     sent = {}
 end
 
+-- ------------------------------------------------ the runway camera pin ---
+--
+-- "Can you lock the camera movement while in the plane until the plane is off
+--  the runway?"                                            -- owner, #241
+--
+-- ═══ THE MOUSE IS HELD DOWN FOR THE WHOLE OF THIS BLOCK, ON PURPOSE ═══
+--
+-- The block above stubs GetControlNormal to a flat 0.0, which is a hand that is
+-- not touching the mouse -- and against THAT hand a camera that is pinned and a
+-- camera that is free produce identical numbers. So the fixture here pushes the
+-- look axes hard on every frame and asks where the shot actually ended up. A
+-- pin that is asserted but does not hold, and a pin that holds for a reason
+-- other than the one claimed, both fail.
+--
+-- ═══ AND THE PLANE IS PARKED, WHICH IS WHAT MAKES THE READING MEAN ANYTHING ═
+--
+-- Every point of this route is the same point, so BR.PathPosAt answers the same
+-- coordinates on every frame and the look-ahead is zero-length (bus.fly's
+-- `hLen > 1.0` is false, so the smoothed heading never moves either). The
+-- camera coordinate is therefore a PURE FUNCTION OF THE ORBIT -- camYaw and
+-- camPitch and nothing else -- and "the shot did not move" is exactly "the
+-- orbit did not move" rather than an accident of where the aeroplane was.
+--
+-- ═══ WHAT IT DELIBERATELY DOES NOT COVER ═══
+--
+-- Whether `rotateAt` is the moment a PLAYER would call "off the runway". That
+-- is the server's stamp for the last sample of the ground roll and two other
+-- subsystems already clock off it; whether it reads right from the cabin is a
+-- playtest fact and is named as one in the report.
+
+describe('the camera is pinned to the airframe until the wheels are up -- #241')
+do
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    -- A hand shoving the look axes, every frame, in one direction.
+    local realNormal = GetControlNormal
+    GetControlNormal = function(_pad, control)
+        if control == 1 or control == 2 then return 0.5 end
+        return 0.0
+    end
+
+    -- WHERE THE SHOT IS, rather than whether a native was called. bus.fly
+    -- writes the camera coordinate every frame whether or not the orbit moved,
+    -- so a spy on SetCamCoord would count sixty calls under a pin that was
+    -- working perfectly. The VALUE is the only thing that separates them.
+    local camAt = nil
+    local realCamCoord = SetCamCoord
+    SetCamCoord = function(_c, x, y, z) camAt = { x = x, y = y, z = z } end
+    local function shot()
+        return camAt and ('%.4f,%.4f,%.4f'):format(camAt.x, camAt.y, camAt.z)
+            or 'no shot'
+    end
+
+    -- ...AND WHAT THE PLAYER'S HAND MEETS, which is a different claim from
+    -- where the shot ended up: an orbit frozen by a skipped accumulation still
+    -- leaves the mouse driving the hidden gameplay camera. Reset per frame,
+    -- because a disable lasts exactly one -- the same reason the file-level
+    -- `disabled` table is cleared in frame().
+    local realDisable = DisableControlAction
+    local blocked = {}
+    DisableControlAction = function(pad, c)
+        blocked[c] = true
+        return realDisable(pad, c)
+    end
+    local function flyFrame()
+        blocked = {}
+        frame(16)
+    end
+
+    --- Put this client aboard a PARKED plane whose wheels come up in `rollMs`.
+    local function boardWithRoll(rollMs)
+        local t = GetGameTimer()
+        local pts = {}
+        for i = 0, 8 do
+            pts[#pts + 1] = { x = 0.0, y = 0.0, z = 500.0, t = t + i * 4000 }
+        end
+        fire(BR.Net.BUS_ROUTE, {
+            points = pts, timed = true, heading = 0.0,
+            sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+            tStart = t, rotateAt = t + rollMs,
+            jumpFrom = t + rollMs + 1000, doorsClose = t + 20000,
+            tEnd = t + 30000,
+        })
+        BR.State.match = { state = BR.MatchState.BUS }
+        BR.State.me.state = BR.PlayerState.BUS
+        local before = #threads
+        BR.Loop.step(BR.Loop.TICK)
+        for i = before + 1, #threads do threads[i]() end
+        flyFrame()
+    end
+
+    -- ── 1. ON THE RUNWAY, THE SHOT DOES NOT MOVE ───────────────────────────
+    boardWithRoll(6000)
+
+    ok(BR.Bus and BR.Bus.camLocked and BR.Bus.camLocked() == true,
+        'boarding on the runway pins the camera',
+        BR.Bus and BR.Bus.camLocked and tostring(BR.Bus.camLocked())
+            or 'BR.Bus.camLocked does not exist')
+
+    local pinnedAt = shot()
+    for _ = 1, 40 do flyFrame() end
+    ok(shot() == pinnedAt,
+        'and forty frames of the mouse being shoved do not move it',
+        ('%s -> %s'):format(pinnedAt, shot()))
+
+    -- ...AND THE INPUT ITSELF IS TAKEN, not merely ignored. LOOK_LR and LOOK_UD
+    -- also steer the hidden gameplay camera, which is the view handed back when
+    -- the ride ends.
+    ok(blocked[1] == true and blocked[2] == true,
+        'and the look axes are disabled rather than only unread',
+        ('LOOK_LR %s  LOOK_UD %s'):format(tostring(blocked[1]),
+            tostring(blocked[2])))
+
+    -- ── 2. WHEELS UP, AND IT LETS GO ON THE CLOCK ALONE ────────────────────
+    --
+    -- NOTHING IS TOLD ABOUT THIS. No event arrives, no handler runs, no flag is
+    -- cleared -- the only thing that changes between the frame above and the
+    -- frame below is what time it is. That is the whole claim of a level: it
+    -- expires without anybody remembering to expire it.
+    frames(30, 200)   -- six seconds of clock, one route sample apart
+    ok(BR.Bus.camLocked() == false,
+        'the pin lifts at wheels-up with nothing having been told about it',
+        ('rotate has passed and camLocked is %s')
+            :format(tostring(BR.Bus.camLocked())))
+
+    local freeFrom = shot()
+    for _ = 1, 10 do flyFrame() end
+    ok(shot() ~= freeFrom,
+        'and the same shove now moves the shot -- free look is genuinely back',
+        ('%s -> %s'):format(freeFrom, shot()))
+    ok(blocked[1] ~= true and blocked[2] ~= true,
+        'with the look axes handed back',
+        ('LOOK_LR %s  LOOK_UD %s'):format(tostring(blocked[1]),
+            tostring(blocked[2])))
+
+    -- ── 3. EVERY ENDING GIVES IT BACK, INCLUDING THE ONES STILL ON THE
+    --       RUNWAY ────────────────────────────────────────────────────────
+    --
+    -- THE CLOCK IS DELIBERATELY LEFT INSIDE THE PIN'S WINDOW FOR BOTH OF THESE.
+    -- If the endings below were passing because time had run out, they would
+    -- prove nothing about the ending. So the roll is made long enough that
+    -- wheels-up is still seconds away when the ride is taken apart, and what
+    -- lifts the pin is the teardown and only the teardown.
+
+    -- (a) THE MATCH ENDS UNDERNEATH THEM -- which is also being killed on the
+    --     bus, being sent back to the lobby, and any other flip of my state
+    --     off BUS: bus.board reaches the same cleanup() for all of them.
+    boardWithRoll(60000)
+    ok(BR.Bus.camLocked() == true, 'precondition: pinned, with a long roll left')
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.TICK)
+    flyFrame()
+    ok(BR.Bus.camLocked() == false,
+        'a match torn down mid-roll frees the camera, though the clock still '
+            .. 'says we are on the runway',
+        tostring(BR.Bus.camLocked()))
+    ok(blocked[1] ~= true and blocked[2] ~= true,
+        'and nothing is left asserting the look axes',
+        ('LOOK_LR %s  LOOK_UD %s'):format(tostring(blocked[1]),
+            tostring(blocked[2])))
+
+    -- (b) THE JUMP, which is the ending nearly every ride actually takes. The
+    --     server's exit coordinates arrive, beginDrop tears the plane down --
+    --     and the player is now falling with a camera that has to work.
+    boardWithRoll(60000)
+    ok(BR.Bus.camLocked() == true, 'precondition: pinned again')
+    fire(BR.Net.BUS_JUMP_OK, { x = 0.0, y = 0.0, z = 400.0, heading = 0.0 })
+    flyFrame()
+    ok(BR.Bus.camLocked() == false,
+        'and jumping out frees it too -- on the coordinates, not on a timer',
+        tostring(BR.Bus.camLocked()))
+    ok(blocked[1] ~= true and blocked[2] ~= true,
+        'with the look axes handed back on the way out',
+        ('LOOK_LR %s  LOOK_UD %s'):format(tostring(blocked[1]),
+            tostring(blocked[2])))
+
+    -- (c) AND A PLAYER WHO IS NOT ON A BUS AT ALL IS NEVER PINNED. The
+    --     predicate is read every frame by a loop that runs for the whole
+    --     session; a lobby bystander must be no more affected by it than by the
+    --     plane itself.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    flyFrame()
+    ok(BR.Bus.camLocked() == false, 'a player who is not aboard is never pinned',
+        tostring(BR.Bus.camLocked()))
+
+    -- 4. /brbus SAYS WHICH IT IS AND WHEN IT COMES OFF. "The camera is stuck"
+    --    is the sentence this feature can produce, and it has to be answerable
+    --    from one paste rather than from a second playtest.
+    boardWithRoll(6000)
+    logged = {}
+    ok(pcall(commands['brbus'], nil, {}, ''), '/brbus still does not throw',
+        table.concat(logged, '\n'))
+    local busDump = table.concat(logged, '\n')
+    ok(busDump:find('PINNED', 1, true) ~= nil
+        and busDump:find('wheels%-up') ~= nil,
+        'and reports the pin and the wheels-up deadline it lifts on', busDump)
+    logged = {}
+
+    -- Put the world back the way the blocks below expect to find it.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    DisableControlAction = realDisable
+    SetCamCoord = realCamCoord
+    GetControlNormal = realNormal
+    sent = {}
+end
+
 describe('an inventory starts and returns to fists, not to slot 1 -- #155')
 do
     -- Owner, 2026-08-16: "The default inventory slot should be fists, not slot

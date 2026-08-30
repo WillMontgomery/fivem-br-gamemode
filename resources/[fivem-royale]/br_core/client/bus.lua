@@ -379,6 +379,78 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     end
 end)
 
+-- ------------------------------------------------------ the runway pin ---
+--
+-- "Can you lock the camera movement while in the plane until the plane is off
+--  the runway?"                                            -- owner, #241
+--
+-- ═══ "OFF THE RUNWAY" IS route.rotateAt, AND IT WAS ALREADY THERE ═══
+--
+-- No geometry was invented for this. server/bus.lua stamps `rotateAt` onto the
+-- timed route -- "wheels leave the runway", the clock at `rotateIdx`, which is
+-- the LAST SAMPLE OF THE GROUND ROLL (the 32 uniform-acceleration samples from
+-- the spawn to `rotatePoint`, the surveyed end of the tarmac). It is the
+-- server's own answer to the owner's own words, it rides the same synced clock
+-- everything else on this flight is derived from, and TWO IN-FLIGHT EVENTS ARE
+-- ALREADY HUNG ON IT: the island handoff (rotateAt + 5500, above) and the
+-- bucket hop (rotateAt + 3500, server/bus.lua). A distance test, an altitude
+-- threshold or an IsEntityInAir read would each have been a THIRD opinion about
+-- a moment two other subsystems already agree on -- and the first two of those
+-- would disagree with each other on the northern exits, where the authored
+-- waypoints carry their own z.
+--
+-- The pin therefore covers the parked idle AND the roll -- boardSeconds (5) plus
+-- ~9.5s of tarmac -- and lifts on the frame the wheels come up.
+--
+-- ═══ A LEVEL, NOT A LATCH, WHICH IS THE WHOLE OF THE SAFETY ARGUMENT ═══
+--
+-- client/dbno.lua makes this case at length over REVIVING_BLOCKED and
+-- client/spectate.lua makes it again over its own list; this is the third
+-- reader of the same rule and it is here for the same reason. A PLAYER LEFT
+-- WITH A CAMERA THAT WILL NOT TURN CANNOT FIX IT THEMSELVES, so the mechanism
+-- has to be one that cannot be left on rather than one that is carefully turned
+-- off on every ending.
+--
+-- There is no start call and no stop call. `camPinned()` is asked every frame
+-- and answers from state that four separate things take away, so EVERY exit is
+-- the same exit -- this branch stops being taken:
+--
+--   THE JUMP           beginDrop -> cleanup(): cam destroyed, riding false.
+--   KILLED / MATCH TORN DOWN / BACK TO LOBBY / STATE FLAP
+--                      bus.board's `riding and me ~= BUS` branch -> cleanup().
+--   RESOURCE RESTART   onResourceStop -> cleanup(); and the file stops running,
+--                      which on its own is enough -- DisableControlAction lasts
+--                      exactly one frame.
+--   DISCONNECT/RECONNECT
+--                      a fresh client holds none of this.
+--
+-- ...AND IF EVERY ONE OF THOSE SOMEHOW FAILED, THE CLOCK STILL LIFTS IT. The
+-- predicate is bounded by a timestamp the server published before the flight
+-- began, so a wedged `riding` expires at wheels-up on its own. That is the
+-- property no teardown-by-name could have.
+--
+-- ═══ AND /brunstuck IS NOT THE NET, WHICH IS WORTH SAYING PLAINLY ═══
+--
+-- It would not lift this and it does not need to. Nothing here is latched, so
+-- there is nothing for `SetPlayerControl(..., true, 0)` to release; and its
+-- `DestroyAllCams` leaves this file's `cam` a stale non-nil handle, so the pin
+-- would keep being asserted for its remaining seconds either way. What that
+-- command WOULD do mid-flight is take the ride's camera down and hand the
+-- player the gameplay one -- degraded, but not stuck, and the clock still ends
+-- the pin. The escape hatch here is the timestamp, not the command.
+BR.Bus = BR.Bus or {}
+
+--- Is the camera pinned to the airframe this frame?
+---
+--- Read by bus.fly and by /brbus. Nil-safe at the call site for the reason
+--- BR.BusLine.drawn() is: it is this file's locals, and the only thing a reader
+--- outside needs is the answer.
+--- @return boolean
+function BR.Bus.camLocked()
+    if not riding or not cam or not route or not route.timed then return false end
+    return BR.Clock.now() < (route.rotateAt or route.tStart)
+end
+
 -- Fly the plane. Frame loop, active only while a bus exists; everyone
 -- computes the same position from the same record and the same clock.
 --
@@ -466,8 +538,38 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     -- Based on the SMOOTHED heading -- on the raw one, every waypoint step
     -- swung the entire view and snapped it back.
     if cam then
-        camYaw   = (camYaw - GetControlNormal(0, 1) * 8.0) % 360.0
-        camPitch = BR.Clamp(camPitch - GetControlNormal(0, 2) * 6.0, -75.0, 25.0)
+        -- THE RUNWAY PIN. See the block above camLocked() for what "off the
+        -- runway" is and why nothing has to restore this.
+        --
+        -- TWO ASSERTIONS, AND THEY ARE NOT ONE MADE TWICE.
+        --
+        --   THE DISABLE is what the player's hand meets: LOOK_LR and LOOK_UD
+        --   are the mouse and the right stick, and blocking them is this
+        --   project's standing idiom for "this input is not available right
+        --   now" (spectate.lua, dbno.lua, inventory.lua). It also keeps the
+        --   HIDDEN gameplay camera still while the scripted one is rendering,
+        --   which is what stops a player who mashed the mouse through the roll
+        --   being handed a view pointing somewhere else when the ride ends.
+        --
+        --   THE SKIP is what the ORBIT obeys, and it is deliberately not left
+        --   to fall out of the disable. GetControlNormal answers 0.0 for a
+        --   disabled control -- that is the contract dbno.lua's crawl relies on
+        --   from the other side, reading 30-35 back through
+        --   GetDisabledControlNormal -- so the accumulation below would already
+        --   be a no-op. Relying on that would make this feature a property of
+        --   engine semantics for disabled controls rather than of a line
+        --   anybody can read, and the next person to add a control to the list
+        --   would have no way of knowing which half was load-bearing.
+        --
+        -- Both are per-frame. Neither is undone anywhere, because neither is
+        -- done anywhere except on the frames it applies to.
+        if BR.Bus.camLocked() then
+            DisableControlAction(0, 1, true)   -- LOOK_LR
+            DisableControlAction(0, 2, true)   -- LOOK_UD
+        else
+            camYaw   = (camYaw - GetControlNormal(0, 1) * 8.0) % 360.0
+            camPitch = BR.Clamp(camPitch - GetControlNormal(0, 2) * 6.0, -75.0, 25.0)
+        end
 
         local dist = BR.Config.Bus.camDistance
         local yawRad   = math.rad((smoothHdg or 0.0) + 180.0 + camYaw)  -- 0 = behind
@@ -959,6 +1061,18 @@ RegisterCommand('brbus', function()
     print('=== bus (client) ===')
     print(('  riding %s   bus %s   cam %s   dropStateGate %s'):format(
         tostring(riding), tostring(bus), tostring(cam), tostring(BR.State.me.state)))
+    -- THE RUNWAY PIN, AND WHEN IT COMES OFF (#241). "The camera is stuck" is a
+    -- sentence a playtester will produce for at least three different reasons --
+    -- the pin is on, the pin is off and the shot is broken, or there is no shot
+    -- at all -- and only the first of those has a deadline. Printed as the
+    -- deadline rather than as a bare boolean so a pin that is ON reads as
+    -- "lifts in 4.2s" and a pin that is somehow not lifting reads as a number
+    -- that stopped falling.
+    if route and route.timed then
+        print(('  camera %s   (wheels-up %+.1fs relative to now)'):format(
+            BR.Bus.camLocked() and 'PINNED to the airframe' or 'free',
+            ((route.rotateAt or route.tStart) - BR.Clock.now()) / 1000))
+    end
     print(('  clock  offset %.0fms  synced %s  now %d'):format(
         BR.Clock.offset, tostring(BR.Clock.synced), BR.Clock.now()))
     -- THE PROMPT AND THE KEY, BEFORE THE ROUTE, because "there was no prompt"
