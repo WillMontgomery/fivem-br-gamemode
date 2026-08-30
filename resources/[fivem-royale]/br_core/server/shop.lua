@@ -307,7 +307,7 @@ AddEventHandler('br:shop:buy', function(d)
     -- optimistically and rolled back on a refusal is a car that briefly existed;
     -- the ordering below means it never does.
     inflight[src] = true
-    BR.Market.charge(src, row.price, 'shop:' .. row.id, function(paid, why2)
+    BR.Market.charge(src, row.price, 'shop:' .. row.id, function(paid, why2, left)
         inflight[src] = nil
 
         if not paid then
@@ -334,8 +334,24 @@ AddEventHandler('br:shop:buy', function(d)
             delivered = false,
         }
 
-        -- THE OWNER'S SENTENCE, VERBATIM, AND THE ONLY ONE THIS PATH SPEAKS.
-        BR.Server.notify(src, S.boughtToast, 'success')
+        -- ═══ THE OWNER'S TWO SENTENCES, VERBATIM, AND THE ONLY ONES THIS PATH
+        --     SPEAKS ═══
+        --
+        -- #239: "'Thank you for your purchase.' toast should also include a
+        -- note about their new balance, stated as 'Your new balance is: [X]
+        -- Volts.'" Both strings are authored in config/shop.lua and joined by
+        -- BR.ShopSolve.boughtToast, which is where a test can run the joining.
+        --
+        -- `left` IS THE ROW'S OWN FIGURE AND NOT ARITHMETIC. It comes out of
+        -- BR.Market.charge, which took it from `br:ddb:spend`'s UPDATED_NEW
+        -- answer -- so the toast quotes what DynamoDB holds after the write, and
+        -- it is the same number BR.Market.push has just sent the Store screen.
+        -- `row.price` subtracted from a cached balance here would be a second
+        -- computation of one fact, free to disagree with the screen the player
+        -- can open in the next breath, and the exact staleness the debit was
+        -- moved into DynamoDB to end.
+        BR.Server.notify(src, BR.ShopSolve.boughtToast(
+            S, left, BR.Config.Market and BR.Config.Market.currency), 'success')
         -- ...and the pickup cue, which the CLIENT plays because a frontend sound
         -- is a client thing. The existing one: see config/shop.lua on why there
         -- is no new cue.

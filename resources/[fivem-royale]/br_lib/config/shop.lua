@@ -793,6 +793,31 @@ BR.Config.Shop = {
     -- sentence is reused), no explanation of what the item does.
     boughtToast = 'Thanks for your purchase. It will be available in your '
                .. 'inventory once the match starts.',
+
+    -- ...AND THE SECOND SENTENCE OF THE SAME TOAST (#239).
+    --
+    -- Owner, 2026-08-30: "'Thank you for your purchase.' toast should also
+    -- include a note about their new balance, stated as 'Your new balance is:
+    -- [X] Volts.'"
+    --
+    -- HIS WORDING, INCLUDING THE COLON AND THE FULL STOP. `[X] Volts` is his
+    -- placeholder for the figure and the currency word together, which is
+    -- exactly what BR.ShopSolve.priceLine already builds -- so there is ONE
+    -- `%s` here rather than a `%d` and a second `%s`. That matters: a two-slot
+    -- template would put the space between the number and the word in this
+    -- string as well as in priceLine, and the two would drift the day the
+    -- currency is renamed.
+    --
+    -- THE WORD ITSELF IS NOT IN THIS STRING. config/market.lua's `currency` is
+    -- the one place it is spelled, and it reaches the slot through priceLine.
+    -- Writing "Volts" here would make it three places, counting Ringmaster's
+    -- constant, and the third is the one nobody greps.
+    --
+    -- AND IT IS ONE TOAST, NOT TWO. He said the purchase toast "should ALSO
+    -- include" the balance, so the two sentences are joined with a space and
+    -- shown together; a second notification would stack on the first and push
+    -- it off the top of the list.
+    balanceToast = 'Your new balance is: %s.',
     -- The plate. `%s` is the model name; the price is the second line and is
     -- rendered as a bare number, which is how every other Volts figure in this
     -- game is written.

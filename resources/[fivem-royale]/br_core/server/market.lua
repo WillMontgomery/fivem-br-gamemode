@@ -510,10 +510,33 @@ end
 --- A refusal releases the reservation and pushes again, so a player who was
 --- refused is looking at the number they actually have.
 ---
+--- ═══ AND IT HANDS BACK WHAT IS LEFT, BECAUSE THE CALLER MUST NOT RE-DERIVE IT
+---     ═══
+---
+--- The third argument to `done` is the balance AFTER the debit, and it exists
+--- because #239 wants it in a toast: "Your new balance is: [X] Volts."
+---
+--- IT IS THE ROW'S ANSWER, NOT ARITHMETIC. `br:ddb:spend` writes with
+--- ReturnValues UPDATED_NEW, so `extra.balance` is what the row holds after the
+--- conditional write -- and a caller doing `balance - price` for itself would
+--- disagree with it the moment another writer (a report award, a console grant,
+--- a second server) moved the row between the read and the press. That is the
+--- exact case the debit was moved into DynamoDB to fix, and re-deriving the
+--- figure here would reintroduce it in the one place a player reads it.
+---
+--- IT IS ALSO THE NUMBER THE STORE SCREEN SHOWS, by construction: BR.Market.push
+--- sends `BR.Market.spendable(entry)` and this is the same call on the same
+--- entry one line later. A toast and a screen that disagreed about a balance
+--- would be worse than either of them being absent.
+---
+--- NIL ON A REFUSAL. There is no "new" balance when nothing was charged, and a
+--- caller that printed one would be quoting a figure for a purchase that did not
+--- happen.
+---
 --- @param src integer
 --- @param amount number
 --- @param reason string  for the console line only; never shown to a player
---- @param done fun(ok:boolean, why:string|nil)|nil
+--- @param done fun(ok:boolean, why:string|nil, balance:integer|nil)|nil
 function BR.Market.charge(src, amount, reason, done)
     done = done or function() end
 
@@ -563,10 +586,13 @@ function BR.Market.charge(src, amount, reason, done)
             -- cache that another writer may have moved.
             entry.balance = tonumber(extra.balance) or ((tonumber(entry.balance) or 0) - cost)
             BR.Market.push(src)
+            -- ONE READ, THREE USES. The console line, the Store screen (pushed
+            -- one line above, out of the same call) and the caller's toast all
+            -- quote this, so there is no arrangement in which they disagree.
+            local left = BR.Market.spendable(entry)
             print(('[br_core] market: %s charged %d Volts (%s) -- %d left')
-                :format(tostring(lic), cost, tostring(reason),
-                        BR.Market.spendable(entry)))
-            done(true, nil)
+                :format(tostring(lic), cost, tostring(reason), left))
+            done(true, nil, left)
             return
         end
 

@@ -592,7 +592,12 @@ local FIXTURE = {
     tokenMarker = 34,
     spawnAheadM = 5.0,
     signLabel   = BR.Config.Shop.signLabel,
-    boughtToast = BR.Config.Shop.boughtToast,
+    -- THE SHIPPED STRINGS, BY REFERENCE. Both halves of the purchase toast are
+    -- the owner's wording, so what the handler is exercised against below is
+    -- what a player actually reads -- not a copy of it that could be edited to
+    -- agree with a broken join.
+    boughtToast  = BR.Config.Shop.boughtToast,
+    balanceToast = BR.Config.Shop.balanceToast,
     cue         = BR.Config.Shop.cue,
     lockedState = 2,
     items = {
@@ -1011,7 +1016,15 @@ BR.Market = {
             end
             BR.Market.balances[src] = BR.Market.balances[src] - amount
             charged[#charged + 1] = { src = src, amount = amount, reason = reason }
-            done(true, nil)
+            -- ═══ THE THIRD ARGUMENT IS THE BALANCE AFTER THE DEBIT (#239) ═══
+            --
+            -- The real BR.Market.charge takes it from `br:ddb:spend`'s
+            -- UPDATED_NEW answer -- the row's own figure -- and hands it to the
+            -- caller so nothing has to re-derive it. Handed back here for the
+            -- same reason the `quiet` option is recorded: a stub that swallowed
+            -- it would let the toast go back to arithmetic on a cache with
+            -- every assertion in this file still green.
+            done(true, nil, BR.Market.balances[src])
         end
         if BR.Market.hold then
             BR.Market.held[#BR.Market.held + 1] = settle
@@ -1115,12 +1128,22 @@ do
            and buysOf(10)[1].matchId == 1,
         'and the purchase is recorded against this match')
 
-    -- ═══ THE OWNER'S SENTENCE, VERBATIM ═══
+    -- ═══ THE OWNER'S TWO SENTENCES, VERBATIM, IN ONE TOAST ═══
+    --
+    -- #239: "'Thank you for your purchase.' toast should also include a note
+    -- about their new balance, stated as 'Your new balance is: [X] Volts.'"
+    --
+    -- THE FIGURE IS THE ONE THE CHARGE LEFT BEHIND, not the price subtracted
+    -- from anything here: the player started on 1000 and the runner costs 750,
+    -- so 250 is what the row holds and 250 is what the toast must say.
     ok(#notices == 1 and notices[1].text ==
         'Thanks for your purchase. It will be available in your inventory '
-        .. 'once the match starts.',
-        'the toast is the owner\'s wording, exactly',
+        .. 'once the match starts. Your new balance is: 250 Volts.',
+        'the toast is the owner\'s wording, exactly, both sentences of it',
         notices[1] and notices[1].text)
+    ok(#notices == 1,
+        'and it is ONE toast rather than two -- a second notification would '
+            .. 'stack on the first and push it off the top', #notices)
 
     ok(#sent == 1 and sent[1].name == 'br:shop:bought',
         'and the client is told, so it can play the existing pickup cue')
@@ -1245,6 +1268,32 @@ do
     local prs = code(readFile(RES .. 'br_stats/server/persist.lua'))
     ok(mkt:find("ask%('br:ddb:spend'") ~= nil,
         'BR.Market.charge writes the debit through br_ddb\'s spend verb')
+
+    -- ═══ ...AND HANDS THE ROW'S OWN FIGURE BACK, WHICH IS #239's HALF OF IT
+    --     ═══
+    --
+    -- The toast has to state the new balance, and the only number worth stating
+    -- is the one DynamoDB holds after the write -- `br:ddb:spend` answers with
+    -- ReturnValues UPDATED_NEW for exactly that reason. A caller subtracting the
+    -- price from a cached balance would disagree with the row the moment another
+    -- writer moved it, which is the staleness the debit was moved into DynamoDB
+    -- to end.
+    --
+    -- ASSERTED ON THE SOURCE, because nothing in this tree loads server/market.lua
+    -- for real -- this file stubs BR.Market wholesale so the shop handler can be
+    -- driven, and a stub cannot prove what the real charge hands back. That is a
+    -- real limit and this is the assertion that fits inside it: the success path
+    -- passes a third argument, it is the same `spendable` figure BR.Market.push
+    -- has just sent the Store screen, and the two-argument success -- which is
+    -- what shipped before and what a revert would restore -- is gone.
+    ok(mkt:find('local left = BR%.Market%.spendable%(entry%)') ~= nil,
+        'and reads what is left ONCE, through the same spendable() the Store '
+            .. 'screen is pushed')
+    ok(mkt:find('done%(true, nil, left%)') ~= nil,
+        'and hands it to the caller rather than making the caller re-derive it')
+    ok(mkt:find('done%(true, nil%)') == nil,
+        'and there is no two-argument success left to revert to -- a toast '
+            .. 'quoting a balance nobody handed it would read "0 Volts"')
     ok(mkt:find('takeSpent') == nil,
         'and the session ledger\'s hand-off no longer exists')
     ok(prs:find('takeSpent') == nil,
@@ -1588,6 +1637,52 @@ do
         'Thanks for your purchase. It will be available in your inventory '
         .. 'once the match starts.',
         'the toast, verbatim')
+
+    -- ═══ AND THE BALANCE SENTENCE HE DICTATED (#239) ═══
+    --
+    -- "stated as 'Your new balance is: [X] Volts.'" -- the colon and the full
+    -- stop are his, and `[X] Volts` is one placeholder for the figure and the
+    -- word together, which is what priceLine already builds. One `%s`, not a
+    -- `%d` and a second `%s`: a two-slot template would put the space between
+    -- number and word in this string as well as in priceLine, and the two would
+    -- drift the day the currency is renamed.
+    ok(shipped.balanceToast == 'Your new balance is: %s.',
+        'the balance sentence, verbatim, with one slot',
+        shipped.balanceToast)
+    ok(BR.ShopSolve.boughtToast(shipped, 250, 'Volts') ==
+        'Thanks for your purchase. It will be available in your inventory '
+        .. 'once the match starts. Your new balance is: 250 Volts.',
+        'and the two are joined into one toast, in his order')
+    ok(BR.ShopSolve.boughtToast(shipped, 250.9, 'Volts')
+           :find('250 Volts', 1, true) ~= nil,
+        'the figure is floored, like every other Volts figure in the game')
+    ok(BR.ShopSolve.boughtToast(shipped, 0, 'Volts')
+           :find('is: 0 Volts%.') ~= nil,
+        'a balance of nothing still reads as a number rather than as a blank')
+
+    -- THE CURRENCY WORD IS NOT IN EITHER STRING. config/market.lua spells it
+    -- once; the toast gets it through priceLine like the plate does.
+    ok(shipped.balanceToast:find('Volts', 1, true) == nil,
+        'and the word "Volts" is not written in the template')
+    ok(BR.ShopSolve.boughtToast(shipped, 250, nil)
+           :find('250.', 1, true) ~= nil,
+        'so with no currency name to be had the balance is a bare number, the '
+            .. 'same way the plate\'s price is')
+
+    -- ═══ A TEMPLATE THAT WILL NOT TAKE A STRING COSTS THE SENTENCE, NOT THE
+    --     PURCHASE ═══
+    --
+    -- string.format throws on `%d` given a string, and this runs inside the
+    -- charge callback -- AFTER the money has left the row. An authoring slip
+    -- must not be the thing that makes a paid-for car fail to record.
+    ok(BR.ShopSolve.boughtToast(
+           { boughtToast = 'Bought.', balanceToast = 'Left: %d.' }, 250, 'Volts')
+       == 'Bought.',
+        'a template that cannot take the figure loses the second sentence and '
+            .. 'nothing else -- it does not throw inside the charge callback')
+    ok(BR.ShopSolve.boughtToast({ boughtToast = 'Bought.' }, 250, 'Volts')
+       == 'Bought.',
+        'and a config with no balance sentence at all is the toast on its own')
     ok(BR.Config.Shop.signLabel == '%s for sale',
         'and the plate says "[model name] for sale"')
     ok(BR.Config.Shop.signLabel:format('Sultan') == 'Sultan for sale',

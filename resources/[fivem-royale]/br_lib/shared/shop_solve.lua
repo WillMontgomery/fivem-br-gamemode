@@ -294,6 +294,46 @@ function BR.ShopSolve.priceLine(price, currency)
     return ('%d %s'):format(n, word)
 end
 
+--- What the purchase toast says: his sentence, then his balance sentence.
+---
+--- ═══ "SHOULD ALSO INCLUDE A NOTE ABOUT THEIR NEW BALANCE" (#239) ═══
+---
+--- Owner, 2026-08-30: "'Thank you for your purchase.' toast should also include
+--- a note about their new balance, stated as 'Your new balance is: [X] Volts.'"
+---
+--- BOTH SENTENCES ARE AUTHORED IN config/shop.lua and neither is written here.
+--- This function does the joining and nothing else, and it is in br_lib so the
+--- joining is a thing a test can run -- the alternative is a concatenation in
+--- server/shop.lua, where the only way to see what a player reads is to buy a
+--- car in a running game.
+---
+--- THE FIGURE GOES THROUGH priceLine, so the number and the currency word are
+--- spaced and floored by the same function that spaces and floors the price on
+--- the plate. A balance and a price that disagreed about their own formatting
+--- would be two representations of one rule.
+---
+--- A TEMPLATE THAT WILL NOT TAKE A STRING LEAVES THE TOAST ALONE. `balanceToast`
+--- is authored, so a `%d` in it is an authoring slip rather than a runtime
+--- condition -- but string.format would THROW on it, inside the charge callback,
+--- after the money has left the row. The purchase must not be the thing that
+--- breaks, so a bad template costs the second sentence and nothing else.
+--- @param cfg table|nil       BR.Config.Shop
+--- @param balance number|nil  what the row holds AFTER the debit
+--- @param currency string|nil
+--- @return string
+function BR.ShopSolve.boughtToast(cfg, balance, currency)
+    local c = type(cfg) == 'table' and cfg or {}
+    local bought = type(c.boughtToast) == 'string' and c.boughtToast or ''
+    local tmpl   = type(c.balanceToast) == 'string' and c.balanceToast or ''
+    if tmpl == '' then return bought end
+
+    local okFmt, line = pcall(string.format, tmpl,
+                              BR.ShopSolve.priceLine(balance, currency))
+    if not okFmt or type(line) ~= 'string' then return bought end
+    if bought == '' then return line end
+    return bought .. ' ' .. line
+end
+
 --- How high up the car its price plate hangs, in metres from the model origin.
 ---
 --- ═══ "CHANGE THE DUI TO DRAW AT THE ELEVATION OF THE VEHICLE'S BUMPER"
