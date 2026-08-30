@@ -155,32 +155,66 @@ local function buysOf(e)
     return e.shopBuys
 end
 
---- How many cars this player has bought FOR THIS MATCH.
+--- How many cars this player is holding against the ceiling.
 ---
---- ═══ THE OWNER'S BUG, 2026-08-29: "I bought a thing, left the match with it
----     (and still in warmup), then joined a new match and couldn't buy anything
----     else" ═══
+--- ═══ THE OWNER'S RULING, 2026-08-30: "ONE CAR AT WHEELS-UP, EVER" ═══
 ---
---- The count was right and its LIFETIME was not. Readying up while a warmup of
---- your mode is still open does not form a new match -- BR.Lobby.ready hands you
---- to BR.Party.lateJoin, which puts you back into the SAME instance with the
---- SAME id (server/lobby.lua). So a player who bought a car, left the pad and
---- readied up again re-entered the match his purchase was stamped with, and the
---- ceiling refused him for a car he had walked away from. From his seat that was
---- a new match; from the roster's it was the same one, and both are correct.
+--- "Confirmed the vehicle is dropped when leaving the WARMUP, nice. But now when
+--- I bought one the next round, and landed after the bus, I have BOTH vehicles
+--- in my inventory -- the one from the previous warmup and this warmup."
 ---
---- So leaving now RELEASES the binding (see BR.Shop.release) and only entries
---- still bound to the match being asked about are counted. Re-entering, whether
---- it is the same instance or the next one, is a fresh allowance.
+--- ═══ WHY THAT HAPPENED, AND WHY THE PREVIOUS FIX AIMED AT THE WRONG THING ═══
+---
+--- The bug before this one was "I bought a thing, left the match with it (and
+--- still in warmup), then joined a new match and couldn't buy anything else".
+--- The diagnosis was right -- readying up while a warmup of your mode is still
+--- open re-enters the SAME instance with the SAME id (BR.Lobby.ready ->
+--- BR.Party.lateJoin), so a purchase he had walked away from was still binding
+--- him. The REMEDY was wrong: it made leaving a fresh allowance, so a player
+--- could hold two paid-for cars at once and both arrived at the next wheels-up.
+---
+--- He was never short of a car. He was refused a SECOND one, which is the rule.
+--- So the ceiling stops counting per match id and counts what he is HOLDING:
+--- every purchase paid for and NOT YET RECEIVED, whether it is still bound to a
+--- match or was unbound by walking out of one (BR.Shop.release).
+---
+--- ═══ AND THAT IS THE WHOLE CONDITION -- A DELIVERED ENTRY IS NOT COUNTED
+---     BECAUSE IT CANNOT EXIST TO BE COUNTED ═══
+---
+--- The obvious extra clause is "...plus anything already received FOR THIS
+--- MATCH", to stop a second purchase after a delivery inside one warmup. It was
+--- written, and it was DEAD: the only two functions that mutate this list --
+--- BR.Shop.release and BR.Shop.deliver -- both drop a delivered entry, so one
+--- never outlives the loop that set the flag. A mutation test proved the clause
+--- unreachable, and unreachable code that looks like a safety net is this
+--- project's signature defect rather than a safety net.
+---
+--- NOTHING IS LOST BY LEAVING IT OUT. Delivery happens on the BUS transition,
+--- and BR.ShopSolve.canBuy already refuses every press outside WARMUP -- so the
+--- window this clause was guarding is one the shop is shut in.
+---
+--- ═══ NOTHING IS FORFEITED AND NOTHING IS REFUNDED, BECAUSE NOTHING IS SOLD
+---     TWICE ═══
+---
+--- The owner asked which of those two a stockpiled purchase gets. The honest
+--- answer is neither: "purchases cannot be refunded" is his rule, and the way to
+--- honour it while also honouring "one car at wheels-up, ever" is to decline the
+--- second sale rather than to take the money and then decide what to do with it.
+--- A player who already owes himself a car keeps it; he simply cannot buy
+--- another until it has been handed over.
+---
+--- HE IS NOT TOLD, and that is deliberate rather than an omission. The refusal
+--- is BR.ShopSolve.Refusal.BOUGHT, which has never produced a toast -- the
+--- standing rule on this project is that unrequested copy is slop, and the
+--- second press is already answered by the plate not disappearing.
 --- @param src integer
---- @param m table|nil
 --- @return integer
-local function boughtIn(src, m)
+local function heldBy(src)
     local e = BR.Roster.get(src)
-    if not e or not m then return 0 end
+    if not e then return 0 end
     local n = 0
     for _, buy in ipairs(buysOf(e)) do
-        if buy.matchId == m.id then n = n + 1 end
+        if not buy.delivered then n = n + 1 end
     end
     return n
 end
@@ -235,7 +269,7 @@ AddEventHandler('br:shop:buy', function(d)
         matchState  = m.state,
         playerState = e.state,
         row         = row,
-        bought      = boughtIn(src, m) + (inflight[src] and 1 or 0),
+        bought      = heldBy(src) + (inflight[src] and 1 or 0),
         limit       = tonumber(S.limit) or 1,
         -- THE BALANCE IS THE MARKET'S, ASKED FOR RATHER THAN CACHED HERE. One
         -- ledger, one reader; a second copy of a balance is a second thing that
@@ -376,7 +410,7 @@ local function deliverOne(src, buy)
     end
 end
 
---- Hand out every car this match's players have paid for and not received.
+--- Hand out ONE car to each of this match's players who is owed any.
 ---
 --- ═══ CALLED FROM match.onEnter(BUS), IMMEDIATELY AFTER BR.Inv.clearFor(m),
 ---     AND THE ORDER IS THE WHOLE OF IT ═══
@@ -399,19 +433,49 @@ function BR.Shop.deliver(m)
     BR.Roster.each(
         function(e) return e.matchId == m.id and e.shopBuys ~= nil end,
         function(src, e)
-            -- ═══ EVERYTHING THEY HAVE PAID FOR AND NOT RECEIVED ═══
+            -- ═══ WHAT THEY HAVE PAID FOR AND NOT RECEIVED ═══
             --
             -- Bound to THIS match, or OWED from an earlier one they walked out
             -- of before its wheels-up (BR.Shop.release). Delivering only the
             -- bound ones would mean a car somebody paid for could never arrive
             -- at all, which is a worse reading of "purchases cannot be refunded"
             -- than the owner can possibly have meant.
+            --
+            -- ═══ ONE CAR AT WHEELS-UP, EVER (owner, 2026-08-30) ═══
+            --
+            -- He landed after the bus holding a car from the previous warmup
+            -- and a car from this one, because this loop handed over everything
+            -- owed. The ceiling in `heldBy` now makes a second purchase
+            -- impossible in the first place, so `given` should never reach the
+            -- limit with anything left in the list -- and it is written anyway,
+            -- because "unreachable today" and "cannot happen" are different
+            -- claims and only the first is true. The same paragraph is above
+            -- the full-bag path below it, for the same reason.
+            --
+            -- WHAT HAPPENS TO A SURPLUS: it WAITS. It is not forfeited (that is
+            -- a paid-for car destroyed) and it is not refunded (the owner's
+            -- standing rule, and a credit that mints currency in a game whose
+            -- market rule is that Volts are earned and never bought). It stays
+            -- owed and unbound, exactly as BR.Shop.release leaves one, and the
+            -- NEXT wheels-up hands it over. That is the owner's sentence read
+            -- literally -- one car at each wheels-up -- and it is the only
+            -- reading under which nobody loses anything.
+            local limit = tonumber(S.limit) or 1
+            local given = 0
             local kept = {}
             for _, buy in ipairs(buysOf(e)) do
-                if not buy.delivered then deliverOne(src, buy) end
+                if not buy.delivered and given < limit then
+                    deliverOne(src, buy)
+                    given = given + 1
+                end
                 -- A DELIVERED ENTRY IS DROPPED. Its only remaining job was to
                 -- say "already bought this match", and warmup is over.
                 if not buy.delivered then kept[#kept + 1] = buy end
+            end
+            if #kept > 0 then
+                print(('^3[br_core] shop: %d is owed %d more car(s) after this '
+                       .. 'wheels-up -- one is handed over per match and the '
+                       .. 'rest wait^7'):format(src, #kept))
             end
             e.shopBuys = kept
         end)

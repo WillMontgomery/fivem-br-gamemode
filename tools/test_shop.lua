@@ -1252,29 +1252,33 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('the one-per-match ceiling means one per MATCH')
+describe('one car at wheels-up, ever')
 -- ---------------------------------------------------------------------------
 do
-    -- ═══ THE OWNER'S BUG, 2026-08-29 ═══
+    -- ═══ THE OWNER'S BUG, 2026-08-30, AND IT IS THE PREVIOUS FIX'S OWN BUG ═══
     --
-    -- "I bought a thing, left the match with it (and still in warmup), then
-    -- joined a new match and couldn't buy anything else because:
-    -- [br_core] shop: 1 refused "ambulance" -- alreadyone"
+    -- "Confirmed the vehicle is dropped when leaving the WARMUP, nice. But now
+    -- when I bought one the next round, and landed after the bus, I have BOTH
+    -- vehicles in my inventory -- the one from the previous warmup and this
+    -- warmup." His console: `shop: 1 received "car_caracara2"` and
+    -- `shop: 1 received "car_marshall"` at one wheels-up.
     --
-    -- THE RECORD WAS ALWAYS KEYED ON THE MATCH ID and the id was always right --
-    -- which is why "a new match reused an identity" is not what happened. What
-    -- happened is that HIS NEW MATCH WAS NOT A NEW MATCH: BR.Lobby.ready hands a
-    -- ready-up to BR.Party.lateJoin whenever a warmup of that mode is still
-    -- open, so leaving the pad and readying up again re-enters the SAME instance
-    -- with the SAME id. The purchase he had walked away from was still binding
-    -- him.
+    -- THE ROUND BEFORE, the complaint was the opposite: "I bought a thing, left
+    -- the match with it (and still in warmup), then joined a new match and
+    -- couldn't buy anything else". The diagnosis then was right -- readying up
+    -- while a warmup of your mode is still open re-enters the SAME instance
+    -- with the SAME id (BR.Lobby.ready -> BR.Party.lateJoin), so a purchase he
+    -- had walked away from was still binding him -- and the REMEDY was wrong.
+    -- It made leaving a fresh allowance, which is how two paid-for cars came to
+    -- exist at once.
     --
-    -- So leaving RELEASES the binding, and re-entering -- same instance or the
-    -- next one -- is a fresh allowance.
+    -- HE WAS NEVER SHORT OF A CAR. He was refused a SECOND one, which is the
+    -- rule. So the ceiling counts what a player is HOLDING rather than what a
+    -- match sold him, and this block is the previous one inverted.
     reset()
-    -- Enough for both cars, so that a refusal below can only be the CEILING and
-    -- never the money. A player who cannot afford the second one would fail
-    -- these assertions for a reason that has nothing to do with his bug.
+    -- Enough for both cars, so a refusal below can only be the CEILING and
+    -- never the money. A player who cannot afford the second would pass these
+    -- assertions for a reason that has nothing to do with the rule.
     player(40, { balance = 5000 })
     buy(40, 'runner')
     ok(#buysOf(40) == 1 and buysOf(40)[1].matchId == 1,
@@ -1285,28 +1289,78 @@ do
         'walking out unbinds it -- the car is still owed, it is just no longer '
             .. 'this match\'s business')
 
-    -- ...AND BACK IN, TO THE VERY SAME MATCH, WHICH IS HIS CASE EXACTLY.
+    -- ...AND BACK IN, WHICH IS THE CASE THAT PRODUCED TWO CARS.
     buy(40, 'hauler')
-    ok(#charged == 2,
-        'so re-entering the same warmup is a fresh allowance and the second '
-            .. 'car is sold', #charged)
-    ok(#buysOf(40) == 2,
-        'and the first purchase is not overwritten by it -- he paid for both',
-        #buysOf(40))
+    ok(#charged == 1,
+        'coming back while a car is still owed buys NOTHING -- one car at '
+            .. 'wheels-up, ever, and the second sale is declined rather than '
+            .. 'taken and then argued about', #charged)
+    ok(#buysOf(40) == 1 and buysOf(40)[1].row == 'runner',
+        'so he is still holding exactly the one he paid for', #buysOf(40))
 
-    -- ═══ AND NOTHING PAID FOR IS LOST ═══
+    -- ═══ NOTHING IS FORFEITED AND NOTHING IS REFUNDED ═══
     --
-    -- An owed car is delivered at the next wheels-up its buyer attends.
-    -- Delivering only the bound ones would mean a purchase that could never
-    -- arrive, which is a much worse reading of "purchases cannot be refunded"
-    -- than the owner can have meant.
+    -- Which is the whole of the answer to "does the older purchase get
+    -- forfeited or refunded": neither, because there is never a second one.
+    -- "Purchases cannot be refunded" is the owner's standing rule, and the way
+    -- to honour it alongside "one car at wheels-up" is not to sell the second.
+    ok(#notices == 1,
+        'and the refused second press produces no toast of its own -- the '
+            .. 'purchase toast is still the only thing this feature says',
+        #notices)
+
     BR.Shop.deliver(matches[1])
-    ok(inv[40] ~= nil and #inv[40] == 2,
-        'both arrive at wheels-up, the owed one included',
+    ok(inv[40] ~= nil and #inv[40] == 1 and inv[40][1].item == 'car_runner',
+        'the one he owns arrives at wheels-up, alone',
         inv[40] and #inv[40] or 0)
     ok(#buysOf(40) == 0,
         'and a delivered record is dropped rather than lingering to refuse the '
             .. 'next match')
+
+    -- ═══ AND HE CAN BUY AGAIN THE MOMENT HE IS NOT HOLDING ONE ═══
+    --
+    -- The ceiling must not become a lifetime ban, which is the failure mode on
+    -- the other side of it. Once the car has been handed over and the match it
+    -- was bought in is behind him, the next warmup sells him another.
+    reset()
+    player(44, { balance = 5000 })
+    buy(44, 'runner')
+    BR.Shop.deliver(matches[1])
+    BR.Shop.release(44)                      -- he leaves; the record is gone
+    buy(44, 'hauler')
+    ok(#charged == 2 and #buysOf(44) == 1 and buysOf(44)[1].row == 'hauler',
+        'a player who has received his car and moved on buys another next '
+            .. 'warmup -- the ceiling is one AT A TIME, not one forever',
+        #charged)
+
+    -- ═══ A SURPLUS WAITS RATHER THAN BEING DESTROYED ═══
+    --
+    -- Unreachable through the handler now, so it is built by hand: two owed
+    -- entries on one roster entry, which is the state the previous fix could
+    -- produce. Wheels-up hands over ONE. The other is not deleted -- a
+    -- paid-for car destroyed is the forfeit the owner never asked for -- it
+    -- stays owed and the next wheels-up delivers it.
+    reset()
+    player(45)
+    roster[45].shopBuys = {
+        { matchId = nil, row = 'runner', paid = 750, delivered = false },
+        { matchId = nil, row = 'hauler', paid = 400, delivered = false },
+    }
+    BR.Shop.deliver(matches[1])
+    ok(inv[45] ~= nil and #inv[45] == 1 and inv[45][1].item == 'car_runner',
+        'two owed cars produce ONE car at this wheels-up, the older of them',
+        inv[45] and #inv[45] or 0)
+    ok(#buysOf(45) == 1 and buysOf(45)[1].row == 'hauler',
+        'and the other is still owed -- not forfeited, not refunded, waiting',
+        #buysOf(45))
+    ok(#dropped == 0,
+        'and nothing was quietly dropped on the floor to make the count work')
+
+    BR.Shop.deliver(matches[1])
+    ok(inv[45] ~= nil and #inv[45] == 2,
+        'the next wheels-up hands over the one that waited',
+        inv[45] and #inv[45] or 0)
+    ok(#buysOf(45) == 0, 'and then there is nothing left owed')
 
     -- A DELIVERED PURCHASE DOES NOT SURVIVE A RELEASE EITHER: its only job was
     -- to say "already bought this match".
