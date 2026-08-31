@@ -447,6 +447,21 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# The same panel says whether a mate's REVIVE KEY is held by the squad. The
+# ledger under it is unit-tested in test_revivekey; this gate is for what no
+# suite can execute: that the fact stayed squad-only, that the tri-state
+# survived both folds (an `x and y or nil` in Lua and a `&&` in JSX each eat the
+# false case, which is the mate whose key is still on the ground), that the mark
+# is a picture rather than a seventh string, and that the plate stops fading a
+# recoverable mate down to nothing. It is also the only gate that catches a
+# stale UI bundle for this file.
+echo "${DIM}== squad revive keys ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_squad_key.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # A key is drawn as a key (#209). The half that is a value -- the owner's
 # sentence, and that a resolved key LABEL never reaches it -- is unit-tested in
 # test_client. This gate is for what no suite can execute: that the token Lua

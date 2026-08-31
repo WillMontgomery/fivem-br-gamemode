@@ -2314,6 +2314,20 @@ function pushSquadOrParty()
             -- already squad-only, so this is the channel that may carry it.
             local b = BR.Squadmates and BR.Squadmates.beaconOf
                 and BR.Squadmates.beaconOf(src)
+
+            -- THIS MATE'S REVIVE KEY, FLATTENED TO THE ONE QUESTION THE PANEL
+            -- ASKS. See the field's note in the member table below.
+            --
+            -- AN `if` RATHER THAN AN `and`/`or` CHAIN, AND THAT IS THE WHOLE
+            -- REASON IT IS COMPUTED UP HERE. `b and b.key and (b.key.held ==
+            -- true) or nil` collapses the false case into nil -- Lua's oldest
+            -- trap -- and false is a REAL state on this field: it is the mate
+            -- whose key is still out there to be fetched. The two readings
+            -- would have silently become one, and the symptom would be the
+            -- report this was built for.
+            local keyState = nil
+            if b and b.key then keyState = b.key.held == true end
+
             members[#members + 1] = {
                 src = src, name = e.name, state = e.state,
                 hp = e.hp or 0, armour = e.armour or 0,
@@ -2358,6 +2372,37 @@ function pushSquadOrParty()
                 -- covered yet and an older server all produce an empty slot,
                 -- which is the honest rendering of all three.
                 voiceOff = b and b.voiceOff or nil,
+
+                -- WHETHER THE SQUAD CAN STILL GET THIS MATE BACK -- OFF THE
+                -- SAME SQUAD-ONLY BEACON, AND FOR THE FOURTH TIME THE SAME
+                -- ARGUMENT. roster.lua's PUBLIC_FIELDS reaches every client in
+                -- the match, and "that squad can still get him back" is
+                -- precisely what the people who just killed him would use.
+                --
+                -- Owner, 2026-08-30, from the playtest: "I also saw nothing in
+                -- the squad panel indicating that a revive key had been
+                -- retrieved", and "I'm unable to interact with their revive key
+                -- now and I have no way to know I still have their key."
+                --
+                -- ONE TRI-STATE, NOT TWO FLAGS, because the panel asks one
+                -- question and draws one mark:
+                --
+                --   nil    there is no key for this mate. Draw nothing.
+                --   false  a key exists and the squad does NOT hold it -- on
+                --          the ground while the pickup lives, at an ambulance
+                --          for 25 Volts once it has expired. Both are "go and
+                --          get it", which is one mark.
+                --   true   the squad HOLDS it. This is the row the owner could
+                --          not read: a mate who is out and coming back.
+                --
+                -- IT IS THE BEACON'S `held` AND NOTHING ELSE OFF THAT ROW. The
+                -- beacon also carries the key's world coordinates and its mint
+                -- time, and neither belongs on a panel: client/revivekey.lua
+                -- reads those to place a plate and to break a tie between two
+                -- keys at one van. A position folded in here would be a
+                -- position the interface could draw, which is a different
+                -- feature and a wider one.
+                reviveKey = keyState,
             }
         end
     end

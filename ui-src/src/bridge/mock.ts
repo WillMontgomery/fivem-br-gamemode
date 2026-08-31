@@ -518,7 +518,14 @@ export function startMockDriver(): void {
           // `serverNow` above is `now`, so `now + n` is the honest shape here.
           { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24',
             bleedEndsAt: now + 40_000, level: 7 },
-          { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6' },
+          // NYX IS OUT AND HER KEY IS HELD, which is the state the owner
+          // reported blind on 2026-08-30 ("no way to know I still have their
+          // key"). The re-push below alternates it with `false` -- a key that
+          // exists and has not been fetched -- because the panel draws two
+          // different marks and a harness that only ever sent one would leave
+          // the other reviewable in the source. Same argument as `level`.
+          { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6',
+            reviveKey: true },
         ],
       },
       inv: {
@@ -575,6 +582,11 @@ export function startMockDriver(): void {
     const t = Date.now()
     // Re-knock once the last bleed has run out, so the countdown loops.
     if (t > knockAt + 40_000) knockAt = t
+    // NYX'S KEY FLIPS BETWEEN THE TWO MARKS, on a cycle slow enough to read.
+    // `false` is a key that exists and the squad has not fetched, `true` is one
+    // they hold; they are drawn in different colours and the fade on the plate
+    // is the same either way, all of which is only reviewable if both arrive.
+    const held = Math.floor(t / 8_000) % 2 === 1
     emit({
       k: 'squad',
       d: {
@@ -591,7 +603,8 @@ export function startMockDriver(): void {
           { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF', level: 100 },
           { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24',
             bleedEndsAt: knockAt + 40_000, level: 7 },
-          { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6' },
+          { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6',
+            reviveKey: held },
         ],
       },
     })

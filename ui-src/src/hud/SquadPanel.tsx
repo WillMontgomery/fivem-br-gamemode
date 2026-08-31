@@ -33,6 +33,12 @@ import VoiceMark from './VoiceMark'
  * the health bar red -- it is recoverable and the player has a decision to
  * make. Dead is finished and still.
  *
+ * ...AND SINCE THE REVIVE KEY, "DEAD" IS TWO THINGS. A mate whose key the squad
+ * holds is out of the match and coming back, and the panel drew him identically
+ * to one nobody can reach: "I also saw nothing in the squad panel indicating
+ * that a revive key had been retrieved" (owner, 2026-08-30). The row now carries
+ * a key mark and stops being faded all the way down. See KeyMark.
+ *
  * ...AND A DECISION NEEDS A NUMBER. Two of the three things the owner could not
  * read off this panel in the playtest were quantities: how long a downed mate
  * has left, and what a mate's health and shield actually are. Both are now
@@ -256,6 +262,95 @@ function LevelMark({ level }: { level: number }) {
   )
 }
 
+/**
+ * WHETHER THE SQUAD CAN STILL GET THIS MATE BACK.
+ *
+ * Owner, 2026-08-30, from the playtest: "I also saw nothing in the squad panel
+ * indicating that a revive key had been retrieved", and, once the body and its
+ * world plate were gone, "I'm unable to interact with their revive key now and
+ * I have no way to know I still have their key."
+ *
+ * BOTH HALVES OF THAT ARE THE SAME BLINDNESS: a key is an entitlement held by a
+ * squad rather than an object anybody carries (br_lib/config/revivekey.lua --
+ * "NO SLOT. NO CARRIER."), so there is nothing in an inventory to look at and,
+ * after the pickup expires, nothing in the world either. The panel is the only
+ * surface that lists the people a key is ABOUT, so it is where the fact lives.
+ *
+ * ═══ ONE OBJECT, TWO COLOURS, WHICH IS VoiceMark'S VOCABULARY EXACTLY ═══
+ *
+ * That component draws one silenced-speaker glyph in two shades and lets the
+ * colour carry the difference between a state that is merely reported and one
+ * the viewer can do something about. This is the same pair:
+ *
+ *   NOT OURS YET  --color-text-dim. A key exists for this mate: on the ground
+ *                 where they fell while the pickup lives, and 25 Volts at an
+ *                 ambulance after it expires. Reported, in the caption shade.
+ *   HELD          --color-royale-accent. The squad owns it, and a live mate
+ *                 walking to any ambulance can spend it. The accent is what
+ *                 this panel already uses for something happening now.
+ *
+ *   NEITHER       no key at all. An absence draws nothing, which is the rule
+ *                 every other optional field on this row follows.
+ *
+ * STATIC, NOT PULSED. `.mate-pulse` and `.mate-talk` mean "this is happening
+ * right now"; holding a key is a standing condition that will still be true in
+ * two minutes. Animating it would put a fact in competition with a fight.
+ *
+ * A DRAWN KEY RATHER THAN A WORD, because the six lines in
+ * br_lib/config/revivekey.lua are the whole of what this feature is allowed to
+ * say and none of them is a panel label -- and because "never add unsolicited
+ * UI text" is a standing instruction. INLINE SVG rather than a font or a PNG,
+ * for VoiceMark's reasons: `currentColor` is what lets one path follow both
+ * tokens through the colourblind remaps, and a glyph font is another entry in
+ * fxmanifest's files{} to be forgotten.
+ *
+ * IT DOES NOT SCALE WITH THE TEXT-SIZE PREFERENCE -- no `.ts`, no `tscale` --
+ * matching LevelMark next door rather than VoiceMark. The squad plate is a
+ * fixed-size plate, and this mark sits in the stamp group, whose baseline is
+ * the row's. `align-self: center` takes it out of baseline alignment entirely
+ * (VoiceMark's note has the measurement) and 0.95rem is under the name's
+ * 1.08rem line box, so the plate's height is arithmetic rather than luck.
+ */
+const KEY_PATH =
+  'M4.7 3.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4Z'
+  + 'M4.7 6.25a1.75 1.75 0 1 1 0 3.5a1.75 1.75 0 1 1 0-3.5Z'
+  + 'M7.5 6.9H15.4V12.2H14.2V9.1H12.8V12.2H11.6V9.1H7.5Z'
+
+function KeyMark({ held }: { held: boolean }) {
+  return (
+    <span
+      className="shrink-0"
+      style={{
+        display: 'block',
+        width: '0.95rem',
+        height: '0.95rem',
+        // See the note above, and VoiceMark's: a flex row with no
+        // baseline-aligned item takes its baseline from the bottom edge of its
+        // first item. Opting out leaves the stamp beside it as the row's
+        // source, which is where it was before this arrived.
+        alignSelf: 'center',
+        color: held
+          ? 'var(--color-royale-accent)'
+          : 'var(--color-text-dim)',
+      }}
+      aria-hidden
+    >
+      <svg
+        viewBox="0 0 16 16"
+        style={{ display: 'block', width: '100%', height: '100%' }}
+        aria-hidden
+      >
+        {/* THE BOW'S HOLE IS WOUND THE OTHER WAY, and the default nonzero fill
+            rule is what cuts it out. `evenodd` would have been the obvious
+            spelling and it is wrong here: the shaft overlaps the bow by a
+            third of a millimetre of viewBox, and under evenodd that sliver
+            would punch a notch through the key exactly where it joins. */}
+        <path d={KEY_PATH} fill="currentColor" />
+      </svg>
+    </span>
+  )
+}
+
 function Row({ m, talking, silent }: {
   m: SquadMember
   talking: boolean
@@ -283,6 +378,12 @@ function Row({ m, talking, silent }: {
   const hp = dead || dying ? 0 : Math.max(0, Math.min(100, m.hp))
   const sh = dead || dying ? 0 : Math.max(0, Math.min(100, m.armour ?? 0))
 
+  // A KEY FOR THIS MATE, OR NOT. Read as two explicit comparisons rather than
+  // as a truthiness test, because `false` is a real reading on this field and a
+  // `&&` would eat it -- see SquadMember.reviveKey in bridge/types.ts.
+  const keyHeld = m.reviveKey === true
+  const keyOut = m.reviveKey === false
+
   // A MATE IS A PLATE. Each row is its own object carrying that player's
   // colour on its edge, rather than a stripe inside one shared box -- so a
   // four-stack reads as four people at a glance instead of as a list, and the
@@ -301,7 +402,30 @@ function Row({ m, talking, silent }: {
         ['--plate-fill' as string]: downed
           ? 'rgba(52,20,24,0.92)' : 'rgba(20,23,33,0.90)',
         ['--cut-max' as string]: '0.45rem',
-        opacity: dead ? 0.34 : 1,
+        // ═══ A MATE WHO CAN COME BACK IS NOT DRAWN AS FINISHED ═══
+        //
+        // 0.34 is what "dead is finished and still" looks like on this panel,
+        // and it is right for a mate nobody can do anything about. It is the
+        // wrong drawing for one whose key the squad is holding: the row is the
+        // most actionable thing on the HUD and it was being faded to a third of
+        // its ink, taking the new mark down with it -- the mark exists because
+        // the owner "saw nothing", and painting it at 0.34 is a slower way of
+        // showing him nothing.
+        //
+        // SO THE FADE IS THE EXISTING VOCABULARY, USED RATHER THAN ADDED TO.
+        // Opacity on this plate already means "is this person still in play".
+        // A key is exactly the answer to that question, so it moves the same
+        // dial instead of introducing a second one, and the 460ms transition
+        // below carries it: a key collected across the map brings its owner's
+        // row UP, which is a squad-wide event visible without reading a word.
+        //
+        // ⚠ 0.7 IS NOT THE OWNER'S NUMBER. He asked to be able to tell; he did
+        // not say how bright. It is deliberately short of a live mate's 1 --
+        // an OUT row must never read as an alive one, and the OUT stamp is
+        // still sitting in it -- and roughly double the finished 0.34, which
+        // is the smallest gap that reads as a difference rather than as a
+        // rendering artefact.
+        opacity: dead ? (keyHeld || keyOut ? 0.7 : 0.34) : 1,
         transition: 'opacity 460ms ease',
       }}
     >
@@ -361,6 +485,19 @@ function Row({ m, talking, silent }: {
             // scale animation that replays on every state change, and a
             // countdown living inside it would pop once a second.
             <span className="flex items-baseline gap-1 shrink-0">
+              {/* THE KEY COMES BEFORE THE STAMP, so DOWN and OUT keep the
+                  right edge they have always had and the rows stay aligned
+                  with each other whether or not a key exists.
+
+                  IT LIVES IN THE STAMP GROUP because it answers the same
+                  question the stamp does -- what has happened to this mate --
+                  and because that group is the only part of the row a dead
+                  plate still draws (the bars and the bleed clock both go).
+
+                  NOTHING AT ALL WHEN THERE IS NO KEY, which is this panel's
+                  standing rule for an absent field: see the bleed clock below
+                  and the level above. */}
+              {(keyHeld || keyOut) && <KeyMark held={keyHeld} />}
               <span
                 key={dead ? 'out' : 'down'}
                 className="mate-stamp font-display text-[0.62rem] tracking-[0.18em]"

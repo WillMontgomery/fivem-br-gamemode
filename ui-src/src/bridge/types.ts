@@ -261,6 +261,43 @@ export interface SquadMember {
    * reads it with `=== true` and never as a truthiness test.
    */
   voiceOff?: boolean
+  /**
+   * THIS MATE'S REVIVE KEY, AS THE ONE QUESTION THE PANEL ASKS.
+   *
+   * Owner, 2026-08-30, from the playtest: "I also saw nothing in the squad panel
+   * indicating that a revive key had been retrieved", and -- once the body was
+   * gone and the world plate with it -- "I'm unable to interact with their
+   * revive key now and I have no way to know I still have their key."
+   *
+   * SQUAD-ONLY, like `bleedEndsAt`, `level` and `voiceOff` above, and this is
+   * the strongest of the four rather than the weakest: whether a squad can still
+   * get somebody back is exactly what the squad that just killed them would use.
+   * It rides the beacon assembled in br_core's server/party.lua, which is
+   * squad-only by construction, and is not on roster.lua's PUBLIC_FIELDS.
+   *
+   * ═══ THREE READINGS, ONE FIELD, AND `undefined` IS ONE OF THEM ═══
+   *
+   *   undefined  no key for this mate -- they are alive, they are still
+   *              bleeding, or their key has been spent. Draw nothing.
+   *   false      a key EXISTS and the squad does not hold it yet. While the
+   *              pickup lives it is lying where they fell; after it expires the
+   *              same key is still 25 Volts at an ambulance. Both are "go and
+   *              get it", so both are one mark.
+   *   true       the squad HOLDS it, and a live mate can spend it at an
+   *              ambulance to put this one back in the sky above it.
+   *
+   * SO IT IS READ WITH `=== true` / `=== false` AND NEVER AS A TRUTHINESS TEST.
+   * `false` and absent are different claims that a `&&` would collapse into one,
+   * and the one it would eat is the one the owner reported blind.
+   *
+   * NO POSITION COMES WITH IT, DELIBERATELY. The beacon's own key row carries
+   * x/y/z and a mint time; br_core/client/state.lua folds in neither. Those are
+   * for client/revivekey.lua to place a world plate with and to break a tie
+   * between two keys at one van -- a coordinate on this payload would be a
+   * coordinate the interface could draw, which is a wider feature than the one
+   * that was asked for.
+   */
+  reviveKey?: boolean
 }
 
 export interface SquadPayload {
