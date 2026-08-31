@@ -557,10 +557,11 @@ export default function Lobby({
                 last that stays on one line; `https://discord.com/invite/` plus
                 a full 32-character vanity is exactly 54, so the realistic
                 worst case lands ON the boundary rather than inside it.
-              * INTERFACE SIZE ABOVE ~113% at 720p. That is not this card's
-                doing -- the same column already clipped above ~122% with no
-                card at all, which is a bug that predates it -- but the card
-                does move the edge in by about nine points.
+              * INTERFACE SIZE AT 113% OR MORE at 720p -- 112% is the last that
+                fits, by 2.3px. That is not this card's doing: the same column
+                already clipped from 122% with no card at all, which is a bug
+                that predates it. What the card does is move that edge in by
+                nine points.
 
             The address itself never overflows sideways at any length: the
             `break-all` on it wraps inside the card, and the reserved "Copied"
