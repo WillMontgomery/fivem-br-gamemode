@@ -1492,6 +1492,17 @@ local resyncArmed = false -- a task has been issued and not yet answered for
 local resyncPhase = 0     -- 0 idle, 1 the step out, 2 the step back
 local resyncs     = 0     -- for /brdbno
 
+-- #246, ALL FOUR FOR /brdbno. The nudge is a round trip through the server and
+-- every one of these is a different place it can die: `scopeNudges` is "the
+-- message arrived", `scopeArms` is "and it was spent on a body that was down",
+-- `corpseWrites` is "and it was spent on a body that was dead". The three of
+-- them summing to less than the server's `sent` is a nudge that landed on a
+-- player who was neither, which is a state race and not a fault.
+local scopeNudges  = 0
+local scopeArms    = 0
+local corpseWrites = 0
+local scopeAt      = nil  -- when the last one landed, ms
+
 --- A fresh crawl task exists, so a fresh mover exists on every clone of us.
 ---
 --- Assigned rather than declared: playCrawl calls this and is written above,
@@ -2106,6 +2117,107 @@ AddEventHandler(BR.Net.DBNO_SET, function(d)
     end
 
     pushMine()
+end)
+
+-- ==========================================================================
+-- #246: SOMEBODY JUST STREAMED THIS BODY IN, SO THIS BODY SAYS WHERE IT IS.
+-- ==========================================================================
+--
+-- "the dead ped's position on the alive player's screen is in the same position
+-- where the death happened" (owner, 2026-08-30).
+--
+-- THE SECOND ARM THE #164 BLOCK SAID WOULD BE NEEDED, ARMED OFF THE SCOPE
+-- CHANGE AND NOT OFF A CLOCK. server/combat.lua watches playerEnteredScope,
+-- coalesces the arrivals and sends one of these; the whole of the decision about
+-- WHEN lives over there, and the whole of the decision about WHAT lives here.
+--
+-- ═══ THE DOWNED BODY: resyncArm AND NOT playCrawl(true) ═══
+--
+-- The obvious spelling is a forced re-task, because playCrawl is what arms the
+-- pair today. It is the wrong one, and the #164 block says why without quite
+-- saying it out loud: the thing the pair cancels is the MOVER, and
+--
+--     "a fresh task is a fresh mover"
+--
+-- so re-tasking to fix a mover is spending one to cancel one. What the owner's
+-- own manual workaround does -- the workaround the pair is a replay of -- has no
+-- task in it at all: "the entire observable effect of the owner's manual press
+-- is this file's own crawl branch -- crawlPlaying(true) and a real
+-- SetEntityCoordsNoOffset step -- followed by the idle branch putting the rate
+-- back to zero." That is resyncBody, exactly, and resyncArm is how it is asked
+-- for. A newcomer's clone already HAS a mover -- it was built with one, from the
+-- task as it stands -- so there is something to cancel and nothing to create.
+--
+-- IT ALSO COSTS THE PLAYERS ALREADY WATCHING NOTHING, which is the open question
+-- on the issue. A re-task restarts a LOCOMOTION clip from its first frame on
+-- every clone in scope; the pair moves the body 9mm and puts it back. Whatever
+-- the newcomer costs, it is not a hitch for everybody else.
+--
+-- AND IT DOES NOT MAKE `steps == tasks` A LIE, it makes it a different equation:
+-- steps == tasks + arms, which is what /brdbno now prints. Read it that way.
+--
+-- ═══ THE CORPSE: A ZERO-DISPLACEMENT WRITE, AND WHY IT IS A DIFFERENT FIX ═══
+--
+-- AN OUT PLAYER LEAVES THEIR PED IN THE WORLD. client/spectate.lua states it as
+-- a design decision rather than an accident -- "a spectator's ped is a corpse
+-- where they fell, deliberately" -- and BR.Native.lockMinimap exists precisely
+-- because nothing moves it. So half the owner's report is about a body that this
+-- file's whole machinery has already let go of: dbno.controls returns on its
+-- first line when `mine.downed` is false, `hold` is nil, and there is no crawl
+-- task to hang anything off.
+--
+-- SO THE STALENESS, IF IT IS REAL, IS A DIFFERENT ONE. A corpse has no mover to
+-- cancel. What it has is a DEATH RAGDOLL, and ragdoll positions are the one
+-- thing this file already knows do not replicate reliably -- citizenfx/fivem
+-- #2436, open, and the reporter's own words are "the position of a player is
+-- completely different from player to player". A body that falls two metres out
+-- of its crawl into its final pose can therefore leave the network holding the
+-- position it had before the fall, and a clone built afterwards inherits that.
+--
+-- WHAT IS WRITTEN IS THE PED'S OWN COORDINATES. Not a correction, not a
+-- teleport, not a guess -- GetEntityCoords straight back into
+-- SetEntityCoordsNoOffset, a displacement of exactly zero. The only thing it
+-- does is make the position node dirty so the newcomer's clone is built from the
+-- resting place instead of the falling one. spectate.lua's warning about moving
+-- a dead ped ("catastrophic for an ADMIN who may be alive and mid-match") is
+-- about DISPLACEMENT, and there is none here -- but the state is checked anyway,
+-- because an admin ghosting a match is exactly the player this must not touch.
+--
+-- THIS HALF IS UNPROVEN AND IS LABELLED AS SUCH. Nobody has watched a corpse be
+-- stale in this game; the mechanism above is inferred from an open engine bug.
+-- /brdbno's `scope` line counts these separately from the downed arms for that
+-- reason: if the owner reports the crawling body fixed and the corpse still
+-- wrong with `corpse` climbing, the write is landing and is not enough, and that
+-- is a different repair from the write never happening at all.
+RegisterNetEvent(BR.Net.DBNO_RESYNC)
+AddEventHandler(BR.Net.DBNO_RESYNC, function()
+    scopeNudges = scopeNudges + 1
+    scopeAt     = GetGameTimer()
+
+    if mine.downed then
+        -- ARMED, NOT PERFORMED. resyncBody owns the two frames and will not run
+        -- without `hold` -- a body still ragdolling out of its knock has none --
+        -- and `resyncArmed` is only spent on a frame that actually starts the
+        -- pair. So a nudge that lands mid-ragdoll is paid the moment the body
+        -- settles rather than thrown away.
+        resyncArm()
+        scopeArms = scopeArms + 1
+        return
+    end
+
+    if BR.State.me.state ~= BR.PlayerState.OUT then return end
+
+    local ped = PlayerPedId()
+    -- didHit AND NOT A BARE READ, for the eleventh time in this codebase.
+    -- IsEntityDead is declared BOOL, this file's own baseline already records
+    -- one raw read of it, and `0` is truthy in Lua -- so the bare spelling would
+    -- write coordinates onto the ped of a LIVING player on any build that hands
+    -- numbers back, which is the one outcome spectate.lua's warning is about.
+    if not didHit(IsEntityDead(ped)) then return end
+
+    local c = GetEntityCoords(ped)
+    SetEntityCoordsNoOffset(ped, c.x, c.y, c.z, true, true, false)
+    corpseWrites = corpseWrites + 1
 end)
 
 -- THE SERVER SAYS WHAT THE NUMBER IS; WE APPLY IT.
@@ -3012,10 +3124,32 @@ RegisterCommand('brdbno', function()
     -- second because nothing throttled it, and every one of them spent a step.
     -- `last task` is the throttle's own reading -- if it is never more than a
     -- frame old while the body lies still, the watchdog is storming again.
-    print(('  clone sync : %d steps for %d crawl tasks, %s, phase %d   (the pin '
-           .. 'above is local; this is what other clients see)')
-        :format(resyncs, crawlTasks, resyncArmed and 'ARMED -- owed a step'
-                                                 or 'settled', resyncPhase))
+    --
+    -- ...AND `arms` IS THE #246 TERM IN THAT EQUATION. The contract stopped
+    -- being "one step per task" the moment a newcomer could buy one: it is now
+    -- one step per task PLUS one per scope arm, and `steps` sitting below the
+    -- sum is the resync never finding a still frame to spend them on.
+    print(('  clone sync : %d steps for %d crawl tasks + %d scope arms, %s, '
+           .. 'phase %d   (the pin above is local; this is what other clients '
+           .. 'see)')
+        :format(resyncs, crawlTasks, scopeArms,
+                resyncArmed and 'ARMED -- owed a step' or 'settled',
+                resyncPhase))
+    -- THE OTHER END OF THE SERVER'S OWN `scope` LINE (#246). Run /brdbno on the
+    -- server console beside this one: `sent` there and `nudges` here are the
+    -- same messages counted at both ends, so a gap between them is the wire and
+    -- everything else is this file.
+    --
+    -- `nudges` AT ZERO WHILE SOMEBODY IS WALKING UP TO YOU is the reading that
+    -- matters, and it has exactly two causes: the box is on onesync LEGACY,
+    -- where playerEnteredScope does not fire at all, or they never left your
+    -- scope in the first place -- relevancy is 424m, so a test that starts with
+    -- both players in the same field proves nothing.
+    print(('  scope      : %d nudges (%s), %d spent as arms, %d corpse writes')
+        :format(scopeNudges,
+                scopeAt and ('last %dms ago'):format(GetGameTimer() - scopeAt)
+                        or 'none yet -- see the note in dbno.lua',
+                scopeArms, corpseWrites))
     print(('  last task  : %s   (a quiet knock settles on 2 tasks total; the '
            .. 'watchdog may not ask again for %dms)')
         :format(taskAt and ('%dms ago'):format(GetGameTimer() - taskAt)

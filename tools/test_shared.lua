@@ -6476,6 +6476,380 @@ do
 end
 
 -- ==========================================================================
+-- #246: THE SECOND ARM, AND IT IS THE SCOPE CHANGE.
+-- ==========================================================================
+--
+-- "After a player dies and their ped is placed on the ground OR MOVES in the
+-- crawling position, then another player from outside the cell comes into the
+-- cell and arrives at the scene - the dead ped's position on the alive player's
+-- screen is in the same position where the death happened." (owner, 2026-08-30.)
+--
+-- WHAT IS TESTABLE OFF-ENGINE AND WHAT IS NOT, said first, because the block
+-- above had to make the same confession. There is no second machine in this
+-- process and no network, so nothing here can watch a clone. What CAN be driven
+-- is the whole of the decision: which src the server nudges, how many nudges
+-- thirty arrivals produce, that a quiet body produces none at all, and what the
+-- client spends one on. The engine's answer -- whether a step cancels a mover on
+-- a machine that has just built one -- is the owner's to report, and #164
+-- already established it for the machines that were watching all along.
+--
+-- THE ONE THAT WOULD BE INVISIBLE IN A PLAYTEST is the first: `data.player` and
+-- `data.for` are one word apart in the FiveM docs, and a build that reads the
+-- wrong one nudges the NEWCOMER instead of the body. That client is alive and
+-- not downed, so it drops the message on the floor and nothing anywhere errors
+-- -- the fix simply does not work, exactly as if it were not there.
+describe('dbno.scope.server')
+do
+    local S  = newServer()
+    local PS = S.env.BR.PlayerState
+    local NET = S.env.BR.Net
+
+    --- Every DBNO_RESYNC the server has sent, oldest first.
+    local function nudges()
+        local out = {}
+        for _, m in ipairs(S.out) do
+            if m.event == NET.DBNO_RESYNC then out[#out + 1] = m.target end
+        end
+        return out
+    end
+
+    --- One clone being built: `player` owns the body, `for` is the newcomer.
+    --- Shaped as FiveM shapes it -- both fields are fmt::sprintf("%d", ...) on
+    --- the C++ side, so they arrive as STRINGS, and a handler that used them as
+    --- table keys without tonumber would find nothing and fail open.
+    local function enters(bodySrc, newcomerSrc)
+        S.env.TriggerEvent('playerEnteredScope',
+            { player = tostring(bodySrc), ['for'] = tostring(newcomerSrc) })
+    end
+
+    --- Run the clock forward in DRAIN-SIZED STEPS.
+    ---
+    --- IT HAS TO BE STEPS AND NOT ONE JUMP, and the first draft of this block
+    --- was written with jumps and was worth nothing because of it. BR.Sched
+    --- fires a job at most once per call to step(), on its own nextRun, so
+    --- `S.tick(2100)` after a pass at 2000 does not run the drain AT ALL --
+    --- which means the branch under test never executes and the assertion
+    --- passes because nothing happened rather than because the right thing did.
+    --- A mutation that DROPPED a floored arm survived exactly that.
+    local T = 0
+    local function advance(ms)
+        local target = T + ms
+        while T < target do
+            T = math.min(T + 250, target)
+            S.tick(T)
+        end
+    end
+
+    -- ═══ AN ALIVE PLAYER IS NOT A BODY ═══
+    --
+    -- Their machine is writing a position every frame and their clone is built
+    -- from one that is at most a snapshot old. Nudging them would be a message
+    -- per player per scope crossing for the whole match, which is the cost that
+    -- makes people delete these events.
+    enters(1, 2)
+    advance(500)
+    ok(#nudges() == 0,
+        'walking into an ALIVE player\'s scope costs nothing',
+        ('%d nudges'):format(#nudges()))
+    -- ...AND IT IS REFUSED AT THE DOOR, not swept up by the drain. The drain
+    -- re-checks the state too -- deliberately, because a body can be revived
+    -- between the arm and the pass -- so `nudges` alone passes with the
+    -- handler's guard deleted. `entered` is the counter only the handler
+    -- increments, and it is the one that says a live player never got a row.
+    ok(S.env.BR.Combat.resyncStats.entered == 0,
+        'and it is refused where the event lands rather than being armed and '
+        .. 'then swept up -- otherwise every scope crossing in the match books '
+        .. 'a pending row for a player with nothing wrong with them',
+        ('entered %d'):format(S.env.BR.Combat.resyncStats.entered))
+
+    -- ═══ AND A DOWNED ONE IS ═══
+    S.env.BR.Combat.knock(1, 2)
+    ok(S.roster[1].state == PS.DBNO, 'player 1 is down')
+
+    enters(1, 2)
+    advance(500)
+    local n = nudges()
+    ok(#n == 1, 'a clone built of a DOWNED body buys exactly one nudge',
+        ('%d nudges'):format(#n))
+    -- THE ORIENTATION ASSERTION. `data.player` is the body and `data.for` is
+    -- the newcomer; reading them the other way round sends this to 2.
+    ok(n[1] == 1,
+        'AND IT IS ADDRESSED TO THE BODY, not to the player who walked up -- '
+        .. 'data.player is the owner of the ped being cloned, data.for is the '
+        .. 'client it is being cloned for',
+        ('sent to %s'):format(tostring(n[1])))
+
+    -- ═══ THIRTY SPECTATORS ARE ONE NUDGE ═══
+    --
+    -- The issue's own words. One step corrects every machine watching, so
+    -- thirty arrivals need one step between them -- and thirty tasks would be
+    -- the 500ms beat #164 removed, arriving by a different door.
+    local before = #nudges()
+    for i = 1, 30 do enters(1, 100 + i) end
+    advance(2000)
+    ok(#nudges() - before == 1,
+        'thirty clients entering scope at once produce ONE nudge, not thirty',
+        ('%d nudges for 30 arrivals'):format(#nudges() - before))
+
+    -- ═══ INSIDE THE FLOOR IS HELD, NOT DROPPED ═══
+    --
+    -- This is the half that is easy to get wrong in the cheap direction. A
+    -- newcomer whose clone was built one frame AFTER the last step is exactly
+    -- the report this issue is, so a floor that DISCARDS is a floor that
+    -- reproduces the bug on every thirty-first arrival.
+    --
+    -- THE DRAIN HAS TO ACTUALLY RUN INSIDE THE WINDOW for this to mean
+    -- anything -- see `advance` -- and the SEND it is inside the floor OF has
+    -- to be a known one. So the clock is walked one pass at a time from a
+    -- settled start: pass 1 sends, pass 2 is 250ms later and must hold, and the
+    -- pass at 1000ms must let it through.
+    advance(2000)              -- nothing pending, floor long expired
+    before = #nudges()
+    enters(1, 400)
+    advance(250)
+    ok(#nudges() - before == 1,
+        'a first arrival on a settled body goes out on the next drain pass',
+        ('%d nudges'):format(#nudges() - before))
+
+    enters(1, 401)
+    advance(250)
+    ok(#nudges() - before == 1,
+        'a second arrival 250ms later does not send -- the floor holds it',
+        ('%d nudges'):format(#nudges() - before))
+    advance(1000)
+    ok(#nudges() - before == 2,
+        'AND IS NOT THROWN AWAY -- it goes out as soon as the floor lets it. A '
+        .. 'floor that dropped would leave every newcomer after the first with '
+        .. 'the exact bug this issue is about',
+        ('%d nudges'):format(#nudges() - before))
+
+    -- ═══ AND A QUIET BODY IS NOT A CLOCK ═══
+    --
+    -- The property #164 paid for and this must not undo: nothing arms except an
+    -- arrival, so twenty seconds of nobody coming is twenty seconds of silence.
+    before = #nudges()
+    advance(20000)
+    ok(#nudges() - before == 0,
+        'and a downed body nobody has walked up to is written to NEVER -- the '
+        .. 'arm is the scope change, not the clock (#164)',
+        ('%d nudges over 20s of drain passes'):format(#nudges() - before))
+
+    -- ═══ A CORPSE IS ARMED TOO ═══
+    --
+    -- An OUT player leaves their ped in the world (client/spectate.lua: "a
+    -- spectator's ped is a corpse where they fell, deliberately"), so the owner's
+    -- "a player dies and their ped is placed on the ground" is a real body with
+    -- a real position and it is armed by the same event.
+    S.roster[1].state = PS.OUT
+    before = #nudges()
+    enters(1, 2)
+    advance(1000)
+    ok(#nudges() - before == 1,
+        'a corpse is streamed in the same way and is nudged the same way',
+        ('%d nudges'):format(#nudges() - before))
+
+    -- ═══ AND A BODY REVIVED BETWEEN THE ARM AND THE DRAIN IS DROPPED ═══
+    --
+    -- THE ARM HAS TO BE TAKEN WHILE THEY ARE STILL DOWN, which is the whole
+    -- point of this case and the thing the first draft got wrong: arming an
+    -- already-ALIVE player is refused at the door by the handler, so it proves
+    -- nothing about the drain. The sequence that matters is down -> armed ->
+    -- picked up -> drained, and it is not rare: BR.Combat.revive and this
+    -- event race every time a squadmate reaches somebody as a third player
+    -- rotates in.
+    S.roster[1].state = PS.DBNO
+    enters(1, 2)
+    S.roster[1].state = PS.ALIVE
+    before = #nudges()
+    advance(2000)
+    ok(#nudges() - before == 0,
+        'and an arm whose body stood up before the drain is discarded rather '
+        .. 'than delivered to a player with nothing to correct',
+        ('%d nudges'):format(#nudges() - before))
+end
+
+-- THE CLIENT HALF: WHAT ONE NUDGE IS SPENT ON.
+--
+-- Two bodies, two different repairs, and the whole point of driving them
+-- separately is that they share no mechanism at all:
+--
+--   THE DOWNED BODY spends it on resyncArm -- the pair, and NOT a re-task. A
+--   re-task is a FRESH MOVER on every clone (client/dbno.lua's #164 block says
+--   so in as many words), so re-tasking to cancel a mover creates the thing it
+--   is cancelling and costs every machine already watching a clip restart.
+--
+--   THE CORPSE has no task, no mover and no `hold`; dbno.controls returns on
+--   its first line. It spends the nudge on one zero-displacement position write,
+--   which exists only to dirty the position node.
+describe('dbno.scope.body')
+do
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local CLI = newReviver(1, 2, peds)
+    local env = CLI.env
+
+    local coordWrites = 0
+    env.SetEntityCoordsNoOffset = function(_, x, y, z)
+        coordWrites = coordWrites + 1
+        peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+    end
+    local tasks, anim = 0, nil
+    env.TaskPlayAnim = function(_, d, a) tasks = tasks + 1 anim = d .. '/' .. a end
+    env.IsEntityPlayingAnim = function() return anim ~= nil end
+
+    local function frames(n)
+        for _ = 1, n do CLI.now = CLI.now + 16 CLI.frame() end
+    end
+
+    -- A NUDGE TO A PLAYER WHO IS NEITHER DOWN NOR OUT DOES NOTHING. First,
+    -- because it is the state every client is in for most of a match and the
+    -- handler is addressed by src rather than by state -- a mistimed one lands
+    -- on somebody standing up.
+    env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+    frames(10)
+    ok(coordWrites == 0 and tasks == 0,
+        'a nudge that lands on a player who is neither down nor out writes '
+        .. 'nothing at all',
+        ('%d writes, %d tasks'):format(coordWrites, tasks))
+
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+    frames(200)
+
+    local baseWrites, baseTasks = coordWrites, tasks
+    local startX, startY = peds[5001].x, peds[5001].y
+
+    env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+    frames(10)
+
+    ok(coordWrites - baseWrites == 2,
+        'a nudge on a DOWNED body buys exactly one pair -- the step out and the '
+        .. 'step back',
+        ('%d writes'):format(coordWrites - baseWrites))
+    ok(tasks == baseTasks,
+        'AND NOT A RE-TASK. A fresh task is a fresh mover on every clone, so '
+        .. 'the obvious spelling -- playCrawl(true) -- creates the thing the '
+        .. 'step is there to cancel, and restarts the clip for everybody who '
+        .. 'was already watching',
+        ('%d tasks became %d'):format(baseTasks, tasks))
+    ok(math.abs(peds[5001].x - startX) < 1e-9
+       and math.abs(peds[5001].y - startY) < 1e-9,
+        'and the body ends the pair exactly where it started it',
+        ('%.6fm'):format(math.sqrt((peds[5001].x - startX) ^ 2
+                                  + (peds[5001].y - startY) ^ 2)))
+
+    -- AND IT IS STILL NOT A CLOCK ON THIS SIDE EITHER. One nudge, one pair,
+    -- and then silence for as long as nothing else asks.
+    baseWrites = coordWrites
+    frames(600)
+    ok(coordWrites == baseWrites,
+        'and ten seconds after the nudge nothing further has been written',
+        ('%d more writes'):format(coordWrites - baseWrites))
+end
+
+-- THE CORPSE, AND THE BOOL AXIS ON IT.
+--
+-- IsEntityDead IS DECLARED BOOL AND client/dbno.lua ALREADY CARRIES ONE RAW
+-- READ OF IT (tools/bool_natives.baseline records it). `0` is truthy in Lua, so
+-- the natural spelling -- `if IsEntityDead(ped) then` -- writes coordinates onto
+-- the ped of a LIVING player on every build that answers numbers. That player is
+-- the one client/spectate.lua's warning is about: an admin ghosting a match is
+-- OUT on the roster and very much alive on their own machine.
+--
+-- So both shapes are driven, the same way dbno.crawl.watchdog drives the
+-- watchdog, and the 1/0 half is the one that fails against a bare read.
+describe('dbno.scope.corpse')
+do
+    local SHAPES = {
+        { name = 'true/false', yes = true, no = false },
+        { name = '1/0',        yes = 1,    no = 0     },
+    }
+
+    for _, sh in ipairs(SHAPES) do
+        -- A DEAD PED THAT ANSWERS `sh.yes`. The write must happen, once, and
+        -- must move the body by nothing.
+        do
+            local peds = { [5001] = { x = 12.5, y = -3.25, z = 30.0 },
+                           [5002] = { x = 0.8,  y = 0.0,   z = 30.0 } }
+            local CLI = newReviver(1, 2, peds)
+            local env = CLI.env
+
+            local writes = {}
+            env.SetEntityCoordsNoOffset = function(_, x, y, z)
+                writes[#writes + 1] = { x = x, y = y, z = z }
+                peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+            end
+            env.IsEntityDead = function() return sh.yes end
+            env.BR.State.me.state = env.BR.PlayerState.OUT
+
+            env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+            ok(#writes == 1,
+                ('[%s] a nudge on an OUT player with a dead ped writes its '
+                 .. 'position exactly once'):format(sh.name),
+                ('%d writes'):format(#writes))
+            if #writes == 1 then
+                ok(math.abs(writes[1].x - 12.5) < 1e-9
+                   and math.abs(writes[1].y - (-3.25)) < 1e-9
+                   and math.abs(writes[1].z - 30.0) < 1e-9,
+                    ('[%s] and it writes the ped\'s OWN coordinates -- a '
+                     .. 'displacement of exactly zero, whose only job is to '
+                     .. 'make the position node dirty for a clone that has not '
+                     .. 'been built yet'):format(sh.name),
+                    ('%.3f, %.3f, %.3f'):format(writes[1].x, writes[1].y,
+                                                writes[1].z))
+            end
+        end
+
+        -- ...AND A PED THAT ANSWERS `sh.no`. This is the assertion the bare
+        -- read fails: on the 1/0 shape `no` is `0`, and `if IsEntityDead(ped)`
+        -- is TRUE for it.
+        do
+            local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                           [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+            local CLI = newReviver(1, 2, peds)
+            local env = CLI.env
+
+            local writes = 0
+            env.SetEntityCoordsNoOffset = function() writes = writes + 1 end
+            env.IsEntityDead = function() return sh.no end
+            env.BR.State.me.state = env.BR.PlayerState.OUT
+
+            env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+            ok(writes == 0,
+                ('[%s] and a ped that is NOT dead is not written to, whatever '
+                 .. 'shape the native answers in -- `0` is truthy in Lua and a '
+                 .. 'bare read moves a living admin\'s ped'):format(sh.name),
+                ('%d writes'):format(writes))
+        end
+    end
+
+    -- ...AND THE STATE IS CHECKED AS WELL AS THE PED, which is belt and braces
+    -- on purpose. The two guards fail in opposite directions and only one of
+    -- them is under this file's control: a state race can leave the roster
+    -- saying OUT while the ped is alive (a revive in flight), and an admin
+    -- ghosting a match is the reverse. Dropping either one is invisible in a
+    -- playtest, because the write moves the body by zero and looks like nothing
+    -- happening -- right up until it lands on somebody mid-ragdoll.
+    do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local writes = 0
+        env.SetEntityCoordsNoOffset = function() writes = writes + 1 end
+        env.IsEntityDead = function() return true end
+        -- The rig's default: ALIVE, and not downed.
+        env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+        ok(writes == 0,
+            'a nudge on a player the roster does not call OUT writes nothing, '
+            .. 'even with a ped that reads dead -- the corpse path is for '
+            .. 'corpses, and spectate.lua\'s warning is about the other case',
+            ('%d writes'):format(writes))
+    end
+end
+
+-- ==========================================================================
 -- A FIVEM NATIVE DECLARED BOOL CAN ANSWER `1`, AND IN LUA `0` IS TRUTHY.
 -- ==========================================================================
 --

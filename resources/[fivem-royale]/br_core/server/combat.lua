@@ -1166,6 +1166,151 @@ BR.Sched.every(250, 'combat.dbno', function()
         function(src, entry) stepDowned(src, entry, now) end)
 end)
 
+-- ==========================================================================
+-- #246: A BODY STREAMED IN LATE IS DRAWN WHERE THE KNOCK HAPPENED.
+-- ==========================================================================
+--
+-- "After a player dies and their ped is placed on the ground OR MOVES in the
+-- crawling position, then another player from outside the cell comes into the
+-- cell and arrives at the scene - the dead ped's position on the alive player's
+-- screen is in the same position where the death happened." (owner, 2026-08-30.)
+--
+-- THIS IS THE REPORT client/dbno.lua PREDICTED, AND IT NAMED THE ARM. The #164
+-- block in that file ends with the sentence this exists to answer:
+--
+--   "a client that streams the body in LATER, with no re-task in between,
+--    builds its clone from the task as it stands and is not covered by a step
+--    that has already been performed. ... it should arm off the scope change
+--    rather than off a clock."
+--
+-- SO THE ARM IS `playerEnteredScope`, AND THE PAYLOAD IS NOT WHAT IT LOOKS
+-- LIKE. Read off ServerGameState.cpp rather than off a forum post, because the
+-- two fields are one word apart in the docs and swapping them would nudge the
+-- wrong machine forever:
+--
+--     evMan->QueueEvent2("playerEnteredScope", {},
+--         { { "player", entityClient->GetNetId() },
+--           { "for",    client->GetNetId() } });
+--
+-- and the block it sits in is `if (!syncData.hasCreated) { if (IsBigMode()) {
+-- if (entity->type == NetObjEntityType::Player) {`. So:
+--
+--   * `data.player` is the OWNER OF THE PLAYER PED BEING CREATED -- the body.
+--   * `data.for` is the CLIENT THE CLONE IS BEING BUILT FOR -- the newcomer.
+--   * it fires on the tick the clone is created, once per pair, and its twin
+--     `playerLeftScope` fires when that clone is destroyed.
+--
+-- BOTH ARE INSIDE `IsBigMode()`, WHICH IS NOT "ONESYNC" -- IT IS ONESYNC
+-- INFINITY. On onesync legacy the events never fire at all and this whole file
+-- section is dead code. server.cfg.example sets `onesync on`, which is the
+-- bigmode value (ServerGameState.cpp reports "on" vs "legacy" off the same
+-- predicate), so it is live on this deployment -- but a box switched to legacy
+-- loses the fix silently, which is what the `entered` counter in /brdbno is for.
+--
+-- WHY THE SERVER ASKS THE OWNER INSTEAD OF DOING IT ITSELF. There is no
+-- server-side SET_ENTITY_COORDS. ServerGameState_Scripting.cpp registers
+-- exactly four entity SETTERS -- distance culling radius, orphan mode, routing
+-- bucket, and the ignore-request-control filter -- plus the lockdown modes.
+-- Player peds are client-authoritative and the server cannot write one, so the
+-- cheapest wire path is one empty event to one client.
+--
+-- AND WIDENING CULLING IS NOT THE FIX, which is worth stating because it is the
+-- first idea everyone has. server/rescue.lua carries the long note: the
+-- relevancy radius is 424m by default, an override makes an entity relevant to
+-- EVERY client on the tick it is set, and rescue.lua takes that trade for one
+-- ambulance for one ride and hands it straight back. Doing it for every downed
+-- body would send the whole match to everybody for the whole match.
+
+--- The floor between two nudges to the SAME body, ms.
+---
+--- THIRTY SPECTATORS ARRIVING AT ONCE MUST NOT BUY THIRTY TASKS, and the answer
+--- is coalescing rather than dropping: one step corrects EVERY machine watching,
+--- so thirty arrivals genuinely need one step between them. What they must not
+--- do is queue thirty.
+---
+--- IT IS A RATE LIMITER AND NOT A CLOCK, and the distinction is the whole of
+--- #164's argument. The 500ms beat that was removed fired for the WHOLE BLEED
+--- whether or not anything had happened -- 80 to 240 per knock, every one of
+--- them a chance for the network to sample the body mid-step. This fires only
+--- when a clone was actually built, so a quiet body in an empty field costs
+--- nothing at all, and a body in a firefight costs at most one per second.
+local RESYNC_FLOOR_MS = 1000
+
+--- How often the pending set is drained, ms.
+---
+--- NOT THE FLOOR, AND SHORTER THAN IT ON PURPOSE. This is the LATENCY a
+--- newcomer pays before the correction leaves; the floor is what stops the
+--- second one arriving too soon. A stale clone crawls at roughly 0.35 m/s
+--- (`move_injured_ground` is a locomotion dictionary), so a quarter second of
+--- waiting is under a tenth of a metre of error, against the ~0.5m the issue
+--- asks for.
+local RESYNC_DRAIN_MS = 250
+
+--- Bodies that somebody has just cloned. src -> true.
+local resyncPending = {}
+--- When each body was last nudged. src -> ms.
+local resyncSentAt = {}
+
+--- For /brdbno. Every one of these is a number the owner can read against the
+--- client's own `scope` line to say which half of the round trip is missing.
+local resyncStats = { entered = 0, sent = 0, coalesced = 0, floored = 0 }
+BR.Combat.resyncStats = resyncStats
+
+AddEventHandler('playerEnteredScope', function(data)
+    if type(data) ~= 'table' then return end
+    -- STRINGS ON THE WIRE. fmt::sprintf("%d", ...) on both fields, so these
+    -- arrive as "12" and a raw table lookup would find nothing.
+    local owner = tonumber(data.player)
+    if not owner then return end
+
+    local entry = BR.Roster.get(owner)
+    if not entry then return end
+    -- ONLY A BODY. An alive player is being driven by their own machine every
+    -- frame and their clone is built from a position that is at most one
+    -- snapshot old; there is nothing stale to correct and no reason to spend a
+    -- message on it. DBNO and OUT are the two states where the ped stops
+    -- generating updates of its own.
+    if entry.state ~= BR.PlayerState.DBNO
+       and entry.state ~= BR.PlayerState.OUT then return end
+
+    resyncStats.entered = resyncStats.entered + 1
+    if resyncPending[owner] then
+        resyncStats.coalesced = resyncStats.coalesced + 1
+    end
+    resyncPending[owner] = true
+end)
+
+BR.Sched.every(RESYNC_DRAIN_MS, 'combat.scoperesync', function()
+    -- `next` rather than a length: this table is empty on almost every pass and
+    -- the empty case must cost one comparison.
+    if next(resyncPending) == nil then return end
+
+    local now = GetGameTimer()
+    for owner in pairs(resyncPending) do
+        local entry = BR.Roster.get(owner)
+        if not entry or (entry.state ~= BR.PlayerState.DBNO
+                         and entry.state ~= BR.PlayerState.OUT) then
+            -- Revived, disconnected, or swept home between the arm and the
+            -- drain. The pending flag goes with them; so does the stamp, or a
+            -- player knocked again inside the floor would have their FIRST
+            -- nudge of the new knock swallowed by the last one of the old.
+            resyncPending[owner] = nil
+            resyncSentAt[owner]  = nil
+        elseif now - (resyncSentAt[owner] or -RESYNC_FLOOR_MS) < RESYNC_FLOOR_MS then
+            -- INSIDE THE FLOOR, SO IT STAYS PENDING rather than being dropped.
+            -- A newcomer who cloned the body one frame AFTER the last step is
+            -- exactly the case this issue is about, and dropping them here
+            -- would reproduce it with extra steps.
+            resyncStats.floored = resyncStats.floored + 1
+        else
+            resyncPending[owner] = nil
+            resyncSentAt[owner]  = now
+            resyncStats.sent     = resyncStats.sent + 1
+            TriggerClientEvent(BR.Net.DBNO_RESYNC, owner)
+        end
+    end
+end)
+
 --- Tell a would-be reviver their hold is not happening.
 ---
 --- A REFUSAL THAT SAYS NOTHING LOOKS EXACTLY LIKE A HOLD THAT IS WORKING, and
@@ -1587,8 +1732,36 @@ RegisterCommand('brdbno', function()
                 :format(e.pos and 'sampled' or 'NEVER SAMPLED -- no OneSync?',
                         r and (r.pos and 'sampled'
                                      or 'NEVER SAMPLED -- no OneSync?') or '-'))
+            -- #246. READ THIS AGAINST THE CLIENT'S OWN `scope` LINE, which is
+            -- the other end of the same round trip: a body with nudges sent
+            -- here and none received there is a client that is not listening,
+            -- and one with `pending` stuck true is a floor that never clears.
+            print(('       scope    : last nudge %s, %s')
+                :format(since(resyncSentAt[src]),
+                        resyncPending[src] and 'ONE PENDING'
+                                           or 'nothing waiting'))
         end)
     if n == 0 then print('  nobody is down') end
+
+    -- ...AND THE TOTALS, WHICH COVER THE CORPSES TOO. The per-body lines above
+    -- are DBNO only; an OUT player is armed by exactly the same event and has
+    -- no row of its own to print, so `entered` is the only place a dead body
+    -- being streamed in shows up at all.
+    --
+    -- `entered` AT ZERO IS THE ONE READING THAT MEANS SOMETHING ON ITS OWN: it
+    -- is what a box running onesync LEGACY looks like. playerEnteredScope is
+    -- fired inside ServerGameState's `IsBigMode()` guard, so on legacy this
+    -- number never leaves 0 however many people walk over a body, and the whole
+    -- of #246 is inert.
+    print(('  scope      : %d entries on a body, %d nudges sent, %d coalesced, '
+           .. '%d held by the %dms floor')
+        :format(resyncStats.entered, resyncStats.sent,
+                resyncStats.coalesced, resyncStats.floored, RESYNC_FLOOR_MS))
+    if resyncStats.entered == 0 then
+        print('               entered 0 -- either nobody has walked up to a body '
+              .. 'yet, or this box is on onesync LEGACY, where the event does '
+              .. 'not exist')
+    end
     print(('  bleed %ds/%d/%ds, %.2fs per damage point, revive %.1fs within %.1fm')
         :format(M.dbnoBleedBase, M.dbnoBleedStep, M.dbnoBleedMin,
                 M.dbnoBleedPerDamage, M.dbnoReviveTime, M.dbnoReviveDist))

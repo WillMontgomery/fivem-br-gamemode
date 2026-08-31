@@ -242,6 +242,19 @@ BR.Net = {
     -- against `Date.now() + clockOffset`, never against Date.now(). The server
     -- clock and the browser clock share no origin.
     DBNO_SET        = 'br:dbno:set',
+    -- S->C (no payload) "somebody just streamed your body in; say where it is".
+    --
+    -- ADDRESSED TO THE BODY'S OWNER AND TO NOBODY ELSE, which is the whole
+    -- shape: the server cannot write a player ped (there is no server-side
+    -- SET_ENTITY_COORDS -- the server's entity setters are routing, culling,
+    -- orphan and lockdown, and nothing else), so the one machine that can say
+    -- where a downed or dead body is, is the machine that owns it.
+    --
+    -- IT CARRIES NOTHING BECAUSE THERE IS NOTHING TO CARRY. Who entered scope
+    -- is the server's business, not the owner's; the owner's answer is the same
+    -- whoever asked, and a payload naming the newcomer would be a list of who
+    -- can see you handed to the player being looked at. #246.
+    DBNO_RESYNC     = 'br:dbno:resync',
     REVIVE_START    = 'br:revive:start',     -- C->S  { target }
     REVIVE_STOP     = 'br:revive:stop',      -- C->S
     -- S->C { pct, target, reviverName, bleedEndsAt }. Sent to BOTH parties while
