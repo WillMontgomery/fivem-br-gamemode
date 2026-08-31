@@ -1,4 +1,5 @@
 import Btn from '../ui/Btn'
+import DiscordCard from '../ui/DiscordCard'
 import { play } from '../audio/cues'
 import Ring from '../hud/Ring'
 import { useEffect, useRef, useState } from 'react'
@@ -490,7 +491,11 @@ export default function Lobby({
           </div>
         </div>
 
-        {/* NOTHING GOES UNDER THE MENU (#147).
+        {/* NOTHING GOES UNDER THE MENU (#147) -- LIFTED ONCE, BY HIM, ON
+            2026-08-30. The lift is at the bottom of this comment; the rule it
+            lifts is left standing above it, in full, because a note that
+            vanishes in the same commit that stops obeying it is how this repo
+            loses the reason for a decision.
 
             A LEAVE SERVER BUTTON STOOD HERE AND THE OWNER TOOK IT OUT UNDER
             #83: "the leave button shouldn't be on the front page, but rather
@@ -509,7 +514,62 @@ export default function Lobby({
             left of it: the reasoning was that the menu needed advertising, and
             the answer is that it does not. Escape is the pause key in every
             game the players already own, and the button below it is the thing
-            this screen is for. Do not put a third thing here. */}
+            this screen is for. Do not put a third thing here.
+
+            THE THIRD THING IS BELOW, AND IT IS HIS (owner, 2026-08-30). Asked
+            where the Discord card should go in the lobby -- above this row, or
+            below it with this note lifted -- he chose below it and lifted the
+            note himself. What #147 threw out was HELPER TEXT: a sentence
+            explaining a control that was already on the screen. That is still
+            out, and this is not it -- the card is a control of its own, and
+            the address printed on it is the thing a player leaves with. The
+            rule stands for everything else. */}
+        {/* AND IT IS THE LAST THING IN THE COLUMN, which is the only place a
+            card that can GROW is safe here.
+
+            This column is `absolute inset-y-0 flex flex-col justify-center`
+            with no overflow handling -- unlike the pause menu's root, which
+            scrolls. A column taller than the viewport is centred past both
+            edges and clips symmetrically and silently, top and bottom, so
+            anything that overflows takes the wordmark with it and says
+            nothing. Last means the address wrapping to a second line costs
+            the column one line and moves nothing above it.
+
+            MEASURED, NOT EYEBALLED (2026-08-30), in the browser harness at a
+            true 1280x720. The budget is 654px: 720 less the 3rem top and
+            bottom padding, at the 11px the root font clamps to at that height.
+            This block costs 62.1px of it -- 51.1px of card plus this mt-4, and
+            77.3px when the address wraps to a second line. The margin is paid
+            either way: on a server that publishes no invite the card removes
+            itself and this wrapper stays behind, 11px tall and empty.
+
+            IT FITS, AND THE MARGIN IS THIN. In a party of four with the invite
+            list full, a match running and the party waiting on you, the column
+            wants 648.6px of 654. Five and a half pixels. Anything added to
+            this column afterwards is spending that, and the next thing to
+            arrive is the thing that clips.
+
+            TWO PLACES IT DOES NOT FIT, both reported to the owner rather than
+            designed around, because the ways out all undo one of his calls:
+
+              * AN INVITE OF 55 CHARACTERS OR MORE wraps to a second line at
+                the 1.15 text size, and that state goes 9.8px over. 54 is the
+                last that stays on one line; `https://discord.com/invite/` plus
+                a full 32-character vanity is exactly 54, so the realistic
+                worst case lands ON the boundary rather than inside it.
+              * INTERFACE SIZE ABOVE ~113% at 720p. That is not this card's
+                doing -- the same column already clipped above ~122% with no
+                card at all, which is a bug that predates it -- but the card
+                does move the edge in by about nine points.
+
+            The address itself never overflows sideways at any length: the
+            `break-all` on it wraps inside the card, and the reserved "Copied"
+            slot stays 16.5px clear of the text. Pressing the card does not
+            reflow it -- 51.09px before and after -- so none of this moves when
+            the label appears. */}
+        <div className="mt-4">
+          <DiscordCard />
+        </div>
       </div>
     </div>
   )
