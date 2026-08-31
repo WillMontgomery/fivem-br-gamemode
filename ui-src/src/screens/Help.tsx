@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
+import DiscordCard from '../ui/DiscordCard'
 import { play } from '../audio/cues'
 
 /**
@@ -155,16 +156,42 @@ export default function Help({ inline = false, onDone }:
 
   const body = (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-4">
+      {/* `flex-wrap` AND A shrink-0 RIGHT-HAND GROUP. Three things share this
+          line now and the third can grow (see below), so the failure mode worth
+          engineering against is the address being squeezed into a four-character
+          column rather than the row taking a second line. Wrapping is the
+          cheaper outcome and this page's root scrolls. */}
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         {/* 1.15rem via .ts, up from a micro-label. This is the heading of
             a page, not a caption for one -- at label size it read as a stray
             line above a white rectangle (user, 2026-08-09). */}
         <div className="font-display uppercase tracking-[0.08em] ts" style={{ ['--fs' as string]: '1.15rem' }}>
           {loaded ? 'Player guide' : slow ? 'Could not load the guide' : 'Loading the guide…'}
         </div>
-        <Btn variant="ghost" size="sm" cue="ui.select" onPress={copy}>
-          {copied ? 'Link copied' : 'Copy link'}
-        </Btn>
+        {/* THE DISCORD INVITE LANDED HERE ON 2026-08-31, off the pause menu's
+            front page and out of the lobby, because the owner played the plate
+            it used to be and said so: "the card in the pause menu is HUGE. we
+            don't need that. Find a better place for it. Perhaps on the Help
+            page only."
+
+            AND IT IS BESIDE Copy link RATHER THAN ANYWHERE ELSE ON THE PAGE,
+            because that button is this exact gesture aimed at the other
+            address -- the manual's. Two addresses a player can take away with
+            them, copied the same way, on the same line. It is built to this
+            button's height so it reads as part of the row and not as a thing
+            sitting next to it; ui/DiscordCard.tsx carries the sizes.
+
+            IT CAN REMOVE ITSELF, TWICE OVER -- on a server that publishes no
+            invite, and for the rest of the session once a copy has landed.
+            Neither leaves a gap: the group is a flex row with a gap, so the
+            button simply becomes the only thing in it. Do not reserve space
+            for something that is designed to go away. */}
+        <div className="flex items-center gap-3 shrink-0">
+          <DiscordCard />
+          <Btn variant="ghost" size="sm" cue="ui.select" onPress={copy}>
+            {copied ? 'Link copied' : 'Copy link'}
+          </Btn>
+        </div>
       </div>
 
       {slow && !loaded && (

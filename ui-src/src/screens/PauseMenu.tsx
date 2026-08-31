@@ -3,7 +3,6 @@ import { useUi, selMatch } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
-import DiscordCard from '../ui/DiscordCard'
 import Settings from './Settings'
 import { play } from '../audio/cues'
 import Progress from './Progress'
@@ -529,31 +528,33 @@ export default function PauseMenu() {
               </Btn>
             </div>
 
-            {/* AN INVITATION IS NOT AN EXIT, so it does not join the card
-                above. That card is one list of exits in increasing order of
-                what they cost you, and a link to our Discord costs nothing and
-                ends nothing -- a fourth row would make it read as a fifth way
-                off the server. Nor does it go BETWEEN the exits and the button
-                that leaves: the order on this page is hero, party, exits, the
-                way out, and nothing gets inserted into that.
+            {/* THE DISCORD CARD SAT HERE FOR ONE DAY, under the way out, and
+                the owner took it off this page on 2026-08-31: "the card in the
+                pause menu is HUGE. we don't need that. Find a better place for
+                it. Perhaps on the Help page only."
 
-                SO IT SITS UNDER THE WAY OUT, which is also the only place a
-                two-line card can grow without moving anything a player came
-                here in a hurry for. It is taller than a one-line card because
-                the owner asked for the address to be printed on it
-                (2026-08-30); this root is `fixed inset-0 overflow-y-auto`, so
-                the extra line scrolls rather than pushing anything off screen.
+                It is on the Help tab now, one line beside that page's Copy link
+                button, and it is a great deal smaller than it was. What was
+                wrong with it here was never the placement -- the argument for
+                this spot still holds, and is left below so nobody re-derives it
+                -- it was that a full-width two-line plate is too much furniture
+                for a link on the screen a player opens to get back to the game.
 
-                AND IT IS NOT GATED ON `!inLobby`, unlike PartyCard above. The
-                gates there exist because those things would be WRONG from the
-                lobby -- a live party control that can disagree with the lobby's
-                own. One address from one envelope can neither be wrong nor
-                disagree with anything, and the lobby is not visible behind this
-                menu in any case (`.page-under` is opacity 0). */}
-            <div className="mt-4">
-              <DiscordCard />
-            </div>
+                THE ARGUMENT THAT PUT IT HERE: an invitation is not an exit, so
+                it did not join the card above. That card is one list of exits in
+                increasing order of what they cost you, and a link to our Discord
+                costs nothing and ends nothing -- a fourth row would have made it
+                read as a fifth way off the server. Nor did it go BETWEEN the
+                exits and the button that leaves: the order on this page is hero,
+                party, exits, the way out, and nothing gets inserted into that.
+                So it went under the way out, the only place a card that grows
+                could grow without moving anything a player came here in a hurry
+                for.
+
+                None of that is an argument for putting something else here. The
+                slot is empty because the page is finished at the way out. */}
           </>
+
         ) : tab === 'notices' ? (
           <NoticeLog />
         ) : tab === 'help' ? (
