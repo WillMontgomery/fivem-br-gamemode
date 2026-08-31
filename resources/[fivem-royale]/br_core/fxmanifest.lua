@@ -86,6 +86,13 @@ shared_scripts {
     -- third file to ask that one list what an ambulance is, and it is declared
     -- beside the other two so the three read as a set.
     '@br_lib/config/revivekey.lua',
+    -- The 23 station ambulances (#219 step 3). AFTER config/rescue.lua and
+    -- config/map.lua, and for the same reason the three above it are: its
+    -- `Points()` and `Model()` resolve BR.Config.Rescue at CALL time -- so the
+    -- surveyed rows have exactly one reader and the two features cannot disagree
+    -- about where a station is. Declared with the other ambulance configs
+    -- because the four are one feature family on the map.
+    '@br_lib/config/ambulances.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
     -- The warmup vehicle shop's catalogue (#224). SHIPS EMPTY, on purpose --
     -- the owner authors the models, coordinates and headings in game, and with
@@ -466,6 +473,23 @@ server_scripts {
     -- file has loaded, and the honest behaviour in that window is a death with
     -- no key rather than a throw inside the elimination path.
     'server/revivekey.lua',
+    -- The 23 station ambulances (#219 step 3). AFTER server/rescue.lua, and this
+    -- is a READER'S order in one direction and a real one in NEITHER:
+    --
+    --   AT LOAD it needs BR.Sched, BR.Config.Ambulances and BR.Config.Match --
+    --   all of them above, all of them br_lib except the scheduler.
+    --   AT CALL it builds vehicles through BR.Vehicles.spawnOwned, which is
+    --   declared BELOW this line (with the allowlist tools/verify.sh requires it
+    --   to sit beside) and is resolved when the bus doors open rather than at
+    --   load -- exactly the arrangement server/rescue.lua already has with the
+    --   same function.
+    --
+    -- THE DEPENDENCY ALSO RUNS BACKWARDS, and that is the one worth naming:
+    -- server/rescue.lua asks BR.Ambulances.displace, from ABOVE this line and
+    -- nil-guarded, so that its ride is not created inside a parked station
+    -- ambulance. A build without this file spawns on the surveyed point exactly
+    -- as it did before, which is correct when there is nothing parked there.
+    'server/ambulances.lua',
     'server/loot.lua',      -- world loot: layout, streaming, claim arbitration
     -- Aerial supply drops. AFTER storm.lua and loot.lua for a reader rather
     -- than for the loader: it asks BR.StormAt where the circle will be when the

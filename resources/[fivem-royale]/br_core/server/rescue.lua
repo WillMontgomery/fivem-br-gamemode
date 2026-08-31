@@ -692,9 +692,45 @@ function BR.Rescue.begin(src)
         pcall(SetPlayerCullingRadius, src, R.cullRadiusM or 10000.0)
     end
 
+    -- ═══ AND IT DOES NOT LAND ON THE STATION AMBULANCE PARKED THERE ═══
+    --
+    -- #219 step 3 puts a persistent ambulance on every one of the 23 surveyed
+    -- points, which are the points this line spawns on. Without the two lines
+    -- below every rescue would create its ride INSIDE a parked vehicle and
+    -- leave the engine to resolve the intersection by throwing one of them.
+    --
+    -- THE MITIGATION THIS USED TO HAVE IS GONE, and config/rescue.lua still
+    -- describes it as live: "`freeSpaceNear` walks a fixed ring of offsets and
+    -- parks in the first clear one". That was true while the CLIENT made the
+    -- vehicle. Since 2026-08-28 the SERVER makes it, client/rescue.lua says so
+    -- itself -- "`freeSpaceNear` USED TO SITE THE VEHICLE and cannot any more:
+    -- the vehicle is created on the server, which has no IsPositionOccupied to
+    -- ask" -- and that ring-walk now only sites the medic. What it named as the
+    -- cost ("two rescues converging on one station can now overlap") was rare.
+    -- A station ambulance on all 23 points makes it certain, every time.
+    --
+    -- IT IS STILL NOT IsPositionOccupied, AND IT DOES NOT NEED TO BE. The server
+    -- cannot ask "is anything there", but this is a smaller question -- "is one
+    -- of MINE there" -- about vehicles it created and re-reads every second. See
+    -- BR.Ambulances.displace. nil-guarded, because this file must go on working
+    -- in a build without #219's half (and tools/test_rescue.lua runs it that
+    -- way): with no station ambulances there is nothing parked to avoid, and the
+    -- surveyed point is the right answer exactly as it was before.
+    local sx, sy, sz = pickup.x, pickup.y, pickup.z
+    if BR.Ambulances and BR.Ambulances.displace then
+        local moved
+        sx, sy, sz, moved = BR.Ambulances.displace(
+            entry.matchId, sx, sy, sz, pickup.heading or 0.0)
+        if moved then
+            print(('[br_core] rescue: %d  %s has a station ambulance on it -- '
+                   .. 'spawning %.1f, %.1f instead')
+                :format(src, pointName(pickup), sx, sy))
+        end
+    end
+
     local veh, netId, whyVeh = BR.Vehicles.spawnOwned(
         R.model or 'ambulance', 'automobile',
-        pickup.x, pickup.y, pickup.z, pickup.heading or 0.0, src)
+        sx, sy, sz, pickup.heading or 0.0, src)
     if not veh then
         -- AND IT COMES OFF ON THE REFUSAL PATH TOO. This is the one exit
         -- between the widening above and the `live[src]` entry below, so it is

@@ -1375,12 +1375,24 @@ local DEFAULT_MODEL = 'granger'
 --- the setter defaults to bucket 0 -- a vehicle left there is one nobody in the
 --- match can see, which is the same failure as not creating it at all.
 ---
+--- ...AND IT CAN BE NAMED DIRECTLY, WHICH IS NOT THE SAME QUESTION AS `forSrc`.
+--- Reading a player's bucket answers "put this where that person is", and there
+--- are callers for whom no player is the right authority: #219's station
+--- ambulances are built at the moment the bus doors open, when riders are still
+--- in the COMMUNAL WARMUP bucket and will not move to the match's own until
+--- `m.hopAt` -- so `forSrc` would have put twenty-three vehicles somewhere
+--- nobody in the match can see, which is this function's own definition of the
+--- same failure as not creating them at all. `bucket` is the match's
+--- (matchBucketBase + matchId), known without asking anybody, and it WINS over
+--- `forSrc` when both are given because it is the more specific claim.
+---
 --- @param model string|number
 --- @param vtype string   automobile/bike/boat/heli/plane/submarine/trailer/train
 --- @param x number @param y number @param z number @param heading number
 --- @param forSrc number|nil  take this player's routing bucket
+--- @param bucket number|nil  ...or this bucket outright; wins over forSrc
 --- @return number|nil veh, number|nil netId, string|nil why
-function BR.Vehicles.spawnOwned(model, vtype, x, y, z, heading, forSrc)
+function BR.Vehicles.spawnOwned(model, vtype, x, y, z, heading, forSrc, bucket)
     local hash = type(model) == 'number' and model or GetHashKey(model)
     if BR.Config.IsAllowedVehicle and not BR.Config.IsAllowedVehicle(hash) then
         return nil, nil, 'the allowlist refuses that model'
@@ -1400,11 +1412,12 @@ function BR.Vehicles.spawnOwned(model, vtype, x, y, z, heading, forSrc)
         return nil, nil, 'the engine refused it (handle 0)'
     end
 
-    if forSrc then
+    local asked = bucket and math.tointeger(tonumber(bucket) or -1) or nil
+    if asked == nil and forSrc then
         local okB, b = pcall(GetPlayerRoutingBucket, tostring(forSrc))
-        local n = okB and math.tointeger(tonumber(b) or -1) or nil
-        if n and n >= 0 then pcall(SetEntityRoutingBucket, veh, n) end
+        asked = okB and math.tointeger(tonumber(b) or -1) or nil
     end
+    if asked and asked >= 0 then pcall(SetEntityRoutingBucket, veh, asked) end
 
     -- ═══ IT SAYS WHAT IT BUILT, BECAUSE THE CALLER CANNOT SEE ANY OF IT ═══
     --
@@ -1420,8 +1433,7 @@ function BR.Vehicles.spawnOwned(model, vtype, x, y, z, heading, forSrc)
     local okB2, gotB = pcall(GetEntityRoutingBucket, veh)
     print(('[br_core] spawnOwned: handle %d  netId %d  bucket asked %s got %s')
         :format(veh, netId,
-                tostring(forSrc and select(2, pcall(GetPlayerRoutingBucket,
-                                                    tostring(forSrc)))),
+                tostring(asked),
                 okB2 and tostring(gotB) or 'unreadable'))
 
     return veh, netId, nil
