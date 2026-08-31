@@ -252,15 +252,20 @@ end
 --- walking away makes it grow relative to the car). Neither is a knob on that
 --- function -- they are what the two natives do.
 ---
---- SO THIS DRAWS THE QUAD IN THE WORLD INSTEAD, in metres, welded to the
---- entity's own axes. Walk round the car and the sign turns with the car,
---- because its four corners are entity-local offsets and nothing here reads the
---- camera except to decide which way to wind the triangles.
+--- SO THIS DRAWS THE QUAD IN THE WORLD INSTEAD, in metres, squared to the
+--- entity's HEADING and level with the horizon. Walk round the car and the sign
+--- turns with the car, because its width lies along the car's own forward
+--- vector; lean the car and the sign does not lean, because that vector is
+--- flattened first (the block in the body has the whole argument). Nothing here
+--- reads the camera except to decide which way to wind the triangles.
 ---
---- THE SAME GEOMETRY AS drawOnEntity, STOOD UP. That one lays a label FLAT on a
---- crate's roof (local X by local Y at a fixed Z); this one stands it UPRIGHT in
---- front of a bumper (local X by local Z at a fixed Y). Everything downstream of
---- the corners -- the normal, the camera-side test, the two triangles and their
+--- THE SAME PLUMBING AS drawOnEntity, STOOD UP -- BUT DELIBERATELY NOT THE SAME
+--- BASIS ANY MORE. That one lays a label FLAT on a crate's roof (local X by
+--- local Y at a fixed Z) and takes its corners from the entity's whole matrix,
+--- pitch and roll included, which its own header records as the point of it;
+--- this one stands a sign UPRIGHT in front of a bumper (the car's flattened
+--- forward by the world's up) and drops the lean. Everything downstream of the
+--- corners -- the normal, the camera-side test, the two triangles and their
 --- UVs -- is the same proven arrangement and is deliberately not re-derived.
 ---
 --- WHICH WAY ROUND "TOP-LEFT" IS, BECAUSE MIRRORED TEXT IS THE FAILURE HERE. A
@@ -276,8 +281,10 @@ end
 ---
 --- @param page table
 --- @param entity integer  the vehicle the sign is bolted to
---- @param oy number       entity-local Y of the sign's centre, in metres
---- @param oz number       entity-local Z of the sign's centre, in metres
+--- @param oy number       metres along the entity's heading from its origin to
+---                        the sign's centre
+--- @param oz number       metres straight up from the entity's origin to the
+---                        sign's centre
 --- @param widthM number   how wide the sign is, in metres; height follows the
 ---                        page's own aspect
 --- @param alpha number|nil
@@ -291,9 +298,61 @@ function BR.Dui.drawFace(page, entity, oy, oz, widthM, alpha)
     if hw <= 0.0 then return end
     local hh = hw * (page.h / page.w)
 
+    -- ═══ LEVEL IN THE WORLD, NOT WELDED TO THE WHOLE MATRIX ═══
+    --
+    -- Owner, 2026-08-30: "The store DUIs look great - but can you make sure
+    -- they're always drawn perfectly level? For example the sanchez tilts a bit
+    -- on the kickstand, and now it's DUI tilts lol."
+    --
+    -- The corners used to come from GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS,
+    -- which multiplies an offset through the entity's FULL 3x3 -- heading,
+    -- pitch and roll together. So the sign was the vehicle's local X-by-Z
+    -- rectangle and wore every degree the vehicle wore, and a bike parked on
+    -- its kickstand really is rolled.
+    --
+    -- NO EULER ANGLES ARE READ HERE, SO NO ROTATION ORDER IS CHOSEN. Asking
+    -- GET_ENTITY_ROTATION would force one (this repo asks for 2, ROT_ZXY --
+    -- client/natives.lua's probe and client/loot.lua's crate pose) and would
+    -- then need rebuilding into a basis. None of that is necessary: a roll
+    -- turns the body about its own forward axis, and a rotation leaves the axis
+    -- it turns about alone, so GET_ENTITY_FORWARD_VECTOR -- which is the
+    -- matrix's forward column, not a decomposition -- already has the kickstand
+    -- lean divided out of it. Flattening it into the world's XY plane divides
+    -- out the pitch as well, and "level" is exactly those two.
+    --
+    -- THE CENTRE IS LEVELLED TOO, RATHER THAN LEFT ON THE TILTED BUMPER. `oz`
+    -- is a height read off the model's own box (client/shop.lua's signOffsets),
+    -- and pushed through the matrix a rolled bike swings that height out
+    -- sideways -- which hangs a level sign off to one side of the bike, and
+    -- that is not what was asked for either. Measured up the WORLD it stays a
+    -- height and the sign stands on the car's centreline. `oy` comes out the
+    -- same either way under roll, because roll IS the forward axis.
+    --
+    -- drawOnEntity BELOW KEEPS THE WHOLE MATRIX, and the divergence is the
+    -- point. Its header (the "STUCK TO AN ENTITY'S TOP FACE" block) records the
+    -- 2026-08-06 bug where a label that ignored pitch and roll lay dead flat
+    -- beside a crate resting on a slope. A label stuck to a lid must follow the
+    -- lid; a sign standing in front of a car must not follow the car's lean.
+    -- Do not "make them consistent".
+    local p = GetEntityCoords(entity)
+    local f = GetEntityForwardVector(entity)
+    local fx, fy = f.x, f.y
+    local flat = math.sqrt(fx * fx + fy * fy)
+    -- A vehicle stood exactly on its nose has no heading left to read. It
+    -- cannot happen to a frozen showroom car, and a quad of nans is a worse
+    -- failure than a missing frame.
+    if flat < 0.0001 then return end
+    fx, fy = fx / flat, fy / flat
+    -- The car's OWN +X, flattened: at heading h forward is (-sin h, cos h) and
+    -- right is (cos h, sin h), so (fy, -fx) is the right vector. `sx` therefore
+    -- means what it meant when it was an entity offset, which is what keeps the
+    -- reader's-left argument above -- and the UV mapping below -- untouched.
+    local rx, ry = fy, -fx
+
     local function corner(sx, sz)
-        local v = GetOffsetFromEntityInWorldCoords(entity, sx, oy, oz + sz)
-        return v.x, v.y, v.z
+        return p.x + fx * oy + rx * sx,
+               p.y + fy * oy + ry * sx,
+               p.z + oz + sz
     end
 
     -- Left and right are the READER'S, standing in front of the car. See above.

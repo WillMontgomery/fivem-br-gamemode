@@ -2392,7 +2392,8 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('the plate is a yard sign: stationary, welded to the car, in metres')
+describe('the plate is a yard sign: stationary, level, squared to the car, in '
+    .. 'metres')
 -- ---------------------------------------------------------------------------
 --
 -- ═══ THIS BLOCK RUNS THE GEOMETRY RATHER THAN GREPPING FOR IT ═══
@@ -2408,10 +2409,15 @@ describe('the plate is a yard sign: stationary, welded to the car, in metres')
 -- NEITHER of those is a parameter anybody could have passed differently. A
 -- source assertion could only ever have checked that the call was still there.
 --
--- So client/dui.lua is LOADED here, with a GetOffsetFromEntityInWorldCoords that
--- performs a real GTA heading rotation, and the four corners it produces are
--- read back out of the DrawSpritePoly calls. Every assertion below fails against
--- the old drawWorld path -- there are no polys at all to read.
+-- So client/dui.lua is LOADED here, standing on a car with a real POSE -- a
+-- heading, a pitch and a roll -- and the four corners it produces are read back
+-- out of the DrawSpritePoly calls. Every assertion below fails against the old
+-- drawWorld path: there are no polys at all to read.
+--
+-- THE POSE IS A FULL ONE BECAUSE A YAW-ONLY ONE WAS WHY THIS BLOCK WAS GREEN
+-- WHILE THE SIGN WAS CROOKED (2026-08-30). The fixture used to rotate about Z
+-- and nothing else, so it could not express a bike leaning on its kickstand and
+-- it modelled the behaviour we wanted rather than the one the native has.
 do
     -- --- the browser, exactly as tools/test_client.lua stubs it ------------
     json = { encode = function() return '{}' end }
@@ -2423,23 +2429,77 @@ do
     function SendDuiMessage() end
     function DestroyDui() end
 
-    -- --- one car, at a known place, facing a known way --------------------
+    -- --- one car, at a known place, in a known ATTITUDE -------------------
     --
     -- GTA HEADING IS COUNTER-CLOCKWISE DEGREES FROM NORTH, so forward is
     -- (-sin h, cos h) and right is (cos h, sin h). Written out rather than
     -- taken from the code under test: a stub that shared the implementation's
     -- convention would agree with it however wrong both were.
-    local CAR = { x = 100.0, y = 200.0, z = 30.0, h = 0.0 }
+    local CAR = { x = 100.0, y = 200.0, z = 30.0,
+                  h = 0.0, pitch = 0.0, roll = 0.0 }
     local VEH = 4242
 
     function DoesEntityExist(e) return e == VEH end
+
+    --- The car's three body axes -- right, forward, up -- in WORLD coordinates.
+    ---
+    --- BUILT FROM THE PHYSICS, NOT FROM AN EULER CONVENTION THE ENGINE NAMES.
+    --- GET_ENTITY_ROTATION's rotationOrder argument (this repo asks for 2,
+    --- ROT_ZXY) decides how a triple of angles composes, and the Cfx docs
+    --- describe the enum only as "rotate around z-axis, then x-axis, then
+    --- y-axis" -- not enough to lift into a fixture that is meant to be the
+    --- independent party. So the pose is composed here from what the words
+    --- mean instead: start from the world-aligned car (right = +X, forward =
+    --- +Y, up = +Z), ROLL it about its own forward axis, PITCH it about its own
+    --- right axis, then swing it to its heading about the WORLD's up.
+    ---
+    --- Two consequences, and the fix under test leans on the first while this
+    --- block exists to pin the second:
+    ---   * a pure roll leaves FORWARD exactly alone, because a rotation cannot
+    ---     move the axis it turns about -- which is why a sign that wants to
+    ---     ignore a kickstand lean needs no angles, only the forward vector;
+    ---   * a pure roll moves RIGHT and UP by the roll angle, so any quad spanned
+    ---     by those two -- which is what the sign used to be -- tilts with it.
+    --- @return table right, table fwd, table up
+    local function axes()
+        local ch, sh = math.cos(math.rad(CAR.h)), math.sin(math.rad(CAR.h))
+        local cp, sp = math.cos(math.rad(CAR.pitch)), math.sin(math.rad(CAR.pitch))
+        local cr, sr = math.cos(math.rad(CAR.roll)), math.sin(math.rad(CAR.roll))
+        local function body(vx, vy, vz)
+            vx, vz = vx * cr + vz * sr, vz * cr - vx * sr   -- roll,  about +Y
+            vy, vz = vy * cp - vz * sp, vy * sp + vz * cp   -- pitch, about +X
+            vx, vy = vx * ch - vy * sh, vx * sh + vy * ch   -- yaw,   about +Z
+            return { vx, vy, vz }
+        end
+        return body(1.0, 0.0, 0.0), body(0.0, 1.0, 0.0), body(0.0, 0.0, 1.0)
+    end
+
+    -- THE THREE ENTITY READS, ALL OFF THAT ONE POSE. Sharing a source is the
+    -- point: a fixture whose position, matrix and forward vector could disagree
+    -- would let a wrong fix pass by quietly reading a different car.
+    --
+    -- GetEntityCoords ADDS the car to this file's ped lookup rather than
+    -- replacing it -- every server-side block above reads that table, and a
+    -- stub answering {0,0,0} for a ped would break them silently if this block
+    -- ever moved.
+    local pedCoords = GetEntityCoords
+    function GetEntityCoords(e)
+        if e == VEH then return { x = CAR.x, y = CAR.y, z = CAR.z } end
+        return pedCoords(e)
+    end
+    function GetEntityForwardVector(e)
+        if e ~= VEH then return { x = 0.0, y = 1.0, z = 0.0 } end
+        local _, fwd = axes()
+        return { x = fwd[1], y = fwd[2], z = fwd[3] }
+    end
+    --- An offset in the car's own frame, through the car's whole matrix. This
+    --- is what drawFace used to be built on and what drawOnEntity still is.
     function GetOffsetFromEntityInWorldCoords(e, lx, ly, lz)
-        local r = math.rad(CAR.h)
-        local cs, sn = math.cos(r), math.sin(r)
+        local rt, fwd, up = axes()
         return {
-            x = CAR.x + lx * cs - ly * sn,
-            y = CAR.y + lx * sn + ly * cs,
-            z = CAR.z + lz,
+            x = CAR.x + rt[1] * lx + fwd[1] * ly + up[1] * lz,
+            y = CAR.y + rt[2] * lx + fwd[2] * ly + up[2] * lz,
+            z = CAR.z + rt[3] * lx + fwd[3] * ly + up[3] * lz,
         }
     end
 
@@ -2551,11 +2611,13 @@ do
             .. 'swaps, the geometry does not', #polys)
     cam = { x = 100.0, y = 210.0, z = 31.0 }
 
-    -- ═══ 4. IT IS WELDED TO THE CAR'S OWN AXES ═══
+    -- ═══ 4. IT IS WELDED TO THE CAR'S OWN HEADING ═══
     --
-    -- Turn the car and the sign turns with it, because its corners are entity
-    -- offsets. At heading 0 the sign stands across the world's X axis, in front
-    -- of the car's nose; at heading 90 the same sign stands across Y.
+    -- Turn the car and the sign turns with it, because its width follows the
+    -- car's forward vector. At heading 0 the sign stands across the world's X
+    -- axis, in front of the car's nose; at heading 90 the same sign stands
+    -- across Y. Section 7 is the other half of this: its heading and NOT its
+    -- lean.
     draw(OY, OZ)
     local flat0 = math.abs(at(0.0, 0.0)[2] - at(1.0, 0.0)[2])
     ok(near(flat0, 0.0, 0.001),
@@ -2604,7 +2666,142 @@ do
         'and the texture\'s top edge is the higher one, so it is not upside '
             .. 'down either')
 
-    -- ═══ 7. THE CONFIG KNOB IS A LENGTH, AND THE SCREEN FRACTION IS GONE ═══
+    -- ═══ 7. AND IT IS LEVEL, WHATEVER THE CAR IS DOING ═══
+    --
+    -- Owner, 2026-08-30: "The store DUIs look great - but can you make sure
+    -- they're always drawn perfectly level? For example the sanchez tilts a bit
+    -- on the kickstand, and now it's DUI tilts lol."
+    --
+    -- EVERY GEOMETRY ASSERTION BELOW FAILS AGAINST THE MATRIX VERSION, now that
+    -- the fixture can express an attitude at all: at 25 degrees the top corners
+    -- of a 0.75m sign sat 0.317m apart in height, on a sign only 0.375m tall.
+
+    --- The sign's centre, off the two corners on a diagonal.
+    local function centre()
+        local p, q = at(0.0, 0.0), at(1.0, 1.0)
+        return (p[1] + q[1]) * 0.5, (p[2] + q[2]) * 0.5, (p[3] + q[3]) * 0.5
+    end
+
+    -- FIRST, THAT THE FIXTURE CAN STILL TILT AT ALL. The version of this block
+    -- that shipped the bug was green because its stub was yaw-only, and a stub
+    -- that quietly lost its roll again would make everything below vacuous. So
+    -- the matrix is asked directly: at 25 degrees a signWidthM-wide local
+    -- X-by-Z rectangle really does drop one end by W*sin(roll).
+    CAR.roll = 25.0
+    local mL = GetOffsetFromEntityInWorldCoords(VEH,  W * 0.5, OY, OZ)
+    local mR = GetOffsetFromEntityInWorldCoords(VEH, -W * 0.5, OY, OZ)
+    ok(near(math.abs(mL.z - mR.z), W * math.sin(math.rad(25.0)), 0.001),
+        'the fixture\'s matrix genuinely rolls: through it, the sign\'s own '
+            .. 'width lands 0.317m out of level, which is what he was looking '
+            .. 'at', ('%.4f'):format(math.abs(mL.z - mR.z)))
+    CAR.roll, CAR.pitch = 0.0, 12.0
+    local mT = GetOffsetFromEntityInWorldCoords(VEH, 0.0, OY, OZ + W * 0.25)
+    local mB = GetOffsetFromEntityInWorldCoords(VEH, 0.0, OY, OZ - W * 0.25)
+    ok(near(math.abs(mT.y - mB.y), W * 0.5 * math.sin(math.rad(12.0)), 0.001),
+        'and it genuinely pitches: the sign\'s own height leans out of plumb '
+            .. 'through the same matrix, so the pitch case below is not asking '
+            .. 'a level car whether it is level',
+        ('%.4f'):format(math.abs(mT.y - mB.y)))
+    CAR.pitch = 0.0
+    CAR.roll = 25.0
+
+
+    draw(OY, OZ)
+    local rtl, rtr = at(0.0, 0.0), at(1.0, 0.0)
+    local rbl, rbr = at(0.0, 1.0), at(1.0, 1.0)
+    ok(near(rtl[3], rtr[3], 0.0005),
+        'a car rolled 25 degrees -- a bike down on its kickstand -- wears a '
+            .. 'sign whose top edge is still dead level',
+        ('%.4fm of drop'):format(math.abs(rtl[3] - rtr[3])))
+    ok(near(rbl[3], rbr[3], 0.0005),
+        'and so is its bottom edge',
+        ('%.4fm of drop'):format(math.abs(rbl[3] - rbr[3])))
+    ok(near(rtl[1], rbl[1], 0.0005) and near(rtl[2], rbl[2], 0.0005),
+        'and its sides hang plumb, so the whole quad is level rather than just '
+            .. 'the one edge that happens to lie across the lean')
+    ok(near(dist(rtl, rtr), W, 0.001),
+        'and it is still the full signWidthM across -- rebuilt level, not '
+            .. 'squashed flat, which would leave W*cos(roll)',
+        ('%.4f, flattened would be %.4f'):format(
+            dist(rtl, rtr), W * math.cos(math.rad(25.0))))
+    local lx, ly, lz = centre()
+    ok(near(lx, CAR.x, 0.001) and near(ly, CAR.y + OY, 0.001)
+           and near(lz, CAR.z + OZ, 0.001),
+        'and the ANCHOR is levelled with it: the sign hangs on the car\'s own '
+            .. 'centreline at the height the shop asked for, instead of being '
+            .. 'swung out sideways by the lean it is refusing to copy',
+        ('%.3f %.3f %.3f'):format(lx, ly, lz))
+    CAR.roll = 0.0
+
+    CAR.pitch = 12.0
+    draw(OY, OZ)
+    local ptl, pbl = at(0.0, 0.0), at(0.0, 1.0)
+    ok(near(ptl[1], pbl[1], 0.0005) and near(ptl[2], pbl[2], 0.0005),
+        'nose the car up twelve degrees and the sign still hangs plumb -- '
+            .. '"perfectly level" is the pitch as well as the roll',
+        ('%.4fm out of plumb'):format(
+            math.sqrt((ptl[1] - pbl[1]) ^ 2 + (ptl[2] - pbl[2]) ^ 2)))
+    local px, py, pz = centre()
+    ok(near(px, CAR.x, 0.001) and near(py, CAR.y + OY, 0.001)
+           and near(pz, CAR.z + OZ, 0.001),
+        'and it stands OY along the ground and OZ above the origin, rather '
+            .. 'than being lifted by the nose it is standing off',
+        ('%.3f %.3f %.3f'):format(px, py, pz))
+    CAR.pitch = 0.0
+
+    -- THE SANCHEZ'S OWN ROW, because a sign that is only level facing north is
+    -- level for the fixture and not for him. config/shop.lua authors that row
+    -- at heading 197.7; the lean is the kickstand's.
+    CAR.h, CAR.pitch, CAR.roll = 197.7, 3.0, 25.0
+    draw(OY, OZ)
+    local stl, str, sbl = at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0)
+    ok(near(stl[3], str[3], 0.0005) and near(stl[1], sbl[1], 0.0005)
+           and near(stl[2], sbl[2], 0.0005),
+        'at the heading his catalogue actually authors, leaning and nose-up, '
+            .. 'the sign is level and plumb',
+        ('%.4fm of drop'):format(math.abs(stl[3] - str[3])))
+
+    local hr = math.rad(CAR.h)
+    local fwx, fwy = -math.sin(hr), math.cos(hr)
+    local sx, sy, sz = centre()
+    ok(near(sx, CAR.x + fwx * OY, 0.001) and near(sy, CAR.y + fwy * OY, 0.001)
+           and near(sz, CAR.z + OZ, 0.001),
+        'and it stands off the nose along the heading the row authored, not '
+            .. 'along wherever the leaning bodywork points',
+        ('%.3f %.3f %.3f'):format(sx, sy, sz))
+    ok(near((str[1] - stl[1]) * fwx + (str[2] - stl[2]) * fwy, 0.0, 0.001),
+        'the sign\'s width is still square across that heading -- levelling it '
+            .. 'did not turn it',
+        ('%.4f'):format((str[1] - stl[1]) * fwx + (str[2] - stl[2]) * fwy))
+    ok((stl[1] - str[1]) * math.cos(hr) + (stl[2] - str[2]) * math.sin(hr) > 0.0,
+        'and the texture\'s left edge is still on the car\'s +X at a heading '
+            .. 'that is not zero, so the rebuilt right vector did not come back '
+            .. 'mirrored')
+    CAR.h, CAR.pitch, CAR.roll = 0.0, 0.0, 0.0
+
+    -- AND THE MATRIX IS GONE FROM THIS ONE FUNCTION ONLY. The geometry above
+    -- would also pass if drawFace still went through the matrix and something
+    -- downstream straightened the result; this says which native the sign is
+    -- built on, and that the crate label keeps the one IT needs.
+    local duiSrc = readFile(RES .. 'br_core/client/dui.lua')
+    local faceBody =
+        duiSrc:match('function BR%.Dui%.drawFace(.-)function BR%.Dui%.')
+    local lidBody =
+        duiSrc:match('function BR%.Dui%.drawOnEntity(.-)function BR%.Dui%.')
+    ok(faceBody ~= nil
+           and faceBody:find('GetOffsetFromEntityInWorldCoords') == nil,
+        'the sign resolves no corner through the entity\'s matrix any more')
+    ok(faceBody ~= nil and faceBody:find('GetEntityForwardVector') ~= nil,
+        'it builds its own basis off the flattened forward vector instead, '
+            .. 'which is the one axis a roll cannot move')
+    ok(lidBody ~= nil
+           and lidBody:find('GetOffsetFromEntityInWorldCoords') ~= nil,
+        'while drawOnEntity keeps the whole matrix, pitch and roll included -- '
+            .. 'a label stuck to a crate lid follows the lid down a slope '
+            .. '(2026-08-06), and levelling that one would put a shipped bug '
+            .. 'back')
+
+    -- ═══ 8. THE CONFIG KNOB IS A LENGTH, AND THE SCREEN FRACTION IS GONE ═══
     ok(type(shipped.signWidthM) == 'number' and shipped.signWidthM > 0.0,
         'signWidthM is a width in metres', tostring(shipped.signWidthM))
     ok(shipped.signScale == nil,
@@ -2625,7 +2822,7 @@ do
         'drawWorld still exists for the crate, the pump, the revive and the '
             .. 'heal station')
 
-    -- ═══ 8. THE TITLE, AND THE CURRENCY WORD'S CASE ═══
+    -- ═══ 9. THE TITLE, AND THE CURRENCY WORD'S CASE ═══
     ok(cli4:find('labelBig%s*=%s*true') ~= nil,
         'the plate asks for the vehicle name\'s larger treatment')
 
@@ -2650,7 +2847,7 @@ do
         'which is "Volts", in sentence case, and is still the only place it '
             .. 'is written', BR.Config.Market.currency)
 
-    -- ═══ 9. THE ORANGE IS THE MARKET PAGE'S OWN TOKEN, END TO END ═══
+    -- ═══ 10. THE ORANGE IS THE MARKET PAGE'S OWN TOKEN, END TO END ═══
     --
     -- Owner: "the same color we show in the market page". That is a claim about
     -- ONE TOKEN reaching two documents, and every link in the chain is checked

@@ -698,9 +698,14 @@ end
 --- drawOnEntity caches its own for the same reason. The cache holds the BOX and
 --- not the derived height, so re-tuning the two config numbers takes effect on
 --- a br_lib reload rather than surviving in a cache keyed by model.
+---
+--- BOTH ARE READ OFF THE MODEL IN ITS OWN AXES AND SPENT LEVEL. drawFace lays
+--- `oy` along the car's flattened heading and `oz` straight up the world, so a
+--- vehicle that leans keeps its sign on its centreline at the bumper height its
+--- box says -- rather than swinging the height out sideways with the lean.
 --- @param veh integer
---- @return number|nil oy  entity-local Y: clear of the model's own nose
---- @return number|nil oz  entity-local Z: the model's own bumper height
+--- @return number|nil oy  metres in front of the model's own nose
+--- @return number|nil oz  metres above the model origin: its bumper height
 local function signOffsets(veh)
     local model = GetEntityModel(veh)
     local d = DIMS[model]
@@ -771,9 +776,14 @@ end)
 --- DrawSprite: the origin projects a world point to the screen and the sprite is
 --- sized in SCREEN fractions, so it is a billboard AND it holds a constant share
 --- of the display at every distance. Neither is a parameter on that function.
---- drawFace builds the quad in the world from the CAR'S OWN AXES instead, in
+--- drawFace builds the quad in the world from the CAR'S OWN HEADING instead, in
 --- metres -- so it turns with the car, stays put, and gets smaller as you walk
 --- away because that is what a thing in the world does.
+---
+--- ITS HEADING AND NOT ITS WHOLE POSE, which is the 2026-08-30 follow-up: the
+--- sanchez leans on its kickstand and its price used to lean with it. drawFace
+--- flattens the car's forward vector and stands the sign up the world's Z, so
+--- both offsets below are read level -- see its own body for the argument.
 BR.Loop.register(BR.Loop.FRAME, 'shop.draw', function()
     if not promptShown or not candidate then return end
     local veh = cars[candidate.id]
