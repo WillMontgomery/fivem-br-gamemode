@@ -2723,6 +2723,20 @@ do
     ok(#eventsOf(BR.Net.BUS_ROUTE) >= 1, 'and the preview reaches every client')
     ok(r.timed == false, 'but it is not timed until departure')
 
+    -- AND `timed == false` IS A CLAIM ABOUT THE GEOMETRY, NOT JUST A FLAG. The
+    -- client's fly loop reads `points[n].t` directly and compares it to the
+    -- synced clock; the flag is only how it knows not to. Pinning the absence
+    -- here is what stops the client-side fixture in tools/test_client.lua from
+    -- drifting into testing a shape the server never sends -- which is the way
+    -- a guard written against this record stops being tested without failing.
+    local anyStamped = false
+    for _, p in ipairs(r.points) do
+        if p.t ~= nil then anyStamped = true end
+    end
+    ok(r.points[1].t == nil and not anyStamped,
+        'and not one of its points carries a timestamp for a client to fly by',
+        ('points %d, points[1].t %s'):format(#r.points, tostring(r.points[1].t)))
+
     ok(#r.legs == #BR.Config.Bus.legs, 'one option chosen per leg')
     local legsValid, wpIdx = true, 1
     for li, pick in ipairs(r.legs) do

@@ -451,8 +451,9 @@ function BR.Bus.camLocked()
     return BR.Clock.now() < (route.rotateAt or route.tStart)
 end
 
--- Fly the plane. Frame loop, active only while a bus exists; everyone
--- computes the same position from the same record and the same clock.
+-- Fly the plane. Frame loop, active only while a bus exists AND the record it
+-- flies by has a clock stamped on it; everyone computes the same position from
+-- the same record and the same clock.
 --
 -- Coordinates are written every frame -- that is the authority, and what
 -- keeps 48 local planes identical. Velocity is ALSO set, from a finite
@@ -465,7 +466,28 @@ end
 -- ped is parked at the airstrip -- without the focus hint, the entire route
 -- ahead is unstreamed ocean, which is precisely how flight 3 looked.
 BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
-    if not bus then return end
+    -- A PLANE IS NOT ENOUGH; THE ROUTE HAS TO HAVE A CLOCK ON IT. The record
+    -- arrives in two shapes: plan() publishes the warmup preview with no `t`
+    -- on any point, and depart() is the only thing that ever stamps one. An
+    -- untimed record landing under a LIVE plane -- `brforce warmup` out of BUS
+    -- republishes the preview while the plane is still up -- put nil into the
+    -- `t <= first.t` compare inside BR.PathPosAt sixty times a second, and
+    -- BR.Loop suspended this callback after five.
+    --
+    -- That suspension is the real damage, not the frames it lost: it is sticky
+    -- for the rest of the client session, and this callback is the ONLY writer
+    -- of the plane's coordinates, rotation, velocity and camera. Every later
+    -- flight that session then leaves without its rider -- the Titan parked at
+    -- the spawn with the ped attached to it while the clock-driven half of the
+    -- ride (island handoff, doors, the server's own eject) runs to schedule.
+    --
+    -- Six other readers of this same record already carry this test -- the
+    -- boarding gate, the island handoff, the doors beep, camLocked(), the
+    -- ghost-plane filter and /brbus. This was the one per-frame consumer
+    -- without it. There is nothing to fly by until depart() has stamped one,
+    -- so the plane holds still; /brbus prints this loop's error and suspend
+    -- counts so a frozen plane cannot be mistaken for a dead callback.
+    if not bus or not route or not route.timed then return end
 
     local t = BR.Clock.now()
     local x, y, z = BR.PathPosAt(route.points, t)
@@ -1100,6 +1122,24 @@ RegisterCommand('brbus', function()
         print(('  browser NEVER READY -- %dms since it was created')
             :format(GetGameTimer() - promptCreatedAt))
     end
+    -- THE FLY LOOP'S OWN HEALTH, ABOVE THE TWO EARLY RETURNS BELOW. bus.fly is
+    -- the only writer of the plane's transform, and now that it no-ops on an
+    -- untimed route it FREEZES the plane rather than erroring -- so "moved 0m"
+    -- further down cannot tell a plane parked for a good reason from a callback
+    -- that died. `suspended` is the sticky one: it survives the match that
+    -- caused it, so a plane that never moves on a LATER flight is answered
+    -- here rather than by a second playtest. Printed before the route lines
+    -- because a route that is missing or untimed is exactly the case a sick
+    -- fly loop travels with.
+    local flyErrors, flySuspended
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'bus.fly' then
+            flyErrors, flySuspended = s.errors, s.suspended
+            break
+        end
+    end
+    print(('  bus.fly  errors %s  suspended %s')
+        :format(tostring(flyErrors), tostring(flySuspended)))
     if not route then print('  route  none') return end
     print(('  route  %d pts  %d crumbs  legs %s  timed %s')
         :format(#route.points, crumbCount,

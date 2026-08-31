@@ -6855,6 +6855,183 @@ do
     sent = {}
 end
 
+-- ------------------------------------ the preview that landed on a flight ---
+--
+-- THE OWNER'S F8 LOG, WHICH IS THE WHOLE SPECIFICATION:
+--
+--   [br_core] aboard the bus (handle 8706)
+--   [br_core] match state: warmup
+--   [br_core] loop callback "bus.fly" errored: @br_lib/shared/geo.lua:176:
+--             attempt to compare number with nil   (x5)
+--   [br_core] suspending "bus.fly" after 5 consecutive errors
+--   [br_core] bus: ending ride -- my state is warmup
+--
+-- ═══ TWO SHAPES OF ONE RECORD ═══
+--
+-- server/bus.lua publishes the route twice. plan() draws the geometry at WARMUP
+-- and sends it with NO `t` on any point -- the map preview, `timed = false`.
+-- depart() stamps the clock onto those same points at BUS and re-sends it. Both
+-- go out on BUS_ROUTE and the client's handler takes either one unfiltered.
+--
+-- Re-entering WARMUP from BUS re-runs plan(), so the PREVIEW arrives while the
+-- plane is still up. The rider's own WARMUP state does not: it rides the 4Hz
+-- delta flush, and the teardown that reads it is on the 100ms tick. The plane
+-- therefore outlives the preview by up to ~350ms -- about 21 frames, against a
+-- suspension ceiling of five.
+--
+-- ═══ WHAT IS BEING PROVED IS THE *SECOND* FLIGHT ═══
+--
+-- The lost frames are not the damage. A suspended entry is sticky for the whole
+-- client session -- nothing in the match lifecycle clears it -- and bus.fly is
+-- the ONLY writer of the plane's coordinates, rotation, velocity and camera. So
+-- one interrupted flight leaves every LATER flight on that client parked at the
+-- runway with its rider attached to it, while the clock-driven half of the ride
+-- runs to schedule around them. That is the owner standing on a pier. The
+-- fixture below therefore flies, takes the preview, ends the ride the way his
+-- log ends it, and then flies AGAIN.
+--
+-- ═══ WHAT IT DELIBERATELY DOES NOT COVER ═══
+--
+-- Whether a collision-disabled, unfrozen Titan sinks, hovers or holds position
+-- while nothing writes its coordinates. That is engine behaviour behind an
+-- undocumented native parameter and it is named as a playtest question in the
+-- report, not guessed at here. Nothing in the guard depends on the answer.
+
+describe('a warmup preview landing under a live plane parks it, and does not kill the fly loop')
+do
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    -- WHERE THE PLANE IS PUT, COUNTED. "The callback survived" and "the
+    -- callback correctly did nothing" are the same reading on an error counter,
+    -- and the second is the claim. 258 is what this file's CreateVehicle hands
+    -- back, so the ped (1) and the pilot (259) stay out of the count -- and
+    -- case 1 below fails loudly if that ever stops being the plane.
+    local PLANE = 258
+    local realCoords = SetEntityCoordsNoOffset
+    local planeWrites = 0
+    SetEntityCoordsNoOffset = function(ent, ...)
+        if ent == PLANE then planeWrites = planeWrites + 1 end
+        return realCoords(ent, ...)
+    end
+
+    local function flyHealth()
+        for _, s in ipairs(BR.Loop.stats()) do
+            if s.name == 'bus.fly' then return s.errors, s.suspended end
+        end
+        return nil, nil
+    end
+
+    --- Aboard a departed flight: the state a re-entered warmup interrupts.
+    local function boardTimed()
+        local t = GetGameTimer()
+        local pts = {}
+        for i = 0, 8 do
+            pts[#pts + 1] = { x = i * 400.0, y = 0.0, z = 500.0, t = t + i * 4000 }
+        end
+        fire(BR.Net.BUS_ROUTE, {
+            points = pts, timed = true, heading = 0.0,
+            sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+            tStart = t, rotateAt = t + 6000,
+            jumpFrom = t + 8000, doorsClose = t + 20000, tEnd = t + 30000,
+        })
+        BR.State.match = { state = BR.MatchState.BUS }
+        BR.State.me.state = BR.PlayerState.BUS
+        local before = #threads
+        BR.Loop.step(BR.Loop.TICK)
+        for i = before + 1, #threads do threads[i]() end
+    end
+
+    --- The map preview, shaped as server/bus.lua's plan() actually sends it:
+    --- x/y/z/v per point, no `t` anywhere, no tStart/rotateAt/doorsClose/tEnd.
+    --- None of that is invented -- tools/test_roster.lua pins the same absence
+    --- on the server side, so this fixture cannot quietly drift away from it.
+    local function firePreview()
+        local pts = {}
+        for i = 0, 8 do
+            pts[#pts + 1] = { x = i * 400.0, y = 0.0, z = 500.0, v = 60.0 }
+        end
+        fire(BR.Net.BUS_ROUTE, {
+            points = pts, timed = false, heading = 0.0,
+            sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+            waypoints = { { x = 0.0, y = 0.0 } },
+        })
+    end
+
+    -- 1. THE INSTRUMENT, BEFORE IT IS ASKED TO PROVE AN ABSENCE. A spy that
+    --    never fires makes case 2 green against absolutely anything.
+    boardTimed()
+    planeWrites = 0
+    frames(10, 16)
+    ok(planeWrites >= 10, 'a departed flight writes the plane every frame',
+        ('%d writes over 10 frames'):format(planeWrites))
+
+    -- 2. THE PREVIEW ARRIVES UNDER THE LIVE PLANE.
+    local errsBefore = select(1, flyHealth())
+    firePreview()
+    planeWrites = 0
+    frames(20, 16)   -- four times the suspension ceiling
+    local errs, susp = flyHealth()
+    ok(errs == errsBefore,
+        'a preview arriving under a live plane does not make the fly loop throw',
+        ('errors %s -> %s'):format(tostring(errsBefore), tostring(errs)))
+    ok(susp ~= true, 'so nothing suspends it for the rest of the session',
+        ('suspended %s'):format(tostring(susp)))
+
+    -- ...AND IT NO-OPPED RATHER THAN MERELY SURVIVING. There is no route to fly
+    -- by until departure stamps one; inventing coordinates from an unstamped
+    -- preview would be a different bug wearing this one's green.
+    ok(planeWrites == 0,
+        'and the plane is not flown by a route with no clock on it',
+        ('%d writes over 20 frames'):format(planeWrites))
+
+    -- 3. THE SECOND FLIGHT -- THE ONE THE OWNER ACTUALLY LOST. His state
+    --    catches up a beat later and the ride ends; then a fresh route departs
+    --    on the same client, in the same session. The plane has to move again.
+    BR.State.me.state = BR.PlayerState.WARMUP
+    BR.Loop.step(BR.Loop.TICK)
+    frame(16)
+    boardTimed()
+    planeWrites = 0
+    frames(10, 16)
+    ok(planeWrites >= 10,
+        'and the next flight of that session still flies its rider out',
+        ('%d writes over 10 frames'):format(planeWrites))
+
+    -- 4. /brbus SEPARATES A PARKED PLANE FROM A DEAD CALLBACK. After the guard
+    --    the failure mode is silent -- a plane that does not move -- and the
+    --    command a playtester is asked to paste already prints "moved 0m" for
+    --    both. The loop's own counters are the only thing that tells them
+    --    apart, and `suspended` is the one that outlives the match.
+    logged = {}
+    ok(pcall(commands['brbus'], nil, {}, ''), '/brbus does not throw',
+        table.concat(logged, '\n'))
+    local dump = table.concat(logged, '\n')
+    ok(dump:find('bus.fly', 1, true) ~= nil
+        and dump:find('suspended', 1, true) ~= nil,
+        'and reports the fly loop\'s errors and suspension beside the displacement',
+        dump)
+
+    -- ...INCLUDING ON A PREVIEW-ONLY ROUTE, which is where the route dump gives
+    -- up two lines in -- and is exactly the route a sick fly loop travels with.
+    firePreview()
+    logged = {}
+    pcall(commands['brbus'], nil, {}, '')
+    local previewDump = table.concat(logged, '\n')
+    ok(previewDump:find('bus.fly', 1, true) ~= nil,
+        'on a preview-only route too, where the route dump gives up first',
+        previewDump)
+    logged = {}
+
+    -- Put the world back the way the blocks below expect to find it.
+    SetEntityCoordsNoOffset = realCoords
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    frame(16)
+    sent = {}
+end
+
 describe('an inventory starts and returns to fists, not to slot 1 -- #155')
 do
     -- Owner, 2026-08-16: "The default inventory slot should be fists, not slot
