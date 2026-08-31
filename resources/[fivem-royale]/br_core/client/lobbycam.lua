@@ -388,15 +388,43 @@ end
 --- @param nodes table   the authored camPath
 --- @param steps number  how many moves to cut the flight into
 --- @param decay number   see BR.LobbyCam.pace
+--- @param startTrim number|nil  see below; 0 flies the whole path
 --- @return table plan  { { x, y, z, pitch, heading, ax, ay, az, at }, ... }
 --- @return table marks  one 0..1 per control point, the lobby frame included
-function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding, minStepFrac)
+function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding, minStepFrac, startTrim)
     nodes = nodes or {}
     if #nodes == 0 then return {} end
     steps = math.max(1, math.floor(steps or 24))
     -- 0.5 is a plain Catmull-Rom, which is what this was before it was a knob.
     local tang = rounding or 0.5
     local samples = arcSamples(steps)
+
+    -- ═══ WHERE THE FLIGHT PICKS THE CURVE UP ═══
+    --
+    -- Owner, 2026-08-31: "the lobby cam movement goes for a WAY too long
+    -- distance ... Can we make it start closer to the destination by like 30%?
+    -- Keep the timing the same though."
+    --
+    -- A FRACTION OF THE PATH'S LENGTH THAT IS NOT FLOWN, taken off the FRONT.
+    -- The curve is the same curve -- same control points, same tangents, same
+    -- landing -- and this only moves where the camera joins it. Trimming toward
+    -- the destination in a straight line would be a different shot; this is the
+    -- shot he tuned, entered later.
+    --
+    -- IT IS NOT A SPEED SETTING, AND THAT IS THE POINT. Nothing here touches
+    -- the clock: `times` below still spans 0..1 and camFlightMs is still shared
+    -- out across it, so a trimmed flight covers less ground in the same time and
+    -- is therefore SLOWER everywhere by exactly (1 - startTrim). That is what
+    -- was asked for -- "keep the timing the same" -- and it is the whole of the
+    -- change, so anyone tempted to compensate by shortening camFlightMs is
+    -- undoing it.
+    --
+    -- CLAMPED WELL SHORT OF 1. A trim of 1 is a flight with no length in it,
+    -- and the arc-length mapping below would be asked to spread 96 steps over
+    -- nothing.
+    local trim = startTrim or 0.0
+    if trim < 0.0 then trim = 0.0 end
+    if trim > 0.9 then trim = 0.9 end
 
     local p = BR.Config.Match.lobbyPos
     local hx, hy, hz, aimX, aimY, aimZ = BR.LobbyCam.lobbyFrame()
@@ -453,7 +481,14 @@ function BR.LobbyCam.flightPlan(nodes, steps, decay, rounding, minStepFrac)
     --- measuring pass and by the plan it produces, so the boundaries cannot be
     --- chosen against one curve and flown along another.
     local function shotAt(s)
-        local f = BR.LobbyCam.pace(s, decay)
+        -- `f` STAYS A FRACTION OF THE WHOLE CURVE even when the front of it is
+        -- trimmed off, so it opens at `trim` rather than at 0. That is what
+        -- makes `marks` still mean something: the wave is cued on the flight
+        -- passing a CONTROL POINT, and a control point's position on the path
+        -- does not move because the camera joined the path later. It also keeps
+        -- the aim point where the untrimmed flight had it at this stage,
+        -- so the trim really is the same shot entered late, rotation included.
+        local f = trim + (1.0 - trim) * BR.LobbyCam.pace(s, decay)
         local x, y, z = curveAt(pts, paramAt(f), tang)
         local ax = p.x + (aimX - p.x) * f
         local ay = p.y + (aimY - p.y) * f

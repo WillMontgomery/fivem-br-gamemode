@@ -391,6 +391,52 @@ BR.Config.Match = {
             { x = 5072.10, y = -5738.05, z =  31.77, heading =  64.8 },
         },
 
+        -- ═══ HOW MUCH OF THE FRONT OF THAT PATH IS NOT FLOWN ═══
+        --
+        -- Owner, 2026-08-31: "the lobby cam movement goes for a WAY too long
+        -- distance - you were right. Can we make it start closer to the
+        -- destination by like 30%? Keep the timing the same though."
+        --
+        -- A FRACTION OF THE FLIGHT'S LENGTH, TAKEN OFF THE START. 0.30 drops
+        -- the path from 598m to 419m and the opening shot from 560m out to
+        -- 385m. The camera joins the curve at the point that was 30% along it;
+        -- it does NOT cut a new line toward home, so the arc, the rounding and
+        -- the landing are all exactly the ones surveyed above.
+        --
+        -- ═══ camPath IS NOT EDITED, AND THAT IS WHY THIS IS A NUMBER ═══
+        --
+        -- The three nodes are a survey and are retyped in tools/test_lobbyseq.lua
+        -- so that they cannot drift. Shortening the flight by moving node 1 down
+        -- the hill would have meant re-authoring a surveyed coordinate to express
+        -- a timing preference, and there would then be no way back to the full
+        -- path except another survey. This is one character to change and the
+        -- path is still on disk underneath it. 0 flies the whole thing.
+        --
+        -- ═══ IT MAKES THE CAMERA SLOWER, ON PURPOSE ═══
+        --
+        -- `camFlightMs` is untouched, so the flight still takes 13.846 seconds
+        -- and covers 70% of the ground: every step is 30% slower than it was.
+        -- "Keep the timing the same though" is that sentence, and anybody who
+        -- "fixes" the speed by cutting camFlightMs to match has undone the whole
+        -- change. The speed knob is camFlightMs; this one is the distance.
+        --
+        -- ═══ AND NONE OF THE STEP SETTINGS WANTED REBALANCING FOR IT ═══
+        --
+        -- MEASURED, because a shorter path re-normalises the cost spacing and
+        -- that is exactly the sort of thing that quietly moves. It moves the
+        -- right way: the worst single-step turn goes from 2.36 degrees to 2.13
+        -- (the same measure as the camRounding table above), the longest chord
+        -- from 11.4m to 7.5m -- 1.8% of the path either way -- and the shortest
+        -- step is still sitting exactly on the 17ms floor. So camSteps,
+        -- camStepMinMs, camRounding and camDecay are all left alone.
+        --
+        -- RAISING THIS FURTHER STAYS SMOOTH; WHAT IT COSTS IS THE SHOT. Every
+        -- number above keeps improving as the trim goes up, because the ground
+        -- being removed is the fast straight opening. Past about 0.5 the flight
+        -- stops reading as a descent onto the lobby and becomes a short hop onto
+        -- the mark, and that is a judgement to make by eye and not from here.
+        camStartTrim = 0.30,
+
         -- ═══ THE WHOLE FLIGHT, AND IT DECELERATES ═══
         --
         -- How long the camera takes to get from the first node above to the

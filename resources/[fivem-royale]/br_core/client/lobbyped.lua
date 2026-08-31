@@ -603,14 +603,23 @@ end
 ---
 --- WHAT IT COSTS IS THE OPENING SHOT'S OWN SURROUNDINGS, and that is a smaller
 --- bill than it sounds, because the opening shot is not a shot OF anywhere near
---- the camera. At camPath[1] the lens pitches 16.4 degrees down at the lobby
---- mark 537m away (flightPlan's aim point starts there), and lobbyCam.fov is 50
---- -- so the BOTTOM edge of the frame is at -41.4 degrees and the ground first
---- appears about 1.1 times the lens's own height above it further on. Everything
---- nearer than that is out of shot, which is the near half of any volume
---- streamed around that node: it would be loading ground behind and beneath the
---- camera. What is in the middle of the frame, from the first frame of the
---- flight to the last, is the destination.
+--- the camera. The lens pitches 17.0 degrees down at the lobby mark 386m away
+--- (flightPlan's aim point starts there), and lobbyCam.fov is 50 -- so the
+--- BOTTOM edge of the frame is at -42.0 degrees and the ground first appears
+--- about 1.1 times the lens's own height above it further on. Everything nearer
+--- than that is out of shot, which is the near half of any volume streamed
+--- around the opening: it would be loading ground behind and beneath the camera.
+--- What is in the middle of the frame, from the first frame of the flight to the
+--- last, is the destination.
+---
+--- ═══ AND THE OPENING IS NO LONGER camPath[1] ═══
+---
+--- `camStartTrim` (0.30) joins the curve 30% along it, so the flight now begins
+--- 385m from home rather than 560m -- 180m down the path from the first authored
+--- node, at the same pitch on the same aim point. The figures above are the
+--- trimmed opening; the argument is unchanged by it and the reversal still
+--- holds, because 385m is still well past the 300 units at which SetFocusEntity
+--- is documented to gut the detail around the player.
 ---
 --- So the trade is a possibly softer far-distance vista for the two or three
 --- seconds where the camera is moving fastest anyway (camDecay is 2.0, so the
@@ -1071,17 +1080,24 @@ local function waveNow(mine)
     playEmote(e, mine)
 end
 
---- The flight, built from config. ONE CALL SITE FOR FIVE SETTINGS: placeOnStart
+--- The flight, built from config. ONE CALL SITE FOR SIX SETTINGS: placeOnStart
 --- needs its first shot, flyCamera needs the whole thing, and /brlobbywalk
 --- prints it -- and three copies of the argument list is three chances for the
 --- shot that is RAISED to be built from different numbers than the one that is
 --- FLOWN, which reads as a snap on the first frame.
+---
+--- `camStartTrim` MAKES THAT LAST SENTENCE LOAD-BEARING RATHER THAN TIDY. It
+--- moves the flight's first shot off camPath[1] and onto a point partway along
+--- the curve, so a placeOnStart that built its plan without it would raise the
+--- camera 180m back up the path and then cut, on the first frame, to wherever
+--- the flight actually starts.
 --- @return table plan, table marks
 local function camPlan()
     local C = cfg()
     return BR.LobbyCam.flightPlan(C.camPath, C.camSteps or 24, C.camDecay or 0.0,
         C.camRounding or 0.5,
-        (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1))
+        (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1),
+        C.camStartTrim or 0.0)
 end
 
 --- Is the screen genuinely showing the lobby yet?
@@ -2076,6 +2092,8 @@ RegisterCommand('brlobbywalk', function()
         :format(C.camFlightMs or 0, C.walkTargetMs or 0))
     print(('  camSteps     %d   camDecay %.2f   camRounding %.2f')
         :format(C.camSteps or 0, C.camDecay or 0, C.camRounding or 0))
+    print(('  camStartTrim %.2f  (the first %.0f%% of the path is not flown)')
+        :format(C.camStartTrim or 0, (C.camStartTrim or 0) * 100.0))
     print(('  walkMps      %.2f  blend %.2f..%.2f')
         :format(C.walkMps or 0, C.walkBlendMin or 0, C.walkBlendMax or 0))
     print(('  focusLeadMs  %d'):format(C.focusLeadMs or 0))

@@ -696,9 +696,27 @@ do
                          'arriveRadius', 'cornerRadius', 'markRadius',
                          'walkTargetMs', 'walkMps', 'walkBlendMin',
                          'walkBlendMax', 'camSteps', 'camDecay',
-                         'revealWaitMs' }) do
+                         'camStartTrim', 'revealWaitMs' }) do
         ok(type(C[k]) == 'number', ('lobbyEntrance.%s is tunable'):format(k))
     end
+
+    -- ═══ AND THE START TRIM IS DELIBERATELY NOT PINNED TO A VALUE ═══
+    --
+    -- "Can we make it start closer to the destination by like 30%" -- the owner,
+    -- 2026-08-31, and "like 30%" is a man saying he will try 0.35 next. It is
+    -- checked for being a FRACTION rather than for being 0.30, so nudging it is
+    -- a config edit and not a config edit plus a test edit. What section 14b
+    -- asserts is the behaviour it produces, whatever it is set to.
+    --
+    -- THE CEILING IS THE ONE THING WORTH GUARDING. Past about half the path
+    -- the flight stops being a descent and becomes a short hop onto the mark,
+    -- and at 1.0 there would be no flight at all to share camFlightMs out over.
+    -- flightPlan clamps at 0.9 rather than trusting this; this is where the
+    -- number gets read by somebody.
+    ok(type(C.camStartTrim) == 'number'
+        and C.camStartTrim >= 0.0 and C.camStartTrim <= 0.5,
+        ('camStartTrim is a fraction of the path and leaves a flight behind '
+            .. '(%.2f)'):format(C.camStartTrim or -1))
 
     -- ═══ AND THE THREE RADII HAVE TO STAND IN THE RIGHT ORDER ═══
     --
@@ -883,13 +901,27 @@ do
     ok(BR.LobbyPed.revealBlock() == nil,
        'once the ped is on its mark the loading screen may come down')
 
-    -- The entrance's first shot went up at the authored node, with no
+    -- The entrance's first shot went up where the flight starts, with no
     -- interpolation INTO it -- it is raised under a black screen and there is
     -- nothing to blend from. (The fixed lobby shot the follow tick had already
     -- raised is the camera it replaces.)
+    --
+    -- ═══ AND THAT IS NO LONGER camPath[1] ═══
+    --
+    -- camStartTrim moves where the camera JOINS the curve, so the raised shot
+    -- and the flown shot are only the same shot while placeOnStart builds its
+    -- plan from the same six settings flyCamera does. Built without the trim it
+    -- would raise the camera on the hilltop and then cut, on the first frame of
+    -- the flight, to a point 180m along the path -- which is the exact failure
+    -- the ONE CALL SITE note on camPlan exists to prevent, and it is invisible
+    -- in every other assertion in this file.
+    local wantStart = BR.LobbyCam.flightPlan(C.camPath, C.camSteps, C.camDecay,
+        C.camRounding, (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1),
+        C.camStartTrim)[1]
     local _, made = firstOf('cammade',
-        function(e) return math.abs(e.x - C.camPath[1].x) < 0.01 end)
-    ok(made ~= nil, 'a camera is raised at the first authored node')
+        function(e) return math.abs(e.x - wantStart.x) < 0.01
+                     and math.abs(e.y - wantStart.y) < 0.01 end)
+    ok(made ~= nil, 'a camera is raised where the flight actually starts')
     ok(made and made.pitch < 0.0,
        'and it is tilted DOWN toward the lobby rather than at the horizon')
     ok(made and firstOf('camglide', function(e) return e.to == made.id end) == nil,
@@ -1571,11 +1603,12 @@ do
     -- loop's own behaviour -- ease flags, no gap between moves, one move per
     -- step -- is still asserted off the log below, because none of that depends
     -- on sub-hop timing.
-    -- THE SAME FIVE SETTINGS THE CLIENT FLIES WITH, the step floor included:
-    -- a plan built without it is not the plan the loop issues.
+    -- THE SAME SIX SETTINGS THE CLIENT FLIES WITH, the step floor and the start
+    -- trim included: a plan built without either is not the plan the loop
+    -- issues, and the trim is the one that changes every distance below.
     local minFrac = (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1)
     local pacePlan = BR.LobbyCam.flightPlan(C.camPath, C.camSteps, C.camDecay,
-        C.camRounding, minFrac)
+        C.camRounding, minFrac, C.camStartTrim)
     local speeds, mids = {}, {}
     for i = 2, #pacePlan do
         local a, b = pacePlan[i - 1], pacePlan[i]
@@ -1850,7 +1883,7 @@ do
     pump(70000)
 
     local plan = BR.LobbyCam.flightPlan(C.camPath, 12, C.camDecay, C.camRounding,
-        (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1))
+        (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1), C.camStartTrim)
     local moves = glides()
 
     ok(#moves == 12, ('precondition: twelve moves were flown (%d)'):format(#moves))
@@ -1900,6 +1933,154 @@ do
             :format(worst, #moves))
 
     C.walkMps = realMps
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 14b. THE FLIGHT STARTS PART OF THE WAY ALONG ITS OWN PATH, AND STILL TAKES
+--      EXACTLY AS LONG
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-31: "the lobby cam movement goes for a WAY too long distance -
+-- you were right. Can we make it start closer to the destination by like 30%?
+-- Keep the timing the same though."
+--
+-- TWO CLAIMS THAT PULL AGAINST EACH OTHER, which is the only reason this is a
+-- suite entry rather than a config diff. Less ground in the same time is a
+-- SLOWER camera, and the obvious "helpful" mistake -- trimming camFlightMs to
+-- match so the speed is preserved -- would satisfy the first sentence and
+-- silently undo the second. So both halves are asserted, and the timing half is
+-- read off the fixture's clock rather than off the arithmetic that produced it.
+--
+-- THE THIRD CLAIM IS THE SHAPE. "Closer to the destination" has a cheap reading
+-- -- slide the opening shot down the straight line toward home -- and that is a
+-- different flight through different air. The trim moves the start ALONG the
+-- surveyed curve, so what is asserted is that the new opening shot is still a
+-- point ON the path, and that the cheap reading would not be.
+do
+    local C = BR.Config.Match.lobbyEntrance
+    local minFrac = (C.camStepMinMs or 0) / math.max(1, C.camFlightMs or 1)
+
+    local function planWith(trim)
+        return BR.LobbyCam.flightPlan(C.camPath, C.camSteps, C.camDecay,
+            C.camRounding, minFrac, trim)
+    end
+    local function arcLen(plan)
+        local n = 0.0
+        for i = 2, #plan do
+            n = n + BR.Dist3(plan[i - 1].x, plan[i - 1].y, plan[i - 1].z,
+                             plan[i].x, plan[i].y, plan[i].z)
+        end
+        return n
+    end
+
+    local full = planWith(0.0)
+    local flown = planWith(C.camStartTrim)
+    local hx, hy, hz = BR.LobbyCam.lobbyFrame()
+
+    -- ═══ IT STARTS CLOSER TO WHERE IT LANDS ═══
+    --
+    -- Against the untrimmed flight rather than against a metre count, so this
+    -- keeps meaning the same thing after the next survey. Set camStartTrim to 0
+    -- and this is the assertion that goes red.
+    local wasGap = BR.Dist3(full[1].x, full[1].y, full[1].z, hx, hy, hz)
+    local nowGap = BR.Dist3(flown[1].x, flown[1].y, flown[1].z, hx, hy, hz)
+    ok(nowGap < wasGap * 0.85,
+        ('the flight starts closer to the shot it lands on -- %.0fm out against '
+            .. '%.0fm untrimmed'):format(nowGap, wasGap))
+
+    -- ...AND BY THE FRACTION THE NUMBER SAYS. The trim is a share of the path's
+    -- LENGTH, so this is what makes the setting readable: 0.30 means the camera
+    -- flies 70% of the ground it used to, not "somewhat less".
+    local wasLen, nowLen = arcLen(full), arcLen(flown)
+    local ratio = wasLen > 0.0 and (nowLen / wasLen) or -1
+    ok(math.abs(ratio - (1.0 - C.camStartTrim)) < 0.02,
+        ('and it flies %.0f%% of the path, which is the %.0f%% trim it was '
+            .. 'given (%.0fm of %.0fm)')
+            :format(ratio * 100.0, C.camStartTrim * 100.0, nowLen, wasLen))
+
+    -- ═══ ALONG THE CURVE, NOT ACROSS IT ═══
+    --
+    -- The opening shot has to be a point the untrimmed flight ALSO passed
+    -- through -- same arc, entered late -- so it is measured against densely
+    -- sampled points of the path itself. The straight-line reading is measured
+    -- too, and it is the number that says this assertion has teeth: it is not
+    -- close to the path at all, so a build that trimmed toward the destination
+    -- would fail here rather than pass by accident.
+    local curve = BR.LobbyCam.curveSamples(C.camPath, 4000, C.camRounding)
+    local function offPath(x, y, z)
+        local best = math.huge
+        for _, q in ipairs(curve) do
+            local d = BR.Dist3(x, y, z, q.x, q.y, q.z)
+            if d < best then best = d end
+        end
+        return best
+    end
+
+    local onCurve = offPath(flown[1].x, flown[1].y, flown[1].z)
+    local t = C.camStartTrim
+    local shortcut = offPath(full[1].x + (hx - full[1].x) * t,
+                             full[1].y + (hy - full[1].y) * t,
+                             full[1].z + (hz - full[1].z) * t)
+    ok(onCurve < 0.5,
+        ('the opening shot is still a point ON the surveyed path (%.2fm off it)')
+            :format(onCurve))
+    ok(shortcut > 20.0,
+        ('and it is not the straight line toward home, which leaves the path by '
+            .. '%.0fm'):format(shortcut))
+
+    -- ...AND THE LANDING IS UNTOUCHED. The whole reason the trim is taken off
+    -- the FRONT: the shot the locker was composed against is the shot the
+    -- entrance still ends on, exactly.
+    local last = flown[#flown]
+    ok(math.abs(last.x - hx) < 0.01 and math.abs(last.y - hy) < 0.01
+        and math.abs(last.z - hz) < 0.01,
+       'and a trimmed flight still lands on the lobby frame exactly')
+
+    -- ═══ AND THE TIMING IS THE SAME TIMING ═══
+    --
+    -- "Keep the timing the same though." MEASURED OFF THE FIXTURE'S CLOCK, from
+    -- the first move issued to the last one finishing, on two real entrances --
+    -- one trimmed, one not. The plan's own `t` column spans 0..1 either way and
+    -- would agree with itself no matter what the loop did with it, which is
+    -- exactly the reassurance that is worth nothing here.
+    local function flightMs()
+        reset()
+        wearChosenModel()
+        pump(70000)
+        local moves = glides()
+        if #moves < 2 then return -1, #moves end
+        local last = moves[#moves]
+        return (last.at + (last.ms or 0)) - moves[1].at, #moves
+    end
+
+    local trimmedMs, trimmedMoves = flightMs()
+
+    local shipped = C.camStartTrim
+    C.camStartTrim = 0.0
+    local untrimmedMs, untrimmedMoves = flightMs()
+    C.camStartTrim = shipped
+
+    -- One 50ms hop of slack, which is the fixture's own resolution and nowhere
+    -- near enough to hide the 30% the speed-preserving mistake would take off.
+    ok(trimmedMs > 0 and math.abs(trimmedMs - untrimmedMs) <= 50,
+        ('the trimmed flight takes exactly as long as the untrimmed one -- '
+            .. '%dms against %dms'):format(trimmedMs, untrimmedMs))
+    ok(trimmedMs > 0 and math.abs(trimmedMs - (C.camFlightMs or 0)) <= 100,
+        ('and it is still the whole of camFlightMs -- %dms against %dms')
+            :format(trimmedMs, C.camFlightMs or 0))
+    ok(trimmedMoves == untrimmedMoves and trimmedMoves == C.camSteps,
+        ('and it is still cut into the same camSteps moves (%d and %d)')
+            :format(trimmedMoves, untrimmedMoves))
+
+    -- ═══ WHICH MEANS IT IS SLOWER, AND THAT IS THE POINT ═══
+    --
+    -- The consequence he asked for, stated as an assertion so that nobody
+    -- "restores" the speed by cutting camFlightMs and leaves this suite green.
+    -- Same clock over 70% of the ground is 70% of the speed, everywhere.
+    ok(nowLen < wasLen * 0.95,
+        ('so the camera moves slower over the whole flight -- %.1f m/s average '
+            .. 'against %.1f'):format(nowLen / (C.camFlightMs / 1000.0),
+                                      wasLen / (C.camFlightMs / 1000.0)))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
