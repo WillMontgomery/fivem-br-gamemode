@@ -527,10 +527,22 @@ BR.Config.Match = {
         camDecay = 2.0,
 
         -- STREAMING LEADS THE REVEAL. SetFocusPosAndVel is pointed at the
-        -- first camera node this long before the screen fades in, so the
-        -- terrain under that shot has begun loading before anybody can see it
-        -- (owner, 2026-08-29). It moves where the engine STREAMS and nothing
-        -- else; it has no bearing on which entities exist for this client.
+        -- flight's DESTINATION -- the lobby frame it lands on -- this long
+        -- before the screen fades in (owner, 2026-08-29: "1 second before
+        -- fading in"). It moves where the engine STREAMS and nothing else; it
+        -- has no bearing on which entities exist for this client.
+        --
+        -- IT USED TO POINT AT THE FIRST CAMERA NODE, which was the same owner's
+        -- instruction on 2026-08-29 and which he revised on 2026-08-31 after
+        -- watching the finished flight: "the textures are consistently not
+        -- loading fully when the lobby cam arrives at the destination". The
+        -- reasoning for the reversal lives on BR.LobbyPed.focusAhead in
+        -- br_core/client/lobbyped.lua.
+        --
+        -- SO THIS NUMBER IS NO LONGER THE WHOLE LEAD, and raising it buys much
+        -- less than it used to. The destination now streams for this PLUS the
+        -- entire camFlightMs beneath it -- about fifteen seconds -- because the
+        -- focus is not moved again until the entrance ends.
         focusLeadMs = 1000,
 
         -- How long the loading screen will hold for this sequence to get its

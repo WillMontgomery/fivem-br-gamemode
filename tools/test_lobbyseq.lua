@@ -1010,15 +1010,36 @@ do
     ok(lead == BR.Config.Match.lobbyEntrance.focusLeadMs,
        'focusAhead reports the configured lead so loading.lua can hold the reveal')
 
+    -- ═══ AND IT POINTS AT THE DESTINATION, NOT AT THE FIRST NODE ═══
+    --
+    -- Owner, 2026-08-31, having reported it three times: "The textures are
+    -- consistently not loading fully when the lobby cam arrives at the
+    -- destination." Until then this pointed at camPath[1] -- his own instruction
+    -- of 2026-08-29 -- and nothing moved it across the 13.8-second flight, so
+    -- the shot the entrance LANDS on was the one place in the sequence the
+    -- engine was never told to stream.
+    --
+    -- MEASURED AGAINST BR.LobbyCam.lobbyFrame, which is what flightPlan actually
+    -- lands on -- not against camPath's last entry, which is a control point the
+    -- curve passes through 37.8m short of home. The two candidate targets are
+    -- some 560m apart, so a metre of tolerance tells them apart with room to
+    -- spare and the second assertion says so out loud.
     local _, f = firstOf('focus')
-    ok(f and math.abs(f.x - BR.Config.Match.lobbyEntrance.camPath[1].x) < 0.01
-         and math.abs(f.z - BR.Config.Match.lobbyEntrance.camPath[1].z) < 0.01,
-       'and it points the streaming focus at the FIRST camera node')
+    local dstX, dstY, dstZ = BR.LobbyCam.lobbyFrame()
+    ok(f ~= nil and math.abs(f.x - dstX) < 1.0
+         and math.abs(f.y - dstY) < 1.0
+         and math.abs(f.z - dstZ) < 1.0,
+       'and it points the streaming focus at the shot the flight LANDS on')
+    local first = BR.Config.Match.lobbyEntrance.camPath[1]
+    ok(f ~= nil and BR.Dist3(f.x, f.y, f.z, first.x, first.y, first.z) > 100.0,
+       'nowhere near the first camera node it used to be nailed to')
 
     -- AND IT IS GIVEN BACK ON AN ABANDONMENT, not only on the happy path. A
-    -- client left streaming a point three hundred metres up over the ocean
-    -- presents, much later and somewhere else, as world geometry that will not
-    -- load -- with nothing pointing back here.
+    -- client left holding a fixed streaming focus presents, much later and
+    -- somewhere else, as world geometry that will not load -- with nothing
+    -- pointing back here. The lobby frame is a SNEAKIER address for that than
+    -- the old node over the ocean, not a safer one: it looks perfectly healthy
+    -- until the player readies up and leaves it forty kilometres behind.
     order = {}
     BR.LobbyPed.stop('test')
     local _, back = firstOf('focusback')

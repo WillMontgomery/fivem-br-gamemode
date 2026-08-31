@@ -396,9 +396,16 @@ end
 --- Give the streaming focus back to the player.
 ---
 --- ON EVERY ENDING, WHICH IS WHY IT IS IN stop() AND NOWHERE ELSE. A client
---- left with its focus three hundred metres up over the ocean does not error
---- and does not log: it presents, later and somewhere else, as world geometry
---- failing to stream in around the player, with nothing pointing back here.
+--- left holding a fixed focus does not error and does not log: it presents,
+--- later and somewhere else, as world geometry failing to stream in around the
+--- player, with nothing pointing back here.
+---
+--- AND THE NEW ADDRESS IS A SNEAKIER ONE THAN THE OLD (see focusAhead, which
+--- points at the lobby frame since 2026-08-31 rather than at a node three
+--- hundred metres up). A focus left over the ocean at least looked wrong the
+--- moment you thought about it; a focus left on the LOBBY looks perfectly
+--- healthy for as long as the player is standing in the lobby, and only bites
+--- when they ready up and the world forty kilometres away declines to arrive.
 local function releaseFocus()
     if not focusHeld then return end
     focusHeld = false
@@ -558,26 +565,138 @@ function BR.LobbyPed.revealBlock()
     return nil
 end
 
---- Point the streaming focus at the first camera node.
+--- Point the streaming focus at where the flight is GOING.
+---
+--- Called BY client/loading.lua, which owns the reveal and is therefore the only
+--- thing that can lead it; it returns the lead so that file can hold the reveal
+--- open for exactly that long rather than hoping the calls happen to land in the
+--- right order.
+---
+--- ═══ IT POINTED AT THE FIRST NODE, AND THE OWNER REVERSED THAT ═══
 ---
 --- "please set the focus area to the first camera coords 1 second before fading
---- in" -- the owner, 2026-08-29. Called BY client/loading.lua, which owns the
---- reveal and is therefore the only thing that can lead it; it returns the lead
---- so that file can hold the reveal open for exactly that long rather than
---- hoping the calls happen to land in the right order.
+--- in" -- the owner, 2026-08-29, and that is exactly what this did: camPath[1],
+--- once, with nothing moving it afterwards.
 ---
---- SET_FOCUS_POS_AND_VEL MOVES WHERE THE ENGINE STREAMS TERRAIN AND ASSETS, and
---- that is the whole of what it does. It has no bearing on which entities are
---- relevant to this client -- that is decided from the player's own ped and
---- camera sync nodes and never reads the focus.
+--- "The textures are consistently not loading fully when the lobby cam arrives
+--- at the destination. I think it's fair to assume the focus is not set to the
+--- destination properly." -- the owner, 2026-08-31, reporting it for the third
+--- time after seeing the finished flight in game. HE IS DESCRIBING THE BILL FOR
+--- THE SENTENCE ABOVE, not a second bug. The focus was nailed to the opening
+--- shot and the camera then spends camFlightMs -- 13.8 seconds -- flying 583m of
+--- spline away from it, ending 560m from where the focus was left. So the shot
+--- the entrance ACTUALLY ENDS ON, the character frame the whole lobby lives in,
+--- was the one place in the sequence the engine was never told to stream.
+---
+--- AND IT WAS WORSE THAN SETTING NO FOCUS AT ALL, which is the half that makes
+--- the report say "consistently". The focus REPLACES the player's own -- that is
+--- what CLEAR_FOCUS exists to undo -- so those fourteen seconds were also spent
+--- not streaming around the ped, and the ped is standing thirty metres from the
+--- destination doing the walk this entire file is about.
+---
+--- ═══ SO IT IS THE DESTINATION NOW, FOR THE WHOLE FLIGHT ═══
+---
+--- The destination gets the lead the opening shot used to get, and it gets far
+--- more of it: focusLeadMs before the reveal PLUS the entire flight, about
+--- fifteen seconds against the one second the old target had. Nothing has to be
+--- moved, timed or torn down mid-flight to make that true.
+---
+--- WHAT IT COSTS IS THE OPENING SHOT'S OWN SURROUNDINGS, and that is a smaller
+--- bill than it sounds, because the opening shot is not a shot OF anywhere near
+--- the camera. At camPath[1] the lens pitches 16.4 degrees down at the lobby
+--- mark 537m away (flightPlan's aim point starts there), and lobbyCam.fov is 50
+--- -- so the BOTTOM edge of the frame is at -41.4 degrees and the ground first
+--- appears about 1.1 times the lens's own height above it further on. Everything
+--- nearer than that is out of shot, which is the near half of any volume
+--- streamed around that node: it would be loading ground behind and beneath the
+--- camera. What is in the middle of the frame, from the first frame of the
+--- flight to the last, is the destination.
+---
+--- So the trade is a possibly softer far-distance vista for the two or three
+--- seconds where the camera is moving fastest anyway (camDecay is 2.0, so the
+--- opening is the quickest part of the flight), in exchange for the one shot
+--- that is then held for the rest of the session.
+---
+--- ═══ WHY NOT WALK THE FOCUS ALONG THE PATH ═══
+---
+--- NOT ON COST. A per-frame focus that follows a moving point is the established
+--- pattern -- it is what every freecam resource does inside its own render loop,
+--- and a later call simply replaces the earlier one with no clearing in between.
+---
+--- It is the wrong answer twice over anyway. It hands the destination the
+--- SMALLEST possible lead -- the focus would arrive exactly when the camera does,
+--- which is the report again with better manners -- and it cannot live here:
+--- this function is called on the BOOT ROAD ONLY, by loading.lua, whereas
+--- flyCamera runs on every road home. A focus that tracks the flight has to be
+--- driven from flyCamera, which would take the focus away from the player on the
+--- trips home, where nothing is broken today.
+---
+--- ═══ WHAT THE NATIVE ACTUALLY DOES, WITH ITS SOURCES ═══
+---
+--- SET_FOCUS_POS_AND_VEL (STREAMING, alias _SET_FOCUS_AREA, 0xBB7454BAFF08FE25)
+--- MOVES WHERE THE ENGINE STREAMS TERRAIN AND ASSETS, and that is the whole of
+--- what it does -- citizenfx/natives STREAMING/SetFocusPosAndVel.md documents it
+--- as "Override the area where the camera will render the terrain". It has no
+--- bearing on which entities are relevant to this client: that is decided from
+--- the player's own ped and camera sync nodes and never reads the focus.
+---
+--- A RENDERING SCRIPTED CAMERA DOES NOT DRAG THE STREAMING VOLUME WITH IT, which
+--- is the entire reason this call has to exist at all. Cfx.re forum thread 4947424
+--- ("Creating Camera far from player") states the problem as the LOD being
+--- "based on the player's position and not the camera itself", and the answer is
+--- this native with the camera's coordinates.
+---
+--- AND THE COST OF POINTING IT SOMEWHERE ELSE IS THE OWNER'S EXACT SYMPTOM.
+--- citizenfx/natives STREAMING/SetFocusEntity.md -- the sibling native, the same
+--- focus, and the one place either of them is described in any detail -- records
+--- that a focus more than 300 units from the player makes the detail around the
+--- player "go down drastically", and names shadows disappearing and textures
+--- going "extremely low res". It also states that the player is the default
+--- focus, which is what this call was taking away. camPath[1] is 560m from the
+--- destination the player and the ped are both standing at. That is not an
+--- analogy for what he reported; it is the documented behaviour of the call this
+--- function was making.
+---
+--- ═══ AND IT IS STILL NOT A GUARANTEE, WHICH IS DELIBERATELY NOT FIXED HERE ═══
+---
+--- Nothing documents the focus as meaning "loaded". The teleport implementations
+--- that need certainty (vMenu, and Cfx.re's own nta) pair it with
+--- NEW_LOAD_SCENE_START / IS_NEW_LOAD_SCENE_LOADED on a timeout, and HD texture
+--- dictionaries stream behind geometry by design. This change buys the
+--- destination fifteen seconds of the right focus instead of none, which is a
+--- far larger lead than a load scene is ever given; a gate is the answer only if
+--- fifteen seconds turns out not to be enough. It would also have to go
+--- somewhere other than BR.Spawn.placeAt, which every road in the project uses.
 --- @return number  milliseconds the reveal should wait, 0 when not running
 function BR.LobbyPed.focusAhead()
     if phase ~= RUNNING then return 0 end
 
-    local node = cfg().camPath and cfg().camPath[1]
-    if not node or not SetFocusPosAndVel then return 0 end
+    -- NO FLIGHT, NO FOCUS. An empty camPath is an entrance with no camera move
+    -- in it -- flyCamera returns on a plan of fewer than two entries -- and the
+    -- camera then never leaves the lobby frame the follow tick already put it on.
+    -- Taking the focus off the player to point it where the player is standing
+    -- would be pure loss, so the guard stays exactly as wide as it was.
+    if not (cfg().camPath and cfg().camPath[1]) then return 0 end
+    if not SetFocusPosAndVel then return 0 end
+    if not (BR.LobbyCam and BR.LobbyCam.lobbyFrame) then return 0 end
 
-    SetFocusPosAndVel(node.x + 0.0, node.y + 0.0, node.z + 0.0, 0.0, 0.0, 0.0)
+    -- ═══ THE DESTINATION IS THE LOBBY FRAME, NOT THE LAST AUTHORED NODE ═══
+    --
+    -- camPath's entries are CONTROL POINTS the curve passes through, and the
+    -- flight's final control point is not among them: BR.LobbyCam.flightPlan
+    -- appends BR.LobbyCam.lobbyFrame and lands on it exactly. The last authored
+    -- node is 37.8m short of that and 14m above it. Asked of the same function
+    -- the flight lands on, so there is no second copy of the destination for the
+    -- two to drift apart on -- the same rule `legs` states for the lobby mark.
+    local x, y, z = BR.LobbyCam.lobbyFrame()
+
+    -- THE LAST THREE ARE ZERO, WHICH IS WHAT THE DOCUMENTATION ASKS FOR. The
+    -- name says "AND_VEL"; citizenfx/natives names them offsetX/offsetY/offsetZ
+    -- and says only that they are "usually set to 0.0". What they actually do is
+    -- UNVERIFIED and nothing here needs them -- this focus is a fixed point that
+    -- is set once and not moved again until the entrance ends -- so they stay at
+    -- the documented value rather than being guessed at.
+    SetFocusPosAndVel(x + 0.0, y + 0.0, z + 0.0, 0.0, 0.0, 0.0)
     focusHeld = true
     return cfg().focusLeadMs or 1000
 end

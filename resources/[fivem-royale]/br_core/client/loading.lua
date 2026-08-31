@@ -269,12 +269,16 @@ Citizen.CreateThread(function()
     -- "please set the focus area to the first camera coords 1 second before
     -- fading in").
     --
-    -- The entrance's opening shot is three hundred metres from where the player
-    -- has been standing and a hundred metres above it, so nothing under it has
-    -- streamed. SET_FOCUS_POS_AND_VEL moves where the engine loads terrain and
-    -- assets -- that and nothing else; it has no bearing on which entities are
-    -- relevant to this client -- and pointing it there before anybody can see
-    -- the shot is exactly its job.
+    -- WHERE IT POINTS CHANGED ON 2026-08-31 AND THE LEAD DID NOT. The owner
+    -- revised the target after watching the finished flight -- "the textures are
+    -- consistently not loading fully when the lobby cam arrives at the
+    -- destination" -- so BR.LobbyPed.focusAhead now points at the shot the
+    -- flight LANDS on rather than the one it starts from, and that shot then has
+    -- this lead plus the whole 13.8-second flight to stream in. Its own
+    -- docstring carries the reasoning and both of his instructions; this file
+    -- only owns the clock. SET_FOCUS_POS_AND_VEL moves where the engine loads
+    -- terrain and assets -- that and nothing else; it has no bearing on which
+    -- entities are relevant to this client.
     --
     -- THE ORDER IS ENFORCED RATHER THAN HOPED FOR. `revealAt` is a floor the
     -- flip below waits out, so the lead survives somebody retiming the fade cue
