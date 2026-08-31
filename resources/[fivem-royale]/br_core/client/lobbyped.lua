@@ -1189,6 +1189,78 @@ local function flyCamera(mine)
     camLanded = true
 end
 
+--- How far off the start mark still counts as standing on it.
+---
+--- AN ESCAPE, NOT A KNOB, like STALL_MS above: the placement is an exact
+--- coordinate write onto a frozen ped, so the honest reading is zero and
+--- anything past half a metre is another subsystem having moved the ped. It is
+--- not in config because nothing about how the entrance LOOKS changes with it.
+local DRIFT_M = 0.5
+
+--- Put the ped on the start mark. Idempotent, and asserted rather than set.
+---
+--- ═══ THE PLACEMENT HAS TO BE RE-ASSERTED, AND THE BOOT ROAD IS WHY ═══
+---
+--- Owner, 2026-08-31: "the first time the client loads in the ped walks to the
+--- points in reverse before turning around and walking the correct way ... Every
+--- time back to the lobby afterwards is fine, tested dozens of cycles."
+---
+--- HE IS DESCRIBING A PED THAT STARTED AT THE WRONG END. The path is not
+--- reversed -- if it were, the walk would finish up the hill instead of on the
+--- mark, and it finishes on the mark. A ped standing on the LOBBY MARK when the
+--- walk begins is tasked to pedPath[1] first, which is nineteen metres back up
+--- the path and passes within 1.5m of the third corner and 3.9m of the second:
+--- the points, in reverse. It then turns around at the top and walks the
+--- authored path correctly, which is the rest of his sentence.
+---
+--- AND THE ENTRANCE ONLY EVER LOOKED ONCE. begin() writes the start mark in the
+--- caller's own frame and the walk then waits -- for the model (modelWaitMs,
+--- eight seconds), for the clipset, for the emote dictionaries, and for the
+--- cover to lift (revealWaitMs, ten more) -- and starts walking from wherever
+--- the ped turned out to be, having never asked again.
+---
+--- ON EVERY ROAD BUT THE FIRST THAT WINDOW IS EMPTY. The character is applied
+--- ONCE PER SESSION (client/locker.lua: "it does NOT re-apply on every return to
+--- the lobby"), so the model wait only ever waits on the first load; and the
+--- player is already alive and already spawned, so BR.Spawn.respawn's
+--- NetworkResurrectLocalPlayer is a coordinate write that has already landed and
+--- BR.Spawn.reveal's IsPlayerSwitchInProgress is false. On the FIRST load none
+--- of that is true: the trip home runs `respawn(lobbyPos, exact)` and then, with
+--- no Citizen.Wait between them, BR.LobbyPed.startNow -- so the entrance writes
+--- pedStart on top of a spawn that the engine is still settling onto lobbyPos,
+--- and reveal() has just called SwitchInPlayer on a player it says GTA "can
+--- leave mid-switch". Which of those wins the race is not knowable from here and
+--- does not matter: they all write the ped after begin() has stopped looking.
+---
+--- SO THE FIX IS AN ASSERTION RATHER THAN A SECOND GUESS, which is the shape
+--- client/natives.lua's per-frame lobby freeze already has and for the same
+--- reason -- a fact somebody else can overwrite has to be re-stated, not set.
+--- Called from placeOnStart, and again by run() at both ends of its wait.
+--- @param why string|nil  where the correction was made. NIL FOR THE FIRST
+---        PLACEMENT, which is a teleport up the path from wherever the trip
+---        home left us and is therefore always "off the mark" -- logging that
+---        would print a line on every entrance on every road, and a line that
+---        appears every time is a line nobody reads on the one that matters.
+local function standOnStart(why)
+    local ped = PlayerPedId()
+    local s = startMark()
+    if not s then return end
+
+    if why then
+        local c = GetEntityCoords(ped)
+        local off = BR.Dist(c.x, c.y, s.x, s.y)
+        if off > DRIFT_M then
+            print(('[br_core] lobby entrance: the ped was %.1fm off its start '
+                .. 'mark %s -- put back'):format(off, why))
+        end
+    end
+
+    RequestCollisionAtCoord(s.x, s.y, s.z)
+    SetEntityCoordsNoOffset(ped, s.x, s.y, s.z, false, false, false)
+    SetEntityHeading(ped, s.heading + 0.0)
+    FreezeEntityPosition(ped, true)
+end
+
 --- Put the ped on the start mark and raise the first shot over it.
 ---
 --- ═══ SYNCHRONOUS, AND THAT IS THE POINT ═══
@@ -1202,17 +1274,11 @@ end
 --- BR.LobbyPed.startNow() while it is still black.
 ---
 --- THE WALK THAT FOLLOWS IT DOES NOT START HERE. See awaitReveal: the ped is
---- placed under the cover and then waits, frozen, for the cover to lift.
+--- placed under the cover and then waits, frozen, for the cover to lift -- and
+--- see standOnStart, which is why that wait is not the end of the story.
 local function placeOnStart()
-    local C = cfg()
-    local ped = PlayerPedId()
-    local s = startMark()
-    if not s then return end
-
-    RequestCollisionAtCoord(s.x, s.y, s.z)
-    SetEntityCoordsNoOffset(ped, s.x, s.y, s.z, false, false, false)
-    SetEntityHeading(ped, s.heading + 0.0)
-    FreezeEntityPosition(ped, true)
+    if not startMark() then return end
+    standOnStart(nil)
 
     -- THE CAMERA'S FIRST SHOT, RAISED UNDER THE BLACK. No interpolation: there
     -- is nothing to blend from. Taken from the flight plan rather than from the
@@ -1304,6 +1370,23 @@ local function run(mine)
     end
     if token ~= mine then return end
 
+    -- 4c. AND THE START MARK IS RE-ASSERTED, BECAUSE THE WAITS ABOVE ARE WHERE
+    --     THE PED GETS MOVED OUT FROM UNDER IT. See standOnStart: the walk used
+    --     to begin from the LOBBY MARK on the first load of a session and walk
+    --     the path backwards to reach its own first corner.
+    --
+    --     HERE, WHILE THE COVER IS STILL UP, which is what makes this a
+    --     correction rather than a snap the player watches. Everything above is
+    --     a stream wait taken behind the loading screen or the trip's black,
+    --     and the reveal is the line below.
+    --
+    --     AND IT IS THE FIRST MOMENT THAT CAN BE RIGHT, not merely a convenient
+    --     one: the model wait ends on a ped handle that did not exist when
+    --     begin() placed the old one (client/locker.lua's swap is what it was
+    --     waiting for), so this is the earliest point at which the ped being
+    --     stood on the mark is the ped that is going to walk.
+    standOnStart('while the cover was still up')
+
     -- 5. AND NOW IT WAITS FOR SOMEBODY TO BE LOOKING.
     --
     --    See awaitReveal and the header. The ped is standing on its mark under
@@ -1313,6 +1396,18 @@ local function run(mine)
     --    costs a walk that starts anyway.
     if not awaitReveal(mine) then return end
     if token ~= mine then return end
+
+    -- ...AND AGAIN, AS THE LAST WORD BEFORE THE FIRST LEG.
+    --
+    -- The call above is the one that is guaranteed to be under cover; this one
+    -- is the one that is guaranteed to be LAST. Both are wanted: awaitReveal is
+    -- up to ten seconds long on the boot road and is the only stretch of the
+    -- entrance this file leaves unattended, and a ped that arrives at the walk
+    -- off its mark has no good outcome left -- a correction that is briefly
+    -- visible is strictly better than nineteen metres walked the wrong way with
+    -- the camera already flying. On every road where nothing went wrong it
+    -- writes the coordinates the ped is already standing on and says nothing.
+    standOnStart('with the walk already due')
     ped = PlayerPedId()
 
     -- 6. AND NOW IT MAY MOVE. client/natives.lua re-freezes a LOBBY ped every

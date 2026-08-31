@@ -3069,6 +3069,140 @@ do
             :format(D.focusMaxMs or -1))
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 21. THE FIRST LOAD: THE WALK STARTS AT THE START MARK, NOT AT THE LOBBY MARK
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-31: "the first time the client loads in the ped walks to the
+-- points in reverse before turning around and walking the correct way ... Every
+-- time back to the lobby afterwards is fine, tested dozens of cycles."
+--
+-- THE PATH IS NOT REVERSED AND THIS BLOCK IS NOT ABOUT THE PATH. A reversed
+-- path would finish up the hill; his finishes on the mark. What he is watching
+-- is a ped that began the walk standing on the LOBBY MARK: its first leg is then
+-- the nineteen metres back up to pedPath[1], which passes 1.5m from the third
+-- corner and 3.9m from the second -- the points, in reverse -- and it turns
+-- around at the top and walks the authored path correctly from there.
+--
+-- ═══ WHAT THE FIXTURE MODELS, AND WHY IT IS ONLY THE FIRST LOAD ═══
+--
+-- The entrance places the ped in begin(), in the trip's own frame, and then
+-- WAITS: for the character model, for the clipset, for the emote dictionaries,
+-- and for the cover to lift. On every road but the first that window is empty --
+-- the character is applied once per session (client/locker.lua) so the model
+-- wait does not wait, and the player is already alive and already spawned so
+-- BR.Spawn.respawn's resurrect has nothing left to do. On the FIRST load both
+-- are false at once, and BR.Spawn.toLobby runs `respawn(lobbyPos, exact)` and
+-- BR.LobbyPed.startNow with no Citizen.Wait between them.
+--
+-- SO THE TWO FACTS MODELLED HERE ARE THE TWO THAT ARE TRUE EXACTLY ONCE: the
+-- character is not on the player yet (so the model wait genuinely waits, and
+-- ends on a NEW ped handle, which is what it was waiting for), and the spawn
+-- that put the player on the lobby mark settles onto its coordinates a frame
+-- after it was asked to rather than inside the call. Which engine call wins that
+-- race -- the resurrect completing, or the SwitchInPlayer that BR.Spawn.reveal
+-- makes on a player it says GTA "can leave mid-switch" -- is not knowable from
+-- Lua and is not what is asserted. WHAT IS ASSERTED IS THE CONTRACT: if anything
+-- writes the ped's position while the entrance is standing it on its mark under
+-- the cover, the walk still begins at the start mark.
+
+--- Whether the fixture's spawn lands a frame late, as an unspawned one does.
+local settleLate = false
+do
+    local real = NetworkResurrectLocalPlayer
+    NetworkResurrectLocalPlayer = function(x, y, z, h, ...)
+        real(x, y, z, h, ...)
+        if not settleLate then return end
+        -- ONE STEP OF THE CLOCK, which is this fixture's frame. Cfx's own
+        -- spawnmanager freezes the player across exactly this gap and waits it
+        -- out before unfreezing; br_core does not, because on every road it was
+        -- written for there is nothing to wait for.
+        Citizen.SetTimeout(50, function()
+            SetEntityCoordsNoOffset(PlayerPedId(), x, y, z, false, false, false)
+            SetEntityHeading(PlayerPedId(), h or 0.0)
+        end)
+    end
+end
+
+do
+    local C = BR.Config.Match.lobbyEntrance
+    local L = BR.Config.Match.lobbyPos
+
+    reset()
+    -- A FRESH CONNECT: no character on the player, no spawn yet, loading screen
+    -- still up. The lobby watchdog in client/spawn.lua is what takes us home
+    -- from here, exactly as it does on a real join.
+    ped.model = 0
+    ped.x, ped.y, ped.z = 0.0, 0.0, 0.0
+    BR.State.worldReady = false
+    settleLate = true
+
+    -- The character arrives three seconds in, on a NEW handle -- which is what
+    -- SetPlayerModel hands back and what the entrance's model wait is waiting
+    -- for. Late enough to be a wait, early enough to be well inside modelWaitMs.
+    Citizen.SetTimeout(3000, function()
+        pedHandle = pedHandle + 1
+        wearChosenModel()
+    end)
+
+    pump(200)
+
+    -- THE PRECONDITION IS THE BUG, and it is asserted rather than assumed: a
+    -- fixture that quietly failed to move the ped would make everything below
+    -- pass on any build at all.
+    ok(BR.LobbyPed.entering(), 'precondition: the first load starts an entrance')
+    ok(BR.Dist(ped.x, ped.y, L.x, L.y) < 1.0,
+       'precondition: the settling spawn has put the ped back on the lobby mark')
+    ok(not BR.LobbyPed.walking(),
+       'precondition: and the walk has not started -- it is waiting for the model')
+
+    pump(6000)                     -- the character lands; the waits run out
+    BR.State.worldReady = true     -- client/loading.lua reveals
+    pump(40000)
+
+    local tasks = {}
+    for _, e in ipairs(order) do
+        if e.kind == 'task' then tasks[#tasks + 1] = e end
+    end
+
+    ok(#tasks == #C.pedPath + 1,
+       ('the whole path is walked -- %d legs, one per corner plus the mark (saw %d)')
+           :format(#C.pedPath + 1, #tasks))
+
+    -- THE ASSERTION THE REPORT IS ABOUT. Measured on where the ped WAS when the
+    -- first leg was tasked, which is the only number that can tell the two ends
+    -- apart: the start mark and the lobby mark are 22m apart.
+    ok(#tasks > 0
+       and BR.Dist(tasks[1].fromX, tasks[1].fromY, C.pedStart.x, C.pedStart.y) < 1.0,
+       'the first leg is walked FROM the start mark')
+    ok(#tasks > 0
+       and BR.Dist(tasks[1].fromX, tasks[1].fromY, L.x, L.y) > 10.0,
+       'and not from the lobby mark, nineteen metres back down the path')
+
+    -- AND THE PATH ITSELF IS STILL THE RIGHT WAY ROUND, which is the other way
+    -- this report could have been answered and the wrong one. A build that
+    -- "fixed" the direction by reversing the legs would satisfy the two above
+    -- and fail this.
+    ok(#tasks > 0 and math.abs(tasks[1].x - C.pedPath[1].x) < 0.01
+       and math.abs(tasks[1].y - C.pedPath[1].y) < 0.01,
+       'the first leg still goes to the first authored corner')
+    ok(#tasks > 0 and math.abs(tasks[#tasks].x - L.x) < 0.01
+       and math.abs(tasks[#tasks].y - L.y) < 0.01,
+       'and the last one still ends on the lobby mark')
+
+    -- IT IS AN ENTRANCE, NOT A RESCUE. The failsafe places a ped that is late,
+    -- and a walk that starts nineteen metres out is late by about eleven
+    -- seconds -- so a build with the bug in it ends the owner's first lobby with
+    -- a teleport as well as a reversal.
+    ok(not forcedHome(),
+       'the failsafe never has to place a ped that started at the wrong end')
+    ok(math.abs(ped.x - L.x) < 0.01 and math.abs(ped.y - L.y) < 0.01,
+       'and the first load ends with the ped on the lobby mark like every other')
+
+    settleLate = false
+    BR.State.worldReady = true
+end
+
 -- And the gather loop goes back on, so nothing added after this inherits a
 -- disabled subsystem from a block that only wanted it quiet for itself.
 ok(BR.Loop.setEnabled('spawn.gather', true), 'spawn.gather is left enabled')
