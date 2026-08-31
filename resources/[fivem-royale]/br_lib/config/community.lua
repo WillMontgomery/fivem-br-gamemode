@@ -23,9 +23,17 @@
 --
 -- SERVER-READ ONLY, like every other overridable key, and tools/verify.sh's
 -- tunable-overrides gate enforces it by grepping br_*/client/*.lua for the key
--- name. No client reads this: the only surface it reaches is the message shown
--- to a player being kicked or refused at the door, and both of those are built
--- on the server.
+-- name. That has not changed and cannot: no client file may so much as say
+-- `discordUrl`, in code or in a trailing comment.
+--
+-- WHAT CHANGED IS THAT IT NOW REACHES TWO SURFACES (2026-08-30). It was the
+-- message shown to a player being kicked or refused at the door, and nothing
+-- else. It is also the Discord card in the pause menu, which the owner asked
+-- for: br_core/server/community.lua reads this value on br:ready -- on the
+-- server, in the one state where the override applied -- and sends the resolved
+-- string to that player's page under the wire name `invite`. The rule the gate
+-- exists for is untouched, because there is still exactly one reader per Lua
+-- state and the two sides cannot hold different values for it.
 
 BR = BR or {}
 BR.Config = BR.Config or {}
@@ -33,10 +41,13 @@ BR.Config = BR.Config or {}
 BR.Config.Community = {
     -- The Discord invite, as a full link: scheme, host and path.
     --
-    -- EMPTY MEANS NO LINE AT ALL. A kicked player is told why they were kicked
-    -- and nothing more, exactly as before this existed. An appeal sentence with
-    -- a blank where the address should be would be worse than no sentence --
-    -- it invites somebody to go looking for a link that is not there.
+    -- EMPTY MEANS NO LINE AT ALL, AND NOW NO CARD EITHER. A kicked player is
+    -- told why they were kicked and nothing more, exactly as before this
+    -- existed, and the pause menu simply has no Discord card in it. An appeal
+    -- sentence with a blank where the address should be would be worse than no
+    -- sentence -- it invites somebody to go looking for a link that is not
+    -- there -- and a card that copies an empty string is the same mistake with
+    -- a button on it.
     --
     -- A LINK, NOT AN ORIGIN, which is the difference between this and
     -- BR.Config.Admin.consoleUrl. An invite is `https://discord.gg/<code>`: the

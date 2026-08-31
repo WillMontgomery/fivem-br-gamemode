@@ -281,7 +281,19 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # BR.Server stub has no `notify`, so unrequested player copy would otherwise
     # throw three hundred lines later and report a nil call instead of the rule
     # it broke (#219 Q20 is unanswered and no wording may be invented).
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_shop.lua tools/test_bool_natives.lua; do
+    #
+    # test_community.lua is the ninth suite to load a real SERVER file, and the
+    # only one whose subject is a single envelope. It runs the REAL
+    # config/overrides.lua rather than assigning BR.Config.Community by hand,
+    # which is what makes it a seam test rather than a restatement: it fails the
+    # day the convar stops reaching the table the sender reads out of.
+    #
+    # What it is really guarding is the `{}`. br_core/server/community.lua
+    # answers br:ready even when there is no invite, so a page already on screen
+    # takes the Discord card down when an operator clears the value and restarts;
+    # a sender that returned early instead would look correct, pass any test
+    # written as "no invite was sent", and leave a dead card up forever.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_shop.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

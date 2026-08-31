@@ -114,6 +114,10 @@ export default function App() {
   // The Admin tab's availability, and any mint answer. Sent to one player, only
   // when the server has decided that player may have it.
   useNuiEvent('admin',    (d) => s.setAdmin(d))
+  // Where our Discord is. Sent to EVERY player on br:ready -- an invite is a
+  // public address -- and `{}` is a real answer meaning there is none, which is
+  // what takes the card back down if an operator clears it and restarts.
+  useNuiEvent('community', (d) => s.setCommunity(d))
   // A SQUADMATE WENT DOWN, OUT, OR CAME BACK UP -- and nothing here was
   // listening. Lua has sent `squadcue` since the squad audio landed and this
   // handler did not exist, so all three sounds were dropped by the router with

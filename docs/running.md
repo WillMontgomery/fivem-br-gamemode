@@ -33,7 +33,7 @@ simply absent**:
 | convar | kind | unset means |
 |---|---|---|
 | `br_adminConsoleUrl` | `url` | No Admin tab in the pause menu, no HTTP call, and one line in the boot banner. The game never depends on Ringmaster, so a server with no console configured plays exactly as it did before the feature existed. |
-| `br_discordUrl` | `link` | A kicked or banned player is told why and nothing more — **no line at all**, not an empty URL and not a bare "contact an admin". |
+| `br_discordUrl` | `link` | A kicked or banned player is told why and nothing more — **no line at all**, not an empty URL and not a bare "contact an admin" — and there is **no Discord card in the pause menu**. Set, it does both: the appeal line on the way out, and a card every player can press to copy the invite. |
 
 **They are parsed differently on purpose, and that is why there are two kinds.**
 `br_adminConsoleUrl` is *compared* against a browser's `event.origin`, so it must

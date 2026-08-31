@@ -41,6 +41,20 @@ export function emit<E extends Envelope>(env: E): void {
  */
 const MOCK_CONSOLE = 'https://ringmaster.invalid'
 
+/**
+ * A stand-in invite for the harness.
+ *
+ * NOT THE REAL ONE, AND NOT PLAYER COPY. In game the address comes from
+ * `br_discordUrl` and is the operator's; this exists only so the card can be
+ * drawn and measured in `npm run dev`, where no Lua is running to send one. It
+ * is `.invalid` for the same reason MOCK_CONSOLE above is -- a dev harness that
+ * pointed at somebody's actual server is a worse default than one that visibly
+ * goes nowhere -- but it is deliberately invite-SHAPED and roughly invite-LENGTH,
+ * because the one thing this card's layout can get wrong is how much room the
+ * printed address needs beside the reserved "Copied" slot.
+ */
+const MOCK_INVITE = 'https://discord.invalid/aBcDeFgHiJ'
+
 /** Advances per mocked mint, so the screen sees a fresh answer each time. */
 let mockMintSeq = 0
 
@@ -421,6 +435,12 @@ export function startMockDriver(): void {
   // a tab you cannot make appear is a screen you cannot work on. In game this
   // envelope arrives only for a license the server has cleared.
   emit({ k: 'admin', d: { origin: MOCK_CONSOLE } })
+  // AND THE HARNESS ALWAYS HAS A DISCORD, for the same reason it is always an
+  // admin: in game this arrives on br:ready from br_core/server/community.lua,
+  // and a harness that never sent it is a harness where the card cannot be
+  // built, positioned or measured at all. An unconfigured server sends `{}`
+  // instead and the card is simply absent.
+  emit({ k: 'community', d: { invite: MOCK_INVITE } })
   // Mirrors br_ui/client/keybinds.lua's ACTIONS table. Without it the
   // controls tab renders its empty state, which is a different screen from
   // the one that ships.

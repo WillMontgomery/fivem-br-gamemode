@@ -1062,6 +1062,30 @@ AddEventHandler(BR.Net.ADMIN_STATE, function(payload)
     TriggerEvent('br:ui:sendLocal', BR.Nui.ADMIN, payload)
 end)
 
+-- WHERE OUR DISCORD IS, FORWARDED TO THE PAGE UNREAD. Same shape as the handler
+-- above and for the same reason, which is why it is written directly beside it.
+--
+-- This one carries no permission -- an invite is public and every player gets
+-- the envelope -- but the reason for not opening it is unchanged and is the
+-- stronger of the two. The value comes from an OVERRIDABLE KEY, and
+-- br_lib/config/overrides.lua's contract is that such a key is read on the
+-- server and nowhere else; tools/verify.sh greps every br_*/client/*.lua for the
+-- key names to keep it that way, and it filters only whole-line comments -- so
+-- even naming the key in a note at the end of this line would fail the build.
+-- Forwarding the table whole means this file never learns a name it is not
+-- allowed to say, and br_core/server/community.lua stays the one reader.
+--
+-- The type guard is the only inspection, and note what it does NOT decide: an
+-- empty table is a perfectly good payload here, meaning "this server publishes
+-- no Discord", and it has to reach the page so a card already on screen comes
+-- down. Only a nil -- which would cross the bridge as an empty envelope and
+-- leave the page unable to tell that from a malformed message -- is dropped.
+RegisterNetEvent(BR.Net.COMMUNITY)
+AddEventHandler(BR.Net.COMMUNITY, function(payload)
+    if type(payload) ~= 'table' then return end
+    TriggerEvent('br:ui:sendLocal', BR.Nui.COMMUNITY, payload)
+end)
+
 --- The verbs on the front page.
 ---
 --- EVERY ONE OF THEM IS br_core's TO PERFORM, not ours: leaving a match is a

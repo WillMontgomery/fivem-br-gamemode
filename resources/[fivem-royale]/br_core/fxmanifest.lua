@@ -489,6 +489,13 @@ server_scripts {
     -- than for the loader: it asks BR.Grants.holds the question grants.lua
     -- answers, and it is declared below the file that answers it.
     'server/admin.lua',
+    -- The Discord card in the pause menu. NO LOAD-ORDER REQUIREMENT AT ALL: it
+    -- reads BR.Config.Community at call time, not at load, and its only other
+    -- dependency is BR.Net -- which is br_lib and is above everything here. It
+    -- is declared beside admin.lua because it is the second file to answer
+    -- br:ready with a one-field envelope for the pause menu, and a reader
+    -- looking for one will find the other.
+    'server/community.lua',
     -- Spectate sessions and the squad rule. AFTER combat.lua and party.lua for
     -- a reader rather than for the loader: it asks the roster who is still in
     -- the fight, and both of those are what make that answer true.

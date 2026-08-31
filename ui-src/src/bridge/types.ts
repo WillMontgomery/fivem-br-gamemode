@@ -1089,6 +1089,21 @@ export interface AdminPayload {
   mint?: AdminMint
 }
 
+/**
+ * Where this deployment's Discord is, or that it has none.
+ *
+ * `invite` PRESENT IS THE WHOLE OF "DRAW THE CARD". A card with no address on it
+ * is worth nothing, so the address is the condition and there is no boolean
+ * beside it to disagree with it -- the same one-field shape as `AdminPayload`.
+ *
+ * THE OBJECT ITSELF PROVES NOTHING. Lua sends `{}` when the invite is unset --
+ * deliberately, so a page already on screen takes the card down -- and `{}` is
+ * truthy. Every reader has to test the STRING, never the payload.
+ */
+export interface CommunityPayload {
+  invite?: string
+}
+
 export interface SnapshotPayload {
   match: MatchPayload
   hud: HudPayload
@@ -1146,6 +1161,7 @@ export type Envelope =
   | { k: 'players';  d: PlayersPayload }
   | { k: 'report';   d: ReportResult }
   | { k: 'admin';    d: AdminPayload }
+  | { k: 'community'; d: CommunityPayload }
   /** A SQUADMATE changed phase, and this is the sound everybody else hears.
    *
    *  NOT IN BR.Nui, deliberately, and it is the one kind here that is not. The

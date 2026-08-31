@@ -59,10 +59,12 @@ set br_devMode false
 # you accept that.
 #
 # br_discordUrl is the address appended to the message a kicked or banned player
-# sees ("Please join our Discord to discuss or appeal: ..."). Unlike everything
+# sees ("Please join our Discord to discuss or appeal: ..."), and since
+# 2026-08-30 it is also the Discord card in the pause menu -- a card every player
+# can press to copy the invite, drawn only when this is set. Unlike everything
 # else named in these two files it is NOT a dev-versus-public difference -- it
 # is the same address on every box, and a public server is where the kicks
-# actually happen.
+# actually happen and where the card is worth the most.
 #
 # It stays unset here because this file's whole promise is that copying it over
 # tunables.cfg leaves you with the reviewed configuration and nothing typed on a

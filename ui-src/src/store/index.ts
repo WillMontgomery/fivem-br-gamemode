@@ -17,7 +17,7 @@ import type {
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
   ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
-  AdminPayload, VehiclePayload,
+  AdminPayload, CommunityPayload, VehiclePayload,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -162,6 +162,11 @@ export interface UiState {
    *  An absent `origin` means no Admin tab, and it is the default -- the tab
    *  exists only because the server chose to send this player an address. */
   admin: AdminPayload
+  /** Where our Discord is (owner, 2026-08-30). An absent `invite` means this
+   *  deployment publishes none, and it is the default -- the card exists only
+   *  because the server sent an address. `{}` is a legitimate value and is
+   *  truthy: read `community.invite`, never `community`. */
+  community: CommunityPayload
   /** The answer to the last submitted report, or null. */
   reportResult: ReportResult | null
 
@@ -269,6 +274,7 @@ export interface UiState {
   clearXpAward: () => void
   setPlayers: (p: PlayersPayload) => void
   setAdmin: (a: AdminPayload) => void
+  setCommunity: (c: CommunityPayload) => void
   setReportResult: (r: ReportResult | null) => void
   setMarket: (m: MarketPayload) => void
   setShopPlate: (up: boolean) => void
@@ -541,6 +547,7 @@ export const useUi = create<UiState>((set, get) => {
   shopPlate: false,
   players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
   admin: {},
+  community: {},
   reportResult: null,
   keybinds: [],
   keybindsRaw: false,
@@ -745,6 +752,7 @@ export const useUi = create<UiState>((set, get) => {
   setShopPlate: (shopPlate) => set({ shopPlate }),
   setPlayers: (players) => set({ players }),
   setAdmin: (admin) => set({ admin }),
+  setCommunity: (community) => set({ community }),
   setReportResult: (reportResult) => set({ reportResult }),
   setKeybinds: (keybinds, keybindsRaw) => set({ keybinds, keybindsRaw }),
 

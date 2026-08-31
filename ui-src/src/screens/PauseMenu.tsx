@@ -3,6 +3,7 @@ import { useUi, selMatch } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
+import DiscordCard from '../ui/DiscordCard'
 import Settings from './Settings'
 import { play } from '../audio/cues'
 import Progress from './Progress'
@@ -526,6 +527,31 @@ export default function PauseMenu() {
               <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
                 {inLobby ? 'Back to lobby' : 'Resume'}
               </Btn>
+            </div>
+
+            {/* AN INVITATION IS NOT AN EXIT, so it does not join the card
+                above. That card is one list of exits in increasing order of
+                what they cost you, and a link to our Discord costs nothing and
+                ends nothing -- a fourth row would make it read as a fifth way
+                off the server. Nor does it go BETWEEN the exits and the button
+                that leaves: the order on this page is hero, party, exits, the
+                way out, and nothing gets inserted into that.
+
+                SO IT SITS UNDER THE WAY OUT, which is also the only place a
+                two-line card can grow without moving anything a player came
+                here in a hurry for. It is taller than a one-line card because
+                the owner asked for the address to be printed on it
+                (2026-08-30); this root is `fixed inset-0 overflow-y-auto`, so
+                the extra line scrolls rather than pushing anything off screen.
+
+                AND IT IS NOT GATED ON `!inLobby`, unlike PartyCard above. The
+                gates there exist because those things would be WRONG from the
+                lobby -- a live party control that can disagree with the lobby's
+                own. One address from one envelope can neither be wrong nor
+                disagree with anything, and the lobby is not visible behind this
+                menu in any case (`.page-under` is opacity 0). */}
+            <div className="mt-4">
+              <DiscordCard />
             </div>
           </>
         ) : tab === 'notices' ? (

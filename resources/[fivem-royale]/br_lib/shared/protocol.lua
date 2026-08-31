@@ -649,6 +649,31 @@ BR.Net = {
     -- server -> BR.Net.X -> a br_ui client handler -> br:ui:sendLocal, and that
     -- is the path with production mileage on it.
     ADMIN_STATE     = 'br:admin:state',
+
+    -- S->C { invite? }. Where this deployment's Discord is, or that it has no
+    -- Discord to point at.
+    --
+    -- THE MIRROR IMAGE OF ADMIN_STATE ABOVE, AND WORTH SAYING SO NEXT TO IT.
+    -- That event withholds an address because holding it IS the permission;
+    -- this one has nothing to withhold. An invite is a public link already
+    -- printed to anyone we kick, so it goes to every player on br:ready with no
+    -- gate in front of it, and the only question the payload answers is whether
+    -- there is one.
+    --
+    -- `{}` IS A REAL ANSWER AND SILENCE IS NOT. An operator who clears
+    -- br_discordUrl and restarts br_core sends the empty table, and a page that
+    -- is still up takes the card down on the strength of it -- which saying
+    -- nothing could never do. Same argument br_core/server/admin.lua's push()
+    -- makes for sending `{}` rather than staying quiet.
+    --
+    -- THE FIELD IS `invite`, NOT `discordUrl`, AND THE RENAME IS LOAD-BEARING.
+    -- br_lib/config/overrides.lua's contract is that an overridable key is read
+    -- on the server and nowhere else, and tools/verify.sh enforces it by
+    -- grepping every br_*/client/*.lua for the bare key name -- a name that
+    -- appears in a client file at all, comment or code, fails the build. The
+    -- wire carries the resolved value under a name the client half is allowed
+    -- to say, which is the same rename consoleUrl -> `origin` already makes.
+    COMMUNITY       = 'br:community',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the
@@ -797,6 +822,18 @@ BR.Nui = {
     -- out of step: the tab needs a URL to be worth anything, so the URL IS the
     -- permission.
     ADMIN     = 'admin',
+    -- Where our Discord is (owner, 2026-08-30): { invite? }.
+    --
+    -- `invite` PRESENT IS THE WHOLE OF "DRAW THE CARD", the same one-field shape
+    -- ADMIN uses above and for the same reason: a card with no address on it is
+    -- worth nothing, so the address IS the condition, and there is no boolean
+    -- beside it to fall out of step with it.
+    --
+    -- THE ENVELOPE ITSELF IS NOT THE SIGNAL, WHICH IS THE ONE TRAP HERE. `{}`
+    -- is a table and a table is truthy in both languages, so a reader that asks
+    -- whether the payload arrived draws a card with nothing in it. Every reader
+    -- has to look inside, at the string.
+    COMMUNITY = 'community',
 }
 
 --- A HOLE IN A SENTENCE WHERE A KEY BELONGS.
