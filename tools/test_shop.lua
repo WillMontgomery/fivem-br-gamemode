@@ -2879,6 +2879,461 @@ do
         'and client/dui.lua still writes no colour of its own')
 end
 
+-- ---------------------------------------------------------------------------
+describe('/brshop -- the reading that replaces the guess (#243)')
+-- ---------------------------------------------------------------------------
+
+--- ═══ THIS BLOCK RUNS THE REAL client/shop.lua, IT DOES NOT READ IT ═══
+---
+--- Every other assertion about the client in this file is a search over its
+--- source text, and a search cannot tell whether a printed column holds the
+--- right number. The command under test exists to produce numbers the owner
+--- will make a decision from, so it is STOOD UP AND CALLED here, against a
+--- world whose ground, collision and settling behaviour this block decides --
+--- which is the only way to check that a probe refusing to answer reads as a
+--- refusal rather than as an answer of zero.
+---
+--- IT IS LAST IN THE FILE ON PURPOSE. Loading a client file installs its
+--- handlers and overwrites several engine stubs the server blocks above share,
+--- so nothing may run after it.
+---
+--- ═══ THE FIXTURE ENCODES THE THING THE CONSTANT CANNOT DO ═══
+---
+--- Three rows, three models, and THREE DIFFERENT ORIGIN-TO-WHEEL DISTANCES --
+--- because that is the fault the owner is looking at ("some through the ground
+--- but some are still floating") and a fixture where every model sat the same
+--- height above its own origin could not express it. `far` additionally stands
+--- 900m away with no collision and a ground probe that refuses, which is the
+--- shape of the `veto` row.
+do
+    --- Where the ground is, whether the world is resident, and whether the
+    --- settle will work -- per row, decided here rather than by the code.
+    local WORLD = {
+        near = { gz = 29.60, gzx = 29.60, coll = true,  settles = true  },
+        -- gzx DIFFERS HERE, AND ONLY HERE. The two probes exclude different
+        -- things, so a column that copied the other one instead of asking its
+        -- own native would agree on all three rows; this row is what makes
+        -- that copy fail.
+        mid  = { gz = 29.60, gzx = 29.15, coll = true,  settles = true  },
+        far  = { gz = nil,   gzx = nil,   coll = false, settles = false },
+    }
+
+    --- How far each model's origin stands above its own tyre contact patch.
+    --- The whole argument against one authored drop, in three numbers.
+    local WHEEL = { sultan = 0.65, bison = 1.10, blista = 0.55 }
+
+    local DIAG = {
+        enabled = true, limit = 1, reachM = 4.0, minSpacingM = 6.0,
+        useMs = 3000, lockedState = 2, tokenScale = 0.1, tokenMarker = 34,
+        spawnAheadM = 5.0,
+        signLabel = shipped.signLabel, signWidthM = shipped.signWidthM,
+        signForwardM = shipped.signForwardM,
+        signBumperFrac = shipped.signBumperFrac, signLift = shipped.signLift,
+        boughtToast = shipped.boughtToast, balanceToast = shipped.balanceToast,
+        cue = shipped.cue,
+        -- HIS NUMBER, UNCHANGED. This block asserts what the drop DOES, and
+        -- zeroing it here would be asserting against a shop nobody runs.
+        groundDropM = 0.5,
+        items = {
+            { id = 'near', model = 'sultan', price = 750,
+              x = 100.0, y = 200.0, z = 30.0, heading = 90.0 },
+            { id = 'mid',  model = 'bison',  price = 400,
+              x = 140.0, y = 200.0, z = 30.0, heading = 90.0 },
+            { id = 'far',  model = 'blista', price = 100,
+              x = 1000.0, y = 200.0, z = 30.0, heading = 0.0 },
+        },
+    }
+    DIAG.register      = shipped.register
+    DIAG.refusedReason = shipped.refusedReason
+    BR.Config.Shop = DIAG
+
+    --- Which row an authored x belongs to.
+    local function rowAt(x)
+        for _, it in ipairs(DIAG.items) do
+            if math.abs(it.x - x) < 0.01 then return it.id end
+        end
+    end
+
+    --- Every entity this block has made: [handle] = a car standing in a world.
+    local ents = {}
+    local byId = {}                 -- [row id] = handle
+    local nextHandle = 9000
+    --- Every ground probe fired, in order: { id, x, y, fromZ }.
+    local probes = {}
+
+    --- Natives that would MOVE, MAKE or DESTROY something. Recorded only while
+    --- `armed` -- the build legitimately calls several of them, and the claim
+    --- under test is about the COMMAND.
+    local writes, armed = {}, false
+    local function noteWrite(name)
+        if armed then writes[#writes + 1] = name end
+    end
+
+    -- --- the engine --------------------------------------------------------
+
+    function IsModelValid() return true end
+    function IsModelAVehicle() return true end
+    function RequestModel() end
+    function HasModelLoaded() return true end
+    function SetModelAsNoLongerNeeded() end
+    function PlayerPedId() return 1 end
+
+    local PLAYER = { x = 102.0, y = 200.0, z = 30.0 }
+
+    function CreateVehicle(_model, x, y, z, h, _net, _mission)
+        noteWrite('CreateVehicle')
+        nextHandle = nextHandle + 1
+        local id = rowAt(x)
+        local model
+        for _, r in ipairs(DIAG.items) do if r.id == id then model = r.model end end
+        ents[nextHandle] = { id = id, model = model,
+                             x = x, y = y, z = z, h = h,
+                             pitch = 0.0, roll = 0.0 }
+        byId[id] = nextHandle
+        return nextHandle
+    end
+
+    local prevExists = DoesEntityExist
+    function DoesEntityExist(e)
+        if ents[e] then return 1 end
+        return prevExists(e)
+    end
+
+    local prevCoords = GetEntityCoords
+    function GetEntityCoords(e)
+        if e == 1 then return { x = PLAYER.x, y = PLAYER.y, z = PLAYER.z } end
+        local c = ents[e]
+        if c then return { x = c.x, y = c.y, z = c.z } end
+        -- A DEAD HANDLE THROWS, WHICH IS WHAT THE ENGINE DOES. client/shop.lua's
+        -- own draw pass carries the note ("reading the coordinates of a dead
+        -- handle throws"), and a stub that answered {0, 0, 0} instead would let
+        -- an unguarded read pass while printing every lost car at sea level.
+        if e >= 9000 then error('coords on a dead entity handle', 0) end
+        return prevCoords(e)
+    end
+
+    function SetEntityCoords(e, x, y, z)
+        noteWrite('SetEntityCoords')
+        local c = ents[e]
+        if c then c.x, c.y, c.z = x, y, z end
+    end
+    function SetEntityCoordsNoOffset(e, x, y, z)
+        noteWrite('SetEntityCoordsNoOffset')
+        local c = ents[e]
+        if c then c.x, c.y, c.z = x, y, z end
+    end
+    function FreezeEntityPosition() noteWrite('FreezeEntityPosition') end
+    function DeleteEntity(e) noteWrite('DeleteEntity') ents[e] = nil end
+    function SetEntityRotation() noteWrite('SetEntityRotation') end
+    function SetEntityHeading() noteWrite('SetEntityHeading') end
+    function RequestCollisionAtCoord() noteWrite('RequestCollisionAtCoord') end
+    function SetFocusPosAndVel() noteWrite('SetFocusPosAndVel') end
+
+    --- The settle: the ENGINE's per-model answer, which is the ground plus that
+    --- model's own origin-to-wheel distance and nothing the config authored.
+    ---
+    --- IT ANSWERS 1 AND 0, NOT true AND false. Both spellings are live in FiveM
+    --- and 0 is truthy in Lua; a fixture that answered `false` could not catch
+    --- the defect this project has shipped ten times.
+    function SetVehicleOnGroundProperly(e)
+        noteWrite('SetVehicleOnGroundProperly')
+        local c = ents[e]
+        if not c then return 0 end
+        local w = WORLD[c.id]
+        if not w or not w.settles then return 0 end
+        c.z = w.gz + WHEEL[c.model]
+        return 1
+    end
+
+    function GetGroundZFor_3dCoord(x, y, fromZ, _water)
+        local id = rowAt(x)
+        probes[#probes + 1] = { id = id, x = x, y = y, fromZ = fromZ }
+        local w = id and WORLD[id]
+        -- A REFUSAL IS A ZERO, WHICH IS TRUTHY IN LUA. Cfx documents the native
+        -- as answering false outside the client's render distance; this is that
+        -- answer in the spelling that has cost this project the most.
+        if not w or not w.gz then return 0 end
+        return 1, w.gz
+    end
+
+    function GetGroundZExcludingObjectsFor_3dCoord(x, _y, _fromZ, _water)
+        local id = rowAt(x)
+        local w = id and WORLD[id]
+        if not w or not w.gzx then return 0 end
+        return 1, w.gzx
+    end
+
+    function HasCollisionLoadedAroundEntity(e)
+        local c = ents[e]
+        return (c and WORLD[c.id] and WORLD[c.id].coll) and 1 or 0
+    end
+    function IsEntityWaitingForWorldCollision(e)
+        local c = ents[e]
+        return (c and WORLD[c.id] and WORLD[c.id].coll) and 0 or 1
+    end
+    function IsVehicleOnAllWheels(e)
+        local c = ents[e]
+        return (c and WORLD[c.id] and WORLD[c.id].settles) and 1 or 0
+    end
+
+    --- The engine's own "how far off the ground is this", which owes nothing to
+    --- the survey or to the drop. Zero for a car standing on its wheels.
+    function GetEntityHeightAboveGround(e)
+        local c = ents[e]
+        if not c then return 0.0 end
+        local w = WORLD[c.id]
+        if not w or not w.gz then return 0.0 end
+        return c.z - w.gz - WHEEL[c.model]
+    end
+
+    function GetEntityRotation(e)
+        local c = ents[e]
+        if not c then return { x = 0.0, y = 0.0, z = 0.0 } end
+        return { x = c.pitch, y = c.roll, z = c.h }
+    end
+
+    Citizen = {
+        Wait = function() end,
+        -- SYNCHRONOUS, so the build finishes inside the call that starts it.
+        CreateThread = function(f) f() end,
+    }
+
+    local commands = {}
+    function RegisterCommand(n, fn) commands[n] = fn end
+
+    local loops = {}
+    BR.Loop = {
+        SLOW = 'slow', TICK = 'tick', FRAME = 'frame',
+        register = function(_, name, fn) loops[name] = fn end,
+    }
+    BR.Keys = { on = function() end, isHeld = function() return false end }
+    BR.State = {
+        me    = { state = BR.PlayerState.WARMUP },
+        match = { state = BR.MatchState.WARMUP },
+    }
+
+    -- --- the subject -------------------------------------------------------
+
+    local realPrint = print
+    local out = {}
+    local function quiet(f, ...)
+        out = {}
+        print = function(s) out[#out + 1] = tostring(s) end
+        local fine, err = pcall(f, ...)
+        print = realPrint
+        return fine, err
+    end
+
+    loadCore('br_core/client/shop.lua')
+    ok(commands['brshop'] ~= nil, '/brshop is registered on the client')
+
+    -- BEFORE ANYTHING IS BUILT. A diagnostic that throws when there is nothing
+    -- to diagnose is a diagnostic nobody gets to run on the fault.
+    ok(quiet(commands['brshop'], nil, {}, ''),
+        '/brshop does not throw with no catalogue and no pad')
+
+    quiet(handlers['onClientResourceStart'], 'br_core')
+    quiet(loops['shop.scene'])
+    ok(byId.near and byId.mid and byId.far, 'the pad built three cars')
+
+    --- One printed row, split into its columns.
+    ---
+    --- SPLIT ON WHITESPACE RATHER THAN MATCHED CHARACTER BY CHARACTER: the
+    --- padding is a presentation choice and re-aligning a column must not go
+    --- red, while a wrong VALUE in one must.
+    local function cols(id)
+        for _, line in ipairs(out) do
+            if line:match('^%s*([%w_]+)') == id then
+                local c = {}
+                for tok in line:gmatch('%S+') do c[#c + 1] = tok end
+                return {
+                    id = c[1], model = c[2], survey = c[3], built = c[4],
+                    now = c[5], dsrv = c[6], dblt = c[7],
+                    gz = c[9], gzx = c[10], hgt = c[11],
+                    coll = c[13], wait = c[14], whls = c[15], rot = c[17],
+                }
+            end
+        end
+        return nil
+    end
+
+    local function lineWith(s)
+        for _, line in ipairs(out) do
+            if line:find(s, 1, true) then return line end
+        end
+    end
+
+    local function run()
+        probes, writes = {}, {}
+        armed = true
+        local fine = quiet(commands['brshop'], nil, {}, '')
+        armed = false
+        return fine
+    end
+
+    ok(run(), '/brshop does not throw with the pad standing')
+
+    -- ═══ 1. IT MEASURES AND IT NEVER PLACES ═══
+    --
+    -- THE ASSERTION THE WHOLE COMMIT RESTS ON. The owner has been told this
+    -- round changes nothing about where a car ends up; a single write from the
+    -- command would make that false, and it would be invisible on screen
+    -- because the numbers would still look plausible.
+    ok(#writes == 0,
+        '/brshop calls no native that moves, makes or destroys anything',
+        table.concat(writes, ', '))
+
+    -- ═══ 2. A HEALTHY ROW ═══
+    local near = cols('near')
+    ok(near ~= nil, 'the near row prints a line')
+    ok(near and near.model == 'sultan', 'naming its model', near and near.model)
+    ok(near and near.survey == '30.00',
+        'and the z the catalogue authored', near and near.survey)
+    ok(near and near.built == '30.25' and near.now == '30.25',
+        'built and now agree -- nothing has moved it since the settle',
+        near and (near.built .. ' / ' .. near.now))
+    ok(near and near.dblt == '0.00',
+        'so the drift against its build height is zero', near and near.dblt)
+    ok(near and near.hgt == '0.00' and near.whls == 'Y',
+        'the engine says it is on the ground and on all its wheels',
+        near and (near.hgt .. ' / ' .. near.whls))
+
+    -- ═══ 3. THE SPLIT, WHICH IS THE FAULT HE IS LOOKING AT ═══
+    --
+    -- `mid` is a bison: its origin stands 1.10m over its own tyres against the
+    -- sultan's 0.65. Both cars are ON THE GROUND and each is a different
+    -- distance from the surveyed z, and `d-srv` is the column that says so.
+    -- One authored constant cannot be both numbers, which is the whole of the
+    -- argument the next round has to settle.
+    local mid = cols('mid')
+    ok(mid and near and mid.dsrv == '0.70' and near.dsrv == '0.25',
+        'two settled cars sit two different distances from the same surveyed '
+            .. 'height -- one constant cannot be right for both',
+        mid and near and (mid.dsrv .. ' vs ' .. near.dsrv))
+    ok(mid and mid.dblt == '0.00',
+        'and neither has drifted, so this is a placement fault and not a '
+            .. 'streaming one', mid and mid.dblt)
+
+    -- ═══ 4. THE TWO PROBES ARE TWO QUESTIONS ═══
+    ok(near and near.gz == '29.60' and near.gzx == '29.60',
+        'where both probes agree, the surface under the car is map geometry',
+        near and (near.gz .. ' / ' .. near.gzx))
+    ok(mid and mid.gz == '29.60' and mid.gzx == '29.15',
+        'and where they disagree the column says so -- the excluding-objects '
+            .. 'probe is asked its own native, not copied from the first',
+        mid and (mid.gz .. ' / ' .. mid.gzx))
+
+    -- ═══ 5. THE veto CASE: A PROBE THAT REFUSES, IN THE SPELLING THAT LIES ═══
+    --
+    -- The native answers 0 for "outside the render distance" and 0 is TRUTHY in
+    -- Lua. Read raw, this row would print a ground of 0.00 -- sea level on this
+    -- map, a plausible-looking number -- and the one row that most needs to be
+    -- recognised as unmeasurable would read as measured.
+    local far = cols('far')
+    ok(far and far.gz == 'NONE' and far.gzx == 'NONE',
+        'a probe that refuses prints as a refusal, not as a ground of 0.00',
+        far and (far.gz .. ' / ' .. far.gzx))
+    ok(far and far.coll == 'N' and far.wait == 'Y',
+        'and the collision columns say the world is not resident there',
+        far and (far.coll .. ' / ' .. far.wait))
+    ok(far and far.built == '29.50' and far.now == '29.50',
+        'the un-settled car is at its starting height -- the survey less the '
+            .. '0.5m drop', far and far.built)
+    ok(far and far.whls == 'N', 'and it is not standing on its wheels',
+        far and far.whls)
+
+    -- ═══ 6. THE PROBE STARTS ABOVE THE SURFACE ═══
+    --
+    -- "A probe started under the surface can only answer with something lower
+    -- or with nothing at all" -- client/loot.lua, written after hillside loot
+    -- spawned below the map. A future edit that starts this one at the surveyed
+    -- z, or at the dropped z, re-opens that exact hole.
+    local pNear
+    for _, pr in ipairs(probes) do if pr.id == 'near' then pNear = pr end end
+    ok(pNear ~= nil and pNear.fromZ > 30.0,
+        'the ground probe starts ABOVE the surveyed z, never at or below it',
+        pNear and pNear.fromZ)
+    ok(pNear ~= nil and pNear.x == 100.0 and pNear.y == 200.0,
+        'and it is fired at the coordinate he surveyed', pNear and pNear.x)
+
+    -- ═══ 7. THE HEADER LABELS THE READING ═══
+    --
+    -- A printout taken from across the island is a printout of a world that is
+    -- not loaded, and every NONE in it means nothing. The distance line is what
+    -- lets the second reading of the pair be recognised as one taken on the way
+    -- back rather than one taken at the cars.
+    local head = lineWith('nearest row')
+    ok(head ~= nil, 'the header carries a distance line')
+    ok(head ~= nil and head:find('nearest row near at 2.0m', 1, true) ~= nil,
+        'naming the nearest row and how far the player is from it', head)
+    ok(head ~= nil and head:find('farthest far at 898.0m', 1, true) ~= nil,
+        'and the farthest, so an outlier row cannot hide behind an average',
+        head)
+
+    -- ═══ 8. THE VERDICT LINE ═══
+    local verdict = lineWith('settled at build')
+    ok(verdict ~= nil and verdict:find('settled at build 2/3', 1, true) ~= nil,
+        'the summary counts what the engine grounded', verdict)
+    ok(verdict ~= nil
+           and verdict:find('probe answering now 2/3', 1, true) ~= nil,
+        'and how much of the world is answering right now', verdict)
+    ok(verdict ~= nil and verdict:find('moved since build 0', 1, true) ~= nil,
+        'and nothing has moved yet', verdict)
+
+    -- ═══ 9. THE STREAM ROUND TRIP, WHICH IS THE OTHER FAULT ═══
+    --
+    -- "After seeing the shop once in warmup, and going outside its focus area,
+    -- then coming back, all the vehicles are floating off the ground again at
+    -- waist level." Nobody has ever had a before-reading to compare that
+    -- against. Lift a frozen car by 0.90 behind the client's back -- which is
+    -- what the report describes -- and the drift column is what catches it.
+    --
+    -- ONE UP AND ONE DOWN, because the drift has to be read two-sided. The 0.5
+    -- drop that is in the tree today is one-sided by construction and that is
+    -- half of why it produced "some through the ground but some are still
+    -- floating"; a drift check that only noticed cars rising would carry the
+    -- same defect into the instrument meant to diagnose it.
+    ents[byId.near].z = ents[byId.near].z + 0.90
+    ents[byId.mid].z  = ents[byId.mid].z  - 0.40
+    run()
+    local near2 = cols('near')
+    local mid2a = cols('mid')
+    ok(mid2a and mid2a.dblt == '-0.40',
+        'a car that SANK reports its drift too, with the sign on it',
+        mid2a and mid2a.dblt)
+    ok(near2 and near2.built == '30.25',
+        'the build height is a ledger and does not follow the car',
+        near2 and near2.built)
+    ok(near2 and near2.now == '31.15' and near2.dblt == '0.90',
+        'so a car that moved after it was placed reports the exact drift',
+        near2 and (near2.now .. ' / ' .. near2.dblt))
+    local verdict2 = lineWith('settled at build')
+    ok(verdict2 ~= nil and verdict2:find('moved since build 2', 1, true) ~= nil,
+        'and the summary counts both of them, in both directions', verdict2)
+    ok(#writes == 0,
+        'and the command still puts nothing back -- this round measures only',
+        table.concat(writes, ', '))
+
+    -- ═══ 10. A ROW WHOSE CAR IS GONE ═══
+    --
+    -- The engine deletes local entities on its own (citizenfx/fivem#2623 is
+    -- this project's own scar) and a diagnostic that throws on the case it was
+    -- opened to investigate is worthless.
+    ents[byId.mid] = nil
+    ok(run(), '/brshop does not throw when a row has lost its car')
+    local mid2 = cols('mid')
+    ok(mid2 and mid2.now == '-' and mid2.dblt == '-',
+        'and prints a dash where there is nothing to read, not a zero',
+        mid2 and (mid2.now .. ' / ' .. mid2.dblt))
+    ok(mid2 and mid2.gz == '29.60',
+        'while the ground probe still answers, because it is fired at his '
+            .. 'coordinate and not at the car', mid2 and mid2.gz)
+
+    -- ═══ 11. THE DROP IS UNTOUCHED BY ALL OF THIS ═══
+    ok(shipped.groundDropM == 0.5,
+        'and nothing here has changed where a car goes -- the drop is still '
+            .. 'the number he named', tostring(shipped.groundDropM))
+end
 print(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     print(('\27[31m%d failed\27[0m'):format(fail))

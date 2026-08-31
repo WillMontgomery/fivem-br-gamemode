@@ -73,6 +73,20 @@ local rows = {}
 --- The showroom, by catalogue id: [id] = entity handle.
 local cars = {}
 
+--- What each car MEASURED at when it was built, by catalogue id.
+---
+--- A LEDGER, NOT A PLAN. Nothing in this file reads it to decide where anything
+--- goes -- /brshop prints it and that is its whole purpose. It exists because
+--- "the cars are floating" and "the cars moved after they were placed" are two
+--- different reports and there has never been a before-reading to tell them
+--- apart: the height a car settles to is gone the frame after it happens.
+---
+---   [id] = { settled = boolean,  -- did SET_VEHICLE_ON_GROUND_PROPERLY say yes
+---            startZ  = number,   -- where CreateVehicle was told to put it
+---            z       = number,   -- where it actually was once the settle ran
+---            at      = number }  -- GetGameTimer at that moment
+local placed = {}
+
 --- Is the showroom standing?
 local built = false
 
@@ -220,6 +234,10 @@ local function teardown()
             DeleteEntity(veh)
         end
         cars[id] = nil
+        -- The ledger goes with the car it describes. A build reading left
+        -- standing over a pad that has been taken down is a reading of a
+        -- previous match, and /brshop would print it as if it were this one.
+        placed[id] = nil
     end
 end
 
@@ -460,6 +478,35 @@ local function build()
                                 :format(tostring(row.id), startZ, row.z + 0.0,
                                         tonumber(S.groundDropM) or 0.0))
                         end
+
+                        -- ═══ WHAT THE SETTLE PRODUCED, WRITTEN DOWN (#243) ═══
+                        --
+                        -- READ-ONLY BOOKKEEPING. Nothing places anything from
+                        -- this table; /brshop is its only reader. It is here
+                        -- because the one number nobody has is the height each
+                        -- of thirteen different models CAME TO REST AT, and
+                        -- that number exists for exactly one frame -- after
+                        -- this it is either still true, in which case the car
+                        -- is where the engine put it, or it is not, in which
+                        -- case something moved a frozen car and we finally have
+                        -- the before to compare the after against.
+                        --
+                        -- THE ENGINE'S OWN PER-MODEL ANSWER, NOT A GUESS. A
+                        -- vehicle's origin is not at its wheels and the
+                        -- origin-to-wheel distance differs per model, which is
+                        -- why one authored constant cannot be right for all
+                        -- thirteen. SET_VEHICLE_ON_GROUND_PROPERLY computes
+                        -- that distance from the model's own wheels; reading
+                        -- the coordinates straight back off a successful call
+                        -- is a MEASUREMENT of it, and it is correct for a model
+                        -- this code has never seen.
+                        local okP, pz = pcall(GetEntityCoords, veh)
+                        placed[row.id] = {
+                            settled = (okG and isTrue(landed)) and true or false,
+                            startZ  = startZ,
+                            z       = (okP and pz and pz.z) or nil,
+                            at      = GetGameTimer(),
+                        }
 
                         nat(FreezeEntityPosition, veh, true)
                         -- ...and the two that make "frozen" mean what a player
@@ -932,6 +979,280 @@ AddEventHandler('br:shop:dress', function(d)
         end
     end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- The measurement (#243)
+-- ---------------------------------------------------------------------------
+
+--- ═══ "PLEASE RESEARCH THIS AND STOP GUESSING" -- owner, 2026-08-30 ═══
+---
+--- He is right that `groundDropM = 0.5` is a guess, and this command is what
+--- replaces the guess with a reading. IT CHANGES NOTHING ABOUT WHERE A CAR
+--- ENDS UP: every native it calls is a getter, it writes to no entity, and the
+--- drop is still 0.5 in config/shop.lua after it.
+---
+--- ═══ THERE ARE TWO REPORTS AND THEY ARE PROBABLY TWO FAULTS ═══
+---
+--- 2026-08-30, earlier: "After seeing the shop once in warmup, and going
+--- outside its focus area (cell/culling radius), then coming back, all the
+--- vehicles are floating off the ground again at waist level." SHOP-WIDE, and
+--- it needs a stream-out and a stream-in to appear.
+---
+--- 2026-08-30, after the drop shipped: "Seems lowering the vehicles just put
+--- some through the ground but some are still floating." A SPLIT, and it is
+--- there on a first look.
+---
+--- One diagnosis was written that merged them and it did not survive review:
+--- twelve of the thirteen rows are within about ten metres of a warmup spawn,
+--- so "its collision had not streamed when we made it" cannot be what is wrong
+--- with twelve cars a player is standing next to. Only `veto` is far enough
+--- away (about 159m from the nearest spawn) for that story to fit. So the two
+--- reports are asked two different questions here and the columns are laid out
+--- to keep them apart.
+---
+--- ═══ WHAT EACH FAULT LOOKS LIKE IN THE OUTPUT ═══
+---
+--- A HEALTHY ROW: `built` and `now` agree to the centimetre, `d-blt` is 0.00,
+--- `gz` answers, `hgt` is about 0.00, `whls` is Y.
+---
+--- FAULT (a), THE SPLIT: `built` and `now` still agree -- nothing moved -- but
+--- `d-blt` being 0.00 next to an `hgt` that is not 0.00 says the car came to
+--- rest in the wrong place and stayed there. A NEGATIVE `hgt` with `whls` N is
+--- a car in the tarmac; a positive one is a car above it. If those two signs
+--- appear on different rows of one printout, the constant is the fault: one
+--- number cannot be the origin-to-wheel distance of thirteen different models.
+---
+--- FAULT (b), THE STREAM ROUND TRIP: run it at the pad, leave, come back, run
+--- it again. If `now` has moved away from `built` between the two printouts,
+--- something moved a frozen car and `d-blt` is the first measurement anybody
+--- has of it. If `now` is IDENTICAL both times and the cars still look wrong on
+--- screen, then the position is not what changed and the next place to look is
+--- what is being drawn -- which is a different investigation, and knowing which
+--- one to open is the entire value of this command.
+
+--- HOW FAR ABOVE THE SURVEYED z THE DIAGNOSTIC PROBE STARTS ITS SEARCH DOWNWARD.
+---
+--- GET_GROUND_Z_FOR_3D_COORD answers with the highest ground BELOW the point it
+--- is handed, so a probe started under the surface can only answer with
+--- something lower or with nothing at all -- client/loot.lua's PROBE_FROM_Z
+--- carries the write-up and the playtest that produced it ("hillside loot just
+--- spawned below the map instead"). The pad is an apron at z 3.30 to 4.30 and
+--- nothing on this island stands fifty metres over it, so this clears the
+--- surface from above without reaching down past it from inside a roof.
+---
+--- IT IS A PROBE HEIGHT, NOT AN OFFSET. Nothing is placed at it.
+local PROBE_LIFT_M = 50.0
+
+--- One ground probe, or an honest account of why there is no answer.
+---
+--- THE FIRST RETURN IS A BOOL AND IT GOES THROUGH isTrue. Cfx documents the
+--- native as answering false when the coordinates are outside the client's
+--- render distance (citizenfx/natives, MISC/GetGroundZFor_3dCoord.md: "This
+--- native can only calculate the elevation when the coordinates are within the
+--- render distance of the client") -- which is the exact condition this command
+--- exists to separate from a wrong height. Reading its 0 as truth would print
+--- "no answer" as an answer of 0.00, and 0.00 is sea level on this map, so it
+--- would read as a plausible number rather than as a refusal.
+--- @param fn any
+--- @param x number
+--- @param y number
+--- @param fromZ number
+--- @return boolean|nil hit  nil when this build has no such native
+--- @return number|nil z
+local function probe(fn, x, y, fromZ)
+    if type(fn) ~= 'function' then return nil, nil end
+    -- includeWater false: we want the apron, not the sea over it.
+    local okc, hit, gz = pcall(fn, x, y, fromZ, false)
+    if not okc then return nil, nil end
+    if not isTrue(hit) then return false, nil end
+    return true, tonumber(gz) or 0.0
+end
+
+--- The excluding-objects probe, under whichever name this build exports it.
+---
+--- WHY ASK IT AT ALL. GET_GROUND_Z_FOR_3D_COORD includes props in what it will
+--- call ground; GET_GROUND_Z_EXCLUDING_OBJECTS_FOR_3D_COORD does not
+--- (0x9E82F0F362881B29, alias _GET_GROUND_Z_FOR_3D_COORD_2, citizenfx/natives
+--- MISC/GetGroundZExcludingObjectsFor3dCoord.md). If the two columns AGREE, the
+--- cars are standing on map geometry and the next round's fix can use either.
+--- If they DISAGREE, the surface under the showroom is a placed object, and
+--- that changes which native the fix must ask -- which is not something anyone
+--- can settle by looking at the pad.
+---
+--- TWO SPELLINGS, AND WHICH ONE IS LIVE IS NOT VERIFIED. FiveM's Lua name comes
+--- from a mechanical conversion that cannot capitalise a word beginning with a
+--- digit, which is why its neighbour is `GetGroundZFor_3dCoord` and not
+--- `GetGroundZFor3dCoord`. The underscore form is the likelier of the two; both
+--- are asked for, and if neither exists the column prints `n/a` rather than
+--- pretending the probes disagreed.
+--- @return any
+local function groundZNoObjects()
+    local f = GetGroundZExcludingObjectsFor_3dCoord
+    if type(f) == 'function' then return f end
+    return GetGroundZExcludingObjectsFor3dCoord
+end
+
+--- A metre reading, or a dash where there is nothing to read.
+---
+--- "-0.00" IS NOT A READING AND IT IS THE ONE THIS COMMAND WOULD PRODUCE MOST.
+--- Every delta here is a difference of two floats that are meant to be equal,
+--- so a car that has not moved answers with a value a hair under zero about
+--- half the time -- and "-0.00" in a column headed d-blt reads as "it has sunk
+--- a little", which is the opposite of what it means. At two decimals the
+--- number IS zero; it is printed as zero.
+--- @param v number|nil
+--- @return string
+local function m(v)
+    if type(v) ~= 'number' then return '-' end
+    local s = ('%.2f'):format(v)
+    if s == '-0.00' then return '0.00' end
+    return s
+end
+
+--- A probe result as a column.
+--- @param hit boolean|nil
+--- @param z number|nil
+--- @return string
+local function probeText(hit, z)
+    if hit == nil then return 'n/a' end
+    if not hit then return 'NONE' end
+    return m(z)
+end
+
+--- A native BOOL as a column, with "this build has no such native" kept
+--- distinct from "the native said no". Those two have been confused on this
+--- project before and they mean opposite things to a reader.
+--- @param fn any
+--- @param ... any
+--- @return string
+local function boolText(fn, ...)
+    if type(fn) ~= 'function' then return 'n/a' end
+    local okc, v = pcall(fn, ...)
+    if not okc then return 'ERR' end
+    return isTrue(v) and 'Y' or 'N'
+end
+
+--- Everything about where the thirteen cars are, printed at once.
+---
+--- CONSOLE ONLY. Nothing here draws, notifies, or speaks to a player.
+RegisterCommand('brshop', function()
+    local ped = PlayerPedId()
+    local p = GetEntityCoords(ped)
+    local gzx = groundZNoObjects()
+
+    local nCars = 0
+    for _ in pairs(cars) do nCars = nCars + 1 end
+
+    print('=== shop (client) ===')
+    print(('  scene %s   match %s   me %s   rows %d   cars %d')
+        :format(built and 'BUILT' or 'down',
+                tostring(BR.State.match.state), tostring(BR.State.me.state),
+                #rows, nCars))
+
+    -- ═══ THE DISTANCE LINE, SO A READING TAKEN FROM THE WRONG PLACE SAYS SO ═══
+    --
+    -- "Focus area" is the engine's own word for the streaming volume, and a
+    -- ground probe is documented as only answering inside the client's render
+    -- distance. So a printout taken from across the island is a printout of a
+    -- world that is not loaded, and every NONE in it means nothing. This line
+    -- is what lets the second reading of the pair be recognised as one taken on
+    -- the way back rather than one taken at the cars.
+    local nearId, nearD, farId, farD
+    for _, row in ipairs(rows) do
+        local d = BR.Dist(p.x, p.y, row.x + 0.0, row.y + 0.0)
+        if not nearD or d < nearD then nearD, nearId = d, row.id end
+        if not farD  or d > farD  then farD,  farId  = d, row.id end
+    end
+    if nearId then
+        print(('  you   %.2f, %.2f, %.2f   nearest row %s at %.1fm   '
+               .. 'farthest %s at %.1fm')
+            :format(p.x, p.y, p.z,
+                    tostring(nearId), nearD, tostring(farId), farD))
+    else
+        print(('  you   %.2f, %.2f, %.2f   (the catalogue is empty on this '
+               .. 'client)'):format(p.x, p.y, p.z))
+    end
+    print(('  probe from the surveyed z + %.1fm, includeWater false   '
+           .. 'drop groundDropM %.2fm   excl-objects native %s')
+        :format(PROBE_LIFT_M, tonumber(S.groundDropM) or 0.0,
+                type(gzx) == 'function' and 'present' or 'ABSENT'))
+
+    print(('  %-11s %-11s %6s %6s %6s %6s %6s | %6s %6s %6s | %-4s %-4s %-4s | %s')
+        :format('id', 'model', 'survey', 'built', 'now', 'd-srv', 'd-blt',
+                'gz', 'gz-x', 'hgt', 'coll', 'wait', 'whls', 'pitch/roll/yaw'))
+
+    local settled, answered, moved = 0, 0, 0
+
+    for _, row in ipairs(rows) do
+        local veh  = cars[row.id]
+        local rec  = placed[row.id]
+        local live = (veh ~= nil and veh ~= 0 and isTrue(DoesEntityExist(veh)))
+
+        -- WHERE IT IS NOW, WHICH IS THE ONLY FIGURE HERE THAT IS NOT A MEMORY.
+        local nowZ
+        if live then
+            local okc, c = pcall(GetEntityCoords, veh)
+            if okc and c then nowZ = c.z end
+        end
+
+        local builtZ = rec and rec.z or nil
+        local dSurv  = nowZ and (nowZ - (row.z + 0.0)) or nil
+        local dBuilt = (nowZ and builtZ) and (nowZ - builtZ) or nil
+
+        -- THE PROBE IS FIRED AT THE ROW'S x/y AND NOT AT THE CAR'S. They are
+        -- the same point unless something has slid a car sideways, and asking
+        -- about the authored coordinate is what makes a NONE mean "the world is
+        -- not resident under his survey" rather than "the world is not resident
+        -- under wherever this car has ended up".
+        local fromZ = row.z + 0.0 + PROBE_LIFT_M
+        local hit,  gz  = probe(GetGroundZFor_3dCoord, row.x + 0.0, row.y + 0.0, fromZ)
+        local hitX, gzZ = probe(gzx, row.x + 0.0, row.y + 0.0, fromZ)
+
+        -- HOW FAR OFF THE GROUND THE ENGINE THINKS IT IS. This is the one
+        -- number in the row that owes nothing to the survey, to the drop, or to
+        -- anything this repository authored -- so it is the column to read when
+        -- the others are in dispute.
+        local hgt
+        if live and type(GetEntityHeightAboveGround) == 'function' then
+            local okh, h = pcall(GetEntityHeightAboveGround, veh)
+            if okh then hgt = tonumber(h) end
+        end
+
+        -- COLLISION IS ASKED ABOUT THE ENTITY, NOT THE COORDINATE, and
+        -- client/loot.lua explains why at length: there is no coord-taking form
+        -- of the question, and a ground probe cannot stand in for it because
+        -- terrain streams first and answers yes on its own.
+        local coll = live and boolText(HasCollisionLoadedAroundEntity, veh) or '-'
+        local wait = live and boolText(IsEntityWaitingForWorldCollision, veh) or '-'
+        local whls = live and boolText(IsVehicleOnAllWheels, veh) or '-'
+
+        local rot = '-'
+        if live and type(GetEntityRotation) == 'function' then
+            local okr, r = pcall(GetEntityRotation, veh, 2)
+            if okr and r then
+                rot = ('%.1f/%.1f/%.1f'):format(r.x, r.y, r.z)
+            end
+        end
+
+        print(('  %-11s %-11s %6.2f %6s %6s %6s %6s | %6s %6s %6s | %-4s %-4s %-4s | %s')
+            :format(tostring(row.id), tostring(row.model), row.z + 0.0,
+                    m(builtZ), m(nowZ), m(dSurv), m(dBuilt),
+                    probeText(hit, gz), probeText(hitX, gzZ), m(hgt),
+                    coll, wait, whls, rot))
+
+        if rec and rec.settled then settled = settled + 1 end
+        if hit then answered = answered + 1 end
+        if dBuilt and math.abs(dBuilt) > 0.01 then moved = moved + 1 end
+    end
+
+    -- THE VERDICT LINE, WHICH IS THREE COUNTS AND NO OPINION. `settled` is how
+    -- many the engine grounded when the pad went up; `answered` is how much of
+    -- the world is resident right now; `moved` is how many cars are somewhere
+    -- other than where they were left. A healthy pad reads N, N, 0.
+    print(('  settled at build %d/%d   probe answering now %d/%d   '
+           .. 'moved since build %d')
+        :format(settled, #rows, answered, #rows, moved))
+end, false)
 
 -- ---------------------------------------------------------------------------
 -- Lifecycle
