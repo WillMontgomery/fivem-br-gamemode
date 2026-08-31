@@ -219,30 +219,48 @@ BR.Config.Shop = {
     --     },
     --   },
     --
-    -- Coordinates come from /brcoords, which is what the 23 ambulance points
-    -- were surveyed with -- a ped-standing position, so the z can be trusted
-    -- and the heading is the way a vehicle put there should face.
+    -- The x, y and heading come from /brcoords, which is what the 23 ambulance
+    -- points were surveyed with -- and the heading it prints is the way a
+    -- vehicle put there should face.
     --
-    -- ═══ THE `z` BELOW IS A STARTING HEIGHT, NOT THE FINAL ONE ═══
+    -- ═══ THE `z` IS A SETTLED CAR'S ORIGIN, NOT A HEIGHT SOMEBODY STOOD AT ═══
     --
-    -- READ THIS BEFORE "RESTORING" A z. His x and y are exact and must never be
-    -- touched -- "those coords are very specifically placed. Don't change
-    -- them" -- and until 2026-08-29 the same was true of z. It no longer is,
-    -- BECAUSE HE ASKED FOR IT: "sometimes the vehicles appear floating off the
-    -- ground."
+    -- READ THIS BEFORE "CORRECTING" A z, AND BEFORE WRITING ANY CODE THAT
+    -- PLACES A CAR FROM ONE. This block said the opposite until 2026-08-31 --
+    -- "a ped-standing position, so the z can be trusted", "the height of that
+    -- person's feet" -- and that sentence is why the un-settled fallback in
+    -- br_core/client/shop.lua was built backwards and stayed backwards for two
+    -- rounds. It subtracted half a metre from the number and then handed it to
+    -- SET_ENTITY_COORDS, which takes z as where the BOTTOM of the entity goes
+    -- and lifts the car by its own height to put it there. A ped height,
+    -- lowered, then raised by a whole car: the floating, computed.
     --
-    -- br_core/client/shop.lua now calls SetVehicleOnGroundProperly on each car
-    -- as it is built, BEFORE freezing it, so the engine settles every model onto
-    -- the actual surface under it -- which it must, because a z surveyed by a
-    -- PERSON STANDING is the height of that person's feet and a car's origin is
-    -- not at its wheels. A Marshall and a Sanchez need different numbers for the
-    -- same patch of ground, and no single surveyed figure can be right for both.
+    -- THE NUMBERS THEMSELVES SETTLE WHICH IT IS. The twelve rows on the apron
+    -- stand in a line, in x order, across 45m of flat airfield -- and their z
+    -- swings 0.84m over that line without ever being monotonic in x. That is
+    -- not a surface. Sort them by z instead and the tall bodies are at the top
+    -- (marshall 4.30, a monster truck, a clear 0.28 above anything else; then
+    -- outlaw 4.02, mesa3 3.99, caracara2 3.93, every one of them a raised
+    -- off-roader) and the low ones at the bottom (drifttampa 3.59, formula2
+    -- 3.46, an open-wheel car). Thirteen origin-to-wheel distances over one
+    -- surface, which is exactly what a person walking the line COULD NOT have
+    -- produced: their feet would have given one number thirteen times. (The
+    -- veto is not part of that comparison -- it stands 150m up the runway from
+    -- the others, on its own patch of ground.)
     --
-    -- So these numbers are the height the settle STARTS from, and the height it
-    -- FALLS BACK TO if the engine refuses (it says so on the console when that
-    -- happens). A car that looks a few centimetres off from the surveyed figure
-    -- is this working, not drift -- do not re-survey the z to match what you
-    -- see, or the floating comes back for whichever model is dropped in next.
+    -- SO A CAR THE ENGINE REFUSES TO SETTLE BELONGS AT EXACTLY THIS NUMBER,
+    -- with nothing added and nothing taken off, placed with
+    -- SET_ENTITY_COORDS_NO_OFFSET. That is what the client now does, and it
+    -- says so on the console every time it has to.
+    --
+    -- HIS x AND y ARE EXACT AND MUST NEVER BE TOUCHED -- "those coords are very
+    -- specifically placed. Don't change them" -- and the z is not to be
+    -- re-typed either. On a healthy build nothing here decides a height at all:
+    -- SetVehicleOnGroundProperly computes the origin-to-wheel distance from the
+    -- model's own wheels and puts the car on the real surface, which is more
+    -- accurate than any surveyed figure can be. A car that ends up a few
+    -- centimetres off one of these numbers is that native working. Re-surveying
+    -- the z to match what you see puts the guess back in front of it.
     --
     -- ═══ EVERY ROW CARRIES A `label`, AND EVERY ONE IS ROCKSTAR'S OWN WORD ═══
     --
@@ -670,6 +688,35 @@ BR.Config.Shop = {
     -- back correct but sit low on first spawn, the grounding is not succeeding
     -- and the console says so on the line below it.
     groundDropM = 0.5,
+
+    -- How long one showroom car will wait for the ground under it to arrive
+    -- before it is placed anyway, in milliseconds.
+    --
+    -- ═══ "THIS WILL HAPPEN TO PLAYERS IF THEY COME BACK TO WARMUP AFTER A
+    --     PREVIOUS MATCH" (owner, 2026-08-31) ═══
+    --
+    -- THE PAD IS BUILT OFF THE STATE FLIP TO WARMUP, and at that instant the
+    -- player is still in the lobby, 1.36km from the airfield, with no collision
+    -- resident under any of the thirteen rows. SET_VEHICLE_ON_GROUND_PROPERLY
+    -- needs ground to put wheels on; with none it refuses, and a refusal is a
+    -- car standing at a height nobody measured. That is the floating.
+    --
+    -- SO IT IS A RACE, AND THE READOUTS SHOW BOTH SIDES OF IT: `settled at
+    -- build 12/13` on a cold first build, `0/13` on a rebuild. Nothing in
+    -- br_core/client/shop.lua ever waited for streaming, so which side of the
+    -- race a player landed on was decided by how far away they happened to be.
+    --
+    -- THE SAME NUMBER AND THE SAME ARGUMENT AS config/loot.lua's
+    -- `collisionWaitMs`, which has held crates out of the physics simulation
+    -- until their roof arrived since 2026-08-23. 1500ms IS A CEILING AND NOT A
+    -- COST: the wait ends the moment the collision reports in, which for a
+    -- player already standing on the pad is the first check. Only the build
+    -- that fires from across the island pays anything, and it pays it once.
+    --
+    -- WHEN IT EXPIRES THE CAR IS PLACED ANYWAY, at the surveyed z. A car that
+    -- behaves exactly as it did before this existed beats a showroom that never
+    -- finishes appearing because one streaming request never completed.
+    collisionWaitMs = 1500,
 
     -- ------------------------------------------------------------------
     -- UNPACKING THE ITEM

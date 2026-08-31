@@ -84,7 +84,18 @@ local cars = {}
 ---   [id] = { settled = boolean,  -- did SET_VEHICLE_ON_GROUND_PROPERLY say yes
 ---            startZ  = number,   -- where CreateVehicle was told to put it
 ---            z       = number,   -- where it actually was once the settle ran
----            at      = number }  -- GetGameTimer at that moment
+---            at      = number,   -- GetGameTimer at that moment
+---            collAtBuild = boolean, -- HasCollisionLoadedAroundEntity, THEN
+---            waitAtBuild = boolean, -- IsEntityWaitingForWorldCollision, THEN
+---            waitedMs    = number } -- ms this car spent waiting for it
+---
+--- THE LAST THREE ARE SAMPLED AT THE BUILD AND NOWHERE ELSE, and that is the
+--- entire reason they are written down. /brshop's `coll` and `wait` columns ask
+--- those same two natives AT THE MOMENT THE COMMAND IS TYPED -- minutes after
+--- the pad went up, with the player standing in the middle of it -- so a car
+--- that was built into an empty world reads `coll Y` by the time anybody looks.
+--- Reading those two columns as if they described the build is what sent this
+--- bug's first diagnosis to the wrong place.
 local placed = {}
 
 --- Is the showroom standing?
@@ -241,6 +252,79 @@ local function teardown()
     end
 end
 
+--- Wait for the ground under one showroom car to arrive.
+---
+--- ═══ THE PAD IS BUILT FROM 1.36km AWAY, AND THAT IS THE WHOLE BUG ═══
+---
+--- Owner, 2026-08-31: "the positioning bug where vehicles are floating in the
+--- shop -- that's still happening when going between buckets like `playing` to
+--- `warmup` [...] this will happen to players if they come back to warmup after
+--- a previous match."
+---
+--- THE SHOWROOM IS BUILT OFF THE STATE FLIP, NOT OFF ARRIVAL AT THE PAD. The
+--- reconciler sees WARMUP and builds; at that moment the player is still in the
+--- lobby, a kilometre and a third from the airfield, and there is no collision
+--- resident under any of the thirteen rows. SET_VEHICLE_ON_GROUND_PROPERLY has
+--- to have ground to put wheels on -- with none it answers false, and the code
+--- below then freezes the car at a guessed height anyway. Until this function
+--- existed NOTHING here ever waited for that ground, so whether a car landed
+--- correctly was a RACE AGAINST STREAMING that the player's distance decided:
+--- the owner's readouts show `settled at build 12/13` on a cold first build and
+--- 0/13 on a rebuild.
+---
+--- SAME SHAPE AS client/loot.lua's awaitCollision, DELIBERATELY. That function
+--- has solved this exact problem for loot crates since 835254d -- freeze,
+--- RequestCollisionAtCoord, poll, give up on a budget -- and a second pattern
+--- for one fault is a second thing that has to be kept right.
+---
+--- FROZEN WHILE IT WAITS AND UNFROZEN BEFORE IT RETURNS. This is the only thing
+--- in the build that YIELDS, so it is the only point at which a newly created
+--- car gets a simulation step -- and a car handed to the physics over ground
+--- that has not arrived falls through the map, which would be a worse bug than
+--- the one being fixed. THE UNFREEZE IS NOT OPTIONAL: a frozen entity does not
+--- move, so the settle would pin it at the height it was floating at and report
+--- success, which is the failure this file already warns about twice.
+---
+--- BOTH NATIVES ARE DECLARED BOOL AND 0 IS TRUTHY IN LUA. Read raw, this loop
+--- either never waits at all or never stops -- the two spellings are wrong in
+--- opposite directions, which is why both go through isTrue.
+--- @param veh integer
+--- @param row table
+--- @param mine integer  the build generation this car belongs to
+--- @return boolean loaded
+--- @return number waited  milliseconds spent
+local function awaitCollision(veh, row, mine)
+    nat(FreezeEntityPosition, veh, true)
+    nat(RequestCollisionAtCoord, row.x + 0.0, row.y + 0.0, row.z + 0.0)
+
+    local budget = tonumber(S.collisionWaitMs) or 1500
+    local waited = 0
+
+    --- Released on EVERY exit, including the early ones. A hold that is only
+    --- let go on the happy path is a showroom of cars frozen in mid-air.
+    local function done(loaded)
+        nat(FreezeEntityPosition, veh, false)
+        return loaded, waited
+    end
+
+    while not isTrue(HasCollisionLoadedAroundEntity(veh))
+            or isTrue(IsEntityWaitingForWorldCollision(veh)) do
+        -- WHEN THE BUDGET RUNS OUT, TODAY'S BEHAVIOUR IS WHAT HAPPENS. A car
+        -- placed the way it was placed before this existed beats a showroom
+        -- that never finishes because one streaming request never completed.
+        if waited >= budget then return done(false) end
+        Citizen.Wait(50)
+        waited = waited + 50
+        -- THE ABANDONMENT CHECK BELONGS IN HERE. A state flap starts a second
+        -- build, and a wait that outlives its own generation is a car nobody
+        -- is going to put in `cars` and nobody is going to delete.
+        if mine ~= gen then return done(false) end
+        if not isTrue(DoesEntityExist(veh)) then return done(false) end
+        nat(RequestCollisionAtCoord, row.x + 0.0, row.y + 0.0, row.z + 0.0)
+    end
+    return done(true)
+end
+
 --- Put the cars on the pad.
 ---
 --- ONE THREAD FOR THE WHOLE SHOWROOM, not one per car: model streaming yields,
@@ -278,9 +362,8 @@ local function build()
                     --
                     -- HIS COORDINATES ARE NOT EDITED. "those coords are very
                     -- specifically placed. Don't change them" -- the row is
-                    -- untouched and this is applied on top of it, which
-                    -- config/shop.lua has always described the authored z as
-                    -- being: a starting height rather than a final one.
+                    -- untouched and this is applied on top of it, at the
+                    -- create and nowhere else.
                     --
                     -- IT LOSES TO THE GROUNDING BELOW, DELIBERATELY. When
                     -- SetVehicleOnGroundProperly succeeds it puts the wheels on
@@ -290,10 +373,14 @@ local function build()
                     -- a successful grounding would bury every car half a metre
                     -- into the pad.
                     --
-                    -- IT SHOWS WHERE HE IS COMPLAINING. The grounding runs once,
-                    -- before the freeze, and a frozen entity is not re-settled --
-                    -- so whatever height a streamed-back car comes back at is
-                    -- derived from where it was CREATED, and this lowers that.
+                    -- AND SINCE THE FALLBACK BELOW STOPPED READING IT, IT IS A
+                    -- NO-OP ON EVERY PATH -- which is exactly what the comment
+                    -- above it always claimed it would be. A settled car is put
+                    -- where the engine says; an unsettled one is put at the raw
+                    -- survey. Both overwrite this height. It is left at 0.5
+                    -- rather than deleted because it is the dial he named and
+                    -- the one thing a spawn height still decides is how far a
+                    -- car may fall in the frame before it is frozen.
                     local startZ = row.z + 0.0 - (tonumber(S.groundDropM) or 0.0)
 
                     -- LOCAL. NEVER NETWORKED. See the header, and client/bus.lua
@@ -461,22 +548,74 @@ local function build()
                         --
                         -- AND IF IT FAILS, THE AUTHORED HEIGHT IS THE FALLBACK.
                         -- A car left wherever a failed grounding put it can be
-                        -- under the pad; the surveyed z is a height a person
-                        -- stood at, so it is never underground.
+                        -- under the pad; the surveyed z is the height a car of
+                        -- that model came to rest at, so it is never
+                        -- underground and never at waist height either.
+                        --
+                        -- ═══ AND NOTHING SETTLES ONTO GROUND THAT HAS NOT
+                        --     ARRIVED ═══
+                        --
+                        -- The native immediately below needs RESIDENT
+                        -- COLLISION, and this pad is built while the player is
+                        -- still 1.36km away in the lobby. awaitCollision is
+                        -- what turns "whether it worked depended on how fast
+                        -- the world streamed" into "it waited until the world
+                        -- was there". Everything after this line is unchanged;
+                        -- the only difference is WHEN it runs.
+                        local collOK, collMs = awaitCollision(veh, row, mine)
+                        if mine ~= gen then
+                            -- Abandoned mid-wait. This car is in nobody's
+                            -- `cars` table yet, so teardown cannot reach it and
+                            -- this is the only place it can be cleaned up.
+                            if isTrue(DoesEntityExist(veh)) then
+                                DeleteEntity(veh)
+                            end
+                            return
+                        end
+                        local bWait = false
+                        do
+                            local okW, w = pcall(IsEntityWaitingForWorldCollision,
+                                                 veh)
+                            bWait = okW and isTrue(w) or false
+                        end
+
                         local okG, landed = pcall(SetVehicleOnGroundProperly, veh)
                         if not (okG and isTrue(landed)) then
-                            -- THE SAME STARTING HEIGHT, NOT THE RAW SURVEY. If
-                            -- this branch is taken the drop is the only thing
-                            -- positioning the car, so putting his untouched z
-                            -- back here would undo #243 in exactly the case
-                            -- where nothing else is going to fix it.
-                            pcall(SetEntityCoords, veh, row.x + 0.0, row.y + 0.0,
-                                  startZ, false, false, false, false)
-                            print(('[br_core] shop: "%s" would not settle on the '
-                                   .. 'ground -- left at its starting z (%.2f, '
-                                   .. 'surveyed %.2f less a %.2fm drop)')
-                                :format(tostring(row.id), startZ, row.z + 0.0,
-                                        tonumber(S.groundDropM) or 0.0))
+                            -- ═══ THE RAW SURVEY, AND PLACED WITHOUT THE
+                            --     OFFSET ═══
+                            --
+                            -- TWO FAULTS LIVED IN THE ONE LINE THIS REPLACES,
+                            -- and they pushed the same way -- upward, into the
+                            -- floating the branch exists to prevent.
+                            --
+                            -- SET_ENTITY_COORDS TAKES z AS WHERE THE BOTTOM OF
+                            -- THE ENTITY GOES and lifts the car by its own
+                            -- height to put it there; SET_ENTITY_COORDS_NO_
+                            -- OFFSET is the same native without that lift, and
+                            -- it is the one client/loot.lua reseats crates
+                            -- with. An origin height handed to the offsetting
+                            -- form is an origin height plus a car.
+                            --
+                            -- AND `startZ` IS THE SURVEY LESS THE DROP, which
+                            -- is a starting height for a settle that has just
+                            -- refused to happen. The authored z IS a settled
+                            -- car's origin -- see config/shop.lua -- so a car
+                            -- the engine would not place belongs at exactly
+                            -- that number, with nothing added and nothing
+                            -- taken off.
+                            pcall(SetEntityCoordsNoOffset, veh, row.x + 0.0,
+                                  row.y + 0.0, row.z + 0.0, false, false, false)
+                            -- WHAT IT SAYS IS WHERE THE CAR IS. The line this
+                            -- replaces printed startZ, which after the offset
+                            -- lift was not a height any car was ever at -- so
+                            -- the console was reporting a number that could not
+                            -- be checked against anything.
+                            print(('[br_core] shop: "%s" would not settle -- '
+                                   .. 'placed at its surveyed z (%.2f); '
+                                   .. 'collision %s after %dms')
+                                :format(tostring(row.id), row.z + 0.0,
+                                        collOK and 'loaded' or 'NEVER LOADED',
+                                        collMs))
                         end
 
                         -- ═══ WHAT THE SETTLE PRODUCED, WRITTEN DOWN (#243) ═══
@@ -500,12 +639,23 @@ local function build()
                         -- the coordinates straight back off a successful call
                         -- is a MEASUREMENT of it, and it is correct for a model
                         -- this code has never seen.
+                        --
+                        -- AND THE STREAMING STATE AT THE BUILD, WHICH IS THE
+                        -- ONE THING NO COLUMN COULD PREVIOUSLY ANSWER. /brshop
+                        -- asks the two collision natives when the command is
+                        -- typed; by then the player is standing on the pad and
+                        -- both say what a healthy pad says, whatever the world
+                        -- looked like when the cars were made. These three are
+                        -- that earlier moment, kept.
                         local okP, pz = pcall(GetEntityCoords, veh)
                         placed[row.id] = {
                             settled = (okG and isTrue(landed)) and true or false,
                             startZ  = startZ,
                             z       = (okP and pz and pz.z) or nil,
                             at      = GetGameTimer(),
+                            collAtBuild = collOK and true or false,
+                            waitAtBuild = bWait and true or false,
+                            waitedMs    = collMs,
                         }
 
                         nat(FreezeEntityPosition, veh, true)
@@ -1132,6 +1282,21 @@ local function boolText(fn, ...)
     return isTrue(v) and 'Y' or 'N'
 end
 
+--- A BOOL THIS FILE RECORDED EARLIER, as a column.
+---
+--- NOT boolText. That one CALLS a native now; this one reads a value taken at
+--- the build and kept, so "there is no record" (a car built before the ledger
+--- learned to keep it, or a row that never built) has to stay distinct from
+--- "the answer was no". Collapsing those two would make an unrecorded car read
+--- as one that was built into an empty world, which is the exact claim these
+--- columns exist to make.
+--- @param v boolean|nil
+--- @return string
+local function yn(v)
+    if v == nil then return '-' end
+    return v and 'Y' or 'N'
+end
+
 --- Everything about where the thirteen cars are, printed at once.
 ---
 --- CONSOLE ONLY. Nothing here draws, notifies, or speaks to a player.
@@ -1173,13 +1338,24 @@ RegisterCommand('brshop', function()
                .. 'client)'):format(p.x, p.y, p.z))
     end
     print(('  probe from the surveyed z + %.1fm, includeWater false   '
-           .. 'drop groundDropM %.2fm   excl-objects native %s')
+           .. 'drop groundDropM %.2fm   collision budget %dms   '
+           .. 'excl-objects native %s')
         :format(PROBE_LIFT_M, tonumber(S.groundDropM) or 0.0,
+                tonumber(S.collisionWaitMs) or 0,
                 type(gzx) == 'function' and 'present' or 'ABSENT'))
 
-    print(('  %-11s %-11s %6s %6s %6s %6s %6s | %6s %6s %6s | %-4s %-4s %-4s | %s')
+    -- TWO COLLISION GROUPS, AND THE SECOND ONE IS THE READING THAT MATTERS.
+    -- `coll`/`wait`/`whls` are asked NOW, from wherever the player is standing,
+    -- minutes after the pad went up. `b-coll`/`b-wait`/`b-ms` are what the same
+    -- two natives said AT THE BUILD, plus how long that car actually waited for
+    -- them. A pad built into an empty world and a pad built onto real ground
+    -- are indistinguishable in the first group by the time anybody types this,
+    -- and that is what the first reading of this command got wrong.
+    print(('  %-11s %-11s %6s %6s %6s %6s %6s | %6s %6s %6s | %-4s %-4s %-4s '
+           .. '| %-6s %-6s %6s | %s')
         :format('id', 'model', 'survey', 'built', 'now', 'd-srv', 'd-blt',
-                'gz', 'gz-x', 'hgt', 'coll', 'wait', 'whls', 'pitch/roll/yaw'))
+                'gz', 'gz-x', 'hgt', 'coll', 'wait', 'whls',
+                'b-coll', 'b-wait', 'b-ms', 'pitch/roll/yaw'))
 
     local settled, answered, moved = 0, 0, 0
 
@@ -1234,11 +1410,21 @@ RegisterCommand('brshop', function()
             end
         end
 
-        print(('  %-11s %-11s %6.2f %6s %6s %6s %6s | %6s %6s %6s | %-4s %-4s %-4s | %s')
+        -- WHAT THE WORLD LOOKED LIKE WHEN THIS CAR WAS MADE, from the ledger.
+        -- A row with no ledger entry -- a pad that has been taken down, a build
+        -- that never reached this row -- is three dashes, and `yn` is what
+        -- keeps that distinct from three answers of "no".
+        local led   = rec or {}
+        local bColl = yn(led.collAtBuild)
+        local bWait = yn(led.waitAtBuild)
+        local bMs   = led.waitedMs and ('%d'):format(led.waitedMs) or '-'
+
+        print(('  %-11s %-11s %6.2f %6s %6s %6s %6s | %6s %6s %6s | %-4s %-4s '
+               .. '%-4s | %-6s %-6s %6s | %s')
             :format(tostring(row.id), tostring(row.model), row.z + 0.0,
                     m(builtZ), m(nowZ), m(dSurv), m(dBuilt),
                     probeText(hit, gz), probeText(hitX, gzZ), m(hgt),
-                    coll, wait, whls, rot))
+                    coll, wait, whls, bColl, bWait, bMs, rot))
 
         if rec and rec.settled then settled = settled + 1 end
         if hit then answered = answered + 1 end

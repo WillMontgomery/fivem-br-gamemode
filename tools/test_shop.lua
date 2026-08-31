@@ -2237,11 +2237,99 @@ do
     -- is identical to not having called it at all, and it would be invisible to
     -- every other assertion in this file. client/loot.lua carries the same
     -- warning about its own props.
-    local freeze = cli:find('FreezeEntityPosition', 1, true)
-    ok(ground ~= nil and freeze ~= nil and ground < freeze,
-        'and it runs BEFORE the freeze -- after it, the native is a no-op that '
-            .. 'still returns true',
-        ('ground@%s freeze@%s'):format(tostring(ground), tostring(freeze)))
+    --
+    -- ═══ AND IT IS NOW A SANDWICH, BECAUSE THE COLLISION WAIT HOLDS THE CAR ═══
+    --
+    -- The wait added on 2026-08-31 is the only thing in the build that YIELDS,
+    -- so it is the only point at which a new car gets a simulation step -- and
+    -- a car handed to the physics over ground that has not streamed falls
+    -- through the map. So it freezes the car for the duration, exactly the way
+    -- client/loot.lua's awaitCollision does. THAT MAKES THE RELEASE
+    -- LOAD-BEARING: leave the car frozen and the settle is the no-op this test
+    -- was written about, with every other assertion in this file still green.
+    --
+    -- ON A COMMENT-STRIPPED COPY, and matching the ARGUMENTS rather than the
+    -- native name -- both freezes are the same call and only the third
+    -- parameter tells them apart. The last `veh, true` is the permanent one.
+    --
+    -- THE STRIP IS NOT OPTIONAL. This file explains the grounding at length,
+    -- and names the native while doing so, hundreds of lines above the call --
+    -- so a raw search finds the prose and compares the wrong two positions,
+    -- which is how the assertion this replaces came to pass against a comment.
+    local cliBody = (cli:gsub('%-%-[^\n]*', ''))
+    local unfreeze = cliBody:find('FreezeEntityPosition, veh, false', 1, true)
+    local groundC  = cliBody:find('SetVehicleOnGroundProperly', 1, true)
+    local lastFreeze
+    do
+        local at = 1
+        while true do
+            local hit = cliBody:find('FreezeEntityPosition, veh, true', at, true)
+            if not hit then break end
+            lastFreeze, at = hit, hit + 1
+        end
+    end
+    ok(unfreeze ~= nil and groundC ~= nil and unfreeze < groundC,
+        'the car is UNFROZEN before it is grounded -- the collision wait holds '
+            .. 'it, and a settle on a held car is a no-op that returns true',
+        ('unfreeze@%s ground@%s'):format(tostring(unfreeze), tostring(groundC)))
+    ok(groundC ~= nil and lastFreeze ~= nil and groundC < lastFreeze,
+        'and the freeze that KEEPS it there comes after the grounding',
+        ('ground@%s freeze@%s'):format(tostring(groundC), tostring(lastFreeze)))
+
+    -- ═══ NOTHING SETTLES ONTO GROUND THAT HAS NOT ARRIVED (2026-08-31) ═══
+    --
+    -- Owner: "the positioning bug where vehicles are floating in the shop --
+    -- that's still happening when going between buckets like `playing` to
+    -- `warmup` [...] this will happen to players if they come back to warmup
+    -- after a previous match."
+    --
+    -- The pad is built off the STATE FLIP to WARMUP, with the player still in
+    -- the lobby 1.36km away and no collision resident under any row.
+    -- SetVehicleOnGroundProperly needs ground to put wheels on, so until the
+    -- wait existed whether a car landed correctly was a race against streaming
+    -- -- `settled at build 12/13` cold, 0/13 on a rebuild.
+    local await = cliBody:find('= awaitCollision(veh, row, mine)', 1, true)
+    ok(await ~= nil,
+        'each car waits for the world under it before anything settles it')
+    ok(await ~= nil and groundC ~= nil and await < groundC,
+        'and it waits BEFORE the settle, which is the whole of the fix',
+        ('wait@%s ground@%s'):format(tostring(await), tostring(groundC)))
+
+    -- BOTH QUESTIONS, AND BOTH THROUGH isTrue. They are wrong in opposite
+    -- directions read raw: a truthy 0 from the first makes the wait a no-op
+    -- that looks like it ran, and a truthy 0 from the second makes it never
+    -- stop. `HasCollisionLoadedAroundEntity` alone is not enough either --
+    -- an entity can report collision loaded while still queued behind it.
+    ok(cli:find('isTrue(HasCollisionLoadedAroundEntity(veh))', 1, true) ~= nil,
+        'the collision-loaded native is read through isTrue, because 0 is '
+            .. 'truthy')
+    ok(cli:find('isTrue(IsEntityWaitingForWorldCollision(veh))', 1, true) ~= nil,
+        'and so is the still-waiting one, which would otherwise never let go')
+
+    -- THE BUDGET IS A CONFIG VALUE, not a literal. A hardcoded ceiling is one
+    -- nobody can nudge on the box where the fault actually reproduces.
+    ok(cli:find('S%.collisionWaitMs') ~= nil,
+        'the wait reads its ceiling out of the config under its own name')
+    ok(type(shipped.collisionWaitMs) == 'number'
+           and shipped.collisionWaitMs == 1500,
+        'and the shipped ceiling is loot.lua\'s number, for loot.lua\'s reason',
+        tostring(shipped.collisionWaitMs))
+
+    -- AND THE ABANDONMENT CHECK SURVIVED THE REWRITE. The wait yields, so a
+    -- state flap can start a second build while this one is holding a car that
+    -- is in nobody's `cars` table -- teardown cannot reach it, and without this
+    -- the pad leaks a frozen vehicle every time warmup flaps.
+    ok(cliBody:find('if mine ~= gen then return done(false) end', 1, true) ~= nil,
+        'a build that has been superseded stops waiting')
+    -- SEARCHED FROM THE WAIT, NOT FROM THE TOP OF THE FILE. teardown() deletes
+    -- entities too, several hundred lines earlier, so a search from 1 finds
+    -- that one and passes no matter what the abandonment branch does -- which
+    -- is what the first cut of this assertion did.
+    local delAt = await and cliBody:find('DeleteEntity(veh)', await, true)
+    ok(delAt ~= nil and groundC ~= nil and delAt < groundC,
+        'and the car it was holding is deleted rather than orphaned -- it is '
+            .. 'in nobody\'s `cars` table yet, so teardown cannot reach it',
+        ('delete@%s ground@%s'):format(tostring(delAt), tostring(groundC)))
 
     -- IT RETURNS A BOOL, SO IT GOES THROUGH isTrue. Ten shipped instances of
     -- reading a native's 0 as truth on this project; this one would invert the
@@ -2305,12 +2393,35 @@ do
             .. 'buried half a metre rather than floating half a metre',
         ('drop@%s ground@%s'):format(tostring(dropAt), tostring(groundAt)))
 
-    -- ...AND THE FALLBACK USES THE SAME NUMBER. If the grounding refuses, the
-    -- drop is the only thing positioning the car, so putting the raw survey back
-    -- there would undo this in exactly the case nothing else covers.
-    ok(cli:find('row%.y %+ 0%.0,\n%s*startZ, false, false, false, false%)') ~= nil,
-        'the un-settled fallback places the car at the same starting height, '
-            .. 'not back at the raw surveyed z')
+    -- ═══ ...AND THE FALLBACK USES THE RAW SURVEY, WHICH IS THE OTHER HALF OF
+    --     THE FIX (2026-08-31) ═══
+    --
+    -- IT USED THE DROPPED HEIGHT UNTIL TODAY, and it was wrong twice over in
+    -- the same direction:
+    --
+    --   * `startZ` IS A STARTING HEIGHT FOR A SETTLE THAT HAS JUST REFUSED. The
+    --     authored z is a settled car's ORIGIN -- config/shop.lua argues that
+    --     from the thirteen numbers themselves -- so the height a car belongs
+    --     at when the engine will not place it is that number exactly.
+    --   * AND SET_ENTITY_COORDS LIFTS THE CAR BY ITS OWN HEIGHT, because it
+    --     takes z as where the BOTTOM of the entity goes. Handed an origin
+    --     height it produces an origin height plus a car, which is the
+    --     floating.
+    --
+    -- A REJECTED FIX FOR THE SAME LINE PUT EVERY FAILED CAR 0.5m INTO THE
+    -- GROUND, trading floating for sinking. The test for both is the same one:
+    -- a failed car must stand where a successful settle would have left it.
+    ok(cli:find('SetEntityCoordsNoOffset, veh, row%.x %+ 0%.0,\n'
+                .. '%s*row%.y %+ 0%.0, row%.z %+ 0%.0, false, false, false%)')
+           ~= nil,
+        'the un-settled fallback places the car at the raw surveyed z, with '
+            .. 'the native that does not add the car\'s own height to it')
+    ok(cli:find('pcall(SetEntityCoords,', 1, true) == nil,
+        'and never with the offsetting form, which would lift it by a whole '
+            .. 'car body')
+    ok(cli:find('startZ, false, false, false, false%)') == nil,
+        'nor at the dropped starting height, which is a number no car the '
+            .. 'engine refused was ever meant to rest at')
 
     -- ═══ THE VOLTS READOUT: A FLAG, NEVER A BALANCE ═══
     --
@@ -2934,6 +3045,11 @@ do
         -- HIS NUMBER, UNCHANGED. This block asserts what the drop DOES, and
         -- zeroing it here would be asserting against a shop nobody runs.
         groundDropM = 0.5,
+        -- ...AND DELIBERATELY NOT HIS. The shipped budget is 1500 and so is the
+        -- client's `or` default, so a fixture that used either could not tell a
+        -- client reading this key from one with the number typed into it. 250
+        -- can only come from here.
+        collisionWaitMs = 250,
         items = {
             { id = 'near', model = 'sultan', price = 750,
               x = 100.0, y = 200.0, z = 30.0, heading = 90.0 },
@@ -3022,7 +3138,16 @@ do
         local c = ents[e]
         if c then c.x, c.y, c.z = x, y, z end
     end
-    function FreezeEntityPosition() noteWrite('FreezeEntityPosition') end
+    --- FROZEN IS A STATE HERE, NOT A NO-OP, because the settle below has to be
+    --- able to refuse the way the engine refuses. A stub that only recorded the
+    --- call could not tell a build that grounds an unfrozen car from one that
+    --- grounds a frozen one, and those two produce identical source text and
+    --- opposite showrooms.
+    function FreezeEntityPosition(e, on)
+        noteWrite('FreezeEntityPosition')
+        local c = ents[e]
+        if c then c.frozen = (on == true or on == 1) end
+    end
     function DeleteEntity(e) noteWrite('DeleteEntity') ents[e] = nil end
     function SetEntityRotation() noteWrite('SetEntityRotation') end
     function SetEntityHeading() noteWrite('SetEntityHeading') end
@@ -3035,10 +3160,19 @@ do
     --- IT ANSWERS 1 AND 0, NOT true AND false. Both spellings are live in FiveM
     --- and 0 is truthy in Lua; a fixture that answered `false` could not catch
     --- the defect this project has shipped ten times.
+    ---
+    --- AND A FROZEN CAR IS PINNED WHERE IT IS, WHILE THE NATIVE STILL SAYS YES.
+    --- That is the trap client/shop.lua warns about in two places -- "grounding
+    --- after the freeze would pin each car at exactly the height it was
+    --- floating at and report success" -- and it is now a fixture behaviour
+    --- rather than a comment: freeze before this and `built` reads the CREATED
+    --- height with `settled` still counting the car, which is precisely the
+    --- symptom that would otherwise be invisible to every assertion here.
     function SetVehicleOnGroundProperly(e)
         noteWrite('SetVehicleOnGroundProperly')
         local c = ents[e]
         if not c then return 0 end
+        if c.frozen then return 1 end
         local w = WORLD[c.id]
         if not w or not w.settles then return 0 end
         c.z = w.gz + WHEEL[c.model]
@@ -3150,7 +3284,12 @@ do
                     id = c[1], model = c[2], survey = c[3], built = c[4],
                     now = c[5], dsrv = c[6], dblt = c[7],
                     gz = c[9], gzx = c[10], hgt = c[11],
-                    coll = c[13], wait = c[14], whls = c[15], rot = c[17],
+                    coll = c[13], wait = c[14], whls = c[15],
+                    -- THE SECOND COLLISION GROUP: the same two questions asked
+                    -- AT THE BUILD, plus how long that car waited. The first
+                    -- group is sampled when the command is typed, which is
+                    -- minutes later and from the middle of the pad.
+                    bcoll = c[17], bwait = c[18], bms = c[19], rot = c[21],
                 }
             end
         end
@@ -3236,11 +3375,72 @@ do
     ok(far and far.coll == 'N' and far.wait == 'Y',
         'and the collision columns say the world is not resident there',
         far and (far.coll .. ' / ' .. far.wait))
-    ok(far and far.built == '29.50' and far.now == '29.50',
-        'the un-settled car is at its starting height -- the survey less the '
-            .. '0.5m drop', far and far.built)
+    -- ═══ AND THE UN-SETTLED CAR IS AT THE RAW SURVEY, NOT AT THE DROP ═══
+    --
+    -- IT READ 29.50 UNTIL 2026-08-31 and that was the bug, not the fixture. The
+    -- authored z is a settled car's ORIGIN (config/shop.lua argues it from the
+    -- thirteen numbers), so a car the engine would not place belongs at exactly
+    -- that height -- the drop is a starting height for a settle that has just
+    -- refused to happen, and SET_ENTITY_COORDS would then have lifted the car
+    -- by its own height on top of it. Both faults pushed the same way, upward,
+    -- into the floating this branch exists to prevent.
+    ok(far and far.built == '30.00' and far.now == '30.00',
+        'the un-settled car is at the z the catalogue authored, with nothing '
+            .. 'added and nothing taken off', far and far.built)
+    ok(far and far.dsrv == '0.00',
+        'so it stands exactly where a settled car of its model would have, '
+            .. 'rather than half a metre under it', far and far.dsrv)
     ok(far and far.whls == 'N', 'and it is not standing on its wheels',
         far and far.whls)
+
+    -- ═══ AND THE BUILD-MOMENT COLUMNS SAY WHY IT DID NOT SETTLE ═══
+    --
+    -- THIS IS THE PAIR THE FIRST READING OF THIS COMMAND GOT WRONG. `coll` and
+    -- `wait` above are asked when the command is TYPED; by then a player is
+    -- standing on the pad and they say what a healthy pad says no matter what
+    -- the world looked like when the cars were made. These three are that
+    -- earlier moment, and only these three can distinguish "the ground was
+    -- never there" from "the ground is there now".
+    ok(near and near.bcoll == 'Y' and near.bwait == 'N' and near.bms == '0',
+        'a car built into a world that was already resident waited for nothing',
+        near and (near.bcoll .. '/' .. near.bwait .. '/' .. near.bms))
+    ok(far and far.bcoll == 'N' and far.bwait == 'Y',
+        'and the car that never settled records a world that never arrived, '
+            .. 'while `coll`/`wait` on the same line are sampled now',
+        far and (far.bcoll .. '/' .. far.bwait))
+    -- 250 IS THE FIXTURE'S OWN BUDGET AND NOTHING ELSE IN THE TREE HOLDS IT.
+    -- The shipped value and the client's `or` default are both 1500, so this is
+    -- the only number that can prove the budget is READ rather than typed in.
+    ok(far and far.bms == '250',
+        'having spent the configured budget waiting for it, to the millisecond',
+        far and far.bms)
+
+    -- ═══ 5b. AND NOW THE WORLD ARRIVES, WHICH IS THE READING THAT MISLED ═══
+    --
+    -- THIS IS THE EXACT SHAPE OF THE OWNER'S OWN READOUT. The pad is built from
+    -- the lobby, 1.36km out, over nothing; by the time he walks to the cars and
+    -- types /brshop the collision is resident and `coll`/`wait` say so. Two
+    -- rounds were spent looking for something that MOVED the cars because of
+    -- it. Nothing moved them -- they were placed wrong, and the only columns
+    -- that can say so are the ones taken at the build.
+    --
+    -- SO THE TWO GROUPS MUST DISAGREE ON THIS ROW. A `b-coll` copied from
+    -- `coll` -- the cheapest way to write these columns wrong -- agrees with it
+    -- on every row in every other case in this file, and only here does it not.
+    WORLD.far.coll = true
+    run()
+    local far2 = cols('far')
+    ok(far2 and far2.coll == 'Y' and far2.wait == 'N',
+        'the world under the un-settled car has streamed in since, and the '
+            .. 'live columns say so', far2 and (far2.coll .. '/' .. far2.wait))
+    ok(far2 and far2.bcoll == 'N' and far2.bwait == 'Y' and far2.bms == '250',
+        'while the build columns still say it was made over nothing -- which '
+            .. 'is the whole reason they are kept rather than sampled',
+        far2 and (far2.bcoll .. '/' .. far2.bwait .. '/' .. far2.bms))
+    ok(far2 and far2.built == '30.00' and far2.dblt == '0.00',
+        'and the car has still not moved -- a collision that arrives late does '
+            .. 'not re-settle a frozen car, which is why the placement has to '
+            .. 'be right the first time', far2 and far2.dblt)
 
     -- ═══ 6. THE PROBE STARTS ABOVE THE SURFACE ═══
     --
@@ -3329,7 +3529,37 @@ do
         'while the ground probe still answers, because it is fired at his '
             .. 'coordinate and not at the car', mid2 and mid2.gz)
 
-    -- ═══ 11. THE DROP IS UNTOUCHED BY ALL OF THIS ═══
+    -- ═══ 11. THE PAD COMES DOWN AND THE LEDGER GOES WITH IT ═══
+    --
+    -- A build reading left standing over a pad that has been taken down is a
+    -- reading of a PREVIOUS MATCH, and this command would print it as if it
+    -- were this one -- which on the `playing` -> `warmup` round trip is the
+    -- single most misleading thing it could do, because that round trip is the
+    -- bug. So every column that describes a car has to become a dash.
+    --
+    -- AND A DASH IS NOT AN 'N'. "The world was not resident when this car was
+    -- built" and "there is no record of this car being built" are opposite
+    -- claims; collapsing them would make a torn-down pad read as thirteen cars
+    -- built into an empty world, which is a diagnosis of the very fault
+    -- somebody would be running this command to look for.
+    BR.State.match.state = BR.MatchState.PLAYING
+    quiet(loops['shop.scene'])
+    ok(run(), '/brshop does not throw once the pad has been taken down')
+    local gone = cols('near')
+    ok(gone ~= nil and gone.now == '-' and gone.built == '-',
+        'a row whose pad is down prints no heights at all',
+        gone and (gone.built .. ' / ' .. gone.now))
+    ok(gone ~= nil and gone.bcoll == '-' and gone.bwait == '-'
+           and gone.bms == '-',
+        'and no build reading either -- a dash, never an N, because "not '
+            .. 'recorded" and "the answer was no" are opposite claims',
+        gone and (gone.bcoll .. '/' .. gone.bwait .. '/' .. gone.bms))
+    local verdict3 = lineWith('settled at build')
+    ok(verdict3 ~= nil and verdict3:find('settled at build 0/3', 1, true) ~= nil,
+        'and the verdict counts nothing, rather than last match\'s cars',
+        verdict3)
+
+    -- ═══ 12. THE DROP IS UNTOUCHED BY ALL OF THIS ═══
     ok(shipped.groundDropM == 0.5,
         'and nothing here has changed where a car goes -- the drop is still '
             .. 'the number he named', tostring(shipped.groundDropM))
