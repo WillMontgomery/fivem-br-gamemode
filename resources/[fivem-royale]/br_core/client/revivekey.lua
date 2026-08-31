@@ -790,6 +790,30 @@ end)
 --- What we were promised, and when. nil when nothing is arriving.
 local arriving = nil
 
+--- Is this client inside the deliberate black of a revive arrival?
+---
+--- READ BY client/spawn.lua's `spawn.antiblack` WATCHDOG AND BY NOTHING ELSE.
+--- That watchdog fades the screen back in after two consecutive SLOW ticks find
+--- it dark, and it already stands down for the two other deliberate blacks in
+--- this codebase -- `BR.Spawn.traveling` and `BR.Rescue.riding()`. The arrival
+--- is a third: ARRIVE fades out, the server then holds REVIVEKEY_PLACE for
+--- `fadeMs + focusMs` (1400ms) plus stepper granularity and a round trip, so the
+--- dark window runs about 1.45-1.75s against a 1000ms tick. Two ticks land
+--- inside a window that long often enough that the owner would have seen his own
+--- corpse fade in and then been snapped 150m into the air with the screen
+--- already up -- which is the exact sequence the black exists to hide.
+---
+--- IT STANDS DOWN RATHER THAN THE ARRIVAL GIVING UP ITS FADE, which is the rule
+--- the rescue-ride exemption above it is written to: a recovery mechanism must
+--- never undo a deliberate fade. Safe because this black is bounded at both ends
+--- -- `BR.Spawn.reveal()` on the happy path, and `endArrival`'s own deadline
+--- watchdog when the message never comes -- so there is nothing here for the
+--- watchdog to rescue that the arrival does not already resolve itself.
+--- @return boolean
+function BR.ReviveKey.arriving()
+    return arriving ~= nil
+end
+
 --- How long the black may last before this client lifts it on its own.
 ---
 --- THE DEADLINE IS THE ESCAPE, NOT THE PLAN -- client/spawn.lua's rule for its

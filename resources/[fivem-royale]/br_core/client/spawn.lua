@@ -1390,6 +1390,28 @@ BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
         return
     end
 
+    -- AND SO IS A REVIVE ARRIVAL, which is the same fault again in a third
+    -- feature's clothes. The owner's sequence is "their screen should fade to
+    -- black, set focus to the area where the ambulance I just used is, process
+    -- the revive, give them a parachute, put them 150m above the ambulance, then
+    -- fade in" -- so the black is the first step of six and every one of the
+    -- early returns above reads false throughout it.
+    --
+    -- THE WINDOW IS LONGER THAN THIS WATCHDOG'S PATIENCE, WHICH IS THE WHOLE
+    -- PROBLEM. client/revivekey.lua fades out and the server then holds
+    -- REVIVEKEY_PLACE for fadeMs + focusMs (1400ms), plus up to a hold step and
+    -- a round trip: 1.45-1.75s against two 1000ms ticks. Without this the
+    -- subject watches their own corpse fade in and is then snapped 150m into the
+    -- air with the screen already up -- the exact reveal the black exists to
+    -- hide, on roughly half of all revives.
+    --
+    -- Nil-guarded like the ride above it, because this file must go on working
+    -- in a build without the revive key's half.
+    if BR.ReviveKey and BR.ReviveKey.arriving and BR.ReviveKey.arriving() then
+        darkTicks = 0
+        return
+    end
+
     -- holdBlack is a deliberately dark screen (the end-of-match sequence);
     -- recovering from it would fade the aftermath in behind the result
     -- card. But the hold is only legitimate while that sequence is
