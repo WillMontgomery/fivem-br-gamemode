@@ -674,14 +674,17 @@ describe('ban gate')
 -- Stand in for br_ddb's JS half: record the question instead of answering it,
 -- so each test decides what comes back and when.
 local banChecks = {}
-AddEventHandler('br:ddb:banCheck', function(req, license)
-    banChecks[#banChecks + 1] = { req = req, license = license }
+AddEventHandler('br:ddb:banCheck', function(req, license, discord)
+    banChecks[#banChecks + 1] = { req = req, license = license, discord = discord }
 end)
 local function lastBanCheckReq()
     return banChecks[#banChecks] and banChecks[#banChecks].req
 end
 local function lastBanCheckLicense()
     return banChecks[#banChecks] and banChecks[#banChecks].license
+end
+local function lastBanCheckDiscord()
+    return banChecks[#banChecks] and banChecks[#banChecks].discord
 end
 
 do
@@ -794,11 +797,73 @@ do
         'without br_ddb the gate is a no-op, not a five-second tax')
     resourceState.br_ddb = 'started'
 
-    -- A player with no license cannot be matched against a ban list keyed on
-    -- license. Admitted rather than refused on a guess.
+    -- ------------------------------------------------- the second identifier ---
+    --
+    -- SINCE fivem-ringmaster#38 THE GATE ASKS ABOUT TWO KEYS. blitz-bot files a
+    -- ban under `discord:<snowflake>` for somebody an admin banned in Discord
+    -- whom the game has never met, and until this change the gate looked up the
+    -- license and nothing else -- so that row was a record of a decision and not
+    -- a closed door. The cases here are about WHAT IS ASKED; which of two
+    -- answers wins is br_ddb's `effective`, tested in
+    -- js-src/br_ddb/scripts/test.mjs against the same table the console runs.
+
+    d = connect(70)
+    ok(lastBanCheckLicense() == BANNED,
+        'the license still goes first -- it is the tie-break when both are in force',
+        tostring(lastBanCheckLicense()))
+    ok(lastBanCheckDiscord() == 'discord:900',
+        'and the discord identifier goes with it, QUALIFIED',
+        tostring(lastBanCheckDiscord()))
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+
+    -- MOST CONNECTIONS CARRY NO DISCORD IDENTIFIER. FiveM reports one only when
+    -- the player has Discord's activity integration switched on, which is
+    -- opt-in -- so the common case must still ask exactly the one question it
+    -- always did.
+    --
+    -- '' AND NOT nil, AND THE TEST PINS IT DELIBERATELY. A nil in the middle of
+    -- a TriggerEvent argument list is a msgpack question this repo cannot answer
+    -- offline, and the case that produces one -- a Discord-banned player with no
+    -- license -- is the case the whole change exists for. br_ddb reads '' as "no
+    -- such identifier"; a test that accepted either spelling would let the
+    -- riskier one back in.
+    identifiers[72] = { 'license:2222222222222222222222222222222222222222', 'steam:110000100000000' }
+    d = connect(72)
+    ok(lastBanCheckDiscord() == '',
+        'a connection with no discord identifier sends an empty string, never nil',
+        tostring(lastBanCheckDiscord()))
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil, 'and is admitted on a clean answer')
+
+    -- A PLAYER WITH NO LICENSE IS NOW A QUESTION, NOT AN AUTOMATIC ADMIT. This
+    -- case used to assert the opposite -- "no license means admitted, not
+    -- refused" -- and it was right while bans keyed on license alone. A
+    -- `discord:`-keyed ban is precisely a ban on somebody the game does not
+    -- know, so skipping the lookup for exactly the people it was written for
+    -- would be the original bug in a new place.
     identifiers[71] = { 'discord:901' }
     d = connect(71)
-    ok(d.doneCount == 1 and d.doneArg == nil, 'no license means admitted, not refused')
+    ok(lastBanCheckLicense() == '' and lastBanCheckDiscord() == 'discord:901',
+        'no license still asks -- about the discord id alone, and the gap is ""',
+        tostring(lastBanCheckLicense()) .. ' / ' .. tostring(lastBanCheckDiscord()))
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Banned in Discord' })
+    ok(d.doneCount == 1 and type(d.doneArg) == 'string'
+       and d.doneArg:find('Banned in Discord', 1, true) ~= nil,
+        'and a discord-only ban refuses the connection', d.doneArg)
+
+    -- ...and the same connection with no ban is still admitted, which is the
+    -- half a "refuse anyone we cannot identify" reading would get wrong.
+    d = connect(71)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil,
+        'an unbanned player with no license is admitted, not refused on a guess')
+
+    -- NEITHER IDENTIFIER: nothing to ask, and no five-second tax for asking it.
+    identifiers[73] = { 'steam:110000100000001' }
+    local nAsked = #banChecks
+    d = connect(73)
+    ok(#banChecks == nAsked, 'a connection with neither identifier asks nothing')
+    ok(d.doneCount == 1 and d.doneArg == nil, 'and is admitted immediately')
 
     -- ----------------------------------------------------- the appeal line ---
     --

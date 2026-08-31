@@ -159,14 +159,29 @@ AddEventHandler('br:ddb:banResult', function(req, banned, info)
     end
 end)
 
---- Ask br_ddb whether a license is banned, guaranteeing exactly one answer.
+--- Ask br_ddb whether this CONNECTION is banned, guaranteeing exactly one answer.
+---
+--- TWO IDENTIFIERS SINCE fivem-ringmaster#38, AND ONE ANSWER. `ringmaster-bans`
+--- is keyed on a qualified identifier, and blitz-bot files a ban under
+--- `discord:<snowflake>` for somebody an admin banned in Discord whom the game
+--- has never met -- so there is no license to file it under and, until now,
+--- nothing that would ever read it. That row was a record of a decision and not
+--- a closed door.
+---
+--- BOTH KEYS GO IN ONE REQUEST rather than two `askBanned` calls, and that is
+--- not tidiness. Two calls would mean two deferral answers to reconcile, two
+--- timers, and a rule about which answer wins written HERE -- in the file whose
+--- one job is "always resolve, exactly once". br_ddb does both lookups and
+--- applies the rule (`effective`, the one shared with the console), so this
+--- file's three rules are untouched: one question, one answer, one done().
 ---
 --- The timeout is armed BEFORE the question is asked. Arming it afterwards
 --- looks equivalent and is not: if the event handler throws synchronously, the
 --- timer never gets set and the caller waits forever.
---- @param license string
+--- @param license string|nil qualified, or nil when FiveM reported none
+--- @param discord string|nil qualified `discord:...`, or nil
 --- @param cb fun(banned: boolean, info: table)
-local function askBanned(license, cb)
+local function askBanned(license, discord, cb)
     nextReq = nextReq + 1
     local req = nextReq
 
@@ -184,11 +199,25 @@ local function askBanned(license, cb)
         -- Admitting on timeout does not end our interest in the answer. Record
         -- the license so a late "banned" verdict can still remove them --
         -- see lateWatch above.
-        if not answered then lateWatch[req] = license end
+        --
+        -- THE LICENSE AND NOT THE DISCORD ID, even when the discord row is what
+        -- the late answer will be about. `dropByLicense` is the only removal
+        -- this file has and it matches on license; a connection without one
+        -- cannot be found again once it is in, so it is simply not watched.
+        -- That gap is bounded by the same 5s and is the price of failing open.
+        if not answered and license then lateWatch[req] = license end
         once(false, { error = ('no answer within %dms'):format(ANSWER_TIMEOUT_MS) })
     end)
 
-    TriggerEvent('br:ddb:banCheck', req, license)
+    -- EMPTY STRINGS AND NEVER nil, WHICH IS THE ONE THING IN THIS CHANGE THAT IS
+    -- NOT ABOUT BANS. A player with no license and a Discord ban is the case the
+    -- second lookup exists for, and it is exactly the case that would put a nil
+    -- in the MIDDLE of this argument list. Whether FiveM's msgpack packs an
+    -- embedded nil or truncates the array there is not something this repo can
+    -- answer offline, and the game box is production -- so the question is
+    -- removed rather than researched: both arguments are always strings, and
+    -- br_ddb reads '' as "no such identifier" on both.
+    TriggerEvent('br:ddb:banCheck', req, license or '', discord or '')
 end
 
 
@@ -275,21 +304,43 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     local byKind = BR.Identity and BR.Identity.ofPlayer(src)
     local license = byKind and BR.Identity.qualified('license', byKind.license)
 
-    -- No license, no ban check. Bans key on license and nothing else, so
-    -- there is no question to ask -- let them in rather than inventing an
-    -- identifier to refuse them by.
-    if not license then
-        print('^3[br_ringmaster] gate: connecting player has no license -- admitted^7')
+    -- THE SECOND IDENTIFIER, AND IT IS ONLY SOMETIMES THERE. FiveM reports
+    -- `discord:` only when the player has Discord's activity integration
+    -- switched on, which is opt-in -- so most connections carry no such
+    -- identifier and ask exactly the one question they always did. Qualified
+    -- through BR.Identity, never interpolated by hand: `parse` strips the
+    -- prefix and the table is keyed on the string WITH it, so a lookup for
+    -- `280...` instead of `discord:280...` is a perfectly valid GetItem that
+    -- finds no row and reads as "never banned".
+    local discord = byKind and BR.Identity.qualified('discord', byKind.discord)
+
+    -- NEITHER IDENTIFIER, NO BAN CHECK. There is no question to ask -- let them
+    -- in rather than inventing an identifier to refuse them by.
+    --
+    -- THIS USED TO SAY "NO LICENSE, NO BAN CHECK" and admit anybody FiveM gave
+    -- no license for. That was correct while bans keyed on license and nothing
+    -- else; it is not correct now, because a `discord:`-keyed ban is precisely
+    -- a ban on somebody the game does not know, and skipping the lookup for
+    -- exactly the people it was written for would be the bug this change is
+    -- about, in a new place.
+    if not license and not discord then
+        print('^3[br_ringmaster] gate: connecting player has no license or discord id -- admitted^7')
         deferrals.done()
         return
     end
 
     deferrals.update('Checking your account...')
 
-    askBanned(license, function(banned, info)
+    -- What the log lines below name. Both when we have both, so a refusal says
+    -- which identifiers were actually asked about -- "I banned them and they
+    -- got in anyway" is answered by knowing what was looked up.
+    local asked = license or discord
+    if license and discord then asked = license .. ' + ' .. discord end
+
+    askBanned(license, discord, function(banned, info)
         if info.error then
             print(('^3[br_ringmaster] ban check failed for %s: %s -- allowing (fail open)^7')
-                :format(license, tostring(info.error)))
+                :format(asked, tostring(info.error)))
             deferrals.done()
             return
         end
@@ -301,13 +352,13 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
             -- you whether the gate ran at all, found no row, or was never asked.
             -- At 48 slots this is a handful of lines a minute, and every server
             -- logs connects anyway.
-            print(('^2[br_ringmaster] gate: %s not banned -- admitted^7'):format(license))
+            print(('^2[br_ringmaster] gate: %s not banned -- admitted^7'):format(asked))
             deferrals.done()
             return
         end
 
-        print(('^1[br_ringmaster] refused banned license %s (%s)^7')
-            :format(license, tostring(info.reason)))
+        print(('^1[br_ringmaster] refused banned connection %s (%s)^7')
+            :format(asked, tostring(info.reason)))
 
         -- done(reason) REFUSES the connection with that message shown to the
         -- player. done() with no argument admits them. One character between

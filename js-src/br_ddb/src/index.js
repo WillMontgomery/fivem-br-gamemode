@@ -14,7 +14,7 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
 
 import { artifactNames, isSpoolFile } from './artifacts.js'
-import { isActive } from './ban.js'
+import { effective } from './ban.js'
 import { buildIncidentClose } from './close.js'
 import { buildIncidentItem } from './incident.js'
 import { spendCost, spendUpdate } from './spend.js'
@@ -25,11 +25,17 @@ import { projectVerdict } from './verdict.js'
  * br_ddb -- the game server's read-only window onto DynamoDB.
  *
  * WHY THIS EXISTS AT ALL. The ban list lives in DynamoDB because Ringmaster
- * owns it, and the game server has to answer "is this license banned" at the
+ * owns it, and the game server has to answer "is this connection banned" at the
  * moment somebody connects. Routing that question through Ringmaster would make
  * every player's connection depend on a web console in another region being
  * awake -- so the game asks the database directly, and Ringmaster being down
  * costs you the admin panel rather than the server.
+ *
+ * SINCE fivem-ringmaster#38 THAT QUESTION IS TWO GetItems RATHER THAN ONE: the
+ * connecting license, and the `discord:` identifier on the same connection,
+ * because a ban can be filed under either. Two keys already in hand, asked
+ * about together. See `br:ddb:banCheck`, and note that the sentence below about
+ * there being no Query and no Scan in this file is still exactly true.
  *
  * IT EXPOSES A SHORT, NAMED LIST OF VERBS, and that is a security boundary
  * rather than a convenience. There is deliberately no generic "run this query"
@@ -152,8 +158,9 @@ function withTimeout(promise, ms) {
  * One point lookup, keyed on license.
  *
  * GetItem rather than Query or Scan, deliberately: every question this resource
- * asks is about one specific key it already holds -- a license, or an incident id
- * it minted itself. On the `ringmaster-*` family the game box's IAM policy grants
+ * asks is about one specific key it already holds -- a license, an incident id
+ * it minted itself, or (since #38) the `discord:` identifier FiveM handed over
+ * with the same connection. On the `ringmaster-*` family the game box's IAM policy grants
  * GetItem (broadly, since 2026-08-17) and PutItem on `ringmaster-incidents`
  * alone. THERE IS STILL NO QUERY AND NO SCAN ANYWHERE IN THIS FILE, which is the
  * property that stops a compromised box enumerating anything, and it is worth
@@ -187,27 +194,96 @@ function getByLicense(table, license) {
 /**
  * Ban check. Answers on `br:ddb:banResult` with the same `req` it was given.
  *
- * FAILS OPEN, ALWAYS. Every error path -- no credentials, no network, a
- * throttle, a timeout, a malformed row -- answers `banned = false` and reports
- * the reason in `error`. A database that cannot be reached must not become a
- * server nobody can join: the failure mode of "a banned player gets in until
- * the link recovers" is strictly better than "nobody gets in at all", and the
- * caller logs the error loudly so it is not silent.
+ * TWO POINT LOOKUPS SINCE fivem-ringmaster#38, AND STILL NO QUERY. The table is
+ * keyed on a QUALIFIED identifier, and blitz-bot -- a third repo writing this
+ * same table -- files a ban under `discord:<snowflake>` when an admin bans
+ * somebody in Discord whom the game has never met and who therefore has no
+ * license to file it under. This handler used to ask one question, about the
+ * license, so such a row stopped nobody: it was a record of a decision rather
+ * than a closed door.
+ *
+ * A SECOND `GetItem`, NOT A `Query`. The obvious shape for "find every ban that
+ * could apply to this connection" is a query over the identifiers, and it is
+ * not available here and is not going to be: "there is no Query and no Scan
+ * anywhere in br_ddb" is the property that stops a compromised game box
+ * enumerating who is banned, docs/security.md calls it load-bearing, and it is
+ * worth more than the convenience. The gate holds both keys already -- FiveM
+ * handed them over with the connection -- so two lookups on two keys it was
+ * given is the same shape as one, twice. The IAM policy does not move: this is
+ * `dynamodb:GetItem` on `ringmaster-bans`, which the box already has.
+ *
+ * ISSUED TOGETHER, NOT ONE AFTER THE OTHER. `Promise.all` puts both requests on
+ * the wire before either answer comes back, so the added wall-clock cost on a
+ * warm client is roughly zero rather than a second round trip -- which matters
+ * because this runs inside a connect deferral with a human watching. Each send
+ * still carries its own `TIMEOUT_MS`, so the pair is bounded by one timeout and
+ * not two, and the gate's own 5s backstop is untouched.
+ *
+ * SKIPPED ENTIRELY WHEN THERE IS NO DISCORD IDENTIFIER, which is the common
+ * case rather than an edge: FiveM only reports `discord:` when the player has
+ * Discord's activity integration switched on. Those connections cost exactly
+ * what they cost before this change.
+ *
+ * FAILS OPEN, ALWAYS, AND NOW ON EITHER LOOKUP. Every error path -- no
+ * credentials, no network, a throttle, a timeout, a malformed row -- answers
+ * `banned = false` and reports the reason in `error`. A database that cannot be
+ * reached must not become a server nobody can join: the failure mode of "a
+ * banned player gets in until the link recovers" is strictly better than
+ * "nobody gets in at all", and the caller logs the error loudly so it is not
+ * silent. `Promise.all` rejecting on the FIRST failure is exactly right for
+ * that -- one unreadable row is one unanswerable question, and answering half
+ * of it would be a confident "not banned" about somebody we did not look up.
  */
-on('br:ddb:banCheck', (req, license) => {
+on('br:ddb:banCheck', (req, license, discord) => {
   const answer = (banned, extra) => {
     emit('br:ddb:banResult', req, banned, extra ?? {})
   }
 
-  if (typeof license !== 'string' || license === '') {
+  /**
+   * A qualified `discord:...` identifier, or null. The gate qualifies it.
+   *
+   * '' IS ABSENCE, AND THAT IS A CONTRACT WITH THE CALLER RATHER THAN
+   * defensiveness. gate.lua sends '' rather than nil for a missing identifier,
+   * because a nil in the MIDDLE of a TriggerEvent argument list -- which is
+   * exactly what a Discord-banned player with no license produces -- raises a
+   * msgpack question about embedded nils that is not worth having on a
+   * production box. Both sides agree on '' instead. `brban` in
+   * br_ddb/server/debug.lua passes nil for an omitted argument, so both spellings
+   * arrive here and both mean the same thing.
+   */
+  const second = typeof discord === 'string' && discord !== '' ? discord : null
+
+  /**
+   * The keys to ask about, LICENSE FIRST. That order is the tie-break `effective`
+   * uses when both rows are in force -- see ban.js.
+   */
+  const keys = []
+  if (typeof license === 'string' && license !== '') keys.push(license)
+  if (second) keys.push(second)
+
+  /**
+   * NO LICENSE IS NO LONGER THE END OF THE QUESTION, WHICH IS WHY THIS TESTS THE
+   * KEY LIST AND NOT THE LICENSE. It used to test the license, because bans
+   * keyed on one and nothing else, so a connection without one had nothing to
+   * ask about. A `discord:`-keyed ban is precisely a ban on somebody the game
+   * does not know -- refusing to look it up because we do not know them is the
+   * one case this whole change is about.
+   *
+   * THE MESSAGE IS UNCHANGED. `brban` prints it and the gate logs it; rewording
+   * an operator-facing string is not part of this.
+   */
+  if (keys.length === 0) {
     answer(false, { error: 'no license' })
     return
   }
 
-  getByLicense('bans', license)
-    .then((row) => {
-      const now = Date.now()
-      if (!isActive(row, now)) {
+  Promise.all(keys.map((key) => getByLicense('bans', key)))
+    .then((rows) => {
+      // `effective`, the rule copied from the console, rather than an `if`
+      // written out here -- see the comment on that function. The license row
+      // is first in `keys`, so it is first here, which is the tie-break.
+      const row = effective(rows, Date.now())
+      if (!row) {
         answer(false, {})
         return
       }
@@ -218,7 +294,7 @@ on('br:ddb:banCheck', (req, license) => {
       })
     })
     .catch((e) => {
-      console.log(`[br_ddb] ban check failed for ${license}: ${e.message}`)
+      console.log(`[br_ddb] ban check failed for ${keys.join(', ')}: ${e.message}`)
       answer(false, { error: e.message })
     })
 })

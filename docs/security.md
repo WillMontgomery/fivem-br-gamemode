@@ -261,13 +261,35 @@ once:
 
 | table | verb | what for |
 |---|---|---|
-| `ringmaster-bans` | `GetItem` | the connect gate |
+| `ringmaster-bans` | `GetItem` ×2 | the connect gate — see below |
 | `ringmaster-grants` | `GetItem` | in-game admin scopes |
 | `ringmaster-maintenance` | `GetItem` | the drain gate |
 | `ringmaster-incidents` | `GetItem` | the verdict read, plus the two writes above |
 
 Nothing in that file reads `audit`, and nothing should. When somebody comes to
 narrow the policy back to a list of ARNs, that table is the answer.
+
+**The connect gate became two `GetItem`s and not one (fivem-ringmaster#38), and
+the policy did not move.** `ringmaster-bans` is keyed on a *qualified identifier*,
+and blitz-bot — a third repo writing this table — files a ban under
+`discord:<snowflake>` when an admin bans somebody in Discord whom the game has
+never met and who therefore has no license to file it under. The gate looked up
+the license alone, so such a row stopped nobody: it was a record of a decision
+and not a closed door. It now looks up the license **and** the `discord:`
+identifier FiveM reported for the same connection, and `br_ddb/src/ban.js`
+decides which of the two answers applies.
+
+Read the shape of that carefully, because it is the whole reason it was allowed:
+
+- **Two point lookups on two keys the connection handed over.** Not a query over
+  a person's identifiers. The game box learns nothing it was not already told.
+- **`Promise.all`, so both are on the wire together.** One round trip, not two,
+  inside a connect deferral with a human watching it.
+- **The IAM policy is unchanged.** This is `dynamodb:GetItem` on
+  `ringmaster-bans`, which the box already had. Nothing widened; a verb learned
+  a second argument.
+- **Still no `Query` and no `Scan` anywhere in `br_ddb`** — the property below,
+  which was the thing that could have been traded away here and was not.
 
 **The incidents read is narrower than the grant in three further ways, all of them
 enforced in code rather than promised.** It is a `GetItem` keyed on `incidentId` —

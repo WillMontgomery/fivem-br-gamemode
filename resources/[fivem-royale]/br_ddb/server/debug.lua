@@ -51,25 +51,42 @@ AddEventHandler('br:ddb:banResult', function(req, banned, info)
     handler(banned, info or {})
 end)
 
---- Ask the ban question directly, for one license.
+--- Ask the ban question directly, for one license and optionally a discord id.
 ---
 --- THIS EXISTS BECAUSE "THE BAN DID NOT WORK" HAS FOUR CAUSES and they are
 --- indistinguishable from the outside: the row was never written, it was
 --- written under a different license string, the game cannot read the table, or
 --- the connect gate is not running. This command isolates the middle two --
---- it performs the exact lookup the gate performs, with the license spelled out
---- by hand, and prints the raw answer.
+--- it performs the exact lookup the gate performs, with the identifiers spelled
+--- out by hand, and prints the raw answer.
+---
+--- THE SECOND ARGUMENT EXISTS SO THAT SENTENCE STAYS TRUE. Since #38 the gate
+--- asks about two keys, and a debug command that asked about one would quietly
+--- disagree with the thing it is here to reproduce -- which is the precise
+--- failure it was written to end.
 ---
 --- Usage:  brban license:b6f5a1273092df7eb6a8c2a981418f275f2ae3fb
+---         brban license:b6f5a127... discord:280000000000000000
+---         brban - discord:280000000000000000      (no license at all)
 RegisterCommand('brban', function(_source, args)
     local license = args[1]
-    if type(license) ~= 'string' or license == '' then
-        print('^3usage: brban <license>   e.g. brban license:abc123...^7')
-        print('  Your own license prints from `bridents` while connected.')
+    local discord = args[2]
+
+    -- `-` STANDS IN FOR "NO LICENSE", because that case is now worth being able
+    -- to reproduce: a discord-only ban is the whole reason the second lookup
+    -- exists, and a console command cannot pass an empty first argument.
+    if license == '-' then license = nil end
+
+    if (type(license) ~= 'string' or license == '')
+       and (type(discord) ~= 'string' or discord == '') then
+        print('^3usage: brban <license> [discord:id]   e.g. brban license:abc123...^7')
+        print('  Or:   brban - discord:280000000000000000   to ask about the discord id alone.')
+        print('  Your own identifiers print from `bridents` while connected.')
         return
     end
 
-    print(('^5[br_ddb]^7 asking about %s'):format(license))
+    print(('^5[br_ddb]^7 asking about %s'):format(
+        table.concat({ license or '(no license)', discord or '(no discord id)' }, ' + ')))
 
     local req = newReq(function(banned, info)
         if info.error then
@@ -87,15 +104,15 @@ RegisterCommand('brban', function(_source, args)
             print('  The gate would refuse this connection.')
         else
             print('^2  not banned^7')
-            print('  Either no row exists for this EXACT license string, or the')
-            print('  ban is lifted/expired. Compare it character for character')
-            print('  with what the console shows -- a mismatched license reads')
-            print('  as "not banned" and is the most common cause of a ban that')
-            print('  appears to do nothing.')
+            print('  Either no row exists for these EXACT identifier strings, or')
+            print('  every ban that does exist is lifted/expired. Compare them')
+            print('  character for character with what the console shows -- a')
+            print('  mismatched key reads as "not banned" and is the most common')
+            print('  cause of a ban that appears to do nothing.')
         end
     end)
 
-    TriggerEvent('br:ddb:banCheck', req, license)
+    TriggerEvent('br:ddb:banCheck', req, license, discord)
 end, RESTRICTED)
 
 RegisterCommand('brddb', function()

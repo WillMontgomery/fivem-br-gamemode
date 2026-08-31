@@ -1,5 +1,5 @@
 import { artifactNames, ARTIFACT_PREFIX, isSpoolFile } from '../src/artifacts.js'
-import { isActive } from '../src/ban.js'
+import { effective, isActive } from '../src/ban.js'
 import { buildIncidentClose, CLOSE_LIMITS } from '../src/close.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
 import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
@@ -11,7 +11,7 @@ import { projectVerdict, verdictWord } from '../src/verdict.js'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { unmarshall } from './aws_stub.mjs'
+import { marshall, unmarshall } from './aws_stub.mjs'
 import { loadBridge, lastEmit } from './bridge.mjs'
 
 /**
@@ -73,6 +73,59 @@ const banCases = [
 console.log('ban rule')
 for (const [label, ban, expected] of banCases) {
   check(`${label} -> ${expected}`, isActive(ban, NOW), expected)
+}
+
+// ------------------------------------------------- which of two rows wins ---
+//
+// THE GATE HOLDS TWO ROWS NOW: the connecting license, and the `discord:` key
+// blitz-bot files a ban under when the game has never met the person an admin
+// banned in Discord. `effective` turns those into one answer, and the owner
+// settled the rule -- an ACTIVE ban always takes precedence over a lifted one,
+// whichever identifier each is keyed on.
+//
+// EVERY CASE HERE ALSO EXISTS IN fivem-ringmaster/scripts/check-ban-rule.mjs.
+// A drift between the two is somebody walking past the connect gate the console
+// says is closed, which nobody notices until it matters.
+
+const L_ACTIVE = { license: 'license:abc', expiresAt: null, liftedAt: null }
+const L_LIFTED = { license: 'license:abc', expiresAt: null, liftedAt: NOW - HOUR }
+const L_SERVED = { license: 'license:abc', expiresAt: NOW - HOUR, liftedAt: null }
+const D_ACTIVE = { license: 'discord:280', expiresAt: null, liftedAt: null }
+const D_LIFTED = { license: 'discord:280', expiresAt: null, liftedAt: NOW - HOUR }
+
+const pickCases = [
+  // [label, rows in the order index.js passes them, the winner's key]
+  ['nothing on either identifier', [null, null], null],
+  ['an empty list is not banned', [], null],
+  ['a license ban alone', [L_ACTIVE, null], 'license:abc'],
+  [
+    'a discord ban alone -- the row the gate could not see before #38',
+    [null, D_ACTIVE],
+    'discord:280',
+  ],
+
+  // ═══ THE OWNER'S RULING, BOTH WAYS ROUND ═══
+  //
+  // The first of these is the one that forced the rule to be written down: an
+  // admin lifts an old license ban, a Discord ban lands afterwards, and any
+  // rule that preferred the license row BY KIND would read the lift and open
+  // the door.
+  ['a LIFTED license ban does not beat an ACTIVE discord ban', [L_LIFTED, D_ACTIVE], 'discord:280'],
+  ['a SERVED license ban does not beat an ACTIVE discord ban', [L_SERVED, D_ACTIVE], 'discord:280'],
+  ['and a lifted discord ban does not beat an active license ban', [L_ACTIVE, D_LIFTED], 'license:abc'],
+
+  ['neither in force means admitted', [L_LIFTED, D_LIFTED], null],
+  [
+    'both in force: the caller order decides, and it is license first',
+    [L_ACTIVE, D_ACTIVE],
+    'license:abc',
+  ],
+  ['a gap in the list is skipped, not read as a row', [undefined, D_ACTIVE], 'discord:280'],
+]
+
+console.log('\nban rule: which of two rows wins')
+for (const [label, rows, expected] of pickCases) {
+  check(label, effective(rows, NOW)?.license ?? null, expected)
 }
 
 // ----------------------------------------------------------- incident item ---
@@ -1726,6 +1779,149 @@ console.log('\nspend: a refusal is not a failure')
   check('the real balance is read back for the message', res.extra.balance, 700)
 }
 
+// ------------------------------------------------------ the two-key gate ---
+//
+// THE PROPERTY UNDER TEST IS THAT A `discord:`-KEYED BAN CLOSES THE DOOR. Every
+// case above this line drives a builder or a single write; these drive the
+// handler that decides whether a human gets into the server, through the real
+// src/index.js, with the SDK stubbed. The block above them (`ban rule: which of
+// two rows wins`) pins the rule in isolation -- this one pins that the handler
+// actually asks both questions and hands the rule both answers.
+
+const DISCORD = 'discord:280000000000000000'
+
+/** A ban row as DynamoDB returns it, with only the fields the handler reads. */
+const banRow = (over = {}) => ({
+  Item: marshall({
+    license: LIC,
+    reason: 'Aimbot',
+    byName: 'Admin',
+    expiresAt: null,
+    liftedAt: null,
+    ...over,
+  }),
+})
+
+console.log('\nban check: one key when that is all there is')
+{
+  bridge.reset()
+  bridge.reply({}) // no row
+
+  const threw = bridge.call('br:ddb:banCheck', 60, LIC)
+  check('the handler runs', why(threw), null)
+  check('exactly one GetItem for a connection with no discord id', bridge.calls.length, 1)
+  check('on the console table', sent(0).input.TableName, 'ringmaster-bans')
+  check('keyed on the license', unmarshall(sent(0).input.Key), { license: LIC })
+
+  await bridge.settle()
+  check('and no row means admitted', answer('br:ddb:banResult').ok, false)
+
+  // THE SHAPE gate.lua ACTUALLY SENDS. It never passes nil -- a nil in the
+  // middle of a TriggerEvent argument list is a msgpack question nobody wants on
+  // a production box -- so '' is the wire spelling of "no such identifier" and
+  // must not become a key this handler goes and looks up.
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:banCheck', 60, LIC, '')
+  check("'' is absence, not a key", bridge.calls.length, 1)
+  check('and it is the license that was asked about', unmarshall(sent(0).input.Key), {
+    license: LIC,
+  })
+  await bridge.settle()
+}
+
+console.log('\nban check: two keys, issued together')
+{
+  bridge.reset()
+  bridge.reply({}) // the license: nothing
+  bridge.reply(banRow({ license: DISCORD, reason: 'Banned in Discord' }))
+
+  const threw = bridge.call('br:ddb:banCheck', 61, LIC, DISCORD)
+  check('the handler runs', why(threw), null)
+
+  // ═══ THE ASSERTION THAT PROVES THEY ARE PARALLEL ═══
+  //
+  // Read BEFORE any `settle()`, so nothing inside a `.then` has run yet. Both
+  // commands are already recorded, which can only happen if both sends were
+  // issued before either answer was awaited. Written as an `await` chain this
+  // would read 1 here and go red -- which is the point, because the sequential
+  // version costs a second network round trip inside a connect deferral with a
+  // human watching it.
+  check('both lookups are on the wire before either answer', bridge.calls.length, 2)
+
+  check('the license is asked first', unmarshall(sent(0).input.Key), { license: LIC })
+  check('and the discord id second', unmarshall(sent(1).input.Key), { license: DISCORD })
+  check('both on the bans table', [sent(0).input.TableName, sent(1).input.TableName], [
+    'ringmaster-bans',
+    'ringmaster-bans',
+  ])
+  check('and neither is a Query', [sent(0).kind, sent(1).kind], [
+    'GetItemCommand',
+    'GetItemCommand',
+  ])
+
+  await bridge.settle()
+  const res = answer('br:ddb:banResult')
+  check('a discord-keyed ban refuses the connection', res.ok, true)
+  check('with its own reason on the connecting screen', res.extra.reason, 'Banned in Discord')
+}
+
+console.log('\nban check: the ruling, through the handler')
+{
+  bridge.reset()
+  // A license ban an admin lifted last week, and a Discord ban from today.
+  bridge.reply(banRow({ liftedAt: NOW - HOUR, reason: 'Old, and lifted' }))
+  bridge.reply(banRow({ license: DISCORD, reason: 'Banned in Discord' }))
+
+  bridge.call('br:ddb:banCheck', 62, LIC, DISCORD)
+  await bridge.settle()
+
+  const res = answer('br:ddb:banResult')
+  check('a lifted license ban does not admit somebody Discord-banned', res.ok, true)
+  check('and the reason shown is the ban that is actually in force', res.extra.reason, 'Banned in Discord')
+}
+
+console.log('\nban check: no license at all')
+{
+  bridge.reset()
+  bridge.reply(banRow({ license: DISCORD, reason: 'Banned in Discord' }))
+
+  bridge.call('br:ddb:banCheck', 63, '', DISCORD)
+
+  // THE CASE THE WHOLE CHANGE IS ABOUT. A `discord:`-keyed ban exists precisely
+  // because the game has never seen this person; refusing to look it up when
+  // they turn up without a license would skip the lookup for exactly the people
+  // it was written for.
+  check('one lookup, and it is the discord id', bridge.calls.length, 1)
+  check('keyed on the discord identifier', unmarshall(sent(0).input.Key), { license: DISCORD })
+
+  await bridge.settle()
+  check('and they are refused', answer('br:ddb:banResult').ok, true)
+}
+
+console.log('\nban check: neither identifier, and a failure')
+{
+  bridge.reset()
+  bridge.call('br:ddb:banCheck', 64, '', '')
+  check('nothing to ask means nothing is sent', bridge.calls.length, 0)
+  check('and it answers rather than hanging a deferral', answer('br:ddb:banResult').ok, false)
+  check('naming why', answer('br:ddb:banResult').extra.error, 'no license')
+
+  bridge.reset()
+  bridge.reply({}) // the license read succeeds
+  bridge.reply(new Error('ProvisionedThroughputExceededException'))
+
+  bridge.call('br:ddb:banCheck', 65, LIC, DISCORD)
+  await bridge.settle()
+
+  const res = answer('br:ddb:banResult')
+  // FAILS OPEN ON EITHER LOOKUP. Half an answer is not an answer: a confident
+  // "not banned" about a key we could not read is the failure mode
+  // docs/ban-contract.md refuses.
+  check('one unreadable row fails the whole check open', res.ok, false)
+  check('and says so', res.extra.error, 'ProvisionedThroughputExceededException')
+}
+
 // ------------------------------------------------- no free variables, ever ---
 //
 // The block above pins one verb because one verb broke. This one is the ratchet
@@ -1763,7 +1959,8 @@ console.log('\nevery verb runs: no free variables anywhere in the bridge')
   writeFileSync(join(bridge.spoolDir, frame.file), Buffer.from('not really a png'))
 
   const PAYLOADS = {
-    'br:ddb:banCheck': [1, LIC],
+    // BOTH keys, so the two-lookup path is what this sweep drives.
+    'br:ddb:banCheck': [1, LIC, DISCORD],
     'br:ddb:grantsFetch': [2, LIC],
     'br:ddb:maintenance': [3],
     'br:ddb:profileFetch': [4, LIC],
