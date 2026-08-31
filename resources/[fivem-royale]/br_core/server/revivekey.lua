@@ -1,41 +1,72 @@
--- The revive key: minted at elimination, collected off the ground, bought at an
--- ambulance, and spent by a squadmate holding a key over the spot where it lies.
--- #219 steps 4 and 5.
+-- The revive key: minted at elimination, taken off the ground with a press,
+-- bought at an ambulance, and spent by a squadmate holding a key AT an
+-- ambulance. #219 steps 4 and 5.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
--- WHERE THE REVIVE HAPPENS, AND WHY IT IS NOT AT AN AMBULANCE
+-- WHERE THE REVIVE HAPPENS: AT AN AMBULANCE, AND NOWHERE ELSE
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- A LIVE SQUADMATE HOLDS `interact` AT THE KEY'S OWN RECORDED POINT. Not at the
--- corpse, not at an ambulance, not anywhere a player has to be PUT.
+-- Owner, 2026-08-30, after the round that shipped the other answer:
 --
--- NOT AT THE CORPSE, AND THAT IS THE LOAD-BEARING HALF. The record already
--- carries x/y/z, copied off the body at mint time specifically so the key does
--- not follow it. Ruling against those two numbers re-uses the exact circle that
--- already decides collection and costs no new geometry. Ruling against the ped
--- instead would inherit two shipped defects at once: #163's clone, which
--- "CRAWLS AWAY" on the reviver's machine while the real body is pinned on its
--- own, and 33ca88c's finding that a corpse's position is a DEATH RAGDOLL --
--- "the one thing this file already knows do not replicate reliably"
--- (citizenfx/fivem#2436, open). A hold measured to a body that drifts dies at
--- two seconds with a full ring on screen and nothing to say why.
+--   "I should be able to walk up to an ambulance and see a DUI to press
+--    something to revive them. Then once that is complete, their screen should
+--    fade to black, set focus to the area where the ambulance I just used is,
+--    process the revive, give them a parachute, put them 150m above the
+--    ambulance, then fade in. And now they're back in the match."
 --
--- NOT AT AN AMBULANCE, EITHER, and the reason is placement. Buying keys at a van
--- is a number leaving a balance and touches no vehicle state; STANDING A LIVING
--- PED UP at one is a placement, and client/spawn.lua states what that costs --
--- the ground probe "is actively wrong indoors: it searches downward from fifty
--- metres up, which for a death inside a building finds the roof". The 23
--- persistent ambulances of #219 step 3 do not exist either, so an
--- ambulance-only revive would make a squad's whole path back depend on finding
--- an ambient van.
+--   "the press e to revive DUI when standing at the ped should not show once
+--    they've bled out. The only option at that point is the ambulance."
 --
--- SO THEY COME BACK WHERE THEY FELL, WITH NO PLACEMENT AT ALL.
--- BR.Net.REVIVED is the existing OUT->ALIVE resurrection (#144's held death) and
--- it resurrects at `GetEntityCoords(ped)` on the machine that owns the ped --
--- the body's own position, exactly, with no probe and no server sample in the
--- loop. It also carries ClearPedTasksImmediately, initHealthModel and cleanPed
--- ("any time revive is processed, please clean the ped" -- owner, 2026-08-28)
--- for no new client code.
+-- THIS FILE USED TO ARGUE THE OPPOSITE AT LENGTH and the argument is deleted
+-- rather than answered, because it was never ours to make. What is worth
+-- keeping from it is the one technical finding it was built on: a hold must not
+-- be measured to a CORPSE. #163's clone "CRAWLS AWAY" on the reviver's machine
+-- while the real body is pinned on its own, and 33ca88c found that a corpse's
+-- position is a death ragdoll -- "the one thing this file already knows do not
+-- replicate reliably" (citizenfx/fivem#2436, open). That finding survives
+-- intact here: the hold is measured to an AMBULANCE, which is a networked
+-- vehicle the server can read directly, and to nothing that ever died.
+--
+-- SO THE HOLD IS RULED WITH `reachM`, THE PURCHASE'S OWN RADIUS. Same van, same
+-- player, same question -- see config/revivekey.lua on why there is not a second
+-- number for it. The two reach values that measured a hold at the key's point
+-- (`reviveReachM`, `reviveSlackM`) are gone; nothing is measured to a key's
+-- recorded coordinates any more except the PICKUP, which is still on the ground
+-- where it fell.
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- AND THE ARRIVAL IS A DROP, IN THE ORDER HE GAVE IT
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   1. the subject's screen fades to black
+--   2. the streaming focus moves to the ambulance that was used
+--   3. the revive is processed
+--   4. they are given a parachute
+--   5. they are placed 150m above that ambulance
+--   6. fade in
+--
+-- STEPS 1 AND 2 ARE A MESSAGE, AND 3-6 ARE THE ONE AFTER IT. This file owns
+-- WHEN, because it owns the ledger; client/revivekey.lua owns the screen, the
+-- ped and the chute. The hold completing sends BR.Net.REVIVEKEY_ARRIVE (go
+-- black, focus there) and then waits `fadeMs + focusMs` before doing ANY of its
+-- own work -- so the resurrection, the roster flip and the health all still
+-- happen in the order they always did, one after another, with the player's
+-- screen already black by the time the first of them runs.
+--
+-- WHY THE WAIT IS ON THIS SIDE RATHER THAN THE CLIENT'S. If the server flipped
+-- the roster to ALIVE and the client deferred the resurrection behind its own
+-- fade, there would be up to a second of a player the server calls ALIVE whose
+-- ped is a corpse -- which is precisely the state the 1Hz server-observed death
+-- check in server/combat.lua exists to eliminate, and it would eliminate them,
+-- intermittently, for a revive that had just been paid for. Holding the whole
+-- sequence here means that window never opens.
+--
+-- STEPS 3 AND 5 ARE ONE NATIVE, AND THAT IS NOT A STEP BEING DROPPED.
+-- NetworkResurrectLocalPlayer takes the coordinates it stands you up at, so
+-- "process the revive" and "put them 150m above the ambulance" cannot be two
+-- calls without resurrecting somebody twice. See client/revivekey.lua's
+-- REVIVEKEY_PLACE handler, which performs all four of the remaining steps in
+-- his order.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WHAT THEY COME BACK WITH: NOTHING, AND IT IS FREE
@@ -127,22 +158,29 @@
 --     admin console cannot act on it.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
--- COLLECTION IS A SERVER PROXIMITY TEST, NOT A CLIENT MESSAGE
+-- COLLECTION IS A PRESS. IT USED TO BE A PROXIMITY TEST, AND THAT WAS THE BUG
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- There is no `REVIVEKEY_TAKE` and there must not be one. The server already
--- samples every player's position four times a second, server-side, with
--- GetEntityCoords -- server/roster.lua's note on why it is not asked of the
--- client applies here word for word -- and the key lies at a position this file
--- wrote down itself. So "did a squadmate walk over it" is answerable HERE, from
--- two numbers neither of which a client has ever touched.
+-- Owner, 2026-08-30: "I somehow picked up the dead player's key by walking up
+-- to them without seeing a DUI or pressing anything."
 --
--- WHAT THAT DELETES: a net event, a client file, a trust boundary, and a string
--- the owner has not written. See config/revivekey.lua's `collectM` for the full
--- argument against a prompt.
+-- This file used to say "there is no REVIVEKEY_TAKE and there must not be one",
+-- on the grounds that the server samples every position four times a second and
+-- can therefore answer "did a squadmate walk over it" from two numbers no client
+-- has touched. All of that is still TRUE and none of it was the question. A
+-- thing that leaves the ground without a press is a thing the player cannot know
+-- they have -- and a squad that cannot tell whether it holds a key cannot decide
+-- whether to walk to an ambulance.
 --
--- THE LATENCY IS THE SAMPLER'S, up to 250ms. That is imperceptible for walking
--- over something and it is the same freshness the storm damages people on.
+-- SO THERE IS A PRESS, AND THE SERVER STILL DECIDES EVERYTHING ELSE. The client
+-- sends "I pressed, and I meant that mate" (BR.Net.REVIVEKEY_TAKE) and nothing
+-- more; `canTake` re-derives the distance, the squad, the match, the state and
+-- whether there is still a pickup there from this server's own samples. The
+-- trust boundary that the old sweep avoided by never listening is the same
+-- boundary `canBuy` has always stood on, and it is stood on the same way.
+--
+-- WHAT THE SWEEP STILL DOES: the expiry, and only the expiry. It is a deadline
+-- check with nobody to ask.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
 -- BUYING IS THE FIRST TIME A SAVED BALANCE IS SPENT INSIDE A MATCH
@@ -459,82 +497,32 @@ local function grant(e, via, line)
     say(squadSrcs(e.squadId, e.matchId), line, 'success')
 end
 
---- Walk over a key to collect it; run out the clock to lose the pickup.
+--- Run out the clock to lose the pickup. That is the whole of this job now.
 ---
---- ═══ ONE JOB PER RECORD PER TICK, AND COLLECTION IS TESTED FIRST ═══
+--- ═══ COLLECTION LEFT THIS SWEEP AND BECAME A PRESS ═══
 ---
---- A squadmate standing on the body on the tick the timer runs out has
---- collected it. That ordering is the forgiving one, it is the one a player
---- would expect, and it is the only one that does not turn a race into a
---- silent loss of the thing they walked across the map for.
+--- The tick used to gather every ALIVE squadded player and test each of them
+--- against each loose key, so that walking within `collectM` of a body silently
+--- took the key off it. The owner asked for a prompt and a press instead (see
+--- the header), so that half lives in `BR.ReviveKey.take` and this is a deadline
+--- check with nobody to ask.
+---
+--- WHAT WENT WITH IT: the collector walk, and with it the rule that an OUT
+--- player must not be a collector. That rule was the single most load-bearing
+--- line in this file -- an eliminated player's `pos` IS the key's position, so a
+--- sweep that admitted them collected every key for free on the tick after it
+--- was minted. It is not gone, it has MOVED: `canTake` refuses a presser who is
+--- not ALIVE and refuses a presser who is the subject, and tools/test_revivekey
+--- .lua asserts both against the press rather than against the sweep.
 BR.Sched.every(K and K.tickMs or 1000, 'revivekey.sweep', function()
     if not enabled() then return end
 
     local now = GetGameTimer()
 
-    -- COLLECTORS FIRST, GATHERED ONCE. The alternative is a roster walk per key,
-    -- which in a squad match with four bodies down is four walks a second for
-    -- the same answer.
-    --
-    -- ALIVE AND NOTHING ELSE. Narrower than server/party.lua's visible states
-    -- and narrower on purpose:
-    --
-    --   OUT is excluded because THE SUBJECT'S OWN CORPSE IS AT THE KEY. An OUT
-    --   player's `pos` is the body they are spectating from, which is the exact
-    --   position this file wrote the key down at -- so admitting OUT would have
-    --   every key collect ITSELF on the first tick after it was minted, and the
-    --   feature would look like it worked.
-    --
-    --   DBNO is excluded because a downed player crawls at 0.55 m/s and is
-    --   bleeding out; if they are on top of a body it is because they were shot
-    --   there, not because they went to fetch anything.
-    --
-    --   BUS, FREEFALL and GLIDE are excluded because nobody is eliminated before
-    --   the doors open, so a body under a flight path is not a thing that
-    --   happens -- and if step 5 ever drops a resurrected player back in, they
-    --   must not hoover up keys on the way down.
-    local movers = {}
-    BR.Roster.each(
-        function(e) return e.state == BR.PlayerState.ALIVE and e.squadId and e.pos end,
-        function(src, e)
-            movers[#movers + 1] = { src = src, e = e }
-        end)
-
     BR.Roster.each(
         function(e) return e.reviveKey ~= nil and e.reviveKey.held ~= true end,
         function(src, e)
             local rec = e.reviveKey
-
-            -- ═══ THERE HAS TO BE SOMETHING THERE TO WALK OVER ═══
-            --
-            -- `pickupLive` and not a bare distance test, and this is the whole
-            -- of what the expiry BUYS. Without it the three minutes are
-            -- decorative: the record stays unheld for ever (deliberately, so it
-            -- can still be bought), so a squadmate wandering past the body at
-            -- minute ten would collect a pickup that stopped existing at minute
-            -- three -- and the free option the owner put a clock on would never
-            -- actually close.
-            --
-            -- THE BOUNDARY IS EXCLUSIVE AND THE TWO TESTS ARE COMPLEMENTS:
-            -- `pickupLive` is `now < expiresAt`, the expiry below is
-            -- `now >= expiresAt`. So no tick can both collect and expire the
-            -- same key, and there is no ordering between them that could lose
-            -- one -- which is the property worth having, rather than a
-            -- tie-break rule that would have to be remembered.
-            if pickupLive(rec, now) then
-                for _, mv in ipairs(movers) do
-                    if mv.e.squadId == e.squadId and mv.e.matchId == e.matchId
-                       and mv.src ~= src
-                       and BR.Dist(mv.e.pos.x, mv.e.pos.y, rec.x, rec.y)
-                           <= (tonumber(K.collectM) or 2.5) then
-                        grant(e, 'fetched', copy().collected)
-                        stat.collected = stat.collected + 1
-                        print(('[br_core] revivekey: %d collected the key for %s (%d)')
-                            :format(mv.src, tostring(e.name), src))
-                        return
-                    end
-                end
-            end
 
             -- THE PICKUP GOES, THE KEY STAYS. `reviveKey` is not cleared here
             -- and clearing it would delete the purchase path -- "They can still
@@ -558,8 +546,184 @@ BR.Sched.every(K and K.tickMs or 1000, 'revivekey.sweep', function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- Taking one off the ground
+-- ---------------------------------------------------------------------------
+
+--- May this player take that mate's key off the ground, right now?
+---
+--- EVERY CLAUSE OF "I WAS STANDING ON IT AND I PRESSED" IS RE-DERIVED HERE, the
+--- way `canBuy` re-derives every clause of "I was at an ambulance". The client
+--- carries the INTENT -- which mate -- and nothing else, because the intent is
+--- the only part of it the server cannot see.
+---
+--- THE TWO REFUSALS THAT MATTER MOST ARE THE FIRST TWO, and they are the rule
+--- the old sweep enforced with its collector filter:
+---
+---   THE SUBJECT MAY NOT TAKE THEIR OWN KEY. An eliminated player's `pos` IS the
+---   position this file wrote the key down at -- they are spectating from the
+---   body it was minted on -- so the distance is zero, for ever. Without this
+---   line a dead player pressing interact would hold their own key, every squad
+---   would own every key for free, and it would look like the feature working.
+---
+---   AND THE PRESSER HAS TO BE ALIVE. A DBNO mate crawls at 0.55 m/s and is
+---   bleeding out; if they are on top of a body it is because they were shot
+---   there, not because they went to fetch anything.
+---
+--- @param src integer
+--- @param entry table|nil
+--- @param targetSrc any
+--- @return boolean
+--- @return string|nil why   for /brkey and the console, never for a player
+--- @return table|nil target the roster entry of the mate whose key it is
+function BR.ReviveKey.canTake(src, entry, targetSrc)
+    if not enabled() then return false, 'disabled' end
+    if not entry then return false, 'no entry' end
+
+    targetSrc = math.tointeger(tonumber(targetSrc))
+    if not targetSrc then return false, 'no target' end
+    if targetSrc == src then
+        return false, 'a player cannot take their own key -- their body is on it'
+    end
+
+    if entry.state ~= BR.PlayerState.ALIVE then
+        return false, 'only a player who is up and in the match may take a key'
+    end
+
+    local m = entry.matchId and BR.Server.matches[entry.matchId]
+    if not m or m.state ~= BR.MatchState.PLAYING then
+        return false, 'not in a playing match'
+    end
+    if not entry.squadId then return false, 'no squad' end
+
+    local e = BR.Roster.get(targetSrc)
+    if not e then return false, 'no such player' end
+    if e.squadId ~= entry.squadId then return false, 'different squads' end
+    if e.matchId ~= entry.matchId then return false, 'different matches' end
+
+    local rec = e.reviveKey
+    if not rec then return false, 'no key for that player' end
+    if rec.held == true then return false, 'that key is already held' end
+
+    -- ═══ THERE HAS TO BE SOMETHING THERE TO PICK UP ═══
+    --
+    -- `pickupLive` and not a bare distance test, and this is the whole of what
+    -- the expiry BUYS. The record stays unheld for ever on purpose so it can
+    -- still be bought, so without this a squadmate pressing over the body at
+    -- minute ten would take a pickup that stopped existing at minute three --
+    -- and the free option the owner put a clock on would never actually close.
+    if not pickupLive(rec, GetGameTimer()) then
+        return false, 'that pickup has expired -- it is buyable, not takeable'
+    end
+
+    local p = entry.pos
+    if p == nil then return false, 'no position sample for that player yet' end
+
+    local reach = (tonumber(K.collectM) or 2.5) + (tonumber(K.collectSlackM) or 1.0)
+    local d = BR.Dist(p.x, p.y, rec.x, rec.y)
+    if d > reach then
+        return false, ('%.2fm from the key, server reach is %.2fm'):format(d, reach)
+    end
+
+    return true, nil, e
+end
+
+--- Take it.
+--- @param src integer
+--- @param targetSrc any
+--- @return boolean ok, string|nil why
+function BR.ReviveKey.take(src, targetSrc)
+    local entry = BR.Roster.get(src)
+    local ok, why, e = BR.ReviveKey.canTake(src, entry, targetSrc)
+    if not ok then
+        stat.refused = stat.refused + 1
+        -- LOGGED AND NOT SENT, which is this whole feature's rule: a press the
+        -- server declines says nothing at all. The refusal reasons exist for
+        -- /brkey and the console log.
+        print(('[br_core] revivekey: %d may not take %s\'s key -- %s')
+            :format(src, tostring(targetSrc), tostring(why)))
+        return false, why
+    end
+
+    grant(e, 'fetched', copy().collected)
+    stat.collected = stat.collected + 1
+    print(('[br_core] revivekey: %d took the key for %s (%s)')
+        :format(src, tostring(e.name), tostring(targetSrc)))
+    return true
+end
+
+--- C->S. "I am standing on that mate's key and I am taking it."
+RegisterNetEvent(BR.Net.REVIVEKEY_TAKE)
+AddEventHandler(BR.Net.REVIVEKEY_TAKE, function(d)
+    local src = source
+    if type(d) ~= 'table' then return end
+    BR.ReviveKey.take(src, d.target)
+end)
+
+-- ---------------------------------------------------------------------------
 -- Buying
 -- ---------------------------------------------------------------------------
+
+--- Resolve a net id to an ambulance this player is actually standing at.
+---
+--- ═══ ONE RESOLVER FOR THE PURCHASE AND FOR THE REVIVE ═══
+---
+--- Both gestures happen at the same van and both are sent as a net id, so "is
+--- that an ambulance and am I at it" is asked twice per press by two features
+--- that must never come to disagree. server/ambheal.lua's header states the
+--- shape and this is the same one minus the rear arc: the model, the distance
+--- and the vehicle's existence are all read off this server's own samples.
+--- Nothing the client sent is trusted except WHICH vehicle it means.
+---
+--- IT ASKS BR.Rescue.isAmbulance, which is the one answer server/rescue.lua,
+--- server/ambheal.lua and this file all use, so all three mean the same thing by
+--- the word. Nil-guarded because this file must keep loading if the rescue half
+--- is ever pulled, and the honest answer during that window is "nothing is an
+--- ambulance", which makes both gestures inert rather than wrong.
+---
+--- @param entry table|nil   the acting player's roster entry
+--- @param netId any
+--- @return integer|nil veh
+--- @return string|nil why
+--- @return table|nil at   { x, y, z } -- where the van is, for the arrival
+local function ambulanceFor(entry, netId)
+    if not can.entityFromNet then return nil, 'no net id resolver on this build' end
+
+    netId = tonumber(netId)
+    if not netId then return nil, 'no net id' end
+
+    local okVeh, veh = pcall(NetworkGetEntityFromNetworkId, netId)
+    if not okVeh or not veh or veh == 0 then
+        return nil, 'that net id resolves to nothing'
+    end
+
+    local okEx, exists = pcall(DoesEntityExist, veh)
+    if not okEx or not isTrue(exists) then return nil, 'that vehicle does not exist' end
+
+    local okModel, model = pcall(GetEntityModel, veh)
+    if not okModel then return nil, 'could not read the model' end
+    if not (BR.Rescue and BR.Rescue.isAmbulance and BR.Rescue.isAmbulance(model)) then
+        return nil, 'that is not an ambulance'
+    end
+
+    -- ═══ ARE THEY ACTUALLY AT IT ═══
+    --
+    -- Both positions are the SERVER's: `entry.pos` is its own four-times-a-second
+    -- sample of the player's ped, and the vehicle's is read on this line.
+    -- Neither is anything the client sent.
+    local okPos, c = pcall(GetEntityCoords, veh)
+    if not okPos or c == nil then return nil, 'could not read where it is' end
+
+    local p = entry and entry.pos
+    if p == nil then return nil, 'no position sample for that player yet' end
+
+    local reach = (tonumber(K.reachM) or 6.0) + (tonumber(K.reachSlackM) or 2.0)
+    local d = BR.Dist(c.x, c.y, p.x, p.y)
+    if d > reach then
+        return nil, ('not at an ambulance (%.1fm)'):format(d)
+    end
+
+    return veh, nil, { x = c.x, y = c.y, z = c.z }
+end
 
 --- May this player buy their squad's keys at this vehicle, right now?
 ---
@@ -580,9 +744,7 @@ function BR.ReviveKey.canBuy(src, entry, netId)
     if not enabled() then return false, 'disabled' end
     if not entry then return false, 'no entry' end
     if not can.entityFromNet then return false, 'no net id resolver on this build' end
-
-    netId = tonumber(netId)
-    if not netId then return false, 'no net id' end
+    if tonumber(netId) == nil then return false, 'no net id' end
 
     -- ═══ THE BUYER MUST BE IN THE MATCH, AND `OUT` IS THE INTERESTING HALF ═══
     --
@@ -617,41 +779,10 @@ function BR.ReviveKey.canBuy(src, entry, netId)
     if n <= 0 then return false, 'that squad has no outstanding keys' end
 
     -- ═══ THE VEHICLE, RESOLVED AND INTERROGATED RATHER THAN TRUSTED ═══
-    local okVeh, veh = pcall(NetworkGetEntityFromNetworkId, netId)
-    if not okVeh or not veh or veh == 0 then
-        return false, 'that net id resolves to nothing'
-    end
-
-    local okEx, exists = pcall(DoesEntityExist, veh)
-    if not okEx or not isTrue(exists) then return false, 'that vehicle does not exist' end
-
-    -- IS IT AN AMBULANCE. Asked of server/rescue.lua so all three features mean
-    -- the same thing by the word -- see BR.Rescue.isAmbulance. Nil-guarded
-    -- because this file must keep loading if the rescue half is ever pulled, and
-    -- the honest answer during that window is "nothing is an ambulance", which
-    -- makes buying inert rather than wrong.
-    local okModel, model = pcall(GetEntityModel, veh)
-    if not okModel then return false, 'could not read the model' end
-    if not (BR.Rescue and BR.Rescue.isAmbulance and BR.Rescue.isAmbulance(model)) then
-        return false, 'that is not an ambulance'
-    end
-
-    -- ═══ ARE THEY ACTUALLY AT IT ═══
     --
-    -- Both positions are the SERVER's: `entry.pos` is its own four-times-a-second
-    -- sample of the player's ped, and the vehicle's is read on this line.
-    -- Neither is anything the client sent.
-    local okPos, c = pcall(GetEntityCoords, veh)
-    if not okPos or c == nil then return false, 'could not read where it is' end
-
-    local p = entry.pos
-    if p == nil then return false, 'no position sample for that player yet' end
-
-    local reach = (tonumber(K.reachM) or 6.0) + (tonumber(K.reachSlackM) or 2.0)
-    local d = BR.Dist(c.x, c.y, p.x, p.y)
-    if d > reach then
-        return false, ('not at an ambulance (%.1fm)'):format(d)
-    end
+    -- Through the ONE resolver the revive hold also uses -- see `ambulanceFor`.
+    local veh, whyVeh = ambulanceFor(entry, netId)
+    if not veh then return false, whyVeh end
 
     return true, nil, veh
 end
@@ -740,14 +871,9 @@ end
 
 --- C->S. "I am at an ambulance and I want my squad's keys."
 ---
---- ═══ THIS HANDLER HAS NO CLIENT SENDER YET, AND THAT IS REPORTED ═══
----
---- The press needs an on-screen affordance, an affordance needs a word, and the
---- owner has not given one (#219 Q20). Rather than invent copy, the whole
---- player-facing half is left out and this handler is driven by `/brkey buy`
---- below -- the same way /brrescue drives BR.Rescue.begin. When he gives the
---- wording, the client half is a prompt and one TriggerServerEvent into here;
---- nothing on this side changes.
+--- ITS SENDER IS client/revivekey.lua's buy plate, and `/brkey buy` drives the
+--- identical path -- the same rule server/rescue.lua states for /brrescue: an
+--- admin verb that took a different route would be testing itself.
 RegisterNetEvent(BR.Net.REVIVEKEY_BUY)
 AddEventHandler(BR.Net.REVIVEKEY_BUY, function(d)
     local src = source
@@ -779,11 +905,12 @@ end)
 -- `held = false` instead would put the key back on the market and let a squad
 -- buy the same person back twice.
 
---- How far the SERVER lets a hold be from the key. See config/revivekey.lua.
+--- How far the SERVER lets a hold be from the ambulance. See the header: this
+--- is `reachM` -- the PURCHASE's radius -- because it is the same van.
 --- @return number
 local function reviveReach()
-    return (tonumber(K and K.reviveReachM) or 3.0)
-         + (tonumber(K and K.reviveSlackM) or 1.0)
+    return (tonumber(K and K.reachM) or 6.0)
+         + (tonumber(K and K.reachSlackM) or 2.0)
 end
 
 --- @return integer
@@ -791,25 +918,36 @@ local function holdMs()
     return math.floor(tonumber(K and K.reviveHoldMs) or 6000)
 end
 
+--- How long the subject's screen is black before this file touches anything.
+---
+--- fadeMs + focusMs: the fade, and then the streaming focus sitting on the
+--- ambulance while the world comes in under it. See the header for why the whole
+--- of that wait is on THIS side.
+--- @return integer
+local function arriveMs()
+    return math.floor(tonumber(K and K.fadeMs) or 400)
+         + math.floor(tonumber(K and K.focusMs) or 1000)
+end
+
 --- Everything that has to be true for a key revive to still be running.
 ---
 --- RE-CHECKED EVERY TICK rather than only when the hold starts, which is
 --- server/combat.lua's shape and what makes the cancellation rules free: walking
---- away, being knocked yourself, the key being spent by somebody else and the
---- match ending are all just this returning false.
+--- away from the van, being knocked yourself, the ambulance being blown up, the
+--- key being spent by somebody else and the match ending are all just this
+--- returning false.
 ---
---- MEASURED IN TWO DIMENSIONS, DELIBERATELY, and not in three. This is the same
---- circle `collectM` is measured with one screen above -- the key is a flat spot
---- on the ground and the reviver is standing on that ground -- and the vertical
---- difference between a standing player and a body lying at their feet is noise
---- a 3D form would charge them for. server/combat.lua's DBNO revive uses Dist3
---- because both of ITS positions are peds.
+--- MEASURED IN TWO DIMENSIONS, DELIBERATELY, and not in three. A van is four
+--- metres long and you walk up to it; the vertical difference between a standing
+--- player and a vehicle's origin is noise a 3D form would charge them for, and
+--- `canBuy` has always measured the same circle at the same vehicle.
 ---
 --- @param reviverSrc integer
 --- @param src integer          the player the key belongs to
 --- @param e table              their roster entry
---- @return boolean allowed, string|nil why not
-local function reviveAllowed(reviverSrc, src, e)
+--- @param netId any            the ambulance the reviver says they are at
+--- @return boolean allowed, string|nil why not, table|nil at  { x, y, z }
+local function reviveAllowed(reviverSrc, src, e, netId)
     if not enabled() then return false, 'disabled' end
     if not e then return false, 'no such player' end
 
@@ -817,9 +955,9 @@ local function reviveAllowed(reviverSrc, src, e)
     if not rec then return false, 'no key for that player' end
     -- ═══ THE SQUAD HAS TO OWN IT ═══
     --
-    -- A key lying unclaimed on the ground is not a revive. It is fetched by
-    -- walking to it (the sweep, above) or bought at an ambulance, and only then
-    -- is there anything to spend.
+    -- A key lying unclaimed on the ground is not a revive. It is taken with a
+    -- press at the body (`canTake`) or bought at an ambulance, and only then is
+    -- there anything to spend.
     if rec.held ~= true then return false, 'that key is not held yet' end
 
     if e.state ~= BR.PlayerState.OUT then
@@ -852,15 +990,18 @@ local function reviveAllowed(reviverSrc, src, e)
         return false, 'not in a playing match'
     end
 
-    local p = r.pos
-    if not p then return false, 'no position sampled for the reviver' end
+    -- ═══ AND THEY HAVE TO BE AT AN AMBULANCE ═══
+    --
+    -- THE WHOLE OF WHAT THE OWNER'S 2026-08-30 MESSAGE CHANGED, and it is one
+    -- call: the same resolver the purchase uses, on the same net id the client
+    -- names, measured with the same radius. `at` is what comes back with it --
+    -- the van's own coordinates, which the arrival is placed 150m above -- so
+    -- the vehicle that ruled the hold and the vehicle they fall onto are the
+    -- same vehicle by construction rather than by two lookups agreeing.
+    local veh, whyVeh, at = ambulanceFor(r, netId)
+    if not veh then return false, whyVeh end
 
-    local reach = reviveReach()
-    local d = BR.Dist(p.x, p.y, rec.x, rec.y)
-    if d > reach then
-        return false, ('%.2fm from the key, server reach is %.2fm'):format(d, reach)
-    end
-    return true
+    return true, nil, at
 end
 
 --- Tell one client its hold is over. Harmless when the hold was never theirs.
@@ -872,13 +1013,37 @@ local function cancelTo(reviverSrc, src, reason)
         { pct = 0.0, target = src, cancelled = true, reason = reason })
 end
 
+--- Withdraw the promise made to the subject when the hold completed.
+---
+--- The black screen and the streaming focus are the client's, taken on our
+--- word, and this is the word being taken back. Rare by construction -- see
+--- `stillPossible` for the two things that can go wrong in the second and a half
+--- between the promise and the arrival -- but a subject left staring at a black
+--- screen because a match ended underneath them would have no way out at all,
+--- and client/revivekey.lua's own deadline is the second net rather than the
+--- first.
+--- @param src integer
+local function unpromise(src)
+    TriggerClientEvent(BR.Net.REVIVEKEY_ARRIVE, src, { cancelled = true })
+end
+
 --- Drop whatever hold is running on this key. Safe on a record with none.
+---
+--- ═══ IT REFUSES TO TOUCH A COMMITTED REVIVE ═══
+---
+--- Once the six seconds are up the revive is PAID FOR, and the second and a half
+--- the arrival spends fading is not a window in which the reviver can change
+--- their mind. Without this line, letting go of the key during the fade -- or the
+--- 250ms silence of a dropped heartbeat -- would take a completed revive back
+--- and leave the subject to time out on a black screen. `arriveAt` is what says
+--- the hold is over; see the stepper.
 --- @param src integer
 --- @param e table
 --- @param reason string|nil
 local function stopHold(src, e, reason)
     local rec = e.reviveKey
     if not rec or not rec.byS then return end
+    if rec.arriveAt then return end
 
     local byS = rec.byS
     -- KEPT FOR /brkey, the way server/combat.lua keeps `reviveLastPct`: a string
@@ -894,7 +1059,28 @@ local function stopHold(src, e, reason)
     cancelTo(byS, src, reason)
 end
 
---- Put a player who is OUT back in the match, where they fell.
+--- Is a promised arrival still deliverable?
+---
+--- THE ONLY THINGS RE-CHECKED IN THE SECOND AND A HALF THE BLACK SCREEN LASTS,
+--- and the list is short on purpose. Once the hold has completed, the revive is
+--- paid for: the reviver's distance, their heartbeat, and whether the ambulance
+--- is still in one piece have all stopped mattering -- they mattered while the
+--- ring was filling. What is left is the two facts that would make standing this
+--- player up nonsense rather than unfair.
+--- @param e table
+--- @return boolean, string|nil
+local function stillPossible(e)
+    if e.state ~= BR.PlayerState.OUT then
+        return false, 'the target is ' .. tostring(e.state) .. ', not out'
+    end
+    local m = e.matchId and BR.Server.matches[e.matchId]
+    if not m or m.state ~= BR.MatchState.PLAYING then
+        return false, 'not in a playing match'
+    end
+    return true
+end
+
+--- Put a player who is OUT back in the match, 150m above the ambulance used.
 ---
 --- ═══ SHAPED ON BR.Combat.reviveHeld, NOT ON BR.Combat.revive ═══
 ---
@@ -906,11 +1092,20 @@ end
 --- `engineHp` (or the 1Hz server-observed death check reads a stale corpse
 --- sample and eliminates them again a second into their new life), it stamps
 --- `healthSettleUntil` so the health audit does not log the crossover, and it
---- sends REVIVED BEFORE the state flip.
+--- sends the resurrection BEFORE the state flip.
 ---
 --- IT IS NOT REUSED, ONLY COPIED IN SHAPE. `reviveHeld` hardcodes 100 health and
 --- speaks "The match has started. You are back in.", both of which are wrong
---- here.
+--- here -- and it resurrects a player where they fell, which is now wrong twice.
+---
+--- ═══ AND THE PED EVENT IS REVIVEKEY_PLACE, NOT REVIVED ═══
+---
+--- REVIVED stands a body up at `GetEntityCoords(ped)` -- exactly where it is
+--- lying, no placement at all -- which is what #144's held death needs and the
+--- opposite of what the owner asked for here. This path names the AMBULANCE and
+--- the client does the whole of his sequence off it. `at` is the vehicle's own
+--- coordinates as the ruling read them, so the van that allowed the hold and the
+--- van they fall onto cannot be two different vans.
 ---
 --- ═══ AND THE STORM LEDGER IS CLEARED, WHICH IS A REAL BUG AND NOT HYGIENE ═══
 ---
@@ -929,7 +1124,8 @@ end
 --- @param src integer
 --- @param e table
 --- @param reviverSrc integer|nil  credited; nil for the console path
-local function bringBack(src, e, reviverSrc)
+--- @param at table                { x, y, z } of the ambulance they arrive over
+local function bringBack(src, e, reviverSrc, at)
     local M = BR.Config.Match or {}
     local hp = tonumber(M.dbnoReviveHp) or 30
 
@@ -959,7 +1155,13 @@ local function bringBack(src, e, reviverSrc)
     -- THE PED FIRST, THE LEDGER SECOND, for the reason protocol.lua's REVIVED
     -- note gives: a client left holding a corpse while the server calls it ALIVE
     -- is exactly the state the server-observed death check exists to eliminate.
-    TriggerClientEvent(BR.Net.REVIVED, src)
+    --
+    -- AND THE SCREEN IS ALREADY BLACK BY HERE. This whole function runs
+    -- `arriveMs()` after the promise went out, so the client resurrects the
+    -- instant this lands rather than deferring behind its own fade -- which is
+    -- what keeps the window above from opening at all. See the header.
+    TriggerClientEvent(BR.Net.REVIVEKEY_PLACE, src,
+        { x = at.x, y = at.y, z = at.z })
 
     e.healthSettleUntil = GetGameTimer()
         + (((BR.Config.Combat or {}).healthAudit or {}).settleMs or 2000)
@@ -968,11 +1170,11 @@ local function bringBack(src, e, reviverSrc)
     BR.Roster.setState(src, BR.PlayerState.ALIVE)
     TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = hp, armour = 0 })
 
-    -- SPECTATING ENDS BY ITSELF AND NEEDS NO TEARDOWN CALL HERE.
-    -- server/spectate.lua's `mayWatch` refuses anyone BR.Server.isInMatch, and
-    -- its resolve pass stops the session with 'in-the-fight' on the next feed --
-    -- 250ms. Its own comment names this as the line #144's revive already runs
-    -- into.
+    -- SPECTATING IS ALREADY OVER BY HERE. It was ended a whole fade ago, at the
+    -- moment the promise went out, so that the camera cut happened while there
+    -- was nothing on screen -- see the stepper. server/spectate.lua's resolve
+    -- pass would also have caught it within 250ms of the state flip below; that
+    -- is now the net rather than the plan.
 
     local r = reviverSrc and BR.Roster.get(reviverSrc) or nil
     if r then
@@ -982,8 +1184,10 @@ local function bringBack(src, e, reviverSrc)
     end
 
     stat.revived = stat.revived + 1
-    print(('[br_core] revivekey: %s (%d) is back in on %d hp%s')
+    print(('[br_core] revivekey: %s (%d) is back in on %d hp, %.0fm over '
+        .. '(%.1f, %.1f)%s')
         :format(tostring(e.name), src, hp,
+                tonumber(K and K.dropM) or 150.0, at.x, at.y,
                 r and (' -- brought back by ' .. tostring(r.name)) or ''))
 end
 
@@ -992,37 +1196,62 @@ end
 --- `/brkey revive` runs THIS, which is `bringBack` with the identical ruling in
 --- front of it -- server/rescue.lua's rule for /brrescue and the same one: an
 --- admin verb that took a different route would be testing itself.
+---
+--- ═══ IT NEEDS AN AMBULANCE NOW, BECAUSE THE ARRIVAL IS SOMEWHERE ═══
+---
+--- The verb used to be able to stand somebody up with no reviver at all, because
+--- a key revive placed nobody anywhere -- there was nothing left to name. There
+--- is now: they arrive 150m over a specific van, so the console has to say WHICH,
+--- and there are exactly two honest ways to know.
+---
+---   A HOLD THAT IS ALREADY RUNNING knows. `rec.spot` is the ambulance the last
+---   ruling measured, refreshed every 250ms by the stepper, so `/brkey revive
+---   <id>` finishes the revive a player is actually performing -- which is what
+---   the verb is for in a two-client test.
+---
+---   OR THE CALLER NAMES BOTH. `/brkey revive <id> <reviverSrc> <netId>` runs
+---   the full ruling against that pair, exactly as a press would.
+---
+--- AND NOTHING ELSE. With no hold and no named van there is no arrival point,
+--- and inventing one -- their corpse, the map centre -- would be this verb
+--- testing a path the game does not have.
 --- @param src integer
 --- @param reviverSrc integer|nil
+--- @param netId any
 --- @return boolean ok, string|nil why
-function BR.ReviveKey.revive(src, reviverSrc)
+function BR.ReviveKey.revive(src, reviverSrc, netId)
     local e = BR.Roster.get(src)
     if not e then return false, 'no roster entry' end
+    local rec = e.reviveKey
+
     -- The reviver defaults to the holder of the running hold, so the console
     -- verb finishes the hold a player is actually performing rather than
     -- stealing the credit for it.
-    reviverSrc = reviverSrc or (e.reviveKey and e.reviveKey.byS) or nil
+    reviverSrc = reviverSrc or (rec and rec.byS) or nil
 
-    if reviverSrc then
-        local ok, why = reviveAllowed(reviverSrc, src, e)
-        if not ok then return false, why end
+    local at = nil
+    if netId ~= nil then
+        if not reviverSrc then return false, 'name a reviver with the net id' end
+        local okRule, why
+        okRule, why, at = reviveAllowed(reviverSrc, src, e, netId)
+        if not okRule then return false, why end
     else
-        -- NO REVIVER NAMED AND NONE HOLDING. The geometry has nobody to measure,
-        -- so the rest of the ruling is applied without it -- a key that is held,
-        -- a player who is OUT, a match that is playing.
-        local rec = e.reviveKey
+        -- NO VAN NAMED, SO THE RUNNING HOLD'S ONE IS THE ONLY ANSWER. The rest
+        -- of the ruling is still applied -- a key that is held, a player who is
+        -- OUT, a match that is playing -- so this is a shortcut through the
+        -- GEOMETRY and through nothing else.
         if not rec then return false, 'no key for that player' end
         if rec.held ~= true then return false, 'that key is not held yet' end
-        if e.state ~= BR.PlayerState.OUT then
-            return false, 'the target is ' .. tostring(e.state) .. ', not out'
-        end
-        local m = e.matchId and BR.Server.matches[e.matchId]
-        if not m or m.state ~= BR.MatchState.PLAYING then
-            return false, 'not in a playing match'
+        local okPossible, whyPossible = stillPossible(e)
+        if not okPossible then return false, whyPossible end
+        at = rec.spot
+        if not at then
+            return false, 'no ambulance -- nobody is holding at one, so name '
+                .. 'a reviver and a net id'
         end
     end
 
-    bringBack(src, e, reviverSrc)
+    bringBack(src, e, reviverSrc, at)
     return true
 end
 
@@ -1044,11 +1273,44 @@ BR.Sched.every(250, 'revivekey.hold', function()
             local rec = e.reviveKey
             local byS = rec.byS
 
-            local ok, why = reviveAllowed(byS, src, e)
+            -- ═══ COMMITTED: THE HOLD IS OVER AND THE SCREEN IS GOING BLACK ═══
+            --
+            -- Everything below this branch is about a hold that is still being
+            -- performed, and none of it applies once the six seconds are up. A
+            -- reviver who lets go, walks away or drops a heartbeat during the
+            -- fade has already paid; re-ruling them here would take a completed
+            -- revive back and strand the subject on a black screen.
+            if rec.arriveAt then
+                if now < rec.arriveAt then return end
+
+                local okStill, whyStill = stillPossible(e)
+                if not okStill then
+                    -- THE PROMISE IS WITHDRAWN, not silently dropped. The
+                    -- subject's client is holding a black screen and the
+                    -- streaming focus on our word.
+                    unpromise(src)
+                    rec.arriveAt = nil
+                    stopHold(src, e, whyStill or 'notallowed')
+                    print(('[br_core] revivekey: the arrival for %s (%d) fell '
+                        .. 'through -- %s'):format(tostring(e.name), src,
+                                                   tostring(whyStill)))
+                    return
+                end
+
+                bringBack(src, e, byS, rec.spot)
+                return
+            end
+
+            local ok, why, at = reviveAllowed(byS, src, e, rec.veh)
             if not ok then
                 stopHold(src, e, why or 'notallowed')
                 return
             end
+            -- WHERE THE VAN IS, REFRESHED EVERY TICK. An ambulance is a vehicle
+            -- and a vehicle can be pushed; the arrival is placed over wherever
+            -- it was when the hold finished, not over where it was when the hold
+            -- started.
+            rec.spot = at
 
             -- ═══ SILENCE IS A RELEASE ═══
             --
@@ -1065,7 +1327,39 @@ BR.Sched.every(250, 'revivekey.hold', function()
 
             local pct = (now - (rec.from or now)) / ms
             if pct >= 1.0 then
-                bringBack(src, e, byS)
+                -- ═══ STEP 1 AND STEP 2, AND THEN A WAIT ═══
+                --
+                -- "their screen should fade to black, set focus to the area
+                -- where the ambulance I just used is" -- and only THEN is the
+                -- revive processed. So the hold completing sends the promise and
+                -- does nothing else; `arriveAt` is when the branch at the top of
+                -- this callback picks it up, one whole fade later.
+                rec.arriveAt = now + arriveMs()
+                TriggerClientEvent(BR.Net.REVIVEKEY_ARRIVE, src,
+                    { x = at.x, y = at.y, z = at.z })
+
+                -- ═══ AND THE SPECTATE CAMERA COMES DOWN UNDER THE BLACK ═══
+                --
+                -- It would come down on its own -- server/spectate.lua's
+                -- resolve pass stops anyone BR.Server.isInMatch with
+                -- 'in-the-fight' -- but that runs at 250ms and it runs off the
+                -- STATE, which does not flip until the far end of the fade. So
+                -- left alone, the camera would still be sitting behind a
+                -- squadmate's shoulder for a quarter of a second AFTER the
+                -- screen has begun coming back, and the player would watch
+                -- somebody else for a beat before cutting to their own descent.
+                -- Ending it here spends that quarter second inside the black.
+                --
+                -- BR.Spectate.stop IS THE ONE TEARDOWN and it is documented as
+                -- safe for a player with no session, so this needs no test for
+                -- whether they were watching anybody. Nil-guarded because this
+                -- file must keep loading if the spectate half is ever pulled.
+                if BR.Spectate and BR.Spectate.stop then
+                    BR.Spectate.stop(src, 'in-the-fight')
+                end
+                print(('[br_core] revivekey: %s (%d) is coming back at '
+                    .. '(%.1f, %.1f) in %dms')
+                    :format(tostring(e.name), src, at.x, at.y, arriveMs()))
                 return
             end
 
@@ -1074,7 +1368,7 @@ BR.Sched.every(250, 'revivekey.hold', function()
         end)
 end)
 
---- C->S. "I am on that key and I am holding the button."
+--- C->S. "I am at that ambulance and I am holding the button."
 ---
 --- RE-ASSERTED, NOT ANNOUNCED ONCE -- see protocol.lua. The heartbeat branch is
 --- first because it is the common case: at 250ms over a six-second hold it runs
@@ -1088,7 +1382,8 @@ AddEventHandler(BR.Net.REVIVEKEY_START, function(d)
     if not targetSrc then return end
 
     local e = BR.Roster.get(targetSrc)
-    local ok, why = reviveAllowed(src, targetSrc, e)
+    local netId = type(d) == 'table' and d.n or nil
+    local ok, why, at = reviveAllowed(src, targetSrc, e, netId)
     if not ok then
         stat.refused = stat.refused + 1
         cancelTo(src, targetSrc, why or 'notallowed')
@@ -1100,8 +1395,13 @@ AddEventHandler(BR.Net.REVIVEKEY_START, function(d)
     -- ALREADY OURS: this is the heartbeat, not a new hold. It must NOT restart
     -- the progress, or a player leaning on the key would reset their own clock
     -- four times a second and the ring would never finish.
+    --
+    -- IT DOES REFRESH THE VAN, because a re-assertion is the client saying which
+    -- ambulance it is still standing at -- and a player who walked from one to
+    -- another mid-hold has been ruled against the new one on the line above.
     if rec.byS == src then
         rec.beat = GetGameTimer()
+        rec.veh, rec.spot = netId, at
         return
     end
 
@@ -1121,6 +1421,11 @@ AddEventHandler(BR.Net.REVIVEKEY_START, function(d)
     rec.byS  = src
     rec.from = GetGameTimer()
     rec.beat = rec.from
+    -- THE VAN, RECORDED WITH THE CLAIM. The stepper re-rules against it every
+    -- 250ms and the arrival is placed above it, so it is stored beside the hold
+    -- rather than re-derived from a second lookup that could find a different
+    -- ambulance parked half a metre closer.
+    rec.veh, rec.spot = netId, at
     stat.holds = stat.holds + 1
 end)
 
@@ -1141,18 +1446,31 @@ end)
 -- Admin
 -- ---------------------------------------------------------------------------
 
---- What does this player's squad hold, and why can they not buy?
+--- What does this player's squad hold, where does the revive happen, and why
+--- can they not do it?
 ---
 --- THE REFUSAL REASONS EXIST FOR THIS COMMAND AND NOWHERE ELSE, which is
 --- server/rescue.lua's rule for /brrescue and the same one: a refusal toast
 --- would be player-facing copy nobody asked for.
+---
+--- ═══ THE NET ID IS THE THIRD ARGUMENT FOR ALL THREE VERBS ═══
+---
+--- The revive happens at an ambulance now, so "could this player revive that
+--- mate" is not answerable without one -- exactly as "could they buy" never was.
+--- One position for one argument across the three verbs, rather than the third
+--- slot meaning a vehicle for `buy` and a person for `revive`.
+---
+--- WITH NO NET ID GIVEN, a key that has a HOLD running is ruled against the van
+--- that hold is at, so a bare `/brkey <id>` during a two-client test still
+--- answers the question the test is asking.
 RegisterCommand('brkey', function(src, args)
     local verb   = args and args[1]
     local target = tonumber(args and args[2])
         or (tonumber(src) ~= 0 and tonumber(src) or nil)
+    local netId  = tonumber(args and args[3])
 
     if not target then
-        print('usage: brkey <status|buy|revive> <serverId> [netId]')
+        print('usage: brkey <status|buy|revive> <serverId> [netId] [reviverSrc]')
         return
     end
 
@@ -1166,11 +1484,14 @@ RegisterCommand('brkey', function(src, args)
     local now  = GetGameTimer()
 
     print(('[br_core] revivekey %d: squad=%s  keys=%d  outstanding=%d  '
-        .. 'hold=%dms reach=%.1fm hp=%d')
+        .. 'hold=%dms reach=%.1fm (at an ambulance) take=%.1fm hp=%d '
+        .. 'drop=%.0fm after %dms of black')
         :format(target, tostring(entry.squadId), #keys,
                 BR.ReviveKey.outstanding(entry.squadId, entry.matchId),
                 holdMs(), reviveReach(),
-                tonumber((BR.Config.Match or {}).dbnoReviveHp) or 30))
+                (tonumber(K.collectM) or 2.5) + (tonumber(K.collectSlackM) or 1.0),
+                tonumber((BR.Config.Match or {}).dbnoReviveHp) or 30,
+                tonumber(K.dropM) or 150.0, arriveMs()))
 
     for _, k in ipairs(keys) do
         print(('    %s (%d)  held=%s%s  pickup=%s  at (%.1f, %.1f)')
@@ -1190,10 +1511,21 @@ RegisterCommand('brkey', function(src, args)
         -- "the ring fills and nothing happens" actually is; a single stop at 40%
         -- with a distance in the reason is a player who walked off. Those two
         -- look identical on screen and cost four playtest rounds last time.
-        if k.rec.byS then
-            print(('        held by %d for %.0f%% (last beat %dms ago)')
+        if k.rec.arriveAt then
+            -- ═══ THE HALF SECOND NOBODY CAN SEE FROM A CHAIR ═══
+            --
+            -- Between the ring closing and the player falling out of the sky
+            -- there is a black screen on somebody else's machine, and "the
+            -- revive did nothing" and "the revive is mid-arrival" look
+            -- identical from the reviver's side. This line is the difference.
+            print(('        COMMITTED -- arriving in %dms over (%.1f, %.1f)')
+                :format(math.max(0, k.rec.arriveAt - now),
+                        (k.rec.spot or {}).x or 0.0, (k.rec.spot or {}).y or 0.0))
+        elseif k.rec.byS then
+            print(('        held by %d for %.0f%% at van %s (last beat %dms ago)')
                 :format(k.rec.byS,
                         math.min(1.0, (now - (k.rec.from or now)) / holdMs()) * 100.0,
+                        tostring(k.rec.veh),
                         now - (k.rec.beat or now)))
         elseif k.rec.stopAt then
             print(('        no hold -- last stopped %.0fs ago at %.0f%% (%s)')
@@ -1203,17 +1535,27 @@ RegisterCommand('brkey', function(src, args)
             print('        no hold, and none has been attempted')
         end
 
+        -- WHY A PICKUP WOULD BE REFUSED RIGHT NOW. The press is new and its
+        -- refusals are the ones a playtest cannot read: "I stood on the body and
+        -- pressed and nothing happened" is a distance, an expiry or a state, and
+        -- the three are indistinguishable on screen because none of them says
+        -- anything.
+        local okTake, whyTake = BR.ReviveKey.canTake(target, entry, k.src)
+        print(('        %d may take their key: %s%s'):format(target,
+            tostring(okTake), okTake and '' or (' (' .. tostring(whyTake) .. ')')))
+
         -- WHY A HOLD WOULD BE REFUSED RIGHT NOW, asked of the real ruling. Only
-        -- meaningful with somebody to measure, which is `target` -- so this line
-        -- answers "could the player I named revive this mate from where they are
-        -- standing", which is the question a two-client test round asks.
-        local okRev, whyRev = reviveAllowed(target, k.src, k.entry)
-        print(('        %d may revive them: %s%s'):format(target, tostring(okRev),
-            okRev and '' or (' (' .. tostring(whyRev) .. ')')))
+        -- meaningful with somebody to measure (`target`) AND a van to measure to
+        -- -- so this line answers "could the player I named revive this mate at
+        -- that ambulance", which is the question a two-client test round asks.
+        local okRev, whyRev = reviveAllowed(target, k.src, k.entry,
+                                            netId or k.rec.veh)
+        print(('        %d may revive them at van %s: %s%s')
+            :format(target, tostring(netId or k.rec.veh), tostring(okRev),
+                    okRev and '' or (' (' .. tostring(whyRev) .. ')')))
     end
 
     if verb == 'buy' then
-        local netId = tonumber(args and args[3])
         local okBuy, whyBuy = BR.ReviveKey.canBuy(target, entry, netId)
         print(('    canBuy=%s%s'):format(tostring(okBuy),
             okBuy and '' or (' (' .. tostring(whyBuy) .. ')')))
@@ -1223,7 +1565,13 @@ RegisterCommand('brkey', function(src, args)
         -- `brkey revive <serverId>` FINISHES THE NAMED PLAYER'S OWN REVIVE --
         -- the id is the person coming BACK, matching `status` and `buy`, which
         -- both take the subject rather than the actor.
-        local okRev, whyRev = BR.ReviveKey.revive(target, tonumber(args and args[3]))
+        --
+        -- IT DRIVES THE WHOLE ARRIVAL, not a shortcut past it: the same
+        -- bringBack, the same REVIVEKEY_PLACE at the same van. What it skips is
+        -- only the fade, because there was no hold to promise one.
+        local okRev, whyRev = BR.ReviveKey.revive(target,
+                                                  tonumber(args and args[4]),
+                                                  netId)
         print(('    revive=%s%s'):format(tostring(okRev),
             okRev and '' or (' (' .. tostring(whyRev) .. ')')))
     end

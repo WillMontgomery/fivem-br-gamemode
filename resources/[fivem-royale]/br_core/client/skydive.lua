@@ -647,8 +647,17 @@ AddEventHandler('br:drop:begin', function(d)
 
         -- Carry the bus's momentum out of the door; a dead-stop exit reads
         -- as teleportation even when the coordinates are right.
+        --
+        -- ...UNLESS THE CALLER SAYS THERE IS NO MOMENTUM TO CARRY. The revive
+        -- key's arrival puts a player 150m ABOVE AN AMBULANCE (owner,
+        -- 2026-08-30) and nothing threw them out of anything, so it asks for
+        -- zero -- 25 m/s of borrowed bus speed would drift them a couple of
+        -- hundred metres off the van they are supposed to be landing at. The
+        -- default is the bus's own number, so bus.lua passes nothing and
+        -- nothing about the drop changes.
+        local speed = tonumber(d.speed) or 25.0
         local rad = math.rad(d.heading or 0.0)
-        SetEntityVelocity(ped, -math.sin(rad) * 25.0, math.cos(rad) * 25.0, -2.0)
+        SetEntityVelocity(ped, -math.sin(rad) * speed, math.cos(rad) * speed, -2.0)
 
         -- THE CHUTE, VERIFIED -- and NEVER DOUBLED. GiveWeaponToPed is
         -- normally instant, but the one scenario where it quietly fails is

@@ -1080,6 +1080,18 @@ local function keyRow(e, now)
         -- being asked and cannot be read the other way.
         held = k.held == true or nil,
         live = (k.held ~= true and now < (k.expiresAt or 0)) and true or nil,
+        -- WHEN IT WAS MINTED, WHICH IS HOW THE CLIENT BREAKS A TIE.
+        --
+        -- The revive happens at an ambulance now, so a squad with two mates down
+        -- has two held keys at ONE van and the plate has to name one of them.
+        -- The rule is "whoever has been out longest", and this is the number it
+        -- is read from -- on the client, because the client draws the plate and
+        -- the server only rules on the target it is handed.
+        --
+        -- SAFE ON THIS PUSH FOR THE SAME REASON EVERYTHING ELSE ON IT IS: it
+        -- goes to the squad and to nobody else. How long your own mate has been
+        -- dead is not a fact the squad that killed them gets from here.
+        mintedAt = k.mintedAt,
     }
 end
 

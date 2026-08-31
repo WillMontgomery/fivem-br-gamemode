@@ -360,6 +360,39 @@ function BR.Spawn.respawn(x, y, z, heading, exact, cb)
     BR.Spawn.placeAt(x, y, z, heading, cb)
 end
 
+--- Stand the local player's own ped back up, wherever we want it to happen.
+---
+--- ═══ THE FOUR CALLS EVERY RESURRECTION ON THIS CLIENT MAKES ═══
+---
+--- Extracted from the REVIVED handler below rather than written twice: a ped is
+--- dead on the machine that owns it and NetworkResurrectLocalPlayer runs on that
+--- machine or nowhere, so BOTH OUT->ALIVE paths in the game end up here. What
+--- differs between them is only the COORDINATES -- #144's held death stands a
+--- player up where they fell, and a revive key's arrival stands them up 150m
+--- over the ambulance their squad used -- and a coordinate is an argument, not a
+--- second function.
+---
+--- ClearPedTasksImmediately because the dying animation outlives the
+--- resurrection otherwise (the ped stands up and then finishes collapsing);
+--- initHealthModel because resurrection restores GTA's defaults and not ours;
+--- cleanPed because "any time revive is processed, please clean the ped" (owner,
+--- 2026-08-28) and a player who DIED has more on them than a knock leaves.
+---
+--- IT DOES NOT SET THE HEALTH, AND THAT IS THE SERVER'S JOB EITHER WAY.
+--- initHealthModel leaves the ped on full; BR.Net.HEALTH_SYNC arrives behind
+--- this and says what the number actually is. Both callers are resurrected by a
+--- server that sends that message one line later, so the order holds for both.
+--- @param x number
+--- @param y number
+--- @param z number
+--- @param heading number|nil
+function BR.Spawn.reviveAt(x, y, z, heading)
+    NetworkResurrectLocalPlayer(x, y, z, heading or 0.0, true, false)
+    ClearPedTasksImmediately(PlayerPedId())
+    BR.Native.initHealthModel()
+    BR.Native.cleanPed()
+end
+
 -- BACK ON YOUR FEET WHERE YOU FELL (#144).
 --
 -- The server holds a death that happens before its match reaches PLAYING: no
@@ -394,18 +427,11 @@ AddEventHandler(BR.Net.REVIVED, function()
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
 
-    NetworkResurrectLocalPlayer(p.x, p.y, p.z, GetEntityHeading(ped), true, false)
-    -- The dying animation outlives the resurrection otherwise: the ped stands up
-    -- and then finishes collapsing.
-    ClearPedTasksImmediately(PlayerPedId())
-    BR.Native.initHealthModel()
-    -- ...AND THE DEATH COMES OFF THE BODY WITH IT (owner, 2026-08-28: "any time
-    -- revive is processed, please clean the ped"). THE SECOND OF THE TWO PLACES
-    -- A REVIVE LANDS ON THIS CLIENT: BR.Combat.reviveHeld does not go through
-    -- BR.Combat.revive, so client/dbno.lua's DBNO_SET handler never hears about
-    -- this one. A resurrection restores the health model, not the skin -- and
-    -- this player died, so there is more on them than a knock leaves.
-    BR.Native.cleanPed()
+    -- THE BODY'S OWN COORDINATES, WHICH IS THE WHOLE OF WHAT MAKES THIS EVENT
+    -- DIFFERENT FROM THE OTHER RESURRECTION. Everything else it does -- the
+    -- task clear, the health model, the clean ped -- is shared with the revive
+    -- key's arrival and lives in BR.Spawn.reviveAt for that reason. See its note.
+    BR.Spawn.reviveAt(p.x, p.y, p.z, GetEntityHeading(ped))
 
     print('[br_core] revived where we fell -- the match had not started yet')
 end)
@@ -684,6 +710,14 @@ BR.Spawn.departure = {
 --- idempotent and every path may call it without knowing what the others did.
 local focusHeld = false
 
+--- Until when somebody OTHER than the warmup trip is holding the focus.
+---
+--- DECLARED HERE, ABOVE EVERY FUNCTION THAT READS IT. A `local` read from a
+--- closure built earlier in the file resolves as a GLOBAL -- nil, no error,
+--- silently wrong -- which is what tools/check_forward_locals.lua exists to
+--- catch. See BR.Spawn.focusOn for what the lend is for.
+local focusLentUntil = 0
+
 --- Point the streaming focus at the warmup spawn.
 ---
 --- SET_FOCUS_POS_AND_VEL MOVES WHERE THE ENGINE STREAMS TERRAIN AND ASSETS, and
@@ -705,6 +739,7 @@ end
 --- states for the arrival, arrived at from the other direction. Abandonment,
 --- failure and timeout included -- not just the happy one.
 local function releaseFocus()
+    focusLentUntil = 0
     if not focusHeld then return end
     focusHeld = false
     if SetFocusEntity then
@@ -720,6 +755,40 @@ function BR.Spawn.focusHeld()
     return focusHeld
 end
 
+--- Hold the streaming focus somewhere for a caller that is not the warmup trip.
+---
+--- ═══ ONE OWNER OF THE FOCUS, LENT RATHER THAN COPIED ═══
+---
+--- client/revivekey.lua's arrival needs exactly what the warmup departure needs
+--- -- "set focus to the area where the ambulance I just used is" (owner,
+--- 2026-08-30) is the same sentence as "move the focus to the selected warmup
+--- spawn area" (2026-08-29) -- so it borrows this file's focus rather than
+--- calling SetFocusPosAndVel for itself. Two files taking the focus would be two
+--- files releasing it, and whichever released second would hand it back out from
+--- under the other; the watchdog below would then be watching one of them.
+---
+--- THE LEND IS A DEADLINE, NOT A FLAG. `focuswatch` gives the focus back the
+--- moment it is held by nobody travelling, which is correct for the trip and
+--- would kill a borrower on its next SLOW tick. So a borrower says how long it
+--- expects to need it, and the watchdog is the net under that rather than under
+--- nothing.
+--- @param x number
+--- @param y number
+--- @param z number
+--- @param ms number|nil  how long to hold it before the watchdog may take it back
+function BR.Spawn.focusOn(x, y, z, ms)
+    if not SetFocusPosAndVel then return end
+    SetFocusPosAndVel(x + 0.0, y + 0.0, z + 0.0, 0.0, 0.0, 0.0)
+    focusHeld = true
+    focusLentUntil = GetGameTimer()
+        + math.floor(tonumber(ms) or BR.Spawn.departure.focusMaxMs)
+end
+
+--- Give a borrowed focus back. Idempotent, like every other path into it.
+function BR.Spawn.focusRelease()
+    releaseFocus()
+end
+
 -- The focus's own watchdog, and it is the same shape as the curtain's at the
 -- bottom of this file for the same reason: this is a piece of state that is
 -- taken at the start of a trip and given back at the end of it, so every way a
@@ -730,9 +799,16 @@ end
 -- a healthy trip can never be seen in this state. Anything that is -- a state
 -- that bounced back to LOBBY, a thread that threw, a /brunstuck -- is by
 -- definition an ending that did not go through landed().
+--
+-- AND A BORROWED FOCUS IS EXEMPT UNTIL ITS DEADLINE, not for ever. BR.Spawn.
+-- focusOn lends the focus to a caller that is not travelling -- the revive key's
+-- arrival -- so without this line the watchdog would take it back on the very
+-- next SLOW tick and the borrower would be streaming nothing. The deadline is
+-- what keeps this a watchdog: a borrower that never gives it back still loses it.
 BR.Loop.register(BR.Loop.SLOW, 'spawn.focuswatch', function()
     if not focusHeld then return end
     if BR.Spawn.traveling then return end
+    if GetGameTimer() < focusLentUntil then return end
 
     print('[br_core] the warmup focus outlived its trip -- handing it back (watchdog)')
     releaseFocus()

@@ -71,15 +71,27 @@
 -- to ask him, not to write one. See the note over `copy`.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
--- THE RESURRECTION NUMBERS ARE HERE NOW TOO. TWO OF THEM, AND NOT THE OTHERS
+-- THE REVIVE HAPPENS AT AN AMBULANCE, AND THE ARRIVAL IS A DROP
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- Step 5 is built (server/revivekey.lua's hold, client/revivekey.lua's prompt),
--- so the numbers it actually spends are named here: `reviveHoldMs` and the two
--- reach values. What is STILL not here is everything the shape of the feature
--- deleted rather than deferred -- there is no drop height, no parachute and no
--- landing spot, because a key revive stands a player up where they fell and
--- performs no placement at all. See server/revivekey.lua's `bringBack`.
+-- Owner, 2026-08-30, after the fifth round on this feature:
+--
+--   "I should be able to walk up to an ambulance and see a DUI to press
+--    something to revive them. Then once that is complete, their screen should
+--    fade to black, set focus to the area where the ambulance I just used is,
+--    process the revive, give them a parachute, put them 150m above the
+--    ambulance, then fade in. And now they're back in the match."
+--
+-- THAT SENTENCE DELETED THE CORPSE REVIVE AND WROTE THREE NUMBERS. The hold now
+-- happens at an ambulance, so it is measured with `reachM` -- the SAME radius
+-- the purchase already uses, because it is the same gesture at the same van and
+-- a second number would be a second answer to "am I at it". The pair that used
+-- to measure a hold at the body (`reviveReachM`, `reviveSlackM`) is GONE rather
+-- than repurposed: nothing is measured to a key's recorded point any more.
+--
+-- AND THE ARRIVAL IS ITS OWN SEQUENCE, with `dropM`, `fadeMs` and `focusMs`
+-- below. He did not give durations for the black or the focus hold; he gave the
+-- ORDER and the height. See each key for which half is his.
 --
 -- AND THERE IS NO `reviveHp`, DELIBERATELY. A key revive hands back
 -- BR.Config.Match.dbnoReviveHp -- the same 30 a squadmate's pick-up hands back
@@ -109,31 +121,41 @@ BR.Config.ReviveKey = {
     -- there.
     expiryMs = 180000,
 
-    -- How close a squadmate has to be to the body to have collected it.
+    -- How close a squadmate has to be to the body to take the key off it.
     --
-    -- ═══ WHY THERE IS NO PROMPT AND NO PRESS ═══
+    -- ═══ THERE IS A PROMPT AND THERE IS A PRESS, AND THE OWNER ASKED FOR IT ═══
     --
-    -- Collection is a PROXIMITY TEST THE SERVER RUNS ON ITS OWN SAMPLES, not a
-    -- key press. Three reasons, in order of weight:
+    -- "I somehow picked up the dead player's key by walking up to them without
+    -- seeing a DUI or pressing anything." -- the owner, 2026-08-30.
     --
-    --   1. IT NEEDS NO WORDING. A prompt is a string the owner has not given
-    --      (Q20), and inventing one is the thing he has asked us not to do.
-    --   2. THERE IS NO CHOICE TO REFUSE. A prompt exists to let a player decline
-    --      -- to leave a crate for a squadmate, to not spend a med kit. Nobody
-    --      declines their own mate's revive key, and a prompt whose only answer
-    --      is yes is a keypress tax.
-    --   3. THE PROMPT BUDGET IS ALREADY SPENT. client/dbno.lua: "One browser for
-    --      every world prompt in the game", and BR.Loot.suppress() exists
-    --      because the crate prompt and the revive prompt already collide over
-    --      it. A body has scattered loot around it by construction
-    --      (BR.Loot.deathBox rings the corpse at deathScatterRadius), so a key
-    --      prompt would be a fourth contender in the one place the third already
-    --      fights.
+    -- This file used to argue at length that collection needed no prompt: that
+    -- there is no choice to refuse, that a prompt needs wording he had not
+    -- given, and that the plate budget over a corpse was already spent. The
+    -- first two are answered -- he HAS given the wording (`copy.take`) and he
+    -- wants the press -- and the third was never a reason to make a pickup
+    -- silent, only a reason to arbitrate the plates, which client/revivekey.lua
+    -- does. A thing that leaves your pocket without you touching a key is
+    -- something you cannot know you have.
     --
-    -- 2.5m IS "STANDING ON THE BODY" and is deliberately tighter than the 4.6m
-    -- ring their kit is scattered in, so running the loot does not sweep up the
-    -- key from the far side of it without ever reaching them.
+    -- SO THIS IS NOW A PROMPT RADIUS AS WELL AS A RULING ONE, and 2.5m is still
+    -- "standing on the body" -- deliberately tighter than the 4.6m ring their
+    -- kit is scattered in, so the key plate does not fight the crate plate from
+    -- the far side of the loot without ever reaching them.
     collectM = 2.5,
+
+    -- Slack added to `collectM` for the SERVER's own ruling only.
+    --
+    -- The same argument `reachSlackM` carries below and `reviveSlackM` used to:
+    -- the server's position sample is up to one sampler interval old, so a
+    -- ruling run at exactly `collectM` refuses presses that were legitimate when
+    -- they were made. The plate keeps the tight number, the ruling keeps the
+    -- loose one, and the only direction this can be wrong in is forgiving.
+    --
+    -- NEW WITH THE PRESS. While collection was a server-side proximity test
+    -- there were not two numbers to reconcile -- the server was the only thing
+    -- measuring. A press is a claim about where the player was a moment ago, so
+    -- it needs the same slack every other press in this project is ruled with.
+    collectSlackM = 1.0,
 
     -- ------------------------------------------------------------------
     -- BUYING ONE
@@ -154,7 +176,16 @@ BR.Config.ReviveKey = {
     -- its own hold at an ambulance, which is step 5 and does not exist yet.
     buysAll = true,
 
-    -- How close to an ambulance "at an ambulance" is.
+    -- How close to an ambulance "at an ambulance" is -- FOR BOTH THE PURCHASE
+    -- AND THE REVIVE.
+    --
+    -- ═══ ONE RADIUS, TWO GESTURES, AND THAT IS DELIBERATE ═══
+    --
+    -- The revive moved to the van (see the header), so "am I at it" is now
+    -- asked twice at the same vehicle by the same player. A second reach value
+    -- would be a second answer to one question, free to drift, and the symptom
+    -- would be a buy plate that appears half a metre before the revive plate
+    -- does at the same van.
     --
     -- ═══ BESIDE IT, NOT BEHIND IT -- AND THAT IS A DIFFERENCE FROM ambheal ═══
     --
@@ -194,8 +225,8 @@ BR.Config.ReviveKey = {
     -- SPENDING ONE
     -- ------------------------------------------------------------------
 
-    -- How long a squadmate holds the interact key over the key's own point to
-    -- bring the owner of it back.
+    -- How long a squadmate holds the interact key AT AN AMBULANCE to bring a
+    -- mate whose key their squad holds back into the match.
     --
     -- ⚠ NOT THE OWNER'S NUMBER. He has not given one. This is roughly double
     -- BR.Config.Match.dbnoReviveTime (2.8s), and the doubling is the only
@@ -206,33 +237,51 @@ BR.Config.ReviveKey = {
     -- ring is animated from this number and the server rules against it.
     reviveHoldMs = 6000,
 
-    -- How close to the KEY'S OWN POINT the reviver has to stand.
+    -- ------------------------------------------------------------------
+    -- COMING BACK: THE ARRIVAL SEQUENCE
+    -- ------------------------------------------------------------------
     --
-    -- ═══ TO THE RECORDED POINT, NEVER TO THE CORPSE ═══
+    -- "their screen should fade to black, set focus to the area where the
+    --  ambulance I just used is, process the revive, give them a parachute, put
+    --  them 150m above the ambulance, then fade in."  -- the owner, 2026-08-30.
     --
-    -- server/revivekey.lua copies x/y/z off the body at mint time precisely so
-    -- the key does NOT follow it, and this is the reach that circle is measured
-    -- with. Measuring to the dead player's ped instead would inherit #163's
-    -- drifting clone and commit 33ca88c's death-ragdoll problem in one line --
-    -- the body a reviver is standing over walks out of any circle you draw
-    -- around it, on their machine only, and the hold dies with nothing on screen
-    -- to say why.
-    --
-    -- WIDER THAN `collectM` (2.5) BY HALF A METRE, on purpose. Collection is
-    -- "standing on the body"; the revive is a hold you should not lose by
-    -- shifting your feet, and it is the same relationship
-    -- dbnoReviveDist/dbnoReviveSlack has.
-    reviveReachM = 3.0,
+    -- SIX STEPS IN ONE SENTENCE, AND THE ORDER IS THE SPECIFICATION. The three
+    -- numbers under it are here; the sequence itself is split across
+    -- server/revivekey.lua (which owns WHEN, because it owns the ledger) and
+    -- client/revivekey.lua (which owns the screen, the ped and the chute).
 
-    -- Slack added to `reviveReachM` for the SERVER's ruling only.
+    -- How far above the ambulance they are put down.
     --
-    -- Identical in kind to `reachSlackM` above and to
-    -- BR.Config.Match.dbnoReviveSlack: the server's position sample is up to one
-    -- sampler interval old, so a ruling run at exactly `reviveReachM` cancels
-    -- holds that were legitimate when they were made. The prompt keeps the tight
-    -- number, the ruling keeps the loose one, and the only direction this can be
-    -- wrong in is forgiving.
-    reviveSlackM = 1.0,
+    -- HIS NUMBER, EXACTLY, AND THE ONLY ONE OF THE THREE THAT IS. 150m is
+    -- roughly two thirds of the bus's own drop and is comfortably above
+    -- BR.Config.Drop.autoDeployAGL, so the canopy is a choice rather than a
+    -- formality.
+    dropM = 150.0,
+
+    -- How long the screen takes to go black, before anything else happens.
+    --
+    -- ⚠ NOT THE OWNER'S NUMBER. He asked for a fade and did not time it. This is
+    -- client/spawn.lua's departure fade rounded up a beat: long enough to read
+    -- as a fade rather than a cut, short enough that a squad watching the ring
+    -- close does not think it hung. The fade back IN is BR.Spawn.reveal()'s own,
+    -- which is the one function in the client that undoes every dark screen.
+    fadeMs = 400,
+
+    -- How long the streaming focus sits on the ambulance BEFORE the ped is put
+    -- above it.
+    --
+    -- ⚠ NOT THE OWNER'S NUMBER EITHER -- but it is his number for the same job
+    -- somewhere else: "move the focus to the selected warmup spawn area for at
+    -- least 1 second before moving the ped, then we fade in once the ped is
+    -- there" (2026-08-29, client/spawn.lua's `departure.focusHoldMs`). The
+    -- engine spends this second pulling the terrain around the van in while
+    -- there is nothing on screen to spoil.
+    --
+    -- THE SERVER SPENDS fadeMs + focusMs BEFORE IT PROCESSES THE REVIVE, which
+    -- is why both live in a SHARED config rather than on the client: the client
+    -- draws the black and the server holds the ledger, and the two must be
+    -- reading one clock.
+    focusMs = 1000,
 
     -- How long the server waits to hear from a hold before it drops it.
     --
@@ -273,17 +322,20 @@ BR.Config.ReviveKey = {
 --- line in /brkey prints `price` rather than this string, so the two can always
 --- be compared.
 BR.Config.ReviveKey.copy = {
-    -- The world prompt over a key lying on the ground, for the squadmate who
-    -- can walk to it. See the note on `collectM`: walking in is what takes it,
-    -- so this plate carries NO key glyph -- it names the thing, it does not
-    -- offer a press.
+    -- The world prompt over a key lying on the ground, and the press that takes
+    -- it. See the note on `collectM`: this plate DOES carry a key glyph now,
+    -- because there is a key to press. "I somehow picked up the dead player's
+    -- key by walking up to them without seeing a DUI or pressing anything"
+    -- (owner, 2026-08-30) is the report that put one there.
     take      = 'Take revive key',
 
     -- The world prompt at an ambulance, when this squad has something to buy.
     buy       = 'Buy revive keys — 25 Volts',
 
-    -- The world prompt over a key the squad already owns: the hold that
-    -- actually brings the owner of it back.
+    -- The world prompt AT AN AMBULANCE for a key the squad already owns: the
+    -- hold that brings its owner back. It used to be drawn over the body; the
+    -- owner moved it to the van, and once a mate has bled out the van is the
+    -- only place it appears at all.
     revive    = 'Revive teammate',
 
     -- Sent to the squad the moment a key is collected off the ground...

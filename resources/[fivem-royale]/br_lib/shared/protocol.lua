@@ -413,18 +413,42 @@ BR.Net = {
     -- only way to reach this handler; that console verb still exists and still
     -- runs the identical path.
     --
-    -- THERE IS NO COLLECTION EVENT AND THERE MUST NOT BE ONE. Walking over a
-    -- dead mate's key is decided by the server off its own position samples --
-    -- see server/revivekey.lua's header -- so there is nothing for a client to
-    -- send and nothing for it to lie about. The plate the player sees over a
-    -- loose key names it; it does not offer a press, and it carries no key
-    -- glyph for that reason.
     REVIVEKEY_BUY   = 'br:revivekey:buy',
+
+    -- ═══ AND THE PICKUP IS A PRESS TOO, WHICH IT WAS NOT ═══
+    --
+    -- C->S  { target = serverId } -- "I am standing on that mate's key and I am
+    -- taking it".
+    --
+    -- THIS EVENT USED NOT TO EXIST, AND THE NOTE HERE SAID IT MUST NOT. The
+    -- argument was that the server already samples every position four times a
+    -- second, so nothing needed to be sent and nothing could be lied about. It
+    -- was answered by a playtest: "I somehow picked up the dead player's key by
+    -- walking up to them without seeing a DUI or pressing anything" (owner,
+    -- 2026-08-30). A thing that leaves the ground without a press is a thing the
+    -- player cannot know they have.
+    --
+    -- NOTHING IS TRUSTED BUT THE INTENT. The claim carried here is "I pressed,
+    -- and I meant that mate"; the distance, the squad, the match and whether
+    -- there is still a pickup there are all re-derived from the server's own
+    -- samples in BR.ReviveKey.canTake -- exactly as the purchase re-derives
+    -- every clause of "I was standing at an ambulance".
+    REVIVEKEY_TAKE  = 'br:revivekey:take',
 
     -- ═══ THE HOLD THAT ACTUALLY BRINGS SOMEBODY BACK ═══
     --
-    -- C->S  { target = serverId } -- "I am standing on the key for that player
-    -- and I am holding the key down". RE-ASSERTED EVERY 250ms RATHER THAN SENT
+    -- C->S  { target = serverId, n = netId } -- "I am at that ambulance and I am
+    -- holding the key down to bring that player back".
+    --
+    -- IT NAMES THE AMBULANCE AS WELL AS THE MATE, and that is the difference the
+    -- owner's 2026-08-30 message made: the revive used to be ruled against the
+    -- key's own recorded point on the ground and is now ruled at a van, so the
+    -- server needs to know WHICH van -- both to rule the distance and because
+    -- the arrival is placed 150m above that exact vehicle. The net id is a name,
+    -- not a fact: server/revivekey.lua resolves it, checks it exists, checks the
+    -- model against BR.Rescue.isAmbulance and measures the distance itself.
+    --
+    -- RE-ASSERTED EVERY 250ms RATHER THAN SENT
     -- ONCE, which is client/dbno.lua's protocol and exists for a bug this
     -- project has already shipped: a brief tap completed a whole revive when the
     -- STOP below was raised and did not land. Progress requires CONTINUOUS
@@ -451,6 +475,34 @@ BR.Net = {
     -- outcome of, and the ring itself is animated locally from a start message
     -- rather than driven by these -- a dropped one cannot stutter it.
     REVIVEKEY_PROGRESS = 'br:revivekey:progress',
+
+    -- ═══ THE ARRIVAL, IN THE OWNER'S OWN ORDER ═══
+    --
+    --   "their screen should fade to black, set focus to the area where the
+    --    ambulance I just used is, process the revive, give them a parachute,
+    --    put them 150m above the ambulance, then fade in."  -- 2026-08-30.
+    --
+    -- TWO EVENTS, BECAUSE THE BLACK HAS TO COME FIRST AND THE SERVER OWNS THE
+    -- LEDGER. The screen is the client's and the resurrection is the server's,
+    -- and the whole point of his sentence is that one precedes the other.
+    --
+    -- S->C  { x, y, z } -- "you are coming back at that van: go black and pull
+    -- the world in there". Sent to the SUBJECT the moment the hold completes.
+    -- `{ cancelled = true }` is the same event withdrawing the promise, so a
+    -- revive that falls apart in the second between the two does not leave
+    -- somebody staring at a black screen.
+    REVIVEKEY_ARRIVE = 'br:revivekey:arrive',
+    -- S->C  { x, y, z } -- "you are back: stand up 150m over that point with a
+    -- parachute, and fade in". Sent BEFORE the roster flips to ALIVE, which is
+    -- the ordering REVIVED's note below states and the reason it is stated: a
+    -- client left holding a corpse while the server calls it ALIVE is exactly
+    -- the state the server-observed death check exists to eliminate.
+    --
+    -- WHY NOT REVIVED. That event resurrects a player WHERE THEY FELL, with no
+    -- placement at all -- it is #144's held death, and client/spawn.lua's
+    -- handler is written around the body already being on the ground it fell to.
+    -- This one is an arrival somewhere else, in the air, with a chute.
+    REVIVEKEY_PLACE  = 'br:revivekey:place',
 
     -- Spectate / end
     --
