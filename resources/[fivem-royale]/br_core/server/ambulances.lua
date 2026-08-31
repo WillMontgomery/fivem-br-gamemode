@@ -1,4 +1,5 @@
--- The 23 station ambulances (#219 step 3).
+-- The 23 station ambulances (#219 step 3), and the map of every ambulance a
+-- match knows about.
 --
 -- Owner: "The 23 surveyed points should be persistent ambulances. Whenever a
 -- squadmate is down or out, the blips for all the ambulances should be shown to
@@ -9,6 +10,30 @@
 -- aren't spawning still. And neither did the blips for them" -- and the revive
 -- key cannot be tested in an ordinary round without it, because the ambulance is
 -- where a revive happens.
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE FIRST ROUND THEY ALL WORKED CORRECTED THE SENTENCE ABOVE, TWICE
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Both corrections are the owner's, 2026-08-31, and both are implemented in
+-- `publish`. They are recorded here because the quote above is what this file
+-- was built from and it is no longer the whole rule.
+--
+--   NOT "DOWN OR OUT" -- OUT. "while a squadmate is DBNO bleeding out we have
+--   ambulance blips for the squad, but we can't do anything with the ambulances.
+--   We should not see blips until they've bled out." A downed mate is picked up
+--   AT THE BODY; there is no revive key until they are eliminated, so during the
+--   bleed-out the map of vans points at something nobody can use yet.
+--
+--   AND THE 23 ARE NOT THE WHOLE MAP. "let's not auto-show ambulance blips just
+--   because they got in an ambulance - BUT do add the position to the table so
+--   when blips are shown we can include any that other players have found along
+--   the way (engine-spawned ones)." Discovery is server/rescue.lua's -- it owns
+--   the only hook that can see ambient traffic -- and it used to publish a blip
+--   to the whole match the moment anyone sat in a van. It now only remembers.
+--   This file mirrors that ledger (`refreshFound`) and publishes the finds
+--   through the same gate as the 23: same audience, same trigger, same event,
+--   one undifferentiated set of icons on the squad's map.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WHY THE SERVER MAKES THEM, WHICH IS NOT A CHOICE
@@ -174,6 +199,11 @@ local function begin(m)
         pending  = pending,
         next     = 1,
         stations = {},
+        -- THE AMBULANCES NOBODY AUTHORED. [blipKey] = { x, y, moved }, mirrored
+        -- every pass from server/rescue.lua's discovery ledger -- see
+        -- `refreshFound`. Empty for most of most matches and never touched by
+        -- creation or teardown: nothing in here was made by this file.
+        ambient  = {},
         refused  = 0,
         attempts = 0,
         gone     = {},
@@ -265,30 +295,60 @@ local function push(src, key, x, y)
     TriggerClientEvent(BR.Net.RESCUE_BLIP, src, { key = key, x = x, y = y })
 end
 
---- Take every station blip off one player's map.
+--- Take every ambulance blip off one player's map.
+---
+--- ALL THREE LISTS, and the third is the one that would be missed: `rec.gone`
+--- holds keys retired THIS pass, which are no longer in either live list and
+--- would otherwise be left drawn on the map of a player who stops qualifying in
+--- the same second one of them expired.
 --- @param src integer
 --- @param rec table
 local function hide(src, rec)
     for _, s in ipairs(rec.stations) do push(src, s.key, nil, nil) end
+    for key in pairs(rec.ambient) do push(src, key, nil, nil) end
     for _, key in ipairs(rec.gone) do push(src, key, nil, nil) end
     showing[src] = nil
 end
 
---- Publish this match's station blips to the squads that should have them.
+--- Publish this match's ambulance blips to the squads that should have them.
 ---
---- ═══ ALL OF THEM, TO THE WHOLE SQUAD, WHILE ANY ONE OF THEM IS DOWN OR OUT ═══
+--- ═══ ALL OF THEM, TO THE WHOLE SQUAD, ONCE A SQUADMATE IS OUT ═══
 ---
---- The owner's rule, unmodified. Not the nearest station, not the one beside the
---- body: the squad is deciding where to drive, and a map showing one option is
---- not a choice.
+--- OUT, AND NO LONGER DBNO. Owner, 2026-08-31: "while a squadmate is DBNO
+--- bleeding out we have ambulance blips for the squad, but we can't do anything
+--- with the ambulances. We should not see blips until they've bled out."
 ---
---- OUT COUNTS, WHICH BR.Server.isInMatch DOES NOT. An eliminated player is
---- exactly who this feature exists for -- their key is what a mate carries to an
---- ambulance -- so the audience test here is `isInMatch OR OUT` rather than that
---- helper, and the DOWN-or-OUT test is the owner's two words.
+--- The earlier rule said "down or out" and this file kept it literally. What a
+--- round showed is that the two halves are not the same offer. While a mate is
+--- DBNO the answer is a revive AT THE BODY -- client/dbno.lua's plate, a hold,
+--- free, and it keeps their inventory -- and nothing about an ambulance is
+--- reachable: there is no key yet, so the whole map of vans is pointing at
+--- something nobody can use. The key is minted at ELIMINATION
+--- (BR.ReviveKey.onEliminated, off server/combat.lua), and that is the instant
+--- these blips become an actual choice. So the test is exactly OUT, and it lines
+--- up with the state the revive key exists for rather than with a word.
 ---
---- ONLY TRANSITIONS AND MOVEMENT ARE SENT. Turning the blips on sends all 23
---- once; after that a parked ambulance sends nothing at all, and one somebody
+--- ALL OF THEM STILL, AND TO THE WHOLE SQUAD STILL. Not the nearest van, not the
+--- one beside the body: the squad is deciding where to drive, and a map showing
+--- one option is not a choice.
+---
+--- THE AUDIENCE TEST IS SEPARATE FROM THE TRIGGER and both need OUT for
+--- different reasons. BR.Server.isInMatch does not count OUT, and an eliminated
+--- player must still SEE the map their squad is reading -- they are the one being
+--- fetched. So the second filter is `isInMatch OR OUT`, and the first is OUT
+--- alone.
+---
+--- ═══ AND IT IS NOT ONLY THE 23 ═══
+---
+--- Owner, same message: "do add the position to the table so when blips are
+--- shown we can include any that other players have found along the way
+--- (engine-spawned ones)." `rec.ambient` is that table, mirrored from
+--- server/rescue.lua's discovery ledger by `refreshFound`, and it is published
+--- through the identical gate: found ambulances are not a second feature with a
+--- second audience, they are more rows in the same list.
+---
+--- ONLY TRANSITIONS AND MOVEMENT ARE SENT. Turning the blips on sends the whole
+--- set once; after that a parked ambulance sends nothing at all, and one somebody
 --- drives away sends its own coordinates at this pass's cadence. Re-sending 23
 --- coordinates per squad per second for vehicles that are not moving would be
 --- the whole of this feature's network cost, for nothing.
@@ -297,12 +357,11 @@ end
 local function publish(matchId, rec)
     if not A.blip or A.blip.enabled == false then return end
 
-    -- WHICH GROUPS HAVE SOMEBODY DOWN OR OUT.
+    -- WHICH GROUPS HAVE SOMEBODY OUT.
     local needy = {}
     BR.Roster.each(
         function(e) return e.matchId == matchId
-            and (e.state == BR.PlayerState.DBNO
-                 or e.state == BR.PlayerState.OUT) end,
+            and e.state == BR.PlayerState.OUT end,
         function(src, e) needy[groupKey(src, e)] = true end)
 
     BR.Roster.each(
@@ -321,14 +380,20 @@ local function publish(matchId, rec)
             if not had then
                 -- NEWLY QUALIFYING: the whole set, once.
                 for _, s in ipairs(rec.stations) do push(src, s.key, s.x, s.y) end
+                for key, f in pairs(rec.ambient) do push(src, key, f.x, f.y) end
                 showing[src] = matchId
                 return
             end
 
-            -- ALREADY SHOWING: only what changed.
+            -- ALREADY SHOWING: only what changed. A find that is new to this
+            -- pass carries `moved` set, so it reaches a player who already has
+            -- the rest by the same road a station that drove off does.
             for _, key in ipairs(rec.gone) do push(src, key, nil, nil) end
             for _, s in ipairs(rec.stations) do
                 if s.moved then push(src, s.key, s.x, s.y) end
+            end
+            for key, f in pairs(rec.ambient) do
+                if f.moved then push(src, key, f.x, f.y) end
             end
         end)
 end
@@ -368,6 +433,76 @@ local function refresh(rec)
         end
     end
     rec.stations = kept
+end
+
+--- Mirror the ambulances this match has DISCOVERED, and retire the ones that
+--- have stopped existing.
+---
+--- ═══ THE 23 ARE OURS; THESE ARE ONLY EVER BORROWED ═══
+---
+--- Owner, 2026-08-31: "do add the position to the table so when blips are shown
+--- we can include any that other players have found along the way (engine-spawned
+--- ones)."
+---
+--- WHY THE LEDGER IS NOT KEPT HERE. Ambient traffic is client-created population
+--- and this server cannot see it at all until somebody sits in one --
+--- server/rescue.lua's AMBIENT AMBULANCES section argues that out and owns the
+--- only hook there is (server/vehicles.lua's 4 Hz seat read). So discovery lives
+--- there and the MAP lives here, which is the split the owner's sentence
+--- describes: a table that is added to as players find things, read at the moment
+--- blips are shown.
+---
+--- WHY A MIRROR RATHER THAN READING IT AT PUBLISH TIME. `moved` is a difference
+--- between two passes, and publish runs once per WATCHING PLAYER's group rather
+--- than once per pass -- computing it there would ask the same question several
+--- times and get a different answer each time. `rec.stations` carries exactly the
+--- same field for exactly the same reason, and the two lists are published by one
+--- rule because they are shaped the same.
+---
+--- ═══ HOW A STALE RECORD IS RETIRED ═══
+---
+--- IT IS NOT RETIRED HERE, AND THAT IS DELIBERATE. server/rescue.lua's sweep asks
+--- DoesEntityExist once a second and drops the record the moment the answer is
+--- no -- a van that was blown up, or that the owning client's population manager
+--- reclaimed after everybody drove away. This pass sees the disappearance as a
+--- key that stopped being walked, puts it on `rec.gone`, and `publish` withdraws
+--- the blip from everyone holding it in the same pass. One staleness rule, in the
+--- file that can actually observe it, and the same DoesEntityExist test the 23
+--- live by one function above.
+--- @param matchId integer
+--- @param rec table
+local function refreshFound(matchId, rec)
+    local was = rec.ambient
+    local now = {}
+
+    -- NIL-GUARDED, and the guard is load order rather than caution:
+    -- server/rescue.lua may be disabled outright (BR.Config.Rescue.enabled), and
+    -- tools/test_ambulances drives this file with no rescue module at all. With
+    -- no ledger the mirror is empty, every key falls into `rec.gone` once, and
+    -- the 23 carry on exactly as they did.
+    if BR.Rescue and BR.Rescue.eachFound then
+        local movedM = (A.blip and A.blip.movedM) or 1.0
+        BR.Rescue.eachFound(matchId, function(key, x, y)
+            local f = was[key]
+            if not f then
+                -- NEW, AND `moved` IS TRUE ON PURPOSE. It is what carries a
+                -- freshly discovered van onto the map of a squad that is already
+                -- watching -- `rec.stations` sets the same flag at creation for
+                -- the same reason.
+                now[key] = { x = (x or 0.0) + 0.0, y = (y or 0.0) + 0.0,
+                             moved = true }
+                return
+            end
+            f.moved = BR.Dist(x or f.x, y or f.y, f.x, f.y) > movedM
+            if f.moved then f.x, f.y = x + 0.0, y + 0.0 end
+            now[key] = f
+        end)
+    end
+
+    for key in pairs(was) do
+        if not now[key] then rec.gone[#rec.gone + 1] = key end
+    end
+    rec.ambient = now
 end
 
 -- ---------------------------------------------------------------------------
@@ -548,6 +683,11 @@ BR.Sched.every((A and A.tickMs) or 1000, 'ambulances.tick', function()
 
         advance(m.id, rec)
         refresh(rec)
+        -- BEFORE publish AND AFTER refresh, because both of them write
+        -- `rec.gone` and publish is what drains it. A find that expired this
+        -- second must be withdrawn in the same pass it expired in, or its blip
+        -- survives until something else happens to move.
+        refreshFound(m.id, rec)
         publish(m.id, rec)
         rec.gone = {}
     end)
@@ -652,6 +792,32 @@ function BR.Ambulances.count(matchId)
     return #rec.stations
 end
 
+--- Is this vehicle one of the 23 this file made for this match?
+---
+--- ASKED BY server/rescue.lua's `noteVehicle`, WHICH IS THE WHOLE REASON IT
+--- EXISTS. The owner asked for the found list to hold "engine-spawned ones"; a
+--- squadmate who drives a STATION ambulance would otherwise be recorded as a
+--- find, and the same van would then be published twice -- once as `s:<entity>`
+--- and once as `v:<entity>`. The client keys its blips on that string and would
+--- draw both, which is a map saying there are two ambulances where there is one.
+---
+--- A WALK RATHER THAN A SET, and it is 23 comparisons on a table this file
+--- already owns. It runs only when a player is driving a vehicle whose model is
+--- an ambulance and which the ledger has not seen before -- which is once per
+--- ambulance per match, not per sample.
+--- @param matchId integer|nil
+--- @param veh integer|nil
+--- @return boolean
+function BR.Ambulances.isStation(matchId, veh)
+    if not matchId or not veh then return false end
+    local rec = live[matchId]
+    if not rec then return false end
+    for _, s in ipairs(rec.stations) do
+        if s.veh == veh then return true end
+    end
+    return false
+end
+
 --- Everything the console needs, for one match.
 --- @param matchId integer|nil
 --- @return table|nil
@@ -662,6 +828,8 @@ function BR.Ambulances.stats(matchId)
     for _, id in pairs(showing) do
         if id == matchId then watching = watching + 1 end
     end
+    local found = 0
+    for _ in pairs(rec.ambient) do found = found + 1 end
     return {
         bucket    = rec.bucket,
         up        = #rec.stations,
@@ -671,6 +839,11 @@ function BR.Ambulances.stats(matchId)
         tearing   = rec.tearing == true,
         attempts  = rec.attempts,
         watching  = watching,
+        -- HOW MANY AMBULANCES THE ROUND HAS DISCOVERED. Printed because it is
+        -- otherwise unobservable: the owner's map shows the 23 and the finds as
+        -- one undifferentiated set of icons, on purpose, so the console line is
+        -- the only place the split is visible.
+        found     = found,
     }
 end
 
@@ -705,9 +878,10 @@ RegisterCommand('brambulances', function(src)
             return
         end
         print(('[br_core] ambulances: match %d (%s) -- %d up of %d planned '
-               .. '(%d built, %d refused) in bucket %d; %d player(s) watching%s')
+               .. '(%d built, %d refused) in bucket %d, %d found; %d player(s) '
+               .. 'watching%s')
             :format(m.id, tostring(m.state), s.up, s.planned, s.built,
-                    s.refused, s.bucket, s.watching,
+                    s.refused, s.bucket, s.found, s.watching,
                     s.tearing and (', tearing down, pass ' .. s.attempts) or ''))
 
         local rec = live[m.id]
@@ -715,6 +889,13 @@ RegisterCommand('brambulances', function(src)
             print(('    %-14s veh %-6d net %-6s %.1f, %.1f')
                 :format(tostring(st.id or '?'), st.veh, tostring(st.netId),
                         st.x, st.y))
+        end
+        -- THE FOUND ONES, NAMED BY THEIR BLIP KEY. There is no surveyed id to
+        -- print -- nobody authored these -- and the key is what would be matched
+        -- against a report that a blip is pointing at nothing.
+        for key, f in pairs(rec.ambient) do
+            print(('    %-14s %-13s %.1f, %.1f')
+                :format('(found)', key, f.x, f.y))
         end
     end)
 

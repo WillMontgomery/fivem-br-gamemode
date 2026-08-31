@@ -331,6 +331,49 @@ do
         'and the take plate carries a press, so it draws a key cap and the '
             .. 'player has to mean it')
 
+    -- ═══ A THIRD PIN, AND IT IS THE SAME MISTAKE TWICE IN TWO FILES ═══
+    --
+    -- "the 'take revive key' DUI over a corpse is way too high off the ground."
+    --
+    -- All three plates were drawn at PROMPT_LIFT, which config/ambheal.lua
+    -- defines as "metres above the VEHICLE ORIGIN" -- right for the two that
+    -- hang off an ambulance, wrong for the one that hangs off the key's recorded
+    -- z. That z is the corpse's ped root, which is at its FEET (config/loot.lua
+    -- measures `waistHeight` up from it), so it is the ground the body is lying
+    -- on and 1.1 above it is chest height on a standing man.
+    --
+    -- client/dbno.lua HIT THIS FIRST, over the same body, and was brought to
+    -- `dbnoPromptLift = 0.35` off the head bone. This is that number reached
+    -- from a ground anchor instead. The two files must not converge again by
+    -- accident, which is why the pin is on the SPLIT rather than on a value: a
+    -- ground plate and a vehicle plate may not share one constant.
+    ok(clientCode:find('local GROUND_LIFT') ~= nil,
+        'the loose key has a lift of its own -- the plate over a corpse is not '
+            .. 'measured the way a plate over a van is')
+
+    -- AND IT IS LOWER, WHICH IS THE ONLY THING ABOUT THE VALUE WORTH PINNING.
+    -- 0.6 is a tuning number and the owner may want it at 0.5 or 0.7 after a
+    -- round; re-typing it here would make every nudge a two-file edit for no
+    -- gain. What may never happen again is a plate over a body sitting as high
+    -- as a plate over an ambulance roof, which is the whole of what he reported.
+    local gl = tonumber(clientCode:match('local GROUND_LIFT%s*=%s*([%d%.]+)'))
+    local pl = tonumber(clientCode:match('local PROMPT_LIFT%s*=%s*([%d%.]+)'))
+    ok(gl ~= nil and pl ~= nil and gl < pl,
+        '...and it sits lower than the vehicle lift, because the ground is lower '
+            .. 'than an ambulance roof',
+        ('ground %s, vehicle %s'):format(tostring(gl), tostring(pl)))
+    ok(clientCode:find(', c%.z %+ GROUND_LIFT') ~= nil,
+        '...and it is what the key\'s own point is drawn at')
+    -- THE LEADING ', ' IS LOAD-BEARING IN THESE PATTERNS. `vc.z` ends in `c.z`,
+    -- so a bare `c%.z` matches the AMBULANCE call too and the refusal below
+    -- would be unfailable.
+    ok(clientCode:find(', c%.z %+ PROMPT_LIFT') == nil
+       and clientCode:find(', vc%.z %+ PROMPT_LIFT') ~= nil
+       and clientCode:find(', hc%.z %+ PROMPT_LIFT') ~= nil,
+        '...while both AMBULANCE plates keep the vehicle lift, so the fix for '
+            .. 'the one the owner reported did not quietly move the two he did '
+            .. 'not')
+
     -- ═══ THE KEY POINT IS SQUAD-ONLY, WHICH IS A PROPERTY OF TWO OTHER FILES ═══
     --
     -- The client needs the coordinates the server rules against, and there are

@@ -166,8 +166,15 @@ local abandoned = {}
 --- COORDINATES RATHER THAN AN ENTITY, for the reason client/squadmates.lua
 --- records: an entity blip dies at the scope ceiling and an ambulance crossing
 --- the map is exactly that case.
+--- ONE CALLER NOW, AND THE KEY IS STILL A PARAMETER. The ambient finds used to
+--- publish through here under `v:<entity>` keys and no longer publish at all
+--- from this file (see AMBIENT AMBULANCES, decision 2b); what is left is the
+--- rescue in flight. The signature is unchanged because the CLIENT's contract is
+--- unchanged -- server/ambulances.lua sends the other two categories on the same
+--- event, and the handler that draws all three was written to take an opaque
+--- string precisely so that could move.
 --- @param m table|nil    the match to publish into
---- @param key string     opaque; `r:<src>` for a rescue, `v:<entity>` for a find
+--- @param key string     opaque; `r:<src>` for the rescue in flight
 --- @param x number|nil
 --- @param y number|nil
 local function pushBlip(m, key, x, y)
@@ -1228,12 +1235,27 @@ end)
 --      is built from (config/rescue.lua `models`), so "an ambulance" means one
 --      thing across the whole feature. One model today.
 --
---   2. THE BLIP OUTLIVES THE DRIVER. A player getting out does NOT take it down,
---      and that is the more useful of the two rules rather than the lazier one:
---      the question a blip answers is "is there an ambulance there", and an
---      abandoned one still answers yes. A marker that vanished the moment
---      somebody stepped out would also be a strange thing to explain -- the
---      vehicle is still sitting there in plain sight.
+--   2. THE RECORD OUTLIVES THE DRIVER. A player getting out does NOT take it
+--      down, and that is the more useful of the two rules rather than the lazier
+--      one: the question this ledger answers is "is there an ambulance there",
+--      and an abandoned one still answers yes.
+--
+--   2b. ...AND FINDING ONE NO LONGER PUTS A BLIP ON ANYBODY'S MAP (owner,
+--      2026-08-31): "let's not auto-show ambulance blips just because they got
+--      in an ambulance - BUT do add the position to the table so when blips are
+--      shown we can include any that other players have found along the way
+--      (engine-spawned ones)."
+--
+--      THAT SPLITS THIS FEATURE IN HALF AND THIS FILE KEEPS ONLY THE FIRST HALF.
+--      Discovery is a LEDGER here; the map is server/ambulances.lua's, which
+--      already decides who may see an ambulance blip and when (a squadmate who
+--      is OUT, and only their squad). This file used to publish straight to the
+--      whole match on its own tick, which meant a blip appeared for everybody
+--      the moment anyone sat in a van -- with nothing to use it for.
+--
+--      WHAT IS LEFT HERE IS EXACTLY WHAT ONLY THIS FILE CAN DO: notice the
+--      vehicle, keep its position current, and forget it when it stops existing.
+--      BR.Rescue.eachFound is the whole of the interface.
 --
 --   3. THEY DO NOT JOIN THE AUTHORED POINTS. Discovered ambulances are blips and
 --      nothing else; BR.Config.Rescue.Points() never sees them. A rescue needs a
@@ -1328,6 +1350,22 @@ end
 --- on the ordinary path, and a model read only for a vehicle that is new to it.
 --- Adding a second per-tick vehicle scan to find the same thing would have been
 --- the obvious way and is pure duplicated cost.
+---
+--- ═══ ONE OF THE 23 IS NOT A FIND, AND SAYING SO IS NOT COSMETIC ═══
+---
+--- The owner asked for "any that OTHER PLAYERS HAVE FOUND along the way
+--- (engine-spawned ones)". server/ambulances.lua already publishes the 23 under
+--- `s:<entity>` keys; without this gate a squadmate who drives one would put a
+--- SECOND blip on the same van under `v:<entity>`, and the client keeps its
+--- blips in one table keyed on that string, so it would draw both. Two icons on
+--- one vehicle is a map claiming there are two.
+---
+--- ASKED OF THE FILE THAT MADE THEM rather than answered here. It holds the 23
+--- handles and their match; a list kept in this file would be a second copy of
+--- something already authoritative one file away. Nil-guarded at call time, the
+--- same shape in which four files ask BR.Rescue.riding() from above the file
+--- that answers -- and the guard is real rather than defensive, because
+--- tools/test_rescue drives this module with no ambulances.lua loaded at all.
 --- @param src integer
 --- @param entry table
 --- @param veh integer|nil
@@ -1340,6 +1378,11 @@ function BR.Rescue.noteVehicle(src, entry, veh)
     local okModel, model = pcall(GetEntityModel, veh)
     if not okModel or not isAmbulanceModel(model) then return end
 
+    if BR.Ambulances and BR.Ambulances.isStation
+       and BR.Ambulances.isStation(entry.matchId, veh) then
+        return
+    end
+
     local pos = entry.pos
     found[veh] = {
         x = pos and pos.x or 0.0,
@@ -1350,12 +1393,69 @@ function BR.Rescue.noteVehicle(src, entry, veh)
         :format(veh, src))
 end
 
+--- Every ambulance this match has discovered, as blip keys and coordinates.
+---
+--- THE WHOLE OF THE INTERFACE, and the reason it is a walk rather than a table
+--- is BR.Roster.each's: the caller runs this once a second per match and a
+--- returned table would be a fresh allocation every pass for a list that is
+--- almost always empty.
+---
+--- THE KEY IS AUTHORED HERE, ONCE. `v:<entity>` is the category
+--- client/rescue.lua's RESCUE_BLIP handler was deliberately left open for
+--- ("both are just strings here"), and it is spelled in exactly one place so
+--- the file that PUBLISHES it and the file that RETIRES it cannot disagree
+--- about a string.
+---
+--- ═══ MATCH-WIDE, WHICH IS THE READING THAT MAKES IT WORTH HAVING ═══
+---
+--- "any that OTHER PLAYERS have found along the way." Scoped to the finder's own
+--- squad this is nearly nothing -- a squad would have to have personally driven
+--- an ambient van earlier in the round for it to help them at the moment one of
+--- them dies, which is the case where they already know where it is. Scoped to
+--- the match it is what it sounds like: the round accumulates knowledge of where
+--- the ambulances are, and any squad that needs one gets the benefit.
+---
+--- AND IT LEAKS NOTHING THE OLD BEHAVIOUR DID NOT. This ledger has always been
+--- match-wide and always published to the whole match; what changes is that a
+--- blip now appears only while the viewer's OWN squadmate is out, so the surface
+--- is strictly smaller than it was.
+--- @param matchId any
+--- @param fn fun(key: string, x: number, y: number)
+function BR.Rescue.eachFound(matchId, fn)
+    if not matchId or not fn then return end
+    for veh, rec in pairs(found) do
+        if rec.matchId == matchId then
+            fn('v:' .. tostring(veh), rec.x, rec.y)
+        end
+    end
+end
+
 --- Keep the found ones honest.
 ---
---- TWO JOBS, AND THE SECOND IS THE ONE THAT MATTERS. Moving the blip is
---- cosmetic; REMOVING one whose vehicle has stopped existing is what stops the
---- map filling up with markers for ambulances that were destroyed, streamed out
---- or cleaned up by the engine. A blip nobody can act on is worse than none.
+--- ═══ HOW A STALE RECORD IS RETIRED, WHICH IS THE JOB THAT MATTERS ═══
+---
+--- Ambient traffic despawns. A remembered position with no ambulance on it is a
+--- blip pointing at nothing, and a squad driving three minutes to it because a
+--- mate is out is the worst version of that. So the record's whole lifetime is
+--- one question asked once a second: DOES THE ENTITY STILL EXIST. A vehicle that
+--- was blown up, or that the owning client's population manager reclaimed once
+--- everybody drove away, stops existing on this server -- and the record goes
+--- with it, in the same pass, before anything can be published from it.
+---
+--- THAT IS THE SAME RULE THE 23 LIVE BY. server/ambulances.lua's `refresh` drops
+--- a station whose handle has stopped existing and withdraws its blip; this is
+--- the identical test on the identical cadence, and the consumer withdraws these
+--- the identical way. There is no second staleness mechanism -- no age, no TTL,
+--- no distance check -- because none of them would be more true than the engine's
+--- own answer, and each would be a way for the two halves to disagree.
+---
+--- THE MATCH IS THE OTHER END OF IT. A record whose match is no longer PLAYING
+--- is dropped outright: the bucket is gone, the round is over, and nothing that
+--- was true about the world during it survives.
+---
+--- NOTHING IS PUBLISHED FROM HERE ANY MORE. See decision 2b in this section's
+--- header -- this pass keeps the ledger and server/ambulances.lua decides who
+--- sees it.
 BR.Sched.every(R and R.tickMs or 1000, 'rescue.found', function()
     if not R or not R.enabled then return end
 
@@ -1369,15 +1469,16 @@ BR.Sched.every(R and R.tickMs or 1000, 'rescue.found', function()
         if not m or m.state ~= BR.MatchState.PLAYING
            or not okExists or not (alive == true or alive == 1) then
             found[veh] = nil
-            pushBlip(m, 'v:' .. tostring(veh), nil, nil)
         else
             -- STILL TRACKED AFTER THE DRIVER LEAVES, which is the whole point of
             -- reading the VEHICLE rather than the person who was in it. An
-            -- abandoned ambulance keeps its blip where it was left, and one
-            -- somebody drives away keeps it under them.
+            -- abandoned ambulance keeps its position where it was left, and one
+            -- somebody drives away keeps it under them -- which is the owner's
+            -- own rule for the station ambulances ("if someone takes it, we need
+            -- to update it's location on the map", 2026-08-23) holding for these
+            -- without a second mechanism.
             local okPos, c = pcall(GetEntityCoords, veh)
             if okPos and c then rec.x, rec.y = c.x, c.y end
-            pushBlip(m, 'v:' .. tostring(veh), rec.x, rec.y)
         end
     end
 end)

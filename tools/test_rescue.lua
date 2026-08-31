@@ -1915,6 +1915,153 @@ do
         'and the widening happens exactly once, not on every pass of the gate',
         #culled)
     culled, playerCulled = {}, {}
+
+    -- -----------------------------------------------------------------------
+    --
+    -- ═══ AN AMBULANCE SOMEBODY FOUND IS REMEMBERED AND NOT DRAWN ═══
+    --
+    -- Owner, 2026-08-31: "let's not auto-show ambulance blips just because they
+    -- got in an ambulance - BUT do add the position to the table so when blips
+    -- are shown we can include any that other players have found along the way
+    -- (engine-spawned ones)."
+    --
+    -- THE REMOVAL IS THE HALF THAT NEEDS PINNING HERE. This module used to
+    -- publish a RESCUE_BLIP to the whole match, on its own tick, the moment
+    -- anybody sat in an ambulance -- so the map filled with icons for vans
+    -- nobody could use, in a match where nobody was down. Deleting two lines is
+    -- the entire fix and re-adding them is the entire regression, which is
+    -- exactly the shape that gets a test.
+    --
+    -- WHO DRAWS THEM NOW IS tools/test_ambulances' QUESTION, not this file's:
+    -- server/ambulances.lua reads this ledger through BR.Rescue.eachFound and
+    -- publishes it through the same gate as the 23 (a squadmate who is OUT, and
+    -- only their squad). Both suites have to pass for the feature to exist.
+    describe('ambient.rememberedRatherThanBlipped')
+
+    -- The two natives this path reads, and a world small enough to move by
+    -- hand. `sent` is TriggerClientEvent; `broadcast` is BR.Broadcast.toMatch,
+    -- which the harness swallows by default and which is the road the old blip
+    -- actually took -- swallowing it here would make the assertion vacuous.
+    local broadcast = {}
+    local realToMatch = BR.Broadcast.toMatch
+    BR.Broadcast.toMatch = function(m, evt, d)
+        broadcast[#broadcast + 1] = { m = m, evt = evt, d = d }
+    end
+
+    local vworld = {
+        [700] = { model = 'ambulance', x = 100.0, y = 200.0 },
+        [701] = { model = 'sultan',    x = 300.0, y = 400.0 },
+    }
+    _G.GetHashKey        = function(s) return ('h:' .. tostring(s)):len() * 7 end
+    _G.GetEntityModel    = function(v)
+        local e = vworld[v]
+        return e and GetHashKey(e.model) or 0
+    end
+    _G.DoesEntityExist   = function(v) return vworld[v] ~= nil end
+    _G.GetEntityCoords   = function(v)
+        local e = vworld[v]
+        return e and { x = e.x, y = e.y, z = 30.0 } or nil
+    end
+
+    matches[1] = { id = 1, state = BR.MatchState.PLAYING, mode = BR.Mode.SOLO.key }
+    local driver = { src = 9, matchId = 1, state = BR.PlayerState.ALIVE,
+                     pos = { x = 100.0, y = 200.0, z = 30.0 } }
+
+    sent, broadcast = {}, {}
+    BR.Rescue.noteVehicle(9, driver, 701)
+    local seen = {}
+    BR.Rescue.eachFound(1, function(k) seen[#seen + 1] = k end)
+    ok(#seen == 0,
+        'a player driving something that is not an ambulance is not recorded -- '
+            .. 'the model is checked against the one list config/rescue.lua keeps',
+        #seen)
+
+    BR.Rescue.noteVehicle(9, driver, 700)
+    seen = {}
+    BR.Rescue.eachFound(1, function(k, x, y) seen[#seen + 1] = k .. '@' .. x .. ',' .. y end)
+    ok(#seen == 1 and seen[1] == 'v:700@100.0,200.0',
+        'and driving an ambulance IS recorded, at the driver\'s own '
+            .. 'server-sampled position, under a `v:` key',
+        table.concat(seen, ' '))
+
+    -- ═══ ONE OF THE 23 IS NOT A FIND ═══
+    --
+    -- "engine-spawned ONES". server/ambulances.lua already publishes every
+    -- station under an `s:<entity>` key and the client keeps its blips in one
+    -- table keyed on that string -- so a squadmate driving one of OUR vans would
+    -- put a second icon on it under `v:<entity>` and the map would claim there
+    -- are two ambulances where there is one.
+    --
+    -- ASKED OF THE FILE THAT MADE THEM. Stubbed here rather than loaded, because
+    -- what is under test is that this module ASKS: a list of station handles
+    -- kept in server/rescue.lua would be a second copy of something already
+    -- authoritative one file away.
+    vworld[702] = { model = 'ambulance', x = 500.0, y = 600.0 }
+    BR.Ambulances = { isStation = function(matchId, veh)
+        return matchId == 1 and veh == 702
+    end }
+    BR.Rescue.noteVehicle(9, driver, 702)
+    seen = {}
+    BR.Rescue.eachFound(1, function(k) seen[#seen + 1] = k end)
+    ok(#seen == 1,
+        'a STATION ambulance is not recorded as a find, however many squadmates '
+            .. 'drive it',
+        table.concat(seen, ' '))
+    BR.Ambulances = nil
+
+    -- ═══ AND NOTHING WENT ANYWHERE ═══
+    ok(#broadcast == 0 and #sent == 0,
+        'finding one puts NOTHING on anybody\'s map -- not a broadcast, not a '
+            .. 'direct send. This is the owner\'s "let\'s not auto-show '
+            .. 'ambulance blips just because they got in an ambulance"',
+        ('%d broadcast, %d direct'):format(#broadcast, #sent))
+
+    sched['rescue.found']()
+    ok(#broadcast == 0 and #sent == 0,
+        '...and the sweep that keeps the ledger honest publishes nothing either '
+            .. '-- it used to push all of them, every second, to the whole match',
+        ('%d broadcast, %d direct'):format(#broadcast, #sent))
+
+    -- ═══ THE POSITION FOLLOWS THE VEHICLE ═══
+    vworld[700].x, vworld[700].y = 850.0, 950.0
+    sched['rescue.found']()
+    seen = {}
+    BR.Rescue.eachFound(1, function(k, x, y) seen[#seen + 1] = x .. ',' .. y end)
+    ok(seen[1] == '850.0,950.0',
+        'a found ambulance somebody drives away keeps its record under it, so '
+            .. 'the blip it feeds is where the van is rather than where it was',
+        table.concat(seen, ' '))
+
+    -- ═══ HOW A STALE RECORD IS RETIRED, WHICH IS THE ONLY MECHANISM ═══
+    --
+    -- Ambient traffic despawns: the vehicle is destroyed, or the owning client's
+    -- population manager reclaims it once everybody has driven away, and either
+    -- way it stops existing on this server. A remembered position with nothing on
+    -- it is a blip a squad drives three minutes to for nothing.
+    vworld[700] = nil
+    sched['rescue.found']()
+    seen = {}
+    BR.Rescue.eachFound(1, function(k) seen[#seen + 1] = k end)
+    ok(#seen == 0,
+        'a record whose vehicle has stopped existing is dropped on the next '
+            .. 'sweep -- the same DoesEntityExist test the 23 live by, and the '
+            .. 'only staleness rule there is',
+        #seen)
+
+    -- ...AND THE MATCH IS THE OTHER END OF IT.
+    vworld[700] = { model = 'ambulance', x = 100.0, y = 200.0 }
+    BR.Rescue.noteVehicle(9, driver, 700)
+    matches[1].state = BR.MatchState.ENDED
+    sched['rescue.found']()
+    seen = {}
+    BR.Rescue.eachFound(1, function(k) seen[#seen + 1] = k end)
+    ok(#seen == 0,
+        'and nothing survives its match -- a round\'s knowledge of where the '
+            .. 'ambulances were does not carry into the next one',
+        #seen)
+
+    BR.Broadcast.toMatch = realToMatch
+    sent, broadcast = {}, {}
 end
 
 -- ---------------------------------------------------------------------------

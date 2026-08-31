@@ -11,9 +11,37 @@
 --    vehicle spawn positions. Those ambulances should be spawned at the
 --    beginning of the match when the bus doors open."
 --
--- ALL of them, to the WHOLE squad, while ANY squadmate is DBNO or OUT. Not the
--- nearest one, not the one the downed player is beside: the squad is choosing
--- where to drive, and a map showing one option is not a choice.
+-- ALL of them, to the WHOLE squad. Not the nearest one, not the one the downed
+-- player is beside: the squad is choosing where to drive, and a map showing one
+-- option is not a choice.
+--
+-- ═══ "DOWN OR OUT" BECAME "OUT" ON 2026-08-31, AND SO DID THE CODE ═══
+--
+--   "while a squadmate is DBNO bleeding out we have ambulance blips for the
+--    squad, but we can't do anything with the ambulances. We should not see
+--    blips until they've bled out."
+--
+-- The two halves of the old word are not the same offer. A DBNO mate is revived
+-- AT THE BODY -- client/dbno.lua's plate, a hold, free, and they keep their
+-- inventory -- and no revive key exists until they are eliminated, so a map of
+-- ambulances during the bleed-out points at something nobody can act on. The
+-- trigger in server/ambulances.lua's `publish` is BR.PlayerState.OUT alone, and
+-- that state is the one BR.ReviveKey.onEliminated mints a key on. THERE IS NO
+-- KNOB FOR THIS and there should not be: it is the sentence, not a preference.
+--
+-- ═══ AND THE 23 ARE NOT THE WHOLE MAP ═══
+--
+--   "let's not auto-show ambulance blips just because they got in an ambulance -
+--    BUT do add the position to the table so when blips are shown we can include
+--    any that other players have found along the way (engine-spawned ones)."
+--
+-- Ambient ambulances are discovered by server/rescue.lua (the only hook that can
+-- see client-created population is a player driving one) and REMEMBERED there.
+-- server/ambulances.lua mirrors that ledger and publishes the finds beside the
+-- 23, through the identical gate. Nothing in this file configures them: they
+-- have no count to plan, no model to choose and no point to survey -- the only
+-- setting they share with the stations is `blip.movedM` below, which is the
+-- right answer for both because both are ambulances on a minimap.
 --
 -- ═══ THE POINTS ARE NOT IN THIS FILE, AND MUST NEVER BE COPIED INTO IT ═══
 --
@@ -168,10 +196,22 @@ BR.Config.Ambulances = {
     -- It is settled by the owner's own sentence -- the whole squad, and nobody
     -- else -- so it is a rule here rather than a field, and the rescue's moving
     -- blip keeps its own separate one.
+    --
+    -- ═══ AND `enabled` NOW GOVERNS THE FOUND ONES TOO ═══
+    --
+    -- server/rescue.lua's ambient ambulances used to reach the map through
+    -- BR.Config.Rescue.blip and its 'match' audience. They reach it through
+    -- `publish` in server/ambulances.lua now, so this switch turns off EVERY
+    -- parked-ambulance blip in the game and the rescue's own moving one is the
+    -- only thing left on that event. That is the honest meaning of the field --
+    -- one line that stops this feature -- and it is worth writing down because
+    -- the old path is what somebody would go looking for.
     blip = {
         enabled = true,
 
-        -- How far a station ambulance has to move before its blip is re-sent.
+        -- How far an ambulance has to move before its blip is re-sent -- one of
+        -- the 23 or one somebody found; `refresh` and `refreshFound` read the
+        -- same number, because a minimap has no idea which kind it is drawing.
         --
         -- THEY ARE PARKED, SO ALMOST NOTHING IS SENT AFTER THE FIRST PASS -- and
         -- one somebody DRIVES AWAY keeps its blip under it, which is the owner's

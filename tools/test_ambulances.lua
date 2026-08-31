@@ -310,7 +310,19 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-describe('the blips: all of them, to the whole squad, while one is down or out')
+--
+-- ═══ THE TRIGGER IS OUT, AND IT USED TO BE "DOWN OR OUT" ═══
+--
+-- Owner, 2026-08-31, after the first round in which all 23 spawned: "while a
+-- squadmate is DBNO bleeding out we have ambulance blips for the squad, but we
+-- can't do anything with the ambulances. We should not see blips until they've
+-- bled out."
+--
+-- THIS SUITE ASSERTED THE OLD WORD IN FIVE PLACES and every one of them has been
+-- turned round rather than deleted: DBNO showing nothing is now the assertion,
+-- and OUT bringing the whole set is the control that stops a file which simply
+-- never blips from passing it.
+describe('the blips: all of them, to the whole squad, once one is OUT')
 do
     -- Two squads and a solo, all in match 1, which already has its 23 up.
     roster = {
@@ -318,9 +330,9 @@ do
         [2] = { matchId = 1, squadId = 'A', state = BR.PlayerState.ALIVE },
         [3] = { matchId = 1, squadId = 'B', state = BR.PlayerState.ALIVE },
         [4] = { matchId = 1, state = BR.PlayerState.ALIVE },
-        -- ANOTHER MATCH ENTIRELY, and its player has a mate down. Without this
+        -- ANOTHER MATCH ENTIRELY, and its player has a mate out. Without this
         -- row a file that ignored matchId would pass everything below.
-        [5] = { matchId = 2, squadId = 'A', state = BR.PlayerState.DBNO },
+        [5] = { matchId = 2, squadId = 'A', state = BR.PlayerState.OUT },
     }
     matches[1].state = BR.MatchState.PLAYING
 
@@ -330,8 +342,24 @@ do
         'a squad with nobody down sees nothing -- the blips are not simply on',
         blipsIn(sent))
 
-    -- SQUAD A LOSES ONE.
+    -- ═══ A MATE BLEEDING OUT IS NOT THE TRIGGER ═══
+    --
+    -- The plate at the body is the offer while this state lasts (client/dbno.lua
+    -- draws it, a hold, free, inventory kept) and no revive key exists yet --
+    -- BR.ReviveKey.onEliminated mints one at ELIMINATION. So a map of vans here
+    -- is pointing at something nobody can act on, which is exactly what the
+    -- owner watched.
     roster[2].state = BR.PlayerState.DBNO
+    sent = {}
+    tick(1)
+    ok(blipsIn(sent) == 0,
+        'a squad with a mate DBNO still sees nothing -- during the bleed-out the '
+            .. 'answer is a revive at the body, and there is no key to carry to '
+            .. 'an ambulance yet',
+        blipsIn(sent))
+
+    -- SQUAD A LOSES ONE FOR GOOD.
+    roster[2].state = BR.PlayerState.OUT
     sent = {}
     tick(1)
 
@@ -340,12 +368,13 @@ do
         if s.evt == BR.Net.RESCUE_BLIP then per[s.src] = (per[s.src] or 0) + 1 end
     end
     ok((per[1] or 0) == 23,
-        'the DOWNED player\'s squadmate gets all 23 -- "the blips for ALL the '
+        'the ELIMINATED player\'s squadmate gets all 23 -- "the blips for ALL the '
             .. 'ambulances", because the squad is choosing where to drive',
         per[1])
     ok((per[2] or 0) == 23,
-        'and so does the downed player themselves -- "shown to the whole squad" '
-            .. 'has no exception in it',
+        'and so does the eliminated player themselves -- "shown to the whole '
+            .. 'squad" has no exception in it, and BR.Server.isInMatch does not '
+            .. 'count OUT',
         per[2])
     ok((per[3] or 0) == 0,
         'the OTHER squad in the same match gets nothing -- this is not a '
@@ -353,7 +382,7 @@ do
         per[3])
     ok((per[4] or 0) == 0, 'and neither does the solo player', per[4])
     ok((per[5] or 0) == 0,
-        'and a player in a DIFFERENT MATCH whose own mate is down gets none of '
+        'and a player in a DIFFERENT MATCH whose own mate is out gets none of '
             .. 'THIS match\'s ambulances',
         per[5])
 
@@ -398,7 +427,7 @@ do
             .. 'it, we need to update it\'s location on the map"',
         movedSent)
 
-    -- ═══ AND OUT COUNTS, WHICH BR.Server.isInMatch DOES NOT ═══
+    -- ═══ AND THEY COME BACK OFF THE MAP WHEN NOBODY IS OUT ═══
     roster[2].state = BR.PlayerState.ALIVE
     sent = {}
     tick(1)
@@ -413,6 +442,17 @@ do
             .. 'withdrawn, not left on the map',
         gone)
 
+    -- ...AND A MATE WHO IS KNOCKED DOWN AGAIN DOES NOT BRING THEM BACK. This is
+    -- the OTHER direction of the owner's correction and the one a fix that only
+    -- edited the first filter's ordering would miss.
+    roster[2].state = BR.PlayerState.DBNO
+    sent = {}
+    tick(1)
+    ok(blipsIn(sent) == 0,
+        'a second knock does not put them back -- DBNO is not a trigger in '
+            .. 'either direction',
+        blipsIn(sent))
+
     roster[2].state = BR.PlayerState.OUT
     sent = {}
     tick(1)
@@ -423,9 +463,181 @@ do
         end
     end
     ok(back == 23,
-        'and an ELIMINATED mate brings them back -- "down or out", and OUT is '
-            .. 'the state a revive key exists for',
+        'and bleeding out brings them back -- OUT is the state a revive key '
+            .. 'exists for, and the only state that shows a map of ambulances',
         back)
+end
+
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THE AMBULANCES NOBODY AUTHORED ═══
+--
+-- Owner, 2026-08-31: "let's not auto-show ambulance blips just because they got
+-- in an ambulance - BUT do add the position to the table so when blips are shown
+-- we can include any that other players have found along the way (engine-spawned
+-- ones)."
+--
+-- TWO HALVES AND THEY FAIL DIFFERENTLY. The removal is asserted where the old
+-- publisher lived (tools/test_rescue: a find puts nothing on anybody's map); the
+-- inclusion is asserted here, because this is the file that now decides who sees
+-- one and when. A version that recorded finds perfectly and never published them
+-- would pass the first suite and fail this one.
+--
+-- THE LEDGER IS STUBBED rather than driven through server/rescue.lua, and that is
+-- the point of the interface being one function: what is under test is that this
+-- file mirrors whatever it is told, publishes it through the SAME gate as the 23,
+-- and withdraws it the moment the ledger stops walking it.
+describe('the found ones ride along with the 23, through the same gate')
+do
+    local ledger = {}
+    BR.Rescue = {
+        eachFound = function(matchId, fn)
+            for key, p in pairs(ledger[matchId] or {}) do fn(key, p.x, p.y) end
+        end,
+    }
+
+    local function blipsFor(src, wantGone)
+        local n = 0
+        for _, s in ipairs(sent) do
+            if s.evt == BR.Net.RESCUE_BLIP and s.src == src
+               and (s.d.gone == true) == wantGone then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    -- The roster is where the block above left it: squad A's player 2 is OUT, so
+    -- 1 and 2 are watching and squad B's 3 and the solo 4 are not.
+    ok(roster[2].state == BR.PlayerState.OUT, 'fixture: squad A has a mate out')
+
+    -- ═══ A FIND REACHES A SQUAD THAT IS ALREADY WATCHING ═══
+    ledger[1] = { ['v:5001'] = { x = 10.0, y = 20.0 } }
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, false) == 1,
+        'a squad already watching gets the new find on the next pass -- it does '
+            .. 'not have to lose another mate to see it',
+        blipsFor(1, false))
+    ok(blipsFor(3, false) == 0 and blipsFor(3, true) == 0,
+        'and the squad with nobody out gets nothing, exactly as with the 23 -- '
+            .. 'a find is more rows in one list, not a second feature with a '
+            .. 'second audience',
+        ('%d shown, %d withdrawn'):format(blipsFor(3, false), blipsFor(3, true)))
+
+    local key, x, y
+    for _, s in ipairs(sent) do
+        if s.evt == BR.Net.RESCUE_BLIP and s.src == 1 then
+            key, x, y = s.d.key, s.d.x, s.d.y
+        end
+    end
+    ok(key == 'v:5001' and x == 10.0 and y == 20.0,
+        'carrying the ledger\'s own key and coordinates -- `v:` is the second '
+            .. 'category client/rescue.lua\'s handler was left open for, and it '
+            .. 'is spelled in server/rescue.lua alone',
+        ('%s at %s, %s'):format(tostring(key), tostring(x), tostring(y)))
+
+    ok(BR.Ambulances.stats(1).found == 1,
+        'and /brambulances can say how many the round has discovered -- the map '
+            .. 'deliberately cannot',
+        BR.Ambulances.stats(1).found)
+
+    -- ═══ A PARKED FIND COSTS NOTHING PER PASS ═══
+    sent = {}
+    tick(3)
+    ok(blipsIn(sent) == 0,
+        'a find that has not moved sends nothing on later passes -- the same '
+            .. 'rule the 23 live by, off the same movedM',
+        blipsIn(sent))
+
+    -- ═══ ...AND ONE SOMEBODY DRIVES KEEPS ITS BLIP UNDER IT ═══
+    ledger[1]['v:5001'] = { x = 210.0, y = 20.0 }
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, false) == 1 and blipsFor(2, false) == 1,
+        'a find that moved is re-sent to everyone watching',
+        ('%d, %d'):format(blipsFor(1, false), blipsFor(2, false)))
+
+    -- ═══ AND A SQUAD THAT LOSES A MATE MID-ROUND GETS THE LOT ═══
+    ledger[1]['v:5002'] = { x = -40.0, y = -50.0 }
+    roster[3].state = BR.PlayerState.OUT
+    sent = {}
+    tick(1)
+    ok(blipsFor(3, false) == BR.Ambulances.count(1) + 2,
+        'the second squad, newly bereaved, gets the 23 AND both ambulances the '
+            .. 'match had found before them -- "any that other players have '
+            .. 'found along the way", which is the whole point of remembering '
+            .. 'them match-wide rather than per squad',
+        ('%d for %d stations + 2 finds')
+            :format(blipsFor(3, false), BR.Ambulances.count(1)))
+
+    -- ═══ A STALE RECORD IS RETIRED, AND ITS BLIP WITH IT ═══
+    --
+    -- Ambient traffic despawns. server/rescue.lua drops the record the pass its
+    -- entity stops existing; from here that is a key that stopped being walked,
+    -- and the blip must come off every map holding it in the same pass. A blip
+    -- pointing at nothing is worse than no blip -- a squad drives to it.
+    ledger[1]['v:5001'] = nil
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, true) == 1 and blipsFor(3, true) == 1,
+        'a find that leaves the ledger is withdrawn from everyone watching, in '
+            .. 'the pass it went',
+        ('%d, %d'):format(blipsFor(1, true), blipsFor(3, true)))
+    ok(blipsFor(1, false) == 0,
+        '...and nothing else is re-sent with it', blipsFor(1, false))
+    ok(BR.Ambulances.stats(1).found == 1,
+        'and the count follows', BR.Ambulances.stats(1).found)
+
+    -- ═══ THEY COME OFF WITH THE REST WHEN THE SQUAD STOPS QUALIFYING ═══
+    roster[2].state = BR.PlayerState.ALIVE
+    roster[3].state = BR.PlayerState.ALIVE
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, true) == BR.Ambulances.count(1) + 1,
+        'a squad that stops qualifying loses the finds as well as the stations '
+            .. '-- `hide` walks all three lists, and a find left drawn on a map '
+            .. 'nobody is entitled to is the leak that would never be noticed',
+        ('%d for %d stations + 1 find')
+            :format(blipsFor(1, true), BR.Ambulances.count(1)))
+
+    -- ═══ THE 23 ARE NOT FINDS, AND THE LEDGER IS ASKED TO PROVE IT ═══
+    --
+    -- "engine-spawned ones". A squadmate driving one of OUR ambulances must not
+    -- be recorded as a discovery -- the same van would be published twice, under
+    -- `s:` and `v:`, and the client keys its blips on that string and would draw
+    -- both.
+    local station = nil
+    for v in pairs(world) do if not station or v < station then station = v end end
+    ok(BR.Ambulances.isStation(1, station) == true,
+        'one of the 23 is recognised as ours', tostring(station))
+    ok(BR.Ambulances.isStation(1, 5001) == false,
+        'and a vehicle this file never made is not', tostring(station))
+    ok(BR.Ambulances.isStation(2, station) == false,
+        '...nor is one of ours when a DIFFERENT match asks -- handles are per '
+            .. 'server, and a match must not disown another match\'s find')
+
+    -- ═══ AND WITH NO DISCOVERY MODULE AT ALL, NOTHING BREAKS ═══
+    --
+    -- BR.Config.Rescue.enabled is a real switch, and tools/test_rescue drives
+    -- server/rescue.lua with no ambulances.lua loaded at all. The reverse has to
+    -- hold too, or the 23 -- which the owner waited three rounds for -- would be
+    -- taken down by a feature that is a bonus.
+    --
+    -- THIS ALSO RESTORES THE FIXTURE the blocks below inherit: squad A's player
+    -- 2 is out and 1 and 2 are watching the stations, which is where the
+    -- previous block left it.
+    BR.Rescue = nil
+    ledger[1] = nil
+    roster[2].state = BR.PlayerState.OUT
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, false) == BR.Ambulances.count(1),
+        'with no ledger to read the 23 carry on exactly as they did, and the '
+            .. 'last find is simply forgotten',
+        ('%d for %d stations'):format(blipsFor(1, false), BR.Ambulances.count(1)))
+    ok(blipsFor(1, true) == 0,
+        '...with nothing withdrawn that was never drawn', blipsFor(1, true))
 end
 
 -- ---------------------------------------------------------------------------

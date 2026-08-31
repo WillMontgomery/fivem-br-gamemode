@@ -193,10 +193,17 @@ BR.Config.Rescue = {
     -- re-places are visible in the log either side of it.
     controlWatchMs = 15000,
 
-    -- WHAT COUNTS AS AN AMBULANCE, for the ambient-discovery blip (owner,
+    -- WHAT COUNTS AS AN AMBULANCE, for the ambient-discovery LEDGER (owner,
     -- 2026-08-23: "There will also be ambulances around the map which spawn
     -- naturally. If a player gets into one that we weren't aware of, add it to
     -- our list of blips").
+    --
+    -- A LEDGER RATHER THAN A BLIP SINCE 2026-08-31: "let's not auto-show
+    -- ambulance blips just because they got in an ambulance - BUT do add the
+    -- position to the table so when blips are shown we can include any that
+    -- other players have found along the way". server/rescue.lua still does the
+    -- finding and this list is still what it recognises; server/ambulances.lua
+    -- decides when any of it reaches a map.
     --
     -- ONE LIST FOR BOTH JOBS, so the vehicle the rescue BUILDS and the vehicles
     -- it RECOGNISES can never mean different things. `model` above must be one
@@ -1236,11 +1243,19 @@ BR.Config.Rescue = {
         --
         -- IT IS A KNOB BECAUSE #219 OWNS THE REAL ANSWER. The owner's sentence
         -- came out of #219 (squad resurrection), where ambulance blips are shown
-        -- while a squadmate is down and the audience question is that issue's to
+        -- while a squadmate is OUT and the audience question is that issue's to
         -- settle. This feature needs one moving blip and has no opinion about
         -- squads, so what is built here is the MECHANISM -- server-published
         -- coordinates, drawn client-side -- and #219 changes this one field
         -- rather than rebuilding any of it.
+        --
+        -- ═══ AND IT NOW GOVERNS ONE BLIP RATHER THAN TWO KINDS ═══
+        --
+        -- The ambient ambulances a player discovered used to publish through
+        -- this field as well, and no longer publish from server/rescue.lua at
+        -- all -- BR.Config.Ambulances.blip.enabled is the switch for those, and
+        -- for the 23. What is left under this knob is the rescue in flight: one
+        -- moving marker, for the reasons above.
         --
         -- AND IT IS THE CAMPING KNOB TOO. #191 already flags the drop points as
         -- likely camping spots and defers it to playtesting; a map marker on a

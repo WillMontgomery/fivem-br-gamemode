@@ -242,8 +242,41 @@ end
 -- consumer of one browser does not draw at a different size to the fifth. They
 -- are not tuning knobs and are deliberately not in the config: a plate that
 -- looks like the other five is the whole requirement.
+--
+-- PROMPT_LIFT IS A VEHICLE NUMBER AND ONLY A VEHICLE NUMBER. config/ambheal.lua
+-- spells out what it measures -- "metres above the vehicle ORIGIN" -- and a
+-- vehicle's origin sits up between its wheels, so 1.1 lands the plate about at
+-- the roof of an ambulance. That is right for the revive and the purchase, which
+-- are both drawn at a van.
 local PROMPT_LIFT  = 1.1
 local PROMPT_SCALE = 1.6
+
+-- ═══ AND THE KEY ON THE GROUND IS NOT A VEHICLE ═══
+--
+-- Owner, in game: "the 'take revive key' DUI over a corpse is way too high off
+-- the ground."
+--
+-- PROMPT_LIFT was being used for all three plates, and the third one hangs off
+-- the key's RECORDED z rather than off a van. That z is the corpse's own
+-- position at the moment of elimination (server/revivekey.lua copies
+-- `entry.pos`), and a ped's root is at its FEET -- config/loot.lua says so where
+-- it measures `waistHeight = 0.75` up from it. So the key's z is the ground the
+-- body is lying on, and 1.1 above the ground is chest height on a standing man,
+-- floating clear of a body lying flat.
+--
+-- THIS IS THE SECOND TIME THIS EXACT MISTAKE HAS BEEN MADE and the first fix is
+-- the number to match. client/dbno.lua's revive plate had it over a downed mate
+-- ("at the standing 0.9 it hovered well clear of the player it belonged to",
+-- config/match.lua) and was brought to `dbnoPromptLift = 0.35` measured from the
+-- HEAD BONE -- which on a body on the floor is, in client/squadmates.lua's
+-- words, "a few centimetres of ground clearance". 0.6 off the ground is where
+-- that approved plate ends up over the same body, reached from the anchor this
+-- file actually has.
+--
+-- AND IT STAYS UNDER THE CRATE'S. config/loot.lua's `promptLift = 0.75` is
+-- written for an item that RISES half a metre when it is offered; a plate over
+-- a corpse has nothing to rise with and belongs lower than one that does.
+local GROUND_LIFT  = 0.6
 
 -- Sent on change only, exactly like the crate's and the stretcher's: a re-send
 -- restarts the ring animation from zero, so a hold already running is left
@@ -710,7 +743,10 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.draw', function()
         local vc = GetEntityCoords(c.veh)
         BR.Dui.drawWorld(page, vc.x, vc.y, vc.z + PROMPT_LIFT, PROMPT_SCALE)
     else
-        BR.Dui.drawWorld(page, c.x, c.y, c.z + PROMPT_LIFT, PROMPT_SCALE)
+        -- THE GROUND LIFT, NOT THE VEHICLE ONE. This is the loose key, and
+        -- `c.z` is the ground the body it fell from is lying on -- see
+        -- GROUND_LIFT above for why the two numbers cannot be the same one.
+        BR.Dui.drawWorld(page, c.x, c.y, c.z + GROUND_LIFT, PROMPT_SCALE)
     end
 end)
 
