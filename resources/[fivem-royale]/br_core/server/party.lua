@@ -1054,7 +1054,37 @@ end
 -- 250ms, matching the roster's own position sampling: pushing faster than the
 -- server samples would only re-send the same coordinates. A squadmate's dot
 -- now tracks them rather than hopping (user, 2026-08-05).
+
+--- This mate's revive key, as the squad beacon carries it. See the call site.
+---
+--- A FILE-LEVEL FUNCTION RATHER THAN A CLOSURE IN THE LOOP, because the loop
+--- runs four times a second over every squadded player in every live match and a
+--- closure built per member per push is an allocation per member per push for a
+--- field that is nil for almost all of them.
+---
+--- NIL FOR A PLAYER WITH NO KEY, which is what makes the membership list its own
+--- clear: the rows are rebuilt whole every push, so a key that was spent,
+--- expired into un-holdability or wiped by BR.Match.resetPlayer simply stops
+--- appearing, with nothing written anywhere to take it down.
+--- @param e table
+--- @param now integer
+--- @return table|nil
+local function keyRow(e, now)
+    local k = e.reviveKey
+    if not k then return nil end
+    return {
+        x = k.x, y = k.y, z = k.z,
+        -- `== true` AND `~= true` RATHER THAN TRUTH TESTS. `held` is written
+        -- false at mint and only ever raised to true, and 0-is-truthy has cost
+        -- this project ten shipped bugs; the explicit comparisons say what is
+        -- being asked and cannot be read the other way.
+        held = k.held == true or nil,
+        live = (k.held ~= true and now < (k.expiresAt or 0)) and true or nil,
+    }
+end
+
 BR.Sched.every(250, 'party.squadpos', function()
+    local now = GetGameTimer()
     -- Live states, checked per player against THEIR match: with parallel
     -- matches there is no single gate. Squad ids are match-namespaced, so
     -- grouping by squadId alone can never mix two matches' beacons.
@@ -1185,6 +1215,43 @@ BR.Sched.every(250, 'party.squadpos', function()
                 -- `== true` is the test because the entry's value arrives from
                 -- a client (see BR.Net.VOICE_STATE in server/voice.lua).
                 voiceOff = e.voiceOff == true or nil,
+
+                -- THE REVIVE KEY THIS MATE LEFT, AND ONLY TO THEIR SQUAD.
+                --
+                -- IT RIDES THE BEACON FOR THE FOURTH TIME, AND FOR THE FOURTH
+                -- TIME THE ARGUMENT IS THE ONE ABOVE -- but here it is the
+                -- strongest of the four rather than the weakest. roster.lua's
+                -- PUBLIC_FIELDS reaches EVERY client in the match, and whether a
+                -- squad can still get somebody back is exactly what the squad
+                -- that just killed them would most like to know: it is the
+                -- difference between pushing a body and leaving it. This push is
+                -- already squad-only and already carries OUT players (see
+                -- visibleStates above), so the audience is right by construction.
+                --
+                -- ONE FIELD WITH THREE READINGS, rather than three flat ones:
+                --
+                --   absent          nothing to draw, nothing outstanding.
+                --   held = true     the squad owns it. `x/y/z` is where a live
+                --                   mate holds interact to bring them back.
+                --   live = true     there is still something on the GROUND at
+                --                   x/y/z to walk over. Absent once the pickup
+                --                   has expired -- at which point the key is
+                --                   still buyable and the field still travels
+                --                   with neither flag, which is what tells the
+                --                   client to offer the purchase.
+                --
+                -- THE COORDINATES ARE THE SERVER'S OWN, and that is the whole
+                -- reason this rides a wire at all rather than being derived on
+                -- the client from a ped. server/revivekey.lua rules the hold
+                -- against exactly these numbers; sending them means the prompt
+                -- and the ruling cannot disagree, and no clone of a dead body --
+                -- which #163 says crawls away and 33ca88c says does not
+                -- replicate reliably -- is anywhere in the loop.
+                --
+                -- REBUILT WHOLE EVERY PUSH, so leaving the key off IS the clear:
+                -- a key that was spent, expired or reset stops travelling on the
+                -- next pass with nothing written here to say so.
+                key = keyRow(e, now),
             }
         end
     end)

@@ -53,19 +53,41 @@
 -- makes "unlimited -- if they can pay" (owner, 2026-08-30, #219 Q19) true.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
--- WHAT IS NOT HERE, AND MUST NOT BE ADDED UNTIL HE ASKS
+-- THE STRINGS ARE HERE NOW, AND EVERY ONE OF THEM IS A PLACEHOLDER
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- NO STRINGS. Not a prompt, not a toast, not a marker label. #219 Q20 asks him
--- what his squad is told and when, and it is UNANSWERED -- so there is no
--- player-facing copy in this feature at all, and the owner's standing rule is
--- that unrequested copy reads as slop. config/rescue.lua holds the same line
--- ("Nothing in this feature ever tells a player anything").
+-- This file used to say "NO STRINGS", and the reason it gave was that #219 Q20
+-- was unanswered. It is answered: the owner listed six lines on 2026-08-30 and
+-- then said to stop waiting on him and ship it.
 --
--- NO RESURRECTION NUMBERS. No hold time, no drop height, no parachute, no
--- landing health. That is #219 step 5 and it is gated on Q10, Q11, Q18 and Q21,
--- none of which he has answered. A number written here ahead of them would be a
--- guess wearing the authority of config.
+-- SO ALL SIX LIVE IN ONE TABLE, `copy` BELOW, AND NOWHERE ELSE. That is the
+-- whole point of the table: he can rewrite every word this feature speaks by
+-- editing one screen of one file, without opening the server module, the client
+-- module or the prompt page. No string in this feature may be written anywhere
+-- but there -- not a default in a `or`, not a fallback in the client, not a
+-- second copy in a comment that somebody later pastes.
+--
+-- AND THERE ARE EXACTLY SIX. If the design ever needs a seventh, the answer is
+-- to ask him, not to write one. See the note over `copy`.
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE RESURRECTION NUMBERS ARE HERE NOW TOO. TWO OF THEM, AND NOT THE OTHERS
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Step 5 is built (server/revivekey.lua's hold, client/revivekey.lua's prompt),
+-- so the numbers it actually spends are named here: `reviveHoldMs` and the two
+-- reach values. What is STILL not here is everything the shape of the feature
+-- deleted rather than deferred -- there is no drop height, no parachute and no
+-- landing spot, because a key revive stands a player up where they fell and
+-- performs no placement at all. See server/revivekey.lua's `bringBack`.
+--
+-- AND THERE IS NO `reviveHp`, DELIBERATELY. A key revive hands back
+-- BR.Config.Match.dbnoReviveHp -- the same 30 a squadmate's pick-up hands back
+-- -- because it is the same act: a mate standing over a body in the open for a
+-- few seconds. The 100 in config/rescue.lua is the argued exception (an
+-- ultra-rare item spent in full on a ride the player could not shoot back
+-- during), not the rule. A number of its own here would be a second answer to a
+-- question that already has one, free to drift.
 
 BR = BR or {}
 BR.Config = BR.Config or {}
@@ -167,6 +189,111 @@ BR.Config.ReviveKey = {
     -- not an animation, and a second of imprecision on a three-minute timer is
     -- not observable.
     tickMs = 1000,
+
+    -- ------------------------------------------------------------------
+    -- SPENDING ONE
+    -- ------------------------------------------------------------------
+
+    -- How long a squadmate holds the interact key over the key's own point to
+    -- bring the owner of it back.
+    --
+    -- ⚠ NOT THE OWNER'S NUMBER. He has not given one. This is roughly double
+    -- BR.Config.Match.dbnoReviveTime (2.8s), and the doubling is the only
+    -- argument behind it: putting somebody back in the match is a larger act
+    -- than picking up a mate who is still bleeding, and the whole read of the
+    -- gesture -- standing still in the open, visible, doing nothing else -- is
+    -- what the duration buys. Change it here and nothing else moves; the client
+    -- ring is animated from this number and the server rules against it.
+    reviveHoldMs = 6000,
+
+    -- How close to the KEY'S OWN POINT the reviver has to stand.
+    --
+    -- ═══ TO THE RECORDED POINT, NEVER TO THE CORPSE ═══
+    --
+    -- server/revivekey.lua copies x/y/z off the body at mint time precisely so
+    -- the key does NOT follow it, and this is the reach that circle is measured
+    -- with. Measuring to the dead player's ped instead would inherit #163's
+    -- drifting clone and commit 33ca88c's death-ragdoll problem in one line --
+    -- the body a reviver is standing over walks out of any circle you draw
+    -- around it, on their machine only, and the hold dies with nothing on screen
+    -- to say why.
+    --
+    -- WIDER THAN `collectM` (2.5) BY HALF A METRE, on purpose. Collection is
+    -- "standing on the body"; the revive is a hold you should not lose by
+    -- shifting your feet, and it is the same relationship
+    -- dbnoReviveDist/dbnoReviveSlack has.
+    reviveReachM = 3.0,
+
+    -- Slack added to `reviveReachM` for the SERVER's ruling only.
+    --
+    -- Identical in kind to `reachSlackM` above and to
+    -- BR.Config.Match.dbnoReviveSlack: the server's position sample is up to one
+    -- sampler interval old, so a ruling run at exactly `reviveReachM` cancels
+    -- holds that were legitimate when they were made. The prompt keeps the tight
+    -- number, the ruling keeps the loose one, and the only direction this can be
+    -- wrong in is forgiving.
+    reviveSlackM = 1.0,
+
+    -- How long the server waits to hear from a hold before it drops it.
+    --
+    -- THE CLIENT RE-ASSERTS AND SILENCE IS A RELEASE, which is the protocol
+    -- client/dbno.lua already runs and the reason a brief tap cannot complete a
+    -- revive: the hold needs CONTINUOUS evidence, so a STOP that never lands
+    -- costs a fraction of a second rather than the whole interaction. The client
+    -- re-asks every 250ms; this is four of those.
+    reviveBeatMs = 1000,
+}
+
+--- EVERY WORD THIS FEATURE SPEAKS, IN ONE PLACE, ALL OF IT PROVISIONAL.
+---
+--- ⚠ PLACEHOLDER WORDING PENDING THE OWNER'S. He listed these six lines on
+--- 2026-08-30 and asked for the feature to ship rather than wait on him
+--- polishing them, so they are here to be CORRECTED IN ONE EDIT: every prompt,
+--- every confirmation and every notice in server/revivekey.lua and
+--- client/revivekey.lua reads out of this table and holds no string of its own.
+--- Rewrite a value here and the game says the new thing everywhere, immediately.
+---
+--- ═══ SIX, AND A SEVENTH IS A QUESTION RATHER THAN A COMMIT ═══
+---
+--- The standing rule on this project is that copy nobody asked for reads as
+--- slop, and this is the feature that has come closest to breaking it. There is
+--- deliberately NO refusal string, NO hint, NO empty state and NO progress
+--- label: a press the server declines says nothing at all, exactly as the CPR
+--- rescue and the ambulance heal say nothing (server/rescue.lua: "Nothing in
+--- this feature ever tells a player anything"). If a seventh line ever seems
+--- necessary, ask him for it.
+---
+--- ═══ `buy` CARRIES THE PRICE AS TEXT, AND THAT IS HIS SENTENCE ═══
+---
+--- "Buy revive keys — 25 Volts" is quoted verbatim, which means the 25 in the
+--- string and the 25 in `price` above are two copies of one number. Left as
+--- written rather than interpolated, because the words are his and the moment
+--- this file starts assembling them out of parts is the moment his wording
+--- stops being reproducible. If the price moves, both move -- and the console
+--- line in /brkey prints `price` rather than this string, so the two can always
+--- be compared.
+BR.Config.ReviveKey.copy = {
+    -- The world prompt over a key lying on the ground, for the squadmate who
+    -- can walk to it. See the note on `collectM`: walking in is what takes it,
+    -- so this plate carries NO key glyph -- it names the thing, it does not
+    -- offer a press.
+    take      = 'Take revive key',
+
+    -- The world prompt at an ambulance, when this squad has something to buy.
+    buy       = 'Buy revive keys — 25 Volts',
+
+    -- The world prompt over a key the squad already owns: the hold that
+    -- actually brings the owner of it back.
+    revive    = 'Revive teammate',
+
+    -- Sent to the squad the moment a key is collected off the ground...
+    collected = 'Revive key collected',
+    -- ...and the moment a purchase lands.
+    bought    = 'Revive keys bought',
+    -- ...and the moment the thing on the ground goes away. NOT the key: the key
+    -- survives its pickup and is still buyable at an ambulance for the rest of
+    -- the match. This line is about the free option closing.
+    expired   = 'Revive key lost',
 }
 
 --- Which models count as an ambulance.

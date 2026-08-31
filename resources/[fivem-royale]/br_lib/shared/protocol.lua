@@ -270,7 +270,7 @@ BR.Net = {
     -- that stopped it is working. Same units and same origin as DBNO_SET's copy:
     -- a SERVER timestamp, comparable only to the clock-corrected browser time.
     REVIVE_PROGRESS = 'br:revive:progress',
-    -- S->C (no payload) "get up, the match is starting" (#144).
+    -- S->C (no payload) "get up, where you are".
     --
     -- A DEAD PED IS THE ONE THING THE SERVER CANNOT PUT RIGHT ON ITS OWN. Every
     -- other correction in this block is a NUMBER -- health, armour, a bleed
@@ -282,8 +282,22 @@ BR.Net = {
     -- calls it alive is the state the server-observed death check exists to
     -- eliminate, and it would eliminate them.
     --
+    -- ⚠ THE NAME IS `atstart` AND THAT IS NOW HISTORY, NOT MEANING. It was
+    -- written for #144's held death, which is still one of its two senders. The
+    -- other is server/revivekey.lua's key revive, which is not at the start of
+    -- anything -- and the wire name is deliberately NOT being changed for it,
+    -- because an event id is a compatibility surface and renaming one to improve
+    -- a comment is how a deploy goes half-and-half.
+    --
+    -- IT IS NO LONGER "EXACTLY ONCE PER HELD DEATH". It is once per OUT->ALIVE
+    -- transition, from whichever path made it. client/spawn.lua's handler is
+    -- already written to be idempotent (a second copy resurrects a living ped at
+    -- its own feet, which is a no-op), so the widening cost nothing there.
+    --
     -- No payload: the client already knows where its own body is, and the
-    -- server's position sample is a quarter of a second stale.
+    -- server's position sample is a quarter of a second stale. That is what
+    -- makes "you come back where you fell" free rather than a placement -- see
+    -- client/spawn.lua on why the ground probe must not be involved.
     REVIVED         = 'br:revive:atstart',
 
     -- The CPR kit's rescue (#191).
@@ -381,29 +395,62 @@ BR.Net = {
     -- pressing at one van in the same frame produce one attach, not two.
     AMBHEAL_SET     = 'br:ambheal:set',
 
-    -- Revive keys (#219 step 4)
+    -- Revive keys (#219 steps 4 and 5)
     --
     -- C->S  { n = netId } -- "I am standing at that ambulance and I want my
     -- squad's revive keys". ONE EVENT AND NO REPLY, because there is nothing to
-    -- reply with: the only thing a player is ever told about this purchase is
-    -- the market's own shortfall sentence, which BR.Market.charge already
-    -- speaks, and #219 Q20 -- what the squad is told and when -- is unanswered.
+    -- reply with: the only thing a player is ever told about a REFUSED purchase
+    -- is nothing at all, and the only thing they are told about a completed one
+    -- is BR.Config.ReviveKey.copy.bought, which the server speaks itself.
     --
     -- EVERY CLAIM IN THAT SENTENCE IS RE-DERIVED SERVER-SIDE: the model, the
     -- distance, being alive in a playing match, having a squad, and there being
     -- an outstanding key to buy. See BR.ReviveKey.canBuy.
     --
-    -- ⚠ IT HAS NO CLIENT SENDER YET. The press needs an on-screen affordance and
-    -- the affordance needs a word the owner has not given, so the player-facing
-    -- half is deliberately absent and /brkey drives this in the meantime -- the
-    -- same arrangement /brrescue has with BR.Rescue.begin. When the wording
-    -- arrives the client is a prompt and one TriggerServerEvent into here.
+    -- ITS SENDER IS client/revivekey.lua, which draws the buy plate at an
+    -- ambulance when this player's squad has something outstanding. Until the
+    -- owner gave the wording there was no sender at all and /brkey buy was the
+    -- only way to reach this handler; that console verb still exists and still
+    -- runs the identical path.
     --
     -- THERE IS NO COLLECTION EVENT AND THERE MUST NOT BE ONE. Walking over a
     -- dead mate's key is decided by the server off its own position samples --
     -- see server/revivekey.lua's header -- so there is nothing for a client to
-    -- send and nothing for it to lie about.
+    -- send and nothing for it to lie about. The plate the player sees over a
+    -- loose key names it; it does not offer a press, and it carries no key
+    -- glyph for that reason.
     REVIVEKEY_BUY   = 'br:revivekey:buy',
+
+    -- ═══ THE HOLD THAT ACTUALLY BRINGS SOMEBODY BACK ═══
+    --
+    -- C->S  { target = serverId } -- "I am standing on the key for that player
+    -- and I am holding the key down". RE-ASSERTED EVERY 250ms RATHER THAN SENT
+    -- ONCE, which is client/dbno.lua's protocol and exists for a bug this
+    -- project has already shipped: a brief tap completed a whole revive when the
+    -- STOP below was raised and did not land. Progress requires CONTINUOUS
+    -- evidence, so silence stops a hold (BR.Config.ReviveKey.reviveBeatMs) and a
+    -- lost STOP costs a fraction of a second instead of the whole interaction.
+    --
+    -- WHY NOT REVIVE_START. That event's ruling, `reviveAllowed` in
+    -- server/combat.lua, refuses any target that is not DBNO, and the stepper
+    -- behind it (`combat.dbno`) only ever walks DBNO entries. The subject of a
+    -- key revive is OUT and spectating; it needs its own ruling and its own
+    -- stepper, keyed on the key record rather than on the roster entry's
+    -- `reviverSrc` -- see server/revivekey.lua on why sharing that field would
+    -- push DBNO_SET at a player who is not down.
+    REVIVEKEY_START = 'br:revivekey:start',
+    -- C->S  (no payload) "the key came up". The subject is not named because the
+    -- server holds exactly one claim per reviver and can find it; the same shape
+    -- REVIVE_STOP uses, for the same reason.
+    REVIVEKEY_STOP  = 'br:revivekey:stop',
+    -- S->C  { pct, target, done?, cancelled? }. The reviver's own ring.
+    --
+    -- SENT TO THE HOLDER AND TO NOBODY ELSE. It is the same envelope
+    -- REVIVE_PROGRESS carries and it is read the same way: `cancelled` and
+    -- `done` are what let the client drop a hold it can no longer see the
+    -- outcome of, and the ring itself is animated locally from a start message
+    -- rather than driven by these -- a dropped one cannot stutter it.
+    REVIVEKEY_PROGRESS = 'br:revivekey:progress',
 
     -- Spectate / end
     --

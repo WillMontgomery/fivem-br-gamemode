@@ -242,6 +242,24 @@ function BR.AmbHeal.healing()
     return session ~= nil
 end
 
+--- Is the stretcher plate on screen right now?
+---
+--- READ BY client/revivekey.lua, WHICH IS OTHERWISE OFFERING TO SELL REVIVE KEYS
+--- AT THE SAME VAN. The two prompts are drawn on one shared browser and both
+--- handlers act on one 'interact' press, so a hurt player behind an ambulance
+--- with a squadmate down would start a heal AND spend 25 Volts on a single tap.
+--- That file stands down while this returns true.
+---
+--- ONE MORE ACCESSOR RATHER THAN AN ARBITER, deliberately. The header above
+--- records why a shared interaction registry is the right end state and is not
+--- being built here; this is the same nil-guarded, call-time question
+--- BR.AmbHeal.healing() and BR.Rescue.riding() already answer for five other
+--- files, so it costs nothing and cannot create a load order.
+--- @return boolean
+function BR.AmbHeal.prompting()
+    return promptShown == true
+end
+
 -- ---------------------------------------------------------------------------
 -- The prompt
 -- ---------------------------------------------------------------------------

@@ -2710,7 +2710,37 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- keypress. Deciding it at the moment the key goes down would mean the
     -- crate prompt was still on screen when the player pressed, so the thing
     -- they were looking at and the thing that happened would disagree.
-    BR.Loot.suppress(target ~= nil or holding ~= nil)
+    --
+    -- ═══ AND IT IS RAISED FOR THE REVIVE KEY TOO, FROM HERE ═══
+    --
+    -- client/revivekey.lua draws a plate over a dead mate's key, and a corpse is
+    -- ringed with scattered loot BY CONSTRUCTION (BR.Loot.deathBox), so that
+    -- prompt fights the crate prompt on every single revive rather than
+    -- occasionally.
+    --
+    -- IT IS DRIVEN FROM THIS ONE CALL SITE RATHER THAN FROM A SECOND CALLER, and
+    -- that is the point of the extra clause. BR.Loot.suppress is a plain boolean
+    -- with no refcount: two files calling it would each write their own answer,
+    -- and the one whose answer was `false` on a given frame would clear the
+    -- other's yield. One caller, one OR, no possible disagreement -- and turning
+    -- it into a refcount would mean restructuring the hottest frame pass in the
+    -- client, which loot.lua's own header asks not to be done for one caller.
+    --
+    -- NIL-GUARDED AT CALL TIME, so the load order between the two files is a
+    -- reader's convenience and not a requirement -- the same shape in which four
+    -- files ask BR.Rescue.riding() from above the file that answers.
+    local busy = target ~= nil or holding ~= nil
+    BR.Loot.suppress(busy
+        or (BR.ReviveKey ~= nil and BR.ReviveKey.prompting ~= nil
+            and BR.ReviveKey.prompting()))
+
+    -- ...AND THE REVIVE KEY YIELDS BACK. A mate who is DOWNED can still be
+    -- picked up outright -- they keep their inventory and it costs the squad
+    -- nothing -- so when a knock and a corpse are both in reach of one player,
+    -- this file wins and that one stands its plate down.
+    if BR.ReviveKey ~= nil and BR.ReviveKey.yield ~= nil then
+        BR.ReviveKey.yield(busy)
+    end
 
     -- A HOLD IS A LEVEL, NOT AN EDGE, AND THAT WAS THE SECOND-REVIVE BUG.
     --

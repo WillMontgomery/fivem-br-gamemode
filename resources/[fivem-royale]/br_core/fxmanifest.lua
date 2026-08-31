@@ -286,6 +286,36 @@ client_scripts {
     -- IT IS THE FIFTH CONSUMER OF THE ONE PROMPT BROWSER and is declared beside
     -- the fourth for that reason: crate, pump, revive, heal station, showroom.
     'client/shop.lua',
+    -- The revive key on screen (#219 step 5): the plate over a dead mate's key,
+    -- the plate at an ambulance, and the hold that brings them back.
+    --
+    -- THE SIXTH CONSUMER OF THE ONE PROMPT BROWSER, declared beside the fifth
+    -- for the reason the line above gives: crate, pump, revive, heal station,
+    -- showroom, revive key.
+    --
+    -- AFTER client/dbno.lua AND client/ambheal.lua, AND BOTH ARE REAL ORDERINGS
+    -- RATHER THAN A READER'S -- this is the file that YIELDS, twice, and the
+    -- convention in this block is that the yielder is declared after what it
+    -- yields to:
+    --
+    --   * dbno.lua drives BR.ReviveKey.yield() and BR.ReviveKey.prompting()
+    --     from its own frame pass, which is how the one BR.Loot.suppress() call
+    --     site covers this file's plates as well as its own. Those two names are
+    --     reached at CALL time and nil-guarded on both sides, so the loader does
+    --     not actually care -- but a reader looking for who yields to whom
+    --     should find them in this order.
+    --   * ambheal.lua answers BR.AmbHeal.prompting(), which is what stops one
+    --     press behind an ambulance both starting a heal and spending 25 Volts.
+    --
+    -- It needs client/main.lua for the loop registry, client/keybinds.lua for
+    -- BR.Keys, client/dui.lua for the shared prompt page and client/natives.lua
+    -- for BR.Native.keyLabelForCommand -- the same four names client/ambheal.lua
+    -- and client/shop.lua list, all of which are above.
+    --
+    -- IT IS A SECOND HANDLER ON SQUAD_POS, alongside client/squadmates.lua, and
+    -- that needs no order at all: FiveM fans an event to every handler, and
+    -- neither file reads the other's cache.
+    'client/revivekey.lua',
     -- The fuel gauge, the pump prompt and the station blips. AFTER dui.lua
     -- (it borrows the crate's prompt page) and AFTER keybinds.lua (it reads
     -- BR.Keys.isHeld('interact')); it reads BR.Native.blipName at call time, so
