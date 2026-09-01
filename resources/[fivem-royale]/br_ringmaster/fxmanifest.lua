@@ -20,6 +20,12 @@ version '0.1.0'
 -- "not running": it listens for br_core's snapshot event, and if nothing is
 -- broadcasting, it has nothing to say and says so.
 server_scripts {
+    -- FIRST: the dev-mode gate in front of RegisterCommand (see br_core's
+    -- manifest). THIS RESOURCE IS THE ONE WITH EXEMPTIONS -- brkick, brspectate
+    -- and brring pass through it ungated, by name, in devgate.lua's EXEMPT
+    -- line. bridents does not, and that is a decision rather than an oversight:
+    -- see the note above it in server/debug.lua.
+    '@br_lib/shared/devgate.lua',
     '@br_lib/shared/enums.lua',     -- BR.PlayerState etc, for reading roster rows
     '@br_lib/shared/protocol.lua',  -- BR.Net.NOTIFY, for maintenance announcements
     '@br_lib/shared/sched.lua',     -- our OWN job registry, separate from br_core's

@@ -25,6 +25,9 @@ version '0.2.0'
 -- is absent, and a server without stats should run perfectly well. persist.lua
 -- checks the resource state and says so once per match instead.
 server_scripts {
+    -- FIRST: the dev-mode gate in front of RegisterCommand (see br_core's
+    -- manifest). This resource's one command, brawards, is gated by it.
+    '@br_lib/shared/devgate.lua',
     -- BR.Net, for the one client event this resource sends: what a match paid.
     -- Without this the constant is nil and the payload goes to an event named
     -- "nil", which fails silently and looks exactly like the reward not being

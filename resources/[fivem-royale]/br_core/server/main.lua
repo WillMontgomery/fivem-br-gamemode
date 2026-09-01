@@ -216,6 +216,39 @@ AddEventHandler('onResourceStart', function(res)
     BR.Server.devMode = GetConvar('sv_devMode', 'false') == 'true'
         or GetConvar('br_devMode', 'false') == 'true'
 
+    -- AND THE CLIENT IS TOLD, which it previously never was.
+    --
+    -- Every command in the project now sits behind this switch
+    -- (br_lib/shared/devgate.lua; owner, 2026-08-31), and about half of them
+    -- are CLIENT commands -- /brprobe, /brcoords, /brsurvey and the rest. Those
+    -- had no way to read this: client/attachtune.lua's write-up says so in as
+    -- many words -- "sv_devMode and br_devMode are read in
+    -- br_core/server/main.lua and are NOT replicated, so a client GetConvar
+    -- sees neither". Copying the server's spelling onto the client produced a
+    -- command that silently never ran, which is why those files gated
+    -- themselves on player state instead.
+    --
+    -- ONE NAME CARRIES THE ANSWER TO BOTH QUESTIONS. sv_devMode is not
+    -- replicated and is not going to be; what crosses is br_devMode, holding
+    -- the OR above rather than its own raw value. So a box started with only
+    -- `set sv_devMode true` still has working client dev commands, and
+    -- BR.Dev.on() reads the same truth on both sides of the wire.
+    --
+    -- IT WRITES THE NAME IT ALSO READS, and the one case where that shows: the
+    -- read two lines above sees whatever this wrote last time. Across a server
+    -- restart that is harmless, because the value written is the OR of the two
+    -- convars the .cfg just set, so it can only agree with them. It bites once
+    -- -- `set sv_devMode false` typed live, then `restart br_core`, which reads
+    -- the br_devMode this left behind and stays in dev mode. `set br_devMode
+    -- false` is the way out, and the boot banner below prints which it took.
+    --
+    -- Guarded like server/voice.lua's convar pass, and for the same reason: the
+    -- unit suites run this file without the Cfx runtime, where a nil global
+    -- here would raise inside onResourceStart and take the boot with it.
+    if SetConvarReplicated then
+        SetConvarReplicated('br_devMode', tostring(BR.Server.devMode))
+    end
+
     BR.Sched.start()
 
     -- ONESYNC IS NOT OPTIONAL FOR THIS GAMEMODE.

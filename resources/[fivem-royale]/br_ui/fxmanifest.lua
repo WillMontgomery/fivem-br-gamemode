@@ -12,6 +12,11 @@ ui_page 'ui/index.html'
 -- Only the protocol constants are needed here, not the whole config. Keeping
 -- this list minimal means a change to storm tuning cannot break the UI bridge.
 shared_scripts {
+    -- FIRST: the dev-mode gate in front of RegisterCommand. See br_core's
+    -- manifest for why the position is load-bearing. This resource's six
+    -- commands (brfocus, brcover, brsettings, brpause, brmapmode, brxp) are all
+    -- diagnostics and all gated by it.
+    '@br_lib/shared/devgate.lua',
     '@br_lib/shared/enums.lua',
     '@br_lib/shared/protocol.lua',
     '@br_lib/shared/names.lua',   -- display-name rules; client and server share them

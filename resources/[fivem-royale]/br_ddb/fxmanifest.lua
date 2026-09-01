@@ -39,6 +39,14 @@ node_version '22'
 -- pre-bundled file sidesteps the whole toolchain.
 server_scripts {
     'dist/server.js',
+    -- The dev-mode gate in front of RegisterCommand (see br_core's manifest),
+    -- ahead of the only file here that registers one. It is a br_lib SHARED
+    -- module and not br_core or br_ringmaster, so the independence this
+    -- resource is built around still holds -- br_lib is a library of pure Lua,
+    -- it starts nothing and it knows nothing about matches. The JS bundle above
+    -- registers no commands and runs in its own runtime, where a Lua global
+    -- means nothing either way.
+    '@br_lib/shared/devgate.lua',
     'server/debug.lua',
 }
 

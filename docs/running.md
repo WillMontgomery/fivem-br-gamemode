@@ -150,6 +150,23 @@ Install the pre-commit hook with `./tools/install-hooks.sh`.
 
 ### In-game diagnostics
 
+**Everything in this table needs dev mode** (`br_devMode true` or `sv_devMode
+true`), client commands included, since 2026-08-31 — owner: "Yes I want all
+client and server commands gated behind devmode". The gate is one wrap around
+`RegisterCommand` in `br_lib/shared/devgate.lua` rather than a check inside each
+verb, so a command added later is gated without anybody remembering to do it.
+Typing one on the public box prints which gate closed rather than doing nothing.
+
+**Three commands are exempt and keep working on the public server**: `brkick`
+and `brspectate`, which the admin console types into this console over tmux and
+which are therefore its Kick and Spectate buttons, and `brring`, which is how an
+operator finds out on the live box that the Ringmaster link is dead (see the
+IAM-policy note in [security.md](security.md)). `bridents` is *not* exempt —
+nothing invokes it and it prints licenses and Discord ids for every connected
+player. The keybind commands are not in this table and are not gated: FiveM
+builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
+3. `/brleave` is a player verb and is not gated either.
+
 | Command | Where | What |
 |---|---|---|
 | `brnativecheck` | client | Verify every native assumption against the running build |

@@ -16,6 +16,13 @@ version '0.1.0'
 --   config    reads enums at load time to build its lookup tables
 --   storm_solve reads BR.Lerp and BR.StormPhase
 shared_scripts {
+    -- FIRST, AND THE ORDER IS THE WHOLE MECHANISM. devgate.lua wraps
+    -- RegisterCommand with the dev-mode gate every command in this project now
+    -- carries (owner, 2026-08-31); a file that registers a command BEFORE this
+    -- one loads is silently ungated. Shared rather than client+server because
+    -- both states register commands and both need the same wrap.
+    -- tools/verify.sh checks this line's position.
+    '@br_lib/shared/devgate.lua',
     '@br_lib/shared/enums.lua',
     '@br_lib/shared/protocol.lua',
     '@br_lib/shared/names.lua',   -- display-name rules; client and server share them

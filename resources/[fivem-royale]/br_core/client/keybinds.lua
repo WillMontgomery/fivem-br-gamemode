@@ -167,6 +167,25 @@ BR.Keys.bindings = {}
 --- Which action a group is filed under on the settings screen.
 local group = 'Combat'
 
+--- THE UNGATED DOOR, AND THIS FILE IS THE REASON IT EXISTS.
+---
+--- br_lib/shared/devgate.lua puts a dev-mode gate in front of RegisterCommand
+--- for the whole project (owner, 2026-08-31: "Yes I want all client and server
+--- commands gated behind devmode"). Every row below would be caught by it, and
+--- that would not cost the public box a diagnostic -- it would cost it the
+--- KEYBOARD. GTA has no keybind primitive; FiveM builds one out of a command
+--- plus RegisterKeyMapping, so `brslot3` is a console command in exactly the
+--- sense `brshop` is, and it is also the 3 key. Gate these and E does not pick
+--- anything up, TAB does not open the inventory, and M does not draw the map,
+--- on the box where real matches are played.
+---
+--- The fallback is the raw native rather than an error because it is only ever
+--- reached when devgate.lua did not load -- in which case RegisterCommand is
+--- itself unwrapped, and the two spellings mean the same thing. Same shape as
+--- br_ringmaster/server/kick.lua's appeal guard, and for the same reason: a key
+--- must work whatever else is wrong.
+local bindCommand = (BR.Dev and BR.Dev.rawCommand) or RegisterCommand
+
 --- Register a tap action: fires once on press.
 --- @param action string      internal name
 --- @param command string     console command / binding id
@@ -177,7 +196,7 @@ local group = 'Combat'
 ---                           is Escape, and Escape is not something
 ---                           RegisterKeyMapping can be given.
 local function tap(action, command, description, key, raw)
-    RegisterCommand(command, function()
+    bindCommand(command, function()
         -- The RAW LAYER WINS WHEN IT IS RUNNING. The command stays registered
         -- so GTA's own list still shows it, but firing from both paths would
         -- double-tap every action for a player whose chosen key happens to
@@ -254,13 +273,13 @@ end
 --- loses the ability to move one action on an old build, and is told so, which
 --- is a different thing entirely from the action silently going away.
 local function hold(action, command, description, key)
-    RegisterCommand('+' .. command, function()
+    bindCommand('+' .. command, function()
         if BR.Keys.rawHolds then return end
         -- The press is gated for the same reason the tap above is.
         if BR.Keys.uiOwnsKeyboard then return end
         fire(action, true)
     end, false)
-    RegisterCommand('-' .. command, function()
+    bindCommand('-' .. command, function()
         if BR.Keys.rawHolds then return end
         -- AND THE RELEASE IS NOT, DELIBERATELY, WHICH IS THE ASYMMETRY THAT
         -- MATTERS MOST IN THIS FILE.

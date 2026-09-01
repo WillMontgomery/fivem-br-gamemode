@@ -1690,6 +1690,219 @@ else
     rc=1
 fi
 
+# --- 4d-bis. every console command is behind the dev gate ---------------------
+#
+# Owner, 2026-08-31: "Yes I want all client and server commands gated behind
+# devmode." There are ~140 of them and they are NOT gated one by one -- the gate
+# is installed once, in br_lib/shared/devgate.lua, which wraps RegisterCommand
+# for every file that loads after it. So this section does not check 140 things.
+# It checks the four ways a command can get out from behind that wrap, because
+# those four are the whole surface:
+#
+#   1. its name is added to the EXEMPT line              -> the exact-set check
+#   2. it registers through BR.Dev.rawCommand            -> the raw-door allowlist
+#   3. it lives in a resource that never loads devgate   -> the coverage check
+#   4. it lives in a file listed BEFORE devgate          -> the ordering check
+#
+# THE POINT OF DOING IT THIS WAY is that a NEW command is gated by default and
+# this gate does not have to know it exists. A list of today's command names
+# would be green forever while the 141st arrived ungated beside it -- the same
+# denylist-inside-the-gate failure the dispatch.sh verb check above records,
+# where `configreport)` did not match `config)` and a new capability was
+# invisible to the thing built to see new capabilities.
+echo "${DIM}== dev gate on console commands ==${RST}"
+devgate=0
+DEVGATE_FILE="resources/[fivem-royale]/br_lib/shared/devgate.lua"
+
+# The exemptions, spelled out HERE as well as in devgate.lua so the two have to
+# be changed together and a widening cannot happen quietly in one of them.
+#
+#   brkick, brspectate  tools/dispatch.sh types these into the server console
+#                       over tmux -- they are the admin console's Kick and
+#                       Spectate buttons, and a dev gate would make both do
+#                       nothing on the live box with no error anywhere.
+#   brring              the health dump DEPLOY.md sends the operator to, by
+#                       hand, on the live box, after an IAM policy change.
+#
+# bridents is deliberately NOT here: nothing invokes it and it prints licenses
+# and Discord ids for everyone connected. See the note above it in
+# br_ringmaster/server/debug.lua.
+EXEMPT_="brkick brring brspectate"
+
+if [ ! -f "$DEVGATE_FILE" ]; then
+    echo "${RED}FAIL${RST} $DEVGATE_FILE is gone"
+    echo "     Every console command in the project is gated by that file"
+    echo "     wrapping RegisterCommand. Without it they are all open."
+    devgate=1
+else
+    # (1) THE EXEMPTION SET, PARSED RATHER THAN GREPPED FOR.
+    #
+    # Read as the actual `name = true` pairs on the EXEMPT line and compared as
+    # a sorted set, so adding a fourth verb fails here instead of passing on the
+    # strength of the other three still being present.
+    exempt_now=$(grep -E '^local EXEMPT = \{' "$DEVGATE_FILE" \
+                 | grep -oE "[a-z]+ = true" | awk '{print $1}' | sort | tr '\n' ' ' \
+                 | sed 's/ $//')
+    if [ "$exempt_now" != "$EXEMPT_" ]; then
+        echo "${RED}FAIL${RST} the dev-gate exemption list is '${exempt_now}', expected '${EXEMPT_}'"
+        echo "     Every name on that line is a command that keeps working on"
+        echo "     the PUBLIC server. Two of them are the admin console's Kick"
+        echo "     and Spectate buttons; the third is how the operator finds out"
+        echo "     the Ringmaster link is dead. A fourth is a decision, not a"
+        echo "     tidy-up -- make it here and in devgate.lua together."
+        devgate=1
+    fi
+
+    # (2) THE GATE ITSELF IS STILL A GATE.
+    #
+    # MATCHED AS REAL READS, NOT AS SUBSTRINGS, which is the finding
+    # brtime/brweather's gate above records: its first draft was
+    # `grep -q 'BR.Server.devMode'`, and a mutant renaming every occurrence to
+    # `BR.Server.devModeX` -- a read of a field that does not exist, so NO GATE
+    # AT ALL -- survived it, because the old name is a prefix of the new one.
+    # Every pattern here is anchored on a non-word character or end of line.
+    if ! grep -qE 'RegisterCommand = function\(' "$DEVGATE_FILE"; then
+        echo "${RED}FAIL${RST} devgate.lua no longer wraps RegisterCommand"
+        echo "     The wrap IS the mechanism. Without the reassignment every"
+        echo "     command in every resource registers straight to the native."
+        devgate=1
+    fi
+    if ! grep -qE 'if not BR\.Dev\.on\(\)([^[:alnum:]_]|$)' "$DEVGATE_FILE"; then
+        echo "${RED}FAIL${RST} devgate.lua's wrapper no longer asks BR.Dev.on()"
+        echo "     A wrapper that does not test anything is a wrapper that"
+        echo "     forwards every command, which looks exactly like a gate."
+        devgate=1
+    fi
+    # The refusal has to SAY SO. A command that returns quietly on the public
+    # box is indistinguishable from one that ran and did nothing, and after this
+    # change that is the ordinary experience of typing anything there.
+    if ! grep -qE '^ *print\(' "$DEVGATE_FILE"; then
+        echo "${RED}FAIL${RST} devgate.lua's refusal is silent"
+        echo "     Someone typing brshop on the public box must read WHICH gate"
+        echo "     closed, on the console, not nothing at all."
+        devgate=1
+    fi
+    # Both convar names, both as real reads. sv_devMode alone would miss a box
+    # started the other way, and br_devMode alone would miss the client.
+    for cv_ in sv_devMode br_devMode; do
+        if ! grep -qE "GetConvar\('$cv_', 'false'\) == 'true'" "$DEVGATE_FILE"; then
+            echo "${RED}FAIL${RST} BR.Dev.on() no longer reads $cv_"
+            echo "     server/main.lua resolves dev mode from BOTH names and"
+            echo "     this must give the same answer or the two will drift."
+            devgate=1
+        fi
+    done
+fi
+
+# (2b) THE CLIENT HALF OF THE SWITCH.
+#
+# About half the commands in the project are CLIENT commands, and a client
+# cannot see either convar: client/attachtune.lua's write-up says so in as many
+# words. server/main.lua replicates the resolved answer under br_devMode, and
+# without that line BR.Dev.on() is false on every client forever -- so every
+# client dev command is dead on the DEV box too, with nothing saying why.
+mainfile_="resources/[fivem-royale]/br_core/server/main.lua"
+if [ -f "$mainfile_" ]; then
+    if ! grep -qE "SetConvarReplicated\('br_devMode'" "$mainfile_"; then
+        echo "${RED}FAIL${RST} br_devMode is no longer replicated to clients"
+        echo "     Without it GetConvar('br_devMode') is unset on every client,"
+        echo "     BR.Dev.on() is false there permanently, and every client dev"
+        echo "     command refuses on the dev box as well as the public one."
+        devgate=1
+    fi
+fi
+
+# (3) THE RAW DOOR, PINNED TO PLAYER INPUT.
+#
+# BR.Dev.rawCommand is the unwrapped native, and it exists for one reason: GTA
+# has no keybind primitive. FiveM builds one out of a command plus
+# RegisterKeyMapping, so `+brinteract`, `brslot3` and `brmap` are console
+# commands in exactly the sense `brshop` is -- and they are also E, 3 and M.
+# Gating them would not cost the public box a diagnostic, it would cost it the
+# keyboard. `brleave` is the fourth: a documented, bindable, player-facing verb.
+#
+# ANYTHING ELSE REACHING FOR THIS DOOR IS A COMMAND WALKING AROUND THE GATE,
+# which is why the consumers are an allowlist rather than a count.
+RAWDOOR_="resources/[fivem-royale]/br_core/client/keybinds.lua resources/[fivem-royale]/br_core/client/spawn.lua"
+raw_now=$(grep -rlE 'BR\.Dev\.rawCommand([^[:alnum:]_]|$)' "resources/[fivem-royale]" \
+          --include=*.lua 2>/dev/null | grep -v 'br_lib/shared/devgate\.lua' \
+          | sort | tr '\n' ' ' | sed 's/ $//')
+if [ "$raw_now" != "$RAWDOOR_" ]; then
+    echo "${RED}FAIL${RST} the ungated command door is used by '${raw_now}'"
+    echo "     Expected exactly '${RAWDOOR_}'."
+    echo "     That door is for PLAYER INPUT -- the keybind rows and /brleave."
+    echo "     A console command reaching for it is a command walking around"
+    echo "     the dev gate. If a new binding needs it, add the file here."
+    devgate=1
+fi
+
+# (4) COVERAGE AND ORDER, DERIVED FROM THE CALL SITES RATHER THAN FROM A LIST.
+#
+# For every resource that actually registers a command, its manifest must pull
+# devgate.lua in BEFORE the first file that registers one. Both halves matter
+# and the second is the quiet one: a resource that loads devgate last has a
+# wrap nothing ran through, and every command in it is open with no symptom.
+#
+# THE RESOURCE SET IS READ OFF THE TREE, so a sixth resource growing its first
+# command is caught the day it does. Comment lines are stripped first --
+# client/voice.lua quotes pma-voice's own RegisterCommand('+radiotalk') in a
+# note, and a gate that counted that would be chasing a file with no commands.
+for res_ in "resources/[fivem-royale]"/*/; do
+    res_="${res_%/}"
+    man_="$res_/fxmanifest.lua"
+    [ -f "$man_" ] || continue
+
+    # Files in this resource that really register a command.
+    regfiles_=$(find "$res_" -name '*.lua' -type f 2>/dev/null | sort | while IFS= read -r f_; do
+        if sed 's/--.*$//' "$f_" | grep -qE 'RegisterCommand\('; then echo "$f_"; fi
+    done)
+    [ -n "$regfiles_" ] || continue
+
+    dgline_=$(grep -nE "'@br_lib/shared/devgate\.lua'" "$man_" | head -1 | cut -d: -f1)
+    if [ -z "$dgline_" ]; then
+        echo "${RED}FAIL${RST} $(basename "$res_") registers console commands but never loads devgate.lua"
+        echo "     Every command in it is ungated on the public server."
+        echo "     Add '@br_lib/shared/devgate.lua' as the FIRST script it loads."
+        devgate=1
+        continue
+    fi
+
+    while IFS= read -r f_; do
+        [ -n "$f_" ] || continue
+        # PARAMETER EXPANSION, NOT sed, AND THE FIRST DRAFT WAS sed. The
+        # resource path contains `[fivem-royale]`, which a sed s/// pattern
+        # reads as a CHARACTER CLASS -- so `s|^$res_/||` matched nothing, every
+        # `base_` stayed a full path, no manifest line was ever found, and the
+        # `continue` below skipped the check for every file in the project.
+        # This half of the gate was green and doing nothing until the mutant
+        # that moves devgate to the END of br_stats' manifest survived it.
+        base_="${f_#"$res_/"}"
+        fline_=$(grep -nF "'$base_'" "$man_" | head -1 | cut -d: -f1)
+        if [ -z "$fline_" ]; then
+            # A file that registers a command and is in NO script list is
+            # loaded by nothing -- the manifest-coverage gate above owns that
+            # case, so this one only reports what it can place.
+            continue
+        fi
+        if [ "$fline_" -lt "$dgline_" ]; then
+            echo "${RED}FAIL${RST} $base_ is loaded before devgate.lua in $(basename "$res_")'s manifest"
+            echo "     Its commands register against the raw native, so they are"
+            echo "     open on the public box while every command around them is"
+            echo "     gated -- and nothing about that is visible at runtime."
+            devgate=1
+        fi
+    done <<REGEOF
+$regfiles_
+REGEOF
+done
+
+if [ "$devgate" -eq 0 ]; then
+    echo "${GRN}ok${RST}   every console command is dev-gated by one wrap, exempting only ${EXEMPT_}"
+    echo "${GRN}ok${RST}   the ungated door is player input only (the keybind rows and /brleave)"
+else
+    rc=1
+fi
+
 # --- 4e. the branch-switch invariant ------------------------------------------
 #
 # THE ONE RULE BRANCH SWITCHING HANGS OFF, made mechanical.

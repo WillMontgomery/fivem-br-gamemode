@@ -1318,7 +1318,20 @@ end
 --- The party survives this door. Typing /brleave says nothing about the people
 --- you are queued with; the pause menu's button says so on its own confirm
 --- ("You will also leave your party") and passes true.
-RegisterCommand('brleave', function()
+--- REGISTERED THROUGH THE RAW DOOR, which is the one thing about this verb that
+--- is not obvious from the paragraph above. br_lib/shared/devgate.lua gates
+--- every command in the project behind dev mode (owner, 2026-08-31), and this
+--- is a PLAYER's verb, not a diagnostic: it is documented in docs/running.md as
+--- `/brleave`, it is offered in Pause > Settings > Key Bindings, and the pause
+--- menu's own Leave button is the same door. Gating it would delete a shipped
+--- feature from the public box and leave a bindable key in the settings screen
+--- that does nothing when pressed.
+---
+--- A local rather than the expression inline, because a statement STARTING with
+--- `(` is Lua's oldest ambiguity: the parser joins it to the previous line as a
+--- call. It compiles, and it calls the wrong thing.
+local bindCommand = (BR.Dev and BR.Dev.rawCommand) or RegisterCommand
+bindCommand('brleave', function()
     BR.Spawn.leaveMatch(false)
 end, false)
 RegisterKeyMapping('brleave', 'Royale: Leave the current match', 'keyboard', '')

@@ -13512,6 +13512,248 @@ do
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- THE DEV GATE (br_lib/shared/devgate.lua)
+--
+-- Owner, 2026-08-31: "Yes I want all client and server commands gated behind
+-- devmode." ~140 commands, gated by ONE wrap around RegisterCommand rather than
+-- 140 copies of a helper call -- so what has to be true is not a property of
+-- any one command, it is a property of the wrap, and none of it is visible to a
+-- text gate. tools/verify.sh checks that the wrap is still spelled the way it
+-- is spelled; this checks that it still DOES anything.
+--
+-- The file is loaded into a sandbox rather than at the top of this suite for
+-- the reason it exists: it REPLACES the global RegisterCommand, and doing that
+-- to this process would put a dev gate in front of every command every other
+-- block here registers.
+-- ---------------------------------------------------------------------------
+do
+    --- Stand devgate.lua up on its own, with a recording RegisterCommand.
+    --- @param convars table  what GetConvar answers
+    --- @return table
+    local function newGate(convars)
+        local env = newSandbox()
+        local G = { registered = {}, printed = {} }
+
+        env.GetConvar = function(name, default)
+            local v = convars[name]
+            if v == nil then return default end
+            return v
+        end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.print = function(s) G.printed[#G.printed + 1] = tostring(s) end
+        env.RegisterCommand = function(name, fn, restricted)
+            G.registered[name] = { fn = fn, restricted = restricted }
+        end
+
+        loadInto(env, { 'br_lib/shared/devgate.lua' })
+        G.env = env
+
+        --- Register a command through whatever RegisterCommand now is, and
+        --- return a runner for it.
+        --- @return function
+        function G.register(name, restricted)
+            local calls = {}
+            env.RegisterCommand(name, function(source, args, rawText)
+                calls[#calls + 1] = { source = source, args = args, raw = rawText }
+                return 'ran'
+            end, restricted)
+            return calls
+        end
+
+        --- Run a registered command the way FiveM would.
+        function G.run(name, source, args, rawText)
+            return G.registered[name].fn(source, args, rawText)
+        end
+
+        return G
+    end
+
+    describe('devgate.gated')
+
+    do
+        local G = newGate({})              -- neither convar set: a public box
+        local calls = G.register('brshop', true)
+
+        ok(G.registered['brshop'] ~= nil,
+           'a gated command is still REGISTERED on the public box -- the gate is'
+           .. ' on the run, not on the registration, so the name still exists')
+
+        local ret = G.run('brshop', 0, { 'x' }, 'brshop x')
+        ok(#calls == 0, 'and running it does not reach the handler')
+        ok(ret == nil, 'and it returns nothing rather than the answer a run would have given')
+
+        -- THE REFUSAL SAYS WHICH GATE CLOSED. A command that returns quietly is
+        -- indistinguishable from one that ran and did nothing, and after this
+        -- change that is what typing anything on the public box does.
+        ok(#G.printed == 1, 'the refusal prints exactly once', #G.printed)
+        local msg = G.printed[1] or ''
+        ok(msg:find('brshop', 1, true) ~= nil,
+           'and it names the verb that was refused', msg)
+        ok(msg:find('dev%-mode only') ~= nil,
+           'and says dev mode is the gate that closed it', msg)
+        ok(msg:find('br_devMode true', 1, true) ~= nil,
+           'and says what to do about it', msg)
+    end
+
+    do
+        -- THE RESTRICTED FLAG MUST SURVIVE THE WRAP. A wrapper that forwarded
+        -- only (name, fn) would drop every command's `true` third argument and
+        -- turn the whole restricted surface -- brroster, brkill, brgive -- into
+        -- commands any connected player can type. It would look perfect on a
+        -- dev box, where the console is the only caller anybody tries.
+        local G = newGate({ br_devMode = 'true' })
+        G.register('brkill', true)
+        G.register('brleavealike', false)
+        ok(G.registered['brkill'].restricted == true,
+           'a restricted command is still registered restricted through the wrap')
+        ok(G.registered['brleavealike'].restricted == false,
+           'and an unrestricted one is still unrestricted')
+    end
+
+    describe('devgate.open')
+
+    do
+        local G = newGate({ br_devMode = 'true' })
+        local calls = G.register('brshop', true)
+        local ret = G.run('brshop', 7, { 'a', 'b' }, 'brshop a b')
+
+        ok(#calls == 1, 'in dev mode the handler runs')
+        ok(ret == 'ran', 'and its return value comes back through the wrap')
+        ok(#G.printed == 0, 'and nothing is printed', G.printed[1])
+
+        -- All three arguments, because a wrapper that forwarded only `args`
+        -- would break every command that reads `source` -- which is every
+        -- console-only gate in the project: `tonumber(src) ~= 0`.
+        ok(calls[1].source == 7, 'source is forwarded')
+        ok(calls[1].args and calls[1].args[2] == 'b', 'args are forwarded')
+        ok(calls[1].raw == 'brshop a b', 'and the raw command line is forwarded')
+    end
+
+    do
+        -- EITHER NAME TURNS IT ON, and this is the case that decides whether the
+        -- client and the server agree. server/main.lua resolves dev mode from
+        -- sv_devMode OR br_devMode; a gate reading only one of them would call
+        -- a box started the other way a public server and refuse everything on
+        -- it, with the boot banner one line above saying devMode true.
+        local A = newGate({ sv_devMode = 'true' })
+        local aCalls = A.register('brstate2', true)
+        A.run('brstate2', 0)
+        ok(#aCalls == 1, 'sv_devMode alone opens the gate')
+
+        local B = newGate({ br_devMode = 'true' })
+        local bCalls = B.register('brstate2', true)
+        B.run('brstate2', 0)
+        ok(#bCalls == 1, 'br_devMode alone opens the gate')
+
+        -- ...and only the literal string. GetConvar answers TEXT, so anything
+        -- truthy-looking that is not 'true' is a public box.
+        local C = newGate({ br_devMode = '1' })
+        local cCalls = C.register('brstate2', true)
+        C.run('brstate2', 0)
+        ok(#cCalls == 0, 'and a convar set to "1" is not dev mode')
+    end
+
+    describe('devgate.exempt')
+
+    do
+        -- THE THREE VERBS THE PUBLIC BOX KEEPS. brkick and brspectate are the
+        -- admin console's Kick and Spectate buttons -- tools/dispatch.sh types
+        -- them into the server console over tmux -- and brring is the health
+        -- dump DEPLOY.md sends the operator to on the live box. Gating any of
+        -- them produces NO error anywhere the console can see: the button
+        -- posts, the SSH verb succeeds, the keystrokes land, and the player
+        -- stays exactly where they were.
+        local G = newGate({})              -- public box
+        for _, verb in ipairs({ 'brkick', 'brspectate', 'brring' }) do
+            local calls = G.register(verb, true)
+            local ret = G.run(verb, 0, { 'license:abc' }, verb)
+            ok(#calls == 1, verb .. ' runs on the public box')
+            ok(ret == 'ran', 'and ' .. verb .. ' returns its own answer')
+        end
+        ok(#G.printed == 0,
+           'and none of the three prints a refusal', G.printed[1])
+
+        -- REGISTERED THROUGH THE RAW NATIVE, not through a wrapper that decides
+        -- to forward. A closure that checks the name at RUN time would still be
+        -- a closure, and brkick would be one nil-index in devgate.lua away from
+        -- doing nothing on the live box.
+        ok(G.registered['brkick'].restricted == true,
+           'and brkick keeps its restricted flag')
+    end
+
+    do
+        -- THE FOURTH COMMAND IN br_ringmaster IS NOT EXEMPT, and that is a
+        -- decision rather than an oversight -- pinned here so reversing it is
+        -- deliberate. Nothing invokes bridents: dispatch.sh types only brkick
+        -- and brspectate, and no document sends an operator to it in
+        -- production. What it does do is print licenses, Discord ids and Steam
+        -- ids for every connected player at once.
+        local G = newGate({})
+        local calls = G.register('bridents', true)
+        G.run('bridents', 0, {}, 'bridents')
+        ok(#calls == 0, 'bridents is gated on the public box')
+        ok(#G.printed == 1, 'and says so', #G.printed)
+    end
+
+    describe('devgate.rawdoor')
+
+    do
+        -- THE KEYBOARD. GTA has no keybind primitive: FiveM builds one out of a
+        -- command plus RegisterKeyMapping, so `+brinteract`, `brslot3` and
+        -- `brmap` are console commands in exactly the sense brshop is -- and
+        -- they are also E, 3 and M. br_core/client/keybinds.lua registers all
+        -- 22 rows through this door, and /brleave, a documented player verb,
+        -- is the fourth use. Through the wrap instead, the public box would
+        -- have no controls at all.
+        local G = newGate({})              -- public box
+        local calls = {}
+        G.env.BR.Dev.rawCommand('+brinteract', function()
+            calls[#calls + 1] = true
+        end, false)
+        G.run('+brinteract', nil, {}, '+brinteract')
+        ok(#calls == 1, 'the raw door registers a keybind that still fires on the'
+           .. ' public box')
+        ok(#G.printed == 0, 'and refuses nothing')
+
+        ok(G.env.BR.Dev.rawCommand ~= G.env.RegisterCommand,
+           'and the raw door is NOT the wrapped RegisterCommand -- captured'
+           .. ' before the wrap replaced it')
+    end
+
+    describe('devgate.idempotent')
+
+    do
+        -- A file listed twice in one manifest must not wrap the wrap: two gates
+        -- in front of every command would print the refusal twice, and the
+        -- second print is the kind of thing that gets "fixed" by removing the
+        -- first gate.
+        local G = newGate({})
+        local rawBefore = G.env.BR.Dev.rawCommand
+        loadInto(G.env, { 'br_lib/shared/devgate.lua' })
+        G.register('brshop', true)
+        G.run('brshop', 0, {}, 'brshop')
+        ok(#G.printed == 1,
+           'loading devgate twice still refuses exactly once', #G.printed)
+
+        -- AND THE RAW DOOR IS STILL THE RAW NATIVE, which is the half of this
+        -- that costs the keyboard rather than a duplicated line. Capturing
+        -- rawCommand outside the installed-guard re-captures RegisterCommand
+        -- AFTER the wrap has replaced it, so on the second load every keybind
+        -- row registers through the gate while still reading like it goes
+        -- around it -- and the public box has no controls.
+        ok(G.env.BR.Dev.rawCommand == rawBefore,
+           'and the raw door is not re-captured as the wrapped RegisterCommand')
+
+        local fired = {}
+        G.env.BR.Dev.rawCommand('+brinteract', function()
+            fired[#fired + 1] = true
+        end, false)
+        G.run('+brinteract', nil, {}, '+brinteract')
+        ok(#fired == 1, 'so E still fires after a double load')
+    end
+end
+
 -- ----------------------------------------------------------------- result ---
 
 io.write(('\n%s%d passed%s'):format('\27[32m', pass, '\27[0m'))
