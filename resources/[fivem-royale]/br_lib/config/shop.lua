@@ -313,17 +313,35 @@ BR.Config.Shop = {
     -- is a tie-break rule as well as a reading order, and his order is the one
     -- that matches the notes he will check this against.
     items = {
-        -- `veto` STANDS 154m FROM THE OTHER TWELVE, AND THAT IS WHERE HE PUT IT.
-        -- Its x is 4665.97 where every other car is between 4468 and 4512. That
-        -- was queried as a possible transposed digit (4465.97 would set it at
-        -- the head of the line, 2.5m from `sanchez`) and he answered on
-        -- 2026-08-29: "No those coords are very specifically placed. Don't
-        -- change them." So it is a deliberate outlier, it is not a typo, and
-        -- nothing in the code assumes the showroom is one cluster because of it.
+        -- `veto` WAS A TYPO AFTER ALL, AND THE NOTE THAT SAID OTHERWISE IS KEPT
+        -- HERE BECAUSE BEING WRONG TWICE IN THE SAME PLACE IS WORTH RECORDING.
+        --
+        -- It shipped at x 4665.97 where every other car sits between 4468 and
+        -- 4512. That was queried as a possible transposed digit and he answered
+        -- on 2026-08-29: "No those coords are very specifically placed. Don't
+        -- change them." So it was written down as a deliberate outlier.
+        --
+        -- IT WAS NOT. He re-surveyed the spot on 2026-08-31 by standing on it --
+        -- "Veto goes here 4466.08, -4479.03, 4.22" -- after reporting for three
+        -- rounds that the veto "still isn't spawning". It always spawned; it sat
+        -- 154m up the runway where nobody looked, and 2026-08-30's /brshop
+        -- readout showed why nobody could see it either: ground there probes at
+        -- 4.18 against an authored z of 3.3, so it was created a metre under.
+        --
+        -- WHAT THIS COST, so the lesson is legible: three playtest rounds, a
+        -- whole investigation into why one car of thirteen would not settle, and
+        -- a fallback rewritten around the wrong story. The tell was in the data
+        -- the entire time -- twelve cars between z 3.46 and 4.30 on one flat
+        -- apron, and a thirteenth 154m away claiming a z from that same range.
+        -- A confirmation from the owner is evidence, not proof; the ground under
+        -- the point is proof, and it disagreed from the first readout onward.
+        --
+        -- The heading is UNCHANGED at 198.1 -- he gave three numbers, not four,
+        -- and 198.1 is within a degree of every other row's facing.
         {
             id = 'veto', model = 'veto', label = 'Dinka Veto Classic',
             price = 250,
-            x = 4665.97, y = -4478.9, z = 3.3, heading = 198.1,
+            x = 4466.08, y = -4479.03, z = 4.22, heading = 198.1,
             appearance = {  -- his note: Preset Color 1
                 primary = 0, secondary = 0, pearl = 0, wheelColour = 0,
             },

@@ -167,7 +167,7 @@ describe("the shipped catalogue -- the owner's survey of 2026-08-29")
 ---
 ---   model, x, y, z, heading, his Preset Color row, his livery index (or nil)
 local SURVEY = {
-    { 'veto',       4665.97, -4478.9,  3.30, 198.1, 1 },
+    { 'veto',       4466.08, -4479.03, 4.22, 198.1, 1 },
     { 'sanchez',    4468.09, -4478.40, 3.68, 197.7, 6 },
     { 'outlaw',     4471.23, -4477.56, 4.02, 199.8, 4 },
     { 'mesa3',      4474.67, -4477.09, 3.99, 199.3, 2 },
@@ -241,10 +241,13 @@ do
             ok(row.model == model and row.id == model,
                 model .. ': the catalogue id and the model are his one word')
 
-            -- HIS COORDINATES, TO THE DIGIT. He confirmed on 2026-08-29 that
-            -- they are deliberate -- "those coords are very specifically
-            -- placed. Don't change them" -- including `veto`, which stands
-            -- 154m from the other twelve.
+            -- HIS COORDINATES, TO THE DIGIT. "those coords are very
+            -- specifically placed. Don't change them" (2026-08-29).
+            --
+            -- `veto` IS THE EXCEPTION THAT PROVES WHY THIS BLOCK EXISTS. It
+            -- shipped at x 4665.97, was queried as a typo, was confirmed as
+            -- deliberate, and was a typo -- he re-surveyed it on 2026-08-31 by
+            -- standing on the spot. This row is what will catch the next one.
             ok(row.x == x and row.y == y and row.z == z,
                 model .. ': stands exactly where he surveyed it',
                 ('%s,%s,%s'):format(row.x, row.y, row.z))
@@ -512,19 +515,45 @@ do
             .. '-- two cars in range is the NORMAL case here, not the edge one',
         overlapping)
 
-    -- ═══ THE CATALOGUE IS NOT ONE CLUSTER, AND NOTHING MAY ASSUME IT IS ═══
+    -- ═══ NOTHING MAY ASSUME THE CATALOGUE IS ONE CLUSTER ═══
     --
-    -- `veto` stands 154m from the other twelve, where he put it. A resolver
-    -- that walked outwards from the last answer, or stopped at the first row in
-    -- range, would work perfectly on the line and fail on the outlier.
-    local V = row('veto')
-    ok(d(V, row('marshall')) > 150.0,
-        'veto stands 154m from its nearest neighbour -- deliberately',
-        ('%.1f'):format(d(V, row('marshall'))))
-    ok(BR.ShopSolve.nearest(SROWS, V.x, V.y, reach) == V,
-        'and standing at it resolves to it, from the far side of the survey')
-    ok(BR.ShopSolve.nearest(SROWS, A.x, A.y, reach) ~= V,
+    -- THIS USED TO BE A TEST ABOUT `veto`, and it was testing a typo. It stood
+    -- 154m up the runway, that was recorded here as deliberate on the owner's
+    -- own confirmation, and on 2026-08-31 he re-surveyed the spot and it turned
+    -- out to be a mistyped x all along. The thirteen rows are now one line.
+    --
+    -- THE GUARANTEE OUTLIVES THE OUTLIER, so it is kept against a SYNTHETIC row
+    -- rather than deleted with it. A resolver that walked outwards from its last
+    -- answer, or stopped at the first row in range, would pass on a tidy line
+    -- and fail the day he parks one anywhere else -- which he has now done once
+    -- and may do again. The catalogue no longer proves this property, so the
+    -- test supplies its own proof instead of borrowing one from a coordinate.
+    local far = {}
+    for i, r in ipairs(SROWS) do far[i] = r end
+    far[#far + 1] = { id = 'synthetic-outlier', model = 'veto',
+                      x = A.x + 250.0, y = A.y, z = A.z, heading = 0.0 }
+    local V = far[#far]
+
+    local nearestReal = math.huge
+    for _, r in ipairs(SROWS) do nearestReal = math.min(nearestReal, d(V, r)) end
+    ok(nearestReal > 150.0,
+        'the synthetic outlier really is out of the line',
+        ('%.1f'):format(nearestReal))
+    ok(BR.ShopSolve.nearest(far, V.x, V.y, reach) == V,
+        'standing at an outlier resolves to it, from the far side of the survey')
+    ok(BR.ShopSolve.nearest(far, A.x, A.y, reach) ~= V,
         'while standing in the line never reaches it')
+
+    -- AND THE REAL CATALOGUE IS NOW ONE LINE, which is worth asserting so that
+    -- the next stray coordinate fails here rather than three playtests later.
+    local spread = 0.0
+    for _, r in ipairs(SROWS) do
+        local e = d(r, row('sanchez'))
+        if e > spread then spread = e end
+    end
+    ok(spread < 60.0,
+        'every surveyed car is within 60m of the head of the line',
+        ('%.1f'):format(spread))
 
     -- ═══ REACH IS A GATE, NOT A CHOOSER ═══
     ok(BR.ShopSolve.nearest(SROWS, V.x + reach + 1.0, V.y, reach) == nil,
@@ -565,11 +594,19 @@ do
             if dd < BR.Config.Shop.minSpacingM then tight = tight + 1 end
         end
     end
-    ok(tight == 0,
-        'minSpacingM is quiet on his thirteen rows -- the console warning is a '
-            .. 'signal again rather than ten lines of noise', tight)
-    ok(BR.Config.Shop.minSpacingM < closest,
-        'because it sits below his tightest pair rather than above it',
+    -- ONE PAIR IS INSIDE IT AS OF 2026-08-31, AND IT IS HIS. The re-surveyed
+    -- `veto` stands 2.11m from `sanchez`, against a 3.0m rule and a line whose
+    -- next-tightest pair is 3.25m. minSpacingM was NOT lowered to hide that:
+    -- weakening a warning to silence the one thing it caught is how a gate stops
+    -- being a gate. The count is pinned at exactly one so a SECOND tight pair
+    -- still fails here, and the owner has been asked whether he wants the veto
+    -- moved or the ambiguity accepted. If he accepts it, this comment is the
+    -- record of the decision; if he moves it, this goes back to zero.
+    ok(tight == 1,
+        'exactly one pair is inside minSpacingM -- his re-surveyed veto beside '
+            .. 'the sanchez, and nothing else has crept in', tight)
+    ok(BR.Config.Shop.minSpacingM > closest,
+        'and it sits ABOVE that pair, which is why it fires on it',
         ('%.2f < %.2f'):format(BR.Config.Shop.minSpacingM, closest))
 
     -- ...and `reachM` must clear HALF the tightest gap, or there is a dead spot
