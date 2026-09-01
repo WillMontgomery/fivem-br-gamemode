@@ -26,6 +26,27 @@
 -- and never a description -- there is no appearance on this side to get wrong,
 -- to truncate over the wire, or to let drift.
 --
+-- ═══ ...WITH ONE ADDITION, AND IT IS A NUMBER RATHER THAN A DESCRIPTION ═══
+--
+-- Owner, 2026-08-31: "can you make the vehicles in the shop spawn with random
+-- colors each time they are spawned? except the ambulance."
+--
+-- THE SERVER OWNS THE ROLL, and it owns it as ONE INTEGER PER MATCH. `seedFor`
+-- below hands out `m.shopSeed`; every client derives the same thirteen colours
+-- from it through BR.ShopSolve.paint, and the delivery message carries the same
+-- number so the car that unpacks is painted from the same input as the car that
+-- stood on the pad. NOTHING ABOUT PAINT EVER COMES *FROM* A CLIENT -- there is
+-- no colour, index or seed this file will accept from one, so a client cannot
+-- name its own car by any route the shop provides.
+--
+-- AND THE SEED DOES NOT MOVE. It is rolled once, on first ask, and lives as
+-- long as the match does. That is what makes a capture at the press unnecessary
+-- rather than merely convenient: there is no window in which a rebuild could
+-- re-roll a car somebody is standing in front of, and no second copy of the
+-- colour to keep in step with the first. A `paint` field on the purchase record
+-- would be dead bookkeeping -- this project's signature defect -- because the
+-- number it copied could never have changed.
+--
 -- IT NEVER REFUNDS AND NEVER RETRIES. Owner, 2026-08-29, answer 3: "Purchases
 -- cannot be refunded" is literal, and it covers citizenfx/fivem#2623 -- the OPEN
 -- bug where a vehicle from CreateVehicleServerSetter is randomly deleted. What
@@ -127,6 +148,85 @@ end)
 --- The catalogue, for anything that needs to look a row up.
 --- @return table
 function BR.Shop.rows() return rows end
+
+-- ---------------------------------------------------------------------------
+-- The paint seed
+-- ---------------------------------------------------------------------------
+
+--- The one number that decides what colour thirteen cars are in this match.
+---
+--- ═══ ONE ROLL PER MATCH, AND THAT IS THE WHOLE MECHANISM ═══
+---
+--- Owner, 2026-08-31: "random colors each time they are spawned". Every client
+--- builds its own showroom off the flip to WARMUP, so a match's warmup IS the
+--- spawn -- one seed per match means one fresh set of thirteen colours every
+--- time a showroom goes up, which is what he asked for.
+---
+--- ═══ AND A REBUILD *WITHIN* A WARMUP DELIBERATELY DOES NOT RE-ROLL ═══
+---
+--- client/shop.lua's pad is torn down and rebuilt whenever the scene reconciler
+--- says so -- a routing-bucket change, a br_core restart, a state flap while
+--- models were streaming. Re-rolling on each of those would repaint a car while
+--- a player stood at its plate reading the price, and could repaint it between
+--- the press and the DynamoDB answer six seconds later, so what arrived in the
+--- bag would not be what was on screen when they paid. Holding the seed for the
+--- life of the match makes that unreachable rather than guarded against.
+---
+--- ROLLED LAZILY, ON FIRST ASK, so nothing has to be wired into
+--- match.onEnter(WARMUP) and a match that predates a br_core restart still gets
+--- an answer. It is announced, because it is the only thing that can explain a
+--- colour after the fact and there is no other record of it anywhere.
+---
+--- THE ARITHMETIC IS BR.Loot.begin's, deliberately: the clock plus the match id
+--- times a prime. Two matches starting in the same millisecond are the case the
+--- id is there for.
+--- @param m table|nil
+--- @return integer|nil
+function BR.Shop.seedFor(m)
+    if not m then return nil end
+    if m.shopSeed then return m.shopSeed end
+
+    m.shopSeed = (GetGameTimer() + (tonumber(m.id) or 0) * 15485863)
+                 & 0xFFFFFFFF
+    print(('[br_core] shop: match %d showroom painted from seed %d')
+        :format(m.id, m.shopSeed))
+    return m.shopSeed
+end
+
+--- A client asking what colours its showroom is wearing.
+---
+--- THE CLIENT SENDS NOTHING AND IS TOLD ONE NUMBER. It cannot name a seed, a
+--- colour or a car; the only input to this handler is which connection it came
+--- from, and the only output is the seed of the match that connection is
+--- actually in. That is what keeps "the server owns the colour" true across a
+--- feature whose paint is applied on a client.
+---
+--- WARMUP ONLY, ON BOTH CLOCKS, exactly like the purchase. A spectator or a
+--- lobby-sitter has no showroom to paint, and answering them would hand out a
+--- number for a scene they are not allowed to build.
+---
+--- SILENT ON A REFUSAL. client/shop.lua re-asks once a second for as long as it
+--- wants a pad, so there is nothing to recover from and nothing to say -- and a
+--- reply nobody asked for is a reply that paints the wrong match's showroom.
+---
+--- TWO NAMES FOR THE TWO DIRECTIONS -- `br:shop:seed` in, `br:shop:seeded` out
+--- -- which is this file's existing `buy`/`bought` pairing. One name for both
+--- would work in the game (server and client handlers are separate registries)
+--- and would be indistinguishable in a log, in a grep, and in any harness that
+--- stands both halves up in one Lua state.
+RegisterNetEvent('br:shop:seed')
+AddEventHandler('br:shop:seed', function()
+    local src = source
+    if not BR.ShopSolve.enabled(S) then return end
+
+    local m = BR.Server.matchOf(src)
+    local e = BR.Roster.get(src)
+    if not m or not e then return end
+    if m.state ~= BR.MatchState.WARMUP then return end
+    if e.state ~= BR.PlayerState.WARMUP then return end
+
+    TriggerClientEvent('br:shop:seeded', src, { s = BR.Shop.seedFor(m) })
+end)
 
 -- ---------------------------------------------------------------------------
 -- Buying
@@ -633,12 +733,37 @@ function BR.Shop.unpack(src, rowId)
         :format(src, row.id, tostring(netId), x, y, p.z))
 
     -- THE CLIENT DRESSES IT, AND THAT IS WHERE "EXACTLY AS SHOWN" IS KEPT.
-    -- What crosses the wire is a net id and a CATALOGUE ID -- never an
-    -- appearance. The buyer's client already holds config/shop.lua, so it
-    -- rebuilds the car from the same row the showroom car was built from, by
-    -- the same function. There is nothing here that could describe the car
-    -- differently from the way it was described in warmup.
-    TriggerClientEvent('br:shop:dress', src, { n = netId, row = row.id })
+    -- What crosses the wire is a net id, a CATALOGUE ID and the match's PAINT
+    -- SEED -- never an appearance. The buyer's client already holds
+    -- config/shop.lua, so it rebuilds the car from the same row and the same
+    -- seed the showroom car was built from, by the same function. There is
+    -- nothing here that could describe the car differently from the way it was
+    -- described in warmup.
+    --
+    -- ═══ THE SEED IS READ, NEVER ROLLED, AND THAT DISTINCTION IS THE BUG THIS
+    --     LINE EXISTS TO NOT HAVE ═══
+    --
+    -- `m.shopSeed` rather than BR.Shop.seedFor(m). Rolling here would mint a
+    -- number nobody's showroom was ever painted from and hand the player a car
+    -- in a colour they have never seen -- which is precisely the failure
+    -- "exactly as shown" names, arriving through the one door that looks like
+    -- housekeeping.
+    --
+    -- NIL IS A LEGITIMATE ANSWER and it means the authored colour. It is
+    -- reachable on a br_core restart mid-match, where the match object and its
+    -- seed are gone; the same restart already re-resolves the catalogue out from
+    -- under a sold row (see deliverOne). The car still arrives, in the colour
+    -- config/shop.lua authors, and the console says which case this was.
+    local m = BR.Server.matchOf(src)
+    local seed = m and m.shopSeed or nil
+    if not seed then
+        print(('^3[br_core] shop: %d unpacked "%s" with no paint seed on their '
+               .. 'match -- it is dressed in its authored colour, which is not '
+               .. 'what the showroom was wearing^7'):format(src, row.id))
+    end
+
+    TriggerClientEvent('br:shop:dress', src,
+                       { n = netId, row = row.id, s = seed })
     return true
 end
 

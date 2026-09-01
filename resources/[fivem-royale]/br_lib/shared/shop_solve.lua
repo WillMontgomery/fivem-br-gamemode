@@ -25,13 +25,40 @@
 --   table's canonical form: whatever the owner writes in config/shop.lua, both
 --   ends read the output of this function and never the row directly.
 --
--- THE APPEARANCE NEVER TRAVELS OVER THE WIRE, and that is the other half. The
--- purchase, the inventory item, the drop and the use all carry an ITEM ID and
--- nothing else. A client that has the config -- every client does; config/ is a
--- shared_script -- can reconstruct the whole car from the id, so the gap between
--- warmup and the moment somebody unpacks the item mid-match carries no state
--- that could be lost, truncated or edited in flight. The display entity is long
--- gone by then and it does not matter, because it was never consulted.
+-- ═══ AND THE COLOURS ARE ROLLED NOW, WHICH DID NOT CHANGE THAT ARGUMENT --
+--     IT ADDED ONE NUMBER TO IT (owner, 2026-08-31) ═══
+--
+-- "can you make the vehicles in the shop spawn with random colors each time
+--  they are spawned? except the ambulance. that one has a livery so color won't
+--  matter."
+--
+-- The rejected option came back wearing new clothes the moment that landed:
+-- READ THE COLOUR OFF THE DISPLAY CAR AT THE PRESS and carry it on the item. It
+-- is rejected for the identical reason, plus a new one -- a colour riding an
+-- inventory stack has to survive the bag, the ground, a pickup by somebody else
+-- and the NUI mirror, which is four subsystems that would each have to be right
+-- about a fact none of them cares about.
+--
+-- SO THE ROLL IS A FUNCTION, NOT A RECORDING. `BR.ShopSolve.paint` below takes
+-- a row and ONE INTEGER SEED and answers a paint index, deterministically. The
+-- server owns that seed, holds it on the match, and it does not move for the
+-- life of that match -- so the showroom car and the car that comes out of the
+-- item are STILL the same computation run twice, and there is still nothing to
+-- keep in sync. What a capture would have bought -- "the colour it was wearing
+-- when I pressed" -- is bought instead by the seed being immutable: a rebuild
+-- mid-warmup cannot re-roll a car somebody is standing in front of, because
+-- there is no roll left to make.
+--
+-- THE APPEARANCE STILL NEVER TRAVELS OVER THE WIRE, and that is the other half.
+-- The purchase, the inventory item, the drop and the use carry an ITEM ID; the
+-- delivery carries a net id, a catalogue id and the SEED. Not one colour, mod,
+-- livery or plate crosses in any direction, and nothing about paint is ever
+-- sent client -> server at all. A client that has the config -- every client
+-- does; config/ is a shared_script -- reconstructs the whole car from the id and
+-- that one number, so the gap between warmup and the moment somebody unpacks the
+-- item mid-match carries no state that could be lost, truncated or edited in
+-- flight. The display entity is long gone by then and it does not matter,
+-- because it was never consulted.
 
 BR = BR or {}
 BR.ShopSolve = {}
@@ -383,6 +410,99 @@ function BR.ShopSolve.signHeight(minZ, maxZ, frac, lift)
     return lo + (hi - lo) * f + l
 end
 
+-- ---------------------------------------------------------------------------
+-- The roll
+-- ---------------------------------------------------------------------------
+
+--- Does this row take a rolled colour, or does it keep the one he authored?
+---
+--- ═══ AN OPT-OUT, NOT AN OPT-IN, AND THE POLARITY IS THE OWNER'S SENTENCE ═══
+---
+--- "make the vehicles in the shop spawn with random colors [...] except the
+--- ambulance" -- so the rule is the default and the exception is the exception.
+--- A row added next month is randomised because nobody had to remember to say
+--- so, which is the opposite of what an opt-in flag would have shipped: a
+--- fourteenth car standing in preset 1 beside thirteen rolled ones, with nothing
+--- to say why.
+---
+--- `randomColour = false` IS THE ONLY SPELLING THAT TURNS IT OFF. nil is on,
+--- true is on, and anything else is on -- an equality rather than a truth test,
+--- because the field is authored by hand and a typo must not silently pin a
+--- car's colour.
+--- @param row table|nil
+--- @return boolean
+function BR.ShopSolve.randomises(row)
+    if type(row) ~= 'table' then return false end
+    return row.randomColour ~= false
+end
+
+--- One row's own 32-bit seed, folded from the match seed and its id.
+---
+--- FNV-1a, BY ID RATHER THAN BY POSITION. A per-index derivation would repaint
+--- every car below any row the owner inserts or deletes, so a catalogue edit
+--- would look like a bug in the roll. The id is the stable thing about a row --
+--- it is already what the item, the purchase and the delivery are keyed on.
+--- @param seed integer
+--- @param id string
+--- @return integer
+local function fold(seed, id)
+    local h = 2166136261
+    for i = 1, #id do
+        h = (h ~ id:byte(i)) & 0xFFFFFFFF
+        h = (h * 16777619) & 0xFFFFFFFF
+    end
+    return (seed + h) & 0xFFFFFFFF
+end
+
+--- The paint index one row wears under one seed, or nil for "use the row".
+---
+--- ═══ PURE, SO BOTH ENDS CAN RUN IT AND NEITHER HAS TO BE TOLD THE ANSWER ═══
+---
+--- The server holds the seed and hands it out; the client derives the colour
+--- from it. That is BR.Rng's whole reason for existing -- "the server and client
+--- must be able to derive the identical loot layout from a single shared seed"
+--- -- and it is why the wire carries one integer instead of thirteen colours.
+---
+--- IT IS ALSO WHY NOTHING ABOUT PAINT TRAVELS CLIENT -> SERVER. A client never
+--- names a colour, never names a seed, and is never asked: it receives one and
+--- derives. A modified client can of course repaint a vehicle it controls -- it
+--- always could, and appearance has never been a boundary here -- but it cannot
+--- make the SERVER agree, and the delivered car is dressed from the server's
+--- number on every honest machine.
+---
+--- NIL ON EVERY ABSENCE, RATHER THAN A DEFAULT. No seed, no palette, an empty
+--- palette, a row that opted out: all four mean "this car wears what
+--- config/shop.lua says", which is the behaviour that shipped before the roll
+--- and is a far better failure than a car with no colour at all.
+--- @param row table|nil
+--- @param seed integer|nil    the match's paint seed
+--- @param palette table|nil   BR.Config.Shop.palette
+--- @return integer|nil
+function BR.ShopSolve.paint(row, seed, palette)
+    if not BR.ShopSolve.randomises(row) then return nil end
+    if type(palette) ~= 'table' or #palette == 0 then return nil end
+
+    -- A NIL TEST, AND IT READS AS ONE ONLY BECAUSE 0 IS TRUTHY IN LUA. Seed 0
+    -- is a seed -- the server masks its roll to 32 bits -- and so is paint index
+    -- 0, Metallic Black, which is in the shipped palette. An `s == 0` guard
+    -- here, or an `or 0` on either line, silently pins one match in four billion
+    -- and one colour in thirty-two to the authored value.
+    local s = math.tointeger(tonumber(seed))
+    if not s then return nil end
+
+    local id = tostring(row.id or '')
+    if id == '' then return nil end
+
+    -- NIL-GUARDED ON THE MODULE. br_lib loads its shared scripts as a glob and
+    -- the order is the platform's business; a call before rng.lua has run must
+    -- fall back to the authored colour rather than raise inside a dresser.
+    if type(BR.Rng) ~= 'function' then return nil end
+
+    local n = tonumber(BR.Rng(fold(s, id)):pick(palette))
+    if not n then return nil end
+    return math.floor(n)
+end
+
 --- THE APPEARANCE, CANONICALISED. One row in, one fully-populated table out.
 ---
 --- ═══ THIS FUNCTION IS THE "EXACTLY AS SHOWN" GUARANTEE ═══
@@ -392,6 +512,17 @@ end
 --- that comes out of the item are not "kept in sync"; they are the same
 --- computation run twice, and there is no state anywhere that could be right for
 --- one and wrong for the other.
+---
+--- ═══ THE SEED IS PART OF "THE SAME COMPUTATION", NOT AN OVERRIDE ON TOP OF IT
+---     ═══
+---
+--- The showroom is dressed with the match's seed and the delivered car is
+--- dressed with the same match's seed, so the two calls have identical inputs
+--- and cannot disagree. A caller that passed a seed to one and not the other
+--- would be back to two representations -- which is why the delivery message
+--- carries the seed rather than the client remembering the one it built the
+--- showroom with, and why a client that has to guess is told to guess NOTHING
+--- and use the authored colour instead.
 ---
 --- EVERY FIELD IS PRESENT IN THE ANSWER, including the ones the owner left out.
 --- A dresser that skips absent fields would leave the delivered car wearing
@@ -404,8 +535,10 @@ end
 --- into the config by accident -- one client writing a defaulted field back into
 --- the shared row would be the second representation arriving by the back door.
 --- @param row table|nil
+--- @param seed integer|nil    the match's paint seed; nil keeps the authored colour
+--- @param palette table|nil   BR.Config.Shop.palette
 --- @return table
-function BR.ShopSolve.appearance(row)
+function BR.ShopSolve.appearance(row, seed, palette)
     local a = (type(row) == 'table' and type(row.appearance) == 'table')
         and row.appearance or {}
 
@@ -439,12 +572,29 @@ function BR.ShopSolve.appearance(row)
         end
     end
 
+    -- ═══ THE ROLL WINS, AND IT PAINTS BOTH COATS THE SAME ═══
+    --
+    -- ONE COLOUR PER CAR, NOT TWO. Every row the owner authored writes
+    -- `secondary` equal to `primary`, so a single-coat car is the convention he
+    -- already set and the roll keeps it. Two independent draws would put a
+    -- random roof and random stripes on a random body -- three colours nobody
+    -- chose, on the models where the secondary shows at all -- and "random
+    -- colors" is not an invitation to invent a paint job.
+    --
+    -- WRITTEN AS AN `if`, NOT AS `rolled or int(...)`. 0 is Metallic Black and
+    -- 0 is in the palette; it is also TRUTHY in Lua, so the `or` spelling would
+    -- happen to work here and would be one edit away from not. This project has
+    -- shipped that class of bug nine times and it is not spelling it a tenth.
+    local pri, sec = int(a.primary, -1), int(a.secondary, -1)
+    local rolled = BR.ShopSolve.paint(row, seed, palette)
+    if rolled ~= nil then pri, sec = rolled, rolled end
+
     return {
         -- -1 IS THE ENGINE'S OWN "LEAVE IT" FOR EVERY COLOUR INDEX HERE, so an
         -- unwritten field and a deliberately-default field produce the same
         -- car -- which is what makes a half-filled row safe to ship.
-        primary     = int(a.primary,     -1),
-        secondary   = int(a.secondary,   -1),
+        primary     = pri,
+        secondary   = sec,
         pearl       = int(a.pearl,       -1),
         wheelColour = int(a.wheelColour, -1),
         interior    = int(a.interior,    -1),

@@ -212,7 +212,15 @@ shared_scripts {
     -- car's description on the wire, which is precisely the second
     -- representation this design exists to not have.
     --
-    -- LAST, because it reads nothing at load and everything at call time.
+    -- ...AND THE SAME ARGUMENT NOW COVERS THE COLOUR ROLL (2026-08-31).
+    -- BR.ShopSolve.paint turns one server-issued seed into a paint index, and it
+    -- has to answer identically on the server's clients and on each other's --
+    -- so it is BR.Rng (loaded near the top of this list) over a config table
+    -- every machine holds, rather than a colour the server resolves and sends.
+    --
+    -- LAST, because it reads nothing at load and everything at call time --
+    -- which is also why BR.Rng being 180 lines above it is a readability
+    -- choice rather than a dependency.
     '@br_lib/shared/shop_solve.lua',
 }
 

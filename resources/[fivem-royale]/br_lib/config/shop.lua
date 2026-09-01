@@ -80,6 +80,92 @@ BR.Config.Shop = {
     enabled = true,
 
     -- ------------------------------------------------------------------
+    -- WHAT "RANDOM COLOURS" DRAWS FROM
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-31: "can you make the vehicles in the shop spawn with
+    -- random colors each time they are spawned? except the ambulance. that one
+    -- has a livery so color won't matter."
+    --
+    -- ═══ THIS IS A CURATED SET AND NOT THE FULL RANGE, AND HE WAS RIGHT TO
+    --     OFFER TO PICK ONE ═══
+    --
+    -- He said he would choose a set if the full range looked bad. IT WOULD HAVE
+    -- LOOKED BAD, and the reason is a fact about GTA's palette rather than a
+    -- matter of taste. The paint index space is 0..159 (Cfx game reference,
+    -- "Vehicle Colors"), and it is not a spread of colours -- it is a parts
+    -- catalogue:
+    --
+    --   0..26    TWENTY-SEVEN GREYS. Metallic, Matte, Util and Worn blacks,
+    --            silvers and gunmetals, several of which are indistinguishable
+    --            from one another at ten paces. That is a sixth of the range
+    --            before a single colour appears, so a uniform draw over 0..159
+    --            paints roughly one car in six grey and one in three something
+    --            no player would call a colour.
+    --   Util/Worn EVERYWHERE ELSE (43..48, 56..60, 75..81, 85..87, 108..110,
+    --            113..116, 121..124, 126, 130, 132..133). These are the service
+    --            and weathered finishes -- flat, chalky, deliberately unlovely.
+    --            A showroom car in "Worn Sea Wash" reads as an unpainted car
+    --            rather than as a colour somebody chose.
+    --   88..116  A LONG RUN OF BROWNS, BEIGES AND SANDS -- Pueblo Beige, Moss
+    --            Brown, Beechwood, Sun Bleeched Sand -- which are hard to tell
+    --            apart on a car and harder still across a lot.
+    --   117..120,
+    --   156..159 CHROME, BRUSHED STEEL, PURE GOLD, BRUSHED GOLD, DEFAULT ALLOY.
+    --            Chrome and gold read as a cheat rather than a paint job, and
+    --            "Default Alloy" is not a colour at all.
+    --
+    -- So the roll draws from the METALLIC families instead: the glossy finishes,
+    -- spread deliberately across the hue circle, with black and white kept as
+    -- anchors because a showroom with no black car in it looks wrong too.
+    -- THIRTY-TWO ENTRIES, which is enough that thirteen cars rarely repeat and
+    -- few enough that every one of them is a colour a player would name.
+    --
+    -- ═══ AND IT IS HIS TO EDIT, WHICH IS THE WHOLE REASON IT IS HERE ═══
+    --
+    -- Nothing in this list is his. It is a first cut, exactly like the prices
+    -- above the catalogue, and this is the ONE place a paint index is written
+    -- down -- BR.ShopSolve.paint takes the table, so adding, removing or
+    -- reordering entries is the whole change. An empty table turns the roll off
+    -- and every car goes back to the colour authored on its row.
+    --
+    -- Names are the game's own, from the Cfx vehicle-colour reference.
+    palette = {
+        0,    -- Metallic Black
+        4,    -- Metallic Silver
+        11,   -- Metallic Anthracite Grey
+        27,   -- Metallic Red
+        28,   -- Metallic Torino Red
+        29,   -- Metallic Formula Red
+        35,   -- Metallic Candy Red
+        36,   -- Metallic Sunrise Orange
+        37,   -- Metallic Classic Gold
+        38,   -- Metallic Orange
+        50,   -- Metallic Racing Green
+        51,   -- Metallic Sea Green
+        53,   -- Metallic Green
+        61,   -- Metallic Midnight Blue
+        64,   -- Metallic Blue
+        67,   -- Metallic Diamond Blue
+        70,   -- Metallic Bright Blue
+        71,   -- Metallic Purple Blue
+        73,   -- Metallic Ultra Blue
+        88,   -- Metallic Taxi Yellow
+        89,   -- Metallic Race Yellow
+        90,   -- Metallic Bronze
+        91,   -- Metallic Yellow Bird
+        92,   -- Metallic Lime
+        111,  -- Metallic White
+        112,  -- Metallic Frost White
+        135,  -- Hot Pink
+        137,  -- Metallic Vermillion Pink
+        144,  -- Hunter Green
+        145,  -- Metallic Purple
+        150,  -- Metallic Lava Red
+        157,  -- Epsilon Blue
+    },
+
+    -- ------------------------------------------------------------------
     -- THE CATALOGUE, AS THE OWNER SURVEYED IT ON 2026-08-29
     -- ------------------------------------------------------------------
     --
@@ -88,6 +174,36 @@ BR.Config.Shop = {
     -- until he authored it; the "inert rather than broken" behaviour that
     -- covered that is still in BR.ShopSolve.enabled and still correct if the
     -- rows are ever removed.
+    --
+    -- ═══ TWELVE OF THESE THIRTEEN CARS NO LONGER WEAR THE COLOUR ON THEIR ROW
+    --     (owner, 2026-08-31) ═══
+    --
+    -- "can you make the vehicles in the shop spawn with random colors each time
+    --  they are spawned? except the ambulance. that one has a livery so color
+    --  won't matter."
+    --
+    -- So `primary` and `secondary` below stopped being what the showroom paints
+    -- with. Every row except `ambulance` draws from `palette` above instead --
+    -- one colour per row per match, derived from the server's seed by
+    -- BR.ShopSolve.paint, and applied identically to the display car and to the
+    -- car that comes out of the item.
+    --
+    -- ═══ THE NUMBERS ARE KEPT, AND NEITHER REASON IS SENTIMENT ═══
+    --
+    --   1. `ambulance` STILL READS ITS ROW. It carries `randomColour = false`
+    --      and it is painted from the table exactly as it always was -- colour
+    --      AND livery -- so the minus-one conversion below is live code on a
+    --      shipped row and still has to be right.
+    --   2. THEY ARE THE FALLBACK FOR EVERY ROW. BR.ShopSolve.appearance takes a
+    --      SEED; with no seed -- a br_core restart mid-match, a client that
+    --      never got an answer, an emptied `palette` -- it hands back exactly
+    --      what is written here. A car in the colour he surveyed is a far better
+    --      failure than a car in whatever the engine felt like.
+    --
+    -- AND THEY ARE THE RECORD. These were HIS numbers, transcribed from his
+    -- survey, and the double-entry block at the top of tools/test_shop.lua still
+    -- checks this table against them. Deleting them would delete the only proof
+    -- that the conversion below was ever applied correctly.
     --
     -- ═══ HIS SURVEY NUMBERS ARE ONE-BASED. THIS CONFIG IS ZERO-BASED. ═══
     --
@@ -110,9 +226,11 @@ BR.Config.Shop = {
     --     Livery 5            livery  = 4
     --
     -- His original note is quoted verbatim on each row, so the two can always be
-    -- checked against each other. IF A CAR COMES OUT THE WRONG COLOUR THE BUG IS
-    -- ONE OF THESE SUBTRACTIONS, NOT THE CONVENTION -- do not "correct" the
-    -- table back to his row numbers, or all thirteen shift by one.
+    -- checked against each other. IF THE AMBULANCE OR A FALLBACK CAR COMES OUT
+    -- THE WRONG COLOUR THE BUG IS ONE OF THESE SUBTRACTIONS, NOT THE CONVENTION
+    -- -- do not "correct" the table back to his row numbers, or all thirteen
+    -- shift by one. (A car that is merely a colour nobody authored is not that
+    -- bug at all: that is the roll working, and `palette` is where it lives.)
     --
     -- ═══ THE FAIRNESS CONSTRAINT: REVIEWED, RAISED, AND ACCEPTED ═══
     --
@@ -152,6 +270,10 @@ BR.Config.Shop = {
     -- He gave ONE colour per car. Both `primary` and `secondary` are written
     -- with it anyway, and that is not padding.
     --
+    -- IT IS ALSO THE CONVENTION THE ROLL FOLLOWS. BR.ShopSolve.appearance paints
+    -- both coats with ONE rolled index for exactly the reason below: a car with
+    -- two different colours on it is a paint job, and he asked for a colour.
+    --
     -- A -1 in this table means "leave it", and BR.Shop.dress honours that by
     -- READING the value off the vehicle it is dressing. For a freshly created
     -- vehicle the value it reads is the RANDOM colour combination the engine
@@ -185,6 +307,10 @@ BR.Config.Shop = {
     --                              -- car. `bike` for motorcycles.
     --     tokenScale = 0.1,        -- this car's dropped token, as a multiple
     --                              -- of the model's own size
+    --     randomColour = false,    -- pin this car to the colour authored below
+    --                              -- instead of rolling one out of `palette`.
+    --                              -- The ambulance, and nothing else. Absent
+    --                              -- means the car IS rolled.
     --
     --     -- THE APPEARANCE. Everything here is applied to BOTH the showroom
     --     -- car and the car that comes out of the item, by one function, so
@@ -424,8 +550,24 @@ BR.Config.Shop = {
             },
         },
         {
+            -- ═══ THE ONE CAR THE ROLL DOES NOT TOUCH, AND HE GAVE THE REASON
+            --     ═══
+            --
+            -- Owner, 2026-08-31: "except the ambulance. that one has a livery so
+            -- color won't matter."
+            --
+            -- So this row keeps everything below it: his Preset Color 1, and his
+            -- Livery 5. It is the only row in the catalogue whose `primary` is
+            -- still what a player sees on the pad.
+            --
+            -- `marshall` CARRIES A LIVERY TOO AND IS *NOT* EXEMPT, which is
+            -- worth saying because it looks like an oversight and is not. He
+            -- named one car. A marshall's flag sits on its flanks over painted
+            -- bodywork, so colour reads on it perfectly well; an ambulance's
+            -- livery is the vehicle. If he wants the marshall pinned as well,
+            -- this line is the whole change.
             id = 'ambulance', model = 'ambulance', label = 'Ambulance',
-            price = 500,
+            price = 500, randomColour = false,
             x = 4503.87, y = -4468.23, z = 3.89, heading = 198.4,
             appearance = {  -- his notes: Preset Color 1, Livery 5
                 primary = 0, secondary = 0, pearl = 0, wheelColour = 0,

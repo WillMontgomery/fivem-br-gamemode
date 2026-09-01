@@ -21,10 +21,27 @@
 -- outside a running client, where this is a pure function over a table that
 -- tools/test_shop.lua exercises directly.
 --
+-- ═══ THE COLOURS ARE ROLLED, AND THE ROW GAINED A SECOND INPUT RATHER THAN A
+--     SECOND REPRESENTATION (owner, 2026-08-31) ═══
+--
+-- "can you make the vehicles in the shop spawn with random colors each time
+--  they are spawned? except the ambulance."
+--
+-- BR.Shop.dress now takes a SEED as well as a row, and BR.ShopSolve.appearance
+-- derives the paint from the pair. The seed is the SERVER'S -- one per match,
+-- rolled once, asked for by the reconciler below and re-sent with the delivery
+-- -- so this file never invents a colour, never remembers one, and never tells
+-- the server what it painted. It receives a number and derives.
+--
+-- WHICH IS WHY THERE IS STILL NOTHING TO KEEP IN SYNC. The showroom car and the
+-- bought car are dressed from one row and one seed; a rebuild mid-warmup asks
+-- for the same seed and repaints the pad identically, so a car cannot change
+-- colour under a player who is reading its price.
+--
 -- NOTHING ABOUT AN APPEARANCE EVER CROSSES THE WIRE. The purchase carries a
 -- catalogue id, the inventory item carries an item id, and the delivery message
--- carries a net id and a catalogue id. Every client already holds
--- config/shop.lua, because config/ is a shared_script -- so the car is
+-- carries a net id, a catalogue id and that one integer. Every client already
+-- holds config/shop.lua, because config/ is a shared_script -- so the car is
 -- reconstructed rather than transmitted, and the gap between warmup and the
 -- moment somebody uses the item carries no state that could be lost or edited.
 --
@@ -101,6 +118,21 @@ local placed = {}
 --- Is the showroom standing?
 local built = false
 
+--- The match's paint seed, as the SERVER last stated it. nil until it answers.
+---
+--- ═══ THE PAD IS NOT BUILT WITHOUT ONE, AND THAT IS DELIBERATE ═══
+---
+--- Building on the authored colours while the answer is in flight would put a
+--- showroom up in thirteen colours and then repaint it a second later -- and
+--- worse, a player quick enough to press in that second would be looking at one
+--- car and buying another. A pad that appears a beat late is a pad; a pad that
+--- changes colour under somebody is the bug this whole file exists to not have.
+---
+--- CLEARED BY teardown, so leaving warmup forgets it and the next one is asked
+--- for fresh. A seed that outlived its match would paint the next showroom in
+--- the last one's colours.
+local seed = nil
+
 --- Building is asynchronous (models stream), so a state flap can start a second
 --- build while the first is still waiting. Same generation token client/bus.lua
 --- uses, and for the same reason: one flight produced two planes.
@@ -149,11 +181,23 @@ local DIMS = {}
 --- SetVehicleModKit FIRST. Every SetVehicleMod on a vehicle whose mod kit has
 --- not been selected is a write to nothing; client/rescue.lua's ambulance does
 --- the same thing in the same order.
+---
+--- ═══ THE SEED IS AN ARGUMENT, NOT A FILE-LEVEL READ, AND THAT IS THE POINT
+---     ═══
+---
+--- It would be one character shorter to read the `seed` local above. Both
+--- callers would then be reading a value that is nil for the whole of a match
+--- -- the pad is torn down at wheels-up and `seed` goes with it -- so the car a
+--- player unpacks forty minutes later would come out in its authored colour
+--- while the showroom car came out rolled. Passing it in is what forces the
+--- delivery to carry its own, from the server, which is the only copy that is
+--- still alive by then.
 --- @param veh integer
 --- @param row table
-function BR.Shop.dress(veh, row)
+--- @param paintSeed integer|nil  the match's seed; nil is the authored colour
+function BR.Shop.dress(veh, row, paintSeed)
     if not veh or veh == 0 or not isTrue(DoesEntityExist(veh)) then return end
-    local a = BR.ShopSolve.appearance(row)
+    local a = BR.ShopSolve.appearance(row, paintSeed, S.palette)
 
     nat(SetVehicleModKit, veh, 0)
 
@@ -240,6 +284,11 @@ local function teardown()
     gen = gen + 1            -- abandons any build still streaming models
     promptShown = false
     candidate = nil
+    -- THE SEED BELONGS TO THE SHOWROOM IT PAINTED. Keeping it across a teardown
+    -- would build the next match's pad in this match's colours, and the server's
+    -- answer for that match would then disagree with what a player is standing
+    -- in front of.
+    seed = nil
     for id, veh in pairs(cars) do
         if veh and veh ~= 0 and isTrue(DoesEntityExist(veh)) then
             DeleteEntity(veh)
@@ -330,7 +379,8 @@ end
 --- ONE THREAD FOR THE WHOLE SHOWROOM, not one per car: model streaming yields,
 --- and a burst of RequestModel in one frame is how a dense scene turns into a
 --- stutter (client/loot.lua's drain makes the same trade).
-local function build()
+--- @param paintSeed integer the seed every car on this pad is painted from
+local function build(paintSeed)
     if built then return end
     built = true
     gen = gen + 1
@@ -667,7 +717,15 @@ local function build()
                         nat(SetVehicleEngineOn, veh, false, true, true)
                         nat(SetVehicleDoorsLockedForAllPlayers, veh, true)
 
-                        BR.Shop.dress(veh, row)
+                        -- THE SEED THE BUILD STARTED WITH, not the file-level
+                        -- `seed`. A reply landing mid-build swaps that local
+                        -- out from under a thread that has already painted
+                        -- eight cars, and the pad would end up in two matches'
+                        -- colours at once. The generation token abandons this
+                        -- thread on a re-seed; the argument is what makes the
+                        -- cars it did build agree with each other in the
+                        -- meantime.
+                        BR.Shop.dress(veh, row, paintSeed)
                         cars[row.id] = veh
                     else
                         print(('[br_core] shop: could not build "%s" (%s)')
@@ -698,6 +756,38 @@ local function wantScene()
     return true
 end
 
+--- The server naming the colours this match's showroom wears.
+---
+--- ═══ A DIFFERENT SEED IS A DIFFERENT SHOWROOM, SO IT REBUILDS ═══
+---
+--- The reconciler only asks while `seed` is nil, so in the ordinary case exactly
+--- one answer arrives and this runs once. The case it is written for is the
+--- untidy one: a reply for the PREVIOUS match landing a moment after a new
+--- warmup started asking. Taking the first answer and keeping it would leave the
+--- pad painted from a seed the server no longer holds -- and the car unpacked
+--- later, dressed from the delivery's seed, would come out a different colour
+--- with nothing anywhere to explain it.
+---
+--- So the newest answer wins and the pad is rebuilt under it. Repainting a
+--- showroom nobody has bought from yet is free; the purchase is refused on the
+--- server anyway if this player is not in a live warmup.
+---
+--- `not s` IS A NIL TEST, AND IT IS ONE ONLY BECAUSE 0 IS TRUTHY IN LUA.
+--- math.tointeger answers nil for a payload carrying no `s` and 0 for a seed of
+--- zero, which the server can genuinely mint -- it masks its roll to 32 bits.
+--- Those two must not collapse: an `s == 0` guard, or a `tonumber(d.s) or 0`,
+--- would refuse one match in four billion its showroom, and nobody would ever
+--- reproduce it.
+RegisterNetEvent('br:shop:seeded')
+AddEventHandler('br:shop:seeded', function(d)
+    if type(d) ~= 'table' then return end
+    local s = math.tointeger(tonumber(d.s))
+    if not s or seed == s then return end
+
+    if seed ~= nil or built then teardown() end
+    seed = s
+end)
+
 --- The scene, reconciled once a second.
 ---
 --- A RECONCILER RATHER THAN TWO EVENT HANDLERS, and that is the difference
@@ -709,10 +799,23 @@ end
 --- such cases.
 ---
 --- SLOW BAND. The question changes at most twice a match.
+---
+--- ═══ AND THE SEED IS RECONCILED THE SAME WAY, FOR THE SAME REASON ═══
+---
+--- "ask once when the pad goes up" is the shape that fails: the answer can be
+--- lost, the server can refuse it because this player's state has not caught up
+--- yet, or br_core can restart mid-warmup with no edge left to fire on. Asking
+--- again every second until an answer arrives has none of those cases, costs one
+--- event per second per client for at most a beat or two, and STOPS THE MOMENT
+--- IT IS ANSWERED -- `seed` being set is the whole of the condition.
 BR.Loop.register(BR.Loop.SLOW, 'shop.scene', function()
     if wantScene() then
-        build()
-    elseif built then
+        if seed == nil then
+            TriggerServerEvent('br:shop:seed')
+            return
+        end
+        build(seed)
+    elseif built or seed ~= nil then
         teardown()
         -- LEAVING WARMUP IS WHAT RESETS THE ALLOWANCE ON THIS SIDE. The server
         -- keys its own copy on the match id and is the authority; this is only
@@ -1061,6 +1164,18 @@ AddEventHandler('br:shop:dress', function(d)
     if type(d) ~= 'table' then return end
     local netId = math.tointeger(tonumber(d.n) or 0)
     local row = BR.ShopSolve.rowById(rows, tostring(d.row or ''))
+    -- ═══ THE SERVER'S SEED, AND THE LOCAL ONE IS DELIBERATELY NOT CONSULTED
+    --     ═══
+    --
+    -- By the time anybody uses this item the pad is long gone and `seed` is nil,
+    -- so falling back to it would mean falling back to nothing. This number
+    -- travelled with the delivery precisely so the car can be painted from the
+    -- same input the showroom was, minutes after the showroom stopped existing.
+    --
+    -- ABSENT IS ALLOWED and means the authored colour -- server/shop.lua sends
+    -- no seed when the match has none (a br_core restart mid-match) and says so
+    -- on its own console. A car in its config colour beats no car.
+    local paintSeed = math.tointeger(tonumber(d.s))
     if not netId or netId <= 0 or not row then
         print(('[br_core] shop: unusable delivery (%s / %s)')
             :format(tostring(d.n), tostring(d.row)))
@@ -1112,8 +1227,10 @@ AddEventHandler('br:shop:dress', function(d)
                 :format(row.id, GetGameTimer() - tc))
         end
 
-        -- THE SAME FUNCTION THE SHOWROOM CAR WAS DRESSED BY, over the same row.
-        BR.Shop.dress(veh, row)
+        -- THE SAME FUNCTION THE SHOWROOM CAR WAS DRESSED BY, over the same row
+        -- AND THE SAME SEED. Two identical inputs, one function: the two cars
+        -- are not compared, they are computed the same way twice.
+        BR.Shop.dress(veh, row, paintSeed)
 
         -- ...AND NOTHING ELSE. No freeze, no lock, no invincibility: those three
         -- belong to the showroom and to nothing after it. #224: "After that it
@@ -1313,6 +1430,27 @@ RegisterCommand('brshop', function()
         :format(built and 'BUILT' or 'down',
                 tostring(BR.State.match.state), tostring(BR.State.me.state),
                 #rows, nCars))
+
+    -- ═══ THE PAINT SEED, AND THE COLOUR IT RESOLVES EACH ROW TO ═══
+    --
+    -- The only record of why a car is the colour it is. A player reporting "my
+    -- car came out the wrong colour" is reporting a disagreement between two
+    -- numbers -- this seed and the one the delivery carried -- and neither of
+    -- them is visible anywhere else. The server prints its own copy at the roll,
+    -- so the two can be put side by side.
+    --
+    -- `paint` READS THE SHIPPED PALETTE, so a row printing `-` here is a row the
+    -- roll is not touching: the ambulance, or every row if `palette` is empty.
+    local paints = {}
+    for _, row in ipairs(rows) do
+        local c = BR.ShopSolve.paint(row, seed, S.palette)
+        paints[#paints + 1] = ('%s %s'):format(tostring(row.id),
+                                               c and tostring(c) or '-')
+    end
+    print(('  paint seed %s   palette %d   %s')
+        :format(seed and tostring(seed) or 'NOT YET ANSWERED',
+                type(S.palette) == 'table' and #S.palette or 0,
+                table.concat(paints, ', ')))
 
     -- ═══ THE DISTANCE LINE, SO A READING TAKEN FROM THE WRONG PLACE SAYS SO ═══
     --

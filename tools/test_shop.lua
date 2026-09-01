@@ -116,6 +116,11 @@ local function loadCore(f) loadAt(RES, f) end
 for _, f in ipairs({
     'shared/enums.lua',
     'shared/geo.lua',        -- BR.Dist and BR.NormHash
+    -- BR.Rng, WHICH IS WHAT MAKES THE COLOUR ROLL A PROPERTY RATHER THAN A HOPE.
+    -- The shipped generator, not a stub: BR.ShopSolve.paint runs on the server
+    -- and on every client and they have to agree, so a fixture RNG here would
+    -- test that this file agrees with itself.
+    'shared/rng.lua',
     'config/overrides.lua',
     'config/match.lua',
     'config/loot.lua',       -- BR.Config.ConsumableById and the pickup cue
@@ -257,6 +262,15 @@ do
             ok(row.price == PRICES[model],
                 model .. ': carries the proposed price', row.price)
 
+            -- ═══ NO SEED, SO THIS IS THE FALLBACK COAT AND NOT THE ONE ON THE
+            --     PAD ═══
+            --
+            -- Since 2026-08-31 twelve of these thirteen cars are painted from a
+            -- roll (see the block below). `appearance(row)` with no seed is what
+            -- a car wears when there is no roll to be had -- a br_core restart
+            -- mid-match, an emptied `palette` -- and it is still the AMBULANCE's
+            -- everyday colour. So the conversion is still live and is still
+            -- asserted; what changed is which cars it reaches.
             local a = BR.ShopSolve.appearance(row)
 
             -- ═══ THE MINUS-ONE, WHICH IS THE THING MOST LIKELY TO BE
@@ -295,6 +309,273 @@ do
     end
     ok(lo == 250 and hi == 1500,
         'and they run from 250 to 1500 rather than being one flat number')
+end
+
+-- ---------------------------------------------------------------------------
+describe('the colours are rolled, and the ambulance is not')
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-08-31: "can you make the vehicles in the shop spawn with random
+-- colors each time they are spawned? except the ambulance. that one has a
+-- livery so color won't matter."
+--
+-- ═══ WHAT THIS BLOCK IS ACTUALLY DEFENDING ═══
+--
+-- The rule that costs the most to get wrong is NOT "the cars are colourful". It
+-- is the one the owner set on 2026-08-29 and never withdrew -- "the vehicle
+-- which spawns from their inventory must be EXACTLY as shown when they
+-- purchased it" -- which a roll is the single easiest way to break. Every
+-- assertion below is aimed at one of the three ways it breaks:
+--
+--   THE TWO CARS ROLL SEPARATELY. Two calls, two answers, and nobody notices
+--   until somebody compares a showroom photograph with a car forty minutes
+--   later. Killed by determinism: same row, same seed, same colour, forever.
+--   THE SEED MOVES. A re-roll between the press and the delivery repaints the
+--   car somebody paid for. Killed on the server (one seed per match, read and
+--   never re-rolled at the unpack) and asserted in the server block below.
+--   THE ROLL SILENTLY DOES NOTHING. A palette that never reaches the dresser
+--   leaves thirteen cars in preset 1 and looks exactly like the feature not
+--   being asked for yet.
+do
+    local rows = BR.ShopSolve.catalogue(BR.Config.Shop,
+                                        BR.Config.Shop.refusedReason)
+    local PAL = BR.Config.Shop.palette
+    local function row(id) return BR.ShopSolve.rowById(rows, id) end
+
+    -- ═══ THE PALETTE ═══
+    ok(type(PAL) == 'table' and #PAL > 0,
+        'the shop authors a palette, so the roll has something to draw from',
+        type(PAL) == 'table' and #PAL or type(PAL))
+
+    -- IN RANGE AND WHOLE. GTA's paint indices run 0..159 (Cfx game reference,
+    -- "Vehicle Colors"); an index outside that is ignored by SetVehicleColours,
+    -- which would leave that car wearing the engine's own random colour -- a
+    -- DIFFERENT random colour on the showroom car and on the delivered one,
+    -- which is the exact drift this feature is built to make impossible.
+    local bad, dupes, seenIdx = {}, {}, {}
+    for _, c in ipairs(PAL) do
+        if type(c) ~= 'number' or c ~= math.floor(c) or c < 0 or c > 159 then
+            bad[#bad + 1] = tostring(c)
+        end
+        if seenIdx[c] then dupes[#dupes + 1] = tostring(c) end
+        seenIdx[c] = true
+    end
+    ok(#bad == 0,
+        'every entry is a whole paint index inside GTA\'s own 0..159 -- one '
+            .. 'outside it is silently ignored and the car keeps the engine\'s '
+            .. 'random colour', table.concat(bad, ', '))
+    ok(#dupes == 0,
+        'and none of them is written twice, which would weight the draw '
+            .. 'towards a colour nobody meant to favour',
+        table.concat(dupes, ', '))
+
+    -- ═══ IT IS A CURATED SET AND NOT THE WHOLE RANGE, DELIBERATELY ═══
+    --
+    -- A uniform draw over 0..159 spends 27 of its 160 indices on greys before a
+    -- colour appears, and a further large block on Util/Worn service finishes
+    -- and on Chrome and Pure Gold. The owner offered to pick a set if the full
+    -- range looked bad; it does, so one was proposed. THIS ASSERTION IS WHAT
+    -- STOPS A "SIMPLIFICATION" BACK TO `for i = 0, 159` -- which would compile,
+    -- run, and quietly turn his showroom grey.
+    ok(#PAL < 160,
+        'the palette is a chosen set rather than the full index space -- see '
+            .. 'the block in config/shop.lua for what the rest of that space '
+            .. 'actually holds', #PAL)
+
+    -- ═══ EXACTLY ONE ROW OPTS OUT, AND IT IS THE ONE HE NAMED ═══
+    local pinned = {}
+    for _, r in ipairs(rows) do
+        if not BR.ShopSolve.randomises(r) then pinned[#pinned + 1] = r.id end
+    end
+    ok(#pinned == 1 and pinned[1] == 'ambulance',
+        'the ambulance is the only car pinned to its authored colour -- "except '
+            .. 'the ambulance. that one has a livery"',
+        table.concat(pinned, ', '))
+
+    -- ...AND `marshall` IS NOT, WHICH LOOKS LIKE AN OVERSIGHT AND IS NOT. It
+    -- carries a livery too (the flag), and it was not exempted: he named one
+    -- car. Pinned here so that exempting it later is a decision somebody makes
+    -- rather than a tidy-up nobody reviews.
+    ok(BR.ShopSolve.randomises(row('marshall')) == true,
+        'and the marshall is rolled despite also carrying a livery -- its flag '
+            .. 'sits on painted bodywork and he exempted one car, not two')
+
+    -- ═══ THE POLARITY, WHICH IS AN OPT-OUT ═══
+    --
+    -- Absent must mean ON. An opt-in flag would ship the fourteenth car standing
+    -- in preset 1 beside thirteen rolled ones with nothing to say why.
+    ok(BR.ShopSolve.randomises({ id = 'x' }) == true,
+        'a row that says nothing is rolled -- the rule is the default')
+    ok(BR.ShopSolve.randomises({ id = 'x', randomColour = true }) == true,
+        'and saying so explicitly changes nothing')
+    ok(BR.ShopSolve.randomises({ id = 'x', randomColour = false }) == false,
+        'only `false` pins a car')
+    -- AN EQUALITY, NOT A TRUTH TEST. The field is authored by hand, and `nil`
+    -- from a typo (`randomColor`) must not silently pin a car.
+    ok(BR.ShopSolve.randomises({ id = 'x', randomColor = false }) == true,
+        'and a MISSPELLED flag does not pin one, because the check is an '
+            .. 'equality against false rather than a truth test')
+
+    -- ═══ DETERMINISM: THE WHOLE OF "EXACTLY AS SHOWN" ═══
+    --
+    -- The showroom car is painted during warmup and the bought car forty
+    -- minutes later. Both go through this function with this row and this seed.
+    -- If two calls could differ, nothing else in the feature could save it --
+    -- and the symptom would be a report nobody could reproduce.
+    local SEED = 1234567
+    local drift = {}
+    for _, r in ipairs(rows) do
+        local a1 = BR.ShopSolve.appearance(r, SEED, PAL)
+        local a2 = BR.ShopSolve.appearance(r, SEED, PAL)
+        if a1.primary ~= a2.primary or a1.secondary ~= a2.secondary then
+            drift[#drift + 1] = r.id
+        end
+    end
+    ok(#drift == 0,
+        'one row and one seed produce one colour, every time it is asked -- '
+            .. 'the showroom car and the car in the bag are the same '
+            .. 'computation run twice', table.concat(drift, ', '))
+
+    -- ═══ ...AND IT IS THE PALETTE'S COLOUR, NOT SOMETHING NEARBY ═══
+    local offPalette, oneCoat = {}, {}
+    for _, r in ipairs(rows) do
+        if BR.ShopSolve.randomises(r) then
+            for s = 1, 200 do
+                local c = BR.ShopSolve.paint(r, s * 7919, PAL)
+                if not seenIdx[c] then offPalette[#offPalette + 1] = r.id end
+                local a = BR.ShopSolve.appearance(r, s * 7919, PAL)
+                if a.primary ~= c or a.secondary ~= c then
+                    oneCoat[#oneCoat + 1] = r.id
+                end
+            end
+        end
+    end
+    ok(#offPalette == 0,
+        'and over two hundred seeds no car is ever painted a colour that is '
+            .. 'not in the palette', offPalette[1])
+    ok(#oneCoat == 0,
+        'with both coats the same index -- he asked for a colour, not for a '
+            .. 'paint job with a random roof on it', oneCoat[1])
+
+    -- ═══ AND IT ACTUALLY VARIES, WHICH IS THE HALF A DETERMINISM TEST CANNOT
+    --     SEE ═══
+    --
+    -- Everything above is satisfied by a function that returns 0 forever. These
+    -- two are what say the roll is a roll: one car takes many colours across
+    -- seeds, and thirteen cars under ONE seed are not all the same -- which is
+    -- what a fold that ignored the row id would produce.
+    local across = {}
+    for s = 1, 200 do across[BR.ShopSolve.paint(row('sultan') or row('infernus'),
+                                                s * 104729, PAL)] = true end
+    local nAcross = 0
+    for _ in pairs(across) do nAcross = nAcross + 1 end
+    ok(nAcross > 10,
+        'one car takes many different colours across seeds -- a constant would '
+            .. 'satisfy every assertion above this one', nAcross)
+
+    local within = {}
+    for _, r in ipairs(rows) do
+        if BR.ShopSolve.randomises(r) then
+            within[BR.ShopSolve.paint(r, SEED, PAL)] = true
+        end
+    end
+    local nWithin = 0
+    for _ in pairs(within) do nWithin = nWithin + 1 end
+    ok(nWithin > 4,
+        'and twelve cars under ONE seed are not one colour -- the fold is over '
+            .. 'the row id, not just the seed', nWithin)
+
+    -- ...AND OVER THE ID'S CONTENT, NOT ITS SHAPE. Mutation testing found this
+    -- one: a fold over `#id` rather than over its bytes still gives thirteen
+    -- rows about eight distinct colours -- because his ids happen to be eight
+    -- different lengths -- so both assertions above stayed green while any two
+    -- cars with same-length names were painted identically forever.
+    local twins = 0
+    for s = 1, 100 do
+        if BR.ShopSolve.paint({ id = 'aaaa' }, s * 31, PAL)
+           == BR.ShopSolve.paint({ id = 'bbbb' }, s * 31, PAL) then
+            twins = twins + 1
+        end
+    end
+    ok(twins < 30,
+        'and two rows whose ids are the same LENGTH are painted independently '
+            .. '-- the fold reads the name, not how long it is', twins)
+
+    -- ═══ KEYED BY ID, NOT BY POSITION ═══
+    --
+    -- A per-index derivation would repaint every car below any row the owner
+    -- inserts or removes, so a catalogue edit would read as a bug in the roll.
+    local before = BR.ShopSolve.paint(row('marshall'), SEED, PAL)
+    local shifted = { { id = 'newcomer', model = 'blista', price = 1,
+                        x = 0.0, y = 0.0, z = 0.0 } }
+    for _, r in ipairs(rows) do shifted[#shifted + 1] = r end
+    ok(BR.ShopSolve.paint(shifted[#shifted], SEED, PAL) == before
+           and shifted[#shifted].id == 'marshall',
+        'inserting a row at the top of the catalogue does not repaint the ones '
+            .. 'below it -- the fold is over the id')
+
+    -- ═══ THE AMBULANCE, UNDER EVERY SEED ═══
+    --
+    -- His Preset Color 1 and his Livery 5, whatever the roll is doing to the
+    -- other twelve. The livery is checked alongside because it is the REASON he
+    -- gave for the exemption.
+    local amb = row('ambulance')
+    local moved = {}
+    for s = 1, 200 do
+        local a = BR.ShopSolve.appearance(amb, s * 15485863, PAL)
+        if a.primary ~= 0 or a.secondary ~= 0 or a.livery ~= 4 then
+            moved[#moved + 1] = ('seed %d -> %s'):format(s, a.primary)
+        end
+    end
+    ok(#moved == 0,
+        'the ambulance wears his Preset Color 1 and his Livery 5 under every '
+            .. 'seed there is -- "color won\'t matter" on the one car that '
+            .. 'says so', moved[1])
+    ok(BR.ShopSolve.paint(amb, SEED, PAL) == nil,
+        'and the roll declines to answer for it at all, rather than answering '
+            .. 'and being overruled somewhere downstream')
+
+    -- ═══ EVERY ABSENCE FALLS BACK TO THE AUTHORED COLOUR ═══
+    --
+    -- No seed, no palette, an empty palette. All three are reachable -- a
+    -- br_core restart mid-match, an owner who empties the table to turn the
+    -- feature off -- and all three must produce the shop that shipped before
+    -- 2026-08-31 rather than a car with no colour.
+    local marsh = row('marshall')
+    for _, case in ipairs({
+        { name = 'no seed at all',   seed = nil,  pal = PAL },
+        { name = 'no palette',       seed = SEED, pal = nil },
+        { name = 'an empty palette', seed = SEED, pal = {}  },
+    }) do
+        local a = BR.ShopSolve.appearance(marsh, case.seed, case.pal)
+        ok(a.primary == 4 and a.secondary == 4 and a.livery == 23,
+            ('with %s the marshall wears the colour his row authors'):format(
+                case.name), a.primary)
+    end
+
+    -- ═══ 0 IS A REAL PAINT INDEX, NOT AN ABSENCE ═══
+    --
+    -- Metallic Black is index 0 and it is in the shipped palette. Every
+    -- "is there a rolled colour?" test on the way to the car is one edit from
+    -- treating it as no answer -- `rolled and rolled > 0`, `(rolled or 0) ~= 0`,
+    -- `if rolled ~= 0` -- and each of those paints one car in thirty-two from
+    -- the config while the other thirty-one roll. That is a bug nobody would
+    -- ever reproduce on purpose.
+    --
+    -- (The `rolled or authored` spelling is not what this catches: 0 is TRUTHY
+    -- in Lua, so that one happens to work. It is still not how the roll is
+    -- written -- see the note in shop_solve.lua -- because it is correct by
+    -- accident rather than by construction.)
+    local black = BR.ShopSolve.appearance(marsh, SEED, { 0 })
+    ok(black.primary == 0 and black.secondary == 0,
+        'a palette holding only Metallic Black paints the marshall 0, not the '
+            .. 'authored 4 -- index zero is a colour, not an absence',
+        black.primary)
+
+    -- A ROW WITH NO ID CANNOT BE FOLDED, so it keeps what it has rather than
+    -- every such row sharing one colour.
+    ok(BR.ShopSolve.paint({ model = 'blista' }, SEED, PAL) == nil,
+        'a row with no id is not rolled -- there is nothing stable to fold')
 end
 
 -- ---------------------------------------------------------------------------
@@ -812,6 +1093,44 @@ do
         'client/shop.lua declares BR.Shop.dress once and calls it exactly '
             .. 'twice -- the showroom car and the bought car', calls)
 
+    -- ═══ AND BOTH CALLS PASS A SEED, WHICH IS THE HALF THE COUNT ABOVE CANNOT
+    --     SEE ═══
+    --
+    -- Since 2026-08-31 the dresser takes a row AND a paint seed. Drop the third
+    -- argument at ONE of the two sites and the count above is still 3, every
+    -- behavioural assertion in this file is still green, and the showroom paints
+    -- from the authored colours while the bought car rolls (or the reverse).
+    -- That is a car in a colour the buyer never saw, reported weeks later,
+    -- against a display entity that no longer exists.
+    --
+    -- THREE ARGUMENTS AT ALL THREE SITES: the declaration and the two calls.
+    local seeded = 0
+    for _ in cli:gmatch('BR%.Shop%.dress%([^)\n]*,[^)\n]*,[^)\n]*%)') do
+        seeded = seeded + 1
+    end
+    ok(seeded == 3,
+        'and the declaration and BOTH calls carry the paint seed -- a site that '
+            .. 'dropped it would paint one of the two cars from the config and '
+            .. 'the other from the roll', seeded)
+
+    -- ═══ THE ONLY THING THIS CLIENT SAYS TO THE SERVER ABOUT PAINT IS "WHAT IS
+    --     IT?" ═══
+    --
+    -- "The server owns the colour" is a claim about DIRECTION, and this is the
+    -- only place it can be checked as text: the request carries no payload, so
+    -- there is no field a modified client could put a colour, an index or a seed
+    -- of its own into. The runtime half -- that exactly one such event is sent
+    -- and that it is sent empty -- is in the /brshop block at the end of this
+    -- file, which drives the real reconciler.
+    ok(cli:find("TriggerServerEvent('br:shop:seed')", 1, true) ~= nil,
+        'the client asks for the seed with an EMPTY request')
+    for _, forbidden in ipairs({ 'primary', 'secondary', 'palette', 'paint',
+                                 'colour', 'seed' }) do
+        ok(cli:find("TriggerServerEvent%('br:shop:[%w]*'[^\n]*" .. forbidden)
+               == nil,
+            ('and no event it sends the server carries "%s"'):format(forbidden))
+    end
+
     -- ═══ AND NOTHING ABOUT AN APPEARANCE IS ON THE WIRE ═══
     --
     -- The delivery message carries a net id and a catalogue id. If it ever
@@ -828,6 +1147,25 @@ do
            and srv:find('SetVehicleMod', 1, true) == nil
            and srv:find('SetVehicleColours', 1, true) == nil,
         'and the server never touches an appearance at all')
+
+    -- ═══ WHICH IS STILL TRUE OF THE ROLL: THE SERVER OWNS THE SEED, NOT THE
+    --     PAINT ═══
+    --
+    -- The one thing that crosses is an integer. The server never reads the
+    -- palette, never resolves an index and never learns what colour any car
+    -- ended up -- BR.ShopSolve.paint runs on the clients, from a config every
+    -- one of them was handed by this same server, so there is one palette and
+    -- one derivation however many machines run it.
+    --
+    -- A SERVER THAT RESOLVED THE INDEX ITSELF WOULD BE THE SECOND
+    -- REPRESENTATION arriving by the front door: a colour on the wire that a
+    -- client could be handed while deriving a different one from the same seed,
+    -- with nothing to say which of the two the player was looking at.
+    local srvCode = (srv:gsub('%-%-[^\n]*', ''))
+    ok(srvCode:find('BR.ShopSolve.paint', 1, true) == nil
+           and srvCode:find('palette', 1, true) == nil,
+        'and it resolves no colour of its own -- it hands out a seed and the '
+            .. 'clients derive, from one shared palette')
 end
 
 -- ---------------------------------------------------------------------------
@@ -1176,6 +1514,20 @@ end
 local function buy(src, id)
     _G.source = src
     handlers['br:shop:buy']({ id = id })
+end
+
+--- A client asking what colours its showroom is wearing, through the REAL
+--- handler -- which is also what rolls the match's seed for the first time.
+--- @param src integer
+--- @return table|nil  the payload the server sent back, if it sent one
+local function askSeed(src)
+    local before = #sent
+    _G.source = src
+    handlers['br:shop:seed']()
+    for i = before + 1, #sent do
+        if sent[i].name == 'br:shop:seeded' then return sent[i].payload end
+    end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -1713,6 +2065,11 @@ do
     reset()
     player(30)
     peds[30].heading = 0.0
+    -- A CLIENT ASKED DURING WARMUP, which is what rolls the match's paint seed.
+    -- Every unpack in a real match is downstream of that, so the block runs
+    -- downstream of it too -- the seedless path is exercised separately below.
+    local painted = askSeed(30)
+    sent = {}
 
     ok(BR.Shop.unpack(30, 'runner') == true, 'using the item builds the car')
     ok(#spawned == 1 and spawned[1].model == 'sultan'
@@ -1731,10 +2088,107 @@ do
            and dress.payload.n == 9001,
         'and the client is handed a net id and a CATALOGUE ID')
 
-    -- THE WIRE CARRIES NOTHING ELSE. Two keys: the id and the row.
+    -- ═══ ...AND THE MATCH'S PAINT SEED, WHICH IS THE SAME ONE THE SHOWROOM WAS
+    --     BUILT FROM ═══
+    --
+    -- THIS IS "EXACTLY AS SHOWN", REDUCED TO ONE EQUALITY. The pad was painted
+    -- from the number the seed handler gave out during warmup; the car in the
+    -- bag is painted from the number this message carries. If those two can ever
+    -- differ, a player gets a car in a colour they never saw -- and the display
+    -- entity has been gone for forty minutes, so nothing in the game could tell
+    -- them why.
+    ok(painted ~= nil and dress.payload.s == painted.s,
+        'and the SEED the showroom was painted from -- one number, so the car '
+            .. 'in the bag and the car on the pad have identical inputs',
+        ('%s vs %s'):format(tostring(dress.payload.s),
+                            tostring(painted and painted.s)))
+
+    -- THE WIRE CARRIES NOTHING ELSE. Three keys: the net id, the row and the
+    -- seed. A colour, a mod list or a plate here would be a second description
+    -- of the car in flight, which is the drift this whole design exists to make
+    -- impossible.
     local keys = 0
     for _ in pairs(dress.payload) do keys = keys + 1 end
-    ok(keys == 2, 'those two things and nothing else', keys)
+    ok(keys == 3, 'those three things and nothing else', keys)
+
+    -- ═══ THE SEED IS READ AT THE UNPACK, NEVER ROLLED THERE ═══
+    --
+    -- BR.Shop.seedFor rolls on first ask; BR.Shop.unpack reads `m.shopSeed`
+    -- directly. Rolling here would mint a number no showroom was ever painted
+    -- from and hand the player a car in a colour that has never existed -- the
+    -- failure arriving through the one door that looks like housekeeping. So the
+    -- match's seed must be UNCHANGED by an unpack.
+    -- ═══ THE CLOCK IS MOVED FIRST, AND THAT IS NOT DECORATION ═══
+    --
+    -- The seed is minted from GetGameTimer, which this harness pins at zero. A
+    -- re-roll on a frozen clock produces the SAME NUMBER, so every assertion
+    -- below would pass against a function that re-rolls on every call -- which
+    -- is exactly the defect they exist to catch. Mutation testing found this:
+    -- deleting the memoisation in BR.Shop.seedFor survived the whole suite.
+    fakeTime = fakeTime + 60000
+    local wasSeed = matches[1].shopSeed
+    BR.Shop.unpack(30, 'hauler')
+    ok(matches[1].shopSeed == wasSeed,
+        'and unpacking does not re-roll it -- the colour is decided once, in '
+            .. 'warmup, and read from then on',
+        ('%s -> %s'):format(tostring(wasSeed), tostring(matches[1].shopSeed)))
+
+    -- ═══ AND IT IS ONE ROLL FOR THE WHOLE MATCH ═══
+    --
+    -- Every client asks, and every client must be told the same number or two
+    -- players standing at the same car see two different colours -- and only one
+    -- of them can be what the delivery paints.
+    reset()
+    player(33)
+    player(34)
+    local a = askSeed(33)
+    -- A MINUTE LATER, so a seedFor that re-rolled would have a different clock
+    -- to mint from. Without this the two asks land in the same millisecond and
+    -- a re-rolling function answers identically -- which is the assertion
+    -- passing for the one reason that proves nothing.
+    fakeTime = fakeTime + 60000
+    local b = askSeed(34)
+    ok(a ~= nil and b ~= nil and a.s == b.s,
+        'two players in one match are told the same seed -- the showroom is one '
+            .. 'showroom, and it is rolled once rather than per ask',
+        ('%s vs %s'):format(tostring(a and a.s), tostring(b and b.s)))
+    ok(math.tointeger(a.s) ~= nil,
+        'and it is a whole number, which is what BR.Rng takes', tostring(a.s))
+
+    -- ═══ AND IT IS ONLY HANDED OUT DURING A WARMUP, ON BOTH CLOCKS ═══
+    --
+    -- The same gate the purchase uses. A spectator or a lobby-sitter has no
+    -- showroom to paint, and answering them would hand out a number for a scene
+    -- they are not allowed to build.
+    reset()
+    player(35)
+    matches[1].state = BR.MatchState.PLAYING
+    ok(askSeed(35) == nil, 'a player whose match has left warmup is told nothing')
+    reset()
+    player(36, {})
+    roster[36].state = BR.PlayerState.LOBBY
+    ok(askSeed(36) == nil, 'and nor is one who is not in the warmup themselves')
+
+    -- ═══ A MATCH WITH NO SEED DRESSES FROM THE ROW, AND SAYS SO ═══
+    --
+    -- Reachable on a br_core restart mid-match, where the match object and its
+    -- seed are gone -- the same restart deliverOne already has a branch for. The
+    -- car still arrives; it arrives in the colour config/shop.lua authors, and
+    -- the console is the only place that difference is visible.
+    reset()
+    player(37)
+    ok(matches[1].shopSeed == nil,
+        'the fixture match starts with no seed, so this case is real')
+    ok(BR.Shop.unpack(37, 'runner') == true,
+        'an unpack with no seed still builds the car -- a car in its authored '
+            .. 'colour beats no car')
+    local nos = nil
+    for _, s in ipairs(sent) do if s.name == 'br:shop:dress' then nos = s end end
+    ok(nos ~= nil and nos.payload.s == nil,
+        'and carries no seed rather than an invented one',
+        nos and tostring(nos.payload.s))
+    ok(matches[1].shopSeed == nil,
+        'and STILL does not roll one, which would paint it a colour nobody saw')
 
     -- ═══ A VANISHED CAR GETS NOTHING (answer 3) ═══
     reset()
@@ -3241,6 +3695,12 @@ do
         -- client reading this key from one with the number typed into it. 250
         -- can only come from here.
         collisionWaitMs = 250,
+        -- A PALETTE OF ONE, AND THAT IS THE POINT. `/brshop` prints the colour
+        -- each row resolves to; a fixture with the shipped 32-entry palette
+        -- would print three numbers this block would have to re-derive to check.
+        -- With one entry the answer is 137 for every rolled row and 'ambulance'
+        -- is not in this catalogue, so the column is readable by eye.
+        palette = { 137 },
         items = {
             { id = 'near', model = 'sultan', price = 750,
               x = 100.0, y = 200.0, z = 30.0, heading = 90.0 },
@@ -3417,6 +3877,33 @@ do
         return { x = c.pitch, y = c.roll, z = c.h }
     end
 
+    --- WHAT COLOUR EACH ENTITY WAS ACTUALLY PAINTED: [handle] = { pri, sec }.
+    ---
+    --- THE ONE NATIVE THAT MAKES "EXACTLY AS SHOWN" OBSERVABLE. Everything else
+    --- in this suite reasons about BR.ShopSolve.appearance's return value; this
+    --- records what BR.Shop.dress did with it, on the showroom car and on the
+    --- delivered car, so the two can be compared as the player would compare
+    --- them. An entity with no entry here was never painted at all.
+    local painted = {}
+    function SetVehicleColours(e, pri, sec) painted[e] = { pri, sec } end
+    function SetVehicleModKit() end
+    function SetVehicleDoorsLockedForAllPlayers() end
+    function SetVehicleEngineOn() end
+    function SetVehicleDirtLevel() end
+
+    --- The delivered car: server-made, adopted by net id, dressed here.
+    ---
+    --- MINIMAL ON PURPOSE. The adopt loop wants the net id to resolve and the
+    --- control loop wants control; both answer 1/0 rather than true/false,
+    --- because that is what FiveM does and 0 is truthy in Lua.
+    local netEnts = {}
+    function NetworkDoesNetworkIdExist(n) return netEnts[n] and 1 or 0 end
+    function NetworkGetEntityFromNetworkId(n) return netEnts[n] or 0 end
+    function NetworkHasControlOfEntity() return 1 end
+    function NetworkRequestControlOfEntity() end
+    function IsPedInAnyVehicle() return 0 end
+    function SetPedIntoVehicle() end
+
     Citizen = {
         Wait = function() end,
         -- SYNCHRONOUS, so the build finishes inside the call that starts it.
@@ -3425,6 +3912,17 @@ do
 
     local commands = {}
     function RegisterCommand(n, fn) commands[n] = fn end
+
+    --- WHAT THIS CLIENT ASKED THE SERVER FOR, in order.
+    ---
+    --- There is exactly one thing it may ask about paint: for the seed. It never
+    --- sends a colour, an index or a seed of its own, and the assertion below is
+    --- what keeps that true -- "the server owns the colour" is a claim about
+    --- what travels in THIS direction, and nothing else in the suite can see it.
+    local asked = {}
+    function TriggerServerEvent(name, payload)
+        asked[#asked + 1] = { name = name, payload = payload }
+    end
 
     local loops = {}
     BR.Loop = {
@@ -3458,8 +3956,38 @@ do
         '/brshop does not throw with no catalogue and no pad')
 
     quiet(handlers['onClientResourceStart'], 'br_core')
+
+    -- ═══ NO SEED, NO PAD, AND THAT IS THE ORDERING UNDER TEST ═══
+    --
+    -- The reconciler asks the server what colours this match's showroom wears
+    -- and builds NOTHING until it is told. Building on the authored colours
+    -- while the answer is in flight would put thirteen cars up and repaint them
+    -- a second later -- and a player quick enough to press inside that second
+    -- would be looking at one car and buying another.
+    asked = {}
+    quiet(loops['shop.scene'])
+    ok(byId.near == nil and byId.mid == nil and byId.far == nil,
+        'with no paint seed the pad does not go up at all -- a showroom that '
+            .. 'changes colour under somebody is worse than one that appears a '
+            .. 'beat late')
+    ok(#asked == 1 and asked[1].name == 'br:shop:seed'
+           and asked[1].payload == nil,
+        'and the client ASKS for one, sending nothing with the question -- it '
+            .. 'cannot name a colour, an index or a seed of its own',
+        #asked > 0 and asked[1].name or 'asked nothing')
+
+    -- ...AND IT KEEPS ASKING until it is answered, rather than asking once on an
+    -- edge that a lost reply, a br_core restart or a state that had not caught
+    -- up would have consumed.
+    quiet(loops['shop.scene'])
+    ok(#asked == 2, 'and asks again next pass, because nothing answered', #asked)
+
+    -- THE SERVER ANSWERS, and the pad goes up.
+    quiet(handlers['br:shop:seeded'], { s = 4242 })
     quiet(loops['shop.scene'])
     ok(byId.near and byId.mid and byId.far, 'the pad built three cars')
+    ok(#asked == 2,
+        'and the asking stops the moment it is answered', #asked)
 
     --- One printed row, split into its columns.
     ---
@@ -3512,6 +4040,24 @@ do
     ok(#writes == 0,
         '/brshop calls no native that moves, makes or destroys anything',
         table.concat(writes, ', '))
+
+    -- ═══ 1b. THE PAINT SEED, WHICH IS THE ONLY RECORD OF WHY A CAR IS THAT
+    --     COLOUR ═══
+    --
+    -- "My car came out the wrong colour" is a disagreement between two numbers:
+    -- the seed this pad was painted from and the one the delivery carried. The
+    -- server prints its own copy when it rolls; this is the other half, and
+    -- without it there is nothing anywhere to compare.
+    --
+    -- THE FIXTURE PALETTE HOLDS ONE ENTRY, so the answer is 137 for every row
+    -- and the column is checkable by eye rather than by re-deriving the roll --
+    -- which would be this file agreeing with itself.
+    local paintLine = lineWith('paint seed')
+    ok(paintLine ~= nil and paintLine:find('4242', 1, true) ~= nil,
+        '/brshop prints the seed the pad was painted from', paintLine)
+    ok(paintLine ~= nil and paintLine:find('near 137', 1, true) ~= nil
+           and paintLine:find('mid 137', 1, true) ~= nil,
+        'and the colour every row resolves to under it', paintLine)
 
     -- ═══ 2. A HEALTHY ROW ═══
     local near = cols('near')
@@ -3750,7 +4296,133 @@ do
         'and the verdict counts nothing, rather than last match\'s cars',
         verdict3)
 
-    -- ═══ 12. THE DROP IS UNTOUCHED BY ALL OF THIS ═══
+    -- ═══ 12. A NEW SEED IS A NEW SHOWROOM, AND THE SAME ONE IS A NO-OP ═══
+    --
+    -- THE CASE THIS IS WRITTEN FOR is a reply for the PREVIOUS match landing a
+    -- moment after a new warmup started asking. Keeping the first answer would
+    -- leave the pad painted from a seed the server no longer holds -- and the
+    -- car unpacked later, dressed from the delivery's seed, would come out a
+    -- different colour with nothing anywhere to explain it. So the newest answer
+    -- wins and the pad is rebuilt under it.
+    --
+    -- AND THE SAME SEED MUST NOT REBUILD. The reconciler only asks while it has
+    -- no answer, but a duplicate reply is cheap to produce and a teardown on one
+    -- would drop the plate -- and the candidate row with it -- under a player
+    -- standing at a car mid-press.
+    -- ═══ AND THE PAD THAT CAME DOWN FORGOT ITS SEED ═══
+    --
+    -- The teardown above ran because warmup ended. Keeping the number across it
+    -- would build the NEXT match's showroom in THIS match's colours -- and the
+    -- server would then answer the new match's seed to the delivery, so the car
+    -- in the bag and the car on the pad would disagree by exactly one match.
+    -- The tell is that the reconciler has to ASK again.
+    BR.State.match.state = BR.MatchState.WARMUP
+    local askedBefore = #asked
+    quiet(loops['shop.scene'])
+    ok(#asked == askedBefore + 1,
+        'a pad that came down forgets its seed and asks for a new one, rather '
+            .. 'than painting the next match from the last one\'s',
+        ('%d -> %d'):format(askedBefore, #asked))
+
+    quiet(handlers['br:shop:seeded'], { s = 4242 })
+    quiet(loops['shop.scene'])
+    local firstCar = byId.near
+    ok(firstCar ~= nil and ents[firstCar] ~= nil,
+        'the pad goes back up when warmup returns')
+
+    quiet(handlers['br:shop:seeded'], { s = 4242 })
+    ok(ents[firstCar] ~= nil,
+        'the SAME seed again leaves the showroom exactly where it is -- a '
+            .. 'teardown here would drop the plate under somebody mid-press')
+
+    quiet(handlers['br:shop:seeded'], { s = 777 })
+    ok(ents[firstCar] == nil,
+        'a DIFFERENT seed takes it down, because it is a different showroom')
+    quiet(loops['shop.scene'])
+    ok(byId.near ~= nil and byId.near ~= firstCar,
+        'and the next pass puts it back up', tostring(byId.near))
+    ok(run() and (lineWith('paint seed') or ''):find('777', 1, true) ~= nil,
+        'painted from the number the server last stated, not the one it '
+            .. 'superseded', lineWith('paint seed'))
+
+    -- ═══ AND A SEED OF ZERO IS A SEED, BECAUSE 0 IS TRUTHY IN LUA ═══
+    --
+    -- The server masks its roll to 32 bits, so 0 is a value it can genuinely
+    -- hand out. Every gate this number passes through -- the handler's `not s`,
+    -- the reconciler's `seed == nil`, BR.ShopSolve.paint's `not s` -- has a
+    -- spelling that would treat it as "no answer", and this project's
+    -- most-shipped defect is exactly that confusion. A pad that never appears in
+    -- one match out of four billion is not a bug anybody would ever diagnose.
+    quiet(handlers['br:shop:seeded'], { s = 0 })
+    quiet(loops['shop.scene'])
+    ok(byId.near ~= nil and ents[byId.near] ~= nil
+           and (run() and (lineWith('paint seed') or ''):find('seed 0', 1, true))
+               ~= nil,
+        'a seed of ZERO paints a showroom like any other -- it is a number, not '
+            .. 'an absence', lineWith('paint seed'))
+
+    -- ═══ 13. THE SHOWROOM CAR AND THE CAR IN THE BAG, PAINTED AND COMPARED
+    --     ═══
+    --
+    -- ═══ THE ONLY PLACE IN THIS SUITE WHERE THE PROMISE IS ACTUALLY OBSERVED
+    --     ═══
+    --
+    -- Everything else about "exactly as shown" is asserted on the INPUTS -- one
+    -- function, one row, one seed -- which is the right way round and still
+    -- leaves one thing unchecked: that both cars really go through it and come
+    -- out the same colour. That is what a player sees and it is the only form of
+    -- the bug they can report.
+    --
+    -- THE PAD IS TAKEN DOWN FIRST, WHICH IS THE WHOLE POINT OF THE ORDERING. A
+    -- car is unpacked minutes into a match, long after the showroom stopped
+    -- existing and long after this client forgot the seed it built with. So the
+    -- delivery has to be painted from the number the SERVER put on the wire, and
+    -- taking the pad down first is what makes a handler reading the file-level
+    -- `seed` fail here instead of passing by coincidence.
+    local showroomCar = byId.near
+    local showroomPaint = painted[showroomCar]
+    ok(showroomPaint ~= nil and showroomPaint[1] == 137
+           and showroomPaint[2] == 137,
+        'the showroom car was painted from the roll -- the fixture palette holds '
+            .. 'one colour and its rows author none, so 137 can only have come '
+            .. 'from the seed',
+        showroomPaint and table.concat(showroomPaint, '/') or 'never painted')
+
+    BR.State.match.state = BR.MatchState.PLAYING
+    quiet(loops['shop.scene'])
+
+    --- Stand a bought car up in the world and hand it to the delivery handler.
+    --- @return integer handle
+    local function deliver(netId, rowId, s)
+        nextHandle = nextHandle + 1
+        ents[nextHandle] = { id = rowId, model = 'sultan',
+                             x = 0.0, y = 0.0, z = 0.0, h = 0.0 }
+        netEnts[netId] = nextHandle
+        quiet(handlers['br:shop:dress'], { n = netId, row = rowId, s = s })
+        return nextHandle
+    end
+
+    local bought = deliver(5001, 'near', 777)
+    ok(painted[bought] ~= nil and painted[bought][1] == showroomPaint[1]
+           and painted[bought][2] == showroomPaint[2],
+        'and the car unpacked from the item -- after the pad came down, from '
+            .. 'the seed the DELIVERY carried -- comes out the same colour',
+        painted[bought] and table.concat(painted[bought], '/') or 'never painted')
+
+    -- ═══ AND WITH NO SEED ON THE WIRE IT IS NOT PAINTED AT ALL ═══
+    --
+    -- The discriminator. Without this, a handler that ignored the seed and
+    -- hardcoded a colour -- or read a stale local that happened to hold the
+    -- right number -- would pass the assertion above. These fixture rows author
+    -- NO colour, so "the roll did not happen" is visible as the absence of the
+    -- native call rather than as a different number.
+    local unseeded = deliver(5002, 'near', nil)
+    ok(painted[unseeded] == nil,
+        'a delivery carrying no seed paints nothing -- so the colour above came '
+            .. 'from the wire and not from anywhere in this client',
+        painted[unseeded] and table.concat(painted[unseeded], '/') or 'unpainted')
+
+    -- ═══ 14. THE DROP IS UNTOUCHED BY ALL OF THIS ═══
     ok(shipped.groundDropM == 0.5,
         'and nothing here has changed where a car goes -- the drop is still '
             .. 'the number he named', tostring(shipped.groundDropM))
