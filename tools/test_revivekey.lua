@@ -232,6 +232,131 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('plate.face')
+do
+    -- ═══ "A DUI THAT SHOWS ON THE NEAREST FACE OF THE VEHICLE" ═══
+    --
+    -- Owner, 2026-08-31. The client half of that is BR.Dui.drawNearFace, which
+    -- is four DrawSpritePoly arguments and cannot be executed outside the game;
+    -- the RULE it draws from is BR.NearestBoxFace, which is arithmetic and is
+    -- the whole of what "which face" means.
+    --
+    -- IT IS ASSERTED HERE RATHER THAN IN test_shared.lua because this is the
+    -- feature that asked for it and this is the suite that would be read the day
+    -- the plate comes up on the wrong panel.
+    --
+    -- THE AXES: +Y is the van's nose, +X its right flank, and the box is the
+    -- model's own. These numbers are an ambulance's shape rather than its exact
+    -- box -- about 2.4m across and 6m long -- because what is being pinned is
+    -- the rule, and a box read off a live model would make the suite depend on
+    -- an asset.
+    local MINX, MAXX, MINY, MAXY = -1.2, 1.2, -3.0, 3.0
+
+    -- Standing at the driver's door: a metre out from the LEFT flank, level with
+    -- the middle of the van. This is the case in his sentence.
+    local ux, uy, reach = BR.NearestBoxFace(-2.0, 0.0, MINX, MAXX, MINY, MAXY)
+    ok(ux == -1.0 and uy == 0.0,
+        'standing at the driver\'s door puts the plate on the driver\'s side',
+        ('%s, %s'):format(ux, uy))
+    ok(reach == 1.2,
+        'and it stands off the PANEL -- the reach is the distance from the '
+            .. 'van\'s origin out to that flank', reach)
+
+    -- ...and walking round the back moves it to the back.
+    ux, uy, reach = BR.NearestBoxFace(0.0, -4.5, MINX, MAXX, MINY, MAXY)
+    ok(ux == 0.0 and uy == -1.0 and reach == 3.0,
+        'walking round to the back doors moves it to the tail',
+        ('%s, %s, %s'):format(ux, uy, reach))
+
+    ux, uy = BR.NearestBoxFace(0.0, 4.0, MINX, MAXX, MINY, MAXY)
+    ok(ux == 0.0 and uy == 1.0, 'standing at the bonnet puts it on the nose',
+        ('%s, %s'):format(ux, uy))
+
+    ux, uy = BR.NearestBoxFace(2.5, 1.0, MINX, MAXX, MINY, MAXY)
+    ok(ux == 1.0 and uy == 0.0, 'and at the passenger wing, on that flank',
+        ('%s, %s'):format(ux, uy))
+
+    -- ═══ THE ASSERTION THE WHOLE ROUND IS ABOUT ═══
+    --
+    -- THE SAME PLAYER, IN THE SAME SPOT, GETS A DIFFERENT FACE ON A DIFFERENT
+    -- MODEL -- which is what "use the vehicle's own dimensions so it is correct
+    -- for a model this code has never seen" means, and the one property a
+    -- constant tuned against the shipped ambulance would fail.
+    --
+    -- Two and a half metres back and two metres out: BESIDE a six-metre van
+    -- (still well inside its length) and BEHIND a three-metre one.
+    local lx, ly = -2.0, -2.5
+    ux, uy = BR.NearestBoxFace(lx, ly, MINX, MAXX, MINY, MAXY)
+    ok(ux == -1.0 and uy == 0.0,
+        'beside a long van, that spot is the flank', ('%s, %s'):format(ux, uy))
+    ux, uy = BR.NearestBoxFace(lx, ly, MINX, MAXX, -1.5, 1.5)
+    ok(ux == 0.0 and uy == -1.0,
+        'and behind a short one, the same spot is the tail -- the face is read '
+            .. 'off the MODEL, not off a number tuned to the ambulance',
+        ('%s, %s'):format(ux, uy))
+
+    -- ═══ AN ORIGIN THAT IS NOT THE CENTRE OF THE BOX ═══
+    --
+    -- GetModelDimensions is a box, not a half-width, and plenty of models hang
+    -- further one way than the other. A plate placed at half the box's width
+    -- would be inside the bodywork on the long side and floating on the short
+    -- one -- and it would look perfectly right on any symmetric test.
+    ux, uy, reach = BR.NearestBoxFace(3.0, 0.0, -1.0, 1.4, MINY, MAXY)
+    ok(ux == 1.0 and reach == 1.4,
+        'a model whose origin sits off centre reaches further to its wide side',
+        reach)
+    ux, uy, reach = BR.NearestBoxFace(-3.0, 0.0, -1.0, 1.4, MINY, MAXY)
+    ok(ux == -1.0 and reach == 1.0, 'and less far to its narrow one', reach)
+
+    -- ═══ THE MODEL THAT HAS NOT ANSWERED ═══
+    --
+    -- GetModelDimensions hands back zeroes for a model that is not loaded, which
+    -- happens for a frame or two as a van streams in. A plate at the origin is a
+    -- plate slightly in the wrong place; nan corners are a hole in the world.
+    ux, uy, reach = BR.NearestBoxFace(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    ok(ux == 0.0 and uy == 1.0 and reach == 0.0,
+        'a box of zeroes answers the nose at zero reach rather than nothing',
+        ('%s, %s, %s'):format(ux, uy, reach))
+    ok(reach == reach, 'and no nan reaches the draw', reach)
+end
+
+-- ---------------------------------------------------------------------------
+describe('plate.config')
+do
+    -- ═══ THE FOUR NUMBERS THE OWNER IS GOING TO MEASURE ═══
+    --
+    -- "If you want to make me the tools to manipulate the DUI position then
+    -- fetch it I can give you the coords" (2026-08-31). /brplate prints these
+    -- four in the shape of this table so the answer is one paste.
+    --
+    -- WHAT IS PINNED IS THAT ALL FOUR ARE NUMBERS AND NOT WHAT THEY ARE. None of
+    -- them is his yet, so asserting a value would freeze a placeholder; what
+    -- would actually break the plate is one of them arriving as a string, or as
+    -- a fifth key the client never reads.
+    local P = K.plate
+    ok(type(P) == 'table', 'the plate\'s position lives in one table', type(P))
+    if type(P) == 'table' then
+        local want = { out = true, frac = true, lift = true, width = true }
+        local n = 0
+        for k, v in pairs(P) do
+            n = n + 1
+            ok(want[k] == true,
+                ('plate.%s is one of the four the client reads'):format(k))
+            ok(type(v) == 'number',
+                ('and plate.%s is a number rather than a string'):format(k),
+                tostring(v))
+        end
+        ok(n == 4, 'four of them, no more', n)
+        -- A width of zero draws nothing at all, and a negative one draws a
+        -- mirrored plate: BR.Dui.drawNearFace refuses both, so this is the
+        -- config saying the same thing where it can be seen.
+        ok((tonumber(P.width) or 0) > 0, 'the plate has a width', P.width)
+        ok((tonumber(P.out) or -1) >= 0,
+            'and stands off the panel rather than inside it', P.out)
+    end
+end
+
+-- ---------------------------------------------------------------------------
 describe('source')
 do
     -- ═══ NO PLAYER-FACING COPY IN THE SERVER FILE EITHER ═══
@@ -351,28 +476,68 @@ do
         'the loose key has a lift of its own -- the plate over a corpse is not '
             .. 'measured the way a plate over a van is')
 
-    -- AND IT IS LOWER, WHICH IS THE ONLY THING ABOUT THE VALUE WORTH PINNING.
-    -- 0.6 is a tuning number and the owner may want it at 0.5 or 0.7 after a
-    -- round; re-typing it here would make every nudge a two-file edit for no
-    -- gain. What may never happen again is a plate over a body sitting as high
-    -- as a plate over an ambulance roof, which is the whole of what he reported.
-    local gl = tonumber(clientCode:match('local GROUND_LIFT%s*=%s*([%d%.]+)'))
-    local pl = tonumber(clientCode:match('local PROMPT_LIFT%s*=%s*([%d%.]+)'))
-    ok(gl ~= nil and pl ~= nil and gl < pl,
-        '...and it sits lower than the vehicle lift, because the ground is lower '
-            .. 'than an ambulance roof',
-        ('ground %s, vehicle %s'):format(tostring(gl), tostring(pl)))
     ok(clientCode:find(', c%.z %+ GROUND_LIFT') ~= nil,
         '...and it is what the key\'s own point is drawn at')
-    -- THE LEADING ', ' IS LOAD-BEARING IN THESE PATTERNS. `vc.z` ends in `c.z`,
-    -- so a bare `c%.z` matches the AMBULANCE call too and the refusal below
-    -- would be unfailable.
-    ok(clientCode:find(', c%.z %+ PROMPT_LIFT') == nil
-       and clientCode:find(', vc%.z %+ PROMPT_LIFT') ~= nil
-       and clientCode:find(', hc%.z %+ PROMPT_LIFT') ~= nil,
-        '...while both AMBULANCE plates keep the vehicle lift, so the fix for '
-            .. 'the one the owner reported did not quietly move the two he did '
-            .. 'not')
+
+    -- ═══ AND THE VEHICLE LIFT IT USED TO BE COMPARED AGAINST IS GONE ═══
+    --
+    -- This used to assert `GROUND_LIFT < PROMPT_LIFT` -- that a plate over a
+    -- body may not sit as high as a plate over an ambulance roof. The owner then
+    -- objected to the ambulance plate as well (2026-08-31: "I don't like the
+    -- positioning of the 'press E to revive' DUI"), and a plate over the roof is
+    -- exactly what 1.1m above a vehicle's origin is. So the constant is not
+    -- retuned, it is DELETED: the height of a plate on a van is read off that
+    -- van's own box now, and there is nothing left for the ground plate to be
+    -- lower than.
+    --
+    -- THE PROPERTY THAT SURVIVES IS THE SPLIT, which is what the old assertion
+    -- was really protecting. A ground plate and a vehicle plate may not share one
+    -- number, and now they cannot: they do not share a MECHANISM.
+    ok(tonumber(clientCode:match('local GROUND_LIFT%s*=%s*([%d%.]+)')) ~= nil,
+        '...as a number of its own', clientCode:match('local GROUND_LIFT%s*=%s*([%d%.]+)'))
+    ok(clientCode:find('PROMPT_LIFT') == nil,
+        '...and the 1.1m vehicle lift is gone rather than retuned -- the plate '
+            .. 'on a van is derived from the van, so there is no constant left '
+            .. 'to be right for an ambulance and wrong for the next model')
+
+    -- ═══ BOTH AMBULANCE PLATES GO ON A FACE, AND THROUGH ONE CALL ═══
+    --
+    -- "What I want is a DUI that shows on the nearest face of the vehicle."
+    --
+    -- The revive and the purchase are one plate at one van a moment apart --
+    -- `choose` returns exactly one candidate -- so drawing them two different
+    -- ways would only mean the plate jumped the instant a squad bought a key.
+    -- Pinned as ONE call site rather than as two, because that is the property:
+    -- a second drawing path is how they come to disagree.
+    ok(clientCode:find('BR%.Dui%.drawNearFace') ~= nil,
+        'the plate at a van is a sign on its nearest face, not a billboard over '
+            .. 'its roof')
+    local _, vanDraws = clientCode:gsub('drawOnVan%(page', '')
+    ok(vanDraws == 4,
+        'and the revive, the hold, the purchase and the ruler\'s preview all '
+            .. 'reach it through one function -- one declaration and three '
+            .. 'calls', vanDraws)
+    ok(clientCode:find('drawWorld%(page, c%.x') ~= nil
+       and select(2, clientCode:gsub('BR%.Dui%.drawWorld', '')) == 1,
+        '...while the loose key keeps the billboard it needs, because there is '
+            .. 'no bodywork under a key lying on the ground')
+
+    -- ═══ THE RING IS THE RESTING STATE, NOT THE PRESSED ONE ═══
+    --
+    -- "I want it by default to draw the empty circle around the E instead of a
+    -- glyph that changes to the circle when pressed" (2026-08-31).
+    --
+    -- dui/prompt.html already draws `ring` with no `holdMs` as an empty circle
+    -- round the key cap, so the whole of the change is that the resting revive
+    -- plate now carries the flag. The HOLD is what adds a duration -- and
+    -- `holdMs` is part of setPrompt's change key, so the two are separate
+    -- messages and the fill animates from empty on the press.
+    ok(clientCode:find("mode = 'revive', id = c%.id,\n%s*label = e and e%.name or nil, hint = C%.revive, press = true,\n%s*ring%s*=%s*true,") ~= nil,
+        'the revive plate draws its ring before anything is pressed')
+    ok(clientCode:find("mode = 'take', id = c%.id,[^}]*ring") == nil
+       and clientCode:find("mode = 'buy', id = c%.id,[^}]*ring") == nil,
+        '...and the take and the buy do not, because a ring with no duration '
+            .. 'behind it promises a hold that does not exist')
 
     -- ═══ THE KEY POINT IS SQUAD-ONLY, WHICH IS A PROPERTY OF TWO OTHER FILES ═══
     --

@@ -2902,9 +2902,27 @@ do
     ok(faceBody ~= nil
            and faceBody:find('GetOffsetFromEntityInWorldCoords') == nil,
         'the sign resolves no corner through the entity\'s matrix any more')
-    ok(faceBody ~= nil and faceBody:find('GetEntityForwardVector') ~= nil,
-        'it builds its own basis off the flattened forward vector instead, '
-            .. 'which is the one axis a roll cannot move')
+    -- ═══ AND THE BASIS IS NOW ONE FUNCTION, WHICH THE PIN FOLLOWED ═══
+    --
+    -- This used to look for GetEntityForwardVector inside drawFace itself. The
+    -- 2026-08-31 nearest-face sign needed the same levelled basis, so it was
+    -- EXTRACTED rather than copied -- one `levelBasis`, two signs -- and a pin
+    -- that still demanded the native inside drawFace would have been a test
+    -- arguing for the duplicate.
+    --
+    -- THE PROPERTY IS UNCHANGED AND IS ASSERTED IN TWO HALVES: the sign reaches
+    -- its axes through that function, and that function is the forward vector
+    -- flattened rather than a rotation decomposed. Neither half alone would
+    -- catch a `levelBasis` quietly rewritten to read GetEntityRotation.
+    local basisBody = duiSrc:match('local function levelBasis(.-)\nend')
+    ok(faceBody ~= nil and faceBody:find('levelBasis%(entity%)') ~= nil,
+        'it builds its own basis instead, through the one function that levels '
+            .. 'a sign in this file')
+    ok(basisBody ~= nil and basisBody:find('GetEntityForwardVector') ~= nil
+           and basisBody:find('GetEntityRotation') == nil,
+        '...and that basis is the flattened forward vector, which is the one '
+            .. 'axis a roll cannot move -- not a rotation somebody has to pick '
+            .. 'an order for')
     ok(lidBody ~= nil
            and lidBody:find('GetOffsetFromEntityInWorldCoords') ~= nil,
         'while drawOnEntity keeps the whole matrix, pitch and roll included -- '

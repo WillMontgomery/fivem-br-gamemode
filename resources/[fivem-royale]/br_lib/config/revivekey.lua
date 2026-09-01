@@ -238,6 +238,66 @@ BR.Config.ReviveKey = {
     reviveHoldMs = 6000,
 
     -- ------------------------------------------------------------------
+    -- WHERE THE PLATE HANGS ON THE VAN
+    -- ------------------------------------------------------------------
+    --
+    -- ═══ THE OWNER'S SENTENCE, 2026-08-31 ═══
+    --
+    --   "I don't like the positioning of the 'press E to revive' DUI... What I
+    --    want is a DUI that shows on the nearest face of the vehicle. If you
+    --    want to make me the tools to manipulate the DUI position then fetch it
+    --    I can give you the coords."
+    --
+    -- BOTH AMBULANCE PLATES READ THIS TABLE -- the revive and the purchase. They
+    -- are one plate at one van drawn a moment apart (client/revivekey.lua's
+    -- `choose` returns exactly one candidate, and the revive beats the buy), so
+    -- a second set of numbers would be a second answer to "where does the plate
+    -- go on an ambulance", free to drift, and the symptom would be the plate
+    -- jumping the instant a squad bought a key.
+    --
+    -- ⚠ NONE OF THE FOUR IS THE OWNER'S NUMBER YET. He offered to measure them
+    -- ("then fetch it I can give you the coords") and /brplate is the ruler:
+    -- stand at an ambulance, `brplate on`, nudge, and paste the block it prints
+    -- back over this table. These four are a starting point chosen to be
+    -- obviously readable rather than obviously right.
+    --
+    -- TWO OF THE FOUR ARE MEASURED AGAINST THE MODEL RATHER THAN AGAINST
+    -- NOTHING, which is what makes them survive a van this code has never seen.
+    -- `out` starts at the model's own panel (BR.NearestBoxFace hands back the
+    -- reach to it) and `frac` is a position in the model's own height
+    -- (BR.ShopSolve.signHeight, the shop's derivation, borrowed rather than
+    -- re-written) -- so a longer or taller ambulance moves its own plate and
+    -- nothing here changes. config/shop.lua's `signBumperFrac` block is the full
+    -- argument for why that beats a constant. `lift` and `width` are plain
+    -- lengths, and are meant to be: one nudges every plate at once and the other
+    -- is the size of a sign, neither of which is a fact about the bodywork.
+    plate = {
+        -- Metres the plate stands off the panel it is drawn on. Far enough that
+        -- it cannot z-fight the bodywork or clip a wing mirror, close enough to
+        -- read as painted on the van rather than floating beside it.
+        out = 0.35,
+
+        -- Where up the model's own height the plate's centre sits: 0 is the
+        -- ground the tyres stand on, 1 the roof. 0.62 is above the shop's 0.35
+        -- deliberately -- that one is at the BUMPER, because he asked for it
+        -- there; this one is read by somebody standing at the van looking at it,
+        -- so it sits about window height on an ambulance.
+        frac = 0.62,
+
+        -- Metres added after the derivation, to move every plate at once
+        -- without touching the shape. config/shop.lua's `signLift`, same job.
+        lift = 0.0,
+
+        -- How wide the plate is, in metres; its height follows the 512x256
+        -- page's own aspect rather than being a second number to keep in step.
+        -- 0.75 is config/shop.lua's `signWidthM` -- the size the owner approved
+        -- for the yard sign ("The overall DUI size is good", 2026-08-30) --
+        -- matched rather than re-derived, so the two world signs in this game
+        -- are one size. The interface-size preference still multiplies it.
+        width = 0.75,
+    },
+
+    -- ------------------------------------------------------------------
     -- COMING BACK: THE ARRIVAL SEQUENCE
     -- ------------------------------------------------------------------
     --

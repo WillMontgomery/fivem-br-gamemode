@@ -66,6 +66,38 @@
 --     would clear the first writer's yield on the frame they disagree.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
+-- WHERE THE THREE PLATES ARE DRAWN, AND WHY TWO OF THEM ARE NOT BILLBOARDS
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-31: "I don't like the positioning of the 'press E to revive'
+-- DUI... What I want is a DUI that shows on the nearest face of the vehicle."
+--
+-- THE TWO PLATES AT A VAN ARE SIGNS ON ITS BODYWORK. Both of them -- the revive
+-- and the purchase -- go through `drawOnVan` to BR.Dui.drawNearFace, which
+-- stands a quad in the world, in metres, level with the horizon, off whichever
+-- panel of the model's own box the PLAYER is nearest to. They used to be
+-- screen-space sprites hanging a fixed 1.1m over the vehicle's origin, which is
+-- roughly its roof, and that is the positioning he is objecting to.
+--
+-- THEY CANNOT OVERLAP, BECAUSE THEY ARE NEVER BOTH OFFERED. `choose` returns
+-- exactly one candidate and the revive beats the buy (see its header), so the
+-- two never reach the browser in the same frame. That is also why they share one
+-- set of numbers: they are one plate at one van, and giving them two positions
+-- would only mean the plate jumped the instant a squad paid its 25 Volts.
+--
+-- THE PLATE OVER A LOOSE KEY IS STILL A BILLBOARD, and that is not an
+-- inconsistency: there is no bodywork under it. It hangs over a point on the
+-- ground where a body fell, so it stays BR.Dui.drawWorld at GROUND_LIFT.
+--
+-- AND THE RING IS THE RESTING STATE NOW. "I want it by default to draw the empty
+-- circle around the E instead of a glyph that changes to the circle when
+-- pressed" -- the same message. The revive plate carries `ring` with no
+-- duration, which dui/prompt.html already draws as an empty circle round the key
+-- cap; the hold adds `holdMs` and the circle fills. The other two plates are
+-- single presses and carry no ring, because a ring with nothing behind it is an
+-- interface promising a hold that does not exist.
+--
+-- ═══════════════════════════════════════════════════════════════════════════
 -- NO STRINGS LIVE HERE
 -- ═══════════════════════════════════════════════════════════════════════════
 --
@@ -236,19 +268,24 @@ local function promptPage()
     return BR.Dui.page('lootprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
 end
 
--- How high above the point the plate floats, and how big it draws.
+-- How big the plate over a LOOSE KEY draws.
 --
--- client/ambheal.lua's two numbers, matched rather than re-derived, so the sixth
--- consumer of one browser does not draw at a different size to the fifth. They
--- are not tuning knobs and are deliberately not in the config: a plate that
--- looks like the other five is the whole requirement.
+-- client/ambheal.lua's number, matched rather than re-derived, so the sixth
+-- consumer of one browser does not draw at a different size to the fifth. It is
+-- not a tuning knob and is deliberately not in the config: a plate that looks
+-- like the other five is the whole requirement.
 --
--- PROMPT_LIFT IS A VEHICLE NUMBER AND ONLY A VEHICLE NUMBER. config/ambheal.lua
--- spells out what it measures -- "metres above the vehicle ORIGIN" -- and a
--- vehicle's origin sits up between its wheels, so 1.1 lands the plate about at
--- the roof of an ambulance. That is right for the revive and the purchase, which
--- are both drawn at a van.
-local PROMPT_LIFT  = 1.1
+-- IT IS A SCREEN FRACTION AND IT BELONGS TO drawWorld ALONE. The plate over a
+-- key on the ground is still a billboard pinned to a point -- there is nothing
+-- there to bolt a sign to -- so it is still sized as a share of the display. The
+-- two plates AT A VAN are quads measured in metres now and are sized by
+-- BR.Config.ReviveKey.plate.width instead; see the draw pass.
+--
+-- THE VEHICLE LIFT THAT USED TO SIT BESIDE THIS IS GONE. It was 1.1m above the
+-- vehicle ORIGIN, which put the plate at about the roof of an ambulance and is
+-- exactly the positioning the owner objected to on 2026-08-31. The height of a
+-- plate on a van is derived from that van's own box now (`plateHeight` below),
+-- so there is no constant left to keep.
 local PROMPT_SCALE = 1.6
 
 -- ═══ AND THE KEY ON THE GROUND IS NOT A VEHICLE ═══
@@ -256,8 +293,8 @@ local PROMPT_SCALE = 1.6
 -- Owner, in game: "the 'take revive key' DUI over a corpse is way too high off
 -- the ground."
 --
--- PROMPT_LIFT was being used for all three plates, and the third one hangs off
--- the key's RECORDED z rather than off a van. That z is the corpse's own
+-- The vehicle lift was being used for all three plates, and the third one hangs
+-- off the key's RECORDED z rather than off a van. That z is the corpse's own
 -- position at the moment of elimination (server/revivekey.lua copies
 -- `entry.pos`), and a ped's root is at its FEET -- config/loot.lua says so where
 -- it measures `waistHeight = 0.75` up from it. So the key's z is the ground the
@@ -277,6 +314,111 @@ local PROMPT_SCALE = 1.6
 -- written for an item that RISES half a metre when it is offered; a plate over
 -- a corpse has nothing to rise with and belongs lower than one that does.
 local GROUND_LIFT  = 0.6
+
+-- ---------------------------------------------------------------------------
+-- WHERE THE PLATE SITS ON THE VAN
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-08-31: "I don't like the positioning of the 'press E to revive'
+-- DUI... What I want is a DUI that shows on the nearest face of the vehicle."
+--
+-- WHICH FACE IS BR.Dui.drawNearFace's ANSWER AND NOT THIS FILE'S. It is handed
+-- the player's position and the van, and works the face out from the model's own
+-- box; everything this file owns is the four numbers below. Both halves are read
+-- off the model rather than authored against the ambulance, so the day
+-- BR.Config.Rescue.models grows a longer van the plate is still on its panel.
+
+--- Model bounding boxes, cached by model hash.
+---
+--- client/shop.lua's `signOffsets` keeps its own for the same reason and this is
+--- deliberately not shared with it: GetModelDimensions is a model-table lookup
+--- on a path that runs every frame a plate is up, and the answer is a constant
+--- per model. Only the Z span is kept -- the face pick needs the X and Y of the
+--- box and asks BR.Dui for it, which has its own cache and is the file that
+--- draws the corners.
+local DIMS = {}
+
+--- The four numbers that put a plate on a van, with this file's own fallbacks.
+---
+--- FALLBACKS ON NUMBERS, WHICH IS NOT THE RULE ABOUT WORDS. A missing line of
+--- copy draws no plate at all (see the header); a missing distance draws the
+--- plate somewhere sensible, because a number nobody has tuned yet is a starting
+--- point rather than an invention. `tonumber` on each so a string in the config
+--- cannot reach the draw as a string.
+--- @return number out, number frac, number lift, number width
+local function plateNumbers()
+    local p = (K and type(K.plate) == 'table') and K.plate or nil
+    return (p and tonumber(p.out)   or 0.35),
+           (p and tonumber(p.frac)  or 0.62),
+           (p and tonumber(p.lift)  or 0.0),
+           (p and tonumber(p.width) or 0.75)
+end
+
+--- How high up the van the plate's centre hangs, in metres from its origin.
+---
+--- BR.ShopSolve.signHeight IS THE DERIVATION, BORROWED RATHER THAN WRITTEN. It
+--- is the project's one answer to "how far up a vehicle does a plate hang",
+--- argued at length in br_lib/shared/shop_solve.lua against exactly the mistake
+--- this round is fixing: one authored height is a saloon's number applied to a
+--- monster truck. A second copy of the same lerp here would be a second answer
+--- free to drift, and it is a pure function a suite can already execute.
+--- @param veh integer
+--- @param frac number
+--- @param lift number
+--- @return number|nil  nil when the model has not answered with a box
+local function plateHeight(veh, frac, lift)
+    local model = GetEntityModel(veh)
+    local d = DIMS[model]
+    if not d then
+        local a, b = GetModelDimensions(model)
+        if not a or not b then return nil end
+        d = { bottom = a.z, top = b.z }
+        DIMS[model] = d
+    end
+    return BR.ShopSolve.signHeight(d.bottom, d.top, frac, lift)
+end
+
+-- ---------------------------------------------------------------------------
+-- THE RULER'S STATE  (/brplate, at the bottom of this file)
+-- ---------------------------------------------------------------------------
+--
+-- ═══ HE OFFERED TO MEASURE IT, SO THE MEASURING HAS TO BE POSSIBLE ═══
+--
+-- Owner, 2026-08-31: "If you want to make me the tools to manipulate the DUI
+-- position then fetch it I can give you the coords."
+--
+-- THE HARD PART IS NOT THE NUMBERS, IT IS STANDING IN FRONT OF THE PLATE. The
+-- revive plate appears only when this player's squad holds a key for a mate who
+-- has bled out, which is not a thing anybody can arrange on demand while tuning
+-- a distance. So the ruler DRAWS THE PLATE ITSELF at the nearest ambulance, and
+-- everything downstream of that -- the face pick, the height derivation, the
+-- width, the interface-size preference -- is the shipped path rather than a
+-- preview of it. A tool that measured something other than what ships would be
+-- worse than no tool.
+--
+-- DECLARED HERE, ABOVE EVERY PASS THAT READS THEM. A `local` read from a closure
+-- built earlier in the file resolves as a GLOBAL -- which is nil, which does not
+-- error, which silences a whole loop band after five throws.
+-- tools/check_forward_locals.lua exists because that has cost two playtest
+-- rounds.
+
+--- Is the ruler drawing its own plate right now? Set by /brplate on|off.
+local tuning = false
+
+--- The van it has picked, refreshed on the tick band; nil when none is in reach.
+local tuneVeh = nil
+
+--- Which face the last plate at a van went on, in that van's own axes, exactly
+--- as BR.Dui.drawNearFace reported it. NOTHING BUT THE READOUT READS THIS -- it
+--- is an instrument's output, not a decision anything is taken on.
+local faceX, faceY = nil, nil
+
+--- Is the plate on screen the ruler's preview rather than a real offer?
+---
+--- READ BY BR.ReviveKey.prompting BELOW, which client/dbno.lua uses to suppress
+--- crate prompts. Without this a dev command left running would quietly turn the
+--- loot prompts off around every ambulance, and the report would be about loot.
+local previewing = false
 
 -- Sent on change only, exactly like the crate's and the stretcher's: a re-send
 -- restarts the ring animation from zero, so a hold already running is left
@@ -360,9 +502,14 @@ end
 --- A corpse is ringed with scattered loot by construction, so without this every
 --- revive plate would be fighting a crate plate for the same browser and the
 --- same key.
+---
+--- THE RULER'S PREVIEW IS NOT AN OFFER, and this is the one place that matters:
+--- a plate drawn by /brplate is a picture of a plate, there is no press behind
+--- it, and it must not take the crate prompts down around every ambulance for as
+--- long as somebody leaves the tool on.
 --- @return boolean
 function BR.ReviveKey.prompting()
-    return shownKey ~= nil
+    return shownKey ~= nil and not previewing
 end
 
 --- What this player could act on right now, decided once per tick.
@@ -553,7 +700,13 @@ BR.Loop.register(BR.Loop.TICK, 'revivekey.scan', function()
             holding = nil
         end
         cand = nil
-        setPrompt(nil)
+        -- THE RULER OUTLIVES ELIGIBILITY, AND IT HAS TO. Almost nobody tuning
+        -- this is eligible -- it needs a squadmate who has bled out -- so the
+        -- preview is drawn from the frame pass below in exactly the state this
+        -- branch is written for. Clearing the plate here as well would leave the
+        -- two passes sending `show:false` and `show:true` at each other ten
+        -- times a second.
+        if not tuning then setPrompt(nil) end
         return
     end
     local c = GetEntityCoords(PlayerPedId())
@@ -650,6 +803,10 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.hold', function()
 
     -- ═══ WHAT IS ON THE PLATE ═══
     local C = copy()
+    -- Cleared every frame and set by the one branch that draws a preview, so
+    -- "is this a real offer" is a fact about THIS frame rather than a flag
+    -- somebody has to remember to take back down.
+    previewing = false
     if holding then
         local e = BR.State.roster[holding.target]
         setPrompt(C.revive and {
@@ -669,13 +826,52 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.hold', function()
         } or nil)
 
     elseif c == nil then
-        setPrompt(nil)
+        -- ═══ THE RULER'S PREVIEW, AND IT ONLY EVER SPEAKS INTO SILENCE ═══
+        --
+        -- Offered exactly where this pass would otherwise have cleared the
+        -- plate, so there is still ONE writer to the browser and a real offer
+        -- always wins. Nothing above this line changed to make room for it.
+        --
+        -- IT SPEAKS THE OWNER'S OWN LINE AND INVENTS NOTHING. `C.revive` is the
+        -- plate being tuned, so the ruler shows the plate that ships; a preview
+        -- with wording of its own would be a seventh string. There is no `label`
+        -- because a label is a MATE'S NAME and there is no mate -- the same nil
+        -- the real plate draws while a roster row is still in flight.
+        if tuning and tuneVeh then
+            previewing = true
+            setPrompt(C.revive and {
+                mode = 'tune', id = tuneVeh,
+                hint = C.revive, press = true, ring = true,
+            } or nil)
+        else
+            setPrompt(nil)
+        end
 
     elseif c.mode == 'revive' then
         local e = BR.State.roster[c.id]
         setPrompt(C.revive and {
             mode = 'revive', id = c.id,
             label = e and e.name or nil, hint = C.revive, press = true,
+            -- ═══ THE RING IS THE RESTING STATE, NOT THE PRESSED ONE ═══
+            --
+            -- Owner, 2026-08-31: "I want it by default to draw the empty circle
+            -- around the E instead of a glyph that changes to the circle when
+            -- pressed."
+            --
+            -- `ring` WITH NO `holdMs` IS ALREADY A STATE THE PAGE HAS, and that
+            -- is the whole of the change: dui/prompt.html shows the ring, puts
+            -- the key cap inside it and calls stopHold(), which leaves the fill
+            -- at its full dash offset -- an empty circle round the E. The hold
+            -- branch above sends the same plate WITH a duration, and because
+            -- `holdMs` is part of setPrompt's change key that transition is a
+            -- real message, so the fill animates from empty on the press and
+            -- returns to empty on the release.
+            --
+            -- IT DOES NOT SPREAD TO THE OTHER TWO. The loose key and the
+            -- purchase are single presses with nothing to fill, and a ring on a
+            -- plate with no duration behind it would be an interface promising a
+            -- hold that does not exist.
+            ring   = true,
         } or nil)
 
     elseif c.mode == 'take' then
@@ -708,11 +904,49 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.hold', function()
     end
 end)
 
+--- The plate ON A VAN, on whichever face the player is nearest to.
+---
+--- ═══ drawNearFace, NOT drawWorld -- WHICH IS THE ROUND ═══
+---
+--- Owner, 2026-08-31: "I don't like the positioning of the 'press E to revive'
+--- DUI... What I want is a DUI that shows on the nearest face of the vehicle."
+---
+--- drawWorld is SetDrawOrigin + DrawSprite: a point projected to the screen with
+--- the plate then sized in SCREEN fractions, so it was a billboard hanging over
+--- the roof that held the same share of the display from any distance. This
+--- draws a quad in the world in METRES, squared to the van's own heading and
+--- level with the horizon, standing off the panel the player is nearest to.
+--- client/shop.lua made the same move for the same complaint (#236) and
+--- BR.Dui.drawNearFace is that function's basis and quad with one different
+--- direction.
+---
+--- WHICH FACE IS ABOUT WHERE THE PLAYER IS STANDING, NOT WHERE THE CAMERA IS
+--- POINTING. He asked for the face he is closest to; a plate that moved to the
+--- other side of the van because the mouse swung round would be a plate that
+--- will not hold still while it is read.
+--- @param page table
+--- @param veh integer
+local function drawOnVan(page, veh)
+    -- RE-CHECKED, because a vehicle can be destroyed between two frames and
+    -- reading a dead handle's coordinates throws -- which in a frame callback
+    -- costs the whole band after five of them.
+    if not isTrue(DoesEntityExist(veh)) then return end
+
+    local out, frac, lift, width = plateNumbers()
+    local oz = plateHeight(veh, frac, lift)
+    -- A MODEL THAT HAS NOT ANSWERED DRAWS NOTHING FOR A FRAME. Better than a
+    -- plate at a guessed height on the frame the van streams in.
+    if not oz then return end
+
+    local p = GetEntityCoords(PlayerPedId())
+    faceX, faceY = BR.Dui.drawNearFace(page, veh, p.x, p.y, out, oz, width)
+end
+
 --- ...and drawing it, which has to be per frame.
 ---
---- BR.Dui.drawWorld is a DrawSprite and a sprite lasts exactly one frame. The
---- pass above decides WHAT; this decides WHERE, sixty times a second, so the
---- plate is welded to the point however fast the camera moves.
+--- A DrawSprite and a DrawSpritePoly both last exactly one frame. The pass above
+--- decides WHAT; this decides WHERE, sixty times a second, so the plate is
+--- welded to the van however fast the camera moves.
 BR.Loop.register(BR.Loop.FRAME, 'revivekey.draw', function()
     -- NOTHING IS ASKED FOR BEFORE THERE IS SOMETHING TO DRAW. promptPage() would
     -- CREATE the browser, and a player who never stands over a body should never
@@ -727,21 +961,25 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.draw', function()
     -- also the only thing still on screen while it runs -- the body may be a
     -- kilometre away.
     if holding then
-        -- RE-READ, because a vehicle can be destroyed between two frames and
-        -- reading a dead handle's coordinates throws -- which in a frame
-        -- callback costs the whole band after five of them.
-        if not isTrue(DoesEntityExist(holding.veh)) then return end
-        local hc = GetEntityCoords(holding.veh)
-        BR.Dui.drawWorld(page, hc.x, hc.y, hc.z + PROMPT_LIFT, PROMPT_SCALE)
+        drawOnVan(page, holding.veh)
         return
     end
 
     local c = cand
-    if not c then return end
+    if not c then
+        -- THE RULER'S PREVIEW. Only reachable when the pass above put a plate up
+        -- with no candidate behind it, which is the one thing that does that.
+        if tuning and tuneVeh then drawOnVan(page, tuneVeh) end
+        return
+    end
     if c.veh then
-        if not isTrue(DoesEntityExist(c.veh)) then return end
-        local vc = GetEntityCoords(c.veh)
-        BR.Dui.drawWorld(page, vc.x, vc.y, vc.z + PROMPT_LIFT, PROMPT_SCALE)
+        -- BOTH AMBULANCE PLATES, ON THE SAME FACE, THROUGH THE SAME CALL -- the
+        -- revive and the purchase. `choose` returns exactly one candidate and
+        -- the revive beats the buy, so the two are never on screen together and
+        -- cannot overlap; drawing them in two different places would only mean
+        -- the plate jumped from the roof to the bodywork the instant a squad
+        -- paid its 25 Volts.
+        drawOnVan(page, c.veh)
     else
         -- THE GROUND LIFT, NOT THE VEHICLE ONE. This is the loose key, and
         -- `c.z` is the ground the body it fell from is lying on -- see
@@ -981,3 +1219,180 @@ AddEventHandler('onClientResourceStop', function(res)
     -- under the whole file going away.
     if arriving then endArrival() end
 end)
+
+-- ---------------------------------------------------------------------------
+-- /brplate -- stand at an ambulance and MEASURE where the plate goes
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THE REQUEST ═══
+--
+-- Owner, 2026-08-31: "If you want to make me the tools to manipulate the DUI
+-- position then fetch it I can give you the coords."
+--
+-- ═══ IT IS /brlabel's SHAPE, NOT /brattach's, AND THAT IS A DECISION ═══
+--
+-- This project has two kinds of ruler. /brattach takes the ped, blocks WASD and
+-- nudges an offset with the keyboard, because the thing being measured is where
+-- a BODY sits and the body must not walk while it is measured. /brlabel,
+-- /brshine and /brpropscale are console lines that set a number, print what to
+-- paste, and take nothing away from the player.
+--
+-- THE SECOND SHAPE IS THE RIGHT ONE HERE, FOR ONE REASON: WALKING ROUND THE VAN
+-- *IS* THE MEASUREMENT. "Whichever face the player is standing closest to" can
+-- only be judged by standing at each face in turn, so a tool that claimed the
+-- movement keys to nudge with would have taken away the thing being checked.
+-- Nothing here disables a control, holds a ped, or has an exit that can be
+-- forgotten -- stopping the resource with it running leaves nothing behind but a
+-- plate the teardown above already clears.
+--
+-- ═══ WHAT IT DRAWS IS WHAT SHIPS ═══
+--
+-- The preview goes through `drawOnVan` -- the same face pick, the same height
+-- derivation off the model's box, the same width, the same interface-size
+-- preference, the same words out of BR.Config.ReviveKey.copy. There is no
+-- second drawing path to be right while the real one is wrong.
+
+--- One line of the on-screen readout.
+---
+--- attachtune.lua's `text`, matched call for call, because both are a dev
+--- command's instrument panel and there is no reason for two of them to look
+--- different. It is a local there and cannot be reached from here.
+---
+--- IT IS NUMBERS AND NOTHING ELSE. The owner's standing rule against unsolicited
+--- copy is about what a PLAYER reads; this is only ever on the screen of
+--- somebody who typed the command, and it still says nothing it does not have
+--- to. The usage lines are printed to the console once, where they can be read
+--- without covering the thing being measured.
+local function text(x, y, s, scale)
+    SetTextFont(4)
+    SetTextScale(0.0, scale or 0.34)
+    SetTextColour(255, 255, 255, 235)
+    SetTextDropshadow(0, 0, 0, 0, 255)
+    SetTextEdge(1, 0, 0, 0, 205)
+    SetTextDropShadow()
+    SetTextOutline()
+    BeginTextCommandDisplayText('STRING')
+    AddTextComponentSubstringPlayerName(s)
+    EndTextCommandDisplayText(x, y)
+end
+
+--- The face BR.Dui.drawNearFace last reported, as a word.
+---
+--- THE VAN'S OWN AXES, SAID OUT LOUD: +Y is the nose and +X is the right flank,
+--- which is the frame the model's box is written in and the frame
+--- BR.NearestBoxFace answers in. Naming them "nose/tail/left/right" rather than
+--- printing (0,-1) is the difference between a readout that confirms the tool is
+--- picking the face you are standing at and one that has to be decoded.
+--- @return string
+local function faceName()
+    if faceY == 1.0  then return 'nose'  end
+    if faceY == -1.0 then return 'tail'  end
+    if faceX == 1.0  then return 'right' end
+    if faceX == -1.0 then return 'left'  end
+    return '-'
+end
+
+--- Which van the ruler is drawing at, refreshed while it is on.
+---
+--- ON THE TICK BAND, LIKE EVERY OTHER AMBULANCE SCAN IN THIS FILE. Walking speed
+--- is about two metres a second and GetClosestVehicle is the one native this
+--- costs; ten passes a second is already finer than the answer can change.
+---
+--- THE FEATURE'S OWN RESOLVER, so the ruler cannot end up measuring against a
+--- vehicle the revive would refuse. It deliberately does NOT re-apply `reachM`:
+--- standing back to look at the plate is part of tuning it, and the search
+--- radius `nearestAmbulance` already uses is two metres wider than the reach.
+BR.Loop.register(BR.Loop.TICK, 'revivekey.tune', function()
+    if not tuning then
+        tuneVeh = nil
+        return
+    end
+    local c = GetEntityCoords(PlayerPedId())
+    tuneVeh = nearestAmbulance(c.x, c.y, c.z)
+end)
+
+--- ═══ THE READOUT IS CONTINUOUS, AND THAT IS NOT A NICETY ═══
+---
+--- attachtune.lua's argument, unchanged: nudging blind and running a print
+--- command to find out what happened is a round trip per step. With the numbers
+--- on screen the loop is closed -- type, look, type -- and the face this frame
+--- picked is on screen beside them, which is the one thing a printed number
+--- cannot tell you.
+BR.Loop.register(BR.Loop.FRAME, 'revivekey.tuneread', function()
+    if not tuning then return end
+
+    local out, frac, lift, width = plateNumbers()
+    local y = 0.34
+    text(0.015, y, ('~b~revive plate~w~  %s')
+        :format(tuneVeh and ('face ' .. faceName()) or 'no ambulance in reach'))
+    y = y + 0.026
+    text(0.015, y, ('out %5.3f m   frac %5.3f   lift %6.3f m')
+        :format(out, frac, lift))
+    y = y + 0.026
+    text(0.015, y, ('width %5.3f m'):format(width))
+end)
+
+--- WHICH WORDS NAME A NUMBER. A set rather than four branches, for /brshine's
+--- reason: the name the owner types and the key that is written are one thing,
+--- so a fifth number cannot arrive answering to a name nothing sets.
+local PLATE_TUNABLE = { out = true, frac = true, lift = true, width = true }
+
+--- /brplate [on|off] | [out|frac|lift|width <value>]
+---
+--- CLIENT-LOCAL AND NOT PERSISTED: it is a ruler, not a setting. A restart puts
+--- br_lib/config/revivekey.lua's values back, which is what makes it safe to
+--- leave a session halfway through a measurement.
+RegisterCommand('brplate', function(_, args)
+    local name  = tostring((args and args[1]) or '')
+    local value = tonumber(args and args[2])
+
+    if name == 'on' or name == 'off' then
+        tuning = (name == 'on')
+        if not tuning then
+            -- The plate comes down on the next frame on its own: the pass that
+            -- draws the preview is a level test on `tuning`, so there is no
+            -- teardown here to be skipped.
+            tuneVeh = nil
+        end
+
+    elseif PLATE_TUNABLE[name] then
+        -- A KNOWN NAME WITH NO NUMBER IS A TYPO, NOT AN UNKNOWN NAME. Split from
+        -- the branch below rather than folded into it: `brplate out` answering
+        -- "no such plate value: out" is a tool telling the owner his spelling is
+        -- wrong when it is not, and he would go looking for the right word. It
+        -- falls through to the printout either way, so the answer to "what is it
+        -- now" is on the screen regardless.
+        if not value then
+            print(('[br_core] brplate: %s takes a number'):format(name))
+        elseif type(K.plate) ~= 'table' then
+            print('[br_core] brplate: BR.Config.ReviveKey.plate is missing -- '
+                .. 'nothing to tune (check br_lib/config/revivekey.lua)')
+            return
+        else
+            K.plate[name] = value
+        end
+
+    elseif name ~= '' then
+        print(('[br_core] brplate: no such plate value: %s'):format(name))
+    end
+
+    local out, frac, lift, width = plateNumbers()
+    print('=== revive plate ===')
+    print(('  preview   %s%s'):format(tuning and 'on' or 'off',
+        tuning and (tuneVeh and ('  (drawing, face ' .. faceName() .. ')')
+                             or '  (no ambulance in reach)') or ''))
+    print(('  out       %.3f m   off the panel the player is nearest to')
+        :format(out))
+    print(('  frac      %.3f     up the model box, 0 ground 1 roof'):format(frac))
+    print(('  lift      %.3f m   added after that'):format(lift))
+    print(('  width     %.3f m   height follows the page'):format(width))
+    print('  paste into br_lib/config/revivekey.lua:')
+    print('    plate = {')
+    print(('        out   = %.3f,'):format(out))
+    print(('        frac  = %.3f,'):format(frac))
+    print(('        lift  = %.3f,'):format(lift))
+    print(('        width = %.3f,'):format(width))
+    print('    },')
+    print('  usage: brplate on | off   draw a plate at the nearest ambulance')
+    print('         brplate out|frac|lift|width <value>')
+end, false)
