@@ -27,6 +27,13 @@ shared_scripts {
     -- the definition above its only caller keeps it from becoming so.
     '@br_lib/shared/polygon.lua',
     '@br_lib/shared/clock.lua',
+    -- The world override -- what time it is and what the sky is doing when the
+    -- console has said so. SHARED because it is the same record on both sides:
+    -- server/world.lua holds the authority and every client mirrors it, and a
+    -- second copy of "what does an unoverridden clock read" is the drift this
+    -- placement prevents. NO LOAD-ORDER REQUIREMENT: it reads nothing at load,
+    -- calls no native, and is above its readers only so it reads that way.
+    '@br_lib/shared/world.lua',
     '@br_lib/config/match.lua',
     '@br_lib/config/storm.lua',
     '@br_lib/config/map.lua',
@@ -200,6 +207,16 @@ shared_scripts {
 client_scripts {
     'client/main.lua',      -- defines the loop registry; must be first
     'client/natives.lua',
+    -- The world override this client is holding, and THE ONLY PLACE THIS CLIENT
+    -- WRITES WEATHER. AFTER natives.lua for a reader rather than for the loader
+    -- -- natives.lua's clock pin asks BR.World.clockHM() at call time and
+    -- nil-guards it -- but BEFORE client/storm.lua, which is a real order in
+    -- the sense that matters: storm.lua's weather branches are now claims made
+    -- through BR.World.want, and a claim made into a nil table would take the
+    -- storm tick down with it. It answers BR.Net.WORLD_SET and the island's
+    -- 'br:world:island' from br_environment; it registers no command and joins
+    -- no loop.
+    'client/world.lua',
     'client/loading.lua',   -- owns BR.State.worldReady; screen.lua reads it
     'client/screen.lua',
     'client/spawn.lua',
@@ -428,6 +445,14 @@ server_scripts {
     '@br_lib/shared/artifact_plan.lua',
     'server/main.lua',      -- defines BR.Server and starts the scheduler
     'server/clock.lua',
+    -- brtime and brweather: the console's clock and sky. AFTER server/main.lua,
+    -- and that IS a real order rather than a reader's -- both verbs read
+    -- BR.Server.devMode, which main.lua resolves from the convars. It is
+    -- declared beside server/clock.lua because a reader looking for "the time"
+    -- will land on one of the two, and they are opposite halves of the subject:
+    -- clock.lua is the network clock every countdown is derived from, this is
+    -- the world clock the sun hangs on.
+    'server/world.lua',
     'server/broadcast.lua', -- BR.Broadcast, used by roster
     'server/roster.lua',
     'server/evidence.lua', -- BR.Evidence: what a match remembers, for incidents

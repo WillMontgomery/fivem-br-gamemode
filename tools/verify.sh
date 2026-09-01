@@ -1458,6 +1458,88 @@ if [ -f "$dmgfile_" ]; then
     done
 fi
 
+# THE WORLD ITSELF: brtime AND brweather, NARROWED THE SAME WAY AND SHIPPED
+# NARROWED (owner, 2026-08-31: "Yes I want all client and server commands gated
+# behind devmode").
+#
+# These two move the clock and the sky for EVERY client in the session at once,
+# and the clock is not only a lighting knob: GTA's ambient population is
+# time-gated, so moving it changes which vehicles and peds the engine spawns --
+# hospital ambulances among them, which is what server/rescue.lua's ambient
+# ambulance ledger finds and where a squad can spend a revive key. That makes it
+# a gameplay change in a live round, which is precisely what the dev gate is for.
+#
+# AND `0` IS TRUTHY IN LUA, which is why the console check is matched as an
+# EQUALITY rather than by looking for the word `src`: `if src then` admits every
+# player and `if not src then` admits nobody. Both compile, both look right,
+# both are wrong in opposite directions. Same trap the two gates above spell out.
+#
+# TWO EQUALITIES, COUNTED rather than merely found, so deleting the narrowing
+# from ONE of the two verbs cannot pass on the other one's line.
+worldfile_="resources/[fivem-royale]/br_core/server/world.lua"
+if [ -f "$worldfile_" ]; then
+    for verb_ in brtime brweather; do
+        if ! grep -q "RegisterCommand('$verb_'" "$worldfile_"; then
+            echo "${RED}FAIL${RST} $verb_ is not registered in $worldfile_"
+            echo "     If it moved, move this gate with it -- the verb and the"
+            echo "     override record it writes belong on one screen."
+            boundary=1
+        fi
+    done
+
+    if ! grep -qE 'tonumber\(src\) ~= 0' "$worldfile_"; then
+        echo "${RED}FAIL${RST} brtime/brweather have lost the server-console gate"
+        echo "     Expected 'tonumber(src) ~= 0' in $worldfile_."
+        echo "     RESTRICTED is not that gate: it also admits any live client"
+        echo "     holding br.admin, and these change the world for everybody."
+        echo "     It must stay an equality -- 0 is truthy in Lua."
+        boundary=1
+    fi
+
+    # MATCHED AS A READ, NOT AS A SUBSTRING, AND MUTATION TESTING IS WHY -- the
+    # identical finding /brsfx's silence probe records a few blocks below. The
+    # first draft here was `grep -q 'BR.Server.devMode'`, and a mutant that
+    # renamed every occurrence to `BR.Server.devModeX` -- which is a read of a
+    # field that does not exist, i.e. NO GATE AT ALL, permanently open on the
+    # public box -- SURVIVED it, because the old name is a prefix of the new one.
+    if ! grep -qE 'BR\.Server\.devMode([^[:alnum:]_]|$)' "$worldfile_"; then
+        echo "${RED}FAIL${RST} brtime/brweather have lost the dev-mode gate"
+        echo "     Moving the clock changes which ambient vehicles and peds the"
+        echo "     engine spawns -- hospital ambulances included -- so it is not"
+        echo "     armable on a box running real matches."
+        boundary=1
+    fi
+
+    # AND THE SKY HAS ONE WRITER. The override only works because
+    # br_core/client/storm.lua and br_environment/client/ipl.lua stopped calling
+    # the weather natives and started making claims that
+    # br_core/client/world.lua resolves. A file that goes back to writing
+    # directly would silently wipe a console override at the next storm tier or
+    # island flip -- and would look completely correct in a diff.
+    #
+    # COMMENT LINES ARE STRIPPED FIRST, exactly as the sound gate below does it:
+    # all three of those files discuss these natives by name in prose, because
+    # the point of those paragraphs is to say why the call is not there.
+    wxfiles_=$(
+        for f in "resources/[fivem-royale]"/*/client/*.lua; do
+            [ -f "$f" ] || continue
+            if grep -v '^[[:space:]]*--' "$f" \
+               | grep -qE '(^|[^_[:alnum:]])(Set|Clear)WeatherType[[:alnum:]_]*[[:space:]]*\('; then
+                echo "$f" | sed 's|.*/\([a-z_]*\)/client/|\1/client/|'
+            fi
+        done | sort -u | tr '\n' ' '
+    )
+    if [ "$wxfiles_" != "br_core/client/world.lua " ]; then
+        echo "${RED}FAIL${RST} weather natives live in '${wxfiles_}'"
+        echo "     expected 'br_core/client/world.lua '"
+        echo "     The storm and the island CLAIM the sky through BR.World.want"
+        echo "     and one file resolves the claims by priority. A second writer"
+        echo "     wipes a console override at the next tier change or island"
+        echo "     flip, silently, and this is the only thing that would notice."
+        boundary=1
+    fi
+fi
+
 # THE THIRD DIRECTION: WHAT CAN MAKE THIS CLIENT PLAY A SOUND.
 #
 # Lighter than the two above and gated for the same reason they are -- the
@@ -1582,6 +1664,7 @@ if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
     echo "${GRN}ok${RST}   brcar is console-only and CreateVehicle is scoped to the file that holds the allowlist"
     echo "${GRN}ok${RST}   brshots/brtestfire are console-only, dev-gated and cannot file a manufactured incident"
+    echo "${GRN}ok${RST}   brtime/brweather are console-only, dev-gated, and the sky has one writer"
     echo "${GRN}ok${RST}   native sound comes from 3 known files, and /brsfx keeps its silence probe"
 else
     rc=1

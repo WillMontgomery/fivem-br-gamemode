@@ -328,6 +328,27 @@ end
 --
 -- The ladder never touches the weather until the player is first caught
 -- outside -- a match spent inside the circle keeps GTA's own sky.
+--
+-- ═══ IT CLAIMS THE SKY, IT NO LONGER WRITES IT (2026-08-31) ═══
+--
+-- Every SetWeatherType* call below became BR.World.want('storm', ...) when
+-- `brweather` arrived. Two things made that necessary and neither is about the
+-- console verb on its own:
+--
+--   THE OVERRIDE HAS TO OUTLAST A TIER CHANGE. A console sky that this file
+--   overwrote the next time somebody stepped over the wall would look exactly
+--   like the verb not working.
+--
+--   AND THE OVERRIDE HAS TO GIVE THIS ONE BACK. `brweather reset` does not
+--   guess what the sky should return to -- client/world.lua still holds this
+--   file's last claim and simply re-resolves. That only works if the claim was
+--   recorded, which is what these calls now do.
+--
+-- The ladder, the hysteresis and the drying schedule are untouched: what
+-- changed is where the last line of each branch sends its answer.
+-- RAIN IS NOT PART OF IT. SetRainLevel is this file's own knob and stays here;
+-- the sky is a claim, the rain is a setting, and only one of them has three
+-- systems arguing over it.
 local wxTier  = 'clear'   -- what the sky is currently doing
 local wxWant  = 'clear'   -- what the ladder wants it to do
 local wxSince = 0         -- when it first wanted that
@@ -354,7 +375,13 @@ local function weatherWant(tier)
         -- HARD-RESETS the weather system's internal rain memory, which the
         -- overtime path preserves and which is what kept the ground shiny
         -- long after the sky cleared (live report, 2026-08-04).
-        SetWeatherTypeNowPersist(WX_NAME.clear)
+        --
+        -- FORCED, because that hard reset is the entire point of the call and
+        -- the claim it re-asserts is one this file already holds. Without the
+        -- flag client/world.lua would see "the winner has not changed" and skip
+        -- the write, which is correct for every other claim on this page and
+        -- exactly wrong for this one.
+        BR.World.want('storm', WX_NAME.clear, 0.0, true)
         SetRainLevel(0.0)
         wxUndryAt = now + 45000
     end
@@ -372,7 +399,7 @@ local function weatherWant(tier)
         wxTier = tier
         if not wxOwned and tier == 'clear' then return end
         wxOwned = true
-        SetWeatherTypeOvertimePersist(WX_NAME[tier], wcfg.blendSec + 0.0)
+        BR.World.want('storm', WX_NAME[tier], wcfg.blendSec + 0.0)
         if tier == 'thunder' then
             -- Let the thunderstorm actually rain, whatever the dry
             -- schedule was up to.
@@ -399,13 +426,17 @@ local function teardown()
     fxTarget, fxLevel = 0.0, 0.0
     if fxApplied then fxApplied = false ClearTimecycleModifier() end
     if postOn then postOn = false AnimpostfxStop(cfg.fx.postFx) end
-    -- Hand the sky back to the engine between matches.
+    -- Hand the sky back between matches: this file drops its claim, and
+    -- client/world.lua clears the weather only if nothing else wants it.
+    -- Dropping the claim rather than clearing the sky directly is what keeps a
+    -- match ending from wiping a console override or the lobby island's
+    -- overcast out from under them.
     if wxOwned then
         wxOwned = false
         wxTier, wxWant = 'clear', 'clear'
         wxDryAt, wxUndryAt = nil, nil
         SetRainLevel(-1.0)
-        ClearWeatherTypePersist()
+        BR.World.want('storm', nil)
     end
 end
 

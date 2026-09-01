@@ -18,6 +18,9 @@ for _, f in ipairs({
     -- shared/storm_solve.lua, which calls InBounds to keep a circle on the map.
     'shared/polygon.lua',
     'shared/clock.lua',
+    -- The world override -- the pinned noon, the fifteen weather names, and the
+    -- priority order that decides whose sky wins. Pure: no natives, no config.
+    'shared/world.lua',
     'shared/sched.lua',
     'shared/outbox.lua',
     'shared/identity.lua',
@@ -3788,6 +3791,11 @@ local SANDBOX_LIB = {
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
     'br_lib/shared/names.lua', 'br_lib/shared/rng.lua',
     'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
+    -- The world override. Both halves of it are sandboxed below -- the client's
+    -- sky resolver and the server's two verbs -- and client/storm.lua now makes
+    -- its weather a CLAIM through this table rather than writing the native, so
+    -- the storm sandbox needs it too.
+    'br_lib/shared/world.lua',
     'br_lib/shared/sched.lua', 'br_lib/config/match.lua',
     'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua', 'br_lib/config/vehicles.lua',
@@ -10869,7 +10877,11 @@ do
             if C.blips[h] then C.blips[h].name = name end
         end
 
-        loadInto(env, { 'br_core/client/storm.lua' })
+        -- client/world.lua BEFORE client/storm.lua, exactly as the manifest
+        -- declares them. The storm's weather branches are claims made through
+        -- BR.World.want now, and this is the file that turns a winning claim
+        -- into the native call the assertions below read.
+        loadInto(env, { 'br_core/client/world.lua', 'br_core/client/storm.lua' })
 
         env.BR.State.match.state = env.BR.MatchState.PLAYING
         env.BR.State.me.state    = env.BR.PlayerState.ALIVE
@@ -12608,6 +12620,660 @@ do
             ok(BR.ChatScreen.nonLatinIn(e.text) == false,
                 'and is never cut through the middle of a character')
         end
+    end
+end
+
+-- ===========================================================================
+-- THE WORLD OVERRIDE: brtime AND brweather
+-- ===========================================================================
+--
+-- Owner, 2026-08-31: "can you make me a brtime command on the server which will
+-- set the time in-game? Recall we have the game locked at noon right now. Also I
+-- want one for brweather too." And the ruling that landed on top of it: "Yes I
+-- want all client and server commands gated behind devmode."
+--
+-- ═══ WHY THIS IS WORTH A SUITE AND NOT A PLAYTEST ═══
+--
+-- Every property that can go wrong here is invisible from inside the game:
+--
+--   THE GATES. A verb that refuses correctly and a verb that is simply broken
+--   print the same nothing on the wrong box, and the box where it matters --
+--   the public one -- is the box nobody is going to test this on. Both gates
+--   are asserted here as REFUSED PLUS UNCHANGED PLUS NOTHING SENT, because a
+--   gate that prints a refusal and then does the work anyway is the shape this
+--   would actually take.
+--
+--   THE YIELD. The interesting frame is the one where the storm wants THUNDER
+--   and the console has said EXTRASUNNY. In the game those are the same
+--   screenshot as any other clear sky; here the storm's claim is placed and the
+--   native calls are counted.
+--
+--   THE RESTORE. `brweather reset` does not write a sky at all -- it removes a
+--   claim and lets whatever was underneath win again. A version that snapped to
+--   EXTRASUNNY instead would look identical on nine playtests out of ten and
+--   wrong on the tenth, which is the one where a storm was running.
+--
+--   THE RESET OVER THE WIRE. `nil` cannot travel in a table, so the payload is
+--   rebuilt whole and a missing key IS the clear. A sender that merged instead
+--   would make `brtime reset` a no-op on every client and nothing would say so.
+-- ---------------------------------------------------------------------------
+
+describe('world / parsing')
+do
+    local W = BR.World
+
+    local function timeKind(...)
+        local kind = W.parseTime(...)
+        return kind
+    end
+
+    ok(timeKind(nil) == 'usage', 'brtime with no argument asks for usage')
+    ok(timeKind('') == 'usage', 'and so does an empty one')
+
+    local k, h, m = W.parseTime('21')
+    ok(k == 'set' and h == 21 and m == 0, 'brtime 21 is nine in the evening',
+       ('%s %s %s'):format(k, tostring(h), tostring(m)))
+
+    k, h, m = W.parseTime('21', '30')
+    ok(k == 'set' and h == 21 and m == 30, 'brtime 21 30 carries the minutes',
+       ('%s %s %s'):format(k, tostring(h), tostring(m)))
+
+    k, h, m = W.parseTime('21:30')
+    ok(k == 'set' and h == 21 and m == 30, 'and so does brtime 21:30',
+       ('%s %s %s'):format(k, tostring(h), tostring(m)))
+
+    k, h, m = W.parseTime('0', '0')
+    ok(k == 'set' and h == 0 and m == 0, 'midnight parses -- 0 is a real hour')
+
+    for _, word in ipairs({ 'reset', 'RESET', 'default', 'off' }) do
+        ok(timeKind(word) == 'reset', ('brtime %s puts the pin back'):format(word))
+    end
+
+    -- OUT OF RANGE IS REFUSED, NEVER CLAMPED (config/overrides.lua's rule). A
+    -- clamp answers a question nobody asked and reads as the verb not working.
+    local err
+    k, h, m, err = W.parseTime('24')
+    ok(k == 'error' and h == nil, 'hour 24 is refused rather than wrapped to 0')
+    ok(err and err:find('0 to 23'), 'and the refusal names the range', tostring(err))
+
+    ok(timeKind('-1') == 'error', 'a negative hour is refused')
+    ok(timeKind('12.5') == 'error', 'so is half past twelve spelled as a fraction')
+    ok(timeKind('noon') == 'error', 'and so is a word that is not a reset word')
+
+    k, h, m, err = W.parseTime('12', '60')
+    ok(k == 'error', 'minute 60 is refused rather than carried into the hour')
+    ok(err and err:find('0 to 59'), 'and names its own range', tostring(err))
+
+    ok(timeKind('12', 'half') == 'error', 'a minute that is not a number is refused')
+
+    -- ── the weather half ──
+    local name
+    ok((W.parseWeather(nil)) == 'usage', 'brweather with no argument asks for usage')
+    ok((W.parseWeather('reset')) == 'reset', 'brweather reset hands the sky back')
+
+    k, name = W.parseWeather('thunder')
+    ok(k == 'set' and name == 'THUNDER', 'lowercase in, canonical out',
+       tostring(name))
+
+    k, name = W.parseWeather('ThUnDeR')
+    ok(k == 'set' and name == 'THUNDER', 'however it was typed')
+
+    -- THE TRAP: `clear` is a WEATHER, not a reset word. If the two shared a
+    -- spelling then one of them would be unreachable and the other a surprise.
+    k, name = W.parseWeather('clear')
+    ok(k == 'set' and name == 'CLEAR',
+       'brweather clear is the CLEAR sky, not a reset', ('%s %s'):format(k, tostring(name)))
+
+    k, name, err = W.parseWeather('sunny')
+    ok(k == 'error' and name == nil, 'a name the engine does not have is refused')
+    ok(err and err:find('sunny'), 'and the refusal quotes what was typed', tostring(err))
+
+    local roundTripped = 0
+    for _, wx in ipairs(W.WEATHERS) do
+        local kk, nn = W.parseWeather(wx:lower())
+        if kk == 'set' and nn == wx then roundTripped = roundTripped + 1 end
+        if not W.WEATHER[wx] then roundTripped = -1000 end
+    end
+    ok(roundTripped == #W.WEATHERS,
+       'every listed weather parses back to itself -- the console list and the'
+       .. ' accepted set are one table',
+       ('%d of %d'):format(roundTripped, #W.WEATHERS))
+end
+
+describe('world / the override record')
+do
+    local W = BR.World
+    W.applyPayload(nil)
+
+    local h, m = W.clockHM()
+    ok(h == 12 and m == 0 and h == W.DEFAULT_HOUR,
+       'an unoverridden world reads high noon -- the pin natives.lua used to spell out')
+    ok(W.holdsTime() == false, 'and says it is not holding the clock')
+    ok(W.weatherName() == nil, 'and claims no sky')
+
+    W.setTime(21, 30)
+    W.setWeather('THUNDER')
+    h, m = W.clockHM()
+    ok(h == 21 and m == 30 and W.holdsTime() == true, 'a set override reads back')
+
+    local p = W.payload()
+    ok(p.hour == 21 and p.minute == 30 and p.weather == 'THUNDER',
+       'and travels whole')
+
+    -- THE RESET MECHANISM, WHICH IS THE ABSENCE OF A KEY. A merging receiver
+    -- would leave 21:30 pinned forever with nothing on either side to notice.
+    W.clearTime()
+    p = W.payload()
+    ok(p.hour == nil and p.weather == 'THUNDER',
+       'clearing the time leaves the sky alone and drops the hour from the payload')
+
+    -- EVERY ASSERTION BELOW SETS A REAL OVERRIDE FIRST. A receiver that MERGED
+    -- rather than replaced would pass any of these that started from an empty
+    -- table, because the answer it gets wrong -- "the key is missing, so leave
+    -- what I had" -- is indistinguishable from the right answer when what it
+    -- had was nothing. The first draft of this block did exactly that and a
+    -- merging applyPayload survived it.
+    W.setTime(21, 30)
+    W.applyPayload(p)
+    ok(W.holdsTime() == false and W.weatherName() == 'THUNDER',
+       'a payload with no hour clears a clock that WAS overridden',
+       ('holds %s, sky %s'):format(tostring(W.holdsTime()), tostring(W.weatherName())))
+
+    W.setTime(21, 30)
+    W.setWeather('THUNDER')
+    W.applyPayload({})
+    ok(W.holdsTime() == false and W.weatherName() == nil,
+       'an empty payload is the full reset -- which is what brtime reset and '
+       .. 'brweather reset send once both are back')
+
+    -- VALIDATED ON ARRIVAL. A half-set hour would make clockHM answer noon
+    -- while holdsTime said otherwise, and the two would disagree forever.
+    W.setTime(21, 30)
+    W.applyPayload({ hour = 3 })
+    ok(W.holdsTime() == false, 'an hour with no minute is not half an override')
+
+    W.setTime(21, 30)
+    W.applyPayload({ hour = 24, minute = 0 })
+    ok(W.holdsTime() == false, 'an out-of-range hour on the wire is refused too')
+
+    W.setWeather('THUNDER')
+    W.applyPayload({ weather = 'SUNNY' })
+    ok(W.weatherName() == nil, 'and a weather name the engine lacks never lands')
+
+    W.applyPayload({ hour = 21, minute = 30, weather = 'FOGGY' })
+    ok(W.holdsTime() and W.weatherName() == 'FOGGY', 'a whole payload lands whole')
+    W.applyPayload(nil)
+end
+
+describe('world / whose sky wins')
+do
+    local W = BR.World
+    local storm  = { name = 'THUNDER',    blend = 8.0 }
+    local island = { name = 'OVERCAST',   blend = 0.0 }
+    local over   = { name = 'EXTRASUNNY', blend = 0.0 }
+
+    ok((W.resolveSky({})) == nil, 'nobody claiming means nobody wins')
+    ok((W.resolveSky(nil)) == nil, 'and a missing table is not an error')
+
+    local name, blend = W.resolveSky({ island = island })
+    ok(name == 'OVERCAST' and blend == 0.0, 'the island alone gets its sky')
+
+    name = W.resolveSky({ island = island, storm = storm })
+    ok(name == 'THUNDER', 'the storm outranks the island -- gameplay over scenery')
+
+    name = W.resolveSky({ island = island, storm = storm, override = over })
+    ok(name == 'EXTRASUNNY', 'and the console outranks both')
+
+    -- THE RESTORE. Removing the top claim does not need anything to be
+    -- remembered separately: what was underneath is still underneath.
+    name = W.resolveSky({ island = island, storm = storm })
+    ok(name == 'THUNDER', 'lifting the override hands the sky back to the storm')
+    name = W.resolveSky({ island = island })
+    ok(name == 'OVERCAST', 'and lifting the storm hands it back to the island')
+
+    name, blend = W.resolveSky({ storm = storm })
+    ok(blend == 8.0, 'the winner brings its own blend', tostring(blend))
+
+    name = W.resolveSky({ weather = { name = 'RAIN' } })
+    ok(name == nil, 'a key that is not a ranked source is not a claim')
+end
+
+-- ---------------------------------------------------------------------------
+-- The client half: the real br_core/client/world.lua.
+-- ---------------------------------------------------------------------------
+
+describe('world / the client yields and restores')
+do
+    --- One client with the real client/world.lua and nothing else.
+    local function newWorldClient()
+        local env = newSandbox()
+        local C = { writes = {}, rain = {}, prints = {}, asks = 0 }
+
+        env.print = function(...)
+            local parts = {}
+            for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+            C.prints[#C.prints + 1] = table.concat(parts, ' ')
+        end
+        env.RegisterNetEvent = function() end
+
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.TriggerEvent = function(n)
+            if n == 'br:world:ask' then C.asks = C.asks + 1 end
+        end
+
+        -- The three sky natives, each recorded with how it was called, so a
+        -- snap can be told from a blend and both from a hand-back.
+        env.SetWeatherTypeNowPersist = function(w)
+            C.writes[#C.writes + 1] = { how = 'now', name = w }
+        end
+        env.SetWeatherTypeOvertimePersist = function(w, b)
+            C.writes[#C.writes + 1] = { how = 'over', name = w, blend = b }
+        end
+        env.ClearWeatherTypePersist = function()
+            C.writes[#C.writes + 1] = { how = 'clear' }
+        end
+        env.SetRainLevel = function(v) C.rain[#C.rain + 1] = v end
+
+        loadInto(env, SANDBOX_LIB)
+        loadInto(env, { 'br_core/client/world.lua' })
+
+        C.env = env
+        --- Deliver a BR.Net.WORLD_SET envelope, the way the server sends it.
+        C.tell = function(p)
+            for _, fn in ipairs(handlers[env.BR.Net.WORLD_SET] or {}) do fn(p) end
+        end
+        --- Deliver br_environment's island claim.
+        C.island = function(name, blend)
+            for _, fn in ipairs(handlers['br:world:island'] or {}) do fn(name, blend) end
+        end
+        C.last = function() return C.writes[#C.writes] end
+        return C
+    end
+
+    do
+        local C = newWorldClient()
+        ok(C.asks == 1,
+           'the client asks br_environment to re-announce its sky on load -- '
+           .. 'the start order where the island announced first is covered')
+    end
+
+    -- ── the island's claim is what a lobby stands under ──
+    do
+        local C = newWorldClient()
+        C.island('OVERCAST', 0.0)
+        ok(C.last() and C.last().name == 'OVERCAST' and C.last().how == 'now',
+           'the island claim from another resource reaches the sky')
+
+        C.island('EXTRASUNNY', 10.0)
+        ok(C.last().how == 'over' and C.last().blend == 10.0,
+           'and its ten-second clear is still a blend rather than a snap',
+           C.last().how .. ' ' .. tostring(C.last().blend))
+
+        local n = #C.writes
+        C.island('EXTRASUNNY', 10.0)
+        ok(#C.writes == n,
+           're-asserting the same sky writes nothing -- a repeated blend never '
+           .. 'finishes arriving')
+    end
+
+    -- ── THE YIELD. The override is set; the storm must not fight it. ──
+    do
+        local C = newWorldClient()
+        C.island('EXTRASUNNY', 10.0)
+        C.tell({ weather = 'FOGGY' })
+        ok(C.last().name == 'FOGGY' and C.last().how == 'now',
+           'the console sky snaps in over the island')
+        ok(C.rain[#C.rain] == -1.0,
+           'and the rain knob is handed back, so the chosen weather looks like itself',
+           tostring(C.rain[#C.rain]))
+
+        local n = #C.writes
+        C.env.BR.World.want('storm', 'THUNDER', 8.0)
+        ok(#C.writes == n,
+           'the storm claims THUNDER underneath and NOTHING is written -- the '
+           .. 'override is yielded to rather than fought')
+        ok((C.env.BR.World.sky()) == 'FOGGY', 'and the sky is still the console\'s')
+
+        -- ── THE RESTORE. Lifting it hands the sky to the storm, not to a guess.
+        C.tell({})
+        ok(C.last().name == 'THUNDER' and C.last().how == 'over'
+           and C.last().blend == 8.0,
+           'brweather reset gives the storm the sky it was claiming all along, '
+           .. 'blend and all',
+           C.last().name .. ' ' .. C.last().how)
+
+        -- ...and when the storm lets go, the island is still underneath IT.
+        C.env.BR.World.want('storm', nil)
+        ok(C.last().name == 'EXTRASUNNY',
+           'and under the storm, the island claim was never lost')
+
+        C.env.BR.World.want('island', nil)
+        ok(C.last().how == 'clear',
+           'with nobody claiming, the sky goes back to the engine rather than '
+           .. 'to a default this file invented')
+    end
+
+    -- ── a forced write, which the storm's drying snap depends on ──
+    do
+        local C = newWorldClient()
+        C.env.BR.World.want('storm', 'EXTRASUNNY', 0.0)
+        local n = #C.writes
+        C.env.BR.World.want('storm', 'EXTRASUNNY', 0.0)
+        ok(#C.writes == n, 'an unchanged claim is not re-written')
+        C.env.BR.World.want('storm', 'EXTRASUNNY', 0.0, true)
+        ok(#C.writes == n + 1,
+           'unless it is forced -- the drying snap exists to reset the rain '
+           .. 'memory and is a no-op visually by design')
+
+        -- ...AND THE FORCE IS ONLY THE WINNER'S TO ASK FOR. A yielding source
+        -- re-asserting somebody else's sky is a small wrong thing that makes
+        -- "the storm writes nothing while an override holds" untrue.
+        C.tell({ weather = 'FOGGY' })
+        n = #C.writes
+        C.env.BR.World.want('storm', 'EXTRASUNNY', 0.0, true)
+        ok(#C.writes == n,
+           'a forced write from a source that is NOT on screen writes nothing')
+    end
+
+    -- ── a source nobody ranked is not a claim ──
+    do
+        local C = newWorldClient()
+        C.env.BR.World.want('weather', 'RAIN', 0.0)
+        ok(#C.writes == 0, 'an unranked source writes nothing')
+        ok(#C.prints == 1 and C.prints[1]:find('not a sky source'),
+           'and says so on the console rather than storing a claim that could '
+           .. 'never win and would never be noticed',
+           C.prints[1] or 'nothing printed')
+    end
+
+    -- ── the clock is NOT this file's business ──
+    do
+        local C = newWorldClient()
+        C.tell({ hour = 21, minute = 30 })
+        ok(#C.writes == 0, 'a time-only override writes no weather')
+        local h, m = C.env.BR.World.clockHM()
+        ok(h == 21 and m == 30,
+           'and the value the pin in client/natives.lua reads is simply there')
+    end
+
+    -- ═══ ONE WRITER, COUNTED IN THE TREE ═══
+    --
+    -- Everything above is about what the resolver does with the claims it is
+    -- given. NONE of it can see a file that stopped making claims and went back
+    -- to calling the native, and that is the exact regression this design
+    -- replaces: client/storm.lua clearing the sky at match end would silently
+    -- wipe a console override, and br_environment/client/ipl.lua writing
+    -- OVERCAST at an island flip would silently wipe it again. Both look
+    -- completely correct in a diff.
+    --
+    -- So the writers are an ALLOWLIST, the same shape tools/verify.sh uses for
+    -- PlaySoundFrontend and for the same reason: the failure is silent, the
+    -- wrong spelling is the natural one, and the right one looks like paranoia.
+    --
+    -- COMMENT LINES ARE STRIPPED FIRST. This subject is heavily commented --
+    -- storm.lua, ipl.lua and client/world.lua all discuss these natives by name
+    -- in prose, because the whole point of those paragraphs is to say why the
+    -- call is not there any more. A check that counted prose would fail on the
+    -- explanation of why it exists, which is the fastest route to it being
+    -- deleted.
+    do
+        --- Read a file whole, or nil.
+        local function slurp(path)
+            local fh = io.open(path, 'r')
+            if not fh then return nil end
+            local text = fh:read('a')
+            fh:close()
+            return text
+        end
+
+        -- THE FILE LIST COMES OUT OF THE MANIFESTS, not out of a list written
+        -- here. A hand-written list would go stale the day somebody adds a
+        -- client file, and it would go stale SILENTLY -- the new file would
+        -- simply not be scanned, which is the same as passing.
+        local files, scanned = {}, 0
+        for _, res in ipairs({ 'br_core', 'br_environment' }) do
+            local manifest = slurp(RES .. res .. '/fxmanifest.lua') or ''
+            for rel in manifest:gmatch("'(client/[^']+%.lua)'") do
+                files[#files + 1] = res .. '/' .. rel
+            end
+        end
+
+        local writers = {}
+        for _, rel in ipairs(files) do
+            local text = slurp(RES .. rel)
+            if text then
+                scanned = scanned + 1
+                for line in text:gmatch('[^\n]+') do
+                    local code = line:gsub('%-%-.*$', '')
+                    if code:find('SetWeatherType%w*Persist%s*%(')
+                       or code:find('ClearWeatherTypePersist%s*%(') then
+                        writers[rel] = true
+                    end
+                end
+            end
+        end
+
+        ok(scanned > 30 and scanned == #files,
+           'the weather scan read every client file both manifests declare',
+           ('%d found, %d read'):format(#files, scanned))
+
+        local list = {}
+        for rel in pairs(writers) do list[#list + 1] = rel end
+        table.sort(list)
+        ok(#list == 1 and list[1] == 'br_core/client/world.lua',
+           'the weather natives are CALLED in exactly one client file -- the '
+           .. 'storm and the island make claims, they do not write the sky',
+           #list == 0 and 'nobody at all' or table.concat(list, ', '))
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- The server half: the real br_core/server/world.lua, both gates and all.
+-- ---------------------------------------------------------------------------
+
+describe('world / the console verbs')
+do
+    --- One server with the real server/world.lua behind stub natives.
+    --- @param devMode boolean
+    local function newWorldServer(devMode)
+        local env = newSandbox()
+        local S = { sent = {}, prints = {}, cmds = {}, restricted = {} }
+
+        env.print = function(...)
+            local parts = {}
+            for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+            S.prints[#S.prints + 1] = table.concat(parts, ' ')
+        end
+        env.RegisterNetEvent = function() end
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.RegisterCommand = function(name, fn, restricted)
+            S.cmds[name] = fn
+            S.restricted[name] = restricted
+        end
+        env.TriggerClientEvent = function(evt, target, payload)
+            S.sent[#S.sent + 1] = { event = evt, target = target, payload = payload }
+        end
+
+        loadInto(env, SANDBOX_LIB)
+        env.BR.Server = { devMode = devMode }
+        loadInto(env, { 'br_core/server/world.lua' })
+
+        S.env = env
+        --- Run a verb the way FiveM would. `src` 0 is the server console.
+        S.run = function(name, src, ...)
+            S.cmds[name](src, { ... })
+        end
+        --- A client finishing its load.
+        S.ready = function(src)
+            env.source = src
+            for _, fn in ipairs(handlers[env.BR.Net.READY] or {}) do fn() end
+            env.source = nil
+        end
+        S.saidSomethingAbout = function(needle)
+            for _, line in ipairs(S.prints) do
+                if line:find(needle, 1, true) then return true end
+            end
+            return false
+        end
+        return S
+    end
+
+    -- ── both verbs are RESTRICTED at registration, which is the outer fence ──
+    do
+        local S = newWorldServer(true)
+        ok(S.restricted['brtime'] == true and S.restricted['brweather'] == true,
+           'both verbs are registered restricted, so a client without br.admin '
+           .. 'never reaches the handler at all')
+    end
+
+    -- ══ GATE ONE: THE CONSOLE. `0` is truthy in Lua, so this is an equality ══
+    do
+        local S = newWorldServer(true)          -- dev mode ON, so only the
+        S.run('brtime', 1, '21')                -- console gate can refuse
+        ok(S.env.BR.World.holdsTime() == false,
+           'an admin client running brtime changes nothing')
+        ok(#S.sent == 0, 'and nothing goes out over the wire')
+        ok(S.saidSomethingAbout('server-console only'),
+           'and the console is told WHICH gate refused it, rather than nothing',
+           table.concat(S.prints, ' | '))
+
+        S.run('brweather', 1, 'thunder')
+        ok(S.env.BR.World.weatherName() == nil and #S.sent == 0,
+           'brweather is narrowed the same way')
+    end
+
+    -- ══ GATE TWO: DEV MODE (owner, 2026-08-31) ══
+    do
+        local S = newWorldServer(false)         -- console, but a live box
+        S.run('brtime', 0, '21', '30')
+        ok(S.env.BR.World.holdsTime() == false,
+           'the console on a non-dev box moves nothing')
+        ok(#S.sent == 0, 'and tells no client anything')
+        ok(S.saidSomethingAbout('dev-mode only'),
+           'and the refusal names the dev gate and the convar that opens it',
+           table.concat(S.prints, ' | '))
+        ok(S.saidSomethingAbout('br_devMode'),
+           'so the reader knows what to change', table.concat(S.prints, ' | '))
+
+        S.run('brweather', 0, 'thunder')
+        ok(S.env.BR.World.weatherName() == nil and #S.sent == 0,
+           'brweather carries the same gate')
+    end
+
+    -- ══ AND WITH BOTH OPEN, IT WORKS ══
+    do
+        local S = newWorldServer(true)
+        S.run('brtime', 0, '21', '30')
+        local h, m = S.env.BR.World.clockHM()
+        ok(h == 21 and m == 30, 'the console on a dev box moves the clock')
+        ok(#S.sent == 1 and S.sent[1].target == -1
+           and S.sent[1].event == S.env.BR.Net.WORLD_SET,
+           'and tells every client at once')
+        ok(S.sent[1].payload.hour == 21 and S.sent[1].payload.minute == 30,
+           'with the whole override in the envelope')
+
+        S.run('brtime', 0, '21:45')
+        h, m = S.env.BR.World.clockHM()
+        ok(h == 21 and m == 45, 'the hh:mm spelling works through the verb too')
+
+        S.run('brweather', 0, 'thunder')
+        ok(S.env.BR.World.weatherName() == 'THUNDER', 'and the sky is set')
+        ok(S.sent[#S.sent].payload.weather == 'THUNDER'
+           and S.sent[#S.sent].payload.hour == 21,
+           'each envelope carries BOTH halves -- a weather send must not read '
+           .. 'as "stop overriding the clock"')
+    end
+
+    -- ══ REVERSIBLE, AND THE TWO HALVES ARE INDEPENDENT ══
+    do
+        local S = newWorldServer(true)
+        S.run('brtime', 0, '3')
+        S.run('brweather', 0, 'foggy')
+
+        S.run('brtime', 0, 'reset')
+        local h, m = S.env.BR.World.clockHM()
+        ok(h == 12 and m == 0 and S.env.BR.World.holdsTime() == false,
+           'brtime reset puts the clock back on the pinned noon')
+        ok(S.env.BR.World.weatherName() == 'FOGGY',
+           'and leaves the sky exactly where it was')
+        ok(S.sent[#S.sent].payload.hour == nil
+           and S.sent[#S.sent].payload.weather == 'FOGGY',
+           'the reset travels as an ABSENT key, which is the only way nil can')
+
+        S.run('brweather', 0, 'reset')
+        ok(S.env.BR.World.weatherName() == nil, 'brweather reset hands the sky back')
+        ok(S.sent[#S.sent].payload.weather == nil
+           and S.sent[#S.sent].payload.hour == nil,
+           'and the envelope is now empty, which is the full stand-down')
+    end
+
+    -- ══ USAGE AND REFUSALS CHANGE NOTHING AND SEND NOTHING ══
+    do
+        local S = newWorldServer(true)
+        S.run('brtime', 0, '9')
+        local before = #S.sent
+
+        S.run('brtime', 0)
+        ok(#S.sent == before, 'brtime with no argument sends nothing')
+        local h = S.env.BR.World.clockHM()
+        ok(h == 9, 'and leaves the override alone')
+        ok(S.saidSomethingAbout('usage: brtime'), 'it prints usage')
+        ok(S.saidSomethingAbout('Ambient population is time-gated'),
+           'and says what moving the clock costs, which is the part a person '
+           .. 'cannot see coming')
+
+        S.run('brtime', 0, '25')
+        ok(#S.sent == before, 'a refused hour sends nothing')
+        ok(S.env.BR.World.clockHM() == 9, 'and leaves the last good value up')
+
+        S.prints = {}
+        S.run('brweather', 0)
+        ok(#S.sent == before, 'brweather with no argument sends nothing')
+        ok(S.saidSomethingAbout('THUNDER') and S.saidSomethingAbout('EXTRASUNNY'),
+           'and prints the names, which is the whole reason to type it bare',
+           table.concat(S.prints, ' | '))
+
+        S.prints = {}
+        S.run('brweather', 0, 'sunny')
+        ok(#S.sent == before, 'a bad name sends nothing')
+        ok(S.saidSomethingAbout('THUNDER'),
+           'and the refusal prints the list rather than only complaining')
+    end
+
+    -- ══ THE LATE JOINER ══
+    do
+        local S = newWorldServer(true)
+        S.run('brtime', 0, '21')
+        S.run('brweather', 0, 'thunder')
+        local before = #S.sent
+
+        S.ready(7)
+        ok(#S.sent == before + 1, 'a client finishing its load is sent one envelope')
+        ok(S.sent[#S.sent].target == 7,
+           'to itself and nobody else', tostring(S.sent[#S.sent].target))
+        ok(S.sent[#S.sent].payload.hour == 21
+           and S.sent[#S.sent].payload.weather == 'THUNDER',
+           'carrying the override the rest of the session is already standing in '
+           .. '-- without this the new client pins noon while everyone else is '
+           .. 'at dusk')
+
+        -- ...AND IT IS SENT EVEN WHEN IT IS EMPTY, for server/community.lua's
+        -- reason: a client reconnecting after a reset has to be told the
+        -- override is gone, and "no override" is a payload rather than silence.
+        S.run('brtime', 0, 'reset')
+        S.run('brweather', 0, 'reset')
+        before = #S.sent
+        S.ready(8)
+        ok(#S.sent == before + 1 and S.sent[#S.sent].target == 8,
+           'and an empty override is still sent rather than skipped')
     end
 end
 

@@ -1167,7 +1167,8 @@ local LATCH_REFRESH_MS = 1000
 --- last fired; the rest are the values last written.
 local latch = {
     at = 0, ped = nil, state = nil, match = nil,
-    shield = nil, invincible = nil, visible = nil, clockSec = nil,
+    shield = nil, invincible = nil, visible = nil,
+    clockSec = nil, clockHour = nil, clockMin = nil,
 }
 
 --- Forget every belief about the engine's rule state, so the next
@@ -1179,6 +1180,7 @@ function BR.Native.forgetRules()
     latch.at, latch.ped, latch.state, latch.match = 0, nil, nil, nil
     latch.shield, latch.invincible = nil, nil
     latch.visible, latch.clockSec = nil, nil
+    latch.clockHour, latch.clockMin = nil, nil
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1934,6 +1936,21 @@ function BR.Native.applyGameRules()
     -- (invisible at sun-angle scale) so any engine system that steps on
     -- clock deltas -- wetness decay is a suspect -- keeps stepping.
     --
+    -- ...EXCEPT WHEN THE CONSOLE HAS SAID OTHERWISE (owner, 2026-08-31:
+    -- "can you make me a brtime command on the server which will set the time
+    -- in-game?"). THE PIN LEARNED THE OVERRIDE RATHER THAN GAINING A RIVAL:
+    -- this is still the only NetworkOverrideClockTime call in the tree, still
+    -- on the same band, still latched the same way -- it is handed a different
+    -- pair of numbers. A second writer somewhere else would have lost the
+    -- argument within one frame, every frame, and looked like the verb simply
+    -- not working. BR.World.clockHM answers the pinned noon until a
+    -- BR.Net.WORLD_SET envelope says otherwise.
+    --
+    -- NIL-GUARDED because client/world.lua is the file that receives that
+    -- envelope and br_lib/shared/world.lua is what defines the accessor; a
+    -- build without either should stand at noon rather than throw inside the
+    -- per-frame rules, which is where an uncaught error costs the whole loop.
+    --
     -- ONCE A SECOND, WHICH IS EVERY TIME THE ARGUMENT CHANGES. The third
     -- argument is whole seconds, so at 60fps this native was being handed the
     -- IDENTICAL (12, 0, s) triple about sixty times per distinct value -- and
@@ -1943,10 +1960,21 @@ function BR.Native.applyGameRules()
     -- The seconds still spin at exactly the rate they did, which is the whole
     -- of the note above: this drops fifty-nine redundant writes per second and
     -- changes nothing about the sequence of values the engine sees.
+    --
+    -- THE HOUR AND MINUTE ARE LATCHED BESIDE THE SECOND, and that is not
+    -- symmetry for its own sake: comparing the second alone would hold a new
+    -- override back until the second happened to tick, so `brtime 21` would
+    -- land somewhere in the following second rather than on the keystroke.
+    local hour, minute = 12, 0
+    if BR.World and BR.World.clockHM then hour, minute = BR.World.clockHM() end
+
     local clockSec = math.floor(now / 1000) % 60
-    if clockSec ~= latch.clockSec then
-        latch.clockSec = clockSec
-        NetworkOverrideClockTime(12, 0, clockSec)
+    if clockSec ~= latch.clockSec
+       or hour ~= latch.clockHour or minute ~= latch.clockMin then
+        latch.clockSec  = clockSec
+        latch.clockHour = hour
+        latch.clockMin  = minute
+        NetworkOverrideClockTime(hour, minute, clockSec)
     end
 
     -- Never let the engine's own death/respawn flow run; the gamemode owns it.

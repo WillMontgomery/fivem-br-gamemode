@@ -1131,6 +1131,12 @@ end
 loadAll({
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
+    -- The world override. Here for the clock pin at the bottom of this file:
+    -- client/natives.lua asks BR.World.clockHM() what to hand
+    -- NetworkOverrideClockTime, and without this module the pin's nil-guard
+    -- would answer noon forever and the block asserting otherwise would be
+    -- testing its own fallback.
+    'br_lib/shared/world.lua',
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
     -- The catalogue, for the descent block at the bottom: what `trail_ember`
@@ -10005,7 +10011,13 @@ do
     SetScenarioPedDensityMultiplierThisFrame = noop2
     SetRandomVehicleDensityMultiplierThisFrame = noop2
     SetParkedVehicleDensityMultiplierThisFrame = noop2
-    NetworkOverrideClockTime = noop2
+    -- THE CLOCK PIN IS RECORDED RATHER THAN SWALLOWED, because it stopped
+    -- being a constant on 2026-08-31: `brtime` moves it, and what it is handed
+    -- is the whole of the client half of that verb.
+    clockWrites = {}
+    NetworkOverrideClockTime = function(h, m, s)
+        clockWrites[#clockWrites + 1] = { h = h, m = m, s = s }
+    end
     PauseDeathArrestRestart = noop2
     SetFadeOutAfterDeath = noop2
     IgnoreNextRestart = noop2
@@ -13230,6 +13242,123 @@ do
        .. 'match cannot bring it back')
 
     BR.State.me.state = BR.PlayerState.ALIVE
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- brtime -- THE PIN WAS TOLD A NEW NUMBER, IT DID NOT GAIN A RIVAL
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-31: "can you make me a brtime command on the server which will
+-- set the time in-game? Recall we have the game locked at noon right now."
+--
+-- THE OBVIOUS IMPLEMENTATION IS THE BROKEN ONE, and it is broken in a way that
+-- is completely invisible in a diff. NetworkOverrideClockTime called from
+-- anywhere else would be overwritten by THIS function within a frame, every
+-- frame, forever -- so the verb would report success on the console, send its
+-- envelope, arrive on the client, and the sun would not move. Nothing would
+-- error and nothing would say why.
+--
+-- So the pin reads BR.World.clockHM() where it used to spell out `12, 0`, and
+-- what is asserted below is that the read is live: a new override lands on the
+-- NEXT frame rather than on the next second, the seconds keep spinning
+-- underneath it (which is the note above this block in natives.lua -- engine
+-- systems that step on clock deltas must keep stepping), and a reset puts noon
+-- back without a restart.
+--
+-- AND THE LAST ASSERTION IS A COUNT, not a behaviour. "One writer" is a
+-- property of the tree rather than of a frame, and the only way to test it is
+-- to go and look.
+
+describe('brtime -- the clock pin is told a new number')
+do
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
+    BR.State.match = { state = BR.MatchState.PLAYING }
+
+    --- One FRAME of the rules, answering with what the clock was handed.
+    local function pinFrame()
+        clockWrites = {}
+        BR.Native.applyGameRules()
+        return clockWrites[#clockWrites]
+    end
+
+    BR.World.applyPayload(nil)
+    BR.Native.forgetRules()
+
+    local w = pinFrame()
+    ok(w and w.h == 12 and w.m == 0,
+       'with nothing overridden the pin is still high noon, which is the world '
+       .. 'every match up to now has been played in',
+       w and ('%s:%s'):format(tostring(w.h), tostring(w.m)) or 'no write at all')
+
+    ok(pinFrame() == nil,
+       'and the next frame in the same second writes nothing -- the latch that '
+       .. 'dropped fifty-nine redundant writes a second is untouched')
+
+    -- ON THE NEXT FRAME, NOT THE NEXT SECOND. Latching on the second alone
+    -- would hold a new override back until the second happened to tick, so
+    -- `brtime 21` would land somewhere in the following second instead of on
+    -- the keystroke -- which reads as a laggy verb and is really a stale latch.
+    BR.World.applyPayload({ hour = 21, minute = 30 })
+    w = pinFrame()
+    ok(w and w.h == 21 and w.m == 30,
+       'an override arriving mid-second moves the sun on the very next frame',
+       w and ('%s:%s'):format(tostring(w.h), tostring(w.m)) or 'no write at all')
+
+    -- THE SECONDS STILL SPIN. natives.lua's own note is that any engine system
+    -- stepping on clock deltas -- wetness decay is the named suspect -- has to
+    -- keep stepping, and that is as true at dusk as it was at noon.
+    local before = w.s
+    fakeTime = fakeTime + 1000
+    w = pinFrame()
+    ok(w and w.h == 21 and w.m == 30 and w.s ~= before,
+       'and the seconds go on spinning underneath the override',
+       w and ('%s -> %s'):format(tostring(before), tostring(w.s)) or 'no write')
+
+    -- MIDNIGHT IS REACHABLE. Hour 0 is the value most likely to be lost to a
+    -- truthiness test somewhere along the way, and it is the one hour a person
+    -- testing a night-time map will actually type.
+    BR.World.applyPayload({ hour = 0, minute = 0 })
+    w = pinFrame()
+    ok(w and w.h == 0 and w.m == 0, 'midnight is a real override, not a missing one',
+       w and ('%s:%s'):format(tostring(w.h), tostring(w.m)) or 'no write at all')
+
+    -- REVERSIBLE WITHOUT A RESTART, which is the half the owner will use most.
+    BR.World.applyPayload({})
+    w = pinFrame()
+    ok(w and w.h == 12 and w.m == 0,
+       'and brtime reset puts the pin back on noon with nothing restarted',
+       w and ('%s:%s'):format(tostring(w.h), tostring(w.m)) or 'no write at all')
+
+    -- ONE WRITER, COUNTED IN THE TREE. This is the property the whole design
+    -- rests on: a second NetworkOverrideClockTime anywhere would win or lose at
+    -- random and look like the verb not working.
+    local writers = 0
+    for _, path in ipairs({
+        'resources/[fivem-royale]/br_core/client/natives.lua',
+        'resources/[fivem-royale]/br_core/client/world.lua',
+        'resources/[fivem-royale]/br_core/client/storm.lua',
+        'resources/[fivem-royale]/br_core/client/gamerules.lua',
+        'resources/[fivem-royale]/br_environment/client/ipl.lua',
+    }) do
+        local fh = io.open(path, 'r')
+        if fh then
+            for line in fh:lines() do
+                -- Calls only. The paragraph above the pin discusses the native
+                -- by name and a gate that counted prose would fail on it.
+                if line:find('NetworkOverrideClockTime%s*%(') then
+                    writers = writers + 1
+                end
+            end
+            fh:close()
+        end
+    end
+    ok(writers == 1,
+       'NetworkOverrideClockTime is CALLED exactly once in the client tree -- '
+       .. 'the override moved the pin rather than adding a second one',
+       ('%d call sites'):format(writers))
+
+    BR.World.applyPayload(nil)
+    BR.Native.forgetRules()
 end
 
 -- ═══════════════════════════════════════════════════════════════ #203 ═══

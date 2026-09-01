@@ -192,6 +192,40 @@ local function nearIsland()
     return #(GetFinalRenderedCamCoord() - ISLAND_CENTRE) < NEAR_ISLAND
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE SKY IS ASKED FOR, NOT WRITTEN (2026-08-31)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- This file used to call SetWeatherType*Persist itself. So did
+-- br_core/client/storm.lua, and neither knew the other existed -- whichever
+-- happened last won, which was survivable only because the two rarely fired in
+-- the same minute. `brweather` would have made it a three-way, so the sky got
+-- ONE writer instead: br_core/client/world.lua resolves the claims by priority
+-- (console override, then the storm, then this) and writes the winner.
+--
+-- IT TRAVELS AS A CLIENT EVENT because br_core is a different Lua state. Client
+-- events cross resources -- br_core/client/bus.lua already triggers
+-- 'br:env:releaseIsland' into this file, and this is the same road in the other
+-- direction.
+--
+-- AND IT IS REMEMBERED, FOR THE START ORDER. If this resource starts before
+-- br_core, the first announcement is triggered into a client with no handler
+-- for it and is simply lost -- the lobby would then sit under whatever the
+-- engine felt like rather than the overcast the bus choreography hides the world
+-- swap with. br_core asks once on load; this answers with the claim it still
+-- holds. Either start order ends with the same sky.
+local skyName, skyBlend = nil, nil
+
+--- @param name string @param blend number  seconds; 0 snaps
+local function wantSky(name, blend)
+    skyName, skyBlend = name, blend
+    TriggerEvent('br:world:island', name, blend)
+end
+
+AddEventHandler('br:world:ask', function()
+    if skyName then TriggerEvent('br:world:island', skyName, skyBlend) end
+end)
+
 --- Flip the island's existence. This is the same switch the Cayo heist flips;
 --- everything else (scenarios, path nodes, ambient audio zones) rides along so
 --- the island is a place rather than a diorama.
@@ -215,11 +249,12 @@ local function applyIsland(on)
     -- swap invisible -- there is no crisp distant geometry to pop. When
     -- the island is released for the flight, the sky spends the next ten
     -- seconds clearing to EXTRASUNNY, timed to be fully bright before the
-    -- doors open. Per-client weather, like the storm's: nothing syncs it.
+    -- doors open. Per-client weather, like the storm's: nothing syncs it --
+    -- and since 2026-08-31 nothing writes it from here either; see wantSky.
     if on then
-        SetWeatherTypeNowPersist('OVERCAST')
+        wantSky('OVERCAST', 0.0)
     else
-        SetWeatherTypeOvertimePersist('EXTRASUNNY', 10.0)
+        wantSky('EXTRASUNNY', 10.0)
     end
 end
 

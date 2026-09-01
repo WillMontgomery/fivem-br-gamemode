@@ -700,6 +700,19 @@ BR.Net = {
     CLOCK_PING      = 'br:clock:ping',       -- C->S  { sentAt }
     CLOCK_PONG      = 'br:clock:pong',       -- S->C  { sentAt, serverAt }
 
+    -- The world override: the console's time of day and sky (brtime/brweather).
+    --
+    -- S->C { hour, minute, weather }. NOT A DELTA AND NEVER ONE: `nil` cannot
+    -- travel in a table, so a payload of changes could never say "stop
+    -- overriding the hour". This carries the whole override every time and A
+    -- MISSING KEY IS THE RESET -- see BR.World.payload.
+    --
+    -- Sent to everyone the moment it changes, and to ONE client on br:ready.
+    -- That second send is the whole of the late-joiner story: a client that
+    -- connects after the command was typed would otherwise pin its own clock at
+    -- noon while the rest of the session stood at dusk.
+    WORLD_SET       = 'br:world:set',
+
     -- Client -> server position report (2 Hz), used for validation and spectate
     POS_REPORT      = 'br:pos',              -- C->S  { x, y, z }
 
