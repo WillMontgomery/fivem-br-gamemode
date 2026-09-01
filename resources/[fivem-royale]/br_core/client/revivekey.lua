@@ -87,7 +87,9 @@
 --
 -- THE PLATE OVER A LOOSE KEY IS STILL A BILLBOARD, and that is not an
 -- inconsistency: there is no bodywork under it. It hangs over a point on the
--- ground where a body fell, so it stays BR.Dui.drawWorld at GROUND_LIFT.
+-- ground where a body fell, so it stays BR.Dui.drawWorld -- at the height the
+-- van plate's own numbers work out to above the ground, which is the owner's
+-- "same elevation" and is `plateGroundHeight` below.
 --
 -- AND THE RING IS THE RESTING STATE NOW. "I want it by default to draw the empty
 -- circle around the E instead of a glyph that changes to the circle when
@@ -288,32 +290,57 @@ end
 -- so there is no constant left to keep.
 local PROMPT_SCALE = 1.6
 
--- ═══ AND THE KEY ON THE GROUND IS NOT A VEHICLE ═══
+-- ═══ AND THE KEY ON THE GROUND IS NOT A VEHICLE, WHICH IS WHY IT NEEDED ONE ═══
 --
--- Owner, in game: "the 'take revive key' DUI over a corpse is way too high off
--- the ground."
+-- Owner, 2026-09-01: "'take revive key' is still over the body. it should be the
+-- same elevation as the 'press E to revive' DUI."
 --
--- The vehicle lift was being used for all three plates, and the third one hangs
--- off the key's RECORDED z rather than off a van. That z is the corpse's own
--- position at the moment of elimination (server/revivekey.lua copies
--- `entry.pos`), and a ped's root is at its FEET -- config/loot.lua says so where
--- it measures `waistHeight = 0.75` up from it. So the key's z is the ground the
--- body is lying on, and 1.1 above the ground is chest height on a standing man,
--- floating clear of a body lying flat.
+-- ═══ "STILL", BECAUSE THIS IS THE THIRD ANSWER TO THE SAME COMPLAINT ═══
 --
--- THIS IS THE SECOND TIME THIS EXACT MISTAKE HAS BEEN MADE and the first fix is
--- the number to match. client/dbno.lua's revive plate had it over a downed mate
--- ("at the standing 0.9 it hovered well clear of the player it belonged to",
--- config/match.lua) and was brought to `dbnoPromptLift = 0.35` measured from the
--- HEAD BONE -- which on a body on the floor is, in client/squadmates.lua's
--- words, "a few centimetres of ground clearance". 0.6 off the ground is where
--- that approved plate ends up over the same body, reached from the anchor this
--- file actually has.
+-- The plate over a loose key hangs off the key's RECORDED z rather than off a
+-- van. That z is the corpse's own position at the moment of elimination
+-- (server/revivekey.lua copies `entry.pos`), and a ped's root is at its FEET --
+-- config/loot.lua says so where it measures `waistHeight = 0.75` up from it. So
+-- the key's z is the GROUND the body is lying on.
 --
--- AND IT STAYS UNDER THE CRATE'S. config/loot.lua's `promptLift = 0.75` is
--- written for an item that RISES half a metre when it is offered; a plate over
--- a corpse has nothing to rise with and belongs lower than one that does.
-local GROUND_LIFT  = 0.6
+-- It was drawn 1.1m above that ("way too high off the ground", in game); f2d2041
+-- brought it to 0.6, reasoning from where client/dbno.lua's approved plate ends
+-- up over the same body; and he has now reported it a third time. So the third
+-- answer stops guessing at a number and takes the one he actually named.
+--
+-- ═══ MATCHING THE NUMBER IS NOT MATCHING THE APPEARANCE ═══
+--
+-- The plate he pointed at is measured from a VEHICLE'S ORIGIN and this one from
+-- the GROUND, and an ambulance's origin is most of a metre off the ground -- so
+-- copying `frac`, or copying the metres `plateHeight` returns, would put the two
+-- a van's ride height apart and look like the fix had not been made. What has to
+-- agree is the height above the ground each one is STANDING on:
+--
+--     the van plate, in the world     vehZ + signHeight(bottom, top, frac, lift)
+--     the ground it stands on         vehZ + bottom
+--     so its height above that        (top - bottom) * frac + lift
+--
+-- `bottom` CANCELS, so the vehicle's origin drops out of the answer entirely and
+-- what is left is a height off the ground -- which is the only thing the key's
+-- own z can be added to. `plateGroundHeight` below is that subtraction, written
+-- as `signHeight(...) - bottom` so it is literally the van plate's own
+-- derivation with the origin removed rather than a second lerp beside it.
+--
+-- ═══ SO IT IS DERIVED, AND THAT IS WHAT MAKES IT STAY FIXED ═══
+--
+-- A constant of 1.4 here would be level with today's plate and would come apart
+-- the first time he nudges `frac` or `lift` with /brplate -- silently, with the
+-- symptom being a fourth report of this same sentence. Reading the same two
+-- config numbers means the pair he asked to be level move together and cannot
+-- drift, which is the property he asked for rather than the value.
+--
+-- THE FALLBACK IS A HEIGHT, NOT A LIFT. GetModelDimensions answers zeroes for a
+-- model the model table has not got to yet, and `frac` of nothing is zero -- a
+-- plate lying in the mud. So the span falls back rather than the answer: 2.3m is
+-- about how tall a van is, `frac` and `lift` still apply, and a frame drawn
+-- before the ambulance's real box arrives is a few centimetres out rather than
+-- on the floor.
+local FALLBACK_SPAN_M = 2.3
 
 -- ---------------------------------------------------------------------------
 -- WHERE THE PLATE SITS ON THE VAN
@@ -345,10 +372,16 @@ local DIMS = {}
 --- plate somewhere sensible, because a number nobody has tuned yet is a starting
 --- point rather than an invention. `tonumber` on each so a string in the config
 --- cannot reach the draw as a string.
---- @return number out, number frac, number lift, number width
+---
+--- `side` IS DEFAULTED TO ZERO AND THE OTHERS ARE NOT, which is not an
+--- oversight: a missing distance-off-the-panel or width has a sensible non-zero
+--- answer and a missing lateral has an exactly correct one -- centred, where the
+--- plate has always been.
+--- @return number out, number side, number frac, number lift, number width
 local function plateNumbers()
     local p = (K and type(K.plate) == 'table') and K.plate or nil
     return (p and tonumber(p.out)   or 0.35),
+           (p and tonumber(p.side)  or 0.0),
            (p and tonumber(p.frac)  or 0.62),
            (p and tonumber(p.lift)  or 0.0),
            (p and tonumber(p.width) or 0.75)
@@ -376,6 +409,54 @@ local function plateHeight(veh, frac, lift)
         DIMS[model] = d
     end
     return BR.ShopSolve.signHeight(d.bottom, d.top, frac, lift)
+end
+
+--- The ambulance's own z box, once the model table has answered for it.
+---
+--- ASKED BY MODEL NAME AND NOT OFF A HANDLE, because the thing this is for --
+--- the plate over a key lying in a field -- is drawn where there is no ambulance
+--- within a kilometre. BR.Config.ReviveKey.models() is the feature's own
+--- resolver (server/rescue.lua's one list), so this cannot end up measuring
+--- against a van the revive would refuse.
+---
+--- LATCHED ON THE FIRST REAL ANSWER, never re-asked, and that is the point: a
+--- model table that has not got to the ambulance yet answers a box of zeroes,
+--- and half a metre is under every vehicle in the game, so the sentinel cannot
+--- reject a real van. The answer is a constant per model, so the first good one
+--- is the last one needed.
+--- @return number|nil bottom, number|nil top
+local BOX = nil
+local function vanBox()
+    if BOX then return BOX.bottom, BOX.top end
+    local names = K and K.models and K.models()
+    local name = names and names[1]
+    if not name then return nil end
+    local a, b = GetModelDimensions(GetHashKey(name))
+    if not a or not b then return nil end
+    if math.abs(b.z - a.z) < 0.5 then return nil end
+    BOX = { bottom = a.z, top = b.z }
+    return BOX.bottom, BOX.top
+end
+
+--- How high above the ground a revive plate hangs, in metres.
+---
+--- THE VAN PLATE'S OWN DERIVATION WITH THE VEHICLE'S ORIGIN TAKEN BACK OUT. See
+--- the block over FALLBACK_SPAN_M: `signHeight` answers metres above the
+--- ORIGIN, the ground the van stands on is `bottom` below that origin, and the
+--- difference is what the two plates have to agree on. It is one subtraction and
+--- it is written as one, against BR.ShopSolve.signHeight, so there is no second
+--- lerp here to drift from the one `plateHeight` calls a few lines up.
+---
+--- READ EVERY FRAME A LOOSE KEY IS ON SCREEN, which is a table lookup and two
+--- multiplications -- the box behind it is latched.
+--- @return number
+local function plateGroundHeight()
+    local _, _, frac, lift = plateNumbers()
+    local bottom, top = vanBox()
+    if not bottom then
+        bottom, top = 0.0, FALLBACK_SPAN_M
+    end
+    return BR.ShopSolve.signHeight(bottom, top, frac, lift) - bottom
 end
 
 -- ---------------------------------------------------------------------------
@@ -808,18 +889,30 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.hold', function()
     -- somebody has to remember to take back down.
     previewing = false
     if holding then
-        local e = BR.State.roster[holding.target]
         setPrompt(C.revive and {
             mode   = 'revive',
             id     = holding.target,
-            -- THE SUBJECT IS THE PERSON AND THE VERB IS THE OWNER'S LINE, which
-            -- is client/loot.lua's split followed by dbno.lua, ambheal.lua and
-            -- shop.lua. `label` is the mate's name -- exactly what dbno.lua's
-            -- revive plate puts there -- and it is not new copy: it is a name
-            -- the roster already holds. A mate whose row has not arrived draws
-            -- no plate rather than a placeholder word.
-            label  = e and e.name or nil,
-            hint   = C.revive,
+            -- ═══ TWO LINES, BOTH HIS, AND NEITHER OF THEM A NAME ═══
+            --
+            -- Owner, 2026-09-01: "The ambulance DUI should say 'Revive your
+            -- squad' and the line under (in the smaller lighter font) should say
+            -- 'PRESS AND HOLD' instead of including the player's name."
+            --
+            -- SO THE ROSTER LOOKUP IS GONE FROM ALL THREE OF THESE CALL SITES
+            -- rather than left feeding a `label` nothing reads. Every other
+            -- world prompt in this game splits subject and verb -- client/
+            -- loot.lua's shape, followed by dbno.lua, ambheal.lua and shop.lua
+            -- -- and this is the one he has asked not to. Keeping the lookup
+            -- "in case" would be a nil-guarded read of a roster row for a value
+            -- thrown away, and the day somebody wired it back up it would put a
+            -- name over the top of his line.
+            --
+            -- GUARDED ON THE BIG LINE ONLY. A missing `reviveHold` draws his
+            -- verb with no line under it, which reads; a missing `revive` is a
+            -- plate with no words on it, which is the case the header's rule is
+            -- about.
+            label  = C.revive,
+            hint   = C.reviveHold,
             press  = true,
             ring   = true,
             holdMs = math.floor(tonumber(K.reviveHoldMs) or 6000),
@@ -832,26 +925,27 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.hold', function()
         -- plate, so there is still ONE writer to the browser and a real offer
         -- always wins. Nothing above this line changed to make room for it.
         --
-        -- IT SPEAKS THE OWNER'S OWN LINE AND INVENTS NOTHING. `C.revive` is the
-        -- plate being tuned, so the ruler shows the plate that ships; a preview
-        -- with wording of its own would be a seventh string. There is no `label`
-        -- because a label is a MATE'S NAME and there is no mate -- the same nil
-        -- the real plate draws while a roster row is still in flight.
+        -- IT SPEAKS THE OWNER'S OWN LINES AND INVENTS NOTHING. `C.revive` and
+        -- `C.reviveHold` are the plate being tuned, so the ruler shows the plate
+        -- that ships -- both lines, at the size and weight they really draw at,
+        -- which is half of what he is looking at while he moves it. A preview
+        -- with wording of its own would be an eleventh string AND a plate whose
+        -- text is a different length from the one being positioned.
         if tuning and tuneVeh then
             previewing = true
             setPrompt(C.revive and {
                 mode = 'tune', id = tuneVeh,
-                hint = C.revive, press = true, ring = true,
+                label = C.revive, hint = C.reviveHold, press = true, ring = true,
             } or nil)
         else
             setPrompt(nil)
         end
 
     elseif c.mode == 'revive' then
-        local e = BR.State.roster[c.id]
         setPrompt(C.revive and {
             mode = 'revive', id = c.id,
-            label = e and e.name or nil, hint = C.revive, press = true,
+            -- His two lines, and no name. See the hold branch above.
+            label = C.revive, hint = C.reviveHold, press = true,
             -- ═══ THE RING IS THE RESTING STATE, NOT THE PRESSED ONE ═══
             --
             -- Owner, 2026-08-31: "I want it by default to draw the empty circle
@@ -932,14 +1026,17 @@ local function drawOnVan(page, veh)
     -- costs the whole band after five of them.
     if not isTrue(DoesEntityExist(veh)) then return end
 
-    local out, frac, lift, width = plateNumbers()
+    local out, side, frac, lift, width = plateNumbers()
     local oz = plateHeight(veh, frac, lift)
     -- A MODEL THAT HAS NOT ANSWERED DRAWS NOTHING FOR A FRAME. Better than a
     -- plate at a guessed height on the frame the van streams in.
     if not oz then return end
 
     local p = GetEntityCoords(PlayerPedId())
-    faceX, faceY = BR.Dui.drawNearFace(page, veh, p.x, p.y, out, oz, width)
+    -- `side` GOES TO THE SAME CALL, not to a second offset applied here. Which
+    -- way "right" points is a fact about the face BR.Dui picked, and it is the
+    -- only file that knows which face that was.
+    faceX, faceY = BR.Dui.drawNearFace(page, veh, p.x, p.y, out, oz, width, side)
 end
 
 --- ...and drawing it, which has to be per frame.
@@ -981,10 +1078,14 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.draw', function()
         -- paid its 25 Volts.
         drawOnVan(page, c.veh)
     else
-        -- THE GROUND LIFT, NOT THE VEHICLE ONE. This is the loose key, and
-        -- `c.z` is the ground the body it fell from is lying on -- see
-        -- GROUND_LIFT above for why the two numbers cannot be the same one.
-        BR.Dui.drawWorld(page, c.x, c.y, c.z + GROUND_LIFT, PROMPT_SCALE)
+        -- THE SAME HEIGHT AS THE VAN PLATE, FROM A DIFFERENT ANCHOR. This is
+        -- the loose key, and `c.z` is the ground the body it fell from is lying
+        -- on -- so what is added is a height above the GROUND, which is what
+        -- plateGroundHeight answers and what the van plate's own numbers work
+        -- out to once the vehicle's origin is taken back out. See the block
+        -- over FALLBACK_SPAN_M: the two are level because they are one
+        -- derivation, not because two constants were set to the same value.
+        BR.Dui.drawWorld(page, c.x, c.y, c.z + plateGroundHeight(), PROMPT_SCALE)
     end
 end)
 
@@ -1336,7 +1437,13 @@ end)
 -- Owner, 2026-08-31: "If you want to make me the tools to manipulate the DUI
 -- position then fetch it I can give you the coords."
 --
--- ═══ IT IS /brlabel's SHAPE, NOT /brattach's, AND THAT IS A DECISION ═══
+-- ═══ AND THE SECOND REQUEST, WHICH REBUILT IT ═══
+--
+-- Owner, 2026-09-01: "brplate needs reworked - it should use arrow keys to
+-- adjust the position and I need to be able to move it left/right as well.
+-- in/out and up/down are great but can't do left/right right now."
+--
+-- ═══ IT WAS /brlabel's SHAPE. IT IS /brattachpose's NOW, AND HE ASKED ═══
 --
 -- This project has two kinds of ruler. /brattach takes the ped, blocks WASD and
 -- nudges an offset with the keyboard, because the thing being measured is where
@@ -1344,20 +1451,39 @@ end)
 -- /brshine and /brpropscale are console lines that set a number, print what to
 -- paste, and take nothing away from the player.
 --
--- THE SECOND SHAPE IS THE RIGHT ONE HERE, FOR ONE REASON: WALKING ROUND THE VAN
--- *IS* THE MEASUREMENT. "Whichever face the player is standing closest to" can
--- only be judged by standing at each face in turn, so a tool that claimed the
--- movement keys to nudge with would have taken away the thing being checked.
--- Nothing here disables a control, holds a ped, or has an exit that can be
--- forgotten -- stopping the resource with it running leaves nothing behind but a
--- plate the teardown above already clears.
+-- THIS FILE ARGUED FOR THE SECOND SHAPE AND THE ARGUMENT WAS RIGHT, WHICH IS WHY
+-- THE FIRST ONE HERE IS NOT /brattach's. "Walking round the van *is* the
+-- measurement" -- "whichever face the player is standing closest to" can only be
+-- judged by standing at each face in turn -- so the keys this claims are the
+-- FOUR ARROWS and nothing else. WASD, the mouse, sprint and crouch are all still
+-- the player's, so he can still walk to the tail doors and watch the plate
+-- follow him while he is holding one down. attachtune.lua takes twenty controls
+-- away because its ped is welded to a van; this one takes four because its
+-- player has to keep moving.
+--
+-- SO THE STEP MODIFIER IS *READ* RATHER THAN CLAIMED. SHIFT is coarse here as it
+-- is there, but sprint is not disabled -- a coarse nudge while jogging round the
+-- back is a thing he will do, and IsDisabledControlPressed answers for a control
+-- whether or not anybody disabled it, so one reader covers both.
+--
+-- ═══ AND THEY ARE NOT CLAIMED WHILE IT IS OFF ═══
+--
+-- The DisableControlAction pass is a LEVEL TEST on `tuning`, so with the tool
+-- off there is not a frame in which the arrow keys behave differently from any
+-- other session -- and turning it off needs no teardown at all, because
+-- DisableControlAction lasts exactly one frame and stops being renewed. That is
+-- attachtune.lua's strongest property and it is the reason its shape is safe to
+-- borrow: there is no restore to be skipped by a Lua error, a resource stop, a
+-- match teardown or a forgotten exit. GROUP 0 ONLY, so the pause menu's own
+-- arrow navigation (which is group 2) is untouched and is still the exit that
+-- does not depend on this file behaving.
 --
 -- ═══ WHAT IT DRAWS IS WHAT SHIPS ═══
 --
 -- The preview goes through `drawOnVan` -- the same face pick, the same height
--- derivation off the model's box, the same width, the same interface-size
--- preference, the same words out of BR.Config.ReviveKey.copy. There is no
--- second drawing path to be right while the real one is wrong.
+-- derivation off the model's box, the same width, the same lateral, the same
+-- interface-size preference, the same words out of BR.Config.ReviveKey.copy.
+-- There is no second drawing path to be right while the real one is wrong.
 
 --- One line of the on-screen readout.
 ---
@@ -1418,37 +1544,216 @@ BR.Loop.register(BR.Loop.TICK, 'revivekey.tune', function()
     tuneVeh = nearestAmbulance(c.x, c.y, c.z)
 end)
 
+-- ---------------------------------------------------------------------------
+-- THE ARROWS
+-- ---------------------------------------------------------------------------
+
+--- The controls this claims WHILE IT IS ON, and everything else those keys do.
+---
+--- FOUR ARROWS AND THE FIFTH THING THE UP ONE IS. GTA has TWO controls on the up
+--- arrow -- INPUT_PHONE opens the phone and INPUT_CELLPHONE_UP scrolls it -- so
+--- blocking only the one this reads would leave the other live and the owner
+--- would tune the plate upward into a ringing mobile. attachtune.lua's list has
+--- the same shape and its note is the reason: every key a tool claims is shared
+--- with something, and the something is what gets found in a playtest.
+---
+--- WHAT IS DELIBERATELY NOT HERE: the movement axes, the mouse, sprint, crouch
+--- and the pause menu. Walking round the van IS the measurement -- see the
+--- header -- and the two modifiers below are read without being taken.
+local BLOCKED = {
+    27,                       -- INPUT_PHONE            (UP ARROW)
+    172, 173, 174, 175,       -- INPUT_CELLPHONE_UP/DOWN/LEFT/RIGHT (the arrows)
+}
+
+--- @see BLOCKED for what each of these otherwise does.
+local KEY = {
+    UP     = 172,
+    DOWN   = 173,
+    LEFT   = 174,
+    RIGHT  = 175,
+    -- LEFT CTRL (INPUT_DUCK). Held, it points the vertical arrows at `out`
+    -- instead of `lift` -- attachtune.lua's answer to the same problem, where
+    -- ALT and CTRL choose which angle E and R drive. A modifier rather than a
+    -- mode, so the axis in force is a property of what your hand is doing right
+    -- now and cannot be left set wrong.
+    DEPTH  = 36,
+    -- LEFT SHIFT (INPUT_SPRINT). Coarse steps.
+    COARSE = 21,
+}
+
+-- ═══ TWO STEP SIZES, AND THEY ARE attachtune.lua's TWO ═══
+--
+-- 1cm steps take forever across the length of a van; 10cm steps cannot centre a
+-- plate in a window. So both, on a modifier rather than a mode. Matched to that
+-- file rather than re-chosen, because a second dev tool whose fine step is a
+-- different size is a tool whose numbers cannot be compared with the first's.
+local STEP = { fine = 0.01, coarse = 0.10 }
+
+-- ═══ ONE STEP PER 50ms WHILE HELD, NOT ONE PER FRAME ═══
+--
+-- attachtune.lua's argument, and it is about REPRODUCIBILITY rather than feel: a
+-- per-frame step means the distance a key travels depends on the frame rate, so
+-- the same hold moves further on a better machine and a number measured today
+-- does not come back tomorrow. A tap is exactly one step -- the deadline is
+-- cleared the moment nothing is held -- and a hold is 20 steps a second whatever
+-- the machine is doing.
+local REPEAT_MS = 50
+
+--- How far any one number may be pushed, in metres.
+---
+--- A tool that can send the plate into the next postcode while somebody leans on
+--- a key is a tool that ends in a /brplate nobody can aim. It is deliberately
+--- SYMMETRIC: `out` below zero is the plate sunk into the bodywork and `side`
+--- below zero is the left of the panel, and both are things worth being able to
+--- try. attachtune.lua's LIMIT, halved -- this is a sign on a van, not an offset
+--- across a cabin.
+local LIMIT = 2.5
+
+--- The next moment a held arrow may move anything.
+local nudgeAt = 0
+
+--- @param v number
+--- @return number
+local function clampNudge(v)
+    if v >  LIMIT then return  LIMIT end
+    if v < -LIMIT then return -LIMIT end
+    return v
+end
+
+--- Is one of the keys above held?
+---
+--- IsDisabledControlPressed, NOT IsControlPressed, and it is the right reader
+--- for both halves of KEY. The arrows are held down every frame by the pass
+--- below and the plain reader stops seeing them; SHIFT and CTRL are NOT
+--- disabled, and this reader answers for a live control just as well. One reader
+--- rather than two is also what stops the modifiers quietly becoming claimed
+--- keys the day somebody adds them to BLOCKED.
+---
+--- A FiveM native declared BOOL may answer 1 or 0 and 0 is TRUTHY in Lua, so
+--- this goes through `isTrue` like every other BOOL read in this file.
+--- @param id number
+--- @return boolean
+local function held(id)
+    return isTrue(IsDisabledControlPressed(0, id))
+end
+
+--- The arrows, per frame, while the ruler is on.
+---
+--- FRAME AND NOT TICK, for the one reason that matters: DisableControlAction
+--- lasts exactly one frame, so a control only held down ten times a second is a
+--- control that is live five frames in six -- the phone would open on the way
+--- past. client/inventory.lua's suppression block is the same shape.
+BR.Loop.register(BR.Loop.FRAME, 'revivekey.tunekeys', function()
+    if not tuning then
+        -- NOTHING TO UNDO. The block above is not renewed, so the arrows are the
+        -- player's again on the very next frame; only the repeat deadline is
+        -- state, and it is cleared so that turning the tool back on lands its
+        -- first press immediately.
+        nudgeAt = 0
+        return
+    end
+
+    for i = 1, #BLOCKED do
+        DisableControlAction(0, BLOCKED[i], true)
+    end
+
+    local step = held(KEY.COARSE) and STEP.coarse or STEP.fine
+    local dv, dh = 0.0, 0.0
+    if held(KEY.UP)    then dv = dv + step end
+    if held(KEY.DOWN)  then dv = dv - step end
+    if held(KEY.RIGHT) then dh = dh + step end
+    if held(KEY.LEFT)  then dh = dh - step end
+
+    if dv == 0.0 and dh == 0.0 then
+        nudgeAt = 0
+        return
+    end
+
+    local now = GetGameTimer()
+    if now < nudgeAt then return end
+    nudgeAt = now + REPEAT_MS
+
+    -- THE TABLE IS WRITTEN, NOT A SHADOW COPY, so the readout, the paste block
+    -- and the plate on the van are one set of numbers and the typed form
+    -- (`brplate out 0.4`) and the arrows cannot disagree. A config with no plate
+    -- table has nothing to nudge and says so through the command rather than
+    -- from a frame callback sixty times a second.
+    local P = (K and type(K.plate) == 'table') and K.plate or nil
+    if not P then return end
+
+    if dv ~= 0.0 then
+        -- WHICH VERTICAL AXIS IS THE MODIFIER'S ANSWER. `lift` is the one with
+        -- no modifier at all because it is the one he is looking at: metres
+        -- straight up, the same metres the plate over a key on the ground reads
+        -- (see plateGroundHeight), so a nudge here moves BOTH of the plates he
+        -- asked to be level and they stay level while he does it. `frac` is a
+        -- share of the model's height and stays on the typed form, where a
+        -- number between 0 and 1 can be entered as one.
+        local axis = held(KEY.DEPTH) and 'out' or 'lift'
+        P[axis] = clampNudge((tonumber(P[axis]) or 0.0) + dv)
+    end
+    if dh ~= 0.0 then
+        P.side = clampNudge((tonumber(P.side) or 0.0) + dh)
+    end
+end)
+
 --- ═══ THE READOUT IS CONTINUOUS, AND THAT IS NOT A NICETY ═══
 ---
 --- attachtune.lua's argument, unchanged: nudging blind and running a print
 --- command to find out what happened is a round trip per step. With the numbers
---- on screen the loop is closed -- type, look, type -- and the face this frame
+--- on screen the loop is closed -- press, look, press -- and the face this frame
 --- picked is on screen beside them, which is the one thing a printed number
 --- cannot tell you.
 BR.Loop.register(BR.Loop.FRAME, 'revivekey.tuneread', function()
     if not tuning then return end
 
-    local out, frac, lift, width = plateNumbers()
+    local out, side, frac, lift, width = plateNumbers()
+    -- WHICH AXIS THE VERTICAL ARROWS ARE POINTED AT, SAID IN COLOUR RATHER THAN
+    -- IN WORDS. The rule over `text` is that this panel is numbers and nothing
+    -- else; a modifier that silently changes what a key does is the one thing
+    -- that cannot be left off it, so the number being driven is the one drawn in
+    -- blue and no sentence is added to say so.
+    local depth = held(KEY.DEPTH)
     local y = 0.34
     text(0.015, y, ('~b~revive plate~w~  %s')
         :format(tuneVeh and ('face ' .. faceName()) or 'no ambulance in reach'))
     y = y + 0.026
-    text(0.015, y, ('out %5.3f m   frac %5.3f   lift %6.3f m')
-        :format(out, frac, lift))
+    text(0.015, y, ('%sout %6.3f~w~ m   side %6.3f m')
+        :format(depth and '~b~' or '', out, side))
     y = y + 0.026
-    text(0.015, y, ('width %5.3f m'):format(width))
+    text(0.015, y, ('frac %5.3f   %slift %6.3f~w~ m   width %5.3f m')
+        :format(frac, depth and '' or '~b~', lift, width))
+    y = y + 0.026
+    text(0.015, y, ('step %.2f m')
+        :format(held(KEY.COARSE) and STEP.coarse or STEP.fine))
 end)
 
---- WHICH WORDS NAME A NUMBER. A set rather than four branches, for /brshine's
+--- WHICH WORDS NAME A NUMBER. A set rather than five branches, for /brshine's
 --- reason: the name the owner types and the key that is written are one thing,
---- so a fifth number cannot arrive answering to a name nothing sets.
-local PLATE_TUNABLE = { out = true, frac = true, lift = true, width = true }
+--- so a sixth number cannot arrive answering to a name nothing sets.
+local PLATE_TUNABLE = {
+    out = true, side = true, frac = true, lift = true, width = true,
+}
 
---- /brplate [on|off] | [out|frac|lift|width <value>]
+--- /brplate [on|off] | [out|side|frac|lift|width <value>]
 ---
 --- CLIENT-LOCAL AND NOT PERSISTED: it is a ruler, not a setting. A restart puts
 --- br_lib/config/revivekey.lua's values back, which is what makes it safe to
 --- leave a session halfway through a measurement.
+---
+--- THE TYPED FORM SURVIVES THE ARROWS RATHER THAN BEING REPLACED BY THEM. Both
+--- write the same table, so `brplate side 0` is how a lateral nudged too far
+--- comes back to nothing in one line instead of forty presses, and `frac` -- a
+--- share between 0 and 1 rather than a distance -- is only reachable this way.
+---
+--- IT IS DEV-GATED, AND NOT BY ANYTHING WRITTEN HERE. br_lib/shared/devgate.lua
+--- wraps RegisterCommand for every file br_core loads after it, so this is
+--- gated BY CONSTRUCTION and its refusal is that wrapper's line -- which names
+--- the resource, names the command, and says to start the server with
+--- br_devMode true. Reaching for the unwrapped door that file keeps for the
+--- keybind rows, to "keep the ruler working" on the public box, would be this
+--- command walking around that gate; tools/verify.sh pins that door to an
+--- allowlist of two files for exactly this reason, and this is not one of them.
 RegisterCommand('brplate', function(_, args)
     local name  = tostring((args and args[1]) or '')
     local value = tonumber(args and args[2])
@@ -1456,9 +1761,10 @@ RegisterCommand('brplate', function(_, args)
     if name == 'on' or name == 'off' then
         tuning = (name == 'on')
         if not tuning then
-            -- The plate comes down on the next frame on its own: the pass that
-            -- draws the preview is a level test on `tuning`, so there is no
-            -- teardown here to be skipped.
+            -- The plate comes down on the next frame on its own, and so do the
+            -- arrow keys: both passes are level tests on `tuning`, and
+            -- DisableControlAction is a per-frame assertion rather than a state
+            -- to put back. There is no teardown here to be skipped.
             tuneVeh = nil
         end
 
@@ -1483,23 +1789,35 @@ RegisterCommand('brplate', function(_, args)
         print(('[br_core] brplate: no such plate value: %s'):format(name))
     end
 
-    local out, frac, lift, width = plateNumbers()
+    -- THE PASTE BLOCK IS THE WHOLE POINT OF THE PRINTOUT and it is printed on
+    -- every invocation, including the ones that changed nothing -- `brplate`
+    -- with no arguments is how he takes the reading once the arrows have put the
+    -- plate where he wants it.
+    local out, side, frac, lift, width = plateNumbers()
     print('=== revive plate ===')
     print(('  preview   %s%s'):format(tuning and 'on' or 'off',
         tuning and (tuneVeh and ('  (drawing, face ' .. faceName() .. ')')
                              or '  (no ambulance in reach)') or ''))
     print(('  out       %.3f m   off the panel the player is nearest to')
         :format(out))
+    print(('  side      %.3f m   along that panel, + is the reader\'s right')
+        :format(side))
     print(('  frac      %.3f     up the model box, 0 ground 1 roof'):format(frac))
-    print(('  lift      %.3f m   added after that'):format(lift))
+    print(('  lift      %.3f m   added after that, and it also sets the height '
+        .. 'of the plate over a key on the ground'):format(lift))
     print(('  width     %.3f m   height follows the page'):format(width))
     print('  paste into br_lib/config/revivekey.lua:')
     print('    plate = {')
     print(('        out   = %.3f,'):format(out))
+    print(('        side  = %.3f,'):format(side))
     print(('        frac  = %.3f,'):format(frac))
     print(('        lift  = %.3f,'):format(lift))
     print(('        width = %.3f,'):format(width))
     print('    },')
     print('  usage: brplate on | off   draw a plate at the nearest ambulance')
-    print('         brplate out|frac|lift|width <value>')
+    print('         brplate out|side|frac|lift|width <value>')
+    print('  keys while on:  LEFT/RIGHT arrows   side, along the panel')
+    print('                  UP/DOWN arrows      lift, straight up')
+    print('                  CTRL + UP/DOWN      out, off the panel')
+    print('                  hold SHIFT          10cm steps instead of 1cm')
 end, false)

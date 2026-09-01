@@ -3557,6 +3557,132 @@ do
             .. '(2026-08-06), and levelling that one would put a shipped bug '
             .. 'back')
 
+    -- ═══ 7b. THE LATERAL ALONG THE FACE -- drawNearFace's SECOND DIRECTION ═══
+    --
+    -- Owner, 2026-09-01, on the revive plate: "I need to be able to move it
+    -- left/right as well. in/out and up/down are great but can't do left/right
+    -- right now."
+    --
+    -- ═══ WHY IT IS TESTED HERE, IN THE SHOP'S SUITE ═══
+    --
+    -- Because THIS is the fixture that executes client/dui.lua's quads. The
+    -- revive key's own suite says of drawNearFace that it "cannot be executed
+    -- outside the game" and pins BR.NearestBoxFace instead -- which was true of
+    -- the FACE PICK and is not true of the geometry, as the seven sections above
+    -- demonstrate. The lateral is the revive plate's feature and drawNearFace is
+    -- this file's function; the numbers reaching it are pinned in
+    -- tools/test_revivekey.lua and what they DO is pinned here.
+    --
+    -- ═══ AND WHY IT IS WORTH EXECUTING RATHER THAN READING ═══
+    --
+    -- The lateral is spent along the same vector as section 6's mirror-writing
+    -- check -- the reader's left -- so its two failure modes are that vector's:
+    -- a sign that slides the wrong WAY, and a sign that slides along the wrong
+    -- AXIS on three of the four faces. Both render perfectly. Neither is visible
+    -- in a diff. The second is the one a constant in the van's own axes would
+    -- have, and it would look completely correct at the nose.
+    do
+        -- The model's box, which is what BR.NearestBoxFace is handed. An
+        -- ambulance's shape rather than its exact box, for test_revivekey.lua's
+        -- reason: the rule is under test, not an asset.
+        local MODEL = 0xA11B
+        function GetEntityModel(e) return e == VEH and MODEL or 0 end
+        function GetModelDimensions(m)
+            if m ~= MODEL then return nil end
+            return { x = -1.2, y = -3.0, z = -0.86 },
+                   { x =  1.2, y =  3.0, z =  1.44 }
+        end
+
+        local OUT, OZ2 = 0.4, 0.9
+        local function drawNear(px, py, side)
+            polys = {}
+            BR.Dui.drawNearFace(page, VEH, px, py, OUT, OZ2, W, side)
+            return polys
+        end
+        local function mid()
+            local p, q = at(0.0, 0.0), at(1.0, 1.0)
+            return (p[1] + q[1]) * 0.5, (p[2] + q[2]) * 0.5, (p[3] + q[3]) * 0.5
+        end
+
+        -- ── AT THE NOSE, WITH NO LATERAL ───────────────────────────────────
+        --
+        -- The car faces north, so its nose is +Y and its box reaches 3.0m that
+        -- way. Standing ten metres in front of it puts the plate on the nose,
+        -- OUT beyond the panel.
+        drawNear(CAR.x, CAR.y + 10.0, 0.0)
+        local zx, zy, zz = mid()
+        ok(near(zx, CAR.x, 0.001) and near(zy, CAR.y + 3.0 + OUT, 0.001)
+               and near(zz, CAR.z + OZ2, 0.001),
+            'with no lateral the plate is centred on the panel, exactly where '
+                .. 'the reach and the stand-off put it',
+            ('%.3f %.3f %.3f'):format(zx, zy, zz))
+
+        -- WHICH WAY IS THE READER'S RIGHT, READ OFF THE TEXTURE ITSELF rather
+        -- than asserted from the same convention the code uses. Section 6 proves
+        -- u=0 is the reader's left; so the u=1 corner is on their right, and a
+        -- positive lateral has to move the plate TOWARDS it.
+        local rightX = at(1.0, 0.0)[1]
+
+        -- ── ...AND WITH ONE ────────────────────────────────────────────────
+        local SIDE = 0.5
+        drawNear(CAR.x, CAR.y + 10.0, SIDE)
+        local sx2, sy2, sz2 = mid()
+        ok(near(sz2, zz, 0.001) and near(sy2, zy, 0.001),
+            'a lateral spends none of the height and none of the stand-off -- '
+                .. 'the plate is still OUT off the same panel',
+            ('%.3f %.3f'):format(sy2, sz2))
+        ok(near(math.abs(sx2 - zx), SIDE, 0.001),
+            '...and moves it exactly the metres it was given',
+            ('%.4f'):format(math.abs(sx2 - zx)))
+        ok((sx2 - zx) * (rightX - zx) > 0.0,
+            '...towards the READER\'S RIGHT, which is the same side the '
+                .. 'texture\'s u=1 edge is on -- so "right" means one thing on '
+                .. 'the plate and on the offset that moves it',
+            ('centre %.3f -> %.3f, u1 edge at %.3f'):format(zx, sx2, rightX))
+
+        -- ── AND ROUND AT THE FLANK, WHICH IS THE ASSERTION THAT MATTERS ────
+        --
+        -- Walk to the driver's side and the plate moves to that panel. A lateral
+        -- authored in the VAN's axes would still slide it along world X here --
+        -- it would look right at the nose and slide the plate INTO the bodywork
+        -- on the flank. Derived from the face normal, it slides along Y instead.
+        drawNear(CAR.x - 10.0, CAR.y, 0.0)
+        local fx0, fy0 = mid()
+        ok(near(fx0, CAR.x - 1.2 - OUT, 0.001) and near(fy0, CAR.y, 0.001),
+            'standing at the driver\'s door puts the plate on that flank',
+            ('%.3f %.3f'):format(fx0, fy0))
+        drawNear(CAR.x - 10.0, CAR.y, SIDE)
+        local fx1, fy1 = mid()
+        ok(near(fx1, fx0, 0.001) and near(math.abs(fy1 - fy0), SIDE, 0.001),
+            'and there the SAME positive lateral slides it along the van\'s '
+                .. 'LENGTH rather than along world X -- the direction is the '
+                .. 'face\'s, so it is still along the panel and still the '
+                .. 'reader\'s right',
+            ('%.3f %.3f -> %.3f %.3f'):format(fx0, fy0, fx1, fy1))
+
+        -- A NEGATIVE ONE IS THE OTHER HALF OF THE AXIS, and it is the half that
+        -- a `math.abs` or a clamp at zero would silently delete -- leaving a
+        -- tool that can move the plate right and not left.
+        drawNear(CAR.x, CAR.y + 10.0, -SIDE)
+        local nx = mid()
+        ok(near(math.abs(nx - zx), SIDE, 0.001)
+               and (nx - zx) * (sx2 - zx) < 0.0,
+            'and a negative lateral goes the other way by the same distance, '
+                .. 'so he has both halves of the axis he asked for',
+            ('%.3f vs %.3f'):format(nx, sx2))
+
+        -- THE SHOP SIGN IS UNTOUCHED BY ANY OF IT. drawFace shares drawPlane,
+        -- so the parameter passes through the function that draws the yard sign
+        -- as well -- and the owner has already approved where that one stands.
+        draw(OY, OZ)
+        local ux2, uy2, uz2 = centre()
+        ok(near(ux2, CAR.x, 0.001) and near(uy2, CAR.y + OY, 0.001)
+               and near(uz2, CAR.z + OZ, 0.001),
+            'while the yard sign is still centred exactly where it was -- the '
+                .. 'shared quad grew a parameter, not an offset',
+            ('%.3f %.3f %.3f'):format(ux2, uy2, uz2))
+    end
+
     -- ═══ 8. THE CONFIG KNOB IS A LENGTH, AND THE SCREEN FRACTION IS GONE ═══
     ok(type(shipped.signWidthM) == 'number' and shipped.signWidthM > 0.0,
         'signWidthM is a width in metres', tostring(shipped.signWidthM))

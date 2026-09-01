@@ -61,15 +61,16 @@
 -- then said to stop waiting on him and ship it, and he rewrote the collection
 -- half of them himself on 2026-08-31.
 --
--- SO ALL NINE LIVE IN ONE TABLE, `copy` BELOW, AND NOWHERE ELSE. That is the
+-- SO ALL TEN LIVE IN ONE TABLE, `copy` BELOW, AND NOWHERE ELSE. That is the
 -- whole point of the table: he can rewrite every word this feature speaks by
 -- editing one screen of one file, without opening the server module, the client
 -- module or the prompt page. No string in this feature may be written anywhere
 -- but there -- not a default in a `or`, not a fallback in the client, not a
 -- second copy in a comment that somebody later pastes.
 --
--- AND THERE ARE EXACTLY NINE. If the design ever needs a tenth, the answer is
--- to ask him, not to write one. See the note over `copy`.
+-- AND THERE ARE EXACTLY TEN -- nine of them his of 2026-08-31 and the tenth
+-- his of 2026-09-01. If the design ever needs an eleventh, the answer is to ask
+-- him, not to write one. See the note over `copy`.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THE REVIVE HAPPENS AT AN AMBULANCE, AND THE ARRIVAL IS A DROP
@@ -288,27 +289,65 @@ BR.Config.ReviveKey = {
     -- go on an ambulance", free to drift, and the symptom would be the plate
     -- jumping the instant a squad bought a key.
     --
-    -- ⚠ NONE OF THE FOUR IS THE OWNER'S NUMBER YET. He offered to measure them
-    -- ("then fetch it I can give you the coords") and /brplate is the ruler:
-    -- stand at an ambulance, `brplate on`, nudge, and paste the block it prints
-    -- back over this table. These four are a starting point chosen to be
-    -- obviously readable rather than obviously right.
+    -- ═══ AND SO DOES THE PLATE OVER A KEY ON THE GROUND, SINCE 2026-09-01 ═══
     --
-    -- TWO OF THE FOUR ARE MEASURED AGAINST THE MODEL RATHER THAN AGAINST
+    -- Owner: "'take revive key' is still over the body. it should be the same
+    -- elevation as the 'press E to revive' DUI."
+    --
+    -- `frac` AND `lift` NOW SET THE HEIGHT OF ALL THREE PLATES. He asked for two
+    -- of them to be level with each other, and the only way that survives the
+    -- next nudge is for one pair of numbers to place both -- so the loose key's
+    -- plate is drawn at the height these two put an ambulance plate at, measured
+    -- from the ground rather than from a van's origin. client/revivekey.lua's
+    -- `plateGroundHeight` is the arithmetic and says why the origin drops out.
+    -- Nudge `lift` and the pair moves together; they cannot come apart.
+    --
+    -- `out`, `side` AND `width` STILL BELONG TO THE VAN ALONE -- there is no
+    -- panel to stand off, no face to slide along, and the ground plate is a
+    -- screen-space billboard rather than a quad in metres.
+    --
+    -- ⚠ NONE OF THE FIVE IS THE OWNER'S NUMBER YET. He offered to measure them
+    -- ("then fetch it I can give you the coords") and /brplate is the ruler:
+    -- stand at an ambulance, `brplate on`, nudge it with the arrow keys, and
+    -- paste the block it prints back over this table. These five are a starting
+    -- point chosen to be obviously readable rather than obviously right.
+    --
+    -- TWO OF THE FIVE ARE MEASURED AGAINST THE MODEL RATHER THAN AGAINST
     -- NOTHING, which is what makes them survive a van this code has never seen.
     -- `out` starts at the model's own panel (BR.NearestBoxFace hands back the
     -- reach to it) and `frac` is a position in the model's own height
     -- (BR.ShopSolve.signHeight, the shop's derivation, borrowed rather than
     -- re-written) -- so a longer or taller ambulance moves its own plate and
     -- nothing here changes. config/shop.lua's `signBumperFrac` block is the full
-    -- argument for why that beats a constant. `lift` and `width` are plain
-    -- lengths, and are meant to be: one nudges every plate at once and the other
-    -- is the size of a sign, neither of which is a fact about the bodywork.
+    -- argument for why that beats a constant. `side`, `lift` and `width` are
+    -- plain lengths, and are meant to be: two nudge every plate at once and the
+    -- third is the size of a sign, none of which is a fact about the bodywork.
     plate = {
         -- Metres the plate stands off the panel it is drawn on. Far enough that
         -- it cannot z-fight the bodywork or clip a wing mirror, close enough to
         -- read as painted on the van rather than floating beside it.
         out = 0.35,
+
+        -- Metres ALONG that panel, positive to the right of somebody standing
+        -- at it reading the plate.
+        --
+        -- ═══ THE AXIS HE ASKED FOR, 2026-09-01 ═══
+        --
+        -- "I need to be able to move it left/right as well. in/out and up/down
+        -- are great but can't do left/right right now."
+        --
+        -- ITS DIRECTION IS THE FACE'S, NOT THE VAN'S. BR.NearestBoxFace already
+        -- says which panel the plate is on; this is spent along the
+        -- perpendicular of that same answer, so "right" means the reader's right
+        -- at the driver's door AND at the back doors -- there is no face on
+        -- which a positive number moves the plate the other way. See
+        -- BR.Dui.drawNearFace, and the note in drawPlane beside the line that
+        -- decides the same left for the writing on it.
+        --
+        -- ZERO IS CENTRED ON THE PANEL, which is where the plate has always been
+        -- and is a real answer rather than an absent one: he did not say it was
+        -- off-centre, he said he could not move it.
+        side = 0.0,
 
         -- Where up the model's own height the plate's centre sits: 0 is the
         -- ground the tyres stand on, 1 the roof. 0.62 is above the shop's 0.35
@@ -319,6 +358,12 @@ BR.Config.ReviveKey = {
 
         -- Metres added after the derivation, to move every plate at once
         -- without touching the shape. config/shop.lua's `signLift`, same job.
+        --
+        -- "EVERY PLATE" NOW INCLUDES THE ONE OVER A KEY ON THE GROUND, which is
+        -- the whole of how the two he asked to be level stay level -- see the
+        -- header. This is the arrow keys' vertical axis in /brplate for the same
+        -- reason: it is the one height knob measured in metres, so a nudge here
+        -- is a nudge anybody can read back off the screen.
         lift = 0.0,
 
         -- How wide the plate is, in metres; its height follows the 512x256
@@ -470,19 +515,23 @@ BR.Config.ReviveKey = {
 --- holds no string of its own. Rewrite a value here and the game says the new
 --- thing everywhere, immediately.
 ---
---- ═══ NINE, AND A TENTH IS A QUESTION RATHER THAN A COMMIT ═══
+--- ═══ TEN, AND AN ELEVENTH IS A QUESTION RATHER THAN A COMMIT ═══
 ---
 --- The standing rule on this project is that copy nobody asked for reads as
 --- slop, and this is the feature that has come closest to breaking it. There is
 --- deliberately NO refusal string, NO hint, NO empty state and NO progress
 --- label: a press the server declines says nothing at all, exactly as the CPR
 --- rescue and the ambulance heal say nothing (server/rescue.lua: "Nothing in
---- this feature ever tells a player anything"). If a tenth line ever seems
+--- this feature ever tells a player anything"). If an eleventh line ever seems
 --- necessary, ask him for it.
+---
+--- THE TENTH IS `reviveHold`, AND HE WROTE IT (2026-09-01). It arrived with a
+--- rewrite of `revive` in the same sentence, which is why the count moved by one
+--- and not by two -- see both, below.
 ---
 --- ═══ `%s` IS WHERE HE WROTE `[player]` ═══
 ---
---- Four of the nine name somebody. He wrote the hole as `[player]`; it is `%s`
+--- Four of the ten name somebody. He wrote the hole as `[player]`; it is `%s`
 --- here because that is the hole every sentence in this project uses and
 --- because BR.Notice.line is what fills it -- splitting on THIS string, which
 --- is ours, and never on the name, which is the player's. See
@@ -526,7 +575,35 @@ BR.Config.ReviveKey.copy = {
     -- hold that brings its owner back. It used to be drawn over the body; the
     -- owner moved it to the van, and once a mate has bled out the van is the
     -- only place it appears at all.
-    revive    = 'Revive teammate',
+    --
+    -- ═══ IT IS THE PLATE'S BIG LINE NOW, AND IT NO LONGER NAMES ANYBODY ═══
+    --
+    -- Owner, 2026-09-01: "The ambulance DUI should say 'Revive your squad' and
+    -- the line under (in the smaller lighter font) should say 'PRESS AND HOLD'
+    -- instead of including the player's name."
+    --
+    -- TWO CHANGES IN ONE SENTENCE AND THE SECOND IS THE STRUCTURAL ONE. This
+    -- string moves from the plate's SMALL line to its BIG one -- and the big one
+    -- was the downed mate's NAME, which is what "instead of including the
+    -- player's name" deletes. So the ambulance plate is the one prompt in this
+    -- game that names nobody: `reviveHold` below took the small line, and the
+    -- roster lookup that fed the name is gone from all three call sites in
+    -- client/revivekey.lua rather than left feeding a field nothing reads.
+    --
+    -- IT IS STILL THE VERB AND STILL HIS. "Revive your squad" is quoted exactly
+    -- as typed -- his capital R, his lower-case squad, no full stop.
+    revive    = 'Revive your squad',
+
+    -- The line under it, in prompt.html's smaller lighter face.
+    --
+    -- HIS CAPITALS, KEPT EVEN THOUGH THE PAGE WOULD SHOUT IT ANYWAY.
+    -- dui/prompt.html sets `text-transform: uppercase` on `#hint`, so
+    -- 'Press and hold' would REACH THE SCREEN LOOKING IDENTICAL -- and that is
+    -- exactly why the capitals stay: he typed them, this table is the place his
+    -- wording is read back against his message, and a value that renders the
+    -- same is still not the value he wrote. The day that CSS rule changes, the
+    -- line he asked for is the line that draws.
+    reviveHold = 'PRESS AND HOLD',
 
     -- ------------------------------------------------------------------
     -- THE FOUR THAT NAME SOMEBODY (owner, 2026-08-31)

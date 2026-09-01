@@ -323,6 +323,11 @@ end
 --- @param ox number      ...the level unit direction the sign stands out along...
 --- @param oy number
 --- @param dist number    ...how far out along it the sign's centre sits...
+--- @param side number|nil ...how far ALONG THE FACE from there, positive to the
+---                       reader's right. Derived from `out` and nothing else --
+---                       see below -- so a sign slid sideways is still on the
+---                       same panel, still level, still the same distance off
+---                       the bodywork, and still the right way round.
 --- @param oz number      ...and how far straight UP the world from the entity's
 ---                       origin. Up the WORLD rather than up the entity: `oz` is
 ---                       a height read off the model's own box, and pushed
@@ -331,11 +336,26 @@ end
 --- @param hw number      half width, and half height, in metres
 --- @param hh number
 --- @param alpha number|nil
-local function drawPlane(page, px, py, pz, ox, oy, dist, oz, hw, hh, alpha)
-    local cx0, cy0, cz0 = px + ox * dist, py + oy * dist, pz + oz
+local function drawPlane(page, px, py, pz, ox, oy, dist, side, oz, hw, hh, alpha)
     -- The reader's LEFT. See above; this is the one line that decides whether
     -- the words come out the right way round.
+    --
+    -- ═══ AND IT IS THE LINE THE LATERAL IS SPENT ALONG, WHICH IS THE POINT ═══
+    --
+    -- "left" and "right" are already decided here, once, for the text. Sliding
+    -- the sign along the SAME vector is what makes a plate nudged right come out
+    -- to the right of where it was FROM THE SIDE ANYBODY READS IT -- on the tail
+    -- of a van as much as on its nose, with no second opinion about which way
+    -- round the face is. A lateral derived anywhere else would be free to
+    -- disagree with the writing on it, and the symptom would be a plate that
+    -- moves the wrong way on two of the four faces.
+    --
+    -- SUBTRACTED, BECAUSE POSITIVE IS THE READER'S RIGHT and this is their left.
     local lx, ly = oy, -ox
+    local s = tonumber(side) or 0.0
+    local cx0 = px + ox * dist - lx * s
+    local cy0 = py + oy * dist - ly * s
+    local cz0 = pz + oz
 
     local function corner(sx, sz)
         return cx0 + lx * sx, cy0 + ly * sx, cz0 + sz
@@ -466,7 +486,10 @@ function BR.Dui.drawFace(page, entity, oy, oz, widthM, alpha)
     -- picks a different direction from the same basis and spends it the same
     -- way. Left and right are the READER'S, which drawPlane owns.
     local p = GetEntityCoords(entity)
-    drawPlane(page, p.x, p.y, p.z, fx, fy, oy, oz, hw, hh, alpha)
+    -- NO LATERAL. The yard sign stands on the centre of the nose and the owner
+    -- approved it there; a nil would do the same thing, and 0.0 says the
+    -- decision was made rather than skipped.
+    drawPlane(page, p.x, p.y, p.z, fx, fy, oy, 0.0, oz, hw, hh, alpha)
 end
 
 --- Draw a page as a sign on WHICHEVER FACE OF A VEHICLE A POINT IS NEAREST TO.
@@ -506,15 +529,28 @@ end
 --- @param entity integer  the vehicle the sign is bolted to
 --- @param px number       the point the nearest face is nearest TO -- the
 --- @param py number       player's own position, in the world
+--- ═══ AND ALONG IT, WHICH IS THE SECOND DIRECTION THE FACE ALREADY CARRIES ═══
+---
+--- Owner, 2026-09-01: "I need to be able to move it left/right as well. in/out
+--- and up/down are great but can't do left/right right now."
+---
+--- `out` spends the face's own OUTWARD normal; `side` spends the perpendicular
+--- of that same normal. Both come out of BR.NearestBoxFace's answer, so neither
+--- is a guess about which way the van is pointing and both follow the plate to
+--- whichever panel the player walked round to. The perpendicular is taken in
+--- drawPlane, beside the line that already decides the reader's left, so the
+--- text and the offset cannot come to disagree -- see the note there.
+---
 --- @param out number      metres the sign stands off that face's panel
 --- @param oz number       metres straight up from the entity's origin
 --- @param widthM number   how wide the sign is, in metres; height follows the
 ---                        page's own aspect
+--- @param side number|nil metres along that face, positive to the reader's right
 --- @param alpha number|nil
 --- @return number|nil ux, number uy  which face it drew on, in the vehicle's own
 ---                        axes, so a tuning readout can name it. nil when
 ---                        nothing was drawn.
-function BR.Dui.drawNearFace(page, entity, px, py, out, oz, widthM, alpha)
+function BR.Dui.drawNearFace(page, entity, px, py, out, oz, widthM, side, alpha)
     if not BR.Dui.ready(page) then return nil end
     if not entity or entity == 0 or not isTrue(DoesEntityExist(entity)) then
         return nil
@@ -548,8 +584,8 @@ function BR.Dui.drawNearFace(page, entity, px, py, out, oz, widthM, alpha)
     local ox = rx * ux + fx * uy
     local oy = ry * ux + fy * uy
 
-    drawPlane(page, p.x, p.y, p.z, ox, oy, reach + (tonumber(out) or 0.0), oz,
-              hw, hh, alpha)
+    drawPlane(page, p.x, p.y, p.z, ox, oy, reach + (tonumber(out) or 0.0),
+              tonumber(side) or 0.0, oz, hw, hh, alpha)
     return ux, uy
 end
 

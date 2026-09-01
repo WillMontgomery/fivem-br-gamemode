@@ -357,10 +357,17 @@ end
 -- -------------------------------------------------------- no tenth string ---
 --
 -- The copy table is the whole of what this feature is allowed to say. The owner
--- listed six lines on 2026-08-30 and rewrote the collection half into nine on
--- 2026-08-31. A HUD caption added "for clarity" is the likeliest tenth, and it
--- would arrive here rather than in the panel -- which is the point of the table
--- and the reason to count it from this side.
+-- listed six lines on 2026-08-30, rewrote the collection half into nine on
+-- 2026-08-31, and wrote the tenth himself on 2026-09-01 ("the line under (in the
+-- smaller lighter font) should say 'PRESS AND HOLD'"). A HUD caption added "for
+-- clarity" is the likeliest eleventh, and it would arrive here rather than in
+-- the panel -- which is the point of the table and the reason to count it from
+-- this side.
+--
+-- THE COUNT MOVED BY ONE AND THE SENTENCE THAT MOVED IT ADDED TWO STRINGS, which
+-- is worth writing down because it looks like an off-by-one: the same message
+-- rewrote `revive` from 'Revive teammate' to 'Revive your squad' AND added
+-- `reviveHold` under it. One new key, one rewritten value.
 
 do
     local cfg = read(ROOT .. 'br_lib/config/revivekey.lua', codeOf)
@@ -380,12 +387,13 @@ do
             -- meant.
             local n = 0
             for _ in copy:gmatch('\n%s*[%a_][%w_]*%s*=') do n = n + 1 end
-            if n ~= 9 then
-                fail(('the revive key copy table holds %d lines, not 9'):format(n),
+            if n ~= 10 then
+                fail(('the revive key copy table holds %d lines, not 10'):format(n),
                      'the owner listed six on 2026-08-30, asked for the feature '
-                     .. 'to ship rather than wait on him polishing them, and '
-                     .. 'polished them himself on 2026-08-31 into nine. A tenth '
-                     .. 'is a question for him, not a commit -- and the squad '
+                     .. 'to ship rather than wait on him polishing them, '
+                     .. 'polished them himself on 2026-08-31 into nine, and '
+                     .. 'wrote the tenth on 2026-09-01. An eleventh is a '
+                     .. 'question for him, not a commit -- and the squad '
                      .. 'panel\'s mark is a picture precisely so it does not '
                      .. 'need one')
             end

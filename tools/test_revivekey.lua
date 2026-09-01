@@ -79,6 +79,13 @@ for _, f in ipairs({
     -- fills the holes through BR.Notice.line, so the module cannot speak at all
     -- without this.
     'shared/notice.lua',
+    -- BR.ShopSolve.signHeight, which is the ONE derivation behind how high a
+    -- plate hangs: client/revivekey.lua calls it for the plate on the van and
+    -- calls it again, minus the vehicle's origin, for the plate over a key on
+    -- the ground. "The same elevation as the 'press E to revive' DUI" (owner,
+    -- 2026-09-01) is a property of this function and is executed in
+    -- `plate.config` below.
+    'shared/shop_solve.lua',
     'config/match.lua',
     'config/overrides.lua',
     'config/storm.lua',
@@ -149,7 +156,19 @@ do
         local want = {
             take        = 'Collect revive key',
             buy         = 'Buy revive keys — 25 Volts',
-            revive      = 'Revive teammate',
+            -- ═══ THE TENTH LINE, AND THE REWRITE THAT CAME WITH IT ═══
+            --
+            -- Owner, 2026-09-01: "The ambulance DUI should say 'Revive your
+            -- squad' and the line under (in the smaller lighter font) should say
+            -- 'PRESS AND HOLD' instead of including the player's name."
+            --
+            -- `reviveHold` IS PINNED IN CAPITALS AND THAT IS THE ASSERTION.
+            -- dui/prompt.html sets `text-transform: uppercase` on the small
+            -- line, so 'Press and hold' would look IDENTICAL on screen and no
+            -- playtest could ever catch the difference -- which makes this the
+            -- one line in the table whose only guard is here.
+            revive      = 'Revive your squad',
+            reviveHold  = 'PRESS AND HOLD',
             bledOut     = '%s has bled out! Get their revive key or purchase '
                           .. 'it at an ambulance!',
             collect     = "You've collected %s's revive key. Get to an "
@@ -167,8 +186,8 @@ do
                 ('copy.%s is the owner\'s line, character for character'):format(k),
                 v)
         end
-        ok(n == 9,
-            'and there are NINE and no more -- a tenth line is a question for '
+        ok(n == 10,
+            'and there are TEN and no more -- an eleventh line is a question for '
                 .. 'the owner, not a string to write', n)
 
         -- THE RENAME, ASSERTED AS A RENAME. Owner, 2026-08-31: the plate becomes
@@ -315,10 +334,17 @@ describe('plate.face')
 do
     -- ═══ "A DUI THAT SHOWS ON THE NEAREST FACE OF THE VEHICLE" ═══
     --
-    -- Owner, 2026-08-31. The client half of that is BR.Dui.drawNearFace, which
-    -- is four DrawSpritePoly arguments and cannot be executed outside the game;
-    -- the RULE it draws from is BR.NearestBoxFace, which is arithmetic and is
-    -- the whole of what "which face" means.
+    -- Owner, 2026-08-31. The client half of that is BR.Dui.drawNearFace; the
+    -- RULE it draws from is BR.NearestBoxFace, which is arithmetic and is the
+    -- whole of what "which face" means.
+    --
+    -- THE GEOMETRY *IS* EXECUTED, AND NOT HERE. This note used to say
+    -- drawNearFace "cannot be executed outside the game". That was wrong:
+    -- tools/test_shop.lua stands client/dui.lua on a stubbed car and reads the
+    -- corners back out of DrawSpritePoly, and its section 7b drives this very
+    -- function -- including the lateral the owner asked for on 2026-09-01, on
+    -- two different faces. What stays here is the face RULE and the numbers this
+    -- feature hands over; what the drawing does with them is proved there.
     --
     -- IT IS ASSERTED HERE RATHER THAN IN test_shared.lua because this is the
     -- feature that asked for it and this is the suite that would be read the day
@@ -402,36 +428,97 @@ end
 -- ---------------------------------------------------------------------------
 describe('plate.config')
 do
-    -- ═══ THE FOUR NUMBERS THE OWNER IS GOING TO MEASURE ═══
+    -- ═══ THE FIVE NUMBERS THE OWNER IS GOING TO MEASURE ═══
     --
     -- "If you want to make me the tools to manipulate the DUI position then
     -- fetch it I can give you the coords" (2026-08-31). /brplate prints these
-    -- four in the shape of this table so the answer is one paste.
+    -- five in the shape of this table so the answer is one paste.
     --
-    -- WHAT IS PINNED IS THAT ALL FOUR ARE NUMBERS AND NOT WHAT THEY ARE. None of
+    -- THE FIFTH IS `side` AND HE ASKED FOR IT: "I need to be able to move it
+    -- left/right as well. in/out and up/down are great but can't do left/right
+    -- right now" (2026-09-01).
+    --
+    -- WHAT IS PINNED IS THAT ALL FIVE ARE NUMBERS AND NOT WHAT THEY ARE. None of
     -- them is his yet, so asserting a value would freeze a placeholder; what
     -- would actually break the plate is one of them arriving as a string, or as
-    -- a fifth key the client never reads.
+    -- a sixth key the client never reads.
     local P = K.plate
     ok(type(P) == 'table', 'the plate\'s position lives in one table', type(P))
     if type(P) == 'table' then
-        local want = { out = true, frac = true, lift = true, width = true }
+        local want = {
+            out = true, side = true, frac = true, lift = true, width = true,
+        }
         local n = 0
         for k, v in pairs(P) do
             n = n + 1
             ok(want[k] == true,
-                ('plate.%s is one of the four the client reads'):format(k))
+                ('plate.%s is one of the five the client reads'):format(k))
             ok(type(v) == 'number',
                 ('and plate.%s is a number rather than a string'):format(k),
                 tostring(v))
         end
-        ok(n == 4, 'four of them, no more', n)
+        ok(n == 5, 'five of them, no more', n)
         -- A width of zero draws nothing at all, and a negative one draws a
         -- mirrored plate: BR.Dui.drawNearFace refuses both, so this is the
         -- config saying the same thing where it can be seen.
         ok((tonumber(P.width) or 0) > 0, 'the plate has a width', P.width)
         ok((tonumber(P.out) or -1) >= 0,
             'and stands off the panel rather than inside it', P.out)
+        -- AND `side` IS NOT HELD TO THAT. It is signed on purpose -- negative is
+        -- the left of the panel -- so the assertion is that it EXISTS and is a
+        -- number, which the loop above already made. Pinned as a comment rather
+        -- than as a `>= 0` somebody would add later by symmetry and break the
+        -- half of the axis he asked for.
+        ok(tonumber(P.side) ~= nil,
+            'and the lateral he asked for is there, signed -- negative is the '
+                .. 'left of the panel and that is half the axis', P.side)
+    end
+
+    -- ═══ "THE SAME ELEVATION AS THE PRESS E TO REVIVE DUI" ═══
+    --
+    -- Owner, 2026-09-01: "'take revive key' is still over the body. it should be
+    -- the same elevation as the 'press E to revive' DUI."
+    --
+    -- THE TWO PLATES ARE MEASURED FROM DIFFERENT ORIGINS, which is the whole
+    -- difficulty and the reason this is asserted as arithmetic rather than as a
+    -- pair of constants. BR.ShopSolve.signHeight answers metres above a
+    -- VEHICLE'S ORIGIN; the ground the van stands on is `bottom` below that
+    -- origin; so the height the two have to agree on is `signHeight(...) -
+    -- bottom`, and client/revivekey.lua's `plateGroundHeight` is that
+    -- subtraction. What is executed here is the property that makes it correct.
+    do
+        local S = BR.ShopSolve
+        local frac, lift = 0.62, 0.11
+
+        -- THE ORIGIN DROPS OUT. Two boxes of the same HEIGHT with the origin in
+        -- completely different places -- one a van whose origin is near its
+        -- axles, one a model whose box starts at its own feet -- answer the same
+        -- height above the ground they stand on. This is the property a plain
+        -- `frac` copied across would NOT have, and copying `frac` is the
+        -- obvious wrong fix: it would put the two a van's ride height apart.
+        local a = S.signHeight(-0.86, 1.44, frac, lift) - (-0.86)
+        local b = S.signHeight(0.0, 2.30, frac, lift) - 0.0
+        ok(math.abs(a - b) < 1e-9,
+            'the height a plate hangs at ABOVE THE GROUND does not depend on '
+                .. 'where the vehicle\'s origin sits inside its box -- which is '
+                .. 'why the ground plate can share the van plate\'s numbers',
+            ('%.6f vs %.6f'):format(a, b))
+
+        -- ...AND IT IS THE SPAN, THE FRACTION AND THE LIFT, in that arrangement.
+        -- Written out longhand so a change to signHeight that still satisfies
+        -- the identity above -- squaring the fraction, say -- fails here.
+        ok(math.abs(a - (2.30 * frac + lift)) < 1e-9,
+            'and it is span * frac + lift, so nudging either number moves both '
+                .. 'plates by the same distance and they cannot come apart',
+            ('%.6f vs %.6f'):format(a, 2.30 * frac + lift))
+
+        -- A MODEL THAT HAS NOT ANSWERED. signHeight is handed the fallback span
+        -- rather than a box of zeroes, because `frac` of nothing is zero and a
+        -- plate at zero is one lying in the mud -- exactly the complaint being
+        -- fixed, arriving on the frames a van is still streaming in.
+        ok(S.signHeight(0.0, 2.3, frac, lift) - 0.0 > 1.0,
+            'and a fallback span still puts the plate at a readable height '
+                .. 'rather than on the floor')
     end
 end
 
@@ -548,28 +635,46 @@ do
         'and the take plate carries a press, so it draws a key cap and the '
             .. 'player has to mean it')
 
-    -- ═══ A THIRD PIN, AND IT IS THE SAME MISTAKE TWICE IN TWO FILES ═══
+    -- ═══ A THIRD PIN, AND IT HAS NOW INVERTED ═══
     --
-    -- "the 'take revive key' DUI over a corpse is way too high off the ground."
+    -- "the 'take revive key' DUI over a corpse is way too high off the ground"
+    -- put a constant of this file's own under the loose key, and this suite used
+    -- to assert exactly that: a ground plate and a vehicle plate MAY NOT SHARE
+    -- ONE CONSTANT, because 1.1m above a vehicle's origin is a plate over a roof
+    -- and the same number over a body is a plate in the air.
     --
-    -- All three plates were drawn at PROMPT_LIFT, which config/ambheal.lua
-    -- defines as "metres above the VEHICLE ORIGIN" -- right for the two that
-    -- hang off an ambulance, wrong for the one that hangs off the key's recorded
-    -- z. That z is the corpse's ped root, which is at its FEET (config/loot.lua
-    -- measures `waistHeight` up from it), so it is the ground the body is lying
-    -- on and 1.1 above it is chest height on a standing man.
+    -- THE OWNER THEN ASKED FOR THE OPPOSITE PROPERTY, and it is not a
+    -- contradiction: "'take revive key' is still over the body. it should be the
+    -- same elevation as the 'press E to revive' DUI" (2026-09-01). What may not
+    -- be shared is the ORIGIN -- one is a van's centre and one is the ground. The
+    -- HEIGHT is now required to be the same, and the only way that survives the
+    -- next nudge of `frac` or `lift` is for one derivation to produce both.
     --
-    -- client/dbno.lua HIT THIS FIRST, over the same body, and was brought to
-    -- `dbnoPromptLift = 0.35` off the head bone. This is that number reached
-    -- from a ground anchor instead. The two files must not converge again by
-    -- accident, which is why the pin is on the SPLIT rather than on a value: a
-    -- ground plate and a vehicle plate may not share one constant.
-    ok(clientCode:find('local GROUND_LIFT') ~= nil,
-        'the loose key has a lift of its own -- the plate over a corpse is not '
-            .. 'measured the way a plate over a van is')
+    -- SO THE PIN MOVES FROM THE SPLIT TO THE SUBTRACTION. What would silently go
+    -- wrong is somebody "tidying" plateGroundHeight into a constant again, or
+    -- into a second lerp beside signHeight's -- both of which look right and
+    -- both of which come apart the first time he tunes the van plate. The
+    -- arithmetic itself is executed in plate.config above; this pins that the
+    -- client is what runs it.
+    ok(clientCode:find('local function plateGroundHeight') ~= nil,
+        'the loose key\'s height is DERIVED rather than authored -- there is no '
+            .. 'constant left for the van plate to drift away from')
 
-    ok(clientCode:find(', c%.z %+ GROUND_LIFT') ~= nil,
-        '...and it is what the key\'s own point is drawn at')
+    ok(clientCode:find('BR%.ShopSolve%.signHeight%(bottom, top, frac, lift%) %- bottom')
+           ~= nil,
+        '...and it is the van plate\'s own derivation with the vehicle origin '
+            .. 'subtracted back out, not a second lerp beside it')
+
+    ok(clientCode:find('c%.z %+ plateGroundHeight%(%)') ~= nil,
+        '...added to the key\'s own z, which is the ground the body fell on')
+
+    -- AND BOTH READ ONE SET OF NUMBERS. `plateNumbers` is the only reader of the
+    -- config table, so the van plate and the ground plate cannot be given
+    -- different fracs by an edit that only touches one call site.
+    ok(select(2, clientCode:gsub('plateNumbers%(%)', '')) >= 2
+       and clientCode:find('local _, _, frac, lift = plateNumbers%(%)') ~= nil,
+        '...and the height it derives comes out of the SAME plateNumbers() the '
+            .. 'van plate reads, so there is one frac and one lift in this file')
 
     -- ═══ AND THE MARKER THAT NOW STANDS WHERE THE BODY DOES NOT ═══
     --
@@ -627,11 +732,19 @@ do
     -- van's own box now, and there is nothing left for the ground plate to be
     -- lower than.
     --
-    -- THE PROPERTY THAT SURVIVES IS THE SPLIT, which is what the old assertion
-    -- was really protecting. A ground plate and a vehicle plate may not share one
-    -- number, and now they cannot: they do not share a MECHANISM.
-    ok(tonumber(clientCode:match('local GROUND_LIFT%s*=%s*([%d%.]+)')) ~= nil,
-        '...as a number of its own', clientCode:match('local GROUND_LIFT%s*=%s*([%d%.]+)'))
+    -- THE PROPERTY THAT SURVIVES IS THE ANCHOR, which is what the old assertion
+    -- was really protecting. The two plates now share the HEIGHT the owner asked
+    -- them to share and still do not share the point it is measured from -- one
+    -- is a van's origin and one is the ground a body fell on. The only constant
+    -- left in this file is a fallback SPAN, which is a fact about how tall a van
+    -- is rather than about how high a plate hangs, and it is a span precisely so
+    -- that `frac` and `lift` still apply on the frames it is used.
+    ok(tonumber(clientCode:match('local FALLBACK_SPAN_M%s*=%s*([%d%.]+)')) ~= nil,
+        '...and the only number left is a van\'s HEIGHT, not a plate\'s lift',
+        clientCode:match('local FALLBACK_SPAN_M%s*=%s*([%d%.]+)'))
+    ok(clientCode:find('local GROUND_LIFT') == nil,
+        '...so the authored ground lift he reported three times is gone rather '
+            .. 'than retuned a fourth time')
     ok(clientCode:find('PROMPT_LIFT') == nil,
         '...and the 1.1m vehicle lift is gone rather than retuned -- the plate '
             .. 'on a van is derived from the van, so there is no constant left '
@@ -669,8 +782,135 @@ do
     -- plate now carries the flag. The HOLD is what adds a duration -- and
     -- `holdMs` is part of setPrompt's change key, so the two are separate
     -- messages and the fill animates from empty on the press.
-    ok(clientCode:find("mode = 'revive', id = c%.id,\n%s*label = e and e%.name or nil, hint = C%.revive, press = true,\n%s*ring%s*=%s*true,") ~= nil,
+    ok(clientCode:find("mode = 'revive', id = c%.id,\n%s*label = C%.revive, hint = C%.reviveHold, press = true,\n%s*ring%s*=%s*true,") ~= nil,
         'the revive plate draws its ring before anything is pressed')
+
+    -- ═══ AND THE AMBULANCE PLATE NAMES NOBODY ═══
+    --
+    -- "The ambulance DUI should say 'Revive your squad' and the line under (in
+    -- the smaller lighter font) should say 'PRESS AND HOLD' instead of including
+    -- the player's name." (2026-09-01.)
+    --
+    -- THREE CALL SITES DRAW THAT PLATE -- the resting offer, the running hold and
+    -- the ruler's preview -- and every one of them used to look up a roster row
+    -- for the name. A single one left behind would put a name back over his line
+    -- in exactly one of the three states, which is the shape of bug that gets
+    -- reported as "sometimes it says my mate's name".
+    --
+    -- ASSERTED AS AN ABSENCE OF THE LOOKUP, not just a presence of the strings:
+    -- `label = C.revive` with a dead `local e = ...` above it would pass a
+    -- presence check and would be one edit away from regressing.
+    local revivePasses = select(2, clientCode:gsub('label = C%.revive, hint = C%.reviveHold', ''))
+              + select(2, clientCode:gsub('label  = C%.revive,\n%s*hint   = C%.reviveHold,', ''))
+    ok(revivePasses == 3,
+        'all three ambulance-plate call sites say his two lines -- the offer, '
+            .. 'the hold and the ruler\'s preview', revivePasses)
+    ok(clientCode:find('BR%.State%.roster%[holding%.target%]') == nil,
+        'and the roster lookup that fed the name is gone from the hold rather '
+            .. 'than left reading a row for a value nothing draws')
+
+    -- ═══ THE LATERAL REACHES THE DRAW ═══
+    --
+    -- "I need to be able to move it left/right as well." (2026-09-01.)
+    --
+    -- The direction is BR.Dui's, because BR.NearestBoxFace is what knows which
+    -- panel the plate is on -- so what this file must do is READ the number and
+    -- HAND IT OVER, and the failure mode is a config key nothing passes: the
+    -- owner would type `brplate side 0.3`, watch the readout change, and watch
+    -- the plate stay exactly where it was.
+    -- READ AND HAND-OFF IN ONE ASSERTION, INSIDE THE ONE FUNCTION, and that is
+    -- the lesson of the mutant that got past the first draft of this. Pinning
+    -- "somewhere in the file, a line reads `side` out of plateNumbers" is green
+    -- against a drawOnVan that reads it into a `_` and declares `local side =
+    -- 0.0` underneath -- because the READOUT and the COMMAND also read all five,
+    -- and either of them satisfies a file-wide search. The plate would never
+    -- move, the on-screen number would change as he pressed, and the paste block
+    -- would be right. So the whole function body is taken and all three things
+    -- are asserted of IT: it reads the lateral, it hands that same name over,
+    -- and nothing in between rebinds the name.
+    local vanBody = clientCode:match('local function drawOnVan%(page, veh%)(.-)\nend')
+    ok(vanBody ~= nil, 'the plate at a van is drawn by one function')
+    ok(vanBody ~= nil
+       and vanBody:find('local out, side, frac, lift, width = plateNumbers%(%)')
+           ~= nil,
+        'the draw reads the lateral out of the config')
+    ok(vanBody ~= nil
+       and vanBody:find('drawNearFace%(page, veh, p%.x, p%.y, out, oz, width, side%)')
+           ~= nil,
+        '...and passes it to the one function that knows which face it is on, '
+            .. 'rather than offsetting the plate itself')
+    ok(vanBody ~= nil and vanBody:find('local side') == nil,
+        '...and does not rebind the name in between, which is the shape that '
+            .. 'leaves every readout right and the plate stationary')
+
+    -- ═══ THE RULER TAKES THE ARROW KEYS, AND ONLY WHILE IT IS ON ═══
+    --
+    -- "brplate needs reworked - it should use arrow keys to adjust the
+    -- position." (2026-09-01.)
+    --
+    -- THE DANGEROUS HALF OF THIS CHANGE IS NOT THE NUDGING, IT IS THE CLAIM. A
+    -- DisableControlAction that is not inside a level test on `tuning` takes the
+    -- arrow keys away from every player on the server for the whole match, and
+    -- there is NO SYMPTOM anywhere near this file -- the report comes back as
+    -- "the phone doesn't open" weeks later. So what is pinned is the guard, in
+    -- the pass, and that the pass is the only place in the file that disables
+    -- anything.
+    local keyPass = clientCode:match(
+        "BR%.Loop%.register%(BR%.Loop%.FRAME, 'revivekey%.tunekeys'.-\nend%)")
+    ok(keyPass ~= nil, 'the arrows are read on a frame pass of their own')
+    ok(keyPass ~= nil and keyPass:find('if not tuning then') ~= nil,
+        '...which returns before it disables anything unless the ruler is on, '
+            .. 'so the keys are the player\'s in every ordinary session')
+    ok(select(2, clientCode:gsub('DisableControlAction', '')) == 1,
+        '...and that pass is the ONLY place in this file that takes a control '
+            .. 'away from anybody',
+        select(2, clientCode:gsub('DisableControlAction', '')))
+
+    -- FRAME, NOT TICK, and the reason is mechanical: DisableControlAction lasts
+    -- exactly one frame, so a claim renewed ten times a second is a key that is
+    -- live five frames in six -- the up arrow would open the phone on the way
+    -- past. Pinned because a band is a one-word edit that looks harmless.
+    ok(clientCode:find("BR%.Loop%.FRAME, 'revivekey%.tunekeys'") ~= nil,
+        '...on the FRAME band, because a block renewed at 10Hz is not a block')
+
+    -- ENDING CLEANLY IS THE ABSENCE OF A TEARDOWN, NOT THE PRESENCE OF ONE.
+    -- There is nothing to restore -- the block simply stops being renewed -- so
+    -- an enable call in this file would be somebody adding a restore path that
+    -- can be skipped by a Lua error, and would also be re-enabling controls the
+    -- player may have disabled for their own reasons.
+    ok(clientCode:find('EnableControlAction') == nil,
+        '...and nothing re-enables anything, because a per-frame claim that '
+            .. 'stops being made needs no undoing')
+
+    -- THE BOOL READ. IsDisabledControlPressed is declared BOOL and may answer
+    -- 1/0, and 0 is TRUTHY in Lua -- a bare read here would hold every arrow
+    -- down permanently. tools/check_bool_natives.lua counts these tree-wide;
+    -- this is the same rule said where the reader is.
+    ok(clientCode:find('isTrue%(IsDisabledControlPressed%(0, id%)%)') ~= nil,
+        'and the control read goes through isTrue, because a BOOL native that '
+            .. 'answers 0 is TRUE in Lua')
+
+    -- ═══ THE PASTE BLOCK STILL PASTES ═══
+    --
+    -- The whole tool exists so he can send back numbers ("then fetch it I can
+    -- give you the coords"). A fifth number that is nudged, drawn and NOT
+    -- printed is the one failure that wastes his time rather than the code's: he
+    -- would position the plate, paste the block, and lose the axis he was asked
+    -- to measure.
+    ok(clientCode:find("print%(%('        side  = %%%.3f,'%):format%(side%)%)")
+           ~= nil,
+        'the paste block carries the lateral, so what he sends back is the '
+            .. 'whole position')
+
+    -- AND IT IS STILL GATED. br_lib/shared/devgate.lua wraps RegisterCommand for
+    -- every br_core file loaded after it, so /brplate is gated by construction
+    -- and its refusal is that wrapper's printed line. The one way to lose that
+    -- is to reach for the raw door, which reads as a fix for "the ruler stopped
+    -- working on the public box". tools/verify.sh pins the door project-wide;
+    -- this says it where somebody would be tempted.
+    ok(clientCode:find('BR%.Dev%.rawCommand') == nil,
+        'and /brplate registers through the gated door like every other console '
+            .. 'command -- the ruler is dev-only and says so when it refuses')
     ok(clientCode:find("mode = 'take', id = c%.id,[^}]*ring") == nil
        and clientCode:find("mode = 'buy', id = c%.id,[^}]*ring") == nil,
         '...and the take and the buy do not, because a ring with no duration '
