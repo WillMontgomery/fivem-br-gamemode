@@ -543,12 +543,23 @@ server_scripts {
     -- than for the loader: it asks BR.Grants.holds the question grants.lua
     -- answers, and it is declared below the file that answers it.
     'server/admin.lua',
-    -- The Discord card in the pause menu. NO LOAD-ORDER REQUIREMENT AT ALL: it
-    -- reads BR.Config.Community at call time, not at load, and its only other
-    -- dependency is BR.Net -- which is br_lib and is above everything here. It
-    -- is declared beside admin.lua because it is the second file to answer
-    -- br:ready with a one-field envelope for the pause menu, and a reader
-    -- looking for one will find the other.
+    -- Whether a player is already in our Discord: one authenticated GET to
+    -- Discord per connection, cached for that connection. AFTER
+    -- @br_lib/shared/identity.lua, and that IS a real order rather than a
+    -- reader's -- it resolves the `discord:` identifier through BR.Identity, and
+    -- identity.lua is the second line of this list.
+    --
+    -- BEFORE community.lua for a reader rather than for the loader: the file
+    -- that answers the question is declared above the file that asks it, exactly
+    -- as grants.lua sits above admin.lua.
+    'server/guild.lua',
+    -- The Discord card in the pause menu. ITS ONLY LOAD-ORDER REQUIREMENT IS
+    -- br_lib: it reads BR.Config.Community at call time rather than at load, and
+    -- it nil-guards BR.Guild above -- so a checkout with guild.lua removed still
+    -- sends the invite and simply shows the card to everybody, which is this
+    -- feature's own default. It is declared beside admin.lua because it is the
+    -- second file to answer br:ready with a small envelope for the pause menu,
+    -- and a reader looking for one will find the other.
     'server/community.lua',
     -- Spectate sessions and the squad rule. AFTER combat.lua and party.lua for
     -- a reader rather than for the loader: it asks the roster who is still in

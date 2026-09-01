@@ -440,6 +440,12 @@ export function startMockDriver(): void {
   // and a harness that never sent it is a harness where the card cannot be
   // built, positioned or measured at all. An unconfigured server sends `{}`
   // instead and the card is simply absent.
+  //
+  // AND IT IS NEVER A MEMBER. `member: true` is the one value that takes the
+  // card off the page, so a harness that sent it would be a harness with no
+  // card in it at all -- which is the same "a tab you cannot make appear is a
+  // screen you cannot work on" argument as the admin envelope above, in the
+  // other direction.
   emit({ k: 'community', d: { invite: MOCK_INVITE } })
   // Mirrors br_ui/client/keybinds.lua's ACTIONS table. Without it the
   // controls tab renders its empty state, which is a different screen from

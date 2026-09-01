@@ -293,7 +293,29 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # takes the Discord card down when an operator clears the value and restarts;
     # a sender that returned early instead would look correct, pass any test
     # written as "no invite was sent", and leave a dead card up forever.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_bool_natives.lua; do
+    #
+    # test_guild.lua is the tenth suite to load a real SERVER file, and it is the
+    # first whose subject is an OUTSIDE SERVICE. br_core/server/guild.lua asks
+    # Discord whether a player is already in our guild, and the answer decides
+    # whether that player is shown the invite card at all -- so every mistake
+    # available in it is a mistake that stops inviting people, silently, in the
+    # states nobody watches.
+    #
+    # THE POLARITY IS THE SUBJECT. The lookup has three answers -- yes, no, and we
+    # did not find out -- and only the first hides anything. Two of the three must
+    # behave identically, which means the wrong version and the right version are
+    # indistinguishable on a healthy server with a valid token: they differ only
+    # when Discord 404s about the GUILD rather than the member, when the bot has
+    # been removed, when we are rate-limited, or when no token is configured at
+    # all. Staging any of those in a match costs a second Discord server and a way
+    # to make Discord fail on demand; here each is a status code.
+    #
+    # It also drives the pacing, which nothing else can: sixty players connect at
+    # once when a match fills, one lookup goes out at a time, and a 429 stands the
+    # queue down for the interval Discord named. Its clock is stepped by hand for
+    # the reason test_lobbyseq.lua models Citizen -- a no-op SetTimeout would make
+    # every one of those assertions vacuously true.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

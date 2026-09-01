@@ -162,10 +162,12 @@ export interface UiState {
    *  An absent `origin` means no Admin tab, and it is the default -- the tab
    *  exists only because the server chose to send this player an address. */
   admin: AdminPayload
-  /** Where our Discord is (owner, 2026-08-30). An absent `invite` means this
+  /** Where our Discord is (owner, 2026-08-30), and whether this player is
+   *  already in it (owner, 2026-08-31). An absent `invite` means this
    *  deployment publishes none, and it is the default -- the card exists only
    *  because the server sent an address. `{}` is a legitimate value and is
-   *  truthy: read `community.invite`, never `community`. */
+   *  truthy: read the FIELDS, never `community`. `member` arrives only for a
+   *  confirmed yes and may land in a second envelope after the first. */
   community: CommunityPayload
   /** The answer to the last submitted report, or null. */
   reportResult: ReportResult | null

@@ -280,6 +280,36 @@ exec "tunables.cfg"
 # set br_discordUrl "https://discord.gg/abcdefg"
 
 # ---------------------------------------------------------------------------
+# HIDING THAT CARD FROM THE PEOPLE ALREADY IN THE DISCORD. BOTH OPTIONAL, AND
+# WITH NEITHER SET THE CARD SIMPLY SHOWS TO EVERYBODY -- which is the default and
+# is a perfectly good place to leave it.
+#
+# With both set, br_core asks Discord once per connection whether that player is
+# in the guild, and only a confirmed YES takes the card off their Help page. No
+# token, no answer, a timeout, a rate limit, or a player whose Discord desktop
+# client is not running all mean "we do not know", and the card shows.
+#
+# WHAT THE BOT NEEDS: to be a member of the guild, and nothing else. No
+# privileged intent -- SERVER MEMBERS INTENT is required to LIST a guild's
+# members and is not required to fetch ONE by id, which is all this does. It
+# cannot read messages and does not need to.
+#
+# IT IS NOT THE RINGMASTER BOT'S TOKEN BY NECESSITY, though it may be the same
+# one. The game does not ask the admin console anything -- the console may depend
+# on the game and never the reverse -- so this box holds its own copy.
+#
+# THE TOKEN IS A REAL CREDENTIAL and this file is committed. It goes in
+# server.cfg, which is gitignored for exactly this; the angle brackets below are
+# what stop tools/check_secrets.sh reading the line as a leaked one.
+#
+# The guild id is the Discord server's own id -- digits only. Turn on Developer
+# Mode in Discord, right-click the server, Copy Server ID. Anything that is not
+# a run of digits is refused at boot with a line saying so.
+# ---------------------------------------------------------------------------
+# set br_discord_bot_token "<the bot token, from the Discord developer portal>"
+# set br_discord_guild_id  "<the guild id, digits only>"
+
+# ---------------------------------------------------------------------------
 # Gamemode
 #
 # ORDER MATTERS.

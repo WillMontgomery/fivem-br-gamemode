@@ -169,6 +169,13 @@ set br_partyGraceSeconds 10
 # puts it below the `exec "tunables.cfg"` line and above `ensure br_lib`, which
 # is the one place the swap cannot reach. It is documented here because this is
 # the file that documents the convars.
+#
+# SINCE 2026-08-31 THE CARD CAN ALSO HIDE ITSELF from players who are already in
+# the Discord, and that costs two more convars -- br_discord_bot_token and
+# br_discord_guild_id. They are NOT in this file and never will be: the first is
+# a real credential and this file is committed. server.cfg.example documents the
+# pair, directly under br_discordUrl. Set neither and the card shows to
+# everybody, which is the shipped default and the right one for a dev box.
 # ---------------------------------------------------------------------------
 # set br_discordUrl https://discord.gg/abcdefg
 

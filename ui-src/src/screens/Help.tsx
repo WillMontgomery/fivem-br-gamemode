@@ -182,7 +182,10 @@ export default function Help({ inline = false, onDone }:
             sitting next to it; ui/DiscordCard.tsx carries the sizes.
 
             IT CAN REMOVE ITSELF, TWICE OVER -- on a server that publishes no
-            invite, and for the rest of the session once a copy has landed.
+            invite, and for a player the server has confirmed is already in the
+            Discord. (It used to remove itself for the rest of the session once
+            a copy had landed; that rule was withdrawn on 2026-08-31 and the
+            membership check replaced it. ui/DiscordCard.tsx has the exchange.)
             Neither leaves a gap: the group is a flex row with a gap, so the
             button simply becomes the only thing in it. Do not reserve space
             for something that is designed to go away. */}

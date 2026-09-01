@@ -21,6 +21,14 @@
 -- address is not a secret, the secret is, and secrets live on convars that are
 -- never reported (see br_ringmaster/server/config.lua).
 --
+-- AND THAT RULE NOW HAS A SECOND SUBJECT NEXT DOOR (2026-08-31). Deciding whether
+-- to show the card to a given player costs a Discord bot token, and it is
+-- deliberately NOT a key in this file: br_core/server/guild.lua reads it straight
+-- off `br_discord_bot_token`, precisely because everything in br_lib/config/ is
+-- printed at boot by main.lua's tunables block and read back out by `brconfig`
+-- and the console's `configreport`. A credential in this directory would be a
+-- credential in three logs.
+--
 -- SERVER-READ ONLY, like every other overridable key, and tools/verify.sh's
 -- tunable-overrides gate enforces it by grepping br_*/client/*.lua for the key
 -- name. That has not changed and cannot: no client file may so much as say

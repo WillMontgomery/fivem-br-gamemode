@@ -1139,6 +1139,23 @@ export interface AdminPayload {
  */
 export interface CommunityPayload {
   invite?: string
+  /**
+   * WE POSITIVELY KNOW THIS PLAYER IS ALREADY IN THE DISCORD.
+   *
+   * ONLY EVER `true` OR ABSENT, and the absence carries two different facts on
+   * purpose: "Discord says they are not a member" and "we never found out" --
+   * no bot token configured, no `discord:` identifier because their desktop
+   * client is not running, a timeout, a 429. br_core/server/guild.lua keeps
+   * those apart internally and server/community.lua collapses them HERE,
+   * because the page's question is only ever "may I stop inviting this person",
+   * and only a confirmed yes may answer it.
+   *
+   * SO THE CARD'S CONDITION IS `member !== true`, NOT `!member`. They are the
+   * same today and they are not the same the moment a `false` appears on the
+   * wire, which is exactly the kind of change that gets made without reading
+   * the consumer.
+   */
+  member?: boolean
 }
 
 export interface SnapshotPayload {

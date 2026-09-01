@@ -36,30 +36,38 @@ import { play } from '../audio/cues'
  * size, colour, reserved width, fade and 2400ms hold below are byte-for-byte
  * what he saw. Do not tidy them.
  *
- * ═══ ONE SUCCESSFUL COPY AND IT IS DONE FOR THE SESSION ═══
+ * ═══ IT ALWAYS SHOWS, UNLESS WE KNOW THEY ARE ALREADY THERE ═══
  *
- * Owner, 2026-08-31: "once they've copied it and that screen goes away (like
- * the lobby) we never show it to them again that session. Because they may join
- * the discord at that moment and it's not worth us writing something to listen
- * for that."
+ * Owner, 2026-08-31: "Let's make it always show in the help page (unless we know
+ * they're in the guild)."
  *
- * `spent` below is a module-level flag read ONCE, in a lazy initialiser, so the
- * decision is taken at mount and cannot change under a player who is looking at
- * the thing. That is what makes "and that screen goes away" literal: the label
- * still shows, the address stays readable while they are on the page, and it is
- * the NEXT open of Help that finds it gone.
+ * THAT REPLACED A RULE, IT DID NOT JOIN ONE. Earlier the same day: "once they've
+ * copied it and that screen goes away we never show it to them again that
+ * session. Because they may join the discord at that moment and it's not worth
+ * us writing something to listen for that." A module-level `copiedThisSession`
+ * flag and a `spent` lazy initialiser implemented it, and both are GONE -- the
+ * clause after "because" is the one that was answered: the server now asks
+ * Discord, so a copy no longer has to stand in for having joined. Do not
+ * reintroduce a copy-hides-the-card rule; it is not a smaller version of this
+ * one, it is the guess this one replaces.
  *
- * NOT localStorage, AND NOT THE SAVED PROFILE. "That session" is what he asked
- * for and it is also the right ceiling: a permanent hide would silently stop
- * inviting somebody who reinstalls, clears CEF's cache into a different state
- * than their profile, or simply changes their mind next week. A module-level
- * `let` dies with the CEF page, which is the client session, which is the
- * question.
+ * WHAT SURVIVED THAT CHANGE IS EVERY LINE OF THE COPY BEHAVIOUR -- the two-step
+ * clipboard, the error cue, the held timer, and the "Copied" label the owner has
+ * praised twice. Only the hiding went.
  *
- * ONLY A SUCCESS COUNTS. The flag is set on the same line that decides the
- * label may appear -- past the `if (!ok) return` -- because a card that hid
- * itself after a copy that never reached the clipboard would have taken the
- * address away at the exact moment it became the only thing left to read.
+ * `member` IS THE ONLY THING THAT TAKES THE CARD AWAY, AND ONLY WHEN IT IS
+ * `true`. bridge/types.ts has the full argument; the short version is that the
+ * server sends it for a confirmed yes and for nothing else, so a server with no
+ * bot token, a player whose Discord client is not running, a timeout and a rate
+ * limit all leave the card exactly where it was. Testing `!member` instead would
+ * be identical today and would reverse the meaning the day a `false` is sent.
+ *
+ * (It used a shorter verb for turning a meaning upside down until a build diff
+ * caught it. Tailwind's content scan is a regex over the file's TEXT, comments
+ * included, so that bare word matched a utility class and put 211 bytes of CSS
+ * nothing uses into the shipped stylesheet. Like the note above the opening tag
+ * below -- which cannot spell the element it is about, for the same reason with
+ * a different scanner -- this one cannot spell its own subject.)
  *
  * ═══ THE PAYLOAD ARRIVING IS NOT THE CONDITION ═══
  *
@@ -79,29 +87,14 @@ import { play } from '../audio/cues'
  * invitation is not competing with the way out.
  */
 
-/**
- * Whether a copy has landed in this client session.
- *
- * MODULE SCOPE ON PURPOSE, not the zustand store. Nothing renders off this --
- * it is read exactly once per mount and never during an update -- so putting it
- * in the store would buy a subscription that can only cause re-renders nobody
- * asked for. It lives and dies with the CEF page, which is the definition of
- * "session" here.
- */
-let copiedThisSession = false
-
 export default function DiscordCard() {
-  // THE STRING, NOT THE OBJECT. Selecting the field also keeps this component
-  // out of the re-render that a fresh identical `{}` from a reconnect would
-  // otherwise cause.
+  // THE FIELDS, NOT THE OBJECT. Selecting them also keeps this component out of
+  // the re-render that a fresh identical `{}` from a reconnect would otherwise
+  // cause -- and it is why the membership answer arriving in a SECOND envelope
+  // costs one re-render of this row rather than of the page around it.
   const url = useUi((s) => s.community.invite)
+  const member = useUi((s) => s.community.member)
   const [copied, setCopied] = useState(false)
-
-  // READ ON MOUNT AND NEVER AGAIN, which is the whole of "and that screen goes
-  // away". A lazy initialiser, not a plain read: `useState(copiedThisSession)`
-  // would evaluate the flag on every render and React would keep the first
-  // value anyway, so it would look wrong AND behave right, which is worse.
-  const [spent] = useState(() => copiedThisSession)
 
   // THE TIMER IS HELD, CLEARED BEFORE RESCHEDULING, AND CLEARED ON UNMOUNT.
   // Help.tsx did none of that and a second press there blanks the label early:
@@ -113,10 +106,18 @@ export default function DiscordCard() {
     if (timer.current !== null) window.clearTimeout(timer.current)
   }, [])
 
-  // ALREADY TAKEN, SO NOTHING IS DRAWN. Every hook above this line runs first
-  // and unconditionally: an early return placed among them would change the
-  // hook order between the mount that shows this and the mount that does not.
-  if (spent) return null
+  // THEY ARE ALREADY IN THE DISCORD, SO THERE IS NOTHING TO INVITE THEM TO.
+  //
+  // `=== true`, NOT `member`. The field is absent for "not a member" AND for
+  // every way of not knowing, and those are the cases that must keep the card --
+  // see the header. The strict comparison is what keeps the polarity right if a
+  // `false` is ever put on the wire.
+  //
+  // EVERY HOOK ABOVE THIS LINE RUNS FIRST AND UNCONDITIONALLY: an early return
+  // placed among them would change the hook order between the render that draws
+  // this and the render that does not, which matters here because the answer can
+  // arrive in a second envelope while the page is already up.
+  if (member === true) return null
 
   // NO ADDRESS, NO CARD. Not a disabled card, not an empty one -- the standing
   // rule on this screen, the same treatment the Admin tab and the spectate exit
@@ -165,19 +166,11 @@ export default function DiscordCard() {
       // refusal path does the same. And nothing is said: no wording exists for
       // this and none is invented here. The address is on the card, which is
       // why it is on the card.
-      //
-      // AND THE SESSION FLAG IS NOT SET HERE. A failed copy leaves this exactly
-      // as it was, still on the page and still showing the address, because a
-      // failed copy is the case where the address matters most.
       play('ui.error')
       return
     }
 
     play('ui.select')
-    // SET BEFORE THE LABEL, AND IT DOES NOT AFFECT THIS MOUNT. `spent` was
-    // taken at mount, so this row stays put and finishes its hold; the next
-    // open of Help is the one that finds nothing here.
-    copiedThisSession = true
     if (timer.current !== null) window.clearTimeout(timer.current)
     setCopied(true)
     // 2400ms, matching Help.tsx's hold for the same action.
