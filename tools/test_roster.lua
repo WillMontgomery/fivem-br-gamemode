@@ -18294,6 +18294,217 @@ do
     if m then end
 end
 
+-- ---------------------------------------------------------------------------
+describe('combat.bleedout.spill')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE BLEED-OUT ROUTE INTO eliminate(), WHICH NOTHING HAS EVER DRIVEN
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-08-31: "Curiously the inventory doesn't always seem to spill
+    -- when going from DBNO to OUT, but before this push it did." And then, after
+    -- watching it again: "I don't think it spilled inventory until they revived,
+    -- and when they did the spills were all created locally?"
+    --
+    -- EVERY OTHER BLOCK IN THIS SUITE CALLS BR.Combat.eliminate() BY HAND, and
+    -- that is precisely the half the report is about. A bleed-out does not
+    -- arrive that way: it arrives through combat.lua's 250ms `combat.dbno` job,
+    -- through the per-player match gate, through stepDowned, past the revive
+    -- arm and the rescue arm, and out of `not entry.rescue and now >=
+    -- dbnoUntil`. Five pieces of code, none of them covered, all of them between
+    -- a knock and the death box -- so "is the spill still on the timer route"
+    -- was a question the suite could not answer.
+    --
+    -- SO THIS BLOCK KNOCKS SOMEBODY DOWN AND LETS THE CLOCK FINISH THEM. The
+    -- only thing it calls by hand is BR.Combat.knock; everything after that is
+    -- BR.Sched.step and the game's own scheduler.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local m = theMatch()
+    for _, s in ipairs({ 1, 2 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        -- THROUGH THE PED, NOT ONTO THE ENTRY. deathBox scatters around
+        -- `entry.pos`, which is the sampler's own reading -- so a hand-set
+        -- roster position would be overwritten by the first BR.Sched.step and
+        -- the ring would land somewhere this block never named.
+        setPos(s, 400.0 + s, 400.0, 30.0)
+        BR.Roster.get(s).squadId = 'sq_bleed'
+    end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    -- BOTH CLIENTS ARE LOOKING AT THE CELL, the way a real one is: the client
+    -- reports the cell it stands in and the server answers with a subscription.
+    -- This is what makes the announce assertion below mean anything -- without
+    -- it there is nobody for announce() to reach and the test would pass on an
+    -- empty loop.
+    local ccx, ccy = BR.LootCellOf(401.0, 400.0)
+    fire(BR.Net.LOOT_CELL, 1, { cx = ccx, cy = ccy })
+    fire(BR.Net.LOOT_CELL, 2, { cx = ccx, cy = ccy })
+
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    BR.Inv.give(2, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 3 })
+    local carried = 0
+    do
+        local inv = BR.Inv.of(2)
+        for i = 1, (BR.Config.Loot.slots or 5) do
+            if inv.slots[i] then carried = carried + 1 end
+        end
+        for _, pool in ipairs(BR.Config.AmmoOrder) do
+            if (inv.ammo[pool] or 0) > 0 then carried = carried + 1 end
+        end
+    end
+    ok(carried > 0, 'the player about to be knocked is actually carrying something',
+        tostring(carried))
+
+    sent = {}
+    local before = m.loot.nextId
+    BR.Combat.knock(2, 1)
+    ok(BR.Roster.get(2).state == BR.PlayerState.DBNO,
+        'a knock puts them down rather than killing them')
+    ok(m.loot.nextId == before,
+        'and a knock spills NOTHING -- "if they are revived in-person there, '
+            .. 'they can keep their inventory" (owner, 2026-08-30)',
+        ('nextId %d -> %d'):format(before, m.loot.nextId))
+
+    -- ═══ AND NOW THE CLOCK, WHICH IS THE WHOLE POINT OF THE BLOCK ═══
+    fakeTime = BR.Roster.get(2).dbnoUntil + 300
+    BR.Sched.step(fakeTime)
+
+    local e2 = BR.Roster.get(2)
+    ok(e2.state == BR.PlayerState.OUT,
+        'the bleed-out clock finished them with nobody calling eliminate()')
+    ok(m.loot.nextId - before == carried,
+        'AND EVERY STACK THEY WERE CARRYING IS ON THE GROUND -- the death box '
+            .. 'ran on the timer route, not just on the direct one',
+        ('carried %d, laid down %d'):format(carried, m.loot.nextId - before))
+
+    -- WHERE, AND IN WHOSE CELL. A ring laid down around a stale position is a
+    -- kit nobody can find, which reads from a chair exactly like a kit that was
+    -- never laid down at all -- and #246 is this project's own evidence that a
+    -- body's position is a thing two machines disagree about. So the ring is
+    -- measured against the SERVER's sample and against the cell the subscription
+    -- is filed under.
+    local ring, farthest = 0, 0.0
+    for id = before + 1, m.loot.nextId do
+        local it = m.loot.items[id]
+        if it then
+            ring = ring + 1
+            local d = BR.Dist(it.x, it.y, e2.pos.x, e2.pos.y)
+            if d > farthest then farthest = d end
+            ok(it.cell == BR.LootCellKeyAt(e2.pos.x, e2.pos.y),
+                ('entry %d is filed in the body\'s own cell'):format(id),
+                tostring(it.cell))
+        end
+    end
+    ok(ring == carried, 'every entry is in the registry and none was dropped',
+        ('%d of %d'):format(ring, carried))
+    ok(farthest <= (BR.Config.Loot.deathScatterRadius or 4.6) + 0.01,
+        'and the whole ring is inside the scatter radius, at the body',
+        ('%.2fm'):format(farthest))
+
+    -- ═══ "THE SPILLS WERE ALL CREATED LOCALLY" -- THE TESTABLE HALF OF IT ═══
+    --
+    -- Loot props ARE built locally: client/loot.lua's header opens with "EVERY
+    -- OBJECT HERE IS LOCAL AND NON-NETWORKED", because 1900 networked entities
+    -- would end the server. That is presentation over a server-owned registry
+    -- and it is not the question. The question is whether the REGISTRY entry
+    -- reaches everybody looking at that patch of ground, or only the client that
+    -- happened to be standing there -- because announce() sends to the cell's
+    -- subscribers and to nobody else, and a drop that reached one machine would
+    -- be a body only one player could loot.
+    local told = {}
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do told[s.target] = true end
+    ok(told[2] == true, 'the dying player is told about their own kit')
+    ok(told[1] == true,
+        'AND SO IS THE SQUADMATE STANDING OVER THEM -- the drop is a server '
+            .. 'record announced to every subscriber, not a local effect on one '
+            .. 'machine')
+
+    ok(e2.reviveKey ~= nil,
+        'and the same edge minted the key, one line below the death box')
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE SECOND DEATH, WHICH IS WHAT THE REPORT ACTUALLY IS
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- df6a624 gave this game its first OUT -> ALIVE path, and the ruling that
+    -- came with it is that a key-revived player comes back with NOTHING --
+    -- server/revivekey.lua: "anything that tried to hand kit back would be
+    -- DUPLICATING loot that is already scattered on the ground".
+    --
+    -- So a revived player's NEXT bleed-out reaches BR.Loot.deathBox with an
+    -- empty inventory, `#contents == 0` returns early, and nothing is scattered
+    -- -- while BR.ReviveKey.onEliminated, which follows the EDGE and explicitly
+    -- not the spill, mints a key anyway. "A key appears and the loot does not"
+    -- is therefore NOT the two halves coming apart: it is the documented
+    -- asymmetry meeting a state that did not exist before the push.
+    --
+    -- NOTHING IS LOST. The kit went on the floor at the FIRST death, at the
+    -- first body, and it is still there -- which is what the entry count below
+    -- is asserting as much as anything else.
+    local VAN = 500
+    pedCoords[VAN] = { x = 401.0, y = 400.0, z = 30.0 }
+    setModel(VAN, (BR.Config.Rescue.models or { 'ambulance' })[1])
+
+    -- GUARDED, so a mutation that stops the mint reports the assertion above
+    -- rather than taking the whole suite down on a nil index. Every block after
+    -- this one would otherwise never run, and a red suite that stops early is a
+    -- red suite that hides the next failure.
+    if e2.reviveKey then e2.reviveKey.held = true end
+    local backOk = BR.ReviveKey.revive(2, 1, VAN)
+    ok(backOk == true, 'the squad spends the key at the van and gets them back')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'they are alive again')
+
+    local backWith = 0
+    do
+        local inv = BR.Inv.of(2)
+        for i = 1, (BR.Config.Loot.slots or 5) do
+            if inv.slots[i] then backWith = backWith + 1 end
+        end
+        for _, pool in ipairs(BR.Config.AmmoOrder) do
+            backWith = backWith + (inv.ammo[pool] or 0)
+        end
+    end
+    ok(backWith == 0,
+        'and they came back with NOTHING -- the cause of everything below',
+        tostring(backWith))
+
+    local standing = m.loot.nextId
+    ok(standing - before == carried,
+        'their first kit is STILL on the ground where they fell -- the revive '
+            .. 'neither restored it nor took it away',
+        ('%d entries'):format(standing - before))
+
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    BR.Combat.knock(2, 1)
+    fakeTime = BR.Roster.get(2).dbnoUntil + 300
+    BR.Sched.step(fakeTime)
+
+    e2 = BR.Roster.get(2)
+    ok(e2.state == BR.PlayerState.OUT, 'they bleed out a second time')
+    ok(m.loot.nextId == standing,
+        'AND THIS ONE SCATTERS NOTHING, because there was nothing on them -- '
+            .. 'this is the "doesn\'t always spill" the owner saw',
+        ('nextId %d -> %d'):format(standing, m.loot.nextId))
+    ok(e2.reviveKey ~= nil,
+        'while the key is minted all the same: the mint follows the EDGE and '
+            .. 'never the spill (server/revivekey.lua), so a key with no ring '
+            .. 'around it is the design and not a fault')
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))
