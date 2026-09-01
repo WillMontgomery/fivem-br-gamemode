@@ -10436,6 +10436,19 @@ local function newVehicleServer()
     end
     env.NetworkGetEntityOwner   = function(h) return e(h).owner end
 
+    -- ═══ THE TWO SEAT NATIVES, AND THE FIRST ONE LIES ON PURPOSE ═══
+    --
+    -- citizenfx/fivem#4006, still OPEN: server-side GetVehiclePedIsIn answers the
+    -- vehicle a ped was LAST in when it is in none. Modelling that faithfully is
+    -- the whole value of this stub -- a version that answered 0 for a ped on foot
+    -- would make the bug untestable and would pass a `ridingIn` written as a bare
+    -- read of it. `S.lastVeh` is the stale answer; `S.seats` is the truth.
+    S.lastVeh, S.seats = {}, {}
+    env.GetVehiclePedIsIn   = function(ped) return S.lastVeh[ped] or 0 end
+    env.GetPedInVehicleSeat = function(veh, seat)
+        return (S.seats[veh] or {})[seat] or 0
+    end
+
     loadInto(env, SANDBOX_LIB)
     env.BR.Roster = {
         get      = function(s) return S.roster[s] end,
@@ -10486,6 +10499,64 @@ do
     local function scripted(model, owner, vtype)
         return { exists = true, etype = 2, model = model, pop = MISSION,
                  owner = owner, vtype = vtype or 'automobile' }
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- BR.Vehicles.ridingIn -- IS THIS PED IN A VEHICLE, REALLY
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Two features rule on this answer: the purchased car may only be unpacked on
+    -- foot (server/inventory.lua) and an ambulance loses its blip while somebody
+    -- is in it (server/ambulances.lua). Both WITHHOLD something when the answer is
+    -- yes, so a false yes is silent -- no error, no log, nothing on screen -- and
+    -- that is exactly what a bare GetVehiclePedIsIn produces on every build,
+    -- forever, for anybody who has ever driven.
+    --
+    -- THE STUB MODELS THE BUG (see `S.lastVeh` above). These cases are therefore
+    -- about the WORKAROUND rather than about Lua: a `ridingIn` written as the
+    -- obvious one-liner passes none of them.
+    do
+        local S = newVehicleServer()
+        local V = S.env.BR.Vehicles
+
+        -- ON FOOT, WITH A CAR IN HIS PAST. #4006 exactly: the ped left vehicle 50
+        -- ten minutes ago and the native still names it. Seat 50 holds nobody.
+        S.lastVeh[900] = 50
+        S.seats[50] = {}
+        ok(V.ridingIn(900) == nil,
+            'a ped who LEFT a vehicle reads as on foot -- citizenfx/fivem#4006 '
+                .. 'makes the first native name it forever, and the seat read is '
+                .. 'what refutes that',
+            tostring(V.ridingIn(900)))
+
+        -- DRIVING. Seat -1 is the driving seat.
+        S.seats[50] = { [-1] = 900 }
+        ok(V.ridingIn(900) == 50, 'a DRIVER is in their vehicle',
+            tostring(V.ridingIn(900)))
+
+        -- RIDING. A passenger answers no to the driving seat and yes to the
+        -- cabin, and "in that ambulance" plainly includes the back seat -- a squad
+        -- driving to fetch a mate is mostly passengers.
+        S.seats[50] = { [3] = 900 }
+        ok(V.ridingIn(900) == 50, 'and so is a PASSENGER, in any cabin seat',
+            tostring(V.ridingIn(900)))
+
+        -- NEVER IN ANYTHING AT ALL.
+        ok(V.ridingIn(901) == nil, 'a ped with no vehicle in its past is on foot')
+
+        -- ZERO IS NOT A PED, AND IN LUA IT IS TRUTHY. An empty seat answers 0 and
+        -- so does an absent native; a ped handle of 0 must not match either.
+        S.lastVeh[0] = 50
+        S.seats[50] = {}
+        ok(V.ridingIn(0) == nil, 'ped handle 0 is nobody, not somebody in seat 0')
+        ok(V.ridingIn(nil) == nil, 'and nil is not an error')
+
+        -- AN EMPTY VEHICLE DOES NOT SWALLOW A PED. Every seat answers 0, and the
+        -- ped under test is non-zero, so there is no reading on which they match.
+        S.lastVeh[902] = 51
+        S.seats[51] = {}
+        ok(V.ridingIn(902) == nil,
+            'and an empty vehicle holds nobody, however recently they were in it')
     end
 
     -- An ordinary car costs nothing and files nothing. This is every vehicle in

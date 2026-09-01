@@ -646,10 +646,16 @@ end)
 --- is deliberately no second one here to race it.
 --- Which of the authored warmup spots this arrival lands on.
 ---
---- FIVE PLACES A PERSON STOOD, surveyed by the owner on 2026-08-29, replacing a
---- random point in a 30m disc around the pad. The old scatter had to ground-snap
---- wherever it landed; these are known ground, and four of the five are a
---- cluster so a squad readying together still arrives together.
+--- THREE PLACES A PERSON STOOD, re-surveyed by the owner on 2026-08-31 and
+--- replacing the five that preceded them, which in turn replaced a random point
+--- in a 30m disc around the pad. The old scatter had to ground-snap wherever it
+--- landed; these are known ground.
+---
+--- THE COUNT IS NOT READ ANYWHERE, and this function is why: it draws from
+--- `#list`, so the table is the whole of the arrangement and re-surveying it is
+--- a config edit. The five it replaced were four in a cluster plus one apart;
+--- these three are 26m to 50m from each other, and the spread now does what the
+--- cluster used to be relied on for.
 ---
 --- THE FALLBACK IS THE OLD SCATTER, not an error and not the pad itself. An
 --- empty table here -- a config edit, a tunable override that went wrong --

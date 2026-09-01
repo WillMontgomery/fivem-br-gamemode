@@ -631,12 +631,13 @@ local FIXTURE = {
     tokenMarker = 34,
     spawnAheadM = 5.0,
     signLabel   = BR.Config.Shop.signLabel,
-    -- THE SHIPPED STRINGS, BY REFERENCE. Both halves of the purchase toast are
-    -- the owner's wording, so what the handler is exercised against below is
-    -- what a player actually reads -- not a copy of it that could be edited to
-    -- agree with a broken join.
+    -- THE SHIPPED STRINGS, BY REFERENCE. Both halves of the purchase toast and
+    -- the on-foot refusal are the owner's wording, so what the handler is
+    -- exercised against below is what a player actually reads -- not a copy of
+    -- it that could be edited to agree with a broken join.
     boughtToast  = BR.Config.Shop.boughtToast,
     balanceToast = BR.Config.Shop.balanceToast,
+    onFootToast  = BR.Config.Shop.onFootToast,
     cue         = BR.Config.Shop.cue,
     lockedState = 2,
     items = {
@@ -1160,6 +1161,13 @@ local function player(src, opts)
         matchId = 1,
         state = opts.state or BR.PlayerState.WARMUP,
         pos = { x = 0.0, y = 0.0, z = 30.0 },
+        -- THE SAMPLED PED, WHICH IS A REAL FIELD AND NOT A CONVENIENCE. The real
+        -- server/roster.lua writes `entry.ped` on every position pass, through
+        -- the `tostring(src)` spelling its own note says is the only one that
+        -- works -- and BR.Shop.refusesUse rules on that field rather than taking
+        -- a fresh GetPlayerPed for exactly that reason. A fixture without it
+        -- would make the on-foot rule untestable.
+        ped = 900 + src,
     }
     peds[src] = { ped = 900 + src, x = 0.0, y = 0.0, z = 30.0, heading = 0.0 }
     BR.Market.balances[src] = opts.balance or 1000
@@ -1754,11 +1762,139 @@ do
     -- the opposite of the ambulance's ordering and is deliberate: a use that put
     -- the item back on a failed spawn is a use a player repeats until the engine
     -- cooperates, which is a second car for one payment.
+    -- THE CALL, NOT A MENTION OF IT. This looked for the bare name until
+    -- 2026-08-31, when the on-foot refusal added a comment ABOVE the consume
+    -- explaining why it is enforced at the channel and not at the effect -- and
+    -- naming this function to do it. The ordering was untouched and the
+    -- assertion failed, because the first `BR.Shop.unpack` in the file had
+    -- become prose. Anchored on the argument list, there is one match and it is
+    -- the call.
     local invsrc = readFile(RES .. 'br_core/server/inventory.lua')
     local consume = invsrc:find('s%.count = s%.count %- 1')
-    local ask = invsrc:find('BR%.Shop%.unpack')
+    local ask = invsrc:find('BR%.Shop%.unpack%(src')
     ok(consume ~= nil and ask ~= nil and ask > consume,
         'the slot is emptied before BR.Shop.unpack is called')
+end
+
+-- ---------------------------------------------------------------------------
+describe('on foot, or not at all')
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-08-31: "let's make sure the player cannot use their purchased
+-- vehicle spawn while already inside another vehicle. They can only use it
+-- while on foot. If they try to use it while not on foot, issue a toast stating
+-- 'You can only spawn a vehicle while on foot.'"
+do
+    -- THE STUB IS THE POINT OF THE SEAM. `BR.Vehicles.ridingIn` is the one thing
+    -- BR.Shop.refusesUse consults, so driving it from here exercises the real
+    -- ruling against both answers -- which is the whole of what this file can
+    -- assert, since the natives underneath it are the server's.
+    local riding = nil
+    BR.Vehicles.ridingIn = function(ped)
+        return (riding ~= nil and ped == riding) and 777 or nil
+    end
+
+    reset()
+    player(40)
+    riding = nil
+    local refused, why = BR.Shop.refusesUse(40)
+    ok(refused == false and why == nil,
+        'a player on foot is not refused, and nothing is said to them')
+
+    reset()
+    player(41)
+    riding = 941            -- peds[41].ped, per the harness
+    refused, why = BR.Shop.refusesUse(41)
+    ok(refused == true, 'a player in a vehicle IS refused')
+    ok(why == 'You can only spawn a vehicle while on foot.',
+        "and the refusal is the owner's sentence, to the full stop")
+    ok(why == BR.Config.Shop.onFootToast,
+        '...taken from the config rather than written at the call site')
+
+    -- ═══ THE RULE OUTLIVES THE WORDING ═══
+    --
+    -- A missing string must not delete a rule. This is the assertion that keeps
+    -- the boolean and the sentence apart: strip the copy and the refusal still
+    -- stands, silently, rather than the copy convention ("absent copy says
+    -- nothing") quietly becoming "spawn a car inside a car".
+    local realCopy = BR.Config.Shop.onFootToast
+    BR.Config.Shop.onFootToast = nil
+    refused, why = BR.Shop.refusesUse(41)
+    ok(refused == true and why == nil,
+        'with the wording gone the use is still refused, and in silence')
+    BR.Config.Shop.onFootToast = realCopy
+
+    -- ═══ THE PED COMES OFF THE ROSTER, NOT FROM A FRESH NATIVE ═══
+    --
+    -- server/roster.lua: "Passing the numeric roster key returned 0 for every
+    -- player, so positions silently never sampled". A refusal built on
+    -- `GetPlayerPed(src)` with a numeric src would read 0 for everybody, refuse
+    -- nobody, and pass every other assertion in this block -- the rule would
+    -- simply never fire in game, and a rule that does not fire looks exactly
+    -- like a player who happened to be on foot.
+    --
+    -- SO THE NATIVE IS MADE TO EXHIBIT THAT FAILURE and the ruling must be
+    -- unmoved by it.
+    reset()
+    player(43)
+    riding = 943
+    local realGetPlayerPed = GetPlayerPed
+    _G.GetPlayerPed = function() return 0 end
+    refused, why = BR.Shop.refusesUse(43)
+    _G.GetPlayerPed = realGetPlayerPed
+    ok(refused == true and why == BR.Config.Shop.onFootToast,
+        'the ruling still refuses with GetPlayerPed answering 0 for everybody -- '
+            .. 'it reads the ped the roster sampled, which is the spelling that '
+            .. 'works')
+
+    -- ═══ AN UNREADABLE PED IS NOT A REFUSAL ═══
+    --
+    -- The same absence BR.Shop.unpack gives up on. Refusing here would turn a
+    -- streaming hiccup into a spent item and no car, which is the one outcome
+    -- the whole ordering of this feature exists to prevent.
+    reset()
+    riding = nil
+    refused = BR.Shop.refusesUse(99)   -- no player(), so GetPlayerPed answers 0
+    ok(refused == false,
+        'a ped this server cannot resolve is allowed through, not refused')
+
+    -- ═══ AND A BUILD WITH NO server/vehicles.lua RULES NOTHING ═══
+    --
+    -- Because the citizenfx/fivem#4006 workaround lives there, and a bare
+    -- GetVehiclePedIsIn is not an answer this file is willing to substitute.
+    reset()
+    player(42)
+    riding = 942
+    local realRiding = BR.Vehicles.ridingIn
+    BR.Vehicles.ridingIn = nil
+    refused = BR.Shop.refusesUse(42)
+    ok(refused == false,
+        'with no BR.Vehicles.ridingIn to ask, nothing is refused')
+    BR.Vehicles.ridingIn = realRiding
+
+    -- ═══ BOTH ARMS EXIST, AND THE SECOND IS ABOVE THE CONSUME ═══
+    --
+    -- The press-time refusal alone is not the rule: `useMs` is 3000, so a player
+    -- can start this on foot and finish it in a passenger seat. What makes it a
+    -- guard is that the channel asks again on the pass that spends the item --
+    -- so the second ask must sit ABOVE `s.count = s.count - 1` in the file.
+    local invsrc2 = readFile(RES .. 'br_core/server/inventory.lua')
+    local asks = {}
+    for at in invsrc2:gmatch('()BR%.Shop%.refusesUse%(src%)') do
+        asks[#asks + 1] = at
+    end
+    ok(#asks == 2, ('the use path asks twice, not once (saw %d)'):format(#asks))
+    local consume2 = invsrc2:find('s%.count = s%.count %- 1')
+    ok(consume2 ~= nil and asks[2] ~= nil and asks[2] < consume2,
+        'and the second ask is above the line that spends the item, so no '
+            .. 'pass can consume a car for somebody sitting in a car')
+    -- ANCHORED ON THE `if refused then` ABOVE IT, AND MUTATION TESTING IS WHY.
+    -- The first spelling of this looked for `BR.Inv.cancelUse(src, why)` on its
+    -- own -- which is also, exactly, the text of that function's own DEFINITION
+    -- twenty lines earlier. It passed with the call deleted.
+    ok(invsrc2:find('if refused then\n%s*BR%.Inv%.cancelUse%(src, why%)') ~= nil,
+        'the channel arm CANCELS rather than completing, so the item survives '
+            .. 'to be spawned on foot')
 end
 
 -- ---------------------------------------------------------------------------

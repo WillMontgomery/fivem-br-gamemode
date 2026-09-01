@@ -1984,6 +1984,26 @@ do
             .. 'server-sampled position, under a `v:` key',
         table.concat(seen, ' '))
 
+    -- ═══ AND THE VEHICLE HANDLE COMES OUT WITH IT ═══
+    --
+    -- Owner, 2026-08-31: "let's not show a blip for an ambulance while a player
+    -- is in that ambulance." Occupancy is a question about a VEHICLE, so
+    -- server/ambulances.lua needs the handle -- and it must get it from here
+    -- rather than by parsing `v:700` back apart, because the key is an opaque
+    -- string by construction and a consumer that unpicks it makes the format a
+    -- contract between two files.
+    --
+    -- ASSERTED BECAUSE NOTHING ELSE COULD SEE IT GO. tools/test_ambulances drives
+    -- that file through its own stub of this function, so dropping the fourth
+    -- argument here leaves both suites green and the blips simply stop being
+    -- withheld.
+    local handle = nil
+    BR.Rescue.eachFound(1, function(_, _, _, veh) handle = veh end)
+    ok(handle == 700,
+        '...and the handle itself is the fourth argument, so a consumer never '
+            .. 'has to take the key apart to find out which vehicle it is',
+        tostring(handle))
+
     -- ═══ ONE OF THE 23 IS NOT A FIND ═══
     --
     -- "engine-spawned ONES". server/ambulances.lua already publishes every

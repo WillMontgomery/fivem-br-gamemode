@@ -641,6 +641,259 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-08-31: "let's not show a blip for an ambulance while a player is
+-- in that ambulance."
+--
+-- ═══ THE HALF THAT WOULD SHIP BROKEN AND LOOK FINE ═══
+--
+-- Publishing sends TRANSITIONS ONLY, so the withdrawal is the easy half and the
+-- RETURN is the one that quietly does not happen: a van whose blip is withheld
+-- while occupied and then simply stops being mentioned when the driver steps out
+-- leaves the squad one ambulance short for the rest of the round. Nothing errors,
+-- nothing logs, and there is no icon on the map to point at. Both directions are
+-- driven below, and so is the pass in between -- because a rule that re-withdraws
+-- every second would be a message per van per squad per second, which is the cost
+-- this feature was built to avoid.
+describe('no blip for an ambulance while a player is in it')
+do
+    -- EVERY PLAYER GETS A PED, because `occupants` skips a roster row without
+    -- one -- which is what has kept every block above this exercising the
+    -- unoccupied path.
+    for src, e in pairs(roster) do e.ped = 900 + src end
+
+    -- THE SEAM IS BR.Vehicles.ridingIn AND NOTHING BELOW IT. That function owns
+    -- the citizenfx/fivem#4006 workaround and is asserted in its own right; what
+    -- is under test here is that this file asks it, once per pass, and turns the
+    -- answer into the right messages.
+    --
+    -- ADDED TO THE EXISTING TABLE RATHER THAN REPLACING IT. `spawnOwned` is on
+    -- there and `advance` builds the 23 through it every pass -- a fresh table
+    -- here takes the whole feature down two blocks later, which is how this was
+    -- written the first time.
+    local riding = {}
+    BR.Vehicles.ridingIn = function(ped) return riding[ped] end
+
+    local function blipsFor(src, wantGone)
+        local n = 0
+        for _, s in ipairs(sent) do
+            if s.evt == BR.Net.RESCUE_BLIP and s.src == src
+               and (s.d.gone == true) == wantGone then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    --- The key of the one blip sent to `src` this pass, or nil.
+    local function loneKey(src)
+        local k = nil
+        for _, s in ipairs(sent) do
+            if s.evt == BR.Net.RESCUE_BLIP and s.src == src then k = s.d.key end
+        end
+        return k
+    end
+
+    local station = nil
+    for v in pairs(world) do if not station or v < station then station = v end end
+    local total = BR.Ambulances.count(1)
+
+    -- ═══ SOMEBODY GETS IN ═══
+    riding[901] = station          -- player 1, a watcher, climbs into one of ours
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, true) == 1,
+        'the blip for an occupied ambulance is withdrawn', blipsFor(1, true))
+    local withdrawnKey = loneKey(1)
+    ok(withdrawnKey ~= nil and withdrawnKey:sub(1, 2) == 's:',
+        '...and it is the station he is sitting in, by its own key',
+        tostring(withdrawnKey))
+    ok(blipsFor(1, false) == 0,
+        'and no other van is disturbed -- the other 22 are parked and silent',
+        blipsFor(1, false))
+
+    -- IT GOES FROM THE WHOLE SQUAD, NOT JUST THE DRIVER. A blip is a fact about
+    -- a vehicle, so it is withheld from everybody or from nobody; his squadmate
+    -- steering toward the same van must not be sent to a van that is taken.
+    ok(blipsFor(2, true) == 1,
+        'the whole squad loses it, not only the player in the seat',
+        blipsFor(2, true))
+
+    -- ═══ AND STAYS QUIET WHILE HE SITS THERE ═══
+    sent = {}
+    tick(3)
+    ok(blipsIn(sent) == 0,
+        'three more passes with him still in it send nothing at all -- the '
+            .. 'withdrawal is an EDGE, and re-sending it every second would be '
+            .. 'the network cost this feature exists to avoid',
+        blipsIn(sent))
+
+    -- ═══ A SQUAD THAT QUALIFIES MID-OCCUPANCY GETS THE OTHER 22 ═══
+    --
+    -- The full push is a different branch from the transition one, and this is
+    -- the case that catches it: skipped rather than pushed as `gone`, because a
+    -- player who has never had that blip cannot have it withdrawn.
+    roster[3].state = BR.PlayerState.OUT
+    sent = {}
+    tick(1)
+    ok(blipsFor(3, false) == total - 1,
+        'a squad that starts watching while a van is occupied is sent every '
+            .. 'other one, and not that one',
+        ('%d of %d'):format(blipsFor(3, false), total))
+    ok(blipsFor(3, true) == 0,
+        '...and is not sent a withdrawal for a blip it never had',
+        blipsFor(3, true))
+
+    -- ═══ HE GETS OUT, AND THE BLIP COMES BACK ═══
+    riding[901] = nil
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, false) == 1 and loneKey(1) == withdrawnKey,
+        'stepping out puts the blip back -- the same van, by the same key',
+        ('%d back, key %s'):format(blipsFor(1, false), tostring(loneKey(1))))
+    ok(blipsFor(3, false) == 1,
+        'and the squad that never saw it gets it for the first time',
+        blipsFor(3, false))
+
+    sent = {}
+    tick(2)
+    ok(blipsIn(sent) == 0,
+        'and it goes quiet again once it is back -- the return is an edge too',
+        blipsIn(sent))
+
+    -- ═══ AN NPC AT THE WHEEL IS NOT A PLAYER ═══
+    --
+    -- "while a PLAYER is in that ambulance". Ambient vans drive around with a
+    -- population ped in them, and `rec.ambient` is a ledger of exactly those --
+    -- so a rule that asked the VEHICLE who was in its seats would hide the blip
+    -- of every found ambulance in the game. Walking the roster is what makes
+    -- this case true by construction: no ped considered here belongs to nobody.
+    riding[4242] = station         -- a handle no roster row carries
+    sent = {}
+    tick(2)
+    ok(blipsIn(sent) == 0,
+        'a ped that is not a player in the roster does not withhold anything',
+        blipsIn(sent))
+    riding[4242] = nil
+
+    -- ═══ AND NEITHER DOES A PLAYER IN A DIFFERENT MATCH ═══
+    --
+    -- Player 5 is the fixture row this file already keeps for exactly this
+    -- purpose ("without this row a file that ignored matchId would pass
+    -- everything below"). Entity handles are unique per SERVER, so a match that
+    -- walked the whole roster would usually get the same answer by luck -- which
+    -- is what makes the scoping worth pinning rather than leaving to it. It is
+    -- also what bounds the cost: this runs once per match per second, and
+    -- without the filter it is every player on the server, every time.
+    ok(roster[5].matchId == 2, 'fixture: player 5 is in another match')
+    riding[905] = station
+    sent = {}
+    tick(2)
+    ok(blipsIn(sent) == 0,
+        'a player in a DIFFERENT match sitting in this match\'s van withholds '
+            .. 'nothing -- occupancy is asked of this match\'s roster alone',
+        blipsIn(sent))
+    riding[905] = nil
+
+    -- ═══ A FOUND VAN IS RULED THE SAME WAY, THROUGH THE SAME FIELD ═══
+    --
+    -- The 23 and the finds are published by one rule because they are shaped the
+    -- same, and occupancy is asked of a handle both lists carry. A version that
+    -- wired this to `rec.stations` alone would pass every assertion above.
+    local ledger = { ['v:7001'] = { x = 40.0, y = 50.0, veh = 7001 } }
+    BR.Rescue = {
+        eachFound = function(matchId, fn)
+            if matchId ~= 1 then return end
+            for key, p in pairs(ledger) do fn(key, p.x, p.y, p.veh) end
+        end,
+    }
+
+    -- ═══ A VAN DISCOVERED WITH SOMEBODY ALREADY IN IT SAYS NOTHING AT ALL ═══
+    --
+    -- A find is only ever recorded because a player was seen DRIVING it, so this
+    -- is not a corner case -- it is the ordinary way one enters the ledger. The
+    -- record is new, so `moved` is true; it is occupied, so nothing may be drawn;
+    -- and `turned` must be FALSE, because a blip nobody has ever had cannot be
+    -- withdrawn. Getting that last one wrong sends a withdrawal for a key the
+    -- client has never seen -- harmless on screen, and a message on the wire in a
+    -- feature whose entire design is "only transitions are sent".
+    riding[901] = 7001
+    sent = {}
+    tick(1)
+    ok(blipsIn(sent) == 0,
+        'a find that is discovered while occupied is neither drawn nor '
+            .. 'withdrawn -- there is nothing there to take back',
+        blipsIn(sent))
+
+    riding[901] = nil
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, false) == 1 and loneKey(1) == 'v:7001',
+        'fixture: an unoccupied find reaches a watching squad')
+
+    riding[901] = 7001             -- he gets into the one that was found
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, true) == 1 and loneKey(1) == 'v:7001',
+        'and getting into a FOUND ambulance withdraws its blip too -- one rule, '
+            .. 'both lists',
+        ('%d withdrawn, key %s')
+            :format(blipsFor(1, true), tostring(loneKey(1))))
+
+    -- ...AND THE FULL PUSH SKIPS AN OCCUPIED FIND, WHICH IS A SECOND BRANCH.
+    -- The transition path and the newly-qualifying path are different loops over
+    -- different lists, and this is the fourth of the four: a squad that starts
+    -- watching while a FOUND van is taken. Mutation testing added it -- deleting
+    -- the `occupied` skip from the ambient half of the full push changed nothing
+    -- until this case existed.
+    local stations = BR.Ambulances.count(1)
+    roster[4].state = BR.PlayerState.OUT          -- the solo starts watching
+    sent = {}
+    tick(1)
+    local sawFound = false
+    for _, s in ipairs(sent) do
+        if s.evt == BR.Net.RESCUE_BLIP and s.src == 4 and s.d.key == 'v:7001' then
+            sawFound = true
+        end
+    end
+    ok(blipsFor(4, false) == stations and not sawFound,
+        'a squad that starts watching while a FIND is occupied is sent the '
+            .. 'stations and not that find',
+        ('%d of %d stations, find sent = %s')
+            :format(blipsFor(4, false), stations, tostring(sawFound)))
+    roster[4].state = BR.PlayerState.ALIVE
+
+    riding[901] = nil
+    sent = {}
+    tick(1)
+    ok(blipsFor(1, false) == 1 and loneKey(1) == 'v:7001',
+        '...and getting out of it brings that one back as well')
+
+    -- ═══ AND WITH NO ridingIn TO ASK, NOTHING IS WITHHELD ═══
+    --
+    -- The workaround lives in server/vehicles.lua and a bare GetVehiclePedIsIn
+    -- is not an answer this file will substitute. A build without it rules
+    -- nothing, which is the direction that leaves the map complete.
+    BR.Vehicles.ridingIn = nil
+    riding[901] = station
+    sent = {}
+    tick(2)
+    ok(blipsIn(sent) == 0,
+        'with no BR.Vehicles.ridingIn to ask, no blip is withheld and none is '
+            .. 'restored -- the feature simply is not on',
+        blipsIn(sent))
+
+    -- RESTORE THE FIXTURE the blocks below inherit: no ledger, no occupancy
+    -- reader, no peds, squad A watching and squad B not.
+    BR.Rescue = nil
+    riding = {}
+    for _, e in pairs(roster) do e.ped = nil end
+    roster[3].state = BR.PlayerState.ALIVE
+    sent = {}
+    tick(1)
+end
+
+-- ---------------------------------------------------------------------------
 describe('a station ambulance that stops existing is forgotten, not respawned')
 do
     local victim = nil

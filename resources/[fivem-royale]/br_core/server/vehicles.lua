@@ -1085,6 +1085,60 @@ local function ridesAsPassenger(veh, ped)
     return false
 end
 
+--- The vehicle this ped is RIDING IN RIGHT NOW, in any seat, or nil.
+---
+--- ═══ WHY THIS LIVES HERE AND NOT AT ITS TWO CALL SITES ═══
+---
+--- Because the answer is not `GetVehiclePedIsIn(ped, false) ~= 0`, and that is
+--- the spelling anybody writing this fresh reaches for. citizenfx/fivem#4006 --
+--- "[Server] GetVehiclePedIsIn(ped, false) returns last vehicle when ped is not
+--- in any vehicle", still OPEN with no fix -- means that native answers a handle
+--- for somebody who got out of a car ten minutes ago and has been walking ever
+--- since, and the documented workaround (`IsPedInAnyVehicle`) DOES NOT EXIST ON
+--- THE SERVER. The whole of that is already written down in this file's roadkill
+--- section, along with the shape of the fix; what was missing was somewhere for
+--- a second feature to get the fix from instead of the bug.
+---
+--- THE BUG IS THE DANGEROUS DIRECTION HERE, WHICH IS WHY IT IS WORTH A FUNCTION.
+--- Both callers refuse or withhold something when the answer is yes. A bare read
+--- answers yes forever after a player's first car, so server/inventory.lua would
+--- refuse a purchased vehicle to everybody who has ever driven for the rest of
+--- the match, and server/ambulances.lua would withhold the blip of every van
+--- anyone ever sat in. Neither would throw, log, or fail a test -- they would
+--- just quietly stop working partway through a round.
+---
+--- SO THE PED'S ANSWER IS A CANDIDATE AND THE VEHICLE SETTLES IT, exactly as
+--- `drivenVehicle` and `ridesAsPassenger` above do. The difference is only which
+--- seats are walked: this one wants ANY seat, so it asks the driving seat first
+--- (the common answer, and one native) and the cabin only if that misses.
+---
+--- ONE VEHICLE IS EVER INTERROGATED, so the cost is bounded at ten natives and
+--- is one in the overwhelmingly common case of a player on foot -- #4006's own
+--- symptom is what makes the first read cheap, because it answers a stale handle
+--- rather than making us search.
+---
+--- SEATS 8 AND BEYOND ARE NOT WALKED, and `ridesAsPassenger` states the same
+--- limit for the same reason: it needs a coach. Somebody in the back of a bus
+--- reads as on foot here. For both callers that fails the SAFE way -- a car they
+--- are allowed to spawn, a blip they are allowed to see -- rather than the way
+--- that silently withholds.
+--- @param ped integer|nil
+--- @return integer|nil  the vehicle handle, or nil when this ped is on foot
+function BR.Vehicles.ridingIn(ped)
+    ped = math.tointeger(tonumber(ped)) or 0
+    if ped == 0 then return nil end
+
+    local veh = entityFrom(GetVehiclePedIsIn, ped, false)
+    if veh == 0 then return nil end
+
+    -- ZERO IS NEVER A MATCH. `entityFrom` answers 0 for an empty seat, an absent
+    -- native and a throw, and `ped` was proved non-zero above -- so an empty
+    -- vehicle cannot read as holding this ped.
+    if entityFrom(GetPedInVehicleSeat, veh, -1) == ped then return veh end
+    if ridesAsPassenger(veh, ped) then return veh end
+    return nil
+end
+
 --- How far above or below a driver may be and still have hit this player.
 ---
 --- A CAR ON THE BRIDGE OVERHEAD IS NOT RUNNING YOU OVER. The horizontal radius is

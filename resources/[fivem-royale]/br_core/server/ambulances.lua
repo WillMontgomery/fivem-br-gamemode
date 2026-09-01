@@ -283,6 +283,67 @@ local function groupKey(src, e)
     return 'p' .. tostring(src)
 end
 
+-- ---------------------------------------------------------------------------
+-- WHICH VANS HAVE SOMEBODY IN THEM
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-08-31: "let's not show a blip for an ambulance while a player is
+-- in that ambulance."
+--
+-- ═══ IT APPLIES TO ALL OF THEM, AND FALLS OUT OF WHERE IT IS ASKED ═══
+--
+-- The 23 stations and the ones players have found are published by one rule
+-- because they are shaped the same (`refreshFound`'s note). Occupancy is asked
+-- of a VEHICLE HANDLE, which both lists carry, so it lands on both without a
+-- second mechanism -- which is what the sentence asks for: a van somebody is
+-- sitting in is a van somebody is sitting in.
+--
+-- ═══ WHY THE ROSTER IS WALKED AND NOT THE AMBULANCES ═══
+--
+-- The obvious loop is over the vans, asking each who is in its seats. It is the
+-- wrong way round twice over.
+--
+--   IT CANNOT TELL A PLAYER FROM A PED, and the difference is the request. An
+--   AMBIENT ambulance drives around with an NPC at the wheel; that is what
+--   `rec.ambient` is a ledger of. "While a PLAYER is in that ambulance" would be
+--   false for every one of them and this loop would hide their blips anyway.
+--   Walking the roster, every ped considered is a player by construction.
+--
+--   AND IT COSTS 23 VANS TIMES 9 SEATS. Walking the roster costs one native per
+--   player -- `BR.Vehicles.ridingIn` interrogates at most ONE vehicle, the
+--   candidate its first read hands back -- and the seat walk is only reached for
+--   somebody actually sitting in something.
+--
+-- ═══ AND IT IS BR.Vehicles.ridingIn RATHER THAN THE NATIVE ═══
+--
+-- Because the native lies. citizenfx/fivem#4006, still OPEN: server-side
+-- `GetVehiclePedIsIn(ped, false)` answers the LAST vehicle for a ped in none, so
+-- a bare read would mark an ambulance occupied by a player who got out of it
+-- minutes ago and never give the blip back. server/vehicles.lua owns that
+-- workaround and its header owns the argument.
+--
+-- REBUILT WHOLE EVERY PASS, so a player getting out is a set this van is simply
+-- not in next second. There is nothing to clear and no event to miss.
+--- Vehicle handles a player of this match is sitting in right now.
+--- @param matchId integer
+--- @return table  [vehicle handle] = true
+local function occupants(matchId)
+    local held = {}
+    if not (BR.Vehicles and BR.Vehicles.ridingIn) then return held end
+
+    BR.Roster.each(
+        -- EVERY STATE, NOT ONLY THE PLAYING ONES. The question is "is there
+        -- somebody in this van", and a player riding in the back while a
+        -- squadmate drives is in it whatever the roster calls them. The audience
+        -- test above is where states belong; this is a fact about a vehicle.
+        function(e) return e.matchId == matchId and e.ped ~= nil end,
+        function(_, e)
+            local veh = BR.Vehicles.ridingIn(e.ped)
+            if veh then held[veh] = true end
+        end)
+    return held
+end
+
 --- @param src integer
 --- @param key string
 --- @param x number|nil
@@ -354,6 +415,37 @@ end
 --- the whole of this feature's network cost, for nothing.
 --- @param matchId integer
 --- @param rec table
+--- What a record's blip should do on THIS pass.
+---
+--- ═══ ONE ANSWER FOR BOTH LISTS, AND FOR ALL FOUR CASES ═══
+---
+--- A station and a found van are shaped the same and are published by one rule,
+--- so the decision is written once. The record's DRAWN STATE is either a pair of
+--- coordinates or nothing at all, and this returns whether that state changed
+--- since the last pass and what it now is:
+---
+---   occupied, just became so     withdraw it     (the owner's rule firing)
+---   occupied, already withdrawn  say nothing     (the silence that keeps this
+---                                                 feature's network cost at
+---                                                 zero for parked vans)
+---   free, just became so         send its point  (somebody got out)
+---   free, and it moved           send its point  (the rule that was here)
+---
+--- WITHOUT THE `turned` HALF THIS FEATURE WOULD LOOK LIKE IT WORKED AND NOT
+--- COME BACK. Publishing sends transitions only, so a van whose blip is withheld
+--- while occupied and then simply stops being mentioned when the driver gets out
+--- would leave the squad with a permanently missing ambulance -- and a missing
+--- blip is exactly the failure nobody reports as a bug, because there is nothing
+--- on screen to point at.
+--- @param r table  a station or an ambient record
+--- @return boolean send
+--- @return number|nil x
+--- @return number|nil y
+local function sending(r)
+    if r.occupied then return r.turned == true, nil, nil end
+    return (r.turned == true or r.moved == true), r.x, r.y
+end
+
 local function publish(matchId, rec)
     if not A.blip or A.blip.enabled == false then return end
 
@@ -378,22 +470,34 @@ local function publish(matchId, rec)
             end
 
             if not had then
-                -- NEWLY QUALIFYING: the whole set, once.
-                for _, s in ipairs(rec.stations) do push(src, s.key, s.x, s.y) end
-                for key, f in pairs(rec.ambient) do push(src, key, f.x, f.y) end
+                -- NEWLY QUALIFYING: the whole set, once -- minus the vans
+                -- somebody is sitting in. Skipped rather than pushed as `gone`:
+                -- this player has no blip for a key they have never been sent,
+                -- and withdrawing one is a message about nothing. They get it
+                -- the moment the van empties, through `turned` below.
+                for _, s in ipairs(rec.stations) do
+                    if not s.occupied then push(src, s.key, s.x, s.y) end
+                end
+                for key, f in pairs(rec.ambient) do
+                    if not f.occupied then push(src, key, f.x, f.y) end
+                end
                 showing[src] = matchId
                 return
             end
 
             -- ALREADY SHOWING: only what changed. A find that is new to this
             -- pass carries `moved` set, so it reaches a player who already has
-            -- the rest by the same road a station that drove off does.
+            -- the rest by the same road a station that drove off does -- and a
+            -- van that has just been climbed into or out of carries `turned`,
+            -- which reaches them by that same road again.
             for _, key in ipairs(rec.gone) do push(src, key, nil, nil) end
             for _, s in ipairs(rec.stations) do
-                if s.moved then push(src, s.key, s.x, s.y) end
+                local send, x, y = sending(s)
+                if send then push(src, s.key, x, y) end
             end
             for key, f in pairs(rec.ambient) do
-                if f.moved then push(src, key, f.x, f.y) end
+                local send, x, y = sending(f)
+                if send then push(src, key, x, y) end
             end
         end)
 end
@@ -414,13 +518,22 @@ end
 --- station that refilled itself would hand a squad an unlimited supply of the
 --- one vehicle this feature is built around.
 --- @param rec table
-local function refresh(rec)
+--- @param rec table
+--- @param held table  [vehicle handle] = true, from `occupants`
+local function refresh(rec, held)
     local kept = {}
     for _, s in ipairs(rec.stations) do
         local okEx, exists = pcall(DoesEntityExist, s.veh)
         if not okEx or not didHit(exists) then
             rec.gone[#rec.gone + 1] = s.key
         else
+            -- WHO IS IN IT, AND WHETHER THAT IS NEWS. `turned` is the edge and
+            -- `occupied` is the level; `sending` needs both, because a blip that
+            -- is already withheld must not be withheld again every second.
+            local was = s.occupied == true
+            s.occupied = held[s.veh] == true
+            s.turned = s.occupied ~= was
+
             s.moved = false
             local okPos, c = pcall(GetEntityCoords, s.veh)
             if okPos and c then
@@ -471,7 +584,10 @@ end
 --- live by one function above.
 --- @param matchId integer
 --- @param rec table
-local function refreshFound(matchId, rec)
+--- @param matchId integer
+--- @param rec table
+--- @param held table  [vehicle handle] = true, from `occupants`
+local function refreshFound(matchId, rec, held)
     local was = rec.ambient
     local now = {}
 
@@ -482,17 +598,33 @@ local function refreshFound(matchId, rec)
     -- the 23 carry on exactly as they did.
     if BR.Rescue and BR.Rescue.eachFound then
         local movedM = (A.blip and A.blip.movedM) or 1.0
-        BR.Rescue.eachFound(matchId, function(key, x, y)
+        -- THE HANDLE IS THE FOURTH ARGUMENT, AND IT IS NOT THE KEY PARSED BACK.
+        -- Occupancy is a question about a VEHICLE and the key is an opaque
+        -- string by construction (see BR.Rescue.eachFound's header); unpicking
+        -- `v:1234` here would make that format a contract between two files.
+        BR.Rescue.eachFound(matchId, function(key, x, y, veh)
+            local occupied = held[veh] == true
             local f = was[key]
             if not f then
                 -- NEW, AND `moved` IS TRUE ON PURPOSE. It is what carries a
                 -- freshly discovered van onto the map of a squad that is already
                 -- watching -- `rec.stations` sets the same flag at creation for
                 -- the same reason.
+                --
+                -- ...AND `turned` IS FALSE EVEN WHEN IT IS OCCUPIED, which is
+                -- not the same as a change nobody saw. A van discovered with
+                -- somebody in it has never been drawn anywhere, so there is
+                -- nothing to withdraw -- `sending` reads `occupied` and stays
+                -- silent. The pass that empties it sets `turned` and puts it on
+                -- the map for the first time.
                 now[key] = { x = (x or 0.0) + 0.0, y = (y or 0.0) + 0.0,
-                             moved = true }
+                             moved = true, occupied = occupied, turned = false }
                 return
             end
+            local wasIn = f.occupied == true
+            f.occupied = occupied
+            f.turned = occupied ~= wasIn
+
             f.moved = BR.Dist(x or f.x, y or f.y, f.x, f.y) > movedM
             if f.moved then f.x, f.y = x + 0.0, y + 0.0 end
             now[key] = f
@@ -682,12 +814,20 @@ BR.Sched.every((A and A.tickMs) or 1000, 'ambulances.tick', function()
         end
 
         advance(m.id, rec)
-        refresh(rec)
+
+        -- ONE OCCUPANCY READ FOR BOTH LISTS, TAKEN ONCE PER PASS. The two
+        -- refreshes below ask the same question of different vans, and this is
+        -- `refreshFound`'s own argument for mirroring rather than reading at
+        -- publish time: a fact computed per consumer is a fact several consumers
+        -- can get different answers to.
+        local held = occupants(m.id)
+
+        refresh(rec, held)
         -- BEFORE publish AND AFTER refresh, because both of them write
         -- `rec.gone` and publish is what drains it. A find that expired this
         -- second must be withdrawn in the same pass it expired in, or its blip
         -- survives until something else happens to move.
-        refreshFound(m.id, rec)
+        refreshFound(m.id, rec, held)
         publish(m.id, rec)
         rec.gone = {}
     end)

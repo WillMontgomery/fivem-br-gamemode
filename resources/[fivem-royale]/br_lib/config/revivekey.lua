@@ -331,6 +331,80 @@ BR.Config.ReviveKey = {
     },
 
     -- ------------------------------------------------------------------
+    -- THE MARKER THAT STANDS WHERE THE BODY USED TO
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-31: "After a player has bled out, their ped should become
+    -- invisible. Only the 3dmarker (type 24) and DUI should be shown at their
+    -- position. I like the blip though - let's keep that."
+    --
+    -- ═══ WHY THERE HAS TO BE ONE AT ALL ═══
+    --
+    -- The corpse was doing a job nobody had written down: it was the only thing
+    -- in the WORLD that said "the key is here". The blip is a dot on a minimap
+    -- and the DUI plate does not appear until `collectM` -- 2.5 metres -- so with
+    -- the body gone and nothing in its place a squadmate would have to walk onto
+    -- an unmarked patch of ground to discover the prompt. The marker is what
+    -- makes the plate findable, which is why the owner named the two together.
+    --
+    -- ═══ THE AUDIENCE IS THE SQUAD, AND IT IS NOT A CHOICE MADE HERE ═══
+    --
+    -- client/revivekey.lua draws this from its `keys` table, which is built from
+    -- the squad beacon and nothing else -- so the marker reaches exactly the
+    -- people who already have the blip and could already have the plate. Making
+    -- it visible to enemies would be a new fact about where somebody died
+    -- travelling to players who were never told it, which is the boundary
+    -- client/squadmates.lua states as "you see your squad, and nobody else".
+    --
+    -- ⚠ NONE OF THESE IS THE OWNER'S NUMBER. He specified the marker TYPE and
+    -- nothing else; the rest are a starting point chosen to be readable, in the
+    -- same spirit as `plate` above. The colour is the one part that is not
+    -- arbitrary -- see `colour`.
+    marker = {
+        -- HIS NUMBER, AND THE ONLY ONE HERE THAT IS. Type 24 is the flat
+        -- upright chevron GTA uses for a thing on the ground worth walking to.
+        -- Named explicitly rather than left as a literal in the draw pass so
+        -- that "the 3dmarker (type 24)" is greppable from his own words.
+        kind = 24,
+
+        -- Metres across, and how tall. Type 24 draws in the ground plane, so
+        -- the third dimension is thickness rather than height -- kept small so
+        -- the chevron reads as painted on the ground rather than as a box.
+        size = 0.8,
+        height = 0.4,
+
+        -- Metres above the key's recorded z. The key's z is the ground the body
+        -- was lying on (see GROUND_LIFT in client/revivekey.lua for the survey
+        -- behind that), and a marker drawn exactly on it z-fights the terrain.
+        lift = 0.06,
+
+        -- THE PLATE'S OWN DANGER RED, NOT A NEW COLOUR. `#F87171` is what
+        -- client/revivekey.lua sends the prompt page, and client/dbno.lua's
+        -- revive plate carries it too -- "the world prompts that are about a
+        -- PERSON rather than an object". Written out as the channels DrawMarker
+        -- actually takes, because a hex string here would be a second spelling
+        -- of one colour and the marker is the only consumer in this game that
+        -- cannot use the first. Alpha is the one free number: low enough to read
+        -- as a marking on the ground rather than a solid object standing on it.
+        colour = { r = 248, g = 113, b = 113, a = 140 },
+
+        -- How far away it is drawn, in metres.
+        --
+        -- WIDER THAN `collectM` BY A LOT, WHICH IS THE ENTIRE POINT -- it exists
+        -- to be seen from where you are, not from where the prompt already is.
+        -- Short of the blip's range on purpose: the minimap is how a squad
+        -- crosses the map to a body and this is how they find it once they are
+        -- in the area, and a chevron visible from 300m would be a second
+        -- long-range marker competing with the one the owner asked to keep.
+        drawM = 120.0,
+
+        -- Does it spin? GTA rotates a marker for you when asked, and a chevron
+        -- that turns is the engine's own idiom for "come here" -- the same thing
+        -- the loot markers do.
+        rotate = true,
+    },
+
+    -- ------------------------------------------------------------------
     -- COMING BACK: THE ARRIVAL SEQUENCE
     -- ------------------------------------------------------------------
     --

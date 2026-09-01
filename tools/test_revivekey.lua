@@ -244,6 +244,37 @@ do
     -- two are ours and are flagged as such in the config; what is asserted here
     -- is that they EXIST, because the server spends fadeMs + focusMs of black
     -- before it processes anything and a nil would collapse that wait to zero.
+    -- ═══ THE MARKER THAT REPLACES THE CORPSE ═══
+    --
+    -- Owner, 2026-08-31: "After a player has bled out, their ped should become
+    -- invisible. Only the 3dmarker (type 24) and DUI should be shown at their
+    -- position. I like the blip though - let's keep that."
+    --
+    -- 24 IS HIS NUMBER AND IS PINNED AS ONE. Every other value in this table is
+    -- ours and is asserted only to exist; this one he wrote down, so a change to
+    -- it should have to come through here.
+    ok(type(K.marker) == 'table', 'the ground marker has a config block')
+    ok(K.marker and K.marker.kind == 24,
+        'and it is type 24, which is the number the owner gave',
+        K.marker and tostring(K.marker.kind))
+
+    -- IT MUST OUTRANGE THE PLATE, AND BY A LOT. The whole reason it exists is
+    -- that hiding the body removed the only world-space thing that said where
+    -- the key was, and the plate does not appear until `collectM` -- 2.5m. A
+    -- marker drawn at the same radius would arrive exactly when it had stopped
+    -- being needed.
+    ok((tonumber(K.marker and K.marker.drawM) or 0) > (tonumber(K.collectM) or 0),
+        'and it is drawn from much further away than the plate it leads to',
+        ('%s vs %s'):format(tostring(K.marker and K.marker.drawM),
+                            tostring(K.collectM)))
+
+    -- LIFTED OFF THE GROUND. `rec.z` is the ground the body was lying on and a
+    -- marker drawn exactly on it z-fights the terrain, which reads as flicker
+    -- rather than as a number being wrong.
+    ok((tonumber(K.marker and K.marker.lift) or 0) > 0,
+        'and it stands off the ground rather than z-fighting it',
+        K.marker and tostring(K.marker.lift))
+
     ok(K.dropM == 150.0, 'they arrive 150m up, which is his number', K.dropM)
     ok((tonumber(K.fadeMs) or 0) > 0, 'behind a fade with a duration', K.fadeMs)
     ok((tonumber(K.focusMs) or 0) > 0,
@@ -539,6 +570,51 @@ do
 
     ok(clientCode:find(', c%.z %+ GROUND_LIFT') ~= nil,
         '...and it is what the key\'s own point is drawn at')
+
+    -- ═══ AND THE MARKER THAT NOW STANDS WHERE THE BODY DOES NOT ═══
+    --
+    -- "After a player has bled out, their ped should become invisible. Only the
+    -- 3dmarker (type 24) and DUI should be shown at their position."
+    --
+    -- TEXT PINS FOR THE SAME REASON AS THE THREE ABOVE: there is no client state
+    -- in this harness to run a frame pass in. What is pinned is the set of
+    -- decisions that would be silently wrong rather than broken.
+    ok(clientCode:find("BR%.Loop%.register%(BR%.Loop%.FRAME, 'revivekey%.marker'")
+           ~= nil,
+        'the marker is drawn on the FRAME band -- a DrawMarker lasts exactly one '
+            .. 'frame, so a TICK registration would draw a marker that strobes')
+
+    ok(clientCode:find('DrawMarker%(kind,') ~= nil
+       and clientCode:find('local kind%s+= math%.tointeger%(tonumber%(M%.kind%)%)')
+           ~= nil,
+        'and its type comes from the config rather than being a literal at the '
+            .. 'call site, so "type 24" is one authored fact')
+
+    -- THE ANCHOR. This is the whole of the file's header applied to a second
+    -- surface: a marker on the ped would sit somewhere different on every
+    -- screen -- the corpse is a death ragdoll and those "do not replicate
+    -- reliably" -- while the server ruled the take against a fixed point. The
+    -- plate and the marker must come off ONE pair of coordinates.
+    ok(clientCode:find('rz %+ lift') ~= nil
+       and clientCode:find('local rx, ry = tonumber%(rec%.x%), tonumber%(rec%.y%)')
+           ~= nil,
+        'and it is drawn at the KEY\'s recorded point, the server\'s own '
+            .. 'numbers, exactly where the plate goes -- never at a ped')
+
+    ok(clientCode:find('PlayerPedId%(%)') ~= nil
+       and clientCode:find('rec%.live == true and rec%.held ~= true') ~= nil,
+        'a key that is held or no longer live draws nothing, which is the same '
+            .. 'pair of fields the plate is chosen on')
+
+    -- NOT GATED ON `eligible()`, AND THAT IS DELIBERATE. That function refuses
+    -- anybody in a vehicle, and a squadmate DRIVING to a body is the player who
+    -- most needs to see where it is. A marker hung off `cand` would vanish the
+    -- moment somebody got in a car to go and fetch their mate.
+    local markerPass = clientCode:match(
+        "BR%.Loop%.register%(BR%.Loop%.FRAME, 'revivekey%.marker'.-\nend%)")
+    ok(markerPass ~= nil and markerPass:find('eligible()', 1, true) == nil,
+        'and the marker pass does NOT consult eligible(), so it still draws for '
+            .. 'the squadmate who is driving over to collect')
 
     -- ═══ AND THE VEHICLE LIFT IT USED TO BE COMPARED AGAINST IS GONE ═══
     --

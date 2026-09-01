@@ -989,6 +989,113 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.draw', function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- THE MARKER ON THE GROUND, WHERE THE BODY IS NO LONGER
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-08-31: "After a player has bled out, their ped should become
+-- invisible. Only the 3dmarker (type 24) and DUI should be shown at their
+-- position. I like the blip though - let's keep that."
+--
+-- ═══ WHY THE MARKER IS PART OF HIDING THE PED, NOT A DECORATION BESIDE IT ═══
+--
+-- The corpse was load-bearing and nothing said so. It was the only thing in the
+-- WORLD that marked where the key was: the blip is a dot on a minimap and the
+-- take plate does not exist until `collectM`, which is 2.5 metres. Hide the body
+-- and the plate becomes a thing you find by walking over unmarked ground. So
+-- this is the world-space half of what the corpse used to do, and the owner named
+-- the two in one sentence for that reason.
+--
+-- ═══ THE SAME POINT THE PLATE USES, AND FOR THE SAME ARGUMENT ═══
+--
+-- `rec.x/y/z` off the squad beacon -- the SERVER'S OWN NUMBERS, the ones the take
+-- ruling is measured against, which is the whole of this file's header. It is
+-- emphatically NOT the ped: that ped is now invisible, and even when it was not,
+-- "a corpse's position is a death ragdoll -- the one thing this file already
+-- knows do not replicate reliably". A marker anchored to it would sit somewhere
+-- different on every screen while the server ruled against a fixed point.
+--
+-- So the chevron and the plate are drawn from ONE pair of coordinates, and the
+-- thing a player walks to is the thing the server will accept.
+--
+-- ═══ ITS OWN PASS, NOT A BRANCH OF THE PLATE'S ═══
+--
+-- The plate draws ONE candidate -- the key `choose` picked, at 2.5m, for a player
+-- who is ALIVE, on foot and eligible. This draws EVERY key the squad still has
+-- outstanding, out to `drawM`, with none of those conditions: a squadmate driving
+-- to the body must see where they are going, and `eligible()` refuses anybody in
+-- a vehicle. Hanging it off `cand` would have made the marker appear exactly when
+-- it had stopped being needed.
+--
+-- WHAT IT IS GATED ON IS THE SAME THING THE BLIP IS: membership and staleness.
+-- `keys` is rebuilt whole on every push and the server goes quiet rather than
+-- sending an empty list, so a key that was spent, taken or expired stops arriving
+-- and stops being drawn -- with no teardown written anywhere, exactly as the
+-- header says. There is nothing here that can leave a marker on the ground.
+--
+-- A KEY THAT IS HELD OR NO LONGER LIVE DRAWS NOTHING, which is the same pair of
+-- fields `choose` reads to decide there is a plate. Once the squad owns the key
+-- the place it was dropped means nothing -- the act moved to an ambulance -- and
+-- once the pickup has expired there is nothing at the body to walk to at all. The
+-- blip stays in both cases, and that is the owner's answer to where a mate went
+-- down: he asked to keep it.
+local M = (K and type(K.marker) == 'table') and K.marker or nil
+
+BR.Loop.register(BR.Loop.FRAME, 'revivekey.marker', function()
+    -- NO BLOCK, NO MARKER. An absent config table is a feature nobody has
+    -- configured rather than one to invent numbers for; individual numbers below
+    -- do fall back, which is `plateNumbers`' split and the same reasoning.
+    if not M then return end
+    if not K or K.enabled ~= true then return end
+
+    -- THE CHEAP REFUSALS FIRST, in `eligible()`'s order and for its reason: on
+    -- almost every frame of almost every match this squad has no outstanding
+    -- key, and that answer must cost one comparison.
+    if next(keys) == nil then return end
+    if GetGameTimer() - lastPush > STALE_MS then return end
+
+    local kind  = math.tointeger(tonumber(M.kind)) or 24
+    local size  = tonumber(M.size) or 0.8
+    local tall  = tonumber(M.height) or 0.4
+    local lift  = tonumber(M.lift) or 0.06
+    local reach = tonumber(M.drawM) or 120.0
+    -- `~= false` RATHER THAN `== true`: an unset knob keeps the shipped
+    -- behaviour, and only an explicit `false` turns the spin off.
+    local spin  = M.rotate ~= false
+
+    local col = (type(M.colour) == 'table') and M.colour or {}
+    local cr = math.tointeger(tonumber(col.r)) or 248
+    local cg = math.tointeger(tonumber(col.g)) or 113
+    local cb = math.tointeger(tonumber(col.b)) or 113
+    local ca = math.tointeger(tonumber(col.a)) or 140
+
+    -- MEASURED FROM THE PED AND NOT FROM BR.Spectate.watchPoint(). A spectator
+    -- has no key of their own in this table -- the beacon handler drops our own
+    -- row -- and the bodies they are watching belong to a squad they are still
+    -- in, so drawing round the camera would put chevrons on a screen whose owner
+    -- cannot walk to any of them. The player is who this is for.
+    local p = GetEntityCoords(PlayerPedId())
+
+    for _, rec in pairs(keys) do
+        if rec.live == true and rec.held ~= true then
+            local rx, ry = tonumber(rec.x), tonumber(rec.y)
+            local rz = tonumber(rec.z)
+            if rx and ry and rz and BR.Dist(p.x, p.y, rx, ry) <= reach then
+                -- LIFTED OFF THE GROUND BY A FEW CENTIMETRES. `rec.z` is the
+                -- ground the body was lying on, and a marker drawn exactly on it
+                -- z-fights the terrain -- which reads as the marker flickering
+                -- rather than as a number being wrong.
+                DrawMarker(kind, rx, ry, rz + lift,
+                    0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                    size, size, tall,
+                    cr, cg, cb, ca,
+                    false, false, 2, spin, nil, nil, false)
+            end
+        end
+    end
+end)
+
+-- ---------------------------------------------------------------------------
 -- The two presses: taking one off the ground, and buying the lot
 -- ---------------------------------------------------------------------------
 

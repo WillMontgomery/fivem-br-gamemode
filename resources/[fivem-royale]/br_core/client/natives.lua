@@ -1634,9 +1634,7 @@ function BR.Native.applyGameRules()
     -- The shot is a character portrait now (BR.LobbyCam) and the ped IS the
     -- subject -- hiding it would leave the camera pointed at scenery.
     --
-    -- YOUR OWN PED IS SIMPLY VISIBLE, and that is the whole rule here.
-    --
-    -- Hiding other players from you is NOT done from this side. It was tried
+    -- Hiding OTHER players from you is NOT done from this side. It was tried
     -- twice -- the owner hiding itself over the network, then the owner
     -- calling _NETWORK_SET_ENTITY_INVISIBLE_TO_NETWORK on itself -- and both
     -- failed, the second because that native is widely reported not to work
@@ -1644,14 +1642,67 @@ function BR.Native.applyGameRules()
     -- frame, with SET_ENTITY_LOCALLY_INVISIBLE; see the long note in
     -- client/squadmates.lua for why that is the only one that cannot lose.
     --
-    -- Nothing about visibility is negotiated between clients any more, which
-    -- is the point: there is no property for two machines to disagree about.
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- ...AND A BLED-OUT PLAYER'S BODY IS THE SECOND THING THIS HIDES
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-08-31: "After a player has bled out, their ped should become
+    -- invisible. Only the 3dmarker (type 24) and DUI should be shown at their
+    -- position. I like the blip though - let's keep that."
+    --
+    -- THE NETWORKED PROPERTY IS THE RIGHT TOOL HERE AND THE WRONG ONE IN THE
+    -- LOBBY, and the difference is who is supposed to see the ped. The lobby
+    -- failure was that SetEntityVisible hides you FROM YOURSELF as well, and the
+    -- lobby is a character shot -- so the one machine that had to keep seeing
+    -- the ped was the one that could not. An OUT player has no such stake: they
+    -- are watching a squadmate through a script camera, their own body is a
+    -- corpse behind them, and "invisible to everyone" is the whole request. The
+    -- property replicating is exactly what makes it reach the enemy standing
+    -- over the body, which no per-frame local hide on THIS machine could do.
+    --
+    -- SO IT IS ONE WRITE ON ONE CLIENT AND NOT A LOOP ON EVERY CLIENT. The
+    -- observer-side alternative would need each machine to enumerate players and
+    -- consult a roster mirror for their state, sixty times a second, all match,
+    -- to reproduce a fact the owning client already knows. The BUS rider beside
+    -- it on this line has been hidden from the whole server this way since M2.
+    --
+    -- NOTHING CAN LEAVE A PLAYER INVISIBLE. `latch.visible` is compared every
+    -- frame and `due` re-asserts on the heartbeat, so the write back to TRUE is
+    -- made by the same line the moment the state stops being OUT -- a revive
+    -- arrival, the trip home to the lobby, a match reset. The three resurrection
+    -- paths (client/spawn.lua, rescue.lua, skydive.lua) each assert it too, so
+    -- the exit is covered four ways and none of them is a teardown somebody has
+    -- to remember to write.
+    --
+    -- ═══ IT DOES NOT BREAK client/spectate.lua's "CORPSE WHERE THEY FELL" ═══
+    --
+    -- That note says a spectator's ped "is a corpse where they fell,
+    -- deliberately (see BR.Native.lockMinimap for why it is not moved and must
+    -- not be)", and lockMinimap's own header records the rejected proposal it
+    -- came from: "to move the dead ped to the target and make it invisible".
+    -- Both halves were declined together, but only one of them carries the
+    -- danger, and lockMinimap says which -- moving a ped "is only safe for [a
+    -- dead player watching a squadmate] and catastrophic in the [ADMIN who may
+    -- be alive and mid-match]" case. The hazard is DISPLACEMENT. Concealment was
+    -- refused as unnecessary, because the minimap did not need it.
+    --
+    -- client/dbno.lua's corpse nudge already drew this same distinction for
+    -- itself -- "spectate.lua's warning about moving a dead ped ... is about
+    -- DISPLACEMENT, and there is none here" -- and there is none here either.
+    -- Nothing is teleported and nothing occupies space next to a living player.
+    --
+    -- AND THE ADMIN IS UNTOUCHED BY CONSTRUCTION, which is the part that
+    -- matters. This is keyed on MY OWN PLAYER STATE being OUT, not on whether a
+    -- spectate session is running. An admin ghosting a match is ALIVE, so
+    -- `wantVisible` stays true for them and this line never fires -- the exact
+    -- case the whole warning exists for is the case the test cannot reach.
     --
     -- Written on change, and `due` already covers the two things that could
     -- undo it underneath us: the handle changing (a new ped is visible by
     -- default, and the write that matters is the one hiding a BUS rider) and
     -- the state changing, which is what this value is derived from anyway.
     local wantVisible = st ~= BR.PlayerState.BUS
+                        and st ~= BR.PlayerState.OUT
     if due or wantVisible ~= latch.visible then
         latch.visible = wantVisible
         SetEntityVisible(ped, wantVisible, false)

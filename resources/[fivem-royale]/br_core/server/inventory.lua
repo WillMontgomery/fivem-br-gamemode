@@ -941,6 +941,35 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         return
     end
 
+    -- ═══ A CAR IS UNPACKED ON FOOT, AND THE PRESS IS THE FIRST OF TWO ASKS ═══
+    --
+    -- Owner, 2026-08-31: "let's make sure the player cannot use their purchased
+    -- vehicle spawn while already inside another vehicle. They can only use it
+    -- while on foot."
+    --
+    -- THE SAME `shopCar` COUPLING AND NO OTHER, which is the rule the effect
+    -- branch below states at length: this file does not know what a catalogue
+    -- is, so it asks BR.Shop about a consumable that carries that field and
+    -- knows nothing else about cars. A server with no shop rules nothing and
+    -- consumes nothing differently, exactly as it does at the effect.
+    --
+    -- REFUSED HERE RATHER THAN AT THE EFFECT, AND THAT IS THE WHOLE PLACEMENT.
+    -- The item is CONSUMED four lines above BR.Shop.unpack is called -- see the
+    -- note there, a purchase is never refunded -- so a rule enforced at the
+    -- effect would cost a player their car for standing in one. Enforced at the
+    -- channel it costs them nothing at all: they step out and press again.
+    --
+    -- THE BOOLEAN REFUSES; THE STRING ONLY SPEAKS. BR.Shop.refusesUse returns
+    -- them apart on purpose (its header says why), so a build with no wording
+    -- still refuses in silence rather than allowing the use.
+    if c.shopCar and BR.Shop and BR.Shop.refusesUse then
+        local refused, why = BR.Shop.refusesUse(src)
+        if refused then
+            if why then BR.Server.notify(src, why, 'warn') end
+            return
+        end
+    end
+
     inv.using = {
         slot   = slot,
         item   = s.item,
@@ -1254,6 +1283,37 @@ BR.Sched.every(250, 'inv.use', function()
             -- so a dropped tick self-corrects on the next one instead of
             -- losing that increment for good.
             local c = BR.Config.ConsumableById[u.item]
+
+            -- ...AND THE SECOND ASK, WHICH IS THE ONE THAT ACTUALLY GUARDS IT.
+            --
+            -- "They can only use it while on foot" is a fact about the WHOLE
+            -- use, not about the frame it started on. This is a three-second
+            -- channel, so a player can press it standing in the road and be in
+            -- the passenger seat of a mate's car well before it lands -- and the
+            -- press-time refusal above sees none of that.
+            --
+            -- PLACED ABOVE THE PARTIALS AND ABOVE THE COMPLETION, so it runs on
+            -- every pass INCLUDING the one where `now >= u.endsAt`. That is what
+            -- makes it a guard rather than a courtesy: the item is consumed a
+            -- few lines below this point, and there is no pass on which it can
+            -- be spent without this test having just answered no.
+            --
+            -- CANCELLED, NOT COMPLETED-AND-DROPPED. cancelUse clears the channel
+            -- and pushes the inventory back without touching the slot -- "an
+            -- interrupted use costs nothing, which is why cancelling needs no
+            -- refund path at all" -- so the car survives to be spawned on foot.
+            --
+            -- THE SAME SENTENCE AS THE PRESS. config/shop.lua's note: the two
+            -- arms refuse for one reason and telling the player so in two
+            -- different wordings would read as two rules.
+            if c and c.shopCar and BR.Shop and BR.Shop.refusesUse then
+                local refused, why = BR.Shop.refusesUse(src)
+                if refused then
+                    BR.Inv.cancelUse(src, why)
+                    return
+                end
+            end
+
             if c and now < u.endsAt then
                 local total = math.max(1, u.ms or 1)
                 local pct = BR.Clamp((total - (u.endsAt - now)) / total, 0.0, 1.0)

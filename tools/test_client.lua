@@ -10000,7 +10000,14 @@ do
     SetCreateRandomCops = countCops
     SetCreateRandomCopsNotOnScenarios = countCops
     SetCreateRandomCopsOnScenarios = countCops
-    SetEntityVisible = noop2
+    -- RECORDED RATHER THAN DISCARDED. This was `noop2` until 2026-08-31, when
+    -- a bled-out player's ped joined the bus rider on the one line in
+    -- applyGameRules that writes it -- and a rule nothing can observe is a rule
+    -- the next edit deletes for free.
+    visWrites = {}
+    function SetEntityVisible(ped, on, p2)
+        visWrites[#visWrites + 1] = { on = on, kind = type(on), p2 = p2 }
+    end
     FreezeEntityPosition = noop2
     DisplayRadar = noop2
     DisableFrontendThisFrame = noop2
@@ -13245,6 +13252,109 @@ do
        .. 'match cannot bring it back')
 
     BR.State.me.state = BR.PlayerState.ALIVE
+end
+
+-- ======================================================================== --
+-- A BLED-OUT PLAYER'S BODY IS INVISIBLE, AND ONLY THEIRS
+-- ======================================================================== --
+--
+-- Owner, 2026-08-31: "After a player has bled out, their ped should become
+-- invisible. Only the 3dmarker (type 24) and DUI should be shown at their
+-- position. I like the blip though - let's keep that."
+--
+-- ═══ WHY THIS IS ASSERTED HERE AND NOT WHERE THE BODY IS ═══
+--
+-- Because applyGameRules is the ONLY writer of this property in the game, and
+-- the property is networked -- so what this block asserts is the whole of what
+-- every other machine will be told. There is no second place a corpse could be
+-- hidden from and no observer loop to check.
+--
+-- ═══ THE FOUR CASES, AND WHY EACH ONE IS A DIFFERENT BUG ═══
+--
+--   OUT       the request. A missing OUT term leaves the corpse standing.
+--   ALIVE     the un-hide. `latch.visible` is what makes the write happen once
+--             rather than per frame, so a rule that hid an OUT player without a
+--             path back would leave a REVIVED player invisible -- the worst
+--             version of this bug and the one that reads as an exploit.
+--   BUS       the rule that was already here. It shares one line with the new
+--             one, so an edit that spelled the new term as a replacement rather
+--             than an addition would un-hide every bus rider and no other test
+--             in this file would notice.
+--   DBNO      NOT hidden, and this is the case that is easy to get wrong by
+--             being helpful. A downed player is still in the world to be
+--             revived and shot at; client/dbno.lua hides its own ped for a
+--             fraction of a second with SET_ENTITY_LOCALLY_INVISIBLE while a
+--             pose lands, which is local, per-frame and nobody else's business.
+--             A networked hide here would make downed players unfindable.
+
+describe('the bled-out body is invisible, and comes back visible')
+do
+    --- Run one frame of the rules in a state, and answer what the ped's
+    --- visibility was set to -- or nil when the latch wrote nothing.
+    ---
+    --- forgetRules() BETWEEN CASES, so each answer is a fact about the state
+    --- rather than about the order the cases happen to be written in. Without
+    --- it the latch would suppress every write after the first and the whole
+    --- block would read `nil`.
+    local function visIn(st)
+        BR.State.me = { src = 1, state = st }
+        BR.State.match = { state = BR.MatchState.PLAYING }
+        BR.Native.forgetRules()
+        visWrites = {}
+        BR.Native.applyGameRules()
+        local last = visWrites[#visWrites]
+        return last and last.on, last and last.kind
+    end
+
+    local v, kind = visIn(BR.PlayerState.OUT)
+    ok(v == false, 'a bled-out player\'s ped is set INVISIBLE')
+    ok(kind == 'boolean',
+       '...with a real boolean, not a 1 or a 0 -- 0 IS TRUTHY IN LUA and this '
+       .. 'property is read back by the engine, not by us')
+
+    ok(visIn(BR.PlayerState.ALIVE) == true,
+       'and an ALIVE player is visible, which is the path back: a revive puts '
+       .. 'the state right and this line puts the body right')
+
+    ok(visIn(BR.PlayerState.BUS) == false,
+       'the bus rider is STILL hidden -- the new term was added to that rule, '
+       .. 'not written over it')
+
+    ok(visIn(BR.PlayerState.DBNO) == true,
+       'a DOWNED player is NOT hidden: they are still in the world to be '
+       .. 'revived, and dbno.lua\'s own cover is local and per-frame')
+
+    ok(visIn(BR.PlayerState.WARMUP) == true
+       and visIn(BR.PlayerState.LOBBY) == true,
+       'and nothing else was caught by the change')
+
+    -- ═══ THE TRANSITION, WHICH IS WHAT A LATCHED WRITE CAN GET WRONG ═══
+    --
+    -- The four cases above each start from forgetRules(), so they prove the
+    -- rule and say nothing about the latch. This drives OUT and then ALIVE with
+    -- the latch INTACT, which is what actually happens to a player who is
+    -- revived -- and it is the sequence where a `due`-only write would leave
+    -- somebody invisible until the next heartbeat.
+    BR.State.me = { src = 1, state = BR.PlayerState.OUT }
+    BR.State.match = { state = BR.MatchState.PLAYING }
+    BR.Native.forgetRules()
+    BR.Native.applyGameRules()
+
+    visWrites = {}
+    BR.Native.applyGameRules()
+    ok(#visWrites == 0,
+       'holding at OUT writes nothing on the next frame -- the latch that keeps '
+       .. 'this off the frame path is untouched')
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    visWrites = {}
+    BR.Native.applyGameRules()
+    ok(visWrites[1] and visWrites[1].on == true,
+       'and the frame the player comes back is the frame the body does, with no '
+       .. 'heartbeat in between')
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Native.forgetRules()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

@@ -929,12 +929,32 @@ BR.Config.Shop = {
     -- ------------------------------------------------------------------
     --
     -- Every player-facing string this feature produces is here, and there are
-    -- exactly three of them. Two are quoted verbatim from the owner and the
-    -- third is a number. NOTHING ELSE IS SPOKEN: no hints, no empty-state copy,
+    -- exactly four of them. Three are quoted verbatim from the owner and the
+    -- fourth is a number. NOTHING ELSE IS SPOKEN: no hints, no empty-state copy,
     -- no "you cannot afford this" of our own invention (the market's existing
     -- sentence is reused), no explanation of what the item does.
     boughtToast = 'Thanks for your purchase. It will be available in your '
                .. 'inventory once the match starts.',
+
+    -- ...AND THE ONE REFUSAL THIS FEATURE IS ALLOWED TO SPEAK.
+    --
+    -- Owner, 2026-08-31: "let's make sure the player cannot use their purchased
+    -- vehicle spawn while already inside another vehicle. They can only use it
+    -- while on foot. If they try to use it while not on foot, issue a toast
+    -- stating 'You can only spawn a vehicle while on foot.'"
+    --
+    -- HIS SENTENCE, INCLUDING THE FULL STOP, and it is the ONLY thing said about
+    -- this rule anywhere. No prompt hint, no greyed slot, no second wording for
+    -- the mid-use cancel -- server/inventory.lua raises this same string on both
+    -- of its two arms, because a player who gets into a car halfway through the
+    -- three-second use is being refused for the identical reason and being told
+    -- so twice differently would read as two rules.
+    --
+    -- IT IS A REFUSAL AND NOT A HINT, which is why server/shop.lua's rule about
+    -- silent failures does not cover it: that rule is about the engine losing a
+    -- car somebody paid for, where there is nothing true to say. This one is a
+    -- thing the player did and can undo by stepping out.
+    onFootToast = 'You can only spawn a vehicle while on foot.',
 
     -- ...AND THE SECOND SENTENCE OF THE SAME TOAST (#239).
     --

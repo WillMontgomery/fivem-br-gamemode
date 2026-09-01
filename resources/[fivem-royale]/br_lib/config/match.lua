@@ -159,26 +159,37 @@ BR.Config.Match = {
     -- these two survive `warmupSpawns` below taking over the PLAYER arrival.
     warmupRadius    = 60.0,
 
-    -- WHERE A PLAYER ACTUALLY LANDS WHEN THEY READY UP. Surveyed in game by
-    -- the owner on 2026-08-29, and picked from at random, one per arrival.
+    -- WHERE A PLAYER ACTUALLY LANDS WHEN THEY READY UP. Re-surveyed in game by
+    -- the owner on 2026-08-31, and picked from at random, one per arrival.
     --
     -- THEY REPLACE THE RANDOM SCATTER, and the reason is not tidiness. The
     -- scatter drew a point in a 30m disc around `warmupPos` and dropped the
-    -- player on whatever ground was under it; these are five places a person
-    -- stood. The first four are a cluster (a group arriving together still
-    -- arrives together); the fifth is off on its own, which is what stops
-    -- five simultaneous readies looking like a formation.
+    -- player on whatever ground was under it; these are three places a person
+    -- stood.
+    --
+    -- THREE SEPARATED STANDS, AND THAT IS THE CHANGE FROM THE FIVE THEY REPLACE.
+    -- The previous set was four points inside three metres of each other plus a
+    -- fifth off on its own, and the cluster was doing the work of "a group
+    -- arriving together still arrives together". These three are 26m, 28m and
+    -- 50m apart, so there is no cluster left to describe and nothing to arrange
+    -- them into a formation -- simultaneous readies land on genuinely different
+    -- parts of the apron. Sited by the owner, and used exactly as surveyed: this
+    -- project does not round, adjust or "correct" his coordinates.
+    --
+    -- THEY ARE NOT BOUNDED BY `warmupRadius`, and one of them is outside it.
+    -- That number anchors the communal LOOT layout (see it above) and stopped
+    -- bounding the player arrival the day this table took it over, so a stand
+    -- 68m from `warmupPos` is a stand the owner picked rather than a number out
+    -- of range.
     --
     -- THE TELEPORT ONTO ONE OF THESE IS THE ORDERING THE WHOLE FIX TURNS ON.
     -- See BR.LobbyPed in br_core/client/lobbyped.lua: the ped is moved HERE
     -- first and only becomes a networked, visible-to-everyone ped afterwards,
     -- so it is never a stranger appearing on the lobby mark.
     warmupSpawns    = {
-        { x = 4498.92, y = -4456.00, z = 4.37, heading = 193.3 },
-        { x = 4500.47, y = -4455.57, z = 4.37, heading = 167.1 },
-        { x = 4497.39, y = -4457.80, z = 4.37, heading = 227.2 },
-        { x = 4508.75, y = -4456.06, z = 4.35, heading = 149.0 },
-        { x = 4461.69, y = -4475.51, z = 4.27, heading = 261.1 },
+        { x = 4467.42, y = -4486.29, z = 4.21, heading = 322.8 },
+        { x = 4516.24, y = -4474.81, z = 4.19, heading = 84.1 },
+        { x = 4488.25, y = -4470.94, z = 4.22, heading = 198.3 },
     },
 
     -- ====================================================================

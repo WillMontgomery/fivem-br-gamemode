@@ -641,3 +641,89 @@ function BR.Shop.unpack(src, rowId)
     TriggerClientEvent('br:shop:dress', src, { n = netId, row = row.id })
     return true
 end
+
+-- ---------------------------------------------------------------------------
+-- On foot, or not at all
+-- ---------------------------------------------------------------------------
+
+--- May this player unpack their car right now?
+---
+--- ═══ THE RULE ═══
+---
+--- Owner, 2026-08-31: "let's make sure the player cannot use their purchased
+--- vehicle spawn while already inside another vehicle. They can only use it
+--- while on foot."
+---
+--- ═══ IT IS RULED HERE, WHICH IS THE POINT ═══
+---
+--- server/inventory.lua calls this and speaks the answer; nothing about the
+--- decision is on a client. The client is not asked whether it is on foot and
+--- is not trusted about it: `BR.Vehicles.ridingIn` reads the SERVER's own copy
+--- of the ped, so a modified client that suppresses its own prompt, forges an
+--- INV_USE or lies about anything at all still meets the same read. There is
+--- deliberately no client half to keep in step -- a hidden slot would be an
+--- interface improvement and never a boundary, and this feature already learned
+--- from the reverse case that two ends disagreeing shows up as a keypress that
+--- does nothing.
+---
+--- ═══ WHY THE REFUSAL AND THE SENTENCE COME BACK SEPARATELY ═══
+---
+--- Because a missing string must not delete a rule. This file's standing
+--- convention is that absent copy means SAY NOTHING (see the header of the
+--- wording block in config/shop.lua), and returning the sentence alone would
+--- quietly turn "no copy" into "spawn a car inside a car" -- the copy rule
+--- eating the safety rule. So the boolean is the ruling and the string is only
+--- what to say about it; a caller with no sentence still refuses, in silence.
+---
+--- ═══ AND IT IS ASKED MORE THAN ONCE ═══
+---
+--- The use is a three-second channel (`useMs` in config/shop.lua), so "on foot"
+--- is not a fact established at the press -- a player can start this standing in
+--- the road and finish it in the passenger seat of a mate's car. inventory.lua
+--- therefore asks on every pass of the channel as well as at the start, and the
+--- last time it asks is the pass that consumes the item. Nothing is spent by a
+--- refusal on any of them.
+--- @param src integer
+--- @return boolean refused
+--- @return string|nil why  the owner's sentence, when there is one to say
+function BR.Shop.refusesUse(src)
+    -- ═══ THE ROSTER'S SAMPLED PED, AND NOT A FRESH GetPlayerPed ═══
+    --
+    -- This is the server's own ped either way -- nothing here is reported by a
+    -- client -- but the two spellings are not equally safe, and server/roster.lua
+    -- carries the reason in as many words:
+    --
+    --     "GET_PLAYER_PED is declared as `Entity GET_PLAYER_PED(char*
+    --      playerSrc)` -- playerSrc is documented as a STRING. Passing the
+    --      numeric roster key returned 0 for every player, so positions silently
+    --      never sampled"
+    --
+    -- A rule built on `GetPlayerPed(src)` with a numeric src would therefore read
+    -- 0 for everybody, refuse nothing, and pass every test in the suite -- which
+    -- is the exact failure shape this whole change is trying to avoid, since the
+    -- refusal is invisible when it does not happen.
+    --
+    -- `entry.ped` IS THAT SAMPLE, TAKEN THROUGH THE KNOWN-GOOD SPELLING once per
+    -- roster pass, and it is what the storm, the health audit, the roadkill
+    -- detector and server/ambulances.lua's own occupancy read all rule on. One
+    -- answer to "which ped is this player" on this server, rather than a second
+    -- one taken here in a form that has already failed once.
+    --
+    -- 0 IS TRUTHY IN LUA, so it is compared and not tested. An unresolvable ped
+    -- is allowed through rather than refused: it is the same absence that makes
+    -- BR.Shop.unpack give up two functions above, and refusing on it would turn a
+    -- streaming hiccup into a spent item and no car.
+    local e = BR.Roster.get(src)
+    local ped = math.tointeger(tonumber(e and e.ped)) or 0
+    if ped == 0 then return false, nil end
+
+    -- NIL-GUARDED ON THE MODULE, not on the answer. server/vehicles.lua carries
+    -- the citizenfx/fivem#4006 workaround this question cannot be asked
+    -- correctly without, and a build without that file is one where the honest
+    -- answer is "cannot tell" -- which, by the same argument as the ped above,
+    -- is not a refusal.
+    if not (BR.Vehicles and BR.Vehicles.ridingIn) then return false, nil end
+    if BR.Vehicles.ridingIn(ped) == nil then return false, nil end
+
+    return true, S.onFootToast
+end

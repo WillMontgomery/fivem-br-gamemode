@@ -1419,13 +1419,28 @@ end
 --- match-wide and always published to the whole match; what changes is that a
 --- blip now appears only while the viewer's OWN squadmate is out, so the surface
 --- is strictly smaller than it was.
+--- ═══ THE HANDLE COMES OUT TOO, AND IT IS NOT REDUNDANT WITH THE KEY ═══
+---
+--- The key is `'v:' .. veh` and the handle could therefore be recovered by
+--- parsing it back out. That is exactly what this fourth argument exists to stop
+--- somebody doing: the key is an OPAQUE STRING by construction -- "both are just
+--- strings here" is the whole reason a station key and a found key can be
+--- published by one rule -- and a consumer that unpicks it has silently made the
+--- format load-bearing across two files.
+---
+--- server/ambulances.lua needs the handle because a blip is now withheld while a
+--- player is sitting in that van (owner, 2026-08-31: "let's not show a blip for
+--- an ambulance while a player is in that ambulance"), and occupancy is a
+--- question about a VEHICLE. Handing it over costs nothing -- the loop already
+--- has it in scope -- and every existing caller ignores a fourth argument it was
+--- not written to take.
 --- @param matchId any
---- @param fn fun(key: string, x: number, y: number)
+--- @param fn fun(key: string, x: number, y: number, veh: integer)
 function BR.Rescue.eachFound(matchId, fn)
     if not matchId or not fn then return end
     for veh, rec in pairs(found) do
         if rec.matchId == matchId then
-            fn('v:' .. tostring(veh), rec.x, rec.y)
+            fn('v:' .. tostring(veh), rec.x, rec.y, veh)
         end
     end
 end

@@ -591,10 +591,14 @@ end
 
 do
     local C = BR.Config.Match.lobbyEntrance
-    ok(#BR.Config.Match.warmupSpawns == 5, 'five warmup spawns are authored')
-    ok(BR.Config.Match.warmupSpawns[1].x == 4498.92
-       and BR.Config.Match.warmupSpawns[5].heading == 261.1,
-       'the warmup spawns are the surveyed numbers')
+    ok(#BR.Config.Match.warmupSpawns == 3, 'three warmup spawns are authored')
+    ok(BR.Config.Match.warmupSpawns[1].x == 4467.42
+       and BR.Config.Match.warmupSpawns[1].heading == 322.8
+       and BR.Config.Match.warmupSpawns[2].x == 4516.24
+       and BR.Config.Match.warmupSpawns[2].heading == 84.1
+       and BR.Config.Match.warmupSpawns[3].x == 4488.25
+       and BR.Config.Match.warmupSpawns[3].heading == 198.3,
+       'the warmup spawns are the surveyed numbers, every one of them')
 
     -- THE CLIPSETS, AND THE TRAILING @. `anim@move_m@grooving` without it is a
     -- different string that RequestAnimSet answers nothing for -- which presents
@@ -1231,8 +1235,14 @@ do
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- 10. THE SPAWN IS ONE OF THE FIVE, AND NOT ALWAYS THE SAME ONE
+-- 10. THE SPAWN IS ONE OF THE AUTHORED ONES, AND NOT ALWAYS THE SAME ONE
 -- ═══════════════════════════════════════════════════════════════════════════
+--
+-- COUNTED AGAINST THE TABLE RATHER THAN AGAINST A LITERAL. The owner re-surveys
+-- these -- five became three on 2026-08-31 -- and a hardcoded count makes every
+-- re-survey fail a test that has nothing to say about the change. What the
+-- assertion is actually for is that the draw reaches EVERY authored stand and
+-- does not get stuck on one, and that is the same claim at any length.
 
 do
     local seen = {}
@@ -1244,7 +1254,10 @@ do
     pass = pass - 200                              -- undo the placeholder counts
     local n = 0
     for _ in pairs(seen) do n = n + 1 end
-    ok(n == 5, ('all five warmup spawns are reachable (saw %d)'):format(n))
+    local authored = #BR.Config.Match.warmupSpawns
+    ok(n == authored,
+       ('all %d authored warmup spawns are reachable (saw %d)')
+           :format(authored, n))
 
     -- An emptied list falls back to the old scatter rather than stacking every
     -- player on one coordinate.
