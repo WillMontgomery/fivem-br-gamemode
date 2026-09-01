@@ -42,7 +42,7 @@ import VoiceMark from './VoiceMark'
  * ...AND A DECISION NEEDS A NUMBER. Two of the three things the owner could not
  * read off this panel in the playtest were quantities: how long a downed mate
  * has left, and what a mate's health and shield actually are. Both are now
- * numerals rather than lengths -- see BleedClock and VitalBar below. A bar
+ * numerals rather than lengths -- see RowClock and VitalBar below. A bar
  * answers "roughly how much?" at a glance and that is all it will ever answer;
  * "can I get there in time" and "is he one shot from down" are questions with
  * digits in them.
@@ -89,27 +89,44 @@ function useDeathSequence(m: SquadMember) {
 }
 
 /**
- * HOW LONG A DOWNED MATE HAS LEFT.
+ * A DEADLINE ON A SQUAD ROW, COUNTED DOWN.
  *
- * Owner, from the playtest: "There's no way for team mates to see how much time
- * is left on DBNO players." A squad's whole decision -- push the pickup or take
- * the fight first -- is a question about this number, and the only player who
- * could see it was the one who could do nothing with it.
+ * TWO CALLERS, AND THEY ARE ONE COMPONENT ON PURPOSE.
+ *
+ * HOW LONG A DOWNED MATE HAS LEFT. Owner, from the playtest: "There's no way
+ * for team mates to see how much time is left on DBNO players." A squad's whole
+ * decision -- push the pickup or take the fight first -- is a question about
+ * this number, and the only player who could see it was the one who could do
+ * nothing with it.
+ *
+ * ...AND HOW LONG THEIR KEY WILL LIE THERE. Owner, 2026-08-31: "If there is a
+ * timer to pickup their key, display it in the squad panel." It was BleedClock
+ * until that sentence, and generalising beat writing a second one: everything
+ * below -- the interval, the offset, the direct write, the rounding, the
+ * trailing `s` -- is a decision this panel has already made about what a
+ * countdown IS, and a second component would be a second place for all of it to
+ * be got subtly differently.
+ *
+ * ONE FORMAT, INCLUDING PAST A MINUTE. `Math.ceil(left / 1000)` and an `s`,
+ * whatever the number. The bleed clock already runs from 120s
+ * (BR.Config.Match.dbnoBleedBase) so three-digit seconds are not new here, and
+ * an `m:ss` for the three-minute pickup would have made the two clocks on one
+ * row disagree about what a countdown looks like.
  *
  * THE SAME NUMBER THE DOWNED PLAYER IS WATCHING, by construction: same field,
  * same clock, same `Math.ceil(left / 1000)` and the same trailing `s` as
  * DbnoOverlay. Two countdowns for one deadline that round differently would
  * have a squad and their downed mate reading two different answers out loud.
  *
- * `bleedEndsAt` is a SERVER timestamp, so it is compared to
- * `Date.now() + clockOffset` -- the rule StormBar, WarmupTimer and DbnoOverlay
- * already follow. Against a bare Date.now() it is wrong by however far the two
+ * `endsAt` is a SERVER timestamp -- both of them are, off the same squad beacon
+ * -- so it is compared to `Date.now() + clockOffset`, the rule StormBar,
+ * WarmupTimer and DbnoOverlay already follow. Against a bare Date.now() it is wrong by however far the two
  * clocks happen to sit apart, which is a number nobody can predict and
  * everybody would report as a broken timer.
  *
  * WRITTEN STRAIGHT TO THE NODE, exactly as DbnoOverlay does it, because the
  * alternative is re-rendering a plate several times a second to move two
- * digits -- and a squad can hold three of these at once.
+ * digits -- and a squad can now hold three of these at once per deadline.
  *
  * ON AN INTERVAL RATHER THAN rAF, which is the one place this deliberately
  * differs from DbnoOverlay. That component is on rAF because it also drives a
@@ -120,7 +137,14 @@ function useDeathSequence(m: SquadMember) {
  * text is only written when it actually differs, so a tick that changes nothing
  * touches no DOM at all.
  */
-function BleedClock({ endsAt, big }: { endsAt: number; big?: boolean }) {
+function RowClock({ endsAt, big, colour = 'var(--color-danger)' }: {
+  endsAt: number
+  big?: boolean
+  /** The clock wears the state it belongs to. The bleed deadline is danger --
+   *  it always was. The pickup deadline is the shade of the key mark it sits
+   *  beside, so the pair reads as one object rather than as two facts. */
+  colour?: string
+}) {
   const ref = useRef<HTMLSpanElement>(null)
   const offset = useUi((s) => s.clockOffset)
 
@@ -146,7 +170,7 @@ function BleedClock({ endsAt, big }: { endsAt: number; big?: boolean }) {
       className={`font-display leading-none tabular-nums shrink-0 ${
         big ? 'text-[1.05rem]' : 'text-[0.72rem]'
       }`}
-      style={{ color: 'var(--color-danger)', textShadow: 'var(--shadow-text)' }}
+      style={{ color: colour, textShadow: 'var(--shadow-text)' }}
     >
       --
     </span>
@@ -498,6 +522,33 @@ function Row({ m, talking, silent }: {
                   standing rule for an absent field: see the bleed clock below
                   and the level above. */}
               {(keyHeld || keyOut) && <KeyMark held={keyHeld} />}
+              {/* HOW LONG IS LEFT TO WALK TO THE BODY.
+
+                  Owner, 2026-08-31: "If there is a timer to pickup their key,
+                  display it in the squad panel."
+
+                  IT IS THE SAME CLOCK COMPONENT THE BLEED DEADLINE USES, which
+                  is the point: one clock discipline (an interval, not rAF; the
+                  server deadline against Date.now() + clockOffset; written
+                  straight to the node), one rounding, and one format. A second
+                  spelling of a countdown on one panel is two answers to "how
+                  many seconds is that" -- and the bleed clock already runs past
+                  a minute (dbnoBleedBase is 120s), so `m:ss` here would have
+                  been the odd one out rather than the tidy one.
+
+                  IT COMES WITH THE MARK, NOT WITH THE STAMP. The deadline is a
+                  fact about the KEY, so it sits next to the key in the key's own
+                  shade; OUT and DOWN keep the right edge every row shares.
+
+                  NOTHING AT ALL ONCE THE PICKUP HAS GONE, and that is why this
+                  is its own field rather than derived from `reviveKey === false`.
+                  The key outlives its pickup -- it is still 25 Volts at an
+                  ambulance for the rest of the match -- so the mark stays and
+                  only the clock goes. See SquadMember.reviveKeyEndsAt. */}
+              {!!m.reviveKeyEndsAt && (
+                <RowClock endsAt={m.reviveKeyEndsAt}
+                          colour="var(--color-text-dim)" />
+              )}
               <span
                 key={dead ? 'out' : 'down'}
                 className="mate-stamp font-display text-[0.62rem] tracking-[0.18em]"
@@ -531,7 +582,7 @@ function Row({ m, talking, silent }: {
             the instant a mate goes down and the whole stack jumps. */}
         {!dead && (downed ? (
           <div className="mt-1 flex h-[1.2rem] items-center justify-center">
-            {!!m.bleedEndsAt && <BleedClock endsAt={m.bleedEndsAt} big />}
+            {!!m.bleedEndsAt && <RowClock endsAt={m.bleedEndsAt} big />}
           </div>
         ) : (
           <div className="mt-1 flex flex-col gap-[0.2rem]">

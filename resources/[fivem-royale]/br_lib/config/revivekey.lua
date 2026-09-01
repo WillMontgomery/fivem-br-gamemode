@@ -53,21 +53,22 @@
 -- makes "unlimited -- if they can pay" (owner, 2026-08-30, #219 Q19) true.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
--- THE STRINGS ARE HERE NOW, AND EVERY ONE OF THEM IS A PLACEHOLDER
+-- THE STRINGS ARE HERE NOW, AND EVERY ONE OF THEM IS HIS
 -- ═══════════════════════════════════════════════════════════════════════════
 --
 -- This file used to say "NO STRINGS", and the reason it gave was that #219 Q20
 -- was unanswered. It is answered: the owner listed six lines on 2026-08-30 and
--- then said to stop waiting on him and ship it.
+-- then said to stop waiting on him and ship it, and he rewrote the collection
+-- half of them himself on 2026-08-31.
 --
--- SO ALL SIX LIVE IN ONE TABLE, `copy` BELOW, AND NOWHERE ELSE. That is the
+-- SO ALL NINE LIVE IN ONE TABLE, `copy` BELOW, AND NOWHERE ELSE. That is the
 -- whole point of the table: he can rewrite every word this feature speaks by
 -- editing one screen of one file, without opening the server module, the client
 -- module or the prompt page. No string in this feature may be written anywhere
 -- but there -- not a default in a `or`, not a fallback in the client, not a
 -- second copy in a comment that somebody later pastes.
 --
--- AND THERE ARE EXACTLY SIX. If the design ever needs a seventh, the answer is
+-- AND THERE ARE EXACTLY NINE. If the design ever needs a tenth, the answer is
 -- to ask him, not to write one. See the note over `copy`.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -93,13 +94,25 @@
 -- below. He did not give durations for the black or the focus hold; he gave the
 -- ORDER and the height. See each key for which half is his.
 --
--- AND THERE IS NO `reviveHp`, DELIBERATELY. A key revive hands back
--- BR.Config.Match.dbnoReviveHp -- the same 30 a squadmate's pick-up hands back
--- -- because it is the same act: a mate standing over a body in the open for a
--- few seconds. The 100 in config/rescue.lua is the argued exception (an
--- ultra-rare item spent in full on a ride the player could not shoot back
--- during), not the rule. A number of its own here would be a second answer to a
--- question that already has one, free to drift.
+-- AND THE HEALTH IS `reviveHp`, WHICH IS THE OWNER'S OWN NUMBER NOW.
+--
+-- "when a revive is processed using the key, the player should come back with
+--  full health"                                          -- owner, 2026-08-31
+--
+-- THIS FILE USED TO ARGUE THE OPPOSITE AT LENGTH, and the argument is worth
+-- keeping as a record of what his sentence overturned: a key revive handed back
+-- BR.Config.Match.dbnoReviveHp, the same 30 a squadmate's pick-up hands back,
+-- "because it is the same act". It is not the same act, and he has said so. A
+-- squad revive costs a mate a few exposed seconds beside a body; a key costs a
+-- death, an inventory spilled on the ground, a fetch across the map or 25
+-- Volts, and a six-second hold at a van. config/rescue.lua's `deliverHp = 100`
+-- already made exactly this trade for exactly this reason.
+--
+-- IT IS A NUMBER OF THIS FEATURE'S OWN, AND THAT IS NOW THE POINT rather than
+-- the objection. The old note called a second number "free to drift" from
+-- dbnoReviveHp; the two are SUPPOSED to differ, so sharing one would have been
+-- the drift. `reviveHp` is below, and BR.Config.Match.dbnoReviveHp is untouched
+-- -- an in-person DBNO revive still hands back 30.
 
 BR = BR or {}
 BR.Config = BR.Config or {}
@@ -237,6 +250,26 @@ BR.Config.ReviveKey = {
     -- ring is animated from this number and the server rules against it.
     reviveHoldMs = 6000,
 
+    -- The health a player is put back into the match on, when their squad spent
+    -- a key on them.
+    --
+    -- ═══ HIS SENTENCE, 2026-08-31, AND IT IS THE WHOLE OF THIS NUMBER ═══
+    --
+    --   "when a revive is processed using the key, the player should come back
+    --    with full health"
+    --
+    -- 100 IS FULL, and it is written as 100 rather than derived from anything
+    -- because that is what every other absolute health in this project is:
+    -- config/rescue.lua's `deliverHp`, BR.Config.Match.dbnoReviveHp, the values
+    -- HEALTH_SYNC carries. The engine's own 200-based scale is converted at the
+    -- edge, not here.
+    --
+    -- IT MOVES THE KEY REVIVE AND NOTHING ELSE. BR.Config.Match.dbnoReviveHp is
+    -- still 30 and an in-person DBNO pick-up still hands back 30 -- the owner
+    -- named one of the two and the other is untouched. See the header for what
+    -- this file used to argue and why his sentence retires it.
+    reviveHp = 100,
+
     -- ------------------------------------------------------------------
     -- WHERE THE PLATE HANGS ON THE VAN
     -- ------------------------------------------------------------------
@@ -353,24 +386,41 @@ BR.Config.ReviveKey = {
     reviveBeatMs = 1000,
 }
 
---- EVERY WORD THIS FEATURE SPEAKS, IN ONE PLACE, ALL OF IT PROVISIONAL.
+--- EVERY WORD THIS FEATURE SPEAKS, IN ONE PLACE, AND ALL OF IT HIS.
 ---
---- ⚠ PLACEHOLDER WORDING PENDING THE OWNER'S. He listed these six lines on
---- 2026-08-30 and asked for the feature to ship rather than wait on him
---- polishing them, so they are here to be CORRECTED IN ONE EDIT: every prompt,
---- every confirmation and every notice in server/revivekey.lua and
---- client/revivekey.lua reads out of this table and holds no string of its own.
---- Rewrite a value here and the game says the new thing everywhere, immediately.
+--- He listed six lines on 2026-08-30 and asked for the feature to ship rather
+--- than wait on him polishing them. On 2026-08-31 he polished them: he renamed
+--- the pickup plate and wrote the four sentences the collection and the revive
+--- now say. Every prompt, every confirmation and every notice in
+--- server/revivekey.lua and client/revivekey.lua reads out of this table and
+--- holds no string of its own. Rewrite a value here and the game says the new
+--- thing everywhere, immediately.
 ---
---- ═══ SIX, AND A SEVENTH IS A QUESTION RATHER THAN A COMMIT ═══
+--- ═══ NINE, AND A TENTH IS A QUESTION RATHER THAN A COMMIT ═══
 ---
 --- The standing rule on this project is that copy nobody asked for reads as
 --- slop, and this is the feature that has come closest to breaking it. There is
 --- deliberately NO refusal string, NO hint, NO empty state and NO progress
 --- label: a press the server declines says nothing at all, exactly as the CPR
 --- rescue and the ambulance heal say nothing (server/rescue.lua: "Nothing in
---- this feature ever tells a player anything"). If a seventh line ever seems
+--- this feature ever tells a player anything"). If a tenth line ever seems
 --- necessary, ask him for it.
+---
+--- ═══ `%s` IS WHERE HE WROTE `[player]` ═══
+---
+--- Four of the nine name somebody. He wrote the hole as `[player]`; it is `%s`
+--- here because that is the hole every sentence in this project uses and
+--- because BR.Notice.line is what fills it -- splitting on THIS string, which
+--- is ours, and never on the name, which is the player's. See
+--- br_lib/shared/notice.lua: that split is the whole reason a name can be drawn
+--- bold without a name being able to carry formatting.
+---
+--- ═══ DOUBLE QUOTES WHERE HIS WORDING HAS AN APOSTROPHE ═══
+---
+--- `"You've collected %s's revive key..."` rather than the same line in single
+--- quotes with two backslashes in it. Both are the same Lua string; only one of
+--- them can be read against his message without mentally unescaping it, and
+--- being readable against his message is the entire job of this table.
 ---
 --- ═══ `buy` CARRIES THE PRICE AS TEXT, AND THAT IS HIS SENTENCE ═══
 ---
@@ -387,7 +437,13 @@ BR.Config.ReviveKey.copy = {
     -- because there is a key to press. "I somehow picked up the dead player's
     -- key by walking up to them without seeing a DUI or pressing anything"
     -- (owner, 2026-08-30) is the report that put one there.
-    take      = 'Take revive key',
+    --
+    -- IT SAID "Take revive key" UNTIL 2026-08-31, and the owner renamed it
+    -- himself: "to be consistent with the terminology of the toast which reads
+    -- 'Revive key collected'". `collect` below is the toast he means, in the
+    -- words he has since given it -- the plate and the sentence it produces now
+    -- use one verb.
+    take      = 'Collect revive key',
 
     -- The world prompt at an ambulance, when this squad has something to buy.
     buy       = 'Buy revive keys — 25 Volts',
@@ -398,13 +454,53 @@ BR.Config.ReviveKey.copy = {
     -- only place it appears at all.
     revive    = 'Revive teammate',
 
-    -- Sent to the squad the moment a key is collected off the ground...
-    collected = 'Revive key collected',
-    -- ...and the moment a purchase lands.
+    -- ------------------------------------------------------------------
+    -- THE FOUR THAT NAME SOMEBODY (owner, 2026-08-31)
+    -- ------------------------------------------------------------------
+    --
+    -- `%s` is his `[player]`; see the note above. Where a line has two holes,
+    -- the comment says which person each one is, because he said so and getting
+    -- them the wrong way round is the one mistake here that still reads as a
+    -- sentence.
+
+    -- To the squad, THE SUBJECT EXCLUDED, the moment somebody stops being in the
+    -- match and their key is minted.
+    bledOut   = '%s has bled out! Get their revive key or purchase it at an '
+                .. 'ambulance!',
+
+    -- To the player who pressed, and to nobody else.
+    --
+    -- IT REPLACES `collected = 'Revive key collected'`, which is the line he
+    -- quoted on 2026-08-31 when he renamed the plate above -- so the terminology
+    -- his rename was for is the terminology this says. The old line went to the
+    -- whole squad; these two split that audience, because he wrote one sentence
+    -- for the collector and a different one for everybody else.
+    collect   = "You've collected %s's revive key. Get to an ambulance to "
+                .. "revive them!",
+
+    -- To the rest of the squad -- everyone but the collector, the person the key
+    -- belongs to included, since they are watching their own body.
+    --
+    -- FIRST HOLE IS THE COLLECTOR, SECOND IS THE OWNER OF THE KEY. His words:
+    -- "(first name is the collector, second is the owner of the key)".
+    collectedBy = "%s picked up %s's revive key! Get to an ambulance to revive "
+                .. "them.",
+
+    -- To the whole squad when a revive completes at an ambulance.
+    --
+    -- FIRST HOLE IS THE REVIVER, SECOND IS THE ONE BROUGHT BACK. His words:
+    -- "(first is the reviver, second is the revived)". The hyphen is his, not an
+    -- em dash -- `buy` above shows he types one when he wants one.
+    revived   = '%s revived %s - they are back in!',
+
+    -- ------------------------------------------------------------------
+
+    -- Sent to the squad the moment a purchase lands.
     bought    = 'Revive keys bought',
-    -- ...and the moment the thing on the ground goes away. NOT the key: the key
-    -- survives its pickup and is still buyable at an ambulance for the rest of
-    -- the match. This line is about the free option closing.
+
+    -- Sent to the squad the moment the thing on the ground goes away. NOT the
+    -- key: the key survives its pickup and is still buyable at an ambulance for
+    -- the rest of the match. This line is about the free option closing.
     expired   = 'Revive key lost',
 }
 

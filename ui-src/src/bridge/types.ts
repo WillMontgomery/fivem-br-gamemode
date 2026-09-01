@@ -298,6 +298,28 @@ export interface SquadMember {
    * that was asked for.
    */
   reviveKey?: boolean
+  /**
+   * WHEN THE PICKUP FOR THAT KEY RUNS OUT -- IF THERE IS STILL A PICKUP.
+   *
+   * Owner, 2026-08-31: "If there is a timer to pickup their key, display it in
+   * the squad panel."
+   *
+   * A SERVER DEADLINE, in the same clock `bleedEndsAt` uses, so it is compared
+   * to `Date.now() + clockOffset` and never to a bare Date.now(). Both
+   * countdowns a squad row can draw are then one clock and one rounding.
+   *
+   * ABSENT ONCE THE PICKUP HAS GONE, and that is not the same as `reviveKey`
+   * being absent. The key row keeps travelling after the three minutes are up --
+   * the key is still 25 Volts at an ambulance for the rest of the match, which
+   * is precisely why `reviveKey === false` outlives this field. br_core's
+   * client/state.lua gates the fold on the beacon's own `live`, so a deadline
+   * here always has time left on it when it arrives.
+   *
+   * IT RIDES THE SAME SQUAD-ONLY BEACON as `reviveKey`, and it is the same
+   * privacy argument: how long a squad has to reach their mate's body is what
+   * the squad that put him there would use.
+   */
+  reviveKeyEndsAt?: number
 }
 
 export interface SquadPayload {
@@ -711,8 +733,47 @@ export interface LobbyPayload {
  * twenty-nine seconds, or thirty lines that shove everything else off the
  * stack. With it, it is ONE line that counts itself down and then leaves.
  */
+/**
+ * ONE PIECE OF A NOTICE THAT NAMES A PLAYER.
+ *
+ * Owner, 2026-08-31: "Any time we mention a player by name in a toast their name
+ * should be bold."
+ *
+ * ═══ WHY THE SENTENCE ARRIVES PRE-SPLIT INSTEAD OF MARKED UP ═══
+ *
+ * A name is the one part of a notice a PLAYER writes. Put the formatting in the
+ * same string -- `**%s** is down!`, or a `{b:...}` token -- and the name is
+ * inside a grammar it can break out of: a player called `**` or `Bob}` is an
+ * injection with a sign-up form in front of it. The `{key:brptt}` token that
+ * KeyText already understands is safe for the opposite reason -- its payload is
+ * a command name from OUR source, over a fixed alphabet, never player data.
+ *
+ * So Lua splits the sentence on ITS OWN format string and sends the pieces:
+ *
+ *   { t: 'literal prose we wrote' }   -- may still hold a {key:} token
+ *   { b: "the player's own name" }    -- drawn bold, rendered as a text child
+ *
+ * A `b` part is never scanned, never tokenised and never escaped -- there is no
+ * grammar to escape it from. See br_lib/shared/notice.lua for the Lua half.
+ */
+export type NoticePart = { t: string } | { b: string }
+
 export interface ToastPayload {
   text: string
+  /**
+   * The same sentence, pre-split, WHEN IT NAMES A PLAYER. See NoticePart.
+   *
+   * ABSENT FOR EVERY NOTICE THAT NAMES NOBODY, which is almost all of them:
+   * BR.Notice.line returns a plain string when no name was marked, so those
+   * payloads are byte for byte what they always were and render through
+   * KeyText exactly as before.
+   *
+   * `text` IS STILL AUTHORITATIVE FOR EVERYTHING THAT IS NOT DRAWING. It is the
+   * same sentence flattened, and it is what the store dedups keyless repeats on
+   * and what the pause menu's history matches. Two representations of one
+   * sentence, and only the renderer reads the second.
+   */
+  parts?: NoticePart[]
   tone?: 'info' | 'warn' | 'danger' | 'success'
   /** Lifetime in ms. Ignored when `endsAt` or `sticky` is set. */
   ms?: number

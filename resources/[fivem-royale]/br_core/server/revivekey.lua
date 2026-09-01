@@ -83,9 +83,11 @@
 -- construction -- and anything that tried to hand kit back would be DUPLICATING
 -- loot that is already scattered on the ground in the 4.6m ring around them.
 --
--- HEALTH IS BR.Config.Match.dbnoReviveHp -- the same 30 a squadmate's pick-up
--- hands back, read at call time so the two can never drift. See
--- config/revivekey.lua on why there is no `reviveHp` of its own.
+-- HEALTH IS BR.Config.ReviveKey.reviveHp -- FULL, and it is the owner's own
+-- sentence of 2026-08-31: "when a revive is processed using the key, the player
+-- should come back with full health". It used to be the 30 an in-person pick-up
+-- hands back; that number has not moved and still governs the in-person revive.
+-- See config/revivekey.lua's `reviveHp` for the argument his sentence retired.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THE KEY IS MINTED ON THE EDGE THAT SPILLS THE INVENTORY. THE SAME ONE
@@ -213,13 +215,21 @@
 -- config makes the game quieter rather than making it print a fallback somebody
 -- else wrote.
 --
--- THREE OF THE SIX REACH PLAYERS FROM HERE (collected, bought, expired). The
--- other three are world prompts and belong to client/revivekey.lua.
+-- SIX OF THE NINE REACH PLAYERS FROM HERE (bledOut, collect, collectedBy,
+-- bought, expired, revived). The other three are world prompts and belong to
+-- client/revivekey.lua.
 --
--- AND A COMPLETED REVIVE SAYS NOTHING AT ALL. BR.Combat.revive ends with "%s
--- picked you up." / "You picked %s up."; this path deliberately does not borrow
--- them. There is no seventh line, the subject watches their own body stand up,
--- and the reviver's ring closes -- see the report.
+-- AND A COMPLETED REVIVE SPEAKS NOW, WHICH IT DID NOT UNTIL 2026-08-31. This
+-- file used to argue that it should not -- "the subject watches their own body
+-- stand up, and the reviver's ring closes" -- and the owner has since written
+-- the sentence himself: `copy.revived`. It still does not borrow BR.Combat's
+-- "%s picked you up.", which is the other act.
+--
+-- FOUR OF THE SIX NAME A PLAYER, AND `say` PASSES THE NAMES SEPARATELY. The
+-- line stays a string out of `copy` and the names travel as BR.Notice.who
+-- markers, so the rule this file is built on -- every word comes from the
+-- config table -- is unchanged, and the name is never inside the string. See
+-- br_lib/shared/notice.lua for why that separation is what makes bold safe.
 
 BR = BR or {}
 BR.ReviveKey = {}
@@ -245,13 +255,24 @@ end
 --- it is how invented copy ships wearing the owner's authority.
 ---
 --- SILENT ON A MISSING LINE. No default, no `or 'something'`.
+---
+--- ═══ THE NAMES ARE ARGUMENTS, NOT PART OF THE LINE ═══
+---
+--- Owner, 2026-08-31: "Any time we mention a player by name in a toast their
+--- name should be bold." Four of his lines have `%s` holes in them, and the
+--- values for those holes arrive here as varargs rather than pre-formatted into
+--- the string -- so `line` is still, character for character, a member of
+--- BR.Config.ReviveKey.copy, and the name is still a value that no parser ever
+--- looks at. BR.Notice.line does the splitting, on OUR string.
 --- @param who integer|integer[]
 --- @param line string|nil
 --- @param tone string|nil
-local function say(who, line, tone)
+--- @param ... any  values for the line's `%s` holes; names wrapped in
+---                 BR.Notice.who so the page draws them bold
+local function say(who, line, tone, ...)
     if type(line) ~= 'string' or line == '' then return end
     if not (BR.Server and BR.Server.notify) then return end
-    BR.Server.notify(who, line, tone or 'info', { ms = 4000 })
+    BR.Server.notify(who, BR.Notice.line(line, ...), tone or 'info', { ms = 4000 })
 end
 
 --- Did a native declared BOOL say yes?
@@ -339,6 +360,28 @@ local function squadSrcs(squadId, matchId)
     return out
 end
 
+--- The same squad, minus one person.
+---
+--- TWO OF THE OWNER'S 2026-08-31 LINES ARE ADDRESSED TO "the rest of the squad"
+--- and one is addressed to a single player, so the audience is now part of what
+--- each sentence means rather than a constant. He wrote a different sentence for
+--- the collector than for everybody else; sending both to everybody would say
+--- "You've collected..." to four people, only one of whom did.
+---
+--- BUILT ON squadSrcs RATHER THAN BESIDE IT, so "who is in this squad" stays one
+--- walk with one predicate and this is only the filter.
+--- @param squadId any
+--- @param matchId any
+--- @param exceptSrc integer|nil
+--- @return integer[]
+local function squadSrcsExcept(squadId, matchId, exceptSrc)
+    local out = {}
+    for _, src in ipairs(squadSrcs(squadId, matchId)) do
+        if src ~= exceptSrc then out[#out + 1] = src end
+    end
+    return out
+end
+
 -- ---------------------------------------------------------------------------
 -- Minting
 -- ---------------------------------------------------------------------------
@@ -403,6 +446,26 @@ function BR.ReviveKey.onEliminated(m, src)
         via = nil,
     }
     stat.minted = stat.minted + 1
+
+    -- ═══ THE SQUAD IS TOLD THERE IS SOMETHING TO GO AND GET ═══
+    --
+    -- Owner, 2026-08-31: "When a squadmate bleeds out, to the rest of the squad:
+    -- '[player] has bled out! Get their revive key or purchase it at an
+    -- ambulance!'"
+    --
+    -- HERE AND NOT IN combat.lua's eliminate(), because the sentence is about
+    -- the KEY -- it names both doors this file owns -- and because this is the
+    -- one place that knows a key was actually minted. A squad whose mate died in
+    -- a mode with no keys, or before this feature was enabled, must not be told
+    -- to go and fetch one; every early return above is a reason this line would
+    -- have been a lie.
+    --
+    -- THE REST OF THE SQUAD, WHICH IS HIS AUDIENCE AND NOT squadSrcs'. The
+    -- subject is excluded: "you have bled out" is not news to the person
+    -- watching their own body, and combat.lua's tellSquad excludes them from the
+    -- cue for the same reason one screen above this call.
+    say(squadSrcsExcept(e.squadId, e.matchId, src), copy().bledOut, 'warn',
+        BR.Notice.who(e.name))
 
     print(('[br_core] revivekey: minted for %s (%d), squad %s, pickup at '
         .. '(%.1f, %.1f) for %.0fs')
@@ -485,16 +548,22 @@ end
 --- Mark a key held, however it was come by, and tell the squad which.
 ---
 --- ONE FUNCTION FOR BOTH DOORS, so a bought key and a fetched one cannot come to
---- differ in anything but the word this says -- which is the owner's ruling
+--- differ in anything but what is SAID about it -- which is the owner's ruling
 --- ("Identical -- just a shortcut", 2026-08-30) held by construction rather than
 --- by two code paths agreeing.
+---
+--- AND THE SPEAKING LEFT IT ON 2026-08-31. It used to take the line and address
+--- the whole squad, which was right while both doors said one sentence to one
+--- audience. The owner then wrote TWO sentences for the fetch -- one to the
+--- collector, one to everybody else -- and left the purchase saying its single
+--- line, so the doors now differ in audience as well as in wording and a shared
+--- speaker would have to be told both. The STATE CHANGE is still one function,
+--- which is the half that had to be identical.
 --- @param e table
 --- @param via string
---- @param line string|nil  the owner's word for this door, from `copy`
-local function grant(e, via, line)
+local function grant(e, via)
     e.reviveKey.held = true
     e.reviveKey.via = via
-    say(squadSrcs(e.squadId, e.matchId), line, 'success')
 end
 
 --- Run out the clock to lose the pickup. That is the whole of this job now.
@@ -644,7 +713,24 @@ function BR.ReviveKey.take(src, targetSrc)
         return false, why
     end
 
-    grant(e, 'fetched', copy().collected)
+    grant(e, 'fetched')
+
+    -- ═══ TWO SENTENCES, TWO AUDIENCES, BOTH HIS (2026-08-31) ═══
+    --
+    -- "On collecting a key, to the collector" and "When someone collects a key,
+    -- to the rest of the squad" are his own headings for these two lines, and
+    -- they replace the single `Revive key collected` that used to go to
+    -- everybody. `entry` is the presser and `e` is the mate whose key it is;
+    -- `collectedBy` names them in that order because he said so -- "first name
+    -- is the collector, second is the owner of the key".
+    --
+    -- THE REST OF THE SQUAD INCLUDES THE ONE WHO IS OUT. They are watching their
+    -- own body and a mate has just picked up the thing that brings them back,
+    -- which makes them the person on that list who most wants the sentence.
+    say(src, copy().collect, 'success', BR.Notice.who(e.name))
+    say(squadSrcsExcept(e.squadId, e.matchId, src), copy().collectedBy,
+        'success', BR.Notice.who(entry.name), BR.Notice.who(e.name))
+
     stat.collected = stat.collected + 1
     print(('[br_core] revivekey: %d took the key for %s (%s)')
         :format(src, tostring(e.name), tostring(targetSrc)))
@@ -850,15 +936,22 @@ function BR.ReviveKey.buy(src, netId, done)
         local n = 0
         for _, k in ipairs(BR.ReviveKey.forSquad(squadId, matchId)) do
             if k.rec.held ~= true then
-                -- THE WORD IS SAID ONCE PER PURCHASE, NOT ONCE PER KEY. "one
-                -- purchase buys all revive keys for the squad" is one event to
-                -- the player, so `grant` is handed the line only for the first
-                -- of them and the rest are silent -- otherwise a squad with
-                -- three mates down would get three identical toasts for one
-                -- press.
-                grant(k.entry, 'bought', n == 0 and copy().bought or nil)
+                grant(k.entry, 'bought')
                 n = n + 1
             end
+        end
+
+        -- THE WORD IS SAID ONCE PER PURCHASE, NOT ONCE PER KEY. "one purchase
+        -- buys all revive keys for the squad" is one event to the player, so it
+        -- is said here rather than inside the loop -- otherwise a squad with
+        -- three mates down would get three identical toasts for one press.
+        --
+        -- IT MOVED OUT OF `grant` WITH EVERY OTHER SENTENCE (see grant), and the
+        -- guard moved with it unchanged: `n == 0` inside the loop and `n > 0`
+        -- after it are the same condition, which is that at least one key was
+        -- actually granted.
+        if n > 0 then
+            say(squadSrcs(squadId, matchId), copy().bought, 'success')
         end
         stat.bought = stat.bought + 1
 
@@ -1126,8 +1219,12 @@ end
 --- @param reviverSrc integer|nil  credited; nil for the console path
 --- @param at table                { x, y, z } of the ambulance they arrive over
 local function bringBack(src, e, reviverSrc, at)
-    local M = BR.Config.Match or {}
-    local hp = tonumber(M.dbnoReviveHp) or 30
+    -- FULL HEALTH, WHICH IS THE OWNER'S SENTENCE OF 2026-08-31: "when a revive
+    -- is processed using the key, the player should come back with full health".
+    -- It was BR.Config.Match.dbnoReviveHp -- the 30 an in-person pick-up hands
+    -- back, which still does. See config/revivekey.lua's `reviveHp` for the
+    -- argument this replaced.
+    local hp = tonumber(K and K.reviveHp) or 100
 
     -- THE KEY IS SPENT. Nilled and not un-held: `forSquad` filters on the record
     -- existing, so nil is the only representation of "gone" that cannot be
@@ -1181,6 +1278,26 @@ local function bringBack(src, e, reviverSrc, at)
         r.revives = (r.revives or 0) + 1
         TriggerClientEvent(BR.Net.REVIVEKEY_PROGRESS, reviverSrc,
             { pct = 100.0, target = src, done = true })
+
+        -- ═══ AND THE SQUAD IS TOLD, WHICH IS NEW ON 2026-08-31 ═══
+        --
+        -- Owner: "When a revive completes, to the squad: '[player] revived
+        -- [player] - they are back in!' (first is the reviver, second is the
+        -- revived)". The order is his and it is the whole of why `r` comes
+        -- before `e` here.
+        --
+        -- THE WHOLE SQUAD, BOTH PARTIES INCLUDED. He said "to the squad" with no
+        -- exclusion, and unlike the collection there is no second sentence for
+        -- anybody to be reading instead.
+        --
+        -- ONLY WITH A REVIVER, AND THAT IS A GAP RATHER THAN A RULE. His line
+        -- names two people, and `/brkey revive <id>` with no hold running and no
+        -- reviver named has only one. The feature's standing answer to a case he
+        -- has not worded is silence (see the header), so the console path with
+        -- nobody to credit says nothing -- rather than this file inventing a
+        -- one-name version of his sentence.
+        say(squadSrcs(e.squadId, e.matchId), copy().revived, 'success',
+            BR.Notice.who(r.name), BR.Notice.who(e.name))
     end
 
     stat.revived = stat.revived + 1
@@ -1490,7 +1607,7 @@ RegisterCommand('brkey', function(src, args)
                 BR.ReviveKey.outstanding(entry.squadId, entry.matchId),
                 holdMs(), reviveReach(),
                 (tonumber(K.collectM) or 2.5) + (tonumber(K.collectSlackM) or 1.0),
-                tonumber((BR.Config.Match or {}).dbnoReviveHp) or 30,
+                tonumber(K.reviveHp) or 100,
                 tonumber(K.dropM) or 150.0, arriveMs()))
 
     for _, k in ipairs(keys) do

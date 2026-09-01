@@ -609,8 +609,16 @@ export function startMockDriver(): void {
           { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF', level: 100 },
           { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24',
             bleedEndsAt: knockAt + 40_000, level: 7 },
+          // AND THE PICKUP'S OWN CLOCK, ON THE HALF OF THE CYCLE WHERE THERE
+          // IS SOMETHING ON THE GROUND. Owner, 2026-08-31: "If there is a
+          // timer to pickup their key, display it in the squad panel." The
+          // field is ABSENT while the key is held, which is the state the
+          // panel has a rule for -- the mark stays and the clock goes -- and a
+          // mock that always sent a deadline would leave that rule reviewable
+          // only in the source. Same argument as `level` and `bleedEndsAt`.
           { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6',
-            reviveKey: held },
+            reviveKey: held,
+            reviveKeyEndsAt: held ? undefined : knockAt + 180_000 },
         ],
       },
     })

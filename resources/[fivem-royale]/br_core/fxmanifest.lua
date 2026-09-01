@@ -19,6 +19,13 @@ shared_scripts {
     '@br_lib/shared/enums.lua',
     '@br_lib/shared/protocol.lua',
     '@br_lib/shared/names.lua',   -- display-name rules; client and server share them
+    -- A toast that names a player, split so the name can be drawn bold and can
+    -- never be anything but text. SHARED because both halves of every such
+    -- notice are here: server/combat.lua and server/party.lua compose them,
+    -- client/state.lua composes one and forwards them all. NO LOAD-ORDER
+    -- REQUIREMENT -- it reads nothing at load and calls no native -- and it
+    -- sits beside names.lua because the two are about the same word.
+    '@br_lib/shared/notice.lua',
     '@br_lib/shared/rng.lua',
     '@br_lib/shared/geo.lua',
     -- Point-in-polygon for the surveyed playable boundary. BEFORE

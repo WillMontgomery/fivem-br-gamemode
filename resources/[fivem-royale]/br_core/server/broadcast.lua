@@ -69,14 +69,30 @@ end
 ---
 --- BR.Server.notifyClear(target, key) is the withdrawal.
 ---
+--- A NOTICE MAY NAME A PLAYER, AND THEN IT IS NOT A STRING.
+---
+--- Owner, 2026-08-31: "Any time we mention a player by name in a toast their
+--- name should be bold." `text` therefore accepts either a plain string -- which
+--- is what almost every caller passes and what this has always taken -- or the
+--- table BR.Notice.line builds, which carries the same sentence FLATTENED plus
+--- the pieces it was flattened from. BR.Notice.wire is the one place that knows
+--- the difference; see br_lib/shared/notice.lua for why a name cannot be
+--- expressed as markup inside the string.
+---
 --- @param target integer|integer[]  a server id, or a list of them
---- @param text string
+--- @param text string|table  a sentence, or one built by BR.Notice.line
 --- @param tone string|nil  'info' | 'success' | 'warn' | 'danger'
 --- @param opts table|nil   { key, ms, endsAt, sticky }
 function BR.Server.notify(target, text, tone, opts)
     opts = opts or {}
+    local flat, parts = BR.Notice.wire(text)
     local payload = {
-        text   = text,
+        text   = flat,
+        -- ABSENT UNLESS SOMEBODY IS NAMED. BR.Notice.line returns a plain
+        -- string when no `who()` was passed, so the forty-odd notices in this
+        -- game that name nobody put nothing extra on the wire and reach the
+        -- page as exactly the payload they always did.
+        parts  = parts,
         tone   = tone or 'info',
         key    = opts.key,
         ms     = opts.ms,
@@ -109,13 +125,15 @@ function BR.Server.notifyClear(target, key)
 end
 
 --- A match-wide alert. Same stack, every client.
---- @param text string
+--- @param text string|table  a sentence, or one built by BR.Notice.line
 --- @param tone string|nil
 --- @param opts table|nil
 function BR.Server.notifyAll(text, tone, opts)
     opts = opts or {}
+    local flat, parts = BR.Notice.wire(text)
     TriggerClientEvent(BR.Net.NOTIFY, -1, {
-        text   = text,
+        text   = flat,
+        parts  = parts,
         tone   = tone or 'info',
         key    = opts.key,
         ms     = opts.ms,

@@ -484,6 +484,26 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# A toast that names a player draws that name in BOLD (owner, 2026-08-31), and
+# no player's name can carry formatting. The module's own behaviour -- including
+# a player called `**bold**`, `{b:x}` or `{key:brptt}` -- is driven in
+# test_shared; this gate is for what no suite can execute: the CALL SITES across
+# every resource, the TSX that draws the result, and the built bundle.
+#
+# THE FILE LIST IS PASSED IN, the way check_forward_locals and check_bool_natives
+# are fed: Lua cannot walk a directory without io.popen, which spawns cmd.exe on
+# a Windows box and would make a gate's coverage depend on the shell.
+#
+# The regression it exists for looks like correct code: `('%s is down!'):format(
+# entry.name)` is what every one of these call sites used to be, and it produces
+# a perfectly good notice with the bold silently gone.
+echo "${DIM}== notice names ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_notice_names.lua $(find resources -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # A key is drawn as a key (#209). The half that is a value -- the owner's
 # sentence, and that a resolved key LABEL never reaches it -- is unit-tested in
 # test_client. This gate is for what no suite can execute: that the token Lua

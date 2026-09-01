@@ -141,6 +141,17 @@ if party then
              'the panel draws two different marks off this one bit, and 0 is '
              .. 'truthy in Lua -- a truth test here is how they become one')
     end
+    -- AND THE PICKUP'S DEADLINE. Owner, 2026-08-31: "If there is a timer to
+    -- pickup their key, display it in the squad panel." The panel cannot derive
+    -- it -- `mintedAt` is on the beacon but BR.Config.ReviveKey.expiryMs is not,
+    -- and shipping the duration so the page could add the two would put the
+    -- three minutes in a second place.
+    if not party:find('expiresAt = k%.expiresAt') then
+        fail('the beacon no longer carries the pickup deadline',
+             'the squad panel counts it down, and the only other way to get it '
+             .. 'there is to send the interface a duration to add to a mint '
+             .. 'time -- which is the same number in two places')
+    end
 end
 
 -- ------------------------------------------------------- the client fold ---
@@ -175,6 +186,30 @@ if state then
         -- NO COORDINATES. The beacon's key row also carries x/y/z and a mint
         -- time, and those belong to client/revivekey.lua's world plates. On
         -- this payload they would be a position the interface could draw.
+        -- THE DEADLINE FOLDS IN TOO, AND ONLY WHILE THERE IS A PICKUP.
+        --
+        -- Owner, 2026-08-31: "If there is a timer to pickup their key, display
+        -- it in the squad panel."
+        --
+        -- GATED ON THE BEACON'S `live`, not on the number being present. The
+        -- key row keeps travelling after the three minutes are up -- that is
+        -- how the client knows the purchase is the only door left -- so a
+        -- deadline forwarded unconditionally leaves every expired key showing a
+        -- countdown pinned at 0s for the rest of the match. It is the same
+        -- class of mistake as collapsing the tri-state above, and it looks like
+        -- simplification.
+        if not push:find('reviveKeyEndsAt = ') then
+            fail('the squad payload no longer carries the pickup deadline',
+                 'the beacon has it and the panel counts it down; this fold is '
+                 .. 'the only thing between them')
+        end
+        if not push:find('b%.key%.live == true') then
+            fail('the pickup deadline is folded in without asking `live`',
+                 'the key row outlives its pickup on purpose -- the key is '
+                 .. 'still buyable -- so an ungated deadline draws a timer '
+                 .. 'stuck at zero on every expired key for the rest of the '
+                 .. 'match')
+        end
         if push:find('key%.x') or push:find('key%.y') or push:find('key%.z') then
             fail('the squad payload has grown the key\'s world position',
                  'the panel needs one bit. A coordinate here is a coordinate '
@@ -231,6 +266,31 @@ if panel then
               .. 'plate still draws, and BEFORE the stamp so DOWN and OUT keep '
               .. 'the right edge every row shares')
              :format(tostring(posGroup), tostring(posMark), tostring(posStamp)))
+    end
+
+    -- THE PICKUP CLOCK, BESIDE THE MARK IT BELONGS TO.
+    --
+    -- IT IS THE SAME COMPONENT THE BLEED DEADLINE USES, which is the assertion
+    -- rather than an implementation detail: one clock discipline (an interval,
+    -- the server deadline against Date.now() + clockOffset, written straight to
+    -- the node) and ONE FORMAT. A second countdown component is how one panel
+    -- ends up with `2:14` on one row and `134s` on the next, and the bleed clock
+    -- already runs from 120s so neither is obviously the odd one out.
+    if not panel:find('m%.reviveKeyEndsAt') then
+        fail('the squad panel no longer draws the pickup countdown',
+             'owner, 2026-08-31: "If there is a timer to pickup their key, '
+             .. 'display it in the squad panel"')
+    end
+    do
+        local clocks = select(2, panel:gsub('function%s+RowClock%s*%(', ''))
+            + select(2, panel:gsub('function%s+BleedClock%s*%(', ''))
+        if clocks ~= 1 then
+            fail(('the panel defines %d countdown components, not 1'):format(clocks),
+                 'the bleed deadline and the pickup deadline are two numbers on '
+                 .. 'one row. Two components is two answers to "what does a '
+                 .. 'countdown look like", and the disagreement shows up only '
+                 .. 'once both are on screen at once')
+        end
     end
 
     local markBody = panel:match('function KeyMark.-\n}')
@@ -294,12 +354,13 @@ if panel then
     end
 end
 
--- ------------------------------------------------------ no seventh string ---
+-- -------------------------------------------------------- no tenth string ---
 --
--- The copy table is the whole of what this feature is allowed to say, and the
--- owner listed exactly six lines. A HUD caption added "for clarity" is the
--- likeliest seventh, and it would arrive here rather than in the panel -- which
--- is the point of the table and the reason to count it from this side.
+-- The copy table is the whole of what this feature is allowed to say. The owner
+-- listed six lines on 2026-08-30 and rewrote the collection half into nine on
+-- 2026-08-31. A HUD caption added "for clarity" is the likeliest tenth, and it
+-- would arrive here rather than in the panel -- which is the point of the table
+-- and the reason to count it from this side.
 
 do
     local cfg = read(ROOT .. 'br_lib/config/revivekey.lua', codeOf)
@@ -309,14 +370,24 @@ do
             fail('config/revivekey.lua no longer defines a `copy` table',
                  'every word this feature speaks lives there and nowhere else')
         else
-            local n = select(2, copy:gsub("=%s*'", ''))
-            if n ~= 6 then
-                fail(('the revive key copy table holds %d lines, not 6'):format(n),
-                     'the owner listed six on 2026-08-30 and asked for the '
-                     .. 'feature to ship rather than wait on him polishing '
-                     .. 'them. A seventh is a question for him, not a commit '
-                     .. '-- and the squad panel\'s mark is a picture precisely '
-                     .. 'so it does not need one')
+            -- COUNT THE ASSIGNMENTS, NOT THE QUOTE MARKS. This counted
+            -- `=%s*'`, which was one hit per line only while every line was a
+            -- single-quoted one-liner. Four of the nine now run across two
+            -- source lines with `..`, and two are DOUBLE quoted -- deliberately,
+            -- because his wording has apostrophes in it and the same lines in
+            -- single quotes cannot be read against his message without mentally
+            -- unescaping two backslashes. Counting keys is what this always
+            -- meant.
+            local n = 0
+            for _ in copy:gmatch('\n%s*[%a_][%w_]*%s*=') do n = n + 1 end
+            if n ~= 9 then
+                fail(('the revive key copy table holds %d lines, not 9'):format(n),
+                     'the owner listed six on 2026-08-30, asked for the feature '
+                     .. 'to ship rather than wait on him polishing them, and '
+                     .. 'polished them himself on 2026-08-31 into nine. A tenth '
+                     .. 'is a question for him, not a commit -- and the squad '
+                     .. 'panel\'s mark is a picture precisely so it does not '
+                     .. 'need one')
             end
         end
     end
@@ -362,6 +433,17 @@ do
                 end
             end
         end
+
+        -- AND THE PICKUP CLOCK'S FIELD NAME. The glyph check above is satisfied
+        -- by any bundle built since the mark was drawn, so it says nothing
+        -- about a LATER edit to this panel. A payload field name is the one
+        -- thing in a TSX file that survives minification unchanged, which makes
+        -- it the freshness marker for everything added to the row after the
+        -- glyph was.
+        if not js:find('reviveKeyEndsAt', 1, true) then
+            fail('the built bundle does not know about the pickup deadline',
+                 'the bundle is stale. Run: cd ui-src && npm run build')
+        end
     end
 end
 
@@ -373,4 +455,6 @@ end
 io.write('ok   a squadmate\'s revive key travels only to their own squad, folds\n'
     .. '     into the panel as a tri-state that keeps its false, and draws a\n'
     .. '     key beside the OUT stamp -- two shades, no caption, on a plate\n'
-    .. '     that stops being faded to nothing\n')
+    .. '     that stops being faded to nothing. The pickup\'s own deadline\n'
+    .. '     rides the same beacon and counts down on the clock the bleed\n'
+    .. '     timer already uses, only while something is still on the ground\n')

@@ -15,6 +15,10 @@ shared_scripts {
     '@br_lib/shared/enums.lua',
     '@br_lib/shared/protocol.lua',
     '@br_lib/shared/names.lua',   -- display-name rules; client and server share them
+    -- client/players.lua names the player it is offering to report, and the
+    -- owner's rule is that a name in a toast is bold. Same module br_core uses;
+    -- this resource composes one notice with it and sends it locally.
+    '@br_lib/shared/notice.lua',
 }
 
 client_scripts {

@@ -75,6 +75,10 @@ for _, f in ipairs({
     'shared/enums.lua',
     'shared/geo.lua',        -- BR.Dist, which both the collect and reach tests use
     'shared/protocol.lua',   -- BR.Net, for the handler driven below
+    -- BR.Notice. Four of the owner's nine lines have a `%s` in them and `say`
+    -- fills the holes through BR.Notice.line, so the module cannot speak at all
+    -- without this.
+    'shared/notice.lua',
     'config/match.lua',
     'config/overrides.lua',
     'config/storm.lua',
@@ -118,28 +122,43 @@ do
         'and "what counts as an ambulance" is config/rescue.lua\'s one list, '
             .. 'not a copy of it')
 
-    -- ═══ EVERY WORD IS IN ONE TABLE, AND THERE ARE EXACTLY SIX OF THEM ═══
+    -- ═══ EVERY WORD IS IN ONE TABLE, AND THERE ARE EXACTLY NINE OF THEM ═══
     --
     -- #219 Q20 used to be unanswered and this suite used to assert the config
     -- held NO strings at all. The owner answered it on 2026-08-30 with a list of
-    -- six lines and an instruction to stop waiting on him, so the rule inverted
-    -- rather than lapsed: the six are pinned VERBATIM and a seventh is a
-    -- failure.
+    -- six lines and an instruction to stop waiting on him, and on 2026-08-31 he
+    -- rewrote the collection half himself: he renamed the pickup plate and wrote
+    -- the four sentences the mint, the collection and the revive now say. So the
+    -- rule inverted rather than lapsed: the nine are pinned VERBATIM and a tenth
+    -- is a failure.
     --
     -- WHY VERBATIM. These are his words. A tidy-up that turned "Buy revive keys
     -- — 25 Volts" into "Buy revive keys (25 Volts)" would be an agent editing
     -- the owner's copy -- the exact thing the standing rule forbids -- and it
-    -- would not error anywhere.
+    -- would not error anywhere. The four new ones are the likeliest to be
+    -- "improved": `revived` joins its clauses with a HYPHEN where this project's
+    -- house style is an em dash, and it is a hyphen because he typed one.
+    --
+    -- `%s` IS HIS `[player]`. He wrote the hole as `[player]` in prose; it is
+    -- `%s` in the table because that is the hole BR.Notice.line fills. That the
+    -- name ends up OUTSIDE the string is driven in `notify` below, against the
+    -- real module.
     local C = K.copy
     ok(type(C) == 'table', 'the wording lives in one table')
     if type(C) == 'table' then
         local want = {
-            take      = 'Take revive key',
-            buy       = 'Buy revive keys — 25 Volts',
-            revive    = 'Revive teammate',
-            collected = 'Revive key collected',
-            bought    = 'Revive keys bought',
-            expired   = 'Revive key lost',
+            take        = 'Collect revive key',
+            buy         = 'Buy revive keys — 25 Volts',
+            revive      = 'Revive teammate',
+            bledOut     = '%s has bled out! Get their revive key or purchase '
+                          .. 'it at an ambulance!',
+            collect     = "You've collected %s's revive key. Get to an "
+                          .. "ambulance to revive them!",
+            collectedBy = "%s picked up %s's revive key! Get to an ambulance "
+                          .. "to revive them.",
+            revived     = '%s revived %s - they are back in!',
+            bought      = 'Revive keys bought',
+            expired     = 'Revive key lost',
         }
         local n = 0
         for k, v in pairs(C) do
@@ -148,9 +167,31 @@ do
                 ('copy.%s is the owner\'s line, character for character'):format(k),
                 v)
         end
-        ok(n == 6,
-            'and there are SIX and no more -- a seventh line is a question for '
+        ok(n == 9,
+            'and there are NINE and no more -- a tenth line is a question for '
                 .. 'the owner, not a string to write', n)
+
+        -- THE RENAME, ASSERTED AS A RENAME. Owner, 2026-08-31: the plate becomes
+        -- "Collect revive key" "to be consistent with the terminology of the
+        -- toast which reads 'Revive key collected'". The plate word and the
+        -- toast's verb are a PAIR, and the pair is what would silently come
+        -- apart -- either half can be edited alone and still read fine.
+        ok(C.collect ~= nil and C.collect:find('collected', 1, true) ~= nil,
+            'the toast the plate was renamed to match still says collected',
+            C.collect)
+        ok(C.collected == nil,
+            'and the old whole-squad `Revive key collected` is gone -- he wrote '
+                .. 'one sentence for the collector and another for the rest of '
+                .. 'the squad, and keeping it would send two toasts for one '
+                .. 'event')
+
+        -- TWO HOLES MEANS TWO PEOPLE. Getting them the wrong way round still
+        -- reads as a sentence, which is exactly why the ORDER is driven below
+        -- rather than only read here.
+        local _, holesBy = C.collectedBy:gsub('%%s', '')
+        local _, holesRv = C.revived:gsub('%%s', '')
+        ok(holesBy == 2, 'collectedBy names two people', holesBy)
+        ok(holesRv == 2, 'and so does revived', holesRv)
     end
 
     -- ═══ AND NOTHING SPEAKS FROM ANYWHERE BUT THAT TABLE ═══
@@ -216,19 +257,26 @@ do
                 .. 'is nothing for it to describe'):format(k))
     end
 
-    -- ═══ AND NO `reviveHp`, WHICH IS THE ONE WORTH ASSERTING ═══
+    -- ═══ AND `reviveHp` IS FULL, WHICH IS THE ONE WORTH ASSERTING ═══
     --
-    -- A key revive hands back BR.Config.Match.dbnoReviveHp, read at call time,
-    -- because it is the same act as a squadmate's pick-up: somebody standing
-    -- over a body in the open for a few seconds. The 100 in config/rescue.lua is
-    -- the argued exception, not the rule. A number of its own here would be a
-    -- second answer to a question that already has one, free to drift the day
-    -- somebody tunes the other.
-    ok(K.reviveHp == nil,
-        'there is no `reviveHp` -- the health is BR.Config.Match.dbnoReviveHp, '
-            .. 'so a key revive and a squad revive cannot come to disagree')
-    ok((tonumber(BR.Config.Match.dbnoReviveHp) or 0) > 0,
-        'and that number exists to be read', BR.Config.Match.dbnoReviveHp)
+    -- Owner, 2026-08-31: "when a revive is processed using the key, the player
+    -- should come back with full health."
+    --
+    -- THIS BLOCK USED TO ASSERT THE OPPOSITE -- that there was NO `reviveHp` and
+    -- that a key revive handed back BR.Config.Match.dbnoReviveHp "because it is
+    -- the same act". His sentence says it is not the same act. The old
+    -- assertion's fear was two numbers drifting apart; they are SUPPOSED to
+    -- differ now, so the PAIR is what is pinned instead -- including the 30,
+    -- which he did not touch and which a tidy-up sharing one constant would
+    -- silently move to 100.
+    ok(K.reviveHp == 100,
+        'a key revive hands back full health, which is his number', K.reviveHp)
+    ok(BR.Config.Match.dbnoReviveHp == 30,
+        'and the in-person DBNO revive still hands back 30 -- he named one of '
+            .. 'the two and the other did not move', BR.Config.Match.dbnoReviveHp)
+    ok(K.reviveHp ~= BR.Config.Match.dbnoReviveHp,
+        'so they are two different numbers on purpose, which is what makes a '
+            .. 'key worth the death it costs')
 end
 
 -- ---------------------------------------------------------------------------
@@ -399,8 +447,21 @@ do
         'server/revivekey.lua reaches a player through exactly one notify call '
             .. 'site -- every word it speaks comes out of the config table',
         notifies)
-    ok(code:find('function say%(who, line, tone%)') ~= nil,
-        'and that call site takes its text as an argument rather than holding one')
+
+    -- AND NO NAME IS EVER FORMATTED INTO ONE OF HIS LINES. Four of them have
+    -- `%s` holes, and the tempting way to fill one is
+    -- `(copy().collect):format(name)` at the call site -- which puts the
+    -- player's name INSIDE the string and silently deletes the bold, because
+    -- the page can only draw a name it was handed as its own part. `say` takes
+    -- the values as varargs and BR.Notice.line does the splitting; a `:format(`
+    -- on a copy line is the shape that regresses it, and it would look right.
+    ok(code:find('copy%(%)%.%w+%s*%)?%s*:%s*format') == nil,
+        'and no call site formats a name INTO one of his lines -- the values go '
+            .. 'to BR.Notice.line as arguments, which is what keeps the name '
+            .. 'bold and keeps it out of any string a parser touches')
+    ok(code:find('function say%(who, line, tone, %.%.%.%)') ~= nil,
+        'and that call site takes its text AND its names as arguments rather '
+            .. 'than holding either')
 
     -- ═══ IT WRITES EXACTLY ONE PLAYER STATE, AND IT IS ALIVE ═══
     --
@@ -697,6 +758,15 @@ do
     -- reaching this stub is a member of BR.Config.ReviveKey.copy. A missing
     -- function could only ever prove that nothing was said; this proves that
     -- what was said is the owner's.
+    -- ═══ `text` IS NOT ALWAYS A STRING ANY MORE ═══
+    --
+    -- Four of the owner's nine lines name a player, and BR.Notice.line hands
+    -- BR.Server.notify a TABLE for those -- `{ text = <flat>, parts = {...} }`
+    -- -- so the name can be drawn bold without ever having been inside a
+    -- string. Captured RAW here, exactly as the real notify receives it, so the
+    -- readers below can assert both halves: what the sentence says and where
+    -- the names are. A stub that flattened on the way in would have made the
+    -- second half untestable.
     BR.Server = {
         matches = matches,
         notify  = function(who, text, tone)
@@ -727,6 +797,52 @@ do
     end
 
     loadCore('br_core/server/revivekey.lua')
+end
+
+--- What a captured notice actually reads as on screen, flattened.
+--- @param s table|nil  one entry of `said`
+--- @return string|nil
+local function flat(s)
+    local t = s and s.text
+    if type(t) == 'table' then return t.text end
+    return t
+end
+
+--- The player names a captured notice sent as parts of their own, in order.
+---
+--- EMPTY FOR A NOTICE THAT NAMES NOBODY, which is the honest reading: a plain
+--- string carries no parts at all and nothing on the page will be bold.
+--- @param s table|nil
+--- @return string[]
+local function names(s)
+    local out = {}
+    local t = s and s.text
+    if type(t) == 'table' and type(t.parts) == 'table' then
+        for _, part in ipairs(t.parts) do
+            if part.b ~= nil then out[#out + 1] = part.b end
+        end
+    end
+    return out
+end
+
+--- The owner's LINE a captured notice was built from: its parts with every name
+--- put back as the `%s` hole it came out of.
+---
+--- THIS IS THE ASSERTION THAT MATTERS FOR THE WHOLE FEATURE. It proves two
+--- things at once about a sentence that reached a player: that the string is
+--- character for character one of his, and that the name was never inside it.
+--- A call site that did `(copy().collect):format(name)` would produce a notice
+--- whose flat text looks perfect and whose form is unrecognisable here.
+--- @param s table|nil
+--- @return string|nil
+local function formOf(s)
+    local t = s and s.text
+    if type(t) ~= 'table' then return t end
+    local out = {}
+    for _, part in ipairs(t.parts or {}) do
+        out[#out + 1] = (part.b ~= nil) and '%s' or part.t
+    end
+    return table.concat(out)
 end
 
 --- Forget everything the module sent and said.
@@ -925,9 +1041,15 @@ do
     ok(dead.reviveKey.via == 'fetched', 'recorded as fetched', dead.reviveKey.via)
     ok(BR.ReviveKey.heldFor(1) == true,
         'which is what the revive asks through BR.ReviveKey.heldFor')
-    ok(#said == 1 and said[1].text == K.copy.collected,
-        'and the squad is told, in the owner\'s words',
-        said[1] and said[1].text)
+    -- TWO SENTENCES NOW, NOT ONE: his line for the collector and his line for
+    -- everybody else. `flat` is this suite's flattener -- see the notify stub.
+    ok(#said == 2, 'and two things are said, one per audience', #said)
+    ok(said[1] and flat(said[1]) == K.copy.collect:format('P1'),
+        'the presser is told the collector\'s line, in the owner\'s words',
+        said[1] and flat(said[1]))
+    ok(said[1] and said[1].who == 2,
+        'and it goes to the presser alone, not to the squad',
+        said[1] and tostring(said[1].who))
 
     -- AND NOT TWICE. A key already held is not takeable again -- a second press
     -- must not re-announce a thing the squad already has.
@@ -1642,9 +1764,9 @@ do
     hush(); finish(1, 2)
 
     ok(dead.state == BR.PlayerState.ALIVE, 'the subject is in the match again')
-    ok(dead.hp == (BR.Config.Match.dbnoReviveHp + 0.0),
-        'on the same health a squadmate\'s pick-up hands back, not on 100 and '
-            .. 'not on a number of this feature\'s own', dead.hp)
+    ok(dead.hp == (K.reviveHp + 0.0),
+        'on FULL health, which is his sentence of 2026-08-31 -- and NOT on the '
+            .. '30 an in-person pick-up still hands back', dead.hp)
     ok(dead.armour == 0.0, 'with no armour -- theirs is on the ground with the '
         .. 'rest of their kit')
 
@@ -1699,7 +1821,7 @@ do
             .. 'it fell, which is what #144 needs and the opposite of this')
 
     local hs = firstSent(BR.Net.HEALTH_SYNC)
-    ok(hs ~= nil and hs.d.hp == BR.Config.Match.dbnoReviveHp,
+    ok(hs ~= nil and hs.d.hp == K.reviveHp,
         'the client is told what the number IS, absolutely, the way every other '
             .. 'health correction in this project is')
 
@@ -1711,15 +1833,25 @@ do
     end
     ok(done ~= nil and done.src == 2, 'and their ring is told it landed')
 
-    -- ═══ AND NOT ONE WORD IS SPOKEN ═══
+    -- ═══ AND THE SQUAD IS TOLD, WHICH IS NEW ═══
     --
-    -- The owner gave six lines and a completed revive is not one of them.
-    -- BR.Combat.revive ends with "%s picked you up." / "You picked %s up." and
-    -- this path deliberately does not borrow them: the subject watches their own
-    -- body stand up, the reviver's ring closes, and there is no seventh string.
-    ok(#said == 0,
-        'a completed revive says nothing -- there is no line for it and none '
-            .. 'may be invented', #said)
+    -- This block used to assert that a completed revive said NOTHING, on the
+    -- grounds that the owner had given no line for it. He gave one on
+    -- 2026-08-31, so the assertion inverts rather than lapses -- and the ORDER
+    -- of the two names is the half worth driving, because a reversed pair still
+    -- reads as a sentence and would never be reported as a bug.
+    --
+    -- `mate` (src 2, "P2") performed the hold; `dead` (src 1, "P1") is the one
+    -- coming back. His words: "(first is the reviver, second is the revived)".
+    ok(#said == 1, 'a completed revive says one thing', #said)
+    ok(said[1] and flat(said[1]) == K.copy.revived:format('P2', 'P1'),
+        'and it is his line with the reviver first and the revived second',
+        said[1] and flat(said[1]))
+    local nm = said[1] and names(said[1]) or {}
+    ok(nm[1] == 'P2' and nm[2] == 'P1' and #nm == 2,
+        'both names travel as parts of their own, so the page can draw them '
+            .. 'bold without anything having parsed a name',
+        table.concat(nm, ' / '))
 end
 
 -- ---------------------------------------------------------------------------
@@ -1842,35 +1974,72 @@ end
 -- ---------------------------------------------------------------------------
 describe('notify')
 do
-    -- ═══ EVERY WORD THIS MODULE SPEAKS IS ONE OF THE OWNER'S SIX ═══
+    -- ═══ EVERY WORD THIS MODULE SPEAKS IS ONE OF THE OWNER'S NINE ═══
     --
     -- The source check above stops a SECOND notify call site being added. This
-    -- is the half that matters: it drives the real module through all three of
-    -- its speaking paths and asserts that what came out is character for
-    -- character what config/revivekey.lua says. A helpful default in an `or`
-    -- would pass the source check and fail here.
+    -- is the half that matters: it drives the real module through all of its
+    -- speaking paths and asserts that what came out is character for character
+    -- what config/revivekey.lua says. A helpful default in an `or` would pass
+    -- the source check and fail here.
+    --
+    -- KEYED ON THE FORM, NOT ON THE FLAT TEXT. Four of his lines have holes in
+    -- them, so the sentence a player reads is never equal to the line it came
+    -- from. `formOf` puts the names back as `%s` -- which only works if the
+    -- names travelled OUTSIDE the string, so this table is also the check that
+    -- nothing formatted a name in.
     local byText = {}
     for k, v in pairs(K.copy) do byText[v] = k end
 
-    -- COLLECTION.
+    -- THE MINT. A squad hears that a mate is gone and that there is something
+    -- to go and get, and the mate himself does not -- he is watching his own
+    -- body.
     wipe()
     fakeTime = 2000000
     local m = { id = 1, state = BR.MatchState.PLAYING }
     matches[1] = m
     local dead = put(1, { squadId = 'A', x = 300.0, y = 300.0 })
-    BR.ReviveKey.onEliminated(m, 1)
-    dead.state = BR.PlayerState.OUT
     put(2, { squadId = 'A', x = 300.0, y = 300.5 })
-    hush(); BR.ReviveKey.take(2, 1)
-    ok(#said == 1, 'taking a key says one thing', #said)
-    ok(said[1] and said[1].text == K.copy.collected,
-        'and it is the owner\'s line for it', said[1] and said[1].text)
-    -- THE WHOLE SQUAD, INCLUDING THE ONE WHO IS OUT. "The key is picked up by
-    -- the player, then owned by the SQUAD" -- and the person it brings back is
-    -- watching their own body, which makes them the one who most wants to know.
-    ok(said[1] and type(said[1].who) == 'table' and #said[1].who == 2,
-        'told to the whole squad, the eliminated player included',
+    hush(); BR.ReviveKey.onEliminated(m, 1)
+    ok(#said == 1, 'a mint says one thing', #said)
+    ok(said[1] and flat(said[1]) == K.copy.bledOut:format('P1'),
+        'and it is his bled-out line, naming the mate who is gone',
+        said[1] and flat(said[1]))
+    ok(said[1] and type(said[1].who) == 'table'
+       and #said[1].who == 1 and said[1].who[1] == 2,
+        'told to the REST of the squad -- "you have bled out" is not news to '
+            .. 'the player watching his own body',
         said[1] and said[1].who and #said[1].who)
+
+    -- COLLECTION. TWO SENTENCES, TWO AUDIENCES.
+    dead.state = BR.PlayerState.OUT
+    hush(); BR.ReviveKey.take(2, 1)
+    ok(#said == 2, 'taking a key says two things, one per audience', #said)
+    ok(said[1] and flat(said[1]) == K.copy.collect:format('P1'),
+        'the collector gets his line for the collector',
+        said[1] and flat(said[1]))
+    ok(said[1] and said[1].who == 2,
+        'and gets it alone', said[1] and tostring(said[1].who))
+    ok(said[2] and flat(said[2]) == K.copy.collectedBy:format('P2', 'P1'),
+        'everybody else gets his other line, collector first and the key\'s '
+            .. 'owner second', said[2] and flat(said[2]))
+    -- THE REST OF THE SQUAD INCLUDES THE ONE WHO IS OUT. "The key is picked up
+    -- by the player, then owned by the SQUAD" -- and the person it brings back
+    -- is watching their own body, which makes them the one who most wants to
+    -- know. Only the COLLECTOR is off this list, because he is reading the
+    -- other sentence.
+    ok(said[2] and type(said[2].who) == 'table'
+       and #said[2].who == 1 and said[2].who[1] == 1,
+        'told to the rest of the squad, the eliminated player included and the '
+            .. 'collector excluded',
+        said[2] and said[2].who and #said[2].who)
+
+    -- AND THE NAMES ARE NOT IN THE STRING. This is the property the owner's
+    -- bold rule rests on and the one that a `:format` at a call site would
+    -- delete while leaving every sentence above reading correctly.
+    local nm = said[2] and names(said[2]) or {}
+    ok(nm[1] == 'P2' and nm[2] == 'P1' and #nm == 2,
+        'both names travelled as parts of their own, in his order',
+        table.concat(nm, ' / '))
 
     -- EXPIRY. THE PICKUP GOES; THE KEY DOES NOT.
     wipe()
@@ -1882,9 +2051,9 @@ do
     put(2, { squadId = 'A', x = 900.0, y = 900.0 })
     fakeTime = fakeTime + K.expiryMs + 1000
     hush(); sweep()
-    ok(#said == 1 and said[1].text == K.copy.expired,
+    ok(#said == 1 and flat(said[1]) == K.copy.expired,
         'a pickup running out says the owner\'s line for it',
-        said[1] and said[1].text)
+        said[1] and flat(said[1]))
     hush(); sweep()
     ok(#said == 0,
         'and says it ONCE -- the record keeps being swept because it is still '
@@ -1903,16 +2072,21 @@ do
     hush()
     BR.ReviveKey.buy(2, 9201)
     settle(true, nil, 500)
-    ok(#said == 1 and said[1].text == K.copy.bought,
+    ok(#said == 1 and flat(said[1]) == K.copy.bought,
         'one purchase says one thing, not one thing per key', #said)
 
-    -- AND NOTHING ELSE EVER CAME OUT.
+    -- AND NOTHING ELSE EVER CAME OUT, IN ANY SHAPE.
+    --
+    -- Run over EVERY notice this suite has captured rather than only the
+    -- purchase's -- `said` is not hushed between the sections above, so this
+    -- sweeps the mint, both collection lines, the expiry and the purchase.
     local strayed = nil
-    for _, s in ipairs(said) do
-        if byText[s.text] == nil then strayed = s.text end
+    for _, entry in ipairs(said) do
+        if byText[formOf(entry)] == nil then strayed = flat(entry) end
     end
     ok(strayed == nil,
-        'no string left this module that is not one of the owner\'s six',
+        'no string left this module that is not one of the owner\'s nine, and '
+            .. 'every name that left it was outside the string',
         strayed)
 end
 

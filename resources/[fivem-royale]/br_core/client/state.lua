@@ -1139,9 +1139,13 @@ AddEventHandler(BR.Net.SQUAD_INVITED, function(inv)
         -- Escape had no entry in the name table -- and a notice that names a
         -- key it cannot name is worse than one that names a place (user,
         -- 2026-08-09). The key is fixed now; the wording is simpler anyway.
+        -- `Someone` IS NOT A NAME, so it goes through the hole unmarked and
+        -- stays in the prose weight. The owner's rule is about names: "Any time
+        -- we mention a player by name in a toast their name should be bold."
         BR.Notify(
-            ('%s invited you to their party — answer it in the pause menu')
-                :format(inv.name or 'Someone'),
+            BR.Notice.line(
+                '%s invited you to their party — answer it in the pause menu',
+                inv.name and BR.Notice.who(inv.name) or 'Someone'),
             'info', { key = 'party.invite', ms = 12000 })
     end
 end)
@@ -1169,6 +1173,12 @@ AddEventHandler(BR.Net.NOTIFY, function(n)
     -- should not be the thing that discovers a sender invented a field.
     TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
         text   = n.text or '',
+        -- THE SENTENCE PRE-SPLIT, WHEN IT NAMES SOMEBODY. Rebuilt rather than
+        -- forwarded, for this handler's own reason one level down: `parts` is
+        -- the first field on this payload that is not a scalar, and
+        -- BR.Notice.clean keeps only the two shapes the page has a branch for.
+        -- See br_lib/shared/notice.lua.
+        parts  = BR.Notice.clean(n.parts),
         tone   = n.tone or 'info',
         key    = n.key,
         ms     = n.ms,
@@ -1183,13 +1193,18 @@ end)
 --- machine can see -- a prompt refused, a countdown on a local effect -- and
 --- until now they had to build the envelope by hand, which is how three of
 --- them ended up with slightly different shapes.
---- @param text string
+--- @param text string|table  a sentence, or one built by BR.Notice.line
 --- @param tone string|nil
 --- @param opts table|nil  { key, ms, endsAt, sticky }
 function BR.Notify(text, tone, opts)
     opts = opts or {}
+    -- Either a plain sentence or a built one, exactly as BR.Server.notify takes
+    -- on the other side. One unpacker, so a client notice that names a player
+    -- and a server one that does cannot come to disagree about the shape.
+    local flat, parts = BR.Notice.wire(text)
     TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-        text   = text,
+        text   = flat,
+        parts  = parts,
         tone   = tone or 'info',
         key    = opts.key,
         ms     = opts.ms,
@@ -2326,7 +2341,22 @@ function pushSquadOrParty()
             -- would have silently become one, and the symptom would be the
             -- report this was built for.
             local keyState = nil
-            if b and b.key then keyState = b.key.held == true end
+            -- AND THE PICKUP'S DEADLINE, WHEN THERE IS STILL A PICKUP.
+            --
+            -- Owner, 2026-08-31: "If there is a timer to pickup their key,
+            -- display it in the squad panel." GATED ON `live` AND NOT ON THE
+            -- DEADLINE ITSELF: the beacon keeps sending the key row after the
+            -- three minutes are up -- that is how the client knows the purchase
+            -- is the only door left -- so a deadline forwarded unconditionally
+            -- would leave every expired key showing a countdown pinned at zero
+            -- for the rest of the match. `live` is the server's own answer to
+            -- "is there anything on the ground", which is the question a timer
+            -- to pick it up is about.
+            local keyEndsAt = nil
+            if b and b.key then
+                keyState = b.key.held == true
+                if b.key.live == true then keyEndsAt = b.key.expiresAt end
+            end
 
             members[#members + 1] = {
                 src = src, name = e.name, state = e.state,
@@ -2403,6 +2433,17 @@ function pushSquadOrParty()
                 -- position the interface could draw, which is a different
                 -- feature and a wider one.
                 reviveKey = keyState,
+
+                -- WHEN THE PICKUP FOR THAT KEY RUNS OUT, AND ONLY WHILE ONE
+                -- EXISTS. See `keyEndsAt` above for why it is gated on the
+                -- beacon's `live` rather than on the number being present.
+                --
+                -- A DEADLINE, NOT A DURATION, and not a coordinate either: this
+                -- is the same one bit-per-question discipline `reviveKey` is
+                -- folded in under. The panel draws a countdown off it exactly as
+                -- it draws the bleed clock off `bleedEndsAt` -- same clock, same
+                -- offset, same rounding.
+                reviveKeyEndsAt = keyEndsAt,
             }
         end
     end

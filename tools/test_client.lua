@@ -1130,6 +1130,9 @@ end
 
 loadAll({
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+    -- BR.Notice; client/state.lua's BR.Notify unpacks with it and br_ui's
+    -- client/players.lua composes the report nudge, which names a player.
+    'br_lib/shared/notice.lua',
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
     -- The world override. Here for the clock pin at the bottom of this file:
     -- client/natives.lua asks BR.World.clockHM() what to hand

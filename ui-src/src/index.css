@@ -1171,6 +1171,31 @@ html, body, #root {
   border: 1px solid rgba(239, 68, 68, 0.9);
   animation: mateHit 700ms ease-out both;
 }
+/* A PLAYER'S NAME, INSIDE A NOTICE.
+
+   Owner, 2026-08-31: "Any time we mention a player by name in a toast their
+   name should be bold."
+
+   700 AND NOT 600. Barlow 400/500/600/700 are all really loaded (main.tsx), so
+   neither weight synthesises and both are honest choices. 600 is this project's
+   ORDINARY emphasis -- `.micro-label`, chat author names, `.body-text` itself --
+   which is exactly why it is wrong here: a notice is one short sentence at
+   0.8125rem read peripherally while the player is doing something else, and a
+   one-step lift inside it is not a distinction anybody finds at a glance.
+
+   A CLASS AND NOT AN INLINE STYLE, though it has exactly one caller
+   (hud/Notices.tsx's NoticeText). Two surfaces draw notices -- the live stack
+   and the pause menu's history -- and the weight a name is drawn at is a
+   design-system fact about this interface rather than a decision that component
+   makes. It is also what tools/check_notice_names.lua grips to prove the built
+   bundle is not stale, which nothing else in a notice can be.
+
+   NO SIZE, NO COLOUR, NO SCALING. It inherits all three from the sentence it
+   sits in, which is what keeps a name inside a `warn` row the same colour as
+   the words either side of it -- and what keeps it out of the `.ts` / `tscale`
+   trap documented at the end of this file. */
+.notice-name { font-weight: 700; }
+
 .mate-stamp { animation: stampIn 430ms var(--ease-snap) both; }
 .mate-pulse { animation: matePulse 800ms ease-in-out infinite; }
 /* The drain is slower than .bar-fill's normal move, so a death does not read

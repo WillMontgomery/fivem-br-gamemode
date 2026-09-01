@@ -394,6 +394,9 @@ end
 local ROOT = 'resources/[fivem-royale]/'
 for _, f in ipairs({
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+    -- BR.Notice; server/combat.lua and server/party.lua compose the toasts that
+    -- name a player with it, and server/broadcast.lua unpacks them.
+    'br_lib/shared/notice.lua',
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
     'br_lib/shared/sched.lua',   -- BR.Sched; br_core/server/* registers into it
     'br_lib/shared/identity.lua',-- BR.Identity; BR.Roster.ringmaster resolves licenses

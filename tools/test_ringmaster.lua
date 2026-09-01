@@ -1137,6 +1137,7 @@ end
 loadAll({
     'br_lib/shared/protocol.lua',
     'br_lib/shared/names.lua',
+    'br_lib/shared/notice.lua',  -- BR.Notice; server/broadcast.lua unpacks with it
     'br_lib/shared/rng.lua',
     'br_lib/shared/geo.lua',
     'br_lib/shared/clock.lua',

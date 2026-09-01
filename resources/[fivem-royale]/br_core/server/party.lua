@@ -231,7 +231,13 @@ end
 --- @param reason string  woven into the recipient's notice
 function BR.Party.withdrawInvitesFrom(src, reason)
     local sender = BR.Roster.get(src)
-    local name = sender and sender.name or 'A player'
+    -- THE NAME IS A MARKER, THE FALLBACK IS A WORD. Owner, 2026-08-31: "Any
+    -- time we mention a player by name in a toast their name should be bold."
+    -- `A player` is not somebody's name, it is what this sentence says when
+    -- there is nobody to name, so it goes through the same hole unmarked and
+    -- stays in the prose weight.
+    local name = sender and sender.name and BR.Notice.who(sender.name)
+        or 'A player'
 
     -- Collect first, mutate after: clearing entries while iterating the table
     -- being iterated is exactly the sort of thing that works until the day it
@@ -247,8 +253,12 @@ function BR.Party.withdrawInvitesFrom(src, reason)
 
     for _, targetSrc in ipairs(dropped) do
         invites[targetSrc] = nil
+        -- TWO HOLES, ONE OF THEM A PERSON. `reason` is our own explanation and
+        -- must not be bold, which is exactly why a name is marked at the call
+        -- site rather than inferred from being a `%s`.
         BR.Server.notify(targetSrc,
-            ('%s\'s invite expired -- %s.'):format(name, reason), 'warn')
+            BR.Notice.line('%s\'s invite expired -- %s.', name, reason),
+            'warn')
         -- The CARD, not only the notice. A prompt offering to join a party
         -- that no longer takes joiners is a button that lies.
         TriggerClientEvent(BR.Net.SQUAD_INVITED, targetSrc, { cancel = true })
@@ -279,7 +289,9 @@ function BR.Party.respond(src, accept)
         -- re-invited people who had already said no.
         local party = parties[inv.partyId]
         if party then
-            BR.Server.notify(inv.from, ('%s declined your invite.'):format(rName), 'warn')
+            BR.Server.notify(inv.from,
+                BR.Notice.line('%s declined your invite.', BR.Notice.who(rName)),
+                'warn')
             sync(party.id)   -- the pending chip goes away for everyone
         end
         return true
@@ -311,7 +323,9 @@ function BR.Party.respond(src, accept)
     BR.Server.notify(src, 'You joined the party.', 'success')
     for _, m in ipairs(party.members) do
         if m ~= src then
-            BR.Server.notify(m, ('%s joined the party.'):format(entry.name), 'success')
+            BR.Server.notify(m,
+                BR.Notice.line('%s joined the party.', BR.Notice.who(entry.name)),
+                'success')
         end
     end
     return true
@@ -379,7 +393,8 @@ function BR.Party.leave(src, quiet)
         end
         if not quiet then
             BR.Server.notify(party.members,
-                ('%s left the party.'):format(entry.name), 'warn')
+                BR.Notice.line('%s left the party.', BR.Notice.who(entry.name)),
+                'warn')
         end
         sync(party.id)
     end
@@ -411,7 +426,8 @@ function BR.Party.kick(src, targetSrc)
         { id = nil, leader = nil, members = {} })
     BR.Server.notify(targetSrc, 'You were removed from the party.', 'danger')
     BR.Server.notify(party.members,
-        ('%s was removed from the party.'):format(target.name), 'warn')
+        BR.Notice.line('%s was removed from the party.',
+                       BR.Notice.who(target.name)), 'warn')
     return true
 end
 
@@ -960,7 +976,9 @@ function BR.Party.lateJoin(src, m)
     -- the match" toast went (#145).
     for other, e in pairs(BR.Server.roster) do
         if other ~= src and e.squadId == target then
-            BR.Server.notify(other, ('%s joined your squad.'):format(entry.name), 'success')
+            BR.Server.notify(other,
+                BR.Notice.line('%s joined your squad.', BR.Notice.who(entry.name)),
+                'success')
         end
     end
 
@@ -1080,6 +1098,24 @@ local function keyRow(e, now)
         -- being asked and cannot be read the other way.
         held = k.held == true or nil,
         live = (k.held ~= true and now < (k.expiresAt or 0)) and true or nil,
+        -- WHEN THE THING ON THE GROUND GOES AWAY.
+        --
+        -- Owner, 2026-08-31: "If there is a timer to pickup their key, display
+        -- it in the squad panel." The panel cannot compute this: `mintedAt` is
+        -- here already but BR.Config.ReviveKey.expiryMs is not, and shipping the
+        -- duration to the page so it could add the two would be a second place
+        -- for the three minutes to live. The DEADLINE is the fact.
+        --
+        -- RAW SERVER TIME, unconverted, exactly as `bleedEndsAt` on this same
+        -- payload is -- so both countdowns on a squad row are read off one clock
+        -- against Date.now() + clockOffset. Two units on one panel is a bug that
+        -- looks like a wrong number.
+        --
+        -- IT TRAVELS WHATEVER `live` SAYS, because it is what MAKES `live` true
+        -- and the client already receives the row after the pickup has expired
+        -- (that is how it knows to offer the purchase). The panel gates its
+        -- countdown on `live`; a deadline in the past is not a second state.
+        expiresAt = k.expiresAt,
         -- WHEN IT WAS MINTED, WHICH IS HOW THE CLIENT BREAKS A TIE.
         --
         -- The revive happens at an ambulance now, so a squad with two mates down
@@ -1395,7 +1431,9 @@ function BR.Party.answerJoin(leaderSrc, requesterSrc, accept)
     BR.Server.notify(requesterSrc, 'You joined the party.', 'success')
     for _, m in ipairs(party.members) do
         if m ~= requesterSrc then
-            BR.Server.notify(m, ('%s joined the party.'):format(rq.name), 'success')
+            BR.Server.notify(m,
+                BR.Notice.line('%s joined the party.', BR.Notice.who(rq.name)),
+                'success')
         end
     end
     return true
@@ -1592,8 +1630,12 @@ BR.Sched.every(5000, 'party.expire', function()
             -- otherwise "expired" and "still thinking" look identical for as
             -- long as the sender cares to keep watching the pending chip.
             local target = BR.Roster.get(src)
+            -- `a player` is the sentence's own word for "we do not know who",
+            -- not a name, so it goes through the hole unmarked and is not bold.
             BR.Server.notify(inv.from,
-                ('Invite to %s expired.'):format(target and target.name or 'a player'),
+                BR.Notice.line('Invite to %s expired.',
+                    target and target.name and BR.Notice.who(target.name)
+                        or 'a player'),
                 'warn')
             sync(inv.partyId)
         end

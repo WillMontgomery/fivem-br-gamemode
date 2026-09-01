@@ -104,6 +104,9 @@ export interface UiState {
   noticeLog: {
     id: number
     text: string
+    /** The sentence pre-split, when it names a player. The history draws the
+     *  same NoticeText the live row does, so a name is bold in both. */
+    parts?: ToastPayload['parts']
     tone: ToastPayload['tone']
     key?: string
     /** Client clock, for "4m ago". Notices are read relatively, never as a
@@ -395,6 +398,12 @@ export const useUi = create<UiState>((set, get) => {
           noticeLog: [{
             ...prev,
             text:  t.text ?? prev.text,
+            // THE SPLIT TRAVELS WITH THE TEXT IT BELONGS TO. A keyed notice
+            // that updates in place may name a different player -- or nobody --
+            // so the parts are replaced whenever the text is, and cleared when
+            // the new text has none. Keeping `prev.parts` here would draw the
+            // OLD name over the new sentence.
+            parts: t.text != null ? t.parts : prev.parts,
             tone:  t.tone ?? prev.tone,
             at:    Date.now(),
             // A keyed notice is ONE event changing state, so it does not
@@ -409,6 +418,7 @@ export const useUi = create<UiState>((set, get) => {
         noticeLog: [{
           id: ++logId,
           text: t.text,
+          parts: t.parts,
           tone: t.tone,
           key: t.key,
           at: Date.now(),

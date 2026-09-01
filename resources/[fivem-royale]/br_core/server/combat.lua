@@ -769,7 +769,13 @@ function BR.Combat.knock(src, killerSrc)
         BR.Roster.each(
             function(e) return e.squadId == entry.squadId and e.src ~= src end,
             function(mate)
-                BR.Server.notify(mate, ('%s is down.'):format(entry.name),
+                -- HIS EXCLAMATION MARK, 2026-08-31, and his rule about the
+                -- name: "Any time we mention a player by name in a toast their
+                -- name should be bold." BR.Notice.line is what carries that
+                -- without ever putting formatting inside the name -- see
+                -- br_lib/shared/notice.lua.
+                BR.Server.notify(mate,
+                    BR.Notice.line('%s is down!', BR.Notice.who(entry.name)),
                     'warn', { key = 'dbno.' .. src, ms = 6000 })
             end)
     end
@@ -986,11 +992,13 @@ function BR.Combat.revive(src, reviverSrc, hp)
     if reviverSrc then
         TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc,
             { pct = 100.0, target = src, done = true })
-        BR.Server.notify(reviverSrc, ('You picked %s up.'):format(entry.name),
+        BR.Server.notify(reviverSrc,
+            BR.Notice.line('You picked %s up.', BR.Notice.who(entry.name)),
             'success', { ms = 4000 })
     end
     BR.Server.notify(src,
-        reviver and ('%s picked you up.'):format(reviver.name)
+        reviver and BR.Notice.line('%s picked you up.',
+                                   BR.Notice.who(reviver.name))
                  or 'You were revived.',
         'success', { ms = 4000 })
 

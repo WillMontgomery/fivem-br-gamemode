@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useUi } from '../store'
-import { TONE_COLOUR } from '../hud/Notices'
+import { TONE_COLOUR, NoticeText } from '../hud/Notices'
 import Btn from '../ui/Btn'
 
 /**
@@ -101,7 +101,14 @@ export default function NoticeLog() {
                 borderLeft: `2px solid ${tone}`,
               }}
             >
-              <span className="min-w-0">{n.text}</span>
+              {/* THE SAME RENDERER THE LIVE ROW USES, so a name the owner
+                  asked to be bold is bold in the history too. "Any time we
+                  mention a player by name in a toast their name should be
+                  bold" (2026-08-31) is about the sentence, and this is the
+                  same sentence read a minute later. */}
+              <span className="min-w-0">
+                <NoticeText text={n.text} parts={n.parts} fs="0.9rem" />
+              </span>
               {n.count > 1 && (
                 <span
                   className="font-display text-[0.85rem] leading-none"

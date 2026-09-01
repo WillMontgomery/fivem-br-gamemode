@@ -12,6 +12,10 @@ for _, f in ipairs({
     'shared/enums.lua',
     'shared/protocol.lua',
     'shared/names.lua',
+    -- BR.Notice, which server/combat.lua and server/party.lua compose their
+    -- name-bearing toasts with. Without it every one of those call sites
+    -- indexes nil and takes the suite down where the sentence is sent.
+    'shared/notice.lua',
     'shared/rng.lua',
     'shared/geo.lua',
     -- BEFORE config/map.lua, whose InBounds wraps it -- and before
@@ -223,6 +227,162 @@ do
     local okCall, out = pcall(BR.KeyToken, nil)
     ok(okCall and type(out) == 'string',
        'a nil command does not throw mid-sentence', tostring(out))
+end
+
+-- ------------------------------------------------------- notices with names ---
+
+describe('BR.Notice')
+do
+    -- ═══ WHAT THIS IS FOR ═══
+    --
+    -- Owner, 2026-08-31: "Any time we mention a player by name in a toast their
+    -- name should be bold."
+    --
+    -- A name is the one part of a notice a PLAYER writes, so the formatting
+    -- cannot be expressed IN the string. This module splits the sentence on our
+    -- own format string and sends the pieces; the page draws a `b` piece as a
+    -- bold text child and never parses it. ui-src/src/hud/Notices.tsx is the
+    -- other half; tools/check_notice_names.lua checks the two agree and that no
+    -- call site goes round them, since nothing executes both languages.
+
+    -- A SENTENCE THAT NAMES NOBODY IS STILL A STRING. This is what keeps the
+    -- forty-odd notices in this game that name no player on exactly the path
+    -- they were on -- nothing extra on the wire, nothing extra to render.
+    local plain = BR.Notice.line('You left the match.')
+    ok(type(plain) == 'string' and plain == 'You left the match.',
+        'a sentence with no name is returned as the string it was',
+        tostring(plain))
+
+    -- A HOLE FILLED WITH A NON-NAME IS ALSO STILL A STRING, and that is the
+    -- distinction the whole design rests on: `%s` does not mean "person", the
+    -- marker does. `Invite to %s expired.` fills its hole with the word `a
+    -- player` when nobody is known, and that word must not go bold.
+    local word = BR.Notice.line('Invite to %s expired.', 'a player')
+    ok(type(word) == 'string' and word == 'Invite to a player expired.',
+        'a hole filled with our own word stays prose', tostring(word))
+
+    -- A MARKED NAME SPLITS THE SENTENCE IN THREE.
+    local one = BR.Notice.line('%s is down!', BR.Notice.who('Wisp'))
+    ok(type(one) == 'table', 'a sentence that names somebody is a built notice')
+    ok(one.text == 'Wisp is down!',
+        'whose flat text is the sentence as a player reads it', one.text)
+    ok(#one.parts == 2
+       and one.parts[1].b == 'Wisp'
+       and one.parts[2].t == ' is down!',
+        'and whose parts hold the name on its own, outside the prose',
+        one.parts and #one.parts)
+
+    -- TWO NAMES KEEP THEIR ORDER. Four of the owner's revive-key lines name two
+    -- people, and a reversed pair still reads as a sentence -- which is exactly
+    -- why the order is asserted rather than eyeballed.
+    local two = BR.Notice.line('%s revived %s - they are back in!',
+                               BR.Notice.who('Ghost'), BR.Notice.who('Wisp'))
+    ok(two.text == 'Ghost revived Wisp - they are back in!',
+        'two names fill their holes in order', two.text)
+    local got = {}
+    for _, part in ipairs(two.parts) do
+        if part.b then got[#got + 1] = part.b end
+    end
+    ok(#got == 2 and got[1] == 'Ghost' and got[2] == 'Wisp',
+        'and stay in that order as parts', table.concat(got, ' / '))
+
+    -- A NAME AND A WORD IN ONE SENTENCE. `%s's invite expired -- %s.` is the
+    -- real call site: the first hole is a person and the second is our own
+    -- explanation, and only one of them may be bold.
+    local mixed = BR.Notice.line("%s's invite expired -- %s.",
+                                 BR.Notice.who('Wisp'), 'they readied up')
+    ok(mixed.text == "Wisp's invite expired -- they readied up.",
+        'a name and a word share a sentence', mixed.text)
+    local bolded = 0
+    for _, part in ipairs(mixed.parts) do
+        if part.b then bolded = bolded + 1 end
+    end
+    ok(bolded == 1,
+        'and only the person is a name -- marking is per hole, not per %s',
+        bolded)
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- AND NOW THE POINT OF ALL OF IT: A NAME CANNOT CARRY FORMATTING
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Every one of these is a name a player can actually pick. Under the two
+    -- obvious designs this module rejects -- markdown in the string, or a
+    -- `{b:...}` token -- each of them changes the rendering of the sentence
+    -- around it. Here they must come out as themselves, character for
+    -- character, and the sentence around them must be unchanged.
+    for _, nasty in ipairs({
+        '**bold**',                 -- markdown, if the page ever read any
+        '{b:x}',                    -- a bold token, if bold were a token
+        'Bob}',                     -- closing a token early
+        '{key:brptt}',              -- the token the page DOES understand
+        '%s',                       -- a format hole
+        '%',                        -- a lone percent
+        '<b>x</b>',                 -- markup, if anything ever set innerHTML
+        "O'Hara",                   -- an ordinary name with an apostrophe
+    }) do
+        local n = BR.Notice.line('%s is down!', BR.Notice.who(nasty))
+        ok(type(n) == 'table' and n.parts[1].b == nasty,
+            ('a player called %q reaches the page as those characters and '
+                .. 'nothing else'):format(nasty),
+            n.parts and n.parts[1] and n.parts[1].b)
+        ok(n.parts[2] and n.parts[2].t == ' is down!',
+            'and the sentence around them is untouched',
+            n.parts and n.parts[2] and n.parts[2].t)
+        -- THE FLAT TEXT CARRIES THEM TOO, unaltered. `text` is what the pause
+        -- menu matches on and what a consumer with no renderer would print, so
+        -- a name that survived the parts and was mangled here would be a second
+        -- rendering of one sentence.
+        ok(n.text == nasty .. ' is down!',
+            'and the flat spelling is the same sentence', n.text)
+    end
+
+    -- `%%` IS AN ESCAPED PERCENT, NOT A HOLE. No line in the game uses one
+    -- today; it is here because the scanner has to decide what to do with the
+    -- character and "treat it as a hole" would eat an argument silently.
+    ok(BR.Notice.line('100%% sure') == '100% sure',
+        'an escaped percent is one percent and consumes no argument',
+        tostring(BR.Notice.line('100%% sure')))
+
+    -- A HOLE WITH NO ARGUMENT WRITES NOTHING rather than the word `nil`. It is
+    -- a programming error either way, and this is composed a frame before it
+    -- goes on screen -- a gap is the least wrong thing to show while it is
+    -- being found.
+    ok(BR.Notice.line('Invite to %s expired.') == 'Invite to  expired.',
+        'a missing value leaves a gap, not the word nil',
+        tostring(BR.Notice.line('Invite to %s expired.')))
+
+    -- ═══ THE WIRE, AND THE CLEAN ON THE OTHER SIDE ═══
+
+    local flat, parts = BR.Notice.wire(one)
+    ok(flat == 'Wisp is down!' and type(parts) == 'table',
+        'wire() unpacks a built notice into text and parts', tostring(flat))
+    local flat2, parts2 = BR.Notice.wire('You left the match.')
+    ok(flat2 == 'You left the match.' and parts2 == nil,
+        'and a plain string into text and NOTHING -- so a notice naming nobody '
+            .. 'puts no second field on the wire', tostring(parts2))
+
+    -- ONLY THE TWO SHAPES THE PAGE HAS A BRANCH FOR survive the clean. This is
+    -- the receiving client's guard: br_core/client/state.lua rebuilds the parts
+    -- rather than forwarding them, for the same reason it forwards every other
+    -- field one at a time.
+    local cleaned = BR.Notice.clean({
+        { t = 'a' }, { b = 'B' }, { z = 'junk' }, 'not a table',
+        { t = 5 }, { b = {} },
+    })
+    ok(#cleaned == 2 and cleaned[1].t == 'a' and cleaned[2].b == 'B',
+        'clean() keeps only {t=string} and {b=string} parts', #cleaned)
+    ok(BR.Notice.clean({}) == nil and BR.Notice.clean('nope') == nil,
+        'and an empty or absent list travels as absent, never as an empty '
+            .. 'table -- which would reach the page as a JSON object rather '
+            .. 'than an array')
+
+    -- A MARKER IS A TABLE, WHICH IS WHY IT CANNOT BE FORGED FROM OUTSIDE. A
+    -- player supplies a string; only our own call sites can supply this.
+    local marker = BR.Notice.who('Wisp')
+    ok(type(marker) == 'table' and marker.b == 'Wisp',
+        'who() marks a value as a person', tostring(marker.b))
+    ok(BR.Notice.who(nil).b == '',
+        'and a nil name marks an empty person rather than throwing mid-sentence')
 end
 
 -- -------------------------------------------------------------------- geo ---
@@ -3790,6 +3950,10 @@ local RES = 'resources/[fivem-royale]/'
 local SANDBOX_LIB = {
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
     'br_lib/shared/names.lua', 'br_lib/shared/rng.lua',
+    -- BR.Notice, beside names.lua because the two are about the same word:
+    -- server/combat.lua and server/party.lua build every toast that names a
+    -- player through it, so a sandbox without it dies at the first sentence.
+    'br_lib/shared/notice.lua',
     'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
     -- The world override. Both halves of it are sandboxed below -- the client's
     -- sky resolver and the server's two verbs -- and client/storm.lua now makes
