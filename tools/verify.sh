@@ -638,7 +638,7 @@ echo "${DIM}== config report ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     if report=$("$LUA" tools/config_report.lua 2>&1); then
         broken=$(printf '%s' "$report" | grep -oE '"key":"[^"]*","value":"\(unreadable[^"]*"' || true)
-        if printf '%s' "$report" | grep -q '"ok":false'; then
+        if grep -q '"ok":false' <<< "$report"; then
             echo "${RED}FAIL${RST} tools/config_report.lua could not load the config files:"
             printf '%s' "$report" | grep -oE '"loadErrors":\[[^]]*\]' | sed 's/^/     /'
             rc=1
@@ -1543,8 +1543,8 @@ if [ -f "$worldfile_" ]; then
     wxfiles_=$(
         for f in "resources/[fivem-royale]"/*/client/*.lua; do
             [ -f "$f" ] || continue
-            if grep -v '^[[:space:]]*--' "$f" \
-               | grep -qE '(^|[^_[:alnum:]])(Set|Clear)WeatherType[[:alnum:]_]*[[:space:]]*\('; then
+            src1_=$(grep -v '^[[:space:]]*--' "$f")
+            if grep -qE '(^|[^_[:alnum:]])(Set|Clear)WeatherType[[:alnum:]_]*[[:space:]]*\(' <<< "$src1_"; then
                 echo "$f" | sed 's|.*/\([a-z_]*\)/client/|\1/client/|'
             fi
         done | sort -u | tr '\n' ' '
@@ -1602,8 +1602,8 @@ fi
 sfxfiles_=$(
     for f in "resources/[fivem-royale]"/*/client/*.lua; do
         [ -f "$f" ] || continue
-        if grep -v '^[[:space:]]*--' "$f" \
-           | grep -qE '(^|[^_[:alnum:]])PlaySound(Frontend|FromEntity)[[:space:]]*\('; then
+        src2_=$(grep -v '^[[:space:]]*--' "$f")
+        if grep -qE '(^|[^_[:alnum:]])PlaySound(Frontend|FromEntity)[[:space:]]*\(' <<< "$src2_"; then
             echo "$f" | sed 's|.*/client/|client/|'
         fi
     done | sort -u | tr '\n' ' '
@@ -1854,7 +1854,8 @@ for res_ in "resources/[fivem-royale]"/*/; do
 
     # Files in this resource that really register a command.
     regfiles_=$(find "$res_" -name '*.lua' -type f 2>/dev/null | sort | while IFS= read -r f_; do
-        if sed 's/--.*$//' "$f_" | grep -qE 'RegisterCommand\('; then echo "$f_"; fi
+        src3_=$(sed 's/--.*$//' "$f_")
+        if grep -qE 'RegisterCommand\(' <<< "$src3_"; then echo "$f_"; fi
     done)
     [ -n "$regfiles_" ] || continue
 
@@ -2121,8 +2122,8 @@ if [ -f "$inc_" ] && [ -f "$ring_" ]; then
     fi
 
     # A corroboration is not a creation. It must never mint the acknowledgement.
-    if sed -n "/AddEventHandler('br:ringmaster:corroborate'/,/^end)/p" "$ring_" \
-       | grep -q "br:incident:filed"; then
+    src4_=$(sed -n "/AddEventHandler('br:ringmaster:corroborate'/,/^end)/p" "$ring_")
+    if grep -q "br:incident:filed" <<< "$src4_"; then
         echo "${RED}FAIL${RST} the corroboration handler emits br:incident:filed"
         echo "     A corroboration appends to a case that already exists. If it"
         echo "     mints an acknowledgement it becomes a creation, and the"
@@ -2348,7 +2349,7 @@ else
             bash tools/dispatch.sh 2>/dev/null
     }
     says_() {
-        if ! printf '%s' "$2" | grep -qF "$3"; then
+        if ! grep -qF "$3" <<< "$2"; then
             echo "${RED}FAIL${RST} status bundle: $1"
             echo "     expected to contain: $3"
             echo "     got: $2"
@@ -2394,7 +2395,7 @@ else
     #    rsync leaves behind.
     printf '\n// truncated deploy\n' >> "$dep_/server.js"
     out_="$(ask_)"
-    if printf '%s' "$out_" | grep -qF "\"onDisk\":\"$want_\""; then
+    if grep -qF "\"onDisk\":\"$want_\"" <<< "$out_"; then
         echo "${RED}FAIL${RST} a modified bundle still reported the manifest's digest"
         echo "     This check cannot go red, which makes it a decoration."
         bfail_=1
@@ -2406,7 +2407,7 @@ else
     cp "$js_" "$clone_/"
     cp "$mf_" "$clone_/"
     out_="$(ask_)"
-    if printf '%s' "$out_" | grep -qF "\"onDisk\":\"$want_\""; then
+    if grep -qF "\"onDisk\":\"$want_\"" <<< "$out_"; then
         echo "${RED}FAIL${RST} status read the clone's bundle, not the deployed one"
         echo "     A deploy that stops halfway is the whole failure this detects,"
         echo "     and it is invisible from the tree the deploy came from."
