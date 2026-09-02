@@ -1064,6 +1064,87 @@ end)
 -- Lobby
 -- --------------------------------------------------------------------------
 
+-- ═══ A READY-UP THAT GOES NOWHERE LEAVES A RECEIPT (2026-09-02) ═══
+--
+-- "not sure how this happened but I readied up and the lobby UI never went
+-- away. no errors anywhere" -- the owner, 2026-09-02, and the second report of
+-- that shape. Both arrived as a screenshot and nothing else.
+--
+-- WHAT TAKES THE LOBBY DOWN, so that what did NOT happen can be named. App.tsx
+-- draws it while `match.state === 'waiting' || hud.state === 'lobby'`, and the
+-- HUD envelope is BR.PushHud at the bottom of this file, whose `state` field is
+-- S.me.state, which is written by exactly one thing: the roster delta the
+-- server produces in BR.Roster.setState. The lobby screen therefore comes down
+-- because MY OWN STATE STOPPED READING LOBBY, and for no other reason. Nothing
+-- watches whether it ever did.
+--
+-- AND THE WHOLE PATH IS SILENT FROM END TO END. The press is a fire-and-forget
+-- TriggerServerEvent below; server/lobby.lua's join() had four endings and only
+-- one of them printed (it says all four now); and client/spawn.lua's trip to
+-- the pad -- the one step in this sequence that traces itself -- only starts
+-- once my state HAS changed, so on a press that goes nowhere its line is never
+-- reached either. Twice reported, twice nothing in any log.
+--
+-- ═══ THE PREDICATE IS EXACT, NOT A TIMEOUT ON THE SCREEN ═══
+--
+-- A ready-up has gone nowhere when, some seconds after the press, the server
+-- has NEITHER named me a participant (my state would have left LOBBY) NOR put
+-- me in the queue (the lobby broadcast at 2 Hz would carry my id). Both facts
+-- are already on this client, continuously, so this costs one comparison a
+-- second and invents no new wire.
+--
+-- QUEUING IS NOT THE FAULT AND MUST NEVER FIRE THIS. Waiting for the room to
+-- fill has no upper bound -- a lobby menu with its spinner up for three minutes
+-- is the interface being correct -- so a queued player is SKIPPED rather than
+-- cleared. That is also what keeps the watch alive across the queue being
+-- consumed: if a match forms, takes me, and this client is never told, `queued`
+-- goes false with my state still LOBBY and the line lands on the next tick.
+--
+-- Cleared by pressing Not ready, because that is the player withdrawing the
+-- question rather than the server failing to answer it.
+local readyAt     = 0       -- when READY UP was last pressed; 0 = nothing pending
+local readyQueued = false   -- what the server's last lobby status said about me
+
+-- Sixteen times the worst legitimate latency on this path (a queue entry shows
+-- up in the next 500ms broadcast; an admission is a roster delta on the next
+-- flush), and the same shape as the curtain's ceiling in client/spawn.lua: long
+-- enough that it can only fire on something genuinely abandoned.
+local READY_MAX_MS = 8000
+
+BR.Loop.register(BR.Loop.SLOW, 'state.readywatch', function()
+    if readyAt == 0 then return end
+
+    -- It worked: the server named me a participant. This is the ordinary
+    -- ending and it is the one the report says never came.
+    if S.me.state ~= BR.PlayerState.LOBBY then
+        readyAt = 0
+        return
+    end
+
+    -- It is working: I am in the queue. See above -- skipped, not cleared.
+    if readyQueued then return end
+
+    if GetGameTimer() - readyAt < READY_MAX_MS then return end
+
+    local waited = GetGameTimer() - readyAt
+    readyAt = 0
+
+    -- ONE LINE WITH EVERY STATE THAT COULD EXPLAIN IT, because correlating four
+    -- console lines by eye at the moment a playtest goes wrong is how the last
+    -- two of these got reported as screenshots. `state` against `match` says
+    -- whether this client's mirror is behind the server; `uiHold` says whether
+    -- the envelope is being held rather than never sent; `traveling` and
+    -- `curtain` say whether a trip started and stalled instead of never
+    -- starting. The server's own line for the same press says which of its four
+    -- endings it took.
+    print(('[br_core] ready up went nowhere: %dms on, my state is still %s, '
+           .. 'match %s, queued %s, uiHold %s, traveling %s, curtain %s (watchdog)')
+        :format(waited, tostring(S.me.state), tostring(S.match.state),
+                tostring(readyQueued), tostring(uiHold),
+                tostring(BR.Spawn and BR.Spawn.traveling),
+                tostring(BR.Spawn and BR.Spawn.curtainWanted)))
+end)
+
 --- UI actions forwarded from br_ui.
 ---
 --- br_ui deliberately does not know what any of these mean -- it owns the NUI
@@ -1072,8 +1153,16 @@ end)
 --- so pressing Play did nothing while the UI happily showed "Searching...".
 AddEventHandler('br:ui:action', function(name, data)
     if name == BR.NuiCb.QUEUE then
+        -- SAID ON THE WAY OUT, so that a missing server line means the request
+        -- never crossed the wire rather than that the server declined to log
+        -- it. Those are different faults and this is the only place that can
+        -- tell them apart from the player's own F8.
+        readyAt = GetGameTimer()
+        print(('[br_core] ready up sent (%s)')
+            :format(tostring(data and data.mode)))
         TriggerServerEvent(BR.Net.QUEUE_JOIN, { mode = data and data.mode })
     elseif name == BR.NuiCb.QUEUE_LEAVE then
+        readyAt = 0
         TriggerServerEvent(BR.Net.QUEUE_LEAVE)
     elseif name == BR.NuiCb.SQUAD_INVITE then
         TriggerServerEvent(BR.Net.SQUAD_INVITE, data)
@@ -2095,6 +2184,12 @@ AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
     for _, src in ipairs(d.ids or {}) do
         if src == S.me.src then you = true break end
     end
+
+    -- ...AND THE READY-UP WATCH READS THE SAME ANSWER. It is the server's word
+    -- on whether a press landed in the queue, arriving twice a second whatever
+    -- state anybody is in, so the watchdog above needs no wire of its own. See
+    -- it for why being queued suspends the watch rather than ending it.
+    readyQueued = you
 
     -- Drop ourselves from the invitable list here rather than making the UI
     -- filter: the client knows its own server id, the interface should not

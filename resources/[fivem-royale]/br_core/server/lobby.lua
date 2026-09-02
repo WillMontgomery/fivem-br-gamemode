@@ -104,14 +104,42 @@ function BR.Lobby.blocked()
     return maintenanceBlock
 end
 
+--[[
+    EVERY WAY THIS FUNCTION CAN ANSWER NOW SAYS SO ON THE CONSOLE (2026-09-02).
+
+    "not sure how this happened but I readied up and the lobby UI never went
+    away. no errors anywhere" -- the owner, and the second report of that shape.
+    Both times the only evidence was a screenshot, because this function had
+    FOUR endings and exactly ONE of them printed: three of its four ways to
+    finish were indistinguishable from the press never having been made.
+
+    The one that matters is the state gate below. A client whose own roster
+    mirror has fallen behind -- it believes it is in the lobby, the server has
+    it in a match -- presses a live-looking READY UP button and is refused here,
+    without a word, for as long as it keeps pressing. That is a permanent,
+    silent, un-loggable stall, and it is the shape the screenshots show: the
+    lobby camera still parked at the pad and the READY UP button still offered
+    rather than the queue spinner that a successful press produces within 500ms.
+
+    THE LINES DO NOT DECIDE ANYTHING. Every branch below is unchanged; each one
+    now names itself first. Unconditional, like the queue line at the bottom
+    that has always been here -- this is a handful of lines per player per
+    round, and the dev switch gates COMMANDS, not the record of what the server
+    did with a request.
+]]
 function BR.Lobby.join(src, mode)
     local entry = BR.Roster.get(src)
-    if not entry then return end
+    if not entry then
+        print(('[br_core] ready up from %d refused: no roster entry'):format(src))
+        return
+    end
 
     -- REFUSED AUDIBLY. A ready button that silently does nothing reads as a
     -- broken button, and the player presses it repeatedly rather than learning
     -- why. They are told, once, what is actually happening.
     if maintenanceBlock then
+        print(('[br_core] %s (%d) readied up during a drain -- refused')
+            :format(entry.name, src))
         TriggerClientEvent(BR.Net.NOTIFY, src, {
             text = 'A server update is pending -- no new matches can be started.',
             tone = 'warn',
@@ -126,7 +154,16 @@ function BR.Lobby.join(src, mode)
     -- may queue for the next one -- the WAITING tick is the only thing that
     -- consumes the queue, so queueing early just means waiting in line.
     -- Someone still IN a match may not queue; leaving is the explicit verb.
+    --
+    -- AND THIS IS THE ONE THAT HAS TO SAY THE STATE OUT LOUD. Which state it
+    -- read is the whole diagnosis: a player looking at the lobby menu while
+    -- this line prints `warmup` is a client mirror that never learned it was
+    -- admitted, and a player who really is mid-match pressing a button they
+    -- should not be able to see is a different fault entirely. The two are
+    -- identical from a chair and one word apart here.
     if entry.state ~= BR.PlayerState.LOBBY then
+        print(('[br_core] %s (%d) readied up, but the server has them in %s -- refused')
+            :format(entry.name, src, tostring(entry.state)))
         return
     end
 
@@ -160,8 +197,16 @@ function BR.Lobby.join(src, mode)
     -- queue instead, and the per-mode formation tick builds their own
     -- match alongside the open one. Both warmups share the communal warmup
     -- bucket; the flights and everything after are separate.
+    --
+    -- THIS PATH NEVER TOUCHES THE QUEUE, which is why it needs its own line as
+    -- much as the refusals do. A late joiner is admitted straight into warmup,
+    -- so nothing about them ever appears in the queue broadcast and the bottom
+    -- of this function is not reached -- the busiest door into a match was the
+    -- quietest one in the log.
     local forming = BR.Server.formingMatch(resolved.key)
     if forming then
+        print(('[br_core] %s (%d) readied into forming match %d (%s)')
+            :format(entry.name, src, forming.id, resolved.key))
         BR.Party.lateJoin(src, forming)
         return
     end

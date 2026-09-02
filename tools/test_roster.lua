@@ -1285,6 +1285,25 @@ do
 
     BR.Lobby.clear()
     ok(BR.Lobby.count() == 0, 'clear empties the queue')
+
+    -- A DRAIN REFUSES THE PRESS, AND NOW SAYS SO ON THE CONSOLE TOO.
+    --
+    -- The player already learns this twice over (a notice, and the lobby
+    -- screen's own blocker copy off BR.Match.startBlocker), so this line is not
+    -- for them -- it is for the operator reading the log of a server they have
+    -- just put into maintenance, who otherwise sees ready-ups arriving and
+    -- nothing happening.
+    fire('br:ringmaster:blockMatches', 1, true)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    ok(BR.Lobby.count() == 0, 'a drain refuses the queue')
+    local drained = printedSaying('readied up during a drain')
+    ok(drained ~= nil, 'and the refusal is on the record', drained)
+
+    -- LIFTED EXPLICITLY, because the flag is a file-local in server/lobby.lua
+    -- that reset() has no reach into -- leaving it set would silently refuse
+    -- every queue in every block below this one.
+    fire('br:ringmaster:blockMatches', 1, false)
+    ok(BR.Lobby.blocked() == false, 'and the hold lifts with the drain')
 end
 
 describe('lobby.mode')
@@ -1329,6 +1348,26 @@ do
 
     fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
     ok(BR.Lobby.count() == 0, 'an in-match player cannot queue')
+
+    -- ...AND THE REFUSAL SAYS SO, WITH THE STATE IT READ (owner, 2026-09-02).
+    --
+    -- This gate used to be a bare `return`, and that is what made "I readied up
+    -- and the lobby UI never went away" unreportable twice over. A client whose
+    -- roster mirror has fallen behind believes it is in the lobby, offers a live
+    -- READY UP button, and is refused HERE for as long as it keeps pressing --
+    -- silently, so nothing anywhere records that the press was even made.
+    --
+    -- WHICH STATE IT NAMES IS THE DIAGNOSIS, not decoration: this line reading
+    -- `warmup` under a player who is looking at the lobby menu is a stale
+    -- client mirror, and the same line under a player who really is mid-match
+    -- is a button that should not have been on screen. Nothing else separates
+    -- them.
+    local refused = printedSaying('readied up, but the server has them in')
+    ok(refused ~= nil,
+        'and the console records the refusal rather than swallowing it',
+        refused)
+    ok(refused ~= nil and refused:find(BR.PlayerState.ALIVE, 1, true) ~= nil,
+        'naming the state the server actually holds them in', refused)
 
     fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
     ok(BR.Lobby.count() == 1,
@@ -2635,6 +2674,19 @@ do
     ok(BR.Roster.get(2).state == BR.PlayerState.WARMUP,
         'readying up during warmup joins the forming match directly')
     ok(BR.Server.queue[2] == nil, 'and does not sit in the queue')
+
+    -- ...WHICH IS EXACTLY WHY IT NEEDS ITS OWN CONSOLE LINE. The assertion
+    -- directly above is the reason: a late joiner never touches the queue, so
+    -- the "queued for X -- n/m" line at the bottom of BR.Lobby.join is never
+    -- reached for them, and until 2026-09-02 the busiest door into a match was
+    -- the only one that left no trace at all.
+    local admitted = printedSaying('readied into forming match')
+    ok(admitted ~= nil,
+        'and the console records the admission, which the queue line cannot',
+        admitted)
+    ok(admitted ~= nil and admitted:find('match ' .. tostring(BR.Server.matchId),
+                                          1, true) ~= nil,
+        'naming the instance they were put into', admitted)
 
     -- Both now count as starting teams: the solo-dev hold does not engage and
     -- the match ends like any other.

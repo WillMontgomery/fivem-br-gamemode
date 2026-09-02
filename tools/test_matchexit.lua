@@ -63,8 +63,35 @@ local pauseMenuUp = false
 function IsPauseMenuActive() return pauseMenuUp end
 function SetFrontendActive(on) pauseMenuUp = on == true end
 
+-- THE CONSOLE IS A SURFACE THIS SUITE ASSERTS ON, not just noise to swallow.
+-- The ready-up watchdog at the bottom of this file has no other output: its
+-- whole product is one line, so a suite that discarded prints could only prove
+-- the code ran and never that it said anything.
 local realPrint = print
-function print() end
+local printed = {}
+function print(...)
+    local parts = {}
+    for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+    printed[#printed + 1] = table.concat(parts, '\t')
+end
+
+--- How many lines carrying `needle` have been printed since index `from`.
+--- Substring, because what is asserted is the fact a line carries.
+local function saidSince(from, needle)
+    local n = 0
+    for i = from, #printed do
+        if printed[i]:find(needle, 1, true) then n = n + 1 end
+    end
+    return n
+end
+
+--- The most recent line carrying `needle`, or nil.
+local function lastSaying(needle)
+    for i = #printed, 1, -1 do
+        if printed[i]:find(needle, 1, true) then return printed[i] end
+    end
+    return nil
+end
 
 --- Deferred callbacks, so the ten-second window can be stepped rather than
 --- waited out. Citizen.SetTimeout is how the word retires itself.
@@ -815,6 +842,160 @@ do
            .. 'bit crosses, and it is the only one',
        ('off=%s mode=%s'):format(tostring(row and row.voiceOff),
                                  tostring(row and row.voiceMode)))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- A READY-UP THAT GOES NOWHERE LEAVES A RECEIPT (owner, 2026-09-02)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- "I readied up and the lobby UI never went away. no errors anywhere" -- twice
+-- now, and both times a screenshot was the whole of the evidence, because every
+-- step of that sequence was silent. The lobby comes down when MY OWN STATE
+-- stops reading LOBBY and for no other reason (App.tsx reads it off the HUD
+-- envelope), so "the press produced neither an admission nor a queue entry" is
+-- the fault, stated exactly.
+--
+-- THE HALF THAT MATTERS MOST HERE IS THE ONE THAT MUST NOT FIRE. Waiting in the
+-- queue for the room to fill has no upper bound and looks identical from the
+-- outside -- lobby menu up, player standing on the pad -- so a watchdog that
+-- cried wolf at every slow Saturday night would be turned off within a week and
+-- the real fault would go back to being invisible.
+
+describe('a ready-up that goes nowhere says so, and one that works never does')
+do
+    local READY_MS = 8000    -- READY_MAX_MS in client/state.lua
+
+    --- A clean lobby: me, standing in it, no match anywhere.
+    local function inLobby()
+        timeouts = {}
+        BR.State.me.src = 1
+        BR.State.roster = { [1] = { src = 1, state = BR.PlayerState.LOBBY } }
+        -- Through a DELTA rather than by assignment, so noteMyState runs and
+        -- the file's own "what was I last" bookkeeping really reads LOBBY --
+        -- the edge every assertion below is measured from.
+        BR.State.me.state = BR.PlayerState.ALIVE
+        matchState(BR.MatchState.WAITING)
+        deltas(meState(BR.PlayerState.LOBBY))
+        fire(BR.Net.LOBBY_STATUS, { ids = {}, players = {} })
+    end
+
+    local function press(mode)
+        fire('br:ui:action', BR.NuiCb.QUEUE, { mode = mode or 'squad' })
+    end
+
+    --- The server's 2 Hz lobby broadcast, with or without me in the queue.
+    local function status(queued)
+        fire(BR.Net.LOBBY_STATUS,
+             { ids = queued and { 1 } or {}, players = {} })
+    end
+
+    --- Advance the clock and run one pass of the slow band.
+    local function slow(ms)
+        advance(ms or 1000)
+        BR.Loop.step(BR.Loop.SLOW)
+    end
+
+    local NOWHERE = 'ready up went nowhere'
+
+    -- 1. THE PRESS IS ON THE RECORD BEFORE ANYTHING ELSE IS. A missing server
+    --    line means the request never crossed the wire; a missing line HERE
+    --    means the button never reached Lua at all. Those are different faults
+    --    and this is the only line that separates them from the player's F8.
+    inLobby()
+    local m = #printed + 1
+    press('squad')
+    ok(saidSince(m, 'ready up sent') == 1,
+       'the press itself is logged, once, with the mode it asked for',
+       lastSaying('ready up sent'))
+    local sent = lastSaying('ready up sent')
+    ok(sent ~= nil and sent:find('squad', 1, true) ~= nil,
+       '...and the mode is the one the page sent', sent)
+
+    -- 2. AND NOTHING IS SAID WHILE THE ANSWER COULD STILL BE COMING. Seven
+    --    seconds is longer than any round trip on this path and still inside
+    --    the window; a watchdog that fired here would be a stopwatch on the
+    --    network rather than a report of a stall.
+    m = #printed + 1
+    slow(0)
+    slow(READY_MS - 1000)
+    ok(saidSince(m, NOWHERE) == 0,
+       'nothing is said while the press could still legitimately be answered',
+       tostring(saidSince(m, NOWHERE)))
+
+    -- 3. THEN IT LANDS, ONCE, NAMING THE STATE THAT SHOULD HAVE CHANGED.
+    slow(2000)
+    ok(saidSince(m, NOWHERE) == 1,
+       'a press that produced neither an admission nor a queue entry is named',
+       lastSaying(NOWHERE))
+    local nowhere = lastSaying(NOWHERE)
+    ok(nowhere ~= nil and nowhere:find('still lobby', 1, true) ~= nil,
+       '...and the line carries the state the lobby screen is still reading',
+       nowhere)
+
+    -- 4. ONCE, NOT ONCE A SECOND. A watchdog that repeats is a watchdog nobody
+    --    reads: this fires on a latch that its own line clears.
+    slow(30000)
+    slow(30000)
+    ok(saidSince(m, NOWHERE) == 1,
+       'and it is said once, not once a second for the rest of the session',
+       tostring(saidSince(m, NOWHERE)))
+
+    -- 5. A READY-UP THAT WORKS SAYS NOTHING AT ALL. This is the ordinary
+    --    ending -- the server names me a participant, my state leaves LOBBY,
+    --    the lobby screen comes down -- and it is the one the report says never
+    --    came. Asserted the long way round (well past the deadline) because a
+    --    watchdog that merely fired LATE on every successful match would be
+    --    just as useless as one that never fired at all.
+    inLobby()
+    m = #printed + 1
+    press()
+    slow(1000)
+    deltas(meState(BR.PlayerState.WARMUP))
+    slow(60000)
+    ok(saidSince(m, NOWHERE) == 0,
+       'a press the server answers with a place in a match is never complained '
+           .. 'about',
+       tostring(saidSince(m, NOWHERE)))
+
+    -- 6. NOR IS ONE THAT IS SITTING IN THE QUEUE. The room filling up has no
+    --    upper bound and the lobby menu staying up with its spinner IS the
+    --    interface being correct.
+    inLobby()
+    m = #printed + 1
+    press()
+    status(true)
+    slow(60000)
+    slow(60000)
+    ok(saidSince(m, NOWHERE) == 0,
+       'a player waiting in the queue is never accused of a stall, however long '
+           .. 'they wait',
+       tostring(saidSince(m, NOWHERE)))
+
+    -- 7. ...AND THE WATCH SURVIVES THE QUEUE BEING CONSUMED. This is the shape
+    --    the screenshot shows: the queue is taken by a forming match, so the
+    --    broadcast stops carrying my id -- and if this client is never told it
+    --    was admitted, its state is still LOBBY with no queue behind it, which
+    --    is the fault. Suspending the watch while queued rather than ending it
+    --    is what leaves it standing here.
+    status(false)
+    slow(1000)
+    ok(saidSince(m, NOWHERE) == 1,
+       'but a queue that is consumed without this client being admitted is',
+       lastSaying(NOWHERE))
+
+    -- 8. PRESSING NOT READY WITHDRAWS THE QUESTION. The player took the press
+    --    back; there is no unanswered request left to complain about.
+    inLobby()
+    m = #printed + 1
+    press()
+    status(true)
+    slow(1000)
+    fire('br:ui:action', BR.NuiCb.QUEUE_LEAVE, {})
+    status(false)
+    slow(60000)
+    ok(saidSince(m, NOWHERE) == 0,
+       'and a player who presses Not ready is not reported as a stall',
+       tostring(saidSince(m, NOWHERE)))
 end
 
 realPrint(('%s%d passed, %d failed\27[0m')
