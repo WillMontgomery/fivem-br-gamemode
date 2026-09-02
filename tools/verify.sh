@@ -1245,6 +1245,19 @@ boundary=0
 # and nothing else in the file; the `*)` fallthrough and the quoted patterns
 # inside `case` blocks do not start with a lowercase letter.
 if [ -f tools/dispatch.sh ]; then
+    # SPECTATE JOINED THE LIST WITH #192, AND THAT IS THIS GATE WORKING RATHER
+    # THAN BEING WORKED AROUND. It is the lightest write verb here -- it removes
+    # nobody, changes no state a player can feel, and takes no free text at all --
+    # but it does something to a player who has not been told, which is precisely
+    # the boundary this list guards. It resolves two licences and hands them to
+    # br_core; the session, the camera and the audit rows all live over there.
+    #
+    # THE GAMEMODE HALF IS NOT ON main YET. This file landed here on its own
+    # because the deploy guard refuses a branch that changes tools/dispatch.sh,
+    # and that refusal is the whole point -- the console's only channel to the
+    # box does not arrive as a side effect of a feature branch. The verb is
+    # therefore inert on main until br_ringmaster registers brspectate: FXServer
+    # answers an unknown command and nothing happens.
     # ANY case arm, not a list of names somebody anticipated.
     #
     # This used to grep a fixed alternation -- (status|telemetry|deploy|...) --
