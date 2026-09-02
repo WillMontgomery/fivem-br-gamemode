@@ -232,12 +232,12 @@ BR.Config.Shop = {
     -- shift by one. (A car that is merely a colour nobody authored is not that
     -- bug at all: that is the roll working, and `palette` is where it lives.)
     --
-    -- ═══ THE FAIRNESS CONSTRAINT: REVIEWED, RAISED, AND ACCEPTED ═══
+    -- ═══ THE FAIRNESS CONSTRAINT: RAISED, AND ANSWERED -- NOT OVERRULED ═══
     --
     -- The header of this file says the catalogue is what keeps "a bought car
     -- must be transport, not an advantage" true, and that this list is where the
-    -- rule is enforced or broken. THIS LIST WAS CHECKED AGAINST THAT RULE AND
-    -- THE OWNER OVERRODE IT, KNOWINGLY. He was told, by name, that:
+    -- rule is enforced or broken. The list was checked against it and five rows
+    -- were put to the owner by name:
     --
     --     voltic2     has a rocket boost
     --     riot        is armoured
@@ -245,16 +245,27 @@ BR.Config.Shop = {
     --     marshall    drives over other cars
     --     formula2    is the fastest thing in the game
     --
-    -- -- i.e. that several of these rows are bought advantages rather than
-    -- transport, which is the condition he set when he agreed the cars could be
-    -- paid for out of the saved balance. His answer, 2026-08-29:
+    -- His answer on 2026-08-29 was "Ship all 13 -- I know what they are." THIS
+    -- NOTE USED TO READ THAT AS HIM OVERRIDING HIS OWN RULE. It was not, and he
+    -- corrected it on 2026-09-01:
     --
-    --     "Ship all 13 -- I know what they are."
+    --     "Yes those are base game vehicles. They don't add any advantage in
+    --      that sense. They are vehicles which could be found elsewhere on the
+    --      map, but sold for convenience of on-demand transportation"
     --
-    -- So this is a decision on the record and not an oversight. IT IS WRITTEN
-    -- DOWN HERE SO THAT NOBODY LATER READS THE HEADER, LOOKS AT `voltic2`, AND
-    -- CONCLUDES THAT THE RULE WAS SIMPLY MISSED. It was not missed. It was
-    -- raised, and it was overruled by the person whose rule it is.
+    -- WHICH IS THE RULE, READ CORRECTLY. Every model here is stock and every one
+    -- of them already spawns somewhere in Los Santos, so nothing in this list is
+    -- reachable ONLY by paying. A player who finds a Riot in the world has the
+    -- same armour as a player who bought one; what the buyer paid for is that it
+    -- is waiting at their feet instead of wherever it happened to spawn. The
+    -- purchase buys AVAILABILITY, not CAPABILITY, and availability is transport.
+    --
+    -- SO THE TEST FOR A NEW ROW IS NOT "IS THIS CAR GOOD". It is: can a player
+    -- who did not pay get this same car in this same match? While the answer is
+    -- yes, the rule holds however fast the car is. A row that is NOT findable in
+    -- the world -- an add-on, a modified handling line, anything the map cannot
+    -- produce on its own -- would break it no matter how modest it looked, and
+    -- that is the change this block exists to catch.
     --
     -- ═══ THE PRICES ARE A FIRST PASS, PROPOSED, AND HIS TO TUNE ═══
     --
