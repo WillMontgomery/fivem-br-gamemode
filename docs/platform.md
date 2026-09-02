@@ -32,6 +32,29 @@ every player, silently.
 **Server-side entity access requires OneSync.** Without it every position read
 returns nothing and nothing errors.
 
+**`onesync on` and `onesync legacy` are two different engines, and only the
+first raises the scope events.** `playerEnteredScope` and `playerLeftScope` are
+queued by `ServerGameState.cpp` inside an `IsBigMode()` guard, and `IsBigMode()`
+is Infinity — the value FXServer reports as `on`, off the same predicate that
+distinguishes it from `legacy`. On `legacy` those events never fire at all.
+That matters here because the scope event is what tells this server a downed
+body has just been cloned onto another player's machine, which is the moment its
+stale position can be corrected: on `legacy` the whole resync section of
+`br_core/server/combat.lua` is dead code and a streamed-in body stands wherever
+it was last seen. Nothing errors, and no warning fires — `br_core`'s boot banner
+shouts about `off` and an empty value and passes `legacy` in silence — so the
+only reading that shows it is the `entered` counter in `/brdbno` sitting at zero.
+Widening the culling radius is not the alternative fix: an override makes an
+entity relevant to every client on the tick it is set, which for every downed
+body would send the whole match to everybody for the whole match.
+
+**The payload field names on that event are not what they look like**, and they
+are one word apart in the docs. Read off `ServerGameState.cpp`: `data.player` is
+the **owner of the ped being created** — the body — and `data.for` is the
+**client the clone is being built for** — the newcomer. Both arrive as strings
+(`fmt::sprintf("%d", …)` on each), so a raw table lookup against a numeric
+roster key finds nothing.
+
 **A parachute is a weapon, and its AMMO is what "has a parachute" means.**
 Opening the canopy does not consume it — the ped keeps `GADGET_PARACHUTE` with
 its count intact, which the engine reads as a chute still available. That is

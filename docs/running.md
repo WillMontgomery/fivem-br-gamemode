@@ -20,6 +20,17 @@ Copy `resources/[fivem-royale]/` into your server's resources directory, or use
 player entities at all — no positions, no storm damage, no validation — and the
 failure is completely silent. The server warns loudly at boot if it is off.
 
+**And it must be `on`, not `legacy`.** Those are two different engines, and the
+boot warning above cannot tell you so: it fires on `off` and on an empty value
+and passes `legacy` without a word. `on` is what FXServer's `IsBigMode()`
+answers to, and `playerEnteredScope` — the event that tells this server a
+downed body has just been cloned onto somebody's machine, so its position can
+be corrected — is raised inside that guard. On `legacy` the event never fires,
+`br_core/server/combat.lua`'s whole resync section is dead code, and a body
+somebody streams in stands wherever it was when they last saw it. Nothing
+errors. The `entered` counter in `/brdbno` is what reads zero when a box has
+been moved to legacy, and it is the only place the difference shows.
+
 A database is **optional**. Without one, `br_stats` disables itself and matches
 run normally; you just get no persistent stats.
 
@@ -33,7 +44,7 @@ simply absent**:
 | convar | kind | unset means |
 |---|---|---|
 | `br_adminConsoleUrl` | `url` | No Admin tab in the pause menu, no HTTP call, and one line in the boot banner. The game never depends on Ringmaster, so a server with no console configured plays exactly as it did before the feature existed. |
-| `br_discordUrl` | `link` | A kicked or banned player is told why and nothing more — **no line at all**, not an empty URL and not a bare "contact an admin" — and there is **no Discord invite on the Help page**. Set, it does both: the appeal line on the way out, and a line on the Help page every player can press to copy the invite — which disappears for the rest of that player's session once they have copied it. |
+| `br_discordUrl` | `link` | A kicked or banned player is told why and nothing more — **no line at all**, not an empty URL and not a bare "contact an admin" — and there is **no Discord card in the pause menu**. Set, it does both: the appeal line on the way out, and a card on the Help page every player can press to copy the invite. |
 
 **They are parsed differently on purpose, and that is why there are two kinds.**
 `br_adminConsoleUrl` is *compared* against a browser's `event.origin`, so it must
@@ -42,10 +53,71 @@ and a Discord invite is nothing without its path — `https://discord.gg/<code>`
 entirely code. Kind `url` would have refused the only value anybody will ever put
 in it.
 
+**`br_discordUrl` now reaches clients, and that is not a hole in the
+server-only rule.** The rule `verify.sh`'s *tunable overrides* gate enforces is
+that an overridable **key** is read on the server and nowhere else — it greps
+every `br_*/client/*.lua` for the bare name `discordUrl` and fails on a match in
+code or in a comment. That is untouched. What changed on 2026-08-30 is that
+`br_core/server/community.lua` reads the resolved value on `br:ready`, on the
+server, and sends it to that player's page under the wire name **`invite`** for
+the pause-menu Discord card. Renaming it on the way out is the sanctioned exit
+and the same one `consoleUrl` → `origin` already takes: the client half never
+says the key, so there is still exactly one reader per Lua state and the two
+sides cannot drift. `{}` is a real answer — an operator who clears the convar
+and restarts `br_core` sends the empty table, and a page still up takes the card
+down on the strength of it.
+
+> **The card used to disappear once a player had copied it, and that was
+> reversed on 2026-08-31** (`2cf704e`). The owner's earlier instruction was that
+> a copy should hide it for the rest of the session, reasoning "they may join
+> the discord at that moment and it's not worth us writing something to listen
+> for that". That is what got answered: the card now shows to **every** player
+> and is withheld only from one Discord itself confirms is already in the guild.
+> The copy-hides-the-card flag is gone rather than joined. Every other line of
+> the copy behaviour, "Copied" included, is untouched.
+
 Both get what the overrides mechanism gives everything else: a strict parse, a
 hard boot failure on a malformed value, a boot banner line and a `brconfig` line.
 A **third** address arriving in that file is the signal to ask whether it is still
 the tunables or has quietly become the deployment addresses as well.
+
+### Two more convars, and they are deliberately not in that file
+
+Hiding the Discord card from players who have already joined costs a question
+only Discord can answer, and asking it costs a credential. Since 2026-08-31
+`br_core/server/guild.lua` reads two convars **straight off `GetConvar`**,
+outside the overrides mechanism entirely:
+
+| convar | what it is | unset means |
+|---|---|---|
+| `br_discord_bot_token` | A Discord bot token — **a secret**. Never write the value into a document, a commit or a `.cfg` that is tracked; it lives on the host in `server.cfg` and nowhere else. | The lookup is never made. |
+| `br_discord_guild_id` | The guild's snowflake id — digits only, 32 characters at most, because it is interpolated straight into the request path. Not a secret. | The lookup is never made. |
+
+**Both, or neither.** A token with no guild id has nothing to ask about and a
+guild id with no token cannot ask, so `BR.Guild.configured()` requires the pair
+and there is no half-configured state. **With neither set the feature is
+completely inert** — no HTTP call, no dependency, and the Discord card simply
+shows to everybody, which is the shipped default and the state the card was
+designed for.
+
+**The token is not a config key precisely because config keys get printed.**
+Everything in `br_lib/config/` is echoed by `main.lua`'s tunables block at boot,
+read back by `brconfig`, and rendered into the admin UI by the console's
+`configreport` verb. A credential in that directory would be a credential in
+three logs. So the boot line prints the guild id and only the **length** of the
+token — enough to diagnose a truncated paste without the value reaching anyone's
+scrollback — and `verify.sh`'s *secrets* and *config report* gates both hold that
+line.
+
+**They are read once, at load.** A convar set after boot applies on the next
+`restart br_core`, and the boot line will say so when it does. A guild id that is
+set but is not digits is its own state and says so loudly — the operator believes
+the feature is on — rather than being quietly treated as absent.
+
+**Only a confirmed yes hides anything.** No token, no `discord:` identifier for
+that player, a timeout, a 429, a guild the bot cannot see — every one of them
+shows the card, because a card that hid itself whenever the lookup failed would
+stop inviting exactly the people it is for, in the states nobody is watching.
 
 ### Voice is pma-voice, and it is vendored and pinned
 
@@ -94,45 +166,64 @@ hear; `brvoice` in the server console says whether pma-voice is even present.
 ## Development
 
 ```bash
-./tools/verify.sh          # syntax, tests, and 19 further gates
+./tools/verify.sh          # syntax, tests, and 34 further gates
 cd ui-src && npm run dev   # the UI in a browser, no game required
 cd ui-src && npm run build # typecheck, build, and CSS compatibility check
 ```
 
-`verify.sh` runs **21 gates**, in increasing order of strictness, exiting
+`verify.sh` runs **36 gates**, in increasing order of strictness, exiting
 non-zero on any failure:
 
 | | |
 |---|---|
 | `syntax` | Lua 5.4 on every file |
-| `tests` | ~3,900 assertions across 10 suites |
+| `tests` | ~10,300 assertions across 28 suites |
 | `scope gate` | OneSync scope-limited natives banned from client gameplay code |
-| `weapon table` | every weapon hash re-derived from its name |
-| `POI siting` | spacing, water, no-loot zones, distance to roads |
+| `weapon table` | every weapon hash re-derived from its name, and every slot weapon's icon present in both the source and the built bundle |
+| `vehicle table` | every refused-vehicle hash re-derived from its name, signed and unsigned |
+| `POI siting` | spacing, water, no-loot zones, distance to roads — and the 23 ambulance spawns held to the same rules |
+| `map boundary` | the surveyed ring is simple and closed, and every POI and ambulance spawn is inside it |
+| `spectator microphone` | a spectator is muted at both session-start sites and unmuted once on stop |
+| `spectator HUD` | a spectator's HUD reads the watched player, sent to one watcher and deduped |
+| `squad voice marks` | the squad panel marks voice from what the client is told; one bit crosses, the mode crosses nothing |
+| `squad levels` | a teammate's level travels only to their own squad, and draws nothing until the server knows it |
+| `squad revive keys` | a squadmate's key travels only to their own squad, and folds into the panel as a tri-state that keeps its false |
+| `notice names` | a toast that names a player carries the name as its own piece and never formats it into a sentence |
+| `key glyphs` | keys draw as keys, resolved by command name off the keybinds list, and a dash when unbound |
+| `vitals bars` | health and shield name themselves inside the pill, and a zero shield draws no numeral |
+| `death verdict` | the death word and the verdict screen are two surfaces on one word table, driven by one deadline |
 | `forward locals` | a `local function` called above its own declaration |
-| `config report` | the convar allowlist stays free of credentials |
+| `player states` | every `PlayerState` reference names one of the nine that exist |
+| `bool natives` | a `BOOL` native read as a bare Lua truth value — the known set, and nothing new |
+| `config report` | the convar allowlist stays free of credentials, and still finds everything it names |
 | `voice defaults` | voice modes are exclusive and the default agrees in Lua, TS and the bundle |
 | `tunable overrides` | overridable keys are server-only; every manifest loads them in order |
 | `manifest coverage` | every `.lua` is declared in an fxmanifest |
 | `shared coverage` | everything dropped in `br_lib` is actually loaded |
 | `deploy payload` | the deploy's own payload check still works |
 | `vendored third-party` | licence kept, version recorded, patch log matches the source, `deploy.sh` syncs it |
-| `console capability boundary` | `dispatch.sh`'s SSH verb set, exactly |
+| `console capability boundary` | `dispatch.sh`'s SSH verb set, exactly — plus `brcar`, `brshots`, `brtestfire` and `brtime`/`brweather` staying console-only |
+| `dev gate on console commands` | every console command goes through the one wrap, exempting only the three; the ungated door is player input only |
 | `branch-switch invariant` | no path to a hard reset that skips the dispatch blob check |
 | `incident surface` | only `BR.ShotSuspicious` can reach the Ringmaster |
 | `incident notice surface` | one announcer of the report notice, one `br:incident:filed`, one incident writer; corroboration is none of them |
 | `timeline entry kinds` | every match-timeline kind Lua writes is one `close.js` stores |
 | `secrets` | scans the whole repo, not just `resources/` |
 | `br_ddb bundle` | the committed bundle is the one recorded against the current `js-src/br_ddb` |
+| `br_ddb bundle over the wire` | `status` reports the bundle actually deployed on a box, and every absence as null |
 | `duplicate console commands` | one name, one registration |
 
-> **This table said 17 gates and "~3,100 assertions across 8 suites".** Neither
-> survived the month. Three gates landed after it — `voice defaults`,
-> `vendored third-party` and `timeline entry kinds` — and three suites came with
-> them: `test_config` (2026-08-19), then `test_artifacts` and `test_admin`
-> (2026-08-20). A gate list that quietly runs short is the failure mode this
-> table exists to prevent, so the count is stated as well as the rows: if they
-> disagree, the table is the stale one.
+> **This table said 21 gates and "~3,900 assertions across 10 suites" on
+> 2026-08-27, and 17 gates and "~3,100 across 8" before that.** None of the six
+> numbers survived. Fifteen gates in the table above were not in the last one —
+> nine covering the HUD, the squad panel and spectating, plus `vehicle table`,
+> `map boundary`, `player states`, `bool natives`,
+> `dev gate on console commands` and `br_ddb bundle over the wire` — and the
+> suite count went from 10 to 28 as each new subsystem brought its own. A gate list
+> that quietly runs short is the failure mode this table exists to prevent, so
+> the count is stated as well as the rows: if they disagree, the table is the
+> stale one. The authority is `verify.sh`'s own output, which names every gate as
+> it runs.
 
 The unit tests cover the pure logic and the server model: geometry, storm solver
 and anchor picker, seeded RNG, loot layout generation, loop registry, roster,
@@ -152,10 +243,27 @@ Install the pre-commit hook with `./tools/install-hooks.sh`.
 
 **Everything in this table needs dev mode** (`br_devMode true` or `sv_devMode
 true`), client commands included, since 2026-08-31 — owner: "Yes I want all
-client and server commands gated behind devmode". The gate is one wrap around
-`RegisterCommand` in `br_lib/shared/devgate.lua` rather than a check inside each
-verb, so a command added later is gated without anybody remembering to do it.
-Typing one on the public box prints which gate closed rather than doing nothing.
+client and server commands gated behind devmode". The two exceptions in the
+table itself are `brring`, exempt for the reason below, and `/brleave`, which is
+a player verb rather than a diagnostic and is registered through the ungated
+door. The gate is one wrap around `RegisterCommand` in
+`br_lib/shared/devgate.lua` rather than a check inside each verb, so a command
+added later is gated without anybody remembering to do it. Typing one on the
+public box prints which gate closed rather than doing nothing.
+
+**The client had no dev mode at all before this**, which is half the commands:
+`sv_devMode` and `br_devMode` are read on the server and neither is replicated,
+so a client's `GetConvar` saw neither. `server/main.lua` now replicates the
+**resolved** answer under `br_devMode`, so a box started with only `sv_devMode`
+still has working client dev tools and both sides of the wire read one truth.
+The gate reads it at call time rather than at registration, because a replicated
+convar has not necessarily arrived when a client's scripts load.
+
+**And it fails open**, which is the wrong direction for a security gate and the
+right one here. If `devgate.lua` falls out of a manifest, `RegisterCommand` is
+the untouched native and that resource's commands register ungated. A gate that
+can take `brkick` off the public box by failing to load is worse than one that
+can leave `brshop` on it.
 
 **Three commands are exempt and keep working on the public server**: `brkick`
 and `brspectate`, which the admin console types into this console over tmux and
@@ -192,6 +300,8 @@ builds keybinds out of commands, so `+brinteract` and `brslot3` are also E and
 | `brwhy <id>` | server | Why a given player is in the state they're in |
 | `brshots [n\|reason]` | server console only | The last N shot adjudications with the arithmetic that decided each one: the measured distance beside the weapon's reach, this shot's interval beside its cadence floor, the magazine the **server** believed, and whether it watched a throw. The starred pair is the comparison that refused the row. Console-only rather than restricted, and that is #93 rather than caution: nobody is exempt from incidents, so an admin can be the *subject* of these rows, and a `br.admin` readout would hand that person the exact bound to stay under |
 | `brtestfire <mode>` | server console only, dev mode | Bend one anticheat bound so a refusal can be fired deliberately from a real shot — `far` (range becomes 2% of the weapon's), `fast` (cadence floor becomes 60×), `thrown` (throw credit expires at once), `noammo <id>` (empty that player's magazine and pool in the server's model only), `off`, `status`. It never edits `BR.Config.Combat`; it swaps in a copy, so `off` restores exactly. Refusals it causes file **no** incident and are stamped `FORCED`. Announced by a banner, then a heartbeat every 15s while armed, and cleared at match teardown and on resource stop |
+| `brtime <hour> [min]`, `brtime <hh:mm>`, `brtime reset` | server console only, dev mode | Move the clock for the whole session. The world clock is otherwise pinned to 12:00 and every client re-pins it every frame, so this moves the pin for all of them — and the override is re-sent to a single client on `br:ready`, so a late joiner arrives into the same world rather than into noon. `reset` goes back to the pin, and the empty override is sent rather than silence, so a client reconnecting after one is told the override is gone. **It is a gameplay change, not a screenshot change**, which is why it is dev-mode rather than merely console-only: GTA's ambient population is time-gated, several hospital ambulance spawns only fire in the evening and at night, and moving the clock changes what `BR.Rescue`'s discovery ledger can find and therefore where a squad can spend a revive key |
+| `brweather <name>`, `brweather`, `brweather reset` | server console only, dev mode | The same for the sky, over the same 15 names (`BR.World.WEATHERS`, `EXTRASUNNY` through `HALLOWEEN`). Bare, it prints the list. While a sky is set it **outranks** the storm's thunder and the island's overcast rather than fighting them; `reset` hands the sky back to both. Neither verb is server state — the clock is overridden per client and the weather is written per client — so what the server owns is the one small override record, sent whole |
 | `brscatter` | server | Spread everyone 3 km apart to test OneSync scoping |
 | `brforce <state>`, `brskip`, `brkill <id>` | server | Drive the match by hand |
 | `brloot [matchId]` | server | World loot: counts by kind and rarity, cells, who is subscribed |

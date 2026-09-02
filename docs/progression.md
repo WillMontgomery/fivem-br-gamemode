@@ -11,8 +11,16 @@ three places and changing them is an edit to one line:
 | what | where |
 |---|---|
 | XP curve and match XP | `br_lib/shared/xp.lua` |
-| Volts payout, level bonus, prices | `br_lib/config/market.lua` |
+| Volts payout, level bonus, cosmetic prices | `br_lib/config/market.lua` |
 | The report reward | `br_stats/server/awards.lua` → `AWARD_VOLTS` |
+| Showroom car prices | `br_lib/config/shop.lua` (a `price` on every catalogue row) |
+| The revive key price | `br_lib/config/revivekey.lua` → `price` |
+
+**It used to be three places, and the last two are why it is five.** Volts were a
+cosmetics-only currency when that was written; they now also buy a warmup car and
+a squad's revive keys, and each of those prices lives with the feature that
+charges it rather than in the market's file. See *Keeping the two calibrated*
+below for what that costs.
 
 ---
 
@@ -37,15 +45,44 @@ any more, so it is corrected here rather than left to be discovered:
 Both are **earned by what you did in a match** — playing it, or reporting
 somebody in it who turned out to be worth reporting. That is the property that
 actually matters and it survives intact; the count of writers was only ever a
-proxy for it. The one debit is `br:ddb:purchase`, which is how a cosmetic is
-bought.
+proxy for it.
+
+**And there are now two debits, where this document used to say one.** It said
+"the one debit is `br:ddb:purchase`, which is how a cosmetic is bought", and
+that stopped being true when the warmup showroom landed:
+
+| verb | when | how much |
+|---|---|---|
+| `br:ddb:purchase` | a cosmetic is bought from the market | that item's price |
+| `br:ddb:spend` | a warmup showroom car, or a squad's revive keys | that car's price, or 25 |
+
+**`spend` is a separate verb rather than a parameter on `purchase`, and the
+reason is the `owned` set.** `purchase` is one conditional write that debits the
+balance *and* adds the item to the profile's `owned` string set, refusing when
+the set already holds it — exactly right for a canopy somebody owns forever, and
+exactly wrong for a car bought again every match. Reusing it would have marked
+the car id owned on the first purchase and refused the second permanently, with
+the player's Volts intact and no car: the tempting shortcut, correct-looking for
+precisely one match. So `spend` has no `owned` set, no item id, and nothing
+idempotent about it — how often is the caller's decision, and the caller is
+server-side Lua.
+
+**It cannot increase a balance**, and that is worth stating rather than assuming:
+the negative is derived inside the function from a cost refused unless it is a
+positive whole number, so there is no argument that turns the debit verb into a
+way to mint currency. The condition `#bal >= :cost` is evaluated by **DynamoDB**
+at write time against the real row, because every other candidate answer is a
+cache — the client's balance is whatever it was last told, and the server's
+session cache is one read taken on connect that a second server, a report award
+or a console grant can move underneath. Both stay as conveniences that refuse
+instantly and can say how short somebody is; neither is the authority.
 
 The check that replaces "count the writers": **every path that moves `balance`
 lives in `js-src/br_ddb/src/index.js` and nowhere else**, and each is a single
 `UpdateItem` on the profile row — `statsApply` unconditional and atomic,
-`awardPay` and `purchase` conditional so neither can half-apply or run twice.
-Adding a third means adding a verb to that file, which is deliberately meant to
-feel like a decision — see [the ban contract](ban-contract.md).
+`awardPay`, `purchase` and `spend` conditional so none can half-apply or run
+twice. Adding a fifth means adding a verb to that file, which is deliberately
+meant to feel like a decision — see [the ban contract](ban-contract.md).
 
 ---
 
@@ -340,10 +377,31 @@ line. A match whose result was not recorded must not tell the player it paid.
 
 ## Keeping the two calibrated
 
-Payout and prices live in the same file on purpose. They only mean anything
-relative to each other — a 1200 canopy is cheap or extortionate depending
-entirely on what a match returns — so changing one should force you to look at
-the other.
+Payout and **cosmetic** prices live in the same file on purpose. They only mean
+anything relative to each other — a 1200 canopy is cheap or extortionate
+depending entirely on what a match returns — so changing one should force you to
+look at the other.
+
+**Two prices now live outside that file, and the property above does not reach
+them.** A showroom car (250–1500, `config/shop.lua`) and a squad's revive keys
+(25, `config/revivekey.lua`) are charged against the same earned balance, but
+nothing puts them next to the payout, so the forcing function that keeps a
+canopy honest does not apply to either.
+
+They are also answering a **different question**. A canopy is permanent and is
+therefore honestly measured in matches; both of these are spent inside one round
+and bought again the next, so against a ~36 middling match the revive key is
+well under one match's takings and the dearest car is around forty. Whether
+those are the right numbers is **not settled**, and the two are unsettled in
+different ways. The **25** is the owner's own, set on 2026-08-30 and superseding
+the 150 written in #219's body a week earlier — a decision, with no reasoning
+recorded either time. The **car prices are not his at all**: he asked for a tier
+to be proposed and said he would adjust it ("propose a tier and I'll adjust"),
+so what is in `config/shop.lua` is a first cut sorted by what a car does —
+novelty and cheap mobility at the bottom, armour and the two 1500s at the top,
+with `mesa3` at 750 because that is the one figure #224 named. **Those thirteen
+numbers are still waiting on him.** If the payout moves a third time, neither
+price will move with it and neither will complain.
 
 **Payout has moved twice and prices have moved once**, which is stated here
 rather than quietly absorbed, because the gap is no longer small. At **~36** for a
