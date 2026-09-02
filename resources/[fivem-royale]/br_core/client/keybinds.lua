@@ -110,8 +110,92 @@ end
 -- anyway would be one more correct, untested, uncalled path in a codebase that
 -- has already paid for several. Add it when something needs it.
 
+--- NORMALISE EVERY BOOL A NATIVE HANDS BACK.
+---
+--- IS_PAUSE_MENU_ACTIVE is a BOOL native and a FiveM BOOL native may answer `1`
+--- rather than `true`. In Lua `1 == true` is false and `0` is TRUTHY, so
+--- `if IsPauseMenuActive() == true` and `if not IsPauseMenuActive()` are two
+--- different kinds of wrong on the same call. br_ui/client/pause.lua,
+--- client/inventory.lua, client/debug.lua and client/driveby.lua each keep a
+--- local of exactly this shape; this is keybinds.lua's, and this file had none
+--- before because it had never read a native.
+local function yes(v) return v == true or v == 1 end
+
+--- Actions the ENGINE'S OWN FRONTEND swallows while it is up.
+---
+--- ═══ THE MAP IS GTA'S, SO THE TEST IS GTA'S (owner, 2026-09-01) ═══
+---
+--- "Pressing tab or tilde while the big map is active should not open inventory
+--- or player map."
+---
+--- THE BIG MAP IS NOT OURS. br_ui/client/pause.lua's Map route is
+--- ActivateFrontendMenu(FE_MENU_VERSION_MP_PAUSE) -- the real pause menu, driven
+--- to its own fullscreen map page -- and `BR.Pause.mapMode` has shipped as
+--- 'frontend' since the owner compared all three in game and said "frontend is
+--- exactly what I want". PauseMenu.tsx says the same thing from the other side:
+--- the map is "the one thing we hand back", because it is a scaleform we cannot
+--- reproduce. So while it is up the ENGINE has a frontend on screen and will say
+--- so if asked.
+---
+--- ═══ ASKED, NOT REMEMBERED, AND THAT IS THE WHOLE DESIGN ═══
+---
+--- The tempting version is a flag: br_ui already tracks `frontendMap`, so raise
+--- something on the way in and lower it on the way out. THAT FLAG IS THE BUG
+--- WAITING TO HAPPEN. It lives in another resource, it survives a br_core
+--- restart that the map does not, and every route that closes the map from
+--- underneath -- Escape, a match ending, the focus watchdog, a crash mid-raise
+--- -- is a chance for it to stick raised. A stuck flag here does not leave a
+--- map open; it leaves a player who cannot open their inventory FOR THE REST OF
+--- THE MATCH, which is far worse than the bug being fixed and would read as
+--- "the game ate my keys" with nothing to point at.
+---
+--- IsPauseMenuActive is the engine's own answer to "is a frontend on screen",
+--- recomputed on every press. It cannot stick, because we do not hold it: the
+--- frame the menu goes down, the keys come back, whatever happened to it and
+--- whoever closed it. IsPauseMenuRestarting is read beside it for the window the
+--- engine admits the scaleform is mid-rebuild -- committing the map page
+--- RESTARTS it, and a press landing in those frames would otherwise slip
+--- through. Both are the engine's; neither is a timer of ours. There is
+--- deliberately NO grace period on the way out, which is the same reasoning
+--- pointed the other way: br_ui needs one (MAP_GONE_MS) because it is deciding
+--- whether to CLOSE a map, and closing one early is invisible; a grace here
+--- would mean a key that is dead for 150ms after the map has visibly gone.
+---
+--- ═══ TWO ACTIONS, NAMED, RATHER THAN "EVERY KEY" ═══
+---
+--- The gate is a list because the alternative is unusable. `pause` is Escape and
+--- `map` is M, and those are the two keys that CLOSE the thing that is up --
+--- swallow those and the map becomes a trap with no way out but the console.
+--- Only the two he named are listed, and a third would be somebody's decision.
+---
+--- (The inventory PANEL already closes itself when the frontend appears --
+--- client/inventory.lua does it on the frame band. What was missing is the half
+--- above it: the panel closed and then the very next TAB opened it again, over
+--- the map. This is that press, refused.)
+local FRONTEND_SWALLOWS = { inventory = true, players = true }
+
+--- Does the game say its own frontend is on screen right now?
+local function frontendUp()
+    return yes(IsPauseMenuActive()) or yes(IsPauseMenuRestarting())
+end
+
 local function fire(action, pressed)
+    -- WRITTEN BEFORE THE GATE, ALWAYS, so a key cannot be left stuck "held" by
+    -- a map that came up between a press and its release. `held` is a fact
+    -- about the keyboard; the gate below is about who gets told.
     BR.Keys.held[action] = pressed
+
+    -- THE PRESS IS DROPPED, THE RELEASE IS NOT. A release means "stop" to every
+    -- listener in this project, and stopping something that never started is a
+    -- no-op -- whereas swallowing a release could strand a listener that was
+    -- already running when the map went up. Same asymmetry, and the same
+    -- reasoning, as the borrowed-press rule immediately below.
+    --
+    -- ABOVE THE CLAIM CHECK ON PURPOSE. A claim is a single-shot borrow with a
+    -- deadline; spending it on a press the player never meant to send would
+    -- retire the offer silently. Refused here, the claim stands and its own
+    -- clock still ends it.
+    if pressed and FRONTEND_SWALLOWS[action] and frontendUp() then return end
 
     -- A BORROWED PRESS NEVER REACHES THE ORDINARY LISTENERS, which is the whole
     -- point: without this, TAB would corroborate the report AND open the

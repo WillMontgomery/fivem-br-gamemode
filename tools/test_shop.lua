@@ -579,6 +579,341 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('the dirt is rolled too, off the same seed, and the ambulance is not '
+         .. 'exempt from it')
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-09-01: "can you make vehicles have random dirt levels >20% at the
+-- shop? That part should also copy over once they've spawned it."
+--
+-- TWO CLAIMS, AND THEY ARE TESTED SEPARATELY BELOW: the level is above 20% of
+-- the engine's scale, and the car out of the item wears what the pad car wore.
+do
+    local rows = BR.ShopSolve.catalogue(BR.Config.Shop,
+                                        BR.Config.Shop.refusedReason)
+    local function row(id) return BR.ShopSolve.rowById(rows, id) end
+    local PAL  = BR.Config.Shop.palette
+    local SEED = 1234567
+
+    -- ═══ THE SCALE IS 0..15, WHICH IS THE WHOLE REASON THIS BLOCK EXISTS ═══
+    --
+    -- SET_VEHICLE_DIRT_LEVEL is a float 0..15, NOT a percentage. ">20%" is
+    -- therefore 3.0, and a version of this that read the request as 20..100
+    -- would hand the native numbers it clamps -- a lot of uniformly filthy cars,
+    -- which is neither what he asked for nor distinguishable from a bug.
+    local SCALE, FLOOR = 15.0, 3.0
+
+    -- ═══ ABOVE HIS FLOOR, UNDER EVERY SEED, ON EVERY ROW ═══
+    --
+    -- STRICTLY above: he wrote ">20%", and the draw is mapped onto (min, max]
+    -- rather than [min, max) precisely so this can be a `>` rather than a `>=`.
+    local low, high = {}, {}
+    for _, r in ipairs(rows) do
+        for s = 1, 300 do
+            local d = BR.ShopSolve.dirt(r, s * 7919)
+            if not d or d <= FLOOR then low[#low + 1] = ('%s@%d=%s'):format(
+                r.id, s, tostring(d)) end
+            if d and d > SCALE then high[#high + 1] = ('%s@%d=%s'):format(
+                r.id, s, tostring(d)) end
+        end
+    end
+    ok(#low == 0,
+        'every car, under three hundred seeds, is dirtier than 20% of the '
+            .. "engine's 0..15 scale -- \"dirt levels >20%\", strictly",
+        low[1])
+    ok(#high == 0,
+        'and none of them exceeds the scale itself -- a level above 15.0 is '
+            .. 'not a dirtier car, it is a number the engine throws away',
+        high[1])
+
+    -- ...AND NOT SO HIGH THAT THE LOT READS AS DERELICT. He set a floor and no
+    -- ceiling; the ceiling is a choice, it is 60%, and it is pinned here so
+    -- that raising it is somebody's decision rather than a drift.
+    local CEIL = 9.0
+    local over = {}
+    for _, r in ipairs(rows) do
+        for s = 1, 300 do
+            local d = BR.ShopSolve.dirt(r, s * 104729)
+            if d and d > CEIL then over[#over + 1] = ('%s=%s'):format(r.id, d) end
+        end
+    end
+    ok(#over == 0,
+        'and no car is dirtier than 60% of the scale -- "dirty" is not '
+            .. '"derelict", and the top of the range is left for the dirt the '
+            .. 'engine adds as the car is driven', over[1])
+
+    -- ═══ IT IS A ROLL, NOT A CONSTANT ═══
+    --
+    -- Everything above is satisfied by a function that returns 5.0 forever.
+    local across = {}
+    for s = 1, 300 do
+        local d = BR.ShopSolve.dirt(row('marshall'), s * 104729)
+        across[math.floor(d * 10)] = true
+    end
+    local nAcross = 0
+    for _ in pairs(across) do nAcross = nAcross + 1 end
+    ok(nAcross > 20,
+        'one car takes many different dirt levels across seeds -- a constant '
+            .. 'inside the band would satisfy every assertion above this one',
+        nAcross)
+
+    -- ...AND THIRTEEN CARS UNDER ONE SEED ARE NOT ALL EQUALLY DIRTY, which is
+    -- what a fold that ignored the row id would produce.
+    local within = {}
+    for _, r in ipairs(rows) do
+        within[math.floor(BR.ShopSolve.dirt(r, SEED) * 100)] = true
+    end
+    local nWithin = 0
+    for _ in pairs(within) do nWithin = nWithin + 1 end
+    ok(nWithin > 4,
+        'and thirteen cars under ONE seed wear different amounts of it -- the '
+            .. 'fold is over the row id, not just the seed', nWithin)
+
+    -- ═══ THE TWO ROLLS DO NOT READ THE SAME WORD, AND THIS IS THE ASSERTION
+    --     THAT SAYS SO ═══
+    --
+    -- Both derive from the SAME match seed, and both take the FIRST value out of
+    -- the generator they seed. If they shared a fold they would be reading one
+    -- identical 32-bit word.
+    --
+    -- THE OBVIOUS TEST FOR THIS DOES NOT WORK, and finding that out is why this
+    -- one is shaped the way it is. "One colour does not imply one dirt level"
+    -- passes whether the folds are separated or not: Rng:pick reaches the
+    -- palette through Rng:int, which reads the word MODULO 32, while Rng:float
+    -- divides it by 2^32 -- bottom five bits against top bits, independent
+    -- enough that a shared fold shows no pattern at all. A version of this block
+    -- asserted decorrelation, went green, and stayed green when the domain
+    -- prefix was deleted. It was measuring nothing.
+    --
+    -- SO IT IS DONE BY RECONSTRUCTION INSTEAD. `float()` is `word / 2^32` and
+    -- the band is a linear map of it, so the word can be recovered from a dirt
+    -- level exactly. If dirt shared the paint fold, that recovered word is the
+    -- one `pick` used -- and `palette[1 + word % 32]` would then be the colour,
+    -- on every seed. With the folds separated it is the right colour about one
+    -- time in thirty-two, by chance.
+    local RANGE = CEIL - FLOOR
+    local predicted, tried = 0, 0
+    for s = 1, 400 do
+        local r = row('marshall')
+        local c = BR.ShopSolve.paint(r, s * 31, PAL)
+        local d = BR.ShopSolve.dirt(r, s * 31)
+        -- float() = word / 2^32, and dirt = CEIL - float() * RANGE.
+        local word = math.floor(((CEIL - d) / RANGE) * 4294967296.0 + 0.5)
+        if PAL[1 + (word % #PAL)] == c then predicted = predicted + 1 end
+        tried = tried + 1
+    end
+    ok(tried == 400 and predicted < 60,
+        "the colour cannot be reconstructed from the dirt level -- the two "
+            .. 'rolls are domain-separated folds of one seed, not two reads of '
+            .. 'one word',
+        ('%d of %d colours predicted from the dirt (all 400 = one shared fold, '
+            .. '~12 = separated)'):format(predicted, tried))
+
+    -- ...AND THE SEPARATOR IS A NUL FOR A REASON THIS PAIR OF IDS DEMONSTRATES.
+    --
+    -- The domain is a PREFIX, so without a separator the dirt domain of `bike`
+    -- and the paint domain of `dirtbike` are the same string -- one row's dirt
+    -- would be folded from the identical number as another row's colour. No
+    -- shipped id collides today, which is exactly why this is written with ids
+    -- chosen to collide: the guard is against a catalogue the owner has not
+    -- authored yet, and nothing else in this suite would ever exercise it.
+    local bike     = { id = 'bike',     model = 'blista', price = 1 }
+    local dirtbike = { id = 'dirtbike', model = 'blista', price = 1 }
+    local collide = 0
+    for s = 1, 200 do
+        local d = BR.ShopSolve.dirt(bike, s * 31)
+        local word = math.floor(((CEIL - d) / RANGE) * 4294967296.0 + 0.5)
+        if PAL[1 + (word % #PAL)] == BR.ShopSolve.paint(dirtbike, s * 31, PAL) then
+            collide = collide + 1
+        end
+    end
+    ok(collide < 30,
+        "a row's dirt domain cannot collide with another row's paint domain by "
+            .. 'being a prefix of it -- `bike` and `dirtbike` fold apart '
+            .. 'because the separator is a NUL', collide)
+
+    -- ═══ THE PROMISE: THE PAD CAR AND THE ITEM CAR ═══
+    --
+    -- "That part should also copy over once they've spawned it." Same row, same
+    -- seed, two calls -- the showroom's and the delivery's. Nothing is sent
+    -- between them, so this equality IS the feature.
+    local drift = {}
+    for _, r in ipairs(rows) do
+        local a1 = BR.ShopSolve.appearance(r, SEED, PAL)
+        local a2 = BR.ShopSolve.appearance(r, SEED, PAL)
+        if a1.dirt ~= a2.dirt then drift[#drift + 1] = r.id end
+    end
+    ok(#drift == 0,
+        'the car out of the item wears the dirt the car on the pad wore -- one '
+            .. 'row and one seed, asked twice', table.concat(drift, ', '))
+
+    -- AND THE APPEARANCE CARRIES THE ROLLED LEVEL, not the authored 0.0. This
+    -- is the assertion that fails if `dirt` is computed and then dropped on the
+    -- way into the returned table -- which is a real edit away, because the
+    -- field was a plain `tonumber(a.dirt) or 0.0` before this landed.
+    local carried = {}
+    for _, r in ipairs(rows) do
+        local a = BR.ShopSolve.appearance(r, SEED, PAL)
+        if a.dirt ~= BR.ShopSolve.dirt(r, SEED) then
+            carried[#carried + 1] = ('%s: %s vs %s'):format(
+                r.id, a.dirt, BR.ShopSolve.dirt(r, SEED))
+        end
+    end
+    ok(#carried == 0,
+        'and the appearance hands the dresser the ROLLED level rather than the '
+            .. '0.0 on the row -- BR.Shop.dress reads this table and nothing '
+            .. 'else', carried[1])
+
+    -- ═══ THE AMBULANCE IS DIRTY, AND THAT IS A DECISION ═══
+    --
+    -- It is exempt from the COLOUR roll, for a stated reason that is about
+    -- paint covering a livery: "that one has a livery so color won't matter."
+    -- Dirt does not cover the livery, it weathers it, and he named no exemption
+    -- at all this time. Copying `randomColour = false` across to dirt by reflex
+    -- would have been a carve-out he never asked for.
+    --
+    -- Asserted rather than commented, so that changing the decision means
+    -- changing this line and reading the paragraph above it.
+    local amb = row('ambulance')
+    ok(BR.ShopSolve.randomises(amb) == false,
+        'the ambulance is still pinned to its authored COLOUR -- nothing here '
+            .. 'touched that')
+    local ambDirt = BR.ShopSolve.dirt(amb, SEED)
+    ok(ambDirt ~= nil and ambDirt > FLOOR,
+        'and it is dirty anyway -- the livery is the reason its PAINT is '
+            .. 'pinned, and dirt weathers a livery rather than replacing it',
+        tostring(ambDirt))
+    ok(BR.ShopSolve.appearance(amb, SEED, PAL).primary == 0
+           and BR.ShopSolve.appearance(amb, SEED, PAL).dirt > FLOOR,
+        'so the delivered ambulance is his Preset Color 1 wearing road dirt -- '
+            .. 'both halves at once, which is what says the two rolls are '
+            .. 'genuinely separate gates')
+
+    -- ═══ THE OPT-OUT, ITS POLARITY, AND ITS SPELLING ═══
+    --
+    -- Same shape as randomColour: absent means ON, only an explicit false pins
+    -- a row, and a typo must not silently pin one. No shipped row uses it.
+    ok(BR.ShopSolve.dirties({ id = 'x' }) == true,
+        'a row that says nothing is rolled -- the rule is the default')
+    ok(BR.ShopSolve.dirties({ id = 'x', randomDirt = true }) == true,
+        'and saying so explicitly changes nothing')
+    ok(BR.ShopSolve.dirties({ id = 'x', randomDirt = false }) == false,
+        'only `false` keeps a car clean')
+    ok(BR.ShopSolve.dirties({ id = 'x', randomDrit = false }) == true,
+        'and a MISSPELLED flag does not, because the check is an equality '
+            .. 'against false rather than a truth test')
+    -- AND IT IS NOT randomColour's FLAG. A row pinned to its colour still gets
+    -- dirt; a row pinned clean still gets a colour. Reading one flag for both
+    -- is the mistake this pair of assertions exists to catch.
+    ok(BR.ShopSolve.dirt({ id = 'y', randomColour = false }, SEED) ~= nil,
+        'a row that opted out of the COLOUR roll is still rolled for dirt -- '
+            .. 'two questions, two flags')
+    ok(BR.ShopSolve.paint({ id = 'y', randomDirt = false }, SEED, PAL) ~= nil,
+        'and a row that opted out of the DIRT roll is still painted')
+
+    local pinnedDirt = {}
+    for _, r in ipairs(rows) do
+        if not BR.ShopSolve.dirties(r) then pinnedDirt[#pinnedDirt + 1] = r.id end
+    end
+    ok(#pinnedDirt == 0,
+        'and no shipped row opts out -- he named no exemption, so the '
+            .. 'catalogue contains none', table.concat(pinnedDirt, ', '))
+
+    -- ═══ EVERY ABSENCE FALLS BACK TO THE AUTHORED LEVEL ═══
+    --
+    -- A br_core restart mid-match leaves a client unpacking an item with no
+    -- seed. The colour route already answers that with the authored colour;
+    -- dirt has to answer it with the authored dirt rather than with a nil that
+    -- reaches `a.dirt + 0.0` in BR.Shop.dress and throws inside the dresser.
+    ok(BR.ShopSolve.dirt(row('marshall'), nil) == nil,
+        'with no seed there is no rolled dirt level, rather than a default one')
+    local noSeed = BR.ShopSolve.appearance(row('marshall'), nil, PAL)
+    ok(noSeed.dirt == 0.0,
+        'and the appearance falls back to the level the row authors -- the shop '
+            .. 'that shipped before 2026-09-01', noSeed.dirt)
+    ok(type(noSeed.dirt) == 'number',
+        'as a number and never nil -- BR.Shop.dress does `a.dirt + 0.0` and a '
+            .. 'nil there is an error inside the dresser, on the one path that '
+            .. 'is already degraded')
+
+    -- A ROW WITH NO ID CANNOT BE FOLDED.
+    ok(BR.ShopSolve.dirt({ model = 'blista' }, SEED) == nil,
+        'a row with no id is not rolled -- there is nothing stable to fold')
+
+    -- KEYED BY ID, NOT BY POSITION -- the same property the colour fold has,
+    -- for the same reason: inserting a row must not re-dirty the ones below it.
+    local before = BR.ShopSolve.dirt(row('marshall'), SEED)
+    local shifted = { { id = 'newcomer', model = 'blista', price = 1,
+                        x = 0.0, y = 0.0, z = 0.0 } }
+    for _, r in ipairs(rows) do shifted[#shifted + 1] = r end
+    ok(BR.ShopSolve.dirt(shifted[#shifted], SEED) == before
+           and shifted[#shifted].id == 'marshall',
+        'inserting a row at the top of the catalogue does not change the dirt '
+            .. 'on the ones below it')
+
+    -- ═══ SEED 0 IS A SEED ═══
+    --
+    -- The server masks its roll to 32 bits, so 0 is reachable. `0 is truthy in
+    -- Lua` cuts the other way here: an `if not s or s == 0` or an `or 0` on the
+    -- way in pins one match in four billion to the authored dirt level.
+    local zero = BR.ShopSolve.dirt(row('marshall'), 0)
+    ok(zero ~= nil and zero > FLOOR,
+        'seed 0 rolls dirt like any other seed -- it is a seed, not an absence',
+        tostring(zero))
+
+    -- ...AND OVER THE ID'S CONTENT, NOT ITS SHAPE. The colour roll carries this
+    -- assertion because mutation testing found that a fold over `#id` keeps a
+    -- catalogue of differently-named cars looking varied. The dirt fold is the
+    -- same `fold` over a different domain, so it inherits both the property and
+    -- the way it can silently stop holding.
+    local twins = 0
+    for s = 1, 100 do
+        if BR.ShopSolve.dirt({ id = 'aaaa' }, s * 31)
+           == BR.ShopSolve.dirt({ id = 'bbbb' }, s * 31) then
+            twins = twins + 1
+        end
+    end
+    ok(twins < 30,
+        'two rows whose ids are the same LENGTH get independent dirt -- the '
+            .. 'fold reads the name, not how long it is', twins)
+
+    -- ═══ THE ENDPOINTS, WHICH SAMPLING CANNOT REACH ═══
+    --
+    -- The band is mapped onto (3.0, 9.0] -- OPEN at the floor, because he wrote
+    -- ">20%" -- and `Rng:float()` returns 0.0 with probability 2^-32. So the one
+    -- draw that distinguishes `[min, max)` from `(min, max]` does not occur in
+    -- any number of sampled seeds this suite could run, and the three hundred
+    -- above would stay green if the mapping were flipped tomorrow.
+    --
+    -- SO THE GENERATOR IS SUBSTITUTED AND THE ENDPOINTS ASKED FOR DIRECTLY.
+    -- This is the only assertion here that does not use the shipped RNG, and it
+    -- is testing the ARITHMETIC ROUND the RNG feeds rather than the RNG.
+    local realRng = BR.Rng
+    local function fixedRng(v)
+        BR.Rng = function() return { float = function() return v end } end
+    end
+
+    fixedRng(0.0)
+    local atFloor = BR.ShopSolve.dirt(row('marshall'), SEED)
+    fixedRng(0.9999999997671694)   -- the largest float() can return: 1 - 2^-32
+    local atCeil = BR.ShopSolve.dirt(row('marshall'), SEED)
+    BR.Rng = realRng
+
+    ok(atFloor ~= nil and atFloor == CEIL,
+        'the lowest draw the RNG can produce lands ON the ceiling, not on the '
+            .. 'floor -- the band is mapped downward from the top so that the '
+            .. 'floor is the OPEN end', tostring(atFloor))
+    ok(atCeil ~= nil and atCeil > FLOOR,
+        'and the highest draw it can produce is still strictly dirtier than '
+            .. '20% -- which is the whole of ">20%" rather than ">=20%"',
+        tostring(atCeil))
+    ok(BR.ShopSolve.dirt(row('marshall'), SEED) ~= nil
+           and BR.Rng == realRng,
+        'and the shipped generator is back afterwards -- a substituted RNG '
+            .. 'leaking into the assertions below would make them meaningless')
+end
+
+-- ---------------------------------------------------------------------------
 describe("the plates say Rockstar's names, not the model strings")
 -- ---------------------------------------------------------------------------
 --

@@ -342,7 +342,24 @@ function GetAmmoInPedWeapon() return 0 end
 function GetAmmoInClip() return false, 0 end
 function GetPedArmour() return 0 end
 function HasPedGotWeapon() return false end
-function IsPauseMenuActive() return false end
+--- THE ENGINE'S FRONTEND, DRIVEABLE, AND IN EVERY BOOL SHAPE.
+---
+--- client/keybinds.lua refuses TAB and tilde while GTA's own frontend is on
+--- screen (the big map is the frontend -- br_ui raises it with
+--- ActivateFrontendMenu). That refusal reads two BOOL natives, so the stub has
+--- to be able to answer `1`/`0` as well as `true`/`false`: a `0` from
+--- IsPauseMenuActive is "no frontend", and 0 is TRUTHY in Lua, so an
+--- unnormalised read would swallow both keys on every frame of every session.
+---
+--- `nil` shape means "answer plain booleans", which is what every block written
+--- before this existed expects.
+local pauseMenu = { active = false, restarting = false, shape = nil }
+local function pauseBool(v)
+    if pauseMenu.shape == nil then return v end
+    return v and pauseMenu.shape.down or pauseMenu.shape.up
+end
+function IsPauseMenuActive() return pauseBool(pauseMenu.active) end
+function IsPauseMenuRestarting() return pauseBool(pauseMenu.restarting) end
 function IsPedReloading() return false end
 function IsPlayerFreeAiming() return false end
 function IsDisabledControlJustPressed() return false end
@@ -2058,6 +2075,156 @@ do
     ok(n == held,
        'and the release adds nothing',
        ('fired %d before release, %d after'):format(held, n))
+end
+
+--- ═══ THE BIG MAP SWALLOWS TAB AND TILDE, AND NOTHING ELSE ═══
+---
+--- Owner, 2026-09-01: "Pressing tab or tilde while the big map is active should
+--- not open inventory or player map."
+---
+--- THE MAP IS THE ENGINE'S FRONTEND, so "is the map up" is IsPauseMenuActive --
+--- a question asked of the game on every press, not a flag br_core sets and
+--- hopes stays true. The tests below are written to fail if it ever becomes a
+--- flag: the gate is opened and closed underneath a held key, and the keys have
+--- to come back on the exact frame the engine says the menu has gone.
+describe('the big map swallows TAB and tilde -- ' .. shape.name)
+do
+    bootOn(true, true, shape)
+    -- THE PAUSE-MENU NATIVES ANSWER IN THIS BLOCK'S SHAPE TOO. `0` is truthy in
+    -- Lua and IS_PAUSE_MENU_ACTIVE is a BOOL native: an unnormalised read makes
+    -- a `0` mean "the map is up", which would swallow TAB and tilde on every
+    -- frame of every session and leave the player with no inventory at all.
+    pauseMenu.shape = shape
+
+    local inv, players, invRelease = 0, 0, 0
+    BR.Keys.on('inventory', function(pressed)
+        if pressed then inv = inv + 1 else invRelease = invRelease + 1 end
+    end)
+    BR.Keys.on('players',   function(pressed) if pressed then players = players + 1 end end)
+
+    local TILDE_VK = 0xC0
+    local function tilde(down)
+        if down then
+            if not keys[TILDE_VK] then keys[TILDE_VK], edge[TILDE_VK] = true, true end
+        else
+            keys[TILDE_VK] = nil
+        end
+        engineKey('F2', down)
+    end
+
+    -- ── with no frontend, both keys work. The control, and it matters: every
+    -- assertion below is also satisfied by a gate that is stuck closed.
+    pauseMenu.active, pauseMenu.restarting = false, false
+    tapKey(true);  frames(2); tapKey(false);  frames(2)
+    tilde(true);   frames(2); tilde(false);   frames(2)
+    ok(inv == 1 and players == 1,
+       'with no frontend on screen TAB opens the inventory and tilde the player '
+       .. 'list, exactly as they always did',
+       ('inventory %d, players %d'):format(inv, players))
+
+    -- ── with the map up, neither reaches its listener.
+    pauseMenu.active = true
+    local invBefore, playersBefore = inv, players
+    local releaseBefore = invRelease
+    tapKey(true);  frames(2); tapKey(false);  frames(2)
+    tilde(true);   frames(2); tilde(false);   frames(2)
+    ok(inv == invBefore,
+       'and while the big map is up TAB does not open the inventory over it',
+       ('fired %d more time(s)'):format(inv - invBefore))
+    ok(players == playersBefore,
+       'nor does tilde open the player list',
+       ('fired %d more time(s)'):format(players - playersBefore))
+
+    -- ...BUT THE RELEASE IS NOT SWALLOWED, AND THAT ASYMMETRY IS DELIBERATE.
+    -- A release means "stop" to every listener in this project. Stopping
+    -- something that never started is a no-op; swallowing a release could
+    -- strand a listener that WAS already running when the map came up, which is
+    -- the shape of bug that leaves a panel open forever. The gate therefore
+    -- tests `pressed`, and this is the assertion that says so -- without it,
+    -- widening the gate to the whole event is a silent, passing edit.
+    ok(invRelease > releaseBefore,
+       'the RELEASE half still reaches the listeners while the map is up -- '
+       .. 'only the press is refused',
+       ('%d release(s) delivered during the map, %d before it'):format(
+           invRelease - releaseBefore, releaseBefore))
+
+    -- ── AND THE SCALEFORM'S REBUILD IS COVERED. Committing the map page
+    -- RESTARTS the pause menu, and a restarting menu reads as NOT ACTIVE for a
+    -- frame or two -- so a press landing in that window would slip through a
+    -- gate that only asked IsPauseMenuActive.
+    pauseMenu.active, pauseMenu.restarting = false, true
+    invBefore, playersBefore = inv, players
+    tapKey(true);  frames(2); tapKey(false);  frames(2)
+    tilde(true);   frames(2); tilde(false);   frames(2)
+    ok(inv == invBefore and players == playersBefore,
+       'and a press landing while the scaleform is mid-restart is refused too '
+       .. '-- IsPauseMenuRestarting is read beside IsPauseMenuActive',
+       ('inventory +%d, players +%d'):format(inv - invBefore,
+                                             players - playersBefore))
+
+    -- ── THE GATE CANNOT STICK, WHICH IS THE FAILURE THAT WOULD BE WORSE THAN
+    -- THE BUG. A player who cannot open their inventory for the rest of the
+    -- match is a far louder problem than a panel over a map, so the keys must
+    -- come back the moment the ENGINE says the menu is gone -- with nothing
+    -- reset, nothing restarted and no event sent to say so.
+    pauseMenu.active, pauseMenu.restarting = false, false
+    invBefore, playersBefore = inv, players
+    tapKey(true);  frames(2); tapKey(false);  frames(2)
+    tilde(true);   frames(2); tilde(false);   frames(2)
+    ok(inv == invBefore + 1 and players == playersBefore + 1,
+       'and both keys work again the moment the engine says the frontend has '
+       .. 'gone -- the gate is a question asked of the game, not a flag we hold',
+       ('inventory +%d, players +%d'):format(inv - invBefore,
+                                             players - playersBefore))
+
+    -- ═══ AND THE KEYS THAT CLOSE THE MAP STILL REACH IT ═══
+    --
+    -- THIS IS THE ASSERTION THAT STOPS THE FIX BEING WORSE THAN THE BUG. The
+    -- lazy version of this gate refuses EVERY action while a frontend is up,
+    -- and the two keys that dismiss the map -- M, which toggles it, and Escape,
+    -- which br_ui also answers -- are actions. Swallow those and the map is a
+    -- trap: it is full-screen, it is opaque, and the only way out is a console
+    -- the player does not have. He asked for two keys to stop working, and the
+    -- gate names exactly those two.
+    local mapPress, pausePress = 0, 0
+    BR.Keys.on('map',   function(pressed) if pressed then mapPress = mapPress + 1 end end)
+    BR.Keys.on('pause', function(pressed) if pressed then pausePress = pausePress + 1 end end)
+
+    pauseMenu.active, pauseMenu.restarting = true, false
+    local MAP_VK, ESC_VK = 0x4D, 0x1B
+    local function press(vk, keyName)
+        keys[vk], edge[vk] = true, true
+        engineKey(keyName, true)
+        frames(2)
+        keys[vk] = nil
+        engineKey(keyName, false)
+        frames(2)
+    end
+    press(MAP_VK, 'M')
+    press(ESC_VK, 'F1')
+    ok(mapPress == 1,
+       'the MAP key still reaches its listener while the map is up -- it is '
+       .. 'what closes the thing, and a gate that ate it would leave the player '
+       .. 'trapped behind a full-screen scaleform',
+       ('fired %d time(s)'):format(mapPress))
+    ok(pausePress == 1,
+       'and so does the pause key -- the gate names two actions rather than '
+       .. 'refusing everything a frontend happens to be covering',
+       ('fired %d time(s)'):format(pausePress))
+
+    -- ── `held` IS NEVER LEFT STUCK. It is written before the gate on purpose:
+    -- a map that comes up between a press and its release must not strand the
+    -- keyboard's idea of what is down.
+    pauseMenu.active = true
+    tapKey(true); frames(2)
+    pauseMenu.active = false
+    tapKey(false); frames(2)
+    ok(BR.Keys.isHeld('inventory') == false,
+       'a swallowed press does not leave the key stuck "held" -- the held state '
+       .. 'is written above the gate, not below it')
+
+    pauseMenu.shape = nil
+    pauseMenu.active, pauseMenu.restarting = false, false
 end
 
 --- A HOLD EARNS EVERY FRAME OF ITS LIFE, AND THEN COMPLETES.

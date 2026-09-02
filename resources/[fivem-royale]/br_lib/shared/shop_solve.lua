@@ -503,6 +503,168 @@ function BR.ShopSolve.paint(row, seed, palette)
     return math.floor(n)
 end
 
+--- ═══ THE DIRT SCALE IS 0..15, AND IT IS NOT A PERCENTAGE ═══
+---
+--- Owner, 2026-09-01: "can you make vehicles have random dirt levels >20% at
+--- the shop? That part should also copy over once they've spawned it."
+---
+--- SET_VEHICLE_DIRT_LEVEL TAKES A FLOAT FROM 0.0 TO 15.0 -- not 0..100, and
+--- guessing 100 would have asked for eleven-hundred-percent dirt and got
+--- whatever the engine clamps to, on every car, which is the filthy showroom
+--- nobody asked for. The number is checked rather than assumed: the FiveM
+--- native reference says values above 15.0 cannot be used and the game refuses
+--- to render a car dirtier than the maximum, and this repository had already
+--- written the same range down twice from its own testing --
+--- br_core/client/fuel.lua ("range 0..15", beside the wash it deliberately does
+--- not do) and the authoring comment in config/shop.lua ("0 clean .. 15
+--- filthy"). Three sources, one answer.
+---
+--- SO ">20%" IS A PERCENTAGE OF FIFTEEN, WHICH IS 3.0. That is the floor he
+--- named and the only number in this block that is his.
+local DIRT_SCALE = 15.0
+
+--- The dirtiest a showroom car may be, and why it is not 15.
+---
+--- ═══ HE SET A FLOOR AND NOT A CEILING, AND A CEILING STILL HAS TO BE CHOSEN
+---     ═══
+---
+--- ">20%" bounds the roll from below only. Drawing over (20%, 100%] would put
+--- caked mud on roughly half the lot, and "dirty" is not "derelict": these cars
+--- are being SOLD, they stand on a pad with a price over them, and the request
+--- was for cars that are not showroom-fresh rather than for wrecks.
+---
+--- 60% -- 9.0 -- IS THE CEILING, AND THE REASON IS HEADROOM RATHER THAN TASTE.
+--- GTA accumulates dirt on a vehicle as it is driven, so the level a car spawns
+--- at is a STARTING point on a scale the game keeps writing to. A car delivered
+--- at 15.0 is pinned at the ceiling for the rest of the match and can never
+--- look like it has been anywhere; one delivered in this band still visibly
+--- weathers on the way to the circle, which is the behaviour a dirt level is
+--- for. Leaving the top 40% of the scale to the engine is what buys that.
+---
+--- ROCKSTAR'S OWN AMBIENT GENERATOR ROLLS `rand() % 15` -- the whole scale --
+--- and a showroom is deliberately not ambient traffic: higher floor, lower
+--- ceiling, a narrower band than a random car in the street. The difference is
+--- the point.
+---
+--- BOTH NUMBERS ARE TUNING, AND THE FLOOR IS THE ONLY ONE HE GAVE. If the lot
+--- reads too clean or too grim in game, these two lines are the whole change.
+local DIRT_MIN = DIRT_SCALE * 0.20   -- 3.0, the floor he named
+local DIRT_MAX = DIRT_SCALE * 0.60   -- 9.0, the ceiling chosen above
+
+--- Does this row take a rolled dirt level?
+---
+--- ═══ A SEPARATE FLAG FROM `randomColour`, AND THE AMBULANCE ROLLS ═══
+---
+--- The obvious move is to read `randomises` here and let the one car that is
+--- pinned to its authored colour keep an authored dirt level too. THAT WOULD BE
+--- THE WRONG READING OF WHY THAT FLAG EXISTS. `randomColour = false` is on the
+--- ambulance for one stated reason -- "that one has a livery so color won't
+--- matter" -- and it is a fact about PAINT REPLACING ARTWORK: a rolled colour
+--- puts a body colour underneath a livery that was drawn for a white one.
+---
+--- DIRT DOES NOT REPLACE THE LIVERY, IT WEATHERS IT, exactly as it weathers
+--- paint on the other twelve. There is no ambulance anywhere that does not get
+--- dirty, and the config already records that the marshall -- which also
+--- carries a livery -- was NOT exempted from the colour roll because "he named
+--- one car". He named no car at all this time: the dirt request has no
+--- exemption in it, and inventing one, justified by a reason that does not
+--- apply, is a decision he never made.
+---
+--- SO ALL THIRTEEN ROLL, AND THE OPT-OUT EXISTS ANYWAY. `randomDirt = false` is
+--- the same shape and the same polarity as `randomColour` -- absent means on,
+--- only an explicit `false` pins a row, and a misspelling cannot silently pin
+--- one because the test is an equality rather than a truth test. No row in the
+--- shipped catalogue uses it. It is here so that disagreeing with the paragraph
+--- above is a one-word edit rather than a change to this file.
+--- @param row table|nil
+--- @return boolean
+function BR.ShopSolve.dirties(row)
+    if type(row) ~= 'table' then return false end
+    return row.randomDirt ~= false
+end
+
+--- How dirty one row is under one seed, or nil for "use the row".
+---
+--- ═══ THE SECOND DERIVATION FROM THE FIRST SEED -- NOT A SECOND SEED ═══
+---
+--- Everything the paint roll's write-up says applies here unchanged: the server
+--- owns ONE integer per match (`m.shopSeed`), both ends derive from it, and
+--- NOTHING ABOUT DIRT TRAVELS OVER THE WIRE in either direction. The delivery
+--- message already carries that seed because the colour needed it; dirt costs
+--- it nothing extra, and "the car unpacked from the item wears the same dirt as
+--- the one on the pad" is true for the same reason the colour matches -- the two
+--- cars are one computation run twice, not two values kept in step.
+---
+--- ═══ DOMAIN-SEPARATED FROM THE PAINT FOLD, AND THE HONEST REASON IS NOT THE
+---     OBVIOUS ONE ═══
+---
+--- `fold(seed, id)` is what the colour draws from, and both rolls take the FIRST
+--- word out of the generator they seed. So sharing the fold would have both of
+--- them reading one identical 32-bit word.
+---
+--- THAT WOULD NOT ACTUALLY CORRELATE THEM TODAY, and the first version of this
+--- comment claimed it would. It is worth writing down what is really true
+--- instead, because the wrong reason is the more persuasive one: `Rng:pick`
+--- reaches the palette through `Rng:int`, which reads the word MODULO 32 -- its
+--- bottom five bits -- while `Rng:float` divides the same word by 2^32 and so
+--- reads essentially all of its top bits. Low bits and high bits of one xoshiro
+--- word are independent enough that a shared fold produces no visible pattern,
+--- and a test looking for "every red car is equally dirty" finds nothing.
+---
+--- THE REASON TO SEPARATE THEM IS THAT THE INDEPENDENCE IS AN ACCIDENT OF
+--- Rng:int'S IMPLEMENTATION. `lo + next() % n` is one refactor away from
+--- `lo + floor(float() * n)` -- the same function, the spelling most people
+--- reach for, and arguably the better one because the modulo is very slightly
+--- biased. On the day somebody makes that change, a shared fold makes the paint
+--- index a pure function of the dirt level and nothing anywhere says so. The
+--- coupling would be introduced by an edit to a DIFFERENT FILE that looks
+--- entirely correct on its own.
+---
+--- So folding `'dirt\0' .. id` buys structural independence rather than a bug
+--- fix: the two rolls cannot read the same word whatever Rng does later. The
+--- prefix is separated by a NUL so no id can collide with another id's dirt
+--- domain by being a prefix of it, and `fold` itself is untouched -- so every
+--- colour this function ships beside is bit-for-bit the one it was before.
+---
+--- ═══ HALF-OPEN AT THE TOP SO THE FLOOR IS STRICT ═══
+---
+--- `Rng:float()` is uniform on [0, 1), so `lo + f * (hi - lo)` can return
+--- EXACTLY `lo` and never returns `hi`. He asked for dirt levels ">20%", so the
+--- floor is the bound that has to be strict -- and the subtraction below maps
+--- the same draw onto (lo, hi] instead, which is strictly above 20% by
+--- construction rather than by rounding. It costs one operator and it makes the
+--- owner's own sentence a property a test can assert.
+---
+--- NIL ON EVERY ABSENCE, exactly as the paint roll does: no seed, no id, a row
+--- that opted out, or an RNG that has not loaded yet all mean "this car wears
+--- what config/shop.lua says", which is the behaviour that shipped before dirt
+--- was rolled at all.
+--- @param row table|nil
+--- @param seed integer|nil    the match's shop seed -- the SAME one paint uses
+--- @return number|nil
+function BR.ShopSolve.dirt(row, seed)
+    if not BR.ShopSolve.dirties(row) then return nil end
+
+    -- A NIL TEST, AND IT READS AS ONE ONLY BECAUSE 0 IS TRUTHY IN LUA. Seed 0
+    -- is a seed -- the server masks its roll to 32 bits -- so an `s == 0` guard
+    -- here, or an `or 0` on the line, silently pins one match in four billion
+    -- to the authored dirt level. Same sentence as the paint roll's, because it
+    -- is the same mistake.
+    local s = math.tointeger(tonumber(seed))
+    if not s then return nil end
+
+    local id = tostring(row.id or '')
+    if id == '' then return nil end
+
+    -- NIL-GUARDED ON THE MODULE, for the reason paint states: br_lib loads its
+    -- shared scripts as a glob and the order is the platform's business.
+    if type(BR.Rng) ~= 'function' then return nil end
+
+    local f = tonumber(BR.Rng(fold(s, 'dirt\0' .. id)):float())
+    if not f then return nil end
+    return DIRT_MAX - f * (DIRT_MAX - DIRT_MIN)
+end
+
 --- THE APPEARANCE, CANONICALISED. One row in, one fully-populated table out.
 ---
 --- ═══ THIS FUNCTION IS THE "EXACTLY AS SHOWN" GUARANTEE ═══
@@ -535,7 +697,9 @@ end
 --- into the config by accident -- one client writing a defaulted field back into
 --- the shared row would be the second representation arriving by the back door.
 --- @param row table|nil
---- @param seed integer|nil    the match's paint seed; nil keeps the authored colour
+--- @param seed integer|nil    the match's shop seed; nil keeps the authored
+---                            colour AND the authored dirt level -- one number
+---                            feeds both rolls and neither has one of its own
 --- @param palette table|nil   BR.Config.Shop.palette
 --- @return table
 function BR.ShopSolve.appearance(row, seed, palette)
@@ -589,6 +753,27 @@ function BR.ShopSolve.appearance(row, seed, palette)
     local rolled = BR.ShopSolve.paint(row, seed, palette)
     if rolled ~= nil then pri, sec = rolled, rolled end
 
+    -- ═══ AND THE DIRT IS ROLLED THE SAME WAY, OFF THE SAME SEED ═══
+    --
+    -- Owner, 2026-09-01: "can you make vehicles have random dirt levels >20% at
+    -- the shop? That part should also copy over once they've spawned it."
+    --
+    -- "COPY OVER" IS THE HALF THAT NEEDED NO CODE, and that is the whole payoff
+    -- of the shape this file already had. Dirt is derived here, in the one
+    -- function BR.Shop.dress reads for BOTH cars, from the seed the delivery
+    -- already carries -- so the car that comes out of the item wears the pad
+    -- car's dirt for exactly the reason it wears its colour, and there is no
+    -- second value to send, store or keep in step.
+    --
+    -- WRITTEN AS AN `if`, NOT AS `rolled or authored`. 0.0 is a legal dirt level
+    -- and 0.0 is TRUTHY in Lua; the `or` spelling would read a clean car as "no
+    -- answer" if this function ever returned one. It cannot today -- the band
+    -- starts at 3.0 -- which is exactly the kind of "safe by a value that lives
+    -- somewhere else" this project has been bitten by.
+    local dirt = tonumber(a.dirt) or 0.0
+    local rolledDirt = BR.ShopSolve.dirt(row, seed)
+    if rolledDirt ~= nil then dirt = rolledDirt end
+
     return {
         -- -1 IS THE ENGINE'S OWN "LEAVE IT" FOR EVERY COLOUR INDEX HERE, so an
         -- unwritten field and a deliberately-default field produce the same
@@ -603,7 +788,7 @@ function BR.ShopSolve.appearance(row, seed, palette)
         roofLivery  = int(a.roofLivery,  -1),
         windowTint  = int(a.windowTint,  -1),
         wheelType   = int(a.wheelType,   -1),
-        dirt        = tonumber(a.dirt) or 0.0,
+        dirt        = dirt,
         plate       = (type(a.plate) == 'string') and a.plate or nil,
         plateIndex  = int(a.plateIndex,  -1),
         xenon       = (a.xenon == true),
