@@ -826,8 +826,31 @@ end
 --- Do the squads still make sense for the number of players in the match?
 ---
 --- True when the ideal squad COUNT has changed (a late joiner pushed the match
---- past a multiple of the cap) or when the teams have drifted more than one
---- player apart. Both are "the shape is wrong", not "somebody moved".
+--- past a multiple of the cap), when the teams have drifted more than one
+--- player apart, or WHEN A PARTY HAS ENDED UP ON TWO TEAMS. All three are "the
+--- shape is wrong", not "somebody moved".
+---
+--- THE THIRD ONE IS THE ONE THIS FUNCTION WAS MISSING, and it is the whole of
+--- the 2026-09-01 report: "the 2 partied together did not stay in the same
+--- squad when they went to warmup again, though they did appear still partied
+--- in the lobby UI."
+---
+--- The party was never the problem. It survived the match exactly as designed
+--- -- `partyId` is untouched by BR.Match.resetPlayer, the parties table still
+--- held both members, and the lobby UI was telling the truth the entire time.
+--- What happened is that an UNPARTIED player readied up first, opened the
+--- warmup alone, and BR.Party.lateJoin then dealt the two friends in one at a
+--- time: the first was autofilled into the stranger's squad (their own
+--- partymate was still in the lobby with no squad to aim at), which filled it,
+--- and the second arrived to find their party's squad full and was given a
+--- squad of their own. Two squads of the right count and within one player of
+--- each other -- so neither test below saw anything wrong, and the pair played
+--- the round against each other.
+---
+--- It needs no match to have ended. The match end is only what re-shuffled the
+--- order in which three people press Ready, which is why it looked like a
+--- consequence of one. It is also not dev-only: any cap, any player count,
+--- whenever a party arrives at a warmup one member at a time.
 --- @param m table
 --- @return boolean
 function BR.Party.needsRebalance(m)
@@ -852,7 +875,18 @@ function BR.Party.needsRebalance(m)
     -- Units the match could be split into: parties count once, solos once
     -- each. Without this the target can exceed what is actually divisible and
     -- the rebalance would fire forever, never reaching the shape it wants.
+    --
+    -- AND THE SAME PASS ANSWERS "IS ANY PARTY ON TWO TEAMS", because it is
+    -- already the pass that knows which party every player is in. A second
+    -- sweep asking the same question off the same predicate is a second place
+    -- for that predicate to drift.
+    --
+    -- `e.squadId` GUARDED, because a player can legitimately be in this match
+    -- with no squad yet -- lateJoin flips the state before it assigns one -- and
+    -- "not placed yet" is not "placed somewhere else". Only two DIFFERENT ids
+    -- under one partyId are a split.
     local units, seenParty = 0, {}
+    local partySquad, partySplit = {}, false
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
         function(_, e)
@@ -861,10 +895,30 @@ function BR.Party.needsRebalance(m)
                     seenParty[e.partyId] = true
                     units = units + 1
                 end
+                if e.squadId then
+                    local first = partySquad[e.partyId]
+                    if first == nil then
+                        partySquad[e.partyId] = e.squadId
+                    elseif first ~= e.squadId then
+                        partySplit = true
+                    end
+                end
             else
                 units = units + 1
             end
         end)
+
+    -- ASKED BEFORE THE ARITHMETIC, because the arithmetic is what agrees with
+    -- the split. Two friends and a stranger at a cap of two make two squads of
+    -- the right count, within one player of each other -- the two tests below
+    -- both pass on the exact shape the players are complaining about.
+    --
+    -- THE RE-FORM IS GUARANTEED TO SETTLE THIS. BR.Party.formSquads places each
+    -- party whole before it deals anybody else (and does so regardless of the
+    -- cap), so a party can never be split by the thing this returns true to
+    -- summon -- there is no shape where the answer stays true and lateJoin's
+    -- one call comes back to the same place.
+    if partySplit then return true end
 
     if count ~= BR.Party.squadTarget(n, units) then return true end
     return count > 0 and (hi - lo) > 1
@@ -924,14 +978,35 @@ function BR.Party.lateJoin(src, m)
 
     -- Their party's squad first: friends who queued in time must not end up
     -- on a different team because one of them was slow to click.
+    --
+    -- `mateSrc` RATHER THAN `m`, AND THAT RENAME IS THE BUG FIX. This loop used
+    -- to bind its member id to `m`, shadowing the MATCH for the whole of its
+    -- body -- so the one check that matters most here, "is this mate even in
+    -- the match I am placing somebody into", could not be written. It was not
+    -- written, and parallel matches are a shipped feature (2026-08-04).
+    --
+    -- WHAT THAT COST WAS NOT A WRONG SQUAD, IT WAS A THROW. `counts` is built
+    -- from this match's players only, so a partymate away in another live match
+    -- yields `counts[mate.squadId] == nil` and the comparison below raised
+    -- "attempt to compare nil with number". BR.Roster.setState has already run
+    -- by then (membership is applied before the state flip, see the top of this
+    -- function), so the arrival was left standing in the match with no squad,
+    -- no colour and no beacon -- a player stranded by a crash halfway through
+    -- their own admission.
+    --
+    -- The `or 0` is belt and braces behind the real guard: with the matchId
+    -- test in place a squad id from this match always has at least its own
+    -- member counted, so the fallback is unreachable and says what it would
+    -- mean if it were not.
     local target
     local party = entry.partyId and parties[entry.partyId]
     if party then
-        for _, m in ipairs(party.members) do
-            local mate = BR.Roster.get(m)
-            if m ~= src and mate and mate.squadId
+        for _, mateSrc in ipairs(party.members) do
+            local mate = BR.Roster.get(mateSrc)
+            if mateSrc ~= src and mate and mate.squadId
+               and mate.matchId == m.id
                and BR.Server.isInMatch(mate.state)
-               and counts[mate.squadId] < maxSize then
+               and (counts[mate.squadId] or 0) < maxSize then
                 target = mate.squadId
                 break
             end

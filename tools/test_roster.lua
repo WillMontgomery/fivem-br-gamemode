@@ -18508,6 +18508,301 @@ do
             .. 'around it is the design and not a fault')
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THESE TWO BLOCKS ARE LAST, AND THAT POSITION IS DELIBERATE.
+--
+-- They are the only blocks in this suite that run the match state machine
+-- forward on its OWN clock rather than forcing it -- twenty-five seconds of
+-- ticks to take a finished match through ENDED, CLEANUP and destruction. That
+-- is the whole point of them (see the header of party.secondWarmup), and it is
+-- also why they cannot sit in the middle.
+--
+-- `match.busDescent` and `match.storm.hold` are coupled to the exact number of
+-- BR.Sched steps that have run before them. Inserting a single extra 250ms
+-- step ANYWHERE above them -- a bare `reset()` plus one tick is enough --
+-- fails both. The mechanism is the roughly thirty sites in this file that
+-- write `fakeTime = mendsAt() + 1`: mendsAt() returns 0 when there is no match
+-- or when the state carries no deadline, so the suite clock slams back to 1,
+-- every BR.Sched job's nextRun is then tens of seconds in the future, and the
+-- scheduler goes quiet for the rest of the run. Which of those sites lands on
+-- a zero depends on tick phase, so today's pass is an alignment rather than a
+-- property.
+--
+-- That is a real defect in this file and it is not this change's to fix --
+-- fixing it means making the suite clock monotonic at every one of those
+-- sites, which touches blocks that have nothing to do with parties. Putting
+-- these two at the end means the fragility keeps whatever coverage it has and
+-- nothing here perturbs it. ANYTHING ADDED AFTER THIS LINE INHERITS THE
+-- PROBLEM: add above, not below.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+describe('party.secondWarmup')
+do
+    -- ═══ THE 2026-09-01 REPORT, DRIVEN END TO END ═══
+    --
+    -- "We had 3 players (2 squads) in a party in a match, match ended, then
+    -- the 2 partied together did not stay in the same squad when they went to
+    -- warmup again, though they did appear still partied in the lobby UI.
+    -- Instead, when everyone readied up, matchmaking took over and the party
+    -- split." -- the owner.
+    --
+    -- ═══ WHY NEITHER EXISTING BLOCK COULD SEE IT ═══
+    --
+    -- `party.persistence` proves the PARTY survives a match and stops there --
+    -- it never forms squads again. `party.squadFormation` proves formation
+    -- keeps a party whole, and it calls BR.Party.formSquads(fakeMatch()) BY
+    -- HAND: a bare instance with every rostered player already attached and no
+    -- state machine within reach of it. `match.lateJoin` proves a late
+    -- partymate lands on their party's squad -- in the one arrangement where
+    -- that squad still has room.
+    --
+    -- All three passed for the whole month this bug was live, because the SEAM
+    -- between them had no coverage at all: a match ends, three people walk
+    -- back to the lobby, and they press Ready ONE AT A TIME -- so a warmup
+    -- opens around whoever was first and the rest arrive through the late-join
+    -- door. That is the same hole the bleed-out timer had: every test called
+    -- the underlying function directly, so the path the players actually walk
+    -- was never walked.
+    --
+    -- So nothing below calls formSquads, lateJoin, needsRebalance, or a
+    -- transition it can avoid. The inputs are QUEUE_JOIN events and the clock.
+    --
+    -- ═══ WHY THE CAP IS TWO ═══
+    --
+    -- "3 players (2 squads)" is not the shipped cap of four -- at four, three
+    -- players are ONE squad. It is `br_maxSquadSize 2`, which is the exact
+    -- lever BR.Party.formationReport tells an operator to pull to get two
+    -- teams out of three dev clients. Restored at the end: reset() does not own
+    -- this value, so leaving it moved would silently re-shape every squad every
+    -- later block forms.
+    local capWas = BR.Config.Match.maxSquadSize
+
+    --- Advance the clock the way a server does -- in tick-sized steps.
+    ---
+    --- ONE BIG JUMP IS NOT THE SAME THING. BR.Sched.step runs each due job ONCE
+    --- per call and the match state machine spends a tick per state, so a
+    --- single 30-second step moves ENDED to CLEANUP and stops -- leaving the
+    --- instance alive and every assertion after it aimed at the wrong match.
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    --- The match's squad sizes, sorted, as a string.
+    local function shapeOf(m)
+        local sizes = {}
+        BR.Roster.each(
+            function(e) return e.matchId == m.id and e.squadId end,
+            function(_, e) sizes[e.squadId] = (sizes[e.squadId] or 0) + 1 end)
+        local out = {}
+        for _, n in pairs(sizes) do out[#out + 1] = n end
+        table.sort(out)
+        return table.concat(out, '/')
+    end
+
+    --- Ready up ONE PLAYER AT A TIME, letting the tick run between each. That
+    --- gap is the whole scenario: pressing Ready in the same instant is not
+    --- what three people in a lobby do, and the gap is where a warmup opens
+    --- around the first of them.
+    local function readyInOrder(order)
+        for _, src in ipairs(order) do
+            fire(BR.Net.QUEUE_JOIN, src, { mode = BR.Mode.SQUAD.key })
+            pump(500)
+        end
+        pump(500)
+    end
+
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 2
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    local pid = BR.Party.of(1).id
+
+    -- ── round one ────────────────────────────────────────────────────────
+    readyInOrder({ 1, 2, 3 })
+    local m1 = theMatch()
+    ok(m1 ~= nil and m1.state == BR.MatchState.WARMUP, 'round one reaches warmup')
+    ok(m1 ~= nil and shapeOf(m1) == '1/2',
+        'three players make two squads at a cap of two', m1 and shapeOf(m1))
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'and the party is one of them')
+    ok(BR.Roster.get(3).squadId ~= BR.Roster.get(1).squadId,
+        'with the stranger on the other')
+
+    -- ── the match is played, and then ends on its own ────────────────────
+    BR.Match.transition(m1, BR.MatchState.BUS)
+    BR.Roster.each(function(e) return e.matchId == m1.id end,
+        function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+    BR.Match.transition(m1, BR.MatchState.PLAYING)
+    BR.Match.transition(m1, BR.MatchState.ENDED)
+
+    -- NOTHING IS FORCED FROM HERE. The tick sweeps everyone home, runs CLEANUP
+    -- and destroys the instance on its own clock, exactly as it does on a real
+    -- box -- which is the half of this path that had never run in a test with a
+    -- party in it. endedSeconds + cleanupSeconds, plus a tick of margin.
+    pump((BR.Config.Match.endedSeconds + BR.Config.Match.cleanupSeconds) * 1000 + 1000)
+
+    ok(theMatch() == nil, 'the match tears itself down without being forced')
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'and everyone is home')
+    ok(BR.Roster.get(1).squadId == nil and BR.Roster.get(2).squadId == nil,
+        'the in-match squad is cleared')
+
+    -- THE PARTY IS STILL THERE, AND SO IS WHAT THE LOBBY DRAWS FROM. This is
+    -- the half of the report that was never the bug: `inParty` on LOBBY_STATUS
+    -- is BR.Party.isGrouped and the panel is BR.Party.public -- both
+    -- server-derived, both correct here. There is no second source of truth and
+    -- no stale field; the interface was telling the truth the whole time, which
+    -- is exactly what made the split so hard to see coming.
+    ok(BR.Party.of(1) ~= nil and BR.Party.of(1).id == pid,
+        'the party survives the match end')
+    ok(BR.Party.isGrouped(1) and BR.Party.isGrouped(2),
+        'and the lobby still reports both of them as partied')
+    ok(#BR.Party.public(pid).members == 2,
+        'with both names on the panel the players are looking at')
+
+    -- ── round two, and THE STRANGER PRESSES READY FIRST ──────────────────
+    --
+    -- That single reordering is the entire trigger, and it is a coin flip
+    -- between three people staring at a lobby. The unpartied player is under no
+    -- party gate, so a warmup opens around them alone; the two friends then
+    -- arrive through the late-join door one at a time, and the first is
+    -- autofilled into the stranger's squad while their own partymate is still
+    -- in the lobby with no squad to aim at. That fills it, and the second
+    -- friend arrives to find their party's squad full.
+    readyInOrder({ 3, 1, 2 })
+    local m2 = theMatch()
+    ok(m2 ~= nil and m2.state == BR.MatchState.WARMUP, 'round two reaches warmup')
+    ok(m2 ~= nil and m1 ~= nil and m2.id ~= m1.id, 'and it is a new match')
+
+    ok(BR.Roster.get(1).squadId ~= nil and BR.Roster.get(2).squadId ~= nil,
+        'both partymates are placed')
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'A PARTY THAT SURVIVED THE MATCH SURVIVES THE NEXT WARMUP -- the two '
+            .. 'who were partied are in one squad again',
+        ('A=%s B=%s C=%s'):format(tostring(BR.Roster.get(1).squadId),
+            tostring(BR.Roster.get(2).squadId),
+            tostring(BR.Roster.get(3).squadId)))
+    ok(BR.Roster.get(3).squadId ~= BR.Roster.get(1).squadId,
+        'and the stranger is the opposition, not a squadmate')
+    ok(m2 ~= nil and shapeOf(m2) == '1/2',
+        'the shape is the one round one had', m2 and shapeOf(m2))
+
+    -- AND IT HAS SETTLED. The reshuffle that repairs the split must not leave
+    -- the match still asking to be reshuffled: a rebalance that is still true
+    -- on the way out is one that fires again on the next arrival, and the two
+    -- would trade players for as long as anybody kept joining.
+    ok(m2 ~= nil and BR.Party.needsRebalance(m2) == false,
+        'the corrected shape does not ask to be corrected again')
+
+    -- ── the same trap with no match in front of it ───────────────────────
+    --
+    -- The match end is NOT a precondition; it is only what re-shuffled the
+    -- order in which three people press Ready, which is why it read as a
+    -- consequence of one. Same three players, same order, no round one at all.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 2
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    readyInOrder({ 3, 1, 2 })
+
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'a party arriving one at a time is kept whole on a FIRST warmup too -- '
+            .. 'the match end was never the cause',
+        ('A=%s B=%s'):format(tostring(BR.Roster.get(1).squadId),
+                             tostring(BR.Roster.get(2).squadId)))
+
+    BR.Config.Match.maxSquadSize = capWas
+end
+
+describe('party.lateJoinAcrossMatches')
+do
+    -- A PARTYMATE AWAY IN ANOTHER LIVE MATCH USED TO THROW, and the arrival was
+    -- left stranded by it.
+    --
+    -- BR.Party.lateJoin's party scan bound its loop variable to `m`, shadowing
+    -- the MATCH argument for the whole of the loop body -- so it could not ask
+    -- the one question that matters, "is this mate even in the match I am
+    -- placing somebody into". It was not asked, and parallel matches are a
+    -- shipped feature (2026-08-04), so the answer is sometimes no: `counts`
+    -- holds THIS match's squads only, the mate's squad id is not a key in it,
+    -- and `counts[mate.squadId] < maxSize` raised "attempt to compare nil with
+    -- number".
+    --
+    -- THE THROW LANDS AFTER THE STATE FLIP. setMatch and setState run at the
+    -- top of lateJoin (membership before the flip, so the routing bucket has a
+    -- matchId to use), so the arrival was left standing in a match with no
+    -- squad, no colour and no beacon -- stranded by a crash halfway through
+    -- their own admission. This block pins the PLACEMENT and not merely the
+    -- absence of an error, because a guard that swallowed the comparison and
+    -- left `target` nil would also stop throwing.
+    local capWas = BR.Config.Match.maxSquadSize
+
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 4
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+
+    -- A and B ready together and take their match live.
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    local mA = theMatch()
+    ok(mA ~= nil and BR.Roster.get(1).squadId ~= nil,
+        'the party gets a squad in its own match')
+
+    BR.Match.transition(mA, BR.MatchState.BUS)
+    BR.Roster.each(function(e) return e.matchId == mA.id end,
+        function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+    BR.Match.transition(mA, BR.MatchState.PLAYING)
+
+    -- B WALKS OUT through the pause menu, which is the cheap way into the state
+    -- this block is about: B is back in the lobby, A is still in a LIVE match
+    -- wearing that match's squad id, and the two are still partied -- leaving a
+    -- match deliberately does not leave the party (BR.Match.leaveMatch ends by
+    -- re-asserting it).
+    BR.Match.leaveMatch(2)
+    ok(BR.Roster.get(2).state == BR.PlayerState.LOBBY, 'B is back in the lobby')
+    ok(BR.Roster.get(2).matchId == nil, 'and detached from the match')
+    ok(BR.Party.isGrouped(2), 'while still partied to A')
+    ok(mA ~= nil and BR.Roster.get(1).squadId ~= nil
+        and BR.Roster.get(1).matchId == mA.id,
+        "and A still holds that match's squad")
+
+    -- C opens a SECOND squad match, and B readies into it.
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    local mC = BR.Server.formingMatch(BR.Mode.SQUAD.key)
+    ok(mC ~= nil and mA ~= nil and mC.id ~= mA.id,
+        'C opens a second, separate squad match')
+
+    local placed = pcall(fire, BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    ok(placed,
+        'a partymate whose friend is in ANOTHER match readies up without throwing')
+    ok(mC ~= nil and BR.Roster.get(2).matchId == mC.id, "and lands in C's match")
+    ok(BR.Roster.get(2).squadId ~= nil,
+        'WITH A SQUAD -- the throw used to leave them in the match with none',
+        tostring(BR.Roster.get(2).squadId))
+    ok(BR.Roster.get(2).squadId ~= BR.Roster.get(1).squadId,
+        "and never wearing the other match's squad id")
+
+    BR.Config.Match.maxSquadSize = capWas
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))
