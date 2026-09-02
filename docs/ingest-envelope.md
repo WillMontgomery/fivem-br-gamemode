@@ -204,6 +204,89 @@ not.
 serialisation in either direction, so absent-versus-null is not a distinction
 this wire can carry — the field is always present.
 
+### `snapshot.ddb` — can this box reach DynamoDB?
+
+**Optional, and absent is the normal case.** It is not in
+`tools/fixtures/ingest-snapshot.json` for that reason: the fixture pins the
+required shape, and this field's absence is a state the receiver must handle
+anyway.
+
+```json
+"ddb": {
+  "ok": true,
+  "at": 4281003,
+  "error": null,
+  "region": "us-east-1",
+  "prefix": "ringmaster-",
+  "ms": 42
+}
+```
+
+**Why it rides the push.** `br:ddb:selftest` is a real `GetItem` issued by the
+running `br_ddb` with its own region, prefix and credentials — the probe `brddb`
+prints. **Only something inside FXServer can ask it.** A shell probe from
+`tools/dispatch.sh` would answer whether the *machine* has a route, which is one
+of the three ways this breaks and reports healthy for the other two: no IAM
+grant, and a wrong region. So the verdict travels on the channel the game
+already owns, and the console's SSH verb set is untouched.
+
+**`at` is the probe's clock, not the push's,** and that is the whole reason it
+is on the wire. `br_ringmaster` does **not** round-trip to DynamoDB on every
+push — that would be a network call every two seconds to answer a question that
+changes when somebody edits an IAM policy. It probes on its own cadence and
+resends the cached verdict, so the receiver dates the **probe**. Convert it like
+every other timestamp; the console expires a reading at five minutes and reads
+anything older as *unknown*.
+
+**The cadence is a minute, with a faster retry while there is nothing at all to
+report** (`server/ddb.lua`). Four beats inside that five-minute ceiling, so one
+skipped probe never flaps the reading to unknown.
+
+**Absent is never a failure.** `br_ddb` not started, no probe answered yet, a
+probe that was never replied to — all of them leave the key off the snapshot
+entirely, and the receiver must read that as *not told*. Nothing on the game
+side invents a verdict in either direction: a false green hides a ban gate
+failing open, and a false red fires on every routine `restart br_ddb`, which
+`tools/deploy.sh` tells you to run after every deploy.
+
+**Bounded at the sender.** `error` ≤ 512, `region` ≤ 64, `prefix` ≤ 128, because
+those are the receiver's caps and an over-long AWS error message would fail the
+whole envelope — taking the player list down to report a database.
+
+### The other half of the same question lives on `status`, not here
+
+Reachability is one of **two** `br_ddb` facts, and the second one is not on this
+wire at all. *Is the box running a `dist/server.js` that is the file its own
+`dist/fingerprint.json` describes?* is answered off the filesystem, so it rides
+`tools/dispatch.sh`'s existing `status` verb as an optional `bundle` object:
+
+```json
+"bundle": {
+  "manifest": { "scheme": "…", "source": "…", "bundle": "…", "bundleBytes": 713416, "files": 8 },
+  "onDisk": "<sha256 of the deployed dist/server.js>"
+}
+```
+
+Both halves are independently nullable and **absence is never a mismatch** — a
+missing manifest, a missing bundle and a box with no `sha256sum` are three
+different absences. The dispatcher compares nothing; it reports two readings.
+
+**What a match means, and the three things it does not.** The box has the bundle
+and the manifest and **no source tree**, so the only comparison available there
+is the file against the hash recorded beside it. It catches an rsync that did
+not finish or a hand-patched bundle. It does **not** prove the bundle was
+rebuilt from current source — that is the manifest's `source` half, it needs
+`js-src/br_ddb`, and `tools/verify.sh` checks it before a commit ever lands. It
+does not prove the bundle is *correct*; nothing reads a line of it. And it is
+**not tamper detection**: the manifest sits in the same directory as the bundle,
+writable by whoever can write the bundle. It is a mistake detector, the realistic
+mistake is a deploy that did not finish, and it must not be described as a
+security property anywhere.
+
+**No ninth verb.** This widens a read-only verb's *response*, not the verb set —
+which is the console's actual capability boundary and is pinned by name in
+`tools/verify.sh`.
+
 ---
 
 ## `kind: "events"`
@@ -254,14 +337,21 @@ See [`tools/fixtures/ingest-events.json`](../tools/fixtures/ingest-events.json).
 `seq` is monotonic **within a `bootEpoch`** and starts at 1. `at` is
 `GetGameTimer()` — convert it with the formula above.
 
-### Event kinds in Slice 1
+### Event kinds
 
-**Four kinds cross this wire and no others**: `player_seen`, `refusal`,
-`incident_filed` and `incident_corroborated`. Nothing the incident, artifact or
-weapon-strip work added is a new kind — artifacts never touch this channel at all
-(frames go straight to S3, and the case row is written by `br_ddb`), and strips
-reuse `incident_filed` and `incident_corroborated`. A receiver that handles these
-four handles everything the game sends.
+**Seven kinds cross this wire and no others**: `player_seen`, `player_left`,
+`refusal`, `incident_filed`, `incident_corroborated`, `outcome` and
+`admin_spectate`. Nothing the incident, artifact or weapon-strip work added is a
+new kind — artifacts never touch this channel at all (frames go straight to S3,
+and the case row is written by `br_ddb`), and strips reuse `incident_filed` and
+`incident_corroborated`.
+
+> **This paragraph said "four kinds" until 2026-08-21 and had been wrong for two
+> slices.** `player_left` shipped with session playtime and `outcome` shipped
+> with the kick, both of them real kinds on this channel with no line here — so
+> the one sentence a console author would read to learn what to expect named
+> less than half of it. `admin_spectate` is the first addition made with this
+> list, and correcting the count was part of adding it.
 
 **`player_seen`** — emitted once per connect, carrying the allowlisted
 identifiers. This is how a Discord id ever becomes associated with a license,
@@ -434,6 +524,61 @@ strip from the second onward (owner, 2026-08-20) — so consecutive values there
 2, 3, 4, 5 and a gap means a *lost* corroboration rather than offences that happened
 quietly in between. Treat it as "at least this many" in both cases; never as an
 exact count.
+
+### `admin_spectate` — who watched whom (#192)
+
+An admin spectate session opening or closing. Two events per session, joined by
+`commandId`.
+
+```json
+{
+  "seq": 91,
+  "kind": "admin_spectate",
+  "at": 4283400,
+  "data": {
+    "commandId": "5f2b…",
+    "adminLicense": "license:abc…",
+    "targetLicense": "license:def…",
+    "targetName": "Nemesis",
+    "phase": "stop",
+    "reason": "target-left",
+    "durationMs": 94210
+  }
+}
+```
+
+**`outcome` is not enough on its own, and that is the whole reason this kind
+exists.** The console mints a `commandId`, writes an intent row, dispatches
+`spectate`, and stamps the `outcome` onto that row — the same two-phase audit the
+kick uses. What that covers is *did the button work*. What it cannot cover is the
+**end**, because nothing asks for it: an admin stops from the in-game pause menu,
+or the target disconnects and the session stops itself. Neither is a command, so
+neither has an outcome, and a log with every start and no end is a log that says
+every admin is still watching.
+
+**`phase`** is `start` or `stop`. **`durationMs` is present on `stop` only** — a
+duration rather than a second timestamp, because every clock the game produces is
+`GetGameTimer()` and that is meaningless once it leaves the box (see the clock
+pair, above).
+
+**`reason` is present on `stop` only**, and it is a bounded string naming which
+of the endings happened:
+
+| `reason` | what happened |
+|---|---|
+| `stopped` | the admin used the pause-menu exit |
+| `target-left` | the target disconnected, **or their server id was recycled** |
+| `retargeted` | the admin pressed Spectate on somebody else |
+| `gone` / `no-match` / `shutdown` | the session could not continue |
+
+**`target-left` covers the recycled id deliberately.** FiveM reuses server ids
+within the minute, so the game re-checks the target's license on every position
+push and ends the session if it no longer matches — which is indistinguishable,
+from the outside, from the target leaving, and means the same thing: the person
+the row was opened about is no longer the person on the other end of the camera.
+
+**A player spectating their own squad produces nothing here.** That is gameplay,
+and a row for every death in every match would bury the rows that matter.
 
 ---
 

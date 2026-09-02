@@ -32,12 +32,63 @@ BR.Loot.openedCount = 0
 --- drag is not strong enough", which cost a round of guessing to tell apart.
 BR.Loot.dragTicks = 0
 
+--- THE COLLISION WAIT, COUNTED, for the reason every other counter in this file
+--- exists: a crate that came down inside a building is one symptom with three
+--- possible causes, and from a chair they are identical.
+---
+--- Owner, 2026-08-23: the airdrop "falls through the top of the building as if
+--- it doesn't have collisions" and the crate then "spawn[s] at ground level
+--- inside a building".
+---
+---   waits 0            the wait never ran -- containers are not reaching it
+---   waits n, loaded 0  the collision never arrives, and every crate is
+---                      released on the budget exactly as it was before
+---   reseated 0         collision arrives, but the ground never changes with it,
+---                      so the roof was never the probe's answer either
+---
+--- Three different bugs, one picture, and this line is what chooses between them
+--- without another match. Read by /brloot.
+BR.Loot.settle = {
+    waits    = 0,    -- containers held frozen while collision streamed
+    loaded   = 0,    -- ...that got it inside the budget
+    timedOut = 0,    -- ...that did not, and were released anyway
+    reseated = 0,    -- ...whose ground moved once the collision was really there
+    lastMs   = 0,    -- how long the last wait took
+    maxMs    = 0,    -- the worst one this session
+    lastLift = 0.0,  -- metres the last re-seat moved a crate, signed
+}
+
+--- THE ARRIVAL ARC, COUNTED AT EVERY LINK IN ITS OWN CHAIN.
+---
+--- The arc "from the crate's mouth to where it lands" was written, shipped, and
+--- never once played -- for every container, all the way back to when it was
+--- written -- and nothing anywhere said so. It is four things in a row (the
+--- server sends an origin, the client keeps it, a prop gets built while the
+--- window is still open, the animation moves it), any one of which failing
+--- produces the exact same symptom: an item that pops into existence. That is
+--- the shape of failure /brloot's drag counter was added for, and it has the
+--- same answer -- count each link separately, so "it never ran" and "it ran and
+--- looked wrong" cannot be confused, and so neither needs a playtest to settle.
+---
+--- Read by /brarc and summarised by /brloot.
+BR.Loot.arc = {
+    born    = 0,     -- entries that arrived carrying an origin
+    armed   = 0,     -- ...whose prop was built while the window was still open
+    late    = 0,     -- ...whose prop was built too late to fly (the old bug)
+    flights = 0,     -- arcs that drew at least one frame
+    frames  = 0,     -- arrival frames drawn, all arcs
+    lastBuildMs = nil,  -- announce -> prop, last arrival seen
+    lastFrames  = 0,    -- frames the last arc drew
+    lastPeak    = 0.0,  -- metres above its resting height the last arc reached
+}
+
 local L = BR.Config.Loot
 
 local entries   = {}      -- [id] = entry, with prop bookkeeping attached
 local byObject  = {}      -- [objectHandle] = id, so a ray hit resolves instantly
 local queue     = {}      -- ids waiting for a model
 local queued    = {}      -- [id] = true, so the queue cannot double up
+
 local draining  = false
 local myCell    = nil     -- last cell reported to the server
 local claimedAt = {}      -- [id] = gametimer, to stop a held key spamming claims
@@ -501,6 +552,23 @@ end
 --- that looked empty.
 local function canTake()
     if suppressed then return false end
+    -- ...AND NOT FROM THE STRETCHER OF AN AMBULANCE.
+    --
+    -- A player healing in the back of a van (client/ambheal.lua) is ALIVE and
+    -- ATTACHED rather than seated, so every test in this function passes for
+    -- them -- including the vehicle test one line below, because
+    -- IsPedInAnyVehicle answers false for an attached ped. Left alone, a crate
+    -- lying on the tarmac behind the ambulance would prompt at somebody lying on
+    -- a stretcher, and the interact key that is supposed to be their ONLY way
+    -- out (the owner, 2026-08-28) would open it instead.
+    --
+    -- A NIL-GUARDED READER, which is the shape four files already use for
+    -- BR.Rescue.riding(). It is not BR.Loot.suppress, deliberately: that is a
+    -- single boolean latch that client/dbno.lua writes every frame, so a second
+    -- writer would spend the match undoing the first.
+    if BR.AmbHeal and BR.AmbHeal.healing and BR.AmbHeal.healing() then
+        return false
+    end
     if BR.Config.LootTakeStates[BR.State.me.state] ~= true
        and BR.State.landed ~= true then
         return false
@@ -566,6 +634,26 @@ end
 --- client already has the item id, and br_lib/config/loot.lua is shared -- so
 --- putting it in wireEntry would grow every loot payload on the server to
 --- re-send something both ends already know.
+--- THE THREE AIRDROP SIZES ARE KEYED OFF THE ITEM ID, which is why the airdrop
+--- gives its crate and its husk ids of their own ('airdrop', 'airdrophusk')
+--- rather than reusing 'chest' and 'husk' like the 1300 generated ones. An id
+--- is already on the wire, the client already has the config, and keying off
+--- anything else would mean growing every loot payload to re-send a number both
+--- ends know (owner, 2026-08-22: crate and husk 2x, Volts 5x).
+---
+--- Built once at load rather than branched per call: this runs at spawn for
+--- every entry and, for a scaled one, ten times a second afterwards.
+--- @param item string
+--- @return number|nil
+local function airdropScale(item)
+    local A = BR.Config.Airdrop
+    if not A then return nil end
+    if item == 'volts'       then return A.voltsScale end
+    if item == 'airdrop'     then return A.crateScale end
+    if item == 'airdrophusk' then return A.huskScale end
+    return nil
+end
+
 --- @param e table
 --- @return number|nil
 local function propScaleOf(e)
@@ -573,74 +661,20 @@ local function propScaleOf(e)
         local c = BR.Config.ConsumableById[e.item]
         return c and c.propScale or nil
     end
-    return nil
+    return airdropScale(e.item)
 end
 
---- One axis vector, renormalised to length k.
+--- Draw a prop at a multiple of its authored size (#166).
 ---
---- Hoisted out of applyPropScale rather than nested in it: that function runs
---- after every rotation write in the hover, which is per frame per item in
---- range, and a closure built three times a frame per shield is a closure
---- built for nothing.
---- @param v table  a vector3 from GetEntityMatrix
---- @param k number
---- @return number x
---- @return number y
---- @return number z
-local function axisAt(v, k)
-    local len = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-    if len < 0.000001 then return 0.0, 0.0, 0.0 end
-    local s = k / len
-    return v.x * s, v.y * s, v.z * s
-end
-
---- Draw a prop at a fraction of its authored size (#166).
----
---- THERE IS NO ENTITY-SCALE NATIVE IN GTA V, and that is not a guess -- the
---- take animation further down wanted one, could not find one, and settled for
---- a spin. The only lever is the transform matrix: an entity's three axis
---- vectors are unit length, their LENGTH is its scale, so renormalising them to
---- k draws the model at k.
----
---- NORMALISED FIRST, AND THAT IS THE LOAD-BEARING WORD. GetEntityMatrix reads
---- back whatever is there NOW, so multiplying the vectors as they arrive would
---- compound -- a half, then a quarter, then an eighth, once per frame, until
---- the prop disappeared into its own origin. Renormalising makes this
---- IDEMPOTENT, which it has to be, because the hover rewrites the matrix every
---- frame and this has to run after every one of those writes.
----
---- WHICH VECTOR IS WHICH DOES NOT MATTER. GetEntityMatrix is declared
---- forward/right/up/position and is widely reported to hand back right/forward
---- in the other order; a UNIFORM scale is invariant under that disagreement,
---- because all three are multiplied by the same k and handed straight back in
---- the order they arrived. SET_ENTITY_MATRIX takes "the same order as with
---- GET_ENTITY_MATRIX", so the round trip cannot be wrong about it either.
----
---- IT SCALES THE RENDER AND NOT A COLLISION BOX, which costs nothing HERE and
---- would cost a great deal anywhere else in this file: loose floor items are
---- spawned with collision switched OFF (see `solid` in the spawn worker), and
---- both reach tests measure from the REGISTRY POSITION rather than from the
---- prop (reachOf here, inReach on the server). So there is no hitbox left to
---- disagree with the picture, and shrinking a shield cannot put it out of
---- reach.
----
---- GUARDED, so a build without the natives draws the prop at its authored size
---- instead of erroring sixty times a second in the hottest pass in the client.
---- @param obj integer|nil
---- @param k number|nil
-local function applyPropScale(obj, k)
-    if not k or k == 1.0 then return end
-    if not obj or not DoesEntityExist(obj) then return end
-    if not GetEntityMatrix or not SetEntityMatrix then return end
-
-    local a, b, c, at = GetEntityMatrix(obj)
-    if not a or not b or not c or not at then return end
-
-    local ax, ay, az = axisAt(a, k)
-    local bx, by, bz = axisAt(b, k)
-    local cx, cy, cz = axisAt(c, k)
-    SetEntityMatrix(obj, ax, ay, az, bx, by, bz, cx, cy, cz, at.x, at.y, at.z)
-end
+--- MOVED TO BR.Native.propScale (client/natives.lua) on 2026-08-22, WITHOUT a
+--- copy left behind. The airdrop's falling crate and canopy have to be drawn at
+--- the same size as the landed ones (owner: "The parachute and crate props
+--- (including husk) should be 2x larger") and those are built by
+--- client/airdrop.lua, not here -- so the choice was one shared function or two
+--- matrix routines that agree until the day one of them is edited. Bound to a
+--- local so this file's hot passes still pay one upvalue read, exactly as they
+--- did when the body was here.
+local applyPropScale = BR.Native.propScale
 
 -- --------------------------------------------------------------------------
 -- Models
@@ -670,16 +704,263 @@ local function modelOf(e)
     return nil
 end
 
+--- How far below where it settled this entry's prop should rest, in metres.
+---
+--- ═══ "THE PROP PICKUP SHOULD BE LOWERED BY MAYBE 0.5M" (owner, 2026-08-30,
+---     #240) ═══
+---
+--- "At rest, the vehicle pickup props are floating above the ground at
+--- waist-level." PlaceObjectOnGroundProperly settles the prop at its AUTHORED
+--- size and the matrix scale is applied afterwards (see the spawn pass, where
+--- the ordering is load-bearing for a different reason), so a car drawn at
+--- 0.375 keeps the origin height a full-size car was given and hangs there.
+---
+--- HE ASKED FOR A NUMBER RATHER THAN A DERIVATION and he is right to: the
+--- arithmetic would need the model's own box and the pose it settled in, and
+--- 0.5m by eye is a knob he can turn in one line after seeing it.
+---
+--- NIL FOR EVERYTHING ELSE, AND THAT IS THE ENTIRE REASON THIS IS PER-ITEM. The
+--- same settle puts about 1300 rifles, bandages and ammo boxes on the ground
+--- across the map. None of those is floating and none of them is scaled down far
+--- enough to; a global drop would bury every one of them.
+--- @param e table
+--- @return number
+local function propDropOf(e)
+    local c = (e.kind == BR.ItemKind.CONSUMABLE)
+        and BR.Config.ConsumableById[e.item] or nil
+    local d = c and tonumber(c.propDrop) or nil
+    if not d or d <= 0.0 then return 0.0 end
+    return d
+end
+
+--- The marker an entry falls back to when its prop cannot be built (#224).
+---
+--- ═══ THIS EXISTS BECAUSE A VEHICLE IS NOT AN OBJECT, PROBABLY ═══
+---
+--- The warmup shop's item is a car, and the owner asked for its dropped token to
+--- be "that vehicle but as a prop and super small, like the same size as a
+--- weapon prop pickup. If that's not possible, use marker ID 34 instead."
+---
+--- WHETHER IT IS POSSIBLE IS NOT ESTABLISHED ANYWHERE IN THIS TREE.
+--- CreateObjectNoOffset takes an OBJECT archetype and a car is a VEHICLE
+--- archetype, so the likely answer is that it refuses -- but "likely" is not a
+--- thing to hardcode either way, and this project has been wrong twice about
+--- what a published native reference says versus what this build does.
+---
+--- SO IT IS NOT DECIDED HERE. The spawn pass below asks for the car as a prop
+--- like any other item; if the engine will not build it, the entry is marked and
+--- the render pass draws this marker in place of the rarity disc. The answer
+--- arrives from the running game, once, on the console, and the owner's stated
+--- fallback is what happens meanwhile.
+---
+--- NIL FOR EVERYTHING ELSE. A bandage whose prop failed to build is a bug and
+--- should look like the missing thing it is, not like a car token.
+--- @param e table
+--- @return integer|nil
+local function fallbackMarkerOf(e)
+    if e.kind ~= BR.ItemKind.CONSUMABLE then return nil end
+    local c = BR.Config.ConsumableById[e.item]
+    return c and tonumber(c.fallbackMarker) or nil
+end
+
+--- How big that fallback marker is drawn, as a radius in metres.
+---
+--- ═══ A DIFFERENT KNOB FROM `propScale`, IN DIFFERENT UNITS ═══
+---
+--- `propScale` is a MULTIPLE OF THE MODEL'S OWN SIZE and only ever reaches an
+--- entry whose prop the engine actually built. This is METRES and is what gets
+--- drawn when it did not, so the two can never be the same number and turning
+--- one does nothing to the other.
+---
+--- IT WAS A LITERAL 0.5 UNTIL 2026-08-29 and the value has not changed; it is
+--- named now because the owner asked for a bigger dropped token and it is not
+--- yet established which of the two knobs his cars are actually using -- see
+--- BR.Config.Shop.tokenMarkerScale, which explains how to tell from the console.
+--- @param e table
+--- @return number
+local function fallbackMarkerScaleOf(e)
+    local c = (e.kind == BR.ItemKind.CONSUMABLE)
+        and BR.Config.ConsumableById[e.item] or nil
+    local k = c and tonumber(c.fallbackMarkerScale) or nil
+    if not k or k <= 0.0 then return 0.5 end
+    return k
+end
+
+--- Mark an entry as having no prop, and say so ONCE.
+---
+--- ONCE PER ENTRY, because the spawn pass revisits an entry every time it
+--- streams back in and a line per pass is a console nobody can read. `noProp` is
+--- the latch and the render pass reads it.
+--- @param e table
+--- @param why string
+local function noProp(e, why)
+    if e.noProp then return end
+    e.noProp = true
+    print(('[br_core] loot: no prop for %s (%s)%s')
+        :format(tostring(e.item), why,
+                fallbackMarkerOf(e)
+                    and (' -- falling back to marker %d'):format(fallbackMarkerOf(e))
+                    or ''))
+end
+
 --- What this entry is called, for the label and the prompt.
 --- @param e table
 --- @return string
 local function labelOf(e)
     if e.kind == 'chest' then return 'Chest' end
     if e.kind == 'deathbox' then return 'Loot Box' end
-    local name = BR.LootLabel({ kind = e.kind, item = e.item })
-    if (e.count or 1) > 1 then return ('%s x%d'):format(name, e.count) end
+    local name = BR.LootLabel({ kind = e.kind, item = e.item, count = e.count })
+    -- 'volts' HAS ALREADY SPENT ITS COUNT ON THE NAME. Every other kind counts
+    -- objects -- three bandages, thirty rounds -- so "x30" reads. A Volts pile
+    -- counts currency, and BR.LootLabel has already put the number in front of
+    -- it, so a suffix here would produce "100 Volts x100".
+    if e.kind ~= 'volts' and (e.count or 1) > 1 then
+        return ('%s x%d'):format(name, e.count)
+    end
     return name
 end
+
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. Six shipped bugs on this project, and solidGround below carries
+--- the write-up of the sixth. Written out inline there rather than routed
+--- through here, deliberately -- the comment on that line is the record of what
+--- it cost, and it is worth more than the deduplication.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
+--- Hold a solid prop still until the map's collision underneath it exists.
+---
+--- ═══ WHY A CRATE ENDS UP INSIDE A BUILDING ═══
+---
+--- Owner, 2026-08-23: "when it lands on top of a building the loot crate falls
+--- through the top of the building as if it doesn't have collisions. This leads
+--- to (when the chute is removed) the actual crate prop spawning at ground level
+--- inside a building."
+---
+--- A CONTAINER IS THE ONLY PROP THIS FILE HANDS TO PHYSICS. Loose items are
+--- frozen; a crate is created dynamic, unfrozen, gravity-bound and then
+--- ActivatePhysics'd, because "drive into one and it moves" (user, 2026-08-05).
+--- An unfrozen object with gravity falls until it hits COLLISION THAT HAS
+--- STREAMED IN -- and map collision streams asynchronously and separately from
+--- everything else. Create a crate a third of a metre above a roof whose
+--- collision has not arrived yet and it falls straight through it, comes to rest
+--- on the terrain, and stays there: the 10Hz crate pass records that sunken pose
+--- into `poses`, and the husk inherits it when somebody opens the box. Nothing
+--- puts it back afterwards, because by then it is simply where it is.
+---
+--- THE FIX IS THE ONE THE TELEPORT PATH ALREADY USES. client/debug.lua's
+--- br:debug:teleport calls RequestCollisionAtCoord before it moves a player,
+--- with a comment saying that skipping it "drops the player through the map into
+--- the water". Same native, same failure, same answer -- a crate is just a
+--- player that cannot swim.
+---
+--- FROZEN FIRST, BECAUSE THIS YIELDS. Everything else in the spawn worker
+--- happens inside one frame, so an object created dynamic never gets a
+--- simulation step before it is configured. This function waits, which means the
+--- physics DOES get to step -- and a crate that fell through the roof during its
+--- own collision wait would be a very funny bug to have written here.
+---
+--- BOUNDED, AND THE WORST CASE IS TODAY'S BEHAVIOUR. When the budget runs out
+--- the caller unfreezes anyway: a crate that behaves exactly as it did before
+--- this function existed beats a crate frozen in mid-air forever because a
+--- streaming request never completed.
+---
+--- HasCollisionLoadedAroundEntity IS ABOUT THE ENTITY, WHICH IS WHY THE OBJECT
+--- IS CREATED FIRST. There is no coord-taking form of that question, and polling
+--- GetGroundZFor_3dCoord instead cannot answer it: terrain streams first and
+--- answers `true` on its own, so the probe says yes about the street while the
+--- building is still missing -- which is the exact state this guards against.
+--- @param obj integer
+--- @param x number
+--- @param y number
+--- @param z number
+--- @return boolean loaded
+--- @return number waited  milliseconds spent
+local function awaitCollision(obj, x, y, z)
+    FreezeEntityPosition(obj, true)
+    RequestCollisionAtCoord(x, y, z)
+
+    local budget = L.collisionWaitMs or 1500
+    local waited = 0
+    local S = BR.Loot.settle
+    S.waits = S.waits + 1
+    -- RECORDED ON EVERY EXIT, INCLUDING THE EARLY ONES. A receipt that is only
+    -- written on the happy path is a receipt that says nothing about the case
+    -- anybody would be reading it for.
+    local function done(loaded)
+        S.lastMs = waited
+        if waited > S.maxMs then S.maxMs = waited end
+        if loaded then S.loaded = S.loaded + 1
+        else S.timedOut = S.timedOut + 1 end
+        return loaded, waited
+    end
+    -- 0 IS TRUTHY IN LUA AND THIS NATIVE IS DECLARED BOOL. `if
+    -- HasCollisionLoadedAroundEntity(e) then` is TRUE for a native that said no
+    -- with a zero, which would make the whole wait a no-op that looks like it
+    -- ran.
+    while not isTrue(HasCollisionLoadedAroundEntity(obj)) do
+        if waited >= budget then return done(false) end
+        Citizen.Wait(50)
+        waited = waited + 50
+        -- The entry can be claimed, or stream out, while we wait.
+        if not DoesEntityExist(obj) then return done(false) end
+        RequestCollisionAtCoord(x, y, z)
+    end
+    return done(true)
+end
+
+--- WHERE A GROUND PROBE STARTS ITS SEARCH DOWNWARD, absolute z.
+---
+--- ═══ "HILLSIDE LOOT JUST SPAWNED BELOW THE MAP INSTEAD, NEVER REACHING THE
+---     SURFACE OR ANYTHING" (owner, 2026-08-23) ═══
+---
+--- GetGroundZFor_3dCoord answers with the highest ground BELOW the point it is
+--- given, so a probe started under the surface can only answer with something
+--- lower or with nothing at all. Both callers below started at
+--- `max(e.z + 50, 300)`, and BOTH HALVES OF THAT ARE TOO LOW ON A HILLSIDE:
+---
+---   * `e.z` IS NOT A MEASUREMENT. Scattered POI loot inherits its POI's centre
+---     z verbatim (BR.GenerateLoot writes `s.z = poi.z` for every item in the
+---     disc), and config/map.lua's own header says those coordinates "were
+---     authored from map knowledge, not surveyed in-game". 121 of the 128 POIs
+---     are authored low enough that `e.z + 50` never even reached the 300 floor.
+---   * AND ROADSIDE FILLER HAS NO z AT ALL. The generator writes `s.z = 0.0` for
+---     every filler item, so 300 was the only thing deciding for all of them.
+---
+--- 300 IS NOT HIGH ON THIS MAP, and config/map.lua proves it in its own words:
+--- the battle bus's northern legs carry hand-written z values of 598 and 892
+--- with the note that they "overfly the Chiliad massif, and the default cruise
+--- altitude is inside the rock". The massif has five POIs on it -- chiliad 780,
+--- chiliad_ridge 400, chiliad_n 320, chiliad_trail 250, chiliad_e 160 -- and
+--- every one of them but the summit scattered its loot with a probe starting at
+--- 300-450, into ground the same file says goes to 892.
+---
+--- So on high ground the probe was fired from inside the hill, and it could only
+--- answer with something below the surface or with nothing. Where it found a
+--- lower surface the item was built there, frozen, and its resting height
+--- captured once -- nothing re-probes afterwards, so it stays under the map for
+--- the rest of the match. Where it found nothing the item was never built at
+--- all, which is the same bug wearing the other symptom.
+---
+--- ═══ AND 835254d's COLLISION WAIT IS NOT THE FIX FOR THIS ═══
+---
+--- That commit is about the crate: a container is the one prop here handed to
+--- the physics simulation, and it fell through roofs whose collision had not
+--- streamed. Loose loot takes a different path on purpose -- collision off,
+--- FreezeEntityPosition true, never dynamic -- so gravity never touches it and
+--- there is nothing for a collision wait to prevent. Its height is the probe
+--- plus `restLift`, settled by PlaceObjectOnGroundProperly, and the probe is
+--- what was wrong.
+---
+--- 1200 IS ABOVE EVERY PIECE OF GROUND ON THIS MAP, so the answer is the surface
+--- everywhere. It changes nothing at street level: between 300 and 1200 there is
+--- no geometry over any city block, so the highest ground below either start
+--- point is the same surface. The same number, for the same reason, is
+--- BR.Config.Airdrop.planeProbeFromZ.
+local PROBE_FROM_Z = 1200.0
 
 --- Is a point dry land with something solid under it?
 ---
@@ -694,7 +975,13 @@ end
 --- @return number groundZ
 local function solidGround(x, y, fromZ)
     local ok, gz = GetGroundZFor_3dCoord(x, y, fromZ, false)
-    if not ok then return false, 0.0 end
+    -- IN LUA 0 IS TRUTHY AND A FIVEM BOOL NATIVE MAY ANSWER 1 RATHER THAN true,
+    -- so `not ok` is FALSE for a native that failed with a zero. This project
+    -- has shipped that bug five times and this line was the sixth waiting to
+    -- happen: it has been survivable only because a failed probe also hands
+    -- back z = 0, which the sea-level rule below catches. That is a guard
+    -- working by accident, and the rooftop check now reads `gz` before it.
+    if ok == nil or ok == false or ok == 0 then return false, 0.0 end
 
     -- SEA LEVEL IS ZERO, and that is the check that actually works.
     --
@@ -707,9 +994,39 @@ local function solidGround(x, y, fromZ)
     -- well above zero and which the height rule cannot see.
     if gz <= 0.0 then return false, gz end
 
+    -- Same normalisation, same reason: `okW` is a native BOOL and a zero from
+    -- it must read as "no answer", not as "yes".
     local okW, wz = GetWaterHeight(x, y, gz)
-    if okW and wz and wz > gz + 0.3 then return false, gz end
+    local haveW = okW ~= nil and okW ~= false and okW ~= 0
+    if haveW and wz and wz > gz + 0.3 then return false, gz end
     return true, gz
+end
+
+--- Does this entry have to land somewhere a PED could be, and not merely
+--- somewhere dry?
+---
+--- ═══ EXACTLY ONE ENTRY IN THE MATCH, AND THE NARROWNESS IS THE POINT ═══
+---
+--- The owner's report is about airdrops (2026-08-22: "Somehow these airdrops can
+--- happen on top of buildings where peds otherwise cannot access"), and the
+--- rooftop check behind this is a navmesh query whose behaviour NOTHING outside
+--- a running client has confirmed. Applying it to all ~3200 generated entries
+--- would put every item on the map behind an untested native: if it answers
+--- wrongly at scale the symptom is a map with no loot on it, which is the worst
+--- failure this file has.
+---
+--- So it is asked of the sealed airdrop crate and of nothing else. That still
+--- covers the whole drop, because the 10-14 items scatter FROM the crate at the
+--- moment it is opened -- and by then the crate has been walked to reachable
+--- ground by the repair round-trip below, so the ring is built around the
+--- corrected point rather than the roof.
+---
+--- WIDENING IT IS ONE LINE once a playtest says the check behaves: return true
+--- for isContainer(e), or unconditionally.
+--- @param e table
+--- @return boolean
+local function needsReachable(e)
+    return e.item == 'airdrop'
 end
 
 --- Somewhere dry and solid near an entry that is not.
@@ -728,13 +1045,21 @@ end
 --- @return number|nil y
 --- @return number|nil z
 local function dryPointNear(e)
-    local from = math.max((e.z or 0.0) + 50.0, 300.0)
+    local from   = math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z)
+    local reach  = needsReachable(e)
     for i = 1, 12 do
         local ang = i * 2.39996323   -- golden angle in radians
         local r   = 4.0 + i * 2.0    -- 6m out to 28m, inside the server's bound
         local x   = e.x + math.cos(ang) * r
         local y   = e.y + math.sin(ang) * r
         local ok, gz = solidGround(x, y, from)
+        -- A CANDIDATE HAS TO CLEAR THE SAME BAR THE ORIGINAL FAILED. Offering a
+        -- rooftop the airdrop crate could move to instead of the rooftop it is
+        -- already on would be a repair that repairs nothing, and it would burn
+        -- the server's cooldown doing it.
+        if ok and reach then
+            ok = BR.Native.pedReachable(x, y, gz)
+        end
         if ok then return x, y, gz end
     end
     return nil
@@ -743,13 +1068,47 @@ end
 --- Ground height under an entry, cached. The server has no ground probe (the
 --- native is client-side), so the authored z is only ever a hint -- and for
 --- roadside filler it is not even that.
+---
+--- ═══ `gzOk` AND `reachOk` ARE TWO DIFFERENT ANSWERS AND MERGING THEM WOULD BE
+---     A CATASTROPHE ═══
+---
+--- `gzOk` is "dry and solid", it is what it has always been, and it is the ONLY
+--- one that decides whether a prop gets built. `reachOk` is the new rooftop
+--- question, and all it may ever do is trigger the repair round-trip.
+---
+--- Folding the second into the first is the obvious implementation and it would
+--- mean that a rooftop airdrop with no better point within 28m never gets a
+--- prop at all -- an invisible, unopenable, unfindable crate carrying the best
+--- loot in the match, in the exact scenario the owner reported. The check is
+--- built on a navmesh native NOTHING outside a running client has confirmed,
+--- against a curated flag set that says "no" about perfectly good rural ground
+--- (see BR.Native.SAFE_COORD_FLAGS). A false "no" must therefore cost a wasted
+--- 30m suggestion and nothing else.
+---
+--- SO THE WORST CASE OF THIS WHOLE FEATURE IS TODAY'S BEHAVIOUR: the crate sits
+--- where it landed, exactly as it did before any of this was written.
 --- @param e table
 --- @return number
 local function groundZ(e)
     local now = GetGameTimer()
     if e.gz and now - (e.gzAt or 0) < 10000 then return e.gz end
-    local from = math.max((e.z or 0.0) + 50.0, 300.0)
+    local from = math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z)
     local ok, gz = solidGround(e.x, e.y, from)
+
+    e.reachOk = true
+    if ok and needsReachable(e) then
+        local reach, why = BR.Native.pedReachable(e.x, e.y, gz)
+        e.reachOk, e.reachWhy = reach, why
+        if not reach then
+            -- NAMED IN THE LOG, because the whole class of bug this addresses
+            -- is invisible from a chair: an airdrop on a roof and an airdrop
+            -- that moved thirty metres look identical to a player who was not
+            -- watching, and neither says anything today.
+            print(('[br_core] loot: entry %s at (%.0f, %.0f, %.1f) is not ped-reachable (%s) -- suggesting somewhere else')
+                :format(tostring(e.item), e.x, e.y, gz, tostring(why)))
+        end
+    end
+
     e.gzOk = ok
     e.gz   = ok and gz or (e.z or 0.0)
     e.gzAt = now
@@ -760,6 +1119,12 @@ local function despawn(e)
     -- The settled height belongs to THAT object handle and that pose. A prop
     -- rebuilt after streaming out has to be measured again.
     e.restZ, e.settled = nil, false
+    -- AND THE FLIGHT DIES WITH THE BODY. `arriveAt` is what keeps the render
+    -- pass animating this entry from outside the glow radius, so leaving it set
+    -- on an entry with no prop buys a per-frame callback that returns on its
+    -- first line for the rest of the match. A rebuild re-arms it if the entry
+    -- is still young enough to be worth flying (see drain).
+    e.arriveAt, e.arcSeen = nil, nil
     if e.obj then
         byObject[e.obj] = nil
         if DoesEntityExist(e.obj) then DeleteEntity(e.obj) end
@@ -805,6 +1170,25 @@ local function clearRetiring()
     end
 end
 
+-- ═══ BR.Loot.airdropBox() USED TO LIVE HERE, AND IT HAD ONE CALLER ═══
+--
+-- It answered "which world object is the airdrop's box drawn as right now --
+-- the sealed crate, or the husk it becomes", and it existed solely so
+-- client/flares.lua could stand a pair of flares on it (owner, 2026-08-22:
+-- "there should be flares on the husk too fwiw").
+--
+-- The owner played that and asked for it to go (2026-08-23: "If we drop the
+-- husk flares and keep the free-falling ones I'd be happy with that") -- see
+-- the reversal written up at the top of client/flares.lua. With the landed pass
+-- deleted this accessor had no readers at all, so it went with it rather than
+-- staying as an exported function nothing calls.
+--
+-- AND `airdropId` WENT WITH IT, because it had exactly one reader and that was
+-- the accessor. It was written on every LOOT_ADD for 'airdrop'/'airdrophusk'
+-- and cleared in forget() and forgetAll(); with nothing left reading its VALUE
+-- those three sites were a variable being maintained for nobody. A write-only
+-- local that looks live is the same trap the flares themselves were.
+
 local function forget(id)
     local e = entries[id]
     if not e then return end
@@ -833,6 +1217,12 @@ local function forgetAll()
     -- local referenced before its declaration silently resolves as a global.
     lastPrompt.id, lastPrompt.hold = nil, nil
     claimedByMe = {}
+    -- The tap rate-limiter, keyed by loot id. Left out of this wipe until now,
+    -- so it was the one registry table that survived every match boundary and
+    -- grew for the whole session -- one entry per distinct item ever picked
+    -- up. Small, but strictly monotonic, and there is no id here worth keeping
+    -- once the entries those ids name have been dropped.
+    claimedAt = {}
     -- The glow teaches the interaction again next match: whoever is here then
     -- may never have opened one.
     BR.Loot.openedCount = 0
@@ -875,16 +1265,47 @@ local function drain()
                     -- a prop built where nobody can reach it; the server
                     -- re-announces it and the next pass builds it properly.
                     groundZ(e)
-                    if not e.gzOk and not reported[id] then
-                        reported[id] = true
+                    -- TWO REASONS TO SUGGEST A MOVE, ONE REASON TO WITHHOLD THE
+                    -- PROP. `gzOk` false is the sea and the inside of hillsides
+                    -- and it stops the build below; `reachOk` false is the
+                    -- rooftop case and it does NOT -- it asks the server to move
+                    -- the entry and lets the crate exist meanwhile. See
+                    -- groundZ.
+                    if (not e.gzOk or not e.reachOk) and not reported[id] then
                         local fx, fy, fz = dryPointNear(e)
                         if fx then
+                            -- MARKED ONLY ON AN ACTUAL SEND. It used to be
+                            -- marked before the search, which spends the entry's
+                            -- one attempt on a search that found nothing -- and
+                            -- the rooftop case is exactly where that happens,
+                            -- because a client too far out for the navmesh to
+                            -- have streamed rejects all twelve candidates and
+                            -- then never asks again once it is close enough to
+                            -- get a real answer.
+                            reported[id] = true
                             TriggerServerEvent(BR.Net.LOOT_FIX,
                                 { id = id, x = fx, y = fy, z = fz })
                         end
                     end
 
                     local model = modelOf(e)
+                    -- A MODEL THIS BUILD DOES NOT HAVE IS THE OTHER HALF OF
+                    -- #224's fallback, and it is checked before the stream
+                    -- rather than after: an entry whose prop name is a typo, or
+                    -- a car the game has never heard of, gets its marker here
+                    -- rather than three seconds of waiting and then nothing.
+                    --
+                    -- THROUGH isTrue, unlike the line below it. IS_MODEL_VALID
+                    -- is a BOOL native and 0 IS TRUTHY IN LUA, so `not
+                    -- IsModelValid(m)` is FALSE for a model the engine just said
+                    -- it does not have -- the marker would never appear and the
+                    -- console would never say why. (The raw read on the next
+                    -- line is the original and is in tools/bool_natives.baseline;
+                    -- it is left alone here so this change is one behaviour and
+                    -- not two.)
+                    if e.gzOk and model and not isTrue(IsModelValid(model)) then
+                        noProp(e, 'the model is not valid on this build')
+                    end
                     if e.gzOk and model and IsModelValid(model) then
                         RequestModel(model)
                         local waited = 0
@@ -927,6 +1348,13 @@ local function drain()
 
                             local obj = CreateObjectNoOffset(model,
                                 sx, sy, sz, false, false, dynamic)
+                            -- AND A HANDLE OF 0 IS A REFUSAL, NOT AN OBJECT.
+                            -- The `else` is #224's: an entry whose model the
+                            -- engine will not build as an object falls back to a
+                            -- marker rather than being invisible on the ground.
+                            if not obj or obj == 0 then
+                                noProp(e, 'the engine refused to build it as an object')
+                            end
                             if obj and obj ~= 0 then
                                 -- CRATES KEEP THEIR COLLISION. You walk up to
                                 -- one and it is a box in the world; the ray
@@ -937,6 +1365,49 @@ local function drain()
                                 -- they are close enough to target by proximity.
                                 local solid = isContainer(e) or isHusk(e)
                                 SetEntityCollision(obj, solid, solid)
+
+                                -- ═══ COLLISION FIRST, PHYSICS SECOND (owner,
+                                --     2026-08-23) ═══
+                                --
+                                -- A crate is the only thing this file hands to
+                                -- the physics simulation, and it is handed over
+                                -- a few lines below. Do that before the map's
+                                -- collision has streamed in underneath it and
+                                -- gravity walks it through the roof it was
+                                -- standing on and leaves it at street level --
+                                -- inside the building, where nobody in the match
+                                -- can ever reach it. See awaitCollision.
+                                --
+                                -- AND THEN RE-PROBE, WHICH IS THE OTHER HALF.
+                                -- The ground height above was read before this
+                                -- wait, so it is a reading of whatever HAD
+                                -- streamed -- the terrain -- and a crate placed
+                                -- on it starts inside the building rather than
+                                -- falling into it. Once the collision is really
+                                -- there the probe returns the surface the crate
+                                -- is actually over, and the box is moved onto
+                                -- it. Skipped when there is a POSE, because a
+                                -- husk inherits exactly where its sealed crate
+                                -- came to rest and re-grounding it would undo a
+                                -- fix from 2026-08-06.
+                                if solid then
+                                    awaitCollision(obj, sx, sy, sz)
+                                    if not pose then
+                                        local ok2, gz2 = solidGround(sx, sy,
+                                            math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z))
+                                        if ok2 and math.abs(gz2 - gz) > 0.05 then
+                                            local S = BR.Loot.settle
+                                            S.reseated = S.reseated + 1
+                                            S.lastLift = gz2 - gz
+                                            gz, e.gz = gz2, gz2
+                                            e.gzAt = GetGameTimer()
+                                            sz = gz2 + (L.restLift or 0.35)
+                                            SetEntityCoordsNoOffset(obj, sx, sy,
+                                                sz, false, false, false)
+                                        end
+                                    end
+                                end
+
                                 if pose then
                                     -- Order 2 is the same convention
                                     -- GetEntityRotation was read with, so the
@@ -987,7 +1458,35 @@ local function drain()
                                     -- ground + 0.35 -- buried it and then
                                     -- floated it (user, 2026-08-08).
                                     local c = GetEntityCoords(obj)
-                                    e.restZ = c.z
+
+                                    -- ...AND THEN LOWERED, FOR THE ITEMS THAT
+                                    -- ASK TO BE (#240).
+                                    --
+                                    -- Owner, 2026-08-30: "At rest, the vehicle
+                                    -- pickup props are floating above the ground
+                                    -- at waist-level... The prop pickup should
+                                    -- be lowered by maybe 0.5m."
+                                    --
+                                    -- The native settles the model at its
+                                    -- AUTHORED size and the matrix scale is
+                                    -- applied further down, so a car token drawn
+                                    -- at 0.375 keeps the origin height a
+                                    -- full-size car was given. propDropOf is
+                                    -- zero for every other item on the map and
+                                    -- this is a no-op for all of them.
+                                    --
+                                    -- WRITTEN INTO restZ, NOT JUST INTO THE
+                                    -- ENTITY. restZ is the height the hover
+                                    -- animation rises from and settles back to;
+                                    -- moving the object without moving that
+                                    -- number would put the float back the first
+                                    -- time anybody walked past.
+                                    local drop = propDropOf(e)
+                                    if drop > 0.0 then
+                                        SetEntityCoordsNoOffset(obj, c.x, c.y,
+                                            c.z - drop, false, false, false)
+                                    end
+                                    e.restZ = c.z - drop
                                 end
 
                                 -- CRATES ARE PHYSICAL. Drive into one and it
@@ -1031,8 +1530,56 @@ local function drain()
                                 e.propScale = propScaleOf(e)
                                 applyPropScale(obj, e.propScale)
 
-                                e.obj = obj
-                                byObject[obj] = id
+                                -- ═══ AND THE ENTRY HAS TO STILL BE THE ENTRY
+                                --     ═══
+                                --
+                                -- The collision wait above is the first thing in
+                                -- this block that YIELDS after an object exists,
+                                -- and up to a second and a half of frames is
+                                -- plenty for the entry to be claimed, replaced by
+                                -- its husk, or streamed out. Handing the prop to
+                                -- a table that is no longer in `entries` is a box
+                                -- in the world that nothing owns and nothing will
+                                -- ever delete -- so it is checked, and the
+                                -- orphan is destroyed rather than adopted.
+                                if entries[id] == e and not e.obj then
+                                    e.obj = obj
+                                    byObject[obj] = id
+                                elseif DoesEntityExist(obj) then
+                                    DeleteEntity(obj)
+                                    obj = nil
+                                end
+
+                                -- THE ARRIVAL CLOCK STARTS HERE, AND THAT IS
+                                -- THE FIX (owner, 2026-08-23: "the loot doesn't
+                                -- animate out of the crate like it should").
+                                --
+                                -- It used to start when the LOOT_ADD message
+                                -- was handled, and animate() cannot move a prop
+                                -- that does not exist -- its first line returns
+                                -- on `not e.obj`. Between those two moments sit
+                                -- the 1Hz spawn pass and a model stream, so the
+                                -- 520ms window had ALWAYS closed before there
+                                -- was anything to animate. The branch was not
+                                -- broken; it was unreachable.
+                                --
+                                -- Everything above has just placed this object
+                                -- at its RESTING height and measured restZ off
+                                -- it, which is why the arm is here rather than
+                                -- earlier: the arc has to know where it is
+                                -- landing before it can leave. animate() picks
+                                -- it up on the next frame.
+                                local age = GetGameTimer() - (e.bornAt or 0)
+                                e.arriveAt = nil
+                                if e.fx and e.fy and e.bornAt then
+                                    BR.Loot.arc.lastBuildMs = age
+                                    if age < (L.arriveGraceMs or 3000) then
+                                        e.arriveAt = GetGameTimer()
+                                        BR.Loot.arc.armed = BR.Loot.arc.armed + 1
+                                    else
+                                        BR.Loot.arc.late = BR.Loot.arc.late + 1
+                                    end
+                                end
                             end
                         end
                         -- The two crate models stay resident. They are the
@@ -1057,6 +1604,11 @@ end
 -- --------------------------------------------------------------------------
 
 local function addEntries(list)
+    -- Read once, and only if something in this batch was actually born just
+    -- now. The common caller is a cell subscription of 50-150 entries that were
+    -- always there, and none of them needs to know where anybody is standing.
+    local px, py = nil, nil
+
     for _, d in ipairs(list or {}) do
         if d.id then
             local have = entries[d.id]
@@ -1120,6 +1672,37 @@ local function addEntries(list)
                     bornAt = d.fx and GetGameTimer() or nil,
                     lift = 0.0,
                 }
+
+                -- BORN JUST NOW MEANS BUILT JUST NOW, and this is the other
+                -- half of why the arc never played.
+                --
+                -- Nothing here used to ask for a prop at all: the ONLY thing
+                -- that queues a new entry is the loot.props pass, which is
+                -- registered on the SLOW band -- once per SECOND. An item that
+                -- has this instant burst out of a crate two metres away
+                -- therefore waited up to a full second for a body, and the
+                -- arrival window is half that. This is the same queue-jump a
+                -- crate becoming its husk already gets, for the same reason:
+                -- something the player is watching cannot wait for the trickle.
+                --
+                -- Gated on the prop radius because drain() does NOT check
+                -- distance -- it builds whatever it is handed -- and a crate
+                -- opened at the far edge of the 768m subscription would
+                -- otherwise build props nobody can see, for the next pass to
+                -- tear straight back down.
+                if d.fx then
+                    if not px then
+                        local p = GetEntityCoords(PlayerPedId())
+                        px, py = p.x, p.y
+                    end
+                    local near = L.propDistance
+                    if BR.Dist2(px, py, d.x or 0.0, d.y or 0.0) <= near * near then
+                        BR.Loot.arc.born = BR.Loot.arc.born + 1
+                        queued[d.id] = true
+                        table.insert(queue, 1, d.id)
+                        drain()
+                    end
+                end
             end
         end
     end
@@ -1128,6 +1711,17 @@ end
 RegisterNetEvent(BR.Net.LOOT_ADD)
 AddEventHandler(BR.Net.LOOT_ADD, function(list)
     addEntries(list)
+end)
+
+-- The Volts cue. See protocol.lua: Volts are collected without a slot, so the
+-- inventory's own pickup sound never fires for them and this is the whole of
+-- the fix -- the same cue, from BR.Config.Loot.pickupSound, not a second one.
+RegisterNetEvent(BR.Net.LOOT_PICKUP_CUE)
+AddEventHandler(BR.Net.LOOT_PICKUP_CUE, function()
+    local L = BR.Config.Loot
+    if L and L.pickupSound then
+        PlaySoundFrontend(-1, L.pickupSound.name, L.pickupSound.set, true)
+    end
 end)
 
 RegisterNetEvent(BR.Net.LOOT_GONE)
@@ -1471,9 +2065,11 @@ end
 --- Three things stack, in order:
 ---
 ---   ARRIVAL  an item born from a crate or a drop flies an arc from where it
----            came from to where it lands. Runs once, from the entry's own
----            birth stamp, so it looks the same for a player who was already
----            standing there and one who walked up mid-flight.
+---            came from to where it lands. Runs once, from the moment its PROP
+---            was built -- see the arming block in drain(). It used to run off
+---            the entry's birth stamp, which is when the MESSAGE arrived, and
+---            that is why it never ran at all: there is no prop to move for the
+---            first second of an entry's life, and the whole window is 520ms.
 ---   HOVER    inside prompt range it rises to about waist height. Eased both
 ---            ways: a snap reads as a bug, a rise reads as "take me".
 ---   BOB+SPIN a slow turn and a shallow breath, scaled by how lifted it is --
@@ -1512,9 +2108,14 @@ local function animate(e, d2, dt, now)
 
     -- ARRIVAL. A parabola, not a straight line: the extra height is what
     -- makes it read as thrown rather than slid.
+    --
+    -- DRIVEN OFF `arriveAt`, WHICH IS STAMPED WHEN THE PROP IS BUILT, not off
+    -- the moment the message arrived. See the arming block in drain(): the prop
+    -- is what flies, and for the whole life of this animation the prop did not
+    -- exist until long after the window had shut.
     local arriveMs = L.arriveMs or 520
-    if e.fx and e.bornAt and (now - e.bornAt) < arriveMs then
-        local t = (now - e.bornAt) / arriveMs
+    if e.arriveAt and (now - e.arriveAt) < arriveMs and e.fx and e.fy then
+        local t = (now - e.arriveAt) / arriveMs
         local k = ease(t)
         -- THE ORIGIN'S HEIGHT IS A LIFT ABOVE OUR OWN GROUND, never a z off
         -- the wire. The server's z is a first-pass hint with no ground probe
@@ -1533,8 +2134,29 @@ local function animate(e, d2, dt, now)
         applyPropScale(e.obj, e.propScale)
         e.lift = 0.0
         e.settled = false
+
+        -- PROOF, AND THE ONLY PROOF THERE IS FROM A CHAIR. See BR.Loot.arc: an
+        -- arc that never runs and an arc that runs badly look identical from
+        -- the outside, and this frame counter is what tells them apart without
+        -- a playtest. /brarc reads it.
+        local a = BR.Loot.arc
+        if not e.arcSeen then
+            e.arcSeen = true
+            a.flights, a.lastFrames, a.lastPeak = a.flights + 1, 0, 0.0
+        end
+        a.frames, a.lastFrames = a.frames + 1, a.lastFrames + 1
+        if z - rest > a.lastPeak then a.lastPeak = z - rest end
         return
     end
+
+    -- THE FLIGHT IS OVER. Cleared rather than left to expire on its own clock,
+    -- because `arriveAt` is also what tells the render pass to keep animating
+    -- this entry from outside the glow radius -- an arc that never clears is a
+    -- prop that keeps paying for a frame callback for the rest of the match.
+    -- The hover below then settles it back onto `rest`, which is the height
+    -- the spawn measured, so the flight leaves the ground placement exactly as
+    -- it found it.
+    if e.arriveAt then e.arriveAt, e.arcSeen = nil, nil end
 
     -- HOVER, toward 1 when the player is close enough to be offered it.
     local pr = L.promptDistance or 2.5
@@ -1676,6 +2298,22 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
                 end
             end
 
+            -- AND THE SIZE, for the one entry in the match that has one.
+            --
+            -- A CONTAINER IS A PHYSICS OBJECT AND PHYSICS OWNS THE MATRIX. The
+            -- hover pass re-asserts the scale after every rotation write it
+            -- makes, but it skips containers by design ("a crate is furniture,
+            -- and furniture does not float") -- so an airdrop crate scaled once
+            -- at spawn is a crate whose size the next simulation step is free
+            -- to throw away. This is the containers' equivalent of that line,
+            -- and it runs at 10Hz rather than 60 because a box that is the
+            -- wrong size for a sixtieth of a second is a box nobody saw.
+            --
+            -- COSTS NOTHING WHEN THERE IS NOTHING TO DO: BR.Native.propScale
+            -- returns immediately on a nil or 1.0, which is every one of the
+            -- ~1300 generated crates.
+            applyPropScale(e.obj, e.propScale)
+
             -- Remember where it ACTUALLY is. This is the only record of the
             -- pose that survives the entry being replaced when the crate
             -- becomes a husk.
@@ -1798,6 +2436,17 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         -- gzOk gates the DRAWING too, not just the prop: an entry rejected for
         -- standing in the sea still had its rarity disc painted on the waves
         -- (user, 2026-08-06).
+        -- AN ARC OUTRANGES THE DRAWING, and it has to. The glow radius is the
+        -- right gate for the hover -- nothing 30m away is being offered to
+        -- anybody -- but a prop already in the air has to be flown all the way
+        -- down whatever happens next. Gated on the same radius, it would be
+        -- stranded mid-flight by a player who drove out of range during the
+        -- half-second the landing takes, and a frozen object hanging over a
+        -- road is forever: nothing else ever moves it.
+        if e.arriveAt and d2 > glow2 and not isHusk(e) and e.gzOk then
+            animate(e, d2, dt, frameNow)
+        end
+
         if d2 <= glow2 and not isHusk(e) and e.gzOk then
             animate(e, d2, dt, frameNow)
             local gz = groundZ(e)
@@ -1826,15 +2475,45 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
             -- as the item rises and fades back in over exactly as long as the
             -- item takes to settle. Two curves would drift; one cannot.
             if not isContainer(e) then
-                local a = math.floor(120 * (1.0 - ease(e.lift or 0.0)))
-                if a > 0 then
-                    -- A flat disc rather than a sphere: it reads as "something
-                    -- is here" without swallowing the item itself.
-                    DrawMarker(1, e.x, e.y, gz - 0.05,
+                -- ═══ AND THE ONE ENTRY THAT IS *NOTHING BUT* A MARKER (#224)
+                --     ═══
+                --
+                -- A dropped warmup car whose prop the engine would not build has
+                -- no object to hover, so the disc is not a hint beside the item
+                -- -- it IS the item, and it has to be the marker the owner named
+                -- rather than the small flat disc. Drawn at full alpha and at
+                -- the entry's own height, because there is nothing to yield to:
+                -- the eased fade above exists so the disc dies as the prop rises
+                -- to meet you, and here nothing rises.
+                --
+                -- WHAT MARKER 34 ACTUALLY LOOKS LIKE IS NOT VERIFIED. It is the
+                -- number the owner asked for, passed through; two published
+                -- versions of this enum have disagreed with the game's own
+                -- parser on this project before, so nothing here claims to know
+                -- what it draws.
+                local mk = e.noProp and fallbackMarkerOf(e) or nil
+                if mk then
+                    local ms = fallbackMarkerScaleOf(e)
+                    DrawMarker(mk, e.x, e.y, gz + 0.05,
                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.45, 0.45, 0.12,
-                        c[1], c[2], c[3], a,
-                        false, false, 2, false, nil, nil, false)
+                        ms, ms, ms,
+                        c[1], c[2], c[3], 200,
+                        -- Bobbing and camera-facing, which is what makes a
+                        -- SYMBOL marker readable where a flat disc is drawn on
+                        -- the ground and wants neither.
+                        true, true, 2, false, nil, nil, false)
+                else
+                    local a = math.floor(120 * (1.0 - ease(e.lift or 0.0)))
+                    if a > 0 then
+                        -- A flat disc rather than a sphere: it reads as
+                        -- "something is here" without swallowing the item
+                        -- itself.
+                        DrawMarker(1, e.x, e.y, gz - 0.05,
+                            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                            0.45, 0.45, 0.12,
+                            c[1], c[2], c[3], a,
+                            false, false, 2, false, nil, nil, false)
+                    end
                 end
             end
 
@@ -2519,6 +3198,25 @@ RegisterCommand('brloot', function()
         end
     end
     print(('  crate props live: %d sealed, %d husk'):format(nSealed, nHusk))
+
+    -- PROOF THE COLLISION WAIT IS RUNNING, and which of its three failures is
+    -- the one in front of you (owner, 2026-08-23: a crate "spawning at ground
+    -- level inside a building"). See BR.Loot.settle.
+    local s = BR.Loot.settle
+    print(('  collision wait: %d held (%d loaded, %d timed out), last %dms, '
+           .. 'worst %dms, budget %dms')
+        :format(s.waits, s.loaded, s.timedOut, s.lastMs, s.maxMs,
+                L.collisionWaitMs or 0))
+    print(('    re-seated after the stream: %d (last moved %+.1fm)')
+        :format(s.reseated, s.lastLift))
+
+    -- PROOF THE ARC IS RUNNING, for exactly the reason the drag line above
+    -- exists. `born 12, flew 0` is the shape the missing arc had for as long as
+    -- it has existed, with nothing anywhere to say so; /brarc is the full
+    -- readout and the live test.
+    local arc = BR.Loot.arc
+    print(('  arrival arc: %d born, %d armed, %d too late, %d flew  (/brarc)')
+        :format(arc.born, arc.armed, arc.late, arc.flights))
     print(('  crate mass: %.0f kg  (glow off after %d opened; %d opened)')
         :format(L.crateMass or 0.0, L.shineOpenLimit or 0, BR.Loot.openedCount or 0))
 
@@ -2808,20 +3506,41 @@ end, false)
 --- MODEL rather than a smaller number.
 ---
 --- Client-local and not persisted: a restart puts the configured value back.
+--- THE AIRDROP'S THREE SIZES ANSWER TO THE SAME RULER, and they had to, because
+--- they are the reason the question "does the matrix scale render at all" is
+--- suddenly worth five numbers rather than one. Their scales live on
+--- BR.Config.Airdrop rather than on a consumable row, so the setter has to know
+--- which table an id belongs to -- this is that lookup, and the field name is
+--- carried so the line printed for pasting names the right key.
+local AIRDROP_SCALES = {
+    volts       = { key = 'voltsScale', prop = 'voltsProp', label = 'Volts pile' },
+    airdrop     = { key = 'crateScale', prop = 'crateProp', label = 'Airdrop crate' },
+    airdrophusk = { key = 'huskScale',  prop = 'huskProp',  label = 'Airdrop husk' },
+}
+
 RegisterCommand('brpropscale', function(_, args)
     local id = args[1] and tostring(args[1]) or nil
     local k  = tonumber(args[2])
 
     if id and k then
-        local c = BR.Config.ConsumableById[id]
-        if not c then
-            print(('[br_core] no such consumable: %s'):format(id))
-            return
-        end
         -- Floored well above zero: a scale of 0 is an invisible item, which is
         -- indistinguishable from loot that failed to spawn -- the exact
         -- confusion this file has burned rounds on.
-        c.propScale = math.max(0.05, k)
+        k = math.max(0.05, k)
+
+        local drop = AIRDROP_SCALES[id]
+        local c    = BR.Config.ConsumableById[id]
+        local where, field
+        if drop and BR.Config.Airdrop then
+            BR.Config.Airdrop[drop.key] = k
+            where, field = 'br_lib/config/airdrop.lua', drop.key
+        elseif c then
+            c.propScale = k
+            where, field = 'br_lib/config/loot.lua', 'propScale'
+        else
+            print(('[br_core] no such scalable item: %s'):format(id))
+            return
+        end
 
         -- REBUILT, NOT RETUNED IN PLACE. The scale is cached on the entry at
         -- spawn, and loot.props re-queues anything in range that has no prop --
@@ -2830,17 +3549,30 @@ RegisterCommand('brpropscale', function(_, args)
         for _, e in pairs(entries) do
             if e.item == id and e.obj then despawn(e) n = n + 1 end
         end
-        print(('[br_core] %s propScale = %.2f  (%d prop(s) rebuilding)')
-            :format(id, c.propScale, n))
-        print('  paste into br_lib/config/loot.lua:')
-        print(('    propScale = %.2f,'):format(c.propScale))
+        print(('[br_core] %s scale = %.2f  (%d prop(s) rebuilding)')
+            :format(id, k, n))
+        print(('  paste into %s:'):format(where))
+        print(('    %s = %.2f,'):format(field, k))
         return
     end
 
-    print('=== consumable prop scale ===')
+    print('=== prop scale ===')
     for _, c in ipairs(BR.Config.Consumables) do
         print(('  %-12s %-16s %s  x%.2f')
             :format(c.id, c.label, tostring(c.prop), c.propScale or 1.0))
+    end
+    local A = BR.Config.Airdrop
+    if A then
+        for _, id in ipairs({ 'volts', 'airdrop', 'airdrophusk' }) do
+            local d = AIRDROP_SCALES[id]
+            print(('  %-12s %-16s %s  x%.2f')
+                :format(id, d.label, tostring(A[d.prop]), A[d.key] or 1.0))
+        end
+        -- The canopy is not a loot entry and has no id to rebuild, so it is
+        -- reported rather than offered: it is built by client/airdrop.lua and
+        -- only exists while something is falling.
+        print(('  %-12s %-16s (falling only)  x%.2f')
+            :format('chute', 'Cargo canopy', A.chuteScale or 1.0))
     end
     print('  usage: brpropscale <itemId> <scale>   (1.0 = as authored)')
 end, false)
@@ -2881,5 +3613,115 @@ RegisterCommand('brpromptcheck', function()
         BR.Native.help(('CUSTOM: press %s to pick up'):format(custom))
         Citizen.Wait(6000)
         BR.Native.help('VANILLA: press ~INPUT_CONTEXT~ to pick up')
+    end)
+end, false)
+
+--- DOES THE ARRIVAL ARC ACTUALLY RUN?
+---
+--- Owner, 2026-08-23: "The loot doesn't animate out of the crate like it
+--- should. This is a more common issue than just airdrops."
+---
+--- It did not, anywhere, ever -- and the reason that went unnoticed for so long
+--- is that there was no way to ask. An item that pops into existence and an item
+--- whose arc ran for two frames at a quarter of a metre look identical from a
+--- chair, and both look identical to an origin the server never sent. So this
+--- drops one item with a KNOWN origin and reports, link by link, how far down
+--- the chain it got:
+---
+---   origin   the entry arrived carrying fx/fy/fl at all
+---   prop     a body was built for it, and how long that took
+---   armed    ...while the arrival window was still open. THIS is the link that
+---            was broken: the prop always arrived after it had shut.
+---   flew     the arrival branch in animate() actually drew frames, and how far
+---            off its resting height it got
+---
+--- The counters above the test are the same links tallied for REAL containers
+--- opened in play since this resource started, so "the test drop arcs" and "a
+--- crate bursting arcs" stay two readings rather than one hopeful inference.
+---
+--- The test entry is client-local with a NEGATIVE id -- every server id is
+--- positive and the server has never heard of this one -- and it removes itself
+--- once the verdict is printed.
+local arcTestId = 0
+
+RegisterCommand('brarc', function()
+    local a = BR.Loot.arc
+    print('=== arrival arc ===')
+    print(('  window %dms, grace %dms, height %.2fm')
+        :format(L.arriveMs or 520, L.arriveGraceMs or 3000, L.arriveArc or 0.55))
+    print(('  in play: %d born with an origin, %d armed, %d too late, %d flew')
+        :format(a.born, a.armed, a.late, a.flights))
+    if a.lastBuildMs then
+        print(('  last arrival: prop built %dms after the announce, %d frame(s), peak %.2fm')
+            :format(a.lastBuildMs, a.lastFrames, a.lastPeak))
+    end
+
+    if not canSee() then
+        print('  the test needs loot to be visible: stand on the warmup pad or in a match')
+        return
+    end
+
+    -- WHERE A CRATE WOULD BE, AND WHERE ITS CONTENTS LAND. Two metres ahead and
+    -- a couple to the side, which is roughly the geometry scatter() produces for
+    -- a real chest. A test that dropped the item onto its own origin would prove
+    -- nothing: a zero-length arc looks exactly like no arc.
+    local ped = PlayerPedId()
+    local p   = GetEntityCoords(ped)
+    local f   = GetEntityForwardVector(ped)
+    local ox, oy = p.x + f.x * 2.0, p.y + f.y * 2.0
+    local tx, ty = ox + f.y * 1.6, oy - f.x * 1.6
+
+    local item = BR.Config.Consumables[1]
+    if not item then
+        print('  no consumable in the config to drop')
+        return
+    end
+
+    arcTestId = arcTestId - 1
+    local id = arcTestId
+    local before = { armed = a.armed, late = a.late, flights = a.flights }
+
+    -- THROUGH THE REAL EVENT, not by calling the handler directly. The handler
+    -- is what is under test; the registration in front of it is one more link
+    -- that can be wrong, and including it costs nothing.
+    TriggerEvent(BR.Net.LOOT_ADD, { {
+        id = id, kind = BR.ItemKind.CONSUMABLE, item = item.id,
+        rarity = BR.Rarity.COMMON, count = 1,
+        x = tx, y = ty, z = p.z,
+        fx = ox, fy = oy, fl = L.crateMouthHeight or 0.6,
+    } })
+
+    print(('  test: one %s, origin %.1fm from where it lands')
+        :format(item.id, BR.Dist(ox, oy, tx, ty)))
+
+    Citizen.CreateThread(function()
+        -- Long enough for the spawn worker to stream a model in (it waits up to
+        -- 3s) plus the whole flight, so a "no prop" below means no prop rather
+        -- than not yet.
+        Citizen.Wait(3500 + (L.arriveMs or 520))
+
+        local e = entries[id]
+        local origin = e ~= nil and e.fx ~= nil
+        local built  = e ~= nil and e.obj ~= nil and e.obj ~= 0
+        local armed  = a.armed > before.armed
+        local flew   = a.flights > before.flights
+
+        print('=== arrival arc: verdict ===')
+        print(('  origin   %s'):format(origin and 'yes'
+            or 'NO -- the entry arrived with no fx/fy on it'))
+        print(('  prop     %s'):format(built
+            and ('yes, %dms after the announce'):format(a.lastBuildMs or -1)
+            or  'NO -- nothing was built for the arc to move'))
+        print(('  armed    %s'):format(armed and 'yes'
+            or 'NO -- the prop arrived after the window had shut'))
+        print(('  flew     %s'):format(flew
+            and ('yes, %d frame(s), peak %.2fm above rest')
+                :format(a.lastFrames, a.lastPeak)
+            or  'NO -- animate() never took the arrival branch'))
+        print(('  %s'):format((origin and built and armed and flew)
+            and 'PASS: loot arcs out of the crate.'
+            or  'FAIL: it pops into existence. The first NO above is where it stops.'))
+
+        forget(id)
     end)
 end, false)

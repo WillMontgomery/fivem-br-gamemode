@@ -79,6 +79,21 @@ local function newEntry(src)
         damage     = 0.0,
         placement  = nil,
 
+        -- CURRENCY PICKED UP OFF THE GROUND THIS MATCH (#88). Airdrops carry a
+        -- Volts pile; claiming one adds to this and writes nothing.
+        --
+        -- IT IS NOT A BALANCE AND MUST NEVER BE READ AS ONE. It is an INPUT to
+        -- the payout formula, published once in the match results and added to
+        -- `deltas.balance` inside br_stats' single atomic write -- which is what
+        -- keeps config/market.lua's "exactly one writer that can increase a
+        -- balance" literally true. Cleared with the rest of the per-match
+        -- counters at CLEANUP.
+        --
+        -- IN NEITHER ALLOWLIST, and deliberately. A client has no use for it --
+        -- the toast at pickup is the whole of what a player is told -- and the
+        -- console cannot act on it.
+        voltsPickedUp = 0,
+
         pos        = nil,          -- sampled server-side, not reported by the client
         posAt      = 0,
 
@@ -610,6 +625,83 @@ function BR.Roster.clearDeparted(matchId)
     departed = kept
 end
 
+--- Does this player's ped agree with the ledger the server keeps for them?
+---
+--- CALLED FROM THE SAMPLER, ONE LINE BEFORE THE LEDGER IS OVERWRITTEN, and that
+--- position is the whole design: the sampler is the only place both numbers
+--- exist at once. The arithmetic and every excuse live in
+--- br_lib/shared/health_solve.lua so they are testable without a server; this
+--- function is the plumbing that finds the stamps and keeps the tally.
+---
+--- IT IS A DETECTOR AND IT IS ALLOWED TO DO NOTHING ELSE. It writes two fields
+--- on the entry (`healthAudit`, and the report stamp inside it) and prints at
+--- most one line per player per match. It must never refuse a sample, adjust a
+--- number or change a state -- the moment it does, a false positive stops being
+--- a noisy log line and starts being a player who cannot be healed.
+---
+--- NO INCIDENT IS FILED, DELIBERATELY (docs/security.md, and the `refusalBar`
+--- note in config/match.lua). Only means-class refusals open an ANTICHEAT case,
+--- and a brand-new detector filing cases before anybody has seen its
+--- false-positive rate is how a good detector gets discredited. This prints for
+--- an operator; promoting it is a decision to make with a playtest in hand.
+--- @param src integer
+--- @param entry table
+--- @param hp number      display hp sampled from the ped THIS pass
+--- @param armour number  armour sampled from the ped THIS pass
+--- @param now number
+local function auditHealth(src, entry, hp, armour, now)
+    local cfg = (BR.Config.Combat or {}).healthAudit
+    -- `enabled` is compared rather than tested for truthiness for the reason
+    -- the whole codebase does it: a convar override can leave a string here,
+    -- and `if cfg.enabled then` is true for the string "false".
+    if cfg == nil or cfg.enabled == false then return end
+    if BR.HealthUnexplainedGain == nil then return end
+
+    -- THE STAMPS ARE ALL SERVER-WRITTEN, and that is the property that makes
+    -- this an anticheat rather than a second thing to lie to.
+    --   lastHitAt    every server-applied damage path writes it
+    --   healUntil    server/inventory.lua, when it ISSUES an INV_EFFECT
+    --   settleUntil  a revive or respawn the server wrote to the ledger
+    local ctx = {
+        now         = now,
+        state       = entry.state,
+        rescue      = entry.rescue,
+        lastHitAt   = entry.lastHitAt,
+        healUntil   = entry.healUntil,
+        settleUntil = entry.healthSettleUntil,
+    }
+
+    local gain, excuse = BR.HealthUnexplainedGain(entry.hp, hp, ctx, cfg)
+    entry.healthAudit = BR.HealthTally(entry.healthAudit, gain, excuse)
+
+    -- ARMOUR IS THE SAME WEAKNESS AND IT IS NOT A SMALLER ONE. `entry.armour`
+    -- is what BR.Damage.applyHit soaks a hit with before health is touched, and
+    -- it is sampled off GetPedArmour on the same line -- so a client pinning its
+    -- armour at 100 regenerates the soak four times a second. Tallied separately
+    -- because the honest upward path is a different item (a shield potion) with
+    -- a different cap, and because a single number would hide which of the two
+    -- somebody was actually doing.
+    local aGain, aExcuse = BR.HealthUnexplainedGain(entry.armour, armour, ctx, {
+        toleranceHp  = cfg.toleranceArmour,
+        hurtGraceMs  = cfg.hurtGraceMs,
+    })
+    entry.armourAudit = BR.HealthTally(entry.armourAudit, aGain, aExcuse)
+
+    if BR.HealthShouldReport(entry.healthAudit, cfg)
+       or BR.HealthShouldReport(entry.armourAudit, { reportHp = cfg.reportArmour }) then
+        -- Stamped on BOTH, so crossing the second bar later cannot produce a
+        -- duplicate line about a player already reported.
+        entry.healthAudit.reportedAt = now
+        entry.armourAudit.reportedAt = now
+        print(('^3[br_core] HEALTH AUDIT: %s (%d) recovered %.0f hp and %.0f armour '
+            .. 'this match that the server never issued (peak %.0f in one sample, '
+            .. '%d samples) -- see /brhealth^7')
+            :format(entry.name, src,
+                entry.healthAudit.hp or 0.0, entry.armourAudit.hp or 0.0,
+                entry.healthAudit.peak or 0.0, entry.healthAudit.samples or 0))
+    end
+end
+
 --- Server-side position sampling.
 ---
 --- Read from the server rather than reported by the client, deliberately. The
@@ -648,6 +740,28 @@ local function samplePositions()
             -- broadcasts fields that actually changed.
             local hp = math.floor(BR.ToDisplayHp(entry.engineHp) + 0.5)
             local armour = math.floor((entry.engineArmour or 0) + 0.5)
+
+            -- ...AND BEFORE THE LEDGER IS OVERWRITTEN, ASK WHETHER IT AGREED.
+            --
+            -- THE LINE BELOW IS THE ONE THIS AUDIT IS ABOUT. `entry.hp` is what
+            -- BR.Damage.applyHit subtracts from, and `hp` is a number the owning
+            -- client chose -- so the assignment hands the authority on "how much
+            -- health does this player have" back to the player. A client that
+            -- pins its ped at full has its ledger restored 250ms after every
+            -- hit, and the server-observed death check in server/combat.lua
+            -- reads `engineHp`, which is the same client-owned value, so the
+            -- backstop that should catch it misses it for the same reason.
+            --
+            -- THE DISAGREEMENT IS ONLY VISIBLE HERE, one line before it is
+            -- destroyed, which is why the call sits in the sampler rather than
+            -- in a sweep of its own: after the write the two numbers are equal
+            -- by construction and there is nothing left to measure.
+            --
+            -- IT COUNTS AND DOES NOT ACT. Nothing below changes `hp`, `armour`
+            -- or anybody's state -- see the healthAudit block in
+            -- config/match.lua for why the fix is a separate, playtested change
+            -- and this went in first.
+            auditHealth(src, entry, hp, armour, now)
 
             -- A DOWNED PLAYER'S HEALTH IS THE LEDGER'S, NOT THE PED'S.
             --
@@ -769,6 +883,53 @@ end
 
 BR.Sched.every(BR.Roster.sampleIntervalMs(), 'roster.positions', samplePositions)
 BR.Sched.every(5000, 'roster.reconcile', reconcile)
+
+--- What the health audit has seen. Read-only, and the excuse breakdown is the
+--- point of it.
+---
+--- THE `excused` COLUMNS ARE THE FALSE-POSITIVE AUDIT and they are why this verb
+--- exists rather than leaving the counters to the console line. The first
+--- question anybody sensible asks of a new detector is "what if it is wrong",
+--- and the only honest answer is a list of what it threw away: a playtest that
+--- ends with `counted 0` and a healthy spread of `hurt` and `healing` is the
+--- detector working. A playtest that ends with `counted` above zero on an honest
+--- player is a bug HERE, not a cheat, and the numbers beside it say which window
+--- was too short.
+RegisterCommand('brhealth', function()
+    local cfg = (BR.Config.Combat or {}).healthAudit or {}
+    print('=== health audit ===')
+    print(('  enabled %s   tolerance %s hp / %s armour   hurt grace %sms')
+        :format(tostring(cfg.enabled), tostring(cfg.toleranceHp),
+            tostring(cfg.toleranceArmour), tostring(cfg.hurtGraceMs)))
+    print(('  heal settle %sms   revive settle %sms   report at %s hp / %s armour')
+        :format(tostring(cfg.healSettleMs), tostring(cfg.settleMs),
+            tostring(cfg.reportHp), tostring(cfg.reportArmour)))
+
+    local any = false
+    for src, entry in pairs(roster) do
+        local h = entry.healthAudit
+        local a = entry.armourAudit
+        if h or a then
+            any = true
+            local parts = {}
+            for excuse, n in pairs((h or {}).excused or {}) do
+                parts[#parts + 1] = ('%s %d'):format(excuse, n)
+            end
+            table.sort(parts)
+            print(('  %s (%d): counted %.0f hp / %.0f armour  peak %.0f  samples %d%s')
+                :format(entry.name, src,
+                    (h or {}).hp or 0.0, (a or {}).hp or 0.0,
+                    (h or {}).peak or 0.0, (h or {}).samples or 0,
+                    (h or {}).reportedAt and '  [REPORTED]' or ''))
+            if #parts > 0 then
+                print(('      excused: %s'):format(table.concat(parts, '  ')))
+            end
+        end
+    end
+    if not any then
+        print('  nothing sampled yet')
+    end
+end, true)
 
 -- Players already connected when the resource starts (a restart mid-session).
 AddEventHandler('onResourceStart', function(res)

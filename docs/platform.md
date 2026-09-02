@@ -32,6 +32,29 @@ every player, silently.
 **Server-side entity access requires OneSync.** Without it every position read
 returns nothing and nothing errors.
 
+**`onesync on` and `onesync legacy` are two different engines, and only the
+first raises the scope events.** `playerEnteredScope` and `playerLeftScope` are
+queued by `ServerGameState.cpp` inside an `IsBigMode()` guard, and `IsBigMode()`
+is Infinity — the value FXServer reports as `on`, off the same predicate that
+distinguishes it from `legacy`. On `legacy` those events never fire at all.
+That matters here because the scope event is what tells this server a downed
+body has just been cloned onto another player's machine, which is the moment its
+stale position can be corrected: on `legacy` the whole resync section of
+`br_core/server/combat.lua` is dead code and a streamed-in body stands wherever
+it was last seen. Nothing errors, and no warning fires — `br_core`'s boot banner
+shouts about `off` and an empty value and passes `legacy` in silence — so the
+only reading that shows it is the `entered` counter in `/brdbno` sitting at zero.
+Widening the culling radius is not the alternative fix: an override makes an
+entity relevant to every client on the tick it is set, which for every downed
+body would send the whole match to everybody for the whole match.
+
+**The payload field names on that event are not what they look like**, and they
+are one word apart in the docs. Read off `ServerGameState.cpp`: `data.player` is
+the **owner of the ped being created** — the body — and `data.for` is the
+**client the clone is being built for** — the newcomer. Both arrive as strings
+(`fmt::sprintf("%d", …)` on each), so a raw table lookup against a numeric
+roster key finds nothing.
+
 **A parachute is a weapon, and its AMMO is what "has a parachute" means.**
 Opening the canopy does not consume it — the ped keeps `GADGET_PARACHUTE` with
 its count intact, which the engine reads as a chute still available. That is
@@ -40,6 +63,22 @@ wearing three different faces across four sessions. The count is zeroed the
 instant the canopy appears, removal at touchdown is retried across real frames
 rather than assumed, and a standing 10 Hz sweep disarms any grounded live
 player still holding one.
+
+**Which weapons may be fired from a vehicle seat is game DATA, not a native.**
+`SET_PLAYER_CAN_DO_DRIVE_BY` is a per-player on/off switch and it defaults to
+on; turning it on cannot make a rifle usable from a car. The real rule lives in
+`vehiclelayouts.meta`: every seat names a `CVehicleDriveByInfo`, and that entry
+carries a `WeaponGroup` list. Standard car seats list
+`DRIVEBY_DEFAULT_UNARMED`, `DRIVEBY_DEFAULT_ONE_HANDED` and `DRIVEBY_THROW` —
+so pistols, the SMG family and thrown weapons work from a seat, and rifles,
+shotguns, snipers and MGs are taken out of the ped's hands on the way in. Two
+of this project's reports are the same fact seen from different ends: "the HUD
+is showing 0 bullets while in a vehicle" (2026-08-06, fixed by not reporting
+ammo for a weapon the engine has stowed) and #197, "a passenger cannot fire".
+A stowed weapon has no ammo reading *and* no trigger. **And the restriction
+cannot be lifted from a resource** — see the next entry, which is the tested
+half of this one. `/brdriveby` measures which of the causes is actually in play,
+from the seat, in one command.
 
 **Native names keep an underscore before digit-leading segments.**
 `GetGroundZFor_3dCoord`, not `GetGroundZFor3dCoord` — the latter is `nil`, and
@@ -58,6 +97,69 @@ only asks whether the call throws, not what the answer means. Three rounds of
 `/brprobe rawkey [vk] [seconds]` now measures it by counting how many frames of
 a real hold each native answers true for — a level answers on nearly every
 frame, an edge on about one.
+
+**Which virtual-key code a shift press fills is undocumented.** `IsRawKeyDown`
+takes a *Windows* virtual-key code and reads GTA's own 256-slot keyboard array
+(`(*ioKeyboardKeys)[*ioKeyboardActive][key]` in FiveM's `InputNatives.cpp`); the
+native's own docs give `IsRawKeyDown(32)` for space, so the indexing is settled.
+What is **not** settled by any source — the declaration, that source file, the
+docs, or any forum thread — is whether shift fills `0x10` (`VK_SHIFT`), the
+side-specific `0xA0`/`0xA1`, or all three. FiveM's mapper parameter table *does*
+distinguish `LSHIFT` from `RSHIFT`, which is a reason to doubt that only the
+generic slot is filled. `keybinds.lua` bet on `0x10` for the vehicle boost and
+wrote the bet down as three converging inferences, none of which is an
+observation; since #203 the raw reader asks all three for that binding
+(`VK_ALSO`), which is a strict superset and costs nothing if the bet was right.
+
+**It was wrong, and this build fills the side-specific slot only.**
+`/brboostwhy 6` on the owner's machine: `0x10` never read down across 686 frames,
+`0xA0` read down on 590 of them, `0xA1` never. So `VK_ALSO` is not a hedge — it
+is the only reason the vehicle boost fires at all, and deleting it as redundant
+would restore #203's original symptom exactly (full meter, dead key, no error).
+`DEFAULT_VK` still stores `0x10` deliberately: it is the code the settings screen
+captures (a browser `keydown` gives `keyCode` 16 for either shift), the code
+`VK_NAME` prints as `Shift`, and the key `VK_ALSO` is looked up by. Moving it to
+`0xA0` would narrow the raw read to one side, break right shift, and print
+`#160`.
+
+**`RegisterKeyMapping` and a stock GTA control coexist on the same key; neither
+swallows the other.** FiveM evaluates custom bindings from the same
+`rage::ioValue` device state the stock controls use, and *deliberately bypasses*
+the game's own conflict resolver for them — custom control ids carry
+`0x80000000` and `HandleMappingConflicts` returns early (`GameInput.cpp`). Both
+fire. This is why aircraft are excluded from the boost rather than relying on
+the binding to win the key, and why "some engine control is eating our keypress"
+is not an available explanation for a binding that does nothing.
+
+**GTA V has no drift-mode input, and nothing vanilla uses LSHIFT in a car.**
+#203's playtest attributed a dead boost to "GTA V's drift mode... bound on
+SHIFT". Drift Tuning (Chop Shop, b3095) is a *vehicle modification* bought at
+Hao's — a handling change with no key, no toggle and no mode; there is no
+`INPUT_*DRIFT*` control in any control table, and the only drift natives are
+tyre-level (`_SET_DRIFT_TYRES_ENABLED`), which a script calls rather than a
+player pressing. The belief comes from third-party FiveM drift *resources* that
+bind left shift themselves. Re-checked after the second playtest: the Cfx control
+table runs 0..359 (359 is `INPUT_RESPAWN_FASTER`) and **no control name in it
+contains DRIFT or SLIDE**.
+
+**A control reading PRESSED means the key is down, not that the engine did
+something.** `IsControlPressed` / `IsDisabledControlPressed` answer the *mapper*
+— "is the input bound to this id currently down" — and no native anywhere
+reports whether the engine consumed it. Eight controls default to LSHIFT, so
+holding shift makes every one of them read PRESSED, in any context, on any
+build. `/brboostwhy` proved exactly that in a car (21, 61, 340 and 352 all
+PRESSED on 590 of 686 frames) and it refutes the older claim in this file that
+they would be silent there — but it does *not* mean four things happened to the
+car. What each does when consumed is unchanged: 21 is on-foot sprint, 352 is
+aircraft-only, 61 pitches an airborne vehicle, 340 needs hydraulics fitted.
+`br_lib/config/boost.lua` carries the full reading and the two ids the boost
+suppresses because of it.
+
+Stated honestly: the public control table's last substantive update was November
+2020 (build ~2189), so an input added between then and 3095 would not appear in
+it. That gap is why `/brboostwhy` no longer trusts its own hardcoded four and
+sweeps all 360 ids on the frames the key is held, naming anything else that
+answers.
 
 **A native declared BOOL may hand Lua a number.** `IsRawKeyDown` may answer
 `true/false`, `1/false`, `1/0` or `1/nil` depending on the build, and **`0` is
@@ -197,6 +299,46 @@ that reaches the server anyway resolves to the `SAME_SQUAD` refusal in
 [security.md](security.md)). What the engine gate buys is that the shooter's
 machine never computes the hit in the first place, so there is no local corpse to
 correct — which is the only thing that was ever wrong with the server-side answer.
+
+**Which weapons a vehicle seat accepts is game DATA, and no native reaches it.**
+A passenger could not fire a rifle (#197, owner 2026-08-21) and the search went
+straight to `SET_PLAYER_CAN_DO_DRIVE_BY` — which defaults to **on**, was already
+being called, and was never the lever. The rule lives in `vehiclelayouts.meta`:
+a seat names a `CVehicleDriveByInfo`, that names `CVehicleDriveByAnimInfo`
+entries, and each of *those* names one `CDrivebyWeaponGroup`. The seat accepts
+the union of those groups. A stock car seat gets unarmed, one-handed and thrown,
+so a long gun is stowed on the way in and the ammo reads 0 — which is why
+`probe.lua` had already recorded "the clip reading dropping to 0 in a seat is
+EXPECTED" two weeks before anyone connected the two halves.
+
+> **A mounted data file may NOT redefine a `CDrivebyWeaponGroup` the base game
+> already has. Tested in game, 2026-08-22, and false.** We shipped exactly that
+> — `DRIVEBY_DEFAULT_ONE_HANDED` and `DRIVEBY_DEFAULT_REAR_ONE_HANDED` restated
+> by name under `data_file 'VEHICLE_LAYOUTS_FILE'`, listing every firearm the
+> gamemode issues. The file was correct and `/brdriveby` read it back off the
+> client, and the engine kept its own list regardless: *"carbine rifle in the
+> passenger seat does nothing but pistols work"* (owner). Cfx hands the file
+> straight to the game's own mounter — it only sorts `VEHICLE_LAYOUTS_FILE` and
+> `HANDLING_FILE` ahead of the rest so layouts parse before `vehicles.meta` —
+> and what the mounter does with a duplicate name is the game's business.
+> **Upstream agrees, and it was found only afterwards:**
+> [citizenfx/fivem#3929](https://github.com/citizenfx/fivem/issues/3929) — *"you
+> can't override existing values in any of these"* — is the identical case,
+> closed without a fix. It did not turn up in the research done before the file
+> shipped because the searches were about `vehiclelayouts.meta` and drive-by, and
+> the issue that answers it is filed under custom SMGs. **The lesson is the
+> search terms, not the conclusion:** when a data file does not take effect, look
+> for somebody overriding the same *kind of entry*, not the same file. **Do not
+> re-derive this**; the write-up is in [vehicle-data.md](vehicle-data.md).
+>
+> **Adding a name the base game does not have is a different question and was
+> not tested.** Every add-on vehicle in the wild depends on new layouts being
+> accepted, so the two cases are not the same case.
+
+Nothing widens the rule, so the remaining work was to stop it being invisible: a
+passenger is told once per session which slot will actually fire
+(`br_core/client/driveby.lua`), on the strength of a `driveby` boolean the
+weapon table is required to carry.
 
 ---
 

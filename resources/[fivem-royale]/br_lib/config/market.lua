@@ -420,16 +420,42 @@ BR.Config.Market = {
 --[[
     WHAT A MATCH PAYS, kept next to what things cost.
 
+    ═══ READ THE LAST SECTION FIRST ═══
+
+    The two retunes below (#89 on 2026-08-16, and the halving on 2026-08-20)
+    describe how weights that are NO LONGER IN THIS TABLE were arrived at. The
+    owner set all five directly on 2026-08-29; the section immediately above
+    `BR.Config.Market.payout` is the one that describes what ships. Everything
+    between here and there is why the SHAPE is the shape, and its worked examples
+    are arithmetic on superseded numbers.
+
     These two numbers only mean anything relative to each other -- a 1200 chute
     is cheap or extortionate depending entirely on what a match returns -- so
     they live in one file where changing one forces you to look at the other.
     Splitting them is how a storefront ends up with a legendary priced at four
     months of play and nobody noticing until somebody does the arithmetic.
 
-    THE CURRENCY IS EARNED, NEVER BOUGHT. There is no purchase path, no top-up,
-    and exactly one writer that can increase a balance (br_ddb's statsApply, at
-    the end of a match). That is what makes "nothing here changes how a fight
-    goes" a property of the system rather than a promise in a comment.
+    THE CURRENCY IS EARNED, NEVER BOUGHT. There is no purchase path and no
+    top-up: no amount of real money moves this number, which is what makes
+    "nothing here changes how a fight goes" a property of the system rather than
+    a promise in a comment.
+
+    "EXACTLY ONE WRITER" IS NO LONGER THE FORM OF THAT PROPERTY, and the sentence
+    that used to say so is corrected rather than deleted. Three things can now
+    increase a balance and each says so at its own definition:
+
+      * br_ddb's `statsApply`, at the end of a match -- the payout below;
+      * br_ddb's `awardPay`, which pays a report bounty (still earned, still not
+        purchasable);
+      * `brvolts`, a DEV-MODE, SERVER-CONSOLE-ONLY grant that exists so the shop
+        can be tested without playing matches to completion. It writes through
+        `statsApply` -- the same atomic ADD the payout uses -- rather than
+        through a verb of its own, precisely so that no path exists on a live
+        server that this table does not describe.
+
+    ONE VERB CAN REDUCE A BALANCE AND IT CANNOT INCREASE ONE: br_ddb's `spend`,
+    which the warmup vehicle shop debits through. Its amount is refused unless it
+    is a positive whole number, so there is no argument that turns it round.
 
     EVERY MATCH PAYS SOMETHING. A player who drops, loses a fight in the first
     minute and finishes last still earns -- badly, but not nothing. Zero-payout
@@ -513,13 +539,58 @@ BR.Config.Market = {
     EVERY NUMBER BELOW IS MEANT TO BE ARGUED WITH. They are in one table, next
     to the prices, on purpose: retuning is editing five integers and re-reading
     the worked examples above, not tracing a formula through three files.
+
+    ═══════════════════════════════════════════════════════════════════════════
+    SET DIRECTLY BY THE OWNER, 2026-08-29 -- AND EVERYTHING ABOVE THIS LINE IS
+    HISTORY, NOT A DESCRIPTION OF THE SHIPPED NUMBERS
+    ═══════════════════════════════════════════════════════════════════════════
+
+    He named all five himself:
+
+        completion    8  ->   100
+        win          60  ->  1000
+        placementTop 35  ->   200
+        perKill       5  ->    50
+        perRevive     4  ->    10
+
+    THE TWO ARGUMENTS ABOVE ARE SUPERSEDED AND ARE KEPT ANYWAY. The #89 retune
+    and the 2026-08-20 halving explain how the OLD weights were arrived at, and
+    the worked examples in them are arithmetic on numbers that are no longer in
+    this table -- a 16-player field no longer pays 68 for a win. They are kept
+    because the SHAPE they argue for is still the shape, and because "these were
+    tuned and then cut by 50%" would be a false statement about the table below
+    if it were left standing unqualified. It is roughly 12x what it describes.
+
+    ═══ WHAT THE NEW RATIOS SAY, WHICH IS NOT WHAT THE OLD ONES SAID ═══
+
+    `win` AND `placementTop` NEVER BOTH PAY. Read `BR.Config.marketPayout`: a
+    surviving winner takes `win` and nobody else can, and everybody else takes
+    `placementTop` scaled linearly by where they finished. So the two numbers are
+    the two ends of one decision and the ratio between them is the whole of it.
+
+    At 1000 and 200, on a sixty-player field:
+
+        won it, survived                    100 + 1000            = 1100
+        2nd of 60                           100 +  197            =  297
+        2nd of 60, four kills               100 +  197 + 200      =  497
+        30th of 60, two kills               100 +   98 + 100      =  298
+        last, nothing                       100                   =  100
+
+    THE WIN DOMINATES AND PLACING WELL IS A REAL BUT MODEST BONUS. Second of
+    sixty earns about 197 -- roughly four kills -- against a winner's 1000. That
+    is deliberate, and it is a different game from the old table, where
+    placementTop was 4.4x `completion` and placement was the headline term in
+    every match nobody won. It is 2x `completion` now.
+
+    EVERY MATCH STILL PAYS SOMETHING, and at 100 the floor is a number a player
+    can recognise rather than a rounding artefact.
 ]]
 BR.Config.Market.payout = {
-    completion   = 8,     -- for turning up and finishing
-    win          = 60,
-    placementTop = 35,    -- scaled linearly by how far up you finished
-    perKill      = 5,
-    perRevive    = 4,     -- paid because it is the least selfish thing you can do
+    completion   = 100,   -- for turning up and finishing
+    win          = 1000,
+    placementTop = 200,   -- scaled linearly by how far up you finished
+    perKill      = 50,
+    perRevive    = 10,    -- paid because it is the least selfish thing you can do
 }
 
 --- What the currency is called, in ONE place.
@@ -602,6 +673,24 @@ function BR.Config.marketPayout(r)
 
     earned = earned + (tonumber(r.kills) or 0) * p.perKill
     earned = earned + (tonumber(r.revives) or 0) * p.perRevive
+
+    -- WHAT THEY PICKED UP OFF THE GROUND (#88). An airdrop carries a pile of
+    -- Volts; claiming it increments a counter on the roster entry, and this is
+    -- where that counter becomes money -- in the same sum, in the same atomic
+    -- write, as everything else this match paid. That is the whole reason it is
+    -- here rather than credited at the pickup: this file's promise, four hundred
+    -- lines above, is that exactly one writer can increase a balance.
+    --
+    -- ADDED WHOLE, NOT WEIGHTED, AND NOT HALVED. Every other term above is a
+    -- weight the owner tuned and then cut by 50%; this one is a number the owner
+    -- named directly ("they should be 100 Volts"), already carrying the amount
+    -- the player was told they collected. Scaling it here would make the toast a
+    -- lie -- and it is not part of the placement/kills/win curve those weights
+    -- exist to shape.
+    --
+    -- LAST, AND AFTER NOTHING MULTIPLIES IT, so it survives a retune of the five
+    -- weights above unchanged.
+    earned = earned + math.max(0, tonumber(r.voltsPickedUp) or 0)
 
     return math.max(0, math.floor(earned))
 end

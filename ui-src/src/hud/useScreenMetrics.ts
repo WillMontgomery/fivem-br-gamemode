@@ -1,13 +1,22 @@
-import { useEffect, useState } from 'react'
 import { useNuiEvent } from '../bridge/useNuiEvent'
+import { useState } from 'react'
 import type { ScreenPayload } from '../bridge/types'
 
 /**
  * Applies the game's real screen metrics to CSS custom properties.
  *
- * Everything in the HUD positions against --safe-x / --safe-y and sizes against
- * --radar-w / --radar-h, so writing them here is enough to relayout the whole
- * interface. No component needs to know the resolution.
+ * Everything in the HUD positions against the safe-zone rectangle
+ * (--safe-x/--safe-y/--safe-r/--safe-b), the minimap rectangle (--map-*) and
+ * the HUD frame those two are NOT the same as on an ultrawide
+ * (--hud-left/--hud-right), so writing them here is enough to relayout the
+ * whole interface. No component needs to know the resolution, and nothing
+ * works out a margin of its own.
+ *
+ * FOUR EDGES, NOT TWO. Lua asks the engine for each corner of the safe zone
+ * rather than deriving one inset from GetSafeZoneSize, because the horizontal
+ * and vertical insets are not the same number on anything but 16:9 (#231).
+ * Older payloads carry only safeX/safeY; the right and bottom fall back to
+ * them, which is exactly the old behaviour and no worse.
  *
  * Until the first screen envelope arrives -- and always, in the browser dev
  * harness -- the fallbacks in index.css apply, so the HUD is never unstyled.
@@ -31,10 +40,10 @@ export function useScreenMetrics(): ScreenPayload | null {
 
     setMetrics(d)
     const root = document.documentElement.style
-    root.setProperty('--safe-x', `${d.safeX}%`)
-    root.setProperty('--safe-y', `${d.safeY}%`)
-    root.setProperty('--radar-w', `${d.radarW}rem`)
-    root.setProperty('--radar-h', `${d.radarH}rem`)
+    root.setProperty('--safe-x', `${d.safeL ?? d.safeX}%`)
+    root.setProperty('--safe-y', `${d.safeT ?? d.safeY}%`)
+    root.setProperty('--safe-r', `${d.safeR ?? d.safeX}%`)
+    root.setProperty('--safe-b', `${d.safeB ?? d.safeY}%`)
     // The minimap rectangle, in viewport percentages. Everything that anchors
     // to the radar -- our health/shield strip, the chat column, the notice
     // stack -- reads these, so the whole lower-left interface follows the
@@ -43,6 +52,27 @@ export function useScreenMetrics(): ScreenPayload | null {
     if (d.mapBottom != null) root.setProperty('--map-bottom', `${d.mapBottom}vh`)
     if (d.mapW != null)      root.setProperty('--map-w',      `${d.mapW}vw`)
     if (d.mapH != null)      root.setProperty('--map-h',      `${d.mapH}vh`)
+
+    // ═══ THE HUD'S FRAME -- THE MINIMAP'S BOX, NOT THE VIEWPORT'S EDGES ═══
+    //
+    // The right edge of the box the minimap lives in. Its LEFT edge is
+    // --map-left, aliased as --hud-left in index.css rather than written twice
+    // here, because the minimap's edge and the HUD's left edge are the same
+    // edge and a second copy is a second thing to drift.
+    //
+    // WHY THERE IS A FRAME AT ALL. The engine keeps its own interface inside a
+    // 16:9 box centred in the viewport and will not move the minimap out of it
+    // (citizenfx/fivem#2719); the safe zone, by the same report, follows the
+    // panel correctly. At 16:9 that is one rectangle and every surface could
+    // read --safe-x/--safe-r and look right. At 32:9 they are hundreds of
+    // pixels apart, and the owner's screenshot is what that looks like: the
+    // map near the middle, the health bars on the far left, the inventory on
+    // the far right.
+    //
+    // OLDER PAYLOADS FALL BACK TO THE SAFE ZONE, which is exactly the old
+    // behaviour -- right on 16:9, wrong on an ultrawide, and no worse than not
+    // writing the variable at all.
+    root.setProperty('--hud-right', `${d.hudR ?? d.safeR ?? d.safeX}vw`)
 
     // THE TOP ROW'S OWN BASELINE.
     //
@@ -62,40 +92,32 @@ export function useScreenMetrics(): ScreenPayload | null {
     // fallback only applies until the first metrics envelope arrives, and
     // setting --hud-top there while still adding an offset here meant the
     // panels never moved at all.
-    root.setProperty('--hud-top', `${d.safeY}%`)
+    root.setProperty('--hud-top', `${d.safeT ?? d.safeY}%`)
   })
 
-  // Ultrawide handling, such as it can be.
+  // ═══ THE ULTRAWIDE CLAMP IS GONE, AND THAT IS HALF OF #231 ═══
   //
-  // GTA's safe zone already pulls the HUD in from the edges on wide panels, so
-  // respecting it gets most of the way there. What it does not do is stop
-  // anchored elements sitting so far apart that the player has to physically
-  // turn their head to read them. Past roughly 21:9 we cap the usable width.
+  // There used to be a --usable-w here: past roughly 21:9 the HUD's box was
+  // narrowed and centred, on the judgement that anchored elements otherwise sit
+  // far enough apart to need a head turn. It is deleted for two reasons, and
+  // either one alone would be enough.
   //
-  // This is a judgement call rather than something the engine tells us -- the
-  // base game does not do it -- so it is deliberately mild and only ever pulls
-  // elements inward, never pushes them out.
+  // IT ONLY EVER MOVED HALF THE HUD. The clamp lives on `.hud-safe`, so the
+  // health bars (inside it) moved and the chat column and notice stack (both
+  // rendered at App level, outside it) did not -- three surfaces that are all
+  // meant to sit on the minimap's left edge, pulled apart by the thing that
+  // was supposed to tidy them up. Measured at 32:9: 305px of disagreement.
   //
-  // THE ENGINE'S ASPECT WINS. This used to derive its own from
-  // window.innerWidth/innerHeight while `aspect` sat unread in the screen
-  // envelope -- typed, mocked, published, and consumed by nothing. The engine
-  // value is the authority: it is what GTA itself lays the safe zone out
-  // against, and it survives a resolution change that the window may report
-  // late or not at all. The window ratio stays as the fallback for the browser
-  // harness, where there is no engine to ask.
-  const engineAspect = metrics?.aspect
-  useEffect(() => {
-    const apply = () => {
-      const aspect = engineAspect && engineAspect > 0
-        ? engineAspect
-        : window.innerWidth / window.innerHeight
-      const usable = aspect > 2.1 ? `${((2.1 / aspect) * 100).toFixed(2)}%` : '100%'
-      document.documentElement.style.setProperty('--usable-w', usable)
-    }
-    apply()
-    window.addEventListener('resize', apply)
-    return () => window.removeEventListener('resize', apply)
-  }, [engineAspect])
-
+  // AND THE ENGINE ALREADY DOES IT. The clamp was hand-rolling the inward pull
+  // that GTA's own safe zone performs on a wide panel -- which we now read
+  // instead of guessing at (citizenfx/fivem#2719: the engine keeps the minimap
+  // "in the center(ish) of the screen as if it was following a 16:9 aspect
+  // ratio"). Doing it twice, to some of the elements, from two different
+  // numbers, is what the ultrawide screenshots actually show.
+  //
+  // Narrowing `.hud-safe` also meant TRANSFORMING it, and a transformed
+  // ancestor becomes the containing block for `position: fixed` descendants --
+  // which quietly captured the vitals strip. index.css and check-ui's R12
+  // carry that half.
   return metrics
 }

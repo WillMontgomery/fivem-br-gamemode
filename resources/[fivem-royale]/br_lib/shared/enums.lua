@@ -13,6 +13,33 @@ BR.MatchState = {
 }
 
 --- Per-player state inside a match.
+---
+--- ═══ WHY `OUT` IS SPELLED 'dead' ON THE WIRE, AND MUST STAY THAT WAY ═══
+---
+--- THE NAME AND THE VALUE ARE DELIBERATELY DIFFERENT. Do not "tidy" the value
+--- to match the name -- the mismatch is the decision, not an oversight (#233).
+---
+--- `state` is a field of BOTH projections in server/roster.lua: `PUBLIC_FIELDS`,
+--- which goes to every client, and `RINGMASTER_FIELDS`, which travels
+--- server-to-server over the VPC peering link to the Ringmaster admin console.
+--- The clients and the NUI are shipped BY this server, so they cannot disagree
+--- with it. THE CONSOLE IS A SEPARATE REPOSITORY ON A SEPARATE DEPLOY -- so
+--- changing this string is a coordinated two-repo release, and getting it wrong
+--- means the console quietly mis-renders eliminated players rather than failing
+--- loudly. Nothing in this repo reads the literal: every site goes through
+--- `BR.PlayerState.OUT`, so the rename cost nothing and the value buys nothing.
+---
+--- If the owner ever does want 'out' on the wire, that is its own commit with
+--- the console repo moving in step.
+---
+--- ═══ AND WHY THERE IS NO `SPECTATING` ═══
+---
+--- There never really was one. It was read in nine places and ASSIGNED IN NONE,
+--- so `DEAD -> SPECTATING` was not a transition any player ever made and every
+--- `st == DEAD or st == SPECTATING` only ever evaluated the first half.
+--- Spectating is a SESSION, tracked on the SPECTATE_SET feed in
+--- client/spectate.lua, and it is possible while OUT rather than instead of it.
+--- Gate on the session; there is no state here to hang a spectator rule on.
 BR.PlayerState = {
     LOBBY      = 'lobby',
     WARMUP     = 'warmup',
@@ -21,8 +48,7 @@ BR.PlayerState = {
     GLIDE      = 'glide',      -- chute open
     ALIVE      = 'alive',      -- landed and fighting
     DBNO       = 'dbno',       -- downed but not out (squads only)
-    DEAD       = 'dead',
-    SPECTATING = 'spectating',
+    OUT        = 'dead',       -- eliminated. WIRE VALUE IS 'dead' -- see above.
     LEFT       = 'left',       -- disconnected mid-match
 }
 
@@ -95,8 +121,19 @@ BR.AmmoType = {
     HEAVY  = 'heavy',  -- snipers / LMG
 }
 
---- Match modes. `squadSize` drives DBNO: solo has no downed state, because there
---- is nobody left who could revive you.
+--- Match modes.
+---
+--- `dbno` IS THE MODE'S DEFAULT ANSWER, NOT THE WHOLE RULE, and it is worth being
+--- exact because this comment used to claim `squadSize` drove DBNO, which was
+--- never true and is now doubly misleading. `squadSize` is read by nothing but a
+--- test; `dbno` is read in exactly one place, BR.Combat.canBeDowned.
+---
+--- Solo carries `false` because a solo player has nobody who could revive them,
+--- so a knock would be a slower death and a worse one. #191's CPR kit makes that
+--- CONDITIONAL ON INVENTORY rather than flipping it: a solo carrying a kit goes
+--- down instead of dying, because they can call an ambulance. THE FLAG STAYS
+--- FALSE -- flipping it would knock down every solo in every match, including
+--- the overwhelming majority holding no kit. See the block in canBeDowned.
 BR.Mode = {
     SOLO  = { key = 'solo',  label = 'Solo',  squadSize = 1, dbno = false },
     SQUAD = { key = 'squad', label = 'Squad', squadSize = 4, dbno = true  },

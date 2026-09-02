@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useUi, selMatch } from '../store'
+import { HotCard, HotTime } from './HotCard'
 
 /**
  * Warmup countdown.
@@ -17,7 +18,8 @@ import { useUi, selMatch } from '../store'
  * Like StormBar, the digits are written straight to a DOM node from one
  * requestAnimationFrame loop rather than through setState -- a re-render per
  * frame for a two-character number is exactly the tax the HUD rules exist to
- * avoid.
+ * avoid. And like StormBar, the placard around them is `HotCard` rather than a
+ * fourth hand-written copy of the same box.
  */
 export default function WarmupTimer() {
   const match = useUi(selMatch)
@@ -58,31 +60,30 @@ export default function WarmupTimer() {
   // line, and a `.panel-hot` placard with a coloured cap over a big numeral.
   // Sharing the placard means a player learns to read the top of the screen
   // once, and the handover from warmup to storm is the same card changing what
-  // it counts rather than one widget being replaced by another.
+  // it counts rather than one widget being replaced by another. That sharing is
+  // now literal -- both draw `HotCard` -- rather than two copies of the markup
+  // that happened to match.
   //
   // Its cap is neutral: nothing about warmup is urgent, and the cap colour is
-  // what the storm bar uses to say that something is.
+  // what the storm bar uses to say that something is. The literal is the storm
+  // bar's own neutral, deliberately: these two hand over to each other in the
+  // same place on screen, so the grey they hold has to be one grey.
+  //
+  // NO `key` HERE, unlike the storm bar. There is no state for this card to
+  // swap into -- it counts one thing and then unmounts -- so there is nothing
+  // for a drop-in replay to mark.
   return (
-    <div
-      className="panel-hot"
-      style={{
-        minWidth: '13rem',
-        ['--hot' as string]: 'rgba(120,132,160,0.85)',
-      }}
-    >
-      <div className="cap">Dropping in</div>
-      <div className="hotbody">
-        <span
-          ref={timeRef}
-          className="font-display block leading-none tabular-nums"
-          style={{ fontSize: '1.4rem', textShadow: 'var(--shadow-text)' }}
-        >
-          --
-        </span>
+    <HotCard hot="rgba(120,132,160,0.85)" cap="Dropping in" minWidth="13rem">
+      <>
+        {/* 1.4rem rather than `HotTime`'s 2rem default: that is the bleed-out
+            card's numeral. This is the storm bar's, because this card hands
+            over to the storm bar and a size change at that handover would read
+            as the widget being replaced. */}
+        <HotTime ref={timeRef} fs="1.4rem" />
         <span className="text-[0.55rem] font-semibold uppercase tracking-[0.18em] text-white/50">
           warmup
         </span>
-      </div>
-    </div>
+      </>
+    </HotCard>
   )
 }

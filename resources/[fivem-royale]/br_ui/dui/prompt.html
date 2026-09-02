@@ -155,10 +155,61 @@
     text-shadow: 0 2px 6px rgba(0,0,0,0.9);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* THE TITLE'S LARGER TREATMENT. Asked for by flag (`labelBig`) and used by
+     the shop's plate alone, exactly as `.price` below is -- owner, 2026-08-30:
+     "the title of the vehicle should be a bit larger."
+
+     34px -> 40px, WHICH IS "A BIT" AND NOT A NEW HIERARCHY. The price under it
+     is 44px and must stay the larger of the two: on the pad the live question
+     is "can I have it", and a name that outgrew its price would answer the
+     other one. The gap narrows from 10px to 4px and no further.
+
+     THE ELLIPSIS STILL DOES THE WORK. #label keeps `white-space: nowrap` and
+     `.plate` keeps its 460px cap, so "Vapid Caracara 4x4" at 40px and a 2.0
+     text scale shortens rather than escaping the 512px texture. */
+  #label.big {
+    font-size: calc(40px * var(--text-scale));
+  }
   #hint {
     font-size: calc(19px * var(--text-scale));
     letter-spacing: 0.16em; text-transform: uppercase;
     color: rgba(255,255,255,0.62); margin-top: 3px;
+  }
+  /* THE PRICE. Added by the shop's prompt only (`hintBig`), and removed on
+     every message so it cannot leak into the four other consumers of this page.
+
+     LARGER THAN THE LABEL ABOVE IT, WHICH IS THE POINT. The owner asked for the
+     price to be "large" and the vehicle name is 34px, so 44px makes the number
+     the thing you read first -- the label answers "what is this" and the price
+     answers "can I have it", and on the pad the second question is the live
+     one. It scales with --text-scale like the two prose lines it sits with, and
+     `.plate` still caps at 460px so a five-digit price shortens rather than
+     escaping the 512px texture.
+
+     THE LETTER-SPACING GOES BACK DOWN. 0.16em is right for a small uppercase
+     hint and reads as gappy at 44px.
+
+     THE COLOUR HERE IS A FALLBACK, NOT THE PALETTE. The real one is
+     --color-royale-accent2 as the HUD resolved it, sent per message and applied
+     inline -- see the handler. This value only paints in the window before
+     br_ui has applied its settings once, so it is deliberately the plain white
+     the rest of the plate uses rather than an orange that would be a second,
+     drifting copy of a token index.css already owns.
+
+     AND THE UPPERCASING IS TURNED BACK OFF, WHICH IS A BUG FIX AND NOT A TASTE
+     CALL. #hint above is `text-transform: uppercase` because a small tracked
+     hint reads better shouted; the price INHERITED that and turned the currency
+     word the config spells "Volts" into "VOLTS" on the plate. Owner,
+     2026-08-30: "VOLTS doesn't need to be all caps." So the price line renders
+     the string it was given, character for character, and the one place the
+     currency's spelling is decided stays config/market.lua. */
+  #hint.price {
+    font-size: calc(44px * var(--text-scale));
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: #ffffff;
+    line-height: 1.05;
+    margin-top: 1px;
   }
 </style>
 </head>
@@ -243,6 +294,34 @@
     label.textContent = d.label || '';
     hint.textContent  = d.hint || '';
     label.style.color = d.colour || '#ffffff';
+
+    // THE PRICE TREATMENT, ASKED FOR BY FLAG AND DEFINED HERE.
+    //
+    // The shop's second line is a PRICE, not a hint, and the owner wants it
+    // read from across the pad: "the price text needs to be increased in font
+    // size and make it green. It should be large" (2026-08-29).
+    //
+    // CLEARED ON EVERY MESSAGE, NOT ONLY SET. This one page is shared by five
+    // consumers -- the crate, the pump, the revive, the heal station and the
+    // shop -- and a browser that is never reloaded would otherwise carry the
+    // shop's green into the next crate prompt it drew. `.price` is removed
+    // first, every time, so the treatment cannot leak between consumers.
+    hint.classList.remove('price');
+    hint.style.color = '';
+    if (d.hintBig) {
+      hint.classList.add('price');
+      // --color-royale-accent2, resolved by the HUD's own cascade and passed
+      // down. Absent when br_ui has not applied its settings yet, in which case
+      // .price's own colour stands -- see the rule for what that is and why.
+      if (d.hintColour) { hint.style.color = d.hintColour; }
+    }
+
+    // THE TITLE'S LARGER TREATMENT, CLEARED FIRST FOR THE SAME REASON THE
+    // PRICE'S IS. Five consumers share this one never-reloaded browser, so a
+    // class that was only ever added would follow the shop's plate into the
+    // next crate prompt drawn and stay there.
+    label.classList.remove('big');
+    if (d.labelBig) { label.classList.add('big'); }
 
     if (d.ring) {
       ring.classList.remove('hidden');

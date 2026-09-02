@@ -103,6 +103,12 @@ end
 check(BR.Config.Weapons, 'weapon')
 check(BR.Config.Throwables, 'throwable')
 check(BR.Config.Melee, 'melee')
+-- The airdrop shelf (#88). In no rarity bucket, so nothing that walks the loot
+-- tables would ever notice a typo here -- and a wrong hash on an RPG is the
+-- Advanced Rifle bug at the top of this file with a rocket launcher: the weapon
+-- is given under one hash, read back under another, and has unlimited ammo with
+-- no other symptom.
+check(BR.Config.AirdropWeapons, 'airdrop weapon')
 -- Fists are not a list, but they ARE resolved from an engine hash on every
 -- punch, so the same joaat proof has to cover them. This is the check that
 -- would have caught the hash being wrong; the thing that made fists fail in
@@ -135,27 +141,230 @@ if BR.Config.WeaponByHash[BR.NormHash(BR.Config.Fists.hash)] ~= BR.Config.Fists 
          .. 'would be refused as an unknown weapon')
 end
 
+-- ...and the same for the airdrop shelf, which is registered the same way and
+-- would fail the same way: silently, since nothing else in this file reads it.
+--
+-- AND IN NO BUCKET, WHICH IS THE OTHER HALF OF WHAT THEY ARE. An RPG that
+-- reached BR.Config.WeaponsByRarity is an RPG in every legendary crate on the
+-- map, ~1900 rolls a match, and the only symptom is that the game got a lot
+-- louder. Checked here rather than trusted to the registration loop staying
+-- where it is.
+for _, w in ipairs(BR.Config.AirdropWeapons or {}) do
+    if BR.Config.WeaponByHash[BR.NormHash(w.hash)] ~= w then
+        fail('airdrop weapon %q does not resolve through WeaponByHash -- it '
+             .. 'would be refused as a weapon this gamemode does not issue', w.id)
+    end
+    if BR.Config.WeaponById[w.id] ~= w then
+        fail('airdrop weapon %q does not resolve through WeaponById -- the '
+             .. 'airdrop pool that names it would resolve to nothing', w.id)
+    end
+    for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+        for _, x in ipairs(BR.Config.WeaponsByRarity[r] or {}) do
+            if x.id == w.id then
+                fail('airdrop weapon %q is in rarity bucket %d -- it is world '
+                     .. 'loot now, on the floor of the whole map', w.id, r)
+            end
+        end
+    end
+end
+
 -- An explosive with no blast radius would be range-checked as though the
 -- victim had to be where the grenade landed.
-for _, t in ipairs(BR.Config.Throwables or {}) do
-    if t.explosive then
-        if not t.blastRadius or t.blastRadius <= 0 then
-            fail('throwable %q is explosive but has no blastRadius', t.id)
-        end
-        if not t.maxRange or t.maxRange <= 0 then
-            fail('throwable %q is explosive but has no maxRange (throw distance)', t.id)
+for _, list in ipairs({ BR.Config.Throwables, BR.Config.AirdropWeapons }) do
+    for _, t in ipairs(list or {}) do
+        if t.explosive then
+            if not t.blastRadius or t.blastRadius <= 0 then
+                fail('%q is explosive but has no blastRadius', t.id)
+            end
+            if not t.maxRange or t.maxRange <= 0 then
+                fail('%q is explosive but has no maxRange (travel distance)', t.id)
+            end
         end
     end
 end
 
 -- A firearm without a magazine size or an ammo pool cannot take part in the
 -- ammo model at all -- it would read as unlimited for a different reason.
-for _, w in ipairs(BR.Config.Weapons or {}) do
-    if not w.clip or w.clip < 1 then
-        fail('weapon %q has no clip size', w.id)
+for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+    for _, w in ipairs(list or {}) do
+        if not w.clip or w.clip < 1 then
+            fail('weapon %q has no clip size', w.id)
+        end
+        if not w.ammo then
+            fail('weapon %q has no ammo pool', w.id)
+        end
+        if w.ammo and not (BR.Config.AmmoCaps or {})[w.ammo] then
+            fail('weapon %q draws from ammo pool %q, which has no cap -- it can '
+                 .. 'never be reloaded', w.id, tostring(w.ammo))
+        end
     end
-    if not w.ammo then
-        fail('weapon %q has no ammo pool', w.id)
+end
+
+-- ------------------------------------------------------------ drive-by ----
+--
+-- EVERY WEAPON MUST SAY WHETHER A CAR SEAT ACCEPTS IT, AND SAYING NOTHING IS
+-- NOT AN ANSWER (#206).
+--
+-- br_core/client/driveby.lua reads this field and, on the strength of it, tells
+-- a passenger "switch to slot N to fire your X". If the field is missing, Lua
+-- hands back nil, nil is not true, and the weapon is silently treated as
+-- unusable from a seat -- so a gun added to the table above would quietly never
+-- be offered, with no error anywhere. That is the same failure mode as the wrong
+-- hash this gate was written for: no symptom except a feature that stops
+-- working for one weapon.
+--
+-- THE OTHER DIRECTION IS WORSE AND IS NOT CHECKABLE HERE. A `true` on a weapon
+-- the engine actually refuses sends a player to a slot that does not fire, and
+-- no offline gate can know: which weapons a seat accepts is game data inside the
+-- .rpf, and the game refused our attempt to redefine it (2026-08-22, see
+-- docs/vehicle-data.md). The check on THAT direction is /brdriveby, from the
+-- seat: it prints our claim next to what the engine did with the weapon, and
+-- names the verdict `stowed-unexpected` when they disagree.
+--
+-- MELEE AND FISTS MUST NOT CARRY THE FIELD AT ALL. Swinging from a seat is
+-- DRIVEBY_BIKE_MELEE, which no car seat reaches, so the answer is "no" for the
+-- whole list and always will be -- and a `driveby = false` on eleven melee
+-- entries reads as though the question were open per weapon. The absence is
+-- asserted rather than left to habit, so nobody half-annotates the table.
+local function checkDriveBy(list, what)
+    for _, w in ipairs(list or {}) do
+        if type(w.driveby) ~= 'boolean' then
+            fail('%s %q has no `driveby` field (must be an explicit true/false '
+                 .. '-- a missing one reads as false and is never offered)',
+                 what, tostring(w.id))
+        end
+    end
+end
+
+checkDriveBy(BR.Config.Weapons, 'weapon')
+checkDriveBy(BR.Config.Throwables, 'throwable')
+
+for _, w in ipairs(BR.Config.Melee or {}) do
+    if w.driveby ~= nil then
+        fail('melee %q carries a `driveby` field; no car seat reaches '
+             .. 'DRIVEBY_BIKE_MELEE, so the answer is no for the whole list',
+             tostring(w.id))
+    end
+end
+if BR.Config.Fists and BR.Config.Fists.driveby ~= nil then
+    fail('fists carry a `driveby` field; unarmed is DRIVEBY_DEFAULT_UNARMED and '
+         .. 'there is nothing to switch to')
+end
+
+-- ---------------------------------------------------------------- icons ----
+--
+-- EVERY WEAPON MUST HAVE A PHOTOGRAPH, AND DRAWING ONE IS NOT AN ANSWER.
+--
+-- Owner, 2026-08-22: "Please double check that we have images for all of our
+-- weapons in the inventory slots - railgun and grenade launcher do not have
+-- images." Then, after the four missing ones were drawn as inline SVG rather
+-- than sourced: "We need to not draw any weapons as SVGs and only use pngs."
+--
+-- WHAT WENT WRONG THE FIRST TIME, because this gate's shape is a reply to it.
+-- The airdrop shelf -- rpg, grenadelauncher, railgun, minigun -- shipped with
+-- no artwork and no category, and NOTHING ERRORED, because
+-- ui-src/src/hud/ItemIcon.tsx degraded twice on the way down:
+--
+--   1. `items/<id>.png` 404s, and the <img> onError swaps in a drawn icon;
+--   2. the drawn icon was chosen by `WEAPON_CATEGORY[slot.id] ?? 'rifle'`, and
+--      an id absent from that map took the DEFAULT.
+--
+-- So a railgun drew an assault rifle. Not a broken image, not an empty square,
+-- not a console warning -- a confident picture of the wrong gun, which cannot
+-- be told apart from a correct answer by looking at the screen. It took a
+-- playtest to find, which is exactly what this gate is for.
+--
+-- THE FIRST VERSION OF THIS GATE ACCEPTED A DRAWING. It required only that an
+-- id appear in WEAPON_CATEGORY, reasoning that "a PNG is not required, a
+-- decision is" -- so that melee and the airdrop shelf could be drawn rather
+-- than photographed. The owner has now ruled that out: the decision has to be
+-- a FILE. So this gate has two halves, and they are complementary rather than
+-- redundant --
+--
+--   A. every slot weapon has a PNG, in the source tree AND in the built
+--      bundle. ABSENCE IS NOW A FAILURE, where before only asymmetry was;
+--   B. ItemIcon.tsx declares no weapon-shaped drawn icon at all, so half (A)
+--      cannot be quietly satisfied again by drawing something.
+--
+-- Without (B), someone re-adds a `rifle` path and the fallback is back with no
+-- test failing. Without (A), (B) leaves every weapon with the placeholder.
+--
+-- FISTS ARE IN THE LIST NOW. They are a weapon-table entry, resolved from an
+-- engine hash on every punch, they occupy a slot of their own, and Fist.png
+-- exists upstream -- there was no reason for them to be the one exception, and
+-- FistIcon had its own hand-drawn fist until this change removed it.
+local UI_ICON     = 'ui-src/src/hud/ItemIcon.tsx'
+local SRC_ITEMS   = 'ui-src/public/items/'
+local BUILT_ITEMS = 'resources/[fivem-royale]/br_ui/ui/items/'
+
+local function exists(path)
+    local fh = io.open(path, 'rb')
+    if fh then fh:close() return true end
+    return false
+end
+
+-- --- A. the art exists, in both places -------------------------------------
+--
+-- ui-src/public/ is the SOURCE and br_ui/ui/ is what FXServer actually serves;
+-- vite copies one to the other on `npm run build`. A PNG committed to only one
+-- of them is either art the game cannot see, or art whose source is gone at the
+-- next build -- and tools/pre-commit's rebuild guard keys on `^ui-src/src/`, so
+-- it does not cover public/ at all. Checked per id rather than by listing the
+-- directories, because Lua cannot list one without io.popen and this repo is
+-- developed on Windows (see tools/test_config.lua on why the directory walks
+-- live in bash).
+local paired = 0
+for _, spec in ipairs({
+    { BR.Config.Weapons,        'weapon' },
+    { BR.Config.AirdropWeapons, 'airdrop weapon' },
+    { BR.Config.Melee,          'melee weapon' },
+    { BR.Config.Throwables,     'throwable' },
+    { { BR.Config.Fists },      'fists' },
+}) do
+    for _, w in ipairs(spec[1] or {}) do
+        local id = tostring(w.id)
+        local inSrc   = exists(SRC_ITEMS .. id .. '.png')
+        local inBuilt = exists(BUILT_ITEMS .. id .. '.png')
+        if inSrc and inBuilt then
+            paired = paired + 1
+        elseif inSrc then
+            fail('%s %q has artwork in %s but not in %s -- the game serves the '
+                 .. 'built copy, so this art does not exist in game. Run: '
+                 .. 'cd ui-src && npm run build', spec[2], id, SRC_ITEMS, BUILT_ITEMS)
+        elseif inBuilt then
+            fail('%s %q has artwork in %s but not in %s -- the source is gone '
+                 .. 'and the next build will delete it', spec[2], id,
+                 BUILT_ITEMS, SRC_ITEMS)
+        else
+            fail('%s %q has no artwork: %s%s.png does not exist. Weapons are '
+                 .. 'photographs now -- there is no drawn silhouette left for '
+                 .. 'this to fall back to, so the slot would show the '
+                 .. '"picture missing" placeholder. See %sREADME.md for where '
+                 .. 'the art comes from.', spec[2], id, SRC_ITEMS, id, SRC_ITEMS)
+        end
+    end
+end
+
+-- --- B. and nothing weapon-shaped is drawn ---------------------------------
+--
+-- The rules themselves live in tools/icon_rules.lua, as pure functions over a
+-- source string. THIS FILE CAN ONLY EVER SEE THE ONE REAL ItemIcon.tsx, so on
+-- a clean tree it proves that file is clean and cannot prove it would notice a
+-- dirty one. tools/test_icons.lua feeds the same rules deliberately broken
+-- sources and asserts each is caught, which is what stops this half rotting
+-- into a green light that means nothing.
+local IconRules = dofile('tools/icon_rules.lua')
+
+do
+    local fh = io.open(UI_ICON, 'r')
+    if not fh then
+        fail('%s is missing, so no weapon has a resolvable icon', UI_ICON)
+    else
+        local raw = fh:read('a')
+        fh:close()
+        for _, msg in ipairs(IconRules.problems(raw)) do
+            fail('%s %s', UI_ICON, msg)
+        end
     end
 end
 
@@ -175,7 +384,8 @@ local function signed32(h)
     return (h >= 0x80000000) and (h - 0x100000000) or h
 end
 
-for _, list in ipairs({ BR.Config.Weapons, BR.Config.Throwables, BR.Config.Melee }) do
+for _, list in ipairs({ BR.Config.Weapons, BR.Config.Throwables,
+                        BR.Config.Melee, BR.Config.AirdropWeapons }) do
     for _, w in ipairs(list or {}) do
         if w.hash then
             signedChecked = signedChecked + 1
@@ -206,9 +416,17 @@ end
 -- ------------------------------------------------------------------- report --
 
 if fails == 0 then
+    local db = 0
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.Throwables }) do
+        for _, w in ipairs(list or {}) do
+            if w.driveby == true then db = db + 1 end
+        end
+    end
     io.write(('\27[32mok\27[0m   %d weapon hashes match their names; %d resolve from '
-        .. 'both signed and unsigned (%d have the top bit set)\n')
-        :format(checked, signedChecked, topBit))
+        .. 'both signed and unsigned (%d have the top bit set); %d are claimed '
+        .. 'usable from a car seat; %d slot weapons have a PNG in both the '
+        .. 'source and the built bundle, and none is drawn\n')
+        :format(checked, signedChecked, topBit, db, paired))
 else
     io.write(('\27[31m%d weapon table problem(s)\27[0m\n'):format(fails))
 end

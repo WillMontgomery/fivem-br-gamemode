@@ -119,9 +119,35 @@ RegisterCommand('brhelp', function()
     print('  brconfig             the tunables that most often explain odd behaviour')
     print('  brwhy <id>           why is this player in the state they are in')
     print('  brartifacts          incident screenshots: taken, stored, refused')
+    print('  brshots [n|reason]   the last n shot adjudications with the numbers')
+    print('                       that decided each: distance against the')
+    print('                       weapon\'s reach, interval against its cadence,')
+    print('                       the magazine the SERVER believed, whether it')
+    print('                       watched a throw. CONSOLE ONLY -- an admin can')
+    print('                       be the subject of these rows (#93)')
+    print('  brtestfire <mode>    bend ONE anticheat bound so a refusal can be')
+    print('                       fired on purpose: far, fast, thrown,')
+    print('                       noammo <id>, off, status. Refusals it causes')
+    print('                       file NO incident and are marked FORCED. Clears')
+    print('                       at match end and on restart. CONSOLE ONLY,')
+    print('                       dev mode')
     print('  brstrips             unissued weapons taken out of hands, and')
     print('                       how many reports were refused and why')
+    print('  brvehicles           refused vehicles seen in matches: what was')
+    print('                       counted, what the engine placed, and which')
+    print('                       models the allowlist did not name')
+    print('  brcar <id> [model] [type]  spawn a vehicle in front of a player,')
+    print('                       since entity lockdown refuses trainers.')
+    print('                       CONSOLE ONLY -- the br.admin ACE is not')
+    print('                       enough -- and only models the allowlist')
+    print('                       tolerates (dev mode). type defaults to')
+    print('                       automobile; name it for a bike or a boat')
     print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
+    print('  brlootnear <id> [r]  every entry within r (50m) of that player, and')
+    print('                       whether the claim path would accept it: the')
+    print('                       registry position, reach, and whether a repair')
+    print('                       would land. The reader for "that crate will')
+    print('                       not open".')
     print('  brlootsim [n] [tier] roll the crate table n times and print the')
     print('                       distribution -- including the share of crates')
     print('                       that hold a gun. Retune loot without playing.')
@@ -129,6 +155,7 @@ RegisterCommand('brhelp', function()
     print('  brweapons [filter]   list every grantable item id')
     print('  brarm <id|all> <item> [rarity]  weapon + FULL reserve (dev mode)')
     print('  brgive <id> <item> [n]  put an item straight into a player\'s hands')
+    print('  brvolts <id> <amount>   grant (or take) Volts on the stored profile')
     print('  brcrate <id> [item]  drop a crate (or one item) at a player\'s feet')
     print('  brlootseed <n|off>   pin the loot layout so it repeats between matches')
     print('  brdbno               every downed player: time left, knocker, reviver')
@@ -144,8 +171,13 @@ RegisterCommand('brhelp', function()
     print('    crawl the build actually resolved),')
     print('    brcratehold <ms> (crate hold duration, live -- brloot shows the')
     print('    hold counting up and whether the key is actually down),')
+    print('    brdriveby [s] (why a passenger cannot fire: seat, what the')
+    print('    ENGINE has in your hands frame by frame, and whether anything')
+    print('    disabled a trigger control -- #197),')
     print('    brloot (what this client can see, what it is OFFERING you and')
-    print('    what else is in reach), brlootblips (dev: blip every')
+    print('    what else is in reach), brarc (drops one item with a known')
+    print('    origin and says, link by link, whether it arced out of the')
+    print('    crate or popped into existence), brlootblips (dev: blip every')
     print('    item in scope), brpois (blip EVERY point of interest, map-wide,')
     print('    coloured by tier with its radius shaded), brpromptcheck,')
     print('    brprobe (what the natives actually do -- run "brprobe" alone')
@@ -173,6 +205,27 @@ RegisterCommand('brstate', function()
     line('-')
     print(('  minted ids   %d'):format(BR.Server.matchId))
     print(('  devMode      %s'):format(tostring(BR.Server.devMode)))
+
+    -- THE DEBUG HOLDS, PRINTED ONLY WHEN THEY ARE ON.
+    --
+    -- #202: the owner froze warmup, the lobby emptied and rebuilt, and every
+    -- match after that was born held -- with nothing anywhere saying so. This is
+    -- the first command anybody runs at a server that is not doing what they
+    -- expect, so it is where the answer belongs.
+    --
+    -- ONLY WHEN ON, because a line reading `warmup hold  off` on every healthy
+    -- server is noise that teaches people to skip the block it lives in. A hold
+    -- is the exception and prints like one.
+    if BR.Match and BR.Match.warmupFrozen and BR.Match.warmupFrozen() then
+        print('  warmup       HELD by brwarmupfreeze -- every warmup that opens')
+        print('               stays on the pad. `brwarmupfreeze off` releases it,')
+        print('               and it lifts itself once the server is empty.')
+    end
+    if BR.Storm and BR.Storm.isFrozen and BR.Storm.isFrozen() then
+        print('  storm        HELD by brstormfreeze -- no phases, no damage.')
+        print('               `brstormfreeze off` releases it, and it lifts')
+        print('               itself at the end of the match it is holding.')
+    end
     print(('  onesync      %s%s'):format(
         tostring(BR.Server.onesync),
         (BR.Server.onesync == 'off' or BR.Server.onesync == '')
@@ -196,9 +249,8 @@ RegisterCommand('brroster', function(_, args)
 
     local rows = {}
     for src, p in pairs(BR.Server.roster) do
-        local living = p.state ~= BR.PlayerState.DEAD
+        local living = p.state ~= BR.PlayerState.OUT
                    and p.state ~= BR.PlayerState.LEFT
-                   and p.state ~= BR.PlayerState.SPECTATING
         if not aliveOnly or living then
             rows[#rows + 1] = {
                 src    = src,
@@ -486,6 +538,166 @@ RegisterCommand('brloot', function(_, args)
     end)
 
     if not any then print('  no matches running') end
+end, RESTRICTED)
+
+--- One player, the loot around them, and why each piece of it will or will not
+--- open.
+---
+---   brlootnear <serverId> [radius]      radius defaults to 50m
+---
+--- WHAT brloot CANNOT ANSWER. It counts by kind and rarity, which settles "is
+--- the layout right" and says nothing at all about any single entry -- so "I am
+--- stood in front of that crate and it says Too far away" had no reading on
+--- this box short of adding prints to server/loot.lua and restarting (#195).
+--- An entity-specific bug needs a per-entity instrument.
+---
+--- IT RUNS THE REAL CHECKS. BR.Loot.inspect calls the same inReach the claim
+--- handler calls and the same fixOk the repair handler calls, on the same
+--- roster entry, so the `reach` column is not a model of the refusal -- it IS
+--- the refusal. Anything else would be a second opinion, and a second opinion
+--- is worthless against a bug whose entire nature is two positions disagreeing.
+---
+--- THE COLUMN TO READ FIRST IS `at`. Every other symptom follows from it: the
+--- server validates a claim against the REGISTRY position printed there, and
+--- the client prompts off its own mirror of the entry, which it slaves to the
+--- prop. Those are the same place right up until they are not.
+RegisterCommand('brlootnear', function(_, args)
+    local src = tonumber(args[1])
+    if not src then
+        print('  usage: brlootnear <serverId> [radius]')
+        print('    every loot entry the server has within radius (default 50m)')
+        print('    of that player, and whether the claim path would accept it')
+        return
+    end
+
+    local radius = math.max(1.0, math.min(1000.0, tonumber(args[2]) or 50.0))
+    local rows, info = BR.Loot.inspect(src, radius)
+
+    local p = BR.Server.roster[src]
+    header(('loot near %s (%d)'):format(p and p.name or '?', src))
+
+    if info and info.why then
+        print(('  %s'):format(info.why))
+        return
+    end
+    if not info then
+        print(('  no roster entry for %d'):format(src))
+        return
+    end
+
+    print(('  zone           %s'):format(
+        info.warmup and 'the shared warmup pad' or ('match ' .. tostring(info.zone))))
+    print(('  state          %s   may take: %s'):format(
+        tostring(info.state), info.canTake and 'yes' or 'NO'))
+    print(('  position       %s%s'):format(
+        info.pos and ('%.1f, %.1f, %.1f'):format(info.pos.x, info.pos.y, info.pos.z)
+                 or 'not sampled yet',
+        info.posAgeMs and ('   (sampled %s ago)'):format(secs(info.posAgeMs)) or ''))
+    print(('  refuses past   %.1fm, and past %.1fm of height once repaired')
+        :format(info.reachMax, info.reachZ))
+    print(('  repairs        accepted within %.1fm, at most once per %s per container')
+        :format(info.fixRadius, secs(info.fixCool)))
+
+    if not rows then
+        print('  no position sampled for this player, so nothing can be tested')
+        return
+    end
+
+    print(('  %d of %d entries in this zone are within %.0fm')
+        :format(#rows, info.total, radius))
+    line('-')
+
+    -- Nearest first, and capped: a landing at a dense POI has a hundred
+    -- entries in range and the answer is always in the first few.
+    local shown = {}
+    for i = 1, math.min(#rows, 24) do
+        local r = rows[i]
+        shown[#shown + 1] = {
+            id    = r.id,
+            kind  = r.kind,
+            item  = r.item or '-',
+            at    = ('%.0f,%.0f'):format(r.x, r.y),
+            dist  = ('%.1f'):format(r.d),
+            dz    = ('%.1f'):format(r.dz),
+            rep   = r.repaired and 'yes' or 'no',
+            fixed = r.fixAgeMs and ('%.1fs'):format(r.fixAgeMs / 1000.0) or '-',
+            sub   = r.subbed and 'yes' or 'NO',
+            reach = r.reach and 'yes' or 'NO',
+            fix   = r.fix and 'yes' or (r.fixWhy or '?'),
+        }
+    end
+
+    grid({
+        { title = 'id',    width = 5,  key = 'id' },
+        -- 10, because 'consumable' is 10 and a kind that overflows its column
+        -- pushes every field after it out of line for that row only -- which
+        -- is the one row you were reading.
+        { title = 'kind',  width = 10, key = 'kind' },
+        { title = 'item',  width = 12, key = 'item' },
+        { title = 'at',    width = 15, key = 'at' },
+        { title = 'dist',  width = 6,  key = 'dist' },
+        { title = 'dz',    width = 6,  key = 'dz' },
+        { title = 'rep',   width = 3,  key = 'rep' },
+        { title = 'fixed', width = 6,  key = 'fixed' },
+        { title = 'sub',   width = 3,  key = 'sub' },
+        { title = 'reach', width = 5,  key = 'reach' },
+        { title = 'fix',   width = 12, key = 'fix' },
+    }, shown)
+
+    if #rows > #shown then
+        print(('  ... and %d more, nearest first'):format(#rows - #shown))
+    end
+
+    -- WHAT THE GRID MEANS, for the two shapes this was built to tell apart.
+    -- Both look identical from a chair -- a crate you are stood in front of
+    -- that will not open -- and they have different fixes, so the reading is
+    -- spelled out rather than left to be inferred from ten columns.
+    line('-')
+    local said = false
+    for _, r in ipairs(rows) do
+        if not r.reach and r.d > info.reachMax then
+            -- Refused on 2D distance. Whether it can ever recover is the whole
+            -- question: an entry that cannot be re-anchored either is stuck
+            -- there, and that is the shape being hunted.
+            print(('  #%d (%s) is %.1fm away IN THE REGISTRY, at %.1f, %.1f.')
+                :format(r.id, r.kind, r.d, r.x, r.y))
+            if r.fixWhy == 'too far' then
+                print('    A repair from where this player stands is refused as')
+                print(('    well, being past the %.0fm bound. If they are stood at')
+                    :format(info.fixRadius))
+                print('    the crate, the registry has stopped following the prop')
+                print('    and cannot catch up.')
+            elseif not r.fix then
+                -- Some other rule refused the repair, and saying "cannot catch
+                -- up" here would be a diagnosis rather than a reading: a
+                -- cooldown clears on its own and an unsubscribed cell is the
+                -- ordinary state of anything a couple of hundred metres off.
+                print(('    A repair is refused right now: %s.'):format(r.fixWhy))
+            end
+            said = true
+        elseif not r.reach and r.repaired then
+            -- Inside the 2D bound and repaired, so inReach can only have
+            -- refused on height.
+            print(('  #%d (%s) is %.1fm away but %.1fm of height from this player,')
+                :format(r.id, r.kind, r.d, math.abs(r.dz)))
+            print(('    and it is repaired, so the %.1fm height check applies.')
+                :format(info.reachZ))
+            said = true
+        elseif not r.reach then
+            -- Neither clause explains it. Says so rather than guessing: a
+            -- reader who is told a reason that is not the reason is worse off
+            -- than one who is told the rule moved.
+            print(('  #%d (%s) is %.1fm away and unreachable for a reason neither')
+                :format(r.id, r.kind, r.d))
+            print('    the distance nor the height clause accounts for.')
+            said = true
+        end
+    end
+    if not said then
+        print('  Every entry listed would be accepted from where this player is.')
+        print('  If a crate is refusing, its registry position is further than')
+        print(('    %.0fm away -- re-run with a bigger radius.'):format(radius))
+    end
 end, RESTRICTED)
 
 --- Roll the crate table N times and print what came out.
@@ -1077,6 +1289,87 @@ RegisterCommand('brstrips', function()
     print('  that does not need the client\'s cooperation.')
 end, RESTRICTED)
 
+--- Refused vehicles: what reached the server, and what was done about it.
+---
+--- THE READER FOR TWO QUESTIONS THAT LOOK LIKE ONE. "Is anybody spawning
+--- vehicles" and "is our allowlist complete" have different answers and
+--- different fixes, and the counters below are arranged so they cannot be
+--- confused for each other.
+RegisterCommand('brvehicles', function()
+    header('vehicles the gamemode refuses')
+    if not BR.Vehicles then
+        print('  server/vehicles.lua is not loaded.')
+        return
+    end
+    local s = BR.Vehicles.stats()
+    print(('  entities       %d created by clients, %d of them vehicles')
+        :format(s.seen, s.vehicles))
+    print(('  allowed        %d passed the allowlist')
+        :format(s.allowed))
+    print(('  counted        %d refused and attributed, %d throttled')
+        :format(s.counted, s.throttled))
+    print(('  not attributed %d refused with no owning player')
+        :format(s.unowned))
+
+    -- #211: THE OTHER ROUTE TO THE SAME CASE, AND THE ONE THAT CATCHES A
+    -- HELICOPTER NOBODY CREATED. `counted` above is the total of both, so these
+    -- two say how much of it came from a driving seat rather than from a create.
+    print(('  occupied       %d taken by sitting in one (driver, %ds dwell)')
+        :format(s.occupied, math.floor((s.dwellMs or 3000) / 1000)))
+    print(('  dwelling       %d driving something refused right now')
+        :format(s.dwelling))
+    print(('  tracking       %d player(s) with a count this match')
+        :format(s.tracked))
+
+    -- THE TWO NUMBERS THAT MEAN SOMETHING IS WRONG SOMEWHERE ELSE, each with
+    -- the fix named beside it, because neither is fixed in server/vehicles.lua.
+    print(('  by class       %d caught by GetVehicleType and NOT by the model')
+        :format(s.byType))
+    if s.byType > 0 then
+        print('                 ^ config/vehicles.lua does not name an aircraft')
+        print('                   that is in this game build. Add it.')
+    end
+    print(('  engine-placed  %d refused model(s) claiming to be population')
+        :format(s.ambient))
+    local any = false
+    for hash, n in pairs(s.models or {}) do
+        if not any then
+            print('                 models seen, as the engine reported them:')
+            any = true
+        end
+        -- THE HASH RATHER THAN A NAME, because the models worth seeing here are
+        -- exactly the ones config/vehicles.lua could not name -- a lookup would
+        -- print "unknown" for the interesting half.
+        print(('                   0x%08X  x%d'):format(hash, n))
+    end
+    if s.ambient > 0 then
+        print('                 ^ either GTA places ambient aircraft in matches,')
+        print('                   or a client is lying about the population')
+        print('                   field to walk one past `relaxed` lockdown.')
+        print('                   The model list above is what tells them apart;')
+        print('                   nothing is filed for either.')
+    end
+
+    print('  Note: what this can see depends on sv_entityLockdown. Under')
+    print('  `relaxed` the platform refuses script-created entities before')
+    print('  this file is reached, so a low count is the boundary working')
+    print('  rather than a quiet server. See server.cfg.example.')
+
+    -- UNDER ITS OWN HEADING, BECAUSE IT IS NOT AN ANTICHEAT NUMBER. Everything
+    -- above counts vehicles the gamemode refuses; this counts kills the gamemode
+    -- credits. They share a file because they share the natives, not because
+    -- they mean the same kind of thing.
+    header('roadkill attribution')
+    print(('  driving        %d player(s) confirmed at the wheel last sample')
+        :format(s.driving or 0))
+    print(('  looks          %d death(s) or health drop(s) asked "was that a car"')
+        :format(s.roadkillLooks or 0))
+    print(('  credited       %d attributed to a driver')
+        :format(s.roadkills or 0))
+    print('  A roadkill by an AMBIENT driver is credited to nobody, by design:')
+    print('  there is no player in the seat. So is a vehicle explosion.')
+end, RESTRICTED)
+
 --- Print the stored profile row for connected players.
 ---
 --- THE TOOL THAT WAS MISSING FOR EVERY STATS PLAYTEST. Verifying that a match
@@ -1195,6 +1488,139 @@ RegisterCommand('brprofile', function(src, args)
         TriggerEvent('br:ddb:profileFetch', req, p.license)
     end
 end, true)
+
+--- Put Volts into a connected player's real profile row.
+---
+--- ═══ WHY THIS HAD TO EXIST ═══
+---
+--- There was NO way to grant Volts, which made the shop untestable without
+--- playing matches to completion. The two commands that look like they would do
+--- it do not: `brgive` is inventory items only, and `brxpsim` is a client-side
+--- animation preview that deliberately writes nothing at all -- it reports Volts
+--- as 0 on purpose, because "claiming a payout that nothing paid is the precise
+--- lie that issue was about".
+---
+--- ═══ IT WRITES THROUGH `br:ddb:statsApply`, WHICH IS THE PAYOUT'S OWN WRITE ═══
+---
+--- Not through a new br_ddb verb, and not into the session cache. The cache
+--- would show a number that cannot be SPENT: br_ddb's purchase and spend
+--- conditions are evaluated by DynamoDB against the real row, so a granted
+--- balance that never reached the row would be refused at the till and would
+--- look exactly like a bug in the shop.
+---
+--- `statsApply` is the atomic `ADD #bal :balance` that every match payout uses.
+--- Sending it a delta carrying nothing but `balance` writes nothing but the
+--- balance -- js-src/br_ddb/src/stats.js only SETs the level, name and
+--- lastMatchAt when the caller supplies them, precisely so a grant cannot claim
+--- the player just finished a match. A second, grant-only br_ddb verb was the
+--- alternative and was rejected: config/market.lua's promise is that the
+--- currency is earned, and a mint sitting in the shipped bundle would end that
+--- whether or not the Lua in front of it was gated.
+---
+--- ═══ NEGATIVE AMOUNTS ARE ALLOWED, DELIBERATELY ═══
+---
+--- `brvolts 3 -500` is how the SPEND path gets tested: taking a balance down to
+--- just under a car's price is the only way to make `br:ddb:spend`'s condition
+--- refuse on demand, and the alternative is buying cars until the money runs
+--- out. It is an unconditional ADD, so a large enough negative WILL drive a row
+--- below zero -- which is a legitimate state to test with (every affordability
+--- check reads `balance < price`) and is not a state the game can otherwise
+--- reach. Zero is refused, because it is a typo rather than an instruction.
+---
+---   brvolts 3 5000      give player 3 five thousand Volts
+---   brvolts 3 -500      take five hundred off them
+---
+--- DEV MODE AND THE SERVER CONSOLE, BOTH. The dev gate is `brgive`'s, for
+--- `brgive`'s reason -- one switch for "this box is not a real match". The
+--- console check is `brprofile`'s, and it is here because this one writes to a
+--- persistent row rather than to a match that is about to end.
+RegisterCommand('brvolts', function(src, args)
+    if tonumber(src) ~= 0 then
+        print('  brvolts is server-console only -- it writes a stored profile.')
+        return
+    end
+    if not devOnly('brvolts') then return end
+
+    local target = tonumber(args[1])
+    local amount = tonumber(args[2])
+    if not target or not amount then
+        print('  usage: brvolts <serverId> <amount>')
+        print('    a positive amount grants, a negative one takes away')
+        print('    written to the real profile row through the same atomic ADD')
+        print('    a match payout uses, so the Volts can actually be spent')
+        return
+    end
+
+    -- THE ROSTER-ENTRY CHECK IS brgive'S, and it answers the same question:
+    -- is this a player the server knows about, rather than a number.
+    if not BR.Roster.get(target) then
+        print(('  no roster entry for %d'):format(target))
+        return
+    end
+
+    if GetResourceState('br_ddb') ~= 'started' then
+        print('  brvolts: br_ddb is not started, so there is nothing to write to.')
+        return
+    end
+
+    amount = math.floor(amount)
+    if amount == 0 then
+        print('  brvolts: 0 grants nothing. Say what you mean.')
+        return
+    end
+
+    local byKind = BR.Identity.ofPlayer(target)
+    local license = byKind and byKind.license
+        and BR.Identity.qualified('license', byKind.license)
+    if not license then
+        print(('  brvolts: %d has no license, so there is no row to write.')
+            :format(target))
+        return
+    end
+
+    local req = BR.Server.nextDbgReq or 1
+    BR.Server.nextDbgReq = req + 1
+
+    -- The handle, not the function -- brprofile's note applies here too: passing
+    -- the function to RemoveEventHandler silently removes nothing.
+    local ref
+    local answered = false
+
+    ref = AddEventHandler('br:ddb:statsResult', function(gotReq, ok, extra)
+        if gotReq ~= req or answered then return end
+        answered = true
+        if ref then RemoveEventHandler(ref) end
+
+        if not ok then
+            print(('^1[br_core] brvolts: %s was NOT credited %d -- %s^7')
+                :format(license, amount,
+                        tostring(extra and extra.error or 'no reason given')))
+            return
+        end
+
+        -- THE CACHE IS TOLD THE SAME WAY A PAYOUT TELLS IT, so the lobby's
+        -- balance moves without a reconnect. `xpEarned` is 0: this granted
+        -- Volts and nothing else, and inventing XP here would put a level-up
+        -- animation on a console command.
+        TriggerEvent('br:market:credited', license, 0, amount)
+
+        print(('[br_core] brvolts: %s %+d Volts (%s) -- run brprofile to read '
+               .. 'the row back'):format(license, amount,
+                                         GetPlayerName(target) or '?'))
+    end)
+
+    SetTimeout(8000, function()
+        if answered then return end
+        answered = true
+        if ref then RemoveEventHandler(ref) end
+        print(('^3[br_core] brvolts: no answer from br_ddb for %s -- the write '
+               .. 'may or may not have landed^7'):format(license))
+    end)
+
+    -- ONE FIELD. Every other key in this table would be a claim about a match
+    -- that did not happen; see the note above and src/stats.js.
+    TriggerEvent('br:ddb:statsApply', req, license, { balance = amount })
+end, RESTRICTED)
 
 --- Pose a match-end award at a connected player without writing anything.
 ---

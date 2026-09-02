@@ -68,6 +68,133 @@ BR.Inv.suspendAmmo = false
 -- without reporting, so a weapon switch never looks like a burst of fire.
 local lastReport = { total = -1, clip = -1, at = 0 }
 
+--- THE LAST FEW REPORTS THIS CLIENT SENT, AND WHAT BECAME OF THEM.
+---
+--- ═══ THE FIFTH DOOR WAS A MESSAGE IN FLIGHT (owner, 2026-08-23, third
+---     report) ═══
+---
+--- "I also picked up the railgun again this time, which came with ammo, and was
+--- immediately drained of all railgun ammo..... didn't even do anything."
+---
+--- He did not do anything. The report loop did. An INV_AMMO is a MEASUREMENT OF
+--- A MOMENT -- "you told me 6, the gun holds 5, take one off" -- and the server
+--- applied its arithmetic to whatever it happened to be holding when the message
+--- landed, which after a pickup is a different and LARGER number. The rounds the
+--- pickup had just credited paid for a previous weapon's shots. See the `was`
+--- field below and the INV_AMMO handler in server/inventory.lua.
+---
+--- WHY A LOG AND NOT ANOTHER COLUMN. Every number /brammo printed was correct at
+--- the instant it was printed, and that is exactly why the readout could not see
+--- this: the fault is a disagreement between two instants, and a still
+--- photograph has only one. What was missing is the sentence "you told the
+--- server a number and it was already out of date" -- so the reports are kept,
+--- with what each was measured against, and the NEXT INV_SET stamps each one
+--- with what the server turned out to hold. A row whose `was` and `now` differ
+--- is a report that described a holding the server no longer had.
+---
+--- EIGHT ROWS, because the window this lives in is one round trip and the loop
+--- speaks at most every 150ms; anything older than that is a different bug.
+local reportLog = {}
+local REPORT_LOG_MAX = 8
+
+--- ROUNDS THIS PED HAS ACTUALLY SPENT THAT THE SERVER HAS NOT CHARGED FOR.
+---
+--- ═══ THE AMMO THAT CAME BACK ═══
+---
+--- Owner, 2026-08-23, live playtest: "once depleted, switching between slots
+--- gave me more ammo". That is a duplication exploit -- cycle the wheel and the
+--- gun is full again -- and it does not live in the switch. The switch is right:
+--- applyActive grants ZERO and then SetPedAmmo's an explicit number, so it can
+--- only ever hand out what it was told to.
+---
+--- IT LIVES IN WHAT IT WAS TOLD. The number applyActive writes is the SERVER's
+--- (`slot.clip` + the pool), and with `Combat.serverAmmo` on the server only
+--- debits a round when a validated `weaponDamageEvent` reaches
+--- BR.Damage.spendRound. Every round the engine burns that raises no such event
+--- -- and an explosive is the clear case, since server/damage.lua's own capture
+--- says a blast raises none at all -- is spent on the ped and never spent on the
+--- server. The two numbers drift apart, silently, and the next slot switch
+--- re-asserts the server's, which is the higher one. That is the refill.
+---
+--- SO THE DRIFT IS MEASURED RATHER THAN ASSUMED AWAY. Per slot, while its weapon
+--- is confirmed in the hand, this holds `what the server says we hold` minus
+--- `what the engine says we hold`. It is subtracted from every re-grant, so a
+--- weapon that was empty when it was stowed comes back empty -- whatever the
+--- server still believes -- and it is REPORTED, so the server stops believing
+--- it. Both halves matter: the report is the fix, and this is what makes the
+--- ped honest inside the round trip.
+---
+--- IT CANNOT INVENT AMMO. It is clamped at zero and only ever subtracts, so the
+--- worst a wrong reading does is leave a player short -- and a short player is
+--- one INV_SET away from the server's number again, while a duplicated magazine
+--- is a match somebody else loses.
+---
+--- KEYED BY SLOT *AND* ITEM. A slot whose weapon changed is a different weapon
+--- with a different magazine, and carrying a rifle's deficit onto the pistol
+--- that replaced it would take rounds off a gun that never fired one.
+---
+--- `svClip` IS HERE BECAUSE `slot.clip` IS NOT THE SERVER'S NUMBER ANY MORE BY
+--- THE TIME ANYONE READS IT. The report loop writes the ENGINE's magazine into
+--- the mirror every tick so the counter follows the gun at 10Hz (see its note),
+--- which means the mirror's clip is honest and the mirror's POOL is the only
+--- stale half left. Measuring the deficit against the laundered value would
+--- therefore find the reserve drift and miss the magazine drift entirely -- and
+--- the magazine is the half a re-grant hands straight back. So what the server
+--- actually said is kept, once, at the moment it says it.
+local shortfall = {}   -- [slot] = { id = <item id>, svClip = <n>, n = <rounds> }
+
+--- The deficit recorded for a slot, or 0 when there is none for THIS weapon.
+--- @param at integer
+--- @param slot table|false
+--- @return integer
+local function shortfallFor(at, slot)
+    local rec = shortfall[at]
+    if not rec or not slot or rec.id ~= slot.id then return 0 end
+    return rec.n or 0
+end
+
+--- WHAT THE SERVER SAID THIS SLOT'S MAGAZINE HOLDS -- not what the mirror says.
+---
+--- ═══ THE DEFICIT WAS BEING CHARGED TWICE (owner, 2026-08-23, third report) ═══
+---
+--- `shortfall` is measured against `rec.svClip` and it says why in its own note:
+--- the report loop writes the ENGINE's magazine into `slot.clip` every tick so
+--- the counter follows the gun, which leaves the mirror's clip laundered and the
+--- server's number recoverable only from the record. THE MEASUREMENT GOT THIS
+--- RIGHT AND BOTH CONSUMERS DID NOT: applyActive and reapplyAmmo each read
+--- `slot.clip` and then subtracted the deficit from it -- so every round already
+--- reflected in the laundered magazine was taken off a second time.
+---
+--- ONE RE-GRANT HALVES A GUN AND THREE EMPTY IT, WITHOUT A SHOT BEING FIRED IN
+--- ANY OF THEM. Measured on 56c0ba7, a railgun with two of six rounds gone:
+---
+---     tick 1   engine 4 -> 2   deficit 2      (1 + 3 - 2)
+---     tick 2   engine 2 -> 0   deficit 4      (0 + 3 - 4)
+---     tick 3   engine 0        deficit 6
+---
+--- Each re-grant lowers the engine, the next measurement reads the lower number
+--- as a bigger deficit, and the next re-grant subtracts that. It compounds, and
+--- it needs nothing from the player: skydive.lua's post-landing sweep calls
+--- BR.Inv.reapply on its third attempt and the strip check clears `applied` for
+--- the same effect, both from TICK loops between INV_SETs -- which is exactly
+--- when the mirror is laundered and the record is not.
+---
+--- The grant on an INV_SET was never wrong, because `adopt` replaces the slot
+--- tables with the server's payload a few lines earlier and the two numbers are
+--- briefly the same one. That is what made this invisible: the path everybody
+--- reads is the path that works.
+--- @param at integer
+--- @param slot table|false
+--- @return integer
+local function saidClipFor(at, slot)
+    if not slot then return 0 end
+    local rec = shortfall[at]
+    if rec and rec.id == slot.id and rec.svClip then
+        return math.floor(rec.svClip)
+    end
+    return math.floor(slot.clip or 0)
+end
+
 -- GTA'S OWN WEAPON UI HAS TO GO. The inventory replaces it wholesale, and
 -- leaving the engine's version bound to the same keys means every one of our
 -- inputs fires two things at once: TAB opened our panel AND the weapon wheel,
@@ -76,6 +203,14 @@ local lastReport = { total = -1, clip = -1, at = 0 }
 -- These are DISABLED, not rebound. The player's own GTA control settings still
 -- decide which physical key each of these is -- we are suppressing the
 -- engine's reaction to them, not claiming a key.
+--
+-- NOT ONE OF THESE IS ON A KEY THE RADIO WHEEL WANTS, and that was checked
+-- rather than assumed when #200 arrived blaming this list. Against the FiveM
+-- controls reference: 37 is TAB, 157-164 are the number row, 99 and 15 are
+-- scroll up, 14 is scroll down, 100 is `[`. The radio wheel is control 85,
+-- INPUT_VEH_RADIO_WHEEL, default Q -- absent from this table and from every
+-- other unconditional disable in this file. The culprit was the MELEE block
+-- further down; see its note.
 local SUPPRESS = {
     37,   -- INPUT_SELECT_WEAPON        (the weapon wheel; TAB by default)
     157, 158, 159, 160, 161,  -- INPUT_SELECT_WEAPON_UNARMED..SHOTGUN (1-5)
@@ -83,6 +218,34 @@ local SUPPRESS = {
     99, 100,                  -- INPUT_SELECT_NEXT/PREV_WEAPON
     14, 15,                   -- INPUT_WEAPON_WHEEL_NEXT/PREV (mouse wheel)
 }
+
+--- IS THE PED IN A VEHICLE RIGHT NOW?
+---
+--- NORMALISED, BECAUSE A FiveM NATIVE DECLARED BOOL DOES NOT HAVE TO HAND LUA A
+--- BOOLEAN, and this project has shipped that mistake four times. `1 == true` is
+--- false, and -- worse in the other direction -- the number 0 is TRUTHY in Lua,
+--- so `not IsPedInAnyVehicle(...)` reads "on foot" as "in a vehicle" on a build
+--- that answers 0. Both shapes are covered here so no caller has to know which
+--- one this build produces. (The evidence says it is a real boolean today:
+--- client/skydive.lua returns early on a raw truthiness test of this same
+--- native, and parachutes deploy -- which they could not if a false read 0. That
+--- is an observation about one build, not a contract.)
+---
+--- WHICH WAY IT IS SAFE TO BE WRONG, AND WHICH WAY THIS LEANS. A false "in a
+--- vehicle" takes the melee suppression away on foot and brings back the
+--- punch-while-drinking bug; a false "on foot" only leaves #200 unfixed. So only
+--- the three values that can actually mean "not in a vehicle" -- nil, false and
+--- 0 -- read as false here, which puts every silence (a native that declined, a
+--- build that has none) on the ON FOOT side, where the cost is the smaller one.
+---
+--- THE SECOND ARGUMENT IS `false` AND THAT MEANS SEATED, not "reaching for the
+--- door" -- so the window where the ped is climbing in still counts as on foot
+--- and still suppresses. There is no radio wheel to open until they are in.
+--- @return boolean
+local function inVehicle()
+    local v = IsPedInAnyVehicle(PlayerPedId(), false)
+    return not (v == nil or v == false or v == 0)
+end
 
 -- SCROLL UP CYCLES BACKWARDS, SCROLL DOWN DOES NOTHING (user call,
 -- 2026-08-05: "if 1 is selected, 5 is next"). One direction through a wrapping
@@ -163,6 +326,64 @@ end
 -- Putting it in the hand
 -- --------------------------------------------------------------------------
 
+--- A FiveM BOOL, read the only way this codebase is allowed to read one.
+---
+--- FIFTH TIME OF ASKING. `0` IS TRUTHY IN LUA and a native declared BOOL may
+--- hand back `1`/`0` rather than `true`/`false`, so both `if v then` and
+--- `v == true` are wrong on one build each. dbno.lua carries the long version
+--- of this scar under `didHit`; the drive-by facts below come straight off
+--- IsPedInAnyVehicle and IsControlEnabled, which are two more of them.
+--- @param v any
+--- @return boolean
+local function yes(v) return v == true or v == 1 end
+
+--- When we last told the engine this player may fire from a seat, and how many
+--- times. Read by /brdriveby so "did we ever ask?" is an observation rather
+--- than an argument about which branch ran.
+local driveBy = { at = 0, count = 0 }
+
+--- PASSENGERS SHOOT, AND WE SAY SO ON A CADENCE RATHER THAN ONCE.
+---
+--- GTA gates drive-bys per player, and with it off a passenger simply cannot
+--- fire at all -- which in a battle royale makes a car a rolling coffin for
+--- everyone who is not driving (user, 2026-08-06: "any seat which is not the
+--- driver should be able to do this").
+---
+--- THIS USED TO LIVE INSIDE applyActive, IN THE ARM BRANCH (#197). That put a
+--- player-scoped engine flag behind two conditions that have nothing to do with
+--- it: the slot had to hold a weapon (the unarmed branch never set it at all),
+--- and the slot had to have just CHANGED, because applyActive returns early
+--- when the mirror already matches. So the last assertion could be minutes and
+--- a respawn behind the moment the player actually sat down in a seat.
+---
+--- Every other engine flag in this project is already re-asserted for exactly
+--- this reason, and each one learned it the hard way: the team memo refreshes
+--- every two seconds "because the engine resets a good deal on respawn"
+--- (natives.lua), SetPedInfiniteAmmo is cleared EVERY TICK because "something
+--- is re-setting the flag after we clear it" (below), and applyGameRules runs
+--- per frame because "several of these reset themselves every tick". One
+--- native a tick buys this one the same guarantee, and it is the only way the
+--- diagnostic can say "we asserted it 0.4s ago" instead of "we asserted it,
+--- once, at some point".
+---
+--- WHAT THIS STILL DOES NOT BUY, AND NOW NEVER WILL. The engine applies its own
+--- rule about which weapons are usable from which seat, and that rule is game
+--- DATA -- the CDrivebyWeaponGroup named by the seat's drive-by anim info -- not
+--- a native we can call. A stock car seat permits unarmed, one-handed and thrown
+--- weapons and nothing else, so a rifle is stowed on the way in whatever this
+--- flag says.
+---
+--- We shipped a data file that redefined those two groups by name, and the game
+--- IGNORED it (owner, 2026-08-22: "carbine rifle in the passenger seat does
+--- nothing but pistols work"). That route is closed and the file is gone; see
+--- docs/vehicle-data.md for the finding and client/driveby.lua for what a
+--- passenger is told instead. This only stops US being the reason. See
+--- /brdriveby.
+local function assertDriveBy()
+    SetPlayerCanDoDriveBy(PlayerId(), true)
+    driveBy.at, driveBy.count = GetGameTimer(), driveBy.count + 1
+end
+
 --- Make the ped hold whatever the active slot says, and nothing else.
 --- @param force boolean|nil  re-apply even if the mirror thinks it is current
 local function applyActive(force)
@@ -195,8 +416,28 @@ local function applyActive(force)
     RemoveAllPedWeapons(ped, true)
 
     if want and slot then
-        local clip    = math.floor(slot.clip or 0)
+        -- THE SERVER'S MAGAZINE, NOT THE MIRROR'S. `slot.clip` has had the
+        -- engine's magazine written into it by the report loop, and subtracting
+        -- the deficit from a number that already reflects it charges the same
+        -- rounds twice. See saidClipFor.
+        local clip    = saidClipFor(inv.active, slot)
         local reserve = reserveFor(slot)
+
+        -- WHAT THIS PED HAS ALREADY SPENT COMES OFF THE TOP.
+        --
+        -- The server's numbers are the authority on what this player OWNS; they
+        -- are not a measurement of what is left in the gun, and with serverAmmo
+        -- on they can sit above it indefinitely (see `shortfall`). Re-asserting
+        -- them unmodified is what let a dry weapon come back loaded from a
+        -- press of a number key.
+        --
+        -- Subtracted from the TOTAL and then taken out of the MAGAZINE first,
+        -- because that is the order rounds actually leave a gun. A weapon that
+        -- ran dry has a deficit equal to everything it was granted, so both
+        -- halves land on zero and it comes back empty.
+        local short = shortfallFor(inv.active, slot)
+        local total = math.max(0, clip + reserve - short)
+        clip = math.min(clip, total)
 
         -- GIVE THE WEAPON WITH ZERO AMMO, THEN SET THE AMMO. This is
         -- ox_inventory's order, and the reason for it is that
@@ -206,7 +447,7 @@ local function applyActive(force)
         -- up by a full holding -- invisible while switching between two guns,
         -- and compounding whenever anything re-applied the same one.
         GiveWeaponToPed(ped, want, 0, false, true)
-        SetPedAmmo(ped, want, clip + reserve)
+        SetPedAmmo(ped, want, total)
         SetAmmoInClip(ped, want, clip)
         SetCurrentPedWeapon(ped, want, true)
 
@@ -215,13 +456,11 @@ local function applyActive(force)
         -- active-slot model for control of the hand.
         SetWeaponsNoAutoswap(true)
 
-        -- PASSENGERS SHOOT. GTA gates drive-bys per player, and with it off a
-        -- passenger simply cannot fire at all -- which in a battle royale
-        -- makes a car a rolling coffin for everyone who is not driving (user,
-        -- 2026-08-06: "any seat which is not the driver should be able to do
-        -- this"). The engine still applies its own rule about which weapons
-        -- are usable from a seat; this only stops us being the reason.
-        SetPlayerCanDoDriveBy(PlayerId(), true)
+        -- THE DRIVE-BY PERMISSION IS NOT SET HERE ANY MORE (#197). It is a
+        -- player-scoped flag, not a property of this grant, and asserting it
+        -- only when the weapon changes is what made "have we asked?" a
+        -- question nobody could answer from a seat. See assertDriveBy above,
+        -- called from the tick loop.
     else
         SetCurrentPedWeapon(ped, UNARMED, true)
     end
@@ -246,9 +485,22 @@ local function reapplyAmmo(serverClip)
     -- a mirror that had drifted upward looked like a gun that needed topping
     -- up, forever (user, 2026-08-06).
     local ped  = PlayerPedId()
-    local clip = math.floor(slot.clip or 0)
+    -- The SERVER's magazine, for the reason applyActive uses it: this path is
+    -- reached from a tick as well as from an INV_SET, and away from an INV_SET
+    -- the mirror's clip is the engine's. See saidClipFor.
+    local clip = saidClipFor(inv.active, slot)
 
-    SetPedAmmo(ped, hash, reserveFor(slot) + clip)
+    -- ...AND MINUS WHAT WAS ALREADY SPENT, exactly as applyActive does it and
+    -- for the same reason. This path is reached on every INV_SET whose ammo
+    -- went up -- which includes a pickup of something else entirely, since the
+    -- pool is shared -- so without the deduction ANY inventory change refilled a
+    -- gun the server had not noticed running dry. The switch is the way the
+    -- owner found it; it was never the only way in.
+    local short = shortfallFor(inv.active, slot)
+    local total = math.max(0, reserveFor(slot) + clip - short)
+    clip = math.min(clip, total)
+
+    SetPedAmmo(ped, hash, total)
     SetAmmoInClip(ped, hash, clip)
     lastReport.clip = serverClip or clip
 end
@@ -271,6 +523,37 @@ local function rebaseline()
     end
 end
 
+--- Write down what the server turned out to be holding, for every report that
+--- has not been answered yet.
+---
+--- Called on every INV_SET, which is the first moment a report's fate is
+--- observable from this side. A report that was APPLIED leaves the server
+--- holding exactly what it reported -- the far end subtracts the difference and
+--- lands on `total` -- so `now == total` reads "accepted" and anything else
+--- reads "the server did not act on this". `was` beside `now` then says WHY: two
+--- different numbers there mean the holding moved under the message, which is
+--- the whole of the 2026-08-23 third bug.
+---
+--- IT IS A DIAGNOSTIC AND NOT A PROOF, and the honest caveat is that an INV_SET
+--- sent for an unrelated reason can arrive before the report is processed and
+--- stamp the row early. That is worth one line in a readout that otherwise could
+--- not describe this class of fault at all.
+local function stampReports()
+    if #reportLog == 0 then return end
+    for _, r in ipairs(reportLog) do
+        if r.now == nil then
+            local s = inv.slots[r.slot]
+            if not s then
+                r.now = 0
+            elseif s.kind == BR.ItemKind.THROWABLE then
+                r.now = math.floor(s.count or 0)
+            else
+                r.now = math.floor(s.clip or 0) + reserveFor(s)
+            end
+        end
+    end
+end
+
 --- Forget everything. Called at match teardown and on death.
 ---
 --- BACK TO FISTS, NOT BACK TO SLOT 1 (#155). This is the death and teardown
@@ -282,6 +565,14 @@ local function clearLocal()
     inv.ammo, inv.active, inv.using = {}, MELEE_SLOT, nil
     applied, appliedPed = nil, 0
     lastReport.clip, lastReport.total = -1, -1
+    -- The deficits go with the guns they were measured on. A new match hands
+    -- out new weapons and a corpse's rifle is not this player's problem any
+    -- more; carrying the numbers over would dock the next magazine.
+    shortfall = {}
+    -- The log describes messages about a match that is over. Keeping it would
+    -- put rows from the last life above rows from this one with nothing to tell
+    -- them apart.
+    reportLog = {}
     BR.Inv.lastGainAt = 0
 end
 
@@ -289,17 +580,57 @@ end
 -- The UI channel
 -- --------------------------------------------------------------------------
 
+--- The inventory of the player we are WATCHING, or nil when we are not.
+---
+--- ═══ WHY THIS IS NOT MERGED INTO `inv` ═══
+---
+--- `inv` is the mirror of OUR OWN server-held inventory, and everything in this
+--- file that acts -- swap, drop, use, select, the ammo report -- reads it. A
+--- spectator's view is a picture and nothing more: no key here may act on it,
+--- and the cheapest way to guarantee that is for it to live in a different
+--- variable that only the draw path knows about. Writing the target's slots
+--- into `inv` would put somebody else's rifle one keypress away from a drop
+--- request, and the server would refuse it -- but "the server would refuse it"
+--- is not a reason to send it.
+---
+--- IT IS SET BY THE SPECTATE FEED and by nothing else; client/spectate.lua
+--- forwards what the server chose to send, and the server only sends it for the
+--- one player it has already decided this viewer may watch.
+local spectated = nil
+
 local function pushUi()
+    -- WHOSE INVENTORY THIS IS, DECIDED IN ONE PLACE. The bar is the same
+    -- component either way -- it draws what it is given -- so the substitution
+    -- happens here rather than in the interface. That keeps `InventoryBar` with
+    -- no notion of spectating at all, which is what stops a second copy of
+    -- "am I watching somebody" appearing in TypeScript.
+    local src = spectated or inv
     -- Sent whole rather than as deltas: five slots is a tiny payload, and the
     -- storm's "never send a nil clear" rule means a partial update would need
     -- a vocabulary for "this slot is now empty" that `false` already is.
     TriggerEvent('br:ui:sendLocal', BR.Nui.INV, {
-        slots  = inv.slots,
-        ammo   = inv.ammo,
-        active = inv.active,
-        using  = inv.using,
+        slots  = src.slots,
+        ammo   = src.ammo,
+        active = src.active,
+        using  = src.using,
     })
 end
+
+-- REGISTERED BELOW pushUi AND NOT ABOVE IT, deliberately. `local function f`
+-- only binds `f` from that line down, so a handler written above this point
+-- that calls pushUi() resolves it as a GLOBAL, which is nil at runtime -- no
+-- syntax error, luac -p happy, and the whole inventory bar silently stops
+-- updating after five caught errors. tools/check_forward_locals.lua exists
+-- because BR.Loot's ground probe shipped exactly that and took every crate on
+-- the map with it.
+AddEventHandler('br:spectate:inv', function(p)
+    -- A NIL IS AN EXPLICIT CLEAR, sent when a session ends. It is NOT what a
+    -- quiet feed tick looks like -- the server dedupes and omits `inv` when
+    -- nothing changed, and spectate.lua does not forward those at all, so the
+    -- last picture stands until it genuinely changes or the session stops.
+    spectated = (type(p) == 'table') and p or nil
+    pushUi()
+end)
 
 --- How much of each thing an inventory holds, ignoring WHERE it is.
 ---
@@ -378,6 +709,21 @@ local function adopt(d)
     for i = 1, SLOTS do
         local s = d.slots[i]
         inv.slots[i] = (type(s) == 'table') and s or false
+
+        -- WHAT THE SERVER SAID THIS MAGAZINE HOLDS, kept before the report loop
+        -- overwrites it with what the ENGINE says (see `shortfall`). A slot
+        -- whose item changed is a different gun: the deficit measured on the one
+        -- that left goes with it, or the replacement arrives already docked.
+        local id  = (type(s) == 'table') and s.id or nil
+        local rec = shortfall[i]
+        if id == nil or (rec and rec.id ~= id) then
+            shortfall[i] = nil
+            rec = nil
+        end
+        if id ~= nil then
+            if not rec then rec = { id = id, n = 0 } shortfall[i] = rec end
+            rec.svClip = math.floor(s.clip or 0)
+        end
     end
     local wasActive = inv.active
     inv.ammo   = d.ammo or {}
@@ -404,6 +750,8 @@ local function adopt(d)
     -- The server has just spoken; that is what the next decrease is measured
     -- against, whether or not anything was reapplied to the ped.
     rebaseline()
+    -- ...and it is also the first news of what became of anything we said.
+    stampReports()
     pushUi()
 
     if gained then
@@ -416,7 +764,26 @@ local function adopt(d)
         -- event, it fires while shooting, and the engine cue ducks correctly
         -- against gunfire. Rarity is carried by the slot's colour and its
         -- rarityPop, which is where it belongs.
-        if L.pickupSound then
+        --
+        -- ═══ UNLESS THE SERVER SAID THIS ARRIVAL IS SILENT ═══
+        --
+        -- `gained` answers "did a slot fill", which is NOT the same question as
+        -- "did this player just pick something up". The warmup shop found the
+        -- difference: the car somebody bought is handed out at wheels-up, so
+        -- every buyer heard PICK_UP at the BUS transition for an item that
+        -- arrived minutes after they paid for it and that they never saw land
+        -- (owner, 2026-08-29).
+        --
+        -- THE SERVER SAYS WHICH IT IS, because only the server knows WHY the
+        -- inventory changed -- see BR.Inv.push. Deciding it here would mean
+        -- inventing a rule (am I entering BUS? is this item a car?) that is a
+        -- second answer to a question already answered upstream, and this file
+        -- would be wrong about it the first time a second system granted
+        -- something.
+        --
+        -- `~= true` RATHER THAN `not`: this is a field off the wire, and the
+        -- only value that buys silence is a real boolean true.
+        if L.pickupSound and d.quiet ~= true then
             PlaySoundFrontend(-1, L.pickupSound.name, L.pickupSound.set, true)
         end
     end
@@ -489,21 +856,125 @@ BR.Keys.on('drop', function(pressed)
     TriggerServerEvent(BR.Net.INV_DROP, { slot = inv.active })
 end)
 
--- THE USE KEY ALWAYS DOES SOMETHING IF THERE IS ANYTHING TO DO.
+--- IS THERE A RELOAD FOR THE ACTIVE SLOT TO DO RIGHT NOW?
+---
+--- THE WHOLE OF WHICH THING `use` MEANS (owner, 2026-08-23: "we need a manual
+--- reload button, which should default to R" -- and R was already `use`).
+--- keybinds.lua carries the argument for why that is one binding rather than
+--- two; this is the line that splits it. True and the press is a reload; false
+--- and it is everything the key already did.
+---
+--- IT IS A GUESS AT WHAT THE SERVER WILL DO, NOT A DECISION. The server runs
+--- BR.Inv.reload and that is the authority -- this only decides whether to ask,
+--- so a press with no reload in it does not go over the wire and does not eat
+--- the `use` that press was. Being wrong in one direction costs one message the
+--- server ignores; being wrong in the other costs one press.
+---
+--- WHICH `clip` THIS READS, AND WHY IT IS THE RIGHT ONE. `slot.clip` on this
+--- side is the ENGINE's magazine -- the report loop overwrites it every tick so
+--- the counter follows the gun -- which is exactly the number the player is
+--- looking at when they decide to press R. `inv.ammo` is the server's pool, the
+--- other half of what the HUD prints. Both halves of the question are the two
+--- numbers already on screen, which is the only way the key can feel honest.
+---
+--- IT DOES NOT ASK canArm(), AND THAT IS NOT AN OVERSIGHT. The lobby, the bus
+--- and the whole descent are refused by the ONE canArm() at the top of the
+--- listener -- arming is suspended in the air because RemoveAllPedWeapons takes
+--- the parachute with it, and a reload is no exception to that. A second copy
+--- here would be a line no test could ever reach, because the listener returns
+--- before this is called: two gates and only one of them measurable is how a
+--- test comes to pass for a reason nobody intended (docs/testing.md, rule 4).
+--- The far end refuses it a second time on its own authority -- FREEFALL and
+--- GLIDE are not in server/inventory's LIVE table -- which is the boundary that
+--- actually matters.
+--- @return boolean
+local function reloadable()
+    local s = inv.slots[inv.active]
+    -- Fists (slot 0 holds nothing), a consumable, a throwable: none of them
+    -- have a magazine to put rounds into.
+    if not s or s.kind ~= BR.ItemKind.WEAPON then return false end
+
+    local w = BR.Config.WeaponById[s.id]
+    if not w or w.melee or not w.clip or not w.ammo then return false end
+
+    -- `>= w.clip` AND `> 0`, NOT TRUTHINESS. A full magazine and an empty pool
+    -- are the two states this has to say "no" in, and the second is a number
+    -- that 0 IS TRUTHY IN LUA gets exactly backwards -- an empty pool under
+    -- `if pool then` reads as ammunition to reload from.
+    if math.floor(s.clip or 0) >= w.clip then return false end
+    return math.floor(inv.ammo[w.ammo] or 0) > 0
+end
+
+-- THE USE KEY ALWAYS DOES SOMETHING IF THERE IS ANYTHING TO DO -- EXCEPT WITH A
+-- GUN IN THE HAND, WHERE IT IS THE RELOAD KEY AND NOTHING ELSE (#234).
 --
 -- Strictly, you use what is in your hand. But a player who has just picked up
 -- their first shield potion into slot 2 while a rifle sits in slot 1 presses
 -- the key, nothing happens, and the reasonable conclusion is that the item is
 -- broken (user, 2026-08-05: "there's no way to use it"). So: the active slot
 -- if it is consumable, otherwise the lowest slot that is.
+--
+-- ═══ AND THAT REACH IS WHAT #234 IS, ONCE R BECAME THE RELOAD KEY TOO ═══
+--
+-- Owner, 2026-08-29: "when holding a weapon (after reloading and no rounds
+-- shot), pressing the reload button switches to consumables when one is
+-- available..... strange."
+--
+-- Nothing about the reload was wrong. The press had no reload in it -- full
+-- magazine -- so it fell to the paragraph above, and the reach does not merely
+-- USE the far slot, it BRINGS IT UP. One press on a full gun took the gun out
+-- of his hands. The dry gun over an empty pool is the same press and is worse,
+-- because that is a player mid-fight pressing R by reflex.
+--
+-- WHICH CLAIM ACTUALLY BROKE. keybinds.lua put both meanings on one key on the
+-- strength of one sentence -- "reloading a shield potion means nothing, so the
+-- two never want the key at the same moment" -- and that sentence is false in
+-- exactly one state: a weapon in hand with nothing to reload. There the reload
+-- wants to do nothing and this reach wants to cross the inventory, so both are
+-- answerable and whichever is written first wins. The sentence is repaired
+-- HERE rather than by splitting the binding, because splitting it needs an
+-- engine assumption nobody in this repo can test (keybinds.lua says so at
+-- length) and because the sentence is nearly true: it only ever overreached.
+--
+-- SO THE REACH IS NARROWED TO HANDS THAT HOLD NO WEAPON. It is not removed --
+-- 2026-08-05 is still answered on fists, on an empty slot, and on a throwable,
+-- which is every hand for which R was never going to be a reload. What a gun in
+-- the hand now guarantees is that R can do one of two things: reload it, or
+-- nothing. It can no longer put the gun away.
 BR.Keys.on('use', function(pressed)
     if not pressed or not canArm() then return end
+
+    -- ═══ AND SINCE 2026-08-23 IT RELOADS FIRST ═══
+    --
+    -- A REQUEST WITH NOTHING IN IT, like every other line in this section. No
+    -- slot, no count, no ammo type: the server reloads what IT thinks is in the
+    -- hand, out of the pool IT holds, by the same rule that refills a gun that
+    -- ran dry mid-burst. Nothing is written to the ped from here -- the magazine
+    -- arrives with the INV_SET that follows, through reapplyAmmo, on the path a
+    -- server-paid reload has always travelled. Asking the engine to reload
+    -- instead would put the ped's magazine back in charge of a number the server
+    -- owns, which is what all four of this week's ammo bugs were made of.
+    --
+    -- IT COMES FIRST BECAUSE THE FALL-THROUGH BELOW WOULD OTHERWISE COLLIDE WITH
+    -- IT: with a half-empty rifle in hand and a shield in slot 3, one press
+    -- would reload the rifle AND drink the shield. The gun asked first, and the
+    -- shield is still one keypress away the moment the gun is full.
+    if reloadable() then
+        TriggerServerEvent(BR.Net.INV_RELOAD, {})
+        return
+    end
 
     local slot = nil
     local s = inv.slots[inv.active]
     if s and s.kind == BR.ItemKind.CONSUMABLE then
         slot = inv.active
-    else
+    elseif not (s and s.kind == BR.ItemKind.WEAPON) then
+        -- A WEAPON IN THE HAND STOPS HERE, and reaching this line at all means
+        -- reloadable() already said no. `kind == WEAPON` on purpose and not
+        -- reloadable()'s finer test: a machete and a gun over a dead pool are
+        -- both weapons the player is holding, and neither should answer the
+        -- reload key by putting itself away. Held open for the issue: whether a
+        -- throwable belongs on this side of the line too (it reaches, today).
         for i = 1, SLOTS do
             local c = inv.slots[i]
             if c and c.kind == BR.ItemKind.CONSUMABLE then slot = i break end
@@ -632,6 +1103,127 @@ local function inAnySlot(h)
     return false
 end
 
+--- Is the hash in this ped's hand the MOUNTED GUN OF THE VEHICLE THEY ARE SAT IN?
+---
+--- ═══ THE BUG THIS EXISTS FOR (owner, 2026-08-22) ═══
+---
+--- The owner stole an armed helicopter, read the case it produced, and asked:
+--- "can you confirm that vehicle-related incidents will not fire as a
+--- weapons-related incident? Because that's exactly what happened here. I caused
+--- this myself and confirmed no weapons were ever involved."
+---
+--- They were right. When a ped takes a seat in an armed vehicle the engine makes
+--- the vehicle's mounted gun their CURRENT WEAPON, and `GetCurrentPedWeapon`
+--- reports that hash. It is not fists, it is not the parachute, and it is in no
+--- inventory slot -- so the strip check above refused it, took it out of the
+--- hand, and filed a WEAPON case against a player who had never touched a
+--- weapon. Once a tick, for as long as they stayed in the seat, because the
+--- engine hands it straight back.
+---
+--- ═══ HOW A MOUNTED WEAPON IS IDENTIFIED, AND WHY NOT THE OTHER WAYS ═══
+---
+--- `GetCurrentPedVehicleWeapon` -- BOOL GET_CURRENT_PED_VEHICLE_WEAPON(Ped,
+--- Hash*) -- is the native built for exactly this question, and it is asked the
+--- way this file asks every out-param native: two returns, the BOOL first.
+--- The three alternatives were considered and rejected:
+---
+---   GetWeapontypeGroup. The obvious "is this hash in the vehicle group" test.
+---   The published group list is INCOMPLETE -- citizenfx's own native docs mark
+---   it `@todo` and name no group constants at all -- so the check would have
+---   been written against a number nobody can cite. A guess in an anticheat is
+---   worse than no check.
+---
+---   A hardcoded set of VEHICLE_WEAPON_* hashes. Finite, auditable, and wrong
+---   the day anyone adds a vehicle: DLC and add-on vehicles carry weapons whose
+---   hashes are not in any list written today, and each missing one is this same
+---   bug again for that vehicle only -- the hardest possible shape to find.
+---
+---   "Seated, and the hash is in no catalogue of ours." THIS IS THE OBVIOUS
+---   WRONG ANSWER and it is the one worth naming, because it is one line and it
+---   passes every test written from the owner's report. It excuses ANY weapon
+---   held in ANY seat, so a player who conjures a rifle and then sits in a car
+---   is holding a weapon this gamemode issues nobody, and this file would hand
+---   it back to them. See the header at the bottom of this file: the
+---   `IsPedInAnyVehicle` guard that used to live in the ammo path was REMOVED
+---   because the vehicle was the wrong question, and re-introducing it here as
+---   an anticheat exemption would be the same mistake with a worse blast radius.
+---
+--- ═══ THE TEST IS AN EQUALITY, AND THAT IS WHAT KEEPS THE HOLE SHUT ═══
+---
+--- The weapon in the hand must BE the mounted weapon the engine names -- not
+--- merely "some weapon, in some vehicle". A conjured rifle held in a Buzzard is
+--- not the Buzzard's minigun, so it fails this test, is stripped, and is
+--- reported exactly as it was before. tools/test_client.lua asserts that case
+--- directly, because it is the one a careless fix loses.
+---
+--- FOUR CONDITIONS, ALL OF THEM CHEAP, ALL OF THEM IN THE SAFE DIRECTION:
+---
+---   1. the ped is SEATED. On foot there is no mounted weapon to be holding, so
+---      a native that answers anyway cannot excuse anything. `inVehicle()` is
+---      the normalised read -- see its note, and note that `false` for the
+---      second argument means seated rather than climbing in.
+---   2. the native EXISTS and did not throw. Absent or angry is no opinion, and
+---      no opinion is not an excuse.
+---   3. it ANSWERED. A FiveM BOOL may be `true` or `1` and this repo has shipped
+---      the wrong reading SIX times, so `yes()` reads both. A build whose BOOL
+---      is unreliable here keeps the bug rather than gaining a hole, and that is
+---      the direction it is safe to be wrong in.
+---   4. the hash is NON-ZERO and EQUAL. A vehicle with no mounted gun answers
+---      `0`, and `0` is TRUTHY in Lua -- `BR.NormHash(0)` is `0`, not nil -- so
+---      without the explicit test "this vehicle has no gun" would compare equal
+---      to "this hand holds nothing" and excuse it. Tested ONCE, on the
+---      vehicle's side: a matching guard on the hand would be the same
+---      condition written twice and mutation testing would correctly call the
+---      second one unkillable, which is the argument client/vehrefuse.lua's
+---      `lock` already makes about a guard it deleted for the same reason.
+---
+--- ═══ WHAT THIS MISSES, STATED RATHER THAN DISCOVERED LATER ═══
+---
+--- A build on which `GetCurrentPedVehicleWeapon` does not answer for the seat
+--- the player is in -- a turret, a passenger gun position, a modded vehicle the
+--- native has no opinion about -- falls through to the old behaviour: the strip
+--- fires and a weapon case is filed. That is the bug, narrowed, not abolished.
+--- If it is ever reported again from a seat, this function is the first place to
+--- look and `/brprobe ammo`'s `inVehicle` is the reading that says whether the
+--- seat was even seen.
+---
+--- AND IT IS AS FORGEABLE AS EVERYTHING ELSE ON THIS PATH. A cheat that hooks
+--- this native to name the rifle it just conjured buys itself an exemption -- but
+--- a cheat that can hook natives can hook `GetCurrentPedWeapon` and never appear
+--- here at all, which is cheaper. The trust boundary is unchanged and is stated
+--- at length in br_core/server/strip.lua: this whole path is a tripwire in front
+--- of server/damage.lua, not the defence.
+--- @param h integer|nil  the normalised hash in the hand
+--- @return boolean
+local function isMountedWeapon(h)
+    if not inVehicle() then return false end
+
+    -- pcall AND NO `type(...) == 'function'` GUARD IN FRONT OF IT, deliberately.
+    -- `pcall(nil, ...)` returns false rather than raising, so the guard and the
+    -- pcall would have had identical behaviour -- and mutation testing said so,
+    -- exactly as it did for the guard client/vehrefuse.lua's `lock` deleted for
+    -- this reason. A native that is not on this build, and one that dislikes the
+    -- handle it was given, both read as "no opinion" here.
+    --
+    -- Three returns: the pcall's own, then the native's two.
+    --
+    -- `not pok` IS THE ONE CONDITION HERE MUTATION TESTING CANNOT KILL, and it
+    -- is kept rather than deleted like the two above: a failed pcall puts the
+    -- ERROR MESSAGE in `answered`, which `yes` rejects for being a string, so
+    -- the two halves cannot disagree today. They can the moment anything else
+    -- goes in that slot, and dropping it would leave `pok` bound and unread --
+    -- which reads as a pcall nobody checked.
+    local pok, answered, mounted = pcall(GetCurrentPedVehicleWeapon, PlayerPedId())
+    if not pok or not yes(answered) then return false end
+
+    -- NO `h == nil` GUARD AT THE TOP OF THIS FUNCTION, for the same reason and
+    -- with the same evidence: `m ~= nil` below already refuses the only shape a
+    -- nil hand can reach here in -- an engine that answered and named nothing --
+    -- and a second test of the same fact was reported unkillable.
+    local m = BR.NormHash(mounted)
+    return m ~= nil and m ~= 0 and m == h
+end
+
 --- Tell the server a weapon it never issued was taken out of this ped's hand.
 ---
 --- WHAT THIS IS AND IS NOT. It is a report of something that already happened;
@@ -659,6 +1251,14 @@ end
 -- --------------------------------------------------------------------------
 
 BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
+    -- ABOVE THE canArm() GATE, ON THE SAME ARGUMENT THE WEAPON-WHEEL BLOCK
+    -- MAKES (#134, and now #197). canArm() answers "may this file put a weapon
+    -- in this ped's hand", which is false for the lobby, the bus and the whole
+    -- descent -- and "may this player fire from a seat" is not that question.
+    -- A permission asserted while nobody can fire costs one native and is
+    -- already true by the time anybody sits down.
+    assertDriveBy()
+
     if not canArm() then
         -- Airborne, in the lobby, or dead: the hand is not ours to fill. The
         -- mirror is left alone so landing re-applies whatever was picked up
@@ -703,9 +1303,20 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
             local wantHash = BR.NormHash(hashOf(inv.slots[inv.active]))
             -- Fists and the parachute are never ours to strip: the chute is
             -- granted by skydive.lua and removing it at 400 metres is a death.
+            --
+            -- AND NEITHER IS THE GUN BOLTED TO THE VEHICLE THEY ARE SITTING IN.
+            -- A ped in an armed vehicle is HANDED its mounted weapon by the
+            -- engine; they did not conjure it and there is nothing to take out
+            -- of their hand. See `isMountedWeapon` for how that is established,
+            -- why it is an equality rather than "in a vehicle", and what it
+            -- misses. The vehicle itself is somebody's problem -- it is refused
+            -- by config/vehicles.lua, ejected by client/vehrefuse.lua and
+            -- detected by server/vehicles.lua -- but it is a VEHICLE problem,
+            -- and answering it here filed it as a weapon one.
             local allowed = h == BR.NormHash(UNARMED)
                 or h == BR.NormHash(BR.Config.Gadgets.PARACHUTE)
                 or (wantHash ~= nil and h == wantHash)
+                or isMountedWeapon(h)
             if not allowed then
                 RemoveWeaponFromPed(ped, held)
                 applied = nil          -- force the active slot back on
@@ -756,8 +1367,8 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     --   DBNO       client/dbno.lua blocks attack, aim and melee for a downed
     --              player and has never blocked 37, so the wheel opened while
     --              crawling. Left to that file to keep or not; this covers it.
-    --   DEAD /     the spectator camera is somebody else's fight; the local
-    --   SPECTATING ped's wheel has no business over it.
+    --   OUT        the spectator camera is somebody else's fight; the local
+    --              ped's wheel has no business over it.
     --
     -- There is no phase in this gamemode that wants the engine's weapon UI --
     -- see the SUPPRESS table's own note -- so the correct gate is no gate.
@@ -774,6 +1385,42 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- none, and it has to be per-frame: a disable lasts exactly one frame.
     for i = 1, #SUPPRESS do
         DisableControlAction(0, SUPPRESS[i], true)
+    end
+
+    -- A SPECTATOR'S MOUSE BELONGS TO THE CAMERA, AND THIS FILE IS THE ONE PLACE
+    -- WHERE DISABLING A CONTROL IS NOT ENOUGH TO SAY SO.
+    --
+    -- "I had a gun in hand and accidentally shot it while in spectate. My
+    -- preference would be we disable all ped actions while in spectate" -- the
+    -- owner, 2026-08-22. client/spectate.lua answers that by holding down every
+    -- control a ped acts through, which stops the ENGINE. It does not stop US:
+    -- the two readers below are `IsDisabledControlJustPressed`, which sees a
+    -- suppressed control on purpose -- the comments beside them say so, twice --
+    -- so a suppressed left mouse button still drank a shield potion and a
+    -- suppressed scroll wheel still swapped the weapon in the ped's hand. Both
+    -- are ped actions, both are the same click the report is about, and neither
+    -- goes away by adding another id to a list somewhere else.
+    --
+    -- IT IS AN ADMIN-ONLY PATH, WHICH IS WHY IT SURVIVED THE FIRST READING. A
+    -- dead player never reaches this line -- canArm() below is false for OUT --
+    -- but the console's Spectate button requires only that an admin be in game,
+    -- so an admin watching a suspect is ALIVE, is holding their own loadout,
+    -- and falls straight through.
+    --
+    -- ABOVE canArm() AND BELOW THE SUPPRESSION, deliberately, and both halves
+    -- of that matter. The weapon wheel is suppressed in EVERY phase (#134) and
+    -- its own note names OUT as one of them, so returning before
+    -- that loop would bring GTA's wheel back over the spectate camera. And
+    -- closing the panel is the same call the canArm() branch makes below, for
+    -- the same reason: a panel left open is a cursor over a shot.
+    --
+    -- THE NIL-GUARD FAILS OPEN and that is covered elsewhere rather than here:
+    -- tools/test_client.lua already pins `function BR.Spectate.active` against
+    -- the file that defines it, precisely because voice.lua reaches across the
+    -- same way and a rename would silently answer "not spectating" forever.
+    if BR.Spectate and BR.Spectate.active() then
+        closePanel()
+        return
     end
 
     if not canArm() then return end
@@ -827,7 +1474,58 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- punch into the air -- most visibly mid-drink, where the animation fights
     -- the use (user, 2026-08-07). Fists and actual melee weapons swing;
     -- everything else refuses.
-    do
+    --
+    -- ...AND NOT FROM A SEAT, WHICH IS #200 (owner: "while in the driver's seat,
+    -- the GTA radio wheel cannot be displayed. I assume it's inadvertently
+    -- disabled as part of our weapon wheel hide").
+    --
+    -- THE HYPOTHESIS WAS RIGHT ABOUT THE BLOCK AND WRONG ABOUT THE LINE. It is
+    -- not the weapon-wheel list above -- nothing in that list is on Q, and the
+    -- radio wheel is control 85, INPUT_VEH_RADIO_WHEEL, which we have never
+    -- disabled anywhere. It is these five. Two of them share the radio wheel's
+    -- key, per the FiveM controls reference:
+    --
+    --    85  INPUT_VEH_RADIO_WHEEL      Q     <- what actually opens it
+    --   141  INPUT_MELEE_ATTACK_HEAVY   Q
+    --   264  INPUT_MELEE_ATTACK2        Q
+    --   140  INPUT_MELEE_ATTACK_LIGHT   R
+    --   263  INPUT_MELEE_ATTACK1        R
+    --   142  INPUT_MELEE_ATTACK_ALTERNATE  left mouse
+    --
+    -- GTA reuses Q across contexts precisely because they are exclusive -- you
+    -- cannot throw a punch from a car seat -- and this file was disabling the
+    -- on-foot half of that pair on EVERY frame of a drive, because `canSwing` is
+    -- false for every slot that is not fists or a melee weapon. Which is the
+    -- normal state of a player who is driving somewhere with a gun.
+    --
+    -- SO THE GATE IS THE CONTEXT GTA ALREADY USES, and it costs nothing that was
+    -- ever wanted: there is no melee attack to suppress from inside a vehicle.
+    -- What it deliberately does NOT touch is the SUPPRESS list above -- #134's
+    -- weapon wheel stays disabled in the plane, on the bus, in the lobby and in
+    -- a car, exactly as its own note demands, because that is a list about whose
+    -- UI owns TAB and this is a list about what the ped's arms can do.
+    --
+    -- THE PANEL BLOCK BELOW STILL DISABLES ALL FIVE, deliberately. A player with
+    -- the inventory open has handed that screen the mouse and the melee keys for
+    -- as long as it is up; that is a screen owning a key it is using, not a
+    -- suppression leaking into a context that never wanted it.
+    --
+    -- WHAT IS PROVEN AND WHAT IS NOT, because the difference matters here. What
+    -- is proven from the desk: 85 is what opens the radio wheel (it is the one
+    -- control every "disable the radio" resource disables), its default key is
+    -- Q, 141 and 264 are also on Q, and this file was disabling them on every
+    -- frame of a drive. What is NOT proven from the desk is that disabling a
+    -- control takes the KEY from a different control sharing it -- the natives
+    -- reference does not say either way and this project has no probe for it.
+    -- If the wheel still refuses after this lands, that is the answer: the
+    -- suspicion moves to control 37, whose suppression is unconditional by
+    -- #134's explicit demand, and the fix there is a different shape.
+    --
+    -- THE ONE-KEYPRESS TEST, since it costs nothing to write down: in a car,
+    -- select the FIST slot and try the radio wheel. Fists make `canSwing` true,
+    -- which is the one path that never disabled 141 even before this change --
+    -- so a wheel that opens on fists and not on a rifle is this bug exactly.
+    if not inVehicle() then
         local w = held and BR.Config.WeaponById[held.id] or nil
         local canSwing = (inv.active == MELEE_SLOT) or (w and w.melee) or false
         if not canSwing then
@@ -857,9 +1555,24 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, 2, true)    -- LOOK_UD
         DisableControlAction(0, 24, true)   -- ATTACK
         DisableControlAction(0, 25, true)   -- AIM
-        DisableControlAction(0, 68, true)   -- VEH_ATTACK
-        DisableControlAction(0, 69, true)   -- VEH_PASSENGER_ATTACK
+        -- EVERY WAY A SEAT FIRES, AND THE NAMES HERE WERE WRONG.
+        --
+        -- These three lines used to read 68 = VEH_ATTACK, 69 =
+        -- VEH_PASSENGER_ATTACK, 70 = VEH_ATTACK2. Checked against the FiveM
+        -- controls table (2026-08-22): 68 is VEH_AIM, 69 is VEH_ATTACK, 91 is
+        -- VEH_PASSENGER_AIM and 92 is VEH_PASSENGER_ATTACK -- which appeared
+        -- NOWHERE in this file.
+        --
+        -- So the panel suppressed the driver's trigger and the aim, and left
+        -- the PASSENGER'S trigger live: a passenger could fire with the
+        -- inventory open, which is the one thing this block exists to stop.
+        -- The comment being wrong is why nobody noticed -- it named the
+        -- control we meant, beside the id of a different one.
+        DisableControlAction(0, 68, true)   -- VEH_AIM
+        DisableControlAction(0, 69, true)   -- VEH_ATTACK
         DisableControlAction(0, 70, true)   -- VEH_ATTACK2
+        DisableControlAction(0, 91, true)   -- VEH_PASSENGER_AIM
+        DisableControlAction(0, 92, true)   -- VEH_PASSENGER_ATTACK
         DisableControlAction(0, 106, true)  -- VEH_MOUSE_CONTROL_OVERRIDE
         DisableControlAction(0, 140, true)  -- MELEE_ATTACK_LIGHT
         DisableControlAction(0, 141, true)  -- MELEE_ATTACK_HEAVY
@@ -882,6 +1595,48 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         end
     end
 end)
+
+--- SEND ONE AMMO REPORT, AND SAY WHAT IT WAS MEASURED AGAINST.
+---
+--- ═══ `was` IS THE WHOLE OF THE 2026-08-23 THIRD FIX ═══
+---
+--- A report is not an instruction, it is an OBSERVATION OF A MOMENT: the server
+--- said this slot holds `was` rounds, the engine says it holds `total`, so the
+--- difference is gone. Sent without `was`, the far end had no choice but to
+--- measure the difference against whatever it held when the message ARRIVED --
+--- and between the measurement and the arrival sits one round trip, which is
+--- exactly long enough for a pickup to land.
+---
+--- The owner's railgun came off the airdrop with three in the magazine and three
+--- in the heavy pool and was empty before he fired it, because a report about
+--- the weapon he had been holding a moment earlier arrived afterwards and the
+--- server charged the new rounds for the old weapon's shots. Nothing in the
+--- message said which holding it described, so nothing could tell it was stale.
+---
+--- Now it does, and the far end refuses a mismatch outright rather than guessing
+--- -- which is safe in the only direction that matters: a refused report is
+--- RE-SENT, because rebaseline() re-arms the loop on the very INV_SET that
+--- invalidated it, so rounds genuinely gone are still charged one cycle later.
+--- Refusing cannot lose ammunition; misapplying can, and did.
+---
+--- @param at integer      slot index the report is about
+--- @param was integer     what the SERVER last said that slot holds, in total
+--- @param total integer   what the ENGINE says it holds now
+--- @param clip integer    the split, for the HUD
+--- @param item string|nil the item measured, for the readout only
+local function sendReport(at, was, total, clip, item)
+    TriggerServerEvent(BR.Net.INV_AMMO, {
+        slot = at, was = math.floor(was), total = total, clip = clip,
+    })
+
+    -- `now` is filled in by the next INV_SET; until then the row is honest
+    -- about not knowing yet. See `reportLog`.
+    reportLog[#reportLog + 1] = {
+        at = GetGameTimer(), slot = at, item = item,
+        was = math.floor(was), total = total, clip = clip, now = nil,
+    }
+    while #reportLog > REPORT_LOG_MAX do table.remove(reportLog, 1) end
+end
 
 -- The ammo report: 2Hz, decrease-only at the far end, and silent when nothing
 -- moved. This is the ONE number the client is the only observer of until M6
@@ -954,8 +1709,10 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if slot.kind == BR.ItemKind.THROWABLE
        and not HasPedGotWeapon(ped, hash, false) then
         if (slot.count or 0) > 0 then
-            TriggerServerEvent(BR.Net.INV_AMMO,
-                { slot = inv.active, total = 0, clip = 0 })
+            -- A THROWABLE'S `was` IS ITS STACK. The count is the only number
+            -- the server ever states for one, and `slot.count` is still that
+            -- number here -- this branch is the only thing that overwrites it.
+            sendReport(inv.active, slot.count or 0, 0, 0, slot.id)
         end
         return
     end
@@ -999,6 +1756,29 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         total = granted
     end
 
+    -- ...AND THE OTHER DIRECTION, WHICH USED TO BE THROWN AWAY.
+    --
+    -- The engine holding FEWER rounds than the server issued is not impossible
+    -- and not a cheat: it is the ordinary state of a gun that has been fired
+    -- since the last thing the server charged for. Nothing recorded it, so the
+    -- next re-grant wrote the server's larger number back onto the ped and the
+    -- rounds came back (owner, 2026-08-23). It is recorded here, against the
+    -- SERVER's own magazine rather than the laundered mirror -- see `shortfall`
+    -- -- and it is subtracted by both write paths.
+    --
+    -- MEASURED ONLY WHERE THE READ IS TRUSTED. Every guard above this line --
+    -- our grant has landed, the ENGINE agrees the ped holds it, no reload is
+    -- playing -- exists because those are the states where the ammo natives
+    -- answer about a weapon that is not in the hand. A stow reads 0, and 0
+    -- recorded here would be a whole holding declared spent.
+    do
+        local rec = shortfall[inv.active]
+        if rec and rec.id == slot.id then
+            local said = (rec.svClip or slot.clip or 0) + reserveFor(slot)
+            rec.n = math.max(0, math.floor(said) - total)
+        end
+    end
+
     -- GET_AMMO_IN_CLIP is a BOOL with an out-param, so Lua gets two returns.
     local _, clip = GetAmmoInClip(ped, hash)
     clip = math.max(0, math.min(clip or 0, total))
@@ -1034,27 +1814,44 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if slot.kind == BR.ItemKind.THROWABLE then
         local count = total
         if count ~= (slot.count or 0) and count < (slot.count or 0) then
+            -- READ BEFORE THE MIRROR IS OVERWRITTEN. `slot.count` is what the
+            -- server last said until the line below changes it, and that is
+            -- precisely the number the far end has to check against.
+            local was = slot.count or 0
             -- Shown immediately rather than waiting for the round trip, the
             -- same way the magazine is. The server still gets the last word
             -- with the next INV_SET.
             slot.count = count
             pushUi()
-            TriggerServerEvent(BR.Net.INV_AMMO,
-                { slot = inv.active, total = count, clip = count })
+            sendReport(inv.active, was, count, count, slot.id)
         end
         return
     end
 
-    -- THE DISPLAY STILL FOLLOWS THE GUN, but the REPORT may be retired.
+    -- THE REPORT IS NOT RETIRED BY serverAmmo ANY MORE, AND THIS IS THE HALF
+    -- THAT ACTUALLY FIXES THE DUPLICATION.
     --
-    -- With M6's server ammo on, the server counts rounds off the shot events
-    -- it already validates, so it has a better answer than this one and does
-    -- not want ours -- two authorities for one number means the reload the
-    -- server just paid for is overwritten by a report that has not seen it.
-    -- The clamp above still runs, because keeping the ped in agreement with
-    -- the server's number is this file's job either way.
-    if (BR.Config.Combat or {}).serverAmmo then return end
-
+    -- It used to return here. The reasoning was sound and the consequence was
+    -- not: M6's server counts rounds off validated shot events, so it has a
+    -- better answer THAN THIS ONE FOR THE SHOTS IT SEES -- and it silently keeps
+    -- its old answer for every round burnt by a shot it never saw. Nothing else
+    -- observes those, so "the server does not want ours" meant nobody had one,
+    -- for as long as the match lasted. A blast raises no weaponDamageEvent at
+    -- all (server/damage.lua's own 2026-08-08 capture), which puts the whole
+    -- airdrop shelf -- the RPG, the grenade launcher and the railgun the owner
+    -- reported -- on the never-charged side.
+    --
+    -- WHAT GOES OUT IS UNCHANGED AND STILL DECREASE-ONLY: the loop below only
+    -- speaks when the ENGINE's total has fallen BELOW the last thing the server
+    -- said, because rebaseline() anchors that baseline on every INV_SET. It
+    -- therefore cannot describe a pickup (a rise, refused at both ends) and it
+    -- cannot describe a reload (which moves rounds between the halves and leaves
+    -- the total alone). It describes rounds that are gone, which is the one
+    -- thing the server cannot see for itself.
+    --
+    -- The server's matching half refuses to let it move anything but the total
+    -- while serverAmmo is on, so the reload the server just paid for is still
+    -- the server's -- see the INV_AMMO handler in server/inventory.lua.
     local now = GetGameTimer()
     if now - lastReport.at < (L.ammoReportMs or 150) then return end
     lastReport.at = now
@@ -1071,10 +1868,14 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if total > lastReport.total then return end
     if total == lastReport.total and clip == lastReport.clip then return end
 
+    -- THE BASELINE IS WHAT THIS REPORT IS ABOUT, so it is read before it is
+    -- advanced. rebaseline() anchors it on the SERVER's own numbers at every
+    -- INV_SET, which makes it exactly "what the far end last told us this slot
+    -- holds" -- the one fact that lets the far end tell a live report from one
+    -- that describes a holding it has since changed. See sendReport.
+    local was = lastReport.total
     lastReport.total, lastReport.clip = total, clip
-    TriggerServerEvent(BR.Net.INV_AMMO, {
-        slot = inv.active, total = total, clip = clip,
-    })
+    sendReport(inv.active, was, total, clip, slot.id)
 end)
 
 -- --------------------------------------------------------------------------
@@ -1109,6 +1910,16 @@ end
 ---
 --- So it reports itself. /brprobe ammo prints this, and the answer is a single
 --- line rather than another round of hypotheses.
+---
+--- "IN A VEHICLE" IS NOT ONE OF THE GUARDS AND HAS NOT BEEN FOR A WHILE (#197).
+--- This chain listed it, and the loop does not have it: the old
+--- IsPedInAnyVehicle guard was replaced by the GetCurrentPedWeapon check above
+--- precisely because the vehicle was the wrong question -- what stops the
+--- report is the engine STOWING the weapon, which happens in a seat and in
+--- three other places besides. A row naming a guard that does not exist sends
+--- the reader to the wrong file, which is the one thing a diagnostic must never
+--- do. The vehicle is still reported, as a FACT, under `inVehicle` -- and
+--- /brdriveby is the command that knows what to make of it.
 --- @return table
 function BR.Inv.reportState()
     local ped   = PlayerPedId()
@@ -1124,7 +1935,6 @@ function BR.Inv.reportState()
     elseif applied ~= hash then             why = 'our own grant has not landed yet'
     elseif not heldOk or BR.NormHash(held) ~= BR.NormHash(hash) then
                                             why = 'the ENGINE says the ped holds a different weapon'
-    elseif IsPedInAnyVehicle(ped, false) then why = 'in a vehicle'
     elseif IsPedReloading(ped) then         why = 'mid-reload'
     end
 
@@ -1137,9 +1947,158 @@ function BR.Inv.reportState()
         engineTotal = hash and GetAmmoInPedWeapon(ped, hash) or nil,
         serverClip  = slot and slot.clip or nil,
         serverPool  = slot and reserveFor(slot) or nil,
+        -- Rounds this ped has spent that the server has not charged for. A
+        -- non-zero value here IS the 2026-08-23 duplication, caught: it is the
+        -- amount a slot switch would have handed back. See `shortfall`.
+        shortfall   = slot and shortfallFor(inv.active, slot) or nil,
         lastTotal   = lastReport.total,
+        inVehicle   = yes(IsPedInAnyVehicle(ped, false)),
         blockedBy   = why,
     }
+end
+
+-- --------------------------------------------------------------------------
+-- Why can a passenger not fire? (#197)
+-- --------------------------------------------------------------------------
+
+--- Everything THIS FILE knows about the question. The engine half -- the seat,
+--- the vehicle, what is actually in the hand, which controls are live -- is
+--- gathered by client/debug.lua and merged on top, because those are reads that
+--- only mean anything sampled across frames.
+--- @return table
+function BR.Inv.driveByFacts()
+    local slot = inv.slots[inv.active]
+    return {
+        state        = BR.State.me.state,
+        canArm       = canArm(),
+        panelOpen    = panelOpen,
+        slotIndex    = inv.active,
+        item         = slot and slot.id or nil,
+        wantHash     = hashOf(slot),
+        appliedHash  = applied,
+        driveByAt    = driveBy.at,
+        driveByCount = driveBy.count,
+    }
+end
+
+--- THE VERDICT, AND IT IS PURE ON PURPOSE.
+---
+--- The same argument BR.Native.teamFor makes: this decides which of four
+--- indistinguishable causes the owner is looking at, the owner cannot easily
+--- stage all four in game, and a wrong answer here sends somebody to the wrong
+--- file for a day. So it takes its world as an argument and is settled at the
+--- desk by tools/test_client.lua.
+---
+--- ORDER IS THE DESIGN. Each branch is checked before the ones it would
+--- otherwise mask, and the two that are OURS -- a panel we left open, a control
+--- something disabled -- come before the two that are the ENGINE's, so we never
+--- blame the platform for our own bug.
+---
+--- `f.permitted` IS OUR CLAIM, NOT THE ENGINE'S ANSWER (#206).
+---
+--- It is the `driveby` field in br_lib/config/weapons.lua, read through
+--- BR.DriveBy.permits: do we say a standard car seat accepts the weapon the
+--- active slot names? `true`, `false`, or `nil` when the caller did not work it
+--- out (a partial world, which the suite passes deliberately).
+---
+--- ONLY `== true` IS A CLAIM. Both of the other two mean "we are not saying
+--- yes", and the branches below are written that way round on purpose: the
+--- verdict that accuses our own table (`stowed-unexpected`) must only fire when
+--- we actually made the claim that would have sent a player to that slot.
+---
+--- The three states ARE told apart one row higher up, in client/debug.lua, where
+--- "-" and "we say the seat REFUSES it" are different things to read.
+---
+--- @param f table  BR.Inv.driveByFacts() plus the engine half
+--- @return string code, string sentence
+function BR.Inv.driveByVerdict(f)
+    f = f or {}
+    local want   = BR.NormHash(f.wantHash)
+    local grant  = BR.NormHash(f.appliedHash)
+    local engine = BR.NormHash(f.engineHash)
+    local bare   = BR.NormHash(UNARMED)
+
+    if not yes(f.inVehicle) then
+        return 'onfoot',
+            'You are not in a vehicle, so there is nothing here to explain. '
+            .. 'Get into a seat and run this again.'
+    end
+    if not f.canArm then
+        return 'state',
+            'This client will not arm you at all in state "'
+            .. tostring(f.state or '?')
+            .. '" -- that is the lobby/bus/descent gate, not a drive-by rule.'
+    end
+    if want == nil then
+        return 'unarmed',
+            'The active slot holds nothing that can be fired. Select a weapon '
+            .. 'slot first.'
+    end
+    if yes(f.panelOpen) then
+        return 'panel',
+            'The inventory panel is open, and it deliberately takes ATTACK, '
+            .. 'AIM and both vehicle attack controls while it is up. Close it.'
+    end
+    if f.blocked then
+        return 'control',
+            'Control ' .. tostring(f.blocked) .. ' was DISABLED on at least one '
+            .. 'frame of this sample. Something is holding the trigger down '
+            .. 'every frame -- that is a script, ours or another resource, and '
+            .. 'it is not the engine.'
+    end
+    if (f.driveByCount or 0) == 0 then
+        return 'never-asked',
+            'We have never called SetPlayerCanDoDriveBy on this client. The '
+            .. 'inv.apply tick is meant to do that every tick, so it is not '
+            .. 'running -- check /brperf for a suspended callback.'
+    end
+    if grant ~= want then
+        return 'ungranted',
+            'Our own grant has not landed: the mirror wants this weapon and we '
+            .. 'have not put it on the ped yet. Wait a tick and run it again.'
+    end
+    if engine == nil or engine == bare then
+        if f.permitted == true then
+            return 'stowed-unexpected',
+                'THE ENGINE HAS STOWED A WEAPON WE SAY THIS SEAT ACCEPTS, so OUR '
+                .. 'TABLE IS WRONG. `driveby = true` in br_lib/config/weapons.lua '
+                .. 'is what client/driveby.lua reads before telling a passenger to '
+                .. 'switch to a slot -- and this readout has just proved it would '
+                .. 'send them to a weapon that does not fire. Set this weapon\'s '
+                .. '`driveby` to false and say which seat this was.'
+        end
+        return 'stowed',
+            'THE ENGINE HAS STOWED THE WEAPON. It is still in your inventory and '
+            .. 'it is not in your hands, so there is nothing to fire. This is '
+            .. 'GTA\'s own per-seat rule, not ours: a seat permits a list of '
+            .. 'weapon groups and a standard car seat lists unarmed, one-handed '
+            .. 'and thrown. A rifle, shotgun, sniper or MG is not on that list, '
+            .. 'no native lifts it, and redefining the list in a data file was '
+            .. 'TRIED AND IGNORED BY THE GAME (2026-08-22, docs/vehicle-data.md). '
+            .. 'Switch to a slot holding a pistol, a small SMG or a thrown weapon.'
+    end
+    if engine ~= want then
+        return 'otherweapon',
+            'The engine says the ped is holding a weapon that is not the one '
+            .. 'the active slot names. That is not a drive-by problem -- read '
+            .. '/brprobe ammo, and expect the strip check to take it back.'
+    end
+    -- THE POSITIVE ANSWER. The engine holding the weapon IN A SEAT is the whole
+    -- of "this seat accepts it", and saying "nothing here explains it" to a
+    -- player who is holding a pistol in a passenger seat reads as a failure.
+    -- It is deliberately keyed on OUR claim agreeing, so that the row above and
+    -- this line can never both be believed while they disagree.
+    if f.permitted == true then
+        return 'armed',
+            'The engine is letting you hold this weapon IN THIS SEAT, which is '
+            .. 'the whole of the seat rule saying yes. Nothing about the seat is '
+            .. 'stopping you firing.'
+    end
+    return 'unexplained',
+        'Nothing here explains it: you are in a seat, the engine agrees you are '
+        .. 'holding the weapon the slot names, the permission is asserted and no '
+        .. 'attack control was seen disabled. Paste this whole readout -- it '
+        .. 'rules out all four of the causes #197 listed.'
 end
 
 --- Force the active slot back onto the ped.
@@ -1151,3 +2110,188 @@ function BR.Inv.reapply()
     applied = nil
     applyActive(true)
 end
+
+-- --------------------------------------------------------------------------
+-- Where did the rounds go? (/brammo)
+-- --------------------------------------------------------------------------
+
+--- What the last /brammo counted, per pool, so the next one can print the
+--- CHANGE. Declared here rather than inside the command because the command is
+--- a closure built at load time -- see tools/check_forward_locals.lua.
+---
+--- nil until the first dump, and that is the honest answer rather than a zeroed
+--- table: "nothing has changed since a measurement nobody took" is a sentence a
+--- diagnostic must not print.
+local lastHeld = nil
+
+--- Everything three parties believe about this player's ammunition, side by
+--- side, in the F8 console.
+---
+--- IT EXISTS BECAUSE THE OWNER HAD NO WAY TO CHECK ANY OF THIS. The 2026-08-23
+--- report was "it seemed to have a different amount of ammo than what the HUD
+--- showed, then once depleted, switching between slots gave me more ammo" --
+--- two sentences describing FOUR numbers that were never printed anywhere: what
+--- the server says the magazine holds, what the pool holds, what the ENGINE says
+--- is in the gun, and what this file has recorded as spent-but-uncharged. The
+--- HUD shows the first two and the gun obeys the third, so a disagreement
+--- between them is invisible from inside the game and reads as "the ammo is
+--- wrong", which is the least actionable bug report a playtest can produce.
+---
+--- WHY THIS AND NOT /brprobe ammo. That one watches the ACTIVE weapon across
+--- time and answers "is the report loop running" -- it is a stopwatch. This is a
+--- still photograph of ALL FIVE SLOTS at one instant, which is the only shape
+--- that can answer a question about SWITCHING: the slot you are not holding is
+--- exactly the one whose numbers nothing else prints.
+---
+--- DIFFERENCES ARE MARKED, because a table of five identical-looking rows is
+--- how the last one hid. A row whose server total and engine total disagree gets
+--- a `!`, and the deficit that disagreement produced is printed next to it.
+---
+--- Console only, by design: this is a diagnostic for a person reading a log, and
+--- nothing here belongs on a player's screen.
+---
+--- ═══ AND IT NOW PRINTS `held` AND A DELTA, WHICH IS WHAT THE NEXT BUG NEEDED
+---     (owner, 2026-08-23, second report) ═══
+---
+--- The drop/pickup round trip was found with this command and it took two dumps
+--- and a careful eye, because what it printed was five DISTRIBUTIONS and the
+--- question was about a TOTAL. His two rows read `0 0 0 0 0` and `1 0 1 1 0` --
+--- a magazine that went up beside a pool that did not move -- and the round that
+--- had actually been created was three of them, minted into the pool and then
+--- spent back down by the INV_AMMO floor before he looked. Every column was
+--- honest and none of them said "you have more ammunition than you did".
+---
+--- `held` is the number the invariant is actually about: everything this player
+--- has for a pool, magazines included, which is the quantity docs/terminology.md
+--- says an empty pool cannot raise. And the delta is against the LAST /brammo,
+--- because that is how the command is used -- dump, do the suspicious thing,
+--- dump again -- so the diff the owner was doing by eye is done for him. A drop
+--- and a pickup with nothing else touched would have printed `+3 since the last
+--- /brammo` on the line above his railgun, and there is no reading of that line
+--- in which the ammunition was moved rather than made.
+RegisterCommand('brammo', function()
+    local ped = PlayerPedId()
+    local st  = BR.Inv.reportState()
+
+    print('=== ammo ===')
+    print(('  state %s   active slot %d   serverAmmo %s')
+        :format(tostring(BR.State.me.state), inv.active,
+                tostring(((BR.Config.Combat or {}).serverAmmo) == true)))
+    if st.blockedBy then
+        print(('  the report loop is NOT running: %s'):format(st.blockedBy))
+    end
+
+    print('  slot  item             mag  pool  said  engine  spent')
+    for i = 1, SLOTS do
+        local slot = inv.slots[i]
+        if not slot then
+            print(('   %s %d  --'):format(inv.active == i and '>' or ' ', i))
+        else
+            local w    = BR.Config.WeaponById[slot.id]
+            local rec  = shortfall[i]
+            local sv   = (rec and rec.id == slot.id and rec.svClip)
+                or slot.clip or 0
+            local pool = reserveFor(slot)
+            local said = math.floor(sv) + pool
+
+            -- THE ENGINE IS ONLY ASKED ABOUT THE WEAPON IT IS ACTUALLY HOLDING.
+            -- RemoveAllPedWeapons has taken every other one off the ped, so
+            -- GetAmmoInPedWeapon would answer 0 for four rows out of five and
+            -- the readout would invent four faults. '-' is the honest answer:
+            -- not stowed, not empty -- not on this ped at all.
+            local hash = hashOf(slot)
+            local eng  = nil
+            if hash and applied == hash then
+                eng = GetAmmoInPedWeapon(ped, hash) or 0
+            end
+
+            print(('   %s %d  %-15s %4s %5d %5d %7s %6s%s')
+                :format(inv.active == i and '>' or ' ', i,
+                        tostring(slot.id),
+                        slot.clip and tostring(math.floor(slot.clip)) or '-',
+                        pool, said,
+                        eng and tostring(eng) or '-',
+                        rec and tostring(rec.n or 0) or '-',
+                        (eng and eng ~= said) and '  !' or ''))
+
+            if w and w.clip and slot.clip and math.floor(slot.clip) > w.clip then
+                print(('        magazine %d is bigger than %s\'s configured %d')
+                    :format(math.floor(slot.clip), slot.id, w.clip))
+            end
+        end
+    end
+
+    -- EVERYTHING THIS PLAYER HAS FOR A POOL, MAGAZINES INCLUDED.
+    --
+    -- The rows above print the SPLIT and the invariant is about the SUM: rounds
+    -- move between a magazine and its pool for free, and no route may raise the
+    -- two together. Adding them up here is what makes "a round was created"
+    -- something the readout says rather than something the reader works out.
+    local held = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder or {}) do
+        held[pool] = math.floor(inv.ammo[pool] or 0)
+    end
+    for i = 1, SLOTS do
+        local slot = inv.slots[i]
+        local w    = slot and BR.Config.WeaponById[slot.id]
+        -- `held[w.ammo] ~= nil`, not `held[w.ammo]`: a pool sitting at 0 is
+        -- exactly the case this whole readout was built for, and 0 IS TRUTHY IN
+        -- LUA -- so the bare test happens to work and says the wrong thing. The
+        -- question is whether AmmoOrder listed the pool at all.
+        if w and w.ammo and held[w.ammo] ~= nil then
+            held[w.ammo] = held[w.ammo] + math.floor(slot.clip or 0)
+        end
+    end
+
+    for _, pool in ipairs(BR.Config.AmmoOrder or {}) do
+        local was   = lastHeld and lastHeld[pool]
+        local delta = was and (held[pool] - was) or 0
+        print(('  pool %-8s %4d   held %4d%s'):format(
+            pool, math.floor(inv.ammo[pool] or 0), held[pool],
+            delta ~= 0
+                and ('   %+d since the last /brammo'):format(delta)
+                or ''))
+    end
+    lastHeld = held
+
+    -- ═══ WHAT THIS PLAYER HAS TOLD THE SERVER, AND WHETHER IT LANDED ═══
+    --
+    -- The table above is a still photograph and the third 2026-08-23 bug was a
+    -- disagreement between two INSTANTS: a report measured against one holding
+    -- and applied to another. Every column up there was correct when it was
+    -- printed, which is exactly why none of them could say so.
+    --
+    -- `was` is what the server had told us when the measurement was taken, `sent`
+    -- is what the engine held, and `now` is what the server turned out to hold at
+    -- the next INV_SET. A report that was ACCEPTED leaves the server holding
+    -- exactly what was sent, so `now == sent` reads "applied" and a `?` marks
+    -- anything else. `was` and `now` differing is the diagnosis: the holding
+    -- moved underneath the message, and the far end refused it rather than
+    -- charging the new rounds for old shots.
+    if #reportLog > 0 then
+        print('  reports sent (newest last)')
+        print('    age   slot item             was  sent  clip   now')
+        for _, r in ipairs(reportLog) do
+            print(('    %5s  %2d  %-15s %4d %5d %5d %5s%s')
+                :format(('%dms'):format(GetGameTimer() - r.at),
+                        r.slot, tostring(r.item or '-'),
+                        r.was, r.total, r.clip,
+                        r.now and tostring(r.now) or '-',
+                        (r.now ~= nil and r.now ~= r.total) and '  ?' or ''))
+        end
+    end
+
+    print('  mag    what the mirror shows -- the ENGINE\'s magazine, written')
+    print('         every tick so the counter follows the gun')
+    print('  said   what the SERVER last said this weapon holds in total')
+    print('  engine what the ENGINE says the ped holds, magazine included')
+    print('  spent  rounds burnt that the server has not charged for; this is')
+    print('         subtracted from every re-grant, so a `!` row is the bug')
+    print('         being contained rather than the bug happening')
+    print('  held   pool PLUS every magazine drawing on it. Nothing may raise')
+    print('         this but a pickup: a `+` after a drop, a switch or a')
+    print('         reload is a round that was made rather than moved')
+    print('  was    what the server said we held when the report was measured;')
+    print('         a row where this differs from `now` is a report the holding')
+    print('         moved underneath, and the far end refuses those')
+end, false)

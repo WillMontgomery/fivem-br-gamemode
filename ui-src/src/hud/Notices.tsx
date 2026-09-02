@@ -1,6 +1,7 @@
 import { useUi, selNotices, selScreen } from '../store'
-import type { ToastPayload } from '../bridge/types'
+import type { NoticePart, ToastPayload } from '../bridge/types'
 import NoticeRow from './NoticeRow'
+import { KeyText } from '../ui/KeyCap'
 
 /**
  * The notification stack.
@@ -31,6 +32,54 @@ export const TONE_COLOUR: Record<NonNullable<ToastPayload['tone']>, string> = {
   success: 'var(--color-hp)',
   warn:    '#FFB020',
   danger:  'var(--color-danger)',
+}
+
+/**
+ * A NOTICE'S SENTENCE, WITH ANY PLAYER IT NAMES IN BOLD.
+ *
+ * Owner, 2026-08-31: "Any time we mention a player by name in a toast their name
+ * should be bold." That is EVERY toast that names somebody, not only the new
+ * ones -- so this is the single component both surfaces that draw a notice go
+ * through, and adding a name to a sentence anywhere in Lua makes it bold here
+ * with nothing else to remember.
+ *
+ * ═══ A NAME IS A REACT TEXT CHILD, AND THAT IS THE SECURITY PROPERTY ═══
+ *
+ * `{p.b}` is rendered as a text node. React escapes it, no markup is parsed, and
+ * -- this is the part that is easy to lose -- it does NOT go through KeyText. A
+ * player who calls themselves `{key:brptt}` gets those nine characters drawn,
+ * not a key cap. The prose halves still go through KeyText, because the `{key:}`
+ * token belongs to sentences we wrote and several of them have one.
+ *
+ * See NoticePart in bridge/types.ts for why the split happens in Lua rather than
+ * this component parsing a marked-up string. The short version: the name is the
+ * one part of a notice a player writes, so it must never be inside a grammar.
+ *
+ * NO PARTS IS THE COMMON CASE and costs nothing -- the flat `text` through
+ * KeyText, which is exactly what every notice did before this existed.
+ *
+ * `.notice-name` CARRIES THE WEIGHT, NOT AN INLINE STYLE. index.css has the
+ * argument for 700 over 600 and for inheriting size and colour; it is a
+ * design-system fact rather than this component's opinion, and it is also what
+ * tools/check_notice_names.lua grips to prove the shipped bundle is the one
+ * built from this file.
+ */
+export function NoticeText({ text, parts, fs }: {
+  text: string
+  parts?: NoticePart[]
+  fs?: string
+}) {
+  if (!parts || parts.length === 0) return <KeyText text={text} fs={fs} />
+  return (
+    <>
+      {parts.map((p, i) => ('b' in p
+        // Keyed on the index because a part has no identity of its own and the
+        // list is rebuilt whole on every push -- there is no reordering for a
+        // stable key to protect.
+        ? <b key={i} className="notice-name">{p.b}</b>
+        : <KeyText key={i} text={p.t} fs={fs} />))}
+    </>
+  )
 }
 
 
@@ -84,8 +133,22 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
           sticky={n.sticky}
         >
           {/* min-w-0 so the flex child may actually shrink, break-words so a
-              long unbroken token cannot force the row wider than the stack. */}
-          <span className="min-w-0 break-words">{n.text}</span>
+              long unbroken token cannot force the row wider than the stack.
+
+              NoticeText, NOT the raw string. It is KeyText plus the owner's
+              bold-name rule: a notice whose sentence names a KEY -- the
+              once-a-session voice notice, the sticky one over the big map --
+              carries a `{key:command}` hole and gets a plate; one that names a
+              PLAYER arrives pre-split and gets that name in 700. A notice with
+              neither is returned untouched and renders exactly as it did. */}
+          <span className="min-w-0 break-words">
+            {/* ABOVE THE ROW'S OWN PROSE (0.8125rem), not below it. It was
+                0.75rem, so the key was drawn smaller than the sentence naming
+                it -- 8.25px of Anton at 1280x720. The cap is a control, and a
+                control set smaller than the words around it reads as a
+                footnote. Costs 1.4-2.6px of line height, measured. */}
+            <NoticeText text={n.text} parts={n.parts} fs="0.95rem" />
+          </span>
           {/* COALESCED REPEATS. Four ammo pickups is one line reading x4, not
               four lines shoving each other off the stack. */}
           {n.count > 1 && (

@@ -27,9 +27,17 @@ export const ENVELOPE_VERSION = 1
 export type MatchState =
   | 'waiting' | 'warmup' | 'bus' | 'playing' | 'ended' | 'cleanup'
 
+// `'dead'` IS THE WIRE VALUE OF `BR.PlayerState.OUT`, and the mismatch is
+// deliberate -- br_lib/shared/enums.lua carries the reasoning. The state is
+// named OUT in Lua and spelled 'dead' on the wire because `state` also travels
+// to the Ringmaster admin console, which is a separate repo on a separate
+// deploy. Do not "fix" this to 'out' on its own; that is a two-repo release.
+//
+// THERE IS NO 'spectating'. It was deleted in #233 -- nothing ever assigned it,
+// and spectating is a session that happens WHILE a player is OUT.
 export type PlayerState =
   | 'lobby' | 'warmup' | 'bus' | 'freefall' | 'glide'
-  | 'alive' | 'dbno' | 'dead' | 'spectating' | 'left'
+  | 'alive' | 'dbno' | 'dead' | 'left'
 
 export type StormPhaseState = 'pre' | 'holding' | 'shrinking' | 'finished'
 
@@ -91,6 +99,69 @@ export interface HudPayload {
   landed?: boolean
 }
 
+/**
+ * The vehicle the player is sitting in, in any seat.
+ *
+ * A CHANNEL OF ITS OWN RATHER THAN TWO MORE FIELDS ON HudPayload, and the
+ * reason is the dedupe at the far end: client/state.lua's HUD push compares
+ * every field and returns early when none moved, which is what keeps it quiet
+ * for a player standing still. Both numbers below move continuously while
+ * driving, so folding them in would make that comparison always true and turn
+ * the whole HUD envelope into an unconditional 10 Hz push, for a readout that
+ * only exists between one door and the next.
+ */
+export interface VehiclePayload {
+  /**
+   * False the moment the ped is out of a vehicle -- on foot, pulled out, dead,
+   * or the car destroyed under them. Lua treats all of those as the same fact,
+   * so there is one flag rather than a transition per way of leaving.
+   */
+  show: boolean
+  /**
+   * Condition, 0..100.
+   *
+   * THE WORST OF GTA'S THREE HEALTH POOLS -- body, engine and petrol tank --
+   * not the body alone. A pristine shell with a 200-point engine is a car about
+   * to stop, and a bar reading the body would show full right up until it did.
+   */
+  health: number
+  /**
+   * Tank, 0..100.
+   *
+   * A PERCENTAGE HERE AND METRES EVERYWHERE ELSE. The server's ledger is a
+   * distance budget in metres -- the owner's unit -- and it stays that on the
+   * server, because that is what the two-stops-per-crossing rule is written in.
+   *
+   * THE BAR IS THE FRACTION, AND THAT SURVIVED THE FIRST PLAYTEST BEING ASKED
+   * TO SHOW A NUMBER. The owner asked for a readout on the bar; the number that
+   * goes there is this one rather than the metres, because nothing else on
+   * screen is denominated in metres to compare it against and the condition bar
+   * three millimetres away is already 0..100. hud/VehicleBars.tsx carries the
+   * argument in full.
+   */
+  fuel: number
+  /**
+   * Boost meter, 0..100.
+   *
+   *   "Good call - I meant to ask for a Boost bar."  -- the owner, 2026-08-22
+   *
+   * PER PLAYER, NOT PER VEHICLE, which is why it does not reset when the driver
+   * changes car -- the owner's spec opens "akin to sprint on foot", and sprint
+   * stamina belongs to the player. See br_core/client/boost.lua for the full
+   * argument and for the one place that would change.
+   *
+   * A PERCENTAGE HERE AND MILLISECONDS EVERYWHERE ELSE, for the same reason
+   * `fuel` is a percentage and metres everywhere else: a bar cannot show a unit
+   * without a caption beside it.
+   *
+   * DRAWN FOR EVERY SEAT, like the two beside it -- a passenger sees the
+   * driver's meter. That is not a decision so much as the absence of one: the
+   * strip is shown to whoever is aboard, and carving an exception for one of its
+   * three bars would be the odd thing to do.
+   */
+  boost: number
+}
+
 export interface StormPayload {
   phase: number
   phaseState: StormPhaseState
@@ -136,6 +207,119 @@ export interface SquadMember {
    * make the pickup when they do not.
    */
   bleedEndsAt?: number
+  /**
+   * THIS MATE'S PROGRESSION LEVEL, 1..100.
+   *
+   * SQUAD-ONLY. It arrives on the squad beacon assembled in br_core's
+   * server/party.lua -- deliberately NOT on roster.lua's PUBLIC_FIELDS, which
+   * is broadcast to every client in the match. A level gives away nothing
+   * tactical, but the owner asked to see his teammates' levels and teammates
+   * are therefore who is told.
+   *
+   * DERIVED SERVER-SIDE FROM LIFETIME XP, via the same BR.Xp.levelFor the
+   * lobby chip and the verdict screen use. The stored `level` column on a
+   * profile row is written at match end and lags the xp beside it, so nothing
+   * reads it.
+   *
+   * OPTIONAL, AND ABSENT IS A REAL STATE: the player's profile has not come
+   * back from the database yet, or this mate has no beacon this tick. The
+   * panel renders NO NUMBER for it rather than a placeholder -- a `1` would be
+   * indistinguishable from a genuine level 1 and would visibly correct itself
+   * a moment later on every high-level player. Same rule as `bleedEndsAt`
+   * above.
+   */
+  level?: number
+  /**
+   * THIS MATE'S VOICE CARRIES NOTHING IN EITHER DIRECTION.
+   *
+   * Owner, 2026-08-29, from a playtest: "the squad panel works, but doesn't
+   * accurately show when others in the squad have 'off' selected." It did not,
+   * because until that day no wire carried it -- a squadmate's voice mode was
+   * published to nobody and the server never learned it either. He then
+   * approved the hop that now does: "Why can't we build another client ->
+   * server -> squad hop? It should only be processed at the start of a squad in
+   * warmup and whenever changes occur."
+   *
+   * SQUAD-ONLY, like `bleedEndsAt` and `level` above. It rides the squad beacon
+   * assembled in br_core's server/party.lua and is deliberately NOT on
+   * roster.lua's PUBLIC_FIELDS: "that player cannot hear anything" is worth
+   * having about a teammate and worth exploiting about an enemy.
+   *
+   * ═══ IT IS ONE BIT, AND THE MODE IS STILL NOT ON ANY WIRE ═══
+   *
+   * True means BR.VoiceMode.OFF is in force for them -- they chose it, they are
+   * spectating, or they are in the lobby. It does NOT distinguish 'nearby' from
+   * 'squad', and that refusal is the original design's and still stands: a mate
+   * on 'nearby' is not on your radio but IS audible standing next to you, so
+   * the only true version of "can I reach them" compares positions, and a panel
+   * that lit up at 25 m would be a proximity sensor for players this client
+   * cannot otherwise see. See hud/VoiceMark.tsx for the full argument.
+   *
+   * OPTIONAL, AND ABSENT IS NOT false. It means the beacon has not covered this
+   * mate yet, or the server is older than the field. Both render as nothing,
+   * which is also what a mate whose voice is fine renders as -- so the panel
+   * reads it with `=== true` and never as a truthiness test.
+   */
+  voiceOff?: boolean
+  /**
+   * THIS MATE'S REVIVE KEY, AS THE ONE QUESTION THE PANEL ASKS.
+   *
+   * Owner, 2026-08-30, from the playtest: "I also saw nothing in the squad panel
+   * indicating that a revive key had been retrieved", and -- once the body was
+   * gone and the world plate with it -- "I'm unable to interact with their
+   * revive key now and I have no way to know I still have their key."
+   *
+   * SQUAD-ONLY, like `bleedEndsAt`, `level` and `voiceOff` above, and this is
+   * the strongest of the four rather than the weakest: whether a squad can still
+   * get somebody back is exactly what the squad that just killed them would use.
+   * It rides the beacon assembled in br_core's server/party.lua, which is
+   * squad-only by construction, and is not on roster.lua's PUBLIC_FIELDS.
+   *
+   * ═══ THREE READINGS, ONE FIELD, AND `undefined` IS ONE OF THEM ═══
+   *
+   *   undefined  no key for this mate -- they are alive, they are still
+   *              bleeding, or their key has been spent. Draw nothing.
+   *   false      a key EXISTS and the squad does not hold it yet. While the
+   *              pickup lives it is lying where they fell; after it expires the
+   *              same key is still 25 Volts at an ambulance. Both are "go and
+   *              get it", so both are one mark.
+   *   true       the squad HOLDS it, and a live mate can spend it at an
+   *              ambulance to put this one back in the sky above it.
+   *
+   * SO IT IS READ WITH `=== true` / `=== false` AND NEVER AS A TRUTHINESS TEST.
+   * `false` and absent are different claims that a `&&` would collapse into one,
+   * and the one it would eat is the one the owner reported blind.
+   *
+   * NO POSITION COMES WITH IT, DELIBERATELY. The beacon's own key row carries
+   * x/y/z and a mint time; br_core/client/state.lua folds in neither. Those are
+   * for client/revivekey.lua to place a world plate with and to break a tie
+   * between two keys at one van -- a coordinate on this payload would be a
+   * coordinate the interface could draw, which is a wider feature than the one
+   * that was asked for.
+   */
+  reviveKey?: boolean
+  /**
+   * WHEN THE PICKUP FOR THAT KEY RUNS OUT -- IF THERE IS STILL A PICKUP.
+   *
+   * Owner, 2026-08-31: "If there is a timer to pickup their key, display it in
+   * the squad panel."
+   *
+   * A SERVER DEADLINE, in the same clock `bleedEndsAt` uses, so it is compared
+   * to `Date.now() + clockOffset` and never to a bare Date.now(). Both
+   * countdowns a squad row can draw are then one clock and one rounding.
+   *
+   * ABSENT ONCE THE PICKUP HAS GONE, and that is not the same as `reviveKey`
+   * being absent. The key row keeps travelling after the three minutes are up --
+   * the key is still 25 Volts at an ambulance for the rest of the match, which
+   * is precisely why `reviveKey === false` outlives this field. br_core's
+   * client/state.lua gates the fold on the beacon's own `live`, so a deadline
+   * here always has time left on it when it arrives.
+   *
+   * IT RIDES THE SAME SQUAD-ONLY BEACON as `reviveKey`, and it is the same
+   * privacy argument: how long a squad has to reach their mate's body is what
+   * the squad that put him there would use.
+   */
+  reviveKeyEndsAt?: number
 }
 
 export interface SquadPayload {
@@ -251,12 +435,127 @@ export interface DbnoPayload {
   bleedEndsAt: number
   reviverName: string | null
   revivePct: number
+  /**
+   * I am a solo, I am holding a CPR kit, and pressing interact would spend it
+   * (#191). THE ONE FIELD ON THIS PAYLOAD THE SERVER DOES NOT DECIDE:
+   * client/rescue.lua answers it locally and merges it in through
+   * BR.Dbno.setCpr, because a prompt should not wait for a round trip.
+   *
+   * A BARE BOOLEAN, AND NO KEY LABEL WITH IT. The glyph is resolved in the
+   * component from the bindings the interface already holds (ui/KeyCap.tsx, by
+   * command name), so a rebind moves the prompt with no plumbing; a letter sent
+   * from Lua would be a second copy of the binding, going stale.
+   *
+   * Optional because it rides an envelope Lua has always been able to send
+   * without it -- absent means no.
+   */
+  cpr?: boolean
+  /**
+   * The ambulance has me (#191). THE SECOND FIELD ON THIS PAYLOAD THE SERVER
+   * DOES NOT DECIDE, and it arrives the same way `cpr` does --
+   * client/rescue.lua polls its own `ride` local and merges the bit in through
+   * BR.Dbno.setRiding.
+   *
+   * ═══ IT IS READ IN App.tsx, NOT IN DbnoOverlay ═══
+   *
+   * Owner, 2026-08-28: "I need you to make the bleed out timer completely go
+   * away while in the ambulance. That time should not be relevant anymore once
+   * the ambulance takes over" and "while in the ambulance, our HUD should be
+   * hidden just like in the bus".
+   *
+   * Those are one change, not two. The bleed-out card is drawn inside the HUD,
+   * and App.tsx already hides the whole HUD for the Battle Bus with one line
+   * (`ridingBus`, feeding `hudUp`). So this field joins that line and the card
+   * goes with everything else -- which is why DbnoOverlay.tsx does not read it
+   * and must not grow a branch for it.
+   *
+   * Optional for the same reason `cpr` is: absent means no.
+   */
+  riding?: boolean
+  /**
+   * When the server will call time on that ride -- a SERVER timestamp, the same
+   * origin as `bleedEndsAt`, so it is only comparable to `Date.now() +
+   * clockOffset`.
+   *
+   * ═══ THE ONE READOUT THE RIDE PUTS BACK ON SCREEN (#191 step 6) ═══
+   *
+   * Owner, 2026-08-28: "let's add an on-screen timer showing their time to
+   * revive please". `riding` above takes the whole HUD away; this is the number
+   * that is drawn instead, by hud/RescueTimer.tsx -- which is mounted BESIDE
+   * `Hud` in App.tsx, not inside it, so the HUD's master switch keeps hiding
+   * everything without an exception in it.
+   *
+   * IT IS NOT A SECOND NOTIFICATION. #191 says both "this is the only
+   * notification in the entire cycle" (about interruptions) and "a timer is
+   * shown to the player" (about a readout); the two coexist. See the header of
+   * br_core/client/rescue.lua for the full argument -- it is written down there
+   * because that is the file a future reader would delete this from.
+   *
+   * IT IS THE SERVER'S DEADLINE AND NOTHING ELSE. `rec.deadlineAt` travels on
+   * RESCUE_BEGIN and client/rescue.lua parks it on the ride, so this is the
+   * number that actually ends the journey. Deriving a second one in the browser
+   * would give the player a clock that disagrees with the ride.
+   *
+   * AND ZERO MEANS NO CLOCK. Lua zeroes it the moment the ride ends and an older
+   * server may not send it at all; the component draws nothing either way.
+   */
+  rideEndsAt?: number
+}
+
+/**
+ * A spectate session, as far as any SCREEN needs to know about it (#192).
+ *
+ * TWO BOOLEANS, AND THE TARGET'S NAME IS DELIBERATELY NOT ONE OF THEM. This
+ * used to carry `targetName`, `targetSrc` and `remaining`, and Lua never sent
+ * any of the three -- nothing had a use for them, because the camera is drawn by
+ * the engine and not by this page. The only thing the interface decides from
+ * this is whether the pause menu offers the exit the owner asked for, so that is
+ * the only thing on it.
+ *
+ * `admin` IS NOT DERIVABLE FROM `active`. A dead player watching their squad is
+ * spectating too, and their pause menu does not offer a way out of it -- there
+ * is nowhere for it to go but back to their own corpse.
+ */
+/**
+ * YOUR OWN DEATH, for the seconds before the spectator camera takes the screen.
+ *
+ * DISTINCT FROM `SummaryPayload`, which is the match-end verdict SCREEN. The
+ * owner asked for the two to stay separate: the text alone on death (~10s, then
+ * gone as spectating begins), the full screen when the match is over. This
+ * carries only what the word is made of.
+ *
+ * LUA OWNS THE CLOCK -- `show` goes false when the window closes, and the same
+ * deadline is what holds the spectate camera back. There is no duration on the
+ * wire because a second timer in the interface could only agree with Lua's by
+ * coincidence.
+ */
+export interface DeathPayload {
+  show: boolean
+  /**
+   * How they died. Absent is a REAL and expected state, not a defect: the
+   * roster delta that makes a player DEAD and the kill-feed message carrying
+   * the cause are separate wires with no ordering between them, so the word can
+   * go up before the cause is known and be corrected in place. `verdictWord`
+   * falls back to WASTED, which is never wrong -- only less specific.
+   */
+  cause?: string | null
+  /** Another player did it. The one input that produces ELIMINATED. */
+  byPlayer?: boolean
 }
 
 export interface SpectatePayload {
-  targetName: string
-  targetSrc: number
-  remaining: number
+  active: boolean
+  admin: boolean
+  /**
+   * Who is being watched. Absent when no session is running.
+   *
+   * The `X` in the owner's "SPECTATING X". The KEYS that go under it are not
+   * here and must not be: `keybinds` already carries every binding with its
+   * live label and is re-pushed on every rebind, so a copy on this envelope
+   * would be a second spelling that goes stale the moment somebody moves the
+   * arrows mid-session.
+   */
+  name?: string
 }
 
 /**
@@ -293,22 +592,61 @@ export interface ChatMessage {
 /**
  * Real screen metrics, read from the game.
  *
- * safeX/safeY are percentage insets derived from GetSafeZoneSize, which the
- * player controls in Settings > Display and which the engine varies with aspect
- * ratio. radarW/radarH describe the native minimap's footprint in rem.
+ * ONE RECTANGLE, ASKED FOR RATHER THAN WORKED OUT. Lua puts the drawing origin
+ * on each corner of the safe zone and asks the engine where it landed
+ * (SetScriptGfxAlign + GetScriptGfxPosition), so the player's slider, the
+ * aspect ratio, and whatever the engine does on an unusual display are all
+ * already applied. Nothing on this side re-derives a margin -- see
+ * br_core/client/screen.lua.
+ *
+ * PER EDGE, because they are not the same number. safeX/safeY are the LEFT and
+ * TOP insets under the names the HUD has always used them by; safeR/safeB are
+ * the right and bottom. On 16:9 all four are close enough to look
+ * interchangeable, which is exactly how a HUD ends up assuming they are.
+ *
+ * `radarW`/`radarH` (the minimap footprint, in rem) ARE GONE. They described
+ * the same rectangle as mapW/mapH in a second unit, derived against a fixed
+ * 1.481vh that the interface-size slider and the clamp on the root font size
+ * both move -- so the two disagreed, and the only reader was the dev outline
+ * that exists to show a disagreement. One rectangle, one unit, every surface.
  */
 export interface ScreenPayload {
   width: number
   height: number
   safeX: number
   safeY: number
-  radarW: number
-  radarH: number
-  aspect: number
+  safeL?: number
+  safeT?: number
+  safeR?: number
+  safeB?: number
+  /** THE HUD'S FRAME, in viewport percentages, and NOT the same rectangle as
+   *  the safe zone once the display stops being 16:9.
+   *
+   *  GTA lays its own interface out inside a 16:9 box centred in the viewport
+   *  and will not move the minimap out of it (citizenfx/fivem#2719), while the
+   *  safe zone follows the panel. So `hudL`/`hudR` are the left and right edges
+   *  of the box the MINIMAP lives in, and everything clustered around the map
+   *  -- squad panel, counters, kill feed, inventory -- anchors to them instead
+   *  of to safeL/safeR. Identical to safeL/safeR on 16:9; hundreds of pixels
+   *  apart at 32:9, which is what the owner's screenshot showed.
+   *
+   *  There is no vertical pair: a wide panel has spare WIDTH, so the top and
+   *  bottom edges are still the safe zone's. */
+  hudL?: number
+  hudR?: number
   /** The native minimap's rectangle, in viewport percentages: left/bottom
    *  insets and width/height. Our health bars, the chat column and the
    *  notice stack all anchor to it -- it moves with the player's safe-zone
-   *  slider, so nothing here is hardcodeable. */
+   *  slider, so nothing here is hardcodeable.
+   *
+   *  mapW comes off the RENDERER's aspect ratio (GetAspectRatio), not off
+   *  width/height: the radar is sized against screen HEIGHT, so turning that
+   *  into a percentage of WIDTH is a division by the aspect, and the two
+   *  aspects agree on 16:9 and diverge exactly where it matters.
+   *
+   *  mapLeft IS hudL. The radar sits on the left edge of the engine's layout
+   *  box, which used to be read as the left edge of the safe zone -- the same
+   *  corner at 16:9 and the whole of the ultrawide bug anywhere else. */
   mapLeft?: number
   mapBottom?: number
   mapW?: number
@@ -395,8 +733,47 @@ export interface LobbyPayload {
  * twenty-nine seconds, or thirty lines that shove everything else off the
  * stack. With it, it is ONE line that counts itself down and then leaves.
  */
+/**
+ * ONE PIECE OF A NOTICE THAT NAMES A PLAYER.
+ *
+ * Owner, 2026-08-31: "Any time we mention a player by name in a toast their name
+ * should be bold."
+ *
+ * ═══ WHY THE SENTENCE ARRIVES PRE-SPLIT INSTEAD OF MARKED UP ═══
+ *
+ * A name is the one part of a notice a PLAYER writes. Put the formatting in the
+ * same string -- `**%s** is down!`, or a `{b:...}` token -- and the name is
+ * inside a grammar it can break out of: a player called `**` or `Bob}` is an
+ * injection with a sign-up form in front of it. The `{key:brptt}` token that
+ * KeyText already understands is safe for the opposite reason -- its payload is
+ * a command name from OUR source, over a fixed alphabet, never player data.
+ *
+ * So Lua splits the sentence on ITS OWN format string and sends the pieces:
+ *
+ *   { t: 'literal prose we wrote' }   -- may still hold a {key:} token
+ *   { b: "the player's own name" }    -- drawn bold, rendered as a text child
+ *
+ * A `b` part is never scanned, never tokenised and never escaped -- there is no
+ * grammar to escape it from. See br_lib/shared/notice.lua for the Lua half.
+ */
+export type NoticePart = { t: string } | { b: string }
+
 export interface ToastPayload {
   text: string
+  /**
+   * The same sentence, pre-split, WHEN IT NAMES A PLAYER. See NoticePart.
+   *
+   * ABSENT FOR EVERY NOTICE THAT NAMES NOBODY, which is almost all of them:
+   * BR.Notice.line returns a plain string when no name was marked, so those
+   * payloads are byte for byte what they always were and render through
+   * KeyText exactly as before.
+   *
+   * `text` IS STILL AUTHORITATIVE FOR EVERYTHING THAT IS NOT DRAWING. It is the
+   * same sentence flattened, and it is what the store dedups keyless repeats on
+   * and what the pause menu's history matches. Two representations of one
+   * sentence, and only the renderer reads the second.
+   */
+  parts?: NoticePart[]
   tone?: 'info' | 'warn' | 'danger' | 'success'
   /** Lifetime in ms. Ignored when `endsAt` or `sticky` is set. */
   ms?: number
@@ -527,6 +904,18 @@ export interface LockerPayload {
    *  in memory takes a moment, and until this existed the button looked like
    *  it had not registered the click. */
   loading?: string | null
+  /** The character may not be changed right now.
+   *
+   *  Set while the lobby ENTRANCE is walking the ped in along its authored
+   *  path (br_core/client/lobbyped.lua). SetPlayerModel hands Lua a NEW ped
+   *  handle and throws the old one away with its tasks, so a swap mid-walk
+   *  strands the character halfway up the hill -- the owner's answer was to
+   *  remove the case rather than survive it (2026-08-29).
+   *
+   *  IT IS A LOCK, NOT A HIDDEN CONTROL, AND IT EXPLAINS NOTHING. The button
+   *  takes the same disabled state every other unavailable control here has;
+   *  there is no caption and no tooltip. Lua refuses the action regardless. */
+  locked?: boolean
 }
 
 /**
@@ -798,6 +1187,38 @@ export interface AdminPayload {
   mint?: AdminMint
 }
 
+/**
+ * Where this deployment's Discord is, or that it has none.
+ *
+ * `invite` PRESENT IS THE WHOLE OF "DRAW THE CARD". A card with no address on it
+ * is worth nothing, so the address is the condition and there is no boolean
+ * beside it to disagree with it -- the same one-field shape as `AdminPayload`.
+ *
+ * THE OBJECT ITSELF PROVES NOTHING. Lua sends `{}` when the invite is unset --
+ * deliberately, so a page already on screen takes the card down -- and `{}` is
+ * truthy. Every reader has to test the STRING, never the payload.
+ */
+export interface CommunityPayload {
+  invite?: string
+  /**
+   * WE POSITIVELY KNOW THIS PLAYER IS ALREADY IN THE DISCORD.
+   *
+   * ONLY EVER `true` OR ABSENT, and the absence carries two different facts on
+   * purpose: "Discord says they are not a member" and "we never found out" --
+   * no bot token configured, no `discord:` identifier because their desktop
+   * client is not running, a timeout, a 429. br_core/server/guild.lua keeps
+   * those apart internally and server/community.lua collapses them HERE,
+   * because the page's question is only ever "may I stop inviting this person",
+   * and only a confirmed yes may answer it.
+   *
+   * SO THE CARD'S CONDITION IS `member !== true`, NOT `!member`. They are the
+   * same today and they are not the same the moment a `false` appears on the
+   * wire, which is exactly the kind of change that gets made without reading
+   * the consumer.
+   */
+  member?: boolean
+}
+
 export interface SnapshotPayload {
   match: MatchPayload
   hud: HudPayload
@@ -829,8 +1250,10 @@ export type Envelope =
   | { k: 'feed';     d: FeedEntry }
   | { k: 'hit';      d: HitPayload }
   | { k: 'storm';    d: StormPayload }
+  | { k: 'vehicle';  d: VehiclePayload }
   | { k: 'dbno';     d: DbnoPayload }
   | { k: 'spectate'; d: SpectatePayload }
+  | { k: 'death';    d: DeathPayload }
   | { k: 'summary';  d: SummaryPayload }
   | { k: 'focus';    d: FocusPayload }
   | { k: 'toast';    d: ToastPayload }
@@ -853,6 +1276,7 @@ export type Envelope =
   | { k: 'players';  d: PlayersPayload }
   | { k: 'report';   d: ReportResult }
   | { k: 'admin';    d: AdminPayload }
+  | { k: 'community'; d: CommunityPayload }
   /** A SQUADMATE changed phase, and this is the sound everybody else hears.
    *
    *  NOT IN BR.Nui, deliberately, and it is the one kind here that is not. The
@@ -866,6 +1290,17 @@ export type Envelope =
    *  wire because the sender already had them, not because anything wants them.
    */
   | { k: 'squadcue'; d: { cue: Cue; src?: number; name?: string } }
+  /** THE WARMUP SHOP'S PLATE IS UP, OR IT IS NOT (#224).
+   *
+   *  It carries NO BALANCE, and that is the point. The Volts figure is already
+   *  in this store -- `market.balance`, pushed on every MARKET_STATE -- so
+   *  sending it again would put a second copy of one number on the wire, free
+   *  to disagree with the store screen about how much money the player has.
+   *  Lua says only WHETHER to show it; the number comes from where it already
+   *  lived.
+   *
+   *  A RAW KIND STRING RATHER THAN A BR.Nui CONSTANT, like `squadcue` above. */
+  | { k: 'shopplate'; d: { show: boolean } }
 
 export type EnvelopeKind = Envelope['k']
 
@@ -936,6 +1371,30 @@ export const CB = {
   COVERED:        'br/cover',
   ERROR:        'br/err',
   ENV:          'br/ui/env',
+  /**
+   * "This is what --color-hp resolved to."
+   *
+   * REPORTED UPWARD, WHICH NOTHING ELSE IN THIS TABLE DOES. Every other name
+   * here is the page asking Lua for something; this one tells Lua a fact only
+   * the page can know.
+   *
+   * The world prompts are a separate document (br_ui/dui/prompt.html) rendered
+   * into a runtime texture, sharing no stylesheet with this page. The
+   * alternatives both duplicate index.css: a hex in Lua, or a second copy of
+   * the :root[data-cb] blocks inside the prompt page. So the cascade is asked
+   * what it resolved to, one line after the attribute that decides it, and
+   * index.css stays the only place a colour is written. See settings/apply.ts.
+   *
+   * TWO COLOURS TRAVEL: `hp` (--color-hp, one of the four tokens the
+   * colourblind modes remap) and `volts` (--color-royale-accent2, which
+   * Market.tsx paints the balance and every price with, and which the shop
+   * plate's price line has read since 2026-08-30).
+   *
+   * DELIBERATELY NOT IN BR.NuiCb. This is not a setting -- it is never stored,
+   * never validated against a range and never sent back -- and br_ui's Lua side
+   * registers it as a raw name for that reason.
+   */
+  PALETTE:      'br/ui/palette',
 } as const
 
 export type CallbackName = (typeof CB)[keyof typeof CB]

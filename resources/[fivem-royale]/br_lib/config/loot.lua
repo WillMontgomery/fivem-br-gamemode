@@ -126,10 +126,58 @@ BR.Config.Consumables = {
     },
 }
 
+--- THE CPR KIT (#191). AN ORDINARY CONSUMABLE IN EVERY RESPECT BUT ONE: it is
+--- in no rarity bucket, so no world roll can ever produce it.
+---
+--- IT IS THE AIRDROP-SHELF PATTERN, which config/weapons.lua established for the
+--- exclusive weapons and which config/airdrop.lua's header explains in full.
+--- Registered into BR.Config.ConsumableById by hand below, exactly as the
+--- exclusive weapons are registered into WeaponById, and into
+--- BR.Config.ConsumablesByRarity never.
+---
+--- WHY NOT JUST APPEND IT TO BR.Config.Consumables. That array is what the
+--- rarity buckets are built from, and the buckets are what BR.RollLootStack
+--- rolls against -- so a legendary CPR kit in that table is a CPR kit in every
+--- crate on the map that rolls legendary, roughly the rarest-common item in the
+--- game. #191 says ULTRA-RARE and says the weight is NOT YET DECIDED:
+---
+---     "Ultra-rare is stated; the actual weight and which crates can roll it are
+---      not."
+---
+--- So no weight is invented here. The one place it is obtainable is the airdrop,
+--- whose `healing` pool has named `cprkit` by id since 2026-08-21 specifically so
+--- that this day would need no edit to that file -- the resolver there drops ids
+--- that do not resolve, and this one now resolves. When the owner decides the
+--- world weight, the change is to move this row into BR.Config.Consumables and
+--- delete the hand registration; nothing else has to know.
+---
+--- CARRY ONE, STACK ONE. It is the item that decides whether death is final, and
+--- a pocket of three would mean three lives -- which is a different item. The
+--- rescue spends the whole slot (server/rescue.lua takes it with BR.Inv.take),
+--- so the stack size and the carry cap have to agree at 1.
+---
+--- NO `useMs`, `health` OR `armour`, AND THAT IS NOT AN OMISSION. The kit is
+--- never used through the inventory: BR.Net.INV_USE refuses a downed player
+--- outright -- deliberately, so nobody can bandage themselves off the floor --
+--- and this item is only ever reachable while downed. It is spent by pressing
+--- the interact key on the "call a medic" prompt, which is its own path
+--- (BR.Net.RESCUE_CALL) and validates its own conditions. A `useMs` here would
+--- be a channel nothing can start.
+BR.Config.CprKit = {
+    id = 'cprkit', label = 'CPR Kit', plural = 'CPR Kits', rarity = BR.Rarity.LEGENDARY,
+    kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
+    maxStack = 1, carryMax = 1,
+    chestOnly = true,
+}
+
 BR.Config.ConsumableById = {}
 for _, c in ipairs(BR.Config.Consumables) do
     BR.Config.ConsumableById[c.id] = c
 end
+
+-- The hand registration. Resolvable everywhere -- the inventory, the ground
+-- prop, the label, the airdrop pool -- and rollable nowhere.
+BR.Config.ConsumableById[BR.Config.CprKit.id] = BR.Config.CprKit
 
 --- Consumables bucketed by rarity, in authored order. Built once, and built from
 --- an ipairs walk rather than a pairs walk for the same reason the weapon
@@ -480,6 +528,22 @@ BR.Config.Loot = {
     arriveMs        = 520,
     arriveArc       = 0.55,   -- extra metres at the top of the parabola
 
+    -- HOW STALE AN ORIGIN MAY BE AND STILL FLY (and this number is the whole of
+    -- why the arc never played, from the other end).
+    --
+    -- The arrival is animated by moving a PROP, and the prop does not exist when
+    -- the message arrives: it is built by the spawn worker, which streams a
+    -- model in. Measuring the 520ms window from the moment the message landed
+    -- meant the window was always shut by the time there was anything to move
+    -- (owner, 2026-08-23: the arc never played, for any crate).
+    --
+    -- So the clock now starts when the PROP is built, and this is the guard on
+    -- that: an entry whose birth was longer ago than this appears at rest, no
+    -- ceremony. It has to be longer than a model stream (RequestModel waits up
+    -- to 3s) and short enough that walking 180m to a crate somebody opened a
+    -- minute ago does not replay the burst.
+    arriveGraceMs   = 3000,
+
     -- HOW HIGH A PROP IS DROPPED FROM BEFORE IT IS SETTLED. Not its resting
     -- height: PlaceObjectOnGroundProperly decides that, from the model's
     -- bounding box and the slope, and the answer is read back and remembered.
@@ -617,6 +681,29 @@ BR.Config.Loot = {
     -- that again (user, 2026-08-06). Heavy enough that a car shunts it and a
     -- shoulder does not.
     crateMass       = 4800.0,
+
+    -- HOW LONG A CRATE IS HELD FROZEN WAITING FOR THE GROUND TO EXIST.
+    --
+    -- Owner, 2026-08-23: an airdrop that lands on a building "falls through the
+    -- top of the building as if it doesn't have collisions", and the crate then
+    -- "spawn[s] at ground level inside a building".
+    --
+    -- A container is the one prop this gamemode hands to the physics
+    -- simulation, and map collision streams asynchronously: hand it over before
+    -- the roof underneath it has arrived and gravity takes it to the terrain,
+    -- where it stays. So client/loot.lua freezes it, calls
+    -- RequestCollisionAtCoord, and waits here for
+    -- HasCollisionLoadedAroundEntity before letting go.
+    --
+    -- 1500ms IS A CEILING AND NOT A COST. The wait ends the moment the collision
+    -- reports in, which for the ordinary ~1300 crates -- built well inside a
+    -- world the player is standing in -- is the first check. Only a prop built
+    -- at the edge of what has streamed pays anything at all.
+    --
+    -- WHEN IT EXPIRES, THE CRATE IS RELEASED ANYWAY. A box that behaves exactly
+    -- as it did before this existed beats a box frozen in mid-air for the rest
+    -- of the match because a streaming request never completed.
+    collisionWaitMs = 1500,
     labelDistance   = 8.0,   -- 3D text draw range
 
     -- Containers are a commitment in the open: you stand still for a second and
@@ -662,6 +749,13 @@ BR.Config.Loot = {
     -- the last thing anyone wants to do (user call, 2026-08-05). ~15 feet.
     deathScatterRadius = 4.6,
     deathBoxSpread     = 0.8,   -- still used by chest contents
+
+    -- HOW CLOSE TO THE BOX AN ITEM MAY LAND. The contents no longer sit on an
+    -- even ring (see scatter() in server/loot.lua) and the inner band of that
+    -- spill is well inside a crate's own footprint for a two-item chest -- an
+    -- item inside the prop is an item that can be neither seen nor targeted,
+    -- which is indistinguishable from loot that failed to spawn.
+    scatterClearance   = 0.7,
 
     -- Inventory. Five is the number the keybinds (slot1..slot5), the UI's
     -- emptyInv and the HUD bar all already assume; changing it means changing
@@ -721,8 +815,7 @@ BR.Config.LootVisibleStates = {
     [BR.PlayerState.GLIDE]      = true,
     [BR.PlayerState.ALIVE]      = true,
     [BR.PlayerState.DBNO]       = true,
-    [BR.PlayerState.DEAD]       = true,
-    [BR.PlayerState.SPECTATING] = true,
+    [BR.PlayerState.OUT]        = true,   -- and so a spectator, who is OUT
     -- LOBBY is absent: the vista is a menu with a view, not a place.
 }
 

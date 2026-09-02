@@ -80,6 +80,43 @@ BR.Net = {
     STORM_SYNC      = 'br:storm:sync',       -- S->C  full storm record (also mirrored to GlobalState)
     STORM_DAMAGE    = 'br:storm:damage',     -- S->C  { amount, targetHp }
 
+    -- S->C  { c = cue } -- "play this interface cue, in your own head".
+    --
+    -- ═══ WHY A MATCH-WIDE CUE NEEDS A MESSAGE AT ALL ═══
+    --
+    -- Every other cue in this gamemode is played by the client that has the
+    -- reason to play it -- a hitmarker knows it hit. A cue for something that
+    -- happens to the WHOLE MATCH at one instant has no such client: the storm
+    -- record is solved locally by everybody, so eight clients crossing the
+    -- HOLDING->SHRINKING boundary in their own frame loops would each have to
+    -- edge-detect it themselves. That is a per-client latch, per tick, drifting
+    -- by a frame each, and a client that rejoined mid-phase would latch at the
+    -- wrong moment. The server already runs the phase job; it owns the edge.
+    --
+    -- WHY NOT REUSE FUEL_SFX. That one carries a NETWORK ID and plays from an
+    -- entity -- it exists because the occupants of one car had to hear
+    -- something positioned on that car. This is the frontend case: no entity,
+    -- no position, the whole match at once. Same cue table, same throttle,
+    -- different native at the far end. See br_core/client/sfx.lua.
+    --
+    -- THE CUE IS A KEY, NOT A SOUND NAME, exactly as FUEL_SFX's is. The wire
+    -- never carries a GTA sound-set name, so the set of sounds this event can
+    -- possibly produce is the client's own BR.Config.Audio.cues and nothing
+    -- else -- an unknown key is ignored with one console line.
+    SFX_CUE         = 'br:sfx:cue',
+
+    -- Aerial supply drops. ONE MESSAGE PER DROP, at the moment it is
+    -- committed: { n, poi, x, y, gz, alt, heading, tStart, tLand }. Both the
+    -- descent and the blip's lifetime are solved from it locally against the
+    -- synced clock, so nothing about a falling crate is ever on the wire --
+    -- the same bargain STORM_SYNC and BUS_ROUTE already make.
+    --
+    -- THE CONTENTS ARE NOT IN IT, deliberately, and for the same reason a
+    -- chest's are not: what is inside is the reason to run for it, and a
+    -- client that knew would only run for the good ones. They arrive as
+    -- ordinary LOOT_ADD entries when it bursts open.
+    AIRDROP_SYNC    = 'br:airdrop:sync',     -- S->C  one airdrop record
+
     -- Player-placed map markers (one per player; squad-visible in squads)
     MARKER_SET      = 'br:marker:set',       -- C->S  { x, y }
     MARKER_CLEAR    = 'br:marker:clear',     -- C->S  remove my marker
@@ -91,10 +128,41 @@ BR.Net = {
     -- player the two numbers and nothing else.
     VOICE_SET       = 'br:voice:set',        -- S->C  { prox, mates, nearbyRange, squadRange }
 
+    -- ONE BIT ABOUT THIS PLAYER'S OWN VOICE, TO THEIR OWN SQUAD.
+    --
+    -- Owner, 2026-08-29, after a playtest: "the squad panel works, but doesn't
+    -- accurately show when others in the squad have 'off' selected"; and, when
+    -- told the client was never sent it: "Why can't we build another client ->
+    -- server -> squad hop? It should only be processed at the start of a squad
+    -- in warmup and whenever changes occur."
+    --
+    -- IT IS A BOOLEAN, NOT THE MODE, AND THAT IS THE WHOLE CONTRACT. `off`
+    -- means "my voice carries nothing in either direction" -- the state
+    -- BR.VoiceMode.OFF resolves to, whether the player chose it, is spectating
+    -- or is sat in the lobby. 'nearby' and 'squad' are indistinguishable on
+    -- this wire and must stay that way: which of the two a mate is on is a fact
+    -- about people a client cannot see, it changes with the distance between
+    -- them, and the honest version of it is a proximity oracle. The refusal is
+    -- argued in full in ui-src/src/hud/VoiceMark.tsx and pinned by
+    -- tools/check_squad_voice.lua, which now permits this one field and still
+    -- fails the build for anything wider.
+    --
+    -- EDGE-TRIGGERED. The client sends when the answer CHANGES and when its
+    -- squad assignment does, never on a band -- see the publish in
+    -- br_core/client/voice.lua. The server keeps it on the roster entry and it
+    -- reaches squadmates on the beacon that is already leaving (SQUAD_POS),
+    -- so nothing periodic was added at either end.
+    VOICE_STATE     = 'br:voice:state',      -- C->S  { off = boolean }
+
     -- Loot / inventory
     LOOT_CELL       = 'br:loot:cell',        -- C->S  { cx, cy } subscribe to a grid cell
     LOOT_ADD        = 'br:loot:add',         -- S->C  array of loot entries entering scope
     LOOT_GONE       = 'br:loot:gone',        -- S->C  array of loot ids removed
+
+    -- Volts never enter the inventory, so they never reach the client path that
+    -- plays the pickup cue. This is that cue, on its own, for the one kind of
+    -- loot that collects without a slot (owner, 2026-08-28).
+    LOOT_PICKUP_CUE = 'br:loot:pickupcue',   -- S->C  play the pickup sound, no payload
     LOOT_CLAIM      = 'br:loot:claim',       -- C->S  { id }
     -- The repair round-trip. Only a CLIENT can ground-probe or read water
     -- height, so a client that finds an entry floating in the sea or buried
@@ -124,6 +192,14 @@ BR.Net = {
     -- validation exists. Reports are accepted ONLY when they LOWER the stored
     -- value, so the worst a liar can do is disarm themselves.
     INV_AMMO        = 'br:inv:ammo',         -- C->S  { pool = { light = n, ... }, clip, slot }
+    -- C->S {}. THE MANUAL RELOAD KEY, AND IT CARRIES NOTHING ON PURPOSE.
+    --
+    -- The server reloads the slot IT believes is active, from the pool IT holds,
+    -- by the same rule spendRound and the INV_AMMO floor run -- so there is no
+    -- number for a client to choose and none to lie about. It moves rounds
+    -- between a magazine and its pool and cannot raise the two together, which
+    -- is what stops a reload key being a fifth way to conjure ammunition.
+    INV_RELOAD      = 'br:inv:reload',       -- C->S  {}
     -- C->S <weapon hash>. The client took a weapon out of its own ped's hand
     -- because the inventory never issued it. Client-observed by necessity, in
     -- the same way NPC_DROP above is: the ped's hand is a client-side fact and
@@ -166,6 +242,19 @@ BR.Net = {
     -- against `Date.now() + clockOffset`, never against Date.now(). The server
     -- clock and the browser clock share no origin.
     DBNO_SET        = 'br:dbno:set',
+    -- S->C (no payload) "somebody just streamed your body in; say where it is".
+    --
+    -- ADDRESSED TO THE BODY'S OWNER AND TO NOBODY ELSE, which is the whole
+    -- shape: the server cannot write a player ped (there is no server-side
+    -- SET_ENTITY_COORDS -- the server's entity setters are routing, culling,
+    -- orphan and lockdown, and nothing else), so the one machine that can say
+    -- where a downed or dead body is, is the machine that owns it.
+    --
+    -- IT CARRIES NOTHING BECAUSE THERE IS NOTHING TO CARRY. Who entered scope
+    -- is the server's business, not the owner's; the owner's answer is the same
+    -- whoever asked, and a payload naming the newcomer would be a list of who
+    -- can see you handed to the player being looked at. #246.
+    DBNO_RESYNC     = 'br:dbno:resync',
     REVIVE_START    = 'br:revive:start',     -- C->S  { target }
     REVIVE_STOP     = 'br:revive:stop',      -- C->S
     -- S->C { pct, target, reviverName, bleedEndsAt }. Sent to BOTH parties while
@@ -181,7 +270,7 @@ BR.Net = {
     -- that stopped it is working. Same units and same origin as DBNO_SET's copy:
     -- a SERVER timestamp, comparable only to the clock-corrected browser time.
     REVIVE_PROGRESS = 'br:revive:progress',
-    -- S->C (no payload) "get up, the match is starting" (#144).
+    -- S->C (no payload) "get up, where you are".
     --
     -- A DEAD PED IS THE ONE THING THE SERVER CANNOT PUT RIGHT ON ITS OWN. Every
     -- other correction in this block is a NUMBER -- health, armour, a bleed
@@ -193,14 +282,318 @@ BR.Net = {
     -- calls it alive is the state the server-observed death check exists to
     -- eliminate, and it would eliminate them.
     --
+    -- ⚠ THE NAME IS `atstart` AND THAT IS NOW HISTORY, NOT MEANING. It was
+    -- written for #144's held death, which is still one of its two senders. The
+    -- other is server/revivekey.lua's key revive, which is not at the start of
+    -- anything -- and the wire name is deliberately NOT being changed for it,
+    -- because an event id is a compatibility surface and renaming one to improve
+    -- a comment is how a deploy goes half-and-half.
+    --
+    -- IT IS NO LONGER "EXACTLY ONCE PER HELD DEATH". It is once per OUT->ALIVE
+    -- transition, from whichever path made it. client/spawn.lua's handler is
+    -- already written to be idempotent (a second copy resurrects a living ped at
+    -- its own feet, which is a no-op), so the widening cost nothing there.
+    --
     -- No payload: the client already knows where its own body is, and the
-    -- server's position sample is a quarter of a second stale.
+    -- server's position sample is a quarter of a second stale. That is what
+    -- makes "you come back where you fell" free rather than a placement -- see
+    -- client/spawn.lua on why the ground probe must not be involved.
     REVIVED         = 'br:revive:atstart',
 
+    -- The CPR kit's rescue (#191).
+    --
+    -- THE TRAFFIC IS ASYMMETRIC ON PURPOSE, and the asymmetry is the security
+    -- model rather than an accident of what was convenient. Four of these six
+    -- events run server->client, because every DECISION in a rescue is the
+    -- server's: whether it may start, where it goes, when it is stuck, and how
+    -- it ends. The two that run client->server carry no parameters at all -- one
+    -- asks for a rescue and one says the ambulance is a wreck -- so there is
+    -- nothing in either for a modified client to forge. See the top of
+    -- server/rescue.lua for how the wreck report can be trusted on sight.
+    RESCUE_CALL     = 'br:rescue:call',   -- C->S  (no payload) "call a medic"
+    -- S->C  { pickup, dest, endsAt }. Everything the client needs to build the
+    -- ride, decided entirely on the server.
+    RESCUE_BEGIN    = 'br:rescue:begin',
+    -- S->C  { distM }. The server has judged this ambulance stuck -- from its
+    -- OWN position samples, never from anything the client said -- and is
+    -- ordering a re-place. The client carries it out; it never decides it.
+    RESCUE_PLACE    = 'br:rescue:place',
+    -- C->S  (no payload) the ambulance has been destroyed. Believed on sight,
+    -- because the only thing it can do is eliminate the player who sent it.
+    RESCUE_LOST     = 'br:rescue:lost',
+    -- C->S  (no payload) the ambulance reached the drop-off. CHECKED, unlike the
+    -- wreck report: it is refused unless the server has independently watched
+    -- the ambulance travel.
+    RESCUE_ARRIVED  = 'br:rescue:arrived',
+    -- S->C  { delivered, x, y, z, heading }. The one ending, both ways round:
+    -- `delivered = false` means tear the ride down without placing anybody.
+    RESCUE_END      = 'br:rescue:end',
+    -- S->C  { key, x, y }, or `{ key, gone = true }` to take one down. Owner,
+    -- 2026-08-23: "if someone takes it, we need to update it's location on the
+    -- map for other players".
+    --
+    -- KEYED BY AN OPAQUE STRING RATHER THAN BY A PLAYER, because two different
+    -- things end up on this channel and only one of them is a person: a rescue
+    -- in flight (`r:<src>`) and an ambient ambulance somebody was seen driving
+    -- (`v:<entity>`). The client neither parses nor interprets the key -- it is a
+    -- table index and nothing else -- which is what lets #219 add a third
+    -- category without touching either end.
+    --
+    -- BROADCAST TO THE MATCH, WHICH IS A DELIBERATE HOLE IN A RULE THIS PROJECT
+    -- OTHERWISE KEEPS ABSOLUTELY. server/roster.lua withholds `pos` from
+    -- PUBLIC_FIELDS because "broadcasting live positions to every client would
+    -- hand a wallhack to anyone reading the event stream", and that reasoning is
+    -- untouched -- this is ONE player, for the DURATION OF ONE RESCUE, and
+    -- publishing it is the point rather than a side effect. The owner made the
+    -- ambulance destructible so other players could end it, kept the siren on so
+    -- they could find it, and asked for the map to follow it. A rescue is a
+    -- position the game is deliberately announcing.
+    --
+    -- COORDINATES, NOT AN ENTITY. client/squadmates.lua records why: an
+    -- entity-anchored blip dies at the ~424m scope ceiling, and an ambulance
+    -- crossing the map is exactly the case that breaks. AddBlipForCoord fed from
+    -- the server has no such limit.
+    RESCUE_BLIP     = 'br:rescue:blip',
+
+    -- Healing in the back of an ambulance (owner, 2026-08-28). A DIFFERENT
+    -- FEATURE FROM THE FOUR ABOVE and deliberately not folded into them: those
+    -- carry a DBNO player on a scripted journey, these carry an ALIVE player
+    -- standing still. Sharing an event would mean one handler branching on which
+    -- kind of ambulance moment it was, which is the shape of thing that ends up
+    -- reviving somebody by accident.
+    --
+    -- ═══ THE HEALTH ITSELF IS NOT ON THIS CHANNEL ═══
+    --
+    -- It goes out on INV_EFFECT, the med kit's own event, because it is the same
+    -- thing: a target the server issued and the client applies upward. That
+    -- reuse is worth more than a tidy name -- client/inventory.lua's handler
+    -- already caps, floors and refuses a downward write, and server/roster.lua's
+    -- health audit already excuses a rise inside `healUntil` as HEALING. A new
+    -- event would have needed its own copy of the first and its own excuse in
+    -- the second, and the audit crying wolf on the owner's own feature is
+    -- exactly the failure config/match.lua's healthAudit block warns about.
+    --
+    -- C->S  { n = netId } -- "I am standing at the open rear doors of that
+    -- ambulance and I pressed interact". EVERY CLAIM IN THAT SENTENCE EXCEPT THE
+    -- DOORS IS RE-DERIVED SERVER-SIDE: the model, the distance, the rear arc,
+    -- being alive and hurt, and whether anybody else already has that van. The
+    -- doors cannot be -- there is no server handler for the door angle -- and
+    -- BR.AmbHealSolve.doorsOpen states what a client gains by lying about them.
+    AMBHEAL_START   = 'br:ambheal:start',
+    -- C->S  (no payload) -- "stop". The interact key while healing, and also
+    -- what the client sends when it sees the doors shut, the van gone or its own
+    -- ped die. NO PAYLOAD because there is nothing to forge: a player may always
+    -- stop their own heal, and the server keeps whatever was granted.
+    AMBHEAL_STOP    = 'br:ambheal:stop',
+    -- S->C  { n = netId } to begin, `{ done = true }` / `{ done = false }` to
+    -- end. ONE EVENT FOR BOTH ENDINGS so a completion cannot be lost behind a
+    -- teardown that arrives after it -- the same argument SPECTATE_SET makes.
+    --
+    -- THE CLIENT BUILDS NOTHING UNTIL THIS ARRIVES. The prompt is local, the
+    -- press is a request, and the stretcher, the siren and the camera are all
+    -- downstream of the server having granted the claim -- so two players
+    -- pressing at one van in the same frame produce one attach, not two.
+    AMBHEAL_SET     = 'br:ambheal:set',
+
+    -- Revive keys (#219 steps 4 and 5)
+    --
+    -- C->S  { n = netId } -- "I am standing at that ambulance and I want my
+    -- squad's revive keys". ONE EVENT AND NO REPLY, because there is nothing to
+    -- reply with: the only thing a player is ever told about a REFUSED purchase
+    -- is nothing at all, and the only thing they are told about a completed one
+    -- is BR.Config.ReviveKey.copy.bought, which the server speaks itself.
+    --
+    -- EVERY CLAIM IN THAT SENTENCE IS RE-DERIVED SERVER-SIDE: the model, the
+    -- distance, being alive in a playing match, having a squad, and there being
+    -- an outstanding key to buy. See BR.ReviveKey.canBuy.
+    --
+    -- ITS SENDER IS client/revivekey.lua, which draws the buy plate at an
+    -- ambulance when this player's squad has something outstanding. Until the
+    -- owner gave the wording there was no sender at all and /brkey buy was the
+    -- only way to reach this handler; that console verb still exists and still
+    -- runs the identical path.
+    --
+    REVIVEKEY_BUY   = 'br:revivekey:buy',
+
+    -- ═══ AND THE PICKUP IS A PRESS TOO, WHICH IT WAS NOT ═══
+    --
+    -- C->S  { target = serverId } -- "I am standing on that mate's key and I am
+    -- taking it".
+    --
+    -- THIS EVENT USED NOT TO EXIST, AND THE NOTE HERE SAID IT MUST NOT. The
+    -- argument was that the server already samples every position four times a
+    -- second, so nothing needed to be sent and nothing could be lied about. It
+    -- was answered by a playtest: "I somehow picked up the dead player's key by
+    -- walking up to them without seeing a DUI or pressing anything" (owner,
+    -- 2026-08-30). A thing that leaves the ground without a press is a thing the
+    -- player cannot know they have.
+    --
+    -- NOTHING IS TRUSTED BUT THE INTENT. The claim carried here is "I pressed,
+    -- and I meant that mate"; the distance, the squad, the match and whether
+    -- there is still a pickup there are all re-derived from the server's own
+    -- samples in BR.ReviveKey.canTake -- exactly as the purchase re-derives
+    -- every clause of "I was standing at an ambulance".
+    REVIVEKEY_TAKE  = 'br:revivekey:take',
+
+    -- ═══ THE HOLD THAT ACTUALLY BRINGS SOMEBODY BACK ═══
+    --
+    -- C->S  { target = serverId, n = netId } -- "I am at that ambulance and I am
+    -- holding the key down to bring that player back".
+    --
+    -- IT NAMES THE AMBULANCE AS WELL AS THE MATE, and that is the difference the
+    -- owner's 2026-08-30 message made: the revive used to be ruled against the
+    -- key's own recorded point on the ground and is now ruled at a van, so the
+    -- server needs to know WHICH van -- both to rule the distance and because
+    -- the arrival is placed 150m above that exact vehicle. The net id is a name,
+    -- not a fact: server/revivekey.lua resolves it, checks it exists, checks the
+    -- model against BR.Rescue.isAmbulance and measures the distance itself.
+    --
+    -- RE-ASSERTED EVERY 250ms RATHER THAN SENT
+    -- ONCE, which is client/dbno.lua's protocol and exists for a bug this
+    -- project has already shipped: a brief tap completed a whole revive when the
+    -- STOP below was raised and did not land. Progress requires CONTINUOUS
+    -- evidence, so silence stops a hold (BR.Config.ReviveKey.reviveBeatMs) and a
+    -- lost STOP costs a fraction of a second instead of the whole interaction.
+    --
+    -- WHY NOT REVIVE_START. That event's ruling, `reviveAllowed` in
+    -- server/combat.lua, refuses any target that is not DBNO, and the stepper
+    -- behind it (`combat.dbno`) only ever walks DBNO entries. The subject of a
+    -- key revive is OUT and spectating; it needs its own ruling and its own
+    -- stepper, keyed on the key record rather than on the roster entry's
+    -- `reviverSrc` -- see server/revivekey.lua on why sharing that field would
+    -- push DBNO_SET at a player who is not down.
+    REVIVEKEY_START = 'br:revivekey:start',
+    -- C->S  (no payload) "the key came up". The subject is not named because the
+    -- server holds exactly one claim per reviver and can find it; the same shape
+    -- REVIVE_STOP uses, for the same reason.
+    REVIVEKEY_STOP  = 'br:revivekey:stop',
+    -- S->C  { pct, target, done?, cancelled? }. The reviver's own ring.
+    --
+    -- SENT TO THE HOLDER AND TO NOBODY ELSE. It is the same envelope
+    -- REVIVE_PROGRESS carries and it is read the same way: `cancelled` and
+    -- `done` are what let the client drop a hold it can no longer see the
+    -- outcome of, and the ring itself is animated locally from a start message
+    -- rather than driven by these -- a dropped one cannot stutter it.
+    REVIVEKEY_PROGRESS = 'br:revivekey:progress',
+
+    -- ═══ THE ARRIVAL, IN THE OWNER'S OWN ORDER ═══
+    --
+    --   "their screen should fade to black, set focus to the area where the
+    --    ambulance I just used is, process the revive, give them a parachute,
+    --    put them 150m above the ambulance, then fade in."  -- 2026-08-30.
+    --
+    -- TWO EVENTS, BECAUSE THE BLACK HAS TO COME FIRST AND THE SERVER OWNS THE
+    -- LEDGER. The screen is the client's and the resurrection is the server's,
+    -- and the whole point of his sentence is that one precedes the other.
+    --
+    -- S->C  { x, y, z } -- "you are coming back at that van: go black and pull
+    -- the world in there". Sent to the SUBJECT the moment the hold completes.
+    -- `{ cancelled = true }` is the same event withdrawing the promise, so a
+    -- revive that falls apart in the second between the two does not leave
+    -- somebody staring at a black screen.
+    REVIVEKEY_ARRIVE = 'br:revivekey:arrive',
+    -- S->C  { x, y, z } -- "you are back: stand up 150m over that point with a
+    -- parachute, and fade in". Sent BEFORE the roster flips to ALIVE, which is
+    -- the ordering REVIVED's note below states and the reason it is stated: a
+    -- client left holding a corpse while the server calls it ALIVE is exactly
+    -- the state the server-observed death check exists to eliminate.
+    --
+    -- WHY NOT REVIVED. That event resurrects a player WHERE THEY FELL, with no
+    -- placement at all -- it is #144's held death, and client/spawn.lua's
+    -- handler is written around the body already being on the ground it fell to.
+    -- This one is an arrival somewhere else, in the air, with a chute.
+    REVIVEKEY_PLACE  = 'br:revivekey:place',
+
     -- Spectate / end
-    SPECTATE_SET    = 'br:spectate:set',     -- S->C  { targetSrc, x, y, z }
-    SPECTATE_CYCLE  = 'br:spectate:cycle',   -- C->S  { dir }
+    --
+    -- THE SERVER PICKS THE TARGET AND THE CLIENT DRAWS IT, and the split is a
+    -- privacy boundary rather than a preference. Who a dead player may look at
+    -- is the whole of #192 (shared/spectate_solve.lua), and a client-side
+    -- filter is not a boundary -- the same sentence BR.ChatChannel's `squad`
+    -- carries. The client never learns a candidate list; it is told one target
+    -- at a time, and told it BY THE SERVER, which is also the only side that can
+    -- see the position of a player who is out of scope.
+    --
+    -- S->C. `{ targetSrc, name, admin, x, y, z }` while a session is running,
+    -- re-sent at BR.Config.Spectate.feedMs so the camera has somewhere to be;
+    -- `{ stop = true, reason = <string> }` when it ends, for whatever reason.
+    -- ONE EVENT FOR BOTH so a stop can never be lost behind a position push
+    -- that arrives after it.
+    SPECTATE_SET    = 'br:spectate:set',
+    -- C->S  { dir } -- +1 next, -1 previous, 0 "start, or re-resolve what I
+    -- have". 0 is what a client sends on being eliminated: it asks the server
+    -- to open a session under the rules, and the rules may answer "nobody".
+    SPECTATE_CYCLE  = 'br:spectate:cycle',
+    -- C->S. The pause-menu exit the owner asked for, and the only way a
+    -- spectator can end their own session. No payload: the server knows who
+    -- asked and a spectator has exactly one session.
+    SPECTATE_STOP   = 'br:spectate:stop',
     SUMMARY         = 'br:summary',          -- S->C  end-of-match payload
+
+    -- Fuel. The server owns a metre budget per VEHICLE (server/fuel.lua); the
+    -- client owns the gauge, the pump prompt and the station blips.
+    --
+    -- THE FRACTION IS WHAT TRAVELS, NOT THE LITRES, because
+    -- SET_VEHICLE_FUEL_LEVEL is in the vehicle's own tank units and only the
+    -- client can read `fPetrolTankVolume` off the handling. The metres ride
+    -- along for the pump readout, which is the ledger's own number and must not
+    -- be recomputed at the far end from a rounded fraction.
+    --
+    -- S->C  { n = netId, f = 0..1 of a tank, m = metres remaining }
+    FUEL_SET        = 'br:fuel:set',
+    -- C->S  { n = netId } -- "what does this car hold?", sent when the player
+    -- starts the ENTRY ANIMATION rather than when they are seated, so the
+    -- answer is in hand before the ignition would fire. The server answers only
+    -- for a vehicle the asker is standing next to; see server/fuel.lua for why
+    -- an unrestricted version of this would be a small wallhack.
+    FUEL_ASK        = 'br:fuel:ask',
+    -- C->S  { n = netId } -- "I am holding the interact key". Repeated for as
+    -- long as the hold lasts. EVERY OTHER CLAIM IN THAT SENTENCE IS RE-DERIVED
+    -- SERVER-SIDE (in a match, alive, in that vehicle, in the driver's seat, at
+    -- a station), and how much fuel it is worth comes from the wall clock
+    -- rather than from how many of these arrived -- BR.FuelSolve.grantMs. This
+    -- is the only message in the gamemode that can make a resource go UP, which
+    -- is why it is the one with the most checks behind it.
+    FUEL_PUMP       = 'br:fuel:pump',
+    -- S->C  { n = netId, c = cue } -- "play this cue from that car".
+    --
+    -- ═══ THIS EXISTS BECAUSE THE AUDIO NATIVE IS NOT NETWORKED ═══
+    --
+    --   "All occupants of a vehicle should hear these sounds."
+    --                                          -- owner, 2026-08-22
+    --
+    -- PLAY_SOUND_FROM_ENTITY plays on the machine that calls it and nowhere
+    -- else, so "everyone in the car hears it" has to be a message. The SERVER
+    -- decides who gets one -- it is already the thing that knows who is in
+    -- which vehicle, from the ledger's own roster walk -- and each recipient
+    -- plays its own copy anchored on its own handle for that car.
+    --
+    -- THE CUE IS A KEY, NOT A SOUND NAME. `c` indexes BR.Config.Audio.cues, so
+    -- the wire never carries a GTA sound-set name and a client cannot ask for
+    -- an arbitrary one. See br_core/client/sfx.lua's playFrom.
+    FUEL_SFX        = 'br:fuel:sfx',
+
+    -- Vehicle boost. The CLIENT owns the meter, the push and its own flames --
+    -- a twitch input cannot wait for a round trip -- so these two carry only
+    -- what a client cannot do for itself.
+    --
+    -- C->S  { on = boolean, netId = integer, endsAt? = server ms }
+    -- EDGES, NOT DURATIONS, and that is the whole security shape of the fuel
+    -- surcharge: the elapsed time is measured on the server's own clock, so
+    -- there is no millisecond count in this message for anyone to inflate.
+    -- `endsAt` is a HINT about the sender's own meter and is clamped to
+    -- BR.Config.Boost.capacityMs at the far end. See server/boost.lua's header
+    -- for the owner's decision to accept the client's word here, exactly what it
+    -- costs, and the three clamps that bound it.
+    BOOST_SET       = 'br:boost:set',
+    -- S->C  { netId, on, endsAt? }
+    -- The published record, in the same clock-and-record shape the storm and the
+    -- bus route use: every client draws its own LOCAL particle effect from it and
+    -- puts it out on `endsAt` with no second message needed, so a lost stop
+    -- cannot leave a car on fire. Nothing here is an entity; see
+    -- br_core/client/boost.lua on why `sv_entityLockdown` has no opinion on a
+    -- particle handle.
+    BOOST_SYNC      = 'br:boost:sync',
 
     -- Death. The client reports; the server decides. See server/combat.lua.
     PLAYER_DIED     = 'br:player:died',      -- C->S  { cause, killer? }
@@ -307,6 +700,19 @@ BR.Net = {
     CLOCK_PING      = 'br:clock:ping',       -- C->S  { sentAt }
     CLOCK_PONG      = 'br:clock:pong',       -- S->C  { sentAt, serverAt }
 
+    -- The world override: the console's time of day and sky (brtime/brweather).
+    --
+    -- S->C { hour, minute, weather }. NOT A DELTA AND NEVER ONE: `nil` cannot
+    -- travel in a table, so a payload of changes could never say "stop
+    -- overriding the hour". This carries the whole override every time and A
+    -- MISSING KEY IS THE RESET -- see BR.World.payload.
+    --
+    -- Sent to everyone the moment it changes, and to ONE client on br:ready.
+    -- That second send is the whole of the late-joiner story: a client that
+    -- connects after the command was typed would otherwise pin its own clock at
+    -- noon while the rest of the session stood at dusk.
+    WORLD_SET       = 'br:world:set',
+
     -- Client -> server position report (2 Hz), used for validation and spectate
     POS_REPORT      = 'br:pos',              -- C->S  { x, y, z }
 
@@ -355,6 +761,31 @@ BR.Net = {
     -- server -> BR.Net.X -> a br_ui client handler -> br:ui:sendLocal, and that
     -- is the path with production mileage on it.
     ADMIN_STATE     = 'br:admin:state',
+
+    -- S->C { invite? }. Where this deployment's Discord is, or that it has no
+    -- Discord to point at.
+    --
+    -- THE MIRROR IMAGE OF ADMIN_STATE ABOVE, AND WORTH SAYING SO NEXT TO IT.
+    -- That event withholds an address because holding it IS the permission;
+    -- this one has nothing to withhold. An invite is a public link already
+    -- printed to anyone we kick, so it goes to every player on br:ready with no
+    -- gate in front of it, and the only question the payload answers is whether
+    -- there is one.
+    --
+    -- `{}` IS A REAL ANSWER AND SILENCE IS NOT. An operator who clears
+    -- br_discordUrl and restarts br_core sends the empty table, and a page that
+    -- is still up takes the card down on the strength of it -- which saying
+    -- nothing could never do. Same argument br_core/server/admin.lua's push()
+    -- makes for sending `{}` rather than staying quiet.
+    --
+    -- THE FIELD IS `invite`, NOT `discordUrl`, AND THE RENAME IS LOAD-BEARING.
+    -- br_lib/config/overrides.lua's contract is that an overridable key is read
+    -- on the server and nowhere else, and tools/verify.sh enforces it by
+    -- grepping every br_*/client/*.lua for the bare key name -- a name that
+    -- appears in a client file at all, comment or code, fails the build. The
+    -- wire carries the resolved value under a name the client half is allowed
+    -- to say, which is the same rename consoleUrl -> `origin` already makes.
+    COMMUNITY       = 'br:community',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the
@@ -394,12 +825,36 @@ BR.Nui = {
     -- travel with the ids rather than being looked up in the squad payload.
     VOICE     = 'voice',
     INV       = 'inv',
+    -- THE CAR YOU ARE IN: { show, health, fuel }, both 0..100.
+    --
+    -- A CHANNEL OF ITS OWN RATHER THAN TWO MORE FIELDS ON `hud`, and the reason
+    -- is the dedupe. client/state.lua's HUD push compares every field it sends
+    -- and returns early when none moved, which is what keeps it quiet for a
+    -- player standing still. Vehicle health and fuel BOTH move continuously
+    -- while driving, so folding them in would make that comparison always true
+    -- and turn the whole HUD envelope into an unconditional 10 Hz push -- for a
+    -- readout only present while seated in a car.
+    --
+    -- IT IS ALSO NOT THE SAME LIFETIME. `hud` is on screen for the whole match;
+    -- this exists between one door and the next.
+    VEHICLE   = 'vehicle',
     PROMPT    = 'prompt',    -- world-anchored interaction prompt + progress ring
     FEED      = 'feed',      -- kill feed + damage numbers
     HIT       = 'hit',       -- YOU connected: {amount, headshot, killed, name}
     STORM     = 'storm',     -- phase, radius, endsAt (4 Hz)
     DBNO      = 'dbno',
     SPECTATE  = 'spectate',
+    -- YOUR OWN DEATH, AS A WORD OVER THE WORLD, for the seconds before the
+    -- spectator camera takes the screen.
+    --
+    -- DELIBERATELY NOT `SUMMARY`, and the split is the point. SUMMARY is the
+    -- match-end verdict SCREEN -- backdrop, placement, Volts -- and it is
+    -- gated on the match being over. This is the death MOMENT: the same word,
+    -- alone, on the live world, ~10 seconds, then gone as spectating begins
+    -- (the owner). One envelope carrying both would have to be told which of
+    -- the two it was, which is a flag standing in for the two surfaces the
+    -- owner asked to keep distinct.
+    DEATH     = 'death',
     SUMMARY   = 'summary',
     FOCUS     = 'focus',     -- tell the UI which screen owns focus
     TOAST     = 'toast',
@@ -479,7 +934,53 @@ BR.Nui = {
     -- out of step: the tab needs a URL to be worth anything, so the URL IS the
     -- permission.
     ADMIN     = 'admin',
+    -- Where our Discord is (owner, 2026-08-30): { invite? }.
+    --
+    -- `invite` PRESENT IS THE WHOLE OF "DRAW THE CARD", the same one-field shape
+    -- ADMIN uses above and for the same reason: a card with no address on it is
+    -- worth nothing, so the address IS the condition, and there is no boolean
+    -- beside it to fall out of step with it.
+    --
+    -- THE ENVELOPE ITSELF IS NOT THE SIGNAL, WHICH IS THE ONE TRAP HERE. `{}`
+    -- is a table and a table is truthy in both languages, so a reader that asks
+    -- whether the payload arrived draws a card with nothing in it. Every reader
+    -- has to look inside, at the string.
+    COMMUNITY = 'community',
 }
+
+--- A HOLE IN A SENTENCE WHERE A KEY BELONGS.
+---
+--- Owner, 2026-08-22: "we should make our own glyphs for keys. For example,
+--- this message looks too bland and hard coded: 'Voice chat is set to nearby.
+--- Hold N to speak. You can change your preference and keybinds in Settings.'"
+---
+--- THE WORDING STAYS HERE AND THE DRAWING GOES THERE, which is the only split
+--- that satisfies both of this project's standing rules at once. Interface text
+--- is composed in Lua, beside the code that decides which state we are in --
+--- one place for the words, and VoiceNotice.tsx, Settings.tsx and this file's
+--- own callers all argue why. A key drawn as a key is a plate with a border and
+--- a bevel, which Lua cannot express. So Lua writes the sentence with a gap in
+--- it and names the COMMAND; ui-src/src/ui/KeyCap.tsx resolves that command
+--- against the keybinds list and draws the plate.
+---
+--- THE COMMAND, NEVER THE LABEL, AND THAT IS THE POINT RATHER THAN A STYLE
+--- CHOICE. A substituted key label is a photograph of the binding at the
+--- instant the string was built. These strings outlive that instant -- a
+--- twelve-second toast, a sticky notice that stays up while the map is open, a
+--- settings paragraph that sits on the very screen the player rebinds from --
+--- so a label would go stale under the reader, naming a key that no longer does
+--- anything. A command name cannot go stale, and the page re-resolves it on
+--- every rebind push.
+---
+--- WHAT IT DOES NOT DO: decide whether a key EXISTS. A caller that has a
+--- different sentence for the unbound case still has to ask (see
+--- BR.Voice.statusFor, which does exactly that). This only marks the gap.
+---
+--- @param command string   a RegisterCommand name, e.g. 'brptt'
+--- @return string          the token to embed, e.g. '{key:brptt}'
+function BR.KeyToken(command)
+    return ('{key:%s}'):format(tostring(command))
+end
 
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on
 --- every path including errors; a missing resolve hangs the CEF promise forever.

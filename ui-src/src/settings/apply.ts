@@ -1,5 +1,6 @@
-import type { SettingsPayload } from '../bridge/types'
+import { CB, type SettingsPayload } from '../bridge/types'
 import { setUiVolume } from '../audio/cues'
+import { fetchNui } from '../bridge/nui'
 
 /**
  * Settings -> the document.
@@ -55,4 +56,43 @@ export function applySettings(s: SettingsPayload): void {
   else root.setAttribute('data-cb', s.colourblind)
 
   setUiVolume(s.volUi)
+
+  // ═══ AND THE RESOLVED GREEN, BACK TO LUA, FOR THE DUI PROMPTS ═══
+  //
+  // The world prompts are a SEPARATE DOCUMENT (br_ui/dui/prompt.html) rendered
+  // into a runtime texture. It shares no stylesheet with this page, so it
+  // cannot read a custom property off this `:root` -- and the shop's price line
+  // has to be --color-hp (owner, 2026-08-29: the price "needs to be increased
+  // in font size and make it green").
+  //
+  // WHY THIS IS READ BACK OUT OF THE DOCUMENT RATHER THAN LOOKED UP. The
+  // obvious alternatives both duplicate the palette: a hex in Lua, or a second
+  // copy of the :root[data-cb] blocks inside prompt.html. Either one is a
+  // second representation of index.css's four accessibility tokens, and the day
+  // somebody retunes the green, one of the two goes stale in silence.
+  //
+  // getComputedStyle asks the browser what --color-hp IS, one line after the
+  // attribute that decides it -- so deuteranopia's teal, protanopia's teal and
+  // the default green all arrive here without this file knowing any of them.
+  // index.css stays the only place a green is written.
+  //
+  // FIRE AND FORGET. A failed post leaves the prompt on its existing colour,
+  // which is a price in the wrong green rather than no price at all -- and this
+  // runs on every settings apply, so the next one corrects it.
+  //
+  // ...AND THE CURRENCY ORANGE ALONGSIDE IT (owner, 2026-08-30: "the volts text
+  // should be orange - the same color we show in the market page"). That colour
+  // is --color-royale-accent2 -- the token Market.tsx paints the balance plate
+  // and every affordable price button with -- so the world plate's price and the
+  // Store screen's prices are one authored value rather than two.
+  //
+  // ONE getComputedStyle PASS AND ONE POST. Both are read here, at the one
+  // moment the cascade is known to be settled, and travel together; a second
+  // call would open a window where the plate had one of its two colours.
+  const style = getComputedStyle(root)
+  const hp = style.getPropertyValue('--color-hp').trim()
+  const volts = style.getPropertyValue('--color-royale-accent2').trim()
+  if (hp || volts) {
+    void fetchNui(CB.PALETTE, { hp, volts }).catch(() => {})
+  }
 }

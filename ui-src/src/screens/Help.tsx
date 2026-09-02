@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
+import DiscordCard from '../ui/DiscordCard'
 import { play } from '../audio/cues'
 
 /**
@@ -63,6 +64,10 @@ export default function Help({ inline = false, onDone }:
   const [loaded, setLoaded] = useState(false)
   const [slow, setSlow] = useState(false)
   const [copied, setCopied] = useState(false)
+  /** The "Link copied" hold, so a re-press cannot be cut short by the previous
+   *  press's timer and closing the panel mid-hold does not set state on an
+   *  unmounted component. */
+  const copyTimer = useRef<number | null>(null)
   // Lazy initialiser: evaluated once, on mount, and never again for this
   // instance -- so the frame re-fetches each time the manual is opened and
   // never mid-render.
@@ -104,16 +109,28 @@ export default function Help({ inline = false, onDone }:
     return () => window.removeEventListener('keydown', onKey, true)
   })
 
+  useEffect(() => () => {
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current)
+  }, [])
+
   // THE LINK GOES TO THE CLIPBOARD, because nothing can launch a browser.
   // The game client has no native for opening a URL and CEF's window.open
   // goes nowhere useful from a nui:// page -- so the honest version of "open
   // it externally" is to hand over the address in one click and let the
   // player paste it wherever they like. A button that promised to open
   // Chrome and did nothing would be worse than no button.
+  //
+  // AND IT SAYS SO ONLY IF IT WORKED. This used to call setCopied(true)
+  // unconditionally and throw execCommand's return value away, so the button
+  // reported success whether or not anything reached the clipboard -- which
+  // meant nothing in this project knew whether copying works in CEF at all. The
+  // boolean is the whole answer and it was already being computed.
   const copy = async () => {
     play('ui.select')
+    let ok = false
     try {
       await navigator.clipboard.writeText(SITE)
+      ok = true
     } catch {
       // Clipboard permission is not guaranteed inside CEF. execCommand is
       // deprecated everywhere and still works here, which is exactly the
@@ -122,25 +139,62 @@ export default function Help({ inline = false, onDone }:
       el.value = SITE
       document.body.appendChild(el)
       el.select()
-      try { document.execCommand('copy') } catch { /* nothing left to try */ }
+      try { ok = document.execCommand('copy') } catch { /* nothing left to try */ }
       el.remove()
     }
+    if (!ok) return
+    // HELD IN A REF, CLEARED BEFORE RESCHEDULING. Without it a second press
+    // leaves the first timeout armed, and the label goes back to "Copy link"
+    // 2.4s after the FIRST press -- under a player who has just pressed again.
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current)
     setCopied(true)
-    window.setTimeout(() => setCopied(false), 2400)
+    copyTimer.current = window.setTimeout(() => {
+      setCopied(false)
+      copyTimer.current = null
+    }, 2400)
   }
 
   const body = (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-4">
+      {/* `flex-wrap` AND A shrink-0 RIGHT-HAND GROUP. Three things share this
+          line now and the third can grow (see below), so the failure mode worth
+          engineering against is the address being squeezed into a four-character
+          column rather than the row taking a second line. Wrapping is the
+          cheaper outcome and this page's root scrolls. */}
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         {/* 1.15rem via .ts, up from a micro-label. This is the heading of
             a page, not a caption for one -- at label size it read as a stray
             line above a white rectangle (user, 2026-08-09). */}
         <div className="font-display uppercase tracking-[0.08em] ts" style={{ ['--fs' as string]: '1.15rem' }}>
           {loaded ? 'Player guide' : slow ? 'Could not load the guide' : 'Loading the guide…'}
         </div>
-        <Btn variant="ghost" size="sm" cue="ui.select" onPress={copy}>
-          {copied ? 'Link copied' : 'Copy link'}
-        </Btn>
+        {/* THE DISCORD INVITE LANDED HERE ON 2026-08-31, off the pause menu's
+            front page and out of the lobby, because the owner played the plate
+            it used to be and said so: "the card in the pause menu is HUGE. we
+            don't need that. Find a better place for it. Perhaps on the Help
+            page only."
+
+            AND IT IS BESIDE Copy link RATHER THAN ANYWHERE ELSE ON THE PAGE,
+            because that button is this exact gesture aimed at the other
+            address -- the manual's. Two addresses a player can take away with
+            them, copied the same way, on the same line. It is built to this
+            button's height so it reads as part of the row and not as a thing
+            sitting next to it; ui/DiscordCard.tsx carries the sizes.
+
+            IT CAN REMOVE ITSELF, TWICE OVER -- on a server that publishes no
+            invite, and for a player the server has confirmed is already in the
+            Discord. (It used to remove itself for the rest of the session once
+            a copy had landed; that rule was withdrawn on 2026-08-31 and the
+            membership check replaced it. ui/DiscordCard.tsx has the exchange.)
+            Neither leaves a gap: the group is a flex row with a gap, so the
+            button simply becomes the only thing in it. Do not reserve space
+            for something that is designed to go away. */}
+        <div className="flex items-center gap-3 shrink-0">
+          <DiscordCard />
+          <Btn variant="ghost" size="sm" cue="ui.select" onPress={copy}>
+            {copied ? 'Link copied' : 'Copy link'}
+          </Btn>
+        </div>
       </div>
 
       {slow && !loaded && (

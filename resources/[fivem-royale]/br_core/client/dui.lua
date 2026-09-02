@@ -21,10 +21,42 @@ BR.Dui = BR.Dui or {}
 
 local pages = {}   -- [name] = { dui, txd, tex, w, h }
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 OR 0
+--- RATHER THAN true OR false. Ten shipped bugs on this project and a ratchet in
+--- tools/verify.sh to stop the eleventh. Same helper, same spelling, as
+--- br_core/client/loot.lua's.
+---
+--- drawOnEntity's own raw read below is deliberately LEFT AS IT IS -- it is in
+--- tools/bool_natives.baseline, and tightening a ratchet is a change of its own
+--- rather than a rider on a shop fix.
+--- @param v any
+--- @return boolean
+local function isTrue(v) return v == true or v == 1 end
+
 --- Model bounding boxes, cached by model hash. A model's dimensions never
 --- change, and drawOnEntity would otherwise ask the engine for them on every
 --- frame the player is looking at a crate.
 local DIMS = {}
+
+--- The model's box, cached. nil when the model has not answered.
+---
+--- ONE CACHE FOR THE TWO DRAWS THAT NEED A BOX -- the label on a crate's lid and
+--- the sign on a van's nearest face. They ask for different fields off the same
+--- six numbers, and a second table keyed by the same model hash would be a
+--- second GetModelDimensions per model for nothing.
+--- @param model integer
+--- @return table|nil  { minx, miny, minz, maxx, maxy, maxz }
+local function modelBox(model)
+    local d = DIMS[model]
+    if d then return d end
+
+    local a, b = GetModelDimensions(model)
+    if not a or not b then return nil end
+    d = { minx = a.x, miny = a.y, minz = a.z,
+          maxx = b.x, maxy = b.y, maxz = b.z }
+    DIMS[model] = d
+    return d
+end
 
 -- ---------------------------------------------------------------------------
 -- THE PLAYER'S INTERFACE SCALE
@@ -225,6 +257,338 @@ function BR.Dui.drawWorld(page, x, y, z, scale, dist)
     ClearDrawOrigin()
 end
 
+--- THE ENTITY'S OWN AXES, FLATTENED INTO THE WORLD'S XY PLANE.
+---
+--- ═══ THE LEVELLING IS 08d7608's AND THE ARGUMENT BELONGS TO IT ═══
+---
+--- Owner, 2026-08-30: "can you make sure they're always drawn perfectly level?
+--- For example the sanchez tilts a bit on the kickstand, and now it's DUI tilts
+--- lol."
+---
+--- NO EULER ANGLES ARE READ HERE, SO NO ROTATION ORDER IS CHOSEN. Asking
+--- GET_ENTITY_ROTATION would force one (this repo asks for 2, ROT_ZXY --
+--- client/natives.lua's probe and client/loot.lua's crate pose) and would then
+--- need rebuilding into a basis. None of that is necessary: a roll turns the
+--- body about its own forward axis, and a rotation leaves the axis it turns
+--- about alone, so GET_ENTITY_FORWARD_VECTOR -- which is the matrix's forward
+--- column, not a decomposition -- already has the kickstand lean divided out of
+--- it. Flattening it into the world's XY plane divides out the pitch as well,
+--- and "level" is exactly those two.
+---
+--- EXTRACTED RATHER THAN COPIED WHEN THE NEAREST-FACE SIGN ARRIVED (owner,
+--- 2026-08-31). Two signs each flattening a forward vector of their own is two
+--- places that can come to disagree about what level means, and this one has
+--- already been got wrong once -- 08d7608 is the fix, and it is one function
+--- now rather than a paragraph to re-read.
+--- @param entity integer
+--- @return number|nil fx, number fy, number rx, number ry  forward then right
+local function levelBasis(entity)
+    local f = GetEntityForwardVector(entity)
+    local fx, fy = f.x, f.y
+    local flat = math.sqrt(fx * fx + fy * fy)
+    -- A vehicle stood exactly on its nose has no heading left to read. It cannot
+    -- happen to a frozen showroom car, and a quad of nans is a worse failure than
+    -- a missing frame.
+    if flat < 0.0001 then return nil end
+    fx, fy = fx / flat, fy / flat
+    -- The entity's OWN +X, flattened: at heading h forward is (-sin h, cos h) and
+    -- right is (cos h, sin h), so (fy, -fx) is the right vector.
+    return fx, fy, fy, -fx
+end
+
+--- Draw the page as an UPRIGHT QUAD standing out along a level direction.
+---
+--- The shared body of the two signs below: they differ only in which direction
+--- is "out", and everything after that -- the corners, the normal, the
+--- camera-side test, the two triangles and their UVs -- is one proven
+--- arrangement that is deliberately not re-derived per caller.
+---
+--- ═══ WHICH WAY ROUND "TOP-LEFT" IS, BECAUSE MIRRORED TEXT IS THE FAILURE ═══
+---
+--- A player reading the sign stands OUTSIDE it looking back along `-out`.
+--- Facing that way with the world's up over their head, their LEFT hand points
+--- along (out.y, -out.x) -- so that is where the texture's left edge goes. Get
+--- this backwards and the sign renders perfectly, in mirror writing, from the
+--- only side anybody stands on. (For the front face `out` is the entity's
+--- forward, and this expression is its right vector, which is what the yard sign
+--- has always used.)
+---
+--- NO ASPECT CORRECTION AND NO DISTANCE TERM. Both exist in drawWorld only
+--- because a screen-space sprite needs them; a quad measured in metres has one
+--- unit, and perspective is the renderer's job.
+--- @param page table
+--- @param px number      the entity's own position...
+--- @param py number
+--- @param pz number
+--- @param ox number      ...the level unit direction the sign stands out along...
+--- @param oy number
+--- @param dist number    ...how far out along it the sign's centre sits...
+--- @param side number|nil ...how far ALONG THE FACE from there, positive to the
+---                       reader's right. Derived from `out` and nothing else --
+---                       see below -- so a sign slid sideways is still on the
+---                       same panel, still level, still the same distance off
+---                       the bodywork, and still the right way round.
+--- @param oz number      ...and how far straight UP the world from the entity's
+---                       origin. Up the WORLD rather than up the entity: `oz` is
+---                       a height read off the model's own box, and pushed
+---                       through a rolled bike's matrix that height swings out
+---                       sideways and hangs a level sign off to one side.
+--- @param hw number      half width, and half height, in metres
+--- @param hh number
+--- @param alpha number|nil
+local function drawPlane(page, px, py, pz, ox, oy, dist, side, oz, hw, hh, alpha)
+    -- The reader's LEFT. See above; this is the one line that decides whether
+    -- the words come out the right way round.
+    --
+    -- ═══ AND IT IS THE LINE THE LATERAL IS SPENT ALONG, WHICH IS THE POINT ═══
+    --
+    -- "left" and "right" are already decided here, once, for the text. Sliding
+    -- the sign along the SAME vector is what makes a plate nudged right come out
+    -- to the right of where it was FROM THE SIDE ANYBODY READS IT -- on the tail
+    -- of a van as much as on its nose, with no second opinion about which way
+    -- round the face is. A lateral derived anywhere else would be free to
+    -- disagree with the writing on it, and the symptom would be a plate that
+    -- moves the wrong way on two of the four faces.
+    --
+    -- SUBTRACTED, BECAUSE POSITIVE IS THE READER'S RIGHT and this is their left.
+    local lx, ly = oy, -ox
+    local s = tonumber(side) or 0.0
+    local cx0 = px + ox * dist - lx * s
+    local cy0 = py + oy * dist - ly * s
+    local cz0 = pz + oz
+
+    local function corner(sx, sz)
+        return cx0 + lx * sx, cy0 + ly * sx, cz0 + sz
+    end
+
+    local ax, ay, az = corner( hw,  hh)   -- top-left
+    local bx, by, bz = corner(-hw,  hh)   -- top-right
+    local cx, cy, cz = corner( hw, -hh)   -- bottom-left
+    local dx, dy, dz = corner(-hw, -hh)   -- bottom-right
+
+    -- WHICH SIDE THE CAMERA IS ON. DrawSpritePoly is single-sided, so a quad
+    -- wound for one side is invisible from the other -- and at a five-metre
+    -- reach on a four-metre car the player is regularly behind the bumper. The
+    -- winding swaps; the vertex-to-UV mapping does NOT, so the sign reads
+    -- correctly from the front and (as any real sign does) backwards from
+    -- behind, rather than vanishing.
+    local ux, uy, uz = bx - ax, by - ay, bz - az
+    local vx, vy, vz = cx - ax, cy - ay, cz - az
+    local nx = uy * vz - uz * vy
+    local ny = uz * vx - ux * vz
+    local nz = ux * vy - uy * vx
+
+    local cam = GetGameplayCamCoord()
+    local mx, my, mz = (ax + dx) * 0.5, (ay + dy) * 0.5, (az + dz) * 0.5
+    local flip = (nx * (cam.x - mx) + ny * (cam.y - my) + nz * (cam.z - mz)) < 0.0
+
+    local a = alpha or 255
+    local txd, tex = page.txd, page.tex
+
+    if flip then
+        DrawSpritePoly(ax, ay, az, cx, cy, cz, bx, by, bz,
+            255, 255, 255, a, txd, tex,
+            0.0, 0.0, 1.0,  0.0, 1.0, 1.0,  1.0, 0.0, 1.0)
+        DrawSpritePoly(cx, cy, cz, dx, dy, dz, bx, by, bz,
+            255, 255, 255, a, txd, tex,
+            0.0, 1.0, 1.0,  1.0, 1.0, 1.0,  1.0, 0.0, 1.0)
+    else
+        DrawSpritePoly(ax, ay, az, bx, by, bz, cx, cy, cz,
+            255, 255, 255, a, txd, tex,
+            0.0, 0.0, 1.0,  1.0, 0.0, 1.0,  0.0, 1.0, 1.0)
+        DrawSpritePoly(cx, cy, cz, bx, by, bz, dx, dy, dz,
+            255, 255, 255, a, txd, tex,
+            0.0, 1.0, 1.0,  1.0, 0.0, 1.0,  1.0, 1.0, 1.0)
+    end
+end
+
+--- Draw a page as a FIXED SIGN STANDING ON AN ENTITY'S FRONT FACE (#236).
+---
+--- ═══ THIS IS THE OPPOSITE OF drawWorld, DELIBERATELY ═══
+---
+--- Owner, 2026-08-30: "The store DUIs are dynamically sized and face the player.
+--- I want them to be stationary, with the DUI displayed on the front face of the
+--- vehicle, akin to a yard sign."
+---
+--- BOTH HALVES OF THAT COMPLAINT ARE ONE CALL. `drawWorld` is
+--- SetDrawOrigin + DrawSprite: the origin projects a world point to the screen
+--- and the sprite is then sized in SCREEN fractions, so the plate is a billboard
+--- (always square to the camera) AND a constant fraction of the display (so
+--- walking away makes it grow relative to the car). Neither is a knob on that
+--- function -- they are what the two natives do.
+---
+--- SO THIS DRAWS THE QUAD IN THE WORLD INSTEAD, in metres, squared to the
+--- entity's HEADING and level with the horizon. Walk round the car and the sign
+--- turns with the car, because its width lies along the car's own forward
+--- vector; lean the car and the sign does not lean, because that vector is
+--- flattened first (the block in the body has the whole argument). Nothing here
+--- reads the camera except to decide which way to wind the triangles.
+---
+--- THE SAME PLUMBING AS drawOnEntity, STOOD UP -- BUT DELIBERATELY NOT THE SAME
+--- BASIS ANY MORE. That one lays a label FLAT on a crate's roof (local X by
+--- local Y at a fixed Z) and takes its corners from the entity's whole matrix,
+--- pitch and roll included, which its own header records as the point of it;
+--- this one stands a sign UPRIGHT in front of a bumper (the car's flattened
+--- forward by the world's up) and drops the lean. Everything downstream of the
+--- corners -- the normal, the camera-side test, the two triangles and their
+--- UVs -- is the same proven arrangement and is deliberately not re-derived.
+---
+--- WHICH WAY ROUND "TOP-LEFT" IS, BECAUSE MIRRORED TEXT IS THE FAILURE HERE. A
+--- player reading the sign stands IN FRONT of the car looking back along the
+--- car's -Y. Facing that way, the car's +X is on their LEFT -- so the texture's
+--- left edge is at +hw and not at -hw. Get this backwards and the sign renders
+--- perfectly, in mirror writing, from the only side anybody stands on.
+---
+--- NO ASPECT CORRECTION AND NO DISTANCE TERM. Both exist in drawWorld only
+--- because a screen-space sprite needs them; a quad measured in metres has one
+--- unit, and perspective is the renderer's job. `prefs.ui` still applies: the
+--- interface-size preference is the player's, and a sign is interface.
+---
+--- @param page table
+--- @param entity integer  the vehicle the sign is bolted to
+--- @param oy number       metres along the entity's heading from its origin to
+---                        the sign's centre
+--- @param oz number       metres straight up from the entity's origin to the
+---                        sign's centre
+--- @param widthM number   how wide the sign is, in metres; height follows the
+---                        page's own aspect
+--- @param alpha number|nil
+function BR.Dui.drawFace(page, entity, oy, oz, widthM, alpha)
+    if not BR.Dui.ready(page) then return end
+    if not entity or entity == 0 or not isTrue(DoesEntityExist(entity)) then
+        return
+    end
+
+    local hw = ((tonumber(widthM) or 0.75) * 0.5) * prefs.ui
+    if hw <= 0.0 then return end
+    local hh = hw * (page.h / page.w)
+
+    -- ═══ LEVEL IN THE WORLD, NOT WELDED TO THE WHOLE MATRIX ═══
+    --
+    -- The corners used to come from GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS,
+    -- which multiplies an offset through the entity's FULL 3x3 -- heading,
+    -- pitch and roll together. So the sign was the vehicle's local X-by-Z
+    -- rectangle and wore every degree the vehicle wore, and a bike parked on
+    -- its kickstand really is rolled. `levelBasis` above is the cure and carries
+    -- the whole argument for it.
+    --
+    -- drawOnEntity BELOW KEEPS THE WHOLE MATRIX, and the divergence is the
+    -- point. Its header (the "STUCK TO AN ENTITY'S TOP FACE" block) records the
+    -- 2026-08-06 bug where a label that ignored pitch and roll lay dead flat
+    -- beside a crate resting on a slope. A label stuck to a lid must follow the
+    -- lid; a sign standing in front of a car must not follow the car's lean.
+    -- Do not "make them consistent".
+    local fx, fy = levelBasis(entity)
+    if not fx then return end
+
+    -- THE NOSE IS JUST ONE DIRECTION TO STAND OUT ALONG, and it is this
+    -- function's only one. `oy` is the distance along it; drawNearFace below
+    -- picks a different direction from the same basis and spends it the same
+    -- way. Left and right are the READER'S, which drawPlane owns.
+    local p = GetEntityCoords(entity)
+    -- NO LATERAL. The yard sign stands on the centre of the nose and the owner
+    -- approved it there; a nil would do the same thing, and 0.0 says the
+    -- decision was made rather than skipped.
+    drawPlane(page, p.x, p.y, p.z, fx, fy, oy, 0.0, oz, hw, hh, alpha)
+end
+
+--- Draw a page as a sign on WHICHEVER FACE OF A VEHICLE A POINT IS NEAREST TO.
+---
+--- ═══ THE REQUEST ═══
+---
+--- Owner, 2026-08-31, on the revive prompt: "I don't like the positioning of the
+--- 'press E to revive' DUI... What I want is a DUI that shows on the nearest
+--- face of the vehicle."
+---
+--- So: approach the ambulance from the driver's side and the plate is on the
+--- driver's side; walk round the back and it moves to the back. drawFace above
+--- is this with the answer fixed to the nose.
+---
+--- ═══ IT IS drawFace's BASIS AND drawFace's QUAD, WITH ONE DIFFERENT NUMBER ═══
+---
+--- Everything that was hard about the yard sign -- levelling a leaning bike,
+--- getting the reader's left the right way round, winding the triangles toward
+--- the camera -- is `levelBasis` and `drawPlane`, and both are shared verbatim
+--- with the function above rather than reasoned about a second time. What is new
+--- here is two lines: which way is out, and how far.
+---
+--- ═══ THE FACE COMES OFF THE MODEL, SO AN UNSEEN VAN IS RIGHT ═══
+---
+--- BR.NearestBoxFace is handed GET_MODEL_DIMENSIONS' own box, so the sides of a
+--- longer ambulance are further out and its tail is further back with nothing
+--- here changing. A constant tuned against one model is the thing this avoids;
+--- see that function's header, and BR.ShopSolve.signHeight, which the caller's
+--- `oz` normally comes through for the same reason.
+---
+--- THE POINT IS THE CALLER'S, NOT THE CAMERA'S. "Whichever face the player is
+--- standing closest to" is about where the player is standing, and a camera
+--- swung round the van on the mouse must not move the plate to a face nobody is
+--- at. This file has no opinion about whose position it is handed.
+---
+--- @param page table
+--- @param entity integer  the vehicle the sign is bolted to
+--- @param px number       the point the nearest face is nearest TO -- the
+--- @param py number       player's own position, in the world
+--- ═══ AND ALONG IT, WHICH IS THE SECOND DIRECTION THE FACE ALREADY CARRIES ═══
+---
+--- Owner, 2026-09-01: "I need to be able to move it left/right as well. in/out
+--- and up/down are great but can't do left/right right now."
+---
+--- `out` spends the face's own OUTWARD normal; `side` spends the perpendicular
+--- of that same normal. Both come out of BR.NearestBoxFace's answer, so neither
+--- is a guess about which way the van is pointing and both follow the plate to
+--- whichever panel the player walked round to. The perpendicular is taken in
+--- drawPlane, beside the line that already decides the reader's left, so the
+--- text and the offset cannot come to disagree -- see the note there.
+---
+--- @param out number      metres the sign stands off that face's panel
+--- @param oz number       metres straight up from the entity's origin
+--- @param widthM number   how wide the sign is, in metres; height follows the
+---                        page's own aspect
+--- @param side number|nil metres along that face, positive to the reader's right
+--- @param alpha number|nil
+--- @return number|nil ux, number uy  which face it drew on, in the vehicle's own
+---                        axes, so a tuning readout can name it. nil when
+---                        nothing was drawn.
+function BR.Dui.drawNearFace(page, entity, px, py, out, oz, widthM, side, alpha)
+    if not BR.Dui.ready(page) then return nil end
+    if not entity or entity == 0 or not isTrue(DoesEntityExist(entity)) then
+        return nil
+    end
+
+    local hw = ((tonumber(widthM) or 0.75) * 0.5) * prefs.ui
+    if hw <= 0.0 then return nil end
+    local hh = hw * (page.h / page.w)
+
+    local fx, fy, rx, ry = levelBasis(entity)
+    if not fx then return nil end
+
+    local box = modelBox(GetEntityModel(entity))
+    if not box then return nil end
+
+    -- THE PLAYER, IN THE VEHICLE'S OWN LEVEL AXES. A dot product against each
+    -- basis vector and nothing else -- no world-to-local native, no matrix, and
+    -- no second flattening. `lx` is metres along the van's right, `ly` metres
+    -- along its nose, which is the frame the model's box is written in.
+    local p = GetEntityCoords(entity)
+    local dx, dy = px - p.x, py - p.y
+    local lx = dx * rx + dy * ry
+    local ly = dx * fx + dy * fy
+
+    local ux, uy, reach = BR.NearestBoxFace(lx, ly, box.minx, box.maxx,
+                                            box.miny, box.maxy)
+
+    -- ...and that face's outward normal, back in the world. (ux, uy) is one of
+    -- the four unit axes, so this is a column of the basis and stays unit
+    -- length -- which is what lets `reach + out` be read as metres.
+    local ox = rx * ux + fx * uy
+    local oy = ry * ux + fy * uy
+
+    drawPlane(page, p.x, p.y, p.z, ox, oy, reach + (tonumber(out) or 0.0),
+              tonumber(side) or 0.0, oz, hw, hh, alpha)
+    return ux, uy
+end
+
 --- Draw a page FLAT ON THE SCREEN, at a fixed spot, like a HUD element.
 ---
 --- THE OTHER TWO DRAWS PIN A PAGE TO THE WORLD; THIS ONE DELIBERATELY DOES NOT,
@@ -300,15 +664,8 @@ function BR.Dui.drawOnEntity(page, entity, size, lift, alpha)
     -- runs every frame the player is looking at a crate -- exactly the kind of
     -- per-frame engine call that shows up as hitching rather than as a
     -- steady cost. The answer is a constant for a given model.
-    local model = GetEntityModel(entity)
-    local dims = DIMS[model]
-    if not dims then
-        local a, b = GetModelDimensions(model)
-        if not a or not b then return end
-        dims = { minx = a.x, miny = a.y, minz = a.z,
-                 maxx = b.x, maxy = b.y, maxz = b.z }
-        DIMS[model] = dims
-    end
+    local dims = modelBox(GetEntityModel(entity))
+    if not dims then return end
     local mn = { x = dims.minx, y = dims.miny, z = dims.minz }
     local mx = { x = dims.maxx, y = dims.maxy, z = dims.maxz }
     local ox, oy = (mn.x + mx.x) * 0.5, (mn.y + mx.y) * 0.5
@@ -437,6 +794,56 @@ AddEventHandler('br:settings:changed', function(s)
         if p.ready then pushScale(p) end
     end
 end)
+
+--- THE INTERFACE'S GREEN, AS THE HUD'S OWN CASCADE RESOLVED IT.
+---
+--- A DUI is a separate document with no access to index.css, so a page that
+--- wants a palette colour has to be told one. br_ui/client/settings.lua explains
+--- at length why the value travels from the page rather than being written down
+--- a second time here; the short version is that `--color-hp` is remapped by the
+--- colourblind modes, and a hex in this file would be the one green in the game
+--- that ignored the setting.
+---
+--- HELD RATHER THAN PUSHED. Unlike the text scale, no page needs this the moment
+--- it changes: it is read by the CALLER at the moment it builds a message
+--- (BR.Shop's price line), so a page showing nothing has nothing to correct. One
+--- fewer message on a path that runs while the player is walking.
+---
+--- NIL UNTIL br_ui HAS APPLIED ITS SETTINGS ONCE, which is a real state and not
+--- an error -- a br_core restart mid-session lands here with nothing until the
+--- next apply. Every reader must treat nil as "no colour", and the prompt page
+--- falls back to its own default when the field is absent.
+local hpColour = nil
+
+--- ...AND THE CURRENCY'S ORANGE, BY THE SAME ROUTE AND FOR THE SAME REASON.
+---
+--- Owner, 2026-08-30: "the volts text should be orange - the same color we show
+--- in the market page." That colour is `--color-royale-accent2`, which is what
+--- ui-src/src/screens/Market.tsx paints both the balance plate and every price
+--- button with -- so the shop plate's price and the Store screen's prices are
+--- now one token rather than two decisions that happen to agree.
+---
+--- READ OUT OF THE DOCUMENT, NOT WRITTEN DOWN HERE, exactly as the green above
+--- is. `--color-royale-accent2` is not one of the four tokens the colourblind
+--- modes remap today, and that is not a reason to hardcode it: the whole point
+--- of resolving through getComputedStyle is that index.css stays the only place
+--- a colour is authored, so the day accent2 is retuned -- or the day a
+--- colourblind mode starts remapping it -- nothing here goes stale in silence.
+local voltsColour = nil
+
+AddEventHandler('br:settings:palette', function(p)
+    if type(p) ~= 'table' then return end
+    if type(p.hp) == 'string' and p.hp ~= '' then hpColour = p.hp end
+    if type(p.volts) == 'string' and p.volts ~= '' then voltsColour = p.volts end
+end)
+
+--- The interface's green, or nil if br_ui has not reported one yet.
+--- @return string|nil
+function BR.Dui.hp() return hpColour end
+
+--- The interface's currency orange, or nil if br_ui has not reported one yet.
+--- @return string|nil
+function BR.Dui.volts() return voltsColour end
 
 --- ASK, RATHER THAN WAIT (#131's lesson, in the small).
 ---

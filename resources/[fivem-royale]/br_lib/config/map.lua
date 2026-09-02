@@ -17,6 +17,164 @@ BR.Config = BR.Config or {}
 
 BR.Config.Map = {}
 
+--- THE PLAYABLE BOUNDARY. HAND-AUTHORED. SURVEYED IN GAME BY THE OWNER ON
+--- 2026-08-28 WITH /brsurvey, AND THE SOURCE OF TRUTH FOR WHAT IS ON THE MAP.
+---
+--- ═══ WHY IT EXISTS ═══
+---
+--- Owner, 2026-08-28: "we have too many places where the storm can end outside
+--- the map and in the ocean", then, once the survey was in: "everything OUTSIDE
+--- this area should be immediately removed from gameplay including POIs and
+--- storm anchors please."
+---
+--- BR.Config.Storm.mapAABB is a RECTANGLE and the island is not one. Every
+--- corner of that box is open water, and the storm's per-phase drift is clamped
+--- into the box, so the corners were reachable: a simulation of 4000 matches
+--- against the old rule ended 20.2% of them with the final circle's centre
+--- outside this shape, the worst 2.2 km outside it. That is the reported bug,
+--- measured. The AABB is still there and still does its coarse job; this ring
+--- is what the storm is actually held to now.
+---
+--- ═══ HOW IT WAS MADE, AND WHY THAT MATTERS ═══
+---
+--- He walked the pause map and clicked every vertex, in order, with
+--- br_core/client/survey.lua drawing the line back to him as he went. This is
+--- AUTHORED DATA in exactly the sense BR.Config.Map.AmbulanceSpawns below is:
+--- the only person on this project who can see the map made the gesture, and
+--- the tool printed the numbers. It is not a guess to be improved by anybody
+--- reading this file. Correct it by SURVEYING AGAIN, not by nudging a vertex
+--- that looks wrong from a coordinate listing.
+---
+--- ═══ 66 POINTS, NOT THE 67 HE CLICKED ═══
+---
+--- /brsurveydump printed 67, of which the 67th is 0m from the 1st -- he closed
+--- the ring by hand, which is exactly right for a tool that has to show him a
+--- complete outline. The ring here closes IMPLICITLY (edge n -> edge 1), so
+--- keeping his closing vertex would author a ZERO-LENGTH EDGE, and a
+--- zero-length edge is the one input every on-the-line test degenerates on:
+--- the perpendicular distance to it is 0/0. So the duplicate is dropped and the
+--- closure is the loop's business. tools/check_boundary.lua fails the build if
+--- a repeated closing vertex ever comes back.
+---
+--- ═══ WHAT THE TOOL REPORTED, RECOMPUTED HERE AS A CHECKSUM ═══
+---
+---     closed     YES -- point 67 is 0m from point 1
+---     perimeter  34.36 km        area      51.06 km^2
+---     centroid   358.0, 1976.3   (area-weighted)
+---     bbox       x -3244.3 .. 3955.9    y -3515.6 .. 7259.8
+---
+--- tools/check_boundary.lua recomputes all of it from the rows below and fails
+--- if any of it has moved. That is what makes the table hard to edit by
+--- accident: the numbers are pinned to a survey, not to whatever is in the file.
+---
+--- ═══ WHERE IT IS COARSER THAN THE COASTLINE ═══
+---
+--- 66 clicks around a 34 km perimeter is a vertex every 520m on average, so
+--- straight chords cut across bays. The longest is the 1.6 km run from
+--- (-1216.2, -1834.5) to (-2110.7, -560.7), which spans the whole west Los
+--- Santos waterfront in one line and leaves DEL PERRO PIER 177m behind it --
+--- the pier is a structure over water and the chord follows the shore. That is
+--- the survey's answer and it was applied; adding one vertex out around
+--- (-1900, -1150) is all it would take to bring the pier back, and that is a
+--- survey decision, not a code one.
+BR.Config.Map.Boundary = {
+    { x =      52.7, y =   7259.8 },   -- 1
+    { x =     472.6, y =   6773.7 },   -- 2
+    { x =    1596.1, y =   6691.3 },   -- 3
+    { x =    2252.9, y =   6747.4 },   -- 4
+    { x =    3390.4, y =   6108.7 },   -- 5
+    { x =    3387.4, y =   5485.8 },   -- 6
+    { x =    3181.0, y =   5092.7 },   -- 7
+    { x =    3900.9, y =   4394.4 },   -- 8
+    { x =    3955.9, y =   4069.8 },   -- 9
+    { x =    3721.4, y =   3782.0 },   -- 10
+    { x =    3897.4, y =   3455.6 },   -- 11
+    { x =    2866.7, y =   1788.5 },   -- 12
+    { x =    2747.9, y =   1100.7 },   -- 13
+    { x =    2959.0, y =    816.4 },   -- 14
+    { x =    2784.1, y =    174.2 },   -- 15
+    { x =    2782.9, y =   -540.0 },   -- 16
+    { x =    2807.0, y =   -822.1 },   -- 17
+    { x =    2622.1, y =  -1168.3 },   -- 18
+    { x =    2454.4, y =  -1447.5 },   -- 19
+    { x =    2592.7, y =  -2095.9 },   -- 20
+    { x =    2279.7, y =  -2122.7 },   -- 21
+    { x =    1456.0, y =  -2740.5 },   -- 22
+    { x =     959.3, y =  -2635.4 },   -- 23
+    { x =     772.5, y =  -2671.7 },   -- 24
+    { x =     777.0, y =  -2863.0 },   -- 25
+    { x =    1198.4, y =  -2865.0 },   -- 26
+    { x =    1288.9, y =  -3071.6 },   -- 27
+    { x =    1289.5, y =  -3341.3 },   -- 28
+    { x =     722.0, y =  -3350.9 },   -- 29
+    { x =     101.0, y =  -3324.1 },   -- 30
+    { x =      94.0, y =  -2773.3 },   -- 31
+    { x =    -263.1, y =  -2693.0 },   -- 32
+    { x =    -495.8, y =  -2932.1 },   -- 33
+    { x =    -573.6, y =  -2821.2 },   -- 34
+    { x =    -748.9, y =  -2800.2 },   -- 35
+    { x =    -857.3, y =  -3077.6 },   -- 36
+    { x =    -757.3, y =  -3240.2 },   -- 37
+    { x =    -970.9, y =  -3515.6 },   -- 38
+    { x =   -1953.3, y =  -3110.2 },   -- 39
+    { x =   -1586.0, y =  -2232.3 },   -- 40
+    { x =   -1216.2, y =  -1834.5 },   -- 41
+    { x =   -2110.7, y =   -560.7 },   -- 42
+    { x =   -3056.8, y =     57.0 },   -- 43
+    { x =   -3144.2, y =    371.8 },   -- 44
+    { x =   -3187.5, y =    760.0 },   -- 45
+    { x =   -3244.3, y =   1308.9 },   -- 46
+    { x =   -3142.4, y =   1783.2 },   -- 47
+    { x =   -3006.0, y =   2240.3 },   -- 48
+    { x =   -2764.4, y =   2521.4 },   -- 49
+    { x =   -2704.5, y =   2942.2 },   -- 50
+    { x =   -3113.2, y =   3311.3 },   -- 51
+    { x =   -2994.0, y =   3546.5 },   -- 52
+    { x =   -2543.9, y =   3667.0 },   -- 53
+    { x =   -2507.8, y =   4146.6 },   -- 54
+    { x =   -2198.8, y =   4611.6 },   -- 55
+    { x =   -1847.6, y =   4827.3 },   -- 56
+    { x =   -1754.7, y =   5077.8 },   -- 57
+    { x =   -1398.8, y =   5390.7 },   -- 58
+    { x =    -881.6, y =   5664.7 },   -- 59
+    { x =    -968.8, y =   6182.9 },   -- 60
+    { x =    -888.4, y =   6192.3 },   -- 61
+    { x =    -811.2, y =   6020.0 },   -- 62
+    { x =    -668.2, y =   6182.8 },   -- 63
+    { x =    -614.4, y =   6381.6 },   -- 64
+    { x =    -222.5, y =   6682.2 },   -- 65
+    { x =     -31.0, y =   6986.0 },   -- 66
+}
+
+--- ═══ EIGHT WERE REMOVED ON 2026-08-28, BY THE BOUNDARY ABOVE ═══
+---
+--- Owner, on handing over the survey: "everything OUTSIDE this area should be
+--- immediately removed from gameplay including POIs and storm anchors please."
+--- These are the eight of 128 whose CENTRE fell outside the ring, worst first,
+--- with the distance from the centre to the nearest boundary edge:
+---
+---     noose_e       East NOOSE Bluffs      489m   tier 1
+---     lighthouse_e  Lighthouse Point       260m   tier 1
+---     delperro      Del Perro Pier         177m   tier 2
+---     chianski_e    East San Chianski      119m   tier 1
+---     lighthouse    El Gordo Lighthouse    105m   tier 1
+---     graybeard     Graybeard Woods         51m   tier 1
+---     palmer_s      South Palmer Flats      51m   tier 1
+---     calafia       Calafia Bridge          45m   tier 2
+---
+--- THE TEST IS ON THE CENTRE, NOT THE DISC, and that is a deliberate line. A
+--- 200m radius on a centre 40m inside puts most of its loot scatter over the
+--- edge, so a whole-disc rule would be defensible -- and it would delete
+--- fifteen more, including Chumash, the Terminal Docks and San Chianski Range,
+--- all of them real towns the owner walked. The scatter already has two
+--- backstops the centre does not: loot_gen refuses the water rectangles, and
+--- the client ground-probes every item and reports the wet ones back to be
+--- relocated. A POI CENTRE has neither. So the centre is what the boundary
+--- governs, which is also what he asked for -- "remove any POIs which are
+--- outside of those bounds".
+---
+--- Loot cost of the eight: budget 859 -> 813 items (-46), crates 2616 -> 2456
+--- (-160). Both stay inside the window tools/test_shared.lua pins.
 BR.Config.Map.POIs = {
     -- Los Santos city
     -- THE TWO SOUTHERN HOT DROPS. Both were tier 2 on a 280-300m radius, which
@@ -26,7 +184,9 @@ BR.Config.Map.POIs = {
     -- loot far enough that four players can land apart and all find something.
     { id = 'lsia',        name = 'LS International', x = -1037.0, y = -2737.0, z =  20.0, radius = 400.0, tier = 3 },
     { id = 'vespucci',    name = 'Vespucci Beach',   x = -1200.0, y = -1500.0, z =  10.0, radius = 260.0, tier = 2 },
-    { id = 'delperro',    name = 'Del Perro Pier',   x = -1850.0, y = -1240.0, z =  13.0, radius = 200.0, tier = 2 },
+    -- `delperro` (Del Perro Pier, -1850, -1240, tier 2) was HERE and is out of
+    -- bounds by 177m -- the largest single removal of the eight and the one
+    -- worth arguing about. See the removal list at the top of this table.
     -- The beach itself, north of the pier: open sand with the boardwalk and
     -- the apartment blocks behind it. A hot drop by request (user,
     -- 2026-08-07) -- the west coast had a tier-2 pier and nothing else.
@@ -113,7 +273,6 @@ BR.Config.Map.POIs = {
     { id = 'chiliad',     name = 'Mount Chiliad',    x =   450.0, y =  5700.0, z = 780.0, radius = 240.0, tier = 1 },
     { id = 'procopio',    name = 'Procopio Beach',   x =  1450.0, y =  6550.0, z =   2.0, radius = 240.0, tier = 1 },
     { id = 'gordo',       name = 'Mount Gordo',      x =  2870.0, y =  5910.0, z = 340.0, radius = 220.0, tier = 1 },
-    { id = 'lighthouse',  name = 'El Gordo Lighthouse', x = 3335.0, y = 5160.0, z =  18.0, radius = 200.0, tier = 1 },
     { id = 'humane',      name = 'Humane Labs',      x =  3600.0, y =  3700.0, z =  30.0, radius = 260.0, tier = 3 },
     { id = 'zancudo',     name = 'Fort Zancudo',     x = -2100.0, y =  3200.0, z =  32.0, radius = 340.0, tier = 3 },
 
@@ -202,9 +361,7 @@ BR.Config.Map.POIs = {
 
     -- North-west: the Paleto forest, off the coast road and off Senora.
     { id = 'paleto_f',    name = 'Paleto Forest',    x =  -950.0, y =  5450.0, z = 130.0, radius = 240.0, tier = 1 },
-    { id = 'graybeard',   name = 'Graybeard Woods',  x = -1750.0, y =  5150.0, z =  50.0, radius = 220.0, tier = 1 },
     { id = 'raton_n',     name = 'North Raton Canyon', x = -1900.0, y = 4700.0, z =  30.0, radius = 200.0, tier = 1 },
-    { id = 'calafia',     name = 'Calafia Bridge',   x = -1000.0, y =  6100.0, z =  35.0, radius = 220.0, tier = 2 },
 
     -- The Chiliad massif, on every face of it.
     { id = 'chiliad_ridge', name = 'Chiliad Ridge',  x =   150.0, y =  5450.0, z = 400.0, radius = 220.0, tier = 1 },
@@ -218,6 +375,68 @@ BR.Config.Map.POIs = {
     { id = 'senora_n',    name = 'North Senora Flats', x = 2500.0, y =  4300.0, z =  40.0, radius = 240.0, tier = 2 },
     { id = 'mthaan',      name = 'Mount Haan',       x =  3100.0, y =  4500.0, z = 110.0, radius = 220.0, tier = 2 },
     { id = 'eastbeach',   name = 'East Coast Bluffs', x = 3600.0, y =  4350.0, z =  30.0, radius = 200.0, tier = 1 },
+
+    -- TWENTY-ONE MORE GREEN, OUT OF A LIST OF TWENTY-FIVE COORDINATES.
+    --
+    -- Owner, 2026-08-23: a bare list of 25 x/y pairs and "all of these should
+    -- be green". Green is tier 1 -- br_core/client/loot.lua colours the
+    -- /brpois blips { [1] = 2, [2] = 5, [3] = 1 } and prints "green = tier 1
+    -- (rural)" underneath them.
+    --
+    -- THE LIST IS NOT A RE-TIERING REQUEST, and that was the first thing that
+    -- had to be settled rather than assumed. NOT ONE of the 25 falls inside
+    -- any existing POI's radius. The closest approach in the whole set is 331m
+    -- from San Chianski Range's centre on a 240m radius -- 91m outside its rim
+    -- -- and the next is 311m from Land Act Dam's. Every one is a gap, which
+    -- is also what a pass over the map with the /brpois blips on produces: the
+    -- places with no blip on them.
+    --
+    -- FOUR OF THE 25 ARE NOT HERE, because they may be sea and a POI centre in
+    -- the sea is silent. The generator only refuses the authored Water
+    -- rectangles below, and none of the four is inside one; the client's ground
+    -- probe then declines to build a prop over a seabed WITHOUT SAYING SO, so
+    -- the whole POI would simply be 25 loot entries that never appear.
+    --   (218.9, 7414.8)   1174m north of Paleto Bay, and further north than
+    --                     anything else in this table by 769m
+    --   (4116.2, 4494.0)  536m from East Coast Bluffs, and further east than
+    --                     any mainland POI by 438m
+    --   (2499.3, -1885.0) 101m west of the eastern-seaboard water rectangle,
+    --                     inside its latitudes
+    --   (2838.6, -1453.3) 147m north of the same rectangle, inside its
+    --                     longitudes -- and that rectangle is drawn
+    --                     deliberately SMALLER than the real sea
+    -- They want one /brtp each before they go in, not a guess.
+    --
+    -- Z IS INTERPOLATED, NOT WALKED. The owner gave x/y only, so each z here
+    -- comes from the hand-walked z of the POIs around it. That is survivable
+    -- because z is only ever a hint: the client probes from max(z + 50, 300)
+    -- and puts the item on the ground it finds (client/loot.lua, groundZ).
+    -- `noose_n` is the exception and is real -- it sits 40m from one of the
+    -- ambulance points the owner surveyed the same day, which read z 108.11.
+    --
+    -- RADIUS 200 THROUGHOUT, the smallest the tier-1 set uses. Several of
+    -- these sit within 400m of an existing centre, and a tight disc keeps the
+    -- overlap down until somebody walks the rims with /brtp.
+    --
+    -- Appended at the END on purpose: loot_gen walks this table in authored
+    -- order, so adding here leaves every existing item's id where it was.
+    { id = 'mirrorpark_s', name = 'South Mirror Park', x = 1167.03, y = -1179.0, z = 35.0, radius = 200.0, tier = 1 },
+    { id = 'noose_w',     name = 'West NOOSE Ridge',  x =  1931.5, y =  -837.6, z =  80.0, radius = 200.0, tier = 1 },
+    { id = 'burro_n',     name = 'North Burro Ridge', x =  1721.0, y = -1579.4, z =  40.0, radius = 200.0, tier = 1 },
+    { id = 'burro_e',     name = 'East Burro Coast',  x =  1989.8, y = -1813.4, z =  35.0, radius = 200.0, tier = 1 },
+    { id = 'landact_s',   name = 'Land Act South',    x =  1628.7, y =  -338.9, z =  60.0, radius = 200.0, tier = 1 },
+    { id = 'noose_n',     name = 'North NOOSE Ridge', x =  2577.3, y =   372.6, z = 108.0, radius = 200.0, tier = 1 },
+    { id = 'palomino_s',  name = 'South Palomino Ridge', x = 2295.9, y = 1182.2, z = 30.0, radius = 200.0, tier = 1 },
+    { id = 'senora_w',    name = 'Grand Senora West', x =   879.0, y =  3394.6, z =  55.0, radius = 200.0, tier = 1 },
+    { id = 'grapeseed_n', name = 'North Grapeseed Fields', x = 2055.6, y = 5183.5, z = 70.0, radius = 200.0, tier = 1 },
+    { id = 'procopio_e',  name = 'Procopio Bluffs',   x =  1994.0, y =  6179.7, z =  35.0, radius = 200.0, tier = 1 },
+    { id = 'cove_n',      name = 'North Cove Point',  x =   688.0, y =  6645.4, z =  25.0, radius = 200.0, tier = 1 },
+    { id = 'chaparral_w', name = 'West Chaparral',    x =  -714.4, y =  2409.6, z =  75.0, radius = 200.0, tier = 1 },
+    { id = 'kortz_s',     name = 'South Kortz Bluffs', x = -2176.2, y =  -402.6, z =  45.0, radius = 200.0, tier = 1 },
+    { id = 'richman_n',   name = 'North Richman Hills', x = -1237.8, y =  674.6, z = 110.0, radius = 200.0, tier = 1 },
+    { id = 'obs_ridge',   name = 'Observatory Ridge', x =  -647.0, y =   845.0, z = 240.0, radius = 200.0, tier = 1 },
+    { id = 'arena_w',     name = 'West Arena Flats',  x =  -684.4, y = -2112.9, z =  12.0, radius = 200.0, tier = 1 },
+    { id = 'fuente_s',    name = 'South Fuente Ridge', x = 1545.2, y =   835.3, z = 105.0, radius = 200.0, tier = 1 },
 }
 
 --- Where the Battle Bus opens its doors regardless of where it is in the tour.
@@ -343,6 +562,133 @@ BR.Config.Map.NoLoot = {
     { minX = 3932.59 - 25.0, minY = -4712.51 - 25.0,
       maxX = 4525.47 + 25.0, maxY = -4456.65 + 25.0 },
 }
+
+--- Ambulance spawn points, surveyed in game by the owner on 2026-08-23.
+---
+--- ═══ #191 READS THIS NOW. #219 STILL DOES NOT ═══
+---
+--- This block said "nothing reads this table yet, and that is the point", which
+--- was true for exactly as long as it took the CPR kit to land. It is corrected
+--- rather than deleted, because the warning it carried is the reason to keep
+--- reading: a value with no readers is a value with no behaviour, so grep before
+--- trusting it in either direction.
+---
+--- THE ONE READER IS `BR.Config.Rescue.Points()` (br_lib/config/rescue.lua),
+--- which returns THIS TABLE ITSELF rather than a copy, at call time. So these
+--- rows are live data: adding, moving or deleting one here changes where
+--- ambulances appear and where they drive to, with no other file edited. #191
+--- uses it for BOTH ends of a rescue -- nearest point to the death is the
+--- pickup, and the shortest point that will still be inside the storm circle on
+--- arrival is the drop-off.
+---
+--- NOTHING WRITES TO IT, and nothing may start. It is survey data, and #219
+--- (squad resurrection, where ambulances become "a tracked, map-wide resource"
+--- blipped for every squad) is still unbuilt and will want the same rows.
+---
+--- ═══ THE ROWS CARRY AN `id` NOW, AND IT IS DERIVED RATHER THAN INVENTED ═══
+---
+--- This block said an id was not needed because #191 only ever uses one in a log
+--- line. That was true and it made the log line useless: the owner's own console
+--- from the first successful ride read `pickup=nil  dest=nil` beside two pairs
+--- of coordinates, which is a rescue nobody can talk about without a map open.
+---
+--- EACH ID IS THE NEAREST POI's ID, taken from BR.Config.Map.POIs above. Not a
+--- place name chosen by eye -- these coordinates are somewhere in Los Santos and
+--- guessing at what to call them is how a table ends up with two names for one
+--- car park. The nearest POI is a name this file already agrees on, it is what
+--- the paragraph below was ALREADY cross-checking the z values against, and the
+--- mapping is unique: no two spawns share a nearest POI except the two Davis
+--- ones, and the further of those takes the `_e` suffix this file already uses
+--- for exactly that (procopio_e, harmony_n, gordo_s, vinehills_e).
+---
+--- AN ID NAMES THE NEIGHBOURHOOD, NOT THE POINT. Several are a few hundred
+--- metres from the POI they are named for -- `terminal` is 406m from the dock
+--- and `strawberry` is 82m from the junction -- which is the honest reading of
+--- "the ambulance station near X" and is all a log line needs.
+---
+--- NOTHING WAS RENUMBERED, REORDERED OR MOVED. The owner surveyed all 23 by
+--- hand; the ids are a new field on unchanged rows, and the row order is still
+--- the order he walked them in.
+---
+--- AUTHORED WITH /brcoords (br_core/client/debug.lua), which prints exactly
+--- these four numbers in exactly this order. So these are ped-standing
+--- positions on ground that streamed in, not points picked off a map -- and
+--- the z values are real, which is the difference between this table and the
+--- POI centres above. `heading` is the way the owner was facing, which is the
+--- way a vehicle put here should face.
+---
+--- Each was cross-checked against the hand-walked z of the nearest POI and
+--- nothing looks like a typo. The two largest disagreements are both a road
+--- above a shoreline rather than an error: 6434.23 north sits 30m above
+--- Procopio BEACH's centre 263m away, and -2596.73 sits 42m above the
+--- Terminal's dock 406m away. The two highest points in the list are the ones
+--- that look wrong and are not -- (-408.51, 1200.45, 325.30) is 2m from
+--- Galileo Observatory, whose walked z is 330, and (358.31, 786.37, 186.16) is
+--- 96m from Vinewood Hills East, whose walked z is 180.
+BR.Config.Map.AmbulanceSpawns = {
+    { id = 'paleto',       x =  -357.57, y = 6134.72, z =  31.10, heading =  43.9 },
+    { id = 'procopio',     x =  1686.21, y = 6434.23, z =  32.04, heading = 161.7 },
+    { id = 'grapeseed',    x =  1687.58, y = 4796.53, z =  41.56, heading = 181.7 },
+    { id = 'senora_n',     x =  2518.10, y = 4198.01, z =  39.58, heading = 149.1 },
+    { id = 'sandy',        x =  1866.94, y = 3698.16, z =  33.21, heading = 209.0 },
+    { id = 'harmony',      x =   568.70, y = 2721.65, z =  41.71, heading =   3.9 },
+    { id = 'penitentiary', x =  1834.39, y = 2541.99, z =  45.53, heading = 268.5 },
+    { id = 'dryfields',    x =  2558.61, y = 2743.19, z =  42.21, heading = 326.9 },
+    { id = 'palmer',       x =  2676.64, y = 1369.68, z =  24.18, heading = 270.5 },
+    { id = 'humane',       x =  3638.16, y = 3768.96, z =  28.19, heading =  22.5 },
+    { id = 'terminal',     x =  1444.42, y = -2596.73, z = 47.89, heading = 345.4 },
+    { id = 'noose_n',      x =  2550.40, y =  342.59, z = 108.11, heading = 268.9 },
+    { id = 'strawberry',   x =    57.17, y = -1569.73, z = 29.11, heading =  49.1 },
+    { id = 'arena_w',      x =  -820.16, y = -2373.66, z = 14.22, heading = 149.6 },
+    { id = 'strawberry_e', x =   411.83, y = -1433.28, z = 29.05, heading =  30.0 },
+    { id = 'hawick',       x =   469.59, y =  247.19, z = 102.86, heading =  69.4 },
+    { id = 'richman',      x = -1679.92, y =   44.41, z =  63.30, heading = 160.8 },
+    { id = 'chumash',      x = -3153.00, y = 1089.12, z =  20.36, heading = 280.4 },
+    { id = 'observatory',  x =  -408.51, y = 1200.45, z = 325.30, heading = 163.3 },
+    { id = 'lagozancudo',  x = -1725.42, y = 2945.55, z =  32.46, heading =  62.1 },
+    { id = 'westvinewood', x =  -531.22, y = -323.49, z =  34.68, heading =  29.9 },
+    { id = 'vinehills_e',  x =   358.31, y =  786.37, z = 186.16, heading = 243.9 },
+    -- RENAMED FROM `graybeard` ON 2026-08-28, and the row itself is untouched.
+    -- Graybeard Woods was one of the eight POIs the surveyed boundary removed,
+    -- so the id it was named for no longer exists. Re-derived by the same rule
+    -- as every other row -- nearest POI in the table, which is now Altruist Camp
+    -- at 347m. The coordinates, z and heading are exactly as he walked them.
+    { id = 'altruist',     x = -1491.27, y = 4963.30, z =  63.56, heading =   2.0 },
+}
+
+--- Is this point inside the surveyed playable boundary?
+---
+--- THE ONE TEST THAT DECIDES WHETHER SOMETHING IS ON THE MAP. Points exactly on
+--- the outline count as inside -- see br_lib/shared/polygon.lua for why that is
+--- a decision rather than an accident.
+---
+--- Read at CALL time, not load time: shared/polygon.lua is pulled into the
+--- consuming resource's state alongside this file, and a load-time capture would
+--- bake in whatever order that happened to be. It is also nil-tolerant on
+--- purpose -- a resource that loads config/map.lua without shared/polygon.lua
+--- gets "everything is in bounds" rather than an error at the top of a match.
+--- tools/verify.sh's shared-coverage gate is what stops that being anybody's
+--- runtime surprise.
+---
+--- @param x number
+--- @param y number
+--- @return boolean
+function BR.Config.Map.InBounds(x, y)
+    local test = BR.PointInPolygon
+    if not test then return true end
+    return test(x, y, BR.Config.Map.Boundary)
+end
+
+--- How far is this point from the boundary, in metres? Unsigned -- pair it with
+--- InBounds for the side. This is what the POI audit prints as "outside by".
+--- @param x number
+--- @param y number
+--- @return number
+function BR.Config.Map.BoundaryDistance(x, y)
+    local d = BR.DistanceToPolygonEdge
+    if not d then return 0.0 end
+    return d(x, y, BR.Config.Map.Boundary)
+end
 
 --- Is this point somewhere loot is banned outright?
 --- @param x number

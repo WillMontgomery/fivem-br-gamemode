@@ -350,10 +350,213 @@ local lastNoted = nil
 -- States where the gamemode's own full-screen UI takes the screen: the death
 -- verdict, the spectator handoff, the lobby menu.
 local OUR_SCREEN = {
-    [BR.PlayerState.DEAD]       = true,
-    [BR.PlayerState.SPECTATING] = true,
-    [BR.PlayerState.LOBBY]      = true,
+    [BR.PlayerState.OUT]   = true,
+    [BR.PlayerState.LOBBY] = true,
 }
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- MATCH-SCOPED SURFACES
+--
+-- A SURFACE RAISED INSIDE A MATCH COMES DOWN WHEN THE MATCH IS OVER FOR THIS
+-- PLAYER, AND THAT IS A RULE RATHER THAN A LINE IN ONE HANDLER (#204).
+--
+-- ═══ WHAT WENT WRONG ═══
+--
+-- The death word (below) is the first surface in this client with a lifetime of
+-- its OWN -- raised at the moment of death, taken down on a clock -- rather
+-- than one borrowed from the match state. It was cleared on the transitions a
+-- round normally passes through and on nothing else, so every exit that is not
+-- "the match ended underneath you" carried it out of the match and into the
+-- lobby, where it means nothing.
+--
+-- Leaving mid-match is the one the owner found (2026-08-22). Going down first
+-- is only what makes it instant: server/match.lua's leaveMatch eliminates a
+-- DBNO player on the way out ("leaving while alive IS an elimination"), so the
+-- DEAD delta and the LOBBY delta arrive in the SAME batch -- the word goes up
+-- on the first and the lobby appears underneath it on the second. The identical
+-- bug needs no knockdown at all: die, then use Leave Match inside the window.
+--
+-- ═══ WHY A REGISTRY AND NOT A THIRD CALL TO clearDeathVerdict ═══
+--
+-- Everything else this client draws mid-match -- the DBNO overlay, the spectate
+-- hint, the vehicle bars -- is safe from this only because App.tsx mounts it
+-- inside <Hud>, whose visibility follows the match state. That is protection by
+-- POSITION, not by rule, and DeathVerdict is mounted outside that wrapper on
+-- purpose: `hudUp` goes false the instant a match is decided and the word has
+-- its own end. The next surface with the same reason to sit outside it repeats
+-- this exactly, which is how a fix per screen becomes a bug per screen.
+--
+-- So the edge is named once, here, and a surface joins it by registering.
+--
+-- ═══ THE EDGES, ALL OF THEM ═══
+--
+--   * MY OWN STATE BECOMES LOBBY -- the one transition every exit passes
+--     through, whichever door was used: Leave Match, the ENDED sweep home, a
+--     match destroyed under a dead player (server/match.lua's destroy, which
+--     never reaches ENDED at all), an admin resetting a stuck round. It sits
+--     with BR.NotifyClear() in noteMyState below, which is the same broom on
+--     the same edge for the same reason.
+--   * THE MATCH STATE IS ANYTHING BUT PLAYING -- including WAITING, which is
+--     where a LEAVER's mirror settles: server/broadcast.lua sends the lobby
+--     digest to players in no match, and the digest replays that transition
+--     locally for exactly this kind of teardown.
+--   * A REVIVE -- a death that was undone must take its word with it. #144's
+--     held death really does put the roster through DEAD (server/combat.lua
+--     says so in as many words), so the word genuinely goes up for a player who
+--     is about to be stood back up.
+--   * THE CAMERA MOVES ON TO SOMEBODY ELSE -- a spectate session opening. This
+--     is the one the owner found on 2026-08-22 ("The verdict text still shows
+--     while spectating for some reason") and it is NOT a match exit, which is
+--     why the first four did not cover it: starting to spectate is the opposite
+--     of leaving. See the handler below for why the word is nonetheless done.
+--   * br_core STARTING -- THE PAGE OUTLIVES THIS RESOURCE, and see the note on
+--     `force` below for why that one is not like the others.
+--
+-- ═══ WHAT IS DELIBERATELY NOT IN HERE ═══
+--
+-- The match-end verdict SCREEN (BR.Nui.SUMMARY, further down). It is not a
+-- surface raised inside a match; it IS the teardown. It is gated on the
+-- teardown in App.tsx and the page drops it itself at WAITING -- and the LOBBY
+-- flip that this rule fires on is the very transition that raises it, so
+-- registering it would delete the screen it exists to show.
+--
+-- ═══ AND NOTHING HERE TOUCHES FOCUS ═══
+--
+-- The death word takes no input and is not on the focus stack; br_ui/client/
+-- nui.lua owns that stack and its own comments record what getting near it
+-- costs. A dismissal that also popped focus could strand a player who dies,
+-- leaves and rejoins with no cursor and no way to open the pause menu -- worse
+-- than the bug being fixed, so this touches none of it.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- Registered surfaces, in registration order. Each is { name, dismiss }.
+local matchSurfaces = {}
+
+--- Declare a surface that belongs to a match in progress.
+---
+--- GLOBAL so a surface can register from the file that owns it instead of being
+--- listed here. That is the point of the registry: the EDGE lives in one place
+--- and what each screen knows about itself stays with that screen.
+---
+--- @param name string  printed on the forced path below, which is the one
+---        dismissal with no other evidence that it happened
+--- @param dismiss fun(force: boolean)  take it down. `force` means "send even
+---        if you believe it is already down" -- see dismissMatchSurfaces.
+function BR.MatchSurface(name, dismiss)
+    matchSurfaces[#matchSurfaces + 1] = { name = name, dismiss = dismiss }
+end
+
+--- The match is over for this player: take down everything it raised.
+---
+--- @param force boolean|nil  pass true only when this client's own idea of what
+---        is on screen cannot be trusted -- which is precisely one case, br_core
+---        restarting in front of a page that did not. Compared against `true`
+---        rather than tested for truth, because in Lua 0 is true and a FiveM
+---        BOOL native answers 1.
+local function dismissMatchSurfaces(force)
+    local hard = force == true
+    local said = {}
+    for _, s in ipairs(matchSurfaces) do
+        s.dismiss(hard)
+        said[#said + 1] = s.name
+    end
+
+    -- SAID OUT LOUD ONLY ON THE FORCED PATH, and only because that one is
+    -- otherwise undiagnosable: "I restarted br_core and the word is still
+    -- there" and "the correction went out and the page ignored it" look
+    -- identical from a chair. Every other dismissal has a state change next to
+    -- it in the log. Once per br_core start, which is not a hot path.
+    if hard and #said > 0 then
+        print(('[br_core] match surfaces dropped on start: %s')
+            :format(table.concat(said, ', ')))
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ...AND THE CAMERA MOVING ON IS AN EDGE TOO, THOUGH IT IS NOT AN EXIT
+--
+-- "The verdict text still shows while spectating for some reason." -- the owner,
+-- 2026-08-22.
+--
+-- ═══ WHAT THE WORD'S LIFETIME ACTUALLY IS ═══
+--
+-- Not "ten seconds". The config that carries the number says so in the owner's
+-- own sentence -- "the verdict text ONLY should be shown for ~10 seconds THEN
+-- the text can immediately disappear AS WE SNAP INTO SPECTATING" -- and
+-- BR.DeathVerdictUp below already names the pair: the word and the camera are
+-- ONE SEQUENCE, not two timers that happen to be the same length. The real
+-- lifetime is "from my death until the camera moves on, and no longer than
+-- deathVerdictMs". deathVerdictMs is the CEILING on that, not the definition.
+--
+-- ═══ WHY IT LEAKED, GIVEN client/spectate.lua ALREADY HOLDS THE CAMERA ═══
+--
+-- The hold is real and it is not enough. spectate.lua's SLOW `spectate.open`
+-- loop waits on BR.DeathVerdictUp() before it asks for a target -- so the
+-- AUTOMATIC snap cannot outrun the word. But that loop is not the only way a
+-- session starts: `ask(dir)` refuses ALIVE, DBNO, BUS, FREEFALL, GLIDE and
+-- WARMUP and admits DEAD, so the arrow keys work the instant a player dies --
+-- and the hint that tells them the arrows exist is on screen by then. A dead
+-- player who presses Left or Right inside the window gets a camera on somebody
+-- else with their own verdict still written across it. That is the report.
+--
+-- ═══ WHY THE EDGE IS HERE AND NOT KEYED ON A SPECTATING PLAYER STATE ═══
+--
+-- Because there is no such state, and there never usefully was. There used to
+-- be a `BR.PlayerState.SPECTATING` that was READ in nine places and ASSIGNED IN
+-- NONE, so a rule hung on it was a rule that never fires -- tested green by a
+-- suite that sets the state by hand, and dead in the game.
+--
+-- #233 DELETED IT rather than giving it a writer, which is the owner's own
+-- reading: spectating is possible WHILE a player is OUT, not instead of it. So
+-- there is no state test to go back to here. The fact that actually changes is
+-- the session, and the session arrives on this wire.
+--
+-- ═══ ONLY THE OPENING EDGE, AND NOT FOR AN ADMIN ═══
+--
+-- SPECTATE_SET is the 4 Hz position feed as well as the start message, so `on`
+-- latches and only the transition into a session calls the registry. Dismissal
+-- is idempotent by contract, so this is tidiness rather than correctness today
+-- -- but the next surface to register need not be, and a rule that fired four
+-- times a second for the rest of a match would be the thing that found out.
+--
+-- AND AN ADMIN SPECTATOR IS NOT OUT OF A MATCH. The console's Spectate button
+-- requires only that the admin be in game; they may be alive, mid-fight, with
+-- every surface a live match raises legitimately on screen. `admin` is the
+-- server's own flag on this envelope and it is the discriminator client/
+-- spectate.lua already trusts for the same distinction one file over.
+--
+-- ═══ AND IT DOES NOT TOUCH THE VERDICT'S NORMAL APPEARANCE ═══
+--
+-- On the ordinary path the word is already down when this fires: the SLOW loop
+-- holds until BR.DeathVerdictUp() goes false, THEN asks, and the reply comes
+-- back after that. clearDeathVerdict returns on its first line when the word is
+-- down, so a player who dies and never presses anything sees exactly what they
+-- see today, for exactly as long. A player who never spectates at all never
+-- reaches this handler.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- Is a spectate session running, as far as this file is concerned?
+local spectatingNow = false
+
+RegisterNetEvent(BR.Net.SPECTATE_SET)
+AddEventHandler(BR.Net.SPECTATE_SET, function(d)
+    if type(d) ~= 'table' then return end
+
+    -- READ EXACTLY AS client/spectate.lua READS IT, deliberately. Two handlers
+    -- on one message that disagreed about what a stop is would be a latch that
+    -- says "spectating" while the camera is down, and the disagreement would be
+    -- invisible until the next death.
+    if d.stop then
+        spectatingNow = false
+        return
+    end
+
+    if d.admin == true then return end
+    if spectatingNow then return end
+    spectatingNow = true
+
+    dismissMatchSurfaces()
+end)
 
 local function noteMyState()
     local st = S.me.state
@@ -396,7 +599,15 @@ local function noteMyState()
         -- was going to do it. This is the broom, on the one edge that covers
         -- all of those at once, and it is why the sticky flag is safe to
         -- hand out.
-        if st == BR.PlayerState.LOBBY then BR.NotifyClear() end
+        --
+        -- ...AND SO IS EVERY SURFACE THE MATCH RAISED (#204). The same edge and
+        -- the same argument one paragraph up: this is the transition every way
+        -- out of a match passes through, so it is the one place that does not
+        -- have to know which door was used.
+        if st == BR.PlayerState.LOBBY then
+            BR.NotifyClear()
+            dismissMatchSurfaces()
+        end
     end
     if st == BR.PlayerState.WARMUP or st == BR.PlayerState.BUS
        or st == BR.PlayerState.FREEFALL or st == BR.PlayerState.GLIDE
@@ -532,8 +743,9 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
             -- while a match runs (left it) must summon the lobby and its
             -- focus, and leaving LOBBY must release them.
             if S.me.state ~= wasState then
-                if S.me.state == BR.PlayerState.DEAD then
+                if S.me.state == BR.PlayerState.OUT then
                     diedThisMatch = true
+                    BR.NoteDeath()
                 end
                 noteMyState()
                 applyFocusForState(S.match.state)
@@ -637,7 +849,133 @@ RegisterNetEvent(BR.Net.REVIVED)
 AddEventHandler(BR.Net.REVIVED, function()
     diedThisMatch = false
     myDeathCause, myDeathByPlayer = nil, false
+    -- ...AND THE WORD THAT WENT UP WITH THE DEATH (#204). A held death puts the
+    -- roster through DEAD -- server/combat.lua's holdForStart is explicit that
+    -- it must, or the health check eliminates them for real -- so the death word
+    -- is genuinely on screen for a death that is about to be unwritten. Nothing
+    -- else would take it down: the revive lands on the transition into PLAYING,
+    -- and PLAYING is the one match state a match-scoped surface survives.
+    dismissMatchSurfaces()
 end)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- YOUR OWN DEATH, FOR THE TEN SECONDS BEFORE THE CAMERA MOVES ON
+--
+-- "Upon dying, the verdict text ONLY should be shown for ~10 seconds then the
+-- text can immediately disappear as we snap into spectating. Our typical
+-- verdict screen should remain once the match is over." -- the owner.
+--
+-- ═══ THE TWO MOMENTS WERE NOT SHARING A SURFACE. THERE WAS ONLY ONE ═══
+--
+-- Worth stating plainly, because it is not what the change was expected to be:
+-- nothing was drawn on death at all. BR.Nui.SUMMARY is sent only on
+-- MatchState.ENDED (see below), and App.tsx gates the verdict screen on the
+-- match tearing down -- so a player who died mid-match got no word, no pause
+-- and no acknowledgement, and client/spectate.lua's SLOW loop put them behind a
+-- squadmate within a second. The moment a player most wants to read was the one
+-- moment the game skipped.
+--
+-- So this is a NEW surface rather than a split of an old one, and the match-end
+-- screen below is untouched.
+--
+-- ═══ WHY IT IS PUSHED TWICE ═══
+--
+-- The cause arrives on KILL_FEED and the death arrives on a roster delta, and
+-- they are separate messages with no ordering between them. Waiting for both
+-- would mean a word that appears late or not at all; so the word goes up on the
+-- DEATH, with whatever cause is known -- 'WASTED' is the honest fallback and is
+-- the same default the verdict screen uses -- and is re-sent if the cause lands
+-- inside the window. The player sees WASTED become ELIMINATED at worst, which
+-- is a correction rather than a delay.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- Game-timer ms at which the death word comes down. 0 when nothing is up.
+local deathVerdictUntil = 0
+
+--- @param show boolean
+local function pushDeath(show)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.DEATH, {
+        show     = show,
+        cause    = show and myDeathCause or nil,
+        byPlayer = show and myDeathByPlayer or false,
+    })
+end
+
+--- Take the death word down, whatever is left of its window.
+---
+--- NOT CALLED FROM THE TRANSITIONS ANY MORE -- it is registered as a
+--- match-scoped surface (immediately below) and the edges that mean "the match
+--- is over for this player" reach it through that. See the long note on
+--- BR.MatchSurface for why the list of transitions was the wrong shape: it has
+--- to be complete, it was not, and the one it was missing was the door the
+--- owner used.
+---
+--- @param force boolean|nil  push `show = false` even when this client believes
+---        the word is already down. Only br_core restarting passes it, and it
+---        is the whole reason the argument exists: a fresh Lua state has
+---        deathVerdictUntil = 0, so without it the one call that could correct
+---        a page left holding show=true is the one call that does nothing.
+local function clearDeathVerdict(force)
+    if deathVerdictUntil == 0 and force ~= true then return end
+    deathVerdictUntil = 0
+    pushDeath(false)
+end
+
+-- THE WORD IS A MATCH-SCOPED SURFACE, and this one line is what puts it under
+-- the rule instead of under a list of transitions somebody has to keep complete.
+BR.MatchSurface('death verdict', clearDeathVerdict)
+
+--- I just died. Put the word up and start the clock.
+---
+--- GLOBAL because the roster-delta handler above is the only caller and it is
+--- the one place that sees the edge; a local declared after that handler would
+--- resolve as a nil global at runtime, which is the forward-local trap
+--- tools/check_forward_locals.lua exists for.
+function BR.NoteDeath()
+    local ms = (BR.Config.Spectate and BR.Config.Spectate.deathVerdictMs) or 10000
+    if ms <= 0 then return end
+
+    -- A NEW DEATH IS A NEW SEQUENCE, so the spectate latch is armed here rather
+    -- than only by a stop message.
+    --
+    -- The latch upstairs exists to keep the 4 Hz feed from calling the registry
+    -- four times a second, and the message that lowers it is the server's
+    -- `stop`. That message is reliable -- the feed re-resolves every tick and a
+    -- player with no match gets stopped -- but it is still a message, and the
+    -- failure if one is ever missed is silent and lasts the rest of the session:
+    -- the latch stays up, and the NEXT death's word has no edge to take it down.
+    -- Clearing it on the death costs one assignment and makes the latch describe
+    -- one death rather than one Lua state.
+    --
+    -- Nobody spectating is alive to reach this line, so there is no session
+    -- being forgotten here -- except an ADMIN's, and an admin's push never sets
+    -- the latch in the first place.
+    spectatingNow = false
+
+    deathVerdictUntil = GetGameTimer() + ms
+    pushDeath(true)
+
+    Citizen.SetTimeout(ms, function()
+        -- STILL THE SAME DEATH? A new round, or a match that ended inside the
+        -- window, has already taken the word down and moved the clock; firing
+        -- blind here would push a stale `show = false` over whatever replaced
+        -- it. Comparing the deadline is what makes this timeout idempotent.
+        if deathVerdictUntil ~= 0 and GetGameTimer() >= deathVerdictUntil then
+            clearDeathVerdict()
+        end
+    end)
+end
+
+--- Is the death word still on screen?
+---
+--- READ BY client/spectate.lua, which holds its first request for a target
+--- until this goes false. That is the "then the text can immediately disappear
+--- as we snap into spectating" half: the two are one sequence, not two timers
+--- that happen to be the same length, so shortening deathVerdictMs moves both.
+--- @return boolean
+function BR.DeathVerdictUp()
+    return deathVerdictUntil ~= 0 and GetGameTimer() < deathVerdictUntil
+end
 
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
@@ -649,6 +987,30 @@ AddEventHandler(BR.Net.STATE, function(d)
     if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS then
         diedThisMatch = false
         myDeathCause, myDeathByPlayer = nil, false
+    end
+
+    -- AND EVERY SURFACE THIS MATCH RAISED COMES DOWN WITH ANY STATE THAT IS NOT
+    -- A LIVE MATCH (#204).
+    --
+    -- ONE NEGATIVE RATHER THAN A LIST OF THE FIVE STATES THAT CLEAR, because the
+    -- list is what shipped and the list is what was wrong. It named WARMUP, BUS,
+    -- ENDED and CLEANUP -- and not WAITING, which is the state a LEAVER's mirror
+    -- settles into (server/broadcast.lua sends the lobby digest to players in no
+    -- match, and the digest replays that transition locally). The one exit that
+    -- was not on the list was the one the owner walked out of.
+    --
+    -- The reasons the old names were there have not changed and are still the
+    -- reasons this holds:
+    --
+    --   ENDED / CLEANUP -- the verdict SCREEN is the surface for a finished
+    --     match. Dying in the closing seconds is ordinary, and without this the
+    --     word sits over the world at the same moment the backdrop and the
+    --     placement come up behind it: two verdicts at once, which is exactly
+    --     the pair the owner asked to keep distinct.
+    --   WARMUP / BUS -- a fresh match with ELIMINATED across it is the one state
+    --     this must never reach.
+    if d.state ~= BR.MatchState.PLAYING then
+        dismissMatchSurfaces()
     end
     -- The round is over for everyone; participation resets with it.
     if d.state == BR.MatchState.WAITING then
@@ -777,9 +1139,13 @@ AddEventHandler(BR.Net.SQUAD_INVITED, function(inv)
         -- Escape had no entry in the name table -- and a notice that names a
         -- key it cannot name is worse than one that names a place (user,
         -- 2026-08-09). The key is fixed now; the wording is simpler anyway.
+        -- `Someone` IS NOT A NAME, so it goes through the hole unmarked and
+        -- stays in the prose weight. The owner's rule is about names: "Any time
+        -- we mention a player by name in a toast their name should be bold."
         BR.Notify(
-            ('%s invited you to their party — answer it in the pause menu')
-                :format(inv.name or 'Someone'),
+            BR.Notice.line(
+                '%s invited you to their party — answer it in the pause menu',
+                inv.name and BR.Notice.who(inv.name) or 'Someone'),
             'info', { key = 'party.invite', ms = 12000 })
     end
 end)
@@ -807,6 +1173,12 @@ AddEventHandler(BR.Net.NOTIFY, function(n)
     -- should not be the thing that discovers a sender invented a field.
     TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
         text   = n.text or '',
+        -- THE SENTENCE PRE-SPLIT, WHEN IT NAMES SOMEBODY. Rebuilt rather than
+        -- forwarded, for this handler's own reason one level down: `parts` is
+        -- the first field on this payload that is not a scalar, and
+        -- BR.Notice.clean keeps only the two shapes the page has a branch for.
+        -- See br_lib/shared/notice.lua.
+        parts  = BR.Notice.clean(n.parts),
         tone   = n.tone or 'info',
         key    = n.key,
         ms     = n.ms,
@@ -821,13 +1193,18 @@ end)
 --- machine can see -- a prompt refused, a countdown on a local effect -- and
 --- until now they had to build the envelope by hand, which is how three of
 --- them ended up with slightly different shapes.
---- @param text string
+--- @param text string|table  a sentence, or one built by BR.Notice.line
 --- @param tone string|nil
 --- @param opts table|nil  { key, ms, endsAt, sticky }
 function BR.Notify(text, tone, opts)
     opts = opts or {}
+    -- Either a plain sentence or a built one, exactly as BR.Server.notify takes
+    -- on the other side. One unpacker, so a client notice that names a player
+    -- and a server one that does cannot come to disagree about the shape.
+    local flat, parts = BR.Notice.wire(text)
     TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-        text   = text,
+        text   = flat,
+        parts  = parts,
         tone   = tone or 'info',
         key    = opts.key,
         ms     = opts.ms,
@@ -856,6 +1233,20 @@ AddEventHandler(BR.Net.KILL_FEED, function(d)
     if d.victimSrc == S.me.src then
         myDeathCause    = d.cause
         myDeathByPlayer = d.killerSrc ~= nil
+        -- AND IF THE WORD IS ALREADY UP, CORRECT IT. This event and the roster
+        -- delta that made me DEAD have no ordering between them, so the word
+        -- goes up on whichever arrives first -- with 'WASTED' standing in until
+        -- the cause is known. Re-sending here turns that into ELIMINATED (or
+        -- COOKED BY THE STORM, or whichever it was) inside the same window.
+        -- Waiting for both messages instead would risk a death with no word at
+        -- all, which is the bug being fixed.
+        if BR.DeathVerdictUp and BR.DeathVerdictUp() then
+            TriggerEvent('br:ui:sendLocal', BR.Nui.DEATH, {
+                show     = true,
+                cause    = myDeathCause,
+                byPlayer = myDeathByPlayer,
+            })
+        end
     end
 
     -- Shaped to the UI's FeedEntry contract.
@@ -1751,7 +2142,7 @@ end)
 -- --------------------------------------------------------------------------
 
 local lastPush = { hp = -1, armour = -1, alive = -1, squads = -1, kills = -1,
-                   state = '', paused = nil, landed = nil }
+                   state = '', paused = nil, landed = nil, watching = nil }
 
 --- Send the HUD envelope, but only when something actually changed.
 ---
@@ -1779,6 +2170,46 @@ function BR.PushHud(force)
     -- showing 5% would be claiming they can take a hit.
     if me.state == BR.PlayerState.DBNO then
         hp, armour = 0, 0
+    end
+
+    -- ═══ WHILE SPECTATING, THE BARS ARE THE PERSON ON SCREEN ═══
+    --
+    -- "the health/shield/inventory don't show properly. They should be fully
+    -- populated" -- the owner. They were populated; they were populated with
+    -- the DEAD VIEWER's numbers, which are zero and zero, so the HUD read as
+    -- broken. The camera changed subject and the vitals did not.
+    --
+    -- IT IS THE ROSTER MIRROR AND NOT A NEW WIRE. `hp` and `armour` are in
+    -- roster.lua's PUBLIC_FIELDS, so this client is already told them for every
+    -- player in the match, 2 Hz, whether it is spectating or not. Asking the
+    -- server to send them a second time down the spectate feed would be two
+    -- representations of one fact -- the bug this project is named for in half
+    -- its comments -- and would leak nothing extra either way, because there is
+    -- nothing extra to leak. THE INVENTORY IS THE OPPOSITE CASE and is handled
+    -- where it belongs, in client/inventory.lua: it is not public, so it does
+    -- come down the session's own feed.
+    --
+    -- A TARGET WITH NO ROSTER ROW LEAVES THE VIEWER'S OWN NUMBERS ALONE rather
+    -- than zeroing. A missing row means a delta in flight or a player already
+    -- gone, and the session is about to end on the server's own licence check.
+    -- Painting 0/0 for that frame would flash an empty bar on the way out,
+    -- which is the reported symptom.
+    local watching = BR.Spectate and BR.Spectate.targetSrc
+        and BR.Spectate.targetSrc() or nil
+    if watching then
+        local t = S.roster[watching]
+        if t then
+            hp     = math.floor(t.hp or 0)
+            armour = math.floor(t.armour or 0)
+            -- THE SAME DBNO RULE, APPLIED TO THEM. A downed player's ledger
+            -- parks them a few points above zero so the shooter's copy stays
+            -- correctable; their health IS the bleed countdown. A spectator
+            -- watching a squadmate bleed out must see the same empty bar the
+            -- squadmate sees, not the sliver the ledger holds.
+            if t.state == BR.PlayerState.DBNO then
+                hp, armour = 0, 0
+            end
+        end
     end
     local kills  = (S.roster[me.src] and S.roster[me.src].kills) or 0
     -- The HUD gets out of the way of the pause menu (the map fills the
@@ -1816,7 +2247,12 @@ function BR.PushHud(force)
        and S.alive == lastPush.alive and S.squadsAlive == lastPush.squads
        and kills == lastPush.kills and me.state == lastPush.state
        and paused == lastPush.paused and stamina == lastPush.stamina
-       and landed == lastPush.landed then
+       and landed == lastPush.landed
+       -- WHO THE BARS ARE ABOUT IS PART OF WHAT CHANGED. Two squadmates on the
+       -- same health are the same three numbers, so without this a cycle to the
+       -- next target would dedupe away and the HUD would keep describing the
+       -- previous one.
+       and watching == lastPush.watching then
         return
     end
 
@@ -1826,6 +2262,7 @@ function BR.PushHud(force)
     lastPush.paused = paused
     lastPush.stamina = stamina
     lastPush.landed = landed
+    lastPush.watching = watching
 
     TriggerEvent('br:ui:sendLocal', BR.Nui.HUD, {
         hp          = hp,
@@ -1892,6 +2329,35 @@ function pushSquadOrParty()
             -- already squad-only, so this is the channel that may carry it.
             local b = BR.Squadmates and BR.Squadmates.beaconOf
                 and BR.Squadmates.beaconOf(src)
+
+            -- THIS MATE'S REVIVE KEY, FLATTENED TO THE ONE QUESTION THE PANEL
+            -- ASKS. See the field's note in the member table below.
+            --
+            -- AN `if` RATHER THAN AN `and`/`or` CHAIN, AND THAT IS THE WHOLE
+            -- REASON IT IS COMPUTED UP HERE. `b and b.key and (b.key.held ==
+            -- true) or nil` collapses the false case into nil -- Lua's oldest
+            -- trap -- and false is a REAL state on this field: it is the mate
+            -- whose key is still out there to be fetched. The two readings
+            -- would have silently become one, and the symptom would be the
+            -- report this was built for.
+            local keyState = nil
+            -- AND THE PICKUP'S DEADLINE, WHEN THERE IS STILL A PICKUP.
+            --
+            -- Owner, 2026-08-31: "If there is a timer to pickup their key,
+            -- display it in the squad panel." GATED ON `live` AND NOT ON THE
+            -- DEADLINE ITSELF: the beacon keeps sending the key row after the
+            -- three minutes are up -- that is how the client knows the purchase
+            -- is the only door left -- so a deadline forwarded unconditionally
+            -- would leave every expired key showing a countdown pinned at zero
+            -- for the rest of the match. `live` is the server's own answer to
+            -- "is there anything on the ground", which is the question a timer
+            -- to pick it up is about.
+            local keyEndsAt = nil
+            if b and b.key then
+                keyState = b.key.held == true
+                if b.key.live == true then keyEndsAt = b.key.expiresAt end
+            end
+
             members[#members + 1] = {
                 src = src, name = e.name, state = e.state,
                 hp = e.hp or 0, armour = e.armour or 0,
@@ -1900,6 +2366,84 @@ function pushSquadOrParty()
                 -- that would drift from the server and keep ticking through a
                 -- revive.
                 bleedEndsAt = b and b.bleedEndsAt or nil,
+                -- THE LEVEL COMES OFF THE SAME BEACON, AND FOR THE SAME
+                -- REASON. It is not in PUBLIC_FIELDS -- the owner asked to see
+                -- his TEAMMATES' levels, and the public roster goes to the
+                -- whole match. The server derives it from lifetime XP on every
+                -- push (see levelOf in server/party.lua); nothing is derived
+                -- here, because a client that computed its own would eventually
+                -- disagree with the lobby about what level somebody is.
+                --
+                -- ABSENT UNTIL THE SERVER KNOWS IT. nil travels as "no level on
+                -- the wire" and the panel draws nothing rather than a 1 it
+                -- would have to take back.
+                level = b and b.level or nil,
+
+                -- THIS MATE'S VOICE CARRIES NOTHING -- ONE BIT, OFF THE SAME
+                -- SQUAD-ONLY BEACON, AND IT IS THE ONLY VOICE FACT ON HERE.
+                --
+                -- Owner, 2026-08-29: "the squad panel works, but doesn't
+                -- accurately show when others in the squad have 'off'
+                -- selected", and then "Why can't we build another client ->
+                -- server -> squad hop?"
+                --
+                -- WHAT MUST NOT FOLLOW IT IS THE MODE. 'nearby' and 'squad'
+                -- are one value away and they are the value this payload is
+                -- forbidden to carry: which of the two a mate is on is only
+                -- meaningful next to how far away they are, so a panel that
+                -- drew it would be a proximity sensor for players this client
+                -- cannot see. tools/check_squad_voice.lua permits `voiceOff`
+                -- here BY NAME and fails the build on any other voice field --
+                -- so widening this is a decision somebody has to make on
+                -- purpose, in that file, rather than one line of drift here.
+                --
+                -- ABSENT MEANS NOTHING TO DRAW, exactly as the two fields above
+                -- do. A mate whose voice is fine, a mate the beacon has not
+                -- covered yet and an older server all produce an empty slot,
+                -- which is the honest rendering of all three.
+                voiceOff = b and b.voiceOff or nil,
+
+                -- WHETHER THE SQUAD CAN STILL GET THIS MATE BACK -- OFF THE
+                -- SAME SQUAD-ONLY BEACON, AND FOR THE FOURTH TIME THE SAME
+                -- ARGUMENT. roster.lua's PUBLIC_FIELDS reaches every client in
+                -- the match, and "that squad can still get him back" is
+                -- precisely what the people who just killed him would use.
+                --
+                -- Owner, 2026-08-30, from the playtest: "I also saw nothing in
+                -- the squad panel indicating that a revive key had been
+                -- retrieved", and "I'm unable to interact with their revive key
+                -- now and I have no way to know I still have their key."
+                --
+                -- ONE TRI-STATE, NOT TWO FLAGS, because the panel asks one
+                -- question and draws one mark:
+                --
+                --   nil    there is no key for this mate. Draw nothing.
+                --   false  a key exists and the squad does NOT hold it -- on
+                --          the ground while the pickup lives, at an ambulance
+                --          for 25 Volts once it has expired. Both are "go and
+                --          get it", which is one mark.
+                --   true   the squad HOLDS it. This is the row the owner could
+                --          not read: a mate who is out and coming back.
+                --
+                -- IT IS THE BEACON'S `held` AND NOTHING ELSE OFF THAT ROW. The
+                -- beacon also carries the key's world coordinates and its mint
+                -- time, and neither belongs on a panel: client/revivekey.lua
+                -- reads those to place a plate and to break a tie between two
+                -- keys at one van. A position folded in here would be a
+                -- position the interface could draw, which is a different
+                -- feature and a wider one.
+                reviveKey = keyState,
+
+                -- WHEN THE PICKUP FOR THAT KEY RUNS OUT, AND ONLY WHILE ONE
+                -- EXISTS. See `keyEndsAt` above for why it is gated on the
+                -- beacon's `live` rather than on the number being present.
+                --
+                -- A DEADLINE, NOT A DURATION, and not a coordinate either: this
+                -- is the same one bit-per-question discipline `reviveKey` is
+                -- folded in under. The panel draws a countdown off it exactly as
+                -- it draws the bleed clock off `bleedEndsAt` -- same clock, same
+                -- offset, same rounding.
+                reviveKeyEndsAt = keyEndsAt,
             }
         end
     end
@@ -1976,6 +2520,26 @@ end, false)
 
 AddEventHandler('onClientResourceStart', function(res)
     if res ~= GetCurrentResourceName() then return end
+
+    -- THE PAGE OUTLIVES THIS RESOURCE, AND NOTHING ELSE IN THE CLIENT KNOWS IT
+    -- (#204).
+    --
+    -- br_ui is a separate resource with a separate lifetime. `restart br_core`
+    -- mid-match gives us a fresh Lua state in front of a CEF document still
+    -- holding every envelope sent before the restart -- and for the death word
+    -- that means show=true with the deadline that would have retired it gone
+    -- from the only process that had it. Not a screen that lingers for ten
+    -- seconds: one that never comes down at all, which is the failure that is
+    -- worse than the bug.
+    --
+    -- FORCED. A fresh deathVerdictUntil is 0, so an ordinary dismissal is a
+    -- no-op in precisely the case that needs it.
+    --
+    -- SAFE IN THE DIRECTION IT CAN BE WRONG. If nothing was up, the page is told
+    -- a surface it is not drawing is down. If br_ui is not running yet the event
+    -- reaches nobody -- and a page that does not exist is not holding a stale
+    -- one, because its own start will re-request everything from here.
+    dismissMatchSurfaces(true)
 
     -- Fallback only: if br_ui started first, its ready event is already gone and
     -- we would otherwise sit with an empty mirror forever.

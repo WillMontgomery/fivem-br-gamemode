@@ -442,9 +442,17 @@ AddEventHandler(BR.Net.REPORT_HINT, function(d)
     end
 
     if d.kind == 'killer' then
-        local name = type(d.name) == 'string' and d.name ~= '' and d.name or 'them'
+        -- THE NAME IS BOLD AND THE PRONOUN IS NOT. Owner, 2026-08-31: "Any time
+        -- we mention a player by name in a toast their name should be bold."
+        -- `them` is this sentence's own word for a killer it could not name, so
+        -- it goes through the same hole unmarked -- see br_lib/shared/notice.lua
+        -- for why the marking is at the call site rather than inferred.
+        local name = type(d.name) == 'string' and d.name ~= '' and d.name or nil
+        local line = BR.Notice.line('Suspect cheating? Press TAB to report %s.',
+            name and BR.Notice.who(name) or 'them')
+        local flat, parts = BR.Notice.wire(line)
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-            text = ('Suspect cheating? Press TAB to report %s.'):format(name),
+            text = flat, parts = parts,
             tone = 'warn', key = 'report.nudge', ms = NUDGE_MS,
         })
 

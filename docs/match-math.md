@@ -61,12 +61,13 @@ that are data rather than logic (see [Testing](testing.md)).
 
 ## 1. Seeds, and why the same match never repeats
 
-Three independent seeds per match, each folded with a **different prime**:
+Four independent seeds per match, each folded with a **different prime**:
 
 ```
-lootSeed  = now + matchId × 15485863
-stormSeed = now + matchId ×     7919
-busSeed   = now + matchId ×   104729
+lootSeed    = now + matchId × 15485863
+stormSeed   = now + matchId ×     7919
+busSeed     = now + matchId ×   104729
+airdropSeed = now + matchId ×   1299709
 ```
 
 where `now` is `GetGameTimer()` — milliseconds since the resource started.
@@ -95,7 +96,23 @@ Subtract the second from the first:
 millisecond.** Match ids are allocated by increment and never reused, so within
 a single server run the probability is *exactly zero* — not small, structurally
 impossible. That is a stronger guarantee than one seed would give, and it is
-what the three different primes buy.
+what the four different primes buy.
+
+**A new subsystem takes a new prime, and the reason is not tidiness.** The
+airdrop (#88) draws its schedule, its landing POI and its contents from
+`airdropSeed`. Had it drawn them from `lootSeed` instead — the obvious
+shortcut, since both are about loot — every draw it took would have shifted the
+entire downstream loot sequence, and every existing layout would have changed
+the day the airdrop shipped. Independent streams are what make a subsystem
+addable without moving anything already on the map.
+
+That is not a one-off argument, and it was collected on again on 2026-08-22.
+The airdrop's item count went from a fixed twelve to a draw of 10–14, which
+*added an rng call*. Taken from `airdropSeed` it moves nothing; taken from
+`lootSeed` it would have shifted all ~3,200 items on every map in the game —
+silently, because a different-but-valid layout is indistinguishable from a
+correct one. `tools/test_airdrop.lua` generates a whole layout, burns an airdrop
+payout, and generates it again, rather than trusting this paragraph.
 
 Across separate server runs, ids restart from the same base, so identity needs
 the same id to be minted at the same millisecond offset. Treating that offset as
@@ -110,6 +127,7 @@ themselves. One layout alone draws roughly:
 | ~3,200 items × (position, kind, rarity, item) | the loot layout |
 | ~24 | storm centres and breakout rolls |
 | ~10 | route chord, tour choice, anchor |
+| ~20 | airdrop: the probability roll, the delay, the POI, the heading, **how many items this drop holds**, and one shuffle per pool it deals from |
 
 The binding constraint is therefore the seed, not the outcome space — which is
 exactly the right way round. Widening the seed widens everything downstream.
@@ -287,7 +305,7 @@ water.
 
 ### How much, and where
 
-For each of the 107 POIs, by tier:
+For each of the **120** POIs — 77 tier 1, 29 tier 2, 14 tier 3 — by tier:
 
 ```
 crates(tier)      = 20 | 20 | 24
@@ -453,6 +471,52 @@ player at all. Tune it against the round count.
 **The clock stops while a revive is genuinely progressing**, and that is the only
 thing that moves the deadline forward. Damage moves it back; letting go simply
 stops it.
+
+### Getting up after the clock has run out
+
+Running the bleed clock out is no longer the end of a squad player's match
+(#219). The moment they go to spectate, their inventory spills as an ordinary
+death box and a **revive key** is minted at the same point — one edge, one call
+site, so a squadmate who reaches them during the bleed-out leaves no key and
+they keep their kit, with no branch written anywhere to say so.
+
+The key is an entitlement **held by the squad** and recorded on the *eliminated*
+player's roster entry. It is not an inventory item, so none of these numbers is
+a slot cost.
+
+| Quantity | Value | Notes |
+|---|---|---|
+| Collect range | 2.5 m | +1.0 m slack on the server's own check, the same allowance the revive range takes |
+| Pickup lifetime | 180 s | Retires the **world pickup only**. The entitlement it stood for stays purchasable for the rest of the match, which is what makes revives unlimited if a squad can pay |
+| Price | 25 Volts | The owner's number of 2026-08-30, superseding the 150 in #219's body. One purchase covers **every** key the squad has outstanding, and the set is re-read *after* the charge lands, so a mate eliminated during the DynamoDB round trip is covered by the price already paid |
+| Revive hold | 6.0 s | At an ambulance, not at the body — more than twice the 2.8 s a pick-up off the floor costs |
+| Reach | 6.0 m | +2.0 m slack. **One radius for both gestures**: buying and reviving ask "am I at this van" of the same player at the same vehicle, and a second value would be a second answer free to drift |
+| Health on arrival | 100 | Full, against 30 for a revive at the body. The owner's call: a key costs a death, a spilled inventory and a drive, so it does not also cost you the fight you land in |
+| Arrival height | 150 m | Above the van. They come back **falling**, not standing up beside it |
+
+**The two ways back are priced against each other, not independently.** A pick-up
+off the floor is free, quick, and keeps the player's inventory; the key costs a
+death, a spilled inventory, a fetch across the map or 25 Volts, and a hold more
+than twice as long. That is the asymmetry the design rests on — the cheap path
+is the one that rewards a squad for reaching a mate in time — and the health is
+the one row deliberately pointing the other way: the owner overturned an earlier
+30 with "the player should come back with full health" precisely because a key
+revive is *not* the same act as a pick-up and should not also cost the fight
+you land in.
+
+**The two ranges are the exception and are more generous, not less.** Both are
+wider than the DBNO revive's 1.5 m, and neither is part of the cost. The 6.0 m
+is measured **to the ambulance** — a van is a bigger thing to stand next to than
+a ped, and it is one radius answering "am I at this vehicle" for the purchase and
+the revive alike, because a second value would be a second answer to one question
+and free to drift. The 2.5 m is to the pickup lying on the ground, which is an
+easier thing to stand over than a body somebody is still shooting at.
+
+**The 23 station ambulances are what make the reach number usable.** They stand
+at surveyed points from the moment the bus doors open, and every one of them is
+put on the squad's map the instant a mate reaches OUT — the trigger is that state
+alone, deliberately, because blips during a bleed-out point at something nobody
+can act on.
 
 ### When a refused shot becomes a case
 

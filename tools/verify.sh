@@ -24,6 +24,11 @@
 #
 #   3b/3c/3d   -- weapon table, POI siting, and forward-declared locals.
 #
+#   3e. BOOLS   -- a FiveM native declared BOOL read as a Lua truth value. 0 is
+#                 truthy in Lua, so both spellings of that test are wrong and
+#                 they are wrong in opposite directions. Seven shipped instances
+#                 and counting; a ratchet against tools/bool_natives.baseline.
+#
 #   4. MANIFEST -- every .lua is declared somewhere, so nothing loads silently
 #                 into nothing.
 #
@@ -123,7 +128,194 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # module. It is worth the stubs: the capture rules -- three frames, one per
     # corroboration after ten seconds, nine and then stop -- can only be seen in
     # the game by drawing nine corroborations on one case.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_client.lua tools/test_config.lua tools/test_admin.lua; do
+    #
+    # test_airdrop.lua is the third suite here to load a server file rather than
+    # a pure module, and it is worth the stubs for the same reason
+    # test_artifacts.lua is: the rules under test -- exactly one drop a match,
+    # never inside 250m of the wall, never past storm stage 4 -- take a whole
+    # match each to observe in the game and are wrong for weeks otherwise.
+    # test_fuel.lua is the fourth suite here to load a real server file, and it
+    # is its own rather than a block inside test_roster because the property
+    # worth pinning spans three layers: the pure solver, the tank size DERIVED
+    # from the map AABB, and the registry that makes a tank survive its driver.
+    # Split across two existing suites, the interesting one -- a car staying dry
+    # for whoever gets in next -- would be testable in neither.
+    #
+    # test_spectate.lua is the fifth exception and the only CLIENT one besides
+    # test_client itself. It stands up br_core/client/spectate.lua, which no
+    # other suite loads -- test_client stubs BR.Spectate and says in a comment
+    # why. That was right while the only thing read out of that file was
+    # `active()`; it stopped being right when the file grew a rule about the
+    # player's OWN ped. The property it exists for is not "which controls are in
+    # the list" -- a text gate could do that -- it is that the list is let go on
+    # every path out of a session, and "the frame after the session ended
+    # disabled nothing" is a step of the loop, not a string in a file. A
+    # spectator who cannot move after a match is a worse bug than the accidental
+    # gunshot that prompted the work.
+    # test_matchexit.lua is the second suite to load a CLIENT file, and it loads
+    # the biggest one -- client/state.lua, the whole mirror -- because the
+    # property it pins is a sequence rather than a value: every way out of a
+    # match has to take the match's surfaces with it (#204). A death word that
+    # walks into the lobby is not visible to any static check; it is visible in
+    # one batch of roster deltas shaped the way server/match.lua really shapes
+    # them, which is what this drives.
+    #
+    # test_vehdamage.lua is the third suite to load a CLIENT file, and the one
+    # whose fixture is the argument. #213's applier writes four handling
+    # multipliers derived from the model's own values -- and FiveM's
+    # GET_VEHICLE_HANDLING_FLOAT reads the vehicle's own CLONE of that handling,
+    # so it answers our write once we have made one. An applier that read the
+    # field and multiplied it would therefore multiply by five ten times a
+    # second, and a fixture whose getter answered a constant would agree with it
+    # happily. So the fixture keeps the template and the clone as two tables and
+    # the suite's central assertion is that two hundred passes leave the numbers
+    # where one pass did.
+
+    # test_bool_natives.lua tests a GATE rather than a shipped module, for the
+    # same reason test_icons.lua does and against the defect this project has
+    # shipped most. tools/check_bool_natives.lua reads the real tree against a
+    # recorded baseline, so on a clean checkout it proves the tree has not got
+    # worse and cannot prove it would notice if it had. The rules are pure
+    # functions in tools/bool_native_rules.lua and this suite feeds them
+    # deliberately broken sources -- and, just as importantly, every spelling of
+    # the FIX, because a gate that flags correct code is a gate that gets an
+    # exception and then gets deleted.
+    #
+    # test_icons.lua is the odd one out in a new way: it tests a GATE rather
+    # than a shipped module. tools/check_weapons.lua can only ever read the one
+    # real ItemIcon.tsx, so it proves that file is clean and cannot prove it
+    # would notice a dirty one. The rules live in tools/icon_rules.lua as pure
+    # functions and this suite feeds them deliberately broken sources -- which
+    # is the only way a detector gets shown to still detect.
+    #
+    # test_vehrefuse.lua is the fourth suite to load a CLIENT file, and its
+    # fixture is an argument too. #215 rejects a refused vehicle AT THE DOOR --
+    # during the entry animation, before the seat is taken -- and falls back to
+    # ejecting a player who got there anyway. Those two paths are one line apart
+    # in the file and indistinguishable in a screenshot: the slow one still ends
+    # with the player standing next to the helicopter. So `entering` and `myVeh`
+    # are two variables in that fixture and are NEVER both set, which is what
+    # makes a file that only ever checks the seat fail rather than pass a second
+    # late.
+    # test_ambheal.lua is the sixth suite to load a real SERVER file, and the
+    # fixture is the argument again. Four of the owner's rules for healing in an
+    # ambulance are effectively unobservable in a match: the doors-shut refusal
+    # looks identical to an unimplemented prompt, the "one heal per ambulance"
+    # race needs two players pressing within a few frames of each other, the
+    # partial-on-interrupt rule is INDISTINGUISHABLE from the wrong
+    # implementation on any heal that completes, and staging a death on the
+    # stretcher costs a playtest round whose bad outcome is a stuck ped. So the
+    # world is three stub vehicles and the clock is this file's.
+    #
+    # The one rule it does NOT test is the one that matters most -- that a
+    # healing player is killable -- and that is deliberate: it is a property of
+    # client/natives.lua's invincibility latch, so it is asserted against the
+    # real natives.lua in test_client.lua, which already drives it frame by
+    # frame. See the header of test_ambheal.lua.
+    #
+    # test_lobbyseq.lua is the fifth suite to load a CLIENT file and the first
+    # to MODEL Citizen rather than stub it away, and both are the same argument.
+    # The property it pins is an ORDER -- the ped is teleported to its warmup
+    # spawn and only then becomes a networked ped (owner, 2026-08-29) -- and an
+    # order is what neither a text gate nor a playtest can see: the window is one
+    # frame wide, on somebody else's screen, and the wrong version and the right
+    # version are identical in a screenshot. Both halves of it live inside
+    # threads with waits in them, so the no-op CreateThread every other client
+    # suite uses would make every assertion here vacuously true. Threads are
+    # coroutines, the clock is stepped, and the ped actually walks -- which is
+    # what lets the second claim be tested too: that the entrance can be
+    # abandoned at any point leaving no camera and no half-finished task.
+    #
+    # test_shop.lua is the seventh suite to load a real SERVER file, and the
+    # FIXTURE is the whole argument -- more so here than anywhere else, because
+    # the shipped catalogue is EMPTY ON PURPOSE. BR.Config.Shop.items is `{}`
+    # until the owner authors his models, coordinates and headings in game, so a
+    # suite that ran against the shipped table would assert nothing and would
+    # start passing for a different reason the day he pastes his rows in. Every
+    # behavioural test there builds its own three-car catalogue; exactly one
+    # reads the real table, and it asserts that it is empty.
+    #
+    # It also pins three things a playtest cannot see. "EXACTLY AS SHOWN WHEN
+    # THEY PURCHASED IT" is a structural property -- one dresser, one authored
+    # row, no appearance on the wire -- and the wrong version is invisible until
+    # somebody happens to notice a colour, by which time the showroom car has
+    # been gone for forty minutes. The DELIVERY ORDERING is one line: the item is
+    # handed out AFTER BR.Inv.clearFor(m), and one line earlier the wipe silently
+    # deletes what the player paid for. And NO REFUND (owner's answer 3) fails
+    # only under an engine fault nobody can reproduce on demand
+    # (citizenfx/fivem#2623), where the wrong version hands out a second car for
+    # one payment.
+    #
+    # test_landtime.lua is the sixth suite to load a CLIENT file, and the only
+    # one whose subject is a MEASURING INSTRUMENT rather than a behaviour. That
+    # is why it is not a block inside test_client.lua, whose descent section
+    # loads the same file: every assertion there is about what the prompt SAID,
+    # and none is about when anything happened.
+    #
+    # An instrument has a failure mode ordinary code does not -- it can agree
+    # with the thing it measures by accident. A landing timer that took its own
+    # "the feet are down" from one of the clauses of the landing test would read
+    # zero for exactly the landing #245 is about: the clause lies, the contact
+    # time lies with it, and the readout exonerates the code it is pointing at.
+    # So the suite holds one clause false for five seconds and asserts that five
+    # seconds is what comes out, from a ground truth (IsEntityInAir) that no ped
+    # task owns. Its stubs answer 1/0 rather than true/false, so a sampler that
+    # loses its isTrue() wrapper fails here rather than in a playtest.
+    #
+    # test_revivekey.lua is the eighth suite to load a real SERVER file, and it
+    # is deliberately NOT where the feature's central rule is proved. "The key
+    # is minted on the same edge that spills the inventory" (owner, 2026-08-30)
+    # is a property of server/combat.lua, so it is asserted in test_roster.lua's
+    # `combat.revivekey` against the real eliminate(), the real loot table and
+    # the real #144 hold -- a sandbox that called BR.ReviveKey.onEliminated by
+    # hand would only be testing that the module does what it is told.
+    #
+    # What IS here is everything a playtest cannot reach cheaply: a three-minute
+    # expiry, the last 2.5 metres of a squadmate's walk, a DynamoDB round trip
+    # with another elimination landing inside it, and two squadmates pressing
+    # buy in the same second. Its BOOL stubs answer 1/0 rather than true/false,
+    # so a refusal that loses its isTrue() wrapper fails here rather than
+    # selling a revive key at a burnt-out ambulance.
+    #
+    # Its `source` block runs BEFORE the module is loaded, on purpose: the
+    # BR.Server stub has no `notify`, so unrequested player copy would otherwise
+    # throw three hundred lines later and report a nil call instead of the rule
+    # it broke (#219 Q20 is unanswered and no wording may be invented).
+    #
+    # test_community.lua is the ninth suite to load a real SERVER file, and the
+    # only one whose subject is a single envelope. It runs the REAL
+    # config/overrides.lua rather than assigning BR.Config.Community by hand,
+    # which is what makes it a seam test rather than a restatement: it fails the
+    # day the convar stops reaching the table the sender reads out of.
+    #
+    # What it is really guarding is the `{}`. br_core/server/community.lua
+    # answers br:ready even when there is no invite, so a page already on screen
+    # takes the Discord card down when an operator clears the value and restarts;
+    # a sender that returned early instead would look correct, pass any test
+    # written as "no invite was sent", and leave a dead card up forever.
+    #
+    # test_guild.lua is the tenth suite to load a real SERVER file, and it is the
+    # first whose subject is an OUTSIDE SERVICE. br_core/server/guild.lua asks
+    # Discord whether a player is already in our guild, and the answer decides
+    # whether that player is shown the invite card at all -- so every mistake
+    # available in it is a mistake that stops inviting people, silently, in the
+    # states nobody watches.
+    #
+    # THE POLARITY IS THE SUBJECT. The lookup has three answers -- yes, no, and we
+    # did not find out -- and only the first hides anything. Two of the three must
+    # behave identically, which means the wrong version and the right version are
+    # indistinguishable on a healthy server with a valid token: they differ only
+    # when Discord 404s about the GUILD rather than the member, when the bot has
+    # been removed, when we are rate-limited, or when no token is configured at
+    # all. Staging any of those in a match costs a second Discord server and a way
+    # to make Discord fail on demand; here each is a status code.
+    #
+    # It also drives the pacing, which nothing else can: sixty players connect at
+    # once when a match fills, one lookup goes out at a time, and a 429 stands the
+    # queue down for the interval Discord named. Its clock is stepped by hand for
+    # the reason test_lobbyseq.lua models Citizen -- a no-op SetTimeout would make
+    # every one of those assertions vacuously true.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
@@ -180,9 +372,172 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# The same joaat proof as the weapon table, over the refused-vehicle table --
+# and it matters more there, because the polarity is inverted. A wrong hash in
+# weapons.lua makes a gun behave oddly and somebody notices. A wrong hash in
+# vehicles.lua permits a tank, and the only symptom is an incident that is never
+# filed, which looks exactly like a clean server.
+echo "${DIM}== vehicle table ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_vehicles.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 echo "${DIM}== POI siting ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_pois.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# --- 3d-bis. nothing authored outside the surveyed map edge --------------------
+#
+# The owner walked the playable boundary on the pause map on 2026-08-28 -- 67
+# clicks, a closed ring, 51.06 km^2 -- and asked for everything outside it to be
+# removed. Eight POIs were. THIS is the half that keeps them removed.
+#
+# The failure it is aimed at has a long fuse. A POI authored six months from now
+# at coordinates nobody checks against a map does not error, does not look wrong
+# in a diff, and does not misbehave until it is drawn as a storm anchor and a
+# match ends over open water. That is the bug the owner reported, and it took a
+# hand survey to diagnose because nothing in the tree could say where the map was.
+# Now something can, so it is asserted every build.
+#
+# check_boundary.lua also pins the ring to the survey's own perimeter, area and
+# centroid, which is what stops this gate being circular: without it, a boundary
+# widened to admit a coordinate would still pass every check it makes.
+echo "${DIM}== map boundary ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_boundary.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# A spectator listens and does not talk -- the owner, unconditionally. The
+# CLIENT half of that rule is unit-tested (test_client drives the real key
+# through the real loop). This gate is for the SERVER half, which is not a
+# function with a value to assert but three call sites: two ways to open a
+# session and one to close it, each of which has to reach the mute. The defect
+# it is aimed at is an edge that does not call -- a fourth way to start
+# spectating, added later, that nobody remembers to mute.
+echo "${DIM}== spectator microphone ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_spectator_mic.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# The HUD a spectator reads. The inventory half has a real behaviour test in
+# test_client; this covers the two halves no suite can reach -- the vitals
+# substitution in client/state.lua, which no suite that owns the HUD loads, and
+# the shape of the server feed, whose important property is that the target's
+# inventory goes to ONE watcher rather than to everybody. A broadcast there
+# would look perfect in game and leak every loadout in the match.
+echo "${DIM}== spectator HUD ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_spectator_hud.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# The squad panel says who is talking and, on the viewer's own row, that their
+# voice is carrying nothing at all. The Lua half -- the sentence this replaced,
+# and the flags the mark reads -- is unit-tested in test_client. This gate is
+# for the properties no suite can reach: that the panel did not grow an oracle
+# (a per-player voice mode would widen what a client is told about players it
+# cannot see), that the mark stays on one row, and that the two halves of its
+# layout pair have not come apart.
+echo "${DIM}== squad voice marks ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_squad_voice.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# The same panel shows a teammate's LEVEL beside their name. The behaviour --
+# derived from lifetime xp, squad-only, absent until the server knows it -- is
+# unit-tested in test_shared ('squad.level'). This gate is for what no suite can
+# execute: that the number has not drifted onto the public roster (where nothing
+# would break and nobody would notice), that it has not grown a caption, and
+# that it has not learned to scale with the text-size preference on a plate
+# whose height must not move.
+echo "${DIM}== squad levels ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_squad_level.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# The same panel says whether a mate's REVIVE KEY is held by the squad. The
+# ledger under it is unit-tested in test_revivekey; this gate is for what no
+# suite can execute: that the fact stayed squad-only, that the tri-state
+# survived both folds (an `x and y or nil` in Lua and a `&&` in JSX each eat the
+# false case, which is the mate whose key is still on the ground), that the mark
+# is a picture rather than a seventh string, and that the plate stops fading a
+# recoverable mate down to nothing. It is also the only gate that catches a
+# stale UI bundle for this file.
+echo "${DIM}== squad revive keys ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_squad_key.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# A toast that names a player draws that name in BOLD (owner, 2026-08-31), and
+# no player's name can carry formatting. The module's own behaviour -- including
+# a player called `**bold**`, `{b:x}` or `{key:brptt}` -- is driven in
+# test_shared; this gate is for what no suite can execute: the CALL SITES across
+# every resource, the TSX that draws the result, and the built bundle.
+#
+# THE FILE LIST IS PASSED IN, the way check_forward_locals and check_bool_natives
+# are fed: Lua cannot walk a directory without io.popen, which spawns cmd.exe on
+# a Windows box and would make a gate's coverage depend on the shell.
+#
+# The regression it exists for looks like correct code: `('%s is down!'):format(
+# entry.name)` is what every one of these call sites used to be, and it produces
+# a perfectly good notice with the bold silently gone.
+echo "${DIM}== notice names ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_notice_names.lua $(find resources -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# A key is drawn as a key (#209). The half that is a value -- the owner's
+# sentence, and that a resolved key LABEL never reaches it -- is unit-tested in
+# test_client. This gate is for what no suite can execute: that the token Lua
+# writes and the pattern the page parses are still one wire format, that the
+# glyph resolves by command name and draws a dash when unbound, and that the
+# surfaces carrying those sentences still render it. A mismatch does not error
+# -- it puts a raw `{key:brptt}` in the middle of the owner's sentence.
+echo "${DIM}== key glyphs ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_key_glyphs.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# The health and shield bars name themselves inside the pill (#210). The rule
+# this protects is the one that change could have broken silently: the shield
+# hides its numeral at 0, and the condition deciding that used to key off
+# whether the bar had a caption -- which stopped being a valid proxy the moment
+# these two got captions of their own.
+echo "${DIM}== vitals bars ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_vitals_bars.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# Your own death and the end of the match are two surfaces sharing one word
+# table, and the word and the spectator camera are one sequence on one deadline.
+# The failure this catches is the two coming apart -- a second timer that agrees
+# with the first only by coincidence, leaving dead air after the word or a
+# camera that cuts away mid-sentence.
+echo "${DIM}== death verdict ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_death_verdict.lua || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -191,6 +546,72 @@ echo "${DIM}== forward locals ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     # shellcheck disable=SC2046
     "$LUA" tools/check_forward_locals.lua $(find resources -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# A reference to a BR.PlayerState member that does not exist. It is nil, not an
+# error, so a half-finished rename reads as always-false in a comparison and
+# TRUNCATES an ipairs list -- a suite that covered four states quietly covers two
+# and stays green. #233 renamed DEAD to OUT across ~30 files and the whole suite
+# passed with a site still on the old name; this is what noticed.
+# AND IT COVERS tools/ AS WELL AS resources/, which is where the next one was
+# already hiding: tools/test_lobbyseq.lua set a player's state to
+# PlayerState.PLAYING in five places -- PLAYING is a MatchState -- so five cases
+# had been exercising a nil state and passing. A test file is the WORST place
+# for this to sit, because a suite that quietly stops testing something is the
+# one thing that cannot be caught by another suite.
+echo "${DIM}== player states ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    # shellcheck disable=SC2046
+    "$LUA" tools/check_player_states.lua $(find resources tools -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# --- 3e. a BOOL native read as a Lua truth value ------------------------------
+#
+# THE MOST-SHIPPED DEFECT IN THIS REPOSITORY. Seven instances, and the seventh
+# was the entire spawn/drop path -- forty-eight raw reads across spawn.lua,
+# loading.lua, bus.lua and skydive.lua, every one of them in a wait.
+#
+# In Lua the number 0 is TRUTHY, and a FiveM native declared BOOL may answer
+# 1/0. So `if HasCollisionLoadedAroundEntity(ped) then` is TRUE for a native
+# that said no, and `while not HasCollisionLoadedAroundEntity(ped) do` is FALSE
+# for the same no -- one proceeds without waiting, the other stops waiting.
+# Either way the code carries on at exactly the moment it should hold, and in
+# the placement path that means putting a player on ground that has not
+# streamed.
+#
+# SIX RECURRENCES SAY REVIEW DOES NOT CATCH IT. Every one of them was found by a
+# playtest, months later, wearing a symptom that looked like something else --
+# a crate inside a building, a watchdog that never fired, sixty TaskPlayAnims a
+# second. It is invisible in a diff because the wrong spelling is the natural
+# one and the right spelling looks like paranoia.
+#
+# IT IS A RATCHET, NOT A WALL. There were 104 of these left when the gate landed
+# and failing the build on all of them would have got the gate deleted, so the
+# debt is recorded per file and per native in tools/bool_natives.baseline and
+# the count may only go down. A new one -- or one more in a file that already
+# had some -- is a red build; so is fixing one without lowering the number,
+# because the room left behind is where instance eight goes. See the top of
+# tools/check_bool_natives.lua for what the checker can and cannot see.
+#
+# VENDORED RESOURCES ARE EXCLUDED, on the same argument gate 4 makes: pma-voice
+# is upstream's code, it is not edited here, and its baseline would churn on
+# every version bump for faults that are not ours to fix.
+echo "${DIM}== bool natives ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    boolfiles=$(find resources -name '*.lua' | while IFS= read -r f; do
+        d=$(dirname "$f"); keep=1
+        while [ "$d" != "." ] && [ "$d" != "/" ]; do
+            [ -f "$d/VENDOR.json" ] && { keep=0; break; }
+            d=$(dirname "$d")
+        done
+        [ "$keep" -eq 1 ] && echo "$f"
+    done | sort)
+    # shellcheck disable=SC2086
+    "$LUA" tools/check_bool_natives.lua $boolfiles || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -217,7 +638,7 @@ echo "${DIM}== config report ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     if report=$("$LUA" tools/config_report.lua 2>&1); then
         broken=$(printf '%s' "$report" | grep -oE '"key":"[^"]*","value":"\(unreadable[^"]*"' || true)
-        if printf '%s' "$report" | grep -q '"ok":false'; then
+        if grep -q '"ok":false' <<< "$report"; then
             echo "${RED}FAIL${RST} tools/config_report.lua could not load the config files:"
             printf '%s' "$report" | grep -oE '"loadErrors":\[[^]]*\]' | sed 's/^/     /'
             rc=1
@@ -888,13 +1309,21 @@ if [ -f tools/dispatch.sh ]; then
 fi
 
 # br_ringmaster: the commands it registers ARE its surface, so the list is
-# pinned. brkick is the kick; the other two are read-only dumps.
+# pinned. brkick is the kick, brspectate points a moderator's camera at somebody;
+# the other two are read-only dumps.
+#
+# brspectate JOINED THE LIST WITH SPECTATING (#192), AND THAT IS THIS GATE
+# WORKING RATHER THAN BEING WORKED AROUND. It is the lightest write verb here --
+# it removes nobody, changes no state a player can feel, and takes no free text
+# -- but it does something to a player who has not been told, which is precisely
+# the boundary this list guards. It resolves two licenses and hands them to
+# br_core; the session, the camera and the audit rows are all over there.
 rmdir_="resources/*/br_ringmaster"
 if compgen -G "$rmdir_" >/dev/null 2>&1; then
     cmds=$(grep -rhoE "RegisterCommand\('[a-z]+'" $rmdir_ 2>/dev/null \
            | grep -oE "'[a-z]+'" | tr -d "'" | sort -u | tr '\n' ' ')
-    if [ -n "$cmds" ] && [ "$cmds" != "bridents brkick brring " ]; then
-        echo "${RED}FAIL${RST} br_ringmaster registers '${cmds}', expected 'bridents brkick brring '"
+    if [ -n "$cmds" ] && [ "$cmds" != "bridents brkick brring brspectate " ]; then
+        echo "${RED}FAIL${RST} br_ringmaster registers '${cmds}', expected 'bridents brkick brring brspectate '"
         boundary=1
     fi
 
@@ -911,8 +1340,579 @@ if compgen -G "$rmdir_" >/dev/null 2>&1; then
     fi
 fi
 
+# THE OTHER DIRECTION OF THE SAME BOUNDARY: what the GAME lets the console do
+# that it lets nobody else do. #202 added the first one -- `brcar`, which puts a
+# vehicle in the world under `sv_entityLockdown relaxed`, where a trainer cannot.
+#
+# WHY IT NEEDS A GATE AND THE OTHER FORTY VERBS DO NOT. Every other command in
+# br_core is registered RESTRICTED, which means the server console OR a live
+# client holding the `br.admin` ACE, and that is the right boundary for all of
+# them. This one is narrower on purpose -- the owner is the only person with
+# console access, not even admins have it, and #202's rule is that this "must not
+# become a route for anyone without console access to obtain a vehicle". The
+# narrowing is one `tonumber(src) ~= 0` inside the handler, which is precisely
+# the kind of line a refactor deletes without anything looking wrong afterwards:
+# the verb keeps working, for everybody.
+#
+# AND `0` IS TRUTHY IN LUA, which is why the pattern is matched as an EQUALITY
+# rather than by looking for the word `src`. `if src then` and `if not src then`
+# are both real, both compile, and both are wrong in opposite directions -- the
+# first admits every player, the second admits nobody.
+#
+# CreateVehicle IS SCOPED TO ONE FILE for server/kick.lua's reason above: it is
+# the only server-side call in this tree that puts a networked entity in a match,
+# and keeping it in the file that also holds the refused-vehicle detector means
+# the spawn and the rule it must obey are reviewed on one screen.
+vehfile_="resources/[fivem-royale]/br_core/server/vehicles.lua"
+if [ -f "$vehfile_" ]; then
+    if ! grep -q "RegisterCommand('brcar'" "$vehfile_"; then
+        echo "${RED}FAIL${RST} brcar is not registered in $vehfile_"
+        echo "     If it moved, move this gate with it -- and keep the console"
+        echo "     check and the CreateVehicle call in the same file."
+        boundary=1
+    elif ! grep -qE 'tonumber\(src\) ~= 0' "$vehfile_"; then
+        echo "${RED}FAIL${RST} brcar has lost its server-console gate"
+        echo "     Expected 'tonumber(src) ~= 0' in $vehfile_."
+        echo "     RESTRICTED is not that gate: it also admits any live client"
+        echo "     holding br.admin, and #202's rule is console access only."
+        echo "     It must stay an equality -- 0 is truthy in Lua, so both"
+        echo "     'if src then' and 'if not src then' are wrong."
+        boundary=1
+    fi
+
+    # ...and nowhere else in any server file may create one.
+    #
+    # BOTH SPELLINGS, AND #212 IS WHY THE SECOND ONE IS HERE. The verb used to
+    # call server-side `CreateVehicle`, which is an RPC whose handle cannot be
+    # routed into a bucket -- so it now calls `CreateVehicleServerSetter`. The
+    # old pattern would not have matched the new name (it anchors on the paren
+    # straight after `CreateVehicle`), so this gate would have gone on passing
+    # while the capability it guards moved out from under it.
+    strayveh=$(grep -rlE '(^|[^_[:alnum:]])CreateVehicle(ServerSetter)?[[:space:]]*\(' \
+               "resources/[fivem-royale]"/*/server/*.lua 2>/dev/null \
+               | grep -v 'br_core/server/vehicles\.lua' || true)
+    if [ -n "$strayveh" ]; then
+        echo "${RED}FAIL${RST} server-side vehicle creation outside br_core/server/vehicles.lua:"
+        echo "$strayveh" | sed 's/^/     /'
+        echo "     Putting a networked vehicle in a match is the one capability"
+        echo "     that has to be reviewed beside the allowlist that limits it."
+        echo "     CreateVehicleServerSetter raises serverEntityCreated and NOT"
+        echo "     entityCreating, so the refused-vehicle detector never sees"
+        echo "     what it makes -- the pre-check in that file is the only"
+        echo "     thing there is, and it cannot guard a call somewhere else."
+        boundary=1
+    fi
+
+    # AND THE PRE-CHECK ITSELF, which is load-bearing in a way it was not when
+    # the verb shipped. While `brcar` used the RPC, a refused model would have
+    # reached the `entityCreating` detector anyway and opened a case; the server
+    # setter raises no such event, so BR.Config.IsAllowedVehicle in this file is
+    # now the whole of the boundary. Deleting it would permit a refused model
+    # that NOTHING would notice -- no case, no count, not a line in brvehicles.
+    if ! grep -q 'IsAllowedVehicle' "$vehfile_"; then
+        echo "${RED}FAIL${RST} brcar has lost its allowlist pre-check"
+        echo "     BR.Config.IsAllowedVehicle must be consulted in $vehfile_"
+        echo "     BEFORE anything is created. CreateVehicleServerSetter does"
+        echo "     not raise entityCreating, so nothing downstream would catch"
+        echo "     a refused model this verb let through."
+        boundary=1
+    fi
+fi
+
+# THE ANTICHEAT'S OWN READOUT AND ITS TEST LEVER, narrowed the same way and for
+# a sharper reason than brcar's (#93).
+#
+# #93's property is that an OFFENDER IS SHOWN NOTHING AT ALL -- no message, no
+# refusal feedback, no hint. `brshots` prints, per refused shot, the exact bound
+# that refused it. RESTRICTED is not the right boundary for that: it admits the
+# server console OR any live client holding `br.admin`, and the owner's standing
+# rule is that nobody is exempt from incidents, admins included. So an admin can
+# be the SUBJECT of the rows brshots prints, and a restricted readout would hand
+# that person a live oracle for exactly which limit to stay under -- which is
+# worse than telling them they were refused, because it tells them by how much.
+#
+# `brtestfire` bends the bounds the anticheat judges by, for every player at
+# once. It carries the console gate AND the dev gate, and the dev gate is the
+# one that keeps it off the public box entirely.
+#
+# AND `0` IS TRUTHY IN LUA, which is why both are matched as an EQUALITY rather
+# than by looking for the word `src`: `if src then` admits every player and
+# `if not src then` admits nobody. Both compile, both look right, both are wrong
+# in opposite directions. Same trap the brcar gate above spells out.
+dmgfile_="resources/[fivem-royale]/br_core/server/damage.lua"
+if [ -f "$dmgfile_" ]; then
+    for verb_ in brshots brtestfire; do
+        if ! grep -q "RegisterCommand('$verb_'" "$dmgfile_"; then
+            echo "${RED}FAIL${RST} $verb_ is not registered in $dmgfile_"
+            echo "     If it moved, move this gate with it -- the verb and the"
+            echo "     adjudication ring it reads belong on one screen."
+            boundary=1
+        fi
+    done
+
+    # One equality per verb. Counted rather than merely found, so deleting the
+    # narrowing from ONE of the two cannot pass on the other one's line.
+    gates_=$(grep -cE 'tonumber\(src\) ~= 0' "$dmgfile_" || true)
+    if [ "$gates_" -lt 2 ]; then
+        echo "${RED}FAIL${RST} brshots/brtestfire have lost a server-console gate"
+        echo "     Expected 'tonumber(src) ~= 0' twice in $dmgfile_, found ${gates_}."
+        echo "     RESTRICTED is not that gate: it also admits any live client"
+        echo "     holding br.admin, and #93's rule is that an offender learns"
+        echo "     NOTHING -- an admin can be the subject of these rows."
+        echo "     It must stay an equality -- 0 is truthy in Lua."
+        boundary=1
+    fi
+
+    # The dev gate on the lever, and the refusal-to-file guard that stops a
+    # manufactured refusal becoming a real case against a playtester.
+    if ! grep -q 'BR.Server.devMode' "$dmgfile_"; then
+        echo "${RED}FAIL${RST} brtestfire has lost its dev-mode gate"
+        echo "     Bending the validator's bounds must not be armable on the"
+        echo "     public box, where a bent bound would stop real refusals"
+        echo "     filing and no one would be told."
+        boundary=1
+    fi
+    if ! grep -qE 'if forced then' "$dmgfile_"; then
+        echo "${RED}FAIL${RST} damage.lua no longer guards noteRefusal on the test lever"
+        echo "     A refusal manufactured by brtestfire must never open an"
+        echo "     incident: it would file a case about a playtest, against the"
+        echo "     person running it, with screenshots attached."
+        boundary=1
+    fi
+
+    # ...and it must clear itself. Both lifecycle hooks, because the guarantee
+    # the owner was given is "reset on match end or resource restart".
+    for hook_ in 'br:match:destroyed' 'onResourceStop'; do
+        if ! grep -q "AddEventHandler('$hook_'" "$dmgfile_"; then
+            echo "${RED}FAIL${RST} damage.lua does not clear the test lever on $hook_"
+            echo "     brtestfire is guaranteed to be impossible to leave armed."
+            boundary=1
+        fi
+    done
+fi
+
+# THE WORLD ITSELF: brtime AND brweather, NARROWED THE SAME WAY AND SHIPPED
+# NARROWED (owner, 2026-08-31: "Yes I want all client and server commands gated
+# behind devmode").
+#
+# These two move the clock and the sky for EVERY client in the session at once,
+# and the clock is not only a lighting knob: GTA's ambient population is
+# time-gated, so moving it changes which vehicles and peds the engine spawns --
+# hospital ambulances among them, which is what server/rescue.lua's ambient
+# ambulance ledger finds and where a squad can spend a revive key. That makes it
+# a gameplay change in a live round, which is precisely what the dev gate is for.
+#
+# AND `0` IS TRUTHY IN LUA, which is why the console check is matched as an
+# EQUALITY rather than by looking for the word `src`: `if src then` admits every
+# player and `if not src then` admits nobody. Both compile, both look right,
+# both are wrong in opposite directions. Same trap the two gates above spell out.
+#
+# TWO EQUALITIES, COUNTED rather than merely found, so deleting the narrowing
+# from ONE of the two verbs cannot pass on the other one's line.
+worldfile_="resources/[fivem-royale]/br_core/server/world.lua"
+if [ -f "$worldfile_" ]; then
+    for verb_ in brtime brweather; do
+        if ! grep -q "RegisterCommand('$verb_'" "$worldfile_"; then
+            echo "${RED}FAIL${RST} $verb_ is not registered in $worldfile_"
+            echo "     If it moved, move this gate with it -- the verb and the"
+            echo "     override record it writes belong on one screen."
+            boundary=1
+        fi
+    done
+
+    if ! grep -qE 'tonumber\(src\) ~= 0' "$worldfile_"; then
+        echo "${RED}FAIL${RST} brtime/brweather have lost the server-console gate"
+        echo "     Expected 'tonumber(src) ~= 0' in $worldfile_."
+        echo "     RESTRICTED is not that gate: it also admits any live client"
+        echo "     holding br.admin, and these change the world for everybody."
+        echo "     It must stay an equality -- 0 is truthy in Lua."
+        boundary=1
+    fi
+
+    # MATCHED AS A READ, NOT AS A SUBSTRING, AND MUTATION TESTING IS WHY -- the
+    # identical finding /brsfx's silence probe records a few blocks below. The
+    # first draft here was `grep -q 'BR.Server.devMode'`, and a mutant that
+    # renamed every occurrence to `BR.Server.devModeX` -- which is a read of a
+    # field that does not exist, i.e. NO GATE AT ALL, permanently open on the
+    # public box -- SURVIVED it, because the old name is a prefix of the new one.
+    if ! grep -qE 'BR\.Server\.devMode([^[:alnum:]_]|$)' "$worldfile_"; then
+        echo "${RED}FAIL${RST} brtime/brweather have lost the dev-mode gate"
+        echo "     Moving the clock changes which ambient vehicles and peds the"
+        echo "     engine spawns -- hospital ambulances included -- so it is not"
+        echo "     armable on a box running real matches."
+        boundary=1
+    fi
+
+    # AND THE SKY HAS ONE WRITER. The override only works because
+    # br_core/client/storm.lua and br_environment/client/ipl.lua stopped calling
+    # the weather natives and started making claims that
+    # br_core/client/world.lua resolves. A file that goes back to writing
+    # directly would silently wipe a console override at the next storm tier or
+    # island flip -- and would look completely correct in a diff.
+    #
+    # COMMENT LINES ARE STRIPPED FIRST, exactly as the sound gate below does it:
+    # all three of those files discuss these natives by name in prose, because
+    # the point of those paragraphs is to say why the call is not there.
+    wxfiles_=$(
+        for f in "resources/[fivem-royale]"/*/client/*.lua; do
+            [ -f "$f" ] || continue
+            src1_=$(grep -v '^[[:space:]]*--' "$f")
+            if grep -qE '(^|[^_[:alnum:]])(Set|Clear)WeatherType[[:alnum:]_]*[[:space:]]*\(' <<< "$src1_"; then
+                echo "$f" | sed 's|.*/\([a-z_]*\)/client/|\1/client/|'
+            fi
+        done | sort -u | tr '\n' ' '
+    )
+    if [ "$wxfiles_" != "br_core/client/world.lua " ]; then
+        echo "${RED}FAIL${RST} weather natives live in '${wxfiles_}'"
+        echo "     expected 'br_core/client/world.lua '"
+        echo "     The storm and the island CLAIM the sky through BR.World.want"
+        echo "     and one file resolves the claims by priority. A second writer"
+        echo "     wipes a console override at the next tier change or island"
+        echo "     flip, silently, and this is the only thing that would notice."
+        boundary=1
+    fi
+fi
+
+# THE THIRD DIRECTION: WHAT CAN MAKE THIS CLIENT PLAY A SOUND.
+#
+# Lighter than the two above and gated for the same reason they are -- the
+# capability is small, and the thing that goes wrong is that it QUIETLY GROWS a
+# second copy of itself.
+#
+# ═══ WHY A SOUND NEEDS A GATE AT ALL ═══
+#
+# Because a wrong sound fails SILENTLY, and this project has now paid for that
+# three separate times: WIN and LOSER were silent in the wrong set; the fuel
+# completion cue has been rejected twice by ear, with "I dislike this" and "this
+# never played" indistinguishable from the driver's seat. The defence is that
+# every sound comes out of ONE table -- br_lib/config/audio.lua -- reached BY
+# KEY, so that /brsfx can audition it and one edit changes it everywhere.
+#
+# A PAIR INLINED AT A CALL SITE DEFEATS ALL OF THAT AT ONCE. It cannot be
+# auditioned (nothing knows the key), it cannot be re-pointed with `brsfx bind`,
+# and when it turns out to be silent the search for it starts with a grep. That
+# is not hypothetical: `brsound` in client/debug.lua was a whole second audition
+# command, invisible to the duplicate-command gate below because that one
+# buckets by NAME and these were two names for one question.
+#
+# SO THE CALLERS ARE AN ALLOWLIST, exactly like DropPlayer above.
+#
+#   client/sfx.lua        owns the cue table, the throttle and /brsfx. The only
+#                         file that is SUPPOSED to name a native audio call.
+#   client/loot.lua       )  config/loot.lua's own openSound/pickupSound, which
+#   client/inventory.lua  )  predate the cue table. NOT MOVED -- the pickup sound
+#                            is one the owner heard and kept -- but pinned here
+#                            so the list is two files rather than "wherever".
+#
+# Adding a fourth is a decision, not an accident; if it is the right one, this
+# list is what gets updated.
+# COMMENT LINES ARE STRIPPED FIRST, and that is not tidiness. This subject is
+# the most heavily commented in the tree -- client/sfx.lua, client/fuel.lua,
+# server/fuel.lua and config/audio.lua all discuss `PlaySoundFrontend(...)` by
+# name in prose, because the whole point of those comments is that the native
+# fails silently. A gate that counted prose would fail on a paragraph explaining
+# why the rule exists, which is the fastest possible route to it being deleted.
+sfxfiles_=$(
+    for f in "resources/[fivem-royale]"/*/client/*.lua; do
+        [ -f "$f" ] || continue
+        src2_=$(grep -v '^[[:space:]]*--' "$f")
+        if grep -qE '(^|[^_[:alnum:]])PlaySound(Frontend|FromEntity)[[:space:]]*\(' <<< "$src2_"; then
+            echo "$f" | sed 's|.*/client/|client/|'
+        fi
+    done | sort -u | tr '\n' ' '
+)
+if [ -n "$sfxfiles_" ] \
+   && [ "$sfxfiles_" != "client/inventory.lua client/loot.lua client/sfx.lua " ]; then
+    echo "${RED}FAIL${RST} native sound calls live in '${sfxfiles_}'"
+    echo "     expected 'client/inventory.lua client/loot.lua client/sfx.lua '"
+    echo "     A set/name pair written at a call site cannot be auditioned with"
+    echo "     /brsfx, cannot be re-pointed with 'brsfx bind', and fails SILENTLY"
+    echo "     when the set is wrong. Add a cue to br_lib/config/audio.lua and"
+    echo "     play it by key. If a fourth file really must, update THIS gate."
+    boundary=1
+fi
+
+# AND THE AUDITION COMMAND IS WHERE THE TABLE IS. /brsfx has to be registered in
+# the file that owns the cue table: a version of it anywhere else would be
+# reading that table across files and would be the first half of growing a
+# second one.
+sfxfile_="resources/[fivem-royale]/br_core/client/sfx.lua"
+if [ -f "$sfxfile_" ]; then
+    if ! grep -q "RegisterCommand('brsfx'" "$sfxfile_"; then
+        echo "${RED}FAIL${RST} brsfx is not registered in $sfxfile_"
+        echo "     The audition command belongs in the file that owns the cue"
+        echo "     table. If it moved, move this gate with it."
+        boundary=1
+    fi
+    # THE PROBE IS THE POINT OF THE COMMAND, so it is pinned rather than
+    # trusted. Without a real GET_SOUND_ID there is nothing to ask
+    # HAS_SOUND_FINISHED about, and /brsfx silently goes back to being what it
+    # was before the owner asked for this: a command that plays something and
+    # cannot tell you whether anything came out.
+    #
+    # MATCHED AS A CALL, NOT AS A SUBSTRING, AND MUTATION TESTING IS WHY. The
+    # first draft of this line was `grep -q 'HasSoundFinished'`, and a mutant
+    # that renamed every occurrence to `HasSoundFinishedX` -- which is a probe
+    # that calls a native that does not exist, i.e. no probe at all -- SURVIVED
+    # it, because the old name is a prefix of the new one. The gate reported
+    # green over a /brsfx that could no longer answer the only question it was
+    # built to answer.
+    if ! grep -qE 'HasSoundFinished[[:space:]]*[,)]' "$sfxfile_"; then
+        echo "${RED}FAIL${RST} /brsfx has lost its silence probe"
+        echo "     Expected HasSoundFinished in $sfxfile_. A wrong sound SET"
+        echo "     plays nothing and reports nothing, which is indistinguishable"
+        echo "     from a sound somebody disliked -- and that ambiguity has cost"
+        echo "     this project two rounds of picking a fuel cue."
+        boundary=1
+    fi
+    # AND IT READS THE ANSWER THROUGH THE 1-OR-true IDIOM. HAS_SOUND_FINISHED is
+    # declared BOOL and a FiveM BOOL native may hand Lua a number; `0` IS TRUTHY
+    # IN LUA, so a bare `if fin then` reports every pair as playing and the probe
+    # becomes a decoration that always says yes. Six times in this codebase.
+    if ! grep -qE 'v == 1 or v == true' "$sfxfile_"; then
+        echo "${RED}FAIL${RST} /brsfx reads a BOOL native without the 1-or-true idiom"
+        echo "     Expected 'v == 1 or v == true' in $sfxfile_."
+        echo "     0 is truthy in Lua and a BOOL native may return 1, so a bare"
+        echo "     truth test would make the silence probe answer 'played' for"
+        echo "     every pair, including the silent ones it exists to catch."
+        boundary=1
+    fi
+fi
+
+# `brsound` IS GONE AND STAYS GONE. It was the second raw-pair audition command
+# and it played through the fire-and-forget sound id -1, which cannot be asked
+# whether it ever started -- so reaching for it instead of /brsfx lost exactly
+# the answer the owner is trying to get. Two commands for one question is #137's
+# lesson, and the duplicate-command gate cannot see this shape because the two
+# had different names.
+if grep -rq "RegisterCommand('brsound'" "resources/[fivem-royale]" 2>/dev/null; then
+    echo "${RED}FAIL${RST} brsound is back"
+    echo "     It is a second answer to the question /brsfx answers, without the"
+    echo "     silence probe. Whoever reached for the wrong one would lose the"
+    echo "     one piece of information they were after. Use 'brsfx play'."
+    boundary=1
+fi
+
 if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
+    echo "${GRN}ok${RST}   brcar is console-only and CreateVehicle is scoped to the file that holds the allowlist"
+    echo "${GRN}ok${RST}   brshots/brtestfire are console-only, dev-gated and cannot file a manufactured incident"
+    echo "${GRN}ok${RST}   brtime/brweather are console-only, dev-gated, and the sky has one writer"
+    echo "${GRN}ok${RST}   native sound comes from 3 known files, and /brsfx keeps its silence probe"
+else
+    rc=1
+fi
+
+# --- 4d-bis. every console command is behind the dev gate ---------------------
+#
+# Owner, 2026-08-31: "Yes I want all client and server commands gated behind
+# devmode." There are ~140 of them and they are NOT gated one by one -- the gate
+# is installed once, in br_lib/shared/devgate.lua, which wraps RegisterCommand
+# for every file that loads after it. So this section does not check 140 things.
+# It checks the four ways a command can get out from behind that wrap, because
+# those four are the whole surface:
+#
+#   1. its name is added to the EXEMPT line              -> the exact-set check
+#   2. it registers through BR.Dev.rawCommand            -> the raw-door allowlist
+#   3. it lives in a resource that never loads devgate   -> the coverage check
+#   4. it lives in a file listed BEFORE devgate          -> the ordering check
+#
+# THE POINT OF DOING IT THIS WAY is that a NEW command is gated by default and
+# this gate does not have to know it exists. A list of today's command names
+# would be green forever while the 141st arrived ungated beside it -- the same
+# denylist-inside-the-gate failure the dispatch.sh verb check above records,
+# where `configreport)` did not match `config)` and a new capability was
+# invisible to the thing built to see new capabilities.
+echo "${DIM}== dev gate on console commands ==${RST}"
+devgate=0
+DEVGATE_FILE="resources/[fivem-royale]/br_lib/shared/devgate.lua"
+
+# The exemptions, spelled out HERE as well as in devgate.lua so the two have to
+# be changed together and a widening cannot happen quietly in one of them.
+#
+#   brkick, brspectate  tools/dispatch.sh types these into the server console
+#                       over tmux -- they are the admin console's Kick and
+#                       Spectate buttons, and a dev gate would make both do
+#                       nothing on the live box with no error anywhere.
+#   brring              the health dump DEPLOY.md sends the operator to, by
+#                       hand, on the live box, after an IAM policy change.
+#
+# bridents is deliberately NOT here: nothing invokes it and it prints licenses
+# and Discord ids for everyone connected. See the note above it in
+# br_ringmaster/server/debug.lua.
+EXEMPT_="brkick brring brspectate"
+
+if [ ! -f "$DEVGATE_FILE" ]; then
+    echo "${RED}FAIL${RST} $DEVGATE_FILE is gone"
+    echo "     Every console command in the project is gated by that file"
+    echo "     wrapping RegisterCommand. Without it they are all open."
+    devgate=1
+else
+    # (1) THE EXEMPTION SET, PARSED RATHER THAN GREPPED FOR.
+    #
+    # Read as the actual `name = true` pairs on the EXEMPT line and compared as
+    # a sorted set, so adding a fourth verb fails here instead of passing on the
+    # strength of the other three still being present.
+    exempt_now=$(grep -E '^local EXEMPT = \{' "$DEVGATE_FILE" \
+                 | grep -oE "[a-z]+ = true" | awk '{print $1}' | sort | tr '\n' ' ' \
+                 | sed 's/ $//')
+    if [ "$exempt_now" != "$EXEMPT_" ]; then
+        echo "${RED}FAIL${RST} the dev-gate exemption list is '${exempt_now}', expected '${EXEMPT_}'"
+        echo "     Every name on that line is a command that keeps working on"
+        echo "     the PUBLIC server. Two of them are the admin console's Kick"
+        echo "     and Spectate buttons; the third is how the operator finds out"
+        echo "     the Ringmaster link is dead. A fourth is a decision, not a"
+        echo "     tidy-up -- make it here and in devgate.lua together."
+        devgate=1
+    fi
+
+    # (2) THE GATE ITSELF IS STILL A GATE.
+    #
+    # MATCHED AS REAL READS, NOT AS SUBSTRINGS, which is the finding
+    # brtime/brweather's gate above records: its first draft was
+    # `grep -q 'BR.Server.devMode'`, and a mutant renaming every occurrence to
+    # `BR.Server.devModeX` -- a read of a field that does not exist, so NO GATE
+    # AT ALL -- survived it, because the old name is a prefix of the new one.
+    # Every pattern here is anchored on a non-word character or end of line.
+    if ! grep -qE 'RegisterCommand = function\(' "$DEVGATE_FILE"; then
+        echo "${RED}FAIL${RST} devgate.lua no longer wraps RegisterCommand"
+        echo "     The wrap IS the mechanism. Without the reassignment every"
+        echo "     command in every resource registers straight to the native."
+        devgate=1
+    fi
+    if ! grep -qE 'if not BR\.Dev\.on\(\)([^[:alnum:]_]|$)' "$DEVGATE_FILE"; then
+        echo "${RED}FAIL${RST} devgate.lua's wrapper no longer asks BR.Dev.on()"
+        echo "     A wrapper that does not test anything is a wrapper that"
+        echo "     forwards every command, which looks exactly like a gate."
+        devgate=1
+    fi
+    # The refusal has to SAY SO. A command that returns quietly on the public
+    # box is indistinguishable from one that ran and did nothing, and after this
+    # change that is the ordinary experience of typing anything there.
+    if ! grep -qE '^ *print\(' "$DEVGATE_FILE"; then
+        echo "${RED}FAIL${RST} devgate.lua's refusal is silent"
+        echo "     Someone typing brshop on the public box must read WHICH gate"
+        echo "     closed, on the console, not nothing at all."
+        devgate=1
+    fi
+    # Both convar names, both as real reads. sv_devMode alone would miss a box
+    # started the other way, and br_devMode alone would miss the client.
+    for cv_ in sv_devMode br_devMode; do
+        if ! grep -qE "GetConvar\('$cv_', 'false'\) == 'true'" "$DEVGATE_FILE"; then
+            echo "${RED}FAIL${RST} BR.Dev.on() no longer reads $cv_"
+            echo "     server/main.lua resolves dev mode from BOTH names and"
+            echo "     this must give the same answer or the two will drift."
+            devgate=1
+        fi
+    done
+fi
+
+# (2b) THE CLIENT HALF OF THE SWITCH.
+#
+# About half the commands in the project are CLIENT commands, and a client
+# cannot see either convar: client/attachtune.lua's write-up says so in as many
+# words. server/main.lua replicates the resolved answer under br_devMode, and
+# without that line BR.Dev.on() is false on every client forever -- so every
+# client dev command is dead on the DEV box too, with nothing saying why.
+mainfile_="resources/[fivem-royale]/br_core/server/main.lua"
+if [ -f "$mainfile_" ]; then
+    if ! grep -qE "SetConvarReplicated\('br_devMode'" "$mainfile_"; then
+        echo "${RED}FAIL${RST} br_devMode is no longer replicated to clients"
+        echo "     Without it GetConvar('br_devMode') is unset on every client,"
+        echo "     BR.Dev.on() is false there permanently, and every client dev"
+        echo "     command refuses on the dev box as well as the public one."
+        devgate=1
+    fi
+fi
+
+# (3) THE RAW DOOR, PINNED TO PLAYER INPUT.
+#
+# BR.Dev.rawCommand is the unwrapped native, and it exists for one reason: GTA
+# has no keybind primitive. FiveM builds one out of a command plus
+# RegisterKeyMapping, so `+brinteract`, `brslot3` and `brmap` are console
+# commands in exactly the sense `brshop` is -- and they are also E, 3 and M.
+# Gating them would not cost the public box a diagnostic, it would cost it the
+# keyboard. `brleave` is the fourth: a documented, bindable, player-facing verb.
+#
+# ANYTHING ELSE REACHING FOR THIS DOOR IS A COMMAND WALKING AROUND THE GATE,
+# which is why the consumers are an allowlist rather than a count.
+RAWDOOR_="resources/[fivem-royale]/br_core/client/keybinds.lua resources/[fivem-royale]/br_core/client/spawn.lua"
+raw_now=$(grep -rlE 'BR\.Dev\.rawCommand([^[:alnum:]_]|$)' "resources/[fivem-royale]" \
+          --include=*.lua 2>/dev/null | grep -v 'br_lib/shared/devgate\.lua' \
+          | sort | tr '\n' ' ' | sed 's/ $//')
+if [ "$raw_now" != "$RAWDOOR_" ]; then
+    echo "${RED}FAIL${RST} the ungated command door is used by '${raw_now}'"
+    echo "     Expected exactly '${RAWDOOR_}'."
+    echo "     That door is for PLAYER INPUT -- the keybind rows and /brleave."
+    echo "     A console command reaching for it is a command walking around"
+    echo "     the dev gate. If a new binding needs it, add the file here."
+    devgate=1
+fi
+
+# (4) COVERAGE AND ORDER, DERIVED FROM THE CALL SITES RATHER THAN FROM A LIST.
+#
+# For every resource that actually registers a command, its manifest must pull
+# devgate.lua in BEFORE the first file that registers one. Both halves matter
+# and the second is the quiet one: a resource that loads devgate last has a
+# wrap nothing ran through, and every command in it is open with no symptom.
+#
+# THE RESOURCE SET IS READ OFF THE TREE, so a sixth resource growing its first
+# command is caught the day it does. Comment lines are stripped first --
+# client/voice.lua quotes pma-voice's own RegisterCommand('+radiotalk') in a
+# note, and a gate that counted that would be chasing a file with no commands.
+for res_ in "resources/[fivem-royale]"/*/; do
+    res_="${res_%/}"
+    man_="$res_/fxmanifest.lua"
+    [ -f "$man_" ] || continue
+
+    # Files in this resource that really register a command.
+    regfiles_=$(find "$res_" -name '*.lua' -type f 2>/dev/null | sort | while IFS= read -r f_; do
+        src3_=$(sed 's/--.*$//' "$f_")
+        if grep -qE 'RegisterCommand\(' <<< "$src3_"; then echo "$f_"; fi
+    done)
+    [ -n "$regfiles_" ] || continue
+
+    dgline_=$(grep -nE "'@br_lib/shared/devgate\.lua'" "$man_" | head -1 | cut -d: -f1)
+    if [ -z "$dgline_" ]; then
+        echo "${RED}FAIL${RST} $(basename "$res_") registers console commands but never loads devgate.lua"
+        echo "     Every command in it is ungated on the public server."
+        echo "     Add '@br_lib/shared/devgate.lua' as the FIRST script it loads."
+        devgate=1
+        continue
+    fi
+
+    while IFS= read -r f_; do
+        [ -n "$f_" ] || continue
+        # PARAMETER EXPANSION, NOT sed, AND THE FIRST DRAFT WAS sed. The
+        # resource path contains `[fivem-royale]`, which a sed s/// pattern
+        # reads as a CHARACTER CLASS -- so `s|^$res_/||` matched nothing, every
+        # `base_` stayed a full path, no manifest line was ever found, and the
+        # `continue` below skipped the check for every file in the project.
+        # This half of the gate was green and doing nothing until the mutant
+        # that moves devgate to the END of br_stats' manifest survived it.
+        base_="${f_#"$res_/"}"
+        fline_=$(grep -nF "'$base_'" "$man_" | head -1 | cut -d: -f1)
+        if [ -z "$fline_" ]; then
+            # A file that registers a command and is in NO script list is
+            # loaded by nothing -- the manifest-coverage gate above owns that
+            # case, so this one only reports what it can place.
+            continue
+        fi
+        if [ "$fline_" -lt "$dgline_" ]; then
+            echo "${RED}FAIL${RST} $base_ is loaded before devgate.lua in $(basename "$res_")'s manifest"
+            echo "     Its commands register against the raw native, so they are"
+            echo "     open on the public box while every command around them is"
+            echo "     gated -- and nothing about that is visible at runtime."
+            devgate=1
+        fi
+    done <<REGEOF
+$regfiles_
+REGEOF
+done
+
+if [ "$devgate" -eq 0 ]; then
+    echo "${GRN}ok${RST}   every console command is dev-gated by one wrap, exempting only ${EXEMPT_}"
+    echo "${GRN}ok${RST}   the ungated door is player input only (the keybind rows and /brleave)"
 else
     rc=1
 fi
@@ -1069,6 +2069,109 @@ if [ -f "$cs_" ]; then
     fi
 fi
 
+# --- 4b-ii. who gets TOLD that a case was opened (#214) -----------------------
+#
+# The rule: an incident CREATED during a match, from any source including
+# `system`, shows the rest of the match the "See something suspicious?" notice,
+# once per match, minus the offender and minus the reporter.
+#
+# WHAT MAKES THAT TRUE IS A SHAPE, NOT A CALL. The four creation paths -- refused
+# shot, stripped weapon, refused vehicle, player report -- all emit
+# `br:ringmaster:incident`; br_ringmaster writes the row and emits ONE
+# acknowledgement, `br:incident:filed`; br_core/server/incident.lua announces
+# from there and nowhere else. A fifth creation path is therefore covered on the
+# day it is written, having called nothing -- which is the property #211's
+# aircraft-occupancy filing depends on without knowing it does.
+#
+# SO THIS GATE PINS THE TWO CHOKE POINTS AND DELIBERATELY DOES NOT COUNT THE
+# PATHS. Pinning "there are four creation paths" would fail the build for #211
+# doing exactly the right thing, and whoever hit that would fix it by editing a
+# number rather than by reading any of this. What must not change is that there
+# is ONE announcer and ONE acknowledgement; add a second of either and the cap,
+# the offender exclusion and the reporter exclusion all become things two places
+# have to agree about.
+#
+# THE OFFENDER EXCLUSION IS #93 AND IS THE REASON THIS IS A GATE AT ALL. A
+# second sender of the notice would not fail a test that nobody thought to
+# write; it would just quietly tell somebody.
+echo "${DIM}== incident notice surface ==${RST}"
+inc_="resources/[fivem-royale]/br_core/server/incident.lua"
+ring_="resources/[fivem-royale]/br_ringmaster/server/incident.lua"
+if [ -f "$inc_" ] && [ -f "$ring_" ]; then
+    notice_rc=0
+
+    # One sender of the 'exists' notice. The 'killer' nudge on the same event
+    # (server/players.lua) is a DIFFERENT occasion -- it answers a dead player
+    # who asked about their killer -- and is not constrained here.
+    hint_senders=$(grep -rn "TriggerClientEvent(BR\.Net\.REPORT_HINT" \
+                   "resources/[fivem-royale]" 2>/dev/null \
+                   | grep -c "'exists'" || true)
+    hint_where=$(grep -rln "TriggerClientEvent(BR\.Net\.REPORT_HINT.*'exists'" \
+                 "resources/[fivem-royale]" 2>/dev/null || true)
+    if [ "$hint_senders" != "1" ] || [ "$hint_where" != "$inc_" ]; then
+        echo "${RED}FAIL${RST} the 'See something suspicious?' notice has ${hint_senders} sender(s)"
+        echo "     in: ${hint_where:-<none>}"
+        echo "     Expected exactly one, in ${inc_}."
+        echo "     That function is where the once-per-match cap, the #93"
+        echo "     offender exclusion and the #180 reporter exclusion live. A"
+        echo "     second sender does not break them loudly -- it just tells"
+        echo "     somebody who was supposed to be told nothing."
+        notice_rc=1
+    fi
+
+    # One minter of the acknowledgement every creation path converges on.
+    ack_senders=$(grep -rn "TriggerEvent('br:incident:filed'" \
+                  "resources/[fivem-royale]" 2>/dev/null | wc -l | tr -d ' ')
+    ack_where=$(grep -rln "TriggerEvent('br:incident:filed'" \
+                "resources/[fivem-royale]" 2>/dev/null || true)
+    if [ "$ack_senders" != "1" ] || [ "$ack_where" != "$ring_" ]; then
+        echo "${RED}FAIL${RST} br:incident:filed has ${ack_senders} emitter(s)"
+        echo "     in: ${ack_where:-<none>}"
+        echo "     Expected exactly one, in ${ring_}, sent only after DynamoDB"
+        echo "     accepted the write. A second emitter would announce a case"
+        echo "     that may not exist, and would spend the one notice this"
+        echo "     match gets on it."
+        notice_rc=1
+    fi
+
+    # A corroboration is not a creation. It must never mint the acknowledgement.
+    src4_=$(sed -n "/AddEventHandler('br:ringmaster:corroborate'/,/^end)/p" "$ring_")
+    if grep -q "br:incident:filed" <<< "$src4_"; then
+        echo "${RED}FAIL${RST} the corroboration handler emits br:incident:filed"
+        echo "     A corroboration appends to a case that already exists. If it"
+        echo "     mints an acknowledgement it becomes a creation, and the"
+        echo "     second thing a cheater does in a round announces itself."
+        notice_rc=1
+    fi
+
+    # And one place that asks br_ddb to write a case at all. This is the only
+    # bypass the two pins above cannot see: a new detector that called
+    # `br:ddb:putIncident` itself would file a perfectly good incident, mint no
+    # acknowledgement, and tell nobody -- the feature would ship dead for that
+    # path with every gate green, which is the exact failure the shared-coverage
+    # gate's note about outbox.lua describes.
+    put_askers=$(grep -rn "br:ddb:putIncident" "resources/[fivem-royale]" 2>/dev/null \
+                 | grep -v "/br_ddb/" | wc -l | tr -d ' ')
+    put_where=$(grep -rln "br:ddb:putIncident" "resources/[fivem-royale]" 2>/dev/null \
+                | grep -v "/br_ddb/" || true)
+    if [ "$put_askers" != "1" ] || [ "$put_where" != "$ring_" ]; then
+        echo "${RED}FAIL${RST} br:ddb:putIncident is asked from ${put_askers} place(s)"
+        echo "     in: ${put_where:-<none>}"
+        echo "     Expected exactly one, in ${ring_}. Every creation path must"
+        echo "     reach the database through it, because that is the function"
+        echo "     that emits the acknowledgement the report notice hangs off."
+        echo "     A path that writes its own row files a case nobody is told"
+        echo "     about, and no other gate can see the difference."
+        notice_rc=1
+    fi
+
+    if [ "$notice_rc" = "0" ]; then
+        echo "${GRN}ok${RST}   one announcer, one acknowledgement, one writer; corroboration is none of them"
+    else
+        rc=1
+    fi
+fi
+
 # --- 4c. the timeline entry kinds agree across the language boundary ----------
 #
 # THE SAME SHAPE AS THE VOICE DEFAULT ABOVE, WHICH IS THIS PROJECT'S SIGNATURE
@@ -1160,30 +2263,196 @@ bash tools/check_secrets.sh || rc=1
 # "my change did nothing" with nothing wrong in any log. Same failure the NUI
 # bundle guard exists to prevent, so it gets the same treatment.
 #
-# SKIPPED RATHER THAN FAILED WITHOUT NODE. verify.sh is required to run on a
-# box with no Node install (that is why check_secrets.sh is bash), and the ban
-# rule's own tests run in the same breath when Node is present.
+# A FINGERPRINT, NOT A REBUILD, SINCE #218. This section used to run esbuild
+# and diff the result against the committed bundle. That is the stronger check
+# and it never once executed: it needed js-src/br_ddb/node_modules, so it
+# printed `skip` on every machine for months, and installing the deps turned it
+# RED rather than green -- on a package-exports failure inside the AWS SDK's own
+# dependency tree under Node 24, which no rebuild of ours fixes. A gate that
+# fails for somebody else's reason is worse than one that never ran, because the
+# two are indistinguishable from here.
+#
+# What runs instead is a sha256 over the source tree, recorded beside the bundle
+# in dist/fingerprint.json. No node, no npm, no install -- so it runs on every
+# machine, starting today. tools/br_ddb_fingerprint.sh carries the scheme and,
+# more usefully, the list of what it does NOT prove: it catches "somebody edited
+# the source and forgot to rebuild", it does not prove the bundle is correct,
+# and it is not a tamper check -- the manifest is as editable as the bundle
+# beside it.
+#
+# THE BAN RULE CASES NEEDED NO node_modules EITHER. They import only src/, which
+# is pure arithmetic on data, and they were sitting behind the same dead guard:
+# 193 cases that ran on no machine that had not done an install. They run now
+# whenever Node is present, which is the only thing they ever needed.
 
 echo "${DIM}== br_ddb bundle ==${RST}"
 if [ ! -d js-src/br_ddb ]; then
     echo "     no br_ddb source, skipping"
-elif ! command -v node >/dev/null 2>&1; then
-    echo "${YEL}skip${RST} node not installed -- cannot verify the bundle matches its source"
-elif [ ! -d js-src/br_ddb/node_modules ]; then
-    echo "${YEL}skip${RST} js-src/br_ddb/node_modules absent (run: cd js-src/br_ddb && npm install)"
 else
-    if node js-src/br_ddb/scripts/build.mjs --check >/dev/null 2>&1; then
-        echo "${GRN}ok${RST}   br_ddb bundle matches its source"
+    if fp=$(bash tools/br_ddb_fingerprint.sh --check 2>&1); then
+        echo "${GRN}ok${RST}   br_ddb bundle matches the source fingerprint ($fp)"
     else
         echo "${RED}FAIL${RST} br_ddb bundle does not match js-src/br_ddb"
-        echo "     Fix:  cd js-src/br_ddb && npm run build"
+        echo "$fp" | sed 's/^/     /'
         rc=1
     fi
 
-    if node js-src/br_ddb/scripts/test.mjs >/dev/null 2>&1; then
+    if ! command -v node >/dev/null 2>&1; then
+        echo "${YEL}skip${RST} node not installed -- ban rule cases not run"
+    elif node js-src/br_ddb/scripts/test.mjs >/dev/null 2>&1; then
         echo "${GRN}ok${RST}   br_ddb ban rule passes its cases"
     else
-        echo "${RED}FAIL${RST} br_ddb ban rule failed -- run: cd js-src/br_ddb && npm test"
+        echo "${RED}FAIL${RST} br_ddb ban rule failed -- run: node js-src/br_ddb/scripts/test.mjs"
+        rc=1
+    fi
+fi
+
+# --- 6b. the same bundle, read off a BOX -------------------------------------
+#
+# The gate above is the one that matters and it runs before a commit lands: it
+# proves the committed bundle was recorded against the committed source. It says
+# nothing at all about the file a running server actually loaded, because a
+# deploy happens afterwards and rsync can stop halfway.
+#
+# So `status` carries a second reading -- the deployed manifest, and the deployed
+# bundle's real digest -- and the console compares the two. THIS SECTION DRIVES
+# tools/dispatch.sh AGAINST FIXTURES, because every interesting case here is a
+# case where a file is missing or wrong, and none of them can be produced by
+# reading this repo.
+#
+# WHAT IS ACTUALLY BEING PINNED:
+#
+#   1. the shape, so the console's parser and this printf cannot drift apart;
+#   2. that ABSENCE IS REPRESENTABLE -- no manifest, no bundle, and no hasher
+#      each produce null rather than a value. A false green is the worst
+#      outcome this feature can produce and null is what prevents it;
+#   3. that a MISMATCH IS REPRESENTABLE. A check that cannot go red is a
+#      decoration, and this one is one hash comparison away from always
+#      agreeing with itself;
+#   4. that the DEPLOYED copy is what gets read. Reading the clone would be a
+#      check that passes by construction -- the clone's manifest and bundle
+#      arrived in the same commit and always agree.
+#
+# NOTHING HERE IS A SECURITY PROPERTY. The manifest sits beside the bundle and
+# is writable by whoever can write the bundle; this catches a deploy that did
+# not finish, which is the realistic cause and very nearly the only one.
+
+echo "${DIM}== br_ddb bundle over the wire ==${RST}"
+mf_="resources/[fivem-royale]/br_ddb/dist/fingerprint.json"
+js_="resources/[fivem-royale]/br_ddb/dist/server.js"
+if [ ! -f tools/dispatch.sh ] || [ ! -f "$mf_" ] || [ ! -f "$js_" ]; then
+    echo "     no dispatcher or no committed bundle, skipping"
+elif ! command -v sha256sum >/dev/null 2>&1 \
+     && ! command -v shasum >/dev/null 2>&1 \
+     && ! command -v openssl >/dev/null 2>&1; then
+    echo "${YEL}skip${RST} no sha256 tool -- bundle reading not driven"
+else
+    bx_=$(mktemp -d)
+    bfail_=0
+
+    # A box: a served clone, and a DEPLOYED resource tree that is not it.
+    mkdir -p "$bx_/.git" "$bx_/resources/[gamemodes]/[fivem-royale]/br_ddb/dist"
+    mkdir -p "$bx_/resources/[fivem-royale]/br_ddb/dist"
+    dep_="$bx_/resources/[gamemodes]/[fivem-royale]/br_ddb/dist"
+    clone_="$bx_/resources/[fivem-royale]/br_ddb/dist"
+
+    ask_() {
+        env BR_SERVER_ROOT="$bx_" BR_SRC_DIR="$bx_" BR_REPO_DIR="$bx_" \
+            BR_TARGET_CATEGORY='[gamemodes]' SSH_ORIGINAL_COMMAND=status \
+            bash tools/dispatch.sh 2>/dev/null
+    }
+    says_() {
+        if ! grep -qF "$3" <<< "$2"; then
+            echo "${RED}FAIL${RST} status bundle: $1"
+            echo "     expected to contain: $3"
+            echo "     got: $2"
+            bfail_=1
+        fi
+    }
+
+    want_="$(sed -n 's/.*"bundle"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$mf_" | head -1)"
+
+    # 1. The healthy case. The digest on the line is the manifest's own, which
+    #    is what makes the console say "Matches" rather than anything stronger.
+    cp "$mf_" "$js_" "$dep_/"
+    out_="$(ask_)"
+    says_ 'a deployed pair reports its manifest' "$out_" "\"scheme\":\"br_ddb-source-fingerprint-1\""
+    says_ 'and the bundle digest beside it'      "$out_" "\"onDisk\":\"$want_\""
+    # THE COUNT IS READ OUT OF THE MANIFEST, NOT TYPED HERE. It used to be the
+    # literal 713416, which made every legitimate rebuild of the bundle fail
+    # this gate in a section that is about a DEPLOY going wrong -- a red that
+    # says nothing about the thing it is checking and is fixed by editing the
+    # test, which is how a gate stops being read. The property under test is
+    # that the count reaches the console as a JSON NUMBER rather than a quoted
+    # string; the surrounding `":` and the absence of a quote after it are what
+    # assert that, and the value only has to agree with the manifest beside it.
+    bytes_="$(sed -n 's/.*"bundleBytes"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$mf_" | head -1)"
+    if [ -z "$bytes_" ]; then
+        echo "${RED}FAIL${RST} status bundle: the manifest has no numeric bundleBytes"
+        bfail_=1
+    fi
+    says_ 'with the byte count as a NUMBER'      "$out_" "\"bundleBytes\":$bytes_"
+
+    # The whole line has to parse. This object is interpolated into the one
+    # response the console polls; malformed here is not a wrong bundle reading,
+    # it is the process state and the branch pin going dark to report a hash.
+    if command -v node >/dev/null 2>&1; then
+        if ! printf '%s' "$out_" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{JSON.parse(s)})' 2>/dev/null; then
+            echo "${RED}FAIL${RST} status did not print valid JSON with the bundle block"
+            echo "     $out_"
+            bfail_=1
+        fi
+    fi
+
+    # 2. A MISMATCH IS REACHABLE. One appended byte, which is what half an
+    #    rsync leaves behind.
+    printf '\n// truncated deploy\n' >> "$dep_/server.js"
+    out_="$(ask_)"
+    if grep -qF "\"onDisk\":\"$want_\"" <<< "$out_"; then
+        echo "${RED}FAIL${RST} a modified bundle still reported the manifest's digest"
+        echo "     This check cannot go red, which makes it a decoration."
+        bfail_=1
+    fi
+    says_ 'and still names what the manifest claims' "$out_" "\"bundle\":\"$want_\""
+
+    # 3. THE DEPLOYED COPY WINS. The clone always agrees with itself, so a
+    #    reader pointed at it could never see the case above.
+    cp "$js_" "$clone_/"
+    cp "$mf_" "$clone_/"
+    out_="$(ask_)"
+    if grep -qF "\"onDisk\":\"$want_\"" <<< "$out_"; then
+        echo "${RED}FAIL${RST} status read the clone's bundle, not the deployed one"
+        echo "     A deploy that stops halfway is the whole failure this detects,"
+        echo "     and it is invisible from the tree the deploy came from."
+        bfail_=1
+    fi
+
+    # 4. ABSENCE, THREE WAYS, AND NONE OF THEM IS A MISMATCH.
+    rm -f "$dep_/fingerprint.json"
+    out_="$(ask_)"
+    says_ 'no manifest reads as null, not as a fault' "$out_" '"manifest":null'
+
+    cp "$mf_" "$dep_/"
+    rm -f "$dep_/server.js"
+    out_="$(ask_)"
+    says_ 'no bundle reads as null'      "$out_" '"onDisk":null'
+    says_ 'while the manifest still reports' "$out_" "\"bundle\":\"$want_\""
+
+    rm -f "$dep_/fingerprint.json"
+    out_="$(ask_)"
+    says_ 'neither file reads as two nulls' "$out_" '{"manifest":null,"onDisk":null}'
+
+    # 5. A manifest with no source hash is not a half manifest, it is a file we
+    #    could not read -- the rule server-side fingerprint reading used to
+    #    apply, kept now that the reading moved to the shell.
+    printf '{\n  "scheme": "br_ddb-source-fingerprint-1"\n}\n' > "$dep_/fingerprint.json"
+    out_="$(ask_)"
+    says_ 'a manifest with no source hash reads as null' "$out_" '"manifest":null'
+
+    rm -rf "$bx_"
+    if [ "$bfail_" -eq 0 ]; then
+        echo "${GRN}ok${RST}   status reports the deployed bundle, and every absence as null"
+    else
         rc=1
     fi
 fi

@@ -153,7 +153,623 @@ BR.Config.Match = {
     warmupPos       = { x = 4449.0, y = -4482.0, z = 4.3, heading = 315.0 },
     -- Tighter than the old LSIA pad: the airstrip apron is generous but the
     -- island tip is not, and a wide scatter puts players in the surf.
+    --
+    -- STILL THE ANCHOR FOR THE WARMUP LOOT LAYOUT (shared/loot_gen.lua and
+    -- server/loot.lua both site the communal layout around it), which is why
+    -- these two survive `warmupSpawns` below taking over the PLAYER arrival.
     warmupRadius    = 60.0,
+
+    -- WHERE A PLAYER ACTUALLY LANDS WHEN THEY READY UP. Re-surveyed in game by
+    -- the owner on 2026-08-31, and picked from at random, one per arrival.
+    --
+    -- THEY REPLACE THE RANDOM SCATTER, and the reason is not tidiness. The
+    -- scatter drew a point in a 30m disc around `warmupPos` and dropped the
+    -- player on whatever ground was under it; these are three places a person
+    -- stood.
+    --
+    -- THREE SEPARATED STANDS, AND THAT IS THE CHANGE FROM THE FIVE THEY REPLACE.
+    -- The previous set was four points inside three metres of each other plus a
+    -- fifth off on its own, and the cluster was doing the work of "a group
+    -- arriving together still arrives together". These three are 26m, 28m and
+    -- 50m apart, so there is no cluster left to describe and nothing to arrange
+    -- them into a formation -- simultaneous readies land on genuinely different
+    -- parts of the apron. Sited by the owner, and used exactly as surveyed: this
+    -- project does not round, adjust or "correct" his coordinates.
+    --
+    -- THEY ARE NOT BOUNDED BY `warmupRadius`, and one of them is outside it.
+    -- That number anchors the communal LOOT layout (see it above) and stopped
+    -- bounding the player arrival the day this table took it over, so a stand
+    -- 68m from `warmupPos` is a stand the owner picked rather than a number out
+    -- of range.
+    --
+    -- THE TELEPORT ONTO ONE OF THESE IS THE ORDERING THE WHOLE FIX TURNS ON.
+    -- See BR.LobbyPed in br_core/client/lobbyped.lua: the ped is moved HERE
+    -- first and only becomes a networked, visible-to-everyone ped afterwards,
+    -- so it is never a stranger appearing on the lobby mark.
+    warmupSpawns    = {
+        { x = 4467.42, y = -4486.29, z = 4.21, heading = 322.8 },
+        { x = 4516.24, y = -4474.81, z = 4.19, heading = 84.1 },
+        { x = 4488.25, y = -4470.94, z = 4.22, heading = 198.3 },
+    },
+
+    -- ====================================================================
+    -- THE LOBBY ENTRANCE: THE WALK IN, AND THE CAMERA THAT MEETS IT.
+    -- ====================================================================
+    --
+    -- EVERY DURATION HERE IS A KNOB ON PURPOSE. The owner offered to tune the
+    -- timing himself ("He has offered to help tune this"), so nothing about
+    -- when this sequence does what is written in the client -- the client
+    -- reads these and /brlobbywalk replays the whole thing without a restart.
+    --
+    -- THE PED'S PATH is four legs: `pedStart`, three surveyed corners, and then
+    -- `lobbyPos` above -- which the client appends rather than this file
+    -- repeating, because the lobby mark has one definition and the locker, the
+    -- camera and the loading gate all read it.
+    --
+    -- THE CAMERA'S PATH is three authored nodes and then the ordinary lobby
+    -- frame, computed from `lobbyPos` and `lobbyCam` exactly as it always was.
+    lobbyEntrance   = {
+        -- ═══ ONE SURVEYED PATH, AND IT IS NOT A DRAW ANY MORE ═══
+        --
+        -- Re-surveyed by the owner on 2026-08-30, REPLACING the four random
+        -- cases that preceded it. There is one way in again, so there is no
+        -- choosing: `pedStart` is where the ped is placed under the cover and
+        -- `pedPath` is the corners it walks through.
+        --
+        -- THE MACHINERY WENT WITH THEM rather than being left as a table of
+        -- one, which would have been a draw that always drew the same card and
+        -- read, to the next person, as a feature still in use.
+        --
+        -- `pedStart.heading` IS USED -- it is where the ped is placed, before it
+        -- has a leg to face along. THE HEADINGS ON THE CORNERS ARE NOT, and are
+        -- kept only because they are the survey. They are where the surveyor
+        -- was standing and looking; handing them to TaskGoStraightToCoord as
+        -- "the way to face on arrival" is what used to make the ped turn most of
+        -- a right angle the wrong way at every corner and then turn back. A
+        -- corner's facing is a consequence of where the path goes NEXT, and the
+        -- client computes it -- see headingFor in br_core/client/lobbyped.lua,
+        -- and the assertion in tools/test_lobbyseq.lua that would catch anyone
+        -- wiring these back in.
+        --
+        -- THE FINAL LEG IS `lobbyPos`, appended by the client. Do not repeat it.
+        --
+        -- FOUR LEGS: 7.0m, 13.0m, 5.8m, 5.0m -- 30.8m in all, against 41m for
+        -- the longest of the old cases. At the 18s target that is 1.71 m/s
+        -- average, comfortably inside the blend clamp, so nothing is pinned at
+        -- the ceiling the way case 2 used to be.
+        pedStart = { x = 5040.08, y = -5699.77, z = 19.88, heading = 118.5 },
+        pedPath  = {
+            { x = 5034.35, y = -5703.75, z = 19.88, heading = 139.2 },
+            { x = 5041.32, y = -5714.51, z = 17.68, heading = 212.0 },
+            { x = 5036.56, y = -5717.71, z = 17.08, heading = 120.4 },
+        },
+
+        -- THE WALKING STYLE, AND IT IS A STOCK GTA MOVEMENT CLIPSET.
+        --
+        -- The owner named these from a separate emote resource's menu
+        -- ("grooving male" / "grooving female") and said he intends to remove
+        -- that resource. They are not its content: that menu's labels sit in
+        -- front of the game's own clipsets, and these two strings are what its
+        -- own table maps them to (client/AnimationList.lua, RP.Walks.Grooving
+        -- and .Grooving2). Nothing in this project references, requires or
+        -- checks for it -- SetPedMovementClipset takes the clipset directly.
+        --
+        -- THE TRAILING @ IS PART OF THE NAME. `anim@move_m@grooving` without
+        -- it is a different string and RequestAnimSet answers nothing for it,
+        -- which presents as a ped that walks normally rather than as an error.
+        walkClipsetMale   = 'anim@move_m@grooving@',
+        walkClipsetFemale = 'anim@move_f@grooving@',
+
+        -- How long to wait for the clipset to stream before walking anyway.
+        -- A missed style costs a plain walk; a wait with no ceiling costs the
+        -- whole entrance.
+        clipsetWaitMs = 3000,
+
+        -- How long to wait for the ped MODEL before starting. The owner called
+        -- this one out explicitly ("Wait for the model to load before
+        -- proceeding"), and it is sized off client/locker.lua's own 5s request
+        -- deadline plus the tick that starts it.
+        modelWaitMs = 8000,
+
+        -- ═══ EVERY WALK TAKES THE SAME TIME, AND THE SPEEDS ARE DERIVED ═══
+        --
+        -- Owner, 2026-08-29: "Each walk should take the exact same amount of
+        -- time, and be faster at the first steps when necessary, before
+        -- slowing down to a normal pace for the last walk." Target confirmed
+        -- at eighteen seconds, for every case.
+        --
+        -- SO THERE IS NO AUTHORED LIST OF SPEEDS ANY MORE, and there cannot be
+        -- one. The four cases are 41.2m, 58.7m, 28.6m and 34.0m long; a single
+        -- list of blend ratios could not put all four on the same clock. The
+        -- client measures the case it drew and solves for the ramp that does --
+        -- see `blendPlan` in br_core/client/lobbyped.lua.
+        --
+        -- THE LAST LEG IS ALWAYS 1.0, which is the owner's "normal pace for the
+        -- last walk", and the legs before it ramp DOWN to it in equal steps
+        -- from whatever the first leg needs. Nothing jumps.
+        --
+        -- `walkMps` IS THE ONE NUMBER THAT CANNOT BE COMPUTED: how many metres
+        -- per second this ped actually covers at blend 1.0, wearing the
+        -- grooving clipset, on this ground. 1.4 is GTA's nominal walk.
+        --
+        -- IF THE MEASURED WALK IS NOT 18 SECONDS, THIS IS THE KNOB. /brlobbywalk
+        -- prints what the last walk really took: a measured 20s against a
+        -- target of 18 means this number is about ten percent low.
+        walkTargetMs = 18000,
+        walkMps      = 1.4,
+
+        -- THE FLOOR AND THE CEILING ON A DERIVED BLEND RATIO. TaskGoStraight-
+        -- ToCoord's move blend ratio: 1.0 is a walk, 2.0 a run, 3.0 a sprint.
+        -- 3.0 is therefore as fast as a person moves, and a ratio above it is
+        -- not a walk arriving anywhere. A case that cannot make the target
+        -- inside this ceiling simply takes longer, and /brlobbywalk says by how
+        -- much rather than the ped sprinting at an impossible ratio.
+        walkBlendMin = 1.0,
+        walkBlendMax = 3.0,
+
+        -- ═══ THREE DISTANCES, AND THEY ARE NOT THE SAME QUESTION ═══
+        --
+        -- `cornerRadius` -- HOW EARLY THE NEXT LEG IS HANDED OVER at a corner,
+        -- in metres. Each leg is a go-to-coord task and a go-to-coord task
+        -- ENDS AT REST: the ped slows over the last couple of metres so it
+        -- stops ON the coordinate. Handing over at 0.9m meant the ped had
+        -- already finished stopping before it was told to keep going -- owner,
+        -- 2026-08-29: "it seems the ped walks to the point, stops, turns, then
+        -- walks to the next point." Bigger rounds the corners more and cuts
+        -- them wider; smaller is closer to the surveyed line and closer to
+        -- stopping at it. It is clamped in the client to a fraction of the leg
+        -- being walked, so a short leg cannot be swallowed by its own corner.
+        --
+        -- `markRadius` -- HOW CLOSE COUNTS AS ARRIVED at the lobby mark, and
+        -- it is small for a reason. The mark is the end of the walk and the
+        -- ped is placed exactly on it (the lobby is a camera shot), so
+        -- whatever is left when the walk stops is a TELEPORT the player
+        -- watches -- owner, 2026-08-29: "the ped is getting close to the final
+        -- coords, but then being teleported there." That is what this is: the
+        -- length of that teleport. Under a boot's width and nobody can see it.
+        --
+        -- `arriveRadius` -- the plain "close enough" the two above are
+        -- measured against: the floor under cornerRadius, and the window in
+        -- which a ped that has stopped improving is taken to have arrived.
+        cornerRadius = 2.0,
+        markRadius   = 0.15,
+        arriveRadius = 0.9,
+
+        -- How long one leg may take before the sequence gives up on it and
+        -- moves to the next. The FLOOR under the grace below, not the plan: it
+        -- covers the window before the camera has landed, when there is nothing
+        -- else watching a ped stuck on geometry.
+        legTimeoutMs = 15000,
+
+        -- ═══ AND THE FAILSAFE IS ANCHORED TO THE CAMERA NOW ═══
+        --
+        -- Owner, 2026-08-29: "I see you implemented a failsafe in case the ped
+        -- doesn't get to the destination in time. It seem's that's firing
+        -- correctly, but takes too long. Can you make it so if the ped doesn't
+        -- get to the destination within 5 seconds of the camera parking we fire
+        -- that function and bring them to the position ourselves?"
+        --
+        -- ...AND IT IS MEASURED FROM WHEN THE WALK IS DUE, NOT FROM THE PARKING.
+        --
+        -- Those were the same moment when he asked for it -- flight and walk
+        -- both eighteen seconds -- and stopped being the same moment one
+        -- message later, when the camera went thirty percent faster and started
+        -- parking four seconds early. Five seconds from the PARKING would now
+        -- leave under a second of slack, and case 2 (which honestly needs 19.6s)
+        -- would trip it on every single return: one lobby entrance in four
+        -- teleporting the ped, presenting as the arrival bug coming back.
+        --
+        -- So the client waits until the walk is genuinely overdue -- the drawn
+        -- case's own planned duration, plus anything the walk was deliberately
+        -- paused for -- and then gives it this long. The camera parking stays
+        -- in as a floor. See `graceExpired` in br_core/client/lobbyped.lua.
+        --
+        -- IT SHOULD NEVER FIRE, AND THAT IS THE POINT. IF IT FIRES ROUTINELY,
+        -- `walkMps` is wrong: the walk is taking longer than the plan thinks,
+        -- and that is the number to change rather than this one.
+        --
+        -- THE FLIP DOES NOT COUNT AGAINST IT. A winning return stops at the
+        -- second-to-last point for the length of the animation, which is a
+        -- deliberate pause and not a ped that failed to arrive. Teleporting a
+        -- winner out of their own victory animation would be the worst possible
+        -- way to spend this.
+        arriveGraceMs = 5000,
+
+        -- THE CAMERA NODES -- CONTROL POINTS FOR A CURVE, NOT STOPS ON A ROUTE.
+        --
+        -- The flight is a Catmull-Rom spline THROUGH these three and then the
+        -- ordinary lobby frame, resampled into `camSteps` short moves. So the
+        -- camera passes through each of them without a corner: owner,
+        -- 2026-08-29, "when the camera gets to a position and changes direction
+        -- that's also too sudden ... we need more steps in this process which
+        -- will smooth out the corners into curves."
+        --
+        -- `heading` IS NO LONGER READ ON A FLIGHT NODE, and that is the fix for
+        -- the other half of the same report ("the camera facing direction
+        -- changes too suddenly"). A per-node heading is a per-node ROTATION and
+        -- a chain of them is a chain of turns. Every step of the flight now
+        -- looks at ONE moving aim point -- the lobby mark, sliding onto the
+        -- locker's exact aim over the last of the path -- so the whole descent
+        -- is a single continuous rotation with nothing to snap between. The
+        -- headings are kept because they are the survey and because the three
+        -- of them are within 18 degrees of "look at the lobby" anyway.
+        --
+        -- `pitch` and `fov` per node are likewise unused by the flight now; the
+        -- pitch is whatever looking at the aim point requires.
+        camPath = {
+            { x = 5550.24, y = -5555.91, z = 175.34, heading = 132.4 },
+            { x = 5189.63, y = -5747.61, z =  66.61, heading =  99.5 },
+            { x = 5072.10, y = -5738.05, z =  31.77, heading =  64.8 },
+        },
+
+        -- ═══ HOW MUCH OF THE FRONT OF THAT PATH IS NOT FLOWN ═══
+        --
+        -- Owner, 2026-08-31: "the lobby cam movement goes for a WAY too long
+        -- distance - you were right. Can we make it start closer to the
+        -- destination by like 30%? Keep the timing the same though."
+        --
+        -- A FRACTION OF THE FLIGHT'S LENGTH, TAKEN OFF THE START. 0.30 drops
+        -- the path from 598m to 419m and the opening shot from 560m out to
+        -- 385m. The camera joins the curve at the point that was 30% along it;
+        -- it does NOT cut a new line toward home, so the arc, the rounding and
+        -- the landing are all exactly the ones surveyed above.
+        --
+        -- ═══ camPath IS NOT EDITED, AND THAT IS WHY THIS IS A NUMBER ═══
+        --
+        -- The three nodes are a survey and are retyped in tools/test_lobbyseq.lua
+        -- so that they cannot drift. Shortening the flight by moving node 1 down
+        -- the hill would have meant re-authoring a surveyed coordinate to express
+        -- a timing preference, and there would then be no way back to the full
+        -- path except another survey. This is one character to change and the
+        -- path is still on disk underneath it. 0 flies the whole thing.
+        --
+        -- ═══ IT MAKES THE CAMERA SLOWER, ON PURPOSE ═══
+        --
+        -- `camFlightMs` is untouched, so the flight still takes 13.846 seconds
+        -- and covers 70% of the ground: every step is 30% slower than it was.
+        -- "Keep the timing the same though" is that sentence, and anybody who
+        -- "fixes" the speed by cutting camFlightMs to match has undone the whole
+        -- change. The speed knob is camFlightMs; this one is the distance.
+        --
+        -- ═══ AND NONE OF THE STEP SETTINGS WANTED REBALANCING FOR IT ═══
+        --
+        -- MEASURED, because a shorter path re-normalises the cost spacing and
+        -- that is exactly the sort of thing that quietly moves. It moves the
+        -- right way: the worst single-step turn goes from 2.36 degrees to 2.13
+        -- (the same measure as the camRounding table above), the longest chord
+        -- from 11.4m to 7.5m -- 1.8% of the path either way -- and the shortest
+        -- step is still sitting exactly on the 17ms floor. So camSteps,
+        -- camStepMinMs, camRounding and camDecay are all left alone.
+        --
+        -- RAISING THIS FURTHER STAYS SMOOTH; WHAT IT COSTS IS THE SHOT. Every
+        -- number above keeps improving as the trim goes up, because the ground
+        -- being removed is the fast straight opening. Past about 0.5 the flight
+        -- stops reading as a descent onto the lobby and becomes a short hop onto
+        -- the mark, and that is a judgement to make by eye and not from here.
+        camStartTrim = 0.30,
+
+        -- ═══ THE WHOLE FLIGHT, AND IT DECELERATES ═══
+        --
+        -- How long the camera takes to get from the first node above to the
+        -- lobby frame, start to finish, INCLUDING the landing.
+        --
+        -- ═══ IT NO LONGER MATCHES `walkTargetMs`, AND THAT IS DELIBERATE ═══
+        --
+        -- It was 18000, matched to the walk, off "The camera flight and the
+        -- walk should finish together". Then: "Also the lobby camera moves too
+        -- slow. Let's do 30% faster" (owner, 2026-08-29).
+        --
+        -- 18000 / 1.3 = 13846, which is SPEED thirty percent higher. The other
+        -- reading -- duration times 0.7, or 12600 -- is a bigger change than
+        -- the words ask for, so this is the conservative one; it is one number
+        -- to change if he meant the other.
+        --
+        -- SO THE CAMERA NOW PARKS ABOUT FOUR SECONDS BEFORE THE PED ARRIVES.
+        -- They still START together (both wait on the same reveal); they no
+        -- longer finish together, because he asked for the first thing more
+        -- recently than the second. /brlobbywalk prints the measured gap, and
+        -- `arriveGraceMs` below is measured from when the WALK is due rather
+        -- than from the parking precisely so this number can move again without
+        -- quietly turning the failsafe into a teleport.
+        camFlightMs = 13846,
+
+        -- ═══ TWO SETTINGS FOR SMOOTHNESS, AND THEY ARE NOT THE SAME THING ═══
+        --
+        -- Owner, 2026-08-29: "the camera movements in the lobby should be 2x
+        -- smoother please. And round the corners once more. I mean like 2x the
+        -- resolution of points."
+        --
+        -- `camSteps` IS THE RESOLUTION -- how many moves the flight is cut into.
+        -- Each one is a linear interpolation between two static cameras with NO
+        -- ease at either end, so the camera never stops: the next move picks it
+        -- up at the speed the last one left it. Doubling it halves both the time
+        -- and the distance per move, which halves how far the shot turns in any
+        -- one of them. That is his "2x the resolution of points", and it was 24.
+        --
+        -- IT DOES NOT ROUND ANYTHING. More samples along the same curve is
+        -- smoother MOTION over identical GEOMETRY -- the path still turns
+        -- exactly as tightly as the spline says. `camRounding` below is the
+        -- other half of the sentence.
+        --
+        -- THE COST IS TWO CAMERAS BUILT AND ONE DESTROYED PER STEP. At 48 over
+        -- a 13.8s flight that is one move every 288ms, which is far longer than
+        -- a frame -- there is no per-step work that does not scale, and the
+        -- retiring camera is destroyed on every move rather than deferred (see
+        -- dropRetiring in lobbycam.lua), so twice the steps is twice the
+        -- allocations and the same number of LIVE cameras: two.
+        camSteps = 96,
+
+        -- THE SHORTEST A SINGLE MOVE MAY BE, IN MILLISECONDS.
+        --
+        -- NOT A KNOB, A FLOOR. The step spacing puts boundaries where the shot
+        -- moves fastest, and on a path whose sharpest bend is its final approach
+        -- that clusters very short steps at the landing -- 11ms on the current
+        -- survey. A move shorter than a frame has no frame to interpolate
+        -- across, so the engine resolves it as a cut, and several in a row is a
+        -- stutter arriving exactly where the smoothing was aimed.
+        --
+        -- 17ms is one frame at 60fps. Raising it past about a tenth of
+        -- camFlightMs / camSteps stops being a floor and starts being the
+        -- schedule; the client ignores it entirely if there is no room for it.
+        camStepMinMs = 17,
+
+        -- ═══ AND THIS IS HOW WIDE IT SWINGS THROUGH EACH CORNER ═══
+        --
+        -- "And round the corners once more." -- the owner, 2026-08-29, about the
+        -- path he had then.
+        --
+        -- The flight is a spline through the authored nodes, and this scales the
+        -- TANGENT it carries through each one: bigger tangents mean the camera
+        -- commits to a turn earlier and leaves it later, spreading the direction
+        -- change over a longer arc instead of pivoting near the node. 0.5 is a
+        -- plain Catmull-Rom, which is what the flight was before this was a knob.
+        --
+        -- ═══ IT WAS 0.75, AND THE NEW SURVEY TURNED IT UPSIDE DOWN ═══
+        --
+        -- ON THE OLD PATH IT HELPED, because that path had a 69-degree corner at
+        -- its last node and rounding is what a 69-degree corner needs. The path
+        -- surveyed on 2026-08-30 does not: it turns 32.6 degrees at node 2 and
+        -- 19.7 at node 3. There is far less corner to soften, and the cost of
+        -- reaching for it did not go down with it. Measured on THIS path:
+        --
+        --   rounding   sharpest bend    worst per-step turn
+        --     0.30       8.40 deg/m
+        --     0.50       7.23 deg/m           1.53 deg   <-- recommended
+        --     0.60       7.16 deg/m
+        --     0.75      13.13 deg/m           2.36 deg   <-- shipped
+        --     1.00      42.59 deg/m           3.91 deg
+        --
+        -- WHY THE CLIFF MOVED DOWN, in one number: a node's tangent is scaled
+        -- from the chord between its NEIGHBOURS, and the last two control
+        -- segments here are 123m and 37.8m. So the tangent steering that final
+        -- 37.8m stretch spans 159m of chord -- 2.1 times the segment at 0.50,
+        -- 3.2 at 0.75, 4.2 at 1.00. A tangent several times longer than the
+        -- segment it steers is a curve that swings wide and has to come back,
+        -- and the bend it puts in on the way back is sharper than the corner it
+        -- was sent to soften.
+        --
+        -- SO 0.75 IS NOW PAST THE CLIFF RATHER THAN BELOW IT. IT IS LEFT AT 0.75
+        -- ANYWAY, deliberately: it is his knob, he has not asked for it to move,
+        -- and 2.36 degrees per step is still better than the 3.32 he accepted
+        -- last round -- so this is a free improvement available rather than a
+        -- regression to fix. 0.50 is the recommendation whenever he wants it;
+        -- it is one character.
+        --
+        -- THE EARLIER ADVICE THAT THIS COULD SAFELY GO TO 1.0 IS WITHDRAWN. On
+        -- this path 1.0 is six times the bend of 0.5 and nearly three times the
+        -- per-step turn. Raising it is a decision to make against a fresh
+        -- measurement, never from the last one.
+        --
+        -- IT MOVES THE PATH, NOT THE PACE. The flight still takes camFlightMs
+        -- whatever this is -- a rounder corner is a slightly longer path flown
+        -- in the same time, so the effect on speed is a percent or two.
+        camRounding = 0.75,
+
+        -- ═══ HOW THE SPEED IS SHARED OUT ACROSS THOSE STEPS ═══
+        --
+        -- Owner, 2026-08-29: "The speed is too slow at the beginning and too
+        -- fast at the end. Over the course of the final move the camera should
+        -- slow down exponentially."
+        --
+        -- Every step lasts the same number of milliseconds; what changes is how
+        -- much of the path it covers. The distance covered by time `s` (0..1)
+        -- is (1 - e^-ks) / (1 - e^-k), so the SPEED is proportional to e^-ks --
+        -- exponential decay, from the first frame to the last. One curve
+        -- answers both halves of the report: it is fastest at the start and it
+        -- is still decelerating, exponentially, through the final move.
+        --
+        -- 0 would be the old flat pace. 2.0 opens at about 2.3x the average and
+        -- lands at about 0.3x it. Higher is a more violent swoop; lower is
+        -- flatter. THIS IS A LOOK, NOT A MEASUREMENT -- tune it by eye.
+        camDecay = 2.0,
+
+        -- STREAMING LEADS THE REVEAL. SetFocusPosAndVel is pointed at the
+        -- flight's DESTINATION -- the lobby frame it lands on -- this long
+        -- before the screen fades in (owner, 2026-08-29: "1 second before
+        -- fading in"). It moves where the engine STREAMS and nothing else; it
+        -- has no bearing on which entities exist for this client.
+        --
+        -- IT USED TO POINT AT THE FIRST CAMERA NODE, which was the same owner's
+        -- instruction on 2026-08-29 and which he revised on 2026-08-31 after
+        -- watching the finished flight: "the textures are consistently not
+        -- loading fully when the lobby cam arrives at the destination". The
+        -- reasoning for the reversal lives on BR.LobbyPed.focusAhead in
+        -- br_core/client/lobbyped.lua.
+        --
+        -- SO THIS NUMBER IS NO LONGER THE WHOLE LEAD, and raising it buys much
+        -- less than it used to. The destination now streams for this PLUS the
+        -- entire camFlightMs beneath it -- about fifteen seconds -- because the
+        -- focus is not moved again until the entrance ends.
+        focusLeadMs = 1000,
+
+        -- How long the loading screen will hold for this sequence to get its
+        -- ped onto the start mark before revealing anyway. Bounded like every
+        -- other wait on that path: a boot that never shows the lobby is worse
+        -- than a boot that skips a walk.
+        armWaitMs = 4000,
+
+        -- ═══ THE WALK DOES NOT START UNTIL THERE IS SOMEBODY WATCHING ═══
+        --
+        -- Owner, 2026-08-29: "when coming back from the warmup or another
+        -- match, the ped doesn't do the full walk again."
+        --
+        -- IT DID THE FULL WALK. Most of it happened behind the cover the trip
+        -- home was still holding -- see the long note in
+        -- br_core/client/lobbyped.lua. Both the walk and the camera flight now
+        -- wait for the screen to be uncovered before they start, and this is
+        -- the ceiling on that wait: a cover that never lifts must cost a walk
+        -- that starts anyway, never an entrance that never happens.
+        --
+        -- Sized off the longest legitimate cover on any road home: the leaving
+        -- curtain's own 15s watchdog is the outer bound, and this sits inside
+        -- it so a stuck curtain still gets a walk.
+        revealWaitMs = 10000,
+
+        -- ====================================================================
+        -- THE EMOTES.
+        -- ====================================================================
+        --
+        -- STOCK GTA ANIMATION DICTIONARIES AND CLIPS, sourced the same way the
+        -- walk clipsets above were: the owner named them from a separate emote
+        -- resource's MENU, and these are the game's own animations that its
+        -- table maps those labels to. Nothing in this project requires,
+        -- references or checks for that resource.
+        --
+        -- Provenance, per entry, is the file/line comment beside it --
+        -- client/AnimationList.lua, blob 6868fc5, 23,862 lines.
+        --
+        -- `flags` IS TaskPlayAnim's animation flag field and it is the only
+        -- part of this that is not a name:
+        --     0  full body, plays once, the ped does nothing else
+        --    48  = 16 (upper body only) + 32 (secondary / allow movement):
+        --         plays OVER a walk without taking the legs
+        emotes = {
+            -- (a) A WINNING RETURN, at the second-to-last walk point, facing
+            -- the camera. The walk PAUSES for it, so a win is longer than a
+            -- loss by roughly `ms`.
+            --
+            -- FULL BODY, because it is a backflip. Its source entry carries no
+            -- options at all -- no loop, and notably no "moving" flag -- so
+            -- there is no version of this that plays over a walk.
+            -- AnimationList.lua:7966  ["flip"]
+            win = {
+                dict  = 'anim@arena@celeb@flat@solo@no_props@',
+                clip  = 'flip_a_player_a',
+                flags = 0,
+                ms    = 3200,   -- the cap; the clip's own end is watched for
+                turnMs = 500,   -- turning to face the camera before it starts
+            },
+
+            -- (b) PARKED IN THE LOBBY, ONCE. "once the ped is parked, if they
+            -- are not in the locker screen, play the 'stretch 3' emote after 30
+            -- seconds, and make sure it only plays once per lobby view."
+            --
+            -- FULL BODY: its source entry is a LOOPING idle with no moving
+            -- flag, so it holds the ped -- which is fine, the ped is parked.
+            -- `ms` is what stops it looping forever.
+            -- AnimationList.lua:8243  ["stretch3"]
+            idle = {
+                dict    = 'mini@triathlon',
+                clip    = 'idle_d',
+                flags   = 0,
+                ms      = 4500,
+                afterMs = 30000,
+            },
+
+            -- (c) READY UP. "play 'thumbs up 3' for 600ms then clearpedtasks.
+            -- Make sure clearpedtasks runs before fade to black if they are
+            -- accepted to warmup."
+            -- AnimationList.lua:7625  ["thumbsup3"]
+            ready = {
+                dict  = 'anim@mp_player_intincarthumbs_uplow@ds@',
+                clip  = 'enter',
+                flags = 48,
+                ms    = 600,
+
+                -- ═══ AND HOW MUCH LONGER IT MAY RUN IF THERE IS ROOM ═══
+                --
+                -- Owner, 2026-08-29: "When pressing ready up, the thumbs up
+                -- emote doesn't have enough time to complete before we fade to
+                -- black. Add 500ms there please."
+                --
+                -- SO THE GESTURE'S WINDOW IS ms + holdMs, 1100ms, AND THE
+                -- SCREEN GOING BLACK IS WHAT ENDS IT EARLY. Both of his
+                -- constraints are live at once -- the animation must finish AND
+                -- ClearPedTasks must run before the screen is dark -- and they
+                -- are only compatible because the client can ask the page when
+                -- the screen is ACTUALLY dark rather than guess. See the
+                -- `br:ui:covered` listener in br_core/client/lobbyped.lua.
+                --
+                -- WHAT IT ACTUALLY GETS TODAY IS ABOUT 600ms OF THAT 1100.
+                -- br_ui's curtain goes up on the same edge the server names the
+                -- player a participant, and takes its own 600ms to reach
+                -- opaque; the gesture is cut when it does. That is four times
+                -- what it had before this number existed and a little more than
+                -- the 600ms he originally asked for -- but it is not 1100.
+                --
+                -- GOING PAST THAT NEEDS THE CURTAIN TO WAIT, which is
+                -- client/state.lua's enterMatchBehindCurtain, and that curtain
+                -- exists (#124) to hide the cut this would then uncover. It is
+                -- a real trade and it is the owner's to make; raising this
+                -- number alone will not do it.
+                holdMs = 500,
+            },
+
+            -- (d) THE CAMERA REACHING ITS SECOND-TO-LAST NODE. The ped is
+            -- still WALKING when that happens, so this is the one emote that
+            -- has to play over a walk -- flags 48. Its source entry is marked
+            -- as a moving emote, which is what says the game has an upper-body
+            -- version of it.
+            -- AnimationList.lua:7723  ["wave"]
+            wave = {
+                dict  = 'friends@frj@ig_1',
+                clip  = 'wave_a',
+                flags = 48,
+                ms    = 2500,
+            },
+
+            -- (e) MY SQUAD HAS READIED AND IS WAITING ON ME. "play any
+            -- variation of 'wait*' emotes except 'wait 9'".
+            --
+            -- THIRTEEN EXIST AND wait9 IS OMITTED HERE rather than filtered in
+            -- the client, so the exclusion is visible in the one place somebody
+            -- would come looking to add one back.
+            --
+            -- wait12 IS ALSO OMITTED, and that is a judgement rather than an
+            -- instruction: upstream pairs dictionary `rcmjosh1` with the clip
+            -- `keeper_base`, which belongs to a different dictionary in the
+            -- entry above it. It looks like a copy-paste and would present as
+            -- an emote that silently does nothing. Add it back if it works.
+            --
+            -- All of these loop, and all of them are marked as moving emotes;
+            -- the ped is parked while they play, so flags 0 is fine and `ms`
+            -- is what ends the loop.
+            -- AnimationList.lua:6341-6457  ["wait".."wait13"]
+            waiting = {
+                ms    = 4000,
+                flags = 0,
+                clips = {
+                    { dict = 'random@shop_tattoo',                                    clip = '_idle_a' },          -- 6341 wait
+                    { dict = 'missbigscore2aig_3',                                    clip = 'wait_for_van_c' },   -- 6350 wait2
+                    { dict = 'amb@world_human_hang_out_street@female_hold_arm@idle_a', clip = 'idle_a' },          -- 6359 wait3
+                    { dict = 'amb@world_human_hang_out_street@Female_arm_side@idle_a', clip = 'idle_a' },          -- 6368 wait4
+                    { dict = 'missclothing',                                          clip = 'idle_storeclerk' },  -- 6377 wait5
+                    { dict = 'timetable@amanda@ig_2',                                 clip = 'ig_2_base_amanda' }, -- 6386 wait6
+                    { dict = 'rcmnigel1cnmt_1c',                                      clip = 'base' },             -- 6395 wait7
+                    { dict = 'rcmjosh1',                                              clip = 'idle' },             -- 6404 wait8
+                    { dict = 'timetable@amanda@ig_3',                                 clip = 'ig_3_base_tracy' },  -- 6422 wait10
+                    { dict = 'misshair_shop@hair_dressers',                           clip = 'keeper_base' },      -- 6431 wait11
+                    { dict = 'rcmnigel1a',                                            clip = 'base' },             -- 6449 wait13
+                },
+            },
+
+            -- How long to wait for one animation dictionary to stream before
+            -- giving up on that emote. BOUNDED, like every other stream wait
+            -- here: a dictionary that will not arrive costs one gesture, never
+            -- a walk that stops halfway.
+            dictWaitMs = 2000,
+        },
+    },
 
     -- Routing buckets. Lobby and warmup are fixed SHARED buckets; matches
     -- allocate upward from matchBase. The warmup pad is communal (user call,
@@ -296,7 +912,10 @@ BR.Config.Match = {
     healthFloor     = 100,    -- engine units; at or below this a player ped is dead
     maxArmour       = 100,    -- armour is already 0..100 natively, no conversion
 
-    -- DBNO (squads only -- solo has nobody who could revive you).
+    -- DBNO. Squads by default; solos only while carrying a CPR kit (#191), which
+    -- is the one thing that can pick a lone player up. The numbers below apply
+    -- to both -- a solo on the floor bleeds on the same clock, and it is the
+    -- clock the ambulance is racing.
     --
     -- TWO MINUTES ON THE FIRST KNOCK, up from 45 seconds (owner, playtest:
     -- "The DBNO bleed out timer seems awfully short. We should probably double
@@ -572,6 +1191,12 @@ BR.Config.Evidence = {
     -- row says what the second already said, and it is the PATTERN that is
     -- evidence. See BR.EvidenceBuf.DEFAULTS, which this mirrors.
     stripMax = 20,
+    -- Chat lines the server accepted and delivered to nobody -- a link, or a
+    -- script this gamemode does not take. Sized like `stripMax` and for the same
+    -- reason, and kept in a list of its own so that a player who keeps talking
+    -- after a refused line cannot push it out of `chatMax` above. See
+    -- BR.EvidenceBuf.DEFAULTS, which this mirrors.
+    refusedMax = 20,
 }
 
 BR.Config.Combat = {
@@ -729,6 +1354,42 @@ BR.Config.Combat = {
     -- it did not.
     blastAttributeMs = 1200,
 
+    --[[
+        ROADKILL, AND IT IS THE SAME ARGUMENT AS THE FIRE LEDGER ABOVE.
+
+        The owner, 2026-08-21 (#194): "Roadkill should be attributed to the
+        driver." The engine agrees that somebody was run over -- it kills the
+        ped with WEAPON_RUN_OVER_BY_CAR -- and says nothing the server can use
+        about who was driving. GET_PED_SOURCE_OF_DEATH names the vehicle, and it
+        is read on the victim's own machine, so a mode that took its word for it
+        would let any client hand any player a free elimination.
+
+        So it is resolved the way fires are: from state this server already
+        holds. A player lost health, they were on foot, and a vehicle a PLAYER
+        was driving was on top of them and moving. Every term in that sentence
+        is a server-side read (br_core/server/vehicles.lua).
+
+        `roadkillRadiusM` IS NOT A CAR'S LENGTH, and that is the whole reason it
+        is 8 rather than 5. Positions are sampled at posSampleHz -- 4 Hz -- so at
+        25 m/s the car has travelled 6.25 m since the sample the check runs
+        against, and the ped it hit is behind it by roughly that. A radius that
+        described the collision would miss the sample that proves it.
+
+        `roadkillMinSpeedMs` IS WHAT STOPS A PARKED CAR OWNING A STORM DEATH.
+        6 m/s is ~21 km/h: below it a car does not kill anybody, and above it a
+        car that happens to be passing is the only false positive left. It is
+        deliberately a SPEED and not a velocity toward the victim -- the server
+        samples position, and two samples give a displacement whichever way the
+        car was pointing.
+    ]]
+    roadkillRadiusM    = 8.0,
+    roadkillMinSpeedMs = 6.0,
+    -- How recently the server must have attributed a roadkill for the kill feed
+    -- to call a death one. The same shape and the same number as the storm's own
+    -- override in server/combat.lua, for the same reason: the finishing blow of
+    -- a vehicular death reads to the engine as generic damage.
+    roadkillCauseMs    = 3000,
+
     -- HOW LONG A THROWN EXPLOSIVE STAYS YOURS.
     --
     -- A grenade goes off a second or more after it leaves the hand, and
@@ -759,6 +1420,83 @@ BR.Config.Combat = {
     -- How many payloads /brdamagelog captures before it stops on its own. It
     -- prints every key it sees, so this is the tool that replaces guessing.
     logSamples    = 15,
+
+    --[[
+        IS ANYBODY REFUSING TO TAKE DAMAGE. (The health audit.)
+
+        server/roster.lua samples every ped's health four times a second and
+        writes it into the same `entry.hp` that BR.Damage.applyHit subtracts
+        from. The ped's health belongs to the OWNING CLIENT, so that write hands
+        back the one number the whole damage model depends on: a client that
+        pins its ped at full has its ledger restored 250ms after every hit, and
+        the server-observed death check in server/combat.lua reads the same
+        client-owned value, so the backstop misses it too.
+
+        THIS BLOCK CHANGES NOTHING ABOUT WHAT HAPPENS TO ANY PLAYER. It counts.
+        The fix is a gameplay change with a real blast radius -- the legitimate
+        upward paths are med kits, shields, revives and respawns, and a ledger
+        that refuses the engine outright would also refuse falls, fire and
+        drowning -- so it goes behind a playtest, and this goes in first. It is
+        the same order the damage validator shipped in (see `enforce` above and
+        docs/security.md): measure, prove the log is empty during honest play,
+        then act.
+
+        THE NUMBERS ARE CHOSEN TO NEVER FIRE ON HONEST PLAY, in that direction
+        deliberately. Every ambiguous sample is excused, because the exploit is
+        not one sample -- it is the same lie four times a second for a whole
+        match -- so a detector that misses its first two seconds still catches
+        it, while one that fires on a bad ping gets switched off.
+    ]]
+    healthAudit = {
+        -- OFF IS NOT A DEFAULT ANYONE HAS TO REMEMBER: this is a counter and a
+        -- console line, it touches no gameplay path, and the whole point is to
+        -- learn what honest play looks like. It is here so a playtest that
+        -- turns up noise can be quietened without a redeploy.
+        enabled = true,
+
+        -- Rounding, not evidence. Our display value and the engine's come
+        -- through different float pipelines and both get floored.
+        toleranceHp     = 2.0,
+        toleranceArmour = 2.0,
+
+        -- HOW LONG AFTER THE SERVER HURT SOMEBODY THE PED MAY STILL READ HIGH.
+        --
+        -- This is the main false-positive control and it is the reason the bar
+        -- is not tighter. The server subtracts from the ledger and TELLS the
+        -- client to hurt its own ped; between those two moments the ped is
+        -- legitimately higher, by exactly the damage in flight. That gap is one
+        -- sample interval (250ms) plus the round trip, and a player on a bad
+        -- connection is not a cheat -- so 1500ms covers a 1.2s round trip,
+        -- which is worse than anybody actually plays on.
+        hurtGraceMs = 1500,
+
+        -- HOW LONG A CONSUMABLE OR A REVIVE IS ALLOWED TO KEEP CLIMBING.
+        --
+        -- A med kit's INV_EFFECT carries a TARGET and the client walks its own
+        -- ped up to it, so the sampler reads the rise on the way past -- that is
+        -- the one honest upward path the ledger does not already own. The window
+        -- starts when the server issues the effect, so it covers the animation
+        -- and the round trip after it.
+        healSettleMs = 2000,
+
+        -- A revive or a respawn is the LEDGER leading and the ped following, so
+        -- the sample normally reads LOW rather than high. This covers the
+        -- crossover: a client that applies HEALTH_SYNC early, or a resurrection
+        -- that restores GTA's default health before our number lands.
+        settleMs = 2000,
+
+        -- WHAT EARNS AN OPERATOR LINE. Cumulative unexplained recovery within
+        -- one match, in display points.
+        --
+        -- 100 IS A WHOLE HEALTH BAR AND IT IS MEANT TO READ THAT WAY: "this
+        -- player has been handed back a full bar the server never issued".
+        -- Honest play sits at zero -- every legitimate rise is excused by name
+        -- -- so the bar is not separating signal from noise, it is waiting long
+        -- enough to be certain. A working exploit crosses it inside a single
+        -- fight; nothing else crosses it at all.
+        reportHp     = 100.0,
+        reportArmour = 100.0,
+    },
 }
 
 --[[
@@ -1005,3 +1743,56 @@ end
 --- was the CANOPY the old per-tick test could not see.
 BR.Config.Match.descendRate  = 0.7      -- m/s; below this is not descending
 BR.Config.Match.stuckLanderMs = 5000    -- held at one altitude this long -> ALIVE
+
+--- Spectating (#192).
+BR.Config.Spectate = {
+    -- WHAT A DEAD PLAYER MAY SEE ONCE THEIR WHOLE SQUAD IS OUT.
+    --
+    -- False is the conservative answer and #192 argues for it directly: "free
+    -- spectate of living players is the mode where a stream-sniping or ghosting
+    -- accusation becomes possible, and refusing it costs little". True widens
+    -- the set to every living player in that match -- never before the squad is
+    -- gone, which is not this value's business: shared/spectate_solve.lua cannot
+    -- reach the widening branch while a squadmate is standing, whatever this
+    -- says.
+    --
+    -- SOLOS READ THIS ON THE FIRST PASS, because a solo player's squad is empty
+    -- from the start. So this is also the answer to "may a dead solo player
+    -- watch the rest of the match", and it is the same answer.
+    freeAfterSquadOut = false,
+
+    -- How often the server pushes the target's position to a spectator.
+    --
+    -- 250ms, MATCHING roster.lua's own position sampling and party.lua's squad
+    -- beacons. Pushing faster than the server samples would re-send identical
+    -- coordinates; the camera interpolates between samples, so the cadence is
+    -- not the frame rate of the shot.
+    feedMs = 250,
+
+    -- The shot. Same three numbers the bus camera takes (BR.Config.Bus), for
+    -- the same orbit: how far behind, how high above the subject's feet the
+    -- camera looks, and the field of view.
+    camDistance = 4.5,
+    camHeight   = 1.0,
+    fov         = 55.0,
+
+    -- HOW LONG YOUR OWN DEATH IS ON SCREEN BEFORE THE CAMERA MOVES ON.
+    --
+    -- "Upon dying, the verdict text ONLY should be shown for ~10 seconds then
+    -- the text can immediately disappear as we snap into spectating" -- the
+    -- owner. Before this, a death cut straight to somebody else's shoulder
+    -- within a second: the SLOW loop in client/spectate.lua asked for a target
+    -- as soon as the state read DEAD, so the moment a player most wants to
+    -- register -- what just happened to them, and who did it -- was the one
+    -- moment the game skipped.
+    --
+    -- IT IS THE TEXT ONLY, NOT THE VERDICT SCREEN. The match-end screen is a
+    -- black backdrop, a placement and a Volts line, and it is unchanged: this is
+    -- the same WORD that screen slams, over the world, with nothing behind it.
+    -- Two moments, two surfaces, one word table (ui-src/src/hud/verdictWord.ts).
+    --
+    -- ~10 SECONDS IS THE OWNER'S NUMBER and the tilde is theirs too. It is here
+    -- rather than in the client so it can be shortened without a rebuild if it
+    -- turns out to be a long time to sit still.
+    deathVerdictMs = 10000,
+}

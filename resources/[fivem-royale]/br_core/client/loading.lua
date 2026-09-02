@@ -21,10 +21,28 @@
 BR = BR or {}
 BR.State = BR.State or {}
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. Every native this file waits on is declared BOOL, and every one
+--- of them was read raw -- so on a build that answers with numbers this whole
+--- file was a sequence of waits that did not wait. lobbyPedPending below
+--- already carried the `== true or == 1` form inline for DoesEntityExist; this
+--- is that same test, once, for the four questions that gate the reveal.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
 -- Initial value by cheap observation: a fresh join still has the loadscreen
 -- up (world genuinely not ready); a br_core restart mid-session does not,
 -- and must not replay the boot choreography over a world already there.
-BR.State.worldReady = not GetIsLoadingScreenActive()
+--
+-- AND THE OBSERVATION IS THE WRONG WAY ROUND WITHOUT isTrue. `not
+-- GetIsLoadingScreenActive()` is FALSE for a 0 -- the answer that MEANS the
+-- loadscreen is already gone -- so a mid-session br_core restart would read
+-- worldReady = false and replay the entire boot choreography over a live world,
+-- which is the one case the line exists to avoid.
+BR.State.worldReady = not isTrue(GetIsLoadingScreenActive())
 
 -- The interface's ready handshake. THE REVEAL MUST WAIT FOR IT: the page
 -- learns worldReady=false via the screen publish that fires on this very
@@ -91,12 +109,12 @@ local PED_WAIT_MS = 8000
 local function lobbyPedPending()
     local ped = PlayerPedId()
 
-    -- BOTH SHAPES, because `not DoesEntityExist(ped)` cannot be written here: a
-    -- FiveM native declared BOOL may hand Lua a NUMBER, and 0 is TRUTHY in Lua,
-    -- so the obvious spelling reads a missing ped as present. spawn.lua's
-    -- /brblack footer carries the same `== true or == 1` for the same scar.
-    local exists = DoesEntityExist(ped)
-    if exists ~= true and exists ~= 1 then return 'no ped yet' end
+    -- `not DoesEntityExist(ped)` cannot be written here -- see isTrue at the top
+    -- of this file. This test was the first place in this file to carry the
+    -- scar, spelled out inline; it goes through the helper now that the helper
+    -- exists, because one file with two spellings of one rule is how the next
+    -- person picks the wrong one.
+    if not isTrue(DoesEntityExist(ped)) then return 'no ped yet' end
 
     -- The locker is the only thing that decides WHICH character this is, so it
     -- is the only honest source for what we are waiting to see.
@@ -123,7 +141,28 @@ local function lobbyPedPending()
         return 'a spawn trip is still in flight'
     end
 
+    -- AND THE ENTRANCE HAS TO HAVE ITS PED ON ITS OWN MARK (owner, 2026-08-29).
+    --
+    -- The lobby ped walks in now, and the owner's choreography has that walk
+    -- STARTING under this screen -- the reveal happens partway through it, with
+    -- the camera already flying. So the two things this gate has to know are
+    -- both questions for client/lobbyped.lua rather than for this file: whether
+    -- the walk has begun, and where the ped is supposed to be standing when it
+    -- has (the START of the path, not the lobby spot).
+    --
+    -- IT FAILS OPEN LIKE EVERY OTHER HALF HERE. revealBlock() is bounded by its
+    -- own arm wait and answers nil once that expires, and the entrance tick
+    -- gives up in the same breath rather than starting a walk after the screen
+    -- has already come down.
+    if BR.LobbyPed and BR.LobbyPed.revealBlock then
+        local why = BR.LobbyPed.revealBlock()
+        if why then return why end
+    end
+
     local p = BR.Config and BR.Config.Match and BR.Config.Match.lobbyPos
+    if BR.LobbyPed and BR.LobbyPed.revealMark then
+        p = BR.LobbyPed.revealMark() or p
+    end
     if p then
         local c = GetEntityCoords(ped)
         -- Ten metres, against a placement that is EXACT: the lobby is a camera
@@ -151,7 +190,7 @@ Citizen.CreateThread(function()
     local deadline = GetGameTimer() + 30000
     while GetGameTimer() < deadline do
         if uiReady and BR.State.me and BR.State.me.src
-           and NetworkIsSessionStarted() then break end
+           and isTrue(NetworkIsSessionStarted()) then break end
         Citizen.Wait(100)
     end
 
@@ -160,7 +199,11 @@ Citizen.CreateThread(function()
     -- alt-tabbed through the load must still get their lobby eventually.
     local wDeadline = GetGameTimer() + 60000
     while GetGameTimer() < wDeadline do
-        if HasCollisionLoadedAroundEntity(PlayerPedId()) then break end
+        -- isTrue, NOT the bare call. `if HasCollisionLoadedAroundEntity(p) then`
+        -- breaks on the 0 that means "no collision here", so the gag reel that
+        -- exists to cover the stream-in would be dropped on the first poll --
+        -- 250ms into a cold load, over an island that is not there yet.
+        if isTrue(HasCollisionLoadedAroundEntity(PlayerPedId())) then break end
         Citizen.Wait(250)
     end
 
@@ -222,6 +265,34 @@ Citizen.CreateThread(function()
             :format(GetGameTimer() - pStarted))
     end
 
+    -- STREAMING LEADS THE REVEAL, AND THE LEAD IS EXPLICIT (owner, 2026-08-29:
+    -- "please set the focus area to the first camera coords 1 second before
+    -- fading in").
+    --
+    -- WHERE IT POINTS CHANGED ON 2026-08-31 AND THE LEAD DID NOT. The owner
+    -- revised the target after watching the finished flight -- "the textures are
+    -- consistently not loading fully when the lobby cam arrives at the
+    -- destination" -- so BR.LobbyPed.focusAhead now points at the shot the
+    -- flight LANDS on rather than the one it starts from, and that shot then has
+    -- this lead plus the whole 13.8-second flight to stream in. Its own
+    -- docstring carries the reasoning and both of his instructions; this file
+    -- only owns the clock. SET_FOCUS_POS_AND_VEL moves where the engine loads
+    -- terrain and assets -- that and nothing else; it has no bearing on which
+    -- entities are relevant to this client.
+    --
+    -- THE ORDER IS ENFORCED RATHER THAN HOPED FOR. `revealAt` is a floor the
+    -- flip below waits out, so the lead survives somebody retiming the fade cue
+    -- or the shutdown; without it the two calls would be a second apart only by
+    -- coincidence, which is the failure mode #124 was made of. pcall'd for the
+    -- same reason the fade cue is: this is the last stretch before the screen
+    -- comes down, and nothing here may be able to strand a player on it.
+    local lead = 0
+    if BR.LobbyPed and BR.LobbyPed.focusAhead then
+        local okf, ms = pcall(BR.LobbyPed.focusAhead)
+        if okf and type(ms) == 'number' then lead = ms end
+    end
+    local revealAt = GetGameTimer() + lead
+
     -- Text out (the glow stays). The result is LOGGED: if this channel ever
     -- fails the exit degrades to a cut, and the console should say which
     -- half was at fault rather than leaving it to timing forensics.
@@ -236,11 +307,18 @@ Citizen.CreateThread(function()
     -- behind the backdrop for step 4 to reveal.
     ShutdownLoadingScreenNui()
     ShutdownLoadingScreen()
-    if IsScreenFadedOut() then DoScreenFadeIn(400) end
+    if isTrue(IsScreenFadedOut()) then DoScreenFadeIn(400) end
     print('[br_core] loading: screen released to the lobby')
 
     -- One beat on pure purple, then the double fade: menu in, world in.
     Citizen.Wait(150)
+
+    -- ...AND NOT BEFORE THE STREAMING FOCUS HAS HAD ITS LEAD. Everything above
+    -- has already spent most of it; this is the remainder, and it is zero
+    -- whenever there is no entrance to lead.
+    local left = revealAt - GetGameTimer()
+    if left > 0 then Citizen.Wait(left) end
+
     BR.State.worldReady = true
     TriggerEvent('br:screen:refresh')
     print('[br_core] loading: world ready -- menu and world fade in')

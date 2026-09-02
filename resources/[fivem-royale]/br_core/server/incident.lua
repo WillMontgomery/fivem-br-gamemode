@@ -199,6 +199,175 @@ function BR.Incident.stats()
 end
 
 -- ---------------------------------------------------------------------------
+-- How often one case is allowed to repeat itself
+-- ---------------------------------------------------------------------------
+--
+-- THE OWNER, 2026-08-22, WITH A SCREENSHOT OF ONE CASE'S TIMELINE: "it seems to
+-- be filing a corroboration every few seconds". Nine notes in nine seconds,
+-- every one of them differing from the row above it in a single digit:
+--
+--   Note -- 3 refusals this match - last: weapon is not one this gamemode issues
+--   Note -- 4 refusals this match - last: weapon is not one this gamemode issues
+--   ...                                                            ... up to 11.
+--
+-- WHAT WAS ACTUALLY FIRING ONCE A SECOND, BECAUSE IT IS NOT WHAT IT LOOKS LIKE.
+-- The ped is stripped TEN times a second -- client/inventory.lua's TICK band is
+-- 10Hz and a re-granting trainer re-arms on every one of them -- and that is
+-- already collapsed twice before it reaches this file: the client reports at
+-- most one a second (STRIP_REPORT_MS), and server/strip.lua counts at most one
+-- per 900ms (MIN_INTERVAL_MS). So by the time an offence gets here it really is
+-- arriving about once a second, and each one produced exactly one note.
+--
+-- WHICH MEANS NOTHING ON THIS PATH RATE-LIMITED ANYTHING. The three throttles
+-- this subsystem has all live in the detectors and all bound the same thing:
+-- how fast an offence may be COUNTED. Not one of them bounds how often the
+-- RECORD REPEATS what it already said, and this file -- the only one that can
+-- tell a corroboration from a filing -- had no opinion on it at all.
+--
+-- SO THE FIX IS HERE AND NOT IN THE DETECTORS OR IN THE CONSOLE. Here it covers
+-- all three producers at once, it is expressible ("throttle a corroboration,
+-- never a filing") only where the two are told apart, and it bounds the wire as
+-- well as the page: today one offender can put a message a second on a 512-deep
+-- drop-oldest outbox that the rest of the server shares, and an UpdateItem a
+-- second on the console's table. Collapsing the rows console-side would have
+-- fixed the reading and left both of those exactly as they are.
+--
+-- ═══ WHY DROPPING A NOTE LOSES NOTHING, WHICH IS THE WHOLE ARGUMENT ═══
+--
+--   `count` AND `seq` ARE RUNNING TOTALS, NOT INCREMENTS. Every producer sends
+--   the cumulative number, so one note says everything the notes it replaced
+--   said: "11 refusals this match" is the same sentence whether it arrives once
+--   or nine times. A suppressed note costs nothing. Suppressing the LAST one
+--   would cost the count outright, which is what `flushHeld` exists to stop.
+--
+--   THE PER-OFFENCE TIMING IS ALREADY WRITTEN DOWN ELSEWHERE. Every counted
+--   strip is a `weapon_strip` row on the case's own match timeline, appended by
+--   the close (MAX_TIMELINE_STRIPS, sixty, oldest dropped). "When did each one
+--   happen" survives this in full. What does not survive is a second, lossier
+--   copy of it, interleaved with the first.
+--
+-- A CHANGE OF FINDING IS NEVER HELD, and that is the half that keeps this from
+-- being a mute button. A different `reason` or a different `severity` is not a
+-- repeat -- it is a refused vehicle after a run of strips, or a worse tier than
+-- the case was opened at -- and it is the row an admin is scrolling for. Only a
+-- note that would read identically to the last one waits.
+--
+-- THIS FILE STILL HAS NO TIMER, which its header promises. A held note goes out
+-- on the next corroboration that crosses the window, or on the match teardown
+-- below; both were already arriving.
+local CORROBORATE_MIN_INTERVAL_MS = 30000
+
+--- What each case last said, and any newer version of it waiting behind.
+---
+--- [matchKey] = { [incidentId] = { at, reason, severity, held } }
+---
+--- KEYED BY MATCH FOR THE REASON `filed` IS. `priorFor` is match-scoped, so every
+--- incidentId that reaches here was filed in the match it is keyed under, and one
+--- teardown can drop both maps. The `nomatch` bucket is not dropped, exactly as
+--- `filed`'s is not: it holds one small record per case filed outside a match --
+--- a `brrefuse` from the console -- and `onResourceStart` is what empties it.
+local lastSaid = {}
+
+--- How many chat lines this server has held back, per player, per match.
+---
+--- [matchKey] = { [license] = count }
+---
+--- KEYED BY LICENCE RATHER THAN BY `src`, unlike server/strip.lua's own counter.
+--- A strip is reported by a client and the throttle that bounds it has to be
+--- keyed on the connection; this count is only ever read to fill in "N messages
+--- held back this match", and a player who disconnects and reconnects mid-round
+--- should carry their total with them rather than starting again -- the licence
+--- is what the case is keyed on either way.
+---
+--- COUNTED HERE RATHER THAN IN server/chat.lua so that the detector stays a
+--- detector. chat.lua's job ends at "this line does not go out"; how many times
+--- that has happened is a question about a case, and cases live in this file.
+local chatCount = {}
+
+--- Send a corroboration, unless it would only repeat the one before it.
+---
+--- THE ONE CALLER SHAPE: every corroboration this file raises goes through here,
+--- so the rule cannot be true of two producers and forgotten by the third. The
+--- corroborations server/players.lua raises deliberately do NOT come through
+--- this -- a person pressing a key is not a loop, it is already capped at
+--- BR.Config.Report.maxPerMatch, and folding two humans' reports into one row
+--- would be destroying evidence rather than tidying it.
+---
+--- @param ev table  the `br:ringmaster:corroborate` payload
+local function corroborate(ev)
+    local k = key(ev.matchId)
+    local m = lastSaid[k]
+    if not m then
+        m = {}
+        lastSaid[k] = m
+    end
+
+    local rec = m[ev.incidentId]
+    local now = GetGameTimer()
+
+    -- SAY IT NOW when there is nothing to repeat, when the finding changed, or
+    -- when the window has passed.
+    --
+    -- `rec == nil` IS THE FIRST CORROBORATION ON THIS CASE AND MUST NEVER WAIT.
+    -- It is the one that tells an admin reading the queue that the case is not
+    -- historical -- "it is still happening, and nobody has acted" -- and it is
+    -- also the one a short burst may produce the only copy of.
+    if rec == nil
+        or rec.reason ~= ev.reason
+        or rec.severity ~= ev.severity
+        or now - rec.at >= CORROBORATE_MIN_INTERVAL_MS
+    then
+        m[ev.incidentId] = { at = now, reason = ev.reason, severity = ev.severity }
+        TriggerEvent('br:ringmaster:corroborate', ev)
+        return
+    end
+
+    -- OTHERWISE THE NEWEST WAITS, AND IT REPLACES WHATEVER WAS WAITING. Keeping
+    -- the older one would be keeping the smaller count, which is the one thing
+    -- this must not do.
+    rec.held = ev
+end
+
+--- A match is over: send what its cases were still holding, and forget them.
+---
+--- WHY THE FLUSH IS NOT OPTIONAL. A throttle that only fires on arrival drops
+--- the tail: an offender who strips twenty times in twenty seconds and then
+--- stops has nineteen of those folded into a note waiting for a twenty-first
+--- which never comes, and the record would close saying `3`. This is what makes
+--- "the count is never lost" true rather than nearly true.
+---
+--- THE TEARDOWN IS THE RIGHT MOMENT AND NOT MERELY A CONVENIENT ONE. It is the
+--- last instant anything will ask, it is already an event so no timer is added,
+--- and the note it releases carries the final total for the match -- which is
+--- the number an admin opening the case tomorrow is actually looking for.
+---
+--- THE SEND AND THE FORGET ARE ONE CALL BECAUSE THEY ARE ONE MOMENT, and
+--- splitting them cost something real enough to be worth naming. With the drop
+--- on its own line beside the flush, deleting that line changed no behaviour any
+--- test could observe -- the map simply grew for the life of the process -- and
+--- a clearing of `rec.held` had to exist to guard a second call that never came.
+--- Joined, there is one thing to call, the per-note clearing is unnecessary
+--- because the whole record goes, and the failure mode of getting it wrong is
+--- the count not arriving, which several cases assert.
+--- @param matchId any
+local function flushAndForget(matchId)
+    local k = key(matchId)
+    local m = lastSaid[k]
+    if not m then return end
+
+    -- DROPPED BEFORE THE SENDS, so a handler that somehow re-entered this file
+    -- cannot find a record for a match that is over and hold a note nothing
+    -- will ever release.
+    lastSaid[k] = nil
+
+    for _, rec in pairs(m) do
+        if rec.held then
+            TriggerEvent('br:ringmaster:corroborate', rec.held)
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- The anticheat path
 -- ---------------------------------------------------------------------------
 
@@ -235,9 +404,15 @@ AddEventHandler('br:ringmaster:refusal', function(ev)
     -- corroboration is by definition redundant. Losing one costs a number; losing
     -- the case loses the record. `seq` travels with it so the console can tell 1,
     -- 2, 4 with a gap from a genuinely quiet match.
+    --
+    -- AND WHY IT GOES THROUGH `corroborate` RATHER THAN STRAIGHT ONTO THE EVENT.
+    -- This producer self-attenuates -- the doublings are seconds apart and then
+    -- minutes -- so it is the one least likely to be held, and it is routed
+    -- through the same door anyway so that "a corroboration is throttled" is a
+    -- property of this file rather than of two of its three handlers.
     local prior = BR.Incident.priorFor(ev.matchId, ev.license)
     if #prior > 0 then
-        TriggerEvent('br:ringmaster:corroborate', {
+        corroborate({
             incidentId = prior[#prior],
             matchId    = ev.matchId,
             license    = ev.license,
@@ -326,7 +501,15 @@ AddEventHandler('br:core:stripped', function(ev)
         -- is already durable, so "it is still happening" may ride the lossy
         -- event channel, and `seq` travels so the console can tell a dropped
         -- corroboration from a quiet match.
-        TriggerEvent('br:ringmaster:corroborate', {
+        --
+        -- THIS IS THE PRODUCER THE OWNER'S 2026-08-22 SCREENSHOT WAS OF, and the
+        -- one the throttle above was written for: `reason` and `severity` are
+        -- both constants here, so a run of strips is a run of notes that differ
+        -- in nothing but a counter, arriving at whatever rate MIN_INTERVAL_MS
+        -- lets a strip be counted at. Every one of them still reaches the case
+        -- -- `count` is cumulative and the timeline gets each strip in full --
+        -- but they no longer each get a row of their own.
+        corroborate({
             incidentId = prior[#prior],
             matchId    = ev.matchId,
             license    = ev.license,
@@ -349,6 +532,257 @@ AddEventHandler('br:core:stripped', function(ev)
     local payload, why = BR.IncidentBuild.fromStrip(ev, records)
     if not payload then
         print(('^3[br_core] strip incident NOT filed for %s: %s^7')
+            :format(tostring(ev.name), tostring(why)))
+        return
+    end
+
+    payload.priorIncidentIds = prior
+    BR.Incident.attachTimeline(payload, records)
+
+    TriggerEvent('br:ringmaster:incident', payload)
+end)
+
+-- ---------------------------------------------------------------------------
+-- A chat line the server would not carry
+-- ---------------------------------------------------------------------------
+--
+-- THE FOURTH SOURCE, AND IT REACHES THIS FILE THE WAY THE OTHER THREE DO.
+-- server/chat.lua screens and decides, exactly as damage.lua, strip.lua and
+-- vehicles.lua do; this file turns the announcement into a case or into a
+-- corroboration. It knows nothing about links, alphabets or who received what.
+--
+-- ONE CASE PER PLAYER PER MATCH, GROWING A TIMELINE -- the owner's rule for this
+-- one, 2026-08-29: "First offence opens an incident; repeats corroborate it. One
+-- case per player, growing a timeline of every shadowed message." That is
+-- `priorFor` plus the evidence buffer, which is the same pair the strip path
+-- uses, so a chat refusal after a strip case appends to the strip case and a
+-- strip after a chat case appends to the chat case. Whichever thing they did
+-- first opened it.
+--
+-- IT OPENS ON THE FIRST, NOT THE SECOND, AND THAT DIFFERS FROM A STRIP ON
+-- PURPOSE. A strip stays quiet until the second because one weapon appearing in
+-- one hand has an innocent shape -- a race between our own two inventory
+-- mirrors. A link does not: server/chat.lua's screen is a judgement about the
+-- text itself, and there is no version of "they typed a domain by accident"
+-- that a second one makes more true.
+--
+-- WHERE THE REPEATS LAND, exactly as they do for strips: every refused line is
+-- written into the evidence buffer by server/chat.lua BEFORE it gets here, so
+-- the first rides the PutItem this handler triggers and every one after it rides
+-- the match-end close. A player who advertises fifty times costs the same two
+-- writes as one who does it once.
+AddEventHandler('br:core:chatrefused', function(ev)
+    if type(ev) ~= 'table' then return end
+
+    -- NO LICENSE, NOTHING TO FILE AGAINST, AND NOTHING TO CORROBORATE EITHER.
+    -- Checked before `priorFor`, which keys on it: a nil license would look up
+    -- the wrong player's open cases.
+    if type(ev.license) ~= 'string' or ev.license == '' then return end
+
+    -- ═══ A LOBBY REFUSAL FILES TOO ═══
+    --
+    -- This used to return here, which left lobby advertising invisible to
+    -- moderation -- and the lobby is exactly where a bot can idle indefinitely
+    -- without ever playing. `fromChat` builds a one-row timeline from the event
+    -- for a matchless case; see its header for why the evidence buffer is
+    -- deliberately not involved, and for the limitation that comes with it.
+    --
+    -- THE `nomatch` BUCKET IS BOUNDED THE WAY `filed`'s ALREADY IS. `priorFor`
+    -- keys matchless cases under one sentinel and `onResourceStart` is what
+    -- empties it -- one small record per player who has drawn a lobby case, per
+    -- uptime, which is the cost a console `brrefuse` already accepts. The count
+    -- below joins it on the same terms, and for a lobby case it is always 1:
+    -- the first refusal files and `priorFor` drops every repeat above.
+    local k = key(ev.matchId)
+    local byLicense = chatCount[k]
+    if not byLicense then
+        byLicense = {}
+        chatCount[k] = byLicense
+    end
+    local n = (byLicense[ev.license] or 0) + 1
+    byLicense[ev.license] = n
+
+    -- ═══ A REPEAT GROWS THE TIMELINE AND ANNOUNCES NOTHING (#244) ═══
+    --
+    -- THIS IS THE ONE PRODUCER THAT DOES NOT CORROBORATE, and the asymmetry is
+    -- the point rather than an oversight. The owner, after the first playtest
+    -- with this live: "Chat blocks work but shows corroborated AND chat block.
+    -- Ideally I'd just like to see chat block in the timeline, and the content
+    -- of said blocked message."
+    --
+    -- WHY IT IS SAFE TO DROP IT HERE AND NOWHERE ELSE. A corroboration feeds
+    -- exactly two things, and neither is a grade:
+    --
+    --   1. A ROW OF TEXT on the console's `events` list -- "3 refusals this
+    --      match · last: an invite · worst: low", built by the ingest route and
+    --      stored by incidents.corroborate(). It is a STRING. Nothing on the
+    --      console reads a corroboration count, and src/lib/incidents.ts does
+    --      not mention severity at all -- so there is no escalation, no
+    --      threshold and no grading behind it to lose. `worst: low` was this
+    --      path sending a hard-coded 'low' every time, which graded nothing.
+    --   2. ONE ARTIFACT FRAME, in server/artifacts.lua. The THREE TIMED frames
+    --      taken when the case is filed are unaffected, so a chat case still
+    --      carries pictures; what goes is an extra frame per repeat. A
+    --      screenshot of somebody's game view at the moment they typed a URL is
+    --      worth much less than the URL, and the URL is now on the row.
+    --
+    -- AND THE AGGREGATE IS NOT LOST, IT IS IMPROVED. Every refused line is
+    -- already in the evidence buffer and becomes its own `chat_block` entry with
+    -- its own timestamp and its own text. Three rows saying what was said and
+    -- when is strictly more than one row saying "3 refusals this match". The
+    -- queue summary is unchanged either way -- it is written once at filing and
+    -- no corroboration ever updated it.
+    --
+    -- THE ONE THING THAT GOES: repeats now reach the record on the match-end
+    -- close rather than live, because `matchTimeline` is only appended by that
+    -- write. Mid-match the case shows the line that opened it. Filing still
+    -- happens on the FIRST offence, so a moderator still learns about the player
+    -- immediately -- they learn the full list at the end of the round.
+    --
+    -- The other three producers still corroborate, and must: a refused shot, a
+    -- stripped weapon and a refused vehicle all carry a severity that VARIES,
+    -- and their repeats are the finding.
+    local prior = BR.Incident.priorFor(ev.matchId, ev.license)
+    if #prior > 0 then return end
+
+    local records = BR.Evidence and BR.Evidence.forLicense(ev.license) or {}
+
+    local payload, why = BR.IncidentBuild.fromChat({
+        license = ev.license,
+        name    = ev.name,
+        matchId = ev.matchId,
+        reason  = ev.reason,
+        count   = n,
+        at      = ev.at,
+        -- READ ONLY ON THE LOBBY BRANCH, where the event is the text's only
+        -- carrier. In a match `attachTimeline` builds the timeline out of the
+        -- evidence buffer and these are ignored.
+        text    = ev.text,
+        channel = ev.channel,
+    }, records)
+    if not payload then
+        print(('^3[br_core] chat incident NOT filed for %s: %s^7')
+            :format(tostring(ev.name), tostring(why)))
+        return
+    end
+
+    print(('[br_core] CHAT: %s -- message held back (%s), %d this %s')
+        :format(tostring(ev.name), tostring(ev.reason), n,
+            ev.matchId ~= nil and 'match' or 'session (lobby)'))
+
+    payload.priorIncidentIds = prior
+
+    -- ═══ SKIPPED ENTIRELY FOR A LOBBY CASE, NOT CALLED AND IGNORED ═══
+    --
+    -- `attachTimeline` would overwrite `payload.matchTimeline` with the empty
+    -- list `timelineOpen` returns for a matchless payload -- deleting the one
+    -- row `fromChat` just built, which is the whole record. The other two things
+    -- it does are no-ops here anyway: `BR.Evidence.retain` promotes a buffer
+    -- record that will never exist for a lobby player, and the close
+    -- registration already declines a payload with no match.
+    if payload.matchId ~= nil then
+        BR.Incident.attachTimeline(payload, records)
+    end
+
+    TriggerEvent('br:ringmaster:incident', payload)
+end)
+
+-- ---------------------------------------------------------------------------
+-- A vehicle this gamemode refuses (#193)
+-- ---------------------------------------------------------------------------
+--
+-- THE THIRD ANTICHEAT SOURCE, AND IT REACHES THIS FILE THE WAY THE OTHER TWO DO.
+-- server/vehicles.lua counts and decides, exactly as damage.lua and strip.lua
+-- count and decide; this file turns the announcement into a case or into a
+-- corroboration. None of the three detectors knows this file exists, which is
+-- what lets any of them be restarted, replaced or absent without the others
+-- caring.
+--
+-- ONE CASE PER PLAYER PER MATCH IS UNCHANGED, AND HERE IT IS THE WHOLE OF THE
+-- REPEAT HANDLING. The strip path also grows the incident's timeline, because
+-- the owner asked for recursive strips to land "in the incident timeline rather
+-- than creating a new incident each time". The owner's instruction for this one
+-- is shorter -- "simply file an incident" -- so `priorFor` does all of it: the
+-- first announcement opens a case, every one after it appends a corroboration to
+-- that same case. See BR.IncidentBuild.fromVehicle for why no new timeline kind
+-- was added, and what it would have cost.
+--
+-- AND IT CROSSES KINDS, WHICH IS THE POINT OF `priorFor` BEING SHARED. A refused
+-- vehicle after a strip case appends to the strip case; a refused shot after a
+-- vehicle case appends to the vehicle case. One player, one round, one record --
+-- whichever thing they did first opened it.
+AddEventHandler('br:core:vehicle', function(ev)
+    if type(ev) ~= 'table' then return end
+
+    local prior = BR.Incident.priorFor(ev.matchId, ev.license)
+    if #prior > 0 then
+        -- SAME CHANNEL, SAME REASONING as the two above: the case is already
+        -- durable, so "it is still happening" may ride the lossy event channel,
+        -- and `seq` travels so the console can tell a dropped corroboration from
+        -- a quiet match.
+        --
+        -- AND THE THROTTLE ABOVE BARELY TOUCHES THIS ONE, which is a property of
+        -- `ev.why` rather than a special case written for it: the two halves of
+        -- the owner's vehicle rule are different strings, so a jet after a tank
+        -- is a change of finding and goes out at once. Only a player repeatedly
+        -- climbing into the SAME kind of refused vehicle folds -- which is the
+        -- one case where the rows really would have been identical.
+        corroborate({
+            incidentId = prior[#prior],
+            matchId    = ev.matchId,
+            license    = ev.license,
+            name       = ev.name,
+            seq        = ev.seq,
+            count      = ev.count,
+            -- ═══ THIS DETECTOR'S OWN WORDS, NOT THE SHOT TAXONOMY'S ═══
+            --
+            -- THIS LINE USED TO READ `BR.ShotRefusal.NO_WEAPON` AND THAT WAS THE
+            -- BUG the owner reported on 2026-08-22: "when getting in an
+            -- unauthorized vehicle, the incident is described in ringmaster as an
+            -- unauthorized weapon". It was borrowed verbatim from the strip
+            -- handler above, along with the rest of this block, on the reasoning
+            -- that it was "the closest true statement in an enum that is about
+            -- shots". It is not a true statement at all here: that enum value IS
+            -- the sentence "weapon is not one this gamemode issues", and the
+            -- console prints `reason` straight onto the case's timeline -- see
+            -- Ringmaster's src/app/api/ingest/route.ts, which composes the note
+            -- as `N refusals this match · last: <reason> · worst: <severity>`.
+            -- So every corroboration on a vehicle case described it as a weapon
+            -- finding, in the one place on the page that says what is STILL
+            -- happening.
+            --
+            -- `ev.why` IS THE FIELD THAT ALREADY EXISTS FOR THIS. config/
+            -- vehicles.lua's BR.Config.VehicleRefusal values -- "vehicle flies",
+            -- "vehicle has built-in weapons" -- are the two halves of the owner's
+            -- rule in the owner's words, and server/vehicles.lua already puts the
+            -- one that tripped on the wire. It is the same string
+            -- BR.IncidentBuild.vehicleSummaryOf builds the case's own summary
+            -- from, so the case and its corroborations now say the same thing
+            -- rather than two different ones.
+            --
+            -- NOT DEFAULTED, DELIBERATELY. A `why` that never arrived leaves this
+            -- nil, the field does not travel, and the console's note drops the
+            -- `last:` clause entirely -- which is honest. A fallback of
+            -- NO_WEAPON here would reintroduce exactly the sentence this line
+            -- exists to stop.
+            reason     = ev.why,
+            -- THE TIER IS STILL READ FROM THE TAXONOMY, and that is not the same
+            -- borrowing. `severity` is 'high'/'normal'/'low' -- a triage hint,
+            -- with no prose in it and nothing to mis-describe -- and it is read
+            -- from the same place BR.IncidentBuild.fromVehicle reads it, so the
+            -- corroborations cannot grade the finding differently from the case
+            -- they attach to.
+            severity   = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+            at         = ev.at,
+        })
+        return
+    end
+
+    local records = BR.Evidence and BR.Evidence.forLicense(ev.license) or {}
+
+    local payload, why = BR.IncidentBuild.fromVehicle(ev, records)
+    if not payload then
+        print(('^3[br_core] vehicle incident NOT filed for %s: %s^7')
             :format(tostring(ev.name), tostring(why)))
         return
     end
@@ -403,6 +837,38 @@ end)
 --- narrower but unchanged -- the wire carries occasions, and a server that
 --- shipped prose would be a server that has to be redeployed to fix a typo.
 ---
+--- ═══ WHY THERE IS NO DELAY AND NO JITTER ON THIS (#214) ═══
+---
+--- The question is fair and was asked directly: this fires the instant a case
+--- becomes durable, and the offender is the one player who does not see it. If
+--- they can watch anybody else react, is the TIMING itself not a signal that
+--- tells them what they just got caught doing?
+---
+--- IT IS NOT, AND THE REASON IS THE ONE-PER-MATCH CAP RATHER THAN ANY SPACING.
+--- A timing oracle is only worth anything if it can be RUN AGAIN. The attack
+--- would be: do a suspicious thing, watch a second account or a stream for the
+--- toast, adjust, repeat -- and read the detection threshold off the responses.
+--- The cap is what kills that. One notice per match, total, means the channel
+--- carries exactly one bit per round, and the FIRST case of the round spends it
+--- -- possibly a case about somebody else entirely. There is no second trial to
+--- compare against and no way to attribute the bit to one's own behaviour.
+---
+--- AND THE ENVELOPE NAMES NOBODY. `{ kind = 'exists' }` carries no subject, no
+--- reporter, no reason, no count. A player who RECEIVES it learns only that
+--- somebody in this round drew a case, so even a cooperating observer -- a
+--- squadmate on voice, a second client -- cannot tell the offender that it was
+--- about them. They do not know either. That is what reduces the oracle to a
+--- single anonymous bit, and a delay on a single anonymous bit buys nothing.
+---
+--- NOR IS THE ABSENCE INFORMATIVE. Seeing no toast is the overwhelmingly common
+--- state of every honest match ever played, so "I saw nothing" is not evidence
+--- of anything and cannot be made into evidence by waiting longer.
+---
+--- WHAT WOULD CHANGE THIS: making the notice per-incident, per-pair, or naming
+--- the subject. Any of the three restores the repeatable experiment, and the
+--- delay-and-jitter conversation would then be worth having. Under the cap it is
+--- machinery guarding an experiment nobody can run twice.
+---
 --- @param matchId any
 --- @param subjectLicense string
 --- @param reporterLicense string|nil  nil for an anticheat filing
@@ -410,10 +876,33 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
     -- NOT OUTSIDE A MATCH. `brrefuse` from a console, or an anticheat firing in
     -- the lobby, files under the `nomatch` sentinel -- there is no audience to
     -- address and no round for the nudge to be about.
+    --
+    -- ═══ WARMUP IS INSIDE, NOT OUTSIDE (#214) ═══
+    --
+    -- "During a match" is decided here, by whether the filing carries a matchId
+    -- at all -- and a warmup case carries one. A match exists from the moment it
+    -- is formed: it is in the registry with a `createdAt`, players are on the
+    -- roster in WARMUP with its id, and server/strip.lua counts WARMUP as a live
+    -- state on purpose. So a weapon granted on the pad opens a case and this
+    -- notice goes out to the pad, which is the owner's call, in the owner's
+    -- words: "Granting yourself a weapon through vMenu is exactly what NOBODY
+    -- will do in the lobby. That's what cheaters do."
+    --
+    -- THE TEST IS DELIBERATELY NOT `m.startedAt ~= nil`. That field is stamped
+    -- on entering PLAYING and is nil for the whole warmup, so gating on it would
+    -- have silently excluded the earliest and cleanest cheat signal this server
+    -- produces -- which is the exact bug #B had to repair one layer down, in
+    -- attachTimeline, where a warmup case was never queued for its match-end
+    -- write. Do not reintroduce that test here.
+    --
+    -- A REFUSED SHOT IN WARMUP STILL FILES NOTHING, and that is a different
+    -- decision made in a different place: WARMUP is a RULE-class refusal, absent
+    -- from BR.ShotSuspicious, so it never becomes an incident and never reaches
+    -- this function. Strips and vehicles are MEANS-class and do.
     if matchId == nil then return end
     if not BR.Roster then return end
 
-    local told, skipped, hushed = 0, 0, 0
+    local told, skipped, hushed, blind = 0, 0, 0, 0
 
     BR.Roster.each(
         function(e) return e.matchId == matchId end,
@@ -424,7 +913,44 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
 
             local byKind = BR.Identity and BR.Identity.ofPlayer(src)
             local lic = byKind and BR.Identity.qualified('license', byKind.license)
-            if lic ~= nil and lic == subjectLicense then
+
+            -- ═══ A PLAYER WE CANNOT NAME IS NOT TOLD (#214) ═══
+            --
+            -- THIS USED TO FALL THROUGH TO THE TriggerClientEvent BELOW, and it
+            -- was the one failure the paragraph at the top of this function says
+            -- it must not have. Both skips beneath were written as `lic ~= nil
+            -- and lic == ...`, so a player whose licence did not resolve matched
+            -- NEITHER test and was therefore told. When that player is the
+            -- SUBJECT, the offender has just been handed the notice #93 exists
+            -- to withhold from them -- quietly, on the one path with no second
+            -- check behind it.
+            --
+            -- THE TRIGGER IS NARROW AND IT IS NOT HYPOTHETICAL. This resolves
+            -- the licence LIVE, off GetPlayerIdentifiers, whose own header in
+            -- br_lib/shared/identity.lua says it "returns nil when FiveM did not
+            -- report a license, which does happen". And the gap between the
+            -- filing and this notice is a DynamoDB round trip that retries for
+            -- up to thirty seconds, so the subject can be most of the way out of
+            -- the server by the time we ask -- still on the roster, not yet
+            -- LEFT, and no longer answering with identifiers.
+            --
+            -- FAILING CLOSED COSTS A COURTESY AND NOTHING ELSE. A player who
+            -- goes untold loses a nudge about a feature that will still be there
+            -- next round. A player who is wrongly told is an offender who now
+            -- knows. Those are not comparable, so the nil case takes the safe
+            -- side rather than the generous one.
+            --
+            -- AND IT IS DELIBERATELY NOT `BR.Identity` BEING ABSENT THAT THIS
+            -- GUARDS. If that module ever went missing the whole match would go
+            -- untold, which is the safe direction but a dead feature -- so the
+            -- count below is on the log line rather than swallowed, and the
+            -- shared-coverage gate is what keeps the module loaded.
+            if lic == nil then
+                blind = blind + 1
+                return
+            end
+
+            if lic == subjectLicense then
                 skipped = skipped + 1
                 return
             end
@@ -434,7 +960,7 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
             -- that must never break, the other is a courtesy, and a log line
             -- that added them together could not tell "the offender was
             -- excluded" from "somebody was".
-            if lic ~= nil and reporterLicense ~= nil and lic == reporterLicense then
+            if reporterLicense ~= nil and lic == reporterLicense then
                 hushed = hushed + 1
                 return
             end
@@ -458,8 +984,14 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
             told = told + 1
         end)
 
-    print(('[br_core] report hint: told %d player(s) in match %s, withheld from %d subject(s) and %d reporter(s)')
-        :format(told, tostring(matchId), skipped, hushed))
+    -- `unnamed` IS ON THE LINE RATHER THAN FOLDED INTO `withheld`, for the same
+    -- reason the subject and the reporter are counted apart: it is a different
+    -- fact. A non-zero count here is not a moderation decision, it is this
+    -- server failing to read identifiers for somebody who was standing in the
+    -- match -- and a number that only ever appears bundled with two deliberate
+    -- withholdings is a number nobody will ever investigate.
+    print(('[br_core] report hint: told %d player(s) in match %s, withheld from %d subject(s) and %d reporter(s), %d unnamed')
+        :format(told, tostring(matchId), skipped, hushed, blind))
 end
 
 -- The other half of the loop: br_ringmaster reports back what id the write got,
@@ -480,6 +1012,38 @@ end
 -- already carried, not looking anything up. It is absent on an anticheat
 -- filing, because `BR.IncidentBuild.fromRefusal` sets no reporter at all, and
 -- that absence is what makes the skip below correct without a sentinel.
+--
+-- ═══ EVERY CREATION PATH ARRIVES HERE, AND THAT IS THE DESIGN (#214) ═══
+--
+-- The owner's rule is "any time an incident is created for any reason during a
+-- match, even by `system`". There are FOUR creation paths today -- a refused
+-- shot, a stripped weapon, a refused vehicle (all three in this file) and a
+-- player's report (server/players.lua) -- and not one of them announces
+-- anything itself. All four emit `br:ringmaster:incident`; br_ringmaster writes
+-- the row and emits `br:incident:filed`; this handler is where they meet.
+--
+-- SO A FIFTH PATH IS COVERED THE DAY IT IS WRITTEN, WITHOUT CALLING ANYTHING.
+-- That is not a happy accident and it is worth stating plainly, because #211 is
+-- adding one right now (occupancy-based filing for stolen aircraft). Whoever
+-- writes it has to do nothing here: emit the payload like the other four and
+-- the notice follows. The only way to build a path this misses is to write the
+-- DynamoDB row without going through `br:ringmaster:incident` -- and verify.sh's
+-- `incident surface` gate fails the build if a second sender of the hint, or a
+-- second emitter of this acknowledgement, ever appears.
+--
+-- A CORROBORATION IS NOT A CREATION, and the separation is structural rather
+-- than a condition anybody has to remember. Corroborations go out on
+-- `br:ringmaster:corroborate`, br_ringmaster puts them on the outbox and mints
+-- no acknowledgement, so they never reach this handler at all. Nothing here has
+-- to test for one.
+--
+-- THE CAP IS `first`, AND IT IS ONE PER MATCH RATHER THAN ONE PER PLAYER.
+-- `remember` returns true only when the match had no filings at all, so the
+-- second case of a round -- about anybody, from any path -- announces nothing,
+-- and a player who joins after the notice went out is simply not told. See the
+-- oracle note on `announceReporting`: the cap is what makes the timing of this
+-- notice unusable to the offender, so it is load bearing for #93 and not merely
+-- a politeness about toast volume.
 AddEventHandler('br:incident:filed', function(ack)
     if type(ack) ~= 'table' then return end
     local first = BR.Incident.remember(ack.matchId, ack.subjectLicense, ack.incidentId)
@@ -501,13 +1065,25 @@ end)
 -- no prompt. See OPEN_MAX for what bounds it instead.
 AddEventHandler('br:match:destroyed', function(ev)
     if not ev or ev.matchId == nil then return end
+    -- THE NOTE THIS RELEASES IS THE ONE CARRYING THE MATCH'S FINAL OFFENCE
+    -- COUNT -- see the throttle's header for why it is the only one whose loss
+    -- would cost anything.
+    flushAndForget(ev.matchId)
     filed[ev.matchId] = nil
+    chatCount[key(ev.matchId)] = nil
 end)
 
 AddEventHandler('onResourceStart', function(name)
     if name == GetCurrentResourceName() then
         filed = {}
         openBy = {}
+        -- INCLUDING THE `nomatch` BUCKET, which nothing else empties. See
+        -- `lastSaid`: it is the only bucket a teardown never reaches.
+        lastSaid = {}
+        -- AND THE SAME BUCKET IN `chatCount`, for the same reason: a refusal
+        -- outside a match files nothing but is still counted, and no teardown
+        -- ever comes for the match it is not in.
+        chatCount = {}
     end
 end)
 
@@ -642,6 +1218,7 @@ function BR.Incident.attachTimeline(payload, records)
             at            = payload.atGameMs,
             killsWritten  = t.matchKillsWritten or 0,
             stripsWritten = t.matchStripsWritten or 0,
+            chatWritten   = t.matchChatWritten or 0,
         }
     end
 
@@ -674,6 +1251,7 @@ AddEventHandler('br:incident:filed', function(ack)
         filedAt       = pend.at,
         killsWritten  = pend.killsWritten,
         stripsWritten = pend.stripsWritten,
+        chatWritten   = pend.chatWritten,
     }
 end)
 
@@ -714,6 +1292,7 @@ AddEventHandler('br:evidence:closing', function(ev)
             records       = records,
             priorKills    = c.killsWritten,
             priorStrips   = c.stripsWritten,
+            priorChat     = c.chatWritten,
         })
 
         -- EMITTED, NOT CALLED. br_ringmaster listens; if it is not running,

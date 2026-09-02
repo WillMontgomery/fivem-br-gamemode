@@ -49,6 +49,20 @@ function BR.Locker.apply(id, cb)
     if applying then return end
     applying = true
 
+    -- ANY SWAP INVALIDATES THE PED HANDLE THE ENTRANCE WALK IS HOLDING, so the
+    -- walk is DROPPED rather than stranded halfway up the path.
+    --
+    -- The lock stops this arriving from the interface, and nothing server-side
+    -- can change a model -- SetPlayerModel below is the only call site in the
+    -- project and the locker is client-only by design (see the header). What is
+    -- left is /brlocker, a deliberate manual override that should still leave a
+    -- coherent lobby behind rather than a ped standing on a hillside with a task
+    -- nobody owns. Dropping the sequence is what makes that true, and it is the
+    -- same stop() every other ending goes through.
+    if BR.LobbyPed and BR.LobbyPed.entering() then
+        BR.LobbyPed.stop('the character was changed')
+    end
+
     local entry = BR.PedById(id or BR.Locker.chosen())
     local hash = GetHashKey(entry.model)
 
@@ -120,6 +134,11 @@ end
 --- @param delta number  degrees
 function BR.Locker.spinBy(delta)
     if BR.State.me.state ~= BR.PlayerState.LOBBY then return end
+    -- The entrance walk owns the ped's heading while it is running; turning it
+    -- would fight the task rather than turn the character. Same lock as the
+    -- pick below, because "the locker is unavailable" has to mean the whole
+    -- locker rather than one of its two gestures.
+    if BR.LobbyPed and BR.LobbyPed.lockerLocked() then return end
     spin = (spin + (tonumber(delta) or 0.0)) % 360.0
     SetEntityHeading(PlayerPedId(),
         ((BR.Config.Match.lobbyPos.heading + spin) % 360.0))
@@ -199,7 +218,20 @@ function BR.Locker.push()
         -- clicked again (user, 2026-08-09: "a delay ... they don't know
         -- why"). Naming which one is loading lets the screen mark that one
         -- button rather than blocking the whole page.
-        { peds = list, chosen = BR.Locker.chosen(), loading = loadingId })
+        --
+        -- `locked` is the entrance walk holding the character still. The ped is
+        -- mid-task on an authored path and SetPlayerModel would hand back a NEW
+        -- handle with the task gone, leaving a stranded walk halfway up the
+        -- hill (owner's call, 2026-08-29: "lock out the 'locker' button until
+        -- the ped has reached it's final coords").
+        --
+        -- IT IS A LOCK, NOT A HIDDEN CONTROL, AND IT SAYS NOTHING. The button
+        -- takes the disabled state every other unavailable control in this
+        -- interface already has -- no caption, no tooltip, no explanation --
+        -- and the Lua side below refuses the action regardless, because the
+        -- page is presentation and this is the half that protects the ped.
+        { peds = list, chosen = BR.Locker.chosen(), loading = loadingId,
+          locked = BR.LobbyPed and BR.LobbyPed.lockerLocked() or false })
 end
 
 AddEventHandler('br:ui:ready', function()
@@ -235,6 +267,19 @@ end)
 AddEventHandler('br:ui:action', function(name, data)
     if name == BR.NuiCb.LOCKER_PICK then
         local id = data and data.id
+
+        -- REFUSED WHILE THE ENTRANCE IS WALKING, and refused HERE rather than
+        -- only on the page. The disabled button is the presentation; this is
+        -- the enforcement, and the two are not the same thing -- a stale page,
+        -- a br_ui restart mid-walk, or a pick that was already in flight when
+        -- the lock went on all arrive at this handler with the button looking
+        -- however it happens to look.
+        --
+        -- SILENTLY. Nothing is said and nothing is queued: a pick that arrives
+        -- during the walk is a pick the player could not have meant, and
+        -- remembering it would apply a model swap at some later moment they had
+        -- forgotten asking for.
+        if BR.LobbyPed and BR.LobbyPed.lockerLocked() then return end
 
         -- THE LAST PRESS WINS, and a press during a swap is not dropped.
         --

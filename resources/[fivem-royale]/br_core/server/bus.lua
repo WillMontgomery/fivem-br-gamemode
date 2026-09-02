@@ -458,7 +458,13 @@ end)
 ---
 --- Once per player per flight; the latch is cleared at BUS entry.
 --- @param m table
---- Withdraw the "waiting for the last players to land" notice.
+--- Withdraw the `bus.landing` notice -- the one that says the match will start
+--- once all players have landed.
+---
+--- NAMED BY ITS KEY RATHER THAN BY ITS SENTENCE, deliberately. The wording has
+--- changed twice at the owner's request and both times left comments elsewhere
+--- quoting a string that no longer existed; `bus.landing` is what the code
+--- actually matches on, here and in tools/test_roster.lua.
 ---
 --- A STICKY NOTICE NEEDS A SECOND CALLER, and forgetting it is the whole risk
 --- of the sticky flag. landingNotices only runs during BUS, so it cannot be
@@ -485,11 +491,12 @@ function BR.Bus.landingNotices(m)
     end)
 
     -- THE ALL-CLEAR IS AS IMPORTANT AS THE WARNING, and it is the half this
-    -- never had. "The match will start once all players have landed" used to
-    -- be a four-second toast: by the time it mattered it was gone, and there
-    -- was no moment at which the player was told the wait was over. It is a
-    -- STICKY notice now -- state, not an event -- and it is withdrawn the
-    -- instant the sky is empty.
+    -- never had. This notice used to be a four-second toast: by the time it
+    -- mattered it was gone, and there was no moment at which the player was
+    -- told the wait was over. It is a STICKY notice now -- state, not an event
+    -- -- and it is withdrawn the instant the sky is empty. THE STICKINESS IS
+    -- THE PART THAT MATTERS AND IT SURVIVED THE REWORDING BELOW; only the
+    -- sentence went back.
     if airborne <= 0 then
         BR.Bus.clearLandingNotices(m)
         return
@@ -500,8 +507,22 @@ function BR.Bus.landingNotices(m)
             and e.state == BR.PlayerState.ALIVE and not e.landNotice end,
         function(src, e)
             e.landNotice = true
+            -- THE OWNER'S SENTENCE, VERBATIM, TRAILING FULL STOP AND ALL:
+            --
+            --   'Let''s change the "Waiting for other players to land"
+            --    notification to say "The match will start once all players
+            --    have landed."'                        -- owner, 2026-08-22
+            --
+            -- WHAT WAS ACTUALLY ON SCREEN WAS 'Waiting for the last players to
+            -- land' -- close to the quoted phrase but not it, and worth writing
+            -- down because the wording has now been round trip: this exact
+            -- sentence shipped first, was replaced when the notice became
+            -- sticky, and is the one being asked for back. Only the WORDS
+            -- returned; the sticky flag, the dedup key and the withdrawal above
+            -- are the reason the old four-second version was replaced and they
+            -- all stay.
             BR.Server.notify(src,
-                'Waiting for the last players to land', 'info',
+                'The match will start once all players have landed.', 'info',
                 { key = 'bus.landing', sticky = true })
             print(('[br_core] landing notice -> %s (%d): %d still airborne')
                 :format(e.name, src, airborne))

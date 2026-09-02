@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useUi } from '../store'
+import { HotCard, HotTime } from './HotCard'
 import type { StormPayload } from '../bridge/types'
 
 /**
@@ -14,6 +15,13 @@ import type { StormPayload } from '../bridge/types'
  * requestAnimationFrame loop writes to a DOM node via a ref. The value is
  * computed locally from `endsAt`, a server timestamp, against the synced
  * clock offset -- the server never ticks a countdown over the bridge.
+ *
+ * THE PLACARD COMES FROM `HotCard`, like the bleed-out card and the ride's
+ * clock. Nothing on screen changed when it did: this file used to hand-write
+ * the same `.panel-hot` / `.cap` / `.hotbody` box, and four copies of one piece
+ * of markup only agree for as long as everyone remembers to change all four.
+ * What is shared is the BOX; the arrangement inside it, the two states and the
+ * decision about which number is worth showing are all still this file's.
  */
 export default function StormBar({ storm }: { storm: StormPayload | null }) {
   const timeRef = useRef<HTMLSpanElement>(null)
@@ -89,44 +97,46 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   // object changing its mind rather than as two different widgets.
   //
   // `--hot` drives the cap fill and the border together; the drop-in animation
-  // is keyed off the state so it replays on the swap and only on the swap.
+  // is keyed off the state so it replays on the swap and only on the swap. The
+  // `key` goes on `HotCard` because remounting the component remounts the
+  // `.panel-hot` div the animation is on -- the same element it sat on when
+  // this file drew that div itself.
   return (
-    <div
+    <HotCard
       key={hurting ? 'out' : 'in'}
-      className="panel-hot"
-      style={{
-        minWidth: '13rem',
-        ['--hot' as string]: hurting
-          ? 'var(--color-danger)'
-          : shrinking ? 'var(--color-storm)' : 'rgba(120,132,160,0.85)',
-      }}
+      hot={hurting
+        ? 'var(--color-danger)'
+        : shrinking ? 'var(--color-storm)' : 'rgba(120,132,160,0.85)'}
+      cap={hurting ? 'Get out of the storm' : label}
+      minWidth="13rem"
     >
-      <div className="cap">{hurting ? 'Get out of the storm' : label}</div>
-      <div className="hotbody">
-        {hurting ? (
-          <>
-            {/* The wall's schedule is useless when you are already in it. The
-                number that matters is how far you have to run. */}
-            <span
-              className="font-display block leading-none tabular-nums"
-              style={{ fontSize: '1.4rem', textShadow: 'var(--shadow-text)' }}
-            >
-              {Math.max(0, Math.round(storm.edgeDistance))}m
-            </span>
-            <span className="text-[0.55rem] font-semibold uppercase tracking-[0.18em] text-white/50">
-              outside the circle
-            </span>
-          </>
-        ) : (
+      {hurting ? (
+        <>
+          {/* The wall's schedule is useless when you are already in it. The
+              number that matters is how far you have to run.
+
+              SPELLED OUT RATHER THAN `HotTime`, and that is the honest way
+              round: `HotTime` renders the `--` placeholder and hands back the
+              node because every clock in this HUD is written by a rAF loop
+              through a ref. This number is not a clock -- React already has it,
+              it re-renders with the envelope, and there is no placeholder frame
+              to cover. Same type, size and shadow; different mechanism. */}
           <span
-            ref={timeRef}
             className="font-display block leading-none tabular-nums"
             style={{ fontSize: '1.4rem', textShadow: 'var(--shadow-text)' }}
           >
-            --
+            {Math.max(0, Math.round(storm.edgeDistance))}m
           </span>
-        )}
-      </div>
-    </div>
+          <span className="text-[0.55rem] font-semibold uppercase tracking-[0.18em] text-white/50">
+            outside the circle
+          </span>
+        </>
+      ) : (
+        // 1.4rem, not `HotTime`'s 2rem default: that is the bleed-out card's
+        // numeral, and this one shares the top of the screen with a cap and a
+        // caption rather than owning its corner.
+        <HotTime ref={timeRef} fs="1.4rem" />
+      )}
+    </HotCard>
   )
 }

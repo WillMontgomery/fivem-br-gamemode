@@ -1,8 +1,18 @@
 import { artifactNames, ARTIFACT_PREFIX, isSpoolFile } from '../src/artifacts.js'
-import { isActive } from '../src/ban.js'
+import { effective, isActive } from '../src/ban.js'
 import { buildIncidentClose, CLOSE_LIMITS } from '../src/close.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
+import { spendCost, spendUpdate, SPEND_MAX } from '../src/spend.js'
+import { buildStatsUpdate } from '../src/stats.js'
 import { projectVerdict, verdictWord } from '../src/verdict.js'
+
+// NOT `../src/`. These two drive src/index.js itself -- the twenty handlers,
+// which until 2026-08-30 nothing here ran. See scripts/bridge.mjs.
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+import { marshall, unmarshall } from './aws_stub.mjs'
+import { loadBridge, lastEmit } from './bridge.mjs'
 
 /**
  * Tests for the decisions in br_ddb that are pure arithmetic on data, and
@@ -63,6 +73,59 @@ const banCases = [
 console.log('ban rule')
 for (const [label, ban, expected] of banCases) {
   check(`${label} -> ${expected}`, isActive(ban, NOW), expected)
+}
+
+// ------------------------------------------------- which of two rows wins ---
+//
+// THE GATE HOLDS TWO ROWS NOW: the connecting license, and the `discord:` key
+// blitz-bot files a ban under when the game has never met the person an admin
+// banned in Discord. `effective` turns those into one answer, and the owner
+// settled the rule -- an ACTIVE ban always takes precedence over a lifted one,
+// whichever identifier each is keyed on.
+//
+// EVERY CASE HERE ALSO EXISTS IN fivem-ringmaster/scripts/check-ban-rule.mjs.
+// A drift between the two is somebody walking past the connect gate the console
+// says is closed, which nobody notices until it matters.
+
+const L_ACTIVE = { license: 'license:abc', expiresAt: null, liftedAt: null }
+const L_LIFTED = { license: 'license:abc', expiresAt: null, liftedAt: NOW - HOUR }
+const L_SERVED = { license: 'license:abc', expiresAt: NOW - HOUR, liftedAt: null }
+const D_ACTIVE = { license: 'discord:280', expiresAt: null, liftedAt: null }
+const D_LIFTED = { license: 'discord:280', expiresAt: null, liftedAt: NOW - HOUR }
+
+const pickCases = [
+  // [label, rows in the order index.js passes them, the winner's key]
+  ['nothing on either identifier', [null, null], null],
+  ['an empty list is not banned', [], null],
+  ['a license ban alone', [L_ACTIVE, null], 'license:abc'],
+  [
+    'a discord ban alone -- the row the gate could not see before #38',
+    [null, D_ACTIVE],
+    'discord:280',
+  ],
+
+  // ═══ THE OWNER'S RULING, BOTH WAYS ROUND ═══
+  //
+  // The first of these is the one that forced the rule to be written down: an
+  // admin lifts an old license ban, a Discord ban lands afterwards, and any
+  // rule that preferred the license row BY KIND would read the lift and open
+  // the door.
+  ['a LIFTED license ban does not beat an ACTIVE discord ban', [L_LIFTED, D_ACTIVE], 'discord:280'],
+  ['a SERVED license ban does not beat an ACTIVE discord ban', [L_SERVED, D_ACTIVE], 'discord:280'],
+  ['and a lifted discord ban does not beat an active license ban', [L_ACTIVE, D_LIFTED], 'license:abc'],
+
+  ['neither in force means admitted', [L_LIFTED, D_LIFTED], null],
+  [
+    'both in force: the caller order decides, and it is license first',
+    [L_ACTIVE, D_ACTIVE],
+    'license:abc',
+  ],
+  ['a gap in the list is skipped, not read as a row', [undefined, D_ACTIVE], 'discord:280'],
+]
+
+console.log('\nban rule: which of two rows wins')
+for (const [label, rows, expected] of pickCases) {
+  check(label, effective(rows, NOW)?.license ?? null, expected)
 }
 
 // ----------------------------------------------------------- incident item ---
@@ -944,11 +1007,11 @@ const entryOf = (extra) =>
   // THE BACKSTOP HAS TO SIT ABOVE WHAT THE LUA SIDE CAN LEGITIMATELY SEND, or
   // it is not a backstop -- it is this file deleting the oldest rows of every
   // large close. The Lua ceiling is MAX_TIMELINE_KILLS + MAX_TIMELINE_STRIPS +
-  // the match_end; those two constants live in
-  // br_lib/shared/incident_build.lua and are 250 and 60.
+  // MAX_TIMELINE_CHAT + the match_end; those three constants live in
+  // br_lib/shared/incident_build.lua and are 250, 60 and 60.
   check(
     'and the bound is above the largest close the game can build',
-    CLOSE_LIMITS.MAX_CLOSE_ENTRIES >= 250 + 60 + 1,
+    CLOSE_LIMITS.MAX_CLOSE_ENTRIES >= 250 + 60 + 60 + 1,
     true,
   )
 }
@@ -994,6 +1057,121 @@ const entryOf = (extra) =>
     'a timeline of strips is still complete when nothing was dropped',
     p.ExpressionAttributeValues[':complete'],
     true,
+  )
+}
+
+// --- a chat line the server would not carry ---------------------------------
+//
+// THE ENTRY KIND ADDED FOR THE CHAT SCREEN, and the same silence applies:
+// `timelineEntry` drops what it does not know, so a spelling that disagrees with
+// br_lib/shared/incident_build.lua's CHAT_KIND fails nothing here or there and
+// simply means no refused line ever reaches a moderation record.
+//
+// THIS IS THE FIRST PLAYER-AUTHORED PROSE ON THIS LIST. Everything else is a
+// fact the server measured; `text` is what somebody typed, which is why it is
+// capped and why what it does with hostile input is asserted rather than assumed.
+
+{
+  const p = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [
+      {
+        at: 6000,
+        kind: 'chat_block',
+        text: 'join evilserver.com now',
+        reason: 'link',
+        channel: 'global',
+      },
+      { at: 7000, kind: 'chat_block', text: 'привет', reason: 'script', channel: 'squad' },
+      { at: 9000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  const entries = p.ExpressionAttributeValues[':entries']
+
+  check('a refused chat entry survives the projection', entries.length, 3)
+  check('and keeps its kind', entries[0].kind, 'chat_block')
+  check(
+    'THE CHAT CONTENT REACHES THE ROW -- the whole point of the feature',
+    entries[0].text,
+    'join evilserver.com now',
+  )
+  check('which rule refused it travels too', entries[0].reason, 'link')
+  check('and the channel it was sent on', entries[0].channel, 'global')
+  check('a non-Latin line is stored as it was written', entries[1].text, 'привет')
+  check('with its own reason', entries[1].reason, 'script')
+  // A rival server advertised to the whole lobby and one whispered to three
+  // squadmates are different facts about intent.
+  check('a squad whisper is distinguishable from a lobby advert', entries[1].channel, 'squad')
+
+  // NO SECOND-PARTY FIELDS, like a strip: a refused line is a fact about the
+  // subject's own message and the row already names them.
+  check('a refused line names nobody but the subject', entries[0].victimLicense, undefined)
+  check(
+    'and carries no weaponIssued, which would paint it red on the console',
+    Object.prototype.hasOwnProperty.call(entries[0], 'weaponIssued'),
+    false,
+  )
+}
+
+// --- what the text field does with input chosen to break something -----------
+//
+// A PLAYER PICKS THIS STRING. The console renders timeline entries as React text
+// children and escapes structurally, so the job here is a bound and a type --
+// not an escape, which would double-encode on the page.
+
+{
+  const long = 'x'.repeat(500)
+  const p = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [
+      { at: 1000, kind: 'chat_block', text: long, reason: 'link' },
+      { at: 2000, kind: 'chat_block', text: '<script>alert(1)</script>', reason: 'link' },
+      { at: 3000, kind: 'chat_block', text: '', reason: 'link' },
+      { at: 4000, kind: 'chat_block', reason: 'link' },
+      { at: 5000, kind: 'chat_block', text: { evil: true }, reason: 'link' },
+      { at: 6000, kind: 'chat_block', text: 'ok', reason: 'made up by a client' },
+      { at: 9000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  const e = p.ExpressionAttributeValues[':entries']
+
+  // 200 IS BR.ChatLimits.maxLength -- the length the server already refuses to
+  // deliver past -- rather than a new number invented for storage.
+  check('an over-long line is capped at the length chat itself allows', e[0].text.length, 200)
+  check(
+    'markup is stored verbatim as TEXT, never escaped here',
+    e[1].text,
+    '<script>alert(1)</script>',
+  )
+  check('an empty line stores null rather than a blank accusation', e[2].text, null)
+  check('an absent line stores null too', e[3].text, null)
+  check('a non-string cannot become "[object Object]"', e[4].text, null)
+  check('an unrecognised reason is stored, bounded, for a human to read', e[5].reason.length <= 32, true)
+
+  // THE KIND IS STILL DROPPED IF IT IS NOT ONE OF OURS -- the property the whole
+  // discrimination rests on, asserted beside the kind that was just added.
+  const q = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [
+      { at: 1000, kind: 'chat_blocked', text: 'nearly right' },
+      { at: 9000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  check(
+    'a kind one letter off is dropped, silently, exactly as designed',
+    q.ExpressionAttributeValues[':entries'].length,
+    1,
+  )
+  check(
+    'and the close then reports itself INCOMPLETE rather than whole',
+    q.ExpressionAttributeValues[':complete'],
+    false,
   )
 }
 
@@ -1171,6 +1349,685 @@ const entryOf = (extra) =>
   check('and the strip that opened the case is on it', item.matchTimeline[1].kind, 'weapon_strip')
   check('with the hash the client reported', item.matchTimeline[1].weapon, '2210333304')
 }
+
+// ------------------------------------------------------------------ spend ---
+//
+// ═══ A FAKE DYNAMODB, AND WHY THERE IS ONE HERE ═══
+//
+// `br:ddb:spend`'s whole feature is a ConditionExpression -- "DynamoDB must
+// refuse an overspend, not our code" -- and a test that only inspected the
+// string would prove that a string exists. So the block below EVALUATES the
+// expression the source produced, against a row, and asserts what happens to
+// the row. An overspend has to actually be refused for these to pass.
+//
+// THE FAKE IS IN THE TEST AND MUST NEVER MIGRATE INTO src/. A second
+// implementation of a rule is this repository's signature defect when it ships;
+// in a test it is the standard way to drive a database that is not present, and
+// tools/test_stats.lua already stubs br_ddb the same way for the award sweep.
+//
+// IT UNDERSTANDS `>` AS WELL AS `>=` ON PURPOSE. If it only knew the operator
+// the source happens to use, weakening `>=` to `>` would make the evaluator
+// throw and the failure would be about the fake rather than about the rule.
+// Knowing both means the boundary case -- spending a balance down to exactly
+// zero -- is what tells the two apart, which is the discrimination that matters.
+
+/**
+ * Apply one UpdateItem-shaped command to a plain row.
+ *
+ * Supports exactly the two clause forms this file's verbs produce: a condition
+ * `#name <op> :value`, and an `ADD #a :x, #b :y` update. Anything else throws,
+ * loudly, rather than being silently ignored -- a clause the fake cannot read is
+ * a clause the assertions below are not really testing.
+ *
+ * @returns {{ ok: boolean, row: object }}  ok=false is ConditionalCheckFailed
+ */
+function fakeUpdate(row, cmd) {
+  const names = cmd.ExpressionAttributeNames || {}
+  const values = cmd.ExpressionAttributeValues || {}
+  const out = { ...row }
+
+  if (cmd.ConditionExpression) {
+    const m = /^\s*(#\w+)\s*(>=|>|<=|<|=)\s*(:\w+)\s*$/.exec(cmd.ConditionExpression)
+    if (!m) throw new Error(`fakeUpdate cannot read condition: ${cmd.ConditionExpression}`)
+    const attr = names[m[1]]
+    const want = values[m[3]]
+    if (attr === undefined || want === undefined) {
+      throw new Error(`fakeUpdate: unbound placeholder in ${cmd.ConditionExpression}`)
+    }
+    const have = out[attr]
+    // DYNAMODB'S OWN RULE: a comparison against an attribute that is not there
+    // is FALSE, not zero. A row that never earned anything cannot spend.
+    let pass = false
+    if (have !== undefined && have !== null) {
+      if (m[2] === '>=') pass = have >= want
+      else if (m[2] === '>') pass = have > want
+      else if (m[2] === '<=') pass = have <= want
+      else if (m[2] === '<') pass = have < want
+      else pass = have === want
+    }
+    if (!pass) return { ok: false, row }
+  }
+
+  const add = /(?:^|\s)ADD\s+(.+)$/.exec(cmd.UpdateExpression || '')
+  if (!add) throw new Error(`fakeUpdate cannot read update: ${cmd.UpdateExpression}`)
+  for (const term of add[1].split(',')) {
+    const t = /^\s*(#\w+)\s+(:\w+)\s*$/.exec(term)
+    if (!t) throw new Error(`fakeUpdate cannot read ADD term: ${term}`)
+    const attr = names[t[1]]
+    const delta = values[t[2]]
+    if (attr === undefined || delta === undefined) {
+      throw new Error(`fakeUpdate: unbound placeholder in ADD ${term}`)
+    }
+    out[attr] = (out[attr] ?? 0) + delta
+  }
+  return { ok: true, row: out }
+}
+
+console.log('\nspend: the amount')
+check('a plain cost is taken', spendCost(750), 750)
+check('a string from Lua still coerces', spendCost('750'), 750)
+// THE MINT THAT MUST NOT EXIST. A debit verb that accepted a negative amount
+// would ADD to the balance, and "the currency is earned, never bought" would
+// stop being a property of the system.
+check('a negative amount is refused outright', spendCost(-750), null)
+check('and so is zero -- charging nothing is a caller bug', spendCost(0), null)
+check('a fraction is refused rather than rounded', spendCost(12.5), null)
+check('NaN is refused', spendCost('nonsense'), null)
+check('and so is an absurd amount', spendCost(SPEND_MAX + 1), null)
+check('but the ceiling itself is allowed', spendCost(SPEND_MAX), SPEND_MAX)
+
+console.log('\nspend: the condition refuses an overspend')
+{
+  const cmd = spendUpdate(750)
+
+  // THE HAPPY PATH, so the failures below mean something.
+  const rich = fakeUpdate({ balance: 1000, owned: new Set(['chute_azure']) }, cmd)
+  check('an affordable spend applies', rich.ok, true)
+  check('and debits exactly the cost', rich.row.balance, 250)
+
+  // ═══ THE CASE THIS VERB EXISTS FOR ═══
+  const poor = fakeUpdate({ balance: 700 }, cmd)
+  check('a balance short of the cost is REFUSED', poor.ok, false)
+  check('and nothing is taken from it', poor.row.balance, 700)
+
+  // The boundary, which is also what tells `>=` from `>`. Spending your last
+  // Volt on a car is a purchase, not an overdraft -- the same rule
+  // BR.ShopSolve.canBuy states on the cache side.
+  const exact = fakeUpdate({ balance: 750 }, cmd)
+  check('a balance of exactly the cost is allowed', exact.ok, true)
+  check('and lands on zero', exact.row.balance, 0)
+
+  // A row that has never earned anything. Absent is not zero.
+  const fresh = fakeUpdate({}, cmd)
+  check('a row with no balance attribute cannot spend', fresh.ok, false)
+  check('and no balance is invented for it', fresh.row.balance, undefined)
+
+  // Twice over is twice charged -- this verb is deliberately NOT idempotent,
+  // which is the whole difference from `purchase`.
+  const once = fakeUpdate({ balance: 1600 }, cmd)
+  const twice = fakeUpdate(once.row, cmd)
+  check('a repeatable spend is repeatable', twice.ok, true)
+  check('and charges again', twice.row.balance, 100)
+  check('a third refuses on the remainder', fakeUpdate(twice.row, cmd).ok, false)
+
+  // ═══ NO `owned` SET, WHICH IS WHY `purchase` COULD NOT BE REUSED ═══
+  check('the debit touches one attribute', Object.keys(cmd.ExpressionAttributeNames), ['#bal'])
+  check('and that attribute is the balance', cmd.ExpressionAttributeNames['#bal'], 'balance')
+  check('nothing is marked owned', /own/i.test(JSON.stringify(cmd)), false)
+
+  // The two placeholders, which must not be collapsed into one.
+  check('the update adds the negative', cmd.ExpressionAttributeValues[':neg'], -750)
+  check('the condition compares the positive', cmd.ExpressionAttributeValues[':cost'], 750)
+}
+
+// ------------------------------------------------------------ stats writes ---
+//
+// The payout's expression is load-bearing and this file had no opinion about it
+// until `brvolts` became a second caller of the same verb. Two properties:
+// the payout's own write must not have moved, and a caller that does not claim
+// to be a match must not blank the fields a match sets.
+
+/**
+ * A whole match result, in the shape br_stats/server/persist.lua builds it.
+ *
+ * NAMED RATHER THAN INLINE because the handler block at the bottom of this file
+ * sends this exact payload through `br:ddb:statsApply` and pins the same
+ * expression coming out the other side. Two payloads that were meant to be the
+ * same and drifted would make the second block agree with a bug in the first.
+ */
+const MATCH_PAYOUT = {
+  xp: 1048, balance: 1200, matches: 1, wins: 1, top10s: 1, kills: 3,
+  deaths: 0, downs: 1, revives: 2, damageDealt: 450, playtimeSec: 900,
+  soloMatches: 1, squadMatches: 0,
+  level: 12, name: 'Epyc', at: 1_700_000_000_000,
+}
+
+/** What that payload must become, byte for byte. */
+const PAYOUT_EXPRESSION =
+  'SET #lvl = :lvl, #nm = :nm, #ls = :ls ADD #xp :xp, #balance :balance,'
+  + ' #matches :matches, #wins :wins, #top10s :top10s, #kills :kills,'
+  + ' #deaths :deaths, #downs :downs, #revives :revives,'
+  + ' #damageDealt :damageDealt, #playtimeSec :playtimeSec,'
+  + ' #soloMatches :soloMatches, #squadMatches :squadMatches'
+
+console.log('\nstats: the match payout writes what it always wrote')
+{
+  const payout = buildStatsUpdate(MATCH_PAYOUT)
+
+  // PINNED AS A STRING, because this is the one assertion that says "the money
+  // path did not move when the SET clause became conditional".
+  check(
+    'the expression is byte for byte the one it shipped with',
+    payout.UpdateExpression,
+    PAYOUT_EXPRESSION,
+  )
+  check('the level it derived is written', payout.ExpressionAttributeValues[':lvl'], 12)
+  check('the name it saw is written', payout.ExpressionAttributeValues[':nm'], 'Epyc')
+  check('and the match end is stamped', payout.ExpressionAttributeValues[':ls'], 1_700_000_000_000)
+
+  // Applied to a row, it is still an ADD and still atomic in the sense that
+  // matters here: it composes with whatever was already there.
+  const after = fakeUpdate({ balance: 300, kills: 40 }, payout)
+  check('the balance accumulates rather than replacing', after.row.balance, 1500)
+  check('and so does every other counter', after.row.kills, 43)
+}
+
+console.log('\nstats: a grant is not a match')
+{
+  // What `brvolts` sends: an amount, and no claim about anything else.
+  const grant = buildStatsUpdate({ balance: 5000 })
+
+  check(
+    'a caller that names no match fields writes no SET clause at all',
+    grant.UpdateExpression.startsWith('ADD '),
+    true,
+  )
+  // ═══ THE THREE FIELDS A GRANT MUST NOT TOUCH ═══
+  //
+  // The first version of this wrote all three unconditionally with `num()` and
+  // `String()` fallbacks, so THIS payload would have set the player to level 0,
+  // blanked their name, and stamped lastMatchAt 0 -- silently, on a live
+  // profile row, every time somebody granted themselves Volts to test the shop.
+  check('no level is claimed', grant.ExpressionAttributeValues[':lvl'], undefined)
+  check('no name is written', grant.ExpressionAttributeValues[':nm'], undefined)
+  check('and no match end is stamped', grant.ExpressionAttributeValues[':ls'], undefined)
+
+  const before = { balance: 120, level: 12, name: 'Epyc', lastMatchAt: 1_700_000_000_000 }
+  const after = fakeUpdate(before, grant).row
+  check('the grant lands on the balance', after.balance, 5120)
+  check('the level survives it', after.level, 12)
+  check('the name survives it', after.name, 'Epyc')
+  check('and so does the last match', after.lastMatchAt, 1_700_000_000_000)
+
+  // Present-and-zero is a value, not an absence. A caller that means level 0
+  // has a bug of its own and this function is not the place to hide it.
+  const explicit = buildStatsUpdate({ balance: 1, level: 0 })
+  check('an explicit zero is still written', explicit.ExpressionAttributeValues[':lvl'], 0)
+  // ...and the empty string is treated as absent, because '' is exactly what
+  // the old unconditional write produced from a missing name.
+  const blank = buildStatsUpdate({ balance: 1, name: '' })
+  check('but an empty name is an absent one', blank.ExpressionAttributeValues[':nm'], undefined)
+}
+
+// -------------------------------------------------------------- handlers ---
+//
+// ═══ EVERYTHING ABOVE THIS LINE TESTS A FUNCTION. NOTHING ABOVE IT RAN A
+//     HANDLER, AND THAT COST THE OWNER A NIGHT OF PLAYER DATA ═══
+//
+// On 2026-08-29, aafe22a moved the stats expression out of src/index.js into
+// src/stats.js, where `deltas` is rebound as a local `d`. The CALL SITE kept the
+// old name:
+//
+//     on('br:ddb:statsApply', (req, license, deltas) => {
+//       ...
+//       const built = buildStatsUpdate(d)      // `d` is not in this scope
+//
+// Every check in this file went green, `verify.sh` went green, the fingerprint
+// gate went green, and the bundle built without a murmur -- esbuild treats an
+// unbound identifier as a global and says nothing. The first thing that
+// noticed was a live server, where every match end threw
+//
+//     ReferenceError: d is not defined   @br_ddb/dist/server.js:60
+//
+// BEFORE the UpdateItem was sent, so XP, Volts, balance and every career
+// counter stopped persisting entirely -- while `br:market:credited` had already
+// moved br_core's session cache, so the players were shown numbers the database
+// never received.
+//
+// The gap was not "no test for statsApply". It was that a file which is
+// twenty event registrations and nothing else had never been IMPORTED here,
+// because importing it means importing the AWS SDK. scripts/bridge.mjs and
+// scripts/aws_stub.mjs remove that reason. The handlers run now.
+
+const bridge = await loadBridge()
+
+/**
+ * The nth command a handler sent, or an empty stand-in.
+ *
+ * A HANDLER THAT SENT NOTHING MUST NOT CRASH THE SUITE. That is not
+ * hypothetical politeness -- it is what the 2026-08-30 bug does: it throws
+ * before the send, so `calls[0]` is undefined and every assertion after it
+ * would die on a TypeError instead of reporting. The failures below are the
+ * evidence; losing eighty of them to the first one is how a suite stops being
+ * read.
+ */
+const sent = (i) => bridge.calls[i] ?? { kind: null, input: {} }
+
+/**
+ * A throw, as a line worth reading.
+ *
+ * `check` compares with JSON.stringify and an Error stringifies to `{}` -- so
+ * the one assertion that mattered on 2026-08-30 would have reported "got {}".
+ * The message IS the finding here: it is the sentence the live server printed.
+ */
+const why = (e) => (e === null ? null : `${e.name}: ${e.message}`)
+
+/** What a verb answered on its result channel, in the three parts it has. */
+const answer = (verb) => {
+  const e = lastEmit(verb)
+  return { req: e?.args[0], ok: e?.args[1], extra: e?.args[2] ?? {} }
+}
+
+console.log('\nstats: the handler, not just the expression it builds')
+{
+  bridge.reset()
+  bridge.reply({}) // DynamoDB accepts the write
+
+  const threw = bridge.call('br:ddb:statsApply', 41, LIC, MATCH_PAYOUT)
+
+  // ═══ THE ASSERTION THIS BLOCK EXISTS FOR ═══
+  //
+  // Red against the bug, with the production message in the `got` line.
+  check(
+    'the handler runs -- no free variable in its body',
+    why(threw),
+    null,
+  )
+
+  // ...and red against a "fix" that made it run without carrying anything.
+  check('one UpdateItem reached DynamoDB', bridge.calls.length, 1)
+
+  const cmd = sent(0)
+  check('it is an UpdateItem', cmd.kind, 'UpdateItemCommand')
+  // The GAME's table, not the console's. Defaulting the prefix is how the first
+  // version of profileFetch read `ringmaster-players`.
+  check('against the game table', cmd.input.TableName, 'br-players')
+  check('keyed on the profile row for that licence', cmd.input.Key, {
+    pk: { S: LIC },
+    sk: { S: 'profile' },
+  })
+
+  // THE SAME PIN AS THE BLOCK ABOVE, TAKEN OFF THE WIRE INSTEAD OF OFF THE
+  // BUILDER. That is the whole difference: this one can only pass if the
+  // handler actually passed the caller's deltas to the builder.
+  check(
+    'the expression on the wire is the payout expression',
+    cmd.input.UpdateExpression,
+    PAYOUT_EXPRESSION,
+  )
+
+  const values = unmarshall(cmd.input.ExpressionAttributeValues)
+  // `buildStatsUpdate({})` would still produce a valid ADD of thirteen zeroes,
+  // which is a shape a passing test could easily accept and a player would
+  // experience as a match that paid nothing. So the NUMBERS are asserted, and
+  // they are the caller's.
+  check("the caller's XP is on the wire", values[':xp'], 1048)
+  check('and the Volts the match paid', values[':balance'], 1200)
+  check('and the level br_stats derived', values[':lvl'], 12)
+  check('and the name it saw', values[':nm'], 'Epyc')
+
+  // End to end: the command the handler built, applied to a profile row.
+  // Guarded, because `fakeUpdate` throws on an expression it cannot read and a
+  // handler that sent nothing has no expression at all.
+  const applied = typeof cmd.input.UpdateExpression === 'string'
+    ? fakeUpdate({ balance: 300, kills: 40 }, {
+      UpdateExpression: cmd.input.UpdateExpression,
+      ExpressionAttributeNames: cmd.input.ExpressionAttributeNames,
+      ExpressionAttributeValues: values,
+    })
+    : { row: {} }
+  check('a profile row moves by exactly the match', applied.row.balance, 1500)
+  check('and every other counter with it', applied.row.kills, 43)
+
+  await bridge.settle()
+  // The `req` must come back untouched: br_stats keys `pending[req]` on it and
+  // an answer under the wrong number is an answer nobody is listening for.
+  check('br_stats is told the write landed', lastEmit('br:ddb:statsResult')?.args, [41, true, {}])
+}
+
+console.log('\nstats: a failed write answers and never throws into the match')
+{
+  bridge.reset()
+  bridge.reply(new Error('ProvisionedThroughputExceededException'))
+
+  // "A STATS FAILURE MUST NEVER STOP A MATCH" is stated at the handler and was
+  // true of every path it could reach -- except the one that threw before the
+  // send, which is exactly the one that happened.
+  const threw = bridge.call('br:ddb:statsApply', 42, LIC, MATCH_PAYOUT)
+  check('nothing is thrown back at br_stats', why(threw), null)
+
+  await bridge.settle()
+  const res = answer('br:ddb:statsResult')
+  check('the failure is reported rather than swallowed', res.ok, false)
+  check('with the reason attached', res.extra.error, 'ProvisionedThroughputExceededException')
+  check(
+    'and logged against the licence',
+    bridge.logs.some((l) => l.includes('stats write failed for ' + LIC)),
+    true,
+  )
+}
+
+console.log('\nstats: brvolts rides the same handler')
+{
+  bridge.reset()
+  bridge.reply({})
+
+  // What br_core/server/debug.lua sends: an amount, and no claim about a match.
+  const threw = bridge.call('br:ddb:statsApply', 43, LIC, { balance: 5000 })
+  check('the grant runs too', why(threw), null)
+
+  const cmd = sent(0)
+  check(
+    'a grant sends no SET clause',
+    String(cmd.input.UpdateExpression ?? '').startsWith('ADD '),
+    true,
+  )
+
+  const values = unmarshall(cmd.input.ExpressionAttributeValues)
+  check('so no name is blanked on the row', values[':nm'], undefined)
+  check('and no level is claimed', values[':lvl'], undefined)
+  check('while the Volts are on the wire', values[':balance'], 5000)
+}
+
+console.log('\nspend: the debit reaches DynamoDB with its condition intact')
+{
+  bridge.reset()
+  bridge.reply({ Attributes: { balance: { N: '250' } } })
+
+  const threw = bridge.call('br:ddb:spend', 44, LIC, 750)
+  check('the handler runs', why(threw), null)
+
+  const cmd = sent(0)
+  // THE CONDITION IS THE WHOLE FEATURE (src/spend.js). A handler that built it
+  // and forgot to put it on the command would debit unconditionally, and every
+  // assertion in the spend block above would still pass.
+  check('the condition is on the command', cmd.input.ConditionExpression, '#bal >= :cost')
+  check('and so is the debit', cmd.input.UpdateExpression, 'ADD #bal :neg')
+  check('the balance after is asked for', cmd.input.ReturnValues, 'UPDATED_NEW')
+
+  await bridge.settle()
+  const res = answer('br:ddb:spendResult')
+  check('the buyer is told what it cost', res.extra.spent, 750)
+  check('and what is left', res.extra.balance, 250)
+}
+
+console.log('\nspend: a refusal is not a failure')
+{
+  bridge.reset()
+  const refused = new Error('The conditional request failed')
+  refused.name = 'ConditionalCheckFailedException'
+  bridge.reply(refused)
+  bridge.reply({ Item: { balance: { N: '700' } } }) // the follow-up read
+
+  bridge.call('br:ddb:spend', 45, LIC, 750)
+  await bridge.settle()
+  await bridge.settle()
+
+  const res = answer('br:ddb:spendResult')
+  check('an overspend is refused, not errored', res.extra.refused, 'not enough currency')
+  check('and no error is reported for it', res.extra.error, undefined)
+  check('the real balance is read back for the message', res.extra.balance, 700)
+}
+
+// ------------------------------------------------------ the two-key gate ---
+//
+// THE PROPERTY UNDER TEST IS THAT A `discord:`-KEYED BAN CLOSES THE DOOR. Every
+// case above this line drives a builder or a single write; these drive the
+// handler that decides whether a human gets into the server, through the real
+// src/index.js, with the SDK stubbed. The block above them (`ban rule: which of
+// two rows wins`) pins the rule in isolation -- this one pins that the handler
+// actually asks both questions and hands the rule both answers.
+
+const DISCORD = 'discord:280000000000000000'
+
+/** A ban row as DynamoDB returns it, with only the fields the handler reads. */
+const banRow = (over = {}) => ({
+  Item: marshall({
+    license: LIC,
+    reason: 'Aimbot',
+    byName: 'Admin',
+    expiresAt: null,
+    liftedAt: null,
+    ...over,
+  }),
+})
+
+console.log('\nban check: one key when that is all there is')
+{
+  bridge.reset()
+  bridge.reply({}) // no row
+
+  const threw = bridge.call('br:ddb:banCheck', 60, LIC)
+  check('the handler runs', why(threw), null)
+  check('exactly one GetItem for a connection with no discord id', bridge.calls.length, 1)
+  check('on the console table', sent(0).input.TableName, 'ringmaster-bans')
+  check('keyed on the license', unmarshall(sent(0).input.Key), { license: LIC })
+
+  await bridge.settle()
+  check('and no row means admitted', answer('br:ddb:banResult').ok, false)
+
+  // THE SHAPE gate.lua ACTUALLY SENDS. It never passes nil -- a nil in the
+  // middle of a TriggerEvent argument list is a msgpack question nobody wants on
+  // a production box -- so '' is the wire spelling of "no such identifier" and
+  // must not become a key this handler goes and looks up.
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:banCheck', 60, LIC, '')
+  check("'' is absence, not a key", bridge.calls.length, 1)
+  check('and it is the license that was asked about', unmarshall(sent(0).input.Key), {
+    license: LIC,
+  })
+  await bridge.settle()
+}
+
+console.log('\nban check: two keys, issued together')
+{
+  bridge.reset()
+  bridge.reply({}) // the license: nothing
+  bridge.reply(banRow({ license: DISCORD, reason: 'Banned in Discord' }))
+
+  const threw = bridge.call('br:ddb:banCheck', 61, LIC, DISCORD)
+  check('the handler runs', why(threw), null)
+
+  // ═══ THE ASSERTION THAT PROVES THEY ARE PARALLEL ═══
+  //
+  // Read BEFORE any `settle()`, so nothing inside a `.then` has run yet. Both
+  // commands are already recorded, which can only happen if both sends were
+  // issued before either answer was awaited. Written as an `await` chain this
+  // would read 1 here and go red -- which is the point, because the sequential
+  // version costs a second network round trip inside a connect deferral with a
+  // human watching it.
+  check('both lookups are on the wire before either answer', bridge.calls.length, 2)
+
+  check('the license is asked first', unmarshall(sent(0).input.Key), { license: LIC })
+  check('and the discord id second', unmarshall(sent(1).input.Key), { license: DISCORD })
+  check('both on the bans table', [sent(0).input.TableName, sent(1).input.TableName], [
+    'ringmaster-bans',
+    'ringmaster-bans',
+  ])
+  check('and neither is a Query', [sent(0).kind, sent(1).kind], [
+    'GetItemCommand',
+    'GetItemCommand',
+  ])
+
+  await bridge.settle()
+  const res = answer('br:ddb:banResult')
+  check('a discord-keyed ban refuses the connection', res.ok, true)
+  check('with its own reason on the connecting screen', res.extra.reason, 'Banned in Discord')
+}
+
+console.log('\nban check: the ruling, through the handler')
+{
+  bridge.reset()
+  // A license ban an admin lifted last week, and a Discord ban from today.
+  bridge.reply(banRow({ liftedAt: NOW - HOUR, reason: 'Old, and lifted' }))
+  bridge.reply(banRow({ license: DISCORD, reason: 'Banned in Discord' }))
+
+  bridge.call('br:ddb:banCheck', 62, LIC, DISCORD)
+  await bridge.settle()
+
+  const res = answer('br:ddb:banResult')
+  check('a lifted license ban does not admit somebody Discord-banned', res.ok, true)
+  check('and the reason shown is the ban that is actually in force', res.extra.reason, 'Banned in Discord')
+}
+
+console.log('\nban check: no license at all')
+{
+  bridge.reset()
+  bridge.reply(banRow({ license: DISCORD, reason: 'Banned in Discord' }))
+
+  bridge.call('br:ddb:banCheck', 63, '', DISCORD)
+
+  // THE CASE THE WHOLE CHANGE IS ABOUT. A `discord:`-keyed ban exists precisely
+  // because the game has never seen this person; refusing to look it up when
+  // they turn up without a license would skip the lookup for exactly the people
+  // it was written for.
+  check('one lookup, and it is the discord id', bridge.calls.length, 1)
+  check('keyed on the discord identifier', unmarshall(sent(0).input.Key), { license: DISCORD })
+
+  await bridge.settle()
+  check('and they are refused', answer('br:ddb:banResult').ok, true)
+}
+
+console.log('\nban check: neither identifier, and a failure')
+{
+  bridge.reset()
+  bridge.call('br:ddb:banCheck', 64, '', '')
+  check('nothing to ask means nothing is sent', bridge.calls.length, 0)
+  check('and it answers rather than hanging a deferral', answer('br:ddb:banResult').ok, false)
+  check('naming why', answer('br:ddb:banResult').extra.error, 'no license')
+
+  bridge.reset()
+  bridge.reply({}) // the license read succeeds
+  bridge.reply(new Error('ProvisionedThroughputExceededException'))
+
+  bridge.call('br:ddb:banCheck', 65, LIC, DISCORD)
+  await bridge.settle()
+
+  const res = answer('br:ddb:banResult')
+  // FAILS OPEN ON EITHER LOOKUP. Half an answer is not an answer: a confident
+  // "not banned" about a key we could not read is the failure mode
+  // docs/ban-contract.md refuses.
+  check('one unreadable row fails the whole check open', res.ok, false)
+  check('and says so', res.extra.error, 'ProvisionedThroughputExceededException')
+}
+
+// ------------------------------------------------- no free variables, ever ---
+//
+// The block above pins one verb because one verb broke. This one is the ratchet
+// for the CLASS: every handler in src/index.js is invoked with a payload that
+// gets past its guards, and a name that is not in scope becomes a named failure
+// instead of a live incident.
+//
+// IT IS A SMOKE TEST AND IT IS NOT ASHAMED OF THAT. It does not assert what any
+// of these verbs write -- only that their bodies run. That is precisely the
+// property the suite was missing, and it is the property an extract-a-function
+// refactor breaks.
+//
+// A VERB WITH NO PAYLOAD HERE IS A FAILURE, not a quiet gap: the check below
+// compares this table against what src/index.js actually registered, so adding
+// a verb and not driving it goes red naming the verb.
+
+console.log('\nevery verb runs: no free variables anywhere in the bridge')
+{
+  // A REAL v4, unlike the `ID` the incident cases use: src/artifacts.js pins
+  // the version and variant nibbles, so a made-up id turns artifactBegin and
+  // artifactPut round at their first guard and this block would be driving two
+  // verbs that never leave their preludes.
+  const UUID = '11111111-2222-4333-8444-555555555555'
+  const MATCH_ROW = {
+    license: LIC, sk: 'match#0001700000000#7', matchId: 7,
+    endedAt: 1_700_000_000_000, mode: 'solo', placement: 3, total: 48,
+    kills: 2, downs: 1, revives: 0, damage: 400, survivedMs: 90_000,
+    xpEarned: 100, voltsEarned: 200, won: false,
+  }
+
+  // artifactPut reads the frame off the spool before uploading it, so put one
+  // there -- otherwise the verb turns round at its first `stat` and the S3 half
+  // of it goes unexercised.
+  const frame = artifactNames(UUID, 1, 'png')
+  writeFileSync(join(bridge.spoolDir, frame.file), Buffer.from('not really a png'))
+
+  const PAYLOADS = {
+    // BOTH keys, so the two-lookup path is what this sweep drives.
+    'br:ddb:banCheck': [1, LIC, DISCORD],
+    'br:ddb:grantsFetch': [2, LIC],
+    'br:ddb:maintenance': [3],
+    'br:ddb:profileFetch': [4, LIC],
+    'br:ddb:statsApply': [5, LIC, MATCH_PAYOUT],
+    'br:ddb:historyPut': [6, [MATCH_ROW]],
+    'br:ddb:inventoryFetch': [7, LIC],
+    'br:ddb:purchase': [8, LIC, 'chute_azure', 750],
+    'br:ddb:spend': [9, LIC, 750],
+    'br:ddb:equip': [10, LIC, 'chute', 'chute_azure', false],
+    'br:ddb:putIncident': [11, 'token-1', refusalPayload()],
+    'br:ddb:incidentClose': [12, {
+      incidentId: UUID,
+      matchEndedAt: 1_700_000_500_000,
+      matchStartedAt: 1_700_000_000_000,
+      verdict: 'upheld',
+      byName: 'Admin',
+      byLicense: LIC,
+    }],
+    'br:ddb:incidentVerdict': [13, UUID],
+    'br:ddb:artifactBegin': [14, UUID, 1, 'png'],
+    'br:ddb:artifactPut': [15, UUID, 1, 'png', 1_700_000_000_000],
+    'br:ddb:awardClaim': [16, UUID, LIC],
+    'br:ddb:awardQueue': [17],
+    'br:ddb:awardPay': [18, LIC, UUID, 500],
+    'br:ddb:awardSettle': [19, UUID],
+    'br:ddb:selftest': [20],
+  }
+
+  check(
+    'every verb src/index.js registers is driven here',
+    [...bridge.handlers.keys()].filter((n) => !Object.hasOwn(PAYLOADS, n)),
+    [],
+  )
+  check(
+    'and nothing here drives a verb that no longer exists',
+    Object.keys(PAYLOADS).filter((n) => !bridge.handlers.has(n)),
+    [],
+  )
+
+  // ONE reset, before the loop. The answers accumulate on purpose -- the last
+  // assertion in this block reads all of them at once.
+  bridge.reset()
+
+  for (const [verb, args] of Object.entries(PAYLOADS)) {
+    const threw = bridge.call(verb, ...args)
+    check(verb, why(threw), null)
+  }
+
+  await bridge.settle()
+  await bridge.settle()
+
+  // ═══ AND THE ASYNCHRONOUS HALF ═══
+  //
+  // A free variable inside a `.then` does NOT throw where the loop above can
+  // see it: every one of these handlers ends in a `.catch` that turns any
+  // failure into an answer. So the answers are where a late ReferenceError
+  // surfaces, and this is the only place it would ever have been visible.
+  check(
+    'no verb answered with a ReferenceError',
+    bridge.emitted
+      .filter((e) => /is not defined/.test(JSON.stringify(e.args)))
+      .map((e) => e.name),
+    [],
+  )
+}
+
+bridge.cleanup()
 
 if (failed) {
   console.error(`\nbr_ddb: ${failed} of ${ran} case(s) failed`)

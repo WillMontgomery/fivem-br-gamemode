@@ -207,13 +207,112 @@ local function screenDump()
         'what DrawSprite actually renders into')
     val('GetAspectRatio(true)', GetAspectRatio(true))
     val('GetScreenAspectRatio', pcall(GetScreenAspectRatio) and GetScreenAspectRatio() or 'n/a')
-    local szx, szy = GetSafeZoneSize(), nil
-    val('GetSafeZoneSize', szx)
+    val('GetSafeZoneSize', GetSafeZoneSize())
+
+    -- ═══ THE SAFE ZONE AS THE ENGINE ACTUALLY PLACES IT ═══
+    --
+    -- THIS is the reading worth pasting from an ultrawide, and it is the one
+    -- the HUD now lays out against (#231). GetSafeZoneSize is a single
+    -- 0.8..1.0 scalar; turning it into a rectangle takes arithmetic, and the
+    -- arithmetic is a 16:9 assumption. SetScriptGfxAlign puts the drawing
+    -- origin on a corner of the real safe zone and GetScriptGfxPosition reports
+    -- where it landed -- the player's slider, the aspect ratio and whatever the
+    -- engine does on an unusual panel, already applied.
+    --
+    -- The old formula is printed BESIDE it on purpose. On a 16:9 monitor the
+    -- two agree and this looks like a pointless pair of lines; the gap between
+    -- them on an ultrawide is the whole bug.
+    local ok, l, t, r, b = pcall(function()
+        SetScriptGfxAlign(string.byte('L'), string.byte('B'))
+        local lx, by = GetScriptGfxPosition(0.0, 0.0)
+        ResetScriptGfxAlign()
+        SetScriptGfxAlign(string.byte('R'), string.byte('T'))
+        local rx, ty = GetScriptGfxPosition(0.0, 0.0)
+        ResetScriptGfxAlign()
+        return lx, ty, rx, by
+    end)
+    if ok and type(l) == 'number' then
+        val('safe zone left (engine)',   ('%.4f'):format(l))
+        val('safe zone top (engine)',    ('%.4f'):format(t))
+        val('safe zone right (engine)',  ('%.4f'):format(r))
+        val('safe zone bottom (engine)', ('%.4f'):format(b))
+    else
+        val('GetScriptGfxPosition', 'FAILED', tostring(l))
+    end
+    local safe = GetSafeZoneSize()
+    if type(safe) == 'number' then
+        val('  -> old formula would say', ('%.4f'):format((1.0 - safe) * 0.5),
+            'left AND top, which is the 16:9 guess #231 removed')
+    end
+
+    -- ═══ AND WHERE THE MINIMAP ACTUALLY IS, WHICH IS A DIFFERENT QUESTION ═══
+    --
+    -- THE ONE THE FIRST FIX DID NOT ASK. It read the safe zone correctly and
+    -- then said the radar sits on the safe zone's bottom-left corner, which is
+    -- true at 16:9 and false on every wider panel: citizenfx/fivem#2719 says
+    -- the minimap stays "in the center(ish) of the screen as if it was
+    -- following a 16:9 aspect ratio" while "the screen safe-zone has been
+    -- verified to be setup correctly". Two edges, not one.
+    --
+    -- FOUR ANSWERS, PRINTED TOGETHER, because ONE PASTE FROM AN ULTRAWIDE HAS
+    -- TO SETTLE THIS and we cannot see that screen from here:
+    --
+    --   engine safe left   what the gfx natives report for the safe zone
+    --   engine map left    the same natives, offset by the minimap's own
+    --                      frontend.xml position (the FiveM cookbook snippet,
+    --                      "Getting the Top Left of the Minimap in Screen
+    --                      Coordinates", and Dalrae1/MinimapPositionFiveM)
+    --   16:9 box left      the centred layout box #2719 describes -- OUR MODEL,
+    --                      and the only number here that is not measured
+    --   published map left what screen.lua is actually sending the HUD
+    --
+    -- On a 16:9 monitor all four collapse onto one number and this block is
+    -- four boring lines. The one that matches where the map is DRAWN on an
+    -- ultrawide is the one screen.lua should be using; if it is not the
+    -- published figure, paste this and the model comes out.
+    local mok, mx, my = pcall(function()
+        SetScriptGfxAlign(string.byte('L'), string.byte('B'))
+        -- -0.0045 / 0.002 are the minimap's own offsets from
+        -- common:/data/ui/frontend.xml, and 0.188888 is its height there --
+        -- subtracted because this reports the TOP-left.
+        local ax, ay = GetScriptGfxPosition(-0.0045, 0.002 + (-0.188888))
+        ResetScriptGfxAlign()
+        return ax, ay
+    end)
+    pcall(ResetScriptGfxAlign)
+
+    local ar = GetAspectRatio(false)
+    if type(ar) ~= 'number' or ar <= 0.1 then
+        ar = (sh and sh > 0) and (sw / sh) or (16.0 / 9.0)
+    end
+    local REF = 16.0 / 9.0
+    local pillar = (ar > REF) and ((1.0 - REF / ar) * 0.5) or 0.0
+
+    line()
+    if mok and type(mx) == 'number' then
+        val('engine map left (cookbook)', ('%.4f'):format(mx))
+        val('engine map top (cookbook)',  ('%.4f'):format(my))
+    else
+        val('engine map left (cookbook)', 'FAILED', tostring(mx))
+    end
+    val('16:9 box pillar (MODEL)', ('%.4f'):format(pillar),
+        'zero on 16:9; a quarter of the screen at 32:9')
+    if ok and type(l) == 'number' then
+        local published = (l >= pillar) and l or (pillar + l)
+        val('published map left', ('%.4f'):format(published),
+            'what the HUD is being told, as a fraction of WIDTH')
+        val('  -> as a percentage', ('%.2f%%'):format(published * 100.0))
+    end
+    print('  WHICH ONE IS THE MAP? Compare these with where the radar is drawn.')
+    print('  If the published figure does not land on it, screen.lua is wrong')
+    print('  and this is the paste that says so.')
 
     -- The two disagree on letterboxed and multi-monitor setups, and the one
     -- that matters for a world-anchored sprite is whatever DrawSprite uses.
     print('  NOTE: if the derived aspect and GetAspectRatio disagree, the DUI')
     print('        prompt should use GetAspectRatio -- it is the renderer\'s.')
+    print('  NOTE: if the engine safe zone and the old formula disagree, the')
+    print('        HUD would have been wrong everywhere before #231.')
 end
 
 -- --------------------------------------------------------------------------
@@ -525,6 +624,12 @@ RegisterCommand('brprobe', function(_, args)
         val('IsPedInAnyVehicle', IsPedInAnyVehicle(PlayerPedId(), false))
         print('  The clip reading dropping to 0 in a seat is EXPECTED -- the')
         print('  engine stows the weapon. It must not be reported as ammo lost.')
+        print('')
+        print('  ...AND THAT SENTENCE IS ALSO THE ANSWER TO #197. A weapon the')
+        print('  engine has stowed is a weapon that cannot be FIRED either, which')
+        print('  is why a passenger with a rifle has no trigger. /brdriveby is')
+        print('  the readout for that question: it samples across frames, so it')
+        print('  can tell a permanent stow from the climb-in animation.')
         return
     elseif what == 'crate' then
         head('probe: crate physics')
@@ -552,6 +657,8 @@ RegisterCommand('brprobe', function(_, args)
     print('    /brprobe raw [seconds]    ammo with br_core NOT touching it')
     print('    /brprobe ammo [seconds]   ammo as the game normally runs')
     print('    /brprobe vehicle          what a vehicle seat does to the readings')
+    print('  Cannot fire from a passenger seat? That is /brdriveby [seconds],')
+    print('  which is its own command because it has to sample across frames.')
     print('    /brprobe armour           prove the 50/100 armour ceiling')
     print('    /brprobe crate            spawn labelled crates to push')
     print('    /brprobe clear            remove them')

@@ -217,6 +217,7 @@ Each of these stands on its own:
 | **[Deploying](DEPLOY.md)** | Standing the server up on Ubuntu against standard FXServer Linux artifacts. |
 | **[Testing](docs/testing.md)** | The suites and gates, when to run them, the rules that keep them honest, and the real bugs each one has caught. |
 | **[Platform constraints](docs/platform.md)** | FiveM and CEF behaviours discovered the hard way — the ones that cost days — and what each one taught. |
+| **[Vehicle data overrides](docs/vehicle-data.md)** | Which weapons a vehicle seat accepts, the playtest that proved a resource cannot change it, and the template for folding an add-on vehicle's own `vehiclelayouts.meta` in. |
 
 The moderation half has its own contracts, because two repositories have to agree
 on them without either being able to call the other:

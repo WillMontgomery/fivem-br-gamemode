@@ -445,8 +445,15 @@ export default function Lobby({
               the push arrives within a frame of the interface being alive. */}
           {locker.peds.length > 0 && (
             <div className="flex-1">
+              {/* LOCKED WHILE THE PED IS WALKING IN. The lobby entrance has
+                  the character on an authored path and a model swap would take
+                  the ped handle out from under it, so the locker is simply
+                  unavailable until it arrives (owner, 2026-08-29). No
+                  explanation on purpose: this is the same disabled plate every
+                  other unavailable control on this screen uses. */}
               <Btn
                 variant="default" size="md" full cue="ui.select"
+                disabled={locker.locked === true}
                 onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
               >
                 Locker
@@ -483,7 +490,12 @@ export default function Lobby({
           </div>
         </div>
 
-        {/* NOTHING GOES UNDER THE MENU (#147).
+        {/* NOTHING GOES UNDER THE MENU (#147). LIFTED ONCE, BY HIM, ON
+            2026-08-30, AND BACK IN FORCE FROM 2026-08-31. The round trip is
+            recorded at the bottom rather than erased, because a rule that has
+            been tested and put back is a stronger rule than one nobody ever
+            questioned -- and because the next person to want this space
+            deserves to know it has already been tried.
 
             A LEAVE SERVER BUTTON STOOD HERE AND THE OWNER TOOK IT OUT UNDER
             #83: "the leave button shouldn't be on the front page, but rather
@@ -502,7 +514,41 @@ export default function Lobby({
             left of it: the reasoning was that the menu needed advertising, and
             the answer is that it does not. Escape is the pause key in every
             game the players already own, and the button below it is the thing
-            this screen is for. Do not put a third thing here. */}
+            this screen is for. Do not put a third thing here.
+
+            THE THIRD THING WAS TRIED AND IS GONE AGAIN. On 2026-08-30 the
+            owner was asked where the Discord card should go in the lobby --
+            above this row, or below it with this note lifted -- and he chose
+            below it and lifted the note himself, on the reading that what #147
+            threw out was HELPER TEXT and a card with an address on it is a
+            control rather than a sentence. He then played it, on 2026-08-31,
+            and cut the card from this screen and from the pause menu's front
+            page in the same breath: "the card in the pause menu is HUGE. we
+            don't need that. Find a better place for it. Perhaps on the Help
+            page only." It lives in screens/Help.tsx now, one line beside that
+            page's Copy link button.
+
+            SO THE RULE IS BACK, UNQUALIFIED, and it has been tested. The
+            distinction the lift rested on was real and it was not enough: the
+            problem was never whether the thing under the menu was helper text
+            or a control, it was that the lobby's menu row is the end of the
+            screen. Nothing goes under it.
+
+            ONE MEASUREMENT IS WORTH KEEPING out of the day the card was here,
+            because it is not about the card. This column is `absolute inset-y-0
+            flex flex-col justify-center` with no overflow handling -- unlike
+            the pause menu's root, which scrolls -- so a column taller than the
+            viewport is centred past both edges and clips symmetrically and
+            silently, top and bottom, taking the wordmark with it and saying
+            nothing. Measured in the harness at a true 1280x720 (2026-08-30),
+            the budget is 654px -- 720 less the 3rem top and bottom padding, at
+            the 11px the root font clamps to at that height -- and a party of
+            four with the invite list full, a match running and the party
+            waiting on you wanted 648.6px of it WITH the 62.1px card block that
+            has since gone, so roughly 586px now. The number that matters is the
+            other one: with no card here at all, the column already clipped from
+            an interface size of 122%. That is a pre-existing bug, it is
+            unreported, and it is the real reason this space is not spare. */}
       </div>
     </div>
   )

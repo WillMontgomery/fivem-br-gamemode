@@ -28,8 +28,16 @@ local M = BR.Config.Match
 -- What the server last told us about our OWN downed state. Held whole, because
 -- the UI envelope is sent whole -- REVIVE_PROGRESS merges into this and the
 -- merged copy goes across the bridge, so there is one shape and one writer.
+--
+-- `cpr`, `riding` AND `rideEndsAt` ARE THE FIELDS THE SERVER DOES NOT SEND HERE.
+-- All three are client/rescue.lua's answers -- "may I use my CPR kit right now",
+-- "am I on the ambulance", and "when does the server say that ride is out of
+-- time" -- parked here because the placard is drawn from this one payload. The
+-- last of those DOES originate on the server (it is `rec.deadlineAt`, carried on
+-- RESCUE_BEGIN); it is not on THIS envelope's server half, so it arrives the
+-- same way the other two do. See BR.Dbno.setCpr and BR.Dbno.setRiding below.
 local mine = { downed = false, bleedEndsAt = 0, reviverName = nil,
-               revivePct = 0.0 }
+               revivePct = 0.0, cpr = false, riding = false, rideEndsAt = 0 }
 
 -- The revive we are performing on somebody else, or nil.
 local holding = nil   -- { target = src, from = ms }
@@ -115,7 +123,99 @@ local function pushMine()
         bleedEndsAt = mine.bleedEndsAt or 0,
         reviverName = mine.reviverName,
         revivePct   = mine.revivePct or 0.0,
+        cpr         = mine.cpr and true or false,
+        riding      = mine.riding and true or false,
+        rideEndsAt  = mine.rideEndsAt or 0,
     })
+end
+
+--- The CPR kit's prompt, as one bit on the downed payload (#191).
+---
+--- WHY IT COMES THROUGH HERE RATHER THAN AS ITS OWN ENVELOPE. The interface
+--- reads ONE payload for the whole overlay -- the same reason REVIVE_PROGRESS
+--- merges into `mine` instead of arriving separately -- and the prompt is now
+--- drawn INSIDE the placard this payload feeds. A second envelope would mean a
+--- second writer for one card.
+---
+--- WHY IT IS A BARE BOOLEAN AND CARRIES NO KEY LABEL. ui/KeyCap.tsx resolves the
+--- glyph from the keybinds the interface already holds, by command name. Sending
+--- a letter would be a second copy of the binding that goes stale on a rebind.
+---
+--- Idempotent: pushing the same answer again would be a wasted envelope, and
+--- client/rescue.lua calls this from a frame band.
+--- @param v boolean
+function BR.Dbno.setCpr(v)
+    v = v and true or false
+    if v == mine.cpr then return end
+    mine.cpr = v
+    pushMine()
+end
+
+--- The ambulance has this player (#191). One bit, the same route as `cpr`.
+---
+--- ═══ WHAT IT TURNS OFF IS THE WHOLE HUD, NOT JUST THIS CARD ═══
+---
+--- Owner, 2026-08-28, two sentences that turn out to be one change:
+---
+---   "I need you to make the bleed out timer completely go away while in the
+---    ambulance. That time should not be relevant anymore once the ambulance
+---    takes over"
+---   "while in the ambulance, our HUD should be hidden just like in the bus"
+---
+--- THE SECOND ONE ANSWERS THE FIRST. The bleed-out card is drawn INSIDE the HUD
+--- (ui-src/src/hud/Hud.tsx renders DbnoOverlay), and the bus ride already hides
+--- the HUD through one line in App.tsx -- `ridingBus`, which feeds `hudUp`, the
+--- master switch for every in-match surface. So the ride is made to look like
+--- the bus to THAT rule, and the card goes with the rest of the chrome. There
+--- is no second mechanism, no `hideTimer` prop, and nothing in DbnoOverlay
+--- needed changing.
+---
+--- AND THE WHOLE CARD GOES, NOT ONLY THE COUNTDOWN. Every row of it is false
+--- during a ride: "YOU ARE DOWN" (an ambulance has you), "UNTIL YOU BLEED OUT"
+--- (server/combat.lua suspends the deadline for the whole journey, 37ef178),
+--- the revive bar (the kit is solos-only, so nobody is coming), and the CPR
+--- prompt (canCall() already refuses while `ride` exists). A card with four
+--- untrue rows is not a card with one bad row.
+---
+--- WHY THIS FILE OWNS THE FLAG rather than the HUD envelope. `ride` is
+--- client/rescue.lua's local and the interface reads ONE payload for this
+--- placard -- the same argument that put `cpr` here. Routing it through
+--- BR.PushHud instead would mean a second writer for a fact one file knows.
+---
+--- ═══ AND THE ONE THING THE RIDE DOES PUT BACK ON SCREEN ═══
+---
+--- Owner, 2026-08-28, after the HUD went away: "let's add an on-screen timer
+--- showing their time to revive please". So `endsAt` rides along with the flag.
+---
+--- IT IS NOT A CONTRADICTION OF THE LINE ABOVE. What the ride hides is the HUD:
+--- vitals, counters, kill feed, squad panel, inventory, and the bleed-out card
+--- with its four now-untrue rows. What it shows is ONE NUMBER, drawn by a
+--- surface that lives outside the HUD tree (ui-src/src/hud/RescueTimer.tsx,
+--- mounted beside `Hud` in App.tsx rather than inside it). `riding` still turns
+--- the whole HUD off and nothing about that rule has an exception in it -- see
+--- the note in App.tsx for why the readout was put outside the tree instead of
+--- carving a hole in it.
+---
+--- WHY BOTH ON ONE CALL. They are one fact seen twice, and a readout that knew
+--- it should be visible one frame before it knew what to count to would draw a
+--- placeholder for that frame. Pairing them makes that unrepresentable.
+---
+--- Idempotent ON THE PAIR, because rescue.lua publishes it from a frame band and
+--- either half moving is a real change. In practice the deadline is fixed for
+--- the whole ride (server/rescue.lua sets `deadlineAt` once), so this still
+--- costs exactly one envelope per rescue and one per ending.
+--- @param v boolean
+--- @param endsAt number|nil  server ms the ride is out of time; 0/nil for none
+function BR.Dbno.setRiding(v, endsAt)
+    v = v and true or false
+    -- ZEROED WHEN THE RIDE IS OVER, not carried. A stale deadline left on the
+    -- payload is a number the interface could start counting again the next time
+    -- anything else re-pushes this envelope.
+    endsAt = v and (tonumber(endsAt) or 0) or 0
+    if v == mine.riding and endsAt == mine.rideEndsAt then return end
+    mine.riding     = v
+    mine.rideEndsAt = endsAt
+    pushMine()
 end
 
 -- THE DOWNED POSE.
@@ -159,6 +259,81 @@ local crawlMoving = nil
 -- against: one step per task is the contract, so a readout with one number in
 -- it cannot say whether it is being met.
 local crawlTasks = 0
+
+-- ==========================================================================
+-- WHAT THE KNOCK ACTUALLY DID TO THE BODY, WRITTEN DOWN AS IT HAPPENS.
+-- ==========================================================================
+--
+-- "when in squads, a squadmate died to an explosion, wherein their ped did not
+--  properly emote when in DBNO, and the ped location wasn't synced. I need you
+--  to force their ped to that." (owner, 2026-08-29, playtested.)
+--
+-- THIS IS THE FIRST DELIVERABLE AND IT OUTRANKS THE FIX, for the reason
+-- docs/working-agreement section 2 gives: an explosion death cannot be staged
+-- on demand, and "the body is in the wrong pose" is a sentence that describes
+-- at least FOUR different faults which are pixel-identical from outside.
+--
+--   1. THE PHYSICS STILL HAVE THE BODY. A blast ragdolls the ped and throws
+--      it; a ragdoll outranks a task, so the crawl this file asks for is
+--      dropped on the floor and dbno.controls' own ragdoll branch clears the
+--      anchor for every frame of it. NOTHING IS WRONG WITH THE CODE -- it is
+--      being asked at a moment when nothing it says can land.
+--   2. THE POSE WAS NEVER ASKED FOR AT ALL, because `crawl` resolved to false
+--      on this build and the body is meant to lie still.
+--   3. THE POSE WAS ASKED FOR, THE BODY WAS AT REST, AND IT STILL DID NOT
+--      LAND. That is a different bug in a different place and none of the work
+--      below would touch it.
+--   4. IT LANDED LATE. The body posed, just not before anybody looked.
+--
+-- Reading cannot separate those and neither can guessing. So every knock
+-- records which one it took, and the record prints ITSELF once, KNOCK_REPORT_MS
+-- after the knock, on the DOWNED player's own console -- not behind a command.
+-- The player who can answer this question is the one lying on the floor in the
+-- middle of a firefight, and a diagnostic that needs them to type is a
+-- diagnostic that gets typed after the evidence has gone.
+--
+-- /brdbno reads the same record back afterwards.
+local KNOCK_REPORT_MS = 3000
+
+-- Counters and stamps, not a log: this is written from a frame band and a paste
+-- has to fit in a console. `spent` starts true so a client that is never
+-- knocked never prints anything.
+local knock = {
+    n = 0,                  -- knocks this session
+    at = nil,               -- when this one arrived
+    from = nil,             -- where the ped was standing when it did
+    looseFrames = 0,        -- frames the physics owned the body
+    ragdollFrames = 0,      -- ...of which IsPedRagdoll said so
+    airFrames = 0,          -- ...of which IsEntityInAir said so
+    looseLastAt = nil,      -- the last such frame
+    settles = 0,            -- forced re-poses on the frame physics let go
+    posedAt = nil,          -- when the crawl was first CONFIRMED on the ped
+    tasksAt = 0,            -- crawlTasks at the knock, so the delta is readable
+    spent = true,
+}
+
+-- PUBLISHED beside the revive ledger, and for the same two readers: /brdbno,
+-- and the suite that has to prove a fix bit. Read-only by convention.
+BR.Dbno.knock = knock
+
+--- A knock has just arrived. Start a fresh record.
+---
+--- Called SYNCHRONOUSLY from enterDowned, before anything yields, because
+--- `from` is the whole of the "how far was the body thrown" measurement and a
+--- position sampled after a 400ms streaming wait is a position the blast has
+--- already moved.
+local function noteKnock()
+    local c = GetEntityCoords(PlayerPedId())
+    knock.n    = knock.n + 1
+    knock.at   = GetGameTimer()
+    knock.from = { x = c.x, y = c.y, z = c.z }
+    knock.looseFrames, knock.ragdollFrames, knock.airFrames = 0, 0, 0
+    knock.looseLastAt = nil
+    knock.settles     = 0
+    knock.posedAt     = nil
+    knock.tasksAt     = crawlTasks
+    knock.spent       = false
+end
 
 -- THE SHORTEST INTERVAL BETWEEN TWO CRAWL TASKS, ms.
 --
@@ -216,6 +391,23 @@ local turnedSince = false
 -- Where the player last asked to be, while they are not asking to move. See
 -- the movement loop: this is what "stay put" is made of.
 local hold = nil      -- { x = number, y = number } or nil
+
+-- WHETHER THE PHYSICS CURRENTLY OWN THE BODY, and when the last time they gave
+-- it back was.
+--
+-- `loose` is a LEVEL sampled by dbno.controls' ragdoll branch and read one
+-- frame later as an EDGE -- see the settle block down there. It is not a
+-- second opinion about the ragdoll; it is the memory of last frame's, which is
+-- the only way to notice the moment physics let go.
+--
+-- `settleAt` is that edge's throttle, and it exists for one reason: a native
+-- that flickers between two frames would otherwise be an unforced re-task path
+-- with no limit on it, which is EXACTLY the shape of the 2026-08-19 regression
+-- (see RETASK_EVERY_MS above -- a re-task path nobody had put a limit on). It
+-- borrows RETASK_EVERY_MS rather than inventing a number: the property that
+-- matters is the same one, "longer than any frame".
+local loose    = false
+local settleAt = nil
 
 --- Pin the ped to where it is standing RIGHT NOW.
 ---
@@ -864,6 +1056,11 @@ local function enterDowned()
     RemoveAllPedWeapons(PlayerPedId(), true)
     SetCurrentPedWeapon(PlayerPedId(), GetHashKey('WEAPON_UNARMED'), true)
 
+    -- AND THE RECORD OPENS HERE, on the same frame and for the same reason the
+    -- anchor is taken here: everything below can yield, and a blast is still
+    -- moving the body while it does. See noteKnock.
+    noteKnock()
+
     -- AND THE SPOT IS TAKEN ON THE FRAME OF THE KNOCK, not on the first frame
     -- dbno.controls happens to like the look of. See anchorHere: everything
     -- below this line can yield, the clip has a mover in it, and the hold is
@@ -1000,6 +1197,11 @@ local function leaveDowned()
     -- indistinguishable from one who was never downed, which is the whole of
     -- the fourth report on this file.
     resyncPhase, resyncArmed, hiddenFrom, posedAt = 0, false, nil, nil
+    -- ...and the settle edge, which is downed-shaped in exactly the same way: a
+    -- player revived mid-ragdoll would otherwise carry `loose` into standing up
+    -- and spend the first frame of their NEXT knock re-posing for a ragdoll
+    -- that happened in the previous one.
+    loose, settleAt = false, nil
     -- ...and the turn watchdog with them: a body that stood up owes the clones
     -- nothing, and a stale taskHeading would re-task the first crawl of the
     -- NEXT knock for a turn that happened in a previous one.
@@ -1290,6 +1492,17 @@ local resyncArmed = false -- a task has been issued and not yet answered for
 local resyncPhase = 0     -- 0 idle, 1 the step out, 2 the step back
 local resyncs     = 0     -- for /brdbno
 
+-- #246, ALL FOUR FOR /brdbno. The nudge is a round trip through the server and
+-- every one of these is a different place it can die: `scopeNudges` is "the
+-- message arrived", `scopeArms` is "and it was spent on a body that was down",
+-- `corpseWrites` is "and it was spent on a body that was dead". The three of
+-- them summing to less than the server's `sent` is a nudge that landed on a
+-- player who was neither, which is a state race and not a fault.
+local scopeNudges  = 0
+local scopeArms    = 0
+local corpseWrites = 0
+local scopeAt      = nil  -- when the last one landed, ms
+
 --- A fresh crawl task exists, so a fresh mover exists on every clone of us.
 ---
 --- Assigned rather than declared: playCrawl calls this and is written above,
@@ -1370,7 +1583,273 @@ local function resyncBody(ped, c)
     return true
 end
 
+-- ==========================================================================
+-- THE FRAME THE PHYSICS LET GO, AND WHY THE `fell` PATH DID NOT HAVE ONE.
+-- ==========================================================================
+--
+-- "a squadmate died to an explosion, wherein their ped did not properly emote
+--  when in DBNO, and the ped location wasn't synced. I need you to force their
+--  ped to that." (owner, 2026-08-29.)
+--
+-- THE ASYMMETRY IS ALREADY WRITTEN DOWN IN THIS FILE, in enterDowned, and it is
+-- an assumption rather than a rule. There are two knock paths:
+--
+--   A LIVE KNOCK ragdolls on purpose (BR.Native.knockdown) and this file waits
+--   the ragdoll out before it re-poses -- the KNOCKDOWN_LANDED beat, whose own
+--   comment says exactly why: "Let the ragdoll land before asking for an
+--   animation on top of it, or the clip is cancelled by a physics state that
+--   has not settled", and "a ped coming out of a ragdoll runs a GETUP -- which
+--   is the engine standing the body up, in front of everybody".
+--
+--   THE `fell` PATH HAS NO SUCH BEAT, and says so: "AND NO KNOCKDOWN ON THIS
+--   PATH. The ragdoll below is the knock INSTANT -- the moment of falling over
+--   -- and this player has already fallen". That sentence is TRUE OF A FALL,
+--   which ends with a body lying still on the ground it landed on. It is not
+--   true of an explosion, which is the same `fell` path -- the engine kills the
+--   ped down a route server/damage.lua never took over, exactly like a fall --
+--   with a blast impulse still on the body. A downed player who was blown up is
+--   tumbling through the air at the moment this file tells them to lie down.
+--
+-- SO THE BEAT IS GENERALISED FROM A BEAT NUMBER TO AN OBSERVATION. What the
+-- live path waits for is "the physics have finished"; KNOCKDOWN_LANDED spells
+-- that as `beat == 24`, which is 1200ms -- and 1200 is the MINIMUM of
+-- SetPedToRagdoll(1200, 1600), not the maximum, so even on the path it was
+-- written for it can land inside a ragdoll that is still running. Here it is
+-- spelled as the frame IsPedRagdoll and IsEntityInAir both stop being true,
+-- which is the same event for a fall (immediately -- nothing happens), for a
+-- knockdown (when the knockdown ends, whatever the roll of the dice was) and
+-- for a blast (when the body stops travelling, however long that takes).
+--
+-- ═══ WHY THIS IS NOT THE 21.8-METRE WATCHDOG COMING BACK ═══
+--
+-- That regression was an UNTHROTTLED PER-FRAME ARM: playCrawl(false) on the
+-- frame band with no limit, each task arming a resync, each arm abandoning the
+-- half of the pair that puts the body back and re-measuring the step from where
+-- the ped already was. Four properties made it unbounded, and this has none of
+-- them:
+--
+--   * IT IS AN EDGE, NOT A LEVEL. `loose` must have been true LAST frame and
+--     false THIS one. A body that is ragdolling does not fire it; a body that
+--     is at rest does not fire it. Only the transition does, and a transition
+--     needs a ragdoll to happen first -- and the first thing this does is turn
+--     ragdolls off (SetPedCanRagdoll false), so there is normally exactly one
+--     per knock.
+--   * IT IS THROTTLED ANYWAY, on RETASK_EVERY_MS, so a native that flickers
+--     between two frames cannot make it a per-frame path. A rate limit is not a
+--     bound, which is why it is not the only guard.
+--   * AND THE BOUND IS THE ONE ALREADY IN THE FILE, untouched. This adds no new
+--     way to move the body: it calls playCrawl, which arms the EXISTING
+--     one-shot pair, whose step is measured from `hold` and whose half-done
+--     pairs are finished rather than abandoned. Whatever this fires, the body
+--     is `hold` or `hold` plus one step -- the invariant dbno.quiet.body
+--     asserts, which this must leave green and does.
+--   * NO NEW CLOCK. There is no beat and no interval; the event is the event.
+--
+-- ═══ AND THIS IS WHAT "FORCE THEIR PED TO THAT" IS MADE OF ═══
+--
+-- Both halves of the owner's sentence, from one edge:
+--
+--   THE EMOTE. The getup is taken off and the clip is re-tasked -- see
+--   settleBody for why the first half is the load-bearing one. The unforced
+--   watchdog cannot do this job: it declines whenever IsEntityPlayingAnim says
+--   the clip is on the ped, and a task that was ACCEPTED and then overridden by
+--   a ragdoll or a getup is exactly the case where that answer cannot be
+--   trusted -- it is the reading under which nothing is ever re-posed at all.
+--   `force` on top of that is the throttle bypass, and it is worth 0 in the
+--   suite once the tasks are cleared (a cleared ped is not playing anything, so
+--   the unforced test would pass too). It is kept as insurance for the case the
+--   suite cannot produce: a settle landing within RETASK_EVERY_MS of a watchdog
+--   task, where the unforced path would decline and the body would wait a
+--   quarter of a second in a getup. Written down as insurance, not as a fix.
+--
+--   THE POSITION. anchorHere() re-takes the anchor at wherever the blast
+--   actually left the body -- the old one points at where they were standing
+--   when the grenade landed, which is metres away -- and playCrawl arms the
+--   clone resync, whose pair is two real SetEntityCoordsNoOffset writes on a
+--   networked entity. That pair IS the position force: it is the mechanism the
+--   owner has already watched work ("DBNO is kinda fixed ... they are synced",
+--   2026-08-18), reused rather than reinvented.
+--
+--   Ragdoll positions are known not to replicate reliably -- citizenfx/fivem
+--   #2436 (OPEN, read 2026-08-29): "the position of a player is completely
+--   different from player to player and the local player of course" -- so a
+--   body that travels under a blast is a clone left where the blast started
+--   until something writes a position. Nothing did, because dbno.controls drops
+--   `hold` for every loose frame and stayPut is the only other writer.
+--
+-- WHAT WAS CONSIDERED AND NOT DONE: AF_FORCE_START (131072 in
+-- eScriptedAnimFlags, citizenfx/natives TASK/TaskPlayAnim.md, read 2026-08-29)
+-- would ask the engine to start the clip DURING the ragdoll rather than after
+-- it. Two reasons it is not here. The flag's behaviour on a ragdolling ped is
+-- reported on forums and is NOT described in the native documentation, which
+-- lists the name and the value and nothing else -- unverified. And it would be
+-- wrong even if it worked: the knockdown ragdoll is deliberate, and this file
+-- says so ("falling over is the knock, and it is the one frame of this that is
+-- supposed to be watched"). A flag that poses a body mid-fall would take that
+-- away from every knock in the game to fix one.
+--- @param ped integer
+local function settleBody(ped)
+    local now = GetGameTimer()
+    if settleAt and now - settleAt < RETASK_EVERY_MS then return end
+    settleAt = now
+    knock.settles = knock.settles + 1
+
+    -- THE KNOCKDOWN BEAT'S FOUR CALLS, PLUS THE ONE THAT MAKES "FORCE" MEAN
+    -- ANYTHING -- and that fifth line is the fix rather than a tidy-up.
+    --
+    -- `force` is this file's own word and it only skips this file's own
+    -- reasons for not asking: the "already playing" test and the throttle. It
+    -- has no authority over the ENGINE, and the engine has something of its own
+    -- running here. A ped coming out of a ragdoll runs a GETUP, and this file
+    -- already carries the owner's observation of what that is worth: "the
+    -- collision ragdolls them and the getup task that follows OUTRANKS A
+    -- LOOPING ANIMATION" (enterDowned, owner in game). A TaskPlayAnim issued
+    -- underneath a getup is a task the getup wins.
+    --
+    -- So the getup is taken off first, with the verb floorTheBody already uses
+    -- against the same class of problem one line before its own playCrawl --
+    -- "The dying animation outlives the resurrection otherwise: the ped stands
+    -- up and then finishes collapsing over the top of the crawl." Same
+    -- sentence, different task.
+    --
+    -- ClearPedTasksImmediately AND NOT ClearPedTasks, for the reason the name
+    -- gives: the point is that the getup is gone before the pose is asked for,
+    -- inside this tick, rather than queued behind it.
+    --
+    -- IT IS SAFE HERE IN A WAY IT IS NOT IN cprStop, which declines to use it
+    -- for a stated reason: clearing a ped's tasks outright would take the CRAWL
+    -- off a reviver who has just been knocked down. This ped IS the downed
+    -- player, the only task it is supposed to have is the crawl, and the very
+    -- next line puts that back.
+    --
+    -- The cover is up first, because everything between here and the pose
+    -- landing is a body the engine is standing upright. `snap` for the same
+    -- reason floorTheBody uses it: the pose being blended FROM is one nobody
+    -- should see. And the ragdoll is turned off so nothing throws them again.
+    --
+    -- ═══ AND anchorHere() IS DELIBERATELY NOT HERE, WHICH IS THE ONE PLACE
+    --     THIS DIFFERS FROM THE KNOCKDOWN BEAT ═══
+    --
+    -- The beat calls it and gives a reason: "The anchor from before the ragdoll
+    -- points at where they were standing when they were shot -- metres away,
+    -- and pinning them to it would teleport them back." That reason needs an
+    -- anchor to have SURVIVED the ragdoll. Here one cannot have: the only way
+    -- to reach this line is through the branch above, which sets `loose` and
+    -- clears `hold` on every frame it runs. `hold` is nil by construction, and
+    -- stayPut's first call records rather than corrects -- so the anchor is
+    -- taken on this very frame anyway, one line further down, at the same
+    -- position and for free.
+    --
+    -- ADDING IT BACK IS NOT NEUTRAL, and this is the 2026-08-19 regression
+    -- trying to get in through a new door. resyncBody's phase 1 steps the body
+    -- ~9mm OUT and phase 2 puts it back on a LATER frame. An anchor taken here
+    -- would hand phase 1 a `hold` on the settle frame itself -- and if the
+    -- physics take the body again before phase 2 runs, the step back is lost
+    -- and the NEXT settle anchors at the stepped-out position. A native that
+    -- flickers between two frames would then bank 9mm every throttle interval,
+    -- for the whole bleed: the same compounding shape, arriving through the fix
+    -- for something else. MEASURED, not argued -- tools/test_shared.lua,
+    -- `dbno.blast.body`, ten seconds of a ragdoll native answering differently
+    -- on every frame:
+    --
+    --   anchorHere() in settleBody     0.176 m   twenty steps, still climbing
+    --   no anchor (shipped)            0.000 m   the pair is never handed one
+    --
+    -- Ten seconds is a twelfth of the longest bleed config/match.lua can
+    -- produce, so the first row is about two metres of body by the end of it.
+    coverPose()
+    ClearPedTasksImmediately(ped)
+    playCrawl(true, true)
+    SetPedCanRagdoll(ped, false)
+end
+
+--- Say, once, what this knock actually did to the body.
+---
+--- SPENT ON A DEADLINE RATHER THAN ON A SUCCESS, because "it never posed at
+--- all" is the reading the owner needs and a report that waited for a pose
+--- would be the one thing that never prints on the broken build.
+---
+--- Everything here is read off the record and off the ped; nothing is inferred.
+--- The verdict separates the four conditions named at the top of this file, and
+--- it is deliberately blunt: the reader is pasting a console into a chat.
+--- @param ped integer
+local function knockReport(ped)
+    if knock.spent or not knock.at then return end
+
+    local now = GetGameTimer()
+    -- Watched every frame, including loose ones -- the question is when the
+    -- pose landed, not when we got round to asking.
+    if not knock.posedAt and playingCrawl(ped) then knock.posedAt = now end
+    if now - knock.at < KNOCK_REPORT_MS then return end
+    knock.spent = true
+
+    local c  = GetEntityCoords(ped)
+    local f  = knock.from or { x = c.x, y = c.y, z = c.z }
+    local dx, dy, dz = c.x - f.x, c.y - f.y, c.z - f.z
+    local thrown = math.sqrt(dx * dx + dy * dy + dz * dz)
+    local looseFor = (knock.looseLastAt and (knock.looseLastAt - knock.at)) or 0
+
+    local verdict
+    if crawl == false then
+        verdict = 'NO DOWNED CLIP ON THIS BUILD -- nothing was ever asked for, '
+               .. 'and the body is meant to lie still. Run /brcrawl.'
+    elseif not knock.posedAt and knock.looseFrames > 0 then
+        verdict = ('NEVER POSED, AND THE PHYSICS STILL HAD THE BODY. A ragdoll '
+                .. 'outranks a task, so the crawl was asked for at a moment '
+                .. 'nothing this file says can land -- and the anchor is '
+                .. 'dropped for every one of those frames, which is the '
+                .. 'position half of the same sentence.')
+    elseif not knock.posedAt then
+        verdict = 'NEVER POSED WITH THE BODY AT REST -- the ragdoll is NOT the '
+               .. 'cause here. Something else is refusing or cancelling the '
+               .. 'clip; read "pose" on /brdbno and the tasks below.'
+    elseif knock.looseFrames > 0 then
+        verdict = ('posed %dms after the knock, and the physics held the body '
+                .. 'for %dms of that. The re-pose on the frame they let go is '
+                .. 'what put it back.')
+                :format(knock.posedAt - knock.at, looseFor)
+    else
+        verdict = ('posed %dms after the knock; the body was never loose. This '
+                .. 'knock was clean.'):format(knock.posedAt - knock.at)
+    end
+
+    print(('[br_core] dbno knock #%d: %s'):format(knock.n, verdict))
+    print(('  body   : loose on %d frames (%d ragdoll, %d in air), last %dms '
+           .. 'after the knock; moved %.2fm from where the knock found it')
+        :format(knock.looseFrames, knock.ragdollFrames, knock.airFrames,
+                looseFor, thrown))
+    print(('  pose   : %s, %d crawl task(s), %d forced re-pose(s) when the '
+           .. 'physics let go')
+        :format(knock.posedAt and ('confirmed after %dms')
+                    :format(knock.posedAt - knock.at) or 'NEVER CONFIRMED',
+                crawlTasks - knock.tasksAt, knock.settles))
+    print(('  clones : %d resync step(s) for %d task(s) this session -- one per '
+           .. 'task is the contract'):format(resyncs, crawlTasks))
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
+    -- ═══ THE AMBULANCE OWNS THE BODY, SO THIS FILE LETS GO OF IT ═══
+    --
+    -- Everything below assumes a downed ped is lying where it fell and must be
+    -- kept there: playCrawl re-issues the clip the moment anything cancels it,
+    -- and stayPut writes the body back if it drifts past HOLD_SLACK. Both are
+    -- right for a player bleeding out on a road.
+    --
+    -- They are the opposite of right for one AttachEntityToEntity'd to the back
+    -- of a moving ambulance. The attach succeeds and is then undone frame by
+    -- frame -- the owner's report is the symptom stated exactly: "My ped stayed
+    -- in place while the timer continued... and my camera moved to some other
+    -- place." The camera followed the vehicle because the vehicle left; the ped
+    -- did not, because this loop kept putting it back.
+    --
+    -- RETURNING, NOT UNDOING. The state is still DBNO and must stay that way --
+    -- the bleed deadline is only suspended (server/combat.lua), and a failed
+    -- rescue puts the player back on the floor with this loop resuming. So the
+    -- hold and the resync stamps are deliberately NOT cleared here: they are
+    -- what a returning body needs, and clearing them would make RESCUE_LOST
+    -- drop somebody in a pose nothing was tracking.
+    if BR.Rescue and BR.Rescue.riding and BR.Rescue.riding() then return end
+
     if not mine.downed then
         hold, resyncPhase, resyncArmed = nil, 0, false
         -- Not `hideBody` -- the cover is simply not asserted, and a flag that
@@ -1384,6 +1863,12 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
         -- second -- which is the standing frame the cover exists to hide,
         -- reintroduced by the fix for something else.
         hiddenFrom, posedAt, turnedSince, taskAt = nil, nil, false, nil
+        -- ...and the settle edge with them. `loose` left standing would fire a
+        -- forced re-pose on the first frame of the NEXT knock -- before the
+        -- knock's own pose has had a chance to land -- and `settleAt` left
+        -- standing would throttle that knock's FIRST settle behind the last
+        -- one, which is the same mistake `taskAt` is cleared here to avoid.
+        loose, settleAt = false, nil
         return
     end
 
@@ -1398,6 +1883,11 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- input branches below both leave early -- so the one call that must not be
     -- skipped goes first. It does nothing at all unless a re-pose is in flight.
     holdCover(ped)
+
+    -- ...AND THE KNOCK IS WATCHED, BEFORE ANY BRANCH CAN RETURN. The one
+    -- reading it needs -- did the clip ever land -- has to be taken on loose
+    -- frames too, and the loose branch below returns.
+    knockReport(ped)
 
     -- The loop is the pose; if anything cancelled it -- a car, a blast, a
     -- scripted task -- put it straight back. Cheap: one IsEntityPlayingAnim
@@ -1420,9 +1910,37 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- ped that took this branch every frame could never reach the crawl at all.
     -- It is fixed here anyway, with the comparison this file already owns,
     -- because "the ped must not move without input" is exactly what it breaks.
-    if didHit(IsPedRagdoll(ped)) or didHit(IsEntityInAir(ped)) then
-        hold = nil
+    -- ...AND WHICH OF THE TWO SAID SO IS COUNTED SEPARATELY. A body a blast
+    -- threw reads BOTH for a while and then only IsPedRagdoll as it comes to
+    -- rest; a body that simply fell over reads only the ragdoll. The knock
+    -- report prints the pair, because "it was still tumbling" and "it was lying
+    -- there and the clip still would not land" are two different faults with
+    -- two different repairs and the owner can see neither of them.
+    local rag = didHit(IsPedRagdoll(ped))
+    local air = didHit(IsEntityInAir(ped))
+    if rag or air then
+        hold  = nil
+        loose = true
+        knock.looseFrames   = knock.looseFrames + 1
+        knock.ragdollFrames = knock.ragdollFrames + (rag and 1 or 0)
+        knock.airFrames     = knock.airFrames + (air and 1 or 0)
+        knock.looseLastAt   = GetGameTimer()
         return
+    end
+
+    -- ═══ THE FRAME THE PHYSICS LET GO -- SEE settleBody ═══
+    --
+    -- An EDGE off the level above, and the whole of the explosion fix: the
+    -- forced re-pose the `fell` path never had. It takes no anchor of its own
+    -- -- stayPut records one four lines down, at the same position and without
+    -- handing the resync pair a `hold` on this frame; see settleBody for why
+    -- that difference is worth a paragraph. The task it issues re-arms the
+    -- pair, and the pair is what tells the other machines where the body
+    -- actually ended up. It cannot fire on a body that never left the ground,
+    -- so a fall and a quiet knock pay nothing at all.
+    if loose then
+        loose = false
+        settleBody(ped)
     end
 
     -- Turn on the horizontal axis, inch forward on the vertical one. Both are
@@ -1579,10 +2097,127 @@ AddEventHandler(BR.Net.DBNO_SET, function(d)
         leaveDowned()
         -- Picked up, or finished. The two look identical from here except for
         -- this flag, and only one of them ends with a body.
-        if d.died then dieNow() end
+        --
+        -- ═══ AND A PICK-UP CLEANS THE BODY (owner, 2026-08-28) ═══
+        --
+        -- "any time revive is processed, please clean the ped."
+        --
+        -- THIS IS WHERE EVERY BR.Combat.revive LANDS. The server's one revive
+        -- function ends in BR.Combat.pushDbno, which sends `{ downed = false }`
+        -- with no `died` -- so a squad pick-up, `/brrevive` and #191's ambulance
+        -- delivery all arrive at exactly this line. Cleaning at the three call
+        -- sites instead would be three chances to add a fourth and forget.
+        --
+        -- IN THE `else`, NOT BESIDE leaveDowned(). A bleed-out reaches the same
+        -- branch and must NOT be washed: `dieNow` is about to leave a body on
+        -- the floor, and scrubbing the blood off it one frame before it drops
+        -- would erase the evidence of the fight that killed them for everybody
+        -- still standing there.
+        if d.died then dieNow() else BR.Native.cleanPed() end
     end
 
     pushMine()
+end)
+
+-- ==========================================================================
+-- #246: SOMEBODY JUST STREAMED THIS BODY IN, SO THIS BODY SAYS WHERE IT IS.
+-- ==========================================================================
+--
+-- "the dead ped's position on the alive player's screen is in the same position
+-- where the death happened" (owner, 2026-08-30).
+--
+-- THE SECOND ARM THE #164 BLOCK SAID WOULD BE NEEDED, ARMED OFF THE SCOPE
+-- CHANGE AND NOT OFF A CLOCK. server/combat.lua watches playerEnteredScope,
+-- coalesces the arrivals and sends one of these; the whole of the decision about
+-- WHEN lives over there, and the whole of the decision about WHAT lives here.
+--
+-- ═══ THE DOWNED BODY: resyncArm AND NOT playCrawl(true) ═══
+--
+-- The obvious spelling is a forced re-task, because playCrawl is what arms the
+-- pair today. It is the wrong one, and the #164 block says why without quite
+-- saying it out loud: the thing the pair cancels is the MOVER, and
+--
+--     "a fresh task is a fresh mover"
+--
+-- so re-tasking to fix a mover is spending one to cancel one. What the owner's
+-- own manual workaround does -- the workaround the pair is a replay of -- has no
+-- task in it at all: "the entire observable effect of the owner's manual press
+-- is this file's own crawl branch -- crawlPlaying(true) and a real
+-- SetEntityCoordsNoOffset step -- followed by the idle branch putting the rate
+-- back to zero." That is resyncBody, exactly, and resyncArm is how it is asked
+-- for. A newcomer's clone already HAS a mover -- it was built with one, from the
+-- task as it stands -- so there is something to cancel and nothing to create.
+--
+-- IT ALSO COSTS THE PLAYERS ALREADY WATCHING NOTHING, which is the open question
+-- on the issue. A re-task restarts a LOCOMOTION clip from its first frame on
+-- every clone in scope; the pair moves the body 9mm and puts it back. Whatever
+-- the newcomer costs, it is not a hitch for everybody else.
+--
+-- AND IT DOES NOT MAKE `steps == tasks` A LIE, it makes it a different equation:
+-- steps == tasks + arms, which is what /brdbno now prints. Read it that way.
+--
+-- ═══ THE CORPSE: A ZERO-DISPLACEMENT WRITE, AND WHY IT IS A DIFFERENT FIX ═══
+--
+-- AN OUT PLAYER LEAVES THEIR PED IN THE WORLD. client/spectate.lua states it as
+-- a design decision rather than an accident -- "a spectator's ped is a corpse
+-- where they fell, deliberately" -- and BR.Native.lockMinimap exists precisely
+-- because nothing moves it. So half the owner's report is about a body that this
+-- file's whole machinery has already let go of: dbno.controls returns on its
+-- first line when `mine.downed` is false, `hold` is nil, and there is no crawl
+-- task to hang anything off.
+--
+-- SO THE STALENESS, IF IT IS REAL, IS A DIFFERENT ONE. A corpse has no mover to
+-- cancel. What it has is a DEATH RAGDOLL, and ragdoll positions are the one
+-- thing this file already knows do not replicate reliably -- citizenfx/fivem
+-- #2436, open, and the reporter's own words are "the position of a player is
+-- completely different from player to player". A body that falls two metres out
+-- of its crawl into its final pose can therefore leave the network holding the
+-- position it had before the fall, and a clone built afterwards inherits that.
+--
+-- WHAT IS WRITTEN IS THE PED'S OWN COORDINATES. Not a correction, not a
+-- teleport, not a guess -- GetEntityCoords straight back into
+-- SetEntityCoordsNoOffset, a displacement of exactly zero. The only thing it
+-- does is make the position node dirty so the newcomer's clone is built from the
+-- resting place instead of the falling one. spectate.lua's warning about moving
+-- a dead ped ("catastrophic for an ADMIN who may be alive and mid-match") is
+-- about DISPLACEMENT, and there is none here -- but the state is checked anyway,
+-- because an admin ghosting a match is exactly the player this must not touch.
+--
+-- THIS HALF IS UNPROVEN AND IS LABELLED AS SUCH. Nobody has watched a corpse be
+-- stale in this game; the mechanism above is inferred from an open engine bug.
+-- /brdbno's `scope` line counts these separately from the downed arms for that
+-- reason: if the owner reports the crawling body fixed and the corpse still
+-- wrong with `corpse` climbing, the write is landing and is not enough, and that
+-- is a different repair from the write never happening at all.
+RegisterNetEvent(BR.Net.DBNO_RESYNC)
+AddEventHandler(BR.Net.DBNO_RESYNC, function()
+    scopeNudges = scopeNudges + 1
+    scopeAt     = GetGameTimer()
+
+    if mine.downed then
+        -- ARMED, NOT PERFORMED. resyncBody owns the two frames and will not run
+        -- without `hold` -- a body still ragdolling out of its knock has none --
+        -- and `resyncArmed` is only spent on a frame that actually starts the
+        -- pair. So a nudge that lands mid-ragdoll is paid the moment the body
+        -- settles rather than thrown away.
+        resyncArm()
+        scopeArms = scopeArms + 1
+        return
+    end
+
+    if BR.State.me.state ~= BR.PlayerState.OUT then return end
+
+    local ped = PlayerPedId()
+    -- didHit AND NOT A BARE READ, for the eleventh time in this codebase.
+    -- IsEntityDead is declared BOOL, this file's own baseline already records
+    -- one raw read of it, and `0` is truthy in Lua -- so the bare spelling would
+    -- write coordinates onto the ped of a LIVING player on any build that hands
+    -- numbers back, which is the one outcome spectate.lua's warning is about.
+    if not didHit(IsEntityDead(ped)) then return end
+
+    local c = GetEntityCoords(ped)
+    SetEntityCoordsNoOffset(ped, c.x, c.y, c.z, true, true, false)
+    corpseWrites = corpseWrites + 1
 end)
 
 -- THE SERVER SAYS WHAT THE NUMBER IS; WE APPLY IT.
@@ -1747,6 +2382,327 @@ local function setPrompt(src, holdMs)
     })
 end
 
+-- ==========================================================================
+-- THE REVIVER'S CPR EMOTE
+-- ==========================================================================
+--
+-- "Also, adding to our roll of emotes: in squads, while holding E to revive a
+--  squadmate, the one reviving should play the "CPR" emote and clear once the
+--  revive is processed, or after 10 seconds, whichever comes first."
+-- (owner, 2026-08-29.)
+--
+-- IT IS ON THE PERSON DOING THE PICKING UP, not on the body. The downed player
+-- already has a pose -- the crawl, several hundred lines above -- and it is the
+-- one thing that tells an enemy across the street "they are down" rather than
+-- "they are gone". Putting chest compressions on the reviver is what tells the
+-- same enemy that somebody is BUSY, which is the read the whole eight seconds
+-- of standing still in the open is supposed to have.
+--
+-- ═══ WHERE THE NAMES CAME FROM ═══
+--
+-- The owner picked "CPR" out of an emote menu he installed to browse with and
+-- intends to remove, and the underlying asset is a stock GTA V animation --
+-- the menu is a list of dictionary/clip pairs and nothing more. Taken from
+-- Daudeuf/rpemotes, client/AnimationList.lua (master, read 2026-08-29):
+--
+--   line 8176   RP.Emotes["cpr"]  = { "mini@cpr@char_a@cpr_str",
+--                                     "cpr_pumpchest", "CPR",
+--                                     AnimationOptions = { EmoteLoop = true } }
+--   line 1402   RP.Shared["cprs"] = { "mini@cpr@char_a@cpr_str",
+--                                     "cpr_pumpchest", "Give CPR", "cprs2", ... }
+--
+-- Both name the SAME pair, and the second one is the one that settles which
+-- side of the pair this is: "Give CPR" is char_a, "Get CPR" is char_b
+-- (`mini@cpr@char_b@cpr_str`, the same clip name). The reviver gives, so char_a.
+-- `EmoteLoop = true` in both entries is why the flags below are the looping
+-- ones -- a hold that outlasts one pass of the clip must not end with a ped
+-- standing back up in the middle of it.
+--
+-- NOTHING HERE REQUIRES, REFERENCES OR CHECKS FOR THAT RESOURCE, and nothing
+-- may: TaskPlayAnim takes the dictionary and the clip directly, exactly as
+-- client/lobbyped.lua's walk clipsets were sourced (see the note above
+-- clipsetFor there, which is the precedent this follows).
+--
+-- ═══ AND EVERY OTHER PLAYER SEES IT, WHICH IS CHECKED RATHER THAN HOPED ═══
+--
+-- "Make sure the revive animations are networked please!" (owner, 2026-08-29.)
+--
+-- THEY ALREADY ARE, AND THE PROOF IS IN THIS FILE. Nothing was added for it and
+-- nothing needed to be -- but "it should just work" is exactly the sentence
+-- this project has been burned by, so here is the evidence instead:
+--
+--   1. THE OWNER HAS WATCHED IT HAPPEN, on a TaskPlayAnim issued by this file
+--      on this player's own ped. #164, several hundred lines above: "When DBNO
+--      - the ped is not moving on the DBNO player's screen, but on others' they
+--      are" (2026-08-18). The whole clone-resync beat exists BECAUSE the crawl
+--      task replicates and is replayed on every other machine. That is the same
+--      native, on the same ped, from the same file.
+--   2. WHAT DOES *NOT* CROSS THE WIRE IS NAMED IN THAT SAME BLOCK, and neither
+--      applies here: TaskPlayAnim's LOCK FLAGS are arguments evaluated on this
+--      machine, and SetEntityAnimSpeed is a local playback-rate override. The
+--      clip itself, the dictionary and the looping flag are the task, and the
+--      task is what replicates. This emote sets no rate override, and its lock
+--      flags are false anyway -- `cpr_pumpchest` is an in-place kneel with no
+--      mover in it, which is the property the crawl notoriously lacks.
+--   3. THE ONE FLAG THAT BREAKS IT IS NOT ONE WE USE. citizenfx/fivem#3733
+--      (OPEN, area:OneSync) reports flag 1024 (OVERRIDE_PHYSICS) putting the
+--      ped in the wrong place for everybody else -- "This offset is applied
+--      twice for other players, but only once for the player playing the
+--      animation". Read the other way round, that is the platform confirming
+--      remote clients render this task at all. We pass flag 1.
+--   4. AN ENTIRE GENRE OF RESOURCE DEPENDS ON IT. The emote menu the owner took
+--      these names from plays every one of its emotes with a bare
+--      `TaskPlayAnim(PlayerPedId(), ...)` and nothing else (client/Emote.lua,
+--      line 908) -- and the only reason such a menu exists is for other people
+--      to see you.
+--
+-- WHAT IS *NOT* PROVEN HERE, said plainly rather than papered over: that
+-- StopAnimTask's END of the task reaches other machines as promptly as its
+-- start does. It travels on the same task-sync node and this file already
+-- leans on that -- leaveDowned() ends the crawl with ClearPedTasks and no
+-- report has ever come back about a revived player still crawling on somebody
+-- else's screen -- but it is an inference, not an observation. IF THE OWNER
+-- CHECKS ONE THING WITH TWO CLIENTS, IT IS THIS: watch the reviver on the
+-- OTHER player's screen and confirm the compressions stop when the key comes
+-- up, not just that they start.
+local CPR_DICT = 'mini@cpr@char_a@cpr_str'
+local CPR_ANIM = 'cpr_pumpchest'
+
+-- WHAT A REVIVER LOSES WHILE THEY ARE HOLDING.
+--
+-- "mid-CPR the ped movement controls should be frozen until they release E.
+--  They can't move, they can't shoot." (owner, 2026-08-29.)
+--
+-- ═══ DisableControlAction, AND *NOT* A FREEZE OR SetPlayerControl ═══
+--
+-- This is the most dangerous line in the feature and it is worth saying why in
+-- full. A stuck animation is cosmetic. A player left unable to move in a live
+-- match cannot recover without dying, and this file owns ELEVEN ways a hold can
+-- end -- so the mechanism has to be one that cannot be left on, rather than one
+-- that is carefully turned off in eleven places.
+--
+-- DisableControlAction LASTS EXACTLY ONE FRAME. There is no start call, no stop
+-- call, and therefore no exit path that can fail to make one: the key coming
+-- up, the server refusing, the revive landing, the reviver being shot, the
+-- match ending, a disconnect, a resource restart, an unhandled error suspending
+-- this callback after five throws, and the game being closed all end in the
+-- same place -- this loop stops asserting, and the controls are live on the
+-- next frame. client/spectate.lua makes exactly this argument at length above
+-- its own BLOCKED list, having been written after br_ui shipped a focus stack
+-- that returned early and left a screen nobody could raise. FreezeEntityPosition
+-- and SetPlayerControl are both LATCHES and both would have to be released by
+-- name on all eleven paths.
+--
+-- ═══ AND IT CANNOT BLIND THE RELEASE, WHICH IS THE FAILURE THAT WOULD MATTER ═
+--
+-- If disabling controls could stop this client seeing E come up, the hold could
+-- never end and the freeze would be permanent -- the exact bug the paragraph
+-- above is written against. It cannot, on either of the two paths keybinds.lua
+-- can be in:
+--
+--   * THE RAW PATH (BR.Keys.rawHolds). `BR.Keys.held.interact` is written every
+--     frame from IsRawKeyDown, which reads GTA's own keyboard array by WINDOWS
+--     VIRTUAL-KEY CODE -- `(*ioKeyboardKeys)[*ioKeyboardActive][key]`, per that
+--     file's own note on InputNatives.cpp. That is underneath the control
+--     system entirely; there is no control to disable.
+--   * THE ENGINE PATH (no level native). The release is delivered by the
+--     `-brinteract` command, which is a RegisterKeyMapping binding with its own
+--     engine-allocated id -- not one of GTA's numbered controls. Every id in
+--     the list below is a numbered control, so none of them is it.
+--
+-- ═══ A SUPERSET OF DOWNED_BLOCKED, AND NOT A SHARED COPY ═══
+--
+-- The same relationship, for the same reason, that client/spectate.lua's list
+-- has: a control a player with no weapon may not use is one an ARMED player
+-- standing over a body certainly may not. tools/test_shared.lua pins the
+-- subset, so adding to DOWNED_BLOCKED makes this list catch up. It is still a
+-- third list rather than a shared one, because DOWNED_BLOCKED is
+-- disabled-then-READ (dbno.controls drives the crawl off
+-- GetDisabledControlNormal on 30-35) and nothing here reads anything back.
+--
+-- 51 (INPUT_CONTEXT) IS DELIBERATELY ABSENT and must stay absent. It is the
+-- control the prompt draws its glyph from, and blocking it would be the one
+-- entry in this list that could plausibly interfere with the key that ends the
+-- hold. There is a test for its absence.
+local REVIVING_BLOCKED = {
+    -- ON FOOT. DOWNED_BLOCKED's seventeen, verbatim.
+    21, 22, 23, 24, 25,        -- SPRINT, JUMP, ENTER, ATTACK, AIM
+    30, 31, 32, 33, 34, 35,    -- MOVE_LR/UD, MOVE_UP/DOWN/LEFT/RIGHT_ONLY
+    44, 75,                    -- COVER, VEH_EXIT
+    140, 141, 142, 143,        -- MELEE_ATTACK_LIGHT/HEAVY/ALTERNATE, _BLOCK
+
+    -- THE REST OF THE TRIGGER, which a downed player never needed because
+    -- enterDowned takes the weapon off them first. A reviver is armed.
+    45, 47, 58,                -- RELOAD, DETONATE, THROW_GRENADE
+    257, 263, 264,             -- ATTACK2, MELEE_ATTACK1, MELEE_ATTACK2
+
+    -- FROM A SEAT. Nothing stops a player pulling up beside a downed mate and
+    -- holding the key from the driver's seat; 24 does not cover a drive-by.
+    68, 69, 70,                -- VEH_AIM, VEH_ATTACK, VEH_ATTACK2
+    91, 92,                    -- VEH_PASSENGER_AIM, VEH_PASSENGER_ATTACK
+    114, 331,                  -- VEH_FLY_ATTACK, VEH_FLY_ATTACK2
+    345, 346, 347,             -- VEH_MELEE_HOLD, VEH_MELEE_LEFT/RIGHT
+}
+
+--- THE OUTSIDE OF ONE EMOTE, ms -- A CEILING, NOT A DURATION.
+---
+--- dbnoReviveTime is 2.8 seconds, so nothing a player ever watches gets near
+--- this: a hold that is going to succeed is finished in a third of it and a
+--- hold that is refused, released or interrupted is torn down by the teardown
+--- below within a frame. What it exists for is the case nobody has thought of
+--- -- a hold that somehow never resolves at all -- because the cost of that is
+--- a player walking around performing chest compressions on thin air for the
+--- rest of the match, which is the shape of bug this file has shipped most.
+---
+--- IT DOES NOT END THE HOLD. The revive is the server's business and this
+--- number is not shared with it; a hold that outlives the ceiling goes on
+--- exactly as it did before, silently.
+local CPR_MAX_MS = 10000
+
+-- WHEN THE CURRENT UNBROKEN RUN OF HOLDING BEGAN, or nil when nothing is being
+-- held. Sampled once per pass of dbno.revive and AFTER `holding` has settled
+-- for that pass, which is the whole reason the ceiling means anything:
+-- `holding` is destroyed and rebuilt from scratch by a refuse-then-re-arm
+-- cycle -- four times a second, for as long as the player leans on the key --
+-- so a ceiling measured from `holding.from` would be reset four times a second
+-- and would never fire on the one interaction it is written for.
+local cprSince = nil
+
+-- Whether the clip has been tasked and not yet stopped.
+local cprPlaying = false
+
+--- Put the clip on our own ped. Idempotent, and never yields.
+---
+--- NO Citizen.Wait, BECAUSE THE ONLY CALLER IS A FRAME CALLBACK. A yield in
+--- there stalls every other callback in the band -- this file says so at length
+--- above resolveCrawl, having shipped exactly that once. The bounded wait is
+--- paid ONCE, at boot, by the thread below; here a dictionary that is somehow
+--- not resident is simply re-requested and picked up on a later pass.
+---
+--- ═══ AND IT TURNS TO FACE THEM ═══
+---
+--- "Reviver should face the body if possible." (owner, 2026-08-29.)
+---
+--- ONCE, AT THE START OF THE RUN, AND AS A SNAP. Three choices were open and
+--- this is the simple one on purpose:
+---
+---   * ONCE rather than every frame. A downed player crawls, so a heading that
+---     tracked them would re-write this ped's rotation sixty times a second for
+---     a body moving at a third of a metre a second -- and #164 is the whole
+---     block above about what a stream of small rotations on a networked ped
+---     costs. At the ranges this happens (1.5m) the drift over a 2.8s hold is
+---     not worth a single extra write.
+---   * A SNAP rather than a turn. The emote's own blend (8.0) is already
+---     covering the transition, and the heading is written BEFORE the task so
+---     the clip starts out pointing the right way rather than swinging into it.
+---   * "IF POSSIBLE" IS THE OWNER'S HEDGE AND IT IS HONOURED LITERALLY. The
+---     mate's ped may not resolve on this machine at all -- #163's `blind`
+---     counter is frames where exactly that happened while a hold was live --
+---     so a ped handle of 0 means face nothing and play the emote anyway. The
+---     emote is the feature; the facing is the polish.
+---
+--- THE ARITHMETIC IS THIS FILE'S OWN. dbno.controls steps a crawl with
+--- `dx = -sin(h), dy = cos(h)`, so a ped's forward vector is (-sin h, cos h)
+--- and the heading that points at a delta (dx, dy) is atan2(-dx, dy). Derived
+--- rather than copied from a forum: getting it wrong by 90 degrees produces a
+--- reviver doing compressions on the grass beside the body, which reads as the
+--- animation being broken.
+--- @param target integer|nil  the downed mate's server id, for the facing
+local function cprStart(target)
+    if cprPlaying then return end
+    if not TaskPlayAnim then return end
+
+    -- THROUGH didHit, LIKE EVERY OTHER BOOL NATIVE IN THIS FILE.
+    -- HasAnimDictLoaded is declared BOOL and answers 1/0 on a build that hands
+    -- numbers back, and `0` IS TRUTHY IN LUA -- read raw, this would task the
+    -- animation on a dictionary that is not there, which plays nothing and
+    -- leaves `cprPlaying` lying about it for the whole hold.
+    if not didHit(HasAnimDictLoaded(CPR_DICT)) then
+        if RequestAnimDict then RequestAnimDict(CPR_DICT) end
+        return
+    end
+
+    local ped = PlayerPedId()
+
+    -- FACE THE BODY, BEFORE THE CLIP RATHER THAN AFTER IT. See the note above.
+    -- Guarded on the ped resolving AND on the two of them not being on exactly
+    -- the same spot: atan2(0, 0) is 0 in Lua, which is a real heading and would
+    -- silently spin a reviver to due north.
+    local mate = target and BR.Squadmates.pedOf(target) or 0
+    if mate ~= 0 and SetEntityHeading then
+        local me = GetEntityCoords(ped)
+        local it = GetEntityCoords(mate)
+        local dx, dy = it.x - me.x, it.y - me.y
+        if (dx * dx + dy * dy) > 0.0001 then
+            SetEntityHeading(ped, math.deg(math.atan(-dx, dy)) % 360.0)
+        end
+    end
+
+    -- Flag 1 is LOOPING and -1 is "until something stops it", which together
+    -- are what make this a pose held for the length of a hold rather than one
+    -- pass of a clip. The three trailing `false`s are the position locks, left
+    -- off deliberately: this ped is standing on its own feet and nothing else
+    -- in this file is writing its position, so there is no second writer to
+    -- fight -- unlike the crawl, which is a locomotion clip with a mover in it.
+    --
+    -- AND FLAG 1 IS NOT 1024. See the networking block above the constants:
+    -- 1024 (OVERRIDE_PHYSICS) is the one value citizenfx/fivem#3733 reports as
+    -- putting the ped somewhere else for every other player.
+    TaskPlayAnim(ped, CPR_DICT, CPR_ANIM, 8.0, -8.0, -1, 1, 0.0,
+                 false, false, false)
+    cprPlaying = true
+end
+
+--- Take it off again. Safe to call when nothing is playing, and it is called
+--- that way on nearly every frame of the match.
+---
+--- ═══ THIS IS THE ONE TEARDOWN, AND THAT IS THE DESIGN ═══
+---
+--- A hold can end in eleven ways -- the key coming up on the level and on the
+--- edge, the player switching to a nearer mate, the server refusing, the server
+--- completing, the mate being picked up by somebody else, the mate
+--- disconnecting, the reviver being knocked down, the reviver being killed, the
+--- match ending, and the resource stopping. Cleanup written once per ending is
+--- cleanup that will be missed in the twelfth. So NOTHING above calls this
+--- directly on an ending: the frame loop reads `holding` as a LEVEL and tears
+--- down whenever it is not set, which means every one of those endings is
+--- covered by the fact that all of them clear `holding`. Only the two endings
+--- that can stop the frame loop itself -- the match teardown and the resource
+--- stop -- call it by hand, and both of them call THIS.
+---
+--- ClearPedTasks IS THE FALLBACK AND NOT THE FIRST CHOICE. StopAnimTask takes
+--- the dictionary and the clip, so it can only ever stop OUR clip; clearing the
+--- ped's tasks outright would also take the crawl off a reviver who has just
+--- been knocked down himself, which is the one path where the emote and the
+--- downed pose overlap. On a build with no StopAnimTask that happens and the
+--- watchdog in dbno.controls puts the crawl back within RETASK_EVERY_MS, which
+--- is what that watchdog is for -- an emote that cannot be stopped at all is
+--- the worse of the two.
+local function cprStop()
+    if not cprPlaying then return end
+    cprPlaying = false
+    if StopAnimTask then
+        StopAnimTask(PlayerPedId(), CPR_DICT, CPR_ANIM, 8.0)
+    elseif ClearPedTasks then
+        ClearPedTasks(PlayerPedId())
+    end
+end
+
+-- THE DICTIONARY IS STREAMED AT BOOT, for the same reason the downed pose is
+-- and with the same wait: the only thing that starts this emote is a FRAME
+-- callback, and the streaming wait is the one cost that cannot be paid there.
+-- Best-effort -- a build that fails here simply requests again from cprStart
+-- and picks the clip up a frame or two into the first hold.
+Citizen.CreateThread(function()
+    -- Not on the first frame of the resource; the streamer is still bringing
+    -- the world up, and nobody can be revived for a whole lobby yet.
+    Citizen.Wait(5000)
+    if not loadDict(CPR_DICT) then
+        print(('[br_core] dbno: %s did not load -- revives will have no CPR emote')
+            :format(CPR_DICT))
+    end
+end)
+
 BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     local target, dist = nearestDowned()
 
@@ -1754,7 +2710,37 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- keypress. Deciding it at the moment the key goes down would mean the
     -- crate prompt was still on screen when the player pressed, so the thing
     -- they were looking at and the thing that happened would disagree.
-    BR.Loot.suppress(target ~= nil or holding ~= nil)
+    --
+    -- ═══ AND IT IS RAISED FOR THE REVIVE KEY TOO, FROM HERE ═══
+    --
+    -- client/revivekey.lua draws a plate over a dead mate's key, and a corpse is
+    -- ringed with scattered loot BY CONSTRUCTION (BR.Loot.deathBox), so that
+    -- prompt fights the crate prompt on every single revive rather than
+    -- occasionally.
+    --
+    -- IT IS DRIVEN FROM THIS ONE CALL SITE RATHER THAN FROM A SECOND CALLER, and
+    -- that is the point of the extra clause. BR.Loot.suppress is a plain boolean
+    -- with no refcount: two files calling it would each write their own answer,
+    -- and the one whose answer was `false` on a given frame would clear the
+    -- other's yield. One caller, one OR, no possible disagreement -- and turning
+    -- it into a refcount would mean restructuring the hottest frame pass in the
+    -- client, which loot.lua's own header asks not to be done for one caller.
+    --
+    -- NIL-GUARDED AT CALL TIME, so the load order between the two files is a
+    -- reader's convenience and not a requirement -- the same shape in which four
+    -- files ask BR.Rescue.riding() from above the file that answers.
+    local busy = target ~= nil or holding ~= nil
+    BR.Loot.suppress(busy
+        or (BR.ReviveKey ~= nil and BR.ReviveKey.prompting ~= nil
+            and BR.ReviveKey.prompting()))
+
+    -- ...AND THE REVIVE KEY YIELDS BACK. A mate who is DOWNED can still be
+    -- picked up outright -- they keep their inventory and it costs the squad
+    -- nothing -- so when a knock and a corpse are both in reach of one player,
+    -- this file wins and that one stands its plate down.
+    if BR.ReviveKey ~= nil and BR.ReviveKey.yield ~= nil then
+        BR.ReviveKey.yield(busy)
+    end
 
     -- A HOLD IS A LEVEL, NOT AN EDGE, AND THAT WAS THE SECOND-REVIVE BUG.
     --
@@ -1883,6 +2869,83 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
         setPrompt(target, nil)
     end
 
+    -- ═══ THE EMOTE, DRIVEN OFF `holding` AND OFF NOTHING ELSE ═══
+    --
+    -- READ AS A LEVEL, AFTER EVERYTHING ABOVE HAS SETTLED, which is the whole
+    -- of the cleanup argument in cprStop. Every way a hold can end clears
+    -- `holding` -- the key coming up (both the level test above and the edge
+    -- listener below it), switching to a nearer mate, a REVIVE_PROGRESS that is
+    -- `cancelled` (the server refusing, the reviver being shot, the reviver
+    -- walking out of reach, somebody else already having the body, the mate
+    -- being picked up by a third player, the mate disconnecting) and a
+    -- REVIVE_PROGRESS that is `done`. Not one of them needs a line of its own
+    -- here, and none of them can be forgotten, because the teardown is not
+    -- hung off any of them.
+    --
+    -- ...AND ONLY WHILE THIS PLAYER CAN ACTUALLY ACT. `holding` deliberately
+    -- outlives a frame in which this client cannot see the body (#163 -- the
+    -- SERVER is the authority on reach), and it therefore also outlives the
+    -- REVIVER being knocked down or killed, for up to a round trip plus the
+    -- server's 250ms step. That is right for the REQUEST and wrong for the
+    -- ANIMATION: a body on the floor performing chest compressions is exactly
+    -- the "CPR on thin air" this block exists to make unrepresentable. Nothing
+    -- here touches `holding`, so the revive itself is unaffected either way.
+    --
+    -- ═══ AND BR.IsPlaying() RATHER THAN `me.state == ALIVE`, WHICH IS A BUG
+    --     THE FREEZE TURNED FROM HARMLESS INTO UNRECOVERABLE ═══
+    --
+    -- forgetAll() clears `holding` at ENDED, CLEANUP and WAITING -- and then
+    -- the frame band ARMS IT AGAIN on the very next pass, because arming needs
+    -- only a held key and a mate the mirror still calls DBNO, and neither of
+    -- those changes at a match boundary. The roster sweep to LOBBY waits for
+    -- the screen to go black (#124), so there are SECONDS of a finished match
+    -- in which this player is still ALIVE and their mate is still down.
+    --
+    -- That re-arm has always happened and has always been harmless: it sends a
+    -- REVIVE_START the server refuses. With a freeze hanging off it, it is a
+    -- player who cannot move through their own results screen -- and that is
+    -- exactly the class of bug the one-frame mechanism was chosen to make
+    -- impossible, arriving through the condition instead. BR.IsPlaying() is
+    -- main.lua's existing "this player can act" -- PLAYING and ALIVE, both --
+    -- so the emote and the freeze end at the match boundary whatever the key
+    -- and the mirror still say. Caught by tools/test_shared.lua, `dbno.cpr`.
+    --
+    -- THE CEILING IS MEASURED FROM `cprSince` AND NOT FROM `holding.from`. See
+    -- the declaration: a refused hold rebuilds `holding` four times a second,
+    -- so a ceiling hung off that table would be re-armed by the very case it
+    -- exists to catch.
+    if holding and BR.IsPlaying() then
+        -- ═══ THE FREEZE ═══
+        --
+        -- KEYED ON THE HOLD AND NOT ON THE EMOTE, which is the one place these
+        -- two rules part company. The owner's sentence is "frozen until they
+        -- release E", and the ceiling below ends the ANIMATION at ten seconds;
+        -- a player still leaning on the key after that is still reviving and
+        -- still must not walk away mid-pick-up. So this sits above the ceiling
+        -- rather than inside the branch it guards.
+        --
+        -- Re-asserted every frame because that IS the mechanism: see the note
+        -- above REVIVING_BLOCKED for why one-frame writes are the only kind
+        -- that cannot be left on.
+        for i = 1, #REVIVING_BLOCKED do
+            DisableControlAction(0, REVIVING_BLOCKED[i], true)
+        end
+
+        if not cprSince then cprSince = GetGameTimer() end
+        if GetGameTimer() - cprSince >= CPR_MAX_MS then
+            -- SPENT, NOT RESTARTED. `cprSince` is deliberately left standing:
+            -- clearing it here would re-arm the emote on the very next frame
+            -- and the ceiling would be a stutter rather than a limit. A new run
+            -- begins when the hold genuinely ends, which is the `else` below.
+            cprStop()
+        else
+            cprStart(holding.target)
+        end
+    else
+        cprSince = nil
+        cprStop()
+    end
+
     -- THE LABEL FOLLOWS THE HOLD, NOT THE REACH TEST. A hold that survives a
     -- frame of not seeing the body must still draw over it, or the prompt
     -- blinks every time the clone wanders past 1.5m.
@@ -1959,6 +3022,14 @@ local function forgetAll()
     camDown()
     holding, lastAsk = nil, 0
     setPrompt(nil)
+    -- BY HAND HERE, unlike every other ending. The frame loop's own teardown
+    -- would take the emote down on its next pass -- `holding` is nil one line
+    -- above -- and that is the reading that matters: this is not a second
+    -- cleanup, it is the SAME cprStop, called early because a match that has
+    -- ended is the one moment a leftover frame of chest compressions is
+    -- guaranteed to be looked at, over a body that is already gone.
+    cprSince = nil
+    cprStop()
 end
 
 RegisterNetEvent(BR.Net.STATE)
@@ -1982,6 +3053,12 @@ AddEventHandler('onClientResourceStop', function(res)
     -- knows this handle exists, so `restart br_core` while downed would leave
     -- the view welded to a dead camera with no code left to release it.
     camDown()
+    -- ...and so does a tasked animation. This is the ONE ending the frame loop
+    -- cannot cover, because the frame loop is what is being stopped: a
+    -- `restart br_core` in the middle of a hold would leave the reviver doing
+    -- chest compressions with nothing left running to stop them.
+    cprSince = nil
+    cprStop()
 end)
 
 -- --------------------------------------------------------------------------
@@ -2077,15 +3154,64 @@ RegisterCommand('brdbno', function()
     -- second because nothing throttled it, and every one of them spent a step.
     -- `last task` is the throttle's own reading -- if it is never more than a
     -- frame old while the body lies still, the watchdog is storming again.
-    print(('  clone sync : %d steps for %d crawl tasks, %s, phase %d   (the pin '
-           .. 'above is local; this is what other clients see)')
-        :format(resyncs, crawlTasks, resyncArmed and 'ARMED -- owed a step'
-                                                 or 'settled', resyncPhase))
+    --
+    -- ...AND `arms` IS THE #246 TERM IN THAT EQUATION. The contract stopped
+    -- being "one step per task" the moment a newcomer could buy one: it is now
+    -- one step per task PLUS one per scope arm, and `steps` sitting below the
+    -- sum is the resync never finding a still frame to spend them on.
+    print(('  clone sync : %d steps for %d crawl tasks + %d scope arms, %s, '
+           .. 'phase %d   (the pin above is local; this is what other clients '
+           .. 'see)')
+        :format(resyncs, crawlTasks, scopeArms,
+                resyncArmed and 'ARMED -- owed a step' or 'settled',
+                resyncPhase))
+    -- THE OTHER END OF THE SERVER'S OWN `scope` LINE (#246). Run /brdbno on the
+    -- server console beside this one: `sent` there and `nudges` here are the
+    -- same messages counted at both ends, so a gap between them is the wire and
+    -- everything else is this file.
+    --
+    -- `nudges` AT ZERO WHILE SOMEBODY IS WALKING UP TO YOU is the reading that
+    -- matters, and it has exactly two causes: the box is on onesync LEGACY,
+    -- where playerEnteredScope does not fire at all, or they never left your
+    -- scope in the first place -- relevancy is 424m, so a test that starts with
+    -- both players in the same field proves nothing.
+    print(('  scope      : %d nudges (%s), %d spent as arms, %d corpse writes')
+        :format(scopeNudges,
+                scopeAt and ('last %dms ago'):format(GetGameTimer() - scopeAt)
+                        or 'none yet -- see the note in dbno.lua',
+                scopeArms, corpseWrites))
     print(('  last task  : %s   (a quiet knock settles on 2 tasks total; the '
            .. 'watchdog may not ask again for %dms)')
         :format(taskAt and ('%dms ago'):format(GetGameTimer() - taskAt)
                         or 'never -- nothing posed yet',
                 RETASK_EVERY_MS))
+    -- ...AND THE LAST KNOCK, WHICH IS THE EXPLOSION READOUT. The same record
+    -- the console printed for itself KNOCK_REPORT_MS after the knock -- this is
+    -- here so it can be asked for again afterwards, and so it can be read in
+    -- the same paste as the lines above it.
+    --
+    -- READ `loose` AGAINST `pose`. Loose frames with no pose is a body the
+    -- physics still had; NO loose frames with no pose is a different fault
+    -- entirely and none of the settle machinery would touch it. `thrown` is how
+    -- far the blast carried them, which is the outside of how wrong any clone
+    -- can be -- ragdoll positions do not replicate reliably (citizenfx/fivem
+    -- #2436, open).
+    if knock.at then
+        local kc = GetEntityCoords(PlayerPedId())
+        local kf = knock.from or { x = kc.x, y = kc.y, z = kc.z }
+        local kdx, kdy, kdz = kc.x - kf.x, kc.y - kf.y, kc.z - kf.z
+        print(('  knock #%-3d : %s; loose %d frames (%d ragdoll, %d air), '
+               .. 'last %dms in; %d settle re-pose(s); thrown %.2fm')
+            :format(knock.n,
+                    knock.posedAt and ('posed after %dms')
+                        :format(knock.posedAt - knock.at) or 'NEVER POSED',
+                    knock.looseFrames, knock.ragdollFrames, knock.airFrames,
+                    (knock.looseLastAt and (knock.looseLastAt - knock.at)) or 0,
+                    knock.settles,
+                    math.sqrt(kdx * kdx + kdy * kdy + kdz * kdz)))
+    else
+        print('  knock      : - (nothing has been knocked down this session)')
+    end
     -- READ `heading` AGAINST `clone sync` ABOVE. A turn that nothing re-tasked
     -- is the second half of #164: the gap is how far the body has turned since
     -- the last thing the clones were told, so a large gap sitting still while
@@ -2126,6 +3252,27 @@ RegisterCommand('brdbno', function()
     print(('  holding    : %s   key %s'):format(
         holding and tostring(holding.target) or '-',
         BR.Keys.isHeld('interact') and 'DOWN' or 'up'))
+    -- READ `emote` AGAINST `holding` ON THE LINE ABOVE. The pair is the whole
+    -- diagnosis: playing with nothing held is the leak, held with the clip not
+    -- running is either the dictionary never arriving or the ceiling having
+    -- already been spent, and the age says which.
+    print(('  emote      : %s   (%s / %s, dict %s; ceiling %dms)'):format(
+        cprPlaying and 'PLAYING' or 'not playing',
+        CPR_DICT, CPR_ANIM,
+        didHit(HasAnimDictLoaded(CPR_DICT)) and 'resident' or 'NOT LOADED',
+        CPR_MAX_MS))
+    print(('  emote run  : %s'):format(
+        cprSince and ('holding for %dms'):format(GetGameTimer() - cprSince)
+                 or '- (nothing held)'))
+    -- THE FREEZE IS NOT A LATCH AND THIS LINE SAYS SO. It is derived from the
+    -- same condition the loop reads, every frame, so there is no stored flag
+    -- that could disagree with reality -- which is the whole reason a player
+    -- cannot be left stuck. If `holding` above is `-`, the controls are live.
+    print(('  controls   : %s   (%d ids, one frame each; 51 INPUT_CONTEXT is '
+           .. 'never among them)'):format(
+        (holding and BR.IsPlaying())
+            and 'HELD -- no movement, no trigger' or 'live',
+        #REVIVING_BLOCKED))
 
     -- ------------------------------------------------------------------ #163
     -- THE THREE FACTS, SEPARATED. Read the verdict line first; the counters

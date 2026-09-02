@@ -225,15 +225,14 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
                 SetBlipCoords(b, m.x + 0.0, m.y + 0.0, 0.0)
             end
 
-            -- A dead mate's blip STAYS, dimmed. Where they went down is the
+            -- An OUT mate's blip STAYS, dimmed. Where they went down is the
             -- whole reason to keep it; a full-brightness dot would read as a
             -- live teammate to rotate to. Set unconditionally rather than on
             -- the state edge -- four native calls a second is nothing, and an
-            -- edge test cannot cover the blip that was born dead (a mate who
-            -- died while this client was out of the squad push).
-            local dead = m.state == BR.PlayerState.DEAD
-                or m.state == BR.PlayerState.SPECTATING
-            SetBlipAlpha(blips[m.src], dead and 120 or 255)
+            -- edge test cannot cover the blip that was born out (a mate who
+            -- was eliminated while this client was out of the squad push).
+            local out = m.state == BR.PlayerState.OUT
+            SetBlipAlpha(blips[m.src], out and 120 or 255)
         end
     end
 
@@ -353,23 +352,27 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- the flight, and a tag on an invisible rider rendered as a name
         -- floating over the fuselage. Pre-drop there is nothing to label.
         --
-        -- DEAD AND DOWNED MATES ARE STILL LABELLED. Nothing hides faster in a
+        -- OUT AND DOWNED MATES ARE STILL LABELLED. Nothing hides faster in a
         -- firefight than the question "where did my teammate go down", and the
         -- corpse is the answer. The state is written into the tag so it reads
         -- at a glance rather than being a name that mysteriously stopped
         -- moving (user report, 2026-08-05: could not see dead squadmates).
+        --
+        -- THE TAG STILL READS [DEAD], and that is deliberate rather than a
+        -- missed rename: the word on screen is the owner's, and #219 Q1 asks
+        -- him whether he wants a different one. A state renamed in the enum is
+        -- not a licence to rewrite what a player reads.
         local e = BR.State.roster[src]
         local st = e and e.state
         local jumped = st == BR.PlayerState.FREEFALL
             or st == BR.PlayerState.GLIDE
             or st == BR.PlayerState.ALIVE
             or st == BR.PlayerState.DBNO
-            or st == BR.PlayerState.DEAD
-            or st == BR.PlayerState.SPECTATING
+            or st == BR.PlayerState.OUT
 
         local mark = ''
         if st == BR.PlayerState.DBNO then mark = ' [DOWN]'
-        elseif st == BR.PlayerState.DEAD or st == BR.PlayerState.SPECTATING then
+        elseif st == BR.PlayerState.OUT then
             mark = ' [DEAD]'
         end
 
@@ -391,8 +394,7 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- at the head bone, in the loop below. The seam is deliberate: the
         -- common case is not being rewritten to fix the uncommon one.
         local onFloor = st == BR.PlayerState.DBNO
-            or st == BR.PlayerState.DEAD
-            or st == BR.PlayerState.SPECTATING
+            or st == BR.PlayerState.OUT
 
         if ped ~= 0 and jumped and not onFloor then
             low[src] = nil
@@ -689,17 +691,32 @@ end)
 -- be re-asserted every frame, which is why every previous attempt on a TICK
 -- loop was structurally unable to work.
 --
--- FRAME, and gated on MY OWN STATE rather than on each other player's. If I
--- am in the lobby then everyone in my scope is in the lobby with me -- a
--- player in a match is in a different routing bucket and cannot be near me --
--- so "hide everyone else" is both simpler and more robust than consulting a
--- roster mirror that may be a beat behind. Outside the lobby the loop does
--- nothing but read one state field.
+-- FRAME, and gated on WHETHER MY OWN PED IS STILL A LOBBY PED rather than on
+-- each other player's state. If my ped is standing in the lobby then everyone
+-- in my scope is in the lobby with me -- a player in a match is in a different
+-- routing bucket and cannot be near me -- so "hide everyone else" is both
+-- simpler and more robust than consulting a roster mirror that may be a beat
+-- behind. Outside the lobby the loop does nothing but read one field.
+--
+-- IT USED TO ASK `BR.State.me.state == LOBBY`, AND THAT IS THE OTHER HALF OF
+-- THE OWNER'S 2026-08-29 REPORT. My state stops saying LOBBY the INSTANT the
+-- server names me a participant -- which is the moment the trip to warmup
+-- STARTS, a second or more before it has moved me anywhere. So a player who
+-- readied up stood on the lobby mark for the whole fade watching every other
+-- lobby ped pop into existence around them. BR.LobbyPed.isLobbyPed() is the
+-- same question asked of the PED instead of the paperwork: it stays true until
+-- the teleport has actually happened, which is exactly the ordering the fix
+-- turns on (see client/lobbyped.lua).
 --
 -- No bookkeeping and nothing to un-hide: the flag lasts one frame, so the
 -- moment this stops calling, they are visible again.
 BR.Loop.register(BR.Loop.FRAME, 'squadmates.lobbyhide', function()
-    if BR.State.me.state ~= BR.PlayerState.LOBBY then return end
+    -- Fails back to the old rule rather than to "hide nobody" if that file is
+    -- ever absent: an interface with a stranger in it is a bug, and an
+    -- interface with everybody in it is the bug this loop exists to prevent.
+    local mine = BR.LobbyPed and BR.LobbyPed.isLobbyPed()
+    if mine == nil then mine = BR.State.me.state == BR.PlayerState.LOBBY end
+    if not mine then return end
 
     local me = PlayerId()
     for _, player in ipairs(GetActivePlayers()) do -- scope-ok: presentation-only hiding of co-located lobby peds

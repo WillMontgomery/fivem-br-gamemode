@@ -54,14 +54,19 @@ const int = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null)
  * towards a rejected write. A kill entry marshals to roughly 200 bytes.
  *
  * IT HAS TO SIT ABOVE THE LUA SIDE'S OWN CEILING, NOT BELOW IT, and that is why
- * this number moved when strips joined the timeline. A close now carries up to
- * MAX_TIMELINE_KILLS (250) plus MAX_TIMELINE_STRIPS (60) plus the match_end, and
- * `tail()` below keeps the LAST n -- so a backstop set under 311 would not be a
+ * this number moved when strips joined the timeline and why it has moved again
+ * for refused chat. A close now carries up to MAX_TIMELINE_KILLS (250) plus
+ * MAX_TIMELINE_STRIPS (60) plus MAX_TIMELINE_CHAT (60) plus the match_end, and
+ * `tail()` below keeps the LAST n -- so a backstop set under 371 would not be a
  * backstop at all, it would be this file quietly deleting the oldest rows of
- * every large close and marking the result incomplete. 320 is that ceiling with
- * the same ten rows of slack the old 260 carried over 250.
+ * every large close and marking the result incomplete. 380 is that ceiling with
+ * the same slack 320 carried over 311 and 260 carried over 250.
+ *
+ * THE SIZE STILL FITS. A chat entry is the largest row on this list -- 200 bytes
+ * of text plus its keys, call it 300 marshalled -- so sixty of them is about
+ * 18KB, on top of the kills' 50KB, against a 400KB item.
  */
-const MAX_CLOSE_ENTRIES = 320
+const MAX_CLOSE_ENTRIES = 380
 
 /**
  * Take the LAST n, because the recent ones explain the incident -- the same
@@ -173,6 +178,50 @@ export function timelineEntry(e) {
       at,
       kind,
       weapon: str(e?.weapon, 64) ?? (Number.isFinite(e?.weapon) ? String(e.weapon) : null),
+    }
+  }
+
+  /**
+   * A CHAT LINE THE SERVER ACCEPTED AND THEN DELIVERED TO NOBODY.
+   *
+   * THE SPELLING IS LOAD-BEARING ACROSS TWO LANGUAGES, as `weapon_strip` and
+   * `match_created` are. The Lua side names it once, as CHAT_KIND in
+   * br_lib/shared/incident_build.lua, and the `return null` at the bottom drops
+   * what this function does not recognise -- so a typo here fails nothing and
+   * simply means the entries never arrive. tools/verify.sh compares the
+   * literals.
+   *
+   * ═══ THIS IS THE FIRST PLAYER-AUTHORED PROSE ON A MATCH TIMELINE ═══
+   *
+   * Everything else on this list is a fact the server measured: a timestamp, a
+   * weapon hash, a licence it resolved itself. `text` is what somebody typed,
+   * and it is here because the owner asked for it by name (2026-08-29):
+   * "specifically save the chat content to the DDB entry and display on the
+   * timeline in the incident".
+   *
+   * SO IT IS CAPPED HERE AS WELL AS ON THE LUA SIDE, at the same 200 -- which is
+   * BR.ChatLimits.maxLength, the length the server already refuses to deliver
+   * past. `str()` is the same coercion every other string on this row gets: a
+   * non-string becomes null rather than `"[object Object]"`, and an empty string
+   * becomes null rather than an entry that renders as a blank accusation.
+   *
+   * NOT ESCAPED, AND THAT IS DELIBERATE. The console renders timeline entries as
+   * React text children, which escapes structurally; escaping here as well would
+   * double-encode and put `&amp;` on a moderation record. The rule is that this
+   * value is TEXT everywhere it is read -- if a consumer ever needs markup it
+   * must escape at its own boundary, not ask for pre-escaped data here.
+   *
+   * `reason` IS A CLOSED SET FROM THE GAME -- `link` or `script` -- and it is
+   * what tells a reviewer whether the finding was the domain in the line or the
+   * alphabet it was written in. For a non-Latin line the text alone will not say.
+   */
+  if (kind === 'chat_block') {
+    return {
+      at,
+      kind,
+      text: str(e?.text, 200),
+      reason: str(e?.reason, 32),
+      channel: str(e?.channel, 32),
     }
   }
 

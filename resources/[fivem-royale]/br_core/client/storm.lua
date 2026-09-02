@@ -45,6 +45,56 @@ local function solveNow(rec)
     return BR.StormAt(rec, BR.Clock.now())
 end
 
+--- WHOSE POSITION EVERY "WHERE AM I RELATIVE TO IT" ANSWER HERE IS MEASURED FROM.
+---
+--- "Storms are not synced between screens when spectating" -- the owner,
+--- two-player playtest, 2026-08-23 (#225). NOTHING ABOUT THE STORM HAD
+--- DESYNCED. The record goes to every src in the match with no state filter, a
+--- dead spectator is stored the same bytes as everybody else, and BR.StormAt is
+--- pure over (record, synced clock) -- so both machines were solving the
+--- identical circle, in the same place, to the millisecond. What differed was
+--- the BODY they measured it from: a spectator's ped is a corpse where they
+--- fell, which client/spectate.lua deliberately never moves and must not.
+---
+--- THE SYMPTOM IS EXACTLY THAT SPLIT, and it is why the report reads as a sync
+--- bug. The purple curtain and the two map rings are drawn at absolute world
+--- coordinates, so they landed in the right place on both screens. The
+--- distance, the bearing, the "Safe Zone -- this way" arrow, the sky and the
+--- colour grade are all derived from viewer position, so none of them did --
+--- and that is most of what a player actually reads.
+---
+--- client/gamerules.lua's mad-driver anchor is the same fix for the same class
+--- of caller, and this mirrors its shape down to the fallback: a session whose
+--- eased point has not landed yet (the first frames) measures from the ped
+--- rather than throwing. With no session running this is byte-for-byte what it
+--- always was -- same native, same value -- which is the point.
+---
+--- ═══ AN ADMIN SPECTATOR KEEPS THEIR OWN STORM, AND THAT IS THE STAKE TEST ═══
+---
+--- The console's Spectate button requires only that the admin be in game
+--- (server/spectate.lua's adminStart), so an admin may be ALIVE and mid-fight
+--- in their own match while watching somebody else. Their body is still out
+--- there and server/storm.lua is still billing it for standing outside the
+--- wall, so moving their readout onto the shot would let them bleed to death
+--- behind a HUD saying they are safe -- this bug pointed the other way.
+---
+--- SO THE QUESTION IS "HAS THIS BODY A STAKE LEFT", NOT "IS THIS AN ADMIN". A
+--- dead admin follows the shot for the same reason a dead player does, a living
+--- one keeps their own, and nothing in this file has to learn what an admin is
+--- or reach into the session for it.
+--- @return vector3 point, string source  'spectate' when it follows the shot
+local function viewpoint()
+    local S = BR.Spectate
+    if S and S.active and S.watchPoint and S.active() then
+        local me = BR.State.me.state
+        if me ~= BR.PlayerState.ALIVE and me ~= BR.PlayerState.DBNO then
+            local p = S.watchPoint()
+            if p then return p, 'spectate' end
+        end
+    end
+    return GetEntityCoords(PlayerPedId()), 'ped'
+end
+
 -- ------------------------------------------------------------------- wall ---
 
 -- Ground height under the nearest wall point, cached: GetGroundZFor_3dCoord
@@ -71,9 +121,6 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
         alphaScale = 1.0 - (msLeft / fadeMs)
     end
 
-    local ped = PlayerPedId()
-    local p = GetEntityCoords(ped)
-
     -- FIXED SLOTS AROUND THE CIRCLE, ALWAYS DRAWN.
     --
     -- Two lessons from the first live walls, both about the same illusion:
@@ -92,8 +139,6 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     --     much of the ring gets columns: enough arc to span the view from
     --     wherever the player is, the full ring once the circle is small.
     local rr = cfg.render
-    local dist = BR.Dist(p.x, p.y, cx, cy)
-    local base = math.atan(p.y - cy, p.x - cx)
     local col = rr.colour
 
     if BR.Storm.wallStyle == 'solid' then
@@ -119,6 +164,23 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
             false, false, 2, false, nil, nil, false)
         return
     end
+
+    -- THE VIEWER, AND THIS IS THE ONLY PATH IN THIS CALLBACK THAT NEEDS ONE.
+    --
+    -- The shipping wall is 'solid' and returned above without asking where
+    -- anybody is, which is exactly why the curtain was the one storm surface
+    -- that DID agree across both screens in #225. The column renderer is the
+    -- /brwallstyle A/B fallback and it is viewer-relative twice over -- it
+    -- centres its arc on the viewer's bearing to the circle and probes the
+    -- ground under the viewer -- so a spectator would otherwise get a
+    -- colonnade hung off their corpse's bearing, standing on their corpse's
+    -- terrain, on a wall they are looking at from somewhere else entirely.
+    --
+    -- Reading it here rather than at the top of the callback also keeps the
+    -- shipping path free of a per-frame GetEntityCoords it never used.
+    local p = viewpoint()
+    local dist = BR.Dist(p.x, p.y, cx, cy)
+    local base = math.atan(p.y - cy, p.x - cx)
 
     -- Column fallback keeps the per-arc ground probe: short columns must
     -- meet the terrain they stand on.
@@ -266,6 +328,27 @@ end
 --
 -- The ladder never touches the weather until the player is first caught
 -- outside -- a match spent inside the circle keeps GTA's own sky.
+--
+-- ═══ IT CLAIMS THE SKY, IT NO LONGER WRITES IT (2026-08-31) ═══
+--
+-- Every SetWeatherType* call below became BR.World.want('storm', ...) when
+-- `brweather` arrived. Two things made that necessary and neither is about the
+-- console verb on its own:
+--
+--   THE OVERRIDE HAS TO OUTLAST A TIER CHANGE. A console sky that this file
+--   overwrote the next time somebody stepped over the wall would look exactly
+--   like the verb not working.
+--
+--   AND THE OVERRIDE HAS TO GIVE THIS ONE BACK. `brweather reset` does not
+--   guess what the sky should return to -- client/world.lua still holds this
+--   file's last claim and simply re-resolves. That only works if the claim was
+--   recorded, which is what these calls now do.
+--
+-- The ladder, the hysteresis and the drying schedule are untouched: what
+-- changed is where the last line of each branch sends its answer.
+-- RAIN IS NOT PART OF IT. SetRainLevel is this file's own knob and stays here;
+-- the sky is a claim, the rain is a setting, and only one of them has three
+-- systems arguing over it.
 local wxTier  = 'clear'   -- what the sky is currently doing
 local wxWant  = 'clear'   -- what the ladder wants it to do
 local wxSince = 0         -- when it first wanted that
@@ -292,7 +375,13 @@ local function weatherWant(tier)
         -- HARD-RESETS the weather system's internal rain memory, which the
         -- overtime path preserves and which is what kept the ground shiny
         -- long after the sky cleared (live report, 2026-08-04).
-        SetWeatherTypeNowPersist(WX_NAME.clear)
+        --
+        -- FORCED, because that hard reset is the entire point of the call and
+        -- the claim it re-asserts is one this file already holds. Without the
+        -- flag client/world.lua would see "the winner has not changed" and skip
+        -- the write, which is correct for every other claim on this page and
+        -- exactly wrong for this one.
+        BR.World.want('storm', WX_NAME.clear, 0.0, true)
         SetRainLevel(0.0)
         wxUndryAt = now + 45000
     end
@@ -310,7 +399,7 @@ local function weatherWant(tier)
         wxTier = tier
         if not wxOwned and tier == 'clear' then return end
         wxOwned = true
-        SetWeatherTypeOvertimePersist(WX_NAME[tier], wcfg.blendSec + 0.0)
+        BR.World.want('storm', WX_NAME[tier], wcfg.blendSec + 0.0)
         if tier == 'thunder' then
             -- Let the thunderstorm actually rain, whatever the dry
             -- schedule was up to.
@@ -337,13 +426,17 @@ local function teardown()
     fxTarget, fxLevel = 0.0, 0.0
     if fxApplied then fxApplied = false ClearTimecycleModifier() end
     if postOn then postOn = false AnimpostfxStop(cfg.fx.postFx) end
-    -- Hand the sky back to the engine between matches.
+    -- Hand the sky back between matches: this file drops its claim, and
+    -- client/world.lua clears the weather only if nothing else wants it.
+    -- Dropping the claim rather than clearing the sky directly is what keeps a
+    -- match ending from wiping a console override or the lobby island's
+    -- overcast out from under them.
     if wxOwned then
         wxOwned = false
         wxTier, wxWant = 'clear', 'clear'
         wxDryAt, wxUndryAt = nil, nil
         SetRainLevel(-1.0)
-        ClearWeatherTypePersist()
+        BR.World.want('storm', nil)
     end
 end
 
@@ -357,24 +450,65 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local now = BR.Clock.now()
     local cx, cy, r, st, msLeft, dps = solveNow(rec)
 
-    local ped = PlayerPedId()
-    local p = GetEntityCoords(ped)
+    -- THE LOUDEST OF #225'S THREE READS. Everything below this line -- the HUD
+    -- envelope, the direction blip, the grade and the sky -- is measured from
+    -- here, so this one substitution is most of the fix.
+    local p, from = viewpoint()
     local dist = BR.Dist(p.x, p.y, cx, cy)
     local edge = dist - r   -- positive = outside
 
     -- Screen FX track being outside AND the storm actually hurting right now
     -- (dps is 0 for everyone during the phase-1 free-loot hold -- the solver
     -- decides that, so this cannot disagree with the server's damage tick),
-    -- and only while we can be hurt at all -- a spectator ghosting through
-    -- the wall does not need a red screen.
+    -- and only for a viewer the storm has something to say to.
+    --
+    -- ═══ GATED ON THE SESSION, NOT ON A PLAYER STATE ═══
+    --
+    -- The comment that used to sit here read "Spectate will re-gate this when
+    -- it exists". Spectating shipped and it never did, because there was no
+    -- state to gate on: BR.PlayerState.SPECTATING was READ in nine places
+    -- across this client and the server and ASSIGNED IN NONE. A spectator
+    -- therefore fell through this test as an eliminated player and got the full
+    -- REDMIST grade and a thunderstorm driven by their corpse's position.
+    --
+    -- So the gate asks the thing that is actually written: `from`, which is a
+    -- running spectate session and nothing else. #233 has since DELETED that
+    -- state rather than giving it a writer -- spectating is possible WHILE a
+    -- player is OUT, not instead of it -- so there is no state test to go back
+    -- to. This is the gate, not a stopgap standing in for one.
     local me = BR.State.me.state
-    -- DEAD is included: a corpse in the storm is still IN the storm, and
-    -- the rain and grade stopping at the moment of death read as a bug
-    -- (live report, 2026-08-04 -- this becomes the DBNO view later).
-    -- Spectate will re-gate this when it exists.
-    local affected = me == BR.PlayerState.ALIVE
-        or me == BR.PlayerState.DBNO
-        or me == BR.PlayerState.DEAD
+    local affected
+    if from == 'spectate' then
+        -- ═══ THE SPECTATOR'S SKY IS THE SKY OVER THE SHOT ═══
+        --
+        -- `edge` above is already the WATCHED player's, so this is not a red
+        -- screen invented for a ghost. Both effects are WORLD RENDERING rather
+        -- than viewer vitals -- REDMIST is a timecycle grade over everything
+        -- drawn, and the weather natives are per-client by nature (which is
+        -- the whole reason config/storm.lua considers them a legitimate storm
+        -- effect at all) -- so what they paint is what a third player standing
+        -- at the camera would see. Following the shot makes them CORRECT, not
+        -- merely quiet.
+        --
+        -- AND THE REPORT NAMES BOTH DIRECTIONS: a screen "red and raining"
+        -- while watching a squadmate safe inside the circle, and "watch a
+        -- squadmate die in the storm and your sky stays clear" (#225).
+        -- Switching a spectator's effects off wholesale would answer the first
+        -- half and leave the second exactly as filed.
+        --
+        -- NOTHING HERE CAN HURT ANYBODY. Storm damage is the server's and is
+        -- applied through state.lua, never from this file -- the header says
+        -- so and the M4 authority drill proves it. A ghost given thunder has
+        -- been given a picture, and a picture cannot become a hit point.
+        affected = true
+    else
+        -- DEAD is included: a corpse in the storm is still IN the storm, and
+        -- the rain and grade stopping at the moment of death read as a bug
+        -- (live report, 2026-08-04 -- this becomes the DBNO view later).
+        affected = me == BR.PlayerState.ALIVE
+            or me == BR.PlayerState.DBNO
+            or me == BR.PlayerState.OUT
+    end
     local caught = edge > 0 and dps > 0 and affected
     fxSet(caught)
     fxStep()
@@ -532,7 +666,7 @@ end)
 --
 --   * inside the circle -- which is nearly everyone, nearly always -- this
 --     is one boolean test per frame and returns;
---   * outside, it is one GetEntityCoords, one distance, and a compare. The
+--   * outside, it is one viewpoint read, one distance, and a compare. The
 --     circle itself is NOT re-solved; it comes from the 10Hz band, and a
 --     100ms-old radius is wrong by centimetres.
 --   * and it only SENDS when the whole metre on screen changes, so sprinting
@@ -544,7 +678,13 @@ end)
 BR.Loop.register(BR.Loop.FRAME, 'storm.edge', function()
     if not solved or not solved.outside then return end
 
-    local p = GetEntityCoords(PlayerPedId())
+    -- THE SAME BODY THE TICK BAND MEASURED FROM, and it has to be asked again
+    -- here rather than reused off `solved`: this callback exists precisely
+    -- because the position is the one term worth recomputing per frame.
+    -- Spectating loses nothing by it -- client/spectate.lua eases the watch
+    -- point on the FRAME band too, so the metres still count down smoothly as
+    -- the watched player runs, rather than stepping at the feed's 4 Hz.
+    local p = viewpoint()
     local edge = BR.Dist(p.x, p.y, solved.cx, solved.cy) - solved.r
     if math.floor(edge + 0.5) == lastEdgeShown then return end
 

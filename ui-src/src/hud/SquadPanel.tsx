@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useUi } from '../store'
 import type { SquadMember, SquadPayload } from '../bridge/types'
+import VoiceMark from './VoiceMark'
 
 /**
  * Squad status.
@@ -8,6 +9,20 @@ import type { SquadMember, SquadPayload } from '../bridge/types'
  * Squad membership and each member's state come from the server roster, never
  * from enumerating nearby players -- a squadmate across the map is out of scope
  * and would simply be missing.
+ *
+ * VOICE IS A MARK BESIDE THE NAME, NOT A LINE AT THE BOTTOM OF THE SCREEN.
+ * Owner, 2026-08-22: "how about instead of showing this text, we show something
+ * in the top squad panel next to each player which shows if they are muted, not
+ * listening, or talking." The model -- what the mark is allowed to claim about
+ * whom -- is argued in full in hud/VoiceMark.tsx.
+ *
+ * IT IS BUILT FROM WHAT THE CLIENT IS TOLD, AND IT IS TOLD EXACTLY THREE
+ * THINGS: who is talking, this client's own verdict, and -- since 2026-08-29 --
+ * one boolean per squadmate saying their voice carries nothing. The third is
+ * the owner's, from a playtest: "the squad panel works, but doesn't accurately
+ * show when others in the squad have 'off' selected." Nothing wider than that
+ * bit is published, and tools/check_squad_voice.lua fails the build if it ever
+ * is.
  *
  * A MATE DYING IS A SEQUENCE, NOT AN OPACITY CHANGE. Fading a row out is the
  * least legible thing a HUD can do: it reads as a render glitch rather than as
@@ -18,10 +33,16 @@ import type { SquadMember, SquadPayload } from '../bridge/types'
  * the health bar red -- it is recoverable and the player has a decision to
  * make. Dead is finished and still.
  *
+ * ...AND SINCE THE REVIVE KEY, "DEAD" IS TWO THINGS. A mate whose key the squad
+ * holds is out of the match and coming back, and the panel drew him identically
+ * to one nobody can reach: "I also saw nothing in the squad panel indicating
+ * that a revive key had been retrieved" (owner, 2026-08-30). The row now carries
+ * a key mark and stops being faded all the way down. See KeyMark.
+ *
  * ...AND A DECISION NEEDS A NUMBER. Two of the three things the owner could not
  * read off this panel in the playtest were quantities: how long a downed mate
  * has left, and what a mate's health and shield actually are. Both are now
- * numerals rather than lengths -- see BleedClock and VitalBar below. A bar
+ * numerals rather than lengths -- see RowClock and VitalBar below. A bar
  * answers "roughly how much?" at a glance and that is all it will ever answer;
  * "can I get there in time" and "is he one shot from down" are questions with
  * digits in them.
@@ -68,27 +89,44 @@ function useDeathSequence(m: SquadMember) {
 }
 
 /**
- * HOW LONG A DOWNED MATE HAS LEFT.
+ * A DEADLINE ON A SQUAD ROW, COUNTED DOWN.
  *
- * Owner, from the playtest: "There's no way for team mates to see how much time
- * is left on DBNO players." A squad's whole decision -- push the pickup or take
- * the fight first -- is a question about this number, and the only player who
- * could see it was the one who could do nothing with it.
+ * TWO CALLERS, AND THEY ARE ONE COMPONENT ON PURPOSE.
+ *
+ * HOW LONG A DOWNED MATE HAS LEFT. Owner, from the playtest: "There's no way
+ * for team mates to see how much time is left on DBNO players." A squad's whole
+ * decision -- push the pickup or take the fight first -- is a question about
+ * this number, and the only player who could see it was the one who could do
+ * nothing with it.
+ *
+ * ...AND HOW LONG THEIR KEY WILL LIE THERE. Owner, 2026-08-31: "If there is a
+ * timer to pickup their key, display it in the squad panel." It was BleedClock
+ * until that sentence, and generalising beat writing a second one: everything
+ * below -- the interval, the offset, the direct write, the rounding, the
+ * trailing `s` -- is a decision this panel has already made about what a
+ * countdown IS, and a second component would be a second place for all of it to
+ * be got subtly differently.
+ *
+ * ONE FORMAT, INCLUDING PAST A MINUTE. `Math.ceil(left / 1000)` and an `s`,
+ * whatever the number. The bleed clock already runs from 120s
+ * (BR.Config.Match.dbnoBleedBase) so three-digit seconds are not new here, and
+ * an `m:ss` for the three-minute pickup would have made the two clocks on one
+ * row disagree about what a countdown looks like.
  *
  * THE SAME NUMBER THE DOWNED PLAYER IS WATCHING, by construction: same field,
  * same clock, same `Math.ceil(left / 1000)` and the same trailing `s` as
  * DbnoOverlay. Two countdowns for one deadline that round differently would
  * have a squad and their downed mate reading two different answers out loud.
  *
- * `bleedEndsAt` is a SERVER timestamp, so it is compared to
- * `Date.now() + clockOffset` -- the rule StormBar, WarmupTimer and DbnoOverlay
- * already follow. Against a bare Date.now() it is wrong by however far the two
+ * `endsAt` is a SERVER timestamp -- both of them are, off the same squad beacon
+ * -- so it is compared to `Date.now() + clockOffset`, the rule StormBar,
+ * WarmupTimer and DbnoOverlay already follow. Against a bare Date.now() it is wrong by however far the two
  * clocks happen to sit apart, which is a number nobody can predict and
  * everybody would report as a broken timer.
  *
  * WRITTEN STRAIGHT TO THE NODE, exactly as DbnoOverlay does it, because the
  * alternative is re-rendering a plate several times a second to move two
- * digits -- and a squad can hold three of these at once.
+ * digits -- and a squad can now hold three of these at once per deadline.
  *
  * ON AN INTERVAL RATHER THAN rAF, which is the one place this deliberately
  * differs from DbnoOverlay. That component is on rAF because it also drives a
@@ -99,7 +137,14 @@ function useDeathSequence(m: SquadMember) {
  * text is only written when it actually differs, so a tick that changes nothing
  * touches no DOM at all.
  */
-function BleedClock({ endsAt, big }: { endsAt: number; big?: boolean }) {
+function RowClock({ endsAt, big, colour = 'var(--color-danger)' }: {
+  endsAt: number
+  big?: boolean
+  /** The clock wears the state it belongs to. The bleed deadline is danger --
+   *  it always was. The pickup deadline is the shade of the key mark it sits
+   *  beside, so the pair reads as one object rather than as two facts. */
+  colour?: string
+}) {
   const ref = useRef<HTMLSpanElement>(null)
   const offset = useUi((s) => s.clockOffset)
 
@@ -125,7 +170,7 @@ function BleedClock({ endsAt, big }: { endsAt: number; big?: boolean }) {
       className={`font-display leading-none tabular-nums shrink-0 ${
         big ? 'text-[1.05rem]' : 'text-[0.72rem]'
       }`}
-      style={{ color: 'var(--color-danger)', textShadow: 'var(--shadow-text)' }}
+      style={{ color: colour, textShadow: 'var(--shadow-text)' }}
     >
       --
     </span>
@@ -194,7 +239,152 @@ function VitalBar({ value, colour, dying }:
   )
 }
 
-function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
+/**
+ * WHAT LEVEL THIS MATE IS.
+ *
+ * Owner, 2026-08-22: "We need some way in the squad panel to see the levels of
+ * our teammates near their name." That is the whole specification, and the
+ * whole of what is drawn: a number, beside the name, with no word attached.
+ *
+ * NO CAPTION, DELIBERATELY. "Lv" or "Level" is interface text nobody asked for,
+ * in the tightest row on the HUD -- the panel is 13rem wide and this row
+ * already holds a voice mark, a name that truncates, and a DOWN/OUT stamp. A
+ * bare figure beside a player's name is the convention every battle royale
+ * shares, and the panel's other numbers are already caption-free.
+ *
+ * WHICH LEAVES IT TO THE STYLING TO SAY THIS IS NOT A VITAL, because the row's
+ * other numerals are hp and shield and they are large, colour-coded and
+ * urgent. This one is 0.62rem in --color-text-dim: the stamp's size and the
+ * caption shade, so it sits in the name's group as an attribute OF the name
+ * rather than as a third quantity in the row.
+ *
+ * AFTER THE NAME RATHER THAN BEFORE IT, and that is a layout requirement, not
+ * a preference. VoiceMark's slot exists to pin the name's left edge for the
+ * life of the panel; a variable-width number between the mark and the name
+ * would unpin it again and shift the name sideways the moment anyone crossed
+ * from 9 to 10. Placed after, the name's left edge never moves, and the level
+ * is still `shrink-0` so a long name truncates rather than squeezing the
+ * figure out.
+ *
+ * IT DOES NOT SCALE WITH THE TEXT-SIZE PREFERENCE, matching the name it
+ * belongs to -- no `.ts`, no `tscale`. The squad plate is a fixed-size plate,
+ * which index.css names as the one place text scaling must not go, and the
+ * voice mark scaling alone is what forced the `align-self: center` /
+ * `items-baseline` pair next door. `leading-none` at 0.62rem puts the line box
+ * far under the name's 1.08rem, so the flex line, the plate and the panel
+ * PlayerList measures keep their height at every setting. Measured at 0.90,
+ * 1.00 and 1.15: identical to the pixel.
+ */
+function LevelMark({ level }: { level: number }) {
+  return (
+    <span
+      className="font-display leading-none tabular-nums text-[0.62rem] shrink-0"
+      style={{ color: 'var(--color-text-dim)', textShadow: 'var(--shadow-text)' }}
+    >
+      {level}
+    </span>
+  )
+}
+
+/**
+ * WHETHER THE SQUAD CAN STILL GET THIS MATE BACK.
+ *
+ * Owner, 2026-08-30, from the playtest: "I also saw nothing in the squad panel
+ * indicating that a revive key had been retrieved", and, once the body and its
+ * world plate were gone, "I'm unable to interact with their revive key now and
+ * I have no way to know I still have their key."
+ *
+ * BOTH HALVES OF THAT ARE THE SAME BLINDNESS: a key is an entitlement held by a
+ * squad rather than an object anybody carries (br_lib/config/revivekey.lua --
+ * "NO SLOT. NO CARRIER."), so there is nothing in an inventory to look at and,
+ * after the pickup expires, nothing in the world either. The panel is the only
+ * surface that lists the people a key is ABOUT, so it is where the fact lives.
+ *
+ * ═══ ONE OBJECT, TWO COLOURS, WHICH IS VoiceMark'S VOCABULARY EXACTLY ═══
+ *
+ * That component draws one silenced-speaker glyph in two shades and lets the
+ * colour carry the difference between a state that is merely reported and one
+ * the viewer can do something about. This is the same pair:
+ *
+ *   NOT OURS YET  --color-text-dim. A key exists for this mate: on the ground
+ *                 where they fell while the pickup lives, and 25 Volts at an
+ *                 ambulance after it expires. Reported, in the caption shade.
+ *   HELD          --color-royale-accent. The squad owns it, and a live mate
+ *                 walking to any ambulance can spend it. The accent is what
+ *                 this panel already uses for something happening now.
+ *
+ *   NEITHER       no key at all. An absence draws nothing, which is the rule
+ *                 every other optional field on this row follows.
+ *
+ * STATIC, NOT PULSED. `.mate-pulse` and `.mate-talk` mean "this is happening
+ * right now"; holding a key is a standing condition that will still be true in
+ * two minutes. Animating it would put a fact in competition with a fight.
+ *
+ * A DRAWN KEY RATHER THAN A WORD, because the six lines in
+ * br_lib/config/revivekey.lua are the whole of what this feature is allowed to
+ * say and none of them is a panel label -- and because "never add unsolicited
+ * UI text" is a standing instruction. INLINE SVG rather than a font or a PNG,
+ * for VoiceMark's reasons: `currentColor` is what lets one path follow both
+ * tokens through the colourblind remaps, and a glyph font is another entry in
+ * fxmanifest's files{} to be forgotten.
+ *
+ * IT DOES NOT SCALE WITH THE TEXT-SIZE PREFERENCE -- no `.ts`, no `tscale` --
+ * matching LevelMark next door rather than VoiceMark. The squad plate is a
+ * fixed-size plate, and this mark sits in the stamp group, whose baseline is
+ * the row's. `align-self: center` takes it out of baseline alignment entirely
+ * (VoiceMark's note has the measurement) and 0.95rem is under the name's
+ * 1.08rem line box, so the plate's height is arithmetic rather than luck.
+ */
+const KEY_PATH =
+  'M4.7 3.8a4.2 4.2 0 1 0 0 8.4a4.2 4.2 0 1 0 0-8.4Z'
+  + 'M4.7 6.25a1.75 1.75 0 1 1 0 3.5a1.75 1.75 0 1 1 0-3.5Z'
+  + 'M7.5 6.9H15.4V12.2H14.2V9.1H12.8V12.2H11.6V9.1H7.5Z'
+
+function KeyMark({ held }: { held: boolean }) {
+  return (
+    <span
+      className="shrink-0"
+      style={{
+        display: 'block',
+        width: '0.95rem',
+        height: '0.95rem',
+        // See the note above, and VoiceMark's: a flex row with no
+        // baseline-aligned item takes its baseline from the bottom edge of its
+        // first item. Opting out leaves the stamp beside it as the row's
+        // source, which is where it was before this arrived.
+        alignSelf: 'center',
+        color: held
+          ? 'var(--color-royale-accent)'
+          : 'var(--color-text-dim)',
+      }}
+      aria-hidden
+    >
+      <svg
+        viewBox="0 0 16 16"
+        style={{ display: 'block', width: '100%', height: '100%' }}
+        aria-hidden
+      >
+        {/* THE BOW'S HOLE IS WOUND THE OTHER WAY, and the default nonzero fill
+            rule is what cuts it out. `evenodd` would have been the obvious
+            spelling and it is wrong here: the shaft overlaps the bow by a
+            third of a millimetre of viewBox, and under evenodd that sliver
+            would punch a notch through the key exactly where it joins. */}
+        <path d={KEY_PATH} fill="currentColor" />
+      </svg>
+    </span>
+  )
+}
+
+function Row({ m, talking, silent }: {
+  m: SquadMember
+  talking: boolean
+  /** This player's voice carries nothing at all. 'fault' is a silence nobody
+   *  asked for and is the VIEWER'S OWN ROW ONLY -- squad mode with no squad is
+   *  a fact about this client and about nobody else. 'chosen' is reachable on
+   *  any row: the viewer's own, and a squadmate whose beacon says `voiceOff`.
+   *  See VoiceMark for what the one published bit is allowed to claim. */
+  silent: 'chosen' | 'fault' | null
+}) {
   const { phase, flash } = useDeathSequence(m)
 
   const dead = phase === 'dead'
@@ -211,6 +401,12 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
   // the only thing that knows what to show.
   const hp = dead || dying ? 0 : Math.max(0, Math.min(100, m.hp))
   const sh = dead || dying ? 0 : Math.max(0, Math.min(100, m.armour ?? 0))
+
+  // A KEY FOR THIS MATE, OR NOT. Read as two explicit comparisons rather than
+  // as a truthiness test, because `false` is a real reading on this field and a
+  // `&&` would eat it -- see SquadMember.reviveKey in bridge/types.ts.
+  const keyHeld = m.reviveKey === true
+  const keyOut = m.reviveKey === false
 
   // A MATE IS A PLATE. Each row is its own object carrying that player's
   // colour on its edge, rather than a stripe inside one shared box -- so a
@@ -230,7 +426,30 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
         ['--plate-fill' as string]: downed
           ? 'rgba(52,20,24,0.92)' : 'rgba(20,23,33,0.90)',
         ['--cut-max' as string]: '0.45rem',
-        opacity: dead ? 0.34 : 1,
+        // ═══ A MATE WHO CAN COME BACK IS NOT DRAWN AS FINISHED ═══
+        //
+        // 0.34 is what "dead is finished and still" looks like on this panel,
+        // and it is right for a mate nobody can do anything about. It is the
+        // wrong drawing for one whose key the squad is holding: the row is the
+        // most actionable thing on the HUD and it was being faded to a third of
+        // its ink, taking the new mark down with it -- the mark exists because
+        // the owner "saw nothing", and painting it at 0.34 is a slower way of
+        // showing him nothing.
+        //
+        // SO THE FADE IS THE EXISTING VOCABULARY, USED RATHER THAN ADDED TO.
+        // Opacity on this plate already means "is this person still in play".
+        // A key is exactly the answer to that question, so it moves the same
+        // dial instead of introducing a second one, and the 460ms transition
+        // below carries it: a key collected across the map brings its owner's
+        // row UP, which is a squad-wide event visible without reading a word.
+        //
+        // ⚠ 0.7 IS NOT THE OWNER'S NUMBER. He asked to be able to tell; he did
+        // not say how bright. It is deliberately short of a live mate's 1 --
+        // an OUT row must never read as an alive one, and the OUT stamp is
+        // still sitting in it -- and roughly double the finished 0.34, which
+        // is the smallest gap that reads as a difference rather than as a
+        // rendering artefact.
+        opacity: dead ? (keyHeld || keyOut ? 0.7 : 0.34) : 1,
         transition: 'opacity 460ms ease',
       }}
     >
@@ -244,25 +463,45 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
 
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="flex items-center gap-1 min-w-0">
-            {/* SPEAKING. Voice had no visual at all -- somebody talks and
-                nothing on screen says who (owner, 2026-08-09). The name is
-                where it belongs: this panel is already the list of who your
-                squad IS, and a mark beside a name needs no legend.
-                It sits BEFORE the name so it never moves the name around as
-                it appears, and it is a filled dot rather than a glyph -- read
-                peripherally, in a corner, at 0.72rem. */}
-            {talking && (
-              <span
-                className="shrink-0 rounded-full mate-talk"
-                style={{
-                  width: '0.34rem', height: '0.34rem',
-                  background: 'var(--color-royale-accent)',
-                }}
-                title={`${m.name} is speaking`}
-              />
-            )}
+          {/* `items-baseline`, NOT `items-center`, AND IT IS LOAD-BEARING.
+              This group is the first flex item of the row above, which is
+              baseline-aligned -- so the group's own baseline decides where the
+              whole row sits and how tall the plate is. A flex container with no
+              baseline-aligned item inside it synthesises one from its FIRST
+              item's bottom edge, and that first item is the voice mark, whose
+              size follows the player's text-size preference. Aligning on the
+              baseline makes the NAME the source instead; the mark opts out with
+              `align-self: center` (see VoiceMark). Measured either way: without
+              this pair every downed and dead plate is 0.6px taller at text
+              scale 1.15 than at 0.90, for a mark that changes nothing else. */}
+          <span className="flex items-baseline gap-1 min-w-0">
+            {/* VOICE. Somebody talks and nothing on screen says who (owner,
+                2026-08-09); and, since 2026-08-22, whether this player's own
+                voice is carrying anything at all.
+                The name is where both belong: this panel is already the list
+                of who your squad IS, and a mark beside a name needs no legend.
+
+                IT USED TO BE A CONDITIONAL DOT AND IS NOW AN ALWAYS-PRESENT
+                SLOT. The old comment claimed the dot "never moves the name
+                around as it appears" -- it did, by its own width plus the gap,
+                every time somebody started a sentence. A slot that is always
+                rendered pins the name's left edge for the life of the panel,
+                and it is what lets the glyphs cross-fade instead of blinking.
+                See VoiceMark. */}
+            <VoiceMark fs="0.72rem" talking={talking} silent={silent} />
             <span className="text-[0.72rem] font-semibold truncate">{m.name}</span>
+            {/* NOTHING AT ALL WHEN THE SERVER HAS NOT SAID, which is the same
+                rule the bleed clock below follows. A missing level means the
+                mate's profile has not come back from the database yet -- so the
+                honest rendering is no number, not a `1` that every high-level
+                player would watch correct itself a second into the match.
+
+                THE TEST IS A RANGE, NOT A TRUTHINESS CHECK. `m.level &&` would
+                also swallow a real 0, and `!= null` would let a NaN through to
+                be drawn; levels are 1..100, so that is what is asked. */}
+            {typeof m.level === 'number' && m.level >= 1 && (
+              <LevelMark level={m.level} />
+            )}
           </span>
           {(dead || downed) && (
             // The stamp and the clock travel together on the right edge. The
@@ -270,6 +509,46 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
             // scale animation that replays on every state change, and a
             // countdown living inside it would pop once a second.
             <span className="flex items-baseline gap-1 shrink-0">
+              {/* THE KEY COMES BEFORE THE STAMP, so DOWN and OUT keep the
+                  right edge they have always had and the rows stay aligned
+                  with each other whether or not a key exists.
+
+                  IT LIVES IN THE STAMP GROUP because it answers the same
+                  question the stamp does -- what has happened to this mate --
+                  and because that group is the only part of the row a dead
+                  plate still draws (the bars and the bleed clock both go).
+
+                  NOTHING AT ALL WHEN THERE IS NO KEY, which is this panel's
+                  standing rule for an absent field: see the bleed clock below
+                  and the level above. */}
+              {(keyHeld || keyOut) && <KeyMark held={keyHeld} />}
+              {/* HOW LONG IS LEFT TO WALK TO THE BODY.
+
+                  Owner, 2026-08-31: "If there is a timer to pickup their key,
+                  display it in the squad panel."
+
+                  IT IS THE SAME CLOCK COMPONENT THE BLEED DEADLINE USES, which
+                  is the point: one clock discipline (an interval, not rAF; the
+                  server deadline against Date.now() + clockOffset; written
+                  straight to the node), one rounding, and one format. A second
+                  spelling of a countdown on one panel is two answers to "how
+                  many seconds is that" -- and the bleed clock already runs past
+                  a minute (dbnoBleedBase is 120s), so `m:ss` here would have
+                  been the odd one out rather than the tidy one.
+
+                  IT COMES WITH THE MARK, NOT WITH THE STAMP. The deadline is a
+                  fact about the KEY, so it sits next to the key in the key's own
+                  shade; OUT and DOWN keep the right edge every row shares.
+
+                  NOTHING AT ALL ONCE THE PICKUP HAS GONE, and that is why this
+                  is its own field rather than derived from `reviveKey === false`.
+                  The key outlives its pickup -- it is still 25 Volts at an
+                  ambulance for the rest of the match -- so the mark stays and
+                  only the clock goes. See SquadMember.reviveKeyEndsAt. */}
+              {!!m.reviveKeyEndsAt && (
+                <RowClock endsAt={m.reviveKeyEndsAt}
+                          colour="var(--color-text-dim)" />
+              )}
               <span
                 key={dead ? 'out' : 'down'}
                 className="mate-stamp font-display text-[0.62rem] tracking-[0.18em]"
@@ -303,7 +582,7 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
             the instant a mate goes down and the whole stack jumps. */}
         {!dead && (downed ? (
           <div className="mt-1 flex h-[1.2rem] items-center justify-center">
-            {!!m.bleedEndsAt && <BleedClock endsAt={m.bleedEndsAt} big />}
+            {!!m.bleedEndsAt && <RowClock endsAt={m.bleedEndsAt} big />}
           </div>
         ) : (
           <div className="mt-1 flex flex-col gap-[0.2rem]">
@@ -322,23 +601,71 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
   )
 }
 
-export default function SquadPanel({ squad, talking = [] }:
-  { squad: SquadPayload; talking?: number[] }) {
+export default function SquadPanel({
+  squad, talking = [], voiceSilent = false, voiceChosen = false,
+}: {
+  squad: SquadPayload
+  talking?: number[]
+  /** THIS CLIENT's verdict, not anybody else's: nothing can reach it and
+   *  nothing it says can leave. Straight off the voice envelope. */
+  voiceSilent?: boolean
+  /** ...and the player asked for it -- the 'off' preference, or spectating. */
+  voiceChosen?: boolean
+}) {
   // Unchanged and load-bearing: a solo player has no squad panel, and the
   // party-vs-squad fallback that feeds this channel is what made the worst M2
   // bug. Do not widen this test.
   if (!squad.id || squad.members.length <= 1) return null
 
-  // Read AFTER the early return so a solo player subscribes to nothing --
-  // this store field changes whenever anybody starts or stops speaking.
   const talkingSet = new Set(talking)
+
+  // THE VIEWER'S OWN ROW IS FOUND BY `you`, which rides on every squad payload
+  // precisely because the interface has no other way to know its own server id.
+  //
+  // ABSENT `you` MARKS THE VIEWER NOBODY, which is the safe failure: an older
+  // Lua, or the party payload standing in for a squad, produces a panel with no
+  // OWN mark rather than one that has guessed. A squadmate's own bit is
+  // unaffected -- it is keyed on that member, not on this comparison.
+  const mine = squad.you
+  const silence: 'chosen' | 'fault' | null =
+    voiceSilent ? (voiceChosen ? 'chosen' : 'fault') : null
+
+  // AND A SQUADMATE'S OWN ROW, WHICH IS NEW AND IS ONE BIT WIDE.
+  //
+  // Owner, 2026-08-29: "the squad panel works, but doesn't accurately show when
+  // others in the squad have 'off' selected." It could not: nothing published
+  // it. `voiceOff` now arrives on the squad beacon (br_core server/party.lua),
+  // and it is the ONLY voice fact about another player on this payload.
+  //
+  // IT IS ALWAYS 'chosen', NEVER 'fault'. The two differ by colour and the
+  // difference is a claim: 'fault' is --color-danger and means "this is wrong
+  // and you can fix it", which is only ever true of the viewer -- they are the
+  // one who can open the settings screen. A mate's voice being off is a state
+  // of theirs, reported, not an alarm to raise on their behalf; painting it red
+  // would teach the player that the colour means nothing, which is the rule
+  // VoiceNotice and VoiceMark already draw by.
+  //
+  // `=== true` RATHER THAN A TRUTHINESS TEST. Absent is a real and common state
+  // -- the beacon has not covered this mate yet, or the server predates the
+  // field -- and it means "nothing to draw", the same as false. Explicit here
+  // keeps those two collapsed onto the same rendering for the right reason
+  // instead of by accident.
+  const silentFor = (m: SquadMember): 'chosen' | 'fault' | null => {
+    if (mine !== undefined && m.src === mine) return silence
+    return m.voiceOff === true ? 'chosen' : null
+  }
 
   // No outer .panel: each row is its own plate now, so a shared box around
   // them was a second frame doing nothing but adding an edge.
   return (
     <div className="flex flex-col gap-1">
       {squad.members.map((m) => (
-        <Row key={m.src} m={m} talking={talkingSet.has(m.src)} />
+        <Row
+          key={m.src}
+          m={m}
+          talking={talkingSet.has(m.src)}
+          silent={silentFor(m)}
+        />
       ))}
     </div>
   )

@@ -24,6 +24,7 @@ local buf = BR.EvidenceBuf.new({
     chatMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.chatMax,
     killMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.killMax,
     stripMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.stripMax,
+    refusedMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.refusedMax,
 })
 
 BR.Evidence.buf = buf
@@ -42,6 +43,23 @@ local function metaFor(src)
     -- ONLY WHILE A MATCH IS LIVE. Lobby chatter is not evidence of anything and
     -- buffering it would mean holding the whole server's small talk between
     -- matches for no reader.
+    --
+    -- ═══ DO NOT DELETE THIS GUARD TO MAKE LOBBY CHAT FILEABLE ═══
+    --
+    -- It is the obvious fix for "a refused line in the lobby has no evidence to
+    -- attach", it has already been considered, and it LEAKS. This buffer's whole
+    -- lifecycle is match-scoped: BR.EvidenceBuf:clearMatch(matchId) drops only
+    -- the records whose `r.matchId` EQUALS the match being torn down, and a
+    -- lobby record's matchId is nil -- so no teardown ever matches one.
+    -- `playerDropped` seals it into `self.sealed`, where it stays until
+    -- `onResourceStart`. Letting lobby chat in costs one record plus up to
+    -- `chatMax` lines per lobby player, per server uptime, held for nobody.
+    --
+    -- THE LOBBY CASE ALREADY WORKS WITHOUT THIS. It does not need the buffer: a
+    -- match case aggregates a round, a lobby refusal is one line, and
+    -- server/chat.lua puts that line on `br:core:chatrefused` where
+    -- BR.IncidentBuild.fromChat builds a one-row timeline from it directly. See
+    -- that function's header.
     if e.matchId == nil then return nil end
 
     return {
@@ -71,6 +89,30 @@ function BR.Evidence.noteChat(src, msg)
         text    = msg.text,
         channel = msg.channel,
         at      = msg.at,
+    }, meta)
+end
+
+--- Record one chat line the server accepted and then delivered to nobody.
+---
+--- CALLED IN ADDITION TO `noteChat`, NOT INSTEAD OF IT. The line is still part of
+--- what this player said this match and still belongs in the chat log; this is
+--- the second, shorter list that says the server refused to pass it on. See
+--- BR.EvidenceBuf:noteRefusedChat for why the two are not one list with a flag.
+---
+--- THE DELIVERED TEXT, LIKE `noteChat` -- what the screen actually judged, after
+--- sanitising. A record of the raw input would be a record of something the
+--- server never formed an opinion about.
+--- @param src integer
+--- @param msg table   the shadowed message { channel, name, text, at }
+--- @param reason string  BR.ChatScreen.LINK or BR.ChatScreen.SCRIPT
+function BR.Evidence.noteRefusedChat(src, msg, reason)
+    local meta = metaFor(src)
+    if not meta then return end
+    buf:noteRefusedChat(src, {
+        text    = msg.text,
+        channel = msg.channel,
+        at      = msg.at,
+        reason  = reason,
     }, meta)
 end
 

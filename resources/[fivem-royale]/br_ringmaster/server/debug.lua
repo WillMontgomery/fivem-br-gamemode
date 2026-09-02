@@ -16,6 +16,30 @@ end
 
 -- bridents [serverId] -- print a connected player's identifiers, or everyone's.
 --
+-- ═══ THE ONE COMMAND IN THIS RESOURCE THAT IS DEV-GATED (2026-08-31) ═══
+--
+-- brkick, brspectate and brring are named in devgate.lua's EXEMPT line and keep
+-- working on the public box. This one is not, and it is the only judgement call
+-- in that list rather than a reading of the code.
+--
+-- WHAT THE OTHER THREE HAVE THAT THIS DOES NOT: a caller. dispatch.sh types
+-- brkick and brspectate into this console over tmux, so gating them would break
+-- the admin console's two buttons with no error anywhere; DEPLOY.md sends the
+-- operator to brring by hand, on the live box, when the ingest link looks dead.
+-- Nothing types bridents and no document sends anybody to it in production.
+--
+-- AND WHAT IT HAS THAT THEY DO NOT: it prints licenses, Discord ids and Steam
+-- ids for every connected player at once. Of everything on this box it is the
+-- readout with the most reason to be off on a server full of strangers, and the
+-- owner's rule was "all client and server commands", with read-only diagnostics
+-- explicitly included and the cost accepted.
+--
+-- IF THAT IS WRONG IT IS ONE WORD TO REVERSE: add `bridents = true` to EXEMPT
+-- in br_lib/shared/devgate.lua and the name to EXEMPT_ in tools/verify.sh. What
+-- it costs meanwhile: reading a license off the live box by hand -- which is
+-- the multi-step ordeal this command was written to end, and the console has
+-- the same identifiers from DynamoDB either way.
+--
 -- Exists because the absence of exactly this turned "read my own license off
 -- my own server" into a multi-step ordeal by way of profile caches and match
 -- lifecycles. The identifiers are RIGHT THERE on the connection; a console
@@ -88,6 +112,27 @@ RegisterCommand('brring', function()
         print(('snapshot      %s'):format(s.summary or 'idle'))
     else
         print('snapshot      not wired yet')
+    end
+
+    -- WHAT THE CONSOLE IS BEING TOLD ABOUT br_ddb, which is a different question
+    -- from `brddb`. `brddb` probes now; this says what is on the snapshot, so
+    -- "the console shows nothing" can be split into "the game is not sending it"
+    -- and "the console is not reading it" without leaving this machine.
+    --
+    -- A dash for absent, deliberately, and never a word like "ok" -- absent is
+    -- "this box cannot say", and printing anything reassuring for it here would
+    -- be the same lie the wire is careful not to tell.
+    if BR.Ring.ddbStats then
+        local d = BR.Ring.ddbStats()
+        if not d.running then
+            print('ddb           br_ddb is not started -- nothing sent')
+        elseif not d.probe then
+            print('ddb           no selftest answered yet -- nothing sent')
+        else
+            print(('ddb           %s, probed at %dms%s')
+                :format(d.probe.ok and 'reachable' or 'FAILED', d.probe.at,
+                    d.probe.error and (' -- ' .. d.probe.error) or ''))
+        end
     end
 
     if BR.Ring.outbox then

@@ -13,11 +13,11 @@ import { create } from 'zustand'
 import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
   InvPayload, InvitePayload, LobbyPayload, MatchPayload, ScreenPayload,
-  SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
+  DeathPayload, SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
   ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
-  AdminPayload,
+  AdminPayload, CommunityPayload, VehiclePayload,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -51,8 +51,27 @@ export interface UiState {
   voice: VoicePayload
   inv: InvPayload
   storm: StormPayload | null
+  /**
+   * The car under you, or null when there is none.
+   *
+   * NULL RATHER THAN A `show: false` OBJECT ONCE IT IS IN THE STORE. Lua sends
+   * the flag because a channel has to say "stop" somehow; the store normalises
+   * it at the boundary so every reader asks one question instead of two, the
+   * same shape `setStorm` uses for a storm that is not running.
+   */
+  vehicle: VehiclePayload | null
   dbno: DbnoPayload
   spectate: SpectatePayload | null
+  /**
+   * Your own death, for the ~10s before the spectator camera takes over.
+   *
+   * A SEPARATE SLICE FROM `summary`, not a mode of it. `summary` is the
+   * match-end verdict SCREEN and is gated on the match tearing down; this is
+   * the death MOMENT, mid-match, over a world that is still running. Folding
+   * them together would mean a flag deciding which of two surfaces a payload
+   * meant, which is the pair the owner asked to keep distinct.
+   */
+  death: DeathPayload | null
   summary: SummaryPayload | null
   feed: FeedEntry[]
   chat: ChatMessage[]
@@ -85,6 +104,9 @@ export interface UiState {
   noticeLog: {
     id: number
     text: string
+    /** The sentence pre-split, when it names a player. The history draws the
+     *  same NoticeText the live row does, so a name is bold in both. */
+    parts?: ToastPayload['parts']
     tone: ToastPayload['tone']
     key?: string
     /** Client clock, for "4m ago". Notices are read relatively, never as a
@@ -132,12 +154,24 @@ export interface UiState {
 
   /** The store catalogue and the player's balance. Also synthetic. */
   market: MarketPayload
+  /** Is the warmup shop's plate up? While it is, the ammo slot shows the
+   *  player's Volts instead of being empty (owner, 2026-08-29). Only the
+   *  FLAG travels; the figure itself is `market.balance`, which is already
+   *  here -- see the `shopplate` envelope. */
+  shopPlate: boolean
   /** The in-game player list, and the report rules that came with it. */
   players: PlayersPayload
   /** The admin console (#23): where it is, and the last mint answer.
    *  An absent `origin` means no Admin tab, and it is the default -- the tab
    *  exists only because the server chose to send this player an address. */
   admin: AdminPayload
+  /** Where our Discord is (owner, 2026-08-30), and whether this player is
+   *  already in it (owner, 2026-08-31). An absent `invite` means this
+   *  deployment publishes none, and it is the default -- the card exists only
+   *  because the server sent an address. `{}` is a legitimate value and is
+   *  truthy: read the FIELDS, never `community`. `member` arrives only for a
+   *  confirmed yes and may land in a second envelope after the first. */
+  community: CommunityPayload
   /** The answer to the last submitted report, or null. */
   reportResult: ReportResult | null
 
@@ -218,8 +252,10 @@ export interface UiState {
   setVoice: (v: VoicePayload) => void
   setInv: (i: WireInvPayload) => void
   setStorm: (s: StormPayload | null) => void
+  setVehicle: (v: VehiclePayload) => void
   setDbno: (d: DbnoPayload) => void
   setSpectate: (s: SpectatePayload | null) => void
+  setDeath: (d: DeathPayload | null) => void
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen'], tab?: string) => void
   setFrontendUp: (v: boolean) => void
@@ -243,8 +279,10 @@ export interface UiState {
   clearXpAward: () => void
   setPlayers: (p: PlayersPayload) => void
   setAdmin: (a: AdminPayload) => void
+  setCommunity: (c: CommunityPayload) => void
   setReportResult: (r: ReportResult | null) => void
   setMarket: (m: MarketPayload) => void
+  setShopPlate: (up: boolean) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
   openChat: (channel: ChatMessage['channel']) => void
   closeChat: () => void
@@ -360,6 +398,12 @@ export const useUi = create<UiState>((set, get) => {
           noticeLog: [{
             ...prev,
             text:  t.text ?? prev.text,
+            // THE SPLIT TRAVELS WITH THE TEXT IT BELONGS TO. A keyed notice
+            // that updates in place may name a different player -- or nobody --
+            // so the parts are replaced whenever the text is, and cleared when
+            // the new text has none. Keeping `prev.parts` here would draw the
+            // OLD name over the new sentence.
+            parts: t.text != null ? t.parts : prev.parts,
             tone:  t.tone ?? prev.tone,
             at:    Date.now(),
             // A keyed notice is ONE event changing state, so it does not
@@ -374,6 +418,7 @@ export const useUi = create<UiState>((set, get) => {
         noticeLog: [{
           id: ++logId,
           text: t.text,
+          parts: t.parts,
           tone: t.tone,
           key: t.key,
           at: Date.now(),
@@ -493,8 +538,10 @@ export const useUi = create<UiState>((set, get) => {
   voice: { talking: [] },
   inv: emptyInv,
   storm: null,
+  vehicle: null,
   dbno: emptyDbno,
   spectate: null,
+  death: null,
   summary: null,
   feed: [],
   chat: [],
@@ -509,8 +556,10 @@ export const useUi = create<UiState>((set, get) => {
   earned: null,
   earnedStaged: false,
   market: { balance: 0, items: [] },
+  shopPlate: false,
   players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
   admin: {},
+  community: {},
   reportResult: null,
   keybinds: [],
   keybindsRaw: false,
@@ -589,8 +638,16 @@ export const useUi = create<UiState>((set, get) => {
   // crossed the Lua bridge becomes {}) must read as "no storm", never as a
   // storm whose every field is undefined.
   setStorm:    (storm) => set({ storm: storm && storm.phase != null ? storm : null }),
+  // NORMALISED AT THE BOUNDARY, exactly as setStorm is. Lua's channel has to be
+  // able to say "stop", and it says it with `show: false`; past this line the
+  // absence of a vehicle is a null, so no component has to remember to check
+  // two things. A shapeless payload -- a nil that crossed the Lua bridge
+  // arrives as {} -- reads as "no vehicle" rather than as a car with undefined
+  // health, which would render two empty bars over the inventory.
+  setVehicle:  (v) => set({ vehicle: (v && v.show) ? v : null }),
   setDbno:     (dbno) => set({ dbno }),
   setSpectate: (spectate) => set({ spectate }),
+  setDeath:    (death) => set({ death }),
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus, focusTab) => set({ focus, focusTab }),
   setFrontendUp: (frontendUp) => set({ frontendUp }),
@@ -704,8 +761,10 @@ export const useUi = create<UiState>((set, get) => {
   },
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
+  setShopPlate: (shopPlate) => set({ shopPlate }),
   setPlayers: (players) => set({ players }),
   setAdmin: (admin) => set({ admin }),
+  setCommunity: (community) => set({ community }),
   setReportResult: (reportResult) => set({ reportResult }),
   setKeybinds: (keybinds, keybindsRaw) => set({ keybinds, keybindsRaw }),
 
@@ -727,6 +786,7 @@ export const useUi = create<UiState>((set, get) => {
 // update at 10 Hz does not re-render the chat log.
 export const selHud      = (s: UiState) => s.hud
 export const selStorm    = (s: UiState) => s.storm
+export const selVehicle  = (s: UiState) => s.vehicle
 export const selMatch    = (s: UiState) => s.match
 export const selSquad    = (s: UiState) => s.squad
 export const selInv      = (s: UiState) => s.inv

@@ -24,3 +24,17 @@ shared_scripts {
 client_scripts {
     'client/ipl.lua',
 }
+
+-- THIS RESOURCE SHIPS NO GAME DATA FILE, AND THAT IS A TESTED RESULT (#197,
+-- closed 2026-08-22 as no plan to fix).
+--
+-- It briefly shipped `data/vehiclelayouts.meta`, mounted as
+-- VEHICLE_LAYOUTS_FILE, redefining DRIVEBY_DEFAULT_ONE_HANDED and
+-- DRIVEBY_DEFAULT_REAR_ONE_HANDED so a passenger could fire a long gun. The
+-- game IGNORED the redefinition -- an added data file does not get to restate a
+-- CDrivebyWeaponGroup the base game already defines -- and the owner confirmed
+-- it in a seat on 2026-08-22: "carbine rifle in the passenger seat does nothing
+-- but pistols work". Backed out whole.
+--
+-- Do not re-add it. docs/vehicle-data.md carries the finding, what it cost to
+-- get, and the only route that remains open.

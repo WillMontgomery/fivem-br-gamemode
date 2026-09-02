@@ -45,8 +45,9 @@ local CAN_TAKE = BR.Config.LootTakeStates
 --- is in a chest is the reason to open it, and a client that knew would only
 --- open the good ones.
 --- @param e table
+--- @param born boolean|nil  true only on the message that ANNOUNCES A BIRTH.
 --- @return table
-local function wireEntry(e)
+local function wireEntry(e, born)
     return {
         id      = e.id,
         kind    = e.kind,
@@ -72,8 +73,18 @@ local function wireEntry(e)
         -- is inside crates it has not opened, which is a wallhack for three
         -- floats' worth of latency we do not actually need: the origin
         -- travels in the same message as the item.
-        fx      = e.fx,
-        fy      = e.fy,
+        --
+        -- AND ONLY IN THAT MESSAGE. An origin is a BIRTH EVENT, not a property
+        -- of the entry, and this is the distinction that makes the arc safe to
+        -- run at all. These fields used to be on every wire copy -- the cell
+        -- subscription, the reconnect snapshot, the repair re-announce -- so a
+        -- player who walked into the cell five minutes after a crate was opened
+        -- was handed the same three floats as the player who opened it. The
+        -- client stamps the arrival clock when the message arrives, because it
+        -- has no other clock to stamp it from, so that player's loot would have
+        -- flown out of a box somebody emptied while they were elsewhere.
+        fx      = born and e.fx or nil,
+        fy      = born and e.fy or nil,
         -- HEIGHT ABOVE THE GROUND, NOT AN ABSOLUTE Z, and that distinction is
         -- a bug fix. The server's z for any entry is a first-pass hint -- only
         -- the client has a ground probe, which is why groundZ() exists there
@@ -84,7 +95,7 @@ local function wireEntry(e)
         -- A lift is unambiguous: the client adds it to the ground height it
         -- resolved itself, so the arc starts at the crate's mouth or the
         -- player's hands wherever the terrain actually is.
-        fl      = e.flift,
+        fl      = born and e.flift or nil,
     }
 end
 
@@ -121,10 +132,16 @@ local function subscribersOf(m, key)
 end
 
 --- Announce a new entry to everyone already looking at its cell.
+---
+--- `born` is what separates "this thing has just come into existence" from the
+--- two RE-announces that ride the same message: a container becoming its husk,
+--- and an entry whose position the repair round-trip corrected. Only the first
+--- is allowed to carry an origin -- see wireEntry.
 --- @param m table
 --- @param e table
-local function announce(m, e)
-    local payload = { wireEntry(e) }
+--- @param born boolean|nil
+local function announce(m, e, born)
+    local payload = { wireEntry(e, born) }
     for _, src in ipairs(subscribersOf(m, e.cell)) do
         TriggerClientEvent(BR.Net.LOOT_ADD, src, payload)
     end
@@ -168,15 +185,47 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from)
         rarity = stack.rarity,
         count  = stack.count or 1,
         clip   = stack.clip,
+        -- HAS THIS BEEN IN SOMEBODY'S HANDS? Set by BR.Inv's `released` on every
+        -- stack that leaves an inventory -- a drop, a death, a displaced swap --
+        -- and read by BR.Inv.give, which mints a clip's worth of reserve for a
+        -- FOUND gun and must not mint one for a gun coming back. It has to
+        -- survive the round trip through the world or the fact is lost exactly
+        -- where it is needed (owner, 2026-08-23: "when I drop it and pick it
+        -- back up it has 1 round in it now"). Nil on all 1300 generated entries,
+        -- on every crate's contents and on the airdrop shelf, which is what
+        -- keeps found loot arriving loaded.
+        --
+        -- SERVER-SIDE ONLY, like the three husk fields below: wireEntry does not
+        -- carry it, because it is an input to an arbitration the server makes
+        -- alone and a client has no use for it and no right to it.
+        carried = stack.carried,
         x = x, y = y, z = z,
         prop   = stack.prop,
         heading = stack.heading,
         contents = stack.contents,
         warmup = stack.warmup,
         dropped = true,
+        -- WHAT THIS CONTAINER BECOMES WHEN IT IS OPENED, and how widely its
+        -- contents scatter. Both nil for every crate the generator makes --
+        -- toHusk and scatter fall back to the config exactly as they always
+        -- have -- and set only by the airdrop, whose husk is drawn at a
+        -- different size and whose ring holds more items than a crate's.
+        --
+        -- SERVER-SIDE ONLY. None of these three reach wireEntry: `huskProp` and
+        -- `huskItem` become the entry's own `prop` and `item` the moment it is
+        -- opened, which is a re-announce the client already handles, and
+        -- `spread` has done its work before any of it travels.
+        huskItem = stack.huskItem,
+        huskProp = stack.huskProp,
+        spread   = stack.spread,
+        -- WHICH AIRDROP THIS IS, if it is one. Read once, by the claim handler,
+        -- to tell br_core/server/airdrop.lua that its crate was opened -- which
+        -- is what starts the blip's last minute. A number rather than a
+        -- reference so nothing here holds a flight plan.
+        airdrop = stack.airdrop,
     }
     index(m.loot, e)
-    announce(m, e)
+    announce(m, e, true)
     return e
 end
 
@@ -190,12 +239,20 @@ end
 ---
 --- A husk is not loot: it cannot be claimed and it carries no rarity. It is
 --- there so a room you have already swept reads as swept from the doorway.
+---
+--- THE HUSK'S IDENTITY CAN BE THE CRATE'S CHOICE, and for exactly one crate it
+--- is. An airdrop's box is drawn at twice the authored size on both sides of the
+--- open (owner, 2026-08-22), and the client resolves a prop's scale from its
+--- ITEM ID -- so an airdrop husk that called itself 'husk' like the other 1300
+--- would shrink back to normal on the frame it was opened. `huskItem` and
+--- `huskProp` are unset on every generated crate and the fallbacks below are
+--- what those have always used.
 --- @param m table
 --- @param crate table
 local function toHusk(m, crate)
     crate.kind     = 'husk'
-    crate.item     = 'husk'
-    crate.prop     = L.chestOpenProp
+    crate.item     = crate.huskItem or 'husk'
+    crate.prop     = crate.huskProp or L.chestOpenProp
     crate.rarity   = BR.Rarity.COMMON
     crate.contents = nil
     announce(m, crate)
@@ -508,6 +565,13 @@ end)
 -- Claims
 -- --------------------------------------------------------------------------
 
+--- The two numbers inReach refuses on, named rather than inline because
+--- BR.Loot.inspect PRINTS them. A diagnostic carrying its own copy of the
+--- bound it is reporting on is a diagnostic that lies at exactly the moment it
+--- matters -- when the rule has moved and the reader has not.
+local REACH_SLACK = 4.0
+local REACH_Z     = 12.0
+
 --- Is this player close enough to that entry to have taken it?
 ---
 --- The position being compared is the roster's own 4Hz sample, so it can be
@@ -520,9 +584,8 @@ end)
 --- @return boolean
 local function inReach(e, item)
     if not e.pos then return false end
-    local slack = 4.0
     local d = BR.Dist(e.pos.x, e.pos.y, item.x, item.y)
-    if d > (L.pickupDistance + slack) then return false end
+    if d > (L.pickupDistance + REACH_SLACK) then return false end
 
     -- THE HEIGHT CHECK ONLY APPLIES TO A HEIGHT WE ACTUALLY KNOW.
     --
@@ -537,7 +600,7 @@ local function inReach(e, item)
     -- having again: it stops someone on the floor above claiming the rifle
     -- downstairs.
     if item.repaired then
-        return math.abs((e.pos.z or 0.0) - (item.z or 0.0)) < 12.0
+        return math.abs((e.pos.z or 0.0) - (item.z or 0.0)) < REACH_Z
     end
     return true
 end
@@ -554,6 +617,81 @@ local function rateOk(e)
     return e.lootClaims <= (L.pickupRateLimit or 4)
 end
 
+--- Where a container's contents land, relative to it.
+---
+--- SPILLED, NOT ARRANGED (owner, 2026-08-23: "the loot doesn't need to be
+--- spread equidistant from the crate"). What was here was `(i / n) * 2pi` at
+--- one fixed radius: every item on an even ring at an identical distance, which
+--- reads as an inventory laid out for inspection rather than as a box that
+--- burst.
+---
+--- THE OLD CONSTRAINTS SURVIVE INTACT, because they are the reason the ring was
+--- a ring in the first place:
+---
+---   VISIBLE AND REACHABLE. Nothing is ever thrown FURTHER than the ring it
+---     replaces -- the radius factors are all <= 1.0 -- and nothing lands
+---     closer to the box than `scatterClearance`, which is what stops an item
+---     ending up inside the container prop where it can be neither seen nor
+---     targeted.
+---
+---     AND THAT BOUND IS WHY THIS CANNOT DISTURB THE GROUND PLACEMENT (owner,
+---     2026-08-23: "We have loot properly landing on the ground today. Nothing
+---     should change there"). Every position this produces is strictly INSIDE
+---     the disc the old ring's items already sat on -- the ring sat exactly on
+---     its rim -- so no item is offered a patch of terrain the old layout was
+---     not already willing to put one on. Nothing here touches z at all: the
+---     caller still passes the container's own, and only the CLIENT resolves a
+---     real ground height (groundZ, then PlaceObjectOnGroundProperly), with the
+---     LOOT_FIX round-trip unchanged behind it. A container on a roof spills
+---     onto that roof, which is the answer the ring gave too.
+---
+---   EVERYONE SEES THE SAME ARRANGEMENT. Not by luck: the offsets come out of
+---     BR.Rng seeded from the match's own layout seed and the CONTAINER'S ID,
+---     both fixed for the life of the entry. math.random would have been just
+---     as identical across clients (this runs on the server, once, and the
+---     positions are what travel) and still wrong -- the layout has to replay
+---     from a seed for /brlootseed to mean anything, and an unseeded roll would
+---     make the same pinned seed lay out differently on the second run.
+---
+--- NOTHING STACKS INSIDE ANYTHING ELSE, which was the ring's other quiet job
+--- and the whole reason the airdrop had to name a wider spread. Each item keeps
+--- its own angular wedge and wanders only inside it, and the radius alternates
+--- between an inner and an outer band by index, so two neighbours are never
+--- both pushed in. Swept over 50,000 seeds at every size a container can hold,
+--- the closest any pair lands is 1.07m (a 3-item crate) and 1.44m at the
+--- airdrop's fourteen -- an ammo box is about a third of a metre across.
+---
+--- The numbers below were measured rather than guessed, and the ANGULAR one is
+--- the sensitive one: at +/- 0.28 of a wedge that worst pair fell to 0.90m,
+--- because a wide swing is a small chord once an item is also on the inner
+--- band. Widen it again and re-measure before believing otherwise.
+--- @param seed integer
+--- @param n integer
+--- @param radius number   the old ring's radius: the OUTER bound, not a target
+--- @return table[]        n entries of { dx, dy }
+local function spill(seed, n, radius)
+    local rng = BR.Rng(seed)
+    local clearance = L.scatterClearance or 0.7
+    local wedge = (math.pi * 2.0) / n
+    local out = {}
+    for i = 1, n do
+        -- The wedge this item owns, and how far inside it it may wander:
+        -- +/- 0.22 of a wedge, which leaves 56% of the gap between any two
+        -- neighbours untouched.
+        local a = (i - 0.5) * wedge + (rng:float() - 0.5) * (wedge * 0.44)
+        -- Two bands by index, so adjacent items are never on the same one.
+        -- Floored rather than rescaled, because the alternative -- mapping both
+        -- bands into the annulus above the clearance -- lets an item sit
+        -- exactly ON the clearance, and two of those at a shallow angle are the
+        -- closest pair the whole scheme can produce.
+        local lo, hi = 0.82, 1.0
+        if i % 2 == 0 then lo, hi = 0.52, 0.70 end
+        local r = math.max(clearance, radius * (lo + (hi - lo) * rng:float()))
+        out[i] = { dx = math.cos(a) * r, dy = math.sin(a) * r }
+    end
+    return out
+end
+
 --- Scatter a container's contents on the ground around it.
 --- @param m table
 --- @param container table
@@ -562,9 +700,13 @@ local function scatter(m, container)
     local n = #contents
     if n == 0 then return end
 
-    -- A ring, not a random spray: everything lands visible and reachable, and
-    -- two players opening the same chest see the same arrangement.
-    local spread = L.deathBoxSpread or 0.8
+    -- THE CONTAINER MAY NAME ITS OWN SPREAD, and only the airdrop does: fourteen
+    -- items on a crate's ring stack inside each other, which is what
+    -- BR.Config.Airdrop.scatterSpread exists to widen. Unset everywhere else, so
+    -- every ordinary crate and death box uses the number it always has -- and
+    -- the spill above still treats whatever comes out as its OUTER bound, so a
+    -- wider airdrop stays exactly as wide as it was.
+    local spread = container.spread or L.deathBoxSpread or 0.8
     local radius = math.max(spread, 0.55 * n * spread)
     -- Everything comes OUT OF THE BOX, a little above its base, so the client
     -- can arc it rather than popping it into existence at the scatter point.
@@ -572,11 +714,14 @@ local function scatter(m, container)
         x = container.x, y = container.y,
         lift = L.crateMouthHeight or 0.6,
     }
-    for i, stack in ipairs(contents) do
-        local a = (i / n) * math.pi * 2.0
-        BR.Loot.spawnStack(m, stack,
-            container.x + math.cos(a) * radius,
-            container.y + math.sin(a) * radius,
+    -- The match layout's seed folded with the container's id and a prime of its
+    -- own -- the same shape BR.Loot.begin uses -- so two containers opened in
+    -- one match do not spill identically.
+    local seed = (m.loot.seed or 0) + (container.id or 0) * 2654435761
+    for i, o in ipairs(spill(seed, n, radius)) do
+        BR.Loot.spawnStack(m, contents[i],
+            container.x + o.dx,
+            container.y + o.dy,
             container.z, from)
     end
 end
@@ -810,7 +955,34 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     end
 
     if not inReach(e, item) then
-        BR.Server.notify(src, 'Too far away.', 'warn')
+        -- "TOO FAR AWAY" IS GONE, EVERYWHERE, WITH NO EXCEPTIONS.
+        --
+        -- This is a straight one-for-one replacement of that sentence and it is
+        -- deliberately NOT conditional on kind. An earlier version said this
+        -- only for chests and kept the distance answer for everything else, on
+        -- the reasoning that for a deathbox or a dropped rifle the distance is
+        -- at least TRUE. The owner overruled it (2026-08-21): "Players have no
+        -- idea what 'Too far away' means without any context or awareness as to
+        -- the expected/actual positions of crates etc. So something that is more
+        -- meaningful to them, even if not technically true, is less confusing."
+        --
+        -- THE MESSAGE BEING LITERALLY TRUE IS NOT THE PROPERTY THAT MATTERS. A
+        -- player cannot see the registry position, so "too far away" reads as
+        -- nonsense whenever it fires -- and it can only fire when the client's
+        -- idea of where the entry is and the server's have diverged, since the
+        -- client only offers the prompt within pickupDistance and this accepts
+        -- within pickupDistance + REACH_SLACK, which is wider. A sentence that
+        -- tells them to stop trying is more use than one that tells them to walk
+        -- closer to something they are already touching.
+        --
+        -- IT DOES NOT FIX THE DIVERGENCE and is not meant to; #198 carries the
+        -- mechanism and the designed fix.
+        --
+        -- AND IT LEAKS NOTHING, which in this handler always deserves the
+        -- question -- see the oracle argument above. Being kind-independent, it
+        -- is strictly less distinguishing than the version it replaced.
+        BR.Server.notify(src,
+            'This crate has a lock on it and cannot be opened.', 'warn')
         return
     end
 
@@ -838,6 +1010,56 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
         return
     end
 
+    if item.kind == 'volts' then
+        -- VOLTS ARE NOT AN INVENTORY ITEM (owner, 2026-08-21: "This should be an
+        -- item that does not go into inventory - they simply pick it up and it's
+        -- gone. Simple notification that they collected 100 Volts, and that's
+        -- it."). So the entry is retired and BR.Inv.give is never reached --
+        -- there is no slot to find, nothing to displace, and no refusal that
+        -- could leave the pile on the floor.
+        --
+        -- AND THIS IS NOT A WRITE. It increments a counter on the roster entry;
+        -- the number rides the match results envelope into
+        -- BR.Config.marketPayout and lands in the SAME atomic ADD as the match
+        -- payout. config/market.lua's "exactly one writer that can increase a
+        -- balance" is the property the whole no-pay-to-win argument rests on,
+        -- and #88 asked for it to stay intact by name. Crediting here would have
+        -- been a second writer and a per-pickup write on a personally-funded
+        -- database, for a number the player is told about either way.
+        --
+        -- THE AMOUNT COMES OFF THE ENTRY, not off the config. The entry is what
+        -- the server generated and holds; reading the config here would let a
+        -- retune mid-match pay a different number from the one the pile was
+        -- created as.
+        local n = math.tointeger(item.count) or 0
+        if n > 0 then
+            e.voltsPickedUp = (e.voltsPickedUp or 0) + n
+        end
+        retire(m, item)
+
+        -- ═══ IT SOUNDS LIKE A PICKUP BECAUSE IT IS ONE ═══
+        --
+        -- Owner, 2026-08-28: "picking up volts doesn't make a sound - it should
+        -- make the same sound as picking up an inventory item."
+        --
+        -- The pickup cue lives on the INVENTORY path (client/inventory.lua
+        -- plays L.pickupSound when a slot gains something), and Volts
+        -- deliberately never enter the inventory -- owner, 2026-08-21: "they
+        -- simply pick it up and it's gone". So the one kind of loot that is
+        -- pure reward was the one kind that collected in silence.
+        --
+        -- SAME CUE, NOT A NEW ONE. He asked for the sound an item makes, so
+        -- this reuses BR.Config.Loot.pickupSound rather than introducing a
+        -- second Volts-only cue that would drift from it.
+        TriggerClientEvent(BR.Net.LOOT_PICKUP_CUE, src)
+
+        BR.Server.notify(src,
+            ('You collected %d %s.'):format(n,
+                (BR.Config.Market and BR.Config.Market.currency) or 'Volts'),
+            'success')
+        return
+    end
+
     if item.kind == 'chest' or item.kind == 'deathbox' then
         local contents = item.contents
         if item.kind == 'chest' then
@@ -845,6 +1067,23 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
             -- contents off the entry.
             scatter(m, item)
             toHusk(m, item)
+
+            -- AND IF IT WAS THE AIRDROP, THE BLIP'S LAST MINUTE STARTS HERE.
+            --
+            -- Owner, 2026-08-22: "we keep the blip on until 1 minute after the
+            -- crate is opened". This is the only moment in the codebase that
+            -- knows an airdrop crate was opened, because since the same
+            -- playtest removed the auto-open the airdrop is an ORDINARY
+            -- container and this handler is the whole of the open path.
+            --
+            -- ONE FIELD AND ONE CALL, not a branch on kind. `item.airdrop` is
+            -- nil on all 1300 generated crates, so the ordinary path is
+            -- unchanged and unbranched; the guard on the function is there
+            -- because br_core/server/airdrop.lua is a separate file and a
+            -- deployment that dropped it must not take the loot system with it.
+            if item.airdrop and BR.Airdrop and BR.Airdrop.opened then
+                BR.Airdrop.opened(m, item.airdrop)
+            end
         else
             -- A death box has no husk -- an empty one lying around would
             -- read as a body nobody had looted.
@@ -947,6 +1186,49 @@ local FIX_RADIUS = 30.0
 -- it can already see by up to 30m, once per entry -- which is a worse outcome
 -- for them than leaving it where it is, and strictly better than the status
 -- quo of items floating in the Pacific.
+
+--- How long a container must wait between accepted repairs. A rolling crate
+--- would otherwise send one of these per frame for as long as it rolls.
+local FIX_COOLDOWN_MS = 1500
+
+--- May this player move this entry to (x, y) right now?
+---
+--- EVERY RULE THE LOOT_FIX HANDLER ENFORCES, IN ONE PLACE THE DIAGNOSTIC CAN
+--- ALSO CALL. BR.Loot.inspect reports whether a repair would be accepted, and
+--- the only way that report can be trusted is for it to ask the same function
+--- the handler asks. A second copy would be a reader that agrees with the rule
+--- until the day the rule changes, which is the day you are reading it.
+---
+--- The refusal REASON is returned for the diagnostic only; the handler drops
+--- it on the floor, because a client is told nothing about a rejected repair
+--- (see the oracle note above the claim handler).
+--- @param m table zone
+--- @param src integer
+--- @param item table
+--- @param x number
+--- @param y number
+--- @return boolean ok
+--- @return string|nil why
+local function fixOk(m, src, item, x, y)
+    -- ONCE PER ENTRY -- EXCEPT FOR CONTAINERS, which are physical and can be
+    -- pushed around by a vehicle for as long as anyone cares to. A crate whose
+    -- registry position stopped following its prop is a crate you can see and
+    -- cannot open, so those get to keep moving; the per-move bound still
+    -- applies to each step, and a cooldown stops a rolling crate flooding the
+    -- server (user, 2026-08-06).
+    local isContainer = item.kind == 'chest' or item.kind == 'deathbox'
+    if item.repaired and not isContainer then return false, 'once-only' end
+    if isContainer and GetGameTimer() - (item.fixedAt or 0) < FIX_COOLDOWN_MS then
+        return false, 'cooldown'
+    end
+
+    -- Must be a place this player is actually looking at, and a small move.
+    local subs = m.loot.subs[src]
+    if not subs or not subs[item.cell] then return false, 'unsubscribed' end
+    if BR.Dist(x, y, item.x, item.y) > FIX_RADIUS then return false, 'too far' end
+    return true, nil
+end
+
 -- NPC WEAPON DROPS.
 --
 -- Ambient peds are client-side: the server has never heard of them, cannot see
@@ -1043,19 +1325,7 @@ AddEventHandler(BR.Net.LOOT_FIX, function(d)
     local item = m.loot.items[id]
     if not item then return end
 
-    -- ONCE PER ENTRY -- EXCEPT FOR CONTAINERS, which are physical and can be
-    -- pushed around by a vehicle for as long as anyone cares to. A crate whose
-    -- registry position stopped following its prop is a crate you can see and
-    -- cannot open, so those get to keep moving; the per-move bound still
-    -- applies to each step, and a cooldown stops a rolling crate flooding the
-    -- server (user, 2026-08-06).
-    local isContainer = item.kind == 'chest' or item.kind == 'deathbox'
-    if item.repaired and not isContainer then return end
-    if isContainer and GetGameTimer() - (item.fixedAt or 0) < 1500 then return end
-
-    -- Must be a place this player is actually looking at, and a small move.
-    if not m.loot.subs[src] or not m.loot.subs[src][item.cell] then return end
-    if BR.Dist(x, y, item.x, item.y) > FIX_RADIUS then return end
+    if not fixOk(m, src, item, x, y) then return end
 
     item.repaired = true
     item.fixedAt = GetGameTimer()
@@ -1072,6 +1342,89 @@ AddEventHandler(BR.Net.LOOT_FIX, function(d)
     -- clients holding it move the entry rather than duplicating it.
     announce(m, item)
 end)
+
+--- What the claim path believes about the entries nearest a player.
+---
+--- THE READER FOR ONE CRATE, because there was not one. brloot counts by kind
+--- and rarity, which answers "is the layout right" and cannot answer "why will
+--- THAT box not open" -- and the difference between those two questions is a
+--- whole class of bug that is invisible from a chair (#195).
+---
+--- IT ASKS THE REAL FUNCTIONS. inReach and fixOk are the ones the LOOT_CLAIM
+--- and LOOT_FIX handlers ask, called here with the same roster entry, so a row
+--- saying `reach no` is the identical computation that produced "Too far
+--- away". Reimplementing either would have made this a second opinion, and a
+--- second opinion is worth nothing against a bug whose whole nature is that
+--- two positions disagree.
+---
+--- THE POSITION IT TESTS A REPAIR FROM IS THE PLAYER'S. The server has never
+--- seen the prop -- crates are client-side objects and only a client knows
+--- where one actually is -- so the closest thing to "could this crate be
+--- re-anchored to where it visibly is" is "would a repair from where the
+--- reporting player stands be accepted". A player standing at the crate makes
+--- that the same question.
+--- @param src integer
+--- @param radius number
+--- @return table|nil rows nearest first
+--- @return table info what the reader needs to interpret them
+function BR.Loot.inspect(src, radius)
+    local e = BR.Roster.get(src)
+    if not e then return nil, { why = 'no roster entry' } end
+
+    local m = zoneFor(src)
+    if not m then
+        return nil, { why = ('state %s is in no loot zone'):format(tostring(e.state)) }
+    end
+
+    local info = {
+        zone      = m.id,
+        warmup    = m.warmup and true or false,
+        state     = e.state,
+        canTake   = CAN_TAKE[e.state] and true or false,
+        pos       = e.pos,
+        posAgeMs  = e.posAt and (GetGameTimer() - e.posAt) or nil,
+        reachMax  = L.pickupDistance + REACH_SLACK,
+        reachZ    = REACH_Z,
+        fixRadius = FIX_RADIUS,
+        fixCool   = FIX_COOLDOWN_MS,
+        total     = 0,
+    }
+    for _ in pairs(m.loot.items) do info.total = info.total + 1 end
+
+    if not e.pos then return nil, info end
+
+    local subs = m.loot.subs[src] or {}
+    local now  = GetGameTimer()
+    local rows = {}
+    for _, item in pairs(m.loot.items) do
+        local d = BR.Dist(e.pos.x, e.pos.y, item.x, item.y)
+        if d <= radius then
+            local fix, fixWhy = fixOk(m, src, item, e.pos.x, e.pos.y)
+            rows[#rows + 1] = {
+                id       = item.id,
+                kind     = item.kind,
+                item     = item.item,
+                x        = item.x, y = item.y, z = item.z,
+                cell     = item.cell,
+                subbed   = subs[item.cell] and true or false,
+                repaired = item.repaired and true or false,
+                fixAgeMs = item.fixedAt and (now - item.fixedAt) or nil,
+                d        = d,
+                dz       = (e.pos.z or 0.0) - (item.z or 0.0),
+                reach    = inReach(e, item),
+                fix      = fix,
+                fixWhy   = fixWhy,
+            }
+        end
+    end
+    -- Nearest first, id as the tiebreak: two entries at the same distance must
+    -- not swap places between two runs of a command you are diffing.
+    table.sort(rows, function(a, b)
+        if a.d ~= b.d then return a.d < b.d end
+        return a.id < b.id
+    end)
+    return rows, info
+end
 
 -- --------------------------------------------------------------------------
 -- Housekeeping

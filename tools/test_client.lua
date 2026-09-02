@@ -166,6 +166,16 @@ local edge = {}
 --- focus change, and a hold that cannot survive it is a hold that cannot be
 --- completed on a machine that ever opens a menu.
 local lying = {}
+--- Codes the raw natives are BLIND to for this whole simulated build, however
+--- hard the key is held.
+---
+--- DIFFERENT FROM `lying` IN THE ONE WAY THAT MATTERS: `lying` is a dropout, one
+--- frame long, cleared at the end of every frame(). This is a PROPERTY OF THE
+--- BUILD and persists, because that is the shape #203's leading candidate has --
+--- "IsRawKeyDown does not answer for shift on this machine, ever". A per-frame
+--- dropout cannot express it, and it is the state in which GTA's own controls
+--- see the key and we do not.
+local rawBlind = {}
 
 --- WHAT THE NATIVE HANDS BACK, WHICH IS NOT THE SAME QUESTION AS WHAT IT MEANS.
 ---
@@ -201,7 +211,7 @@ local build = { rawDown = true, rawPressed = true, shape = SHAPES[1] }
 --- IS_RAW_KEY_DOWN -- a per-frame LEVEL. True for EVERY frame of a hold.
 function IsRawKeyDown(vk)
     if not build.rawDown then error('IS_RAW_KEY_DOWN: no such native', 0) end
-    if lying[vk] then return build.shape.up end
+    if lying[vk] or rawBlind[vk] then return build.shape.up end
     if keys[vk] then return build.shape.down end
     return build.shape.up
 end
@@ -213,6 +223,20 @@ function IsRawKeyPressed(vk)
     if edge[vk] then return build.shape.down end
     return build.shape.up
 end
+
+--- THE HARNESS'S OWN KEYBOARD, KEPT SO A LATER BLOCK CAN HAND IT BACK.
+---
+--- Blocks further down this file legitimately swap a native for a narrower stub
+--- of their own -- #207's map block replaces IsRawKeyDown with an escape-key
+--- model, because what it is testing is the escape key and nothing else. That is
+--- fine right up until a block AFTER it needs the real keyboard, at which point
+--- the failure is silent and looks like a bug in the code under test: #203's
+--- boost block inherited the escape stub, every shift read came back up, and
+--- three verdicts changed to ones that name the wrong file entirely.
+---
+--- One reference, restored by whoever needs it, is cheaper than a rule about
+--- who has to tidy up.
+local RAW_KEYBOARD = { down = IsRawKeyDown, pressed = IsRawKeyPressed }
 
 -- ------------------------------------------------------------------ world ---
 
@@ -270,10 +294,49 @@ function IsPedInAnyVehicle() return inVehicle end
 --- nil means the engine declined to answer -- `ok == false`, the shape a ped
 --- mid-animation or mid-stow produces -- and any number is a weapon actually
 --- held.
+--- `false` IS A THIRD ANSWER AND NOT A TYPO: the engine ANSWERED and named
+--- NOTHING -- `ok == true`, hash nil. It is the shape that makes the difference
+--- between "we could not read the hand" and "the hand is empty" testable, and
+--- both of this file's weapon reads model it, because the strip check compares
+--- the two against each other.
 local pedWeapon = nil
 function GetCurrentPedWeapon()
     if pedWeapon == nil then return false, 0 end
+    if pedWeapon == false then return true, nil end
     return true, pedWeapon
+end
+
+--- THE GUN BOLTED TO THE VEHICLE, WHICH IS A DIFFERENT QUESTION FROM THE ONE
+--- ABOVE AND THE WHOLE OF #216.
+---
+--- `GET_CURRENT_PED_VEHICLE_WEAPON` is `BOOL f(Ped, Hash*)`, so Lua gets the
+--- BOOL and then the hash -- the same shape `GetCurrentPedWeapon` has, and it is
+--- modelled with the same care, because the strip check reads BOTH and the bug
+--- being fixed is that it only ever read one.
+---
+--- nil means THIS BUILD HAS NO OPINION -- `ok == false` -- which is what an
+--- ordinary car, an ordinary ped on foot, and a build where the native is not
+--- implemented all produce. That is the default, so every case written before
+--- #216 keeps behaving exactly as it did.
+---
+--- `vehWeaponAnswersNumber` DRIVES THE BOOL'S SHAPE, for the reason
+--- `controlsAnswerNumbers` below drives IsControlEnabled's: this is a FiveM BOOL
+--- and this repo has shipped `v == true` on a build that answers `1` six times.
+--- Both shapes are put through the same assertions.
+--- `false` here is the same third answer `pedWeapon` above carries: the native
+--- answered and named nothing.
+---
+--- A TABLE IS THE FOURTH: `{ notOk = h }` means the native REFUSED -- `ok ==
+--- false` -- while still handing back a hash. That is the shape the whole `ok`
+--- test exists for, and without it in the fixture the test that a refused answer
+--- is not used cannot be written at all.
+local vehWeapon = nil
+local vehWeaponAnswersNumber = false
+function GetCurrentPedVehicleWeapon()
+    if vehWeapon == nil then return false, 0 end
+    if type(vehWeapon) == 'table' then return false, vehWeapon.notOk end
+    if vehWeapon == false then return (vehWeaponAnswersNumber and 1 or true), nil end
+    return (vehWeaponAnswersNumber and 1 or true), vehWeapon
 end
 function GetAmmoInPedWeapon() return 0 end
 function GetAmmoInClip() return false, 0 end
@@ -500,8 +563,32 @@ function NetworkSetVoiceActive(v) mumble.gameVoice = v and true or false end
 --- audio -- which is exactly why the indicator could name people the owner
 --- could not hear. Modelled as a fact about the network, not about volume, so
 --- that a client which filtered it by nothing would still fail the assertions.
+---
+--- ═══ IT ANSWERS 1 AND 0, NOT true AND false, AND THAT IS THE POINT ═══
+---
+--- This stub used to return a Lua boolean, and that single word made the whole
+--- of the block below unable to see the bug it was written to catch. IN LUA `0`
+--- IS TRUTHY: a caller that believes this native raw reads "not talking" as
+--- "talking" for every player it asks about, forever. The squad panel's voice
+--- mark is built off exactly that list, so every streamed squadmate wore the
+--- speaking glyph permanently -- including one who had picked 'off', which is
+--- how the owner found it.
+---
+--- THE RETURN SHAPE IS NOT A GUESS. The vendored pma-voice reads the same
+--- native in its own proximity loop as
+---
+---     local curTalkingStatus = MumbleIsPlayerTalking(PlayerId()) == 1
+---                              -- client/init/proximity.lua
+---
+--- so the resource that owns this engine, running on this box, compares it to a
+--- NUMBER. A fixture that answered `true`/`false` was not modelling the engine,
+--- it was agreeing with our misreading of it -- which is the shape of every bug
+--- this project has shipped through a green suite.
 --- @param ply integer player index; the stub's index IS the server id
-function MumbleIsPlayerTalking(ply) return mumble.talking[ply] == true end
+--- @return integer  1 or 0, as the engine answers
+function MumbleIsPlayerTalking(ply)
+    return mumble.talking[ply] == true and 1 or 0
+end
 function MumbleDoesChannelExist(ch) return mumble.channels[ch] == true end
 
 --- Which room the engine believes a player is in. -1 for "none I know of",
@@ -682,8 +769,59 @@ for _, n in ipairs({
     'SetEntityHeading', 'SetEntityRotation', 'SetEntityVelocity',
     'SetModelAsNoLongerNeeded', 'SetObjectPhysicsParams', 'SetPedAmmo',
     'SetPedArmour', 'SetPedInfiniteAmmo', 'SetPedInfiniteAmmoClip',
-    'SetPlayerCanDoDriveBy', 'SetPlayerMaxArmour', 'SetWeaponsNoAutoswap',
+    'SetPlayerMaxArmour', 'SetWeaponsNoAutoswap',
+    -- The overlay's drawing half. /brdriveby shares a file with it, so the file
+    -- is loaded, so its FRAME callback runs -- it early-returns while the
+    -- overlay is off, and these exist so that a future test which turns the
+    -- overlay ON does not fail as a native error.
+    'DrawRect', 'SetTextFont', 'SetTextScale', 'SetTextColour',
+    'SetTextDropshadow', 'SetTextEdge', 'SetTextDropShadow', 'SetTextOutline',
+    'BeginTextCommandDisplayText', 'EndTextCommandDisplayText',
+    'RequestCollisionAtCoord',
 }) do _G[n] = noop end
+
+-- ------------------------------------------------------------- drive-by ---
+--
+-- #197's natives, MODELLED RATHER THAN NOOPED, because every one of them is a
+-- fact the diagnosis turns on.
+
+--- SET_PLAYER_CAN_DO_DRIVE_BY, COUNTED.
+---
+--- A noop here could not tell "we assert this every tick" from "we asserted it
+--- once, ten minutes ago, in a branch that has not run since" -- and that
+--- distinction IS #197's first candidate. The counter is what makes the
+--- cadence assertable at the desk.
+local driveByCalls = 0
+function SetPlayerCanDoDriveBy() driveByCalls = driveByCalls + 1 end
+
+--- The seat. `inVehicle` above drives IsPedInAnyVehicle; these two carry the
+--- rest of what a seat is.
+local vehicle, vehicleSeat = 0, nil
+function GetVehiclePedIsIn() return vehicle end
+function GetPedInVehicleSeat(_veh, seat)
+    -- The local ped is 1 (PlayerPedId). Anything else is an empty seat, and an
+    -- empty seat is 0, which is what the engine answers.
+    return seat == vehicleSeat and 1 or 0
+end
+function GetEntityModel() return 42 end
+function GetDisplayNameFromVehicleModel() return 'BALLER' end
+function IsPedDoingDriveby() return false end
+
+--- IS_CONTROL_ENABLED, AND ITS RETURN SHAPE IS PART OF THE FIXTURE.
+---
+--- Declared BOOL, read six times a frame by the drive-by watch, and `0` is
+--- truthy in Lua. A build that answers numbers turns every `not
+--- IsControlEnabled(...)` into a permanent "enabled" -- which would make the
+--- readout confidently exonerate a script that is in fact holding the trigger
+--- down. That is the bug this codebase has shipped four times, so BOTH shapes
+--- are driven through the same assertions below.
+local disabledControls = {}
+local controlsAnswerNumbers = false
+function IsControlEnabled(_pad, c)
+    local on = not disabledControls[c]
+    if controlsAnswerNumbers then return on and 1 or 0 end
+    return on
+end
 
 --- ...EXCEPT THIS ONE, WHICH IS THE THING UNDER TEST RATHER THAN SCENERY.
 ---
@@ -694,7 +832,169 @@ for _, n in ipairs({
 --- distinction the false-positive guard turns on. Declared after the loop above
 --- so it overrides the noop rather than racing it.
 local stripped = {}
-function RemoveWeaponFromPed(_ped, hash) stripped[#stripped + 1] = hash end
+--- CALLS, NOT ENTRIES, AND THE TWO GENUINELY DIFFER. A hash of `nil` appends
+--- nothing to a Lua sequence -- `#stripped` stays where it was -- so a strip of
+--- a weapon the engine named as nil is invisible in the list and visible only
+--- here. #216's nil-versus-nil case is the one that needs it.
+local stripCalls = 0
+function RemoveWeaponFromPed(_ped, hash)
+    stripCalls = stripCalls + 1
+    stripped[#stripped + 1] = hash
+end
+
+--- ...AND THIS ONE, WHICH WAS SCENERY UNTIL #200 (the radio wheel).
+---
+--- Every control this client suppresses goes through DisableControlAction, and
+--- a noop could not tell "we take the weapon wheel away" from "we take the
+--- player's radio away" -- which is the entire question the issue asks. The
+--- disables also LAST ONE FRAME by contract, so the record is cleared at the top
+--- of every frame rather than accumulated: a test that asked "was 141 ever
+--- disabled" would pass on a build that disabled it once in the lobby, and the
+--- claim being made is about the frame the player is driving on.
+local disabled = {}
+function DisableControlAction(_group, control) disabled[control] = true end
+
+-- ---------------------------------------------------------------- boost ---
+--
+-- #203's natives, and the car is a PHYSICS MODEL rather than a counter.
+--
+-- ═══ WHY A MODEL AND NOT A SPY ═══
+--
+-- The owner's report is "boost does nothing, and the bar is at 100". Asserting
+-- "ApplyForceToEntity was called with 0.22" would have PASSED on the build that
+-- produced that report -- the call is made, every frame, and the car does not
+-- move. A spy proves we asked; the complaint is about the answer.
+--
+-- So the stub integrates: an impulse scaled by mass IS a velocity change, so
+-- `dv` lands on the car's speed and the next frame's reading reflects it. That
+-- makes the closed loop a closed loop at the desk, and it makes the failure the
+-- owner reported EXPRESSIBLE -- `forceInert` below is a car that takes every
+-- call and ignores it, which is candidate 2 exactly. A suite that cannot state
+-- the bug cannot prove the fix.
+--
+-- WHAT IS DELIBERATELY NOT MODELLED: drag, gearing, gradient, tyre grip and the
+-- contact solver. The controller only ever asks for a gap and clamps it, so
+-- nothing it does depends on where the resistance comes from -- and modelling a
+-- guess at GTA's drag would be a fixture asserting its own author's arithmetic.
+
+--- The car, in one number. Metres per second, forward.
+local vehSpeed = 0.0
+--- Does APPLY_FORCE_TO_ENTITY do anything on this simulated build?
+local forceInert = false
+--- Does it exist at all, and does it throw?
+local forceThrows = false
+--- Every call, in order, so the ARGUMENTS can be asserted separately from the
+--- effect -- `bScaleByMass` being dropped is a real regression that would leave
+--- the speed test passing on a Blista and failing on nothing the suite drives.
+local forceCalls = {}
+
+function ApplyForceToEntity(ent, ftype, x, y, z, ox, oy, oz, bone,
+                            dirRel, upVec, forceRel, audio, warp)
+    if forceThrows then error('APPLY_FORCE_TO_ENTITY: no such native', 0) end
+    forceCalls[#forceCalls + 1] = {
+        ent = ent, ftype = ftype, x = x, y = y, z = z,
+        ox = ox, oy = oy, oz = oz, bone = bone, dirRel = dirRel,
+        upVec = upVec, forceRel = forceRel, audio = audio, warp = warp,
+    }
+    if forceInert then return end
+    -- SCALED BY MASS MEANS THE UNIT IS m/s. That is the whole argument in
+    -- client/boost.lua's header for why the impulse is a velocity change, and
+    -- it is the argument this line encodes: with the flag set, `y` lands on the
+    -- speed unchanged. WITHOUT the flag an impulse would be divided by the
+    -- vehicle's mass and a heavy car would barely move -- so a mutant that
+    -- passes `false` there must not be able to pass a speed assertion.
+    if forceRel ~= true then return end
+    vehSpeed = vehSpeed + (tonumber(y) or 0.0)
+end
+
+--- GET_ENTITY_SPEED_VECTOR(entity, relative) -- +y is forward in the entity's
+--- own frame, which is the whole reason boost.lua prefers it over the scalar.
+--- Returns a vector table, which is the shape FiveM's Lua runtime produces.
+local speedVectorMissing = false
+--- HOW SIDEWAYS THE CAR IS, which is 0.0 for every test that is not about the
+--- drift report. `x` is the lateral component in the entity's own frame, so a
+--- non-zero value here IS a car in a slide -- the state the owner's second
+--- report describes and the one /brboostwhy had no row for.
+--- `vehLateralStep` is added to it on every read, so a slide can DECAY across a
+--- measurement window. A constant would make the peak and the mean and the
+--- minimum the same number, and a readout that reported any of the three would
+--- look correct -- see the peak assertions in the boost block.
+local vehLateral, vehLateralStep = 0.0, 0.0
+function GetEntitySpeedVector(_ent, _rel)
+    if speedVectorMissing then error('GET_ENTITY_SPEED_VECTOR: no such native', 0) end
+    local x = vehLateral
+    if vehLateralStep ~= 0.0 and vehLateral > 0.0 then
+        vehLateral = math.max(0.0, vehLateral + vehLateralStep)
+    end
+    return { x = x, y = vehSpeed, z = 0.0 }
+end
+
+--- The scalar fallback. UNSIGNED, like the real one -- which is exactly why
+--- boost.lua asks the vector first, and why a build without the vector is a
+--- build where reversing reads as going forwards.
+local speedScalarMissing = false
+function GetEntitySpeed(_ent)
+    if speedScalarMissing then error('GET_ENTITY_SPEED: no such native', 0) end
+    return math.abs(vehSpeed)
+end
+
+--- GET_VEHICLE_CLASS. 0 is Compacts; 15/16 are the excluded aircraft.
+local vehClass = 0
+function GetVehicleClass() return vehClass end
+
+--- The network id, and `0` for a vehicle that is not networked -- the case
+--- boost.lua writes down explicitly because 0 is TRUTHY in Lua.
+local vehNetId = 77
+function NetworkGetNetworkIdFromEntity() return vehNetId end
+function NetworkGetEntityFromNetworkId(id) return id == vehNetId and vehicle or 0 end
+
+--- The particle asset. Loaded by default: the flames are not what any of these
+--- tests are about, and an asset that never arrives would have every boost take
+--- the "no flames" branch and prove nothing about the push.
+local ptfxLoaded = true
+function RequestNamedPtfxAsset() end
+function HasNamedPtfxAssetLoaded() return ptfxLoaded end
+function UseParticleFxAsset() end
+function GetEntityBoneIndexByName(_ent, name)
+    -- Exactly one exhaust, so the fallback-offset path is not taken. -1 is the
+    -- engine's "no such bone" and is what everything else must answer.
+    return name == 'exhaust' and 3 or -1
+end
+function GetModelDimensions() return { x = -1.0, y = -2.0, z = -0.5 }, { x = 1.0, y = 2.0, z = 1.0 } end
+local ptfxHandles = 0
+function StartParticleFxLoopedOnEntityBone()
+    ptfxHandles = ptfxHandles + 1
+    return ptfxHandles
+end
+function StartParticleFxLoopedOnEntity()
+    ptfxHandles = ptfxHandles + 1
+    return ptfxHandles
+end
+function StopParticleFxLooped() end
+function SetParticleFxLoopedColour() end
+function SetParticleFxLoopedAlpha() end
+function SetParticleFxLoopedScale() end
+
+--- IS_DISABLED_CONTROL_PRESSED, which /brboostwhy reads to ask "did the key reach
+--- GTA's own mapper at all". Driven off the same `keys` table the raw natives
+--- read, through a control->virtual-key map, so a test that presses shift
+--- presses it for BOTH readers exactly as a real keyboard does -- which is the
+--- arrangement that makes "the engine saw it and we did not" a state the suite
+--- can actually reach.
+--- WHICH KEY EACH CONTROL SITS ON. The four are the LSHIFT set; 350 is not one
+--- of them and is not on the key, so it is silent unless a test puts it there --
+--- which is what a build with a control the 2020 table does not name looks like.
+local CONTROL_VK = { [21] = 0x10, [61] = 0x10, [340] = 0x10, [352] = 0x10 }
+--- Which controls this simulated build reports at all. Emptying it is a build
+--- where shift drives no control in a car, which is what config/boost.lua
+--- claims and what /brboostwhy exists to check.
+local controlsLive = { [21] = true, [61] = true, [340] = true, [352] = true }
+function IsDisabledControlPressed(_pad, c)
+    if not controlsLive[c] then return controlsAnswerNumbers and 0 or false end
+    local on = keys[CONTROL_VK[c] or -1] == true
+    if controlsAnswerNumbers then return on and 1 or 0 end
+    return on
+end
 
 -- ------------------------------------------------------------- pma-voice ---
 --
@@ -810,6 +1110,13 @@ exports = setmetatable({}, {
 -- ---------------------------------------------------------------- modules ---
 
 local ROOT = 'resources/[fivem-royale]/'
+
+-- LoadResourceFile IS DELIBERATELY NOT STUBBED ANY MORE (#206). It existed for
+-- exactly one caller: /brdriveby reading br_environment's vehiclelayouts.meta
+-- back off this client, to tell "the game ignored our data file" from "the file
+-- never got here". The game ignored it, the file is gone, and a stub with no
+-- caller is a fixture that can only ever mislead the next reader.
+
 local function loadAll(list)
     for _, f in ipairs(list) do
         local chunk, err = loadfile(ROOT .. f)
@@ -823,7 +1130,16 @@ end
 
 loadAll({
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+    -- BR.Notice; client/state.lua's BR.Notify unpacks with it and br_ui's
+    -- client/players.lua composes the report nudge, which names a player.
+    'br_lib/shared/notice.lua',
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
+    -- The world override. Here for the clock pin at the bottom of this file:
+    -- client/natives.lua asks BR.World.clockHM() what to hand
+    -- NetworkOverrideClockTime, and without this module the pin's nil-guard
+    -- would answer noon forever and the block asserting otherwise would be
+    -- testing its own fallback.
+    'br_lib/shared/world.lua',
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
     -- The catalogue, for the descent block at the bottom: what `trail_ember`
@@ -831,6 +1147,10 @@ loadAll({
     -- made of, and BR.Config.MarketIndex is where that answer lives.
     'br_lib/config/market.lua',
     'br_lib/shared/storm_solve.lua', 'br_lib/shared/loot_gen.lua',
+    -- THE BOOST PAIR, AND THE ORDER IS THE MANIFEST'S RATHER THAN A
+    -- PREFERENCE. config/boost.lua derives `addMps` from BR.BoostSolve.MPH at
+    -- LOAD time, so a swap here gives every boost a target of nil.
+    'br_lib/shared/boost_solve.lua', 'br_lib/config/boost.lua',
     'br_core/client/main.lua',       -- the loop registry; must be first
 })
 
@@ -844,6 +1164,20 @@ BR.State = BR.State or {}
 BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
 BR.State.landed = true
 BR.State.roster = {}
+--- [entity] = the last size it was drawn at. There is no SetEntityScale in GTA V
+--- (#166); the real BR.Native.propScale drives the transform matrix, and what
+--- matters here is only that the right entities are asked for the right size.
+local propScales = {}
+
+--- What BR.Native.pedReachable answers. The rooftop check (owner, 2026-08-22:
+--- "Somehow these airdrops can happen on top of buildings where peds otherwise
+--- cannot access"). Driven per-point so a test can put a roof at one coordinate
+--- and clean ground at another, which is what the repair round-trip needs.
+local unreachable = {}          -- ['x,y'] = why
+local function markUnreachable(x, y, why)
+    unreachable[('%.1f,%.1f'):format(x, y)] = why or 'roof'
+end
+
 BR.Native = {
     aim = function() return false, nil, 0 end,
     keyLabelForCommand = function() return 'E', 'brinteract' end,
@@ -851,6 +1185,15 @@ BR.Native = {
     inputForCommand = function() return '~INPUT~' end,
     displayHealth = function() return 100 end,
     setDisplayHealth = noop,
+    propScale = function(obj, k)
+        if not obj or not k or k == 1.0 then return end
+        propScales[obj] = k
+    end,
+    pedReachable = function(x, y)
+        local why = unreachable[('%.1f,%.1f'):format(x, y)]
+        if why then return false, why end
+        return true, 'ok'
+    end,
 }
 BR.Dui = {
     page = function() return { id = 'prompt' } end,
@@ -860,12 +1203,38 @@ BR.Dui = {
 loadAll({
     'br_core/client/keybinds.lua',   -- before loot.lua, as fxmanifest orders it
     'br_core/client/inventory.lua',
+    -- The passenger's "switch to slot N" notice (#206). It registers a TICK
+    -- callback at load, so it steps with every other one -- which is the point:
+    -- its once-per-session latch has to survive the WHOLE suite, not just its
+    -- own block, and a file loaded only for its own tests could not prove that.
+    'br_core/client/driveby.lua',
     'br_core/client/loot.lua',
     -- The consumer half of the voice pair. Loaded here rather than left to the
     -- server suite because #150 was entirely on this side: server/voice.lua's
     -- arithmetic was right, tools/test_roster.lua proved it was right, and two
     -- players still could not hear each other.
     'br_core/client/voice.lua',
+    -- THE BOOST, AND IT IS HERE FOR THE SAME REASON keybinds.lua IS (#203).
+    --
+    -- The owner's report is a key that appears to do nothing, and the last time
+    -- this project had one of those it cost #129 six rounds and #139 alongside
+    -- it, entirely because no suite could drive a keypress. This file already
+    -- models the keyboard three ways; loading the boost underneath it means the
+    -- chain from a physical shift to a force on a car is one assertion, on every
+    -- shape and every simulated build the keyboard block enumerates.
+    --
+    -- AFTER keybinds.lua and BEFORE debug.lua, which is the manifest's own
+    -- order: boost.lua reads BR.Keys.isHeld at load-registered call time, and
+    -- debug.lua's /brboostwhy calls BR.Boost.trace().
+    'br_core/client/boost.lua',
+    -- THE DEBUG FILE IS LOADED FOR ONE COMMAND. /brdriveby is the only answer
+    -- the owner gets to "why can a passenger not fire", it decides between
+    -- causes that look identical from the seat, and it is now also the ONLY
+    -- check there is on the `driveby` field -- no offline gate can know what is
+    -- inside the game's own .rpf. A readout that reaches the wrong verdict costs
+    -- a playtest round the same way a wrong fix does. Its FRAME sampler is
+    -- registered here like any other callback, so the harness can step it.
+    'br_core/client/debug.lua',
 })
 
 -- ---------------------------------------------------------------- harness ---
@@ -928,6 +1297,10 @@ end
 --- One frame of the FRAME band.
 local function frame(ms)
     fakeTime = fakeTime + (ms or 16)
+    -- A DISABLE LASTS EXACTLY ONE FRAME, which is why the suppressions live in
+    -- a FRAME callback at all -- so the record starts empty on every one of
+    -- them. See the DisableControlAction stub for why this is not cumulative.
+    disabled = {}
     BR.Loop.step(BR.Loop.FRAME)
     -- IS_RAW_KEY_PRESSED is true for exactly one frame.
     edge = {}
@@ -1991,6 +2364,70 @@ do
     logged = {}
     ok(pcall(commands['brloot'], nil, {}, ''), '/brloot does not throw')
     ok(pcall(commands['brkeys'], nil, {}, ''), '/brkeys does not throw')
+    ok(pcall(commands['brarc'], nil, {}, ''), '/brarc does not throw')
+end
+
+describe('an item born from a container is given a body NOW, not on the 1Hz pass')
+do
+    -- THE ARRIVAL ARC'S FIRST BROKEN LINK (owner, 2026-08-23: "The loot doesn't
+    -- animate out of the crate like it should").
+    --
+    -- animate() cannot move a prop that does not exist -- its first line returns
+    -- on `not e.obj` -- and the ONLY thing that ever asked for a prop was the
+    -- loot.props pass, registered on the SLOW band at once per SECOND. The
+    -- arrival window is 520ms. So an item bursting out of a crate two metres
+    -- away waited up to twice its own animation for a body, and by the time it
+    -- had one the window had shut. The branch was not broken; it was
+    -- unreachable, for every container, since it was written.
+    --
+    -- THIS IS PROVABLE HERE PRECISELY BECAUSE THE SLOW BAND IS NEVER STEPPED IN
+    -- THIS FILE. Nothing else in the harness can put an id in that queue, so a
+    -- queue that grows on the LOOT_ADD alone is the queue-jump and nothing else.
+    bootOn(true, true)
+    clearWorld()
+
+    local ITEM = BR.Config.Consumables[1].id
+
+    --- What /brloot says is waiting for a model.
+    local function queuedNow()
+        local line = lootLine('queued%s+%d+')
+        return line and tonumber(line:match('queued%s+(%d+)'))
+    end
+
+    local bornBefore = BR.Loot.arc.born
+
+    -- The generated layout was always just there. No origin, no hurry: it can
+    -- wait for the trickle like the other hundred entries in the cell.
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9001, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 2.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+    } })
+    ok(queuedNow() == 0, 'an entry with no origin waits for the 1Hz pass',
+        tostring(queuedNow()))
+
+    -- One that has this instant come out of a container cannot.
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9002, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 2.0, y = 1.5, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+        fx = 0.5, fy = 0.5, fl = 0.6,
+    } })
+    ok(queuedNow() == 1, 'one born with an origin jumps the queue',
+        tostring(queuedNow()))
+    ok(BR.Loot.arc.born == bornBefore + 1,
+        'and is counted, so /brarc can say whether any of this ran',
+        ('%d -> %d'):format(bornBefore, BR.Loot.arc.born))
+
+    -- ...BUT ONLY IF IT IS CLOSE ENOUGH TO BE WORTH A BODY. drain() builds
+    -- whatever it is handed and never asks how far away it is, so without this
+    -- gate a container opened at the far edge of the 768m subscription would
+    -- build props nobody can see, for the next pass to tear straight back down.
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9003, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 900.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+        fx = 898.0, fy = 0.0, fl = 0.6,
+    } })
+    ok(queuedNow() == 1, 'a container opened beyond prop range still does not',
+        tostring(queuedNow()))
 end
 
 -- ------------------------------------------------------------------- voice ---
@@ -3073,10 +3510,33 @@ do
     -- the one it named was Left Alt. BR.Keys.labelFor has no such limit for a
     -- binding this layer owns, and the sentence is derived from it rather than
     -- describing it.
+    -- ...AND IT NAMES THE COMMAND RATHER THAN THE LETTER, WHICH IS #209 AND IS
+    -- STRICTLY STRONGER THAN WHAT THIS USED TO ASSERT.
+    --
+    -- This read `radio.detail:find(key)` -- the resolved LABEL had to appear in
+    -- the sentence. That was the right assertion while the sentence carried a
+    -- letter, and the property it was defending is unchanged: the surface must
+    -- follow the player's own binding rather than a convar. What changed is
+    -- WHEN the binding is read. A substituted label is read once, at compose
+    -- time; this paragraph is displayed on the settings screen, which is the
+    -- screen the player rebinds the key FROM, so a label baked in here goes
+    -- stale under them as they use it. The token is resolved by the page on
+    -- every rebind push instead.
     local key = BR.Voice.pttKeyLabel()
-    ok(type(key) == 'string' and radio.detail:find(key, 1, true) ~= nil,
-       'the key in the sentence is the one BR.Keys.labelFor reports, so it '
-           .. 'moves when the player moves it',
+    ok(type(key) == 'string',
+       'the key layer still reports a push-to-talk label at all -- it is what '
+           .. 'decides WHICH sentence is used',
+       tostring(key))
+    ok(radio.detail:find(BR.KeyToken('brptt'), 1, true) ~= nil,
+       'the sentence names the push-to-talk COMMAND, so the glyph the player '
+           .. 'sees is resolved when it is drawn rather than when it was '
+           .. 'composed',
+       tostring(radio.detail))
+    -- AND THE LABEL IS NOT ALSO IN IT. The mutation that keeps the assertion
+    -- above green and puts the bug back is emitting both -- a token nothing
+    -- reads beside the letter that started this issue.
+    ok(radio.detail:find('Hold ' .. tostring(key), 1, true) == nil,
+       'and the resolved letter appears nowhere in it',
        tostring(key) .. ' / ' .. tostring(radio.detail))
 
     -- AND THE ROW ITSELF EXISTS, IN OUR TABLE, WITH THE OWNER'S DEFAULT.
@@ -3111,6 +3571,90 @@ do
     ok(alone.code ~= radio.code,
        'a radio with nobody else on it is a different state from a live one',
        tostring(alone.code))
+
+    -- ...AND IT SAYS SO IN THE SQUAD PANEL RATHER THAN ACROSS THE SCREEN.
+    --
+    -- Owner, 2026-08-22: "'Squad voice: nobody else on your squad radio yet' -
+    -- how about instead of showing this text, we show something in the top
+    -- squad panel next to each player which shows if they are muted, not
+    -- listening, or talking."
+    --
+    -- THE SENTENCE WAS A CAPTION FOR A PICTURE ALREADY ON THE SCREEN. "Who
+    -- else is on your radio" is a list of people, and the squad panel is a
+    -- list of people. Three rows have now gone quiet for three different
+    -- reasons -- 'radio' because it was furniture, 'off' because it named a
+    -- choice, and this one because something else already answers it -- and
+    -- what is left is the rule VoiceNotice.tsx states about itself: a headline
+    -- means something is WRONG.
+    ok(alone.headline == nil,
+       'and it no longer paints a line across the bottom of the screen about '
+           .. 'it -- the squad panel is the list of who is on the radio, and a '
+           .. 'sentence restating a list that is already drawn is a caption',
+       tostring(alone.headline))
+
+    -- THE FLAG THE PANEL'S MARK ACTUALLY READS, and it must stay FALSE.
+    --
+    -- `silent` is not "nobody is talking", it is "nothing can reach this
+    -- player and nothing they say can leave" -- and a radio with one person on
+    -- it carries the instant a second joins. The squad panel draws its
+    -- "no voice" glyph off this field, so a `true` here would mark a working
+    -- radio as dead for every player who reaches their squad first.
+    ok(alone.silent == false,
+       'a radio waiting for its first squadmate is not a silence -- nothing '
+           .. 'is refusing anybody, and the panel mark must not say otherwise',
+       tostring(alone.silent))
+
+    -- THE SETTINGS SCREEN KEEPS ITS SENTENCE. The owner's instruction is about
+    -- the bottom of the screen; `detail` is read on a page somebody opened on
+    -- purpose, and it is the only surface that names the channel number and
+    -- the key.
+    ok(type(alone.detail) == 'string'
+       and alone.detail:find('only one on it', 1, true) ~= nil,
+       'while the settings screen still explains it in full, because that is a '
+           .. 'page the player went looking for',
+       tostring(alone.detail))
+
+    -- AND NOTHING IS TOASTED FOR IT EITHER, which is not a separate rule but
+    -- the same one: pushVoice toasts `st.headline`, so a row with no headline
+    -- interrupts nobody. Asserted through the real push rather than by reading
+    -- that condition, because the condition is what a later round would edit.
+    do
+        local before = #events
+        nobodyElse()
+        standAt(0, 0)
+        voiceApply(BR.VoiceMode.SQUAD, 30703, {}, 1)
+        local toast = nil
+        for i = #events, before + 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
+                toast = e.args[2]; break
+            end
+        end
+        ok(toast == nil,
+           'and no toast either: a verdict with no headline interrupts nobody, '
+               .. 'which is what "instead of showing this text" has to mean',
+           toast and tostring(toast.text) or '-')
+
+        -- THE ENVELOPE STILL CARRIES THE ROW. The panel needs `silent` and
+        -- `chosen` to decide its mark, and the settings screen needs `status`
+        -- and `detail`; deleting the headline must not have taken the push
+        -- with it.
+        local env = nil
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.VOICE then
+                env = e.args[2]; break
+            end
+        end
+        ok(type(env) == 'table' and env.status == 'alone'
+           and env.silent == false and env.headline == nil,
+           'the envelope still reaches the interface with the verdict on it -- '
+               .. 'silence on the HUD is not silence on the wire',
+           type(env) == 'table'
+               and (tostring(env.status) .. '/' .. tostring(env.silent)
+                    .. '/' .. tostring(env.headline))
+               or 'no voice envelope')
+    end
 
     -- AND NOW THE SURFACES, which is the half that failed. All three derive
     -- from the function above; the point of asserting them separately is that
@@ -3410,11 +3954,1139 @@ do
            .. 'a release never sent is a microphone latched open',
        table.concat(ran, ' '))
 
+    -- =====================================================================
+    -- A SPECTATOR LISTENS AND DOES NOT TALK. Both mechanisms, both edges.
+    --
+    -- "whoever is the spectator should NEVER be able to talk, only listen" --
+    -- the owner, and `NEVER` is what makes this block worth its length. The
+    -- rule has to hold on BOTH transmit paths, and the two are reached by
+    -- different code: squad goes out over +radiotalk and nearby goes out over
+    -- control 249. A gag written into BR.Voice.gagged() alone closes the
+    -- second and leaves the first wide open -- which is the worse half, since
+    -- the squad radio is exactly who a dead player's squadmates are.
+    --
+    -- BR.Spectate IS STUBBED because client/spectate.lua is not in loadAll's
+    -- list -- it is a camera, and standing one up here would mean stubbing
+    -- RenderScriptCams and the shape tests for no assertion's benefit. The
+    -- stub is a hazard of its own and the last assertion in this block is
+    -- what covers it: BR.Voice.silenced() reaches ACROSS files, so a rename
+    -- of the real function would leave the nil-guard answering "not
+    -- spectating" forever and every test here would still pass.
+    local realSpectate = BR.Spectate
+    local spectating = false
+    BR.Spectate = { active = function() return spectating end }
+
+    -- SQUAD, WHICH IS THE PATH THAT MATTERS. The press must not key the radio.
+    voiceApply(BR.VoiceMode.SQUAD, 30703, { 2 }, 1)
+    spectating = true
+    ran = {}
+    ptt(true)
+    ok(table.concat(ran, ' '):find('+radiotalk', 1, true) == nil,
+       'a press while spectating does NOT key the squad radio up -- the one '
+           .. 'path that reaches the dead player\'s own squad',
+       table.concat(ran, ' '))
+    ptt(false)
+
+    -- NEARBY, THE OTHER MECHANISM, ASSERTED SEPARATELY rather than assumed
+    -- from the one above. They are different code and have failed apart.
+    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1)
+    ptt(true)
+    ok(heldFrames(3) == 0,
+       'and it does not open the proximity microphone either -- both '
+           .. 'mechanisms, not whichever one the mode happens to use',
+       tostring(ptt249))
+    ptt(false)
+
+    -- THE EDGE THAT ACTUALLY HAPPENS: dying mid-sentence. The press was taken
+    -- while alive and entitled, the radio IS open, and then the session
+    -- starts. A rule checked only at the press would leave that microphone
+    -- open for the rest of the round.
+    voiceApply(BR.VoiceMode.SQUAD, 30703, { 2 }, 1)
+    spectating = false
+    ptt(true)
+    ran = {}
+    spectating = true
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(table.concat(ran, ' '):find('-radiotalk', 1, true) ~= nil,
+       'a radio already keyed up when the session STARTS is closed mid-hold -- '
+           .. 'dying with the key down is the ordinary way into spectating, '
+           .. 'and a press-time gate would never see it',
+       table.concat(ran, ' '))
+
+    -- ONCE, NOT EVERY FRAME. The close is an edge; spending an ExecuteCommand
+    -- per frame for as long as a dead player holds a key is a real cost at 48
+    -- players, and it is the obvious way to write this wrong.
+    ran = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(#ran == 0, 'and it is closed ONCE, not re-closed every frame',
+       table.concat(ran, ' '))
+    ptt(false)
+
+    -- AND IT LIFTS. A gag that cannot be given back is how a player who
+    -- stopped spectating spends the next round silent with nothing on screen
+    -- to explain it. Re-derived, never latched -- the same property the bus
+    -- rule is built on.
+    spectating = false
+    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1)
+    ptt(true)
+    ok(heldFrames(2) == 2,
+       'and stopping the session brings the microphone straight back, with no '
+           .. 'press in between',
+       tostring(ptt249))
+    ptt(false)
+
+    -- THE MASTER SWITCH IS ALSO THE PROXIMITY GAG, so /brvoice cannot report a
+    -- microphone the checks are refusing.
+    spectating = true
+    local sg, sw = BR.Voice.gagged()
+    ok(sg == true and type(sw) == 'string' and sw:find('spectat') ~= nil,
+       'gagged() answers for it too, in words, so the readout cannot drift '
+           .. 'from the behaviour',
+       tostring(sw))
+    spectating = false
+
+    -- THE CROSS-FILE CALL, ASSERTED ON THE REAL SOURCE.
+    --
+    -- BR.Voice.silenced() reads BR.Spectate.active() out of another file
+    -- behind a nil-guard, and the guard is not optional -- voice.lua loads
+    -- with or without a camera. But it means a RENAME on the other side fails
+    -- open and silently: silenced() would answer false forever, a spectator
+    -- would talk, and every assertion above would still pass against the stub.
+    -- So the name is pinned against the file that owns it.
+    local specFh = io.open(ROOT .. 'br_core/client/spectate.lua', 'r')
+    local specSrc = specFh and specFh:read('a') or nil
+    if specFh then specFh:close() end
+    ok(type(specSrc) == 'string'
+       and specSrc:find('function BR.Spectate.active', 1, true) ~= nil,
+       'and client/spectate.lua really defines BR.Spectate.active -- the stub '
+           .. 'above would otherwise be the only thing that does',
+       'BR.Spectate.active is not defined where voice.lua reaches for it')
+
+    BR.Spectate = realSpectate
+
     -- AND THE KEY IS LEFT UP, so nothing after this block inherits a hold.
     ok(heldFrames(2) == 0, 'and the key layer is left with nothing held',
        tostring(ptt249))
 
     ExecuteCommand, SetControlNormal = realExec, realControl
+end
+
+describe('voice is OFF while spectating, and the preference comes back by itself')
+do
+    -- THE OWNER, 2026-08-21: "On voice -- let's set voice to OFF while in
+    -- spectate, and return it to their preferred setting once spectate is
+    -- over."
+    --
+    -- ═══ WHAT THIS IS NOT, AND WHY THE BLOCK ABOVE DOES NOT COVER IT ═══
+    --
+    -- It is not the spectator mute. That shipped already and it is the
+    -- TRANSMIT half only -- MumbleSetPlayerMuted on the server, and
+    -- BR.Voice.silenced() over both push-to-talk mechanisms on the client. Its
+    -- own comments are explicit about where it stops: "MUTED IS NOT DEAFENED",
+    -- the radio channel and the mute sweep are left alone. So a spectator on
+    -- 'nearby' went on hearing every stranger standing near whoever they were
+    -- watching, and a spectator on 'squad' went on sitting on the squad radio.
+    --
+    -- 'off' IN THIS PROJECT HAS ALWAYS MEANT BOTH HALVES, and that is the
+    -- owner's own ruling, made against a build that only did the first:
+    --
+    --   "'you are not transmitting' should also mean 'you are not listening',
+    --    but alas both are false."
+    --
+    -- So the assertions below lean hardest on the RECEIVE half -- who is
+    -- audible, who is muted, and which radio channel this client is on. Those
+    -- are the facts that moved. The whole suite above this block passes either
+    -- way, which is the point of writing them down.
+    --
+    -- ═══ EVERY RESTORE HERE IS DRIVEN BY THE CLOCK AND NOTHING ELSE ═══
+    --
+    -- The "and it comes back" cases end a session and then step the TICK BAND
+    -- ONLY. No settings event, no VOICE_SET, no state broadcast -- nothing a
+    -- real client is merely usually given. That is the property under test:
+    -- the restore is arithmetic over a mode that is re-derived on every call,
+    -- not an action an exit path has to remember. There are five ways out of a
+    -- session -- the pause-menu stop, the match ending, the player leaving,
+    -- disconnecting, and br_core restarting -- and a design where each one
+    -- calls something is a design where one of them eventually does not.
+    -- A player left voiceless for the rest of a round is a worse bug than the
+    -- one being fixed, and this repo has shipped that exact shape before.
+
+    local realSpectate = BR.Spectate
+    local spectating = false
+    BR.Spectate = { active = function() return spectating end }
+
+    --- One 10 Hz band tick and one pma-voice proximity tick, frozen. THE ONLY
+    --- THING ANY RESTORE BELOW IS ALLOWED TO BE GIVEN.
+    local function settle()
+        BR.Loop.step(BR.Loop.TICK)
+        pmaTick()
+        return pmaSnapshot()
+    end
+
+    -- A SQUAD MATCH, BECAUSE IT IS THE ONLY KIND WHERE ALL THREE MODES ARE
+    -- REACHABLE and the only one with a radio channel to be evicted from and
+    -- put back on. Player 2 is a squadmate, player 3 is a stranger on the
+    -- roster -- so 'squad' has somebody to refuse and somebody to keep, and
+    -- "everyone is muted" is distinguishable from "the usual one is muted".
+    voiceApply(BR.VoiceMode.SQUAD, 30703, { 2 }, 1)
+    playersAt({ [2] = { x = 1, y = 0 }, [3] = { x = 2, y = 0 } })
+    -- AND THE SQUADMATE IS MID-SENTENCE, which is what makes the "and nobody
+    -- is talking while spectating" assertion below mean anything. Left silent
+    -- it would pass on a client that had simply never named anybody.
+    mumble.talking[2] = true
+    local alive = settle()
+
+    ok(#talkingNames() == 1 and talkingNames()[1] == 'p2',
+       'before any session: a squadmate speaking on the radio IS named, so the '
+           .. 'panel has a talking mark to lose',
+       table.concat(talkingNames(), ', '))
+
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and alive.radio == 30703,
+       'before any session: the player is on their squad preference and on the '
+           .. 'channel the server granted',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(alive.radio))
+    ok(alive.muted[3] == true and alive.muted[2] == nil,
+       'and squad refuses the stranger while keeping the squadmate -- the '
+           .. 'state the session has to be visible against',
+       'muted 2=' .. tostring(alive.muted[2]) .. ' 3=' .. tostring(alive.muted[3]))
+
+    -- ==================================================================== --
+    -- THE SESSION STARTS.
+
+    spectating = true
+    local spec = settle()
+
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       "the mode in force goes to 'off' for the length of the session -- the "
+           .. 'setting, which is what the owner asked to be set',
+       tostring(BR.Voice.mode()))
+
+    local r = BR.Voice.routing()
+    ok(r.proximity == false and r.radio == false,
+       'and it is the real mode, both columns of the routing table, rather '
+           .. 'than a fourth mode invented for spectators',
+       tostring(r.proximity) .. '/' .. tostring(r.radio))
+
+    -- THE HALF THAT IS ACTUALLY NEW. The suite above would pass with the
+    -- receive side untouched, because the microphone was already taken.
+    local audible = BR.Voice.audibleFor(BR.Voice.mode(), BR.State.roster,
+                                        BR.Voice.state.mates, 1)
+    ok(next(audible) == nil,
+       'a spectator is audible-to nobody: the receive half moves too, which is '
+           .. 'the whole difference between this and the microphone rule that '
+           .. 'shipped before it',
+       'audible set is not empty')
+
+    ok(spec.muted[2] == true and spec.muted[3] == true,
+       'so the sweep holds a mute on the squadmate as well as the stranger -- '
+           .. 'squad radio included, which is the one channel the old rule '
+           .. 'deliberately left open',
+       'muted 2=' .. tostring(spec.muted[2]) .. ' 3=' .. tostring(spec.muted[3]))
+
+    ok(spec.radio == 0,
+       'and this client leaves the squad radio channel, because that is what '
+           .. "'off' does -- not because anything told it to spectate",
+       tostring(spec.radio))
+
+    -- THE TRANSMIT HALF IS UNCHANGED AND IS STILL ITS OWN RULE. Two
+    -- independent reasons a spectator cannot talk is the property the owner's
+    -- `NEVER` asked for; a mutant that deleted silenced() on the grounds that
+    -- the mode now covers it would be strictly weaker and would open a
+    -- microphone for the 100ms the band takes to notice.
+    ok(BR.Voice.silenced() == true,
+       'the master transmit switch still answers for itself, independently of '
+           .. 'the mode -- it is read at the keypress and every frame, where '
+           .. 'the mode is read on a 10 Hz band',
+       tostring(BR.Voice.silenced()))
+
+    -- NO UI TEXT. The owner did not ask to be told about this and must not be.
+    local st = BR.Voice.status()
+    ok(st.headline == nil,
+       'and nothing is painted over the game to announce it -- no headline, so '
+           .. 'no toast and no notice',
+       tostring(st.headline))
+
+    -- ═══ WHAT A SPECTATOR'S SQUAD PANEL DRAWS, WHICH IS NOW A QUESTION ═══
+    --
+    -- Since 2026-08-22 the squad panel marks each row with the state of that
+    -- player's voice link (ui-src/src/hud/VoiceMark.tsx). A spectator is on
+    -- 'off' for the length of the session, so this is the one envelope that
+    -- decides what a dead player watching their squad sees -- and the two
+    -- flags below are the whole of the input.
+    --
+    -- CHOSEN, NOT A FAULT. The panel paints an unasked-for silence in
+    -- --color-danger and an asked-for one in the dim text colour, which is the
+    -- same rule VoiceNotice has always used for its headline. A spectator's
+    -- silence is not a malfunction and must not be drawn as one -- and 'off'
+    -- is how the rule is expressed here rather than a fourth mode invented for
+    -- spectators, so `chosen` comes out true without anything knowing why.
+    ok(st.silent == true and st.chosen == true,
+       'a spectator\'s own row is marked as having no voice at all, and marked '
+           .. 'as a CHOSEN silence rather than a fault -- the same distinction '
+           .. 'the headline rule has always made',
+       tostring(st.silent) .. '/' .. tostring(st.chosen))
+
+    -- AND THE MATES' ROWS CARRY NOTHING, because there is nothing to carry: a
+    -- spectator is audible-to nobody, so the talking list this panel reads is
+    -- empty by construction rather than by a rule about spectating. THE
+    -- INDICATOR IS DRIVEN FROM THE SAME SET THE MUTE SWEEP USES -- asserted
+    -- through the push rather than off BR.Voice.talking, because the push is
+    -- what reaches the panel.
+    ok(#talkingNames() == 0,
+       'and the squadmate who was mid-sentence a tick ago is no longer named: '
+           .. 'the panel says nobody is talking, which is what a spectator can '
+           .. 'hear. Nothing about spectating is taught to the indicator -- the '
+           .. 'audible set went empty and it fell out',
+       table.concat(talkingNames(), ', '))
+
+    -- THE PREFERENCE IS NOT TOUCHED. This single assertion is what makes the
+    -- disconnect case, the crash case and the resource-restart case safe: a
+    -- session that ends by this client simply ceasing to exist leaves nothing
+    -- behind to be put back, because nothing was ever taken.
+    ok(BR.Voice.pref.squad == BR.VoiceMode.SQUAD,
+       'while the SAVED preference is not written at all -- there is no stored '
+           .. 'mode to be stranded by a disconnect, a crash or a restart',
+       tostring(BR.Voice.pref.squad))
+
+    -- ==================================================================== --
+    -- AND THE SESSION ENDS, WITH NOTHING BUT A TICK.
+
+    spectating = false
+    local back = settle()
+
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'stopping restores the PREFERENCE, not the default -- and nothing was '
+           .. "fired to make it happen; 'squad' is not BR.VoiceModeDefault, so "
+           .. 'a restore that fell back could not pass this',
+       tostring(BR.Voice.mode()))
+    ok(back.radio == 30703,
+       'the squad radio channel is rejoined on the same tick, with no event of '
+           .. 'any kind in between -- this is the assertion that a forgotten '
+           .. 'exit path fails',
+       tostring(back.radio))
+    ok(back.muted[2] == nil and back.muted[3] == true,
+       'and the ears come back exactly as they were: the squadmate released, '
+           .. 'the stranger still refused',
+       'muted 2=' .. tostring(back.muted[2]) .. ' 3=' .. tostring(back.muted[3]))
+    ok(BR.Voice.silenced() == false,
+       'and the microphone is given back with it',
+       tostring(BR.Voice.silenced()))
+
+    -- ==================================================================== --
+    -- THE MATCH ENDS UNDERNEATH THE SPECTATOR.
+    --
+    -- THIS IS THE CASE THAT SEPARATES THE TWO POSSIBLE DESIGNS, and it is the
+    -- reason the implementation is an overlay rather than a saved value. A
+    -- dead player spectates their squad; the match ends while they are
+    -- watching; the session stops in the lobby. An implementation that
+    -- SNAPSHOT the mode at session start and put it back would put back
+    -- 'squad' -- the squad-match answer -- for a player who is now in no match
+    -- at all. Re-deriving gets the lobby's answer, which is the SOLO slot.
+    --
+    -- The two slots are set to DIFFERENT values here on purpose; it is the
+    -- only way to see which one won.
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.OFF, voiceModeSquad = BR.VoiceMode.SQUAD })
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    settle()
+    spectating = true
+    settle()
+    -- the match ends: no match kind any more, and the session stops
+    BR.State.match.mode = nil
+    spectating = false
+    settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'a session that outlives its match comes back to the preference for the '
+           .. 'match the player is in NOW -- the solo slot, not a snapshot of '
+           .. 'the squad answer taken when the camera went up',
+       tostring(BR.Voice.mode()))
+
+    -- ==================================================================== --
+    -- THE PREFERENCE IS CHANGED DURING THE SESSION.
+    --
+    -- The settings screen is reachable from the pause menu and the pause menu
+    -- opens over the spectate camera. "Their preferred setting" is whatever
+    -- they last chose, so the value that comes back is the NEW one -- and
+    -- 'squad' is neither BR.VoiceModeDefault nor the value in force before the
+    -- session, so nothing but the real preference can satisfy this.
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.NEARBY, voiceModeSquad = BR.VoiceMode.NEARBY })
+    settle()
+    spectating = true
+    local mid = settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF and mid.radio == 0,
+       'a session over a nearby preference is off and off the radio too',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(mid.radio))
+
+    voiceMode(BR.VoiceMode.SQUAD)   -- the settings screen, mid-session
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'changing the preference mid-session does not lift the session -- the '
+           .. 'camera is still up, so voice is still off',
+       tostring(BR.Voice.mode()))
+
+    spectating = false
+    local changed = settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and changed.radio == 30703,
+       'and what comes back is the setting they chose WHILE watching, not the '
+           .. 'one they had when the camera went up',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(changed.radio))
+
+    -- ==================================================================== --
+    -- TWICE IN A ROW.
+    --
+    -- Two sessions in one round is the ordinary case, not an edge: a dead
+    -- player steps between squadmates, and every step the SERVER treats as a
+    -- re-resolve. A latch that is taken on the first start and released on the
+    -- first stop is right once and wrong forever after.
+    spectating = true;  settle()
+    spectating = false; local one = settle()
+    spectating = true;  settle()
+    spectating = false; local two = settle()
+    ok(one.radio == 30703 and two.radio == 30703
+       and BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'two sessions back to back both restore -- nothing is spent on the '
+           .. 'first one',
+       tostring(one.radio) .. ' then ' .. tostring(two.radio))
+
+    -- ==================================================================== --
+    -- pma-voice RESTARTS UNDER THE SESSION.
+    --
+    -- An admin restarting the voice resource mid-match is a real thing that
+    -- happens, and br_core's handler for it drops everything it believes about
+    -- the engine (`joined`, `muted`). The session is still running, so the
+    -- answer must still be off -- and stopping must still put the channel back
+    -- on a resource that has never heard of it.
+    spectating = true
+    settle()
+    fire('onClientResourceStart', 'pma-voice')
+    local restarted = settle()
+    ok(restarted.radio == 0,
+       'a voice resource that restarts under a spectator comes back off the '
+           .. 'radio, because the mode is re-derived rather than replayed',
+       tostring(restarted.radio))
+    spectating = false
+    local afterRestart = settle()
+    ok(afterRestart.radio == 30703,
+       'and the channel is put back afterwards all the same',
+       tostring(afterRestart.radio))
+
+    -- ==================================================================== --
+    -- THE CROSS-FILE CALL, PINNED ON THE REAL SOURCE.
+    --
+    -- BR.Voice.mode() reads BR.Spectate.active() behind a nil-guard -- it has
+    -- to, because client/voice.lua loads with or without the camera. That
+    -- guard means a RENAME on the other side fails OPEN AND IN SILENCE: mode()
+    -- would answer with the preference forever, a spectator would hear the
+    -- whole match, and every assertion in this block would still pass against
+    -- the stub above. So the name is checked against the file that owns it.
+    -- (The mute block above pins the same name for the same reason; it is
+    -- repeated here because these are two independent readers and either could
+    -- be the one left behind.)
+    local sFh = io.open(ROOT .. 'br_core/client/spectate.lua', 'r')
+    local sSrc = sFh and sFh:read('a') or nil
+    if sFh then sFh:close() end
+    ok(type(sSrc) == 'string'
+       and sSrc:find('function BR.Spectate.active', 1, true) ~= nil,
+       'and BR.Spectate.active really is the name client/spectate.lua defines '
+           .. '-- the nil-guard in mode() would hide a rename completely',
+       'BR.Spectate.active is not defined where voice.lua reaches for it')
+
+    BR.Spectate = realSpectate
+    spectating = false
+    -- AND THE SQUADMATE STOPS TALKING, so the microphone this block opened does
+    -- not follow the suite into every block after it.
+    mumble.talking[2] = nil
+    nobodyElse()
+end
+
+describe('there is zero voice in the lobby, in both directions, and it all comes back')
+do
+    -- THE OWNER, 2026-08-22: "the lobby should not allow talking or listening.
+    -- period. zero voice in lobby."
+    --
+    -- ═══ `period` IS DOING WORK IN THAT SENTENCE ═══
+    --
+    -- BOTH HALVES. Not muted-but-hearing, which is what the spectator rule was
+    -- before the owner widened it with "'you are not transmitting' should also
+    -- mean 'you are not listening', but alas both are false." And not a
+    -- proximity gag like the bus rule, which is deliberately narrow -- a squad
+    -- on the bus KEEPS its radio -- and would have left the lobby's radio wide
+    -- open. So the assertions below lean on the receive half and on the radio
+    -- channel, exactly as the spectate block above does, because those are the
+    -- facts a half-done version gets wrong.
+    --
+    -- ═══ AND EVERY RESTORE IS DRIVEN BY THE CLOCK AND NOTHING ELSE ═══
+    --
+    -- Same discipline as the block above, and it matters MORE here: the lobby
+    -- is reachable from more directions than any other state in this game --
+    -- connecting, a match ending, a match destroyed underneath you, brforce,
+    -- a party dissolving, dying and being returned. Every "and it comes back"
+    -- case below moves the state and steps the TICK BAND ONLY. No settings
+    -- event, no VOICE_SET, no STATE broadcast. A player left permanently
+    -- voiceless by a visit to the lobby is a far worse bug than the one being
+    -- fixed, and a saved-mode-and-restore-it design is how this repository
+    -- would get there.
+
+    local function settle()
+        BR.Loop.step(BR.Loop.TICK)
+        pmaTick()
+        return pmaSnapshot()
+    end
+
+    -- A SQUAD MATCH WITH A REAL CHANNEL AND A REAL STRANGER, for the same
+    -- reasons the spectate block gives: it is the only kind where all three
+    -- modes are reachable, the only one with a radio to be evicted from, and
+    -- the only one where "everybody is muted" is distinguishable from "the
+    -- usual one is muted".
+    voiceApply(BR.VoiceMode.SQUAD, 41207, { 2 }, 1)
+    playersAt({ [2] = { x = 1, y = 0 }, [3] = { x = 2, y = 0 } })
+    mumble.talking[2] = true
+    local alive = settle()
+
+    -- THE SAVED PAIR AS IT STANDS BEFORE ANY OF THIS, captured rather than
+    -- restated. The two slots do NOT both read 'squad' even though voiceApply
+    -- asked for it -- BR.ToSoloVoiceMode coerces 'squad' out of the solo slot on
+    -- the way in, because a squad radio in a solo match is silence with extra
+    -- steps. Writing the expected values by hand here would encode that
+    -- coercion a second time and go stale the day it changes; what this block
+    -- is actually about is that the pair does not MOVE.
+    local prefBefore = { solo = BR.Voice.pref.solo, squad = BR.Voice.pref.squad }
+
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and alive.radio == 41207,
+       'in a match: the player is on their squad preference and on the channel '
+           .. 'the server granted',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(alive.radio))
+    ok(alive.muted[2] == nil and alive.muted[3] == true,
+       'and squad keeps the squadmate while refusing the stranger -- the state '
+           .. 'the lobby has to be visible against',
+       'muted 2=' .. tostring(alive.muted[2]) .. ' 3=' .. tostring(alive.muted[3]))
+    ok(#talkingNames() == 1,
+       'and the squadmate mid-sentence IS named, so there is a talking mark to '
+           .. 'lose', table.concat(talkingNames(), ', '))
+
+    -- ==================================================================== --
+    -- INTO THE LOBBY.
+
+    local lob = beState(BR.PlayerState.LOBBY)
+
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       "the mode in force goes to 'off' the moment the player is in the lobby",
+       tostring(BR.Voice.mode()))
+
+    local r = BR.Voice.routing()
+    ok(r.proximity == false and r.radio == false,
+       'and it is the REAL mode, both columns of the routing table, rather than '
+           .. 'a fourth mode invented for the lobby -- which is what makes the '
+           .. 'receive half free',
+       tostring(r.proximity) .. '/' .. tostring(r.radio))
+
+    -- LISTENING. The half a transmit-only fix would leave broken, and the half
+    -- the owner's "period" is about.
+    local audible = BR.Voice.audibleFor(BR.Voice.mode(), BR.State.roster,
+                                        BR.Voice.state.mates, 1)
+    ok(next(audible) == nil,
+       'a player in the lobby is audible-to nobody: the LISTEN half moves too',
+       'audible set is not empty')
+    ok(lob.muted[2] == true and lob.muted[3] == true,
+       'so the sweep holds a mute on the squadmate as well as the stranger -- '
+           .. 'the squad radio included, which a bus-shaped gag would have left '
+           .. 'open',
+       'muted 2=' .. tostring(lob.muted[2]) .. ' 3=' .. tostring(lob.muted[3]))
+    ok(lob.radio == 0,
+       'and this client leaves the squad radio channel entirely',
+       tostring(lob.radio))
+    ok(#talkingNames() == 0,
+       'and the squadmate who was mid-sentence a tick ago is no longer named -- '
+           .. 'nothing about the lobby was taught to the indicator, the audible '
+           .. 'set went empty and it fell out',
+       table.concat(talkingNames(), ', '))
+
+    -- TALKING. Two independent reasons, which is what "period" asked for: the
+    -- mode covers it on the 10 Hz band, and silenced() covers it at the
+    -- keypress and on every FRAME. A match ending while a player holds
+    -- push-to-talk is the ordinary way in, and 100ms of open microphone is a
+    -- word.
+    local sil, why = BR.Voice.silenced()
+    ok(sil == true,
+       'the master transmit switch answers for itself, independently of the '
+           .. 'mode -- it is read at the keypress and every frame, where the '
+           .. 'mode is read on a 10 Hz band',
+       tostring(sil))
+    ok(type(why) == 'string' and why:find('lobby', 1, true) ~= nil,
+       'and it gives the LOBBY as the reason rather than "the player chose '
+           .. "'off'\" -- /brvoice reports the cause, not the mechanism",
+       tostring(why))
+
+    -- NO UI TEXT. The owner did not ask to be told about this and must not be.
+    local st = BR.Voice.status()
+    ok(st.headline == nil,
+       'and nothing is painted over the game to announce it -- no headline, so '
+           .. 'no toast and no notice',
+       tostring(st.headline))
+    ok(st.silent == true and st.chosen == true,
+       'the row is marked silent AND chosen, so the squad panel draws it in the '
+           .. 'dim colour rather than as a fault -- the same distinction a '
+           .. "spectator's row gets",
+       tostring(st.silent) .. '/' .. tostring(st.chosen))
+
+    -- THE PREFERENCE IS NOT TOUCHED. This one assertion is what makes the
+    -- disconnect, the crash and the resource-restart cases safe: a lobby visit
+    -- that ends by this client ceasing to exist leaves nothing behind to put
+    -- back, because nothing was taken.
+    ok(BR.Voice.pref.solo == prefBefore.solo
+       and BR.Voice.pref.squad == prefBefore.squad
+       and BR.Voice.pref.squad == BR.VoiceMode.SQUAD,
+       'while the SAVED pair is byte-for-byte what it was before the lobby -- '
+           .. 'there is no stored mode to be stranded by a disconnect, a crash '
+           .. 'or a restart, because nothing was taken',
+       tostring(BR.Voice.pref.solo) .. '/' .. tostring(BR.Voice.pref.squad)
+           .. ' was ' .. tostring(prefBefore.solo) .. '/'
+           .. tostring(prefBefore.squad))
+
+    -- ==================================================================== --
+    -- RESTORE 1: THE MATCH STARTS. The ordinary path, and nothing but a tick.
+
+    local back = beState(BR.PlayerState.WARMUP)
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'leaving the lobby restores the PREFERENCE, not the default -- and '
+           .. "nothing was fired to make it happen. 'squad' is not "
+           .. 'BR.VoiceModeDefault, so a restore that fell back could not pass '
+           .. 'this', tostring(BR.Voice.mode()))
+    ok(back.radio == 41207,
+       'the squad radio channel is rejoined on the same tick, with no event of '
+           .. 'any kind in between -- this is the assertion a forgotten exit '
+           .. 'path fails', tostring(back.radio))
+    ok(back.muted[2] == nil and back.muted[3] == true,
+       'and the ears come back exactly as they were: the squadmate released, '
+           .. 'the stranger still refused',
+       'muted 2=' .. tostring(back.muted[2]) .. ' 3=' .. tostring(back.muted[3]))
+    ok(BR.Voice.silenced() == false,
+       'and the microphone is given back with it',
+       tostring(BR.Voice.silenced()))
+
+    -- ==================================================================== --
+    -- WARMUP IS NOT THE LOBBY, AND THAT IS A DECISION RATHER THAN A GAP.
+    --
+    -- The state above is WARMUP and voice is fully back, which pins it. Warmup
+    -- is INSIDE a match: squads are formed, the radio channel exists, and
+    -- players are shooting each other on the pad. The owner's word was "the
+    -- lobby", and lobbycam.lua, locker.lua and spawn.lua all draw the line at
+    -- exactly BR.PlayerState.LOBBY. A rule that swallowed warmup would silence
+    -- the one moment in a round when a squad is actually planning.
+    ok(BR.Voice.routing().radio == true,
+       'a player on the warmup pad has their squad radio -- the rule is the '
+           .. 'lobby, not "anything before the bus"',
+       tostring(BR.Voice.mode()))
+
+    -- ==================================================================== --
+    -- RESTORE 2: TWICE IN A ROW.
+    --
+    -- Not an edge. A player who plays two rounds passes through the lobby twice,
+    -- and a latch taken on the first entry and released on the first exit is
+    -- right once and wrong forever after.
+    beState(BR.PlayerState.LOBBY)
+    local one = beState(BR.PlayerState.ALIVE)
+    beState(BR.PlayerState.LOBBY)
+    local two = beState(BR.PlayerState.ALIVE)
+    ok(one.radio == 41207 and two.radio == 41207
+       and BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'two lobby visits back to back both restore -- nothing is spent on the '
+           .. 'first one',
+       tostring(one.radio) .. ' then ' .. tostring(two.radio))
+
+    -- ==================================================================== --
+    -- RESTORE 3: pma-voice RESTARTS WHILE THE PLAYER IS IN THE LOBBY.
+    --
+    -- An admin restarting the voice resource between rounds is a real thing
+    -- that happens, and br_core's handler drops everything it believes about the
+    -- engine (`joined`, `muted`). The answer must still be off while in the
+    -- lobby -- and leaving must still put the channel back on a resource that
+    -- has never heard of it.
+    beState(BR.PlayerState.LOBBY)
+    fire('onClientResourceStart', 'pma-voice')
+    local restarted = settle()
+    ok(restarted.radio == 0,
+       'a voice resource that restarts under a lobby player comes back off the '
+           .. 'radio, because the mode is re-derived rather than replayed',
+       tostring(restarted.radio))
+    local afterRestart = beState(BR.PlayerState.ALIVE)
+    ok(afterRestart.radio == 41207,
+       'and the channel is put back afterwards all the same',
+       tostring(afterRestart.radio))
+
+    -- ==================================================================== --
+    -- RESTORE 4: br_core ITSELF RESTARTS UNDER THE LOBBY.
+    --
+    -- The other half of the same admin action, and the one a saved-value design
+    -- loses outright: a stored "what they were on before the lobby" lives in Lua
+    -- state, and a resource reload is exactly what throws Lua state away. There
+    -- is nothing to lose here because nothing is stored -- the preferences are
+    -- pushed back by br_ui and the mode is arithmetic over them.
+    beState(BR.PlayerState.LOBBY)
+    fire('onClientResourceStart', 'br_core')
+    BR.State.me.src = 1     -- main.lua's own handler re-reads it; see voiceApply
+    settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'br_core restarting under a lobby player leaves them off, because the '
+           .. 'lobby is read from the state mirror rather than remembered',
+       tostring(BR.Voice.mode()))
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.NEARBY, voiceModeSquad = BR.VoiceMode.SQUAD })
+    fire(BR.Net.VOICE_SET, { radio = 41207, mates = { 2 },
+                             nearbyRange = VR.nearby })
+    local afterCore = beState(BR.PlayerState.ALIVE)
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and afterCore.radio == 41207,
+       'and the preference the settings screen pushes back is what they leave '
+           .. 'the lobby on',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(afterCore.radio))
+
+    -- ==================================================================== --
+    -- RESTORE 5: THE PREFERENCE IS CHANGED WHILE IN THE LOBBY.
+    --
+    -- The settings screen is reachable from the lobby menu, which makes this the
+    -- ordinary case rather than an edge. What comes back is what they last
+    -- chose -- and it must not be overridden by a snapshot taken on the way in.
+    beState(BR.PlayerState.LOBBY)
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'in the lobby again, off again', tostring(BR.Voice.mode()))
+    voiceMode(BR.VoiceMode.NEARBY)      -- the settings screen, mid-lobby
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'changing the preference in the lobby does not lift the rule -- they are '
+           .. 'still in the lobby, so there is still no voice',
+       tostring(BR.Voice.mode()))
+    local changed = beState(BR.PlayerState.ALIVE)
+    ok(BR.Voice.mode() == BR.VoiceMode.NEARBY and changed.radio == 0,
+       'and what comes back is the setting they chose WHILE in the lobby, not '
+           .. 'the one they had when they entered it',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(changed.radio))
+
+    -- ==================================================================== --
+    -- RESTORE 6: THE MATCH KIND CHANGES WHILE THEY SIT IN THE LOBBY.
+    --
+    -- THE CASE THAT SEPARATES THE TWO POSSIBLE DESIGNS, and the reason this is
+    -- an overlay rather than a saved value. A player finishes a SQUAD match,
+    -- lands in the lobby, and queues a SOLO. An implementation that snapshotted
+    -- the mode on the way in would put back the squad answer for a match that
+    -- has no squads -- which is total silence by design and indistinguishable
+    -- from a fault (#157's second half). Re-deriving reads the slot for the
+    -- match they are in NOW.
+    --
+    -- The two slots are set to DIFFERENT values on purpose; it is the only way
+    -- to see which one won.
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.OFF, voiceModeSquad = BR.VoiceMode.SQUAD })
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    settle()
+    beState(BR.PlayerState.LOBBY)
+    BR.State.match.mode = BR.Mode.SOLO.key   -- they queued a solo from the lobby
+    beState(BR.PlayerState.WARMUP)
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'a lobby visit that changes match kind comes back to the preference for '
+           .. 'the match they are in NOW -- the solo slot, not a snapshot of the '
+           .. 'squad answer taken on the way in',
+       tostring(BR.Voice.mode()))
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    beState(BR.PlayerState.LOBBY)
+    beState(BR.PlayerState.WARMUP)
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'and back the other way, with no settings change in between',
+       tostring(BR.Voice.mode()))
+
+    -- ==================================================================== --
+    -- A LOBBY PLAYER WHILE A MATCH IS RUNNING HEARS NOTHING, AND THAT IS THE
+    -- ANSWER RATHER THAN AN ACCIDENT.
+    --
+    -- The rule is written against THIS PLAYER's state, not the MATCH's, so a
+    -- match in full flight underneath somebody sitting in the lobby changes
+    -- nothing about them. That is what the owner asked for and it is also the
+    -- only safe answer: the lobby is where a player who just died and a player
+    -- waiting for the next round both sit, and a lobby that could listen to a
+    -- live match is a channel for exactly the intel a spectator was muted to
+    -- stop carrying.
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.NEARBY, voiceModeSquad = BR.VoiceMode.NEARBY })
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    local during = beState(BR.PlayerState.LOBBY)
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING, mode = BR.Mode.SQUAD.key })
+    during = settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'a live match running around a lobby player does not give them voice -- '
+           .. 'the rule is their state, not the match state',
+       tostring(BR.Voice.mode()))
+    ok(during.sends[2] == nil and during.sends[3] == nil,
+       'they transmit to nobody, though a nearby preference and two players one '
+           .. 'metre away would otherwise reach both',
+       'sends 2=' .. tostring(during.sends[2]) .. ' 3=' .. tostring(during.sends[3]))
+    ok(during.muted[2] == true and during.muted[3] == true,
+       'and they hear nobody either',
+       'muted 2=' .. tostring(during.muted[2]) .. ' 3=' .. tostring(during.muted[3]))
+
+    -- AN ADMIN IN THE LOBBY IS NOT DIFFERENT, and there is nothing to assert
+    -- against because there is nothing to assert: no config key, no permission
+    -- read, no branch. Same shape as BR.Voice.silenced()'s "not varied by
+    -- whether the session is a dead player's or an admin's". This is a TEXT
+    -- check, and it is the only instrument that can see the absence of a branch.
+    do
+        local vFh = io.open(ROOT .. 'br_core/client/voice.lua', 'r')
+        local vSrc = vFh and vFh:read('a') or ''
+        if vFh then vFh:close() end
+        local code = vSrc:gsub('%-%-%[%[.-%]%]', ' '):gsub('%-%-[^\n]*', '')
+        local lobAt = code:find('local function inLobby', 1, true)
+        local body = lobAt and code:sub(lobAt, lobAt + 400) or ''
+        ok(body:find('BR.PlayerState.LOBBY', 1, true) ~= nil,
+           'the lobby test really reads BR.PlayerState.LOBBY, the same name '
+               .. 'lobbycam.lua and locker.lua use',
+           'inLobby does not compare against BR.PlayerState.LOBBY')
+        ok(not code:find('Admin', 1, true) and not code:find('isAdmin', 1, true),
+           'and nothing in client/voice.lua consults an admin flag -- the rule '
+               .. 'is unconditional, with no exemption to keep in step',
+           'client/voice.lua has grown an admin branch')
+    end
+
+    -- ==================================================================== --
+    -- A CLIENT THAT CANNOT SAY WHERE IT IS, IS NOT IN THE LOBBY.
+    --
+    -- FOUND BY MUTATION: flipping inLobby() to `me == nil or ...` -- so a
+    -- missing state mirror counts AS the lobby -- passed every assertion above,
+    -- because BR.State.me is populated at load by client/main.lua and nothing
+    -- here had ever taken it away.
+    --
+    -- THE DIRECTION IS onBus()'s, DELIBERATELY. That function has answered this
+    -- exact question with `me ~= nil and ...` since it was written, the two sit
+    -- three lines apart, and two neighbouring reads of the same mirror
+    -- disagreeing about what nil means is a bug waiting for whoever edits one of
+    -- them. It is also the honest answer: nothing has PUT this player in the
+    -- lobby, so nothing should silence them for it -- and the state arrives
+    -- within one roster push, at which point the rule applies for real.
+    do
+        local realMe = BR.State.me
+        BR.State.me = nil
+        ok(BR.Voice.mode() ~= BR.VoiceMode.OFF,
+           'a client with no state mirror at all is not treated as being in the '
+               .. 'lobby -- the same answer onBus() gives to the same question, '
+               .. 'three lines away', tostring(BR.Voice.mode()))
+        ok(BR.Voice.silenced() == false,
+           'and its microphone is not taken on the strength of a nil',
+           tostring(BR.Voice.silenced()))
+        BR.State.me = realMe
+    end
+
+    -- ==================================================================== --
+    -- SPECTATING AND THE LOBBY OVERLAP, AND NEITHER RESCUES THE OTHER.
+    --
+    -- The real sequence: a dead player spectates their squad, the match ends
+    -- under them, and the session stops IN THE LOBBY. The spectate block above
+    -- asserts the session ending restores the preference; that must not happen
+    -- here, because they are now in the lobby. Two overlays over one derivation,
+    -- and the second has to hold when the first lifts.
+    local realSpectate2 = BR.Spectate
+    local spectating2 = false
+    BR.Spectate = { active = function() return spectating2 end }
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.NEARBY, voiceModeSquad = BR.VoiceMode.SQUAD })
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    beState(BR.PlayerState.OUT)
+    spectating2 = true
+    settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF, 'watching: off', tostring(BR.Voice.mode()))
+    -- the match ends: the camera comes down and they land in the lobby
+    spectating2 = false
+    local landed = beState(BR.PlayerState.LOBBY)
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF and landed.radio == 0,
+       'a spectate session that ends IN THE LOBBY does not give voice back -- '
+           .. 'the camera lifting is not the lobby lifting',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(landed.radio))
+    local next2 = beState(BR.PlayerState.WARMUP)
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and next2.radio == 41207,
+       'and the next match gives it back, once both overlays are gone',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(next2.radio))
+    BR.Spectate = realSpectate2
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    mumble.talking[2] = nil
+    nobodyElse()
+    settle()
+end
+
+describe('the inventory bar draws the player being watched')
+do
+    -- THE BUG, IN THE OWNER'S WORDS: "the health/shield/inventory don't show
+    -- properly. They should be fully populated." They were populated -- with
+    -- the DEAD VIEWER's inventory, which is empty, because dying clears it.
+    -- The camera changed subject and the bar did not.
+    --
+    -- WHAT IS ASSERTED HERE is the client half: that the bar is fed from the
+    -- spectate feed while a session is running and from the player's own mirror
+    -- when it is not. The SERVER half -- that the target's inventory is only
+    -- ever sent to somebody the server already let watch them -- is not a value
+    -- this suite can see, and is gated by tools/check_spectator_hud.lua.
+
+    --- The payload of the last `inv` envelope pushed to the interface.
+    local function lastInv()
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.INV then
+                return e.args[2]
+            end
+        end
+        return nil
+    end
+
+    -- A LOADOUT NOBODY IN THIS SUITE COULD PRODUCE BY ACCIDENT, so an assertion
+    -- that passes cannot be passing on the local mirror that happens to agree.
+    local WATCHED = {
+        slots = {
+            { id = 'wpn_spectated_rifle', label = 'Watched Rifle',
+              kind = 'weapon', rarity = 'legendary', count = 1, clip = 7,
+              pool = 'rifle' },
+            false, false, false, false,
+        },
+        ammo   = { rifle = 61 },
+        active = 1,
+        using  = nil,
+    }
+
+    fire('br:spectate:inv', WATCHED)
+    local got = lastInv()
+    ok(type(got) == 'table' and got.slots and got.slots[1]
+       and got.slots[1].id == 'wpn_spectated_rifle',
+       'the bar is fed the WATCHED player\'s slots, not the viewer\'s own',
+       tostring(got and got.slots and got.slots[1]
+           and got.slots[1].id or 'nothing'))
+    ok(type(got) == 'table' and got.ammo and got.ammo.rifle == 61
+       and got.active == 1,
+       'and their ammo pools and the slot in their hand travel with it',
+       tostring(got and got.ammo and got.ammo.rifle))
+
+    -- A QUIET TICK MUST NOT BLANK THE BAR. The server dedupes the inventory out
+    -- of most feed pushes, so "no inventory in this message" is the ORDINARY
+    -- case and means unchanged. A client that treated it as empty would blink
+    -- the bar four times a second, which is the reported bug wearing a hat.
+    local before = lastInv()
+    TriggerEvent('br:ui:sendLocal', BR.Nui.INV, before)  -- a push with no change
+    ok(lastInv() ~= nil and lastInv().slots[1] ~= nil
+       and lastInv().slots[1].id == 'wpn_spectated_rifle',
+       'a feed tick carrying no inventory leaves the last one standing',
+       'the bar blanked on an unchanged tick')
+
+    -- AND IT HANDS BACK. A session ending sends an explicit nil, and the bar
+    -- has to return to the viewer's own mirror -- otherwise a player who
+    -- stopped spectating spends the rest of the round looking at somebody
+    -- else's rifle.
+    fire('br:spectate:inv', nil)
+    local mine = lastInv()
+    ok(type(mine) == 'table'
+       and not (mine.slots and mine.slots[1] and mine.slots[1].id
+                == 'wpn_spectated_rifle'),
+       'and the session ending puts the viewer\'s own inventory back',
+       tostring(mine and mine.slots and mine.slots[1]
+           and mine.slots[1].id or 'empty'))
+
+    -- THE PICTURE IS READ-ONLY. Nothing in this file may act on a spectated
+    -- inventory: the slot keys, the drop and the use all read the local mirror,
+    -- and the substitution happens only on the way to the interface. Asserted
+    -- on the source because the defect would be a call site that reads the
+    -- wrong variable, which no payload can show.
+    local invFh  = io.open(ROOT .. 'br_core/client/inventory.lua', 'r')
+    local invSrc = invFh and invFh:read('a') or ''
+    if invFh then invFh:close() end
+    -- THREE, AND THE NUMBER IS THE ASSERTION: the declaration, the ONE read on
+    -- the way to the interface, and the ONE write from the feed. A fourth is
+    -- either a second draw path or -- the case this exists for -- an ACTION
+    -- reading it, which would be a keypress asking the server to drop another
+    -- player's weapon. Somebody who genuinely needs a fourth updates this
+    -- number and has to say why, which is the same discipline verify.sh applies
+    -- to the console's verb set.
+    local reads = select(2, invSrc:gsub('spectated', ''))
+    ok(reads == 3,
+       'the spectated inventory is declared once, drawn from once and written '
+           .. 'once -- it is a picture, and nothing in this file may act on it',
+       ('`spectated` appears %d time(s), expected 3'):format(reads))
+end
+
+describe('a spectator\'s click does not reach their own ped')
+do
+    -- "I had a gun in hand and accidentally shot it while in spectate. My
+    -- preference would be we disable all ped actions while in spectate" -- the
+    -- owner, 2026-08-22.
+    --
+    -- ═══ WHY THE ANSWER IS NOT ENTIRELY IN client/spectate.lua ═══
+    --
+    -- That file holds down every control a ped acts through, which stops the
+    -- ENGINE reacting to them. THIS file is not the engine. The two readers
+    -- below are `IsDisabledControlJustPressed`, which is documented -- in this
+    -- very file, twice -- to see a control somebody has suppressed; that is the
+    -- whole reason the disabled variants exist and it is how the spectate keys
+    -- themselves keep working. So a suppressed left mouse button went on
+    -- drinking a shield potion, and a suppressed scroll wheel went on swapping
+    -- the weapon in the ped's hand. A longer list in the other file cannot
+    -- reach either of them.
+    --
+    -- ═══ AND WHY ONLY AN ADMIN EVER HIT IT ═══
+    --
+    -- canArm() is false for DEAD and SPECTATING, so a dead player watching
+    -- their squad returns before both readers and always did. An ADMIN
+    -- spectator is ALIVE -- the console's button asks only that they be in game
+    -- -- holding their own loadout, and fell straight through. Which is exactly
+    -- the asymmetry the whole spectate feature keeps having to be reminded of.
+    local realSpectate = BR.Spectate
+    local spectating = false
+    BR.Spectate = { active = function() return spectating end }
+
+    local realPressed = IsDisabledControlJustPressed
+    local pressing = nil
+    function IsDisabledControlJustPressed(_pad, c) return c == pressing end
+
+    -- An ALIVE admin holding a consumable: the reported position.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'shield_small', kind = BR.ItemKind.CONSUMABLE,
+                    count = 1 } },
+        ammo = {}, active = 1,
+    })
+
+    local function asked(name)
+        local n = 0
+        for _, s in ipairs(sent) do if s.name == name then n = n + 1 end end
+        return n
+    end
+
+    -- 1. THE BASELINE. Not spectating, the click uses the potion. If this ever
+    --    stops being true the two assertions after it prove nothing at all --
+    --    a gate that blocks something already impossible is a gate that passes
+    --    for the wrong reason.
+    sent = {}
+    pressing = 24                                    -- INPUT_ATTACK
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_USE) == 1,
+       'an alive player clicking with a consumable in hand uses it',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    -- 2. THE SAME CLICK, SPECTATING.
+    spectating = true
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_USE) == 0,
+       'and the same click while spectating does nothing -- the mouse belongs '
+           .. 'to the camera',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    -- 3. THE WHEEL, WHICH IS THE OTHER READER AND A SEPARATE PATH. Swapping the
+    --    weapon in your own ped's hand while watching somebody else's fight is
+    --    the same class of accident as firing it.
+    sent = {}
+    pressing = 15                                    -- WHEEL_UP
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 0,
+       'and the scroll wheel does not swap the weapon in the spectator\'s hand',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 4. GTA'S WEAPON WHEEL IS STILL SUPPRESSED. The gate sits BELOW the
+    --    suppression loop for this reason: #134's own note names DEAD/
+    --    SPECTATING as a phase the engine's wheel must not appear in, so a gate
+    --    written one block higher would trade one bug for that one.
+    local disabled = {}
+    local realDisable = DisableControlAction
+    function DisableControlAction(_pad, c) disabled[c] = true end
+    BR.Loop.step(BR.Loop.FRAME)
+    DisableControlAction = realDisable
+    ok(disabled[37] == true,
+       'and GTA\'s weapon wheel is still held down while spectating (#134)',
+       'control 37 was not disabled')
+
+    -- 5. IT HANDS BACK. The same property the rest of this feature is built on:
+    --    stop spectating and the click works again, with nothing to reset.
+    spectating = false
+    sent = {}
+    pressing = 24
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_USE) == 1,
+       'and the click comes straight back when the session ends',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    pressing = nil
+    IsDisabledControlJustPressed = realPressed
+    BR.Spectate = realSpectate
+end
+
+describe('the inventory panel holds the PASSENGER trigger, not just the driver\'s')
+do
+    -- ═══ THE COMMENT NAMED THE CONTROL WE MEANT, BESIDE A DIFFERENT ID ═══
+    --
+    -- The panel-open block read:
+    --
+    --     DisableControlAction(0, 68, true)   -- VEH_ATTACK
+    --     DisableControlAction(0, 69, true)   -- VEH_PASSENGER_ATTACK
+    --
+    -- Checked against the FiveM controls table on 2026-08-22: 68 is VEH_AIM,
+    -- 69 is VEH_ATTACK, 91 is VEH_PASSENGER_AIM and 92 is
+    -- VEH_PASSENGER_ATTACK -- and 92 appeared NOWHERE in inventory.lua. So the
+    -- block took the driver's trigger and both aims and left the passenger's
+    -- trigger live: a player riding shotgun could fire with the panel open,
+    -- which is the one accident this block exists to prevent.
+    --
+    -- The wrong comment is why it survived review, and it is why this is a
+    -- test rather than a corrected comment: a comment cannot fail a build.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, count = 1 } },
+        ammo = {}, active = 1,
+    })
+
+    --- Every control the FRAME loop disables in one step.
+    local function heldControls()
+        local seen = {}
+        local real = DisableControlAction
+        function DisableControlAction(_pad, c) seen[c] = true end
+        BR.Loop.step(BR.Loop.FRAME)
+        DisableControlAction = real
+        return seen
+    end
+
+    local function togglePanel()
+        for _, fn in ipairs(BR.Keys.listeners['inventory'] or {}) do fn(true) end
+    end
+
+    -- 1. THE BASELINE, WHICH IS THE HALF THAT MAKES THE REST MEAN ANYTHING.
+    --    With the panel shut the trigger must be FREE -- a gate that blocks
+    --    something already blocked passes for the wrong reason.
+    local shut = heldControls()
+    ok(shut[92] ~= true,
+        'with the panel shut, the passenger trigger is the player\'s',
+        'control 92 was disabled with no panel open')
+
+    -- 2. THE PANEL IS OPEN, AND ALL FIVE IN-VEHICLE CONTROLS ARE HELD.
+    togglePanel()
+    local open = heldControls()
+    ok(open[92] == true,
+        'the panel holds VEH_PASSENGER_ATTACK (92) -- the reported gap',
+        'control 92 was NOT disabled with the panel open')
+    ok(open[91] == true,
+        'and VEH_PASSENGER_AIM (91) with it',
+        'control 91 was NOT disabled with the panel open')
+    ok(open[68] == true and open[69] == true and open[70] == true,
+        'and the driver\'s aim and both triggers, as it always did',
+        ('68=%s 69=%s 70=%s'):format(tostring(open[68]), tostring(open[69]),
+                                     tostring(open[70])))
+
+    -- 3. IT HANDS BACK. DisableControlAction lasts one frame, so closing the
+    --    panel restores by arithmetic rather than by remembering to.
+    --
+    --    CLOSED THROUGH THE UI ACTION, NOT A SECOND KEYPRESS. The key handler
+    --    swallows a toggle within 250ms of the last one -- the debounce that
+    --    fixed the panel blinking while TAB was held (user, 2026-08-09) --
+    --    so a test that pressed twice in the same tick would leave the panel
+    --    OPEN and then assert against a state it never reached. It did,
+    --    before this comment existed.
+    fire('br:ui:action', BR.NuiCb.CLOSE)
+    local shutAgain = heldControls()
+    ok(shutAgain[92] ~= true,
+        'and closing the panel gives the trigger straight back',
+        'control 92 was still disabled after the panel closed')
 end
 
 describe('the start-of-match voice notice says the mode and the real key')
@@ -3431,20 +5103,49 @@ do
     local noticeFor = BR.Voice.noticeFor
         or function() return nil end
 
+    -- ═══ THE KEY IS A TOKEN NOW, AND THAT IS #209 ═══
+    --
+    -- This block used to assert 'Hold N to speak.' -- the LABEL, substituted
+    -- here. Owner, 2026-08-22, looking at this exact sentence on screen: "we
+    -- should make our own glyphs for keys. For example, this message looks too
+    -- bland and hard coded". The complaint was not the wording, which is
+    -- unchanged below to the character; it was that the N was a letter of
+    -- prose. So the sentence now carries BR.KeyToken('brptt') and the page
+    -- draws a plate for it.
+    --
+    -- THE WORDING ASSERTIONS ARE THE POINT AND THEY DID NOT MOVE. Everything
+    -- around the hole is still checked verbatim, so a change that "fixed" the
+    -- glyph by rewriting the owner's sentence still fails here.
     local nb = noticeFor(BR.VoiceMode.NEARBY, 'N')
     ok(type(nb) == 'string' and nb:find('set to nearby', 1, true) ~= nil,
        'it names the mode in force', tostring(nb))
-    ok(type(nb) == 'string' and nb:find('Hold N to speak.', 1, true) ~= nil,
-       'and the key, in the owner\'s words', tostring(nb))
+    ok(type(nb) == 'string'
+       and nb:find('Hold {key:brptt} to speak.', 1, true) ~= nil,
+       'and the key, in the owner\'s words, with the key itself left as a hole '
+           .. 'for the interface to draw',
+       tostring(nb))
+    -- AND THE LABEL IS NOWHERE IN IT. Passing 'N' must not put an N in the
+    -- string: the whole value of the token is that the sentence cannot go
+    -- stale, and a version that substituted the label AND emitted a token
+    -- would satisfy the assertion above while keeping the bug.
+    ok(type(nb) == 'string' and nb:find('Hold N', 1, true) == nil,
+       'the resolved label is not substituted into the sentence at all',
+       tostring(nb))
     ok(type(nb) == 'string'
        and nb:find('voice preference and keybinds in Settings', 1, true) ~= nil,
        'and where to change both', tostring(nb))
 
+    -- A DIFFERENT LABEL PRODUCES THE SAME STRING, which is the token's whole
+    -- claim stated as a test: what reaches the interface no longer depends on
+    -- what key was bound at the moment it was composed, only on WHETHER one
+    -- was. The page resolves the rest, live, on every rebind push.
     local sq = noticeFor(BR.VoiceMode.SQUAD, 'V')
     ok(type(sq) == 'string' and sq:find('set to squad', 1, true) ~= nil
-       and sq:find('Hold V', 1, true) ~= nil,
-       'the mode and the key are both read rather than assumed -- a rebound '
-           .. 'key is named as the key it now is',
+       and sq:find('Hold {key:brptt}', 1, true) ~= nil,
+       'the mode is read rather than assumed, and the key is named by command',
+       tostring(sq))
+    ok(sq == noticeFor(BR.VoiceMode.SQUAD, 'Page Down'),
+       'and rebinding does not change the sentence -- only the glyph it holds',
        tostring(sq))
 
     -- OFF SAYS NOTHING. Explicit owner instruction, and it is the same rule
@@ -3528,11 +5229,44 @@ do
     -- removed HUD line used to carry.
     matchOver()
     voiceMode(BR.VoiceMode.NEARBY)
+
+    -- ═══ AND THE BROADCAST ARRIVES WHILE THIS CLIENT IS STILL IN THE LOBBY,
+    --     WHICH IS THE REAL ORDERING AND NOT AN EDGE ═══
+    --
+    -- server/match.lua's BR.Match.onEnter sends Broadcast.state(WARMUP) from
+    -- transition() BEFORE it runs the Roster.setState loop that moves anybody
+    -- out of LOBBY. Those are two different messages on two different paths, so
+    -- at the instant this handler runs the mirrored state is still `lobby`.
+    --
+    -- SINCE 2026-08-22 THAT IS A MODE OF 'off' (BR.Voice.mode overlays the
+    -- lobby), and noticeFor() returns nil on 'off'. A handler that read mode()
+    -- here would therefore decline to say anything -- every match, in every
+    -- session, forever, because the latch is spent on DELIVERY and so would
+    -- never be spent at all. The player would simply never be told the
+    -- push-to-talk key, which is the one fact the removed HUD line carried.
+    --
+    -- The fix is that the notice reads BR.Voice.chosenMode() -- the SETTING,
+    -- which is what the sentence is about -- and this is the assertion that
+    -- says so. Nothing else in the suite would have caught it: voiceApply()
+    -- leaves this client ALIVE, so every other warmup() in this block runs from
+    -- a state the real game is never in at that moment.
+    BR.State.me.state = BR.PlayerState.LOBBY
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'a client that has not yet been moved out of the lobby really is on '
+           .. "'off' when the WARMUP broadcast lands -- the precondition, "
+           .. 'stated so this test cannot pass by the state being wrong',
+       tostring(BR.Voice.mode()))
+
     local shown = warmup()
     ok(type(shown) == 'string',
        'and turning voice ON later still earns the notice -- being suppressed '
-           .. 'is not the same as having been shown',
+           .. 'is not the same as having been shown, and the lobby the player '
+           .. 'has not left yet does not suppress it',
        tostring(shown))
+    ok(type(shown) == 'string' and shown:find('set to nearby', 1, true) ~= nil,
+       'and it names the mode they CHOSE rather than the lobby they are '
+           .. 'standing in', tostring(shown))
+    BR.State.me.state = BR.PlayerState.ALIVE
 
     -- 3. ONCE PER BROADCAST IS NOT ENOUGH. The digest re-fires STATE on any
     -- change, so the same warmup can arrive more than once.
@@ -3693,6 +5427,29 @@ do
     ok(#names == 1 and names[1] == 'p2',
         'somebody talking nearby is named', table.concat(names, ','))
 
+    -- AND SOMEBODY STANDING RIGHT THERE SAYING NOTHING IS NOT.
+    --
+    -- THE ASSERTION THIS BLOCK DID NOT HAVE, AND THE ONE THE OWNER FOUND FOR
+    -- US: "the squad panel works, but doesn't accurately show when others in
+    -- the squad have 'off' selected." A squadmate who is silent -- because
+    -- they picked 'off', or simply because they are not speaking -- must be
+    -- named by nothing, and every assertion above only ever checked the
+    -- POSITIVE case. p2 is audible, streamed and quiet, which is the state a
+    -- squad spends almost all of a match in and the one nothing measured.
+    --
+    -- IT IS ONLY MEANINGFUL BECAUSE THE STUB ANSWERS 0 RATHER THAN false (see
+    -- MumbleIsPlayerTalking above). Against a boolean fixture this line passes
+    -- on the broken code, which is exactly how the fault reached a playtest.
+    mumble.talking = {}
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#talkingNames() == 0,
+        'and an audible neighbour who is NOT talking is named by nobody -- the '
+            .. 'engine says no with a zero, and in Lua a zero is true',
+        table.concat(talkingNames(), ','))
+
+    mumble.talking = { [2] = true }
+    BR.Loop.step(BR.Loop.TICK)
+
     -- AND ON 'squad' THE SAME PERSON IS NOT, because squad does not hear them.
     -- THIS IS THE INDICATOR HALF OF THE EXCLUSIVITY RULE and it is the one that
     -- would have caught the old behaviour from the screen rather than from the
@@ -3739,6 +5496,135 @@ do
     ok(#talkingNames() == 0,
         'off names nobody, because off hears nobody',
         table.concat(talkingNames(), ','))
+end
+
+describe('this client tells its squad one bit about its voice, on the edge only')
+do
+    -- THE HOP THE OWNER ASKED FOR, 2026-08-29. He had just watched the panel
+    -- fail at the one thing he wanted from it -- "the squad panel works, but
+    -- doesn't accurately show when others in the squad have 'off' selected" --
+    -- and, told the fact was on no wire at all: "Why can't we build another
+    -- client -> server -> squad hop? It should only be processed at the start
+    -- of a squad in warmup and whenever changes occur."
+    --
+    -- "WHENEVER CHANGES OCCUR" IS THE HALF WITH TEETH, and it is what most of
+    -- this block is about. The publish sits on the 10 Hz band because that is
+    -- where the mode is already re-derived; what stops it being a 10 Hz
+    -- BROADCAST is a dedup one line long, and a dedup one line long is exactly
+    -- the kind of thing a later round deletes while "simplifying". Nothing else
+    -- in this suite would notice: every assertion about the panel would still
+    -- pass while 48 machines shouted their voice mode ten times a second.
+
+    --- Every voice-state push this client has made since the marker.
+    local function voicePushes()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.VOICE_STATE then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+
+    nobodyElse()
+    standAt(0, 0)
+
+    -- 1. THE FIRST TICK OF A SESSION ALWAYS SENDS, and it sends `false` rather
+    --    than nothing. An unstated bit and a bit stated as false are different
+    --    claims: a fresh Lua state -- a reconnect, br_core restarting -- must
+    --    not assume the server still holds one from last time.
+    sent = {}
+    voiceApply('nearby', nil, nil, 1)
+    local p = voicePushes()
+    ok(#p == 1 and p[1].off == false,
+        'a client on nearby states its voice bit once, as false',
+        ('%d push(es), first off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    -- 2. AND THEN SHUTS UP. THIS IS THE ASSERTION THAT ENFORCES THE OWNER'S
+    --    SENTENCE. Ten ticks is a full second of a band that re-derives the
+    --    mode every time; a publish without its dedup sends ten times here.
+    sent = {}
+    for _ = 1, 10 do BR.Loop.step(BR.Loop.TICK) end
+    ok(#voicePushes() == 0,
+        'and says nothing at all on the ticks that follow -- "whenever changes '
+            .. 'occur", not on a band',
+        ('%d push(es) over ten ticks'):format(#voicePushes()))
+
+    -- 3. THE CHANGE IS WHAT SPEAKS. The player picks Off on the settings
+    --    screen; the squad is entitled to know, and this is the moment.
+    sent = {}
+    voiceMode('off')
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == true,
+        'picking off sends exactly one push, saying so',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    sent = {}
+    for _ = 1, 10 do BR.Loop.step(BR.Loop.TICK) end
+    ok(#voicePushes() == 0, 'and then silence again',
+        ('%d push(es)'):format(#voicePushes()))
+
+    -- 4. AND BACK. The edge works in both directions or the squad is left
+    --    looking at a mate who came back an hour ago.
+    sent = {}
+    voiceMode('squad')
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == false,
+        'and coming back off it sends exactly one push, saying THAT',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    -- 5. IT IS THE MODE IN FORCE, NOT THE STORED PREFERENCE. A spectator is on
+    --    'off' for the length of the session (BR.Voice.mode()), and their squad
+    --    should see it -- reading BR.Voice.pref instead would draw a live
+    --    microphone beside a dead man for the rest of the match.
+    --
+    --    NOTHING HERE TEACHES THE PUBLISH ABOUT SPECTATING, which is the point:
+    --    it asks the same function every routing decision asks, so a rule added
+    --    to mode() later arrives here for free.
+    local realSpectate = BR.Spectate
+    local watching = false
+    BR.Spectate = { active = function() return watching end }
+
+    sent = {}
+    watching = true
+    BR.Loop.step(BR.Loop.TICK)
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == true,
+        'starting to spectate publishes off, with nothing here taught the word',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    sent = {}
+    watching = false
+    BR.Loop.step(BR.Loop.TICK)
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == false,
+        'and the session ending publishes the preference coming back',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    BR.Spectate = realSpectate
+
+    -- 6. A NEW SQUAD IS A NEW AUDIENCE. VOICE_SET is the server naming this
+    --    player's squad and radio -- the "start of a squad in warmup" half of
+    --    the instruction. The bit has not CHANGED, so a publish that only
+    --    watched the value would send nothing and the new squad would be told
+    --    about a mate it has never heard from.
+    sent = {}
+    fire(BR.Net.VOICE_SET, { radio = 30501, mates = { 2 },
+                             nearbyRange = VR.nearby })
+    BR.Loop.step(BR.Loop.TICK)
+    p = voicePushes()
+    ok(#p == 1 and p[1].off == false,
+        'and a fresh squad assignment re-asserts the bit even though it has '
+            .. 'not changed -- the new squad has never been told',
+        ('%d push(es), off=%s'):format(#p, tostring(p[1] and p[1].off)))
+
+    -- 7. AND THE PAYLOAD IS ONE BOOLEAN. The mode is still published to nobody,
+    --    and this is where that would first leak: a publish that helpfully sent
+    --    `mode = BR.Voice.mode()` alongside would pass every assertion above.
+    local keys = {}
+    for k in pairs(p[1] or {}) do keys[#keys + 1] = k end
+    ok(#keys == 1 and keys[1] == 'off',
+        'and the payload carries that boolean and nothing else -- the MODE is '
+            .. 'still published to nobody',
+        table.concat(keys, ','))
 end
 
 describe('the voice readout runs, and leads with the thing that matters')
@@ -4767,6 +6653,394 @@ do
     sent = {}
 end
 
+-- ------------------------------------------------ the runway camera pin ---
+--
+-- "Can you lock the camera movement while in the plane until the plane is off
+--  the runway?"                                            -- owner, #241
+--
+-- ═══ THE MOUSE IS HELD DOWN FOR THE WHOLE OF THIS BLOCK, ON PURPOSE ═══
+--
+-- The block above stubs GetControlNormal to a flat 0.0, which is a hand that is
+-- not touching the mouse -- and against THAT hand a camera that is pinned and a
+-- camera that is free produce identical numbers. So the fixture here pushes the
+-- look axes hard on every frame and asks where the shot actually ended up. A
+-- pin that is asserted but does not hold, and a pin that holds for a reason
+-- other than the one claimed, both fail.
+--
+-- ═══ AND THE PLANE IS PARKED, WHICH IS WHAT MAKES THE READING MEAN ANYTHING ═
+--
+-- Every point of this route is the same point, so BR.PathPosAt answers the same
+-- coordinates on every frame and the look-ahead is zero-length (bus.fly's
+-- `hLen > 1.0` is false, so the smoothed heading never moves either). The
+-- camera coordinate is therefore a PURE FUNCTION OF THE ORBIT -- camYaw and
+-- camPitch and nothing else -- and "the shot did not move" is exactly "the
+-- orbit did not move" rather than an accident of where the aeroplane was.
+--
+-- ═══ WHAT IT DELIBERATELY DOES NOT COVER ═══
+--
+-- Whether `rotateAt` is the moment a PLAYER would call "off the runway". That
+-- is the server's stamp for the last sample of the ground roll and two other
+-- subsystems already clock off it; whether it reads right from the cabin is a
+-- playtest fact and is named as one in the report.
+
+describe('the camera is pinned to the airframe until the wheels are up -- #241')
+do
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    -- A hand shoving the look axes, every frame, in one direction.
+    local realNormal = GetControlNormal
+    GetControlNormal = function(_pad, control)
+        if control == 1 or control == 2 then return 0.5 end
+        return 0.0
+    end
+
+    -- WHERE THE SHOT IS, rather than whether a native was called. bus.fly
+    -- writes the camera coordinate every frame whether or not the orbit moved,
+    -- so a spy on SetCamCoord would count sixty calls under a pin that was
+    -- working perfectly. The VALUE is the only thing that separates them.
+    local camAt = nil
+    local realCamCoord = SetCamCoord
+    SetCamCoord = function(_c, x, y, z) camAt = { x = x, y = y, z = z } end
+    local function shot()
+        return camAt and ('%.4f,%.4f,%.4f'):format(camAt.x, camAt.y, camAt.z)
+            or 'no shot'
+    end
+
+    -- ...AND WHAT THE PLAYER'S HAND MEETS, which is a different claim from
+    -- where the shot ended up: an orbit frozen by a skipped accumulation still
+    -- leaves the mouse driving the hidden gameplay camera. Reset per frame,
+    -- because a disable lasts exactly one -- the same reason the file-level
+    -- `disabled` table is cleared in frame().
+    local realDisable = DisableControlAction
+    local blocked = {}
+    DisableControlAction = function(pad, c)
+        blocked[c] = true
+        return realDisable(pad, c)
+    end
+    local function flyFrame()
+        blocked = {}
+        frame(16)
+    end
+
+    --- Put this client aboard a PARKED plane whose wheels come up in `rollMs`.
+    local function boardWithRoll(rollMs)
+        local t = GetGameTimer()
+        local pts = {}
+        for i = 0, 8 do
+            pts[#pts + 1] = { x = 0.0, y = 0.0, z = 500.0, t = t + i * 4000 }
+        end
+        fire(BR.Net.BUS_ROUTE, {
+            points = pts, timed = true, heading = 0.0,
+            sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+            tStart = t, rotateAt = t + rollMs,
+            jumpFrom = t + rollMs + 1000, doorsClose = t + 20000,
+            tEnd = t + 30000,
+        })
+        BR.State.match = { state = BR.MatchState.BUS }
+        BR.State.me.state = BR.PlayerState.BUS
+        local before = #threads
+        BR.Loop.step(BR.Loop.TICK)
+        for i = before + 1, #threads do threads[i]() end
+        flyFrame()
+    end
+
+    -- ── 1. ON THE RUNWAY, THE SHOT DOES NOT MOVE ───────────────────────────
+    boardWithRoll(6000)
+
+    ok(BR.Bus and BR.Bus.camLocked and BR.Bus.camLocked() == true,
+        'boarding on the runway pins the camera',
+        BR.Bus and BR.Bus.camLocked and tostring(BR.Bus.camLocked())
+            or 'BR.Bus.camLocked does not exist')
+
+    local pinnedAt = shot()
+    for _ = 1, 40 do flyFrame() end
+    ok(shot() == pinnedAt,
+        'and forty frames of the mouse being shoved do not move it',
+        ('%s -> %s'):format(pinnedAt, shot()))
+
+    -- ...AND THE INPUT ITSELF IS TAKEN, not merely ignored. LOOK_LR and LOOK_UD
+    -- also steer the hidden gameplay camera, which is the view handed back when
+    -- the ride ends.
+    ok(blocked[1] == true and blocked[2] == true,
+        'and the look axes are disabled rather than only unread',
+        ('LOOK_LR %s  LOOK_UD %s'):format(tostring(blocked[1]),
+            tostring(blocked[2])))
+
+    -- ── 2. WHEELS UP, AND IT LETS GO ON THE CLOCK ALONE ────────────────────
+    --
+    -- NOTHING IS TOLD ABOUT THIS. No event arrives, no handler runs, no flag is
+    -- cleared -- the only thing that changes between the frame above and the
+    -- frame below is what time it is. That is the whole claim of a level: it
+    -- expires without anybody remembering to expire it.
+    frames(30, 200)   -- six seconds of clock, one route sample apart
+    ok(BR.Bus.camLocked() == false,
+        'the pin lifts at wheels-up with nothing having been told about it',
+        ('rotate has passed and camLocked is %s')
+            :format(tostring(BR.Bus.camLocked())))
+
+    local freeFrom = shot()
+    for _ = 1, 10 do flyFrame() end
+    ok(shot() ~= freeFrom,
+        'and the same shove now moves the shot -- free look is genuinely back',
+        ('%s -> %s'):format(freeFrom, shot()))
+    ok(blocked[1] ~= true and blocked[2] ~= true,
+        'with the look axes handed back',
+        ('LOOK_LR %s  LOOK_UD %s'):format(tostring(blocked[1]),
+            tostring(blocked[2])))
+
+    -- ── 3. EVERY ENDING GIVES IT BACK, INCLUDING THE ONES STILL ON THE
+    --       RUNWAY ────────────────────────────────────────────────────────
+    --
+    -- THE CLOCK IS DELIBERATELY LEFT INSIDE THE PIN'S WINDOW FOR BOTH OF THESE.
+    -- If the endings below were passing because time had run out, they would
+    -- prove nothing about the ending. So the roll is made long enough that
+    -- wheels-up is still seconds away when the ride is taken apart, and what
+    -- lifts the pin is the teardown and only the teardown.
+
+    -- (a) THE MATCH ENDS UNDERNEATH THEM -- which is also being killed on the
+    --     bus, being sent back to the lobby, and any other flip of my state
+    --     off BUS: bus.board reaches the same cleanup() for all of them.
+    boardWithRoll(60000)
+    ok(BR.Bus.camLocked() == true, 'precondition: pinned, with a long roll left')
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.TICK)
+    flyFrame()
+    ok(BR.Bus.camLocked() == false,
+        'a match torn down mid-roll frees the camera, though the clock still '
+            .. 'says we are on the runway',
+        tostring(BR.Bus.camLocked()))
+    ok(blocked[1] ~= true and blocked[2] ~= true,
+        'and nothing is left asserting the look axes',
+        ('LOOK_LR %s  LOOK_UD %s'):format(tostring(blocked[1]),
+            tostring(blocked[2])))
+
+    -- (b) THE JUMP, which is the ending nearly every ride actually takes. The
+    --     server's exit coordinates arrive, beginDrop tears the plane down --
+    --     and the player is now falling with a camera that has to work.
+    boardWithRoll(60000)
+    ok(BR.Bus.camLocked() == true, 'precondition: pinned again')
+    fire(BR.Net.BUS_JUMP_OK, { x = 0.0, y = 0.0, z = 400.0, heading = 0.0 })
+    flyFrame()
+    ok(BR.Bus.camLocked() == false,
+        'and jumping out frees it too -- on the coordinates, not on a timer',
+        tostring(BR.Bus.camLocked()))
+    ok(blocked[1] ~= true and blocked[2] ~= true,
+        'with the look axes handed back on the way out',
+        ('LOOK_LR %s  LOOK_UD %s'):format(tostring(blocked[1]),
+            tostring(blocked[2])))
+
+    -- (c) AND A PLAYER WHO IS NOT ON A BUS AT ALL IS NEVER PINNED. The
+    --     predicate is read every frame by a loop that runs for the whole
+    --     session; a lobby bystander must be no more affected by it than by the
+    --     plane itself.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    flyFrame()
+    ok(BR.Bus.camLocked() == false, 'a player who is not aboard is never pinned',
+        tostring(BR.Bus.camLocked()))
+
+    -- 4. /brbus SAYS WHICH IT IS AND WHEN IT COMES OFF. "The camera is stuck"
+    --    is the sentence this feature can produce, and it has to be answerable
+    --    from one paste rather than from a second playtest.
+    boardWithRoll(6000)
+    logged = {}
+    ok(pcall(commands['brbus'], nil, {}, ''), '/brbus still does not throw',
+        table.concat(logged, '\n'))
+    local busDump = table.concat(logged, '\n')
+    ok(busDump:find('PINNED', 1, true) ~= nil
+        and busDump:find('wheels%-up') ~= nil,
+        'and reports the pin and the wheels-up deadline it lifts on', busDump)
+    logged = {}
+
+    -- Put the world back the way the blocks below expect to find it.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    DisableControlAction = realDisable
+    SetCamCoord = realCamCoord
+    GetControlNormal = realNormal
+    sent = {}
+end
+
+-- ------------------------------------ the preview that landed on a flight ---
+--
+-- THE OWNER'S F8 LOG, WHICH IS THE WHOLE SPECIFICATION:
+--
+--   [br_core] aboard the bus (handle 8706)
+--   [br_core] match state: warmup
+--   [br_core] loop callback "bus.fly" errored: @br_lib/shared/geo.lua:176:
+--             attempt to compare number with nil   (x5)
+--   [br_core] suspending "bus.fly" after 5 consecutive errors
+--   [br_core] bus: ending ride -- my state is warmup
+--
+-- ═══ TWO SHAPES OF ONE RECORD ═══
+--
+-- server/bus.lua publishes the route twice. plan() draws the geometry at WARMUP
+-- and sends it with NO `t` on any point -- the map preview, `timed = false`.
+-- depart() stamps the clock onto those same points at BUS and re-sends it. Both
+-- go out on BUS_ROUTE and the client's handler takes either one unfiltered.
+--
+-- Re-entering WARMUP from BUS re-runs plan(), so the PREVIEW arrives while the
+-- plane is still up. The rider's own WARMUP state does not: it rides the 4Hz
+-- delta flush, and the teardown that reads it is on the 100ms tick. The plane
+-- therefore outlives the preview by up to ~350ms -- about 21 frames, against a
+-- suspension ceiling of five.
+--
+-- ═══ WHAT IS BEING PROVED IS THE *SECOND* FLIGHT ═══
+--
+-- The lost frames are not the damage. A suspended entry is sticky for the whole
+-- client session -- nothing in the match lifecycle clears it -- and bus.fly is
+-- the ONLY writer of the plane's coordinates, rotation, velocity and camera. So
+-- one interrupted flight leaves every LATER flight on that client parked at the
+-- runway with its rider attached to it, while the clock-driven half of the ride
+-- runs to schedule around them. That is the owner standing on a pier. The
+-- fixture below therefore flies, takes the preview, ends the ride the way his
+-- log ends it, and then flies AGAIN.
+--
+-- ═══ WHAT IT DELIBERATELY DOES NOT COVER ═══
+--
+-- Whether a collision-disabled, unfrozen Titan sinks, hovers or holds position
+-- while nothing writes its coordinates. That is engine behaviour behind an
+-- undocumented native parameter and it is named as a playtest question in the
+-- report, not guessed at here. Nothing in the guard depends on the answer.
+
+describe('a warmup preview landing under a live plane parks it, and does not kill the fly loop')
+do
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    -- WHERE THE PLANE IS PUT, COUNTED. "The callback survived" and "the
+    -- callback correctly did nothing" are the same reading on an error counter,
+    -- and the second is the claim. 258 is what this file's CreateVehicle hands
+    -- back, so the ped (1) and the pilot (259) stay out of the count -- and
+    -- case 1 below fails loudly if that ever stops being the plane.
+    local PLANE = 258
+    local realCoords = SetEntityCoordsNoOffset
+    local planeWrites = 0
+    SetEntityCoordsNoOffset = function(ent, ...)
+        if ent == PLANE then planeWrites = planeWrites + 1 end
+        return realCoords(ent, ...)
+    end
+
+    local function flyHealth()
+        for _, s in ipairs(BR.Loop.stats()) do
+            if s.name == 'bus.fly' then return s.errors, s.suspended end
+        end
+        return nil, nil
+    end
+
+    --- Aboard a departed flight: the state a re-entered warmup interrupts.
+    local function boardTimed()
+        local t = GetGameTimer()
+        local pts = {}
+        for i = 0, 8 do
+            pts[#pts + 1] = { x = i * 400.0, y = 0.0, z = 500.0, t = t + i * 4000 }
+        end
+        fire(BR.Net.BUS_ROUTE, {
+            points = pts, timed = true, heading = 0.0,
+            sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+            tStart = t, rotateAt = t + 6000,
+            jumpFrom = t + 8000, doorsClose = t + 20000, tEnd = t + 30000,
+        })
+        BR.State.match = { state = BR.MatchState.BUS }
+        BR.State.me.state = BR.PlayerState.BUS
+        local before = #threads
+        BR.Loop.step(BR.Loop.TICK)
+        for i = before + 1, #threads do threads[i]() end
+    end
+
+    --- The map preview, shaped as server/bus.lua's plan() actually sends it:
+    --- x/y/z/v per point, no `t` anywhere, no tStart/rotateAt/doorsClose/tEnd.
+    --- None of that is invented -- tools/test_roster.lua pins the same absence
+    --- on the server side, so this fixture cannot quietly drift away from it.
+    local function firePreview()
+        local pts = {}
+        for i = 0, 8 do
+            pts[#pts + 1] = { x = i * 400.0, y = 0.0, z = 500.0, v = 60.0 }
+        end
+        fire(BR.Net.BUS_ROUTE, {
+            points = pts, timed = false, heading = 0.0,
+            sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+            waypoints = { { x = 0.0, y = 0.0 } },
+        })
+    end
+
+    -- 1. THE INSTRUMENT, BEFORE IT IS ASKED TO PROVE AN ABSENCE. A spy that
+    --    never fires makes case 2 green against absolutely anything.
+    boardTimed()
+    planeWrites = 0
+    frames(10, 16)
+    ok(planeWrites >= 10, 'a departed flight writes the plane every frame',
+        ('%d writes over 10 frames'):format(planeWrites))
+
+    -- 2. THE PREVIEW ARRIVES UNDER THE LIVE PLANE.
+    local errsBefore = select(1, flyHealth())
+    firePreview()
+    planeWrites = 0
+    frames(20, 16)   -- four times the suspension ceiling
+    local errs, susp = flyHealth()
+    ok(errs == errsBefore,
+        'a preview arriving under a live plane does not make the fly loop throw',
+        ('errors %s -> %s'):format(tostring(errsBefore), tostring(errs)))
+    ok(susp ~= true, 'so nothing suspends it for the rest of the session',
+        ('suspended %s'):format(tostring(susp)))
+
+    -- ...AND IT NO-OPPED RATHER THAN MERELY SURVIVING. There is no route to fly
+    -- by until departure stamps one; inventing coordinates from an unstamped
+    -- preview would be a different bug wearing this one's green.
+    ok(planeWrites == 0,
+        'and the plane is not flown by a route with no clock on it',
+        ('%d writes over 20 frames'):format(planeWrites))
+
+    -- 3. THE SECOND FLIGHT -- THE ONE THE OWNER ACTUALLY LOST. His state
+    --    catches up a beat later and the ride ends; then a fresh route departs
+    --    on the same client, in the same session. The plane has to move again.
+    BR.State.me.state = BR.PlayerState.WARMUP
+    BR.Loop.step(BR.Loop.TICK)
+    frame(16)
+    boardTimed()
+    planeWrites = 0
+    frames(10, 16)
+    ok(planeWrites >= 10,
+        'and the next flight of that session still flies its rider out',
+        ('%d writes over 10 frames'):format(planeWrites))
+
+    -- 4. /brbus SEPARATES A PARKED PLANE FROM A DEAD CALLBACK. After the guard
+    --    the failure mode is silent -- a plane that does not move -- and the
+    --    command a playtester is asked to paste already prints "moved 0m" for
+    --    both. The loop's own counters are the only thing that tells them
+    --    apart, and `suspended` is the one that outlives the match.
+    logged = {}
+    ok(pcall(commands['brbus'], nil, {}, ''), '/brbus does not throw',
+        table.concat(logged, '\n'))
+    local dump = table.concat(logged, '\n')
+    ok(dump:find('bus.fly', 1, true) ~= nil
+        and dump:find('suspended', 1, true) ~= nil,
+        'and reports the fly loop\'s errors and suspension beside the displacement',
+        dump)
+
+    -- ...INCLUDING ON A PREVIEW-ONLY ROUTE, which is where the route dump gives
+    -- up two lines in -- and is exactly the route a sick fly loop travels with.
+    firePreview()
+    logged = {}
+    pcall(commands['brbus'], nil, {}, '')
+    local previewDump = table.concat(logged, '\n')
+    ok(previewDump:find('bus.fly', 1, true) ~= nil,
+        'on a preview-only route too, where the route dump gives up first',
+        previewDump)
+    logged = {}
+
+    -- Put the world back the way the blocks below expect to find it.
+    SetEntityCoordsNoOffset = realCoords
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    frame(16)
+    sent = {}
+end
+
 describe('an inventory starts and returns to fists, not to slot 1 -- #155')
 do
     -- Owner, 2026-08-16: "The default inventory slot should be fists, not slot
@@ -4970,7 +7244,7 @@ do
     --    body, so a corpse or a lobby ped holding something reports nothing --
     --    and, more to the point, is not stripped either, because
     --    RemoveAllPedWeapons would take a parachute with it.
-    BR.State.me.state = BR.PlayerState.DEAD
+    BR.State.me.state = BR.PlayerState.OUT
     BR.State.landed = false
     reset()
     fakeTime = fakeTime + 5000
@@ -4985,6 +7259,223 @@ do
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
     BR.Loop.step(BR.Loop.TICK)
     reset()
+end
+
+describe('a vehicle\'s own mounted gun is not a conjured weapon -- #216')
+do
+    -- ═══ THE OWNER'S REPORT, 2026-08-22 ═══
+    --
+    --   "can you confirm that vehicle-related incidents will not fire as a
+    --    weapons-related incident? Because that's exactly what happened here. I
+    --    caused this myself and confirmed no weapons were ever involved."
+    --
+    -- They had stolen an armed helicopter. The engine makes a seated ped's
+    -- CURRENT WEAPON the vehicle's mounted gun, `GetCurrentPedWeapon` reports
+    -- that hash, and the strip check above found it was not fists, not the
+    -- parachute and in no slot -- so it stripped it and filed a WEAPON case
+    -- against somebody who had never held a weapon. Once a tick, because the
+    -- engine hands it straight back.
+    --
+    -- ═══ WHAT THIS BLOCK IS ACTUALLY GUARDING, WHICH IS THE FIX AND NOT THE BUG
+    --
+    -- The bug is one assertion and it would pass against the one-line wrong fix
+    -- ("in a vehicle? skip the check"). So the assertions below are weighted the
+    -- other way: MOST of them are about the hole that fix would open, and the
+    -- suite is deliberately harder to satisfy than the report was.
+    --
+    -- WHY AN ORDINARY CAR NEEDS NO CASE HERE, and it is worth stating because
+    -- its absence looks like a gap: an ordinary car's seated ped reports
+    -- UNARMED, which was always allowed. If it reported anything else, every car
+    -- ride in every match since 2026-08-08 would have filed a weapon case, and
+    -- none has. The armed vehicle is the whole of the difference.
+
+    local CONJURED = 0x11111111            -- in no table this gamemode has
+    local CARBINE  = 0x83BF0278            -- WEAPON_CARBINERIFLE, issued
+    -- VEHICLE_WEAPON_PLAYER_BUZZARD. A real mounted-gun hash, and the point of
+    -- using a real one is that it is in none of this gamemode's tables either --
+    -- so it is indistinguishable from CONJURED to every check except the new one.
+    local MOUNTED  = 0xE2822A29
+    -- A SECOND MOUNTED GUN, so "the vehicle's own" can be told apart from "any
+    -- mounted-looking hash". VEHICLE_WEAPON_PLAYER_LAZER.
+    local OTHER_MOUNTED = 0x8B3428B8
+
+    local function reports()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.INV_STRIPPED then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+
+    local function strips(hash)
+        local n = 0
+        for _, h in ipairs(stripped) do if h == hash then n = n + 1 end end
+        return n
+    end
+
+    --- One TICK with `held` in the hand, seated in a vehicle whose mounted gun
+    --- is `mounted` (nil for a vehicle with no guns, or none the native knows).
+    local function tickSeated(held, mounted)
+        inVehicle, vehicle = true, 77
+        vehWeapon = mounted
+        pedWeapon = held
+        sent, stripped = {}, {}
+        fakeTime = fakeTime + 5000
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    --- The same, on foot.
+    local function tickOnFoot(held, mounted)
+        inVehicle, vehicle = false, 0
+        vehWeapon = mounted
+        pedWeapon = held
+        sent, stripped = {}, {}
+        fakeTime = fakeTime + 5000
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+
+    -- A carbine in slot 1, selected: an ordinary armed player who then steals a
+    -- Buzzard. This is the owner's situation exactly.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+
+    -- 1. THE BUG. The vehicle's own gun, in the seat of that vehicle.
+    tickSeated(MOUNTED, MOUNTED)
+    ok(strips(MOUNTED) == 0,
+        'the vehicle\'s own mounted gun is not taken out of the hand',
+        strips(MOUNTED))
+    ok(#reports() == 0,
+        'and NO weapon case is filed -- the act was stealing a vehicle',
+        #reports())
+
+    -- 2. THE HOLE THE ONE-LINE FIX WOULD OPEN, AND THE REASON THIS BLOCK EXISTS.
+    --    Same seat, same armed vehicle, a rifle this gamemode issues nobody.
+    --    "Skip the check in a vehicle" passes case 1 and fails this.
+    tickSeated(CONJURED, MOUNTED)
+    ok(strips(CONJURED) == 1,
+        'a CONJURED weapon in that same seat still comes out of the hand',
+        strips(CONJURED))
+    ok(#reports() == 1 and reports()[1] == CONJURED,
+        'and is still reported, with the hash that was actually held',
+        tostring(reports()[1]))
+
+    -- 3. AND THE EXCUSE IS THE VEHICLE'S OWN GUN, NOT ANY MOUNTED-LOOKING HASH.
+    --    A Lazer's cannon held in a Buzzard is not the Buzzard's minigun. Both
+    --    hashes are absent from every table this gamemode has, so nothing but
+    --    the equality can tell them apart.
+    tickSeated(OTHER_MOUNTED, MOUNTED)
+    ok(strips(OTHER_MOUNTED) == 1 and #reports() == 1,
+        'a DIFFERENT vehicle\'s mounted gun is stripped and reported')
+
+    -- 4. A VEHICLE THE NATIVE HAS NO OPINION ABOUT is not a blanket excuse.
+    --    An unarmed car -- `ok == false` -- leaves the check exactly as it was.
+    tickSeated(CONJURED, nil)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'a seat with no mounted gun excuses nothing')
+
+    -- 5. ON FOOT, EVEN IF THE NATIVE ANSWERS ANYWAY. A stale or over-eager
+    --    read must not reach across a ped standing in a field.
+    tickOnFoot(MOUNTED, MOUNTED)
+    ok(strips(MOUNTED) == 1 and #reports() == 1,
+        'the same hash on foot is stripped and reported')
+
+    -- 6. THE BOOL, IN BOTH SHAPES. `0` IS TRUTHY IN LUA and a FiveM BOOL may be
+    --    `1` rather than `true`; this repo has shipped the wrong reading SIX
+    --    times, and a `== true` here would have silently un-fixed the bug on
+    --    every build that answers numbers.
+    vehWeaponAnswersNumber = true
+    tickSeated(MOUNTED, MOUNTED)
+    ok(strips(MOUNTED) == 0 and #reports() == 0,
+        'a build whose BOOL answers 1 rather than true is read the same way')
+    vehWeaponAnswersNumber = false
+
+    -- 7. A VEHICLE THAT ANSWERS `0` HAS NO MOUNTED GUN, and `0` must not match
+    --    a hand that reads `0` either. This is the "0 is truthy in Lua" trap in
+    --    its exact local form: `BR.NormHash(0)` is `0` and not nil, so a bare
+    --    `m == h` would have called "this vehicle has no gun" a match for "this
+    --    hand holds nothing" and excused it. Delete the `m ~= 0` guard and this
+    --    is the assertion that fails.
+    --
+    --    (The REPORT is not asserted here: the client does send hash 0 on this
+    --    path and server/strip.lua refuses it explicitly -- `n ~= 0` -- so
+    --    nothing reaches a record either way. The strip is the behaviour this
+    --    file decides.)
+    tickSeated(0, 0)
+    ok(strips(0) == 1,
+        'a vehicle answering "no mounted gun" excuses nothing, hash 0 included',
+        strips(0))
+
+    -- 8. THE NATIVE SIMPLY NOT BEING ON THIS BUILD. Absent is no opinion, and
+    --    no opinion is not an excuse. Restored immediately after.
+    local realNative = GetCurrentPedVehicleWeapon
+    GetCurrentPedVehicleWeapon = nil
+    tickSeated(CONJURED, MOUNTED)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'a build without the native keeps the old behaviour rather than a hole')
+    GetCurrentPedVehicleWeapon = realNative
+
+    -- 8b. A NATIVE THAT THROWS. Same answer as one that is missing, and it is
+    --     asserted separately because the two reach it down different branches.
+    GetCurrentPedVehicleWeapon = function() error('no such vehicle') end
+    tickSeated(CONJURED, MOUNTED)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'a native that raises is no opinion either, not an exemption')
+    GetCurrentPedVehicleWeapon = realNative
+
+    -- 8c. ═══ THE ANSWER THE ENGINE REFUSED TO GIVE IS NOT AN ANSWER ═══
+    --
+    --     The native says `ok == false` AND hands back a hash anyway -- a stale
+    --     out-param, or a build that fills it before deciding. If the BOOL were
+    --     ignored and only the hash compared, that stale value becomes an
+    --     exemption for whatever it happens to name, and here it names the
+    --     conjured rifle in the player's hand.
+    --
+    --     THIS IS THE ONLY ASSERTION THAT THE `ok` TEST HAS ANY EFFECT AT ALL.
+    --     Mutation testing named it: with the BOOL dropped the suite still
+    --     passed, because every other case here has the hash disagreeing too.
+    tickSeated(CONJURED, { notOk = CONJURED })
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'a hash the native declined to vouch for excuses nothing')
+
+    -- 8d. AN ENGINE THAT ANSWERS AND NAMES NOTHING, on both sides at once: the
+    --     hand reads nil and the vehicle reads nil. `nil == nil` is TRUE in Lua,
+    --     so without the `m ~= nil` test the two nothings would have matched and
+    --     excused each other. Same family as the `0` trap in case 7 and the
+    --     sixth time this repo has paid for a member of it.
+    --
+    --     COUNTED IN CALLS RATHER THAN IN ENTRIES, because the hash being
+    --     stripped IS nil and `t[#t + 1] = nil` appends nothing at all. A list
+    --     length would have read 0 for a strip that happened, which is the
+    --     assertion passing for the exactly wrong reason.
+    inVehicle, vehicle = true, 77
+    vehWeapon = false
+    pedWeapon = false
+    sent, stripped, stripCalls = {}, {}, 0
+    fakeTime = fakeTime + 5000
+    BR.Loop.step(BR.Loop.TICK)
+    ok(stripCalls == 1,
+        'a nil hand and a nil mounted gun do not match each other',
+        stripCalls)
+
+    -- 9. AND THE ISSUED WEAPON IS STILL THE ISSUED WEAPON IN A SEAT. The one
+    --    case that is every tick of every match with a passenger in it.
+    tickSeated(CARBINE, MOUNTED)
+    ok(strips(CARBINE) == 0 and #reports() == 0,
+        'the active slot\'s own weapon is untouched in a seat')
+
+    -- Leave the world as this block found it.
+    inVehicle, vehicle = false, 0
+    vehWeapon, pedWeapon = nil, nil
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.Loop.step(BR.Loop.TICK)
+    sent, stripped = {}, {}
 end
 
 -- ------------------------------------------------ the downed presentation ---
@@ -5301,6 +7792,12 @@ do
     }
     BR.Sfx = BR.Sfx or { play = noop }
     BR.Native.knockdown = function() note('knockdown') end
+    -- THE WASH (owner, 2026-08-28: "any time revive is processed, please clean
+    -- the ped"). Recorded rather than performed: WHICH natives take blood and
+    -- dirt off a ped is a list in client/natives.lua and a test that repeated
+    -- the list would only be agreeing with itself. What can go wrong -- and what
+    -- this block drives -- is WHEN it is asked for.
+    BR.Native.cleanPed = function() note('clean') end
     BR.Native.setDisplayHealth = function(hp) note('setHealth', hp) end
     BR.Native.keyLabelForCommand = function() return 'E' end
     BR.Native.ALLY_GROUP = 1
@@ -5465,9 +7962,9 @@ do
 
     -- A DEAD mate is the owner's second sentence: "the playernames thing is
     -- also true for dead players".
-    BR.State.roster[2].state = BR.PlayerState.DEAD
+    BR.State.roster[2].state = BR.PlayerState.OUT
     fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
-                              state = BR.PlayerState.DEAD } })
+                              state = BR.PlayerState.OUT } })
     tagsMade = 0
     tickBand()
     drawn = {}
@@ -5736,6 +8233,63 @@ do
         'and so does the match ending while they are still on the floor',
         ('up %s, then rendering %s'):format(tostring(upMidMatch),
                                             tostring(shot.rendering)))
+
+    -- ====================================================================== --
+    -- A REVIVE CLEANS THE BODY. A BLEED-OUT DOES NOT.
+    -- ====================================================================== --
+    --
+    -- Owner, 2026-08-28: "any time revive is processed, please clean the ped."
+    --
+    -- He said it about #191's ambulance -- that delivery hands back FULL health,
+    -- so it produced the sight of a player stepping out of the back of an
+    -- ambulance covered in the blood that put them in it -- but the rule he
+    -- stated is every revive, and this is where every BR.Combat.revive lands:
+    -- the server's one revive function ends in pushDbno, which sends
+    -- `{ downed = false }` with no `died`. A squad pick-up, `/brrevive` and the
+    -- CPR delivery are the same line on this side.
+    --
+    -- THE SECOND ASSERTION IS THE ONE WITH TEETH. `leaveDowned` runs for BOTH
+    -- endings and the two are one field apart, so the obvious place to put the
+    -- wash -- next to it -- would also scrub a corpse a frame before it drops,
+    -- erasing the evidence of the fight for everybody still standing over it.
+    -- Nothing on screen would say which of the two had been written.
+
+    describe('a revive cleans the ped -- owner, 2026-08-28')
+
+    bodies[1].dead = false
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    log = {}
+
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
+    ok(countOf('clean') == 1,
+        'being picked up takes the knock off the body -- once',
+        ('%d wash(es)'):format(countOf('clean')))
+
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    log = {}
+
+    fire(BR.Net.DBNO_SET, { downed = false, died = true })
+    runThreads()
+    ok(countOf('clean') == 0,
+        'and bleeding out does NOT -- the corpse keeps the blood that put it '
+            .. 'there, which is what everybody standing over it should see',
+        ('%d wash(es)'):format(countOf('clean')))
+
+    -- NOT ASSERTED HERE, AND WORTH SAYING WHY. The wash runs one statement
+    -- before `pushMine`, which is what tells the interface the player is back
+    -- up -- so a native that THREW would cost them their whole placard rather
+    -- than a wash. That is the reason every call inside BR.Native.cleanPed is
+    -- guarded, and it is a property of that function rather than of this
+    -- handler: driving it from here would only prove that a stub this file
+    -- wrote does what this file made it do.
+    bodies[1].dead = false
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
 
     -- ====================================================================== --
     -- THE READOUT, which is the only instrument for any of this
@@ -6695,7 +9249,14 @@ do
     function ShutdownLoadingScreen()    shut.screen = shut.screen + 1 end
     function DoScreenFadeIn()           shut.fadeIn = shut.fadeIn + 1 end
     function IsScreenFadedOut()         return world.fadedOut end
-    function GetIsLoadingScreenActive() return true end
+    -- SETTABLE, because the answer decides whether this file does ANYTHING.
+    -- `BR.State.worldReady = not isTrue(GetIsLoadingScreenActive())` is the
+    -- first line of loading.lua and the only thing separating a fresh join from
+    -- a mid-session br_core restart.
+    function GetIsLoadingScreenActive()
+        if world.loadscreen == nil then return true end
+        return world.loadscreen
+    end
     function NetworkIsSessionStarted()  return world.session end
     function HasCollisionLoadedAroundEntity() return world.collision end
     function SendLoadingScreenMessage() return true end
@@ -6957,6 +9518,66 @@ do
         end
     end
 
+    describe('every wait in this file survives a native that answers 1/0')
+    do
+        -- THE SEVENTH INSTANCE, AND WHY IT IS TESTED HERE RATHER THAN ARGUED.
+        -- The DoesEntityExist cases above cover the `if not X()` direction. The
+        -- three below are the OTHER direction and the one that is easy to miss
+        -- reading a diff: these are WAITS, and a wait that stops waiting still
+        -- looks exactly like a wait. Every assertion is that the loading screen
+        -- is STILL UP -- which is the only observable difference between a file
+        -- that waited and a file that ran straight through.
+
+        -- 1. THE GROUND. `if HasCollisionLoadedAroundEntity(p) then break end`
+        --    breaks on a 0, so the gag reel that exists to cover the stream-in
+        --    would be dropped 250ms into a cold load, over an island that is
+        --    not there. The false/true pair of this is asserted further up; the
+        --    number pair is the one that shipped.
+        join(function() world.collision = 0 end)
+        pump(20000)
+        ok(shut.screen == 0,
+           'collision answering 0 is not collision, however truthy 0 is in Lua',
+           ('shutdowns=%d after 20s'):format(shut.screen))
+
+        world.collision = 1
+        pump(2000)
+        ok(shut.screen == 1, 'and 1 from the same native releases it',
+           ('shutdowns=%d'):format(shut.screen))
+
+        -- 2. THE SESSION. The first gate holds the screen for up to 30s waiting
+        --    for the interface AND a started session; `not NetworkIsSessionStarted()`
+        --    is FALSE for a 0, so on such a build it never ran one iteration.
+        join(function() world.session = 0 end)
+        pump(4000)
+        ok(shut.screen == 0,
+           'a session reported 0 does not satisfy the wait for a session',
+           ('shutdowns=%d'):format(shut.screen))
+
+        world.session = 1
+        pump(2000)
+        ok(shut.screen == 1, 'and 1 does',
+           ('shutdowns=%d'):format(shut.screen))
+
+        -- 3. THE RESTART, which is the inverted one and the reason a helper is
+        --    better than a habit. `not GetIsLoadingScreenActive()` is FALSE for
+        --    the 0 that MEANS the loadscreen is already gone -- so a br_core
+        --    restart mid-session read worldReady = false and replayed the whole
+        --    boot choreography, gag reel and all, over a live world. That is the
+        --    one case the line exists to prevent, defeated by the line itself.
+        join(function() world.loadscreen = 0 end)
+        pump(4000)
+        ok(BR.State.worldReady == true and shut.screen == 0,
+           'a mid-session restart with no loadscreen up replays nothing',
+           ('worldReady=%s shutdowns=%d'):format(
+               tostring(BR.State.worldReady), shut.screen))
+
+        join(function() world.loadscreen = 1 end)
+        pump(4000)
+        ok(shut.screen == 1,
+           'and a fresh join reported as 1 still gets the whole sequence',
+           ('shutdowns=%d'):format(shut.screen))
+    end
+
     -- ------------------------------------------------------------ teardown ---
 
     Citizen         = prev.Citizen
@@ -7046,7 +9667,7 @@ ok(mercyToasts() == 0,
     ('toasts after a knock and revive: %d'):format(mercyToasts()))
 
 events = {}
-BR.State.me.state = BR.PlayerState.DEAD
+BR.State.me.state = BR.PlayerState.OUT
 BR.Loop.step(BR.Loop.SLOW)
 BR.State.me.state = BR.PlayerState.LOBBY
 BR.Loop.step(BR.Loop.SLOW)
@@ -7099,7 +9720,7 @@ do
     -- client/inventory.lua admits a landed player. So the inventory panel really
     -- does open over a corpse, and the control below asserts it -- which is what
     -- makes the "did not open" assertion afterwards worth anything.
-    BR.State.me.state = BR.PlayerState.DEAD
+    BR.State.me.state = BR.PlayerState.OUT
     BR.State.landed = true
 
     --- The most recent toast with a given key.
@@ -7326,18 +9947,67 @@ do
         gate.last, gate.kind = v, type(v)
     end
 
-    function SetPlayerInvincible(_, v) invincible = v end
+    local invincibleWrites = 0
+    function SetPlayerInvincible(_, v)
+        invincible = v
+        invincibleWrites = invincibleWrites + 1
+    end
+
+    -- ── THE WANTED LEVEL, MODELLED RATHER THAN SWALLOWED ────────────────────
+    --
+    -- A noop2 stub cannot tell "the rule is enforced" from "the rule was
+    -- deleted", and the change these back is a change to WHEN the rule is
+    -- enforced -- so the stub has to behave like the engine does: hold a level,
+    -- let the suite raise it, and let the writes bring it down.
+    --
+    -- `flushes` is the number that mattered for the hitch: it counts
+    -- SET_PLAYER_WANTED_LEVEL_NOW, the call that pushes a pending level through
+    -- the dispatch machinery, and the whole point is that it stops happening
+    -- sixty times a second while still happening whenever it must.
+    local wanted = { level = 0, flushes = 0, caps = 0 }
+    function GetPlayerWantedLevel() return wanted.level end
+    function SetPlayerWantedLevel(_, lvl) wanted.level = lvl end
+    function SetPlayerWantedLevelNow() wanted.flushes = wanted.flushes + 1 end
+    function SetMaxWantedLevel() wanted.caps = wanted.caps + 1 end
+
+    local copFlags = 0
+    local function countCops() copFlags = copFlags + 1 end
+
+    -- ── EMERGENCY DISPATCH (the firetruck report, 2026-08-23) ───────────────
+    --
+    -- RECORDED WITH ITS TYPE, like the friendly-fire gate above and for the
+    -- same reason: the second argument is a BOOL and this repo has shipped the
+    -- 1-versus-true confusion four times. A stub that coerced would hide a
+    -- dispatch service handed a `0` -- which Lua reads as truthy and which
+    -- would leave the service ENABLED while every assertion about "we turned it
+    -- off" still passed.
+    --
+    -- `sweeps` counts complete passes rather than individual writes, because
+    -- the rule being asserted is "the whole set goes off together on the same
+    -- triggers as the wanted cap", and a count of 15 versus 30 is harder to
+    -- read at a glance than 1 versus 2.
+    local dispatch = { off = {}, kinds = {}, writes = 0, sweeps = 0 }
+    function EnableDispatchService(id, on)
+        dispatch.off[id] = on
+        dispatch.kinds[id] = type(on)
+        dispatch.writes = dispatch.writes + 1
+        if id == 1 then dispatch.sweeps = dispatch.sweeps + 1 end
+    end
 
     local function noop2() end
     SetCanAttackFriendly = noop2
     SetPedRelationshipGroupHash = noop2
-    SetMaxWantedLevel = noop2
-    SetPlayerWantedLevel = noop2
-    SetPlayerWantedLevelNow = noop2
-    SetCreateRandomCops = noop2
-    SetCreateRandomCopsNotOnScenarios = noop2
-    SetCreateRandomCopsOnScenarios = noop2
-    SetEntityVisible = noop2
+    SetCreateRandomCops = countCops
+    SetCreateRandomCopsNotOnScenarios = countCops
+    SetCreateRandomCopsOnScenarios = countCops
+    -- RECORDED RATHER THAN DISCARDED. This was `noop2` until 2026-08-31, when
+    -- a bled-out player's ped joined the bus rider on the one line in
+    -- applyGameRules that writes it -- and a rule nothing can observe is a rule
+    -- the next edit deletes for free.
+    visWrites = {}
+    function SetEntityVisible(ped, on, p2)
+        visWrites[#visWrites + 1] = { on = on, kind = type(on), p2 = p2 }
+    end
     FreezeEntityPosition = noop2
     DisplayRadar = noop2
     DisableFrontendThisFrame = noop2
@@ -7351,7 +10021,13 @@ do
     SetScenarioPedDensityMultiplierThisFrame = noop2
     SetRandomVehicleDensityMultiplierThisFrame = noop2
     SetParkedVehicleDensityMultiplierThisFrame = noop2
-    NetworkOverrideClockTime = noop2
+    -- THE CLOCK PIN IS RECORDED RATHER THAN SWALLOWED, because it stopped
+    -- being a constant on 2026-08-31: `brtime` moves it, and what it is handed
+    -- is the whole of the client half of that verb.
+    clockWrites = {}
+    NetworkOverrideClockTime = function(h, m, s)
+        clockWrites[#clockWrites + 1] = { h = h, m = m, s = s }
+    end
     PauseDeathArrestRestart = noop2
     SetFadeOutAfterDeath = noop2
     IgnoreNextRestart = noop2
@@ -7366,6 +10042,115 @@ do
         ('teamFor %s, SOLO_TEAM %s')
             :format(type(N.teamFor), tostring(N.SOLO_TEAM)))
 
+    -- ==================================================================== --
+    -- COULD A PED BE STANDING HERE? (#88, the rooftop report)
+    -- ==================================================================== --
+    --
+    -- Owner, 2026-08-22: "Somehow these airdrops can happen on top of buildings
+    -- where peds otherwise cannot access."
+    --
+    -- GetGroundZFor_3dCoord answers HEIGHT, not REACHABILITY, and no native
+    -- answers reachability directly. The nearest thing is the pathfinding
+    -- NAVMESH, which is the graph peds actually walk -- GET_SAFE_COORD_FOR_PED
+    -- is documented entirely in terms of navmesh polygons.
+    --
+    -- ═══ AND THE SNAP DISTANCE IS THE SIGNAL, NOT THE BOOLEAN ═══
+    --
+    -- The native searches a VOLUME around the point (its own USE_FLOOD_FILL
+    -- flag is documented as the alternative to "scanning all polygons within
+    -- the search volume"), so standing on an un-navmeshed roof it happily finds
+    -- the street thirty metres below and answers TRUE. Reading the boolean
+    -- alone would pass every rooftop in Los Santos. These are the cases that
+    -- say so.
+    do
+        describe('natives.pedReachable')
+
+        local safe = { ok = 1, x = 0.0, y = 0.0, z = 0.0 }
+        local navmesh = 1
+        local asked = nil
+        GetSafeCoordForPed = function(x, y, z, onlyOnPavement, flags)
+            asked = { x = x, y = y, z = z,
+                      onlyOnPavement = onlyOnPavement, flags = flags }
+            return safe.ok, { x = safe.x, y = safe.y, z = safe.z }
+        end
+        IsNavmeshLoadedInArea = function() return navmesh end
+
+        local function at(x, y, z)
+            safe.x, safe.y, safe.z = x, y, z
+            return N.pedReachable(0.0, 0.0, 0.0)
+        end
+
+        ok(at(0.0, 0.0, 0.0), 'a point the navmesh returns unchanged is reachable')
+
+        -- THE ROOF. The navmesh has nothing up here, so the search volume finds
+        -- the street below and hands back a coord tens of metres down. The
+        -- boolean said yes; the distance says no.
+        local r, why = at(0.0, 0.0, -34.0)
+        ok(not r, 'a coord snapped 34m downward is a roof, whatever the BOOL said',
+            tostring(why))
+        ok(type(why) == 'string' and why ~= '',
+            'and it says which way it was snapped, for the log')
+
+        -- Sideways, too: a point inside a wall snaps to the corridor outside it.
+        ok(not at(40.0, 0.0, 0.0), 'a coord snapped 40m sideways is not here')
+        -- ...but not so tight that ordinary navmesh jitter rejects good ground.
+        ok(at(0.0, 0.0, 1.0), 'a metre of vertical slack is still reachable')
+        ok(at(2.0, 0.0, 0.0), 'and two metres of horizontal')
+
+        -- A FLAT NO FROM THE NATIVE IS A NO.
+        safe.ok = 0
+        ok(not at(0.0, 0.0, 0.0), 'no safe coord at all is not reachable')
+        safe.ok = 1
+
+        -- ═══ 0 IS TRUTHY IN LUA AND A FIVEM BOOL MAY ANSWER 1 ═══
+        --
+        -- Five shipped bugs on this project. Both natives here are declared
+        -- BOOL, and both are read through the normaliser.
+        safe.ok = false
+        ok(not at(0.0, 0.0, 0.0), 'and neither is a plain false')
+        safe.ok = true
+        ok(at(0.0, 0.0, 0.0), 'a plain true is a yes')
+        safe.ok = 1
+        ok(at(0.0, 0.0, 0.0), 'and so is a 1')
+
+        -- ═══ FAIL OPEN WHEN THE GRAPH IS NOT THERE ═══
+        --
+        -- The navmesh streams like everything else and the drop is announced
+        -- while the whole match is kilometres away. "I cannot see" must never
+        -- read as "no" -- that would refuse every point on the map to every
+        -- distant client and take the loot system with it.
+        navmesh = 0
+        safe.x, safe.y, safe.z = 0.0, 0.0, -500.0   -- a nonsense answer
+        local nr, nwhy = N.pedReachable(0.0, 0.0, 0.0)
+        ok(nr, 'an unloaded navmesh answers YES, not no')
+        ok(nwhy == 'navmesh not loaded', 'and says so rather than pretending',
+            tostring(nwhy))
+        navmesh = 1
+
+        -- THE FOURTH ARGUMENT IS false, AND THAT IS NOT AN ACCIDENT. The one
+        -- forum thread in which a rooftop complaint was actually RESOLVED
+        -- turned on it: the reporter's first attempt passed `true`
+        -- (onlyOnPavement) and got (0,0,0) every time.
+        safe.x, safe.y, safe.z = 0.0, 0.0, 0.0
+        N.pedReachable(1.0, 2.0, 3.0)
+        ok(asked and asked.onlyOnPavement == false,
+            'onlyOnPavement is false -- true is what made the published fix fail')
+        ok(asked and asked.flags == N.SAFE_COORD_FLAGS,
+            'and the flags are the named constant, not a literal',
+            tostring(asked and asked.flags))
+        ok(asked and asked.x == 1.0 and asked.y == 2.0 and asked.z == 3.0,
+            'and it is asked about the point it was given')
+
+        -- A MISSING NATIVE IS TODAY'S BEHAVIOUR, not an empty map.
+        local keep = GetSafeCoordForPed
+        GetSafeCoordForPed = nil
+        ok(N.pedReachable(0.0, 0.0, 0.0),
+            'a build without the native answers yes rather than erroring')
+        GetSafeCoordForPed = keep
+
+        GetSafeCoordForPed, IsNavmeshLoadedInArea = nil, nil
+    end
+
     -- A STAND-IN, SO A MISSING IMPLEMENTATION FAILS RATHER THAN ABORTS. Revert
     -- the production change and every assertion below should report; a suite
     -- that dies on the first nil call reports ONE number, and the revert table
@@ -7376,6 +10161,13 @@ do
     if type(N.teamFor) ~= 'function' then N.teamFor = function() return -999, false end end
     if type(N.SOLO_TEAM) ~= 'number' then N.SOLO_TEAM = -998 end
     if type(N.forgetTeam) ~= 'function' then N.forgetTeam = function() end end
+    if type(N.forgetRules) ~= 'function' then N.forgetRules = function() end end
+    -- The dispatch stand-ins, for the same reason as the four above: revert the
+    -- production change and section 7c should REPORT rather than abort on the
+    -- first `#nil`. An empty list and an empty table make every case there fail
+    -- with a readable number instead of taking the suite down.
+    if type(N.DISPATCH_OFF) ~= 'table' then N.DISPATCH_OFF = {} end
+    if type(N.DispatchService) ~= 'table' then N.DispatchService = {} end
 
     -- ------------------------------------------------------------ the world ---
 
@@ -7531,7 +10323,7 @@ do
     -- state DEAD until the match ends, and the gate stays shut over them: a
     -- corpse does not need shooting, and a gate that opened and closed as
     -- teammates died would be a gate that is wrong for a frame every time.
-    dwindling[2].state = BR.PlayerState.DEAD
+    dwindling[2].state = BR.PlayerState.OUT
     ok(select(2, seat(1, dwindling)) == true,
         'a DEAD squadmate does not reopen the gate -- no flapping mid-fight',
         pairDetail(1, 2, dwindling))
@@ -7614,18 +10406,31 @@ do
     -- 7. WHAT applyGameRules ACTUALLY HANDS THE ENGINE
     -- ==================================================================== --
 
-    local function rules(src, r, state)
+    -- `mst` is optional and defaults to PLAYING, which is every caller written
+    -- before the dispatch cases below. It is a parameter at all because the
+    -- MATCH state is one of the five latch triggers and nothing else in this
+    -- file could move it -- so without it, one of the five would be asserted
+    -- by no case.
+    local function rules(src, r, state, mst)
         BR.State.me = { src = src, squadId = r[src] and r[src].squadId,
                         state = state or BR.PlayerState.ALIVE }
         BR.State.roster = r
-        BR.State.match = { state = BR.MatchState.PLAYING }
+        BR.State.match = { state = mst or BR.MatchState.PLAYING }
         N.applyGameRules()
     end
 
     local function reset()
         team.writes, team.last = {}, nil
         gate.writes, gate.last, gate.kind = {}, nil, nil
+        wanted.level, wanted.flushes, wanted.caps = 0, 0, 0
+        copFlags, invincibleWrites = 0, 0
+        dispatch.off, dispatch.kinds = {}, {}
+        dispatch.writes, dispatch.sweeps = 0, 0
         N.forgetTeam()
+        -- The rule latch is a memo like the team's, and for the same reason;
+        -- a suite that forgot one and not the other would be measuring a
+        -- belief left over from the previous case.
+        N.forgetRules()
     end
 
     reset()
@@ -7692,6 +10497,433 @@ do
         'including for a solo, whose gate is open the whole time',
         ('invincible %s, gate %s')
             :format(tostring(invincible), tostring(gate.last)))
+
+    -- ═══ ...AND AN ALIVE PLAYER IN A PLAYING MATCH IS MORTAL, FULL STOP ═══
+    --
+    -- Owner, 2026-08-28, on healing in the back of an ambulance: "if someone
+    -- shoots me to death while in the ambulance healing, I should still take
+    -- damage and die completely."
+    --
+    -- THIS IS THE PROOF OF THAT REQUIREMENT AND IT IS DELIBERATELY HERE RATHER
+    -- THAN IN tools/test_ambheal.lua. The reason a healing player is killable is
+    -- NOT anything client/ambheal.lua does -- it is that `wantInvincible` in
+    -- client/natives.lua is derived from the PLAYER STATE and the MATCH STATE
+    -- and from nothing else. There is no term in it for a vehicle, an attach, a
+    -- camera or a subsystem, so a player attached to a stretcher is exactly as
+    -- mortal as a player standing in a field, and a suite that stood up the heal
+    -- to demonstrate it would be measuring the wrong file.
+    --
+    -- WHAT IT WOULD CATCH is somebody adding a term. The invincibility list has
+    -- grown three times (DBNO in M7, the decided match in #124, the drop grace)
+    -- and each was a good reason; a fourth reading "or the player is healing"
+    -- would look equally reasonable in a diff and would silently make the
+    -- ambulance a safe room. This line fails the build on it.
+    reset()
+    rules(1, mixed, BR.PlayerState.ALIVE)
+    ok(invincible == false,
+        'AN ALIVE PLAYER IN A PLAYING MATCH IS MORTAL -- which is what makes a '
+            .. 'player healing on an ambulance stretcher killable, since the '
+            .. 'latch has no term for the ambulance at all',
+        ('SetPlayerInvincible(%s)'):format(tostring(invincible)))
+
+    -- ═══ AND NOTHING IN THE HEAL RE-ARMS IT BEHIND THE LATCH'S BACK ═══
+    --
+    -- The latch is the whole of the invincibility rule ONLY IF nothing else
+    -- writes one. client/rescue.lua is allowed to -- it makes the NPC medic
+    -- invincible, deliberately -- so this cannot be a tree-wide ban; it is a
+    -- ban on the one file, and a text read is all a process outside the game
+    -- can do. Stated so a pass is not read as more than it is.
+    --
+    -- ALL THREE SPELLINGS, because they are three different natives with three
+    -- different scopes and any of them would break the requirement:
+    -- SetPlayerInvincible (the player), SetEntityInvincible (the ped) and
+    -- SetEntityProofs (bullets, fire, explosions, collisions and melee, which
+    -- is invincibility spelled out longhand and is the one somebody reaches for
+    -- when they have been told not to use the other two).
+    do
+        local fh = io.open('resources/[fivem-royale]/br_core/client/ambheal.lua')
+        local src = fh and fh:read('a') or ''
+        if fh then fh:close() end
+
+        ok(#src > 0, 'client/ambheal.lua opens for the invincibility read')
+
+        -- COMMENTS BLANKED FIRST, which is tools/bool_native_rules.lua's own
+        -- `blank` and is required rather than tidy: that file's header EXPLAINS
+        -- the rule by naming all three natives and quoting the call the latch
+        -- makes, so a raw text search finds its own documentation and fails. The
+        -- prose is the most valuable thing in the file and must not have to be
+        -- reworded to get past a gate.
+        local code = {}
+        for raw in (src .. '\n'):gmatch('(.-)\n') do
+            code[#code + 1] = raw:gsub('%-%-.*$', '')
+        end
+        code = table.concat(code, '\n')
+
+        for _, native in ipairs({ 'SetPlayerInvincible', 'SetEntityInvincible',
+                                  'SetEntityProofs' }) do
+            -- A CALL, not a mention: the name followed by a paren, in code.
+            ok(code:find(native .. '%s*%(') == nil,
+                ('client/ambheal.lua never calls %s -- the heal must not make '
+                    .. 'the player harder to kill'):format(native),
+                'it does now, and the owner\'s rule is broken')
+        end
+    end
+
+    -- ==================================================================== --
+    -- 7b. THE LATCHING RULES COME OFF THE FRAME PATH, AND STILL HOLD
+    -- ==================================================================== --
+    --
+    -- THE FAULT THIS IS ABOUT. The owner has been hitching in vehicles,
+    -- reproducible on an empty warmup pad, and the FiveM script profiler saw
+    -- nothing at all: worst frame 29.7ms, all scripting 5.1% of wall time,
+    -- worst single scripted call 1.7ms. A `/brloop off` bisect named
+    -- gamerules.apply. Both readings are true together only if the cost is
+    -- what we ask the ENGINE to do rather than what the asking costs us --
+    -- and applyGameRules was asking for 28 natives sixty times a second.
+    --
+    -- SET_PLAYER_WANTED_LEVEL_NOW is the one this started from: its whole
+    -- documented job is to force a PENDING wanted level to be applied
+    -- immediately, and it was being issued sixty times a second to reach a
+    -- number the player was already at.
+    --
+    -- WHAT THESE CASES DO NOT CLAIM. There is no evidence anywhere -- docs,
+    -- nativedb, decompiled scripts, cfx.re -- that this native is expensive.
+    -- The engine-cost story is a hypothesis and /brhitch is what tests it. So
+    -- nothing below asserts a cost; they assert that the redundant asking is
+    -- gone and that the RULE it was asking for still holds. That is true
+    -- whether or not the hypothesis survives.
+    --
+    -- WHAT THESE CASES ARE FOR. Moving a rule off the frame path is only safe
+    -- if the rule still holds, and "it still holds" is exactly the thing a
+    -- cadence can silently stop doing. So each case below asserts the RULE,
+    -- not the call: the player is never wanted, the cap is on, the cops are
+    -- off, and the frame path stops paying for saying so.
+
+    -- ── THE COST IS GONE ────────────────────────────────────────────────────
+    reset()
+    rules(1, twoSquads)
+    local firstFlushes = wanted.flushes
+    for _ = 1, 120 do rules(1, twoSquads) end
+    ok(wanted.flushes == firstFlushes,
+        'A SETTLED FRAME FLUSHES THE WANTED LEVEL ZERO TIMES -- 120 frames at '
+        .. 'a wanted level of 0 ask the dispatch system for nothing',
+        ('%d flush(es) over 120 frames after the first')
+            :format(wanted.flushes - firstFlushes))
+
+    ok(wanted.caps == 1 and copFlags == 3,
+        'and the cap and the three cop flags are written once, not once a '
+        .. 'frame -- they are latching engine settings',
+        ('%d cap write(s), %d cop-flag write(s)'):format(wanted.caps, copFlags))
+
+    -- ── THE RULE STILL HOLDS, AND HOLDS FASTER THAN A CADENCE WOULD ─────────
+    --
+    -- THIS IS THE CASE THAT MAKES THE CHANGE SAFE. The old code wrote zero
+    -- every frame without ever asking; this asks and writes when the answer is
+    -- wrong. So a star raised by anything at all -- another resource, a
+    -- scripted event, the engine -- is cleared on the VERY NEXT FRAME, with no
+    -- wait for a heartbeat. A cadence alone could not promise that, which is
+    -- why the read is there rather than a timer.
+    wanted.level = 3
+    rules(1, twoSquads)
+    ok(wanted.level == 0,
+        'RAISE THE WANTED LEVEL AND THE NEXT FRAME TAKES IT STRAIGHT BACK '
+        .. 'DOWN -- the rule is closed-loop now, not open-loop',
+        ('wanted level after one frame: %s'):format(tostring(wanted.level)))
+    ok(wanted.flushes == firstFlushes + 1,
+        'and it costs exactly one flush to do it, on the frame that needed one',
+        ('%d flush(es)'):format(wanted.flushes - firstFlushes))
+
+    -- ── AND IT IS RE-ASSERTED ON EVERYTHING THAT COULD CLEAR IT ─────────────
+    --
+    -- A memo is a belief about the engine's state, and the engine resets a
+    -- good deal on a respawn and at a match boundary. These are the events the
+    -- old per-frame comments named as the reason for writing every frame; each
+    -- one has to put the writes back by itself.
+    reset()
+    rules(1, twoSquads)
+    local afterSettle = wanted.caps
+    for _ = 1, 30 do rules(1, twoSquads) end
+    ok(wanted.caps == afterSettle, 'a settled frame writes no cap...')
+
+    rules(1, twoSquads, BR.PlayerState.DBNO)
+    ok(wanted.caps == afterSettle + 1,
+        '...A CHANGE OF PLAYER STATE PUTS THE WHOLE RULE SET BACK, immediately '
+        .. 'and not at the next heartbeat',
+        ('%d cap write(s)'):format(wanted.caps - afterSettle))
+
+    local afterState = wanted.caps
+    for _ = 1, 30 do rules(1, twoSquads, BR.PlayerState.DBNO) end
+    ok(wanted.caps == afterState, 'and settles again straight afterwards')
+
+    fakeTime = fakeTime + 5000
+    rules(1, twoSquads, BR.PlayerState.DBNO)
+    ok(wanted.caps == afterState + 1,
+        'AND THE HEARTBEAT STILL FIRES with nothing changing at all, because a '
+        .. 'memo is only a belief and something else may have written since',
+        ('%d cap write(s)'):format(wanted.caps - afterState))
+
+    -- ── INVINCIBILITY IS KEYED ON ITS ANSWER, BECAUSE ITS ANSWER HAS A CLOCK ─
+    --
+    -- THE TRAP THIS PINS. The invincibility expression ends in
+    -- `GetGameTimer() < dropGraceUntil` -- so it flips from true to false at a
+    -- moment when the player state, the match state and the ped handle have
+    -- all stayed the same. Key that write on the state triggers alone and a
+    -- player who has landed stays invincible until the heartbeat catches up,
+    -- which is a player who cannot be shot for up to a second after touchdown.
+    --
+    -- Comparing the ANSWER catches it on the same frame the old unconditional
+    -- write did. Nothing else in this file would have noticed.
+    reset()
+    BR.State.dropGraceUntil = fakeTime + 500
+    rules(1, twoSquads, BR.PlayerState.ALIVE)
+    ok(invincible == true,
+        'inside the landing grace an ALIVE player is still invincible',
+        ('SetPlayerInvincible(%s)'):format(tostring(invincible)))
+
+    fakeTime = fakeTime + 600            -- the grace expires; nothing else moves
+    local before = invincibleWrites
+    rules(1, twoSquads, BR.PlayerState.ALIVE)
+    ok(invincible == false and invincibleWrites == before + 1,
+        'AND THE FRAME THE GRACE RUNS OUT TAKES IT AWAY -- no state changed, '
+        .. 'so only comparing the answer could have caught this',
+        ('invincible %s after %d write(s)')
+            :format(tostring(invincible), invincibleWrites - before))
+    BR.State.dropGraceUntil = 0
+
+    -- ==================================================================== --
+    -- 7c. EMERGENCY DISPATCH IS OFF, AND STAYS OFF
+    -- ==================================================================== --
+    --
+    -- OWNER, 2026-08-23, MID-PLAYTEST: "For some reason firetrucks are
+    -- dispatching when I do things?"
+    --
+    -- They were, and the cause was an absence: ENABLE_DISPATCH_SERVICE was
+    -- called NOWHERE in this repository, so every dispatch service GTA ships
+    -- with had been on in every match ever run here. GTA dispatches police,
+    -- ambulances, fire trucks and helicopters at crimes, fires and explosions
+    -- by default -- which in a game mode made of crimes, fires and explosions
+    -- is a permanent second population driving into every firefight.
+    --
+    -- WHY THESE CASES ARE SHAPED AGAINST THE WANTED CAP RATHER THAN WRITTEN
+    -- ALONE. The rule is not "dispatch is disabled once"; it is "dispatch is
+    -- disabled on exactly the triggers the neighbouring latching rules use".
+    -- A case that only counted its own sweeps would still pass if a later edit
+    -- moved dispatch onto its own cadence, or dropped it from `due` and left it
+    -- firing on the heartbeat alone. So every re-assertion case below compares
+    -- the sweep count against `wanted.caps`, which is SET_MAX_WANTED_LEVEL --
+    -- the rule immediately above it in the same block. They move together or a
+    -- case fails.
+    --
+    -- ── THE WHOLE SET, ON THE FIRST FRAME ───────────────────────────────────
+    reset()
+    rules(1, twoSquads)
+
+    do
+        local missing, wrongValue = {}, {}
+        for _, id in ipairs(N.DISPATCH_OFF) do
+            if dispatch.off[id] == nil then
+                missing[#missing + 1] = id
+            elseif dispatch.off[id] ~= false then
+                wrongValue[#wrongValue + 1] = id
+            end
+        end
+        ok(#N.DISPATCH_OFF == 15 and #missing == 0,
+            'EVERY DISPATCH SERVICE 1..15 IS TURNED OFF ON THE FIRST FRAME -- '
+            .. 'the firetruck report was an absence, not a wrong value',
+            ('%d in the list, %d never written (%s)')
+                :format(#N.DISPATCH_OFF, #missing,
+                        table.concat(missing, ',')))
+        ok(#wrongValue == 0,
+            'and every one of them is turned OFF rather than merely written',
+            ('%d written with the wrong value (%s)')
+                :format(#wrongValue, table.concat(wrongValue, ',')))
+    end
+
+    -- ═══ 0 IS TRUTHY IN LUA AND A FIVEM BOOL MAY BE HANDED ONE ═══
+    --
+    -- The second argument is a BOOL. Handing the engine `0` for "off" is the
+    -- fifth instance of the bug this project has shipped four times, and it is
+    -- the direction that FAILS SILENTLY: the engine reads a number, every
+    -- assertion about "we wrote to service 3" still passes, and the fire
+    -- engines keep coming. The TYPE is asserted, not just the value.
+    do
+        local wrongType = {}
+        for _, id in ipairs(N.DISPATCH_OFF) do
+            if dispatch.kinds[id] ~= 'boolean' then
+                wrongType[#wrongType + 1] = id
+            end
+        end
+        ok(#wrongType == 0,
+            'with a real Lua boolean and not a 0 -- a 0 here would read as ON '
+            .. 'and every other assertion in this block would still pass',
+            ('%d handed a non-boolean (%s)')
+                :format(#wrongType, table.concat(wrongType, ',')))
+    end
+
+    -- ── THE TWO IDS THAT ARE PINNED BY NAME, AND WHY ────────────────────────
+    --
+    -- 3 IS THE REPORT. Fire response is service 3 and nothing else -- there is
+    -- no second fire-dispatch native, so if this id is wrong the owner's
+    -- symptom comes straight back and nothing else in the suite notices.
+    --
+    -- AND THE ID IS THE ONE THING HERE THAT IS EASY TO GET WRONG. Three
+    -- mappings of this enum are in circulation: R*'s own (alloc8or's
+    -- DispatchType.txt, extracted from the CDispatchResponse parser
+    -- definition), the FiveM reference's -- which skips 12 and issues 15 twice
+    -- -- and the most-copied cfx.re release thread's, which puts FIRE_DEPARTMENT
+    -- at 4. Following that last one, `EnableDispatchService(4, false)` turns off
+    -- SWAT and leaves the fire brigade running.
+    ok(N.DispatchService.FIRE_DEPARTMENT == 3
+       and dispatch.off[3] == false,
+        'DT_FireDepartment IS 3, from Rockstar\'s own enum -- the popular '
+        .. 'cfx.re list says 4, which is DT_SwatAutomobile and would have '
+        .. 'shipped the bug back with a fix sitting on top of it',
+        ('FIRE_DEPARTMENT = %s, written %s')
+            :format(tostring(N.DispatchService.FIRE_DEPARTMENT),
+                    tostring(dispatch.off[3])))
+
+    -- 5 IS THE ONE THAT COULD HAVE BROKEN SOMETHING, and it is pinned so that
+    -- the reasoning is attached to the assertion rather than left in a commit
+    -- message. #191's CPR kit spawns an ambulance with an NPC medic -- and a
+    -- dispatch service governs the ENGINE's unprompted AI response, not a
+    -- CreateVehicle. #191's ambulance is client-side and non-networked by
+    -- design (server/fuel.lua and server/vehicles.lua both say so in as many
+    -- words), so it is a gamemode entity end to end and this flag cannot reach
+    -- it. If #191 ever asks for a medic via CREATE_INCIDENT instead, that
+    -- native takes a dispatchService argument and IS governed -- and this is
+    -- the case that should fail when it does.
+    ok(N.DispatchService.AMBULANCE_DEPARTMENT == 5
+       and dispatch.off[5] == false,
+        'DT_AmbulanceDepartment IS 5 and is off too -- #191\'s CPR ambulance is '
+        .. 'gamemode-created, so this cannot reach it',
+        ('AMBULANCE_DEPARTMENT = %s, written %s')
+            :format(tostring(N.DispatchService.AMBULANCE_DEPARTMENT),
+                    tostring(dispatch.off[5])))
+
+    -- THE DOCUMENTED NAMES AND THE WRITTEN RANGE ARE THE SAME SET. The table is
+    -- documentation and the array is what runs, which is the arrangement that
+    -- makes the naming dispute above harmless -- but only while the two agree.
+    -- A service added to one and not the other is exactly the drift this pins.
+    do
+        local named = {}
+        for _, id in pairs(N.DispatchService) do named[id] = true end
+        local unnamed, unwritten = {}, {}
+        for _, id in ipairs(N.DISPATCH_OFF) do
+            if not named[id] then unnamed[#unnamed + 1] = id end
+        end
+        for id in pairs(named) do
+            if dispatch.off[id] == nil then unwritten[#unwritten + 1] = id end
+        end
+        table.sort(unnamed); table.sort(unwritten)
+        ok(#unnamed == 0 and #unwritten == 0,
+            'the named enum and the disabled range are the same set -- the '
+            .. 'table cannot document a service the loop does not turn off',
+            ('%d written but unnamed (%s), %d named but unwritten (%s)')
+                :format(#unnamed, table.concat(unnamed, ','),
+                        #unwritten, table.concat(unwritten, ',')))
+    end
+
+    -- 0 IS DT_Invalid AND IS NOT A SERVICE. It is in R*'s enum, which is
+    -- exactly why a range loop written from that file is one `for i = 0` away
+    -- from asking the engine about a service that does not exist.
+    ok(dispatch.off[0] == nil and dispatch.off[16] == nil,
+        'and DT_Invalid (0) is never written, nor anything past the end',
+        ('0 => %s, 16 => %s')
+            :format(tostring(dispatch.off[0]), tostring(dispatch.off[16])))
+
+    -- ── THE COST IS BOUNDED, LIKE THE RULES IT SITS WITH ────────────────────
+    --
+    -- Fifteen natives is the most expensive single rule in this function, which
+    -- is precisely why it may not go on the frame path. At sixty frames a
+    -- second it would be nine hundred engine writes per second on a function
+    -- 56c0ba7 had just cut from 29 writes per frame to 14.
+    reset()
+    rules(1, twoSquads)
+    ok(dispatch.sweeps == 1 and dispatch.writes == 15,
+        'one settling frame sweeps the set exactly once',
+        ('%d sweep(s), %d write(s)'):format(dispatch.sweeps, dispatch.writes))
+
+    for _ = 1, 120 do rules(1, twoSquads) end
+    ok(dispatch.sweeps == 1 and dispatch.writes == 15,
+        'AND 120 SETTLED FRAMES AFTER IT SWEEP NOTHING -- this is a latching '
+        .. 'engine setting, not a per-frame one',
+        ('%d sweep(s), %d write(s) over 121 frames')
+            :format(dispatch.sweeps, dispatch.writes))
+
+    -- ── AND IT IS RE-ASSERTED ON THE SAME FIVE TRIGGERS AS ITS NEIGHBOURS ───
+    --
+    -- Each case moves exactly one trigger and asserts that the dispatch sweep
+    -- and SET_MAX_WANTED_LEVEL both fired. Comparing against the cap is what
+    -- makes these cases about the SHARED latch rather than about a cadence that
+    -- happens to look similar today.
+
+    -- 1. THE PLAYER STATE.
+    reset()
+    rules(1, twoSquads)
+    local baseSweeps, baseCaps = dispatch.sweeps, wanted.caps
+    rules(1, twoSquads, BR.PlayerState.DBNO)
+    ok(dispatch.sweeps == baseSweeps + 1 and wanted.caps == baseCaps + 1,
+        'a change of PLAYER state puts dispatch back, on the same frame as the '
+        .. 'wanted cap',
+        ('%d sweep(s), %d cap(s)'):format(dispatch.sweeps - baseSweeps,
+                                          wanted.caps - baseCaps))
+
+    -- 2. THE MATCH STATE.
+    reset()
+    rules(1, twoSquads)
+    baseSweeps, baseCaps = dispatch.sweeps, wanted.caps
+    rules(1, twoSquads, nil, BR.MatchState.ENDED)
+    ok(dispatch.sweeps == baseSweeps + 1 and wanted.caps == baseCaps + 1,
+        'a change of MATCH state does too -- a match boundary is where the '
+        .. 'engine resets most of what this function believes',
+        ('%d sweep(s), %d cap(s)'):format(dispatch.sweeps - baseSweeps,
+                                          wanted.caps - baseCaps))
+
+    -- 3. THE PED HANDLE -- a respawn. The one trigger whose whole purpose is a
+    -- new ped, and the reason the old code was per-frame at all.
+    reset()
+    rules(1, twoSquads)
+    baseSweeps, baseCaps = dispatch.sweeps, wanted.caps
+    local keepPed = PlayerPedId
+    PlayerPedId = function() return 77 end
+    rules(1, twoSquads)
+    PlayerPedId = keepPed
+    ok(dispatch.sweeps == baseSweeps + 1 and wanted.caps == baseCaps + 1,
+        'and so does a new PED HANDLE -- a respawn re-asserts the whole set',
+        ('%d sweep(s), %d cap(s)'):format(dispatch.sweeps - baseSweeps,
+                                          wanted.caps - baseCaps))
+
+    -- 4. THE HEARTBEAT, with nothing else moving at all. This is the one that
+    -- is insurance rather than a known requirement: no documented reset for
+    -- this native exists, no cfx.re report of it decaying was found, and
+    -- qb-smallresources calls it once under a comment saying once is enough.
+    -- A second of staleness is the worst case; it costs 15 writes a second.
+    reset()
+    rules(1, twoSquads)
+    baseSweeps, baseCaps = dispatch.sweeps, wanted.caps
+    for _ = 1, 30 do rules(1, twoSquads) end
+    ok(dispatch.sweeps == baseSweeps, 'a settled frame sweeps nothing...')
+
+    fakeTime = fakeTime + 5000
+    rules(1, twoSquads)
+    ok(dispatch.sweeps == baseSweeps + 1 and wanted.caps == baseCaps + 1,
+        '...AND THE HEARTBEAT STILL PUTS IT BACK with nothing changed, because '
+        .. 'a memo is only a belief about what the engine currently holds',
+        ('%d sweep(s), %d cap(s)'):format(dispatch.sweeps - baseSweeps,
+                                          wanted.caps - baseCaps))
+
+    -- 5. AND forgetRules FORGETS IT TOO. The kill switch for the whole latch is
+    -- what anything that knows the engine was reset underneath us calls, and a
+    -- rule it does not clear is a rule that never comes back.
+    reset()
+    rules(1, twoSquads)
+    baseSweeps = dispatch.sweeps
+    N.forgetRules()
+    rules(1, twoSquads)
+    ok(dispatch.sweeps == baseSweeps + 1,
+        'and forgetRules puts dispatch back on the next frame, like every '
+        .. 'other belief in the latch',
+        ('%d sweep(s)'):format(dispatch.sweeps - baseSweeps))
 
     -- ==================================================================== --
     -- 8. THE ONE-LINE WAY BACK
@@ -7828,6 +11060,4296 @@ do
     ok(item == nil and why == 'already owned by everyone',
         'and it is still refused as a purchase, tile or no tile',
         tostring(why))
+end
+
+-- ------------------------------------------------------------- drive-by ---
+--
+-- #197 -- A PASSENGER CANNOT FIRE FROM A SEAT.
+--
+-- WHAT THESE TESTS CAN AND CANNOT PROVE, FIRST, because the honest answer to
+-- #197 is not a code change and pretending otherwise is how this ships green
+-- and broken.
+--
+-- The cause is the ENGINE's own per-seat weapon rule: a seat carries a list of
+-- weapon groups in its CVehicleDriveByInfo, a standard car seat lists unarmed,
+-- one-handed and thrown, and a rifle is therefore taken out of the ped's hands
+-- on the way into the seat. No Lua process can be asked to confirm that, and no
+-- native lifts it. This file cannot prove the diagnosis.
+--
+-- WHAT IT CAN PROVE IS EVERYTHING WE OWN, which is exactly the half that had to
+-- be ruled out before the platform could be blamed:
+--
+--   1. that we assert the drive-by permission on a CADENCE. It used to be set
+--      only inside applyActive's arm branch, which returns early when the
+--      weapon has not changed -- so the last assertion could be minutes and a
+--      respawn behind the moment the player sat down. That is #197's candidate
+--      1 and it is now closed by construction.
+--   2. that the READOUT reaches the right verdict from a given world. Four
+--      causes look identical from a passenger seat; the owner gets one command
+--      and it has to name the right one, including on a build where BOOL
+--      natives answer numbers.
+--   3. that a diagnostic does not blame a guard that no longer exists.
+
+describe('#197 -- the drive-by permission is asserted on a cadence, not once')
+do
+    bootOn(true, true)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+    disabledControls, controlsAnswerNumbers = {}, false
+
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)      -- the grant lands here
+
+    -- THE REGRESSION, STATED AS AN ASSERTION. Nothing changes from here on: no
+    -- INV_SET, no slot switch, no respawn. applyActive returns on its second
+    -- line for every one of these ticks -- which is precisely the state a player
+    -- is in while they walk to a car, get in, and sit down.
+    driveByCalls = 0
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.TICK)
+    ok(driveByCalls == 3,
+        'the permission is re-asserted every tick with NOTHING changing',
+        ('called %d times over 3 quiet ticks'):format(driveByCalls))
+
+    -- AND ABOVE THE canArm() GATE, which is the other half of the same
+    -- argument. canArm() answers "may this file put a weapon in this ped's
+    -- hand" -- false for the lobby, the bus and the whole descent -- and whether
+    -- a player may fire from a seat is not that question. A permission that is
+    -- already true before anybody sits down cannot be late.
+    BR.State.me.state = BR.PlayerState.BUS
+    BR.State.landed = false
+    driveByCalls = 0
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.TICK)
+    ok(driveByCalls == 2,
+        'and it is still asserted in a state this file refuses to arm',
+        ('called %d times in BUS'):format(driveByCalls))
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+
+    -- THE FISTS CASE, which the old placement could never reach at all: the
+    -- unarmed branch of applyActive has no SetPlayerCanDoDriveBy in it and never
+    -- did, so a player who spawned, drew nothing and got into a car was relying
+    -- entirely on the engine's default.
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = BR.Config.Loot.meleeSlot or 0 })
+    BR.Loop.step(BR.Loop.TICK)
+    driveByCalls = 0
+    BR.Loop.step(BR.Loop.TICK)
+    ok(driveByCalls == 1,
+        'and with fists up, where the arm branch never ran',
+        ('called %d times'):format(driveByCalls))
+end
+
+describe('#197 -- the verdict names the cause, and the causes are separable')
+do
+    local CARBINE = BR.NormHash(BR.Config.WeaponById['carbinerifle'].hash)
+    local UNARMED = BR.NormHash(BR.Config.Gadgets.UNARMED)
+
+    --- "Explicitly absent", because `{ engineHash = nil }` is an EMPTY TABLE in
+    --- Lua and pairs() cannot carry a nil. Half the cases below are about a
+    --- field being missing -- the engine naming no weapon at all is the shape a
+    --- stow produces -- so the absence has to survive being passed around.
+    local NONE = {}
+
+    --- A world, as the readout sees it. Defaults are "an armed passenger with
+    --- nothing wrong", so each case below states only what it is about.
+    local function world(over)
+        local f = {
+            state = BR.PlayerState.ALIVE, canArm = true, panelOpen = false,
+            slotIndex = 1, item = 'carbinerifle',
+            wantHash = CARBINE, appliedHash = CARBINE, engineHash = CARBINE,
+            driveByAt = 0, driveByCount = 900,
+            inVehicle = true, blocked = nil,
+        }
+        for k, v in pairs(over or {}) do
+            if v == NONE then f[k] = nil else f[k] = v end
+        end
+        return f
+    end
+    local function verdict(over)
+        local code = BR.Inv.driveByVerdict(world(over))
+        return code
+    end
+
+    -- THE ANSWER TO #197, and the shape it arrives in: our two hashes agree
+    -- with each other and the ENGINE is holding nothing. The weapon is in the
+    -- inventory and not in the hands.
+    ok(verdict({ engineHash = UNARMED }) == 'stowed',
+        'the engine holding fists over our rifle is named a STOW',
+        verdict({ engineHash = UNARMED }))
+    ok(verdict({ engineHash = NONE }) == 'stowed',
+        'and so is the engine declining to name a weapon at all',
+        verdict({ engineHash = NONE }))
+
+    -- OURS BEFORE THEIRS. Both of the causes we can actually fix are checked
+    -- before the platform is blamed, or the readout would exonerate our own bug
+    -- in the exact case where it matters -- a stow and an open panel look the
+    -- same from the seat.
+    ok(verdict({ engineHash = UNARMED, panelOpen = true }) == 'panel',
+        'an open panel is OUR bug and outranks the stow',
+        verdict({ engineHash = UNARMED, panelOpen = true }))
+    ok(verdict({ engineHash = UNARMED, blocked = 'VEH_PASSENGER_ATTACK' }) == 'control',
+        'and so does a control something disabled',
+        verdict({ engineHash = UNARMED, blocked = 'VEH_PASSENGER_ATTACK' }))
+
+    -- CANDIDATE 1, which is what this round actually changed. If the tick that
+    -- asserts the permission is dead, that is the answer and it is not the
+    -- engine's fault.
+    ok(verdict({ engineHash = UNARMED, driveByCount = 0 }) == 'never-asked',
+        'a permission we never asserted outranks the stow too',
+        verdict({ engineHash = UNARMED, driveByCount = 0 }))
+
+    -- NOT EVERY QUESTION IS THIS QUESTION.
+    ok(verdict({ inVehicle = false }) == 'onfoot',
+        'on foot, there is nothing here to explain')
+    ok(verdict({ canArm = false }) == 'state',
+        'and a state this client will not arm is named as such')
+    ok(verdict({ wantHash = NONE, item = NONE }) == 'unarmed',
+        'an empty hand is not a drive-by problem')
+    ok(verdict({ appliedHash = NONE }) == 'ungranted',
+        'nor is a grant that has not landed yet')
+
+    -- EVERYTHING RULED OUT IS ITS OWN ANSWER, and it has to be, because that is
+    -- the readout that says "#197 is not what you think it is" -- the one case
+    -- where a confident wrong verdict costs the most.
+    ok(verdict({}) == 'unexplained',
+        'a passenger holding what we granted, with every control live, is UNEXPLAINED')
+
+    -- SIGNED HASHES, ON BOTH SIDES. The engine hands weapon hashes back SIGNED
+    -- and the config authors them positive; twenty of the forty weapons in this
+    -- game have the top bit set, and a raw comparison has already produced
+    -- unlimited ammo once. Here it would produce a permanent, confident,
+    -- completely wrong "THE ENGINE HAS STOWED THE WEAPON" for half the loot
+    -- table -- on foot as well as in a seat.
+    local signed = CARBINE - 0x100000000
+    ok(verdict({ engineHash = signed }) == 'unexplained',
+        'the same weapon, signed one side and unsigned the other, is not a stow',
+        verdict({ engineHash = signed }))
+
+    -- BOOLS THAT ARE NUMBERS, which is the bug this codebase has shipped four
+    -- times. `0` is truthy in Lua, so an `if f.inVehicle then` would read a
+    -- build's honest "no, you are not in a vehicle" as yes.
+    ok(verdict({ inVehicle = 1, engineHash = UNARMED }) == 'stowed',
+        'inVehicle = 1 is in a vehicle',
+        verdict({ inVehicle = 1, engineHash = UNARMED }))
+    ok(verdict({ inVehicle = 0, engineHash = UNARMED }) == 'onfoot',
+        'and inVehicle = 0 is NOT, however truthy Lua finds it',
+        verdict({ inVehicle = 0, engineHash = UNARMED }))
+    ok(verdict({ panelOpen = 1, engineHash = UNARMED }) == 'panel',
+        'panelOpen = 1 is an open panel',
+        verdict({ panelOpen = 1, engineHash = UNARMED }))
+    ok(verdict({ panelOpen = 0, engineHash = UNARMED }) == 'stowed',
+        'and panelOpen = 0 is a closed one',
+        verdict({ panelOpen = 0, engineHash = UNARMED }))
+
+    -- A verdict with no world at all must still answer rather than throw: this
+    -- is a diagnostic, and a diagnostic that raises has told you nothing.
+    ok(select(1, BR.Inv.driveByVerdict(nil)) == 'onfoot',
+        'and an empty world answers instead of throwing')
+    ok(type(select(2, BR.Inv.driveByVerdict(nil))) == 'string',
+        'with a sentence, always')
+end
+
+describe('#206 -- the readout accuses OUR table when the engine contradicts it')
+do
+    local CARBINE = BR.NormHash(BR.Config.WeaponById['carbinerifle'].hash)
+    local UNARMED = BR.NormHash(BR.Config.Gadgets.UNARMED)
+
+    --- A stowed weapon in a passenger seat -- the reported case -- with only OUR
+    --- CLAIM about the seat varying. Everything else is "nothing wrong", so each
+    --- assertion below is about exactly one thing.
+    local function stow(permitted)
+        return BR.Inv.driveByVerdict({
+            state = BR.PlayerState.ALIVE, canArm = true, panelOpen = false,
+            slotIndex = 1, item = 'carbinerifle',
+            wantHash = CARBINE, appliedHash = CARBINE, engineHash = UNARMED,
+            driveByAt = 0, driveByCount = 900,
+            inVehicle = true, blocked = nil,
+            permitted = permitted,
+        })
+    end
+
+    -- THE EXPECTED STOW IS NOT AN ALARM. A rifle taken out of your hands in a
+    -- car seat is GTA working as designed, and it is what every player will see
+    -- for most of the loot table -- so it is `stowed`, plainly, whether we said
+    -- the seat refuses it or nobody asked.
+    ok(stow(nil) == 'stowed',
+        'a stow with no claim either way is the plain GTA seat rule', stow(nil))
+    ok(stow(false) == 'stowed',
+        'and so is a stow we predicted', stow(false))
+
+    -- THE ONE THAT MATTERS. We claimed this seat accepts the weapon; the engine
+    -- took it away. That is the exact table entry that would have told a player
+    -- to switch to a slot that does not fire, and it is the only thing in this
+    -- project that can catch it -- no offline gate can read the game's .rpf.
+    ok(stow(true) == 'stowed-unexpected',
+        'a stow of a weapon WE said the seat accepts accuses our own table',
+        stow(true))
+    ok(stow(true) ~= stow(false),
+        'and it is a different answer from an ordinary stow, or nobody would look')
+
+    -- ...AND THE SENTENCE HAS TO NAME THE FIELD AND THE FILE, because the fix is
+    -- a one-word edit and a verdict that does not say where is a riddle.
+    local _, wrongTable = BR.Inv.driveByVerdict({
+        inVehicle = true, canArm = true, wantHash = CARBINE,
+        appliedHash = CARBINE, engineHash = UNARMED, driveByCount = 9,
+        permitted = true,
+    })
+    ok(wrongTable:find('weapons.lua', 1, true) ~= nil
+       and wrongTable:find('driveby', 1, true) ~= nil,
+        'the accusing sentence names the file and the field to change', wrongTable)
+
+    -- THE POSITIVE READING. This is what a pistol in a passenger seat looks
+    -- like, and "nothing here explains it" would read as a failure on a readout
+    -- that has just shown the seat saying yes.
+    local function held(permitted)
+        return BR.Inv.driveByVerdict({
+            state = BR.PlayerState.ALIVE, canArm = true, panelOpen = false,
+            slotIndex = 1, item = 'pistol',
+            wantHash = CARBINE, appliedHash = CARBINE, engineHash = CARBINE,
+            driveByAt = 0, driveByCount = 900,
+            inVehicle = true, blocked = nil,
+            permitted = permitted,
+        })
+    end
+    ok(held(true) == 'armed',
+        'a weapon the engine lets you keep in a seat, that we said it would, is ARMED',
+        held(true))
+
+    -- ONLY `== true` IS A CLAIM, and this is where writing `if f.permitted then`
+    -- would be indistinguishable -- so it is pinned from the other side instead:
+    -- neither `nil` nor `false` may be read as the claim that earns `armed`.
+    ok(held(nil) == 'unexplained',
+        'with no claim to credit, a held weapon is still UNEXPLAINED', held(nil))
+    ok(held(false) == 'unexplained',
+        'and a claim that the seat REFUSES it is not a reason to say ARMED',
+        held(false))
+
+    -- ORDER. Every cause we can fix ourselves still outranks both of these, or
+    -- the readout blames a weapon table for an open panel.
+    local function stowWith(permitted, over)
+        local f = {
+            state = BR.PlayerState.ALIVE, canArm = true, panelOpen = false,
+            slotIndex = 1, item = 'carbinerifle',
+            wantHash = CARBINE, appliedHash = CARBINE, engineHash = UNARMED,
+            driveByAt = 0, driveByCount = 900,
+            inVehicle = true, blocked = nil, permitted = permitted,
+        }
+        for k, v in pairs(over) do f[k] = v end
+        return BR.Inv.driveByVerdict(f)
+    end
+    ok(stowWith(true, { panelOpen = true }) == 'panel',
+        'an open panel still outranks an accusation against our table')
+    ok(stowWith(true, { blocked = 'VEH_PASSENGER_ATTACK' }) == 'control',
+        'and so does a control held down every frame')
+    ok(stowWith(true, { driveByCount = 0 }) == 'never-asked',
+        'and so does a permission we never asserted')
+
+    -- THE PLAIN STOW STILL EXPLAINS ITSELF, and it now has to carry the tested
+    -- result rather than promising an override that no longer exists: the data
+    -- file was shipped, the game ignored it, and the file is gone.
+    local _, plain = BR.Inv.driveByVerdict({
+        inVehicle = true, canArm = true, wantHash = CARBINE,
+        appliedHash = CARBINE, engineHash = UNARMED, driveByCount = 9,
+        permitted = false,
+    })
+    ok(plain:find('IGNORED BY THE GAME', 1, true) ~= nil,
+        'the ordinary stow says the data-file route was tried and refused', plain)
+    ok(plain:find('br_environment', 1, true) == nil,
+        'and it no longer sends anybody to a resource that ships no such file',
+        plain)
+end
+
+describe('#197 -- /brdriveby measures it end to end')
+do
+    local CARBINE = BR.NormHash(BR.Config.WeaponById['carbinerifle'].hash)
+
+    --- Arm the watch and let it run to its verdict.
+    --- @return string  everything the command printed, as one blob
+    local function run(seconds)
+        logged = {}
+        commands['brdriveby'](nil, { tostring(seconds or 1) }, '')
+        -- frame() steps fakeTime by 16ms, which is what closes the window.
+        frames(math.ceil(((seconds or 1) * 1000) / 16) + 2)
+        return table.concat(logged, '\n')
+    end
+
+    bootOn(true, true)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- THE REPORTED CASE. In a front passenger seat, holding a rifle the server
+    -- issued, with the engine holding nothing.
+    inVehicle, vehicle, vehicleSeat = true, 77, 0
+    pedWeapon = nil
+    disabledControls, controlsAnswerNumbers = {}, false
+    local out = run(1)
+    -- PLAIN `stowed`, AND THAT IS THE POINT OF THIS ROUND. The carbine is
+    -- `driveby = false` in the weapon table, the engine stowed it, and the two
+    -- agree -- so this is GTA behaving as designed rather than anything to
+    -- investigate. The previous version of this assertion expected
+    -- `override-ignored`, which was true right up until the playtest made the
+    -- override stop existing.
+    ok(out:find('VERDICT %[stowed%]') ~= nil,
+        'a rifle the seat refuses, and that we agree it refuses, is a plain stow',
+        out:sub(1, 400))
+    -- ANCHORED TO THE ROW, NOT TO THE PAGE. The trailer explains what a seat is
+    -- and therefore contains the words "front passenger" whatever seat you are
+    -- actually in -- so a loose `out:find('front passenger')` passes even when
+    -- the row above it says "driver". Caught by mutation: naming seat 0 the
+    -- driver survived a whole test run.
+    ok(out:find('seat%s+0%s+%(front passenger%)') ~= nil,
+        'and the SEAT ROW names the seat, because GTA permits drive-by per seat',
+        out:match('  seat[^\n]*'))
+    ok(out:find('engine held the slot weapon on 0 of') ~= nil,
+        'and the count of frames it was held is 0 -- not a climb-in animation')
+
+    -- THE ENGINE NAMING FISTS is the same answer arriving in the other shape,
+    -- and it is the single most load-bearing line in the readout -- it IS the
+    -- stow. Printed as an unrecognised hash it would be the one row the owner
+    -- skims past.
+    pedWeapon = BR.Config.Gadgets.UNARMED
+    out = run(1)
+    ok(out:find('VERDICT %[stowed%]') ~= nil,
+        'the engine naming WEAPON_UNARMED is a stow too', out:sub(1, 400))
+    ok(out:find('ENGINE holds[^\n]*FISTS') ~= nil,
+        'and the row says FISTS rather than an unrecognised hash',
+        out:match('  ENGINE holds[^\n]*'))
+    pedWeapon = nil
+
+    -- OUR CLAIM, ON THE FACE OF THE READOUT. This row and the sample above it
+    -- are the entire audit of br_lib/config/weapons.lua's `driveby` field --
+    -- there is no offline check possible, because the truth is inside the
+    -- game's .rpf -- so the row has to actually say which way we called it.
+    ok(out:find('we say the seat%s+REFUSES it') ~= nil,
+        'the readout prints our own claim about the seat, next to the engine\'s',
+        out:match('  we say the seat[^\n]*'))
+
+    -- THE HINT, PRINTED RATHER THAN WAITED FOR. It fires once a session, so
+    -- without this row there is no way to see what it would have said.
+    ok(out:find('drive%-by hint%s+nothing to suggest') ~= nil,
+        'and with only a rifle in the bar there is nothing to suggest',
+        out:match('  drive%-by hint[^\n]*'))
+
+    -- ...AND WITH A PISTOL IN ANOTHER SLOT, THE EXACT SENTENCE. Anchored to the
+    -- owner's wording: a readout that paraphrases the notice cannot be used to
+    -- check the notice.
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 },
+            { id = 'pistol',       kind = BR.ItemKind.WEAPON, clip = 12 },
+        },
+        ammo = {}, active = 1,
+    })
+    out = run(1)
+    ok(out:find('Switch to slot 2 to fire your Pistol during drive%-by shootings%.') ~= nil,
+        'the readout prints the notice verbatim, slot and weapon substituted',
+        out:match('  drive%-by hint[^\n]*'))
+
+    -- A WEAPON THE TABLE DOES NOT COVER AT ALL. Melee carries no `driveby`
+    -- field on purpose -- no car seat reaches DRIVEBY_BIKE_MELEE -- and the
+    -- absence must read as "no" rather than as a claim.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'machete', kind = BR.ItemKind.WEAPON, clip = 1 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    pedWeapon = BR.Config.Gadgets.UNARMED
+    out = run(1)
+    ok(out:find('VERDICT %[stowed%]') ~= nil,
+        'a weapon with no claim at all is a plain stow, never an accusation',
+        out:sub(1, 500))
+    ok(out:find('we say the seat%s+REFUSES it') ~= nil,
+        'and a missing field reads as REFUSES rather than as "-"',
+        out:match('  we say the seat[^\n]*'))
+
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    pedWeapon = nil
+
+    -- The other two seats a squad car actually has. Rear seats and the driver's
+    -- own seat are separate entries in the vehicle's layout with their own
+    -- weapon lists, so the readout has to distinguish them or the owner cannot
+    -- tell "this seat" from "this vehicle".
+    vehicleSeat = -1
+    ok(run(0.3):find('seat%s+%-1%s+%(driver%)') ~= nil,
+        'the driver seat is named as the driver')
+    vehicleSeat = 2
+    ok(run(0.3):find('seat%s+2%s+%(rear seat 2%)') ~= nil,
+        'and a rear seat as a rear seat')
+    vehicleSeat = 0
+
+    -- THE SAME SEAT WITH THE WEAPON ACTUALLY IN HAND is a different answer, and
+    -- has to be: this is what a PISTOL looks like, and it is how the owner will
+    -- tell the seat rule from a script bug in ten seconds.
+    --
+    -- IT IS A PISTOL AND NOT THE CARBINE, WHICH IS THE WHOLE OF THIS ROUND. The
+    -- engine holding a carbine in a car seat would mean our table is wrong, and
+    -- the readout says so rather than congratulating itself -- `armed` is
+    -- reserved for the case where the seat and our claim AGREE.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'pistol', kind = BR.ItemKind.WEAPON, clip = 12 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    pedWeapon = BR.Config.WeaponById['pistol'].hash
+    out = run(1)
+    ok(out:find('VERDICT %[armed%]') ~= nil,
+        'a pistol the engine IS holding in a seat is ARMED, not a stow',
+        out:sub(1, 400))
+    ok(out:find('we say the seat%s+ACCEPTS it') ~= nil,
+        'and our claim on the row above agrees with it',
+        out:match('  we say the seat[^\n]*'))
+
+    -- THE OTHER DIRECTION, WHICH IS THE DANGEROUS ONE. Same seat, same held
+    -- weapon, but the engine is holding a CARBINE -- a gun we say the seat
+    -- refuses. Our table would be wrong, and this is the only place in the
+    -- project that can notice.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    pedWeapon = CARBINE
+    out = run(1)
+    ok(out:find('we say the seat%s+REFUSES it') ~= nil
+       and out:find('VERDICT %[armed%]') == nil,
+        'a carbine the engine keeps is NOT called armed, because we said it would not be',
+        out:match('  we say the seat[^\n]*'))
+
+    -- A CONTROL HELD DOWN EVERY FRAME, which is #197's candidate 3. The watch
+    -- has to catch it, and it has to outrank everything the engine is doing.
+    disabledControls = { [69] = true }
+    out = run(1)
+    ok(out:find('VERDICT %[control%]') ~= nil,
+        'a disabled VEH_PASSENGER_ATTACK is caught by the frame sampler',
+        out:sub(1, 400))
+    ok(out:find('VEH_PASSENGER_ATTACK.*DISABLED on') ~= nil,
+        'and the row says so, with the frame count')
+
+    -- ...ON A BUILD WHERE IsControlEnabled ANSWERS NUMBERS. Same world, same
+    -- expected verdict. `not 0` is false in Lua, so a raw read here would report
+    -- every control as enabled on every frame and hand back the wrong verdict
+    -- with total confidence.
+    controlsAnswerNumbers = true
+    out = run(1)
+    ok(out:find('VERDICT %[control%]') ~= nil,
+        'and still caught when the native answers 1/0 instead of true/false',
+        out:sub(1, 400))
+
+    disabledControls, controlsAnswerNumbers = {}, false
+
+    -- ON FOOT. The command must be runnable anywhere without lying.
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+    out = run(1)
+    ok(out:find('VERDICT %[onfoot%]') ~= nil,
+        'and on foot it says so rather than inventing a cause', out:sub(1, 400))
+
+    -- THE READOUT ITSELF MUST NOT BE THE THING THAT BREAKS. Five throws suspend
+    -- a callback in this project's loop registry, and the sampler shares its
+    -- band with the weapon-wheel suppression.
+    local suspended = false
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'debug.driveby' and (s.suspended or s.errors > 0) then
+            suspended = true
+        end
+    end
+    ok(not suspended, 'and the frame sampler never threw across all of that')
+end
+
+-- --------------------------------------------- the passenger's one notice ---
+--
+-- #206 -- TELL A PASSENGER WHICH SLOT THEY CAN ACTUALLY FIRE.
+--
+-- The owner's words, and every one of the three conditions below is in them:
+--
+--   "if a player is in a passenger seat AND has a drive-by capable weapon, AND
+--    the drive-by-capable weapon is not already selected, we should give them a
+--    one-time notification (per session) that says 'Switch to slot [#] to fire
+--    your [weapon] during drive-by shootings.'"
+--
+-- WHAT THIS SUITE CAN AND CANNOT PROVE, because the honest answer matters more
+-- than a green run. It CANNOT prove that a pistol actually fires from a seat --
+-- that is game data inside the .rpf and no Lua process can read it; the two
+-- facts we have are a playtest (pistols yes, carbine no) and /brdriveby, which
+-- audits the claim in game. What it CAN prove is everything that decides WHO is
+-- told WHAT and HOW OFTEN, and a wrong answer in any of those is the failure the
+-- owner named: telling a player to switch to a weapon that then does nothing.
+--
+-- ONE SEQUENCE FROM START TO FINISH, not six independent scenarios, and that is
+-- forced by the thing under test. "Once per session" is a latch with no reset --
+-- deliberately, that IS the feature -- so there is no way to give each assertion
+-- a fresh session short of reloading the file, and a test-only reset would be a
+-- second mechanism that could disagree with the real one. Read top to bottom.
+--
+-- IT STARTS WITH THE CASES THAT MUST SAY NOTHING, and that ordering is the only
+-- way to prove the load-bearing half: a notice that was never due must not spend
+-- the session's one delivery. Run these after the positive case and every one of
+-- them passes for the wrong reason.
+
+describe('#206 -- who gets told, and what the sentence says')
+do
+    --- The mirror, as BR.Inv.local_() hands it over. Written by hand rather than
+    --- driven through INV_SET so each case states only what it is about.
+    --- @param active integer
+    local function mirror(active, ...)
+        local slots = {}
+        for i, id in ipairs({ ... }) do
+            slots[i] = { id = id, kind = BR.ItemKind.WEAPON }
+        end
+        return { slots = slots, ammo = {}, active = active }
+    end
+
+    -- ═══ CONDITION 2: A WEAPON A SEAT ACCEPTS, SOMEWHERE IN THE BAR ═══
+    local slot, label = BR.DriveBy.suggestion(mirror(1, 'carbinerifle', 'sniperrifle'))
+    ok(slot == nil,
+        'a bar with nothing a seat accepts suggests nothing',
+        tostring(slot))
+
+    slot, label = BR.DriveBy.suggestion(mirror(1, 'carbinerifle', 'pistol'))
+    ok(slot == 2 and label == 'Pistol',
+        'a pistol in slot 2, with a rifle selected, is slot 2 and "Pistol"',
+        tostring(slot) .. ' / ' .. tostring(label))
+
+    -- ═══ CONDITION 3: ALREADY HOLDING ONE IS SILENCE, NOT A FALLBACK ═══
+    --
+    -- The owner is explicit: "the drive-by-capable weapon is not already
+    -- selected". A player with the pistol out has nothing to be told, and
+    -- naming some OTHER slot that would also work is a notice about nothing.
+    ok(BR.DriveBy.suggestion(mirror(2, 'carbinerifle', 'pistol')) == nil,
+        'with the pistol already selected there is nothing to say')
+    ok(BR.DriveBy.suggestion(mirror(1, 'pistol', 'microsmg')) == nil,
+        'and that holds even when a SECOND acceptable weapon is in the bar')
+
+    -- THE LOWEST SLOT WINS, which is the bar's own left-to-right order. "The
+    -- best drive-by weapon" is a judgement nobody asked for.
+    slot, label = BR.DriveBy.suggestion(mirror(1, 'carbinerifle', 'microsmg', 'pistol'))
+    ok(slot == 2 and label == 'Micro SMG',
+        'the leftmost acceptable slot is the one named', tostring(slot))
+
+    -- THE MELEE SLOT IS 0, AND slots[0] IS nil. A player on fists must still be
+    -- told, and indexing the mirror with 0 must not be the thing that stops it.
+    slot = BR.DriveBy.suggestion(mirror(0, 'carbinerifle', 'pistol'))
+    ok(slot == 2, 'a player on fists is told about the pistol', tostring(slot))
+
+    -- THROWABLES ARE NOT OFFERED, and that is a decision rather than an
+    -- oversight: they genuinely do work from a seat, and "fire your Smoke
+    -- Grenade" is bad advice in a firefight.
+    ok(BR.Config.WeaponById['grenade'].driveby == true,
+        'a grenade is honestly marked as usable from a seat')
+    ok(BR.DriveBy.suggestion({
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON },
+                  { id = 'grenade',      kind = BR.ItemKind.THROWABLE } },
+        ammo = {}, active = 1,
+    }) == nil, '...and is still never the thing a passenger is told to switch to')
+
+    -- MELEE CARRIES NO CLAIM AT ALL, and the absence must read as "no".
+    ok(BR.Config.WeaponById['machete'].driveby == nil,
+        'melee deliberately has no driveby field')
+    ok(BR.DriveBy.suggestion(mirror(1, 'carbinerifle', 'machete')) == nil,
+        'and a missing field is never mistaken for a yes')
+
+    -- A MIRROR THAT IS NOT ONE. This runs on a tick against whatever the
+    -- inventory happens to be mid-teardown; answering is mandatory, throwing is
+    -- not an option.
+    ok(BR.DriveBy.suggestion(nil) == nil, 'no mirror at all answers rather than throwing')
+    ok(BR.DriveBy.suggestion({}) == nil, 'and neither does a mirror with no slots')
+
+    -- ═══ THE WHOLE CLAIM, AS ONE LINE ═══
+    --
+    -- WHY THE EXACT SET AND NOT A SPOT CHECK. Every `true` below is a promise
+    -- made to a player in a moving car, and the cost of a wrong one is the exact
+    -- failure the owner named: told to switch to a slot, switched, and nothing
+    -- fires. Spot-checking three of them leaves the other seven free to be
+    -- "tidied" by anybody who assumes a weapon band has one answer -- and the
+    -- SMG band provably does not.
+    --
+    -- SO CHANGING THIS LINE IS THE POINT. It is not a guard against edits; it is
+    -- a demand that an edit be deliberate, and that whoever makes it has a
+    -- reason better than symmetry. Nothing offline can check the values (the
+    -- truth is inside the game's .rpf) -- /brdriveby from a seat is the only
+    -- check there is, and the verdict `stowed-unexpected` is what it says when
+    -- one of these is wrong.
+    --
+    -- The evidence for each is written up in docs/vehicle-data.md: GROUP_PISTOL
+    -- is named as a whole group, three small SMGs are named individually, and
+    -- everything else -- including the full-size SMG, the Assault SMG and the
+    -- sawn-off -- is a MOTORCYCLE drive-by weapon that a car seat refuses.
+    local claimed = {}
+    for _, w in ipairs(BR.Config.Weapons) do
+        if w.driveby == true then claimed[#claimed + 1] = w.id end
+    end
+    table.sort(claimed)
+    ok(table.concat(claimed, ' ') ==
+        'combatpistol heavypistol machinepistol microsmg minismg pistol '
+        .. 'pistolmk2 revolver revolvermk2 snspistol',
+        'exactly seven pistols and three small SMGs are claimed usable from a seat',
+        table.concat(claimed, ' '))
+
+    -- AND EVERY THROWABLE, because DRIVEBY_THROW is on every standard seat --
+    -- honestly recorded even though a throwable is never the thing suggested.
+    local thrown = 0
+    for _, t in ipairs(BR.Config.Throwables) do
+        if t.driveby == true then thrown = thrown + 1 end
+    end
+    ok(thrown == #BR.Config.Throwables,
+        'and every throwable, which is a separate weapon group the seat reaches',
+        ('%d of %d'):format(thrown, #BR.Config.Throwables))
+
+    -- SIGNED HASHES, because permits() takes one straight off the engine in
+    -- client/debug.lua. Twenty of the forty weapons here have the top bit set.
+    local P = BR.Config.WeaponById['pistol'].hash
+    ok(BR.DriveBy.permits(P) == true, 'the pistol is permitted from its positive hash')
+    ok(BR.DriveBy.permits(P - 0x100000000) == true,
+        'and from the SIGNED hash the engine hands back')
+    ok(BR.DriveBy.permits(BR.Config.WeaponById['carbinerifle'].hash) == false,
+        'the carbine is not -- which is the one thing the playtest settled')
+    ok(BR.DriveBy.permits(nil) == false, 'and nothing at all is not a yes')
+    ok(BR.DriveBy.permits(0x1234) == false, 'nor is a hash this gamemode never issued')
+end
+
+describe('#206 -- the notice is delivered once per session, and never twice')
+do
+    --- Every drive-by hint this session has produced, newest last.
+    local function hints()
+        local out = {}
+        for _, e in ipairs(events) do
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST
+               and type(e.args[2]) == 'table' and e.args[2].key == 'driveby.hint' then
+                out[#out + 1] = e.args[2].text
+            end
+        end
+        return out
+    end
+
+    bootOn(true, true)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+
+    -- NOTHING HAS SPENT IT YET. Asserted rather than assumed: the latch lives
+    -- for the whole suite, so a future test that sits a player in a seat with a
+    -- pistol in slot 2 would silently move this block's ground out from under
+    -- it. This is the assertion that would fail first, and loudly.
+    ok(not BR.DriveBy.shown(),
+        'the session has not been told anything before this block runs')
+
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 },
+            { id = 'pistol',       kind = BR.ItemKind.WEAPON, clip = 12 },
+        },
+        ammo = {}, active = 1,
+    })
+
+    -- ═══ CONDITION 1: IN A PASSENGER SEAT ═══
+
+    -- ON FOOT, with exactly the inventory that would otherwise qualify.
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#hints() == 0, 'a player standing on the ground is told nothing')
+
+    -- IN A VEHICLE AND NOT IN A SEAT WE COULD NAME. The engine places nobody in
+    -- seats -1..8, which is not the same fact as "front passenger" and must not
+    -- be treated as one -- a wrong guess here is a notice fired at somebody
+    -- climbing in through a door.
+    inVehicle, vehicle, vehicleSeat = true, 77, nil
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#hints() == 0, 'a vehicle with no seat we can name is told nothing')
+
+    -- THE DRIVER. Seat -1 in every vehicle in the game, and the owner's
+    -- condition is "a passenger seat".
+    vehicleSeat = -1
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#hints() == 0, 'the driver is told nothing')
+
+    -- A PASSENGER WITH THE PISTOL ALREADY OUT. Condition 3, from the seat this
+    -- time rather than through the pure function.
+    vehicleSeat = 0
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 },
+            { id = 'pistol',       kind = BR.ItemKind.WEAPON, clip = 12 },
+        },
+        ammo = {}, active = 2,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#hints() == 0, 'a passenger already holding the pistol is told nothing')
+
+    -- A PASSENGER WITH NOTHING A SEAT ACCEPTS. Condition 2.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#hints() == 0, 'a passenger carrying only a rifle is told nothing')
+
+    -- A BUILD WHERE IsPedInAnyVehicle ANSWERS NUMBERS, and the honest "no" it
+    -- gives is `0`. `0` IS TRUTHY IN LUA. `if IsPedInAnyVehicle(...) then` would
+    -- read this as a passenger seat and fire the notice at somebody walking down
+    -- the street -- and it would spend the session doing it, so they would never
+    -- get it when it was true. This codebase has shipped that bug four times.
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 },
+            { id = 'pistol',       kind = BR.ItemKind.WEAPON, clip = 12 },
+        },
+        ammo = {}, active = 1,
+    })
+    inVehicle = 0
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#hints() == 0, 'inVehicle = 0 is NOT in a vehicle, however truthy Lua finds it')
+
+    -- ...AND NONE OF THAT SPENT THE SESSION'S ONE NOTICE.
+    ok(not BR.DriveBy.shown(),
+        'and none of those opportunities used up the one delivery')
+
+    -- ═══ ALL THREE CONDITIONS, AT LAST ═══
+    --
+    -- ON THE `1` SHAPE OF THE SAME NATIVE, which is the other half of that bug:
+    -- `v == true` is just as wrong on a build that answers numbers, and it fails
+    -- silently in the direction where nobody is ever told anything.
+    inVehicle = 1
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- THE OWNER'S SENTENCE, CHARACTER FOR CHARACTER, with the slot number and
+    -- the weapon's own label substituted and NOTHING appended. No key hint, no
+    -- second line -- the standing instruction on this project is that UI text is
+    -- never added unsolicited, and when wording is given it is used verbatim.
+    ok(#hints() == 1, 'a passenger with a pistol in slot 2 and a rifle out is told',
+        tostring(#hints()))
+    ok(hints()[1] == 'Switch to slot 2 to fire your Pistol during drive-by shootings.',
+        'and the sentence is the owner\'s, exactly, with nothing added',
+        tostring(hints()[1]))
+    ok(BR.DriveBy.shown(), 'the latch is spent on DELIVERY')
+
+    -- ═══ AND NEVER AGAIN, HOWEVER HARD THIS TRIES ═══
+    --
+    -- A new match, a new vehicle, a new seat, a respawn, a different weapon in a
+    -- different slot. There is no `noticed = false` anywhere in that file and
+    -- this is what says so.
+    for _, seat in ipairs({ 0, 1, 2, 3 }) do
+        vehicleSeat, vehicle = seat, 77 + seat
+        fire(BR.Net.INV_SET, {
+            slots = {
+                { id = 'sniperrifle', kind = BR.ItemKind.WEAPON, clip = 10 },
+                { id = 'microsmg',    kind = BR.ItemKind.WEAPON, clip = 16 },
+            },
+            ammo = {}, active = 1,
+        })
+        BR.Loop.step(BR.Loop.TICK)
+        BR.Loop.step(BR.Loop.TICK)
+    end
+    BR.State.me.state = BR.PlayerState.LOBBY
+    BR.Loop.step(BR.Loop.TICK)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#hints() == 1,
+        'four more seats, four more vehicles, a state round trip -- still one notice',
+        tostring(#hints()))
+
+    -- THE TWO ENTRIES MOST LIKELY TO BE "TIDIED" INTO AGREEMENT, pinned. They
+    -- are both SMGs and they are on opposite sides of the line: the Mini SMG
+    -- fires from a car seat and the full-size SMG is a motorcycle drive-by
+    -- weapon. Anybody who assumes the SMG family is one answer breaks one of
+    -- these, and the failure is otherwise invisible until a player is told to
+    -- switch to a gun that does nothing.
+    ok(BR.DriveBy.permits(BR.Config.WeaponById['minismg'].hash) == true,
+        'the mini SMG is claimed usable from a car seat')
+    ok(BR.DriveBy.permits(BR.Config.WeaponById['smg'].hash) == false,
+        'and the full-size SMG is not -- it is bike-only')
+    ok(BR.DriveBy.permits(BR.Config.WeaponById['sawnoff'].hash) == false,
+        'nor is the sawn-off, for the same reason')
+
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+end
+
+describe('#197 -- the ammo readout does not blame a guard the loop does not have')
+do
+    bootOn(true, true)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- A passenger holding the weapon the slot names. The ammo loop has no
+    -- vehicle guard -- it was replaced by the GetCurrentPedWeapon check years of
+    -- bugs ago -- so nothing is blocking the report, and saying "in a vehicle"
+    -- here sends the reader to a branch that is not in the file.
+    inVehicle = true
+    pedWeapon = BR.Config.WeaponById['carbinerifle'].hash
+    local s = BR.Inv.reportState()
+    ok(s.blockedBy ~= 'in a vehicle',
+        'a seat on its own is never given as the reason the report stopped',
+        tostring(s.blockedBy))
+    ok(s.inVehicle == true,
+        'but the seat is still reported as a FACT, which is what it is',
+        tostring(s.inVehicle))
+
+    -- And the reason that IS true still is.
+    pedWeapon = nil
+    ok(BR.Inv.reportState().blockedBy == 'the ENGINE says the ped holds a different weapon',
+        'a stowed weapon is named as the engine stowing it',
+        tostring(BR.Inv.reportState().blockedBy))
+
+    inVehicle = false
+end
+
+-- ======================================================================== --
+-- #200. THE RADIO WHEEL IN THE DRIVER'S SEAT
+-- ======================================================================== --
+--
+-- "while in the driver's seat, the GTA radio wheel cannot be displayed. I assume
+-- it's inadvertently disabled as part of our weapon wheel hide, but not sure."
+-- (owner, 2026-08-22.)
+--
+-- THE CONTROL NUMBERS ARE THE TEST. What opens the radio wheel is 85,
+-- INPUT_VEH_RADIO_WHEEL, whose default key is Q -- and so is 141
+-- (INPUT_MELEE_ATTACK_HEAVY) and so is 264 (INPUT_MELEE_ATTACK2), because GTA
+-- reuses that key across contexts that cannot both apply: you do not throw
+-- punches from a car seat. client/inventory.lua was disabling the on-foot half
+-- of that pair on every frame of a drive.
+--
+-- SO THE ASSERTIONS ARE PER-FRAME AND PER-CONTROL, and both halves are pinned
+-- in both contexts. A test that only proved "141 is free in a car" would pass
+-- with the whole melee block deleted, which is the #134-shaped regression this
+-- fix is one wrong line away from.
+
+describe('#200 -- the radio wheel in the driver\'s seat')
+do
+    local RADIO_WHEEL  = 85                  -- INPUT_VEH_RADIO_WHEEL   Q
+    local MELEE_ON_Q   = { 141, 264 }        -- MELEE_ATTACK_HEAVY / _2  Q
+    local WEAPON_WHEEL = 37                  -- INPUT_SELECT_WEAPON     TAB
+    local MELEE_SLOT   = BR.Config.Loot.meleeSlot or 0
+
+    --- Are all of these disabled on the frame just stepped?
+    local function allOff(list)
+        for _, c in ipairs(list) do
+            if disabled[c] ~= true then return false end
+        end
+        return true
+    end
+    local function anyOff(list)
+        for _, c in ipairs(list) do
+            if disabled[c] == true then return true end
+        end
+        return false
+    end
+
+    bootOn(true, true)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    inVehicle = false
+
+    -- An ordinary armed player: a carbine in slot 1, selected.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+
+    -- 1. ON FOOT, ARMED. Everything the two issues care about, in one frame.
+    frame(16)
+    ok(disabled[WEAPON_WHEEL] == true,
+       'on foot: GTA\'s weapon wheel is suppressed -- #134')
+    ok(allOff(MELEE_ON_Q),
+       'on foot: the melee keys are suppressed, so a rifle cannot throw a punch')
+    ok(disabled[RADIO_WHEEL] ~= true,
+       'and control 85 is not disabled -- this gamemode never touches it')
+
+    -- 2. IN THE DRIVER'S SEAT. The one line that changed, and the one that
+    --    must not have.
+    inVehicle = true
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q),
+       'in a vehicle: the melee controls on Q are left alone, so the radio '
+       .. 'wheel opens -- #200')
+    ok(disabled[WEAPON_WHEEL] == true,
+       'in a vehicle: the weapon wheel is STILL suppressed -- #134 does not '
+       .. 'regress to buy #200')
+    ok(disabled[RADIO_WHEEL] ~= true, 'and 85 is still nobody\'s business here')
+
+    -- 3. THE BOOL SHAPES. IsPedInAnyVehicle is declared BOOL and a FiveM native
+    --    declared BOOL does not have to hand Lua a boolean -- this project has
+    --    shipped that mistake four times. Both directions are pinned because
+    --    they fail in opposite ways and only one of them is visible.
+    inVehicle = 1
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q),
+       'a native answering 1 rather than true is still IN A VEHICLE '
+       .. '(1 == true is false in Lua)')
+
+    inVehicle = 0
+    frame(16)
+    ok(allOff(MELEE_ON_Q),
+       'and one answering 0 rather than false is still ON FOOT -- 0 is TRUTHY '
+       .. 'in Lua, so the one-line normalisation would have said otherwise')
+
+    inVehicle = nil
+    frame(16)
+    ok(allOff(MELEE_ON_Q),
+       'a native that declines to answer resolves to ON FOOT, which is the '
+       .. 'side where being wrong only costs the radio wheel')
+
+    -- 4. WHAT THE FIX DID NOT CHANGE. Fists and a real melee weapon still
+    --    swing, on foot, exactly as they did before -- the gate is the SEAT,
+    --    not the slot, and these two prove it did not quietly become the slot.
+    inVehicle = false
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = MELEE_SLOT })
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q), 'on foot with fists up, nothing is suppressed')
+
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'machete', kind = BR.ItemKind.WEAPON } },
+        ammo = {}, active = 1,
+    })
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q), 'and a machete is allowed to swing')
+
+    -- 5. AND THE SEAT IS NOT A LICENCE. An armed player who gets out is back
+    --    under the suppression on the very next frame -- the block is per-frame
+    --    by contract and a latch here would be the punch bug with extra steps.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    inVehicle = true
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q), 'armed and seated: free')
+    inVehicle = false
+    frame(16)
+    ok(allOff(MELEE_ON_Q), 'armed and back on the pavement: suppressed again, '
+       .. 'on the first frame')
+end
+
+-- ======================================================================== --
+-- #199. THE MAP KEY
+-- ======================================================================== --
+--
+-- "we need a new keybind - M by default. It should be a one-key press to open
+-- the full screen map, same function as our 'map' button in the pause menu."
+-- (owner, 2026-08-22.)
+--
+-- The binding row already existed and had no listener -- keybinds.lua said so in
+-- as many words ("STILL DEAD AND STILL BOUND"). What is proved here is the
+-- listener, the states it answers in, and that nothing hardcodes M.
+
+describe('#199 -- the map binding')
+do
+    bootOn(true, true)
+    -- THE KEYBOARD HAS TO BE OURS AND THE READING HAS TO HAVE SETTLED. bootOn
+    -- re-announces focus, which opens the resync window -- and a rising edge
+    -- inside it is ADOPTED rather than fired, deliberately (#90's strobe fix).
+    -- Pressing on the next frame would measure that, not the map.
+    fire('br:ui:focusChanged', 'none')
+    frames(3)
+
+    ok(keymap['M'] == 'brmap',
+       'the map is registered with the engine as a bare tap on M',
+       tostring(keymap['M']))
+
+    local row
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.command == 'brmap' then row = b end
+    end
+    ok(row ~= nil, 'and it is in the table the settings screen reads')
+    ok(row and row.hold == false, 'as a TAP -- one press, not a hold')
+    ok(BR.Keys.boundTo('brmap') == 0x4D,
+       'and the raw layer reads it on M (0x4D) by default',
+       tostring(BR.Keys.boundTo('brmap')))
+
+    --- How many times the map has been asked for since the marker.
+    local function toggles(from)
+        local n = 0
+        for i = from + 1, #events do
+            if events[i].name == 'br:ui:mapToggle' then n = n + 1 end
+        end
+        return n
+    end
+
+    --- One press of a key the raw layer is watching, both paths, like a client.
+    local function tapKey(vk, keyName)
+        keys[vk] = true
+        edge[vk] = true
+        engineKey(keyName, true)
+        frame(16)
+        keys[vk] = nil
+        engineKey(keyName, false)
+        frame(16)
+    end
+
+    -- ONE PRESS, ONE ASK. Two would mean the raw layer and the engine command
+    -- both fired, which is the double-tap `rawActive` exists to prevent.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    local mark = #events
+    tapKey(0x4D, 'M')
+    ok(toggles(mark) == 1, 'one press of M asks for the map exactly once',
+       toggles(mark))
+
+    -- EVERY STATE THE PAUSE MENU'S MAP BUTTON IS OFFERED IN, which is every
+    -- state but the lobby -- PauseMenu.tsx hides the card behind `!inLobby`.
+    for _, st in ipairs({
+        BR.PlayerState.WARMUP, BR.PlayerState.BUS, BR.PlayerState.FREEFALL,
+        BR.PlayerState.GLIDE, BR.PlayerState.ALIVE, BR.PlayerState.DBNO,
+        BR.PlayerState.OUT,
+    }) do
+        BR.State.me.state = st
+        local m = #events
+        tapKey(0x4D, 'M')
+        ok(toggles(m) == 1, ('the map opens in %s'):format(st), toggles(m))
+    end
+
+    -- ...AND NOT THE LOBBY, and the reason is #122 rather than taste: the map
+    -- route raises GTA's frontend, and the lobby is the one screen of ours that
+    -- keeps painting through a cleared focus stack.
+    BR.State.me.state = BR.PlayerState.LOBBY
+    local m = #events
+    tapKey(0x4D, 'M')
+    ok(toggles(m) == 0, 'and not in the lobby, where the button is hidden too')
+
+    -- NOTHING HARDCODES M. Move the row and the key moves with it -- both ways
+    -- round, because a rebind that leaves the OLD key working is the same bug
+    -- as one that never takes.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Keys.set('brmap', 0x4A)          -- J
+    ok(BR.Keys.boundTo('brmap') == 0x4A, 'a rebind moves the map key')
+
+    m = #events
+    tapKey(0x4D, 'M')
+    ok(toggles(m) == 0, 'after the rebind, M no longer opens the map')
+    m = #events
+    tapKey(0x4A, 'M')                   -- the engine half is still on M
+    ok(toggles(m) == 1, 'and the new key does')
+
+    -- AND THE ENGINE SUPPRESSION FOLLOWS IT. natives.lua takes control 244
+    -- (INPUT_INTERACTION_MENU, the only control whose default key is M) away
+    -- only while our map binding is actually sitting on M.
+    ok(BR.Keys.boundTo('brmap') ~= 0x4D,
+       'with the map rebound, nothing claims M from the engine')
+    BR.Keys.reset('brmap')
+    ok(BR.Keys.boundTo('brmap') == 0x4D, 'and reset puts it back on M')
+
+    -- THE REFACTOR THAT MADE boundTo EXIST MUST NOT HAVE MOVED ownsEscape.
+    -- It is the gate on DisableFrontendThisFrame, and a wrong answer there is
+    -- either GTA's pause menu coming back or the player having none at all.
+    ok(BR.Keys.ownsEscape() == true,
+       'the pause menu still owns Escape while the raw layer runs')
+    BR.Keys.set('brpausemenu', 0x71)    -- F2
+    ok(BR.Keys.ownsEscape() == false,
+       'and gives Escape back to the engine the moment it is rebound off it')
+    BR.Keys.reset('brpausemenu')
+    ok(BR.Keys.ownsEscape() == true, 'and takes it back on a reset')
+
+    -- ON A CLIENT WITH NO RAW LAYER, the ENGINE drives every row -- and boundTo
+    -- has to answer with the engine's key, the one that actually works, rather
+    -- than with whatever we wrote down. It is the same rule labelFor applies and
+    -- it exists for the same reason: #129's third round was a prompt naming a
+    -- key nothing was listening to.
+    bootOn(false, false)
+    ok(BR.Keys.boundTo('brmap') == 0x4D,
+       'with no raw layer the map is on the ENGINE\'s M, and boundTo says so',
+       tostring(BR.Keys.boundTo('brmap')))
+    ok(BR.Keys.set('brmap', 0x4A) == false,
+       'a rebind of an engine-driven row is refused rather than stored')
+    ok(BR.Keys.boundTo('brmap') == 0x4D, 'so the key does not move')
+    ok(BR.Keys.ownsEscape() == false,
+       'and Escape stays the engine\'s, which is that client\'s only pause menu')
+
+    -- AND THE TWO ANSWERS HAVE TO BE ABLE TO DIFFER, or the assertion above
+    -- proves nothing -- it would pass on a boundTo that ignored the engine
+    -- entirely, because a row nobody has moved sits on the same key either way.
+    -- This is the real shape of #129's third round: a rebind made on a client
+    -- that HAD the raw layer is still in the KVP when the profile lands on one
+    -- that does not, and the engine is listening on the original key regardless.
+    bootOn(true, true)
+    BR.Keys.set('brmap', 0x4A)          -- J, and it really is stored this time
+    ok(BR.Keys.boundTo('brmap') == 0x4A, 'with the raw layer, the rebind is the key')
+    bootOn(false, false)
+    ok(BR.Keys.boundTo('brmap') == 0x4D,
+       'without it, the SAME stored rebind is ignored and boundTo answers with '
+       .. 'the engine\'s M -- the key that actually works',
+       tostring(BR.Keys.boundTo('brmap')))
+
+    bootOn(true, true)
+    fire('br:ui:focusChanged', 'none')
+    frames(3)
+    BR.Keys.reset('brmap')
+end
+
+-- ======================================================================== --
+-- #199. THE KEY AND THE BUTTON OPEN THE SAME MAP
+-- ======================================================================== --
+--
+-- "same function as our 'map' button in the pause menu ... find what that
+-- button calls and call it."
+--
+-- WHY THIS LOADS br_ui. The routing decision -- bigmap, frontend or fullscreen,
+-- switchable at runtime with `brmapmode` -- lives over there, and each route
+-- leaves a different flag behind for the closer to find. "The key calls the same
+-- function" is only worth asserting against the real three; a stub of them would
+-- be a stub written to agree.
+--
+-- The thread openFrontendMap starts is RECORDED AND NEVER RUN, the same
+-- arrangement the focus-gate block uses for br_ui's own watchdog: Citizen.Wait
+-- is a no-op here, so running it would spin forever. Everything asserted below
+-- happens before that thread's first Wait.
+
+describe('#199 -- the key and the button open the same map')
+do
+    local nuiCb = {}
+    function RegisterNUICallback(name, fn) nuiCb[name] = fn end
+    local uiThreads = {}
+    Citizen.CreateThread = function(fn) uiThreads[#uiThreads + 1] = fn end
+    function ActivateFrontendMenu() end
+    function PauseMenuceptionGoDeeper() end
+    function PauseMenuceptionTheKick() end
+    function SetFrontendActive() end
+    function IsPauseMenuRestarting() return false end
+    local fullscreenArg = nil
+    function PauseToggleFullscreenMap(on) fullscreenArg = on end
+    -- The bigmap route goes through the REAL br_core/client/natives.lua, which
+    -- is loaded by the suite above -- br_core owns the radar, so br_core owns
+    -- the expansion. These three are the only pieces of it a Lua process cannot
+    -- supply: the engine call itself and the notice stack that lives in
+    -- client/state.lua, which this harness does not load.
+    function SetBigmapActive() end
+    BR.Notify = function() end
+    BR.NotifyClear = function() end
+
+    local coreName = GetCurrentResourceName
+    GetCurrentResourceName = function() return 'br_ui' end
+    loadAll({ 'br_ui/client/pause.lua' })
+    GetCurrentResourceName = coreName
+
+    --- How many times the frontend route has been raised since the marker.
+    local function raises(from)
+        local n = 0
+        for i = from + 1, #events do
+            local e = events[i]
+            if e.name == 'br:map:frontend' and e.args[1] == true then n = n + 1 end
+        end
+        return n
+    end
+
+    local function pressButton()
+        nuiCb[BR.NuiCb.PAUSE_ACTION]({ action = 'map' }, function() end)
+    end
+    local function pressKey() fire('br:ui:mapToggle') end
+
+    ok(BR.Pause.mapMode == 'frontend',
+       'the default route is still the engine frontend, driven to its map page',
+       tostring(BR.Pause.mapMode))
+    ok(BR.Pause.closeMap() == false,
+       'with no map up, the closer says there was nothing to close')
+
+    -- 1. THE BUTTON. What it did before this change, unchanged.
+    local m = #events
+    pressButton()
+    ok(raises(m) == 1, 'the pause menu button raises the frontend map')
+
+    -- 2. THE KEY, ON THE SAME STATE. It finds the map already up and takes it
+    --    down rather than opening a second one -- which is the observable proof
+    --    that both went through the same flag rather than through two copies of
+    --    the routing.
+    m = #events
+    pressKey()
+    ok(raises(m) == 0, 'the map key on an open map does not raise a second one')
+    ok(BR.Pause.closeMap() == false, 'because it closed the one that was up')
+
+    -- 3. THE KEY, FROM NOTHING. Identical effect to the button.
+    m = #events
+    pressKey()
+    ok(raises(m) == 1, 'and from a closed map the key opens exactly what the '
+       .. 'button opens')
+    pressKey()
+
+    -- 4. THE OTHER TWO ROUTES. `brmapmode` is switchable in game, so the key
+    --    has to work whichever one the owner is comparing -- and each leaves its
+    --    own flag, which is precisely why there is one closer and not three.
+    BR.Pause.mapMode = 'bigmap'
+    m = #events
+    pressKey()
+    ok(BR.Pause.bigmap == true, 'in bigmap mode the key expands the minimap')
+    pressKey()
+    ok(BR.Pause.bigmap == false, 'and the same key puts it away')
+
+    -- ...AND THE BUTTON GOES THROUGH THE SAME ROUTING, which is the assertion a
+    -- second implementation written for the key would fail. Pressing the card in
+    -- bigmap mode has to expand the minimap and raise no frontend at all.
+    m = #events
+    pressButton()
+    ok(BR.Pause.bigmap == true and raises(m) == 0,
+       'the button honours brmapmode too -- one opener, not two',
+       ('bigmap %s, frontend raises %d'):format(tostring(BR.Pause.bigmap), raises(m)))
+    pressKey()
+    ok(BR.Pause.bigmap == false, 'and the key closes what the button opened')
+
+    BR.Pause.mapMode = 'fullscreen'
+    fullscreenArg = nil
+    pressKey()
+    ok(BR.Pause.fullscreenMap == true and fullscreenArg == true,
+       'in fullscreen mode the key toggles the map on')
+    pressKey()
+    ok(BR.Pause.fullscreenMap == false and fullscreenArg == false,
+       'and off again')
+
+    -- 5. THE PAUSE KEY STILL CLOSES A MAP FIRST, which is the behaviour the
+    --    extraction of closeMap() could most easily have dropped: it was three
+    --    inline branches in that handler and is now one call.
+    BR.Pause.mapMode = 'bigmap'
+    pressKey()
+    ok(BR.Pause.bigmap == true, 'with a big map up...')
+    fakeTime = fakeTime + 1000          -- past the pause key's own 220ms guard
+    fire('br:ui:pauseToggle')
+    ok(BR.Pause.bigmap == false,
+       '...Escape takes the map down rather than opening the pause menu')
+
+    BR.Pause.mapMode = 'frontend'
+end
+
+-- ======================================================================== --
+-- #199. AND GTA'S OWN M IS TAKEN AWAY WHILE OURS IS ON IT
+-- ======================================================================== --
+--
+-- The issue calls M "GTA's own expanded-map key". It is not: per the FiveM
+-- controls reference the only control whose default key is M is 244,
+-- INPUT_INTERACTION_MENU -- GTA Online's interaction menu, which a FiveM server
+-- does not run. So the suppression is insurance rather than a known fix, and the
+-- thing worth pinning is not that 244 is disabled but that it FOLLOWS THE
+-- BINDING: hardcoding it would be the same mistake as hardcoding the key.
+--
+-- This drives client/natives.lua's per-frame rules directly. It is not on
+-- BR.Loop -- gamerules.lua calls it, and that file is not in this harness -- so
+-- a frame() would not reach it.
+
+describe('#199 -- GTA\'s own M, while ours is on it')
+do
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
+    BR.State.roster = {}
+    BR.State.match = { state = BR.MatchState.PLAYING }
+    local INTERACTION_MENU = 244
+
+    local function rulesFrame()
+        disabled = {}
+        BR.Native.applyGameRules()
+    end
+
+    BR.Keys.reset('brmap')
+    rulesFrame()
+    ok(disabled[INTERACTION_MENU] == true,
+       'with our map on M, control 244 is taken from the engine so one press '
+       .. 'cannot drive two things')
+
+    BR.Keys.set('brmap', 0x4A)          -- J
+    rulesFrame()
+    ok(disabled[INTERACTION_MENU] ~= true,
+       'move the map off M and the engine gets 244 back -- the suppression '
+       .. 'follows the binding, it is not a constant')
+
+    BR.Keys.set('brmap', nil)           -- deliberately unbound
+    rulesFrame()
+    ok(disabled[INTERACTION_MENU] ~= true,
+       'and an unbound map claims nothing at all')
+
+    BR.Keys.reset('brmap')
+    rulesFrame()
+    ok(disabled[INTERACTION_MENU] == true, 'reset puts both back')
+
+    -- AND IT IS NOT COLLATERAL. 20 and 48 are the two controls that DO expand
+    -- the radar (INPUT_MULTIPLAYER_INFO / INPUT_HUD_SPECIAL, both on Z) and
+    -- neither is ours to take.
+    ok(disabled[20] ~= true and disabled[48] ~= true,
+       'the controls that actually expand the radar are left alone')
+end
+
+
+-- ======================================================================== --
+-- #207. THE MAP KEY KEEPS OPENING THE MAP, HOWEVER THE LAST ONE CLOSED
+-- ======================================================================== --
+--
+-- THE REPORT: "after opening the map a few times using M, I can no longer open
+-- the map. No errors either. Is it maybe because I didn't use M to dismiss it
+-- but instead right clicked? That's the game's default 'dismiss' button which
+-- should still be an option. Same with ESC." (owner, 2026-08-22.)
+--
+-- THE BUG WAS IN CODE NO TEST COULD REACH, AND THAT IS THE REAL FINDING. The
+-- block above this one says so in as many words -- "the thread openFrontendMap
+-- starts is RECORDED AND NEVER RUN ... Citizen.Wait is a no-op here, so running
+-- it would spin forever. Everything asserted below happens before that thread's
+-- first Wait." Everything that broke happened AFTER it. The suite proved the key
+-- and the button went through one flag and stopped exactly where the exit
+-- watcher began.
+--
+-- SO THE FIX SHIPPED WITH A SHAPE CHANGE: the watcher is BR.Pause.mapStep(st),
+-- one frame per call, and the thread is `while mapStep(st) do Wait(0) end` and
+-- nothing else. There is no Wait inside a step, so this block drives the
+-- watcher frame by frame with the game answering whatever it likes -- a menu
+-- that never comes up, a menu that vanishes on its own, a second raise landing
+-- on top of the first. None of those was reachable before and the middle one is
+-- the report.
+--
+-- WHAT THE HARNESS MODELS THAT THE OLD ONE DID NOT: IsPauseMenuActive is a
+-- variable here rather than `return false`. The map's state is now DERIVED from
+-- it, so a test that could not move it could not test the derivation.
+
+describe('#207 -- the map opens again however the last one was dismissed')
+do
+    --- HOW THIS BUILD SHAPES A BOOL. Flipped to numbers for the last block:
+    --- a FiveM BOOL native may answer 1 rather than true, `1 == true` is false
+    --- and `0` is TRUTHY -- which this project has shipped four times.
+    local shape = { yes = true, no = false }
+    local function B(v) return v and shape.yes or shape.no end
+
+    local menuActive, restarting, escDown = false, false, {}
+    local ctrl = {}
+    local deactivations = 0
+
+    IsPauseMenuActive     = function() return B(menuActive) end
+    IsPauseMenuRestarting = function() return B(restarting) end
+    -- The game's own answer to SET_FRONTEND_ACTIVE(false) is that the menu
+    -- goes away. Modelling that rather than counting calls is what makes the
+    -- settle phase mean anything: an assertion about a counter would pass
+    -- against a settle that never took the menu down.
+    SetFrontendActive = function(on)
+        deactivations = deactivations + 1
+        if on == false then menuActive = false end
+    end
+    IsRawKeyDown = function(vk) return B(escDown[vk] == true) end
+    IsControlJustPressed         = function(_, c) return B(ctrl[c] == true) end
+    IsDisabledControlJustPressed = function(_, c) return B(ctrl[c] == true) end
+
+    --- The raise currently being stepped. openFrontendMap publishes it.
+    local live = nil
+
+    local function raisesSince(from)
+        local n = 0
+        for i = from + 1, #events do
+            local e = events[i]
+            if e.name == 'br:map:frontend' and e.args[1] == true then n = n + 1 end
+        end
+        return n
+    end
+
+    local function lastFrontendEvent()
+        for i = #events, 1, -1 do
+            if events[i].name == 'br:map:frontend' then return events[i].args[1] end
+        end
+    end
+
+    --- What the PAGE was last told about who owns the screen.
+    ---
+    --- WORTH ITS OWN ASSERTIONS BECAUSE THE FAILURE IS CATASTROPHIC. App.tsx
+    --- puts the entire NUI document at `opacity: 0, pointerEvents: none` while
+    --- this is true -- health, inventory, kill feed, everything. A map exit
+    --- that forgets to lower it leaves the player looking at Los Santos with no
+    --- interface at all and no key that brings it back, which is a great deal
+    --- worse than the map not opening.
+    local function pageHidden()
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.FRONTEND then
+                return e.args[2] and e.args[2].up
+            end
+        end
+    end
+
+    local function pressKey()
+        fakeTime = fakeTime + 300          -- past the pause key's own 220ms guard
+        fire('br:ui:mapToggle')
+        if BR.Pause.map then live = BR.Pause.map end
+    end
+
+    --- Step the live raise, one frame per iteration, stopping when it is done.
+    --- @return boolean  whether the watcher still has work
+    local function step(n)
+        local more = true
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 16
+            more = BR.Pause.mapStep(live)
+            if not more then break end
+        end
+        return more
+    end
+
+    --- Back to nothing at all, by the honest road rather than by reaching in.
+    ---
+    --- Every flag this suite drives is a file-local in pause.lua, so a block
+    --- cannot start by assigning them -- it has to leave the previous map the
+    --- way a player would. Which is worth having: a reset that could not be
+    --- expressed as "tell the game the menu is gone and let the code reconcile"
+    --- would be evidence the reconciliation does not work.
+    local function reset()
+        menuActive, restarting, escDown, ctrl = false, false, {}, {}
+        if live then
+            fakeTime = fakeTime + 400
+            for _ = 1, 400 do
+                if BR.Pause.mapStep(live) == false then break end
+                fakeTime = fakeTime + 16
+            end
+        end
+        while BR.Pause.closeMap() do end
+        live = nil
+        deactivations = 0
+    end
+
+    --- A map that is genuinely up: key pressed, menu on screen, page committed.
+    local function openMap()
+        reset()
+        pressKey()
+        step()                 -- raising, and the game has not caught up yet
+        menuActive = true
+        step()                 -- raising -> paging, and the game is believed now
+        step()                 -- paging  -> watching
+        return live
+    end
+
+    BR.Pause.mapMode = 'frontend'
+
+    -- ------------------------------------------------------------------- --
+    -- 1. THE REPORT, REPRODUCED. The frontend dismisses ITSELF.
+    -- ------------------------------------------------------------------- --
+    --
+    -- Right-click is the frontend's own BACK and Escape is its own cancel; both
+    -- are handled inside the scaleform, and the watcher only ever INFERRED them
+    -- from a list of control ids its own comment calls "broad rather than
+    -- precise" because "right mouse cannot be read raw". This is that list
+    -- missing: nothing our end sees, and the menu gone.
+    openMap()
+    ok(live.phase == 'watching',
+       'the map comes up and is watched', tostring(live.phase))
+
+    ok(pageHidden() == true, 'and our page is standing down for it')
+
+    menuActive = false                 -- and not one control we watch fired
+    ok(step(20) == false,
+       'the watcher notices the GAME took the map away, with no input at all')
+    ok(lastFrontendEvent() == false,
+       'br_core gets its frontend suppression back')
+    ok(pageHidden() == false,
+       'and the page is told it may draw again -- a HUD left hidden is worse '
+       .. 'than the map not opening')
+
+    local m = #events
+    pressKey()
+    ok(raisesSince(m) == 1,
+       'AND THE NEXT M PRESS OPENS THE MAP -- which is the whole report',
+       ('raises %d'):format(raisesSince(m)))
+    step(3)
+
+    -- ------------------------------------------------------------------- --
+    -- 2. THE SAME THING WITH NO WATCHER RUNNING AT ALL.
+    -- ------------------------------------------------------------------- --
+    --
+    -- The orphaned-watcher case, which is what a real client had: the loop
+    -- `while frontendMap and not wantsOut()` could not end, because the only
+    -- two things that ended it were our own flag and an input list that had
+    -- already missed. So the flag sat raised over a menu that was not there and
+    -- closeMap answered every press with "yes, there was a map" -- lowering a
+    -- flag nobody was watching and returning, with nothing on screen to show
+    -- for it. No error, because nothing errored.
+    openMap()
+    menuActive = false
+    fakeTime = fakeTime + 300          -- and the watcher never gets a frame
+    ok(BR.Pause.closeMap() == false,
+       'a flag left up over a menu that has gone does not consume the press')
+    ok(BR.Pause.mapStep(live) == false,
+       'and the orphaned watcher is retired rather than left spinning')
+
+    m = #events
+    pressKey()
+    ok(raisesSince(m) == 1, 'so M opens, exactly as the player expected')
+    step(3)
+
+    -- ...AND SO DOES THE BUTTON, which is a SECOND door onto the same stale
+    -- flag. The Map card calls openMap directly and does NOT go through
+    -- closeMap first, so a reconciliation that lived only in closeMap would
+    -- leave the button dead in exactly the state that killed the key -- the
+    -- shape #138 is filed under ("PUBLIC BECAUSE THERE WAS A FOURTH DOOR").
+    reset()
+    pressKey()
+    step()
+    menuActive = true
+    step(2)                            -- a map genuinely up, and then...
+    menuActive = false                 -- ...gone, with nothing watching
+    fakeTime = fakeTime + 300
+    m = #events
+    -- BR.Pause.openMap() is where the Map card's PAUSE_ACTION branch ends up;
+    -- the block above already pins that the card and the key reach this one
+    -- function, so driving it here is driving the button's far end.
+    BR.Pause.openMap()
+    ok(raisesSince(m) == 1,
+       'the pause menu Map BUTTON opens over a stale flag too',
+       ('raises %d'):format(raisesSince(m)))
+    live = BR.Pause.map
+    step(3)
+
+    -- ------------------------------------------------------------------- --
+    -- 3. RIGHT-CLICK AND ESCAPE STILL DISMISS, WHICH THE OWNER ASKED FOR BY
+    --    NAME. "That's the game's default dismiss button which should still be
+    --    an option. Same with ESC."
+    -- ------------------------------------------------------------------- --
+    for _, c in ipairs({ 202, 200, 199, 177, 194, 25 }) do
+        openMap()
+        ctrl = { [c] = true }
+        deactivations = 0
+        step()
+        ok(live.phase == 'settling',
+           ('exit control %d still takes the map down'):format(c),
+           tostring(live.phase))
+        -- ON THE SAME FRAME, not on the next one. The frontend has to come
+        -- down where the player asked for it to; leaving it for the settle's
+        -- re-assert loop to notice would show them one more frame of a menu
+        -- they have already dismissed.
+        ok(deactivations >= 1 and menuActive == false,
+           ('control %d deactivates the frontend on the frame it is pressed')
+               :format(c),
+           ('%d calls, menu %s'):format(deactivations, tostring(menuActive)))
+
+        -- AND THE RE-ASSERT IS REAL. "The same press that got us here is still
+        -- being handled by the scaleform, which can bring the menu straight
+        -- back on the next frame" -- so a menu that comes back during the
+        -- settle has to be put down again rather than left up with the watcher
+        -- already gone.
+        ctrl = {}
+        menuActive = true              -- the scaleform bounces it back
+        step(3)
+        ok(menuActive == false,
+           ('and a menu that flickers back during the settle is put down again '
+            .. '(after control %d)'):format(c))
+        step(60)
+    end
+
+    openMap()
+    escDown = { [0x1B] = true }        -- raw Escape, which the frontend cannot eat
+    step()
+    ok(live.phase == 'settling', 'raw Escape still dismisses the map')
+    escDown = {}
+    step(60)
+    ok(BR.Pause.closeMap() == false, 'and leaves nothing behind')
+
+    -- AND M ITSELF, WHICH CLOSES BY LOWERING THE FLAG RATHER THAN BY BEING
+    -- SEEN. The key never reaches the watcher's input list at all -- br_core
+    -- routes it to closeMap, which drops the flag and lets the watcher find it
+    -- dropped. So "the watcher acts on our flag coming down" is a separate
+    -- path from "the watcher saw a button", and it is the one that has to end
+    -- in a deactivated frontend: nothing else in the file will take GTA's menu
+    -- off the screen.
+    openMap()
+    deactivations = 0
+    pressKey()                         -- M on an open map is a close
+    ok(BR.Pause.mapStep(live) == true and live.phase == 'settling',
+       'the map key lowering the flag sends the watcher to settle',
+       tostring(live.phase))
+    ok(deactivations >= 1 and menuActive == false,
+       'and GTA\'s menu is actually taken off the screen, not just forgotten',
+       ('%d calls, menu %s'):format(deactivations, tostring(menuActive)))
+    step(60)
+    ok(pageHidden() == false, 'with the page handed back')
+
+    -- ------------------------------------------------------------------- --
+    -- 4. A PRESS DURING THE SETTLE IS NOT EATEN.
+    -- ------------------------------------------------------------------- --
+    --
+    -- The half-second re-assert exists because "the same press that got us here
+    -- is still being handled by the scaleform". It used to hold the map's flag
+    -- up for that whole half second, so dismissing the map and pressing M
+    -- straight afterwards -- the most ordinary thing a player does -- did
+    -- nothing at all. What the frontend still owes us is a deactivation; that
+    -- is not a reason to tell the rest of the file there is a map up.
+    openMap()
+    ctrl = { [202] = true }
+    step()
+    ctrl = {}
+    ok(live.phase == 'settling', 'mid-settle...')
+    ok(BR.Pause.closeMap() == false,
+       '...a press is NOT consumed by a map that has already gone')
+
+    -- ------------------------------------------------------------------- --
+    -- 5. AND THE OLD RAISE DOES NOT LAND ON THE NEW ONE.
+    -- ------------------------------------------------------------------- --
+    --
+    -- The other half of the cascade. The old teardown used to write
+    -- `frontendMap = false`, `br:map:frontend false` and announceFrontend(false)
+    -- UNCONDITIONALLY, half a second late -- so it handed br_core's frontend
+    -- suppression back underneath a menu that was mid-raise, br_core closed the
+    -- map that had just been asked for, and the new watcher then sat out its
+    -- full five-second raise deadline. Press again inside that and it happens
+    -- again, which is how "a few times" becomes "no longer".
+    local stale = live
+    m = #events
+    deactivations = 0
+    pressKey()
+    ok(raisesSince(m) == 1, 'it opens a new one, in quick succession')
+    ok(live ~= stale, 'and that really is a NEW raise, not the old one resumed')
+
+    ok(BR.Pause.mapStep(stale) == false,
+       'the superseded raise retires on its next frame')
+    ok(deactivations == 0,
+       'writing nothing on its way out -- no SetFrontendActive aimed at the '
+       .. 'menu the new raise is bringing up', tostring(deactivations))
+    ok(lastFrontendEvent() == true,
+       'so br_core is still stood down for the raise that is actually live')
+
+    menuActive = true
+    step(3)
+    ok(live.phase == 'watching', 'and the new map comes up unharmed',
+       tostring(live.phase))
+    menuActive = false
+    step(20)
+
+    -- ------------------------------------------------------------------- --
+    -- 6. THE RESTART GRACE IS NOT PADDING.
+    -- ------------------------------------------------------------------- --
+    --
+    -- PauseMenuceptionTheKick RESTARTS the scaleform to commit the map page, and
+    -- a restarting menu reads as "not active". Without the grace, deriving the
+    -- flag from the game would close the map on the frame it finished opening --
+    -- a fix that produces a worse bug than the one it fixes.
+    -- LONGER THAN THE GRACE, deliberately. A restart window shorter than
+    -- MAP_GONE_MS would pass with the restart check deleted, which is a test
+    -- that proves the grace and calls it the restart check.
+    openMap()
+    menuActive, restarting = false, true
+    step(30)                           -- ~480ms of restarting, vs a 150ms grace
+    ok(live.phase == 'watching', 'a RESTARTING menu is not a dismissed one',
+       tostring(live.phase))
+
+    restarting = false
+    step(2)                            -- 32ms of "gone", inside the 150ms grace
+    ok(live.phase == 'watching', 'and a frame or two of "gone" is still inside the grace')
+
+    menuActive = true
+    step(2)
+    ok(live.phase == 'watching', 'the menu coming back clears the doubt')
+
+    -- A MAP READ FOR A MINUTE IS STILL A MAP. The grace has to be measured
+    -- from when the game was LAST seen holding the frontend, refreshed every
+    -- frame -- not from one sighting at the start. Anchored at the start, a
+    -- map open longer than the grace would look dismissed while the player was
+    -- still reading it, and the watcher would walk away from a frontend that
+    -- is very much on screen.
+    menuActive = true
+    step(400)                          -- ~6.4 seconds of a map being read
+    ok(live.phase == 'watching',
+       'a map held open far longer than the grace is not read as dismissed',
+       tostring(live.phase))
+    ctrl = { [202] = true }
+    step()
+    ok(live.phase == 'settling',
+       'and it still answers an exit control when the player is done')
+    ctrl = {}
+    step(60)
+
+    openMap()
+    menuActive = false
+    ok(step(20) == false, 'and a real absence still ends it')
+
+    -- ------------------------------------------------------------------- --
+    -- 7. A FRONTEND THAT NEVER ARRIVES GIVES UP AND LEAVES NOTHING BEHIND.
+    -- ------------------------------------------------------------------- --
+    reset()
+    pressKey()
+    fakeTime = fakeTime + 6000
+    ok(step() == false, 'a menu that never comes up is given up on, not waited on')
+    ok(lastFrontendEvent() == false and BR.Pause.closeMap() == false,
+       'and the giving up puts every flag back, so the next press still opens')
+
+    -- ------------------------------------------------------------------- --
+    -- 8. FOR A WHOLE SESSION, WHICHEVER WAY THE LAST ONE WENT.
+    -- ------------------------------------------------------------------- --
+    --
+    -- "M reopens it every time, however the last one was dismissed, for the
+    -- whole session." The bug was cumulative -- it took "a few times" -- so the
+    -- assertion has to be too. Four dismissals, three rounds, and every single
+    -- press in between has to raise a map.
+    local ROUTES = {
+        { name = 'an exit control',   close = function() ctrl = { [202] = true } end },
+        { name = 'raw Escape',        close = function() escDown = { [0x1B] = true } end },
+        { name = 'the map key again', close = function() pressKey() end },
+        { name = 'the frontend, on its own',
+          close = function() menuActive = false end },
+        { name = 'the pause key',
+          close = function()
+              fakeTime = fakeTime + 300
+              fire('br:ui:pauseToggle')
+          end },
+    }
+
+    local everyPressOpened, everyExitTidied = true, true
+    local detail, tidyDetail = nil, nil
+    for round = 1, 3 do
+        for _, r in ipairs(ROUTES) do
+            local before = #events
+            openMap()
+            if raisesSince(before) ~= 1 then
+                everyPressOpened = false
+                detail = detail or ('round %d, after %s: %d raises')
+                    :format(round, r.name, raisesSince(before))
+            end
+            r.close()
+            step(60)
+            escDown, ctrl = {}, {}
+            -- EVERY EXIT PUTS THE SCREEN BACK. Five dismissals, three rounds,
+            -- and not one of them may leave the page hidden, br_core stood
+            -- down, or GTA's menu on screen.
+            if pageHidden() ~= false or lastFrontendEvent() ~= false
+               or menuActive ~= false then
+                everyExitTidied = false
+                tidyDetail = tidyDetail or
+                    ('round %d, %s: page hidden %s, br_core %s, menu %s'):format(
+                        round, r.name, tostring(pageHidden()),
+                        tostring(lastFrontendEvent()), tostring(menuActive))
+            end
+        end
+    end
+    ok(everyPressOpened,
+       'M opens the map on every press of a three-round session, through five '
+       .. 'different dismissals', detail)
+    ok(everyExitTidied,
+       'and every one of those exits hands back the page, the suppression and '
+       .. 'the screen', tidyDetail)
+
+    -- ------------------------------------------------------------------- --
+    -- 9. AND ALL OF IT AGAIN ON A BUILD WHOSE BOOL NATIVES ANSWER NUMBERS.
+    -- ------------------------------------------------------------------- --
+    --
+    -- In Lua `0` is truthy and `1 == true` is false, and a FiveM BOOL native may
+    -- answer either shape. Unnormalised, `not IsPauseMenuActive()` on a build
+    -- that says `0` is FALSE -- so the raise would decide the menu was up before
+    -- it was, and `if IsControlJustPressed(...)` would read every id in both
+    -- lists as pressed on every frame and shut the map on the frame it opened.
+    -- This project has shipped that mistake four times; this is the block that
+    -- makes the fifth fail here instead of in a playtest.
+    shape = { yes = 1, no = 0 }
+
+    openMap()
+    ok(live.phase == 'watching',
+       'the map still comes up when the natives answer 1 rather than true',
+       tostring(live.phase))
+
+    ctrl = {}
+    step(5)
+    ok(live.phase == 'watching',
+       'and a 0 from IsControlJustPressed is NOT read as a press',
+       tostring(live.phase))
+
+    -- THE ONE THAT ACTUALLY BITES, and it is not the one it looks like.
+    -- Unnormalised, `0` is truthy -- so the USING guard fires first, on every
+    -- frame, and refreshes its own busy window forever. wantsOut then never
+    -- reaches the EXITS list at all and the map becomes UNLEAVABLE by any
+    -- control: the map that will not close rather than the map that closes
+    -- itself. Only pressing a real exit on a numeric build shows it.
+    ctrl = { [202] = true }
+    step()
+    ok(live.phase == 'settling',
+       'and a real exit control still closes the map on a numeric build',
+       tostring(live.phase))
+    ctrl = {}
+    step(60)
+
+    openMap()
+    menuActive = false
+    ok(step(20) == false, 'a 0 from IsPauseMenuActive is read as "not active"')
+
+    m = #events
+    pressKey()
+    ok(raisesSince(m) == 1, 'and M opens the map on a numeric build too')
+    step(3)
+    menuActive = false
+    step(20)
+
+    shape = { yes = true, no = false }
+end
+
+-- ======================================================================== --
+-- THE ROCKSTAR EDITOR. A FRONTEND THAT WILL NOT CLOSE IS NOT A LEAKED ESCAPE
+-- ======================================================================== --
+--
+-- "Also, when opening rockstar editor our pause menu opens and cannot be
+-- dismissed." (owner, 2026-08-29.)
+--
+-- WHAT THE FIXTURE HAS THAT EVERY EARLIER ONE LACKED: a frontend that does not
+-- go down when it is asked to. Every stub of SET_FRONTEND_ACTIVE in this file
+-- before now -- #207's included -- models a frontend that obeys, and against an
+-- obedient frontend the code under test is CORRECT: it asks once, the menu
+-- goes, our menu comes up, done. The entire bug lives in the case where the ask
+-- does nothing, which is what a frontend the engine is holding for its own
+-- reasons (the Rockstar Editor being the concrete one) looks like from Lua.
+--
+-- So `frontendYields` is the dimension, and it is the only one that matters. A
+-- suite that could not set it to false could only ever agree with the bug.
+--
+-- WHAT IS MODELLED AND WHAT IS NOT, STATED. That the Editor makes
+-- IsPauseMenuActive read true is NOT verified here or anywhere -- no source
+-- found says what the Editor does to pause state, and this block does not
+-- pretend to know. It asserts the conditional the owner's report establishes:
+-- IF the engine says a frontend is up that we did not raise and cannot close,
+-- our pause menu must not open and must not re-open itself. The report is the
+-- evidence that the antecedent happens; this is the consequent.
+
+describe('a frontend that outlives the ask is left alone')
+do
+    --- HOW THIS BUILD SHAPES A BOOL, the same dimension #207 runs above.
+    local shape = { yes = true, no = false }
+    local function B(v) return v and shape.yes or shape.no end
+
+    --- What the ENGINE says, and whether it can be argued with.
+    local frontendUp, frontendYields = false, true
+    local deactivates, frontendDisables = 0, 0
+
+    IsPauseMenuActive = function() return B(frontendUp) end
+    -- THE ASK IS MODELLED BY ITS EFFECT, NOT COUNTED. A counter alone would
+    -- pass against a retake that never took anything down, which is precisely
+    -- the state this block exists to tell apart -- so the yielding frontend
+    -- really goes away and the stubborn one really does not.
+    SetFrontendActive = function(on)
+        deactivates = deactivates + 1
+        if on == false and frontendYields then frontendUp = false end
+    end
+    DisableFrontendThisFrame = function() frontendDisables = frontendDisables + 1 end
+
+    --- One frame of the per-frame rules, with the clock actually moving.
+    ---
+    --- #199's rulesFrame above does not advance `fakeTime`, which would make the
+    --- whole of the give-up window unreachable: it is measured in milliseconds.
+    local function rulesFrame(ms)
+        fakeTime = fakeTime + (ms or 16)
+        BR.Native.applyGameRules()
+    end
+    local function rulesFrames(n, ms)
+        for _ = 1, (n or 1) do rulesFrame(ms) end
+    end
+
+    --- How many times our pause menu has been RAISED, by the honest observable.
+    ---
+    --- `open` is a file-local in br_ui/client/pause.lua and there is no reader
+    --- for it, which is right: what the rest of the game sees is the focus
+    --- envelope. BR.Pause.open() emits exactly one push per raise -- its own
+    --- `if open then return end` sees to that -- so counting them counts menus.
+    local function opens(from)
+        local n = 0
+        for i = from + 1, #events do
+            if events[i].name == 'br:ui:pushFocus'
+               and events[i].args[1] == 'pause' then n = n + 1 end
+        end
+        return n
+    end
+
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
+    BR.State.roster = {}
+    BR.State.match = { state = BR.MatchState.PLAYING }
+    BR.Native.frontendMap = false
+    BR.Keys.reset('brpausemenu')
+
+    --- Back to nothing at all, and by the honest road: tell the game the
+    --- frontend has gone and let the code reconcile, exactly as #207's reset
+    --- does. A block that could only start by reaching into the retake's own
+    --- state would be evidence the reconciliation does not work.
+    local function reset()
+        frontendUp, frontendYields = false, true
+        BR.Native.frontendMap = false
+        rulesFrames(4)
+        -- AND ANY MAP br_ui STILL BELIEVES IN. `br:ui:pauseToggle` closes a map
+        -- before it toggles a menu and RETURNS -- one press, one thing -- so a
+        -- map flag left standing by an earlier block would eat the first retake
+        -- of every case here and read as "the retake did nothing".
+        while BR.Pause.closeMap() do end
+        BR.Pause.close()
+        -- AFTER the close, not before it. BR.Pause.close() stamps the toggle
+        -- guard on its way out -- one press must not count twice -- so a reset
+        -- that closed the menu and then handed straight over would leave the
+        -- next 220ms of frames unable to open anything, and every case would
+        -- read as "the retake did nothing".
+        fakeTime = fakeTime + 400
+        deactivates, frontendDisables = 0, 0
+    end
+
+    -- THE PRECONDITION, ASSERTED RATHER THAN ASSUMED. Every case below is
+    -- inside `ownsEscape() and not frontendMap`, so a harness in which that
+    -- gate is shut would run every assertion against a block that never ran --
+    -- and they would all pass.
+    ok(BR.Keys.ownsEscape() == true,
+       'the suppression is live in this harness, so the cases below reach it')
+
+    -- ------------------------------------------------------------------- --
+    -- 1. THE LEAK THIS BLOCK HAS ALWAYS BEEN FOR. Escape got through, GTA's
+    --    menu is up, and the player asked for OURS. Unchanged, and it is the
+    --    regression the fix could most easily have caused.
+    -- ------------------------------------------------------------------- --
+    reset()
+    local m = #events
+    frontendUp = true
+    rulesFrame()
+    ok(deactivates >= 1, 'a leaked frontend is asked to go down')
+    ok(frontendUp == false, 'and it goes')
+    rulesFrame()
+    ok(opens(m) == 1,
+       'and our pause menu comes up in its place -- one frame late, which is '
+       .. 'what the retake has always promised', ('%d opens'):format(opens(m)))
+
+    rulesFrames(60)
+    ok(opens(m) == 1,
+       'once, and not again -- a menu raised and then toggled shut by the next '
+       .. 'frame is the report', ('%d opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 2. AND THE FRONTEND br_ui RAISED ON PURPOSE IS STILL UNTOUCHED. This is
+    --    the guard that was already here -- the map route drives GTA's own menu
+    --    deliberately -- and it is the one a rewrite of this block is most
+    --    likely to drop.
+    -- ------------------------------------------------------------------- --
+    reset()
+    m = #events
+    BR.Native.frontendMap = true
+    frontendUp, frontendYields = true, false
+    rulesFrames(30)
+    ok(deactivates == 0 and frontendDisables == 0 and opens(m) == 0,
+       'while br_ui is deliberately holding the frontend open, the retake '
+       .. 'keeps its hands off it entirely',
+       ('%d asks, %d disables, %d opens'):format(
+           deactivates, frontendDisables, opens(m)))
+
+    -- AND AN ASK IN FLIGHT IS DROPPED AT THAT BOUNDARY rather than carried
+    -- across it. The frontend that comes down after the map route takes over is
+    -- the MAP being dismissed, and answering that with our pause menu is #207's
+    -- report wearing this ticket's clothes.
+    BR.Native.frontendMap = false
+    frontendYields = true
+    m = #events
+    rulesFrame()                       -- we see a frontend and ask it to go
+    BR.Native.frontendMap = true       -- br_ui takes the frontend over
+    rulesFrame()
+    BR.Native.frontendMap = false
+    frontendUp = false                 -- and what comes down is br_ui's map
+    rulesFrames(3)
+    ok(opens(m) == 0,
+       'and a deactivate abandoned when br_ui took the frontend over is not '
+       .. 'redeemed by the map closing later',
+       ('%d opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 3. THE ROCKSTAR EDITOR. A frontend that does not answer the ask.
+    -- ------------------------------------------------------------------- --
+    reset()
+    m = #events
+    frontendUp, frontendYields = true, false
+    rulesFrames(120)                   -- ~2s, well past the give-up window
+    ok(opens(m) == 0,
+       'a frontend that outlives SetFrontendActive(false) never opens our '
+       .. 'pause menu at all', ('%d opens'):format(opens(m)))
+
+    -- AND WE STOP ASKING. Sixty deactivates a second aimed at somebody else's
+    -- screen is a thing this gamemode does to the Editor, not a thing the
+    -- Editor does to it -- and DisableFrontendThisFrame over a frontend that is
+    -- already up can only take away the toggle that would have closed it.
+    local asksAtGiveUp = deactivates
+    local disablesAtGiveUp = frontendDisables
+    rulesFrames(60)
+    ok(deactivates == asksAtGiveUp,
+       'and it stops being asked once we have accepted it is not ours',
+       ('%d -> %d'):format(asksAtGiveUp, deactivates))
+    ok(frontendDisables == disablesAtGiveUp,
+       'and the frontend suppression stands down with it, so the engine keeps '
+       .. 'whatever way out it has',
+       ('%d -> %d'):format(disablesAtGiveUp, frontendDisables))
+    -- BOUNDED, NOT ZERO. One frame of trying is what tells a leak from an
+    -- Editor; a retake that never asked at all would fail case 1.
+    ok(asksAtGiveUp >= 1 and asksAtGiveUp <= 60,
+       'the attempt was bounded rather than abandoned or endless',
+       ('%d asks'):format(asksAtGiveUp))
+
+    -- ------------------------------------------------------------------- --
+    -- 4. "AND CANNOT BE DISMISSED", WHICH IS THE HALF THAT MADE IT A SOFT
+    --    LOCK. The toggle is throttled to one action per 220ms, so with the
+    --    old line firing every frame, every dismissal -- the page's Escape,
+    --    the raw key, the menu's own close button -- was undone a fifth of a
+    --    second later, forever.
+    -- ------------------------------------------------------------------- --
+    --
+    -- INSIDE THE GIVE-UP WINDOW, WHICH IS THE WHOLE OF WHY THIS IS ITS OWN
+    -- SCENARIO. Run after case 3 it asserted nothing: the retake had already
+    -- stood down, so a build with the old toggle line passed it. Twenty frames
+    -- is ~320ms -- past one 220ms toggle window and short of the 500ms give-up
+    -- -- so this is the code at its most alive, which is the only place the
+    -- claim means anything.
+    reset()
+    fakeTime = fakeTime + 400
+    BR.Pause.open()                    -- the player has our menu up...
+    fakeTime = fakeTime + 400
+    frontendUp, frontendYields = true, false
+    m = #events
+    BR.Pause.close()                   -- ...and dismisses it
+    rulesFrames(20)
+    ok(opens(m) == 0,
+       'a pause menu the player dismissed stays dismissed while the engine '
+       .. 'holds a frontend we cannot close', ('%d re-opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 5. LEAVING THE EDITOR IS THE PLAYER LEAVING, NOT US SUCCEEDING. The
+    --    deactivate we gave up on must not be redeemed half a minute later by
+    --    a frontend going down for an entirely different reason.
+    -- ------------------------------------------------------------------- --
+    reset()
+    frontendUp, frontendYields = true, false
+    rulesFrames(120)                   -- the retake tries, and gives up
+    disablesAtGiveUp = frontendDisables
+    m = #events
+    frontendUp = false                 -- the player quits the Editor
+    rulesFrames(4)
+    ok(opens(m) == 0,
+       'quitting the frontend we gave up on does not open our menu either',
+       ('%d opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 6. AND NORMAL SERVICE RESUMES ON THE SAME FRAME. A give-up that latched
+    --    for the session would trade a soft lock for a pause menu that never
+    --    came back, which is the worse of the two.
+    -- ------------------------------------------------------------------- --
+    ok(frontendDisables > disablesAtGiveUp,
+       'the frontend is suppressed again the moment the engine says the '
+       .. 'screen is ours',
+       ('%d -> %d'):format(disablesAtGiveUp, frontendDisables))
+    m = #events
+    frontendUp, frontendYields = true, true
+    rulesFrame()
+    rulesFrame()
+    ok(opens(m) == 1,
+       'and the next leaked Escape is taken back exactly as before',
+       ('%d opens'):format(opens(m)))
+
+    -- ------------------------------------------------------------------- --
+    -- 7. ALL OF IT AGAIN ON A BUILD WHOSE BOOL NATIVES ANSWER NUMBERS.
+    -- ------------------------------------------------------------------- --
+    --
+    -- IS_PAUSE_MENU_ACTIVE is a BOOL native. Unnormalised, a build answering
+    -- `0` for "no" makes `if IsPauseMenuActive() then` TRUE on every frame of
+    -- every session -- `0` is truthy in Lua -- so the retake would fire at a
+    -- frontend that is not there and the pause menu would toggle itself every
+    -- 220ms forever. That is this ticket's symptom arriving with no Editor
+    -- involved at all, and it is the tenth time this project would have shipped
+    -- the class.
+    shape = { yes = 1, no = 0 }
+
+    reset()
+    m = #events
+    rulesFrames(60)
+    -- ONE ASSERTION AND NOT TWO. `deactivates == 0` and `opens == 0` are the
+    -- same claim read at two depths -- nothing is asked, so nothing is
+    -- redeemed -- and splitting them leaves the second one unfalsifiable: every
+    -- mutation that lets a `0` through fails the first and then, having asked
+    -- an absent frontend to close, still opens nothing.
+    ok(opens(m) == 0 and deactivates == 0,
+       'a 0 from IsPauseMenuActive is read as "no frontend": nothing is asked '
+       .. 'to close and no menu opens',
+       ('%d opens, %d asks'):format(opens(m), deactivates))
+
+    m = #events
+    frontendUp = true
+    rulesFrame()
+    rulesFrame()
+    ok(opens(m) == 1,
+       'a 1 is still read as a frontend, and the leak is still taken back',
+       ('%d opens'):format(opens(m)))
+
+    reset()
+    m = #events
+    frontendUp, frontendYields = true, false
+    rulesFrames(120)
+    ok(opens(m) == 0,
+       'and the Editor case holds on a numeric build too',
+       ('%d opens'):format(opens(m)))
+
+    shape = { yes = true, no = false }
+    reset()
+
+    -- PUT THE ENGINE BACK for the blocks below, which drive applyGameRules for
+    -- reasons of their own and must not inherit this one's frontend.
+    IsPauseMenuActive = function() return false end
+    SetFrontendActive = function() end
+    DisableFrontendThisFrame = function() end
+end
+
+-- ======================================================================== --
+-- #208. GTA'S OWN VEHICLE NAME DOES NOT DRAW OVER OURS
+-- ======================================================================== --
+--
+-- "when getting in a vehicle, there's a GTA V text in the bottom right
+-- describing what vehicle it is (make/model) - but that text overlaps with our
+-- UI." (owner, 2026-08-22.) Bottom right is the vehicle bars and the inventory.
+--
+-- THE ASSERTION IS AS MUCH ABOUT WHAT SURVIVES AS ABOUT WHAT GOES. "Hide the
+-- vehicle text" has a lazy answer -- one of the whole-HUD switches -- that
+-- takes the reticle and the minimap with it, and a player who cannot see their
+-- crosshair has a worse problem than one reading a car's name through a fuel
+-- bar.
+
+describe('#208 -- the engine\'s vehicle name is hidden, and only it')
+do
+    local hidden = {}
+    HideHudComponentThisFrame = function(id) hidden[id] = true end
+
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
+    BR.State.match = { state = BR.MatchState.PLAYING }
+
+    hidden = {}
+    BR.Native.applyGameRules()
+
+    -- 6 is HUD_VEHICLE_NAME, from the documented component table
+    -- (citizenfx/natives, HUD/HideHudComponentThisFrame.md). Looked up rather
+    -- than guessed, and pinned here so the number cannot drift into a nearby
+    -- one that happens to look right in a screenshot.
+    ok(hidden[6] == true,
+       'HUD_VEHICLE_NAME is suppressed, so the make/model card stops drawing '
+       .. 'over the vehicle bars')
+
+    -- THE ONES THAT MUST SURVIVE. 14 is HUD_RETICLE and 21/22 are the
+    -- whole-HUD groups; taking any of them is the shortcut the issue rules out
+    -- in as many words ("do not disable the whole HUD to remove one label").
+    ok(hidden[14] ~= true, 'the reticle is untouched')
+    ok(hidden[21] ~= true and hidden[22] ~= true,
+       'and neither whole-HUD group is taken')
+
+    -- AND THE FOUR THIS FILE ALREADY HID ARE STILL HIDDEN, which is the
+    -- regression a careless edit to that block would produce.
+    ok(hidden[3] == true and hidden[4] == true and hidden[7] == true
+       and hidden[9] == true and hidden[2] == true,
+       'cash, bank, area, street and the ammo counter are all still suppressed')
+
+    -- PER FRAME, WHICH IS WHAT MAKES IT SURVIVE A RESPAWN AND A MATCH
+    -- BOUNDARY. The engine re-shows the component every frame it wants to
+    -- draw, so a one-shot hide at resource start would last exactly one frame.
+    -- applyGameRules is on BR.Loop.FRAME with no state gate above it, so the
+    -- honest way to assert "it stays hidden" is to run it in the states a
+    -- player passes through and find it hidden in each.
+    local held = true
+    for _, st in ipairs({ BR.PlayerState.LOBBY, BR.PlayerState.WARMUP,
+                          BR.PlayerState.BUS, BR.PlayerState.ALIVE,
+                          BR.PlayerState.DBNO, BR.PlayerState.OUT }) do
+        BR.State.me.state = st
+        hidden = {}
+        BR.Native.applyGameRules()
+        if hidden[6] ~= true then held = false end
+    end
+    ok(held, 'and it is hidden in every player state, so a respawn or a new '
+       .. 'match cannot bring it back')
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+end
+
+-- ======================================================================== --
+-- A BLED-OUT PLAYER'S BODY IS INVISIBLE, AND ONLY THEIRS
+-- ======================================================================== --
+--
+-- Owner, 2026-08-31: "After a player has bled out, their ped should become
+-- invisible. Only the 3dmarker (type 24) and DUI should be shown at their
+-- position. I like the blip though - let's keep that."
+--
+-- ═══ WHY THIS IS ASSERTED HERE AND NOT WHERE THE BODY IS ═══
+--
+-- Because applyGameRules is the ONLY writer of this property in the game, and
+-- the property is networked -- so what this block asserts is the whole of what
+-- every other machine will be told. There is no second place a corpse could be
+-- hidden from and no observer loop to check.
+--
+-- ═══ THE FOUR CASES, AND WHY EACH ONE IS A DIFFERENT BUG ═══
+--
+--   OUT       the request. A missing OUT term leaves the corpse standing.
+--   ALIVE     the un-hide. `latch.visible` is what makes the write happen once
+--             rather than per frame, so a rule that hid an OUT player without a
+--             path back would leave a REVIVED player invisible -- the worst
+--             version of this bug and the one that reads as an exploit.
+--   BUS       the rule that was already here. It shares one line with the new
+--             one, so an edit that spelled the new term as a replacement rather
+--             than an addition would un-hide every bus rider and no other test
+--             in this file would notice.
+--   DBNO      NOT hidden, and this is the case that is easy to get wrong by
+--             being helpful. A downed player is still in the world to be
+--             revived and shot at; client/dbno.lua hides its own ped for a
+--             fraction of a second with SET_ENTITY_LOCALLY_INVISIBLE while a
+--             pose lands, which is local, per-frame and nobody else's business.
+--             A networked hide here would make downed players unfindable.
+
+describe('the bled-out body is invisible, and comes back visible')
+do
+    --- Run one frame of the rules in a state, and answer what the ped's
+    --- visibility was set to -- or nil when the latch wrote nothing.
+    ---
+    --- forgetRules() BETWEEN CASES, so each answer is a fact about the state
+    --- rather than about the order the cases happen to be written in. Without
+    --- it the latch would suppress every write after the first and the whole
+    --- block would read `nil`.
+    local function visIn(st)
+        BR.State.me = { src = 1, state = st }
+        BR.State.match = { state = BR.MatchState.PLAYING }
+        BR.Native.forgetRules()
+        visWrites = {}
+        BR.Native.applyGameRules()
+        local last = visWrites[#visWrites]
+        return last and last.on, last and last.kind
+    end
+
+    local v, kind = visIn(BR.PlayerState.OUT)
+    ok(v == false, 'a bled-out player\'s ped is set INVISIBLE')
+    ok(kind == 'boolean',
+       '...with a real boolean, not a 1 or a 0 -- 0 IS TRUTHY IN LUA and this '
+       .. 'property is read back by the engine, not by us')
+
+    ok(visIn(BR.PlayerState.ALIVE) == true,
+       'and an ALIVE player is visible, which is the path back: a revive puts '
+       .. 'the state right and this line puts the body right')
+
+    ok(visIn(BR.PlayerState.BUS) == false,
+       'the bus rider is STILL hidden -- the new term was added to that rule, '
+       .. 'not written over it')
+
+    ok(visIn(BR.PlayerState.DBNO) == true,
+       'a DOWNED player is NOT hidden: they are still in the world to be '
+       .. 'revived, and dbno.lua\'s own cover is local and per-frame')
+
+    ok(visIn(BR.PlayerState.WARMUP) == true
+       and visIn(BR.PlayerState.LOBBY) == true,
+       'and nothing else was caught by the change')
+
+    -- ═══ THE TRANSITION, WHICH IS WHAT A LATCHED WRITE CAN GET WRONG ═══
+    --
+    -- The four cases above each start from forgetRules(), so they prove the
+    -- rule and say nothing about the latch. This drives OUT and then ALIVE with
+    -- the latch INTACT, which is what actually happens to a player who is
+    -- revived -- and it is the sequence where a `due`-only write would leave
+    -- somebody invisible until the next heartbeat.
+    BR.State.me = { src = 1, state = BR.PlayerState.OUT }
+    BR.State.match = { state = BR.MatchState.PLAYING }
+    BR.Native.forgetRules()
+    BR.Native.applyGameRules()
+
+    visWrites = {}
+    BR.Native.applyGameRules()
+    ok(#visWrites == 0,
+       'holding at OUT writes nothing on the next frame -- the latch that keeps '
+       .. 'this off the frame path is untouched')
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    visWrites = {}
+    BR.Native.applyGameRules()
+    ok(visWrites[1] and visWrites[1].on == true,
+       'and the frame the player comes back is the frame the body does, with no '
+       .. 'heartbeat in between')
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Native.forgetRules()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- brtime -- THE PIN WAS TOLD A NEW NUMBER, IT DID NOT GAIN A RIVAL
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, 2026-08-31: "can you make me a brtime command on the server which will
+-- set the time in-game? Recall we have the game locked at noon right now."
+--
+-- THE OBVIOUS IMPLEMENTATION IS THE BROKEN ONE, and it is broken in a way that
+-- is completely invisible in a diff. NetworkOverrideClockTime called from
+-- anywhere else would be overwritten by THIS function within a frame, every
+-- frame, forever -- so the verb would report success on the console, send its
+-- envelope, arrive on the client, and the sun would not move. Nothing would
+-- error and nothing would say why.
+--
+-- So the pin reads BR.World.clockHM() where it used to spell out `12, 0`, and
+-- what is asserted below is that the read is live: a new override lands on the
+-- NEXT frame rather than on the next second, the seconds keep spinning
+-- underneath it (which is the note above this block in natives.lua -- engine
+-- systems that step on clock deltas must keep stepping), and a reset puts noon
+-- back without a restart.
+--
+-- AND THE LAST ASSERTION IS A COUNT, not a behaviour. "One writer" is a
+-- property of the tree rather than of a frame, and the only way to test it is
+-- to go and look.
+
+describe('brtime -- the clock pin is told a new number')
+do
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
+    BR.State.match = { state = BR.MatchState.PLAYING }
+
+    --- One FRAME of the rules, answering with what the clock was handed.
+    local function pinFrame()
+        clockWrites = {}
+        BR.Native.applyGameRules()
+        return clockWrites[#clockWrites]
+    end
+
+    BR.World.applyPayload(nil)
+    BR.Native.forgetRules()
+
+    local w = pinFrame()
+    ok(w and w.h == 12 and w.m == 0,
+       'with nothing overridden the pin is still high noon, which is the world '
+       .. 'every match up to now has been played in',
+       w and ('%s:%s'):format(tostring(w.h), tostring(w.m)) or 'no write at all')
+
+    ok(pinFrame() == nil,
+       'and the next frame in the same second writes nothing -- the latch that '
+       .. 'dropped fifty-nine redundant writes a second is untouched')
+
+    -- ON THE NEXT FRAME, NOT THE NEXT SECOND. Latching on the second alone
+    -- would hold a new override back until the second happened to tick, so
+    -- `brtime 21` would land somewhere in the following second instead of on
+    -- the keystroke -- which reads as a laggy verb and is really a stale latch.
+    BR.World.applyPayload({ hour = 21, minute = 30 })
+    w = pinFrame()
+    ok(w and w.h == 21 and w.m == 30,
+       'an override arriving mid-second moves the sun on the very next frame',
+       w and ('%s:%s'):format(tostring(w.h), tostring(w.m)) or 'no write at all')
+
+    -- THE SECONDS STILL SPIN. natives.lua's own note is that any engine system
+    -- stepping on clock deltas -- wetness decay is the named suspect -- has to
+    -- keep stepping, and that is as true at dusk as it was at noon.
+    local before = w.s
+    fakeTime = fakeTime + 1000
+    w = pinFrame()
+    ok(w and w.h == 21 and w.m == 30 and w.s ~= before,
+       'and the seconds go on spinning underneath the override',
+       w and ('%s -> %s'):format(tostring(before), tostring(w.s)) or 'no write')
+
+    -- MIDNIGHT IS REACHABLE. Hour 0 is the value most likely to be lost to a
+    -- truthiness test somewhere along the way, and it is the one hour a person
+    -- testing a night-time map will actually type.
+    BR.World.applyPayload({ hour = 0, minute = 0 })
+    w = pinFrame()
+    ok(w and w.h == 0 and w.m == 0, 'midnight is a real override, not a missing one',
+       w and ('%s:%s'):format(tostring(w.h), tostring(w.m)) or 'no write at all')
+
+    -- REVERSIBLE WITHOUT A RESTART, which is the half the owner will use most.
+    BR.World.applyPayload({})
+    w = pinFrame()
+    ok(w and w.h == 12 and w.m == 0,
+       'and brtime reset puts the pin back on noon with nothing restarted',
+       w and ('%s:%s'):format(tostring(w.h), tostring(w.m)) or 'no write at all')
+
+    -- ONE WRITER, COUNTED IN THE TREE. This is the property the whole design
+    -- rests on: a second NetworkOverrideClockTime anywhere would win or lose at
+    -- random and look like the verb not working.
+    local writers = 0
+    for _, path in ipairs({
+        'resources/[fivem-royale]/br_core/client/natives.lua',
+        'resources/[fivem-royale]/br_core/client/world.lua',
+        'resources/[fivem-royale]/br_core/client/storm.lua',
+        'resources/[fivem-royale]/br_core/client/gamerules.lua',
+        'resources/[fivem-royale]/br_environment/client/ipl.lua',
+    }) do
+        local fh = io.open(path, 'r')
+        if fh then
+            for line in fh:lines() do
+                -- Calls only. The paragraph above the pin discusses the native
+                -- by name and a gate that counted prose would fail on it.
+                if line:find('NetworkOverrideClockTime%s*%(') then
+                    writers = writers + 1
+                end
+            end
+            fh:close()
+        end
+    end
+    ok(writers == 1,
+       'NetworkOverrideClockTime is CALLED exactly once in the client tree -- '
+       .. 'the override moved the pin rather than adding a second one',
+       ('%d call sites'):format(writers))
+
+    BR.World.applyPayload(nil)
+    BR.Native.forgetRules()
+end
+
+-- ═══════════════════════════════════════════════════════════════ #203 ═══
+--
+-- THE VEHICLE BOOST, FROM A PHYSICAL KEY TO A FORCE ON A CAR.
+--
+-- The owner's report is "boost does nothing, and the bar is at 100", and the
+-- feature's own report named two unverified guesses as the likely causes with a
+-- third from the owner. Every one of those is a different rung of one chain, and
+-- NOT ONE of them was reachable by a test before this block: the boost suite
+-- tests the arithmetic (tools/test_boost.lua, pure), and nothing tested the
+-- chain the arithmetic sits in.
+--
+-- That is the exact hole #129 fell through twice. The rule this file was written
+-- for applies unchanged: a suite that cannot press a key cannot tell a broken
+-- interaction from a working one, and the expensive check -- a human in a car --
+-- becomes the only check.
+--
+-- WHAT IS PROVED HERE AND WHAT IS NOT. The keyboard, the key layer, the seat
+-- gate, the meter, the decision to push and the ARGUMENTS to the impulse are all
+-- proved. Whether GTA's physics actually moves a car when handed that impulse is
+-- not a thing a Lua process can be asked -- so it is modelled BOTH ways
+-- (`forceInert`) and what is proved instead is that the readout tells the two
+-- apart. That is the deliverable: the suite cannot say which cause is real, and
+-- it can say that the instrument names it correctly whichever it is.
+do
+    describe('#203 the boost, key to car')
+
+    -- THE KEYBOARD, TAKEN BACK. #207's block above swaps IsRawKeyDown for an
+    -- escape-key stub of its own and does not put it back -- correctly, for what
+    -- it tests. Inheriting it here made every shift read come back UP, which is
+    -- indistinguishable from the bug this block exists to measure: three
+    -- verdicts flipped to ones that name a different file. See RAW_KEYBOARD.
+    IsRawKeyDown, IsRawKeyPressed = RAW_KEYBOARD.down, RAW_KEYBOARD.pressed
+
+    local VK_SHIFT, VK_LSHIFT, VK_RSHIFT = 0x10, 0xA0, 0xA1
+
+    --- Which virtual-key codes this simulated BUILD fills when shift goes down.
+    ---
+    --- THE WHOLE OF THE FIX IS THIS ONE FIXTURE. IS_RAW_KEY_DOWN reads a 256-slot
+    --- array indexed by Windows virtual-key code, and no source anywhere -- the
+    --- native declaration, InputNatives.cpp, the docs, the forums -- says which
+    --- slot a shift press fills. keybinds.lua BET on 0x10 and wrote the bet down
+    --- as three converging inferences. So the bet is a dimension of the matrix
+    --- now, exactly as the raw-native shape became one after #129's seventh
+    --- round: every build below is one a player could be sitting at.
+    local FILLS = {
+        { name = 'generic only (0x10)',        codes = { VK_SHIFT } },
+        { name = 'side-specific only (0xA0)',  codes = { VK_LSHIFT } },
+        { name = 'right shift only (0xA1)',    codes = { VK_RSHIFT } },
+        { name = 'both generic and side',      codes = { VK_SHIFT, VK_LSHIFT } },
+    }
+
+    local function shiftDown(fill)
+        for _, c in ipairs(fill.codes) do
+            keys[c] = true
+            edge[c] = true
+        end
+        engineKey('LSHIFT', true)
+    end
+
+    local function shiftUp(fill)
+        for _, c in ipairs(fill.codes) do keys[c] = nil end
+        engineKey('LSHIFT', false)
+    end
+
+    --- Put the player in the driver's seat of an ordinary car at `speed` m/s.
+    local function drive(speed, class)
+        inVehicle   = true
+        vehicle     = 900
+        vehicleSeat = -1          -- -1 is the driver in every vehicle in the game
+        vehClass    = class or 0  -- 0 is Compacts; 15/16 are the excluded aircraft
+        vehSpeed    = speed or 20.0
+    end
+
+    local function onFoot()
+        inVehicle, vehicle, vehicleSeat = false, 0, nil
+    end
+
+    --- A clean slate for one scenario: no key held, meter full, engine willing.
+    local function resetBoost(fill)
+        if fill then shiftUp(fill) end
+        for _, f in ipairs(FILLS) do shiftUp(f) end
+        forceInert, forceThrows = false, false
+        speedVectorMissing, speedScalarMissing = false, false
+        forceCalls = {}
+        vehClass, vehNetId = 0, 77
+        -- SIX SECONDS ON FOOT REFILLS THE METER FROM EMPTY, on wall clock, which
+        -- is the per-player rule client/boost.lua argues for. Doing it by running
+        -- the real loop rather than by poking the local means a change to that
+        -- rule shows up here as a failure rather than being papered over.
+        onFoot()
+        frames(400, 16)
+    end
+
+    local C = BR.Config.Boost
+
+    -- ── THE CHAIN, ON EVERY BUILD THE KEYBOARD CAN BE ────────────────────────
+    for _, fill in ipairs(FILLS) do
+        resetBoost()
+        drive(20.0)
+        shiftDown(fill)
+        frames(8, 16)
+
+        ok(BR.Keys.isHeld('boost') == true,
+           ('key layer sees shift when the build fills %s'):format(fill.name))
+        ok(BR.Boost.active() == true,
+           ('a boost starts when the build fills %s'):format(fill.name))
+        ok(#forceCalls > 0,
+           ('the impulse is applied when the build fills %s'):format(fill.name))
+
+        shiftUp(fill)
+        frames(2, 16)
+        ok(BR.Boost.active() == false,
+           ('the boost ends on release, %s'):format(fill.name))
+    end
+
+    -- ── AND THE KEY LAYER MUST NOT INVENT ONE ────────────────────────────────
+    --
+    -- The superset only widens the codes that mean SHIFT. A build where nothing
+    -- is held must still read as nothing held, or the fix is a boost that runs
+    -- forever -- which is the failure mode a truthiness bug would produce and the
+    -- one this project has shipped four times.
+    resetBoost()
+    drive(20.0)
+    frames(8, 16)
+    ok(BR.Keys.isHeld('boost') == false,
+       'no shift code down means no boost -- the superset widens the key, not the answer')
+    ok(BR.Boost.active() == false, 'and no boost starts')
+
+    -- ...AND IT MUST NOT LEAK ONTO ANOTHER BINDING. 0xA0 now means shift; it must
+    -- not also mean the interact key, which is what a synonym table applied to
+    -- every code instead of to one would do.
+    resetBoost()
+    keys[VK_LSHIFT] = true
+    frames(4, 16)
+    ok(BR.Keys.isHeld('interact') == false,
+       'a shift synonym does not fire the interact binding')
+    keys[VK_LSHIFT] = nil
+
+    -- ── THE SEAT, THE CLASS AND THE METER ────────────────────────────────────
+    local fill = FILLS[1]
+
+    resetBoost()
+    onFoot()
+    shiftDown(fill)
+    frames(8, 16)
+    ok(BR.Boost.active() == false, 'holding the key on foot boosts nothing')
+    shiftUp(fill)
+
+    resetBoost()
+    drive(20.0)
+    vehicleSeat = 0                     -- front passenger
+    shiftDown(fill)
+    frames(8, 16)
+    ok(BR.Boost.active() == false, 'a passenger cannot boost -- the driver seat is the spec')
+    shiftUp(fill)
+
+    resetBoost()
+    drive(20.0, 15)                     -- helicopter
+    shiftDown(fill)
+    frames(8, 16)
+    ok(BR.Boost.active() == false,
+       'a helicopter cannot boost -- shift already climbs it (excludeClasses)')
+    shiftUp(fill)
+
+    -- ── THE ARGUMENTS THE IMPULSE IS GIVEN ───────────────────────────────────
+    --
+    -- ASSERTED SEPARATELY FROM THE EFFECT, because they fail separately. Dropping
+    -- bScaleByMass leaves the call being made and the units silently becoming
+    -- newton-seconds -- a Blista would leap and a Phantom would not move, and no
+    -- speed assertion on one vehicle could see it.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    frames(4, 16)
+    local call = forceCalls[1]
+    ok(call ~= nil, 'the impulse reaches APPLY_FORCE_TO_ENTITY')
+    if call then
+        ok(call.ftype == 1, 'forceType 1 -- APPLY_TYPE_IMPULSE, not a continuous force')
+        ok(call.x == 0.0 and call.z == 0.0, 'nothing is pushed sideways or upwards')
+        ok(call.y > 0.0, 'the push is FORWARD (+y in the entity frame)')
+        ok(call.dirRel == true, 'bLocalForce -- so +y means the car\'s nose, not north')
+        ok(call.forceRel == true,
+           'bScaleByMass -- the flag that makes dv a velocity change in m/s')
+        ok(call.audio == false,
+           'bPlayAudio false -- it squeals once per call and this is called every frame')
+        ok(call.ent == 900, 'and it is applied to the vehicle, not the ped')
+    end
+    shiftUp(fill)
+
+    -- ── THE CAR ACTUALLY GOES FASTER, AND STOPS BEING PUSHED ON RELEASE ──────
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    -- Two seconds is the whole ramp, so this is the spec's own claim: "+30mph
+    -- ... over the course of the first 2 seconds".
+    frames(125, 16)
+    local reached = vehSpeed
+    ok(reached > 20.0 + C.addMps * 0.9,
+       'two seconds of boost reaches about +30 mph over the speed at the press',
+       ('reached %.2f from 20.0, wanted about %.2f'):format(reached, 20.0 + C.addMps))
+
+    -- NOTHING IS DONE TO THE CAR ON RELEASE. The clause the owner stated in as
+    -- many words and the one most likely to be "fixed" by a tidy-up.
+    shiftUp(fill)
+    frames(30, 16)
+    ok(vehSpeed >= reached,
+       'releasing the key does nothing at all to the car -- no braking, no restore',
+       ('was %.2f, now %.2f'):format(reached, vehSpeed))
+
+    -- ── THE READOUT, WHICH IS THE ACTUAL DELIVERABLE ─────────────────────────
+    --
+    -- IT IS ASSERTED ON RATHER THAN TRUSTED, for the reason /brloot's own helper
+    -- gives: the readout is the only thing a playtester can send back, and a
+    -- diagnostic nobody tests can print the wrong number for six rounds without
+    -- anyone noticing. Here it is worse than that -- the readout is what decides
+    -- WHICH of three files gets edited next, so a wrong verdict costs the same
+    -- round a wrong fix does.
+
+    --- Run /brboostwhy for a window and give back its verdict code.
+    local function brboost(secs)
+        logged = {}
+        commands['brboostwhy'](nil, { tostring(secs or 1) }, '')
+        frames(math.floor((secs or 1) * 1000 / 16) + 2, 16)
+        local text = table.concat(logged, '\n')
+        return text:match('VERDICT %[([%w%-]+)%]'), text
+    end
+
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    -- 2.5s, AND THE LENGTH IS PART OF THE TEST. The ramp is 2s, so a window
+    -- shorter than that measures a boost still climbing and correctly reads
+    -- INCONCLUSIVE -- which is the verdict doing its job, not a failure. The
+    -- default window is 6s for the same reason: a diagnostic that reports
+    -- half a boost invites the wrong fix.
+    local code, text = brboost(2.5)
+    ok(code == 'ok', 'a working boost reads as [ok]', code)
+    ok(text:find('best gain', 1, true) ~= nil,
+       'and the readout states the gain against the +30 mph the spec asks for')
+    shiftUp(fill)
+
+    -- CANDIDATE 2, THE ONE THE SUITE EXISTS TO BE ABLE TO STATE. Every call is
+    -- made and the engine ignores all of them: the key is fine, the seat is fine,
+    -- the meter spends, and the car does not move. This is the owner's report
+    -- exactly, and the readout must name the impulse rather than the key.
+    resetBoost()
+    drive(20.0)
+    forceInert = true
+    shiftDown(fill)
+    code, text = brboost(1)
+    ok(code == 'force-inert',
+       'an impulse the engine ignores reads as [force-inert], not as a key fault', code)
+    ok(text:find('APPLY_FORCE_TO_ENTITY is doing nothing', 1, true) ~= nil,
+       'and it says so in words, with the torque-multiplier trade named as the owner\'s call')
+    shiftUp(fill)
+    forceInert = false
+
+    -- CANDIDATE 1. The key never arrives at all: no raw code, no engine control.
+    resetBoost()
+    drive(20.0)
+    code = brboost(1)
+    ok(code == 'key-unseen', 'a key that never arrives reads as [key-unseen]', code)
+
+    -- ...AND THE VERSION OF CANDIDATE 1 THAT IS ACTIONABLE. The build fills only
+    -- the side-specific slot. With the VK_ALSO superset in place the boost simply
+    -- works, so the readout says [ok] -- which is the point: the fix removes the
+    -- failure rather than diagnosing it. The verdict for the un-fixed shape is
+    -- proved directly against BR.Boost.verdict below, where it can be stated
+    -- without un-fixing the code.
+    resetBoost()
+    drive(20.0)
+    shiftDown(FILLS[2])
+    code = brboost(2.5)
+    ok(code == 'ok',
+       'a build that fills only 0xA0 boosts anyway -- that is the fix, measured', code)
+    shiftUp(FILLS[2])
+
+    -- ...AND A WINDOW SHORTER THAN THE RAMP SAYS SO RATHER THAN GUESSING. This
+    -- is the same working boost measured for half its climb; a readout that
+    -- called it [force-inert] would send the next round to rewrite the physics.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    code = brboost(1)
+    ok(code == 'inconclusive',
+       'half a ramp is [inconclusive], not a verdict on the impulse', code)
+    shiftUp(fill)
+
+    -- AND THE SEAT, THROUGH THE REAL READOUT.
+    resetBoost()
+    onFoot()
+    shiftDown(fill)
+    code = brboost(1)
+    ok(code == 'not-in-vehicle', 'holding the key on foot reads as [not-in-vehicle]', code)
+    shiftUp(fill)
+
+    resetBoost()
+    drive(20.0, 16)                     -- plane
+    shiftDown(fill)
+    code = brboost(1)
+    ok(code == 'excluded-class', 'a plane reads as [excluded-class]', code)
+    shiftUp(fill)
+
+    -- THE KEY ARRIVES AND THE KEY LAYER DROPS IT. A NUI screen holding the
+    -- keyboard is the reachable version of that: IsRawKeyDown still reports the
+    -- code down, and BR.Keys.held is forced false so a player typing in a panel
+    -- does not boost. The readout has to name keybinds.lua rather than say the
+    -- key was never seen -- those are different files.
+    --
+    -- THIS CASE IS WHY `rawSelf` EXISTS. Mutation testing found the field was
+    -- never written, so this whole verdict was unreachable and every instance of
+    -- it came out as [key-unseen].
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    fire('br:ui:focusChanged', 'players')
+    code, text = brboost(1)
+    ok(code == 'key-not-routed',
+       'a raw code down with isHeld false is [key-not-routed], not [key-unseen]', code)
+    ok(text:find('keybinds.lua', 1, true) ~= nil,
+       'and the verdict names the file to edit')
+    fire('br:ui:focusChanged', 'none')
+    shiftUp(fill)
+
+    -- ═══ THE SHAPE #203'S LEADING CANDIDATE ACTUALLY HAS ═══
+    --
+    -- The raw natives do not answer for shift AT ALL on this build, on any of the
+    -- three codes, while the key is physically down and GTA's own controls on it
+    -- report pressed. That is what "IsRawKeyDown may not answer for shift" means
+    -- if it is true, and it is the state no readout in this project could see
+    -- before now: the key reaches the GAME and not us, so the fault is the
+    -- READER, and neither a different default key nor a rewrite of the physics
+    -- would touch it.
+    resetBoost()
+    drive(20.0)
+    rawBlind[VK_SHIFT], rawBlind[VK_LSHIFT], rawBlind[VK_RSHIFT] = true, true, true
+    shiftDown(fill)
+    code, text = brboost(1)
+    ok(code == 'key-engine-only',
+       'raw silent while the engine control fires is [key-engine-only]', code)
+    ok(text:find('IsRawKeyDown cannot', 1, true) ~= nil,
+       'and the verdict says the READER is wrong, not the key and not the physics')
+    shiftUp(fill)
+    rawBlind[VK_SHIFT], rawBlind[VK_LSHIFT], rawBlind[VK_RSHIFT] = nil, nil, nil
+
+    -- REMAPPABLE, WHICH IS THE SPEC, AND THE READOUT HAS TO FOLLOW THE REBIND.
+    -- "while holding SHIFT by default (REMAPPABLE)". A diagnostic that assumed
+    -- shift would tell a player who moved the key that their key never arrived.
+    resetBoost()
+    drive(20.0)
+    BR.Keys.set('brboost', 0x4B)        -- K
+    keys[0x4B], edge[0x4B] = true, true
+    code, text = brboost(2.5)
+    ok(code == 'ok', 'the boost follows a rebind off shift', code)
+    ok(text:find('watching 0x4B', 1, true) ~= nil,
+       'and the readout names the key the binding is actually on')
+    keys[0x4B] = nil
+    BR.Keys.reset('brboost')
+    frames(2, 16)
+
+    -- THE RAW NATIVES ANSWERING 1/0 RATHER THAN true/false, WHICH IS THE BUG
+    -- THIS PROJECT HAS SHIPPED FOUR TIMES AND WHICH A TRUTHINESS COUNT CANNOT
+    -- SEE. `0` is TRUTHY in Lua, so a sampler written as `if v then` counts every
+    -- frame of an UNTOUCHED key as pressed -- and then confidently reports that
+    -- the key layer is fine. /brprobe rawkey did exactly that for six rounds.
+    --
+    -- Nothing is held here, so every honest reading is "up": the verdict must be
+    -- [key-unseen]. Under the truthiness bug all three codes read down and it
+    -- becomes [key-not-routed], which sends the next round to the wrong file.
+    bootOn(true, true, SHAPES[3])       -- number 1 / number 0
+    resetBoost()
+    drive(20.0)
+    code = brboost(1)
+    ok(code == 'key-unseen',
+       'on a build that answers 1/0, an untouched key still reads as unseen', code)
+    bootOn(true, true, SHAPES[1])       -- back to booleans for what follows
+
+    -- A NATIVE THAT THROWS. The pcall used to discard its result, which is the
+    -- construction that can fail on every frame of every boost and say nothing.
+    resetBoost()
+    drive(20.0)
+    forceThrows = true
+    shiftDown(fill)
+    code, text = brboost(1)
+    ok(code == 'force-throws', 'a native that throws reads as [force-throws]', code)
+    ok(text:find('no such native', 1, true) ~= nil,
+       'and the readout carries the engine\'s own message, not a guess')
+    shiftUp(fill)
+    forceThrows = false
+
+    -- ── THE VERDICT LADDER, DIRECTLY ─────────────────────────────────────────
+    --
+    -- The rungs above are the ones reachable by driving the real client. These
+    -- are the rest, and they matter for the same reason: each names a DIFFERENT
+    -- file to edit, and a ladder that reaches the wrong rung sends the next round
+    -- to the wrong place. Pure function, so they cost nothing.
+    describe('#203 the verdict ladder')
+
+    local base = {
+        enabled = true, frames = 100, heldFrames = 100, inVehFrames = 100,
+        driverFrames = 100, wantFrames = 100, pushFrames = 100, forced = 100,
+        addMps = C.addMps, gain = C.addMps,
+    }
+    local function verdict(over)
+        local f = {}
+        for k, v in pairs(base) do f[k] = v end
+        for k, v in pairs(over or {}) do f[k] = (v ~= 'nil') and v or nil end
+        return (BR.Boost.verdict(f))
+    end
+
+    ok(verdict({ enabled = false }) == 'disabled', 'boost switched off is [disabled]')
+    ok(verdict({ frames = 0 }) == 'no-frames', 'a loop that never ran is [no-frames]')
+
+    -- THE THREE KEY FAULTS, WHICH ARE THREE DIFFERENT FIXES IN THREE PLACES.
+    ok(verdict({ heldFrames = 0, rawSelf = 90, rawSelfCode = 0x10 }) == 'key-not-routed',
+       'raw code down and isHeld never true is keybinds.lua dropping it')
+    ok(verdict({ heldFrames = 0, rawSelfCode = 0x10, rawBestCode = 0xA0,
+                 rawBestFrames = 90 }) == 'key-wrong-code',
+       'another code answering and ours not is the wrong virtual-key code')
+    ok(verdict({ heldFrames = 0, rawSelfCode = 0x10, engineFrames = 90 }) == 'key-engine-only',
+       'the engine seeing the key while no raw code does is the wrong READER')
+    ok(verdict({ heldFrames = 0, rawSelfCode = 0x10 }) == 'key-unseen',
+       'and nothing at all seeing it is [key-unseen]')
+
+    -- THE key-wrong-code SENTENCE HAS TO NAME BOTH CODES, or it is a verdict the
+    -- reader still has to go and investigate.
+    do
+        local _, s = BR.Boost.verdict({
+            enabled = true, frames = 100, heldFrames = 0,
+            rawSelfCode = 0x10, rawBestCode = 0xA0, rawBestFrames = 90,
+        })
+        ok(s:find('0x10', 1, true) and s:find('0xA0', 1, true),
+           'the wrong-code verdict names the code we watch AND the one that answered')
+    end
+
+    ok(verdict({ driverFrames = 0, inVehFrames = 0 }) == 'not-in-vehicle',
+       'held on foot is [not-in-vehicle]')
+    ok(verdict({ driverFrames = 0 }) == 'not-driver', 'held as a passenger is [not-driver]')
+    -- THE EXCLUSION IS ASKED BEFORE THE SEAT, AND THIS IS THE CASE THAT FOUND IT.
+    -- `driverFrames` counts the SEAT and the class gate is applied after it, so a
+    -- pilot has a non-zero seat count. A ladder that asked the seat first let a
+    -- helicopter through to rung 3 and answered `no-want` -- the ladder's own
+    -- word for "unreachable" -- which would have sent the next round hunting a
+    -- bug that did not exist.
+    ok(verdict({ driverFrames = 100, wantFrames = 0, excludedFrames = 90,
+                 pushFrames = 0, forced = 0, class = 15 }) == 'excluded-class',
+       'a pilot IS in the driver seat, and the class gate still names the cause')
+    ok(verdict({ driverFrames = 0, wantFrames = 0, pushFrames = 0, forced = 0,
+                 excludedFrames = 90, class = 15 }) == 'excluded-class',
+       'and so is a passenger in one')
+    -- ...BUT IT MUST NOT CLAIM A BOOST THAT WORKED. Sit in a helicopter for a
+    -- moment, get into a car, boost it properly: the helicopter is not the story.
+    ok(verdict({ excludedFrames = 30, class = 15 }) == 'ok',
+       'an excluded vehicle earlier in the window does not overrule a boost that ran')
+    ok(verdict({ wantFrames = 0, dryFrames = 90 }) == 'dry-latch',
+       'a latched dry meter is [dry-latch] -- let go and press again')
+    ok(verdict({ wantFrames = 0, emptyFrames = 90 }) == 'meter-empty',
+       'an empty meter is [meter-empty] -- wait six seconds')
+    ok(verdict({ wantFrames = 0 }) == 'no-want', 'and an unreachable combination says so')
+    ok(verdict({ pushFrames = 0 }) == 'no-push', 'wanting to boost and never pushing says so')
+    ok(verdict({ forced = 0, forceThrew = 90 }) == 'force-throws', 'a throwing native is named')
+    ok(verdict({ forced = 0, noSpeed = 90 }) == 'no-speed-native',
+       'no speed reading is [no-speed-native] and stops the ladder there')
+    ok(verdict({ forced = 0, alreadyAhead = 90 }) == 'already-ahead',
+       'a car already faster than the ramp is correct behaviour, not a fault')
+
+    -- THE LAST RUNG, AND ITS MIDDLE. A threshold that called a working boost
+    -- broken would cost exactly the round this whole readout exists to save.
+    ok(verdict({ gain = 0.0 }) == 'force-inert', 'no gain at all is [force-inert]')
+    ok(verdict({ gain = C.addMps * 0.05 }) == 'force-inert',
+       'and a gain far under a tenth of what was asked still is')
+    ok(verdict({ gain = C.addMps * 0.3 }) == 'inconclusive',
+       'a third of the way is INCONCLUSIVE rather than a guess in either direction')
+    ok(verdict({ gain = C.addMps * 0.8 }) == 'ok',
+       'and most of the way, against drag and gearing, is [ok]')
+
+    -- ORDER IS PART OF THE CONTRACT. Every rung assumes the ones above passed, so
+    -- a late symptom must never be able to name itself as the cause: a boost that
+    -- never started trivially "applied no force".
+    ok(verdict({ heldFrames = 0, driverFrames = 0, pushFrames = 0, forced = 0,
+                 gain = 0.0, rawSelfCode = 0x10 }) == 'key-unseen',
+       'with everything downstream also empty, the KEY is still the verdict')
+
+    -- AND A TABLE WITH NOTHING IN IT MUST NOT THROW. The readout calls this
+    -- inside a pcall, and a verdict that errors is a readout that prints its
+    -- rows and then swallows its own conclusion.
+    do
+        local okc, c = pcall(BR.Boost.verdict, {})
+        ok(okc and c == 'disabled', 'an empty facts table is answered, not thrown on')
+        local okn = pcall(BR.Boost.verdict, nil)
+        ok(okn, 'and so is nil')
+    end
+
+    -- ══════════════════════════════════════════════════════════════════════ --
+    -- THE REST OF WHAT THE BOOST KEY DOES
+    -- ══════════════════════════════════════════════════════════════════════ --
+    --
+    -- "Vehicle boost does work now, but still getting drift mode at the same
+    -- time. Sick affect, but not intended or acceptable really."
+    --                                              -- owner, 2026-08-22
+    --
+    -- RegisterKeyMapping does not take a key away from the engine, and eight
+    -- stock controls default to LSHIFT. client/boost.lua now holds down the two
+    -- that can act on a ground vehicle while the key is held in the driver's
+    -- seat.
+    --
+    -- ═══ THIS BLOCK IS SHAPED BY #200 RATHER THAN BY THE FIX ═══
+    --
+    -- A suppression is one edit away from eating a control somebody needs -- an
+    -- unconditional block in client/inventory.lua took the radio wheel away for
+    -- months. So the assertions come in PAIRS, and the negative half of each pair
+    -- is the one that matters: every scope clause is tested by showing that
+    -- OUTSIDE it nothing is suppressed, and the two ids deliberately left off the
+    -- list are pinned as still free. A test that only proved "61 is held down in
+    -- a car" would pass with the whole list replaced by every id on the key,
+    -- which is exactly the regression #200 was.
+    describe('#203 what else is on the boost key')
+
+    -- THE IDS ARE WRITTEN OUT HERE RATHER THAN READ FROM THE CONFIG, and
+    -- mutation testing is why. Every assertion below used to check
+    -- BR.Config.Boost.suppressControls against itself, so deleting 340 from the
+    -- config deleted it from the expectation too and the suite stayed green on a
+    -- control that had silently stopped being suppressed. The list IS the
+    -- decision -- which ids of the eight on this key are ours to take -- so it is
+    -- pinned as a literal and the config is checked against it.
+    local EXPECT     = { 61, 340 }      -- MOVE_UP_ONLY, HYDRAULICS_CONTROL_UP
+    local LEFT_ALONE = { 21, 352 }      -- on the key, off the list, and why
+    local SUPPRESSED = BR.Config.Boost.suppressControls
+
+    local function allOff(list)
+        for _, c in ipairs(list) do
+            if disabled[c] ~= true then return false end
+        end
+        return true
+    end
+    local function anyOff(list)
+        for _, c in ipairs(list) do
+            if disabled[c] == true then return true end
+        end
+        return false
+    end
+
+    -- THE CONFIG SAYS WHAT THIS BLOCK SAYS. Checked as a SET both ways round: a
+    -- missing id and an extra one are different bugs and the second is #200.
+    do
+        local want, got = {}, {}
+        for _, c in ipairs(EXPECT) do want[c] = true end
+        for _, c in ipairs(SUPPRESSED or {}) do got[c] = true end
+        local same = #EXPECT == #(SUPPRESSED or {})
+        for c in pairs(want) do if not got[c] then same = false end end
+        for c in pairs(got) do if not want[c] then same = false end end
+        ok(same, 'BR.Config.Boost.suppressControls is exactly {61, 340} -- adding '
+           .. 'an id here without a reason beside it is how #200 happened',
+           table.concat(SUPPRESSED or {}, ','))
+    end
+
+    -- 1. THE CASE THE OWNER IS IN. Driving a car, holding the key.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    frames(8, 16)
+    ok(allOff(EXPECT),
+       'driving and holding the key: 61 and 340 are both held down')
+    ok(not anyOff(LEFT_ALONE),
+       'and 21 and 352 are NOT -- they are on the key and do nothing to a car, '
+       .. 'which is the #200 distinction between a key and an effect')
+
+    -- 2. THE KEY IS THE SCOPE, AND IT IS MEASURED ON THE VERY NEXT FRAME. The
+    --    release frame is the whole difference: the boost loop skips everything
+    --    below its idle path once the key is up AND no boost is running, so a
+    --    suppression missing its `held` clause looks correct on every frame
+    --    except the one where a running boost is being stopped. Waiting four
+    --    frames to look is what let that mutant live.
+    shiftUp(fill)
+    frame(16)
+    ok(not anyOff(EXPECT),
+       'let go and the engine has all of it back on the VERY NEXT frame, '
+       .. 'including the frame the running boost is stopped on')
+
+    -- 3. THE SEAT IS THE SCOPE.
+    resetBoost()
+    onFoot()
+    shiftDown(fill)
+    frames(8, 16)
+    ok(not anyOff(EXPECT),
+       'holding the key on foot suppresses nothing -- sprint is not ours to take')
+    shiftUp(fill)
+
+    resetBoost()
+    drive(20.0)
+    vehicleSeat = 0                     -- front passenger
+    shiftDown(fill)
+    frames(8, 16)
+    ok(not anyOff(EXPECT),
+       'a passenger keeps their controls -- the boost is the driver\'s and so is '
+       .. 'the suppression')
+    shiftUp(fill)
+
+    -- 4. AND SO IS THE CLASS, WHICH IS THE ONE THAT WOULD HURT MOST TO GET
+    --    WRONG. 61 and 352 ARE the collective in a helicopter. Excluding
+    --    aircraft from the boost and then suppressing their flight controls
+    --    anyway would ground every pilot on the server, silently, for as long as
+    --    they held a key they had every reason to hold.
+    for _, class in ipairs({ 15, 16 }) do
+        resetBoost()
+        drive(20.0, class)
+        shiftDown(fill)
+        frames(8, 16)
+        ok(not anyOff(EXPECT),
+           ('class %d keeps every control -- an excluded aircraft is excluded '
+            .. 'from the suppression too, not just from the push'):format(class))
+        shiftUp(fill)
+    end
+
+    -- 5. NOT GATED ON THE BOOST RUNNING, WHICH IS THE CLAUSE A TIDY-UP WOULD
+    --    ADD. Four seconds of capacity spent, key still down: the meter is empty
+    --    and the dry latch is set, so `want` is false and nothing is being
+    --    pushed -- and GTA does not consult our meter before pitching the car.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    frames(340, 16)                     -- 5.4s: past the 4s capacity, still held
+    ok(BR.Boost.active() == false, 'the meter has run dry, so no boost is running')
+    ok(allOff(EXPECT),
+       'and the controls are STILL held down -- the scope is the key and the '
+       .. 'seat, not the meter')
+    shiftUp(fill)
+
+    -- 6. THE OFF SWITCH TAKES THE SUPPRESSION WITH IT. `enabled = false` is
+    --    documented as "the client registers nothing", and a suppression left
+    --    running under it would be this file quietly keeping a control from a
+    --    server that had switched the whole feature off.
+    resetBoost()
+    drive(20.0)
+    BR.Config.Boost.enabled = false
+    shiftDown(fill)
+    frames(8, 16)
+    ok(not anyOff(EXPECT),
+       'with the boost switched off, nothing is suppressed either')
+    BR.Config.Boost.enabled = true
+    shiftUp(fill)
+
+    -- 7. THE BOOL SHAPES, AGAIN, BECAUSE THE SEAT GATE IS THE SUPPRESSION'S
+    --    GATE. IsPedInAnyVehicle is declared BOOL, `0` is TRUTHY in Lua, and
+    --    this project has shipped that mistake five times. Both directions,
+    --    because they fail in opposite ways and only one of them is visible.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    inVehicle = 1
+    frames(8, 16)
+    ok(allOff(EXPECT),
+       'a native answering 1 rather than true is still IN A VEHICLE '
+       .. '(1 == true is false in Lua)')
+
+    inVehicle = 0
+    frames(8, 16)
+    ok(not anyOff(EXPECT),
+       'and one answering 0 rather than false is still ON FOOT -- 0 is TRUTHY, '
+       .. 'so the naive normalisation would suppress a pedestrian\'s sprint')
+    shiftUp(fill)
+
+    -- ══════════════════════════════════════════════════════════════════════ --
+    -- THE INSTRUMENT THAT WOULD NAME A CAUSE THE DESK CANNOT
+    -- ══════════════════════════════════════════════════════════════════════ --
+    --
+    -- Two rows were added to /brboostwhy for the second report, and both exist
+    -- because the first report was read wrongly: four controls reading PRESSED
+    -- was taken as four things happening to the car, when IS_DISABLED_CONTROL_
+    -- PRESSED only ever answers "the key bound to this id is down".
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    local code, text = brboost(2.5)
+    ok(code == 'ok', 'the suppression does not break the boost it protects', code)
+    ok(text:find('every OTHER control', 1, true) ~= nil,
+       'the readout sweeps the whole 0..359 table and says so when it finds '
+       .. 'nothing -- the four rows above it are a hardcoded 2020 list')
+    shiftUp(fill)
+
+    -- ...AND IT NAMES ONE WHEN THERE IS ONE. A control this build answers for on
+    -- the same key, absent from the four, is precisely the input Rockstar could
+    -- have added after the public table's last update -- the one candidate the
+    -- old readout was structurally incapable of showing.
+    resetBoost()
+    drive(20.0)
+    CONTROL_VK[350], controlsLive[350] = 0x10, true
+    shiftDown(fill)
+    code, text = brboost(1)
+    ok(text:find('(350)', 1, true) ~= nil,
+       'a fifth control on the key is named by its id, not silently dropped')
+    ok(text:find('not in the 2020 table', 1, true) ~= nil,
+       'and it is labelled as one the reference does not cover')
+    shiftUp(fill)
+    CONTROL_VK[350], controlsLive[350] = nil, nil
+
+    -- ...AND THE SWEEP MUST NOT REPORT THE WHOLE DRIVING CONTROL SET. It runs
+    -- only on frames the boost key is down; a version that ran every frame would
+    -- list accelerate, steer and brake, which is true and useless and would bury
+    -- the one row worth having.
+    --
+    -- 350 IS PUT ON A KEY THAT IS HELD DOWN AND THE BOOST KEY IS NOT PRESSED,
+    -- which is the only shape that separates the two versions. Testing it with
+    -- shift ALSO held proves nothing: an ungated sweep and a gated one both run
+    -- on every frame of that window. 0x60 is numpad 0 -- no binding in this
+    -- project watches it, so holding it drives nothing else.
+    resetBoost()
+    drive(20.0)
+    CONTROL_VK[350], controlsLive[350] = 0x60, true
+    keys[0x60] = true
+    code, text = brboost(1)
+    ok(text:find('(350)', 1, true) == nil,
+       'a control held on a DIFFERENT key is not swept up -- the sweep runs only '
+       .. 'on frames the boost key is down')
+    ok(text:find('silent on all 0 frames', 1, true) ~= nil,
+       'and the readout says how many frames it actually swept, so an empty '
+       .. 'list cannot be read as evidence when nothing was sampled')
+    keys[0x60] = nil
+    CONTROL_VK[350], controlsLive[350] = nil, nil
+
+    -- THE SIDEWAYS ROW. The owner's word is "drift", no drift INPUT exists on
+    -- this build, and the remaining suspect is our own impulse -- 1.4 g handed
+    -- to the rigid body without passing through the tyres. This is the number
+    -- that convicts or exonerates it, and it could not be read before.
+    --
+    -- THE VALUE IS READ OUT OF THE ROW RATHER THAN SEARCHED FOR IN THE WHOLE
+    -- REPORT, and anchored at its start. `find('6.0 m/s peak')` matches inside
+    -- '-6.0 m/s peak', which is exactly the reading a dropped abs() would print.
+    local function slipRow(t)
+        return (t:match('sideways while boosting%s+([^\n]+)')) or ''
+    end
+
+    -- A SLIDE THAT DECAYS, so peak, mean and minimum are three different
+    -- numbers and only one of them is 7.5. A readout that kept the last sample,
+    -- or the smallest, passes a constant-value test and fails this one.
+    resetBoost()
+    drive(20.0)
+    vehLateral, vehLateralStep = 7.5, -0.02
+    shiftDown(fill)
+    code, text = brboost(2.5)
+    ok(slipRow(text):find('^7%.5 m/s peak') ~= nil,
+       'the readout reports PEAK lateral speed while boosting, which is what a '
+       .. 'drift IS', slipRow(text))
+    shiftUp(fill)
+    vehLateral, vehLateralStep = 0.0, 0.0
+
+    -- SIDEWAYS IS SIDEWAYS WHICHEVER WAY IT SLID. The component is signed -- a
+    -- car sliding left reads negative -- and a peak taken without abs() would
+    -- report the least sideways frame of a left-hand drift as its worst.
+    resetBoost()
+    drive(20.0)
+    vehLateral = -6.0
+    shiftDown(fill)
+    code, text = brboost(2.5)
+    ok(slipRow(text):find('^6%.0 m/s peak') ~= nil,
+       'a drift the other way is the same size drift -- the sign is dropped, '
+       .. 'not printed', slipRow(text))
+    shiftUp(fill)
+    vehLateral = 0.0
+
+    -- AND A NaN IS NOT A MEASUREMENT. `x ~= x` is the only test for it, and
+    -- without it the row prints '-nan m/s peak' -- which is worse than no row,
+    -- because it looks like an answer.
+    resetBoost()
+    drive(20.0)
+    vehLateral = 0.0 / 0.0
+    shiftDown(fill)
+    code, text = brboost(2.5)
+    ok(slipRow(text):find('^not measured') ~= nil,
+       'a NaN lateral reading is discarded rather than printed as a peak',
+       slipRow(text))
+    shiftUp(fill)
+    vehLateral = 0.0
+
+    -- ...AND SAYS SO RATHER THAN PRINTING A ZERO WHEN IT CANNOT MEASURE. A build
+    -- with no speed vector falls back to the unsigned scalar, which has no
+    -- direction to decompose -- and a confident 0.0 there would exonerate the
+    -- impulse on evidence that was never collected.
+    resetBoost()
+    drive(20.0)
+    speedVectorMissing = true
+    shiftDown(fill)
+    code, text = brboost(2.5)
+    ok(text:find('not measured', 1, true) ~= nil,
+       'a build with no speed vector reports that it could not measure, not 0.0')
+    shiftUp(fill)
+    speedVectorMissing = false
+
+    resetBoost()
+    onFoot()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('sfx.audition')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "Can you make me something which plays GTA sounds with a console command
+--    so I can pick which one sounds good?"      -- owner, 2026-08-22
+--
+-- ═══ WHY THE AUDITION COMMAND IS DRIVEN HERE AND NOT LEFT TO A GREP ═══
+--
+-- tools/test_shared.lua proves the SEARCH returns the right rows and
+-- tools/verify.sh proves the command still exists and still probes. Neither one
+-- runs it. Two things can only be seen by running it, and both are the kind of
+-- mistake that produces SILENCE rather than an error -- which is the exact
+-- failure mode this whole feature exists to make visible:
+--
+--   1. THE ARGUMENT ORDER. PLAY_SOUND_FRONTEND is
+--      (soundId, audioName, audioRef) -- the NAME comes before the SET, which
+--      is the opposite of how everything in this codebase talks about a cue
+--      ("HUD_AWARDS / PROPERTY_PURCHASE", set first). Swap them and every
+--      single sound in the game goes quiet, with no error anywhere and a
+--      config file that still reads perfectly.
+--
+--   2. WHAT THE PROBE MAKES OF EACH SHAPE THE BOOL CAN ARRIVE IN.
+--      HAS_SOUND_FINISHED is declared BOOL and this project has shipped the
+--      number-not-boolean bug SIX times. `0` IS TRUTHY IN LUA, so a build that
+--      answers 0 for "not finished yet" would make a bare truth test report
+--      every pair as silent -- the probe firing constantly on working sounds,
+--      which is worse than no probe because it would be believed at first.
+--      Every shape is driven: true, 1, false, 0 and nil.
+do
+    loadAll({ 'br_lib/config/audio.lua', 'br_core/client/sfx.lua' })
+
+    -- ---------------------------------------------------------- the engine ---
+    local plays, released = {}, {}
+    local savedPlay = PlaySoundFrontend
+    PlaySoundFrontend = function(id, name, set, p3)
+        plays[#plays + 1] = { id = id, name = name, set = set, p3 = p3 }
+    end
+    GetSoundId       = function() return 7 end
+    ReleaseSoundId   = function(id) released[#released + 1] = id end
+
+    -- WHAT THE ENGINE SAYS WHEN ASKED WHETHER THE SOUND IS OVER. Driven per
+    -- case; `true` is the "it never started" answer the probe exists to catch.
+    local finished = true
+    HasSoundFinished = function() return finished end
+
+    -- THREADS RUN INLINE, AND `Wait` MOVES THE CLOCK. The suite's default
+    -- Citizen.Wait is a no-op and GetGameTimer answers a frozen fakeTime -- and
+    -- the probe measures its window with GetGameTimer, so a Wait that did not
+    -- advance it would spin forever. A Wait that does not advance time is also
+    -- not a faithful model of one: in the game every Wait(0) is a frame.
+    local savedCitizen = Citizen
+    Citizen = {
+        CreateThread = function(f) f() end,
+        Wait = function(ms) fakeTime = fakeTime + math.max(tonumber(ms) or 0, 16) end,
+        SetTimeout = function() end,
+    }
+
+    --- Run /brsfx and hand back everything it printed.
+    local function brsfx(...)
+        local from = #logged + 1
+        plays, released = {}, {}
+        commands['brsfx'](0, { ... }, 'brsfx')
+        return table.concat(logged, '\n', from, #logged)
+    end
+
+    ok(commands['brsfx'] ~= nil, '/brsfx is registered')
+
+    -- ═══ THE ARGUMENT ORDER ═══
+    local out = brsfx('play', 'HUD_AWARDS', 'COLLECTED')
+    ok(#plays == 1, 'brsfx play makes exactly one sound call', ('%d'):format(#plays))
+    ok(plays[1] and plays[1].name == 'COLLECTED' and plays[1].set == 'HUD_AWARDS',
+       'and passes the NAME third-from-left and the SET after it, which is '
+           .. 'PLAY_SOUND_FRONTEND(soundId, audioName, audioRef) and is the '
+           .. 'reverse of how a cue is written down',
+       plays[1] and ('name=%s set=%s'):format(tostring(plays[1].name),
+                                              tostring(plays[1].set)) or 'nothing')
+
+    -- THROUGH A REAL SOUND ID, WHICH IS THE WHOLE PROBE. Fire-and-forget -1
+    -- cannot be asked whether it ever started, and a version of this command
+    -- that quietly went back to -1 would still play sounds and would still look
+    -- like it was working.
+    ok(plays[1] and plays[1].id == 7,
+       'through a real GET_SOUND_ID rather than fire-and-forget -1, so there '
+           .. 'is something to ask HAS_SOUND_FINISHED about',
+       plays[1] and tostring(plays[1].id) or 'nothing')
+    ok(released[1] == 7, 'and the id is released afterwards rather than leaked',
+       tostring(released[1]))
+
+    -- ═══ EVERY SHAPE A BOOL NATIVE MAY ARRIVE IN ═══
+    --
+    -- The pair is the same every time; only the engine's answer changes. What
+    -- is asserted is the VERDICT the owner reads, because that is the whole
+    -- output of the feature.
+    local SHAPES = {
+        { v = true,  silent = true,  why = 'a strict true means finished, so it never started' },
+        { v = 1,     silent = true,  why = 'and 1 is the same answer from a build that returns numbers' },
+        { v = false, silent = false, why = 'a strict false means it is still playing' },
+        { v = 0,     silent = false, why = '...AND SO IS 0, which is TRUTHY in Lua -- the shape that '
+                                           .. 'punishes a bare `if finished then` and would report '
+                                           .. 'every working sound as silent' },
+        { v = nil,   silent = false, why = 'and nil is not "finished" either' },
+    }
+    for _, s in ipairs(SHAPES) do
+        finished = s.v
+        local o = brsfx('play', 'HUD_AWARDS', 'COLLECTED')
+        local sawSilent = o:find('[silent?]', 1, true) ~= nil
+        ok(sawSilent == s.silent, s.why,
+           ('HasSoundFinished -> %s, reported %s'):format(
+               tostring(s.v), sawSilent and 'silent' or 'played'))
+    end
+    finished = false
+
+    -- ═══ THE HONEST THIRD ANSWER: THE PROBE DECLINING ═══
+    --
+    -- `[silent?]` and `[unprobed]` must not be confusable. The first is
+    -- evidence about the sound; the second is an admission about the probe, on
+    -- a build where there was no sound id to watch or where the native would
+    -- not answer. A tool that reported "silent" when it simply could not tell
+    -- would send the owner hunting a set name that was fine -- which is the
+    -- same wasted round, with the blame moved.
+    local savedGet = GetSoundId
+    GetSoundId = function() return -1 end
+    out = brsfx('play', 'HUD_AWARDS', 'COLLECTED')
+    ok(out:find('[unprobed]', 1, true) ~= nil,
+       'a build with no sound id to spare reports that it could not tell, not '
+           .. 'that the sound was silent', out)
+    ok(#plays == 1 and plays[1].id == -1,
+       'and the sound is still played, fire-and-forget, rather than skipped -- '
+           .. 'the ear is the primary instrument and the probe is the aid',
+       plays[1] and tostring(plays[1].id) or 'nothing')
+    GetSoundId = savedGet
+
+    HasSoundFinished = function() error('this native does not exist here') end
+    out = brsfx('play', 'HUD_AWARDS', 'COLLECTED')
+    ok(out:find('[unprobed]', 1, true) ~= nil,
+       'and a build whose HAS_SOUND_FINISHED does not bind says the same thing '
+           .. 'rather than taking the whole command down', out)
+    ok(#plays == 1, 'while still playing the sound')
+    HasSoundFinished = function() return finished end
+
+    -- ═══ A CUE BY KEY, WHICH IS WHAT MAKES THE CONFIG AUDITIONABLE ═══
+    local done = BR.Config.Audio.cues['fuel.done']
+    brsfx('fuel.done')
+    ok(#plays == 1 and plays[1].name == done.name and plays[1].set == done.set,
+       '/brsfx <cue> plays whatever the cue table currently says',
+       plays[1] and (tostring(plays[1].set) .. '/' .. tostring(plays[1].name)) or 'nothing')
+
+    -- AND THE OLDER TWO-WORD FORM STILL WORKS. config/audio.lua's own comments
+    -- tell the reader to type `/brsfx HUD_AWARDS PROPERTY_PURCHASE`, and a
+    -- command that broke its documented spelling to make room for subcommands
+    -- would have traded one discovery problem for another.
+    brsfx('HUD_AWARDS', 'MEDAL_BRONZE')
+    ok(#plays == 1 and plays[1].set == 'HUD_AWARDS' and plays[1].name == 'MEDAL_BRONZE',
+       'and the documented two-word form still plays a raw pair',
+       plays[1] and (tostring(plays[1].set) .. '/' .. tostring(plays[1].name)) or 'nothing')
+
+    -- A SUBCOMMAND IS NOT MISTAKEN FOR A SOUND SET. `sets` and `find` take a
+    -- second word too, and reading `brsfx find GO` as the set `find` would be a
+    -- silent sound and a search that never ran.
+    brsfx('find', 'GO')
+    ok(#plays == 0, 'a subcommand with an argument is not read as a set/name pair',
+       ('%d play(s)'):format(#plays))
+
+    -- ═══ SEARCH OUTPUT ═══
+    out = brsfx('find', 'GO', 'MINI')
+    ok(out:find('GO_NON_RACE', 1, true) ~= nil,
+       'brsfx find prints the pairs it matched', out)
+    ok(out:find('HUD_AWARDS', 1, true) == nil,
+       'and nothing from a set the second word excluded')
+
+    out = brsfx('sets', 'AWARDS')
+    ok(out:find('HUD_AWARDS', 1, true) ~= nil, 'brsfx sets lists a matching set')
+
+    out = brsfx('find', 'nothing_is_called_this')
+    ok(out:find(': 0 ', 1, true) ~= nil, 'and an empty search says so', out)
+
+    -- ═══ STEP 2: LISTING ONE SET WITHOUT PLAYING IT ═══
+    --
+    --   "It seems I have no way to list all sfx within a given set."
+    --                                             -- owner, 2026-08-23
+    --
+    -- The verb that was missing, and the property that makes it the missing one
+    -- rather than a synonym for `audition`: IT MAKES NO SOUND. `audition` was
+    -- the only way to see a whole set and it costs twelve seconds of playback
+    -- to do it; a list you read in silence is what lets somebody decide what is
+    -- worth auditioning.
+    local awardNames = BR.Config.Audio.namesIn('HUD_AWARDS')
+    out = brsfx('sounds', 'HUD_AWARDS')
+    ok(#plays == 0,
+       'brsfx sounds plays NOTHING -- it is the silent half of browsing, and a '
+           .. 'version that played would just be `audition` with a longer name',
+       ('%d sound calls'):format(#plays))
+
+    local missing = nil
+    for _, n in ipairs(awardNames) do
+        if out:find(n, 1, true) == nil then missing = n end
+    end
+    ok(missing == nil, 'and prints every name in the set, not a sample', missing)
+    ok(out:find(('%d sounds'):format(#awardNames), 1, true) ~= nil,
+       'with the count in the header', out:sub(1, 80))
+
+    -- EACH STEP NAMES THE NEXT ONE. This is what makes the three-step flow
+    -- findable without reading the help, which is the actual complaint: the
+    -- verbs all existed, and none of them pointed anywhere.
+    ok(brsfx('sets', 'AWARDS'):find('brsfx sounds', 1, true) ~= nil,
+       'step 1 ends by naming step 2')
+    ok(out:find('brsfx play HUD_AWARDS ', 1, true) ~= nil,
+       'and step 2 ends by naming step 3, with a real NAME filled in rather '
+           .. 'than a placeholder to be decoded', out:sub(-300))
+
+    -- AND THE `[silent?]` TEACHING SURVIVES THE NEW ROUTE IN. Being listed here
+    -- proves GTA's own scripts play the pair; it does not prove this build has
+    -- the bank. "Listed it, played it, heard nothing" must not read as "that
+    -- sound is bad" -- that exact confusion cost two rounds of fuel cue.
+    ok(out:find('[silent?]', 1, true) ~= nil
+       and out:find('not a sound you disliked', 1, true) ~= nil,
+       'and a set listing still explains what silence will mean', out:sub(-200))
+
+    -- ═══ FORGIVING ABOUT WHAT WAS TYPED, LOUD ABOUT WHAT IT DECIDED ═══
+    out = brsfx('sounds', 'hud_awards')
+    ok(out:find(awardNames[1], 1, true) ~= nil,
+       'a set name in the wrong case still lists the set -- GTA\'s names SHOUT '
+           .. 'and nobody types 37 characters of caps twice')
+    ok(out:find('reading "hud_awards" as HUD_AWARDS', 1, true) ~= nil,
+       'and the command says which set it decided on, because step 3 needs the '
+           .. 'catalogue\'s spelling and would otherwise be typed wrong', out:sub(1, 120))
+
+    out = brsfx('sounds', 'awards')
+    ok(out:find('reading "awards" as HUD_AWARDS', 1, true) ~= nil
+       and out:find(awardNames[1], 1, true) ~= nil,
+       'a partial name that can only mean one set resolves to it, and says so',
+       out:sub(1, 120))
+
+    -- A NEAR MISS IS ANSWERED WITH THE CANDIDATES, NOT WITH A REFUSAL. `HUD`
+    -- means thirteen sets; picking one would be guessing, and printing nothing
+    -- would leave somebody who is two characters from the answer with no route
+    -- to it.
+    out = brsfx('sounds', 'HUD')
+    ok(out:find('could mean', 1, true) ~= nil
+       and out:find('HUD_AWARDS', 1, true) ~= nil
+       and out:find('HUD_FREEMODE_SOUNDSET', 1, true) ~= nil,
+       'an ambiguous set name lists the sets it could have meant', out:sub(1, 200))
+    ok(#plays == 0, 'and still plays nothing')
+
+    out = brsfx('sounds', 'nothing_is_called_this')
+    ok(out:find('no sound set matches', 1, true) ~= nil
+       and out:find('brsfx sets', 1, true) ~= nil,
+       'a set name matching nothing at all says so and points back at step 1',
+       out)
+
+    out = brsfx('sounds')
+    ok(out:find('usage: brsfx sounds', 1, true) ~= nil,
+       'and the verb with no set at all prints its usage', out)
+
+    -- ═══ PAGING, DRIVEN THROUGH AN INJECTED SET BECAUSE NO REAL ONE IS BIG
+    --     ENOUGH ═══
+    --
+    -- The biggest set in the catalogue is 27 names, well under the 60-row cap,
+    -- so every real `brsfx sounds` fits on one page and the paging arm is
+    -- unreachable through the shipped data. It is tested anyway: the catalogue
+    -- is a list somebody ADDS to, and the failure this guards is a console that
+    -- drops the tail of a list WITHOUT SAYING SO -- which in a tool whose whole
+    -- subject is "the thing you cannot see is the thing that is wrong" would be
+    -- the worst possible bug to have.
+    local big = {}
+    for i = 1, 145 do big[i] = ('ZZ_PAGE_%03d'):format(i) end
+    table.insert(BR.Config.Audio.catalogue, { set = 'ZZ_PAGING_SET', names = big })
+
+    out = brsfx('sounds', 'ZZ_PAGING_SET')
+    ok(out:find('page 1 of 3', 1, true) ~= nil,
+       'a set longer than the cap is paged rather than dumped', out:sub(1, 90))
+    ok(out:find('ZZ_PAGE_001', 1, true) ~= nil
+       and out:find('ZZ_PAGE_060', 1, true) ~= nil
+       and out:find('ZZ_PAGE_061', 1, true) == nil,
+       'with exactly the first page of names on it')
+    ok(out:find('85 more not shown', 1, true) ~= nil,
+       'and it says HOW MANY it held back -- silent truncation in a browsing '
+           .. 'tool is worse than no tool', out:sub(-220))
+    ok(out:find('brsfx sounds ZZ_PAGING_SET 2', 1, true) ~= nil,
+       'and the exact words that fetch them')
+
+    out = brsfx('sounds', 'ZZ_PAGING_SET', '3')
+    ok(out:find('page 3 of 3', 1, true) ~= nil
+       and out:find('ZZ_PAGE_145', 1, true) ~= nil
+       and out:find('more not shown', 1, true) == nil,
+       'the last page holds the tail and claims nothing is missing', out:sub(1, 90))
+    ok(out:find('brsfx sounds ZZ_PAGING_SET 1', 1, true) ~= nil,
+       'and offers the way back to the top')
+
+    -- A PAGE NUMBER PAST THE END, OR NOT A NUMBER AT ALL, IS CLAMPED RATHER
+    -- THAN REFUSED. Somebody typing a page number is trying to see a list; an
+    -- error message instead of a list is how they go back to guessing.
+    ok(brsfx('sounds', 'ZZ_PAGING_SET', '99'):find('page 3 of 3', 1, true) ~= nil,
+       'a page past the end clamps to the last one')
+    ok(brsfx('sounds', 'ZZ_PAGING_SET', 'banana'):find('page 1 of 3', 1, true) ~= nil,
+       'and a page that is not a number is page one')
+    ok(brsfx('sounds', 'ZZ_PAGING_SET', '-4'):find('page 1 of 3', 1, true) ~= nil,
+       'as is a negative one')
+
+    table.remove(BR.Config.Audio.catalogue)
+    ok(BR.Config.Audio.namesIn('ZZ_PAGING_SET') == nil,
+       'and the injected set is gone again')
+
+    -- ═══ AUDITIONING A WHOLE SET, IN ORDER ═══
+    --
+    -- The comparative case, which is the one that actually settles a choice:
+    -- play, wait, play the next, printing each name.
+    local names = BR.Config.Audio.namesIn('HUD_AWARDS')
+    out = brsfx('audition', 'HUD_AWARDS')
+    ok(#plays == #names, 'brsfx audition plays every name in the set',
+       ('%d of %d'):format(#plays, #names))
+    local sameOrder = true
+    for i, n in ipairs(names) do
+        if not plays[i] or plays[i].name ~= n then sameOrder = false end
+    end
+    ok(sameOrder, 'in the catalogue order, so the printed list and the sounds '
+                      .. 'heard line up one for one')
+    ok(out:find(names[1], 1, true) ~= nil and out:find(names[#names], 1, true) ~= nil,
+       'and every name is printed as it plays, not just at the end')
+
+    -- AND THE SILENT ONES ARE COUNTED. This is the line that turns "one of
+    -- these was wrong" into "this one was wrong".
+    finished = true
+    out = brsfx('audition', 'HUD_AWARDS')
+    ok(out:find(('%d of %d never started'):format(#names, #names), 1, true) ~= nil,
+       'a set where nothing plays reports the count rather than looking like a '
+           .. 'set of sounds somebody disliked', out:sub(-260))
+    finished = false
+
+    -- ═══ bind: THE THIRD FUEL SOUND IS THE OWNER'S, AND THIS IS HOW THEY TRY IT ═══
+    local wasSet, wasName = done.set, done.name
+    brsfx('bind', 'fuel.done', 'HUD_MINI_GAME_SOUNDSET', 'MEDAL_UP')
+    ok(BR.Config.Audio.cues['fuel.done'].set == 'HUD_MINI_GAME_SOUNDSET'
+       and BR.Config.Audio.cues['fuel.done'].name == 'MEDAL_UP',
+       'brsfx bind re-points a cue in the live table')
+    brsfx('fuel.done')
+    ok(plays[1] and plays[1].name == 'MEDAL_UP',
+       'and the cue really plays the new pair afterwards -- which is what lets '
+           .. 'a candidate be judged at a pump instead of in a menu')
+
+    -- IT REFUSES A KEY THAT IS NOT A CUE, rather than inventing one. A typo
+    -- that silently created `fuel.donne` would leave the owner auditioning a
+    -- cue nothing fires.
+    brsfx('bind', 'fuel.donne', 'HUD_AWARDS', 'WIN')
+    ok(BR.Config.Audio.cues['fuel.donne'] == nil,
+       'and a misspelled cue key is refused rather than quietly created')
+
+    BR.Config.Audio.cues['fuel.done'] = { set = wasSet, name = wasName }
+
+    -- ═══ THE MATCH-WIDE CUE ARRIVING FROM THE SERVER ═══
+    --
+    -- The storm's. Everything about the payload is treated as untrusted even
+    -- though the server is the sender, because the cost of doing so is one
+    -- type check and the cost of not doing so is a client error mid-match.
+    local move = BR.Config.Audio.cues['storm.move']
+    plays = {}
+    fire(BR.Net.SFX_CUE, { c = 'storm.move' })
+    ok(#plays == 1 and plays[1].set == move.set and plays[1].name == move.name,
+       'a storm.move cue off the wire plays the configured pair',
+       plays[1] and (tostring(plays[1].set) .. '/' .. tostring(plays[1].name)) or 'nothing')
+
+    for _, junk in ipairs({ { c = 'no such cue' }, { c = 42 }, { }, 'not a table', 7 }) do
+        plays = {}
+        local safe = pcall(fire, BR.Net.SFX_CUE, junk)
+        ok(safe and #plays == 0,
+           'a malformed cue message plays nothing and does not throw',
+           ('%s -> %d play(s), ok=%s'):format(type(junk), #plays, tostring(safe)))
+    end
+    plays = {}
+    local safeNil = pcall(fire, BR.Net.SFX_CUE, nil)
+    ok(safeNil and #plays == 0, 'and neither does no payload at all')
+
+    -- THE MUTE SWITCH COVERS IT TOO. A player who muted our cues must not be
+    -- given a sound by the server just because it arrived over the wire.
+    BR.Sfx.setMuted(true)
+    plays = {}
+    fire(BR.Net.SFX_CUE, { c = 'storm.move' })
+    ok(#plays == 0, 'and /brmute silences the server-addressed cue as well',
+       ('%d'):format(#plays))
+    BR.Sfx.setMuted(false)
+
+    PlaySoundFrontend = savedPlay
+    Citizen = savedCitizen
+end
+
+-- ======================================================================== --
+-- N. THE AMMO THAT CAME BACK
+-- ======================================================================== --
+--
+-- Owner, 2026-08-23, live two-player playtest: "when picking up a railgun from
+-- the airdrop it seemed to have a different amount of ammo than what the HUD
+-- showed, then once depleted, switching between slots gave me more ammo."
+--
+-- The second sentence is a duplication exploit: cycle the wheel and the gun is
+-- loaded again, for free, as many times as you like.
+--
+-- IT IS NOT IN THE SWITCH, WHICH IS WHY READING THE SWITCH FOUND NOTHING.
+-- applyActive does RemoveAllPedWeapons -> GiveWeaponToPed(..., 0, ...) ->
+-- SetPedAmmo, so it grants nothing and then writes an explicit number: it can
+-- only ever hand out what it was TOLD. What it is told is the SERVER's number,
+-- and with Combat.serverAmmo on the server only debits a round when a validated
+-- weaponDamageEvent reaches BR.Damage.spendRound. Rounds burnt by anything else
+-- were charged to nobody, and the re-grant handed them straight back.
+--
+-- WHY THE HARNESS MODELS THE PED'S AMMO RATHER THAN COUNTING CALLS. "SetPedAmmo
+-- was called with 6" is true of the fix and of the bug; the question is what the
+-- GUN ends up holding after a sequence of grants, and only a model of the ped
+-- can answer that. Every native below is the real one's contract: GiveWeaponToPed
+-- ADDS (which is why the file passes 0), SetPedAmmo SETS the total, and the
+-- magazine is part of the total rather than beside it.
+describe('a depleted weapon stays depleted across a slot switch -- 2026-08-23')
+do
+    local savedGive    = GiveWeaponToPed
+    local savedRemove  = RemoveAllPedWeapons
+    local savedSetAmmo = SetPedAmmo
+    local savedSetClip = SetAmmoInClip
+    local savedGetAmmo = GetAmmoInPedWeapon
+    local savedGetClip = GetAmmoInClip
+    local savedCurrent = SetCurrentPedWeapon
+
+    -- The ped's own holding, by normalised hash. `total` includes the magazine,
+    -- which is the whole point of the model the report loop watches.
+    local gun = { total = {}, clip = {} }
+
+    function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.clip[h] = math.min(math.max(0, n or 0), gun.total[h] or 0)
+    end
+    function GetAmmoInPedWeapon(_, hash) return gun.total[BR.NormHash(hash)] or 0 end
+    function GetAmmoInClip(_, hash) return true, gun.clip[BR.NormHash(hash)] or 0 end
+    function SetCurrentPedWeapon(_, hash) pedWeapon = hash end
+
+    local RAILGUN = BR.Config.WeaponById['railgun']
+    local PISTOL  = BR.Config.WeaponById['pistol']
+    local RH, PH  = BR.NormHash(RAILGUN.hash), BR.NormHash(PISTOL.hash)
+
+    --- Pull the trigger, the way the engine does: one round out of the magazine
+    --- and out of the total, and a reload off the ped's own reserve when the
+    --- magazine empties. Nothing here talks to the server, which IS the bug.
+    local function pull(hash, n)
+        local h = BR.NormHash(hash)
+        for _ = 1, (n or 1) do
+            if (gun.total[h] or 0) <= 0 then break end
+            gun.total[h] = gun.total[h] - 1
+            gun.clip[h]  = math.max(0, (gun.clip[h] or 0) - 1)
+            if gun.clip[h] == 0 then
+                local w = BR.Config.WeaponByHash[h]
+                gun.clip[h] = math.min(w and w.clip or 0, gun.total[h])
+            end
+        end
+        -- Ten ticks: enough for the report loop's own gate to open, and enough
+        -- for the mirror to have seen the gun at rest afterwards.
+        for _ = 1, 10 do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+    end
+
+    --- What the server would send. `clip` and the pool are the SERVER's numbers,
+    --- so leaving them where they were is exactly a server that has not noticed
+    --- the shots -- which is the state an explosive weapon is always in.
+    local function serverSays(active, railClip, heavy)
+        fire(BR.Net.INV_SET, {
+            slots = {
+                { id = 'railgun', label = 'Railgun', kind = BR.ItemKind.WEAPON,
+                  rarity = 5, count = 1, clip = railClip, pool = 'heavy' },
+                { id = 'pistol', label = 'Pistol', kind = BR.ItemKind.WEAPON,
+                  rarity = 1, count = 1, clip = PISTOL.clip, pool = 'light' },
+            },
+            ammo = { heavy = heavy, light = 24 },
+            active = active,
+        })
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    local function ammoReports()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.INV_AMMO then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. THE PICKUP. What the HUD draws and what the gun holds are the same
+    --       number, which is the first half of the report.
+    --
+    --       The HUD reads `clip` and the pool off the payload and prints them as
+    --       "clip / reserve"; the ped is given `clip + reserve` in total. So the
+    --       assertion is that the engine's total equals what the bar adds up to,
+    --       and that the magazine matches the number in the big type.
+    sent = {}
+    serverSays(1, RAILGUN.clip, RAILGUN.clip)
+    local hudClip, hudReserve = RAILGUN.clip, RAILGUN.clip
+    ok(gun.total[RH] == hudClip + hudReserve,
+       'a railgun off an airdrop holds exactly what the HUD adds up to',
+       ('engine %s, HUD %d + %d'):format(tostring(gun.total[RH]),
+                                         hudClip, hudReserve))
+    ok(gun.clip[RH] == hudClip,
+       'and its magazine is the number the bar prints in the big type',
+       ('engine %s, HUD %d'):format(tostring(gun.clip[RH]), hudClip))
+
+    -- ── 2. FIRE IT DRY, WITH THE SERVER NONE THE WISER.
+    --
+    --       No INV_SET follows, because for an explosive there is nothing to
+    --       follow: a blast raises no weaponDamageEvent (server/damage.lua's own
+    --       2026-08-08 capture), so spendRound never runs and the server's
+    --       numbers stay exactly where they were.
+    sent = {}
+    pull(RAILGUN.hash, hudClip + hudReserve)
+    ok(gun.total[RH] == 0, 'the gun is empty after the last round',
+       tostring(gun.total[RH]))
+
+    -- THE HALF THAT TELLS THE SERVER. Silenced by serverAmmo until 2026-08-23,
+    -- which is why the drift was permanent rather than a round trip long.
+    local reports = ammoReports()
+    ok(#reports > 0 and reports[#reports].total == 0,
+       'the client reports the rounds as gone, even with serverAmmo on',
+       ('%d report(s), last total %s'):format(
+           #reports, reports[#reports] and tostring(reports[#reports].total) or '-'))
+
+    -- ── 3. THE EXPLOIT. Switch away, switch back. The server still believes the
+    --       railgun is loaded, so this is the exact press the owner made.
+    serverSays(2, RAILGUN.clip, RAILGUN.clip)
+    ok(gun.total[RH] == nil or gun.total[RH] == 0,
+       'switching away takes the railgun off the ped',
+       tostring(gun.total[RH]))
+
+    serverSays(1, RAILGUN.clip, RAILGUN.clip)
+    ok((gun.total[RH] or 0) == 0,
+       'A DEPLETED WEAPON COMES BACK DEPLETED -- the switch conjures nothing',
+       ('engine total %s (server still says %d + %d)'):format(
+           tostring(gun.total[RH]), RAILGUN.clip, RAILGUN.clip))
+
+    -- ...AND NOT ONLY THROUGH THE SWITCH. reapplyAmmo runs on any INV_SET whose
+    -- ammo went up, and the pool is SHARED -- so picking up a bandage while
+    -- somebody else's sniper ammo landed used to reload the railgun too. Same
+    -- deficit, same subtraction, different door.
+    serverSays(1, RAILGUN.clip, RAILGUN.clip + 5)
+    ok((gun.total[RH] or 0) == 5,
+       'and an unrelated pickup credits only what was actually picked up',
+       tostring(gun.total[RH]))
+
+    -- ── 4. IT IS NOT RAILGUN-ONLY, AND THE REPORT UNDERSTATES IT. The railgun is
+    --       where the owner found it because an explosive is charged for nothing
+    --       at all; every weapon leaks for every shot the server does not see.
+    sent = {}
+    serverSays(2, RAILGUN.clip, 0)
+    pull(PISTOL.hash, PISTOL.clip + 24)
+    ok(gun.total[PH] == 0, 'a pistol emptied the same way is empty',
+       tostring(gun.total[PH]))
+    serverSays(1, RAILGUN.clip, 0)
+    serverSays(2, RAILGUN.clip, 0)
+    ok((gun.total[PH] or 0) == 0,
+       'and it stays empty across the same switch -- this was never railgun-only',
+       tostring(gun.total[PH]))
+
+    -- ── 5. THE OTHER DIRECTION, WHICH IS THE ONE A CARELESS FIX BREAKS. A
+    --       genuine grant must still arm the player: the deficit may only ever
+    --       take away rounds the ENGINE has already spent.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    sent = {}
+    serverSays(1, RAILGUN.clip, RAILGUN.clip)
+    ok(gun.total[RH] == RAILGUN.clip * 2,
+       'a fresh weapon after a teardown is fully loaded',
+       tostring(gun.total[RH]))
+
+    -- Firing without the shortfall ever being measured (the state a stow or a
+    -- suspended probe leaves) must not dock anything either: it is `max(0, ...)`
+    -- and it is keyed on the item, so a slot that changed weapons starts clean.
+    pull(RAILGUN.hash, 2)
+    serverSays(1, 0, 0)             -- the server catches up: nothing left
+    serverSays(1, PISTOL.clip, 12)  -- ...and a DIFFERENT gun lands in slot 1
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'pistol', label = 'Pistol', kind = BR.ItemKind.WEAPON,
+              rarity = 1, count = 1, clip = PISTOL.clip, pool = 'light' },
+        },
+        ammo = { light = 24 }, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    ok(gun.total[PH] == PISTOL.clip + 24,
+       'and a new weapon in a slot that was empty is not docked for it',
+       tostring(gun.total[PH]))
+
+    -- ── 6. THE READOUT. The owner cannot check any of this from a chair, and a
+    --       diagnostic that throws is worse than none -- /brloot and /brkeys are
+    --       pinned the same way for the same reason. Exercised on a live
+    --       inventory AND on an empty one, because the empty case is the one
+    --       that reaches for fields that are not there.
+    ok(pcall(commands['brammo'], nil, {}, ''),
+       '/brammo does not throw with a weapon in hand')
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = 0 })
+    ok(pcall(commands['brammo'], nil, {}, ''),
+       'and neither does it on an empty inventory holding fists')
+
+    -- ── 7. THE THIRD REPORT, AND IT IS THE SEQUENCE VERBATIM (owner,
+    --       2026-08-23): "I also picked up the railgun again this time, which
+    --       came with ammo, and was immediately drained of all railgun ammo.....
+    --       didn't even do anything."
+    --
+    --       DIDN'T EVEN DO ANYTHING IS THE ASSERTION. A found railgun arrives
+    --       loaded and one full second of the real loop passes with no shot, no
+    --       switch and no key -- and the gun still holds what it came with. The
+    --       drain itself is a server-side fault (see inv.ammo.staleReport in
+    --       test_roster, which is where the arithmetic lives); what is pinned
+    --       HERE is the half only this side can answer -- that the quiet second
+    --       after a pickup is genuinely quiet, and that anything this client DOES
+    --       say names the holding it measured.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+    sent = {}
+    serverSays(1, RAILGUN.clip, RAILGUN.clip)
+    ok(gun.total[RH] == RAILGUN.clip * 2,
+       'the found railgun came with ammo',
+       tostring(gun.total[RH]))
+
+    -- One second of the loop, at the band it really runs at. Nothing is fired,
+    -- nothing is pressed, no INV_SET arrives -- this is the player standing
+    -- still, which is what he was doing.
+    for _ = 1, 10 do
+        fakeTime = fakeTime + 100
+        BR.Loop.step(BR.Loop.TICK)
+    end
+    ok(gun.total[RH] == RAILGUN.clip * 2,
+       'AND A SECOND LATER IT STILL HAS IT -- nothing was done and nothing left',
+       tostring(gun.total[RH]))
+    ok(gun.clip[RH] == RAILGUN.clip,
+       'with the magazine untouched as well', tostring(gun.clip[RH]))
+    ok(#ammoReports() == 0,
+       'and the client said nothing at all, because nothing happened',
+       ('%d report(s)'):format(#ammoReports()))
+
+    -- ...AND WHEN IT DOES SPEAK, IT SAYS WHAT IT MEASURED AGAINST. `was` is the
+    -- compare-and-swap token the far end refuses a stale report on; a report
+    -- without it is one the server cannot tell from a message that crossed a
+    -- pickup in flight, which is the whole of the third bug.
+    sent = {}
+    pull(RAILGUN.hash, 2)
+    local spoke = ammoReports()
+    ok(#spoke > 0, 'firing two rounds is reported', ('%d'):format(#spoke))
+    ok(spoke[1] and spoke[1].was == RAILGUN.clip * 2,
+       'and the report names the holding the server last stated',
+       tostring(spoke[1] and spoke[1].was))
+    ok(spoke[1] and spoke[1].total == RAILGUN.clip * 2 - 2,
+       'beside what the engine actually holds',
+       tostring(spoke[1] and spoke[1].total))
+    ok(spoke[1] and spoke[1].was > spoke[1].total,
+       'which is a DECREASE, still, in the only direction this may travel')
+
+    -- ── 8. AND THE GUN DOES NOT GO ON EMPTYING ITSELF, WHICH IS THE OTHER HALF
+    --       OF "DIDN'T EVEN DO ANYTHING".
+    --
+    --       Two rounds out of six are gone and the deficit is 2. Every re-grant
+    --       between INV_SETs used to subtract that deficit from the LAUNDERED
+    --       magazine -- the one the report loop had already written the engine's
+    --       number into -- so the same two rounds came off twice, the next
+    --       measurement read the lower engine as a bigger deficit, and it
+    --       compounded: 4, then 2, then 0, in three ticks with the player stood
+    --       still. On 56c0ba7 this block reads 2 and 0.
+    --
+    --       BR.Inv.reapply IS THE REAL DOOR AND IT IS CALLED HERE DIRECTLY.
+    --       skydive.lua's post-landing sweep escalates to it on its third
+    --       attempt, and the strip check clears `applied` for the same effect --
+    --       both from TICK loops, which is exactly when the mirror is laundered.
+    ok(gun.total[RH] == RAILGUN.clip * 2 - 2,
+       'two rounds fired leaves four', tostring(gun.total[RH]))
+
+    for _ = 1, 5 do
+        BR.Inv.reapply()
+        fakeTime = fakeTime + 100
+        BR.Loop.step(BR.Loop.TICK)
+    end
+    ok(gun.total[RH] == RAILGUN.clip * 2 - 2,
+       'AND FIVE RE-GRANTS LATER IT IS STILL FOUR -- the deficit is charged ONCE',
+       tostring(gun.total[RH]))
+
+    -- ...AND THE OTHER DIRECTION, WHICH A FIX THAT SIMPLY DROPPED THE
+    -- SUBTRACTION WOULD BREAK: the rounds that ARE gone must stay gone. A
+    -- re-grant may not hand back what the engine has spent, or 951c6ea's
+    -- duplication is open again on this side.
+    ok(gun.total[RH] < RAILGUN.clip * 2,
+       'and it has not been handed the two back either', tostring(gun.total[RH]))
+
+    -- Fire it the rest of the way dry and re-grant again: a weapon whose deficit
+    -- is its whole holding comes back with nothing, which is the case the whole
+    -- of 951c6ea exists for.
+    pull(RAILGUN.hash, RAILGUN.clip * 2)
+    BR.Inv.reapply()
+    BR.Loop.step(BR.Loop.TICK)
+    ok((gun.total[RH] or 0) == 0,
+       'a gun that ran dry still comes back dry -- 951c6ea intact',
+       tostring(gun.total[RH]))
+
+    -- A THROWABLE SPEAKS TOO, AND ITS `was` IS ITS STACK. The same window exists
+    -- for grenades -- throw one, pick two up, the report lands afterwards -- so
+    -- the branch that reports them carries the same token.
+    sent = {}
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'grenade', label = 'Grenade', kind = BR.ItemKind.THROWABLE,
+              rarity = 2, count = 3 },
+        },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    local GRENADE = BR.Config.WeaponById['grenade']
+    if GRENADE then
+        local GH2 = BR.NormHash(GRENADE.hash)
+        gun.total[GH2] = 1                 -- two thrown, one left in the hand
+        for _ = 1, 4 do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+        local thrown = ammoReports()
+        ok(#thrown > 0, 'a throw is reported', ('%d'):format(#thrown))
+        ok(thrown[1] and thrown[1].was == 3,
+           'and it names the stack the server last stated',
+           tostring(thrown[1] and thrown[1].was))
+    end
+
+    ok(pcall(commands['brammo'], nil, {}, ''),
+       'and /brammo still does not throw with the report log populated')
+
+    GiveWeaponToPed     = savedGive
+    RemoveAllPedWeapons = savedRemove
+    SetPedAmmo          = savedSetAmmo
+    SetAmmoInClip       = savedSetClip
+    GetAmmoInPedWeapon  = savedGetAmmo
+    GetAmmoInClip       = savedGetClip
+    SetCurrentPedWeapon = savedCurrent
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ======================================================================== --
+-- O. THE MANUAL RELOAD KEY
+-- ======================================================================== --
+--
+-- Owner, 2026-08-23: "we need a manual reload button, which should default to
+-- R." R WAS ALREADY `use`, and keybinds.lua chose it in the first place by
+-- arguing about a reload that did not exist yet -- "the two never want the key
+-- at the same moment". That sentence is now load-bearing, so it is what this
+-- block tests: ONE key, and which of the two things it means is decided by what
+-- is in the player's hands.
+--
+-- THE SERVER OWNS THE ARITHMETIC AND test_roster PROVES IT. What is proved here
+-- is narrower and is the half that lives on this side: which message goes out,
+-- and -- for the states where nothing should happen -- that NOTHING goes out.
+-- A key that asks the server on every press would be answered correctly and
+-- would still be wrong, because it would eat the `use` that press was.
+describe('#R -- the manual reload key')
+do
+    local RIFLE = BR.Config.WeaponById['carbinerifle']
+
+    local function press()
+        for _, fn in ipairs(BR.Keys.listeners['use'] or {}) do fn(true) end
+    end
+
+    local function asked(name)
+        local n = 0
+        for _, s in ipairs(sent) do if s.name == name then n = n + 1 end end
+        return n
+    end
+
+    --- Stand the player up holding slot 1, with a shield in slot 2.
+    ---
+    --- THE SHIELD IS NOT SCENERY. `use` falls through to "the lowest slot that
+    --- is consumable" when the active slot is not one, so without something to
+    --- fall through TO, every "the reload took the press" assertion would pass
+    --- against a key that did nothing whatsoever.
+    local function holding(slot, pool)
+        fire(BR.Net.INV_SET, {
+            slots = {
+                slot,
+                { id = 'shield', label = 'Shield',
+                  kind = BR.ItemKind.CONSUMABLE, rarity = 2, count = 1 },
+            },
+            ammo = { medium = pool }, active = 1,
+        })
+    end
+
+    local function rifle(clip)
+        return { id = 'carbinerifle', label = 'Carbine Rifle',
+                 kind = BR.ItemKind.WEAPON, rarity = 3, count = 1,
+                 clip = clip, pool = 'medium' }
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. THE ORDINARY PRESS: a magazine with room in it over a live pool.
+    holding(rifle(10), 100)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 1,
+       'R with a half-empty rifle in hand asks the server to reload',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    ok(asked(BR.Net.INV_USE) == 0,
+       'and it does NOT also drink the shield in slot 2 -- one press, one thing',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    -- ── 2. A FULL MAGAZINE IS NOT A RELOAD, AND IT IS NOT A `use` EITHER.
+    --
+    --       THIS ASSERTION USED TO SAY THE OPPOSITE AND IT WAS THE BUG (#234).
+    --       It read "and the press goes back to being the use key it always
+    --       was", asserted one INV_USE, and passed -- against a key that swapped
+    --       the rifle out of the player's hands to get to that USE. Owner,
+    --       2026-08-29: "when holding a weapon (after reloading and no rounds
+    --       shot), pressing the reload button switches to consumables when one
+    --       is available..... strange."
+    --
+    --       WHAT WAS WRONG WITH THE ARGUMENT, not just with the code. This block
+    --       opens by quoting keybinds.lua -- "the two never want the key at the
+    --       same moment" -- and that is false in exactly one state: a weapon in
+    --       hand with nothing to reload. The reload wants to do nothing and the
+    --       old `use` wanted to reach three slots away, so BOTH were answerable
+    --       and the ordering picked the wrong one. The claim is repaired by
+    --       narrowing `use`, not by moving the reload: WITH A WEAPON IN THE HAND
+    --       THE KEY IS THE RELOAD KEY AND ONLY THE RELOAD KEY.
+    --
+    --       INV_SELECT IS THE ASSERTION THAT MATTERS. INV_USE alone would have
+    --       been satisfied by a fix that drank the shield without bringing it
+    --       up, which is not what the owner watched happen -- what he watched
+    --       was his gun leave his hands.
+    holding(rifle(RIFLE.clip), 100)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'a full magazine is not a reload',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    ok(asked(BR.Net.INV_SELECT) == 0,
+       'and a full magazine does NOT switch the hand to the shield in slot 2',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+    ok(asked(BR.Net.INV_USE) == 0,
+       'and does not drink it either -- a full gun means the key does nothing',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    -- ── 3. AN EMPTY POOL IS NOT A RELOAD EITHER, and this is the railgun's
+    --       ordinary state -- the one every ammo bug this week was found in.
+    --       Quietly: no message, no notification, nothing to answer.
+    --
+    --       IT IS ALSO THE SECOND HALF OF #234 and it is the worse half: a gun
+    --       that ran dry mid-fight over an empty pool is the moment the fall-
+    --       through fired, so the reflex press that used to do nothing swapped
+    --       the empty gun away for a shield potion instead.
+    holding(rifle(0), 0)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'A DRY GUN OVER AN EMPTY POOL ASKS FOR NOTHING',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    ok(asked(BR.Net.INV_SELECT) == 0 and asked(BR.Net.INV_USE) == 0,
+       'and a dry gun does not become a switch to the shield either',
+       ('%d INV_SELECT, %d INV_USE'):format(asked(BR.Net.INV_SELECT),
+                                            asked(BR.Net.INV_USE)))
+
+    -- ...AND SPAMMING IT IS THE SAME NOTHING. The server cannot mint a round
+    -- here either (test_roster runs a hundred presses at zero pool through the
+    -- real handler); this is the half that keeps the wire quiet as well.
+    sent = {}
+    for _ = 1, 50 do press() end
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'and fifty presses at zero pool send fifty nothings',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ── 4. FISTS. Slot 0 holds nothing at all, and `inv.slots[0]` is not even
+    --       an index -- the predicate has to answer that without reaching into
+    --       it.
+    fire(BR.Net.INV_SET, {
+        slots = { rifle(0),
+                  { id = 'shield', label = 'Shield',
+                    kind = BR.ItemKind.CONSUMABLE, rarity = 2, count = 1 } },
+        ammo = { medium = 100 }, active = 0,
+    })
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'a reload on fists asks for nothing',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    ok(asked(BR.Net.INV_USE) == 1,
+       'and R with empty hands still reaches the shield, as it always did',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+    -- AND IT STILL BRINGS IT UP. #234 narrowed the reach to hands holding no
+    -- weapon; it did not remove it. The 2026-08-05 report this was built for
+    -- ("there's no way to use it") is still answered, and this is the assertion
+    -- that would catch a fix that went one step too far.
+    ok(asked(BR.Net.INV_SELECT) == 1,
+       'and still brings it up first, so the thing drunk is the thing in hand',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- ── 4b. A CONSUMABLE ALREADY IN THE HAND. The plainest reading of the key,
+    --        and the one case that needs no reaching at all: use what is held,
+    --        and do not send a switch to the slot that is already active.
+    fire(BR.Net.INV_SET, {
+        slots = { rifle(0),
+                  { id = 'shield', label = 'Shield',
+                    kind = BR.ItemKind.CONSUMABLE, rarity = 2, count = 1 } },
+        ammo = { medium = 100 }, active = 2,
+    })
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_USE) == 1 and asked(BR.Net.INV_SELECT) == 0,
+       'R on a shield already in hand drinks it, with no switch',
+       ('%d INV_USE, %d INV_SELECT'):format(asked(BR.Net.INV_USE),
+                                            asked(BR.Net.INV_SELECT)))
+
+    -- ── 5. A MACHETE HAS NO MAGAZINE. It is a WEAPON by kind, which is exactly
+    --       why `kind == WEAPON` is not the whole test -- `w.clip` is nil here
+    --       and `w.clip or 0` would have made it a gun with a zero magazine.
+    holding({ id = 'machete', label = 'Machete', kind = BR.ItemKind.WEAPON,
+              rarity = 1, count = 1 }, 100)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'a machete cannot be reloaded',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    -- AND IT IS STILL A WEAPON IN THE HAND, so #234 applies to it unchanged: a
+    -- key that can never reload here must not quietly become a swap instead.
+    -- Flagged to the owner as an open question on the issue -- if he wants a
+    -- machete to reach for a potion, this is the line that says so.
+    ok(asked(BR.Net.INV_SELECT) == 0 and asked(BR.Net.INV_USE) == 0,
+       'and holding one does not turn R into a switch to the shield',
+       ('%d INV_SELECT, %d INV_USE'):format(asked(BR.Net.INV_SELECT),
+                                            asked(BR.Net.INV_USE)))
+
+    -- ── 6. A THROWABLE'S "MAGAZINE" IS ITS STACK. Nothing moves rounds into a
+    --       grenade, and a reload that touched `count` would be inventing them.
+    holding({ id = 'grenade', label = 'Grenade', kind = BR.ItemKind.THROWABLE,
+              rarity = 3, count = 2 }, 100)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'and neither can a grenade',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ── 7. IN THE AIR, WHICH IS DELIBERATE AND IS NOT ABOUT RELOADING. Arming
+    --       is suspended for the whole descent because RemoveAllPedWeapons takes
+    --       the parachute with it, and canArm() is the gate that says so -- so a
+    --       reload at 400 metres is refused by the same line, on this side, and
+    --       again at the far end where FREEFALL is not in the LIVE table.
+    holding(rifle(10), 100)
+    BR.State.landed = false
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0 and asked(BR.Net.INV_USE) == 0,
+       'a reload in freefall asks for nothing, and neither does anything else',
+       ('%d INV_RELOAD, %d INV_USE'):format(asked(BR.Net.INV_RELOAD),
+                                            asked(BR.Net.INV_USE)))
+
+    BR.State.me.state = BR.PlayerState.GLIDE
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'and under the canopy is the same answer',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ...AND IT COMES BACK ON TOUCHDOWN, with nothing to reset. The landing
+    -- latch is what canArm() reads, so this is the same press one state later.
+    BR.State.landed = true
+    BR.State.me.state = BR.PlayerState.ALIVE
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 1,
+       'and the first press on the ground reloads',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ── 8. THE BINDING ITSELF. One row, on R, and it is a TAP -- a held reload
+    --       would repeat for as long as the key was down.
+    local row
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.command == 'bruse' then row = b end
+    end
+    ok(row ~= nil, 'the key is in the table the settings screen reads')
+    ok(row and row.default == 'R', 'and it defaults to R',
+       tostring(row and row.default))
+    ok(row and row.hold == false, 'as a TAP -- one press, one magazine',
+       tostring(row and row.hold))
+    ok(row and row.label:find('eload') ~= nil,
+       'and the row says so, because it is the only row that can',
+       tostring(row and row.label))
+
+    -- NOTHING ELSE CLAIMED R. The whole argument for one binding is that there
+    -- is only one, so a second row on the same default would silently make this
+    -- block's exclusivity assertions meaningless.
+    local onR = 0
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.default == 'R' then onR = onR + 1 end
+    end
+    ok(onR == 1, 'and it is the only binding defaulting to R', tostring(onR))
+
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
+-- ---------------------------------------------------------------------------
+describe('a silent delivery, and a noisy pickup')
+-- ---------------------------------------------------------------------------
+--
+-- ═══ THE OWNER'S BUG, AT THE LINE THAT MADE THE SOUND ═══
+--
+-- Owner, 2026-08-29: "when transitioning to state BUS, the pickup sound is
+-- heard again by anyone who has purchased an item."
+--
+-- The warmup shop hands out the car somebody bought at wheels-up, and every
+-- arrival in an inventory plays GTA's PICK_UP -- so every buyer heard a pickup
+-- cue in the plane for an item they neither saw land nor had just picked up.
+--
+-- The cue is right for a pickup and wrong for a delivery, and the two are
+-- indistinguishable from inside this file: both are "a slot gained something".
+-- So the SERVER says which, with `quiet` on the push, and this asserts that the
+-- client obeys it -- and, just as importantly, that it still makes a noise when
+-- nobody said otherwise.
+do
+    local plays = {}
+    local savedPlay = PlaySoundFrontend
+    PlaySoundFrontend = function(id, name, set, p3)
+        plays[#plays + 1] = { id = id, name = name, set = set, p3 = p3 }
+    end
+
+    local function gain(n, extra)
+        local d = { slots = {}, ammo = {}, active = 1 }
+        for i = 1, 5 do d.slots[i] = false end
+        for i = 1, n do
+            d.slots[i] = { id = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                           rarity = 1, count = 1 }
+        end
+        for k, v in pairs(extra or {}) do d[k] = v end
+        return d
+    end
+
+    -- Start from empty, so the first push below is unambiguously a GAIN.
+    fire(BR.Net.INV_SET, gain(0))
+    plays = {}
+
+    -- ═══ AN ORDINARY PICKUP STILL SPEAKS ═══
+    --
+    -- Asserted FIRST and deliberately: a "fix" that silenced every arrival
+    -- would pass a test that only checked the quiet case, and it would take the
+    -- pickup cue out of the whole game.
+    fire(BR.Net.INV_SET, gain(1))
+    local noisy = #plays
+    ok(noisy > 0,
+        'a gain with nothing said about it plays the pickup cue, exactly as it '
+            .. 'always has', noisy)
+
+    -- ═══ ...AND A DELIVERY THE SERVER MARKED QUIET DOES NOT ═══
+    plays = {}
+    fire(BR.Net.INV_SET, gain(2, { quiet = true }))
+    ok(#plays == 0,
+        'a gain the server marked quiet is silent -- the shop car arriving at '
+            .. 'wheels-up makes no pickup noise', #plays)
+
+    -- ═══ ONLY A REAL `true` BUYS SILENCE ═══
+    --
+    -- The field comes off the wire. `not d.quiet` would be wrong for the same
+    -- reason every bool-native test in this project is wrong: 0 is truthy in
+    -- Lua, and a 0 arriving here must NOT silence a genuine pickup.
+    plays = {}
+    fire(BR.Net.INV_SET, gain(3, { quiet = 0 }))
+    ok(#plays > 0,
+        'and a 0 is not silence -- 0 is truthy in Lua and would have muted '
+            .. 'every pickup in the game', #plays)
+
+    plays = {}
+    fire(BR.Net.INV_SET, gain(4, { quiet = false }))
+    ok(#plays > 0, 'nor is an explicit false')
+
+    PlaySoundFrontend = savedPlay
 end
 
 realPrint(('%s%d passed, %d failed\27[0m')

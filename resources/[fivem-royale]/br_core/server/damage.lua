@@ -51,6 +51,60 @@ local meleeHit = {}
 -- Recording state for /brdamagelog.
 local recording = 0
 
+-- --------------------------------------------------------------------------
+-- What the validator actually decided, and the dev lever that makes it decide
+-- --------------------------------------------------------------------------
+--
+-- #93 CLOSES ON A GAP THAT `brrefuse` CANNOT REACH. That verb injects a
+-- refusal BY NAME, which proves the reporting path handles the reason -- the
+-- tier, the doubling guard, the evidence bundle, the incident write. It proves
+-- nothing whatever about whether BR.ValidateShot can ever RETURN that reason
+-- from a real shot. A reason the validator cannot produce would pass brrefuse
+-- and be dead in the game, and that is the exact class of bug this project
+-- keeps finding: a subsystem built ahead of its callers, every read path
+-- present and plausible, nothing on the producing end.
+--
+-- So this ring records the adjudication of every shot the validator ruled on,
+-- WITH THE NUMBERS THAT DECIDED IT. A row saying TOO_FAR that cannot also show
+-- the distance beside the limit is an assertion; one that shows both is
+-- evidence, and a wrong limit becomes visible instead of inferred.
+--
+-- BOUNDED AND ALLOCATION-FREE AFTER WARMUP. An automatic weapon raises one
+-- event per round, so this is on the hottest path in the resource -- the row
+-- tables are reused in place rather than built per shot.
+local RING_MAX = 64
+local ring, ringAt, ringSeen = {}, 0, 0
+
+-- The dev-only override, and NOTHING outside `arm`/`disarm` may write it.
+--
+-- `forcedCfg` is a COPY of BR.Config.Combat with one lever bent, never the
+-- shipped table itself. /brdamage mutates cfg in place and is right to -- it
+-- is a live operational switch the owner may want to leave in one position.
+-- This is the opposite: a testing lever whose entire safety story is that
+-- `off` restores the shipped numbers exactly, and a copy makes that true by
+-- construction rather than by remembering what the old value was.
+local forced, forcedCfg = nil, nil
+
+--- The config the validator sees right now. `cfg` unless a test lever is armed.
+local function liveCfg() return forcedCfg or cfg end
+
+--- 0 IS TRUTHY IN LUA, and a FiveM BOOL native may hand back 1 rather than
+--- true. Both facts have shipped as bugs in this project six times, most
+--- recently in a ground probe -- so a flag that reaches a printed row is
+--- normalised at the boundary instead of being tested for truthiness.
+---
+--- EXPORTED SO IT CAN BE PINNED, and that is not gratuitous. Both of its
+--- current callers hand it a real Lua boolean, so mutating the body changes no
+--- behaviour any test can observe -- which makes it exactly the kind of guard
+--- that quietly rots into decoration and is then deleted by a tidy-up as
+--- "obviously equivalent to `if v then`". tools/test_roster.lua asserts it
+--- against 0 and 1 directly, so the rule is held by a test rather than by
+--- everyone remembering it.
+--- @param v any
+--- @return boolean
+function BR.Damage.isTrue(v) return v == true or v == 1 end
+local isTrue = BR.Damage.isTrue
+
 -- Ped handle -> player src, rebuilt on a cadence.
 --
 -- Resolving this per BULLET matters: an automatic weapon raises one of these
@@ -145,11 +199,15 @@ end
 --- @param src integer
 --- @param item string
 --- @return boolean
+--- READ THROUGH liveCfg, NOT cfg. This is the one input to NOT_THROWN that
+--- BR.ValidateShot never sees a config for -- it arrives already decided, as
+--- ctx.threwRecently -- so a grace window bent by /brtestfire has to be
+--- honoured here or `thrown` mode would be the one lever that did nothing.
 function BR.Damage.threwRecently(src, item)
     local t = thrown[src]
     local at = t and t[item]
     if not at then return false end
-    return (GetGameTimer() - at) <= (cfg.explosiveGraceMs or 30000)
+    return (GetGameTimer() - at) <= (liveCfg().explosiveGraceMs or 30000)
 end
 
 --- Everything the validator needs about a shooter/victim pair, from the
@@ -503,14 +561,19 @@ function BR.Damage.spendRound(src, weapon)
     -- RELOAD IS THE SERVER'S TOO, now that it can see the magazine empty.
     -- Without this the gun would simply stop at zero and never refill, because
     -- the client report that used to carry reloads is gone.
-    if slot.clip <= 0 and w.ammo then
-        local pool = inv.ammo[w.ammo] or 0
-        if pool > 0 then
-            local moved = math.min(w.clip, pool)
-            inv.ammo[w.ammo] = pool - moved
-            slot.clip = moved
-        end
-    end
+    --
+    -- BR.Inv.reload IS THE RULE AND THIS USED TO CARRY A COPY OF IT (2026-08-23).
+    -- There are three places that move rounds out of a pool now -- here, the
+    -- INV_AMMO floor, and the manual reload key -- and the third is one a player
+    -- can press on demand, which is a poor moment to discover that two of them
+    -- rounded differently. The arithmetic is identical to what stood here: at
+    -- clip 0 the shared function's `w.clip - clip` IS `w.clip`.
+    --
+    -- The `<= 0` test stays on this side. This is the automatic reload -- the
+    -- gun ran out mid-burst -- and BR.Inv.reload tops a magazine up to capacity,
+    -- which is what the KEY asks for and would refill a partial magazine on
+    -- every shot if it were asked for here.
+    if slot.clip <= 0 then BR.Inv.reload(inv, slot) end
 
     BR.Inv.push(src)
 end
@@ -689,6 +752,58 @@ end
 -- The handler
 -- --------------------------------------------------------------------------
 
+--- Write one adjudication into the ring, with the arithmetic that decided it.
+---
+--- THE LIMITS COME FROM THE VALIDATOR'S OWN HELPERS (BR.ShotRangeLimit,
+--- BR.ShotIntervalFloor) rather than being recomputed here. Recomputing them
+--- would be a second copy of the rule, and the failure mode is specific and
+--- nasty: the readout would keep printing the OLD bound after somebody changed
+--- the real one, so the verb built to make a wrong limit visible would be the
+--- thing hiding it.
+---
+--- NAMES ARE RESOLVED NOW, NOT AT PRINT TIME. FiveM recycles server ids within
+--- the minute, so a row rendered from a src ten minutes later would be labelled
+--- with whoever holds that slot by then.
+--- @param shooter integer
+--- @param victim integer
+--- @param w table|nil   the weapon row, nil for a hash we do not issue
+--- @param ctx table
+--- @param dist number
+--- @param since number
+--- @param why string|nil  nil when the shot was allowed
+local function noteAdjudication(shooter, victim, w, ctx, dist, since, why)
+    local ecfg = liveCfg()
+
+    ringAt   = (ringAt % RING_MAX) + 1
+    ringSeen = ringSeen + 1
+
+    local r = ring[ringAt]
+    if not r then r = {}; ring[ringAt] = r end
+
+    local a = BR.Roster.get(shooter)
+    local b = BR.Roster.get(victim)
+
+    r.n, r.at      = ringSeen, GetGameTimer()
+    r.shooter      = shooter
+    r.victim       = victim
+    r.shooterName  = a and a.name or nil
+    r.victimName   = b and b.name or nil
+    r.weapon       = w and w.id or 'unissued'
+    r.explosive    = isTrue(w and w.explosive)
+    r.reason       = why
+    r.dist         = dist
+    r.limit        = BR.ShotRangeLimit(w, ecfg)
+    r.since        = since
+    r.floor        = BR.ShotIntervalFloor(w, ecfg)
+    r.clip         = ctx.clip
+    r.held         = ctx.heldItem
+    r.threw        = isTrue(ctx.threwRecently)
+    -- Stamped per ROW, not read at print time: a row adjudicated under a bent
+    -- lever must still say so after the lever is switched off, or the readout
+    -- would launder manufactured refusals into evidence.
+    r.forced       = forced and forced.mode or nil
+end
+
 AddEventHandler('weaponDamageEvent', function(sender, data)
     if recording > 0 then record(sender, data) end
     if type(data) ~= 'table' then return end
@@ -810,7 +925,13 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                 else
                     ok, why = BR.ValidateShot(
                         { weapon = data.weaponType, dist = dist,
-                          sinceLastMs = since }, ctx, cfg)
+                          sinceLastMs = since }, ctx, liveCfg())
+                    -- EVERY adjudication, not only the refusals. An allowed
+                    -- row carries its own margins, and a limit that is wrong
+                    -- in the generous direction shows up nowhere else: it
+                    -- never refuses anything, so it never prints a line.
+                    noteAdjudication(shooter, victim, fired, ctx,
+                                     dist, since, why)
                 end
 
                 if dupe then           -- nothing further; already handled
@@ -829,10 +950,33 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- lines that mean "the game said no", drowning the ones
                     -- that mean "somebody has a weapon we did not issue".
                     if BR.ShotSuspicious[why] or cfg.logHits then
-                        print(('[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)')
-                            :format(shooter, victim, tostring(why), dist, since))
+                        print(('[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)%s')
+                            :format(shooter, victim, tostring(why), dist, since,
+                                    forced and ('   [FORCED ' .. forced.mode
+                                                .. ' -- not filed]') or ''))
                     end
-                    BR.Damage.noteRefusal(shooter, why)
+
+                    -- A MANUFACTURED REFUSAL IS NOT EVIDENCE OF ANYTHING.
+                    --
+                    -- While /brtestfire is armed the validator is working
+                    -- against a number the owner bent on purpose, so filing on
+                    -- it would open an incident about a playtest -- against the
+                    -- one person running the playtest, with screenshots
+                    -- attached. The shot is still genuinely refused, still
+                    -- cancelled, still printed and still recorded in the ring:
+                    -- everything #93 asks to be able to SEE happens. It simply
+                    -- accuses nobody.
+                    --
+                    -- This is not a hole in "nobody is exempt from incidents".
+                    -- That rule is about who the anticheat may file against,
+                    -- and the lever is dev-mode-only -- it cannot arm on the
+                    -- public box at all. Exercising the filing half is
+                    -- brrefuse's job, and it drives noteRefusal directly.
+                    if forced then
+                        forced.refusals = (forced.refusals or 0) + 1
+                    else
+                        BR.Damage.noteRefusal(shooter, why)
+                    end
                     if cfg.enforce then
                         CancelEvent()
 
@@ -1114,4 +1258,387 @@ RegisterCommand('brdamage', function(_, args)
     print(('  applyOwnDamage=%s  enforce=%s  logHits=%s  refusals so far=%d')
         :format(tostring(cfg.applyOwnDamage), tostring(cfg.enforce),
                 tostring(cfg.logHits), BR.Damage.refusals or 0))
+end, true)
+
+-- --------------------------------------------------------------------------
+-- Reading the adjudications, and bending the numbers that make them
+-- --------------------------------------------------------------------------
+
+--- `-` rather than `nil`, because a column of `nil` reads as a fault and most
+--- of these are simply not applicable: an explosive has no cadence floor and
+--- fists have no magazine.
+local function n1(v) return v and ('%.1f'):format(v) or '-' end
+local function n0(v) return v and ('%.0f'):format(v) or '-' end
+
+--- "Name(id)", or the bare id when the roster never knew them.
+local function who(name, src)
+    if name then return ('%s(%d)'):format(name, src) end
+    return ('%d'):format(src)
+end
+
+--- Seconds, or `-`. debug.lua has one of these and it is file-local there;
+--- copying four lines beats exporting a formatter.
+local function secs(ms)
+    if not ms or ms <= 0 then return '-' end
+    return ('%.1fs'):format(ms / 1000)
+end
+
+--- How long ago, for the age column.
+---
+--- `now` RATHER THAN `-` AT ZERO, which is why this is not just secs(). A row
+--- adjudicated in this same millisecond is the most interesting one in the
+--- table -- it is the shot you just fired to see what it would say -- and
+--- printing it as a dash reads as missing data, which is exactly backwards.
+local function age(ms)
+    if not ms or ms <= 0 then return 'now' end
+    return ('%.1fs'):format(ms / 1000)
+end
+
+--- BR.ShotRefusal values are SENTENCES ("beyond the weapon's range"), which is
+--- what makes a log line read. A table wants the KEY, so this inverts the enum
+--- once rather than per row.
+---
+--- BUILT FROM THE ENUM, NEVER LISTED BY HAND. A hand-written list is a second
+--- copy of the reason set that goes stale the day a reason is added -- and a
+--- readout whose job is proving a reason can fire must not be the thing that
+--- cannot name it.
+local REASON_NAME = {}
+for k, v in pairs(BR.ShotRefusal) do REASON_NAME[v] = k end
+
+local function reasonName(reason)
+    return REASON_NAME[reason] or tostring(reason):upper()
+end
+
+--- WHAT EACH MODE BENDS, AND BY HOW MUCH.
+---
+--- The numbers are chosen to put the bound somewhere a player has to work to
+--- STAY INSIDE rather than somewhere they have to work to cross -- the whole
+--- point is that the refusal is easy to fire deliberately. They are not chosen
+--- to be plausible; a plausible bend would be a bend you could forget was on.
+local MODES = {
+    -- 2% of the authored range and no flat slack. A pistol's 60m becomes
+    -- 1.2m, so any hit past arm's length is out of range.
+    far    = { rangeSlack = 0.02, rangeSlackM = 0.0 },
+    -- 60x the weapon's own action. A rifle's 85ms floor becomes 5.1s, so the
+    -- second round of any burst arrives faster than the weapon can cycle.
+    fast   = { intervalSlack = 60.0 },
+    -- The credit for a throw expires immediately, so an explosive is owned
+    -- only while the thrower is still holding that very slot.
+    thrown = { explosiveGraceMs = 0 },
+}
+
+--- Arm a test lever.
+---
+--- A COPY OF cfg, NOT cfg ITSELF. `off` has to restore the shipped numbers
+--- exactly, and a copy makes that true by construction instead of by
+--- remembering what the old value was. /brdamage mutates cfg in place and is
+--- right to -- it is an operational switch meant to be left in one position.
+--- This is the opposite kind of thing.
+--- @param mode string  a key of MODES
+function BR.Damage.armTestFire(mode)
+    local bend = MODES[mode]
+    if not bend then return false end
+
+    local o = {}
+    for k, v in pairs(cfg) do o[k] = v end
+    for k, v in pairs(bend) do o[k] = v end
+
+    forced    = { mode = mode, at = GetGameTimer(), refusals = 0 }
+    forcedCfg = o
+
+    print(string.rep('!', 78))
+    print(('!! BR TEST FIRE ARMED -- %s  (the anticheat is judging by BENT numbers)')
+        :format(mode:upper()))
+    for k, v in pairs(bend) do
+        print(('!!   %-18s %s   (shipped: %s)')
+            :format(k, tostring(v), tostring(cfg[k])))
+    end
+    print('!! Refusals caused by this file NO incident and are marked FORCED.')
+    print('!! It clears at match teardown, on resource stop, or: brtestfire off')
+    print(string.rep('!', 78))
+
+    return true
+end
+
+-- A HEARTBEAT, BECAUSE A BANNER SCROLLS AWAY.
+--
+-- The requirement was that this cannot be left on by accident, and one line at
+-- arming time is not that: a console with a match running buries it in seconds.
+--
+-- A SCHEDULER JOB RATHER THAN A THREAD OF ITS OWN, which is the house pattern
+-- (BR.Sched.every) and buys three things a raw loop does not. It is visible to
+-- `/brjob` like every other periodic job; it cannot leak a stale loop that
+-- outlives the arming that started it, because there is only ever one; and
+-- BR.Sched.step drives it in tests, so "it says so every fifteen seconds" is an
+-- assertion rather than a promise.
+BR.Sched.every(15000, 'damage.testfire.heartbeat', function()
+    if not forced then return end
+    print(('[br_core] !! brtestfire %s STILL ARMED (%s, %d refused) '
+        .. '-- brtestfire off'):format(
+            forced.mode, secs(GetGameTimer() - forced.at),
+            forced.refusals or 0))
+end)
+
+--- Put every shipped number back. Safe to call when nothing is armed.
+--- @param why string  what disarmed it, for the console line
+--- @return boolean  true if something actually was armed
+function BR.Damage.disarmTestFire(why)
+    if not forced then return false end
+    local mode, n = forced.mode, forced.refusals or 0
+    -- Cleared BEFORE printing, so a print that throws cannot leave it armed.
+    forced, forcedCfg = nil, nil
+    print(('[br_core] brtestfire %s DISARMED by %s -- %d shot(s) had been '
+        .. 'refused under it. Shipped bounds restored.')
+        :format(mode, tostring(why), n))
+    return true
+end
+
+-- CLEARED WHEN THE MATCH GOES AWAY, which is the requirement "reset on match
+-- end". Deliberately not filtered by matchId the way fuel.lua's teardown is:
+-- this lever is server-wide rather than per-match, so any match ending is a
+-- reason to stop bending the numbers for every match still running.
+AddEventHandler('br:match:destroyed', function()
+    BR.Damage.disarmTestFire('the match ending')
+end)
+
+-- ...and when the resource stops. Nothing about the lever is persisted, so a
+-- restart cannot inherit it -- this handler exists so a STOP that is not a
+-- restart still says out loud that the numbers went back.
+AddEventHandler('onResourceStop', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    BR.Damage.disarmTestFire('br_core stopping')
+end)
+
+--- The last N shot adjudications, with the numbers that decided each one.
+---
+--- WHY THIS IS SERVER-CONSOLE ONLY AND NOT MERELY RESTRICTED. #93's property is
+--- that an offender is shown NOTHING AT ALL -- no message, no feedback, no
+--- hint. RESTRICTED admits the server console OR any live client holding the
+--- `br.admin` ACE, and the owner's standing rule is that nobody is exempt from
+--- incidents, admins included. So an admin can be the SUBJECT of the rows this
+--- prints, and a restricted verb would hand them a live readout of which of
+--- their shots were refused and exactly which bound to stay under -- a tuning
+--- oracle for the hardest class of cheat to catch. The narrowing is
+--- `tonumber(src) ~= 0`, the brcar pattern, and it is pinned by a gate in
+--- tools/verify.sh because it is one deletable line that breaks nothing when
+--- deleted.
+---
+--- AN EQUALITY RATHER THAN A TRUTHINESS TEST: 0 IS TRUTHY IN LUA and source 0
+--- is the console, so `if src then` admits everybody and `if not src then`
+--- admits nobody.
+---
+---   brshots           the last 10
+---   brshots 40        the last 40 (64 are kept)
+---   brshots too_far   only rows refused for a reason matching that
+RegisterCommand('brshots', function(src, args)
+    if tonumber(src) ~= 0 then
+        print('  brshots is server-console only (the br.admin ACE is not enough)')
+        return
+    end
+
+    local want, only = 10, nil
+    if args[1] then
+        local n = tonumber(args[1])
+        if n then
+            want = math.max(1, math.min(RING_MAX, math.floor(n)))
+        else
+            only, want = tostring(args[1]):upper(), RING_MAX
+        end
+    end
+
+    -- Oldest first, so the list reads in the order the shots happened.
+    local rows = {}
+    local held = math.min(ringSeen, RING_MAX)
+    for i = math.min(want, held) - 1, 0, -1 do
+        local r = ring[((ringAt - i - 1) % RING_MAX) + 1]
+        if r and r.n then
+            local name = r.reason and reasonName(r.reason) or 'ALLOWED'
+            if not only or name:find(only, 1, true) then rows[#rows + 1] = r end
+        end
+    end
+
+    local refused = 0
+    for _, r in pairs(ring) do
+        if r.n and r.reason then refused = refused + 1 end
+    end
+
+    print(string.rep('=', 78))
+    print(('  shot adjudications -- %d seen this run, %d of the last %d refused')
+        :format(ringSeen, refused, held))
+    print(string.rep('=', 78))
+
+    if #rows == 0 then
+        print('  (none)')
+        print('')
+        print('  A shot only reaches the validator when it HITS A PLAYER --')
+        print('  rounds into scenery raise no event with a victim -- so an empty')
+        print('  table during a solo test is the expected result, not a fault.')
+        return
+    end
+
+    local now = GetGameTimer()
+    print('  age    shooter > victim          weapon        verdict')
+    print('  ' .. string.rep('-', 74))
+
+    for _, r in ipairs(rows) do
+        -- The star marks the comparison that DECIDED the row, which is the
+        -- whole reason the other three are printed beside it: a reader can see
+        -- at once that the deciding number was the wrong one to decide on.
+        local sd = r.reason == BR.ShotRefusal.TOO_FAR    and '*' or ' '
+        local sg = r.reason == BR.ShotRefusal.TOO_FAST   and '*' or ' '
+        local sc = r.reason == BR.ShotRefusal.NO_AMMO    and '*' or ' '
+        local sh = r.reason == BR.ShotRefusal.NOT_THROWN and '*' or ' '
+
+        print(('  %-6s %-25s %-13s %s%s'):format(
+            age(now - (r.at or 0)),
+            ('%s > %s'):format(who(r.shooterName, r.shooter),
+                               who(r.victimName, r.victim)),
+            r.weapon,
+            r.reason and reasonName(r.reason) or 'ALLOWED',
+            r.forced and ('   [FORCED ' .. r.forced .. ']') or ''))
+
+        print(('        %sdist %s/%sm %sgap %s/%sms %sclip %s %sheld %s thrown %s')
+            :format(sd, n1(r.dist), n1(r.limit),
+                    sg, n0(r.since), n0(r.floor),
+                    sc, r.clip and tostring(r.clip) or '-',
+                    sh, tostring(r.held or '-'),
+                    r.threw and 'yes' or 'no'))
+    end
+
+    print('  ' .. string.rep('-', 74))
+    print('  Every number is the SERVER\'s, computed from its own model and never')
+    print('  from anything the shooter reported. The starred pair is the')
+    print('  comparison that decided the row.')
+    print('    dist/limit  measured separation against the weapon\'s reach --')
+    print('                throw PLUS blast, for an explosive')
+    print('    gap/floor   this shot\'s interval against the fastest the action')
+    print('                can cycle. `-` means cadence cannot refuse this one')
+    print('    clip        the magazine the SERVER believes, not the engine')
+    print('    held        the server\'s own active slot, `fists` when empty')
+    print('    thrown      whether the server watched a throw it can credit')
+    print('  A FORCED row was adjudicated under brtestfire and filed no incident.')
+    print('  None of this was shown to the shooter -- that is #93, and it is why')
+    print('  this verb is console-only.')
+end, true)
+
+--- Bend one of the validator's bounds so a refusal can be fired on purpose,
+--- from a real shot.
+---
+--- WHY A LEVER RATHER THAN EDITED CONSTANTS. Three of these four reasons need a
+--- bound an honest player cannot cross by trying: TOO_FAR is ~93m for a pistol,
+--- TOO_FAST is a gap no human input can produce, and the throw credit lasts
+--- thirty seconds. Testing them by editing config/match.lua means a live box
+--- carrying edited constants and somebody hoping they put them back -- exactly
+--- the risk brrefuse was committed to remove.
+---
+--- HOW IT IS GUARANTEED OFF, four independent ways, because "impossible to
+--- leave on by accident" was the requirement:
+---   * it cannot ARM outside dev mode, so the public box will not take it;
+---   * a banner on arming and a heartbeat every 15s while armed, so even a
+---     console nobody is watching fills up with the fact;
+---   * every refusal it causes prints [FORCED <mode>] and files NO incident;
+---   * it clears itself at match teardown and on resource stop.
+--- Nothing about it survives a restart, and there is no timer to expire.
+---
+---   brtestfire far          range becomes 2% of the weapon's own, so a pistol
+---                           refuses past ~1.2m
+---   brtestfire fast         the cadence floor becomes 60x the action, so a
+---                           rifle wants 5.1s between rounds
+---   brtestfire thrown       throw credit expires at once, so a blast arrives
+---                           with nothing to own it
+---   brtestfire noammo <id>  empty that player's magazine and pool in the
+---                           SERVER's model only
+---   brtestfire off          restore every shipped number
+---   brtestfire status       what is armed, and what it has refused
+RegisterCommand('brtestfire', function(src, args)
+    if tonumber(src) ~= 0 then
+        print('  brtestfire is server-console only (the br.admin ACE is not enough)')
+        return
+    end
+    if not BR.Server.devMode then
+        print('  brtestfire is dev-mode only. Start the server with br_devMode true')
+        print('  (or sv_devMode true). It bends the numbers the anticheat judges by,')
+        print('  so it must not be armable on the public box.')
+        return
+    end
+
+    local mode = tostring(args[1] or 'status'):lower()
+
+    if mode == 'status' then
+        if forced then
+            print(('  brtestfire: %s ARMED for %s, %d shot(s) refused under it')
+                :format(forced.mode, secs(GetGameTimer() - forced.at),
+                        forced.refusals or 0))
+        else
+            print('  brtestfire: nothing armed. The shipped bounds are in force.')
+        end
+        print('  Modes: far, fast, thrown, noammo <id>, off')
+        return
+    end
+
+    if mode == 'off' then
+        if not BR.Damage.disarmTestFire('brtestfire off') then
+            print('  brtestfire: nothing was armed.')
+        end
+        return
+    end
+
+    if mode == 'noammo' then
+        -- NOT A MODE, A ONE-SHOT ACTION ON THE SERVER'S OWN MODEL.
+        --
+        -- There is no config lever for NO_AMMO and inventing one would test the
+        -- lever rather than the check. The check is `ctx.clip <= 0`, and
+        -- ctx.clip IS the server's own slot -- so the honest way to fire it is
+        -- to make the server genuinely believe the magazine is empty. Draining
+        -- the POOL as well is load-bearing: spendRound reloads from the pool the
+        -- moment the clip reaches zero, so a clip alone would refill on the very
+        -- next round and never refuse.
+        --
+        -- THE CLIENT KEEPS ITS ROUNDS, AND THAT IS THE POINT. BR.Inv.push sends
+        -- the new numbers, but the client writes ammo onto the ped only when the
+        -- server's number goes UP (client/inventory.lua, reapplyAmmo) -- so the
+        -- engine still lets them fire and the shot arrives at a server that
+        -- knows better. That is the documented engine/server drift, used on
+        -- purpose instead of waited for.
+        local target = math.tointeger(tonumber(args[2]))
+        if not target then
+            print('  usage: brtestfire noammo <id>')
+            return
+        end
+        local inv = BR.Inv and BR.Inv.of(target) or nil
+        if not inv then
+            print(('  brtestfire: no inventory for %d.'):format(target))
+            return
+        end
+        local slot = inv.slots[inv.active]
+        if not slot or slot.kind ~= BR.ItemKind.WEAPON then
+            print(('  brtestfire: %d is not holding a weapon (active slot is %s).')
+                :format(target, slot and tostring(slot.item) or 'empty -- fists'))
+            print('  Fists have no magazine, so NO_AMMO cannot apply. Have them')
+            print('  select a firearm and run this again.')
+            return
+        end
+
+        local w = BR.Config.WeaponById[slot.item]
+        slot.clip = 0
+        if w and w.ammo then inv.ammo[w.ammo] = 0 end
+        BR.Inv.push(target)
+
+        print(('[br_core] brtestfire: %d\'s %s is EMPTY in the server\'s model now')
+            :format(target, tostring(slot.item)))
+        print('  Their game still has rounds in the gun -- a client only takes the')
+        print('  server\'s ammo when it goes UP. Have them shoot a player: the hit')
+        print('  should be refused NO_AMMO. Then: brshots.')
+        print('  This one DOES file an incident. Nothing was bent -- the server')
+        print('  simply believes what it was told, which is the real check.')
+        return
+    end
+
+    if mode ~= 'far' and mode ~= 'fast' and mode ~= 'thrown' then
+        print(('  brtestfire: unknown mode "%s".'):format(mode))
+        print('  Modes: far, fast, thrown, noammo <id>, off, status')
+        return
+    end
+
+    BR.Damage.armTestFire(mode)
 end, true)

@@ -231,7 +231,13 @@ end
 --- @param reason string  woven into the recipient's notice
 function BR.Party.withdrawInvitesFrom(src, reason)
     local sender = BR.Roster.get(src)
-    local name = sender and sender.name or 'A player'
+    -- THE NAME IS A MARKER, THE FALLBACK IS A WORD. Owner, 2026-08-31: "Any
+    -- time we mention a player by name in a toast their name should be bold."
+    -- `A player` is not somebody's name, it is what this sentence says when
+    -- there is nobody to name, so it goes through the same hole unmarked and
+    -- stays in the prose weight.
+    local name = sender and sender.name and BR.Notice.who(sender.name)
+        or 'A player'
 
     -- Collect first, mutate after: clearing entries while iterating the table
     -- being iterated is exactly the sort of thing that works until the day it
@@ -247,8 +253,12 @@ function BR.Party.withdrawInvitesFrom(src, reason)
 
     for _, targetSrc in ipairs(dropped) do
         invites[targetSrc] = nil
+        -- TWO HOLES, ONE OF THEM A PERSON. `reason` is our own explanation and
+        -- must not be bold, which is exactly why a name is marked at the call
+        -- site rather than inferred from being a `%s`.
         BR.Server.notify(targetSrc,
-            ('%s\'s invite expired -- %s.'):format(name, reason), 'warn')
+            BR.Notice.line('%s\'s invite expired -- %s.', name, reason),
+            'warn')
         -- The CARD, not only the notice. A prompt offering to join a party
         -- that no longer takes joiners is a button that lies.
         TriggerClientEvent(BR.Net.SQUAD_INVITED, targetSrc, { cancel = true })
@@ -279,7 +289,9 @@ function BR.Party.respond(src, accept)
         -- re-invited people who had already said no.
         local party = parties[inv.partyId]
         if party then
-            BR.Server.notify(inv.from, ('%s declined your invite.'):format(rName), 'warn')
+            BR.Server.notify(inv.from,
+                BR.Notice.line('%s declined your invite.', BR.Notice.who(rName)),
+                'warn')
             sync(party.id)   -- the pending chip goes away for everyone
         end
         return true
@@ -311,7 +323,9 @@ function BR.Party.respond(src, accept)
     BR.Server.notify(src, 'You joined the party.', 'success')
     for _, m in ipairs(party.members) do
         if m ~= src then
-            BR.Server.notify(m, ('%s joined the party.'):format(entry.name), 'success')
+            BR.Server.notify(m,
+                BR.Notice.line('%s joined the party.', BR.Notice.who(entry.name)),
+                'success')
         end
     end
     return true
@@ -379,7 +393,8 @@ function BR.Party.leave(src, quiet)
         end
         if not quiet then
             BR.Server.notify(party.members,
-                ('%s left the party.'):format(entry.name), 'warn')
+                BR.Notice.line('%s left the party.', BR.Notice.who(entry.name)),
+                'warn')
         end
         sync(party.id)
     end
@@ -411,7 +426,8 @@ function BR.Party.kick(src, targetSrc)
         { id = nil, leader = nil, members = {} })
     BR.Server.notify(targetSrc, 'You were removed from the party.', 'danger')
     BR.Server.notify(party.members,
-        ('%s was removed from the party.'):format(target.name), 'warn')
+        BR.Notice.line('%s was removed from the party.',
+                       BR.Notice.who(target.name)), 'warn')
     return true
 end
 
@@ -960,7 +976,9 @@ function BR.Party.lateJoin(src, m)
     -- the match" toast went (#145).
     for other, e in pairs(BR.Server.roster) do
         if other ~= src and e.squadId == target then
-            BR.Server.notify(other, ('%s joined your squad.'):format(entry.name), 'success')
+            BR.Server.notify(other,
+                BR.Notice.line('%s joined your squad.', BR.Notice.who(entry.name)),
+                'success')
         end
     end
 
@@ -1005,6 +1023,44 @@ end
 
 -- ---------------------------------------------------------- squad beacons ---
 
+--- One squadmate's level, DERIVED FROM LIFETIME XP.
+---
+--- Owner, 2026-08-22: "We need some way in the squad panel to see the levels of
+--- our teammates near their name."
+---
+--- DERIVED, NEVER READ FROM A STORED FIELD. The profile row carries a `level`
+--- column, and it is written once at match end -- so it lags the `xp` beside it
+--- for the whole of the next match, and a player who levelled up last game is
+--- shown their old number by anything that trusts it. That is not hypothetical:
+--- server/debug.lua's profile dump used to print the stored one and was "the
+--- last place still disagreeing with the lobby after everything else was fixed
+--- to derive". BR.Xp.levelFor is the same authority server/market.lua sends the
+--- lobby and br_stats/server/persist.lua writes the row from, so the panel, the
+--- lobby chip and the verdict screen cannot drift apart.
+---
+--- nil MEANS "NOT KNOWN YET", AND IT IS NOT THE SAME AS LEVEL 1.
+--- BR.Market.lifetimeXp returns nil until that player's inventory has come back
+--- from the database, and a fresh account genuinely holding 0 XP is level 1.
+--- Collapsing the two would draw a confident `1` over every squadmate for the
+--- length of the fetch and then silently correct itself -- which is the exact
+--- symptom market.lua already has a comment about ("a level that reads wrong and
+--- then silently corrects itself... reported as 'it took a while to update'").
+--- The panel draws nothing at all for nil; see hud/SquadPanel.tsx.
+---
+--- `if xp == nil` RATHER THAN `if not xp`. In Lua 0 is TRUTHY, so `not xp` is
+--- false for a zero total and both spellings happen to work here -- but the one
+--- that reads as "has it loaded" is the one that keeps working if the accessor
+--- ever returns false, and this project has shipped the 0-is-truthy bug six
+--- times. The explicit nil test says what is actually being asked.
+--- @param src integer
+--- @return integer|nil
+local function levelOf(src)
+    if not (BR.Xp and BR.Market and BR.Market.lifetimeXp) then return nil end
+    local xp = BR.Market.lifetimeXp(src)
+    if xp == nil then return nil end
+    return BR.Xp.levelFor(xp)
+end
+
 -- Squadmate positions, to squad members ONLY.
 --
 -- This is the single deliberate exception to "positions never leave the
@@ -1016,7 +1072,67 @@ end
 -- 250ms, matching the roster's own position sampling: pushing faster than the
 -- server samples would only re-send the same coordinates. A squadmate's dot
 -- now tracks them rather than hopping (user, 2026-08-05).
+
+--- This mate's revive key, as the squad beacon carries it. See the call site.
+---
+--- A FILE-LEVEL FUNCTION RATHER THAN A CLOSURE IN THE LOOP, because the loop
+--- runs four times a second over every squadded player in every live match and a
+--- closure built per member per push is an allocation per member per push for a
+--- field that is nil for almost all of them.
+---
+--- NIL FOR A PLAYER WITH NO KEY, which is what makes the membership list its own
+--- clear: the rows are rebuilt whole every push, so a key that was spent,
+--- expired into un-holdability or wiped by BR.Match.resetPlayer simply stops
+--- appearing, with nothing written anywhere to take it down.
+--- @param e table
+--- @param now integer
+--- @return table|nil
+local function keyRow(e, now)
+    local k = e.reviveKey
+    if not k then return nil end
+    return {
+        x = k.x, y = k.y, z = k.z,
+        -- `== true` AND `~= true` RATHER THAN TRUTH TESTS. `held` is written
+        -- false at mint and only ever raised to true, and 0-is-truthy has cost
+        -- this project ten shipped bugs; the explicit comparisons say what is
+        -- being asked and cannot be read the other way.
+        held = k.held == true or nil,
+        live = (k.held ~= true and now < (k.expiresAt or 0)) and true or nil,
+        -- WHEN THE THING ON THE GROUND GOES AWAY.
+        --
+        -- Owner, 2026-08-31: "If there is a timer to pickup their key, display
+        -- it in the squad panel." The panel cannot compute this: `mintedAt` is
+        -- here already but BR.Config.ReviveKey.expiryMs is not, and shipping the
+        -- duration to the page so it could add the two would be a second place
+        -- for the three minutes to live. The DEADLINE is the fact.
+        --
+        -- RAW SERVER TIME, unconverted, exactly as `bleedEndsAt` on this same
+        -- payload is -- so both countdowns on a squad row are read off one clock
+        -- against Date.now() + clockOffset. Two units on one panel is a bug that
+        -- looks like a wrong number.
+        --
+        -- IT TRAVELS WHATEVER `live` SAYS, because it is what MAKES `live` true
+        -- and the client already receives the row after the pickup has expired
+        -- (that is how it knows to offer the purchase). The panel gates its
+        -- countdown on `live`; a deadline in the past is not a second state.
+        expiresAt = k.expiresAt,
+        -- WHEN IT WAS MINTED, WHICH IS HOW THE CLIENT BREAKS A TIE.
+        --
+        -- The revive happens at an ambulance now, so a squad with two mates down
+        -- has two held keys at ONE van and the plate has to name one of them.
+        -- The rule is "whoever has been out longest", and this is the number it
+        -- is read from -- on the client, because the client draws the plate and
+        -- the server only rules on the target it is handed.
+        --
+        -- SAFE ON THIS PUSH FOR THE SAME REASON EVERYTHING ELSE ON IT IS: it
+        -- goes to the squad and to nobody else. How long your own mate has been
+        -- dead is not a fact the squad that killed them gets from here.
+        mintedAt = k.mintedAt,
+    }
+end
+
 BR.Sched.every(250, 'party.squadpos', function()
+    local now = GetGameTimer()
     -- Live states, checked per player against THEIR match: with parallel
     -- matches there is no single gate. Squad ids are match-namespaced, so
     -- grouping by squadId alone can never mix two matches' beacons.
@@ -1028,18 +1144,17 @@ BR.Sched.every(250, 'party.squadpos', function()
 
     -- Group squad members. Solos have no squadId and are never sent.
     --
-    -- DEAD MATES STAY ON THE LIST. They used to drop off it the instant they
+    -- OUT MATES STAY ON THE LIST. They used to drop off it the instant they
     -- were eliminated, which took their blip and their overhead name with them
     -- ("in squads I can't see the names of dead players in my squad", user,
     -- 2026-08-05) -- the client's membership model IS this push, so going
     -- quiet about someone reads as "no longer in the squad". Where a
     -- teammate fell is information their squad is entitled to, and it is the
     -- same privacy boundary either way: still squad-only, still their own
-    -- match. SPECTATING rides along for the same reason.
+    -- match. A squadmate spectating is OUT, so they ride along on that key.
     local visibleStates = {
-        [BR.PlayerState.DEAD]       = true,
-        [BR.PlayerState.SPECTATING] = true,
-        [BR.PlayerState.DBNO]       = true,
+        [BR.PlayerState.OUT]  = true,
+        [BR.PlayerState.DBNO] = true,
     }
 
     -- NOBODY IS BEACONED FROM THE PLANE. Everyone aboard is at the same
@@ -1094,6 +1209,97 @@ BR.Sched.every(250, 'party.squadpos', function()
                 -- key off IS the clear.
                 bleedEndsAt = (e.state == BR.PlayerState.DBNO)
                               and e.dbnoUntil or nil,
+
+                -- WHAT LEVEL THIS MATE IS, AND ONLY TO THEIR SQUAD.
+                --
+                -- It rides the beacon for the same reason the deadline above
+                -- does, and the reasoning is worth repeating rather than
+                -- pointing at: roster.lua's PUBLIC_FIELDS is the obvious home
+                -- and it is the wrong one, because that list is broadcast to
+                -- EVERY client in the match. A level is not positional and
+                -- gives away nothing tactical -- it is the least sensitive
+                -- thing this file could carry -- but "harmless" is not the
+                -- test the public list applies; the test is whether the whole
+                -- lobby needs to know, and for this it does not. The owner
+                -- asked to see it for TEAMMATES, so teammates are who is told.
+                --
+                -- RE-DERIVED ON EVERY PUSH rather than cached onto the roster
+                -- entry. A cached copy is precisely the stale field this whole
+                -- feature is written to avoid, and the cost is one closed-form
+                -- inversion per squadded player per quarter second.
+                level = levelOf(src),
+
+                -- WHETHER THIS MATE'S VOICE CARRIES ANYTHING, AND ONLY TO
+                -- THEIR SQUAD.
+                --
+                -- Owner, 2026-08-29: "the squad panel works, but doesn't
+                -- accurately show when others in the squad have 'off'
+                -- selected"; and then, approving the wire, "Why can't we build
+                -- another client -> server -> squad hop?"
+                --
+                -- IT RIDES THE BEACON FOR THE THIRD TIME, AND FOR THE THIRD
+                -- TIME THE ARGUMENT IS THE ONE ABOVE: roster.lua's
+                -- PUBLIC_FIELDS is the obvious home and it is the wrong one,
+                -- because that list reaches every client in the match. "That
+                -- player cannot hear anything" is a fact worth having about a
+                -- teammate and a fact worth EXPLOITING about an enemy -- it is
+                -- the difference between flanking someone who can be warned
+                -- and someone who cannot. The owner asked for it about his
+                -- squad, so his squad is who is told.
+                --
+                -- AND IT RIDES SOMETHING PERIODIC WITHOUT BEING PERIODIC
+                -- ITSELF. The expensive half of a hop like this is the
+                -- CLIENT->SERVER leg -- 48 machines with an opinion -- and that
+                -- leg is edge-triggered (br_core/client/voice.lua's
+                -- publishVoiceState). This push was already leaving four times
+                -- a second carrying four other fields; a fifth costs one
+                -- boolean and, because the list is rebuilt whole every time,
+                -- cannot go stale. A dedicated event would have been strictly
+                -- more traffic and a second clock over one membership list.
+                --
+                -- ABSENT RATHER THAN false, matching the two fields above:
+                -- nothing to draw travels as nothing at all, so an older client
+                -- and a mate whose voice is fine produce the same empty slot.
+                -- `== true` is the test because the entry's value arrives from
+                -- a client (see BR.Net.VOICE_STATE in server/voice.lua).
+                voiceOff = e.voiceOff == true or nil,
+
+                -- THE REVIVE KEY THIS MATE LEFT, AND ONLY TO THEIR SQUAD.
+                --
+                -- IT RIDES THE BEACON FOR THE FOURTH TIME, AND FOR THE FOURTH
+                -- TIME THE ARGUMENT IS THE ONE ABOVE -- but here it is the
+                -- strongest of the four rather than the weakest. roster.lua's
+                -- PUBLIC_FIELDS reaches EVERY client in the match, and whether a
+                -- squad can still get somebody back is exactly what the squad
+                -- that just killed them would most like to know: it is the
+                -- difference between pushing a body and leaving it. This push is
+                -- already squad-only and already carries OUT players (see
+                -- visibleStates above), so the audience is right by construction.
+                --
+                -- ONE FIELD WITH THREE READINGS, rather than three flat ones:
+                --
+                --   absent          nothing to draw, nothing outstanding.
+                --   held = true     the squad owns it. `x/y/z` is where a live
+                --                   mate holds interact to bring them back.
+                --   live = true     there is still something on the GROUND at
+                --                   x/y/z to walk over. Absent once the pickup
+                --                   has expired -- at which point the key is
+                --                   still buyable and the field still travels
+                --                   with neither flag, which is what tells the
+                --                   client to offer the purchase.
+                --
+                -- THE COORDINATES ARE THE SERVER'S OWN, and that is the whole
+                -- reason this rides a wire at all rather than being derived on
+                -- the client from a ped. server/revivekey.lua rules the hold
+                -- against exactly these numbers; sending them means the prompt
+                -- and the ruling cannot disagree, and no clone of a dead body --
+                -- which #163 says crawls away and 33ca88c says does not
+                -- replicate reliably -- is anywhere in the loop.
+                --
+                -- REBUILT WHOLE EVERY PUSH, so leaving the key off IS the clear:
+                -- a key that was spent, expired or reset stops travelling on the
+                -- next pass with nothing written here to say so.
+                key = keyRow(e, now),
             }
         end
     end)
@@ -1225,7 +1431,9 @@ function BR.Party.answerJoin(leaderSrc, requesterSrc, accept)
     BR.Server.notify(requesterSrc, 'You joined the party.', 'success')
     for _, m in ipairs(party.members) do
         if m ~= requesterSrc then
-            BR.Server.notify(m, ('%s joined the party.'):format(rq.name), 'success')
+            BR.Server.notify(m,
+                BR.Notice.line('%s joined the party.', BR.Notice.who(rq.name)),
+                'success')
         end
     end
     return true
@@ -1422,8 +1630,12 @@ BR.Sched.every(5000, 'party.expire', function()
             -- otherwise "expired" and "still thinking" look identical for as
             -- long as the sender cares to keep watching the pending chip.
             local target = BR.Roster.get(src)
+            -- `a player` is the sentence's own word for "we do not know who",
+            -- not a name, so it goes through the hole unmarked and is not bold.
             BR.Server.notify(inv.from,
-                ('Invite to %s expired.'):format(target and target.name or 'a player'),
+                BR.Notice.line('Invite to %s expired.',
+                    target and target.name and BR.Notice.who(target.name)
+                        or 'a player'),
                 'warn')
             sync(inv.partyId)
         end

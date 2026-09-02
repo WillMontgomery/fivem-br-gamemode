@@ -138,7 +138,7 @@ local function holdForStart(src, entry, m)
     entry.reviveBeat, entry.reviveTickAt = nil, nil
 
     entry.revivePending = true
-    BR.Roster.setState(src, BR.PlayerState.DEAD)
+    BR.Roster.setState(src, BR.PlayerState.OUT)
 
     if wasDowned then
         TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
@@ -188,6 +188,15 @@ function BR.Combat.reviveHeld(src, entry)
     entry.engineHp = nil
 
     TriggerClientEvent(BR.Net.REVIVED, src)
+
+    -- THE LEDGER LEADS AND THE PED FOLLOWS, which is the reverse of the usual
+    -- direction and is why the health audit needs telling. For one round trip
+    -- this player's entry says 100 and their ped is still a corpse; the moment
+    -- the client applies HEALTH_SYNC the ped crosses back over. The audit in
+    -- server/roster.lua reads this stamp so the crossover is not counted as a
+    -- client inventing health for itself.
+    entry.healthSettleUntil = GetGameTimer()
+        + ((BR.Config.Combat.healthAudit or {}).settleMs or 2000)
 
     BR.Roster.update(src, { hp = 100.0, armour = 0.0 })
     BR.Roster.setState(src, BR.PlayerState.ALIVE)
@@ -288,6 +297,33 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         BR.Loot.deathBox(m, src)
     end
 
+    -- ═══ AND THE KEY IS MINTED ON THE SAME EDGE, WHICH IS THE WHOLE RULE ═══
+    --
+    -- Owner, 2026-08-30: "The moment that bleed out timer ends and they go to
+    -- spectate - their key is created and their inventory is spilled on the
+    -- ground" -- and, of the other branch, "if they are revived in-person there,
+    -- they can keep their inventory, which is no different from today."
+    --
+    -- ONE EVENT, NOT TWO. The two halves are stated as one moment, so they get
+    -- ONE CALL SITE rather than two rules that happen to agree today: same `if
+    -- m` guard, same `src`, same `entry.pos`, one line apart and above the state
+    -- change. A squadmate who reaches them during the bleed-out never arrives
+    -- here at all, so they keep their kit AND leave no key, with no branch
+    -- written anywhere to say so.
+    --
+    -- IT IS BELOW THE #144 HOLD AND THAT IS LOAD-BEARING. `holdForStart` returns
+    -- long before this line, so a player who died before the match started gets
+    -- no key -- which is right, because they lost no inventory and are about to
+    -- be revived for free. Moving this above that guard would hand their squad a
+    -- 25-Volt entitlement for a death that is never recorded.
+    --
+    -- NOT GUARDED ON WHAT THE DEATH BOX RETURNED. It returns nil for a player
+    -- who was carrying nothing, and an empty-handed player must still be
+    -- recoverable -- the invariant is the EDGE, not the spill.
+    if m and BR.ReviveKey and BR.ReviveKey.onEliminated then
+        BR.ReviveKey.onEliminated(m, src)
+    end
+
     -- A BLEED-OUT IS A DEATH THE PED HAS NOT HEARD ABOUT.
     --
     -- Every other route into this function arrives because something already
@@ -308,7 +344,7 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- dbnoCount deliberately survives: it is per MATCH and resets at CLEANUP,
     -- so being finished does not hand the next knock a fresh 45 seconds.
 
-    BR.Roster.setState(src, BR.PlayerState.DEAD)
+    BR.Roster.setState(src, BR.PlayerState.OUT)
     entry.placement = placement
     -- WHEN THEIR MATCH STOPPED, for the survival term in the XP curve. Written
     -- here because this is the only place a player stops surviving, and read
@@ -333,6 +369,28 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     if killer and killerSrc ~= src then
         killer.kills = (killer.kills or 0) + 1
         BR.Broadcast.delta({ op = 'update', src = killerSrc, e = { kills = killer.kills } })
+
+        -- WHO TO POINT THE VICTIM'S CAMERA AT, IN SOLOS. "If in solos, the
+        -- default spectate target should be the killer (if there was one)" --
+        -- the owner, 2026-08-22. server/spectate.lua reads this; nothing else
+        -- does, and nothing on the client is ever told it.
+        --
+        -- A LICENCE, NOT `killerSrc`. FiveM recycles server ids within the
+        -- minute and this outlives the moment it is written by design -- the
+        -- victim watches this person for the rest of their round. Storing the id
+        -- would eventually point a dead player's camera at whoever inherited it,
+        -- which is the exact bug server/spectate.lua's own feed re-checks a
+        -- licence every 250ms to avoid. It is resolved back to a live id at the
+        -- moment of use and never before.
+        --
+        -- WRITTEN INSIDE THE `killer and killerSrc ~= src` GUARD, so it inherits
+        -- both of that guard's facts for free: there is a real roster entry, and
+        -- nobody is ever recorded as their own killer. `attributedKiller` has
+        -- already refused a stale hit and a killer who has left; a death with no
+        -- killer reaches this line with `killerSrc` nil and simply does not run
+        -- it -- the storm, a fall, a car with nobody in it (#194) -- so "no
+        -- killer" stays nil here, the same representation the kill feed uses.
+        entry.killedByLicense = BR.Roster.licenseOf(killerSrc)
     end
 
     local feed = {
@@ -437,6 +495,36 @@ function BR.Combat.attributedKiller(entry)
     return entry.lastHitBy
 end
 
+--- Who gets this death, including the one attributor that runs too late.
+---
+--- BR.Vehicles' roadkill ledger writes `lastHitBy` from the roster's own 4 Hz
+--- sample, which covers every vehicular death that took more than a quarter of a
+--- second to arrive -- a glancing hit, a knock that bleeds out, a player finished
+--- by the storm afterwards. It does NOT cover the ordinary case, which is a car
+--- at speed turning a full-health player into a corpse between two samples: the
+--- victim's client reports the death immediately and this function runs before
+--- the sampler next fires.
+---
+--- So an unattributed death gets one look, HERE, at the freshest state the server
+--- holds. It costs nothing on the common path -- a death with a killer never
+--- reaches the second branch, and a death without one is rare -- and it reads
+--- exactly the same tables the sampler does. Nothing from the wire is consulted:
+--- `data.killer` and `data.cause` are the client's GET_PED_SOURCE_OF_DEATH and
+--- are ignored here as they have been since M6.
+--- @param src integer
+--- @param entry table
+--- @return integer|nil killer src
+local function killerOf(src, entry)
+    local killer = BR.Combat.attributedKiller(entry)
+    if killer then return killer end
+
+    if BR.Vehicles and BR.Vehicles.creditRoadkill
+       and BR.Vehicles.creditRoadkill(src) then
+        return BR.Combat.attributedKiller(entry)
+    end
+    return nil
+end
+
 -- --------------------------------------------------------------------------
 -- DBNO: down, bleed, revive
 -- --------------------------------------------------------------------------
@@ -505,18 +593,69 @@ function BR.Combat.canBeDowned(entry)
     local m = entry.matchId and BR.Server.matches[entry.matchId]
     if not m then return false end
 
-    -- SQUADS ONLY, AND THE GATE IS THE MODE'S OWN FLAG (owner, 2026-08-09).
+    -- ═══ SQUADS BY MODE, SOLOS BY INVENTORY (#191) ═══
     --
-    -- Solo has nobody who could revive you, so a knock today would only be a
-    -- slower death and a worse one. Solo DBNO is wanted LATER and is
-    -- deliberately not this milestone: it only becomes a real state once there
-    -- is something that can pick a lone player up, and that is M8d's hearse
-    -- rescue. When it arrives the switch here is `BR.Mode.SOLO.dbno = true`
-    -- plus a second answer to the question below -- which is why the two
-    -- conditions are separate rather than one "is this a squad match".
-    if not BR.ResolveMode(m.mode).dbno then return false end
+    -- This used to be one gate -- the mode's `dbno` flag -- with a note saying
+    -- solo DBNO would arrive when there was finally something that could pick a
+    -- lone player up. That is the CPR kit, and it arrived, but NOT in the shape
+    -- the note predicted: the note expected `BR.Mode.SOLO.dbno = true`, and that
+    -- is emphatically not the change.
+    --
+    -- `BR.Mode.SOLO.dbno` STAYS FALSE, and the reason is the whole design. The
+    -- mode's flag is a statement about the MODE -- "in this mode, running out of
+    -- health means being knocked down" -- and in solos that is still false for
+    -- almost every player almost all of the time. Flipping it would knock down
+    -- every solo player in every match and leave them on the floor with no kit,
+    -- no mate and no ambulance, which is the "slower death and a worse one" the
+    -- old note was written to avoid. What the kit changes is not the mode; it is
+    -- one player's own death, and only while they are carrying the item.
+    --
+    -- SO THE TWO ARMS ARE GENUINELY DIFFERENT QUESTIONS and are written as such:
+    --
+    --   SQUAD: the mode says yes, and then -- is anybody left who could actually
+    --   come and pick them up? A squad that is entirely down has nobody, so the
+    --   last knock of a wipe is a death.
+    --
+    --   SOLO: the mode says no, and then -- are they carrying a CPR kit? Nobody
+    --   can ever revive them (see below), so the kit is not "somebody could pick
+    --   them up", it is "they can call an ambulance", and the answer is in their
+    --   inventory rather than on the roster.
+    --
+    -- ═══ AND NO SOLO KNOCKED THIS WAY IS REVIVABLE. IT ALREADY COSTS NOTHING ═══
+    --
+    -- #191: "No revive is possible -- the only exits are the item or the
+    -- bleed-out timer." That is enforced by three things this change did not
+    -- have to touch, and it is worth naming them so nobody later "fixes" one:
+    --
+    --   * reviveAllowed() below requires `reviver.squadId == target.squadId`,
+    --     and a solo player has no squadId at all -- so `nil ~= nil` is false and
+    --     every revive request is refused server-side.
+    --   * client/dbno.lua's revive scan returns early on `not me.squadId`, so a
+    --     solo client never even looks for a body to hold a key on.
+    --   * hasStandingMate() is not consulted on this arm, so nothing here
+    --     implies a rescuer exists.
+    --
+    -- The kit therefore makes solo death conditional WITHOUT making solo revive
+    -- possible, which is exactly the pair #191 asked for.
+    --
+    -- ═══ SOLOS ONLY. THE SQUAD LOCKOUT WAS WITHDRAWN ═══
+    --
+    -- Owner, 2026-08-23: "CPR kit only in solos". Earlier the same day he
+    -- described the kit working in SQUADS instead, with a revive lockout as its
+    -- cost -- "when used in squads, immediately prevents that player from being
+    -- revived by any other players for that one use". The later message wins and
+    -- the lockout IS NOT BUILT. A squad player holding a kit falls through the
+    -- squad arm below and gets exactly what they have always got. Recorded here
+    -- because the issue thread still contains both quotes.
+    if BR.ResolveMode(m.mode).dbno then
+        return hasStandingMate(entry)
+    end
 
-    return hasStandingMate(entry)
+    -- ASKED OF THE INVENTORY, and asked LAST, so the ordinary solo death -- the
+    -- overwhelmingly common case -- costs one table lookup on the mode and stops.
+    -- BR.Damage.applyHit calls this before it writes any health, on every lethal
+    -- hit in every match, so the cheap answer has to be on the cheap path.
+    return BR.Rescue ~= nil and BR.Rescue.holdsKit(entry)
 end
 
 --- 0..1 through the revive currently being held on this player.
@@ -630,7 +769,13 @@ function BR.Combat.knock(src, killerSrc)
         BR.Roster.each(
             function(e) return e.squadId == entry.squadId and e.src ~= src end,
             function(mate)
-                BR.Server.notify(mate, ('%s is down.'):format(entry.name),
+                -- HIS EXCLAMATION MARK, 2026-08-31, and his rule about the
+                -- name: "Any time we mention a player by name in a toast their
+                -- name should be bold." BR.Notice.line is what carries that
+                -- without ever putting formatting inside the name -- see
+                -- br_lib/shared/notice.lua.
+                BR.Server.notify(mate,
+                    BR.Notice.line('%s is down!', BR.Notice.who(entry.name)),
                     'warn', { key = 'dbno.' .. src, ms = 6000 })
             end)
     end
@@ -688,7 +833,10 @@ function BR.Combat.bleed(src, amount, shooterSrc, meta)
         e.downedBy = shooterSrc
     end
 
-    if e.dbnoUntil <= now then
+    -- Same rule as the tick below: a player being carried is not finishable by
+    -- a clock. Damage still shortens the deadline they return to if the rescue
+    -- fails, which is why this subtracts before it checks rather than instead.
+    if not e.rescue and e.dbnoUntil <= now then
         BR.Combat.eliminate(src, 'finished', e.downedBy)
         return
     end
@@ -775,11 +923,24 @@ end
 ---
 --- Public so `/brrevive` runs the SAME path a player's eight seconds run,
 --- rather than a shortcut that could keep working while the feature does not.
+--- `hp` IS THE THIRD CALLER'S DOING (#191) AND DEFAULTS TO THE OLD BEHAVIOUR.
+--- A squad revive and an admin revive both hand back `dbnoReviveHp`; the CPR
+--- kit's ambulance hands back full health, because it is an ultra-rare item
+--- spent in full on a ride the player could not shoot back during. The
+--- alternative was for server/rescue.lua to call this and then correct the
+--- health afterwards, which is two health writes and a visible flicker between
+--- them -- and the undo below (the bleed deadline, the owed kill, the client's
+--- downed mirror) is what nobody may skip, so routing every revive through here
+--- matters more than keeping the signature short.
+---
 --- @param src integer
 --- @param reviverSrc integer|nil  credited with the revive; nil for an admin
-function BR.Combat.revive(src, reviverSrc)
+--- @param hp number|nil  display health to come back on; default dbnoReviveHp
+function BR.Combat.revive(src, reviverSrc, hp)
     local entry = BR.Roster.get(src)
     if not entry or entry.state ~= BR.PlayerState.DBNO then return end
+
+    hp = hp or (M.dbnoReviveHp or 30)
 
     reviverSrc = reviverSrc or entry.reviverSrc
     local reviver = reviverSrc and BR.Roster.get(reviverSrc) or nil
@@ -790,7 +951,14 @@ function BR.Combat.revive(src, reviverSrc)
     -- owns a finish that is not going to happen.
     entry.dbnoUntil, entry.downedBy = nil, nil
 
-    BR.Roster.update(src, { hp = (M.dbnoReviveHp or 30) + 0.0, armour = 0.0 })
+    -- The same crossover reviveHeld describes, and this is the path #191's
+    -- ambulance delivery arrives on as well: the ledger is written here and the
+    -- ped only reaches this number when the client applies the HEALTH_SYNC
+    -- below. Stamped before the write so no sample can land in between.
+    entry.healthSettleUntil = GetGameTimer()
+        + ((BR.Config.Combat.healthAudit or {}).settleMs or 2000)
+
+    BR.Roster.update(src, { hp = hp + 0.0, armour = 0.0 })
     BR.Roster.setState(src, BR.PlayerState.ALIVE)
 
     if reviver then
@@ -801,7 +969,7 @@ function BR.Combat.revive(src, reviverSrc)
     -- client applies it -- the same contract the storm and the validated shot
     -- already use, in absolute form rather than as a delta.
     TriggerClientEvent(BR.Net.HEALTH_SYNC, src,
-        { hp = M.dbnoReviveHp or 30, armour = 0 })
+        { hp = hp, armour = 0 })
     BR.Combat.pushDbno(src)
 
     -- ...AND THE SQUAD HEARS IT, which is the third of the three phases this
@@ -824,11 +992,13 @@ function BR.Combat.revive(src, reviverSrc)
     if reviverSrc then
         TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc,
             { pct = 100.0, target = src, done = true })
-        BR.Server.notify(reviverSrc, ('You picked %s up.'):format(entry.name),
+        BR.Server.notify(reviverSrc,
+            BR.Notice.line('You picked %s up.', BR.Notice.who(entry.name)),
             'success', { ms = 4000 })
     end
     BR.Server.notify(src,
-        reviver and ('%s picked you up.'):format(reviver.name)
+        reviver and BR.Notice.line('%s picked you up.',
+                                   BR.Notice.who(reviver.name))
                  or 'You were revived.',
         'success', { ms = 4000 })
 
@@ -926,16 +1096,227 @@ local function stepDowned(src, entry, now)
         entry.reviveTickAt = nil
     end
 
-    if now >= (entry.dbnoUntil or 0) then
+    -- ═══ A PLAYER ON THE AMBULANCE DOES NOT BLEED OUT ═══
+    --
+    -- Owner, 2026-08-28, first ride that reached the server: "My ped stayed in
+    -- place while the timer continued for some reason... Then the timer expired
+    -- and I died."
+    --
+    -- BR.Rescue.begin sets `rescue` and hands the ride to the client, and that
+    -- was the whole of it -- nothing ever stopped the clock that was already
+    -- running. The countdown that made the kit worth using went on counting and
+    -- finished the player mid-rescue.
+    --
+    -- THE GUARD IS ON THE FLAG, NOT ON A CLEARED TIMER. Clearing dbnoUntil
+    -- would work until a rescue fails: RESCUE_LOST puts the player back in
+    -- DBNO, and a cleared clock would leave them downed forever with nothing to
+    -- finish them. Suspending it keeps the deadline intact for exactly that
+    -- return, and `rescue` is already the flag storm.lua reads for the same
+    -- reason -- a player in the back of an ambulance is not available to be
+    -- killed by anything the match is doing outside it.
+    if not entry.rescue and now >= (entry.dbnoUntil or 0) then
         BR.Combat.eliminate(src, 'bledout', entry.downedBy)
     end
 end
 
+-- ═══ A BLEED CLOCK BELONGS TO A LIVE MATCH, AND STOPS WITH IT ═══
+--
+-- Owner, 2026-08-29: "When one player is in the ambulance and the only other
+-- remaining player(s) die, the verdict shown is 'VICTORY ROYALE' along with
+-- ALSO the cause of DBNO on top of it."
+--
+-- THE SECOND VERDICT WAS A REAL ELIMINATION, PUBLISHED AFTER THE MATCH ENDED,
+-- and the chain is worth writing down because every link in it is correct on
+-- its own:
+--
+--   1. A player on the ambulance is DBNO for the whole ride -- deliberately;
+--      server/rescue.lua and the DBNO section above both turn on it -- and
+--      BR.Server.isInMatch counts DBNO. So they are a squad still standing, the
+--      last other player dying ends the match, and awardPlacements hands them
+--      placement 1. They win, and publishResults banks it, at ENDED.
+--   2. server/rescue.lua's tick sees a match that is no longer PLAYING and
+--      clears `rec`/`entry.rescue`. Correct: that ride is over and it is not
+--      that file's business to eliminate anybody.
+--   3. ...which un-suspends the clock below. The suspension is deliberately a
+--      GUARD on the flag rather than a cleared deadline (see the note in
+--      stepDowned), so `dbnoUntil` is still the timestamp it had when the
+--      ambulance picked them up -- long past. The very next 250ms tick
+--      eliminated the winner for 'bledout'.
+--   4. The client had already dismissed its match surfaces on the ENDED
+--      transition. The DEAD delta arrived after that, BR.NoteDeath put the word
+--      back up, and nothing was left to take it down -- so the death word sat
+--      over VICTORY ROYALE for the ~3.4s until the verdict screen's backdrop
+--      reached black and the roster swept the player home.
+--
+-- THE FIX IS AT (3) BECAUSE (3) IS THE ONLY WRONG LINK. Nothing should be
+-- finished by a clock belonging to a match that is over: the results are
+-- published, the placements are awarded, and an elimination after that point
+-- can only ever contradict something already written down.
+--
+-- THE SAME GATE combat.deathcheck ALREADY USES, in the same shape and for the
+-- same reason -- per player against THEIR match, because matches advance
+-- independently, and BUS is live because #144's held death runs through here
+-- (a player who bleeds out before PLAYING must still reach holdForStart, or
+-- they are never revived into the round).
+--
+-- IT STOPS THE REVIVE HALF TOO, and that is right rather than incidental: a
+-- hold that completed after the winner was decided would stand somebody up in
+-- a finished match.
 BR.Sched.every(250, 'combat.dbno', function()
     local now = GetGameTimer()
     BR.Roster.each(
-        function(e) return e.state == BR.PlayerState.DBNO end,
+        function(e)
+            if e.state ~= BR.PlayerState.DBNO then return false end
+            local m = e.matchId and BR.Server.matches[e.matchId]
+            return m ~= nil and (m.state == BR.MatchState.PLAYING
+                              or m.state == BR.MatchState.BUS)
+        end,
         function(src, entry) stepDowned(src, entry, now) end)
+end)
+
+-- ==========================================================================
+-- #246: A BODY STREAMED IN LATE IS DRAWN WHERE THE KNOCK HAPPENED.
+-- ==========================================================================
+--
+-- "After a player dies and their ped is placed on the ground OR MOVES in the
+-- crawling position, then another player from outside the cell comes into the
+-- cell and arrives at the scene - the dead ped's position on the alive player's
+-- screen is in the same position where the death happened." (owner, 2026-08-30.)
+--
+-- THIS IS THE REPORT client/dbno.lua PREDICTED, AND IT NAMED THE ARM. The #164
+-- block in that file ends with the sentence this exists to answer:
+--
+--   "a client that streams the body in LATER, with no re-task in between,
+--    builds its clone from the task as it stands and is not covered by a step
+--    that has already been performed. ... it should arm off the scope change
+--    rather than off a clock."
+--
+-- SO THE ARM IS `playerEnteredScope`, AND THE PAYLOAD IS NOT WHAT IT LOOKS
+-- LIKE. Read off ServerGameState.cpp rather than off a forum post, because the
+-- two fields are one word apart in the docs and swapping them would nudge the
+-- wrong machine forever:
+--
+--     evMan->QueueEvent2("playerEnteredScope", {},
+--         { { "player", entityClient->GetNetId() },
+--           { "for",    client->GetNetId() } });
+--
+-- and the block it sits in is `if (!syncData.hasCreated) { if (IsBigMode()) {
+-- if (entity->type == NetObjEntityType::Player) {`. So:
+--
+--   * `data.player` is the OWNER OF THE PLAYER PED BEING CREATED -- the body.
+--   * `data.for` is the CLIENT THE CLONE IS BEING BUILT FOR -- the newcomer.
+--   * it fires on the tick the clone is created, once per pair, and its twin
+--     `playerLeftScope` fires when that clone is destroyed.
+--
+-- BOTH ARE INSIDE `IsBigMode()`, WHICH IS NOT "ONESYNC" -- IT IS ONESYNC
+-- INFINITY. On onesync legacy the events never fire at all and this whole file
+-- section is dead code. server.cfg.example sets `onesync on`, which is the
+-- bigmode value (ServerGameState.cpp reports "on" vs "legacy" off the same
+-- predicate), so it is live on this deployment -- but a box switched to legacy
+-- loses the fix silently, which is what the `entered` counter in /brdbno is for.
+--
+-- WHY THE SERVER ASKS THE OWNER INSTEAD OF DOING IT ITSELF. There is no
+-- server-side SET_ENTITY_COORDS. ServerGameState_Scripting.cpp registers
+-- exactly four entity SETTERS -- distance culling radius, orphan mode, routing
+-- bucket, and the ignore-request-control filter -- plus the lockdown modes.
+-- Player peds are client-authoritative and the server cannot write one, so the
+-- cheapest wire path is one empty event to one client.
+--
+-- AND WIDENING CULLING IS NOT THE FIX, which is worth stating because it is the
+-- first idea everyone has. server/rescue.lua carries the long note: the
+-- relevancy radius is 424m by default, an override makes an entity relevant to
+-- EVERY client on the tick it is set, and rescue.lua takes that trade for one
+-- ambulance for one ride and hands it straight back. Doing it for every downed
+-- body would send the whole match to everybody for the whole match.
+
+--- The floor between two nudges to the SAME body, ms.
+---
+--- THIRTY SPECTATORS ARRIVING AT ONCE MUST NOT BUY THIRTY TASKS, and the answer
+--- is coalescing rather than dropping: one step corrects EVERY machine watching,
+--- so thirty arrivals genuinely need one step between them. What they must not
+--- do is queue thirty.
+---
+--- IT IS A RATE LIMITER AND NOT A CLOCK, and the distinction is the whole of
+--- #164's argument. The 500ms beat that was removed fired for the WHOLE BLEED
+--- whether or not anything had happened -- 80 to 240 per knock, every one of
+--- them a chance for the network to sample the body mid-step. This fires only
+--- when a clone was actually built, so a quiet body in an empty field costs
+--- nothing at all, and a body in a firefight costs at most one per second.
+local RESYNC_FLOOR_MS = 1000
+
+--- How often the pending set is drained, ms.
+---
+--- NOT THE FLOOR, AND SHORTER THAN IT ON PURPOSE. This is the LATENCY a
+--- newcomer pays before the correction leaves; the floor is what stops the
+--- second one arriving too soon. A stale clone crawls at roughly 0.35 m/s
+--- (`move_injured_ground` is a locomotion dictionary), so a quarter second of
+--- waiting is under a tenth of a metre of error, against the ~0.5m the issue
+--- asks for.
+local RESYNC_DRAIN_MS = 250
+
+--- Bodies that somebody has just cloned. src -> true.
+local resyncPending = {}
+--- When each body was last nudged. src -> ms.
+local resyncSentAt = {}
+
+--- For /brdbno. Every one of these is a number the owner can read against the
+--- client's own `scope` line to say which half of the round trip is missing.
+local resyncStats = { entered = 0, sent = 0, coalesced = 0, floored = 0 }
+BR.Combat.resyncStats = resyncStats
+
+AddEventHandler('playerEnteredScope', function(data)
+    if type(data) ~= 'table' then return end
+    -- STRINGS ON THE WIRE. fmt::sprintf("%d", ...) on both fields, so these
+    -- arrive as "12" and a raw table lookup would find nothing.
+    local owner = tonumber(data.player)
+    if not owner then return end
+
+    local entry = BR.Roster.get(owner)
+    if not entry then return end
+    -- ONLY A BODY. An alive player is being driven by their own machine every
+    -- frame and their clone is built from a position that is at most one
+    -- snapshot old; there is nothing stale to correct and no reason to spend a
+    -- message on it. DBNO and OUT are the two states where the ped stops
+    -- generating updates of its own.
+    if entry.state ~= BR.PlayerState.DBNO
+       and entry.state ~= BR.PlayerState.OUT then return end
+
+    resyncStats.entered = resyncStats.entered + 1
+    if resyncPending[owner] then
+        resyncStats.coalesced = resyncStats.coalesced + 1
+    end
+    resyncPending[owner] = true
+end)
+
+BR.Sched.every(RESYNC_DRAIN_MS, 'combat.scoperesync', function()
+    -- `next` rather than a length: this table is empty on almost every pass and
+    -- the empty case must cost one comparison.
+    if next(resyncPending) == nil then return end
+
+    local now = GetGameTimer()
+    for owner in pairs(resyncPending) do
+        local entry = BR.Roster.get(owner)
+        if not entry or (entry.state ~= BR.PlayerState.DBNO
+                         and entry.state ~= BR.PlayerState.OUT) then
+            -- Revived, disconnected, or swept home between the arm and the
+            -- drain. The pending flag goes with them; so does the stamp, or a
+            -- player knocked again inside the floor would have their FIRST
+            -- nudge of the new knock swallowed by the last one of the old.
+            resyncPending[owner] = nil
+            resyncSentAt[owner]  = nil
+        elseif now - (resyncSentAt[owner] or -RESYNC_FLOOR_MS) < RESYNC_FLOOR_MS then
+            -- INSIDE THE FLOOR, SO IT STAYS PENDING rather than being dropped.
+            -- A newcomer who cloned the body one frame AFTER the last step is
+            -- exactly the case this issue is about, and dropping them here
+            -- would reproduce it with extra steps.
+            resyncStats.floored = resyncStats.floored + 1
+        else
+            resyncPending[owner] = nil
+            resyncSentAt[owner]  = now
+            resyncStats.sent     = resyncStats.sent + 1
+            TriggerClientEvent(BR.Net.DBNO_RESYNC, owner)
+        end
+    end
 end)
 
 --- Tell a would-be reviver their hold is not happening.
@@ -1112,7 +1493,22 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
         cause = 'storm'
     end
 
-    BR.Combat.defeat(src, cause, BR.Combat.attributedKiller(entry))
+    -- Resolved BEFORE the roadkill cause is read, because resolving is what
+    -- writes `lastRoadkillAt` on the death this handler is processing.
+    local killer = killerOf(src, entry)
+
+    -- ...AND A ROADKILL THE SERVER ITSELF ATTRIBUTED OUTRANKS THE HASH THE
+    -- CLIENT SENT, in the direction that matters. `describeCause` already turns
+    -- WEAPON_RUN_OVER_BY_CAR into 'roadkill', so an honest client usually says it
+    -- first -- but the cause on the wire is the victim's own machine talking, and
+    -- the one thing a victim can do with it is deny their killer the right label.
+    -- Below the storm, which is documented as outranking everything.
+    if cause ~= 'storm' and BR.Vehicles and BR.Vehicles.roadkillRecent
+       and BR.Vehicles.roadkillRecent(entry) then
+        cause = 'roadkill'
+    end
+
+    BR.Combat.defeat(src, cause, killer)
 end)
 
 --- Independent confirmation from server-side health.
@@ -1170,7 +1566,16 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
             -- Attributed the same way as a client-reported death: the server's
             -- own record of who has been shooting them. A player who bleeds
             -- out from a rifle wound still credits the rifle.
-            BR.Combat.defeat(src, cause, BR.Combat.attributedKiller(entry))
+            local killer = killerOf(src, entry)
+            -- ...AND THIS PATH IS THE ONE THAT NEEDS THE ROADKILL LABEL MOST.
+            -- It is reached when the client said nothing at all, so there is no
+            -- cause hash to translate and 'server-observed' is a statement about
+            -- how we found out rather than about what happened.
+            if cause ~= 'storm' and BR.Vehicles and BR.Vehicles.roadkillRecent
+               and BR.Vehicles.roadkillRecent(entry) then
+                cause = 'roadkill'
+            end
+            BR.Combat.defeat(src, cause, killer)
         end
     end)
 end)
@@ -1190,10 +1595,10 @@ end, true)
 
 --- Knock a player down without shooting them.
 ---
---- `brdown <id>` refuses when the rules say it should -- solo, no standing
---- squadmate, already down -- and SAYS WHICH, because "nothing happened" is
---- indistinguishable from a bug and this is the command that will be used to
---- decide whether DBNO is working at all.
+--- `brdown <id>` refuses when the rules say it should -- no standing squadmate
+--- in a squad, no CPR kit in a solo, already down -- and SAYS WHICH, because
+--- "nothing happened" is indistinguishable from a bug and this is the command
+--- that will be used to decide whether DBNO is working at all.
 RegisterCommand('brdown', function(_, args)
     local src = tonumber(args[1])
     if not src then
@@ -1335,8 +1740,36 @@ RegisterCommand('brdbno', function()
                 :format(e.pos and 'sampled' or 'NEVER SAMPLED -- no OneSync?',
                         r and (r.pos and 'sampled'
                                      or 'NEVER SAMPLED -- no OneSync?') or '-'))
+            -- #246. READ THIS AGAINST THE CLIENT'S OWN `scope` LINE, which is
+            -- the other end of the same round trip: a body with nudges sent
+            -- here and none received there is a client that is not listening,
+            -- and one with `pending` stuck true is a floor that never clears.
+            print(('       scope    : last nudge %s, %s')
+                :format(since(resyncSentAt[src]),
+                        resyncPending[src] and 'ONE PENDING'
+                                           or 'nothing waiting'))
         end)
     if n == 0 then print('  nobody is down') end
+
+    -- ...AND THE TOTALS, WHICH COVER THE CORPSES TOO. The per-body lines above
+    -- are DBNO only; an OUT player is armed by exactly the same event and has
+    -- no row of its own to print, so `entered` is the only place a dead body
+    -- being streamed in shows up at all.
+    --
+    -- `entered` AT ZERO IS THE ONE READING THAT MEANS SOMETHING ON ITS OWN: it
+    -- is what a box running onesync LEGACY looks like. playerEnteredScope is
+    -- fired inside ServerGameState's `IsBigMode()` guard, so on legacy this
+    -- number never leaves 0 however many people walk over a body, and the whole
+    -- of #246 is inert.
+    print(('  scope      : %d entries on a body, %d nudges sent, %d coalesced, '
+           .. '%d held by the %dms floor')
+        :format(resyncStats.entered, resyncStats.sent,
+                resyncStats.coalesced, resyncStats.floored, RESYNC_FLOOR_MS))
+    if resyncStats.entered == 0 then
+        print('               entered 0 -- either nobody has walked up to a body '
+              .. 'yet, or this box is on onesync LEGACY, where the event does '
+              .. 'not exist')
+    end
     print(('  bleed %ds/%d/%ds, %.2fs per damage point, revive %.1fs within %.1fm')
         :format(M.dbnoBleedBase, M.dbnoBleedStep, M.dbnoBleedMin,
                 M.dbnoBleedPerDamage, M.dbnoReviveTime, M.dbnoReviveDist))

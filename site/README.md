@@ -112,6 +112,16 @@ That is why the keybind row above names both halves. **A bound key with no
 listener is indistinguishable, to a player, from a broken feature** — and printing
 one in the manual is worse, because it tells them to expect it.
 
+**Two of those four are live as of #192**, and the record is updated rather than
+left standing: `specNext` (Right arrow) and `specPrev` (Left arrow) now have a
+subscriber in `br_core/client/spectate.lua` and cycle a dead player's camera
+through their squad. Nothing about the bindings moved — same actions, same
+defaults — so anyone who had rebound a key they had no way to know was dead keeps
+the key they chose. `Z` is gone entirely and `M` is still bound with no listener.
+**The manual does not name the arrows and this note is not a licence to add
+them**: the row goes in when the owner decides on the wording, and until then the
+site is silent about a key that works, which is the harmless direction of the two.
+
 **It should be generated, not typed** — a script in `tools/` emitting these
 tables into `index.html`, gated so the build fails when the committed output
 drifts from the config. Until that exists, the table above is the manual

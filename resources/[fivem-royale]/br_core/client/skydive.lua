@@ -14,6 +14,24 @@ BR = BR or {}
 
 local CHUTE = GetHashKey('GADGET_PARACHUTE')   -- 0xFBAB5776, verified
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. This is the back half of the drop and it asked five BOOL natives
+--- raw, in the two places where being wrong is fatal rather than untidy:
+---
+---   `if HasPedGotWeapon(ped, CHUTE, false) then break end` -- the give-verify
+---   loop -- breaks on the 0 that means the ped has NO chute, so the retry that
+---   exists because the give "quietly fails for a player mid-teleport" would
+---   never run once. That is the chuteless fall this file opens by describing.
+---
+---   `if IsPedFalling(ped) then return true end` in airborneNow returns airborne
+---   for a ped standing still, so the landing branch never fires and the drop
+---   machine never stands down.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
 local dropping = false
 
 --- Has this drop already ended on the ground?
@@ -47,9 +65,336 @@ local landedThisDrop = false
 --- @param ped integer
 --- @return boolean
 local function airborneNow(ped)
-    if IsPedFalling(ped) then return true end
-    if IsEntityInWater(ped) then return false end
+    if isTrue(IsPedFalling(ped)) then return true end
+    if isTrue(IsEntityInWater(ped)) then return false end
     return GetEntityHeightAboveGround(ped) > 5.0
+end
+
+-- ═══ WHICH STAGE OF THE LANDING IS SLOW -- #245, AND IT IS A RULER, NOT A FIX ═══
+--
+-- The owner, 2026-08-30: "the loop that runs to learn that a player has landed
+-- on their feet -- that either doesn't run often enough or takes too long", and
+-- then, with the size of it: "I land on the ground, and my inventory doesn't
+-- show up for sometimes >5 seconds. This is the same loop that starts the storm
+-- timer once everyone has landed."
+--
+-- THOSE ARE TWO DIFFERENT FAULTS WITH TWO DIFFERENT FIXES and neither he nor
+-- this file can tell them apart from the outside. "Not often enough" is a
+-- cadence and would be fixed by a band; "takes too long" is a predicate that
+-- stays false and would be fixed by the predicate. Shortening the report's
+-- 400ms retry would look like a fix for either and be a coincidence for both.
+--
+-- AND READING CANNOT SETTLE IT EITHER, because the four things that have to
+-- happen after a ped touches down are invisible to each other:
+--
+--   1. the ped is physically on the ground
+--   2. the landing test in skydive.state agrees, and the branch fires
+--   3. the server answers the report and this client's mirror leaves FREEFALL
+--   4. the interface actually shows the bar
+--
+-- Every one of those is seconds-capable and every one of them looks, from a
+-- chair, exactly like the other three. So this measures all four and prints one
+-- line per landing on the landing player's own console -- he is mid-drop and
+-- cannot type a command.
+--
+-- HOW TO READ THE LINE. Every number is milliseconds AFTER GROUND CONTACT.
+--
+--   detect large                  stage 2. The client's own landing test is the
+--                                 bug, and `held by` names which of its four
+--                                 clauses was last to come true.
+--   detect n/a, server ~5000      stage 2, in its worst form: the branch NEVER
+--                                 fired, and what ended the wait was the
+--                                 server's stuck-lander net (stuckLanderMs,
+--                                 5000). `NEVER TRUE` names the clauses that
+--                                 never came true.
+--   detect small, server large    stage 3. The report or the promotion, not
+--                                 this file -- and THEN the 400ms retry is
+--                                 worth looking at.
+--   detect small, ui large        stage 4. The consumer.
+--   contact NEVER                 the physics never said we were down. That is
+--                                 a reading about IsEntityInAir, not a landing.
+--
+-- THE CLOCK IS LEGITIMATE HERE and this is the one place in the project where
+-- that needs saying. GetGameTimer is frame-stamped -- see the long TIMING block
+-- in client/main.lua, where it made every per-callback cost read exactly zero.
+-- It is useless WITHIN a frame and honest ACROSS frames, and every interval
+-- below spans hundreds of frames. This is the same clock noteFrame has always
+-- used correctly.
+BR.Skydive = BR.Skydive or {}
+
+--- The four clauses of the landing test in skydive.state, by the short names
+--- the readout prints. THEY ARE SAMPLED FROM THE SAME VALUES THE PREDICATE IS
+--- EVALUATED FROM, one line above it, so the ruler cannot drift from the thing
+--- it measures:
+---
+---   seen   airborneSeen        -- this drop has been off the ground at least once
+---   nopen  cs ~= OPENING       -- the canopy is not mid-deploy
+---   nfall  not IsPedFalling    -- the ped is not in a falling state
+---   gnd    grounded            -- on foot, in water, or the canopy-still-attached
+---                                 fallback (cs OPEN, agl < 2, speed < 2)
+local LAND_CLAUSES = { 'seen', 'nopen', 'nfall', 'gnd' }
+
+--- Print even an unfinished record after this long, rather than never. A
+--- landing whose server half never arrives is exactly the case worth seeing,
+--- and a diagnostic that stays silent for it is the shape of the bug it is
+--- looking for.
+local LAND_DEADLINE_MS = 20000
+
+--- ...and much sooner than that once the server has already answered. See the
+--- printer at the bottom of this file.
+local LAND_AFTER_SERVER_MS = 3000
+
+--- One drop's stage timings. All absolute GetGameTimer stamps; the readout
+--- turns them into offsets.
+local landTime = {
+    open = false, printed = false,
+    exitAt = 0,
+    contactFrom = nil, contactRun = 0,   -- the two-sample debounce, below
+    contactAt = nil,                     -- 1: physics says we are down
+    branchAt = nil,                      -- 2: the landing branch fired
+    reportAt = nil,                      -- 2b: DROP_LANDED left this client
+    serverAt = nil,                      -- 3: our mirror left FREEFALL/GLIDE/BUS
+    uiAt = nil,                          -- 4: the HUD would draw the bar
+    sawAir = false,                      -- the server called us airborne at least once
+    csContact = nil, csLast = nil,
+    aglMax = 0.0, spdMax = 0.0,
+    at = {},                             -- clause -> first stamp it was true
+    last = nil,                          -- the last finished line, for /brdropdbg
+}
+
+--- Turn one drop's stamps into the line. PURE -- no natives, no clock -- which
+--- is what lets tools/test_client.lua feed it a landing that never happened and
+--- assert the words, the way main.lua's reduceBench is pinned.
+--- @param r table  a landTime record
+--- @return string
+function BR.Skydive.landLine(r)
+    r = r or {}
+    local at = r.at or {}
+
+    -- BASED ON CONTACT, AND IT SAYS SO WHEN IT CANNOT BE. Silently rebasing on
+    -- the branch would turn "the physics never agreed we were down" into a
+    -- healthy-looking zero, which is the one reading that must not be faked.
+    local base = r.contactAt or r.branchAt or r.serverAt
+    local function off(t)
+        if t == nil or base == nil then return 'n/a' end
+        return tostring(t - base)
+    end
+
+    -- WHICH CLAUSE WAS LAST TO COME TRUE -- the answer, when detect is large.
+    -- A clause with no stamp at all never came true in this whole drop, and
+    -- naming those is strictly more useful than naming a maximum over the rest.
+    local held, heldAt, never = nil, nil, {}
+    for _, c in ipairs(LAND_CLAUSES) do
+        local t = at[c]
+        if t == nil then
+            never[#never + 1] = c
+        elseif heldAt == nil or t > heldAt then
+            held, heldAt = c, t
+        end
+    end
+
+    local verdict
+    if r.via == 'seat' then
+        -- NOT "NEVER TRUE", WHICH IS WHAT THIS USED TO SAY HERE. The seat
+        -- branch returns above the landing test, so its four clauses were never
+        -- ASKED -- and a readout that reports an unasked question as a failed
+        -- one is a readout that sends somebody after the wrong clause.
+        verdict = 'ended in a vehicle seat -- the landing test was not reached'
+    elseif #never > 0 then
+        verdict = 'NEVER TRUE: ' .. table.concat(never, ',')
+    elseif r.branchAt and r.contactAt and r.branchAt <= r.contactAt then
+        -- HEALTHY, AND SAID AS SUCH. With every clause true on the same tick,
+        -- "held by" would pick whichever the loop happened to look at first and
+        -- hand the reader a suspect for a landing that had nothing wrong with
+        -- it -- which is how a diagnostic starts costing rounds instead of
+        -- saving them.
+        verdict = 'detected on contact'
+    elseif r.branchAt == nil then
+        -- Unreachable if the sampler and the predicate still read the same
+        -- values in the same pass. Printed rather than assumed away: it is the
+        -- one outcome that would mean the ruler had drifted off the thing it
+        -- measures, and a ruler that can say so is worth the branch.
+        verdict = 'all four clauses true and the branch never fired -- SAMPLER DRIFT'
+    else
+        verdict = 'held by ' .. tostring(held)
+    end
+
+    -- `descent` rather than `fall`: `nfall` is a column on the same line, and a
+    -- reader grepping this readout for one must not land inside the other.
+    return ('[br_core] landtime %s (ms after contact): detect %s report %s server %s ui %s | %s'
+        .. ' | seen %s nopen %s nfall %s gnd %s foot %s airb %s | cs %s>%s aglMax %.1f spdMax %.1f descent %s')
+        :format(
+            r.contactAt and 'contact' or 'contact NEVER',
+            off(r.branchAt), off(r.reportAt), off(r.serverAt), off(r.uiAt),
+            verdict,
+            off(at.seen), off(at.nopen), off(at.nfall), off(at.gnd),
+            off(at.foot), off(at.airb),
+            tostring(r.csContact), tostring(r.csLast),
+            r.aglMax or 0.0, r.spdMax or 0.0,
+            (r.contactAt and r.exitAt and r.exitAt > 0)
+                and tostring(r.contactAt - r.exitAt) or 'n/a')
+end
+
+--- Say it once, and keep it for /brdropdbg -- a console that has scrolled is
+--- the commonest way a one-shot readout is lost.
+local function landPrint()
+    local L = landTime
+    if L.printed then return end
+    L.printed = true
+    -- CLOSED AS WELL AS SPOKEN. A spoken record is finished, and leaving it
+    -- open would keep the sampler and the printer walking over a landing that
+    -- has already had its line -- and would stop the re-arm net below from
+    -- opening a fresh one for the next descent.
+    L.open = false
+    L.last = BR.Skydive.landLine(L)
+    print(L.last)
+end
+
+--- Start timing a descent. Any unfinished record is spoken first: a second drop
+--- must not silently eat the measurement of the one before it.
+--- @param now integer
+local function landOpen(now)
+    local L = landTime
+    if L.open and not L.printed
+       and (L.contactAt or L.branchAt or L.serverAt) then
+        landPrint()
+    end
+    L.open, L.printed = true, false
+    L.exitAt = now
+    L.contactFrom, L.contactRun = nil, 0
+    L.contactAt, L.branchAt, L.reportAt = nil, nil, nil
+    L.serverAt, L.uiAt = nil, nil
+    L.sawAir = false
+    L.via = nil
+    L.csContact, L.csLast = nil, nil
+    L.aglMax, L.spdMax = 0.0, 0.0
+    L.at = {}
+end
+
+--- Sample the world one tick before skydive.state evaluates its landing test,
+--- from the values that test is about to use.
+---
+--- GROUND CONTACT IS ASKED OF THE PHYSICS, DELIBERATELY NOT OF THE TASK. Every
+--- clause of the landing predicate is a question about what the ped is DOING --
+--- falling, on foot, under a canopy -- and if the answer to "is the loop slow"
+--- were taken from one of those, a clause that lies would produce a contact
+--- time that lies with it and the stall would measure zero. IsEntityInAir is
+--- the collision underneath us, which no ped task owns. WATER IS GROUND here
+--- for the same reason it is everywhere else in this file.
+---
+--- TWO CONSECUTIVE SAMPLES CONFIRM IT, AND THE STAMP IS THE FIRST OF THEM: one
+--- tick of collision under a still-gliding ped (a rooftop clipped on the way
+--- past) is not a landing, and 200ms of debounce that is then handed straight
+--- back costs nothing against a five-second question. A run that breaks throws
+--- away everything measured under it, or a clip on the way down would leave the
+--- clause stamps of a landing that had not happened.
+---
+--- CLAUSE STAMPS BEGIN AT THE FIRST TOUCHING SAMPLE, NOT AT THE CONFIRMED ONE,
+--- and they are re-based there rather than run from the door. Both halves of
+--- that matter:
+---
+---   Running from the door would stamp `nfall` during the glide -- IsPedFalling
+---   is false for a ped under a canopy -- and a clause that then went TRUE at
+---   touchdown and stayed true would carry a stamp saying it was never a
+---   problem. The question is only ever "what was false AFTER the feet were
+---   down", so the record starts there.
+---
+---   Waiting for the CONFIRMED sample would leave them empty on a landing the
+---   predicate detects on the very first touching tick -- the healthy case --
+---   and the readout would announce that all four clauses were never true on
+---   a drop that worked perfectly.
+--- @param ped integer
+--- @param cs integer      GetPedParachuteState, as the predicate has it
+--- @param agl number
+--- @param seen boolean    airborneSeen
+--- @param grounded boolean  the predicate's own grounded verdict, fallback included
+local function landSample(ped, cs, agl, seen, grounded)
+    local L = landTime
+    if not L.open or L.printed or L.branchAt then return end
+
+    local now = GetGameTimer()
+    L.csLast = cs
+
+    local touching = isTrue(IsEntityInWater(ped))
+                  or not isTrue(IsEntityInAir(ped))
+    if seen and touching then
+        L.contactFrom = L.contactFrom or now
+        L.contactRun  = L.contactRun + 1
+    elseif not L.contactAt then
+        -- The run broke before it was confirmed. Everything measured under it
+        -- described a ped that turned out to still be in the air.
+        L.contactFrom, L.contactRun = nil, 0
+        L.at, L.aglMax, L.spdMax = {}, 0.0, 0.0
+    end
+    if not L.contactFrom then return end
+
+    if not L.contactAt and L.contactRun >= 2 then
+        L.contactAt = L.contactFrom
+        L.csContact = cs
+    end
+
+    -- THE TWO NUMBERS THAT TEST THE `grounded` FALLBACK, which is the one
+    -- clause with thresholds in it: it needs agl < 2.0 AND speed < 2.0. A
+    -- player who lands running, or who lands on something the height probe
+    -- measures from the terrain below, fails it for as long as that lasts --
+    -- and these are the readings that say so instead of leaving it a theory.
+    if agl > L.aglMax then L.aglMax = agl end
+    local spd = GetEntitySpeed(ped)
+    if spd > L.spdMax then L.spdMax = spd end
+
+    local a = L.at
+    if seen and not a.seen then a.seen = now end
+    if cs ~= BR.Native.ChuteState.OPENING and not a.nopen then a.nopen = now end
+    if not isTrue(IsPedFalling(ped)) and not a.nfall then a.nfall = now end
+    if grounded and not a.gnd then a.gnd = now end
+    -- NOT CLAUSES, BUT THE TWO THE BRIEF NAMED. `foot` is the plain grounded
+    -- test without the canopy fallback, so `foot` late and `gnd` early is the
+    -- fallback earning its keep and the reverse is it getting in the way.
+    -- `airb` is airborneNow, which gates the re-arm and the report retry rather
+    -- than the landing itself -- it is here because it is the function the
+    -- suspicion was pointed at, and a reading that exonerates it is worth as
+    -- much as one that convicts it.
+    if (isTrue(IsPedOnFoot(ped)) or isTrue(IsEntityInWater(ped)))
+       and not a.foot then a.foot = now end
+    if not airborneNow(ped) and not a.airb then a.airb = now end
+end
+
+--- Stage 2: the landing branch has decided. Called from both endings that count
+--- as a landing -- the ordinary one and the vehicle seat.
+---
+--- IT COMMITS A PENDING DEBOUNCE, and that is not tidiness. The healthy landing
+--- is detected on the FIRST touching tick, one line after landSample saw it and
+--- one tick before the second sample would have confirmed it -- so without this
+--- the best possible drop would print `contact NEVER`, which is the readout's
+--- alarm for something else entirely. A branch that has fired is confirmation:
+--- two independent tests agreeing on the same tick is strictly better evidence
+--- than the same test twice.
+---
+--- AND THE SEAT ENDING GETS ITS OWN READING. The vehicle branch returns long
+--- before the sampler runs, so a drop finished from a driver's seat has no
+--- pending debounce at all -- and `contact NEVER` there would put the readout's
+--- one alarm for "the physics never agreed we were down" on a path where it
+--- means nothing of the kind. So the physics is simply asked again, here,
+--- without the debounce. It is still the same ground truth and still nothing
+--- the landing predicate reads; if it answers airborne, the alarm is real.
+--- @param now integer
+--- @param ped integer
+--- @param via string|nil  'seat' for the vehicle ending; nil for the landing test
+local function landBranch(now, ped, via)
+    local L = landTime
+    if not L.open or L.printed or L.branchAt then return end
+    if not L.contactAt then
+        if L.contactFrom then
+            L.contactAt = L.contactFrom
+            L.csContact = L.csLast
+        elseif ped and (isTrue(IsEntityInWater(ped))
+                        or not isTrue(IsEntityInAir(ped))) then
+            L.contactAt = now
+            L.csContact = L.csLast
+        end
+    end
+    L.branchAt = now
+    L.via = via or 'branch'
 end
 
 --- Tell the server we are down, and KEEP TELLING IT UNTIL IT AGREES.
@@ -73,6 +418,11 @@ end
 --- authority -- it validates the state transition exactly as before and
 --- ignores a duplicate -- so the worst case is a handful of tiny events.
 local function reportLanded()
+    -- THE FIRST SEND ONLY. The re-sends below are the retry doing its job, and
+    -- stamping them would move the report time forward every 400ms until the
+    -- server agreed -- which would make stage 3 read as zero for exactly the
+    -- landing where it is the whole delay.
+    landTime.reportAt = landTime.reportAt or GetGameTimer()
     TriggerServerEvent(BR.Net.DROP_LANDED)
 
     Citizen.CreateThread(function()
@@ -257,7 +607,7 @@ end
 --- @param ped integer
 --- @return boolean
 local function hasChute(ped)
-    return HasPedGotWeapon(ped, CHUTE, false)
+    return isTrue(HasPedGotWeapon(ped, CHUTE, false))
         or GetAmmoInPedWeapon(ped, CHUTE) > 0
 end
 
@@ -283,6 +633,10 @@ AddEventHandler('br:drop:begin', function(d)
     -- the note where this is SET, at the bottom of the drop machine.
     BR.State.landed = false
     landedThisDrop = false
+    -- THE STOPWATCH STARTS AT THE DOOR (#245). Out of the plane is the one
+    -- moment the whole descent is measured from, and it is the same moment
+    -- everything else per-drop is cleared.
+    landOpen(GetGameTimer())
 
     Citizen.CreateThread(function()
         local ped = PlayerPedId()
@@ -293,8 +647,17 @@ AddEventHandler('br:drop:begin', function(d)
 
         -- Carry the bus's momentum out of the door; a dead-stop exit reads
         -- as teleportation even when the coordinates are right.
+        --
+        -- ...UNLESS THE CALLER SAYS THERE IS NO MOMENTUM TO CARRY. The revive
+        -- key's arrival puts a player 150m ABOVE AN AMBULANCE (owner,
+        -- 2026-08-30) and nothing threw them out of anything, so it asks for
+        -- zero -- 25 m/s of borrowed bus speed would drift them a couple of
+        -- hundred metres off the van they are supposed to be landing at. The
+        -- default is the bus's own number, so bus.lua passes nothing and
+        -- nothing about the drop changes.
+        local speed = tonumber(d.speed) or 25.0
         local rad = math.rad(d.heading or 0.0)
-        SetEntityVelocity(ped, -math.sin(rad) * 25.0, math.cos(rad) * 25.0, -2.0)
+        SetEntityVelocity(ped, -math.sin(rad) * speed, math.cos(rad) * speed, -2.0)
 
         -- THE CHUTE, VERIFIED -- and NEVER DOUBLED. GiveWeaponToPed is
         -- normally instant, but the one scenario where it quietly fails is
@@ -306,9 +669,9 @@ AddEventHandler('br:drop:begin', function(d)
         -- the engine treats as a RESERVE parachute -- the "handed another
         -- parachute after pulling the first" report (2026-08-04).
         for attempt = 1, 10 do
-            if HasPedGotWeapon(ped, CHUTE, false) then break end
+            if isTrue(HasPedGotWeapon(ped, CHUTE, false)) then break end
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
-            if HasPedGotWeapon(ped, CHUTE, false) then break end
+            if isTrue(HasPedGotWeapon(ped, CHUTE, false)) then break end
             if attempt == 10 then
                 print('[br_core] drop: GADGET_PARACHUTE refused 10 times -- deploy will not work')
             end
@@ -591,7 +954,7 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
     -- TICK landing branch disarms, flashing "open the glider" at a player
     -- standing on the ground -- is covered by the freefall/falling pair
     -- below, both false for a ped with feet on anything.
-    if (IsPedInParachuteFreeFall(ped) or IsPedFalling(ped))
+    if (isTrue(IsPedInParachuteFreeFall(ped)) or isTrue(IsPedFalling(ped)))
        and (cs == BR.Native.ChuteState.ON_BACK
             or cs == BR.Native.ChuteState.FREEFALL) then
         kind = 'glider'
@@ -767,7 +1130,7 @@ end)
 BR.Keys.on('deploy', function(pressed)
     if not pressed or not dropping then return end
     local ped = PlayerPedId()
-    if IsPedInAnyVehicle(ped, true) then return end
+    if isTrue(IsPedInAnyVehicle(ped, true)) then return end
     local cs = GetPedParachuteState(ped)
     -- ON_BACK is the state a HEALTHY drop spends its whole freefall in (the
     -- chute was given, so the engine never reports 3/falling-to-doom). The
@@ -777,10 +1140,10 @@ BR.Keys.on('deploy', function(pressed)
        or cs == BR.Native.ChuteState.ON_BACK then
         ForcePedToOpenParachute(ped)
     elseif cs == BR.Native.ChuteState.NONE
-       and not IsPedOnFoot(ped) and not IsEntityInWater(ped) then
+       and not isTrue(IsPedOnFoot(ped)) and not isTrue(IsEntityInWater(ped)) then
         -- State NONE means the TASK is lost, not necessarily the weapon --
         -- re-giving one the ped still holds stacks a reserve chute.
-        if not HasPedGotWeapon(ped, CHUTE, false) then
+        if not isTrue(HasPedGotWeapon(ped, CHUTE, false)) then
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
         end
         SetPedAmmo(ped, CHUTE, 1)   -- exactly one; never a reserve
@@ -820,6 +1183,12 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         if landedThisDrop and not airborneNow(PlayerPedId()) then return end
         landedThisDrop = false
         dropping = true
+        -- A DESCENT THIS FILE WAS NEVER HANDED still gets measured (#245). This
+        -- is the missed-handoff net, and a landing that arrives through it is
+        -- precisely the one nobody has a reading for. `exitAt` is the re-arm
+        -- rather than the door, so `fall` is short here and means nothing --
+        -- every other number on the line is measured from contact and stands.
+        if not landTime.open then landOpen(GetGameTimer()) end
     end
 
     local ped = PlayerPedId()
@@ -831,10 +1200,14 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- pull, immediately ejected"). If the machine was somehow still armed
     -- when the player got in, entering a vehicle IS proof of being landed:
     -- finish the drop and stand down.
-    if IsPedInAnyVehicle(ped, true) then
+    if isTrue(IsPedInAnyVehicle(ped, true)) then
         if dropping then
             dropping = false
             landedThisDrop = true
+            -- THE OTHER WAY A DROP ENDS ON THE GROUND gets a line too (#245).
+            -- Stamped where the branch decides, not polled after it, so stage 2
+            -- carries no sampling lag of its own.
+            landBranch(GetGameTimer(), ped, 'seat')
             disarmChute(ped)
             -- clearTrail() rather than the bare native: #131 routed every
             -- trail stand-down through one helper so a match killed mid-air
@@ -891,7 +1264,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- expected, and players fell past a floor made of preconditions. The
     -- descent is invincible as the last net, but the chute is the fix.
     local agl = GetEntityHeightAboveGround(ped)
-    local airborne = not IsPedOnFoot(ped) and not IsEntityInWater(ped)
+    local airborne = not isTrue(IsPedOnFoot(ped)) and not isTrue(IsEntityInWater(ped))
     if airborne and agl > 3.0 then airborneSeen = true end
     -- The floor's band has a BOTTOM as well as a top: below ~3m a chute
     -- can do nothing, and firing there is pure harm -- the vehicle-entry
@@ -904,7 +1277,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
        and cs ~= BR.Native.ChuteState.OPEN
        and agl > 3.0
        and agl < BR.Config.Drop.autoDeployAGL then
-        if not HasPedGotWeapon(ped, CHUTE, false) then
+        if not isTrue(HasPedGotWeapon(ped, CHUTE, false)) then
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
         end
         -- Ammo is re-asserted here even when the weapon was already held: the
@@ -941,16 +1314,23 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- "press F, nothing; enter a vehicle, given a chute"). A ped standing
     -- still at ground level with the canopy out has landed, whatever the
     -- task claims.
-    local grounded = IsPedOnFoot(ped) or IsEntityInWater(ped)
+    local grounded = isTrue(IsPedOnFoot(ped)) or isTrue(IsEntityInWater(ped))
     if not grounded and cs == BR.Native.ChuteState.OPEN
        and agl < 2.0 and GetEntitySpeed(ped) < 2.0 then
         grounded = true
     end
+    -- ONE LINE ABOVE THE PREDICATE, FROM THE PREDICATE'S OWN VALUES (#245).
+    -- Anywhere else and the ruler could disagree with the thing it measures --
+    -- a second `grounded` computed a tick later, from a ped that had moved, is
+    -- how a stall measures zero.
+    landSample(ped, cs, agl, airborneSeen, grounded)
+
     if airborneSeen
        and cs ~= BR.Native.ChuteState.OPENING
-       and not IsPedFalling(ped)
+       and not isTrue(IsPedFalling(ped))
        and grounded then
         dropping = false
+        landBranch(GetGameTimer(), ped)
         -- ONCE PER DROP. Everything below this line is a one-shot -- a disarm
         -- sweep, a report, a toast -- and the re-arm at the top of this
         -- callback used to bring the machine straight back for as long as the
@@ -1016,6 +1396,68 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     end
 end)
 
+-- THE BACK HALF OF THE STOPWATCH -- stages 3 and 4, and the line itself (#245).
+--
+-- REGISTERED AFTER skydive.state, WHICH IS THE WHOLE POINT OF ITS POSITION IN
+-- THIS FILE. The registry runs a band in registration order, so on the pass
+-- where the landing branch fires this callback sees the branch's effects in the
+-- SAME pass -- BR.State.landed already set, the report already sent. Registered
+-- before it, every landing would carry a spurious 100ms in stage 4 that came
+-- from the instrument and not the game.
+--
+-- IT IS NOT GATED ON `dropping`, and it cannot be: the branch clears `dropping`
+-- and skydive.state then returns at its own top guard, so anything waiting for
+-- the server's answer has to be watching from outside the drop machine. That is
+-- the same reason the disarm sweep below runs there.
+BR.Loop.register(BR.Loop.TICK, 'skydive.landtime', function()
+    local L = landTime
+    if not L.open or L.printed then return end
+
+    local now = GetGameTimer()
+    local st = BR.State.me.state
+    local airborneState = st == BR.PlayerState.FREEFALL
+                       or st == BR.PlayerState.GLIDE
+                       or st == BR.PlayerState.BUS
+    if airborneState then L.sawAir = true end
+
+    -- THE SERVER'S ANSWER, AND ONLY AFTER IT HAS ASKED THE QUESTION. Without
+    -- `sawAir` a drop whose jump the server had not yet registered would find
+    -- the mirror still saying ALIVE from the last round and stamp stage 3 at
+    -- zero on the way out of the door -- a promotion that had not happened,
+    -- timed as instant.
+    if not L.serverAt and L.sawAir and not airborneState then
+        L.serverAt = now
+    end
+
+    -- WHAT THE PLAYER ACTUALLY SEES, which is neither of the two facts above on
+    -- its own. hud/Hud.tsx hides the inventory bar while the state is
+    -- freefall/glide AND `landed` is false, so EITHER our own ped's verdict or
+    -- the server's promotion un-hides it, whichever lands first.
+    if not L.uiAt and (BR.State.landed == true or L.serverAt ~= nil) then
+        L.uiAt = now
+    end
+
+    local base = L.contactAt or L.branchAt or L.serverAt
+    if not base then return end
+
+    -- A LANDING WHOSE STORY IS ALREADY OVER IS NOT WORTH ANOTHER FIFTEEN
+    -- SECONDS OF SILENCE. Once the server has promoted us the only question
+    -- left is whether the branch ever fires, and a branch that has not fired
+    -- three seconds after the promotion IS the finding -- that is the shape the
+    -- owner is reporting. Holding the record open to the full cap for it would
+    -- risk the next drop opening over the top of it, which is the one way this
+    -- readout could lose the landing it exists for.
+    local due = base + LAND_DEADLINE_MS
+    if L.serverAt and not L.branchAt then
+        local sooner = L.serverAt + LAND_AFTER_SERVER_MS
+        if sooner < due then due = sooner end
+    end
+
+    if (L.branchAt and L.serverAt and L.uiAt) or now >= due then
+        landPrint()
+    end
+end)
+
 -- THE STANDING DISARM. Everything above depends on the landing branch firing,
 -- and the landing branch has now been wrong in four different ways across four
 -- sessions -- attached canopies, vehicle seats, water, the state machine never
@@ -1043,11 +1485,11 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.disarm', function()
     -- skipped them entirely -- which is the worst possible place to leave
     -- someone armed with a parachute, because the engine's next expected
     -- action is a deploy they cannot perform (user, 2026-08-05).
-    local inWater = IsEntityInWater(ped)
+    local inWater = isTrue(IsEntityInWater(ped))
     if not inWater then
         -- Never yank one out of the air: if this player is somehow genuinely
         -- falling, the floor above is the system that owns them.
-        if IsPedFalling(ped) or GetEntityHeightAboveGround(ped) > 5.0 then
+        if isTrue(IsPedFalling(ped)) or GetEntityHeightAboveGround(ped) > 5.0 then
             sweeps = 0
             return
         end
@@ -1082,6 +1524,14 @@ RegisterCommand('brdropdbg', function()
     print(('  landed %s   landedThisDrop %s   server says %s   match %s'):format(
         tostring(BR.State.landed), tostring(landedThisDrop),
         tostring(BR.State.me.state), tostring(BR.State.match.state)))
+
+    -- THE LAST LANDING'S STAGE BREAKDOWN, REPEATED (#245). It already printed
+    -- itself the moment it happened, which is the only way to catch a player
+    -- who is mid-drop -- and a console that has scrolled past it is the
+    -- commonest way a one-shot readout is lost. `(not yet)` here after a
+    -- landing means the record never completed, which is itself the reading:
+    -- see LAND_DEADLINE_MS.
+    print('  ' .. (landTime.last or 'landtime: (not yet -- no drop has finished)'))
     -- THE ANSWERS THE TRAIL PROMPT IS MADE OF, in the order it asks them, so
     -- "why is there no prompt" is one command rather than a guess. `armed false`
     -- means nothing equipped paints; `key (none)` means the binding was cleared.

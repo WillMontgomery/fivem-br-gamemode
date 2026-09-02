@@ -480,6 +480,187 @@ do
     ok(extraEvents == 0, 'an acked batch is gone -- the queue drains to silence')
 end
 
+-- --------------------------------------------------- the br_ddb reading ---
+--
+-- THE PROPERTY UNDER TEST IS "NEVER INVENT A VERDICT". This block publishes a
+-- database's health to a console that raises an undismissable alert on it, and
+-- there are exactly two ways to get that wrong: a green that is not true hides a
+-- ban gate failing open, and a red that is not true fires on every routine
+-- `restart br_ddb` -- which tools/deploy.sh tells you to run after every single
+-- deploy -- until nobody reads the alert at all.
+--
+-- So every case below is about an ABSENCE being representable. A probe that has
+-- never run, a br_ddb that is not started, a question nobody answered: all of
+-- them leave the block off the wire entirely, and the console reads that as
+-- "not told".
+
+describe('push.ddb')
+
+-- Stand in for br_ddb's JS half: record the question, answer it by hand, so a
+-- test can be the thing that never replies.
+local selftests = {}
+AddEventHandler('br:ddb:selftest', function(req) selftests[#selftests + 1] = req end)
+
+do
+    loadAll({ 'br_ringmaster/server/ddb.lua' })
+
+    ok(BR.Ring.ddbProbe() == nil,
+        'a resource that has never probed has NOTHING to say -- not a healthy default')
+
+    fakeTime = 31000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == 1, 'the probe asks br_ddb on its first tick', #selftests)
+
+    -- A STRING, AND THAT IS THE WHOLE POINT OF IT. br_ddb's own debug.lua keys
+    -- its pending table by the integer IT minted for a `brddb` invocation; a
+    -- string key is simply absent from that table, so our answers can never be
+    -- printed as the answer somebody at the console is waiting for.
+    ok(type(selftests[1]) == 'string' and selftests[1]:sub(1, 11) == 'ringmaster:',
+        'with a namespaced request id, which cannot collide with brddb\'s own',
+        tostring(selftests[1]))
+
+    ok(BR.Ring.ddbProbe() == nil, 'a question in flight is still not an answer')
+
+    -- The answer.
+    fakeTime = 31500
+    TriggerEvent('br:ddb:selftestResult', selftests[1], true,
+        { ms = 42, region = 'us-east-1', prefix = 'ringmaster-' })
+
+    local p = BR.Ring.ddbProbe()
+    ok(p ~= nil, 'the verdict is cached')
+    ok(p and p.ok == true, 'ok is a real boolean')
+    ok(p and p.at == 31500,
+        'stamped when the ANSWER arrived -- the console expires the PROBE, not the push')
+    ok(p and p.ms == 42 and p.region == 'us-east-1' and p.prefix == 'ringmaster-',
+        'carrying the detail br_ddb reported')
+    ok(p and p.error == nil, 'and no error on a success')
+
+    -- ...and onto the snapshot that was going out anyway.
+    TriggerEvent('br:ringmaster:snapshot', {
+        takenGameMs = 31500, counts = { connected = 0, inMatch = 0 },
+        truncated = false, matches = {}, players = {},
+    })
+    fakeTime = 34000
+    BR.Sched.step(fakeTime)
+
+    local body = bodyOf(lastRequest())
+    ok(body and body.kind == 'snapshot', 'a snapshot goes out')
+    ok(body and body.snapshot and body.snapshot.ddb ~= nil,
+        'carrying the ddb block INSIDE the snapshot, where the console looks for it')
+    ok(body and body.snapshot.ddb and body.snapshot.ddb.at == 31500,
+        'dated by the probe, so a cached verdict cannot masquerade as a fresh one')
+    ok(body and body.snapshot.ddb and body.snapshot.ddb.ok == true,
+        'and the verdict itself')
+
+    -- ═══ `0` IS TRUTHY IN LUA AND A FiveM BOOL MAY ARRIVE AS `1` ═══
+    --
+    -- This repo has shipped that bug six times. Here it would be worse than
+    -- usual twice over: `if ok then` reads a failed probe as reachable, and the
+    -- console's schema requires a real boolean -- a `1` on the wire fails the
+    -- WHOLE envelope, which the outbox reads as a nack. The player list would
+    -- stop arriving in order to report a database.
+    fakeTime = 35000
+    TriggerEvent('br:ddb:selftestResult', 'ringmaster:99', 1, { ms = 7 })
+    local one = BR.Ring.ddbProbe()
+    ok(one and one.ok == true, 'a BOOL that arrived as 1 becomes a real `true`')
+
+    fakeTime = 35500
+    TriggerEvent('br:ddb:selftestResult', 'ringmaster:100', 0,
+        { ms = 7, error = 'no route to host' })
+    local zero = BR.Ring.ddbProbe()
+    ok(zero and zero.ok == false,
+        'and one that arrived as 0 becomes `false` -- NOT true, which is what `if ok` would say')
+    ok(zero and zero.error == 'no route to host', "with the failure in br_ddb's own words")
+
+    -- AN OPERATOR'S OWN `brddb` COUNTS, and the console already promises it
+    -- does: its fix popup ends with "Run brddb on the FXServer console to
+    -- re-probe once a cause is ruled out". br_ddb mints an integer req for that
+    -- one; adopting any result, whoever asked, is what makes that sentence true.
+    fakeTime = 36000
+    TriggerEvent('br:ddb:selftestResult', 7, true, { ms = 3, region = 'eu-west-2' })
+    local adopted = BR.Ring.ddbProbe()
+    ok(adopted and adopted.region == 'eu-west-2' and adopted.ok == true,
+        'a brddb run at the console refreshes the reading immediately')
+
+    -- BOUNDED AT THE EDGE THAT KNOWS THE NUMBERS. An AWS SDK error message is
+    -- not a bounded string, and the console's schema caps these three. Over the
+    -- cap is not a truncated field, it is a rejected envelope.
+    fakeTime = 37000
+    TriggerEvent('br:ddb:selftestResult', 8, false, {
+        error  = string.rep('x', 900),
+        region = string.rep('r', 200),
+        prefix = string.rep('p', 300),
+        ms     = -5,
+    })
+    local big = BR.Ring.ddbProbe()
+    ok(big and #big.error == 512, 'the error is bounded to 512', big and #big.error)
+    ok(big and #big.region == 64, 'the region to 64', big and #big.region)
+    ok(big and #big.prefix == 128, 'the prefix to 128', big and #big.prefix)
+    ok(big and big.ms == nil, 'and a negative round trip is dropped, not reported')
+
+    -- ═══ br_ddb NOT RUNNING IS AN ABSENCE, NOT A FAILURE ═══
+    --
+    -- br_ringmaster runs without br_ddb by design -- there is no dependency in
+    -- either direction. Reporting "unreachable" for a resource nobody started
+    -- would raise a database alert on a server that has no database configured.
+    resourceState.br_ddb = 'stopped'
+    ok(BR.Ring.ddbProbe() == nil,
+        'a stopped br_ddb reports NOTHING, never a stated failure')
+
+    TriggerEvent('br:ringmaster:snapshot', {
+        takenGameMs = 40000, counts = { connected = 0, inMatch = 0 },
+        truncated = false, matches = {}, players = {},
+    })
+    fakeTime = 40000
+    BR.Sched.step(fakeTime)
+    local off = bodyOf(lastRequest())
+    ok(off and off.kind == 'snapshot' and off.snapshot.ddb == nil,
+        'and the key is simply absent from the wire -- absence is the answer')
+
+    local asked = #selftests
+    fakeTime = 55000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == asked, 'nor is a resource that is not running asked anything')
+    resourceState.br_ddb = 'started'
+
+    -- A RESTART MUST NOT RESURRECT THE OLD VERDICT. br_ddb comes back with a
+    -- different region convar or a bundle that reaches nothing, and the reading
+    -- from before it stopped would keep going out until the next probe.
+    ok(BR.Ring.ddbProbe() ~= nil, 'the cached verdict survives a resourceState blip')
+    TriggerEvent('onResourceStop', 'br_core')
+    ok(BR.Ring.ddbProbe() ~= nil, 'another resource stopping is not our business')
+    TriggerEvent('onResourceStop', 'br_ddb')
+    ok(BR.Ring.ddbProbe() == nil, 'br_ddb stopping takes its verdict with it')
+
+    -- ═══ THE CADENCE, AND WHY IT IS TWO NUMBERS ═══
+    --
+    -- Fast while there is nothing at all to report, slow once there is. The
+    -- fast half is what stops a boot -- or a br_ddb that started after us --
+    -- from leaving the console blank for a full minute; the slow half is what
+    -- stops a GetItem every 2s to answer a question that changes when somebody
+    -- edits an IAM policy.
+    local n0 = #selftests
+    fakeTime = 71000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == n0 + 1, 'with no reading at all, it asks on the next tick')
+
+    fakeTime = 86000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == n0 + 2, 'and keeps asking while nothing has ever answered')
+
+    TriggerEvent('br:ddb:selftestResult', selftests[#selftests], true, { ms = 5 })
+
+    fakeTime = 101000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == n0 + 2,
+        'once there is a reading, a tick 15s later asks nothing')
+
+    fakeTime = 147000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == n0 + 3,
+        'and it re-probes a minute on -- four beats inside the console\'s 5min ceiling')
+end
+
 -- ------------------------------------------------------------- ban gate ---
 --
 -- THE PROPERTY UNDER TEST IS "ALWAYS RESOLVES". A deferral that never calls
@@ -493,14 +674,17 @@ describe('ban gate')
 -- Stand in for br_ddb's JS half: record the question instead of answering it,
 -- so each test decides what comes back and when.
 local banChecks = {}
-AddEventHandler('br:ddb:banCheck', function(req, license)
-    banChecks[#banChecks + 1] = { req = req, license = license }
+AddEventHandler('br:ddb:banCheck', function(req, license, discord)
+    banChecks[#banChecks + 1] = { req = req, license = license, discord = discord }
 end)
 local function lastBanCheckReq()
     return banChecks[#banChecks] and banChecks[#banChecks].req
 end
 local function lastBanCheckLicense()
     return banChecks[#banChecks] and banChecks[#banChecks].license
+end
+local function lastBanCheckDiscord()
+    return banChecks[#banChecks] and banChecks[#banChecks].discord
 end
 
 do
@@ -613,11 +797,73 @@ do
         'without br_ddb the gate is a no-op, not a five-second tax')
     resourceState.br_ddb = 'started'
 
-    -- A player with no license cannot be matched against a ban list keyed on
-    -- license. Admitted rather than refused on a guess.
+    -- ------------------------------------------------- the second identifier ---
+    --
+    -- SINCE fivem-ringmaster#38 THE GATE ASKS ABOUT TWO KEYS. blitz-bot files a
+    -- ban under `discord:<snowflake>` for somebody an admin banned in Discord
+    -- whom the game has never met, and until this change the gate looked up the
+    -- license and nothing else -- so that row was a record of a decision and not
+    -- a closed door. The cases here are about WHAT IS ASKED; which of two
+    -- answers wins is br_ddb's `effective`, tested in
+    -- js-src/br_ddb/scripts/test.mjs against the same table the console runs.
+
+    d = connect(70)
+    ok(lastBanCheckLicense() == BANNED,
+        'the license still goes first -- it is the tie-break when both are in force',
+        tostring(lastBanCheckLicense()))
+    ok(lastBanCheckDiscord() == 'discord:900',
+        'and the discord identifier goes with it, QUALIFIED',
+        tostring(lastBanCheckDiscord()))
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+
+    -- MOST CONNECTIONS CARRY NO DISCORD IDENTIFIER. FiveM reports one only when
+    -- the player has Discord's activity integration switched on, which is
+    -- opt-in -- so the common case must still ask exactly the one question it
+    -- always did.
+    --
+    -- '' AND NOT nil, AND THE TEST PINS IT DELIBERATELY. A nil in the middle of
+    -- a TriggerEvent argument list is a msgpack question this repo cannot answer
+    -- offline, and the case that produces one -- a Discord-banned player with no
+    -- license -- is the case the whole change exists for. br_ddb reads '' as "no
+    -- such identifier"; a test that accepted either spelling would let the
+    -- riskier one back in.
+    identifiers[72] = { 'license:2222222222222222222222222222222222222222', 'steam:110000100000000' }
+    d = connect(72)
+    ok(lastBanCheckDiscord() == '',
+        'a connection with no discord identifier sends an empty string, never nil',
+        tostring(lastBanCheckDiscord()))
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil, 'and is admitted on a clean answer')
+
+    -- A PLAYER WITH NO LICENSE IS NOW A QUESTION, NOT AN AUTOMATIC ADMIT. This
+    -- case used to assert the opposite -- "no license means admitted, not
+    -- refused" -- and it was right while bans keyed on license alone. A
+    -- `discord:`-keyed ban is precisely a ban on somebody the game does not
+    -- know, so skipping the lookup for exactly the people it was written for
+    -- would be the original bug in a new place.
     identifiers[71] = { 'discord:901' }
     d = connect(71)
-    ok(d.doneCount == 1 and d.doneArg == nil, 'no license means admitted, not refused')
+    ok(lastBanCheckLicense() == '' and lastBanCheckDiscord() == 'discord:901',
+        'no license still asks -- about the discord id alone, and the gap is ""',
+        tostring(lastBanCheckLicense()) .. ' / ' .. tostring(lastBanCheckDiscord()))
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Banned in Discord' })
+    ok(d.doneCount == 1 and type(d.doneArg) == 'string'
+       and d.doneArg:find('Banned in Discord', 1, true) ~= nil,
+        'and a discord-only ban refuses the connection', d.doneArg)
+
+    -- ...and the same connection with no ban is still admitted, which is the
+    -- half a "refuse anyone we cannot identify" reading would get wrong.
+    d = connect(71)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil,
+        'an unbanned player with no license is admitted, not refused on a guess')
+
+    -- NEITHER IDENTIFIER: nothing to ask, and no five-second tax for asking it.
+    identifiers[73] = { 'steam:110000100000001' }
+    local nAsked = #banChecks
+    d = connect(73)
+    ok(#banChecks == nAsked, 'a connection with neither identifier asks nothing')
+    ok(d.doneCount == 1 and d.doneArg == nil, 'and is admitted immediately')
 
     -- ----------------------------------------------------- the appeal line ---
     --
@@ -891,6 +1137,7 @@ end
 loadAll({
     'br_lib/shared/protocol.lua',
     'br_lib/shared/names.lua',
+    'br_lib/shared/notice.lua',  -- BR.Notice; server/broadcast.lua unpacks with it
     'br_lib/shared/rng.lua',
     'br_lib/shared/geo.lua',
     'br_lib/shared/clock.lua',
@@ -1186,7 +1433,7 @@ do
     nextSecond()
     local crate = firstSealed(theMatch, 2)
     walkTo(101, crate)
-    BR.Roster.setState(101, BR.PlayerState.DEAD)
+    BR.Roster.setState(101, BR.PlayerState.OUT)
     local was, at = worldOf(theMatch), mark()
     fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
     ok(sameWorld(was, worldOf(theMatch)), 'a DEAD player cannot open a crate')
@@ -1256,8 +1503,28 @@ do
     was, at = worldOf(theMatch), mark()
     fire(BR.Net.LOOT_CLAIM, 101, { id = far.id })
     ok(sameWorld(was, worldOf(theMatch)), 'a crate 100m away cannot be opened')
-    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'Too far away.',
-        'inReach refuses AUDIBLY', table.concat(notices(at, 101), ' / '))
+    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'This crate has a lock on it and cannot be opened.',
+        'inReach refuses AUDIBLY, and a CRATE blames a lock, not the distance',
+        table.concat(notices(at, 101), ' / '))
+
+    -- (d2) THE SAME REFUSAL, ON SOMETHING THAT IS NOT A CRATE -- AND IT SAYS
+    -- THE SAME THING. An earlier version of this case asserted the opposite,
+    -- on the reasoning that for a death box the distance answer is at least
+    -- true. The owner overruled it: the replacement is one-for-one, with no
+    -- exceptions, because a player cannot see a registry position and "too far
+    -- away" reads as nonsense whatever the entry happens to be. THIS CASE NOW
+    -- EXISTS TO STOP THE KIND BRANCH COMING BACK.
+    nextSecond()
+    local box2 = BR.Loot.spawnStack(theMatch, {
+        item = 'deathbox', kind = 'deathbox', rarity = BR.Rarity.RARE, count = 1,
+        contents = { { item = 'bandage', kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 1 } },
+    }, far.x, far.y, far.z)
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = box2.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'a death box 100m away cannot be opened either')
+    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'This crate has a lock on it and cannot be opened.',
+        'and it gets the SAME sentence -- the replacement is not kind-aware',
+        table.concat(notices(at, 101), ' / '))
 
     -- (e) no zone: ALIVE, in a match whose loot has been torn down. This is
     -- reachable in play -- a claim in flight when the match cleans up.
@@ -1713,7 +1980,7 @@ describe('report.killedBy')
 do
     -- #169: killed by somebody who ALREADY has a case open, and only then.
     local W = newIncidentWorld()
-    W.join(1, 7, 'license:victim', W.BR.PlayerState.DEAD)
+    W.join(1, 7, 'license:victim', W.BR.PlayerState.OUT)
     W.join(2, 7, 'license:suspect')
     W.join(3, 7, 'license:clean')
     W.killedBy(1, 2)
@@ -1774,7 +2041,7 @@ do
     ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
         'and neither is one who is only downed -- being knocked is not being killed')
 
-    W.BR.Roster.get(1).state = W.BR.PlayerState.DEAD
+    W.BR.Roster.get(1).state = W.BR.PlayerState.OUT
     W.fromClient(W.BR.Net.REPORT_KILLED, 1)
     ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 1, 'a dead player is')
 
@@ -1787,7 +2054,7 @@ do
     -- THE STORM, A FALL, A FIRE. No attributed killer means no prompt, and the
     -- server decides that from its own damage records rather than from a claim.
     local X = newIncidentWorld()
-    X.join(1, 7, 'license:victim', X.BR.PlayerState.DEAD)
+    X.join(1, 7, 'license:victim', X.BR.PlayerState.OUT)
     X.join(2, 7, 'license:suspect')
     X.filed('inc-1', 7, 'license:suspect')
     X.clear()
@@ -1845,6 +2112,8 @@ local function newTimelineWorld()
         incidents = {},   -- br:ringmaster:incident payloads
         closes = {},      -- br:ringmaster:incidentClose payloads
         corroborations = {},
+        -- Every TriggerClientEvent this world has seen: { name, target, payload }.
+        toClients = {},
         -- The SERVER's inventories, which server/strip.lua cross-checks a
         -- reported hash against. [src] = { slots = { { item = 'id' }, ... } }
         invs = {},
@@ -1864,7 +2133,15 @@ local function newTimelineWorld()
     env.TriggerEvent = function(name, ...)
         for _, fn in ipairs(h[name] or {}) do fn(...) end
     end
-    env.TriggerClientEvent = function() end
+    -- RECORDED RATHER THAN DISCARDED, so a test can ask WHO was sent something.
+    -- It was a no-op until the chat screen needed it, and the thing that needed
+    -- it could not be tested without it: a shadowed message is defined entirely
+    -- by its RECIPIENTS -- the sender gets the ordinary message and nobody else
+    -- gets anything -- so a world that throws client sends away cannot tell the
+    -- feature working from the feature broadcasting the advert to the match.
+    env.TriggerClientEvent = function(name, target, payload)
+        S.toClients[#S.toClients + 1] = { name = name, target = target, payload = payload }
+    end
     env.RegisterNetEvent = function() end
     env.RegisterCommand  = function() end
     -- CONTROLLABLE, because every assertion below is about WHEN something was
@@ -1874,6 +2151,10 @@ local function newTimelineWorld()
     env.print = function() end
     env.GetNumPlayerIdentifiers = function(src) return S.licenses[src] and 1 or 0 end
     env.GetPlayerIdentifier = function(src) return S.licenses[src] end
+    -- server/chat.lua falls back to this for a roster entry with no name.
+    env.GetPlayerName = function(src)
+        return S.roster[src] and S.roster[src].name or nil
+    end
 
     for _, f in ipairs({
         'br_lib/shared/enums.lua',
@@ -1886,7 +2167,20 @@ local function newTimelineWorld()
         -- geo.lua comes first only because weapons.lua calls BR.NormHash.
         'br_lib/shared/geo.lua',
         'br_lib/config/weapons.lua',
+        -- THE REAL REFUSAL WORDS, for the same reason the weapon table is real.
+        -- A vehicle corroboration now carries BR.Config.VehicleRefusal's own
+        -- prose (see the `br:core:vehicle` handler), and a literal spelled in a
+        -- test would still pass the day somebody re-words the config -- which is
+        -- precisely the drift the cases below exist to catch. It loads AFTER
+        -- geo.lua because it calls BR.NormHash at load time.
+        'br_lib/config/vehicles.lua',
         'br_lib/shared/evidence_buf.lua',
+        -- THE REAL DOMAIN AND SHORTENER LISTS, for the reason the weapon table
+        -- and the refusal words are real: a stub would let the chat cases below
+        -- pass against a filter shaped the way this file imagined, and the
+        -- shipped one is what shadows a player.
+        'br_lib/config/chat.lua',
+        'br_lib/shared/chat_screen.lua',
         'br_lib/shared/incident_build.lua',
     }) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
@@ -1913,7 +2207,28 @@ local function newTimelineWorld()
         end,
     }
     -- The match registry, which is where `startedAt` lives.
-    BRs.Server = { matches = S.matches }
+    --
+    -- `roster`, `matchOf` and `audience` are what server/chat.lua routes on. It
+    -- delivers global chat to the sender's MATCH rather than to everybody -- two
+    -- concurrent matches must not hear each other -- so `audience` is the set
+    -- the shadow post has to be measured against: the test for "nobody else
+    -- received it" is only meaningful when somebody else WOULD have.
+    BRs.Server = {
+        matches = S.matches,
+        roster = S.roster,
+        matchOf = function(src)
+            local e = S.roster[src]
+            return e and e.matchId or nil
+        end,
+        audience = function(m)
+            local out = {}
+            for src, e in pairs(S.roster) do
+                if e.matchId == m then out[#out + 1] = src end
+            end
+            table.sort(out)
+            return out
+        end,
+    }
     -- EXTENDED, NOT REPLACED, AND THAT IS LOAD-BEARING. A bare assignment here
     -- threw away everything config/weapons.lua had just put on BR.Config --
     -- the real weapon tables weaponFacts() classifies kills against. Every kill
@@ -1950,6 +2265,11 @@ local function newTimelineWorld()
     -- empty one.
     for _, f in ipairs({
         'br_core/server/evidence.lua',
+        -- chat.lua sits between them in br_core/fxmanifest.lua and so it sits
+        -- between them here. It is the DETECTOR for the chat screen, the way
+        -- strip.lua is for an unissued weapon, and loading the real one is what
+        -- makes the shadow post testable rather than described.
+        'br_core/server/chat.lua',
         'br_core/server/incident.lua',
         'br_core/server/strip.lua',
     }) do
@@ -2043,6 +2363,31 @@ local function newTimelineWorld()
         env.source = nil
     end
 
+    --- One chat message, through the REAL server/chat.lua.
+    ---
+    --- `source` IS SET RATHER THAN PASSED, for the reason W.strip sets it: that
+    --- is how FiveM delivers it, and a helper that passed it as an argument
+    --- would be testing a function this project does not have.
+    --- @param channel string|nil  defaults to global
+    function W.say(src, text, channel)
+        env.source = src
+        env.TriggerEvent(BRs.Net.CHAT_SEND, { text = text, channel = channel })
+        env.source = nil
+    end
+
+    --- Who received a CHAT_MSG since the marker, and what they got.
+    --- @return table[] { target, payload }
+    function W.chatSends(fromIndex)
+        local out = {}
+        for i = fromIndex or 1, #S.toClients do
+            local c = S.toClients[i]
+            if c.name == BRs.Net.CHAT_MSG then
+                out[#out + 1] = { target = c.target, payload = c.payload }
+            end
+        end
+        return out
+    end
+
     --- One elimination, through the REAL BR.Evidence.noteKill, in the shape
     --- server/combat.lua hands it over.
     --- @param weapon any|nil  hash, id or WEAPON_* name; see weaponFacts()
@@ -2086,6 +2431,28 @@ local function newTimelineWorld()
                 subjectLicense = license,
             })
         end
+    end
+
+    --- One refused-vehicle announcement, in the shape server/vehicles.lua sends.
+    ---
+    --- FIRED AT THIS FILE'S HANDLER DIRECTLY rather than through the detector,
+    --- which is deliberate and is the same split `W.file` makes for refusals:
+    --- server/vehicles.lua decides WHEN to announce (the population guard, the
+    --- 900ms throttle, the bar of two) and tools/test_shared.lua drives the real
+    --- handler for all of that. What is under test here is what
+    --- server/incident.lua does with the announcement once it arrives.
+    ---
+    --- `count` STARTS AT 2 BECAUSE THE DETECTOR'S FIRST ANNOUNCEMENT DOES. The
+    --- first refused vehicle is counted and announced to nobody; `seq` is which
+    --- announcement this is, so seq 1 opens the case and 2+ corroborate it.
+    --- @param why string|nil  a BR.Config.VehicleRefusal value, or nil for none
+    function W.vehicle(src, matchId, license, name, count, seq, why)
+        env.TriggerEvent('br:core:vehicle', {
+            src = src, name = name, license = license, matchId = matchId,
+            count = count, seq = seq,
+            why = why,
+            at = S.now,
+        })
     end
 
     --- The acknowledgement br_ringmaster sends once a row is durable.
@@ -2816,34 +3183,53 @@ do
 
     ok(#W.S.incidents == 1, 'five more strips file no second case', #W.S.incidents)
 
-    -- ONE CORROBORATION EACH, WHICH IS THE HALF THE OWNER CHANGED. Under the old
-    -- doubling rule these five produced two (at counts 4 and 8 -- and only
-    -- eventually); the instruction is that "each subsequent should show as
-    -- corroboration", so five offences are five.
-    ok(#W.S.corroborations == 5,
-        'and every single one of them corroborates -- five, not two',
+    -- ═══ ONE ROW, NOT FIVE (the owner, 2026-08-22) ═══
+    --
+    -- This case used to assert five, one per offence, and the owner read the
+    -- result: "it seems to be filing a corroboration every few seconds", with a
+    -- screenshot of nine notes in nine seconds differing only in a counter. Five
+    -- identical rows are the same bug in miniature.
+    --
+    -- WHAT DID NOT CHANGE IS THAT ALL FIVE OFFENCES STILL REACH THE CASE. The
+    -- assertions below are what makes that a claim rather than a hope: the note
+    -- that goes out carries a CUMULATIVE count, and the four that folded into it
+    -- are on the timeline the close appends, individually and with their own
+    -- timestamps. The rows went; the evidence did not.
+    ok(#W.S.corroborations == 1,
+        'and they say so ONCE rather than once each -- one row, not five',
         #W.S.corroborations)
+
+    -- THE FIRST ONE IS NEVER HELD. It is what tells an admin reading the queue
+    -- that the case is live rather than historical.
+    local first = W.S.corroborations[1]
+    ok(first and first.seq == 2 and first.count == 3,
+        'the first repeat goes out at once, at announcement 2 and offence 3',
+        first and (tostring(first.seq) .. '/' .. tostring(first.count)))
+
+    -- ═══ AND THE COUNT IS NOT LOST WITH THE ROWS ═══
+    --
+    -- The four that folded were superseded, not discarded: `count` is a running
+    -- total, so the note released at teardown says everything they would have.
+    -- A throttle without this line would close this case reading `3` when seven
+    -- offences had happened, which is a false statement about a person.
+    W.at(20000)
+    W.endMatch(7)
+
+    ok(#W.S.corroborations == 2,
+        'the match ending releases the one that was still waiting',
+        #W.S.corroborations)
+    local last = W.S.corroborations[2]
+    ok(last and last.count == 7,
+        'and it carries the TRUE final count, not the one the first row had',
+        last and tostring(last.count))
+    ok(last and last.seq == 6,
+        'with the announcement number that produced it', last and tostring(last.seq))
+
     local allSame = true
     for _, c in ipairs(W.S.corroborations) do
         if c.incidentId ~= 'inc-1' then allSame = false end
     end
     ok(allSame, 'every one against the case the write came back with')
-
-    -- THE TWO WIRE COUNTERS, PINNED TOGETHER. `count` is offences and now climbs
-    -- by one; `seq` is announcements and starts at 2 for the first
-    -- corroboration, because announcement 1 opened the case. A gap in either now
-    -- means a LOST message rather than quiet offences in between, and that is
-    -- the meaning change this cadence carries onto the wire.
-    local seqs, counts = {}, {}
-    for i, c in ipairs(W.S.corroborations) do
-        seqs[i] = tostring(c.seq)
-        counts[i] = tostring(c.count)
-    end
-    ok(table.concat(seqs, ',') == '2,3,4,5,6',
-        'seq counts the announcements, from 2', table.concat(seqs, ','))
-    ok(table.concat(counts, ',') == '3,4,5,6,7',
-        'and count counts the offences, one at a time',
-        table.concat(counts, ','))
 
     -- ATTRIBUTION IS THE EXISTING ONE AND NOT A SECOND SPELLING. The game sends
     -- a fact with no actor on it; br_ringmaster forwards a fixed field set; and
@@ -2861,9 +3247,13 @@ do
     -- ...AND EVERY ONE OF THEM REACHES THE TIMELINE, which is the half the
     -- corroboration channel cannot do: corroborations land in the console's own
     -- `events` list, and the owner asked for the incident's timeline.
-    W.at(20000)
-    W.endMatch(7)
-
+    --
+    -- IT IS ALSO WHAT MAKES THE THROTTLE ABOVE SAFE, and this is the assertion
+    -- that says so rather than the comment. The thing a folded note genuinely
+    -- drops is WHEN each offence happened -- and here are all five of those,
+    -- individually, with their own timestamps, on the record the admin opens.
+    -- Were this list ever to stop being complete, the throttle would start
+    -- costing something and this case would fail first.
     local c = W.lastClose()
     ok(c ~= nil, 'the match ending closes that one case')
     ok(c and c.incidentId == 'inc-1', 'the same one, not a new row')
@@ -2903,9 +3293,30 @@ do
     --
     -- THE HALF THAT DID NOT CHANGE is that the timeline still gets every one of
     -- them, which was always the distinction this case existed to draw.
+    --
+    -- ═══ AND THE LAYER THIS CASE IS ABOUT IS THE DETECTOR, NOT THE RECORD ═══
+    --
+    -- 2026-08-22 put a throttle on the CORROBORATION, in server/incident.lua, so
+    -- fourteen announcements no longer make fourteen rows. That is a different
+    -- layer and it did not restore the doubling rule -- so this case now asserts
+    -- both halves apart, because a reader who saw only the row count would
+    -- reasonably conclude the thing this case exists to prevent had happened.
+    --
+    -- WHAT SEPARATES THE THROTTLE FROM THE RULE IT MUST NOT BECOME. Under the
+    -- doubling rule a cheater who stopped at fifteen left a record saying EIGHT:
+    -- the next announcement was the one that would have corrected it and it
+    -- never came. The throttle cannot do that -- the tail is released at
+    -- teardown -- so the final number is always the true one, however few rows
+    -- carried it. That property is asserted at the bottom.
     local W = newTimelineWorld()
     W.startMatch(7, 1000)
     W.join(1, 7, 'license:cheat', 'Cheater')
+
+    -- EVERY ANNOUNCEMENT THE DETECTOR MAKES, counted at the door it makes them
+    -- through. This is the owner's 2026-08-20 rule and it is untouched;
+    -- registering the listener before the strips is what makes it observable.
+    local announced = 0
+    W.env.AddEventHandler('br:core:stripped', function() announced = announced + 1 end)
 
     W.at(4000); W.strip(1, CONJURED)   -- 1: recorded, silent
     W.at(5000); W.strip(1, CONJURED)   -- 2: opens the case
@@ -2917,23 +3328,297 @@ do
     end
 
     ok(#W.S.incidents == 1, 'sixteen strips are still ONE case', #W.S.incidents)
-    ok(#W.S.corroborations == 14,
-        'sixteen strips produce FOURTEEN corroborations, not four',
-        #W.S.corroborations)
 
-    -- NO GAPS, which is what makes a gap mean something on the wire now.
-    local gapless = true
-    for i, c in ipairs(W.S.corroborations) do
-        if c.seq ~= i + 1 or c.count ~= i + 2 then gapless = false end
-    end
-    ok(gapless, 'numbered 2..15 by announcement and 3..16 by offence, with no gap',
-        W.S.corroborations[14] and tostring(W.S.corroborations[14].count))
+    -- THE ASSERTION THIS CASE HAS ALWAYS BEEN FOR, now read off the detector.
+    -- Fifteen: one per offence from the second, which is "each subsequent should
+    -- show as corroboration from system" exactly as the owner wrote it. Four
+    -- would mean the doubling rule was back.
+    ok(announced == 15,
+        'the detector still announces every offence from the second -- fifteen, not four',
+        announced)
+
+    -- AND THE RECORD DOES NOT PRINT ONE ROW PER ANNOUNCEMENT. Fourteen rows a
+    -- second apart is what the owner photographed on 2026-08-22.
+    ok(#W.S.corroborations == 1,
+        'while the record carries one row rather than fourteen',
+        #W.S.corroborations)
 
     W.at(30000)
     W.endMatch(7)
 
+    -- ═══ THE PROPERTY THE DOUBLING RULE DID NOT HAVE ═══
+    local last = W.S.corroborations[#W.S.corroborations]
+    ok(last and last.count == 16,
+        'and the last thing it says is 16 -- the true total, not a stale doubling',
+        last and tostring(last.count))
+
     local strips = ofKind(W.lastClose() and W.lastClose().matchTimeline, 'weapon_strip')
     ok(#strips == 14, 'while all fourteen later strips are on the timeline', #strips)
+end
+
+-- ======================================================================== --
+-- How often one case is allowed to repeat itself  (the owner, 2026-08-22)
+-- ======================================================================== --
+--
+-- WHAT THESE COVER THAT NOTHING ELSE DOES. server/incident.lua's corroboration
+-- path had no rate limit of any kind, and no case anywhere asserted that it
+-- should -- the two strip cases above actively asserted the opposite, one row
+-- per offence, which is what the owner photographed. The throttle that replaced
+-- it is the sort of code that reads correct while being wrong in one direction
+-- only: too eager and the record is unreadable again, too keen and the final
+-- count never arrives. Both directions are asserted below.
+--
+-- MUTATION TESTED. Fifteen mutants applied to the real file, thirteen caught,
+-- two survived. The counts are what was observed rather than what was hoped for:
+--
+--   the throttle removed entirely                     16 cases
+--   the record is never looked up (same effect)       16 cases
+--   the strip handler goes round the throttle         13 cases
+--   the window becomes zero                           16 cases
+--   the teardown stops flushing the held note          5 cases
+--   the oldest waiting note is kept, not the newest    4 cases
+--   `reason` is no longer compared                     8 cases
+--   `severity` is no longer compared                   2 cases
+--   the refusal handler goes round the throttle        3 cases
+--   the vehicle handler goes round the throttle        1 case
+--   the record is never refreshed after a send         1 case
+--   the window boundary becomes exclusive (`>`)        1 case
+--   the window is ten times longer                     3 cases
+--
+-- THE TWO SURVIVORS WERE THE SAME SURVIVOR TWICE and one of them was closed by
+-- changing the code rather than by adding a case: `flushHeld` cleared each note
+-- after sending it while the caller dropped the whole record on the next line,
+-- so deleting either was unobservable. They are now one function.
+--
+-- WHAT STILL SURVIVES, STATED RATHER THAN QUIETLY LEFT: deleting the
+-- `lastSaid[k] = nil` inside `flushAndForget`. It leaks -- one small record per
+-- case, for the life of the process -- and a leak has no behavioural signal to
+-- assert on. `filed`'s equivalent drop IS caught, but only because deleting it
+-- changes which cases get OPENED in the next match; this map is read by nothing
+-- after its match ends. Pinning it would mean exposing the map for a test to
+-- count, and BR.Incident.stats() already has no reader.
+
+describe('corroboration.nine-seconds-of-cheating-is-not-nine-rows')
+do
+    -- ═══ THE REPORT, REPRODUCED (the owner, 2026-08-22) ═══
+    --
+    -- "For the record it seems to be filing a corroboration every few seconds
+    -- (see attached)". The screenshot was one `Weapon strip` and then a Note
+    -- every single second for nine seconds:
+    --
+    --   Note -- 3 refusals this match - last: weapon is not one this gamemode issues
+    --   Note -- 4 refusals this match - ...                            ... up to 11.
+    --
+    -- THE CADENCE IS NOT A GUESS. Nine consecutive counts, one a second, is what
+    -- server/strip.lua's MIN_INTERVAL_MS (900ms) and client/inventory.lua's
+    -- STRIP_REPORT_MS (1000ms) allow through, and it is the shape no other
+    -- producer has: server/damage.lua announces at doublings, so its counts jump
+    -- 2, 4, 8. This drives the same eleven strips the owner drew.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)   -- 1: silent
+    W.at(5000); W.strip(1, CONJURED)   -- 2: opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    -- Nine more, one a second: offences 3 through 11.
+    for i = 1, 9 do
+        W.at(5000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    ok(#W.S.corroborations == 1,
+        'nine seconds of it is ONE row, not nine', #W.S.corroborations)
+
+    -- ═══ AND ROW 11 IS STILL AVAILABLE TO BE READ ═══
+    --
+    -- "11 refusals this match" is real information; the nine rows carrying it
+    -- were not. This is the half a plain drop-throttle would have lost.
+    W.at(60000)
+    W.endMatch(7)
+
+    local last = W.S.corroborations[#W.S.corroborations]
+    ok(last and last.count == 11,
+        'and the record still says eleven', last and tostring(last.count))
+end
+
+describe('corroboration.a-changed-finding-never-waits')
+do
+    -- THE THROTTLE IS NOT A MUTE BUTTON, and this is the line between the two.
+    -- Rows 3 through 11 of the owner's screenshot were suppressible because they
+    -- said what row 2 said. A row that says something NEW -- a different reason,
+    -- a worse tier -- is the row an admin is scrolling for, and it goes out on
+    -- arrival however recently the last one did.
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)   -- opens a STRIP case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    -- Two strips one second apart: the second says nothing new and waits.
+    W.at(6000); W.strip(1, CONJURED)
+    W.at(7000); W.strip(1, CONJURED)
+    ok(#W.S.corroborations == 1, 'a repeat waits', #W.S.corroborations)
+
+    -- A REFUSED VEHICLE IN THE SAME SECOND. Same case -- `priorFor` crosses
+    -- kinds -- but `reason` is now config/vehicles.lua's own prose rather than
+    -- the shot taxonomy's sentence, so it is a different finding.
+    W.at(7500); W.vehicle(1, 7, 'license:cheat', 'Cheater', 2, 1, V.FLIES)
+    ok(#W.S.corroborations == 2,
+        'a different reason does not, even half a second later',
+        #W.S.corroborations)
+    -- GUARDED, LIKE EVERY OTHER INDEX IN THIS FILE. A bare
+    -- `W.S.corroborations[2].reason` aborts the whole suite the moment the row
+    -- it is asserting the existence of is missing -- which is exactly the state
+    -- a broken throttle produces, so the run that most needs the rest of these
+    -- cases is the one that would never reach them.
+    local got = W.S.corroborations[2]
+    ok(got and got.reason == V.FLIES,
+        'and it is the vehicle that got through', got and got.reason)
+
+    -- AND THE SECOND KIND FOLDS ON ITS OWN TERMS. The same vehicle rule again is
+    -- a repeat like any other.
+    W.at(8000); W.vehicle(1, 7, 'license:cheat', 'Cheater', 3, 2, V.FLIES)
+    ok(#W.S.corroborations == 2, 'while a repeat of THAT waits too',
+        #W.S.corroborations)
+end
+
+describe('corroboration.a-worse-tier-never-waits')
+do
+    -- SEVERITY IS THE OTHER HALF OF "SOMETHING NEW", and it is asserted apart
+    -- from `reason` because they are two fields and a throttle that checked only
+    -- one would read, in every other case in this file, exactly like a throttle
+    -- that checked both. A case producing `high` where it had been producing
+    -- `normal` has changed in the one field an admin triages on.
+    --
+    -- DRIVEN THROUGH THE REFUSAL PATH, which is the only producer whose severity
+    -- varies: server/damage.lua carries the tier of the refusal that tripped and
+    -- BR.ShotTier grades them differently. The strip and vehicle handlers both
+    -- read one constant, so neither could ever exercise this.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    local function refusal(at, count, seq, severity)
+        W.at(at)
+        W.env.TriggerEvent('br:ringmaster:refusal', {
+            matchId = 7, license = 'license:cheat', name = 'Cheater',
+            count = count, windowMs = 4000,
+            reason  = W.BR.ShotRefusal.NO_WEAPON,
+            reasons = { [W.BR.ShotRefusal.NO_WEAPON] = count },
+            severity = severity, seq = seq, at = at,
+        })
+    end
+
+    refusal(5000, 16, 2, 'normal')
+    refusal(6000, 32, 3, 'normal')
+    ok(#W.S.corroborations == 1, 'the same tier twice is one row',
+        #W.S.corroborations)
+
+    refusal(7000, 64, 4, 'high')
+    ok(#W.S.corroborations == 2,
+        'and a worse tier a second later is a row of its own',
+        #W.S.corroborations)
+    ok(W.S.corroborations[2] and W.S.corroborations[2].severity == 'high',
+        'the one that got through is the worse one',
+        W.S.corroborations[2] and W.S.corroborations[2].severity)
+end
+
+describe('corroboration.the-window-is-inclusive')
+do
+    -- EXACTLY ONE WINDOW LATER COUNTS AS PAST IT, asserted rather than left to
+    -- whichever comparison somebody types next. `>` where this file has `>=` is
+    -- a one-character change that every other case here would sail through,
+    -- because none of them lands on the boundary to the millisecond.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)   -- opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+    W.at(6000); W.strip(1, CONJURED)   -- the first repeat, sent at once
+
+    -- 6000 + CORROBORATE_MIN_INTERVAL_MS, to the millisecond.
+    W.at(36000); W.strip(1, CONJURED)
+    ok(#W.S.corroborations == 2,
+        'a repeat exactly one window later goes out', #W.S.corroborations)
+end
+
+describe('corroboration.the-window-reopens')
+do
+    -- A CASE STILL SAYS "IT IS STILL HAPPENING", just not every second. Once the
+    -- window has passed the next repeat goes out on its own -- no teardown, no
+    -- change of finding -- which is what keeps a long match's record breathing
+    -- rather than silent from the first row to the last.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)   -- opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    W.at(6000);  W.strip(1, CONJURED)  -- the first repeat, sent at once
+    W.at(35000); W.strip(1, CONJURED)  -- inside the window still: held
+    ok(#W.S.corroborations == 1, 'inside the window it holds', #W.S.corroborations)
+
+    W.at(37000); W.strip(1, CONJURED)  -- past 6000 + 30s: the window reopened
+    ok(#W.S.corroborations == 2,
+        'and past it the next one goes out with no teardown needed',
+        #W.S.corroborations)
+    -- FIVE, NOT THREE AND NOT FOUR. Three is what the first row said; four is
+    -- the offence that was waiting when this one arrived and superseded it. The
+    -- number that goes out is always the newest, which is what makes a held note
+    -- costless.
+    local reopened = W.S.corroborations[2]
+    ok(reopened and reopened.count == 5,
+        'carrying the count as it stands at that moment, not as it stood at the first row',
+        reopened and tostring(reopened.count))
+end
+
+describe('corroboration.a-quiet-case-releases-nothing')
+do
+    -- NOTHING HELD MEANS NOTHING SENT. The teardown flush must not invent a row
+    -- for a case whose repeats all went out already -- a duplicate note is a
+    -- second claim about a person, and this is the cheapest place to catch one.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)   -- opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+    W.at(6000); W.strip(1, CONJURED)   -- one repeat, sent at once, nothing behind it
+
+    ok(#W.S.corroborations == 1, 'one repeat, one row', #W.S.corroborations)
+
+    W.at(40000)
+    W.endMatch(7)
+    ok(#W.S.corroborations == 1,
+        'and the teardown adds nothing, because nothing was waiting',
+        #W.S.corroborations)
+
+    -- AND THE MATCH AFTER IT STARTS CLEAN. The teardown drops the per-match
+    -- record, so the next round's first repeat is a FIRST repeat -- it must not
+    -- inherit a window from a match that is over.
+    W.startMatch(8, 100000)
+    W.join(1, 8, 'license:cheat', 'Cheater')
+    W.at(101000); W.strip(1, CONJURED)
+    W.at(102000); W.strip(1, CONJURED)   -- opens a case in the NEW match
+    W.ack(8, 'license:cheat', 'inc-2')
+    W.at(103000); W.strip(1, CONJURED)
+
+    local c = W.S.corroborations[#W.S.corroborations]
+    ok(#W.S.corroborations == 2 and c and c.incidentId == 'inc-2',
+        'and a new match corroborates at once rather than inheriting a window',
+        #W.S.corroborations)
 end
 
 describe('strip.nobody-is-exempt')
@@ -3225,6 +3910,180 @@ do
 end
 
 -- ======================================================================== --
+-- A REFUSED VEHICLE READS AS A VEHICLE, START TO FINISH  (#193, playtest)
+-- ======================================================================== --
+--
+-- THE OWNER, 2026-08-22: "when getting in an unauthorized vehicle, the incident
+-- is described in ringmaster as an unauthorized weapon."
+--
+-- WHERE THAT CAME FROM, AND WHY NO PURE-FUNCTION TEST COULD HAVE CAUGHT IT.
+-- BR.IncidentBuild.fromVehicle was correct and is covered in test_shared.lua:
+-- the CASE has always named the vehicle rule -- "N refused vehicles this match
+-- -- vehicle flies". What was wrong was the CORROBORATION, which is built in
+-- server/incident.lua and not in br_lib at all -- the whole block was copied
+-- from the strip handler above it, `reason` included, and that field is the
+-- literal sentence "weapon is not one this gamemode issues". Ringmaster prints
+-- it verbatim onto the case's timeline. So the queue row said vehicle and every
+-- row underneath it said weapon.
+--
+-- WHICH IS WHY THESE CASES ARE HERE RATHER THAN IN test_shared.lua. The whole
+-- of this file's `br:core:vehicle` handler had no coverage of any kind; the
+-- functions under it were fully covered and entirely correct. That is the same
+-- gap the header of the strip section describes and the same one this suite
+-- exists to close: a caller wiring correct functions together wrongly.
+--
+-- MUTATION TESTED, which is the only reason to trust any of it. Each was broken
+-- on purpose and this suite watched to fail by name; the counts are what was
+-- observed rather than what was expected:
+--
+--   `reason` goes back to ShotRefusal.NO_WEAPON   5 cases  (the reported bug)
+--   `reason` defaults: `ev.why or NO_WEAPON`      1 case
+--   the corroboration severity becomes 'normal'   2 cases
+--   the vehicle path never corroborates          15 cases
+
+describe('vehicle.the-case-reads-as-a-vehicle')
+do
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:pilot', 'Pilot')
+
+    -- THE DETECTOR'S FIRST ANNOUNCEMENT IS THE SECOND OFFENCE. See the bar in
+    -- server/vehicles.lua; `count` is offences and `seq` is announcements.
+    W.at(4000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 2, 1, V.FLIES)
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'a refused vehicle files a case')
+    ok(p and p.kind == 'anticheat' and p.category == 'system',
+        'in the anticheat shape, filed by nobody')
+    ok(p and p.summary == '2 refused vehicles this match -- vehicle flies',
+        'and the one line an admin reads is about a VEHICLE', p and p.summary)
+    -- THE WORD THAT MUST NOT BE IN IT. Asserted as an absence rather than only
+    -- as the sentence above, because the sentence could be re-worded correctly
+    -- while somebody re-borrowed the shot taxonomy for one of its halves.
+    ok(p and not p.summary:find('weapon is not one this gamemode issues'),
+        'and never as the shot validator\'s sentence about weapons', p and p.summary)
+end
+
+describe('vehicle.corroborations-read-as-vehicles-too')
+do
+    -- ═══ THE REGRESSION THE OWNER REPORTED, PINNED ═══
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:pilot', 'Pilot')
+
+    W.at(4000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 2, 1, V.FLIES)
+    W.ack(7, 'license:pilot', 'inc-veh')
+
+    -- A JET, THEN A TANK. The detector sends the LATEST reason, so the two
+    -- corroborations carry different halves of the owner's rule -- which is the
+    -- property a single borrowed constant destroyed.
+    W.at(5000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 3, 2, V.FLIES)
+    W.at(6000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 4, 3, V.ARMED)
+
+    ok(#W.S.incidents == 1, 'three refused vehicles are ONE case', #W.S.incidents)
+    ok(#W.S.corroborations == 2, 'and two corroborations', #W.S.corroborations)
+
+    local c1, c2 = W.S.corroborations[1], W.S.corroborations[2]
+    ok(c1 and c1.incidentId == 'inc-veh' and c2 and c2.incidentId == 'inc-veh',
+        'both against the case the write came back with')
+
+    -- THE ASSERTION THIS WHOLE SECTION EXISTS FOR.
+    ok(c1 and c1.reason == V.FLIES,
+        'the first corroboration says why the VEHICLE was refused',
+        c1 and tostring(c1.reason))
+    ok(c2 and c2.reason == V.ARMED,
+        'and the second carries the reason that tripped THIS time, not the first',
+        c2 and tostring(c2.reason))
+
+    local weaponish = false
+    for _, c in ipairs(W.S.corroborations) do
+        if c.reason == W.BR.ShotRefusal.NO_WEAPON then weaponish = true end
+    end
+    ok(not weaponish,
+        'and neither of them describes a vehicle case as an unissued weapon')
+
+    -- THE TIER IS STILL THE TAXONOMY'S, which is the half that was right to
+    -- borrow: 'high' is a triage hint with no prose in it, and it must agree
+    -- with the severity fromVehicle put on the case they attach to.
+    ok(c1 and c1.severity == W.BR.ShotTier[W.BR.ShotRefusal.NO_WEAPON],
+        'severity still comes from the taxonomy rather than from a literal',
+        c1 and tostring(c1.severity))
+    ok(c1 and c1.severity == W.lastIncident().severity,
+        'and grades the corroboration exactly as the case itself is graded')
+
+    -- THE WIRE COUNTERS, the same pair the strip path pins. A gap in either
+    -- means a LOST message rather than quiet offences in between.
+    ok(c1 and c1.seq == 2 and c2 and c2.seq == 3,
+        'seq counts the announcements', c1 and tostring(c1.seq))
+    ok(c1 and c1.count == 3 and c2 and c2.count == 4,
+        'and count counts the offences', c1 and tostring(c1.count))
+end
+
+describe('vehicle.no-reason-is-said-rather-than-invented')
+do
+    -- A `why` THAT NEVER ARRIVED LEAVES THE FIELD ABSENT. The console drops the
+    -- `last:` clause of its note entirely when `reason` is missing, which is
+    -- honest; a fallback here would put the shot taxonomy's sentence back on a
+    -- vehicle case through the one door this fix closed.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:pilot', 'Pilot')
+
+    W.at(4000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 2, 1, nil)
+    W.ack(7, 'license:pilot', 'inc-veh')
+    W.at(5000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 3, 2, nil)
+
+    local c = W.S.corroborations[1]
+    ok(c ~= nil, 'it still corroborates')
+    ok(c and c.reason == nil, 'and says nothing rather than guessing a reason',
+        c and tostring(c.reason))
+    ok(c and c.severity ~= nil, 'while the triage hint still travels')
+end
+
+describe('vehicle.a-licenseless-connection-files-nothing')
+do
+    -- THE RULE EVERY PRODUCER HERE SHARES. A case keyed to a server id is a case
+    -- about whoever holds that slot next, and server ids are recycled within the
+    -- minute. server/vehicles.lua sends nil rather than a sentinel when
+    -- BR.Roster.licenseOf has no answer.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+
+    W.at(4000); W.vehicle(1, 7, nil, 'Ghost', 2, 1, W.BR.Config.VehicleRefusal.FLIES)
+
+    ok(#W.S.incidents == 0, 'no license, no case', #W.S.incidents)
+    ok(#W.S.corroborations == 0, 'and nothing to corroborate either')
+end
+
+describe('vehicle.crosses-kinds-with-the-strip-path')
+do
+    -- ONE PLAYER, ONE ROUND, ONE RECORD -- whichever thing they did first opened
+    -- it. This is `priorFor` being shared rather than per-kind, and it is the
+    -- reason the corroboration's `reason` has to be the DETECTOR's word: a
+    -- vehicle corroborating a strip case is exactly where a borrowed constant
+    -- looks correct and is not.
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)   -- recorded, announced to nobody
+    W.at(5000); W.strip(1, CONJURED)   -- opens a STRIP case
+    W.ack(7, 'license:cheat', 'inc-strip')
+
+    W.at(6000); W.vehicle(1, 7, 'license:cheat', 'Cheater', 2, 1, V.ARMED)
+
+    ok(#W.S.incidents == 1, 'the vehicle opens no second case', #W.S.incidents)
+    local c = W.S.corroborations[#W.S.corroborations]
+    ok(c and c.incidentId == 'inc-strip', 'it appends to the case already open')
+    ok(c and c.reason == V.ARMED,
+        'and still says what the VEHICLE did, on a case a weapon opened',
+        c and tostring(c.reason))
+end
+
+-- ======================================================================== --
 -- br_ringmaster's OWN half of the close  (#30, #B, #C)
 -- ======================================================================== --
 --
@@ -3413,6 +4272,278 @@ do
     -- time.
     ok(after:find('dynamodb:Attributes', 1, true) ~= nil,
         'along with where to look when it is not zero', after)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The chat screen, end to end (#244)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- WHAT THESE COVER THAT NOTHING ELSE DOES. tools/test_shared.lua exercises the
+-- SCREEN -- which strings are links, which alphabets are refused -- against the
+-- shipped lists, and that is the false-positive surface. It cannot see any of
+-- the behaviour, because the behaviour is in two server files: who receives a
+-- refused message, and what a repeat does to the case. Both were described in a
+-- commit message and asserted by nothing until now.
+--
+-- THE SHADOW POST IS DEFINED ENTIRELY BY ITS RECIPIENTS. "The experience to the
+-- sender should look like it posted just fine" is not a property of the text --
+-- it is the claim that the sender got the ordinary message and the rest of the
+-- match got nothing. A world that discarded client sends could not tell that
+-- from broadcasting the advert to everybody, so `TriggerClientEvent` is
+-- recorded now and these are the cases that needed it.
+
+describe('chat.shadow')
+do
+    local W = newTimelineWorld()
+    W.startMatch(3, 1000)
+    W.join(1, 3, 'license:talker', 'Rae')
+    W.join(2, 3, 'license:other', 'Sam')
+    -- A THIRD PLAYER IN A DIFFERENT MATCH, so "delivered to the match" is
+    -- distinguishable from "delivered to everybody".
+    W.startMatch(4, 1000)
+    W.join(5, 4, 'license:far', 'Kai')
+
+    -- ═══ AN ORDINARY MESSAGE REACHES THE MATCH ═══
+    W.at(2000)
+    local mark = #W.S.toClients
+    W.say(1, 'rotate north now')
+    local clean = W.chatSends(mark + 1)
+
+    local gotClean = {}
+    for _, c in ipairs(clean) do gotClean[c.target] = c.payload end
+    ok(gotClean[1] ~= nil and gotClean[2] ~= nil,
+        'an ordinary message reaches the sender and their match', #clean)
+    ok(gotClean[5] == nil,
+        'and NOT the other match, which is the bucket rule chat.lua already had')
+    ok(gotClean[2] and gotClean[2].text == 'rotate north now',
+        'with the text intact')
+
+    -- ═══ A REFUSED MESSAGE REACHES THE SENDER AND NOBODY ELSE ═══
+    W.at(3000)
+    mark = #W.S.toClients
+    W.say(1, 'come to evilserver.com')
+    local shadow = W.chatSends(mark + 1)
+
+    ok(#shadow == 1, 'a refused message produces exactly one client send', #shadow)
+    ok(shadow[1] and shadow[1].target == 1,
+        'and its only recipient is the sender', shadow[1] and shadow[1].target)
+
+    -- ═══ AND IT IS INDISTINGUISHABLE FROM THE REAL THING ═══
+    --
+    -- A DIFFERENT SHAPE WOULD BE A TELL. Same event, same channel, same name,
+    -- same text, and a `System` sender would give it away instantly -- the
+    -- refusals chat.lua already had (the slash prefix, the rate limit) all
+    -- answer as System, and a player who has seen those would recognise one.
+    local p = shadow[1] and shadow[1].payload or {}
+    ok(p.text == 'come to evilserver.com', 'the sender sees their own words')
+    ok(p.name == 'Rae' and p.from == 1,
+        'under their own name, not System', tostring(p.name))
+    ok(p.channel == W.BR.ChatChannel.GLOBAL,
+        'on the channel they sent it on', tostring(p.channel))
+    ok(p.channel ~= W.BR.ChatChannel.SYSTEM,
+        'and never on the system channel, which is what a refusal looks like')
+
+    -- SQUAD CHAT SHADOWS TO THE SENDER TOO, not to the squad.
+    W.S.roster[1].squadId = 9
+    W.S.roster[2].squadId = 9
+    W.at(4000)
+    mark = #W.S.toClients
+    W.say(1, 'discord.gg/abcdef', W.BR.ChatChannel.SQUAD)
+    local sq = W.chatSends(mark + 1)
+    ok(#sq == 1 and sq[1].target == 1,
+        'a refused SQUAD message reaches the sender alone, not the squad', #sq)
+    W.S.roster[1].squadId = nil
+    W.S.roster[2].squadId = nil
+end
+
+describe('chat.incident.one-row-per-refusal')
+do
+    -- ═══ THE OWNER'S REPORT, #244 ═══
+    --
+    -- "Chat blocks work but shows corroborated AND chat block. Ideally I'd just
+    -- like to see chat block in the timeline, and the content of said blocked
+    -- message." His timeline read:
+    --
+    --   Chat block            +0:00
+    --   Chat block            +0:09
+    --   Corroborated -- 2 refusals this match · last: a shortened link · worst: low
+    --   Chat block            +0:36
+    --   Corroborated -- 3 refusals this match · last: an invite to another community
+    local W = newTimelineWorld()
+    W.startMatch(3, 1000)
+    W.join(1, 3, 'license:talker', 'Rae')
+
+    W.at(4000)
+    W.say(1, 'come to evilserver.com')
+
+    ok(#W.S.incidents == 1, 'the FIRST refusal opens a case', #W.S.incidents)
+    W.ack(3, 'license:talker', 'inc-chat')
+
+    -- Two more, well outside the corroboration throttle's window, so a
+    -- suppressed note cannot be mistaken for a removed one.
+    W.at(13000); W.say(1, 'bit.ly/abcdef')
+    W.at(40000); W.say(1, 'discord.gg/abcdef')
+
+    ok(#W.S.incidents == 1, 'repeats do not open a second case', #W.S.incidents)
+    ok(#W.S.corroborations == 0,
+        'AND THEY RAISE NO CORROBORATION AT ALL -- the row the owner does not '
+            .. 'want is not written, rather than written and hidden',
+        #W.S.corroborations)
+
+    -- ═══ EVERY REFUSAL IS STILL ON THE RECORD, WITH ITS TEXT ═══
+    --
+    -- This is what replaces the corroboration row, and it carries strictly more:
+    -- the message and the moment, rather than a running count.
+    W.at(50000)
+    W.endMatch(3)
+
+    ok(#W.S.closes == 1, 'the case is closed at match end', #W.S.closes)
+    local rows = {}
+    for _, e in ipairs(W.S.closes[1].matchTimeline or {}) do
+        if e.kind == W.BR.IncidentBuild.CHAT_KIND then rows[#rows + 1] = e end
+    end
+    ok(#rows == 2,
+        'the two refusals AFTER the filing reach the timeline', #rows)
+    ok(rows[1] and rows[1].text == 'bit.ly/abcdef',
+        'carrying what was actually typed', rows[1] and rows[1].text)
+    ok(rows[2] and rows[2].text == 'discord.gg/abcdef', 'each of them')
+    ok(rows[1] and rows[1].reason == 'shortener',
+        'and which rule refused it', rows[1] and rows[1].reason)
+    ok(rows[2] and rows[2].reason == 'invite', 'per row, not per case')
+    ok(rows[1].at < rows[2].at, 'in the order they were said')
+
+    -- THE ONE THAT OPENED THE CASE IS ON THE FILING, not repeated here -- the
+    -- same `> filedAtGameMs` rule that keeps a strip from being written twice.
+    local opened = {}
+    for _, e in ipairs(W.S.incidents[1].matchTimeline or {}) do
+        if e.kind == W.BR.IncidentBuild.CHAT_KIND then opened[#opened + 1] = e end
+    end
+    ok(#opened == 1 and opened[1].text == 'come to evilserver.com',
+        'the line that opened the case rides the filing, once', #opened)
+end
+
+describe('chat.lobby')
+do
+    -- ═══ THE LOBBY IS WHERE A BOT CAN SIT FOREVER WITHOUT PLAYING ═══
+    --
+    -- A refusal outside a match used to file nothing at all, so lobby
+    -- advertising -- the cheapest kind there is, because it costs the
+    -- advertiser no round -- was invisible to moderation. The owner's words
+    -- were "any post containing a link is refused and creates an incident", and
+    -- a lobby post is a post.
+    --
+    -- THE EVIDENCE BUFFER IS NOT INVOLVED, DELIBERATELY. `metaFor` refuses to
+    -- buffer lobby chat and must keep refusing: `clearMatch` only drops records
+    -- whose matchId EQUALS the match being torn down, so a matchless record is
+    -- never torn down and holding lobby chat would leak one record plus its
+    -- lines per lobby player per uptime. The line rides the event instead.
+    local W = newTimelineWorld()
+    -- NO MATCH. `W.join` with a nil matchId is a player sitting in the lobby,
+    -- which is the whole fixture.
+    W.join(1, nil, 'license:lobbybot', 'Rae')
+    W.join(2, nil, 'license:bystander', 'Sam')
+
+    W.at(4000)
+    local mark = #W.S.toClients
+    W.say(1, 'come to evilserver.com')
+
+    -- THE SHADOW STILL HOLDS OUTSIDE A MATCH. The lobby is a delivery audience
+    -- like any other and the bystander must not receive the advert.
+    local sends = W.chatSends(mark + 1)
+    ok(#sends == 1 and sends[1].target == 1,
+        'a refused lobby line reaches the sender alone', #sends)
+
+    ok(#W.S.incidents == 1, 'and it FILES, which it used not to', #W.S.incidents)
+
+    local p = W.S.incidents[1]
+    ok(p.matchId == nil, 'the case carries no match, because there was none')
+    ok(p.matchStartedAt == nil and p.matchCreatedAt == nil,
+        'and no match times are invented for it')
+    ok(type(p.matchTimeline) == 'table' and #p.matchTimeline == 1,
+        'it carries a timeline of exactly one row',
+        p.matchTimeline and #p.matchTimeline)
+
+    local row = p.matchTimeline and p.matchTimeline[1] or {}
+    ok(row.kind == W.BR.IncidentBuild.CHAT_KIND, 'which is a chat_block row',
+        tostring(row.kind))
+    ok(row.text == 'come to evilserver.com',
+        'CARRYING THE LINE -- the event is its only source here', tostring(row.text))
+    ok(row.reason == 'link', 'with the rule that refused it')
+    -- THE CHANNEL TRAVELS FROM chat.lua, and this is the only case that proves
+    -- it: every other assertion about `channel` calls `fromChat` directly with
+    -- one already in hand, so dropping it from the event was invisible until
+    -- this line existed. A lobby advert shouted at everyone and one whispered to
+    -- a squad are different facts about intent.
+    ok(row.channel == 'global', 'and the channel it was sent on',
+        tostring(row.channel))
+    ok(p.matchTimelineComplete == true,
+        'and the record says it is complete, because one line was refused and '
+            .. 'one line is on it')
+
+    -- THE BUFFER REALLY IS UNTOUCHED. If a future change lets lobby chat in,
+    -- this is what will notice.
+    local st = W.BR.Evidence.stats()
+    ok(st.refusedRows == 0 and st.chatRows == 0,
+        'nothing was buffered for a lobby player', st.refusedRows)
+
+    -- ═══ THE LIMITATION, ASSERTED RATHER THAN DESCRIBED ═══
+    --
+    -- There is no match, so there is no match-end close, and the close is the
+    -- only thing that appends to a timeline after filing. A bot advertising a
+    -- hundred times produces ONE case with ONE line; `priorFor` drops the rest
+    -- in silence. Far better than invisible, and not complete -- capturing lobby
+    -- repeats needs a second write path and is the owner's call.
+    W.ack(nil, 'license:lobbybot', 'inc-lobby')
+    W.at(9000);  W.say(1, 'bit.ly/abcdef')
+    W.at(20000); W.say(1, 'discord.gg/abcdef')
+
+    ok(#W.S.incidents == 1,
+        'ACCEPTED LIMITATION: lobby repeats open no second case', #W.S.incidents)
+    ok(#W.S.corroborations == 0,
+        'and raise no corroboration either -- chat does not corroborate at all',
+        #W.S.corroborations)
+    ok(#W.S.incidents[1].matchTimeline == 1,
+        'so the record still shows the one line, not three',
+        #W.S.incidents[1].matchTimeline)
+
+    -- AN ORDINARY LOBBY MESSAGE IS UNTOUCHED, which is the false-positive half.
+    W.at(30000)
+    mark = #W.S.toClients
+    W.say(2, 'anyone want to squad up')
+    local clean = W.chatSends(mark + 1)
+    local seen = {}
+    for _, c in ipairs(clean) do seen[c.target] = true end
+    ok(seen[1] and seen[2], 'clean lobby chat reaches the lobby')
+    ok(#W.S.incidents == 1, 'and files nothing')
+end
+
+describe('chat.incident.the-other-producers-still-corroborate')
+do
+    -- ═══ THE ASYMMETRY IS THE POINT AND MUST NOT SPREAD ═══
+    --
+    -- Dropping the corroboration is right for chat because its severity is a
+    -- constant and its repeats carry their own content. A strip has neither
+    -- property: `worst:` actually varies there, and a strip row is a timestamp
+    -- and a hash, so the aggregate IS the finding. A change that silenced all
+    -- four producers would pass every case in the block above.
+    local W = newTimelineWorld()
+    W.startMatch(3, 1000)
+    W.join(1, 3, 'license:mixed', 'Rae')
+
+    W.at(4000); W.say(1, 'come to evilserver.com')
+    W.ack(3, 'license:mixed', 'inc-mixed')
+    ok(#W.S.corroborations == 0, 'chat still raises none')
+
+    -- A strip onto the SAME case: one player, one round, one record.
+    W.at(9000);  W.strip(1, 0xDEADBEEF)
+    W.at(10000); W.strip(1, 0xDEADBEEF)
+
+    ok(#W.S.incidents == 1, 'the strip appends to the case chat opened')
+    ok(#W.S.corroborations == 1,
+        'and a STRIP still corroborates, which chat no longer does',
+        #W.S.corroborations)
+    ok(W.S.corroborations[1].incidentId == 'inc-mixed',
+        'onto the case that already exists')
 end
 
 -- ----------------------------------------------------------------- result ---

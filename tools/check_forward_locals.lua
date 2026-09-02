@@ -61,11 +61,32 @@ local function check(path)
             local code = blank(lines[i])
             -- A CALL, not a mention: `name(`. Skips comments, table keys and
             -- the string forms above.
-            local before = code:match('()' .. name .. '%s*%(')
-            if before then
+            --
+            -- EVERY OCCURRENCE ON THE LINE, not the first. This was `match`,
+            -- which returns one position -- so a line whose first hit is
+            -- rejected by the prefix test below stopped being examined, and a
+            -- real call later on the same line was invisible.
+            local reported = false
+            for before in code:gmatch('()' .. name .. '%s*%(') do
                 -- `foo.name(` and `foo:name(` are a different function.
+                --
+                -- AND SO IS `unwatch(` WHEN THE NAME IS `watch` (#192). The
+                -- prefix test used to name two characters and stop, so a local
+                -- whose name was a SUFFIX of another local's -- watch/unwatch,
+                -- index/unindex, set/reset -- failed this gate on the longer
+                -- name's call site, at a line where nothing was wrong. That is
+                -- a gate people learn to route around by renaming, which is the
+                -- worst thing a gate can teach. An identifier character before
+                -- the match means this is the tail of a longer word.
+                --
+                -- It cannot fail OPEN: the pattern only ever finds more places
+                -- than it should, so narrowing it removes false alarms and no
+                -- real hit -- a genuine `name(` has a delimiter, an operator or
+                -- nothing at all in front of it, never a letter.
                 local prefix = code:sub(math.max(1, before - 1), before - 1)
-                if prefix ~= '.' and prefix ~= ':' then
+                if prefix ~= '.' and prefix ~= ':' and not prefix:match('[%w_]')
+                   and not reported then
+                    reported = true
                     failures = failures + 1
                     io.write(('\27[31mFAIL\27[0m %s:%d: calls "%s" before its'
                         .. ' `local function` on line %d\n')

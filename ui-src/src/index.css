@@ -46,10 +46,31 @@
      line height simply clips. */
   --text-scale: 1;
 
-  /* Safe-zone insets, overwritten at runtime from GetSafeZoneSize. These are
-     the fallback for the browser dev harness and the first frame in game. */
-  --safe-x: 2.2%;
+  /* THE SAFE-ZONE RECTANGLE, PER EDGE. Overwritten at runtime from the game --
+     which is asked where each corner of the safe zone landed rather than being
+     asked for one 0.8..1.0 scalar we then do arithmetic on (#231; see
+     br_core/client/screen.lua). --safe-x/--safe-y are the LEFT and TOP insets
+     under the names the HUD has always positioned by.
+
+     THE FOUR ARE NOT ONE NUMBER -- but they ARE one number on 16:9, and the
+     round that made them four got the reason wrong. It said the engine's inset
+     is a physical distance, so 3.2% of height is 1.8% of width. It is not.
+     CHudTools::GetMinSafeZone computes `(width - width * safezoneSize) * 0.5`
+     and divides by width, and the same for height: the SAME PERCENTAGE of each
+     axis, so all four are (1 - safeZoneSize) / 2 and the old single inset was
+     right about that much.
+
+     What actually makes them four is the SUPERWIDE OFFSET, which the same
+     function adds to the left and right edges only, past 16:9 -- see
+     --hud-left below. Vertical never moves.
+
+     These values are the harness fallback and the first frame in game: a 16:9
+     screen at the 3.2% inset this file has always assumed. The real numbers
+     come from the engine, and `/brprobe` prints them. */
+  --safe-x: 3.2%;
   --safe-y: 3.2%;
+  --safe-r: 3.2%;
+  --safe-b: 3.2%;
 
   /* Baseline for the TOP ROW: the safe-zone top plus the height of GTA's own
      instructional/help band, which draws in the top left and was landing
@@ -63,25 +84,95 @@
      2026-08-08). Level with the storm bar, which anchors on --safe-y. */
   --hud-top: var(--safe-y);
 
-  /* Footprint of GTA's native radar, which we deliberately do not replace. */
-  --radar-w: 25rem;
-  --radar-h: 12.5rem;
-
   /* The radar's real rectangle in viewport units, overwritten at runtime from
-     the game (screen envelope). Bars, chat and notices anchor to these.
-     Fallbacks approximate a 1080p default safe zone for the dev harness. */
-  --map-left: 2.2vw;
-  --map-bottom: 3.2vh;
-  --map-w: 20.8vw;
-  --map-h: 19.5vh;
+     the game (screen envelope). Bars, chat and notices anchor to these, and so
+     does the dev-build outline that exists to show a disagreement -- ONE
+     rectangle in ONE unit, rather than the second copy in rem that used to sit
+     beside it and drift with the interface-size slider.
 
-  /* Narrowed past ~21:9 so anchored columns do not end up needing a head turn. */
-  --usable-w: 100%;
+     The fallbacks are what Lua sends on a 16:9 screen at the inset above: the
+     radar's map area is screenHeight/4 wide and screenHeight/5.674 tall
+     (the FiveM cookbook's frontend.xml figures, and Dalrae1/MinimapPositionFiveM),
+     so 25vh of width is 14.06vw at 16:9, and 100/5.674 is 17.63vh of height.
+     They were 20.8/19.5 -- numbers that matched nothing Lua has ever
+     published. */
+  --map-left: 3.2vw;
+  --map-bottom: 3.2vh;
+  --map-w: 14.06vw;
+  --map-h: 17.63vh;
+
+  /* ═══ THE HUD'S FRAME, WHICH IS THE MINIMAP'S BOX AND NOT THE VIEWPORT ═══
+
+     "See the minimap near the center of the screen? That's where we want our
+     bars to be. this should include our voice chat, squad panel, inventory,
+     chat, etc"  -- the owner, 2026-08-23, over a real 32:9 screenshot.
+
+     Past 16:9 the engine pushes its own interface into a centred 16:9 box and
+     will not let the radar out of it. That is deliberate, and it is in RAGE's
+     source rather than in anyone's judgement: CHudTools::GetMinSafeZone adds
+     `(1 - (16/9) / aspect) * 0.5` to the safe zone's left edge and takes it
+     off the right, on any screen where `aspect > 16/9`. nta, on the Cfx forum:
+     the radar "is supposed to be 16:9-clamped (imagine playing on a 32:9
+     monitor and having to twist your neck to even see the HUD) according to
+     R*". citizenfx/fivem#2719 is the same behaviour reported as a bug.
+
+     So there are two rectangles once the panel is wide: the SAFE ZONE and the
+     box the engine actually draws in. They are the same rectangle at 16:9,
+     where that offset is zero -- which is why every surface in this file could
+     read --safe-x and --safe-r for a year and look perfectly correct.
+
+     The HUD's left and right edges are these. The TOP and BOTTOM are still the
+     safe zone's: the offset is applied to x0 and x1 only, and there is nothing
+     for a vertical pair to correct.
+
+     --hud-left IS --map-left, aliased rather than published twice, so the
+     minimap's edge and the HUD's left edge cannot drift apart. Overwritten at
+     runtime from the game; the fallbacks are what Lua sends at 16:9, where
+     they equal --safe-x and --safe-r exactly. */
+  --hud-left: var(--map-left);
+  --hud-right: 3.2vw;
 
   /* How far the vitals strip hangs BELOW the radar's bottom edge. One number,
      because the right clearance depends on the player's safe-zone slider and
-     is settled by looking at it in game, not by arithmetic here. */
+     is settled by looking at it in game, not by arithmetic here.
+
+     IT IS ALSO WHAT DECIDES WHETHER THE STRIP FITS THERE AT ALL. The radar is
+     anchored to the safe zone's bottom-left, so this much of the strip hangs
+     into the margin BELOW the safe zone -- and once the player's slider runs
+     out of margin, off the bottom of the screen. hud/Hud.tsx measures this
+     against the real safe zone every render and moves the strip above the
+     radar when it no longer fits. Nothing hardcodes the number twice: the
+     measurement reads THIS declaration, whatever unit it is written in. */
   --vitals-drop: 0.85rem;
+
+  /* Breathing room between the vitals strip and whatever it is stacked with
+     when it does NOT fit under the radar -- the radar's top edge below it, the
+     chat column above it. The same 0.3rem the chat column already keeps from
+     the radar, so the whole left column reads as one unit either way. */
+  --vitals-gap: 0.3rem;
+
+  /* How far the chat column has to move to stay clear of a vitals strip that
+     has come up above the radar. Written by hud/Hud.tsx from the strip's
+     MEASURED height; 0 whenever the strip is in its usual place, which is
+     almost always. */
+  --vitals-lift: 0px;
+
+  /* THE "Currently Talking" LINE, AS A SIZE TWO COMPONENTS AGREE ON.
+     Bottom centre is now shared: TalkingBar sits ON the bottom safe edge and
+     the spectate hint stacks directly above it ("not overlapping with our
+     'Currently talking' text" -- the owner).
+
+     BOTH READ THESE RATHER THAN EACH CARRYING A NUMBER. The hint has to know
+     how tall that line is to clear it, and a hand-copied 1rem here would drift
+     the first time the talking line was resized -- silently, into an overlap
+     that only shows up when somebody happens to be speaking. So the font size
+     is declared once and the HEIGHT is derived from it.
+
+     --text-scale is in the derivation because the line grows with the player's
+     text-size preference and the clearance has to grow with it. 1.5 is the
+     line-height TalkingBar sets. */
+  --talkline-fs: 1rem;
+  --talkline-h: calc(var(--talkline-fs) * var(--text-scale) * 1.5);
 
   /* PALETTE — one colour, one meaning, game-wide. Hex, for the reason at the
      top of this file.
@@ -106,6 +197,52 @@
   --color-shield:  #38bdf8;
   --color-storm:   #c026d3;
   --color-danger:  #ef4444;
+
+  /* THE CAR, WHICH IS NOT A PERSON. hud/VehicleBars.tsx draws vehicle
+     condition and fuel in the same pill health and shield use, so the ONLY
+     thing separating "my health" from "my car's health" at a glance is hue.
+     Reusing --color-hp for the bodywork would have made green mean two things
+     on one screen, which is the exact failure the palette note above this
+     block describes ("one colour, one meaning, game-wide").
+
+     SLATE FOR CONDITION, because it is barely a hue at all -- a machine reads
+     as metal, and an achromatic bar cannot be confused with any of the four
+     saturated colours that already carry meaning.
+
+     ORANGE FOR FUEL, on the petrol-pump convention, and chosen against the two
+     it must not be mistaken for: it is not --color-danger (#ef4444), which
+     means you are losing health, and it is a full hue step from
+     --color-royale-accent2 (#facc15), which means victory and nothing else.
+
+     NO COLOURBLIND OVERRIDES, DELIBERATELY. The rule this file sets for the
+     [data-cb] blocks is to move only what collapses and to leave the rest,
+     because "gratuitously repainting a palette someone has already learned is
+     its own accessibility cost". These two are only ever read against EACH
+     OTHER -- one strip, two bars, side by side -- and slate against orange
+     separates by saturation in every deficiency, not by hue. There is nothing
+     here for a remap to fix. */
+  --color-vehicle: #94a3b8;
+  --color-fuel:    #fb923c;
+
+  /* BOOST, THE THIRD BAR IN THAT SAME STRIP (owner, 2026-08-22: "I meant to ask
+     for a Boost bar").
+
+     IT IS THE UI ACCENT BY REFERENCE, NOT BY COPY. A second literal holding
+     #22d3ee is a value that agrees today and drifts the first time either is
+     tweaked -- the same argument Vitals.tsx makes for sharing `Fill` rather than
+     restyling it. So this names the ROLE and points at the value.
+
+     THE ACCENT IS THE RIGHT ONE ON ITS MERITS RATHER THAN BY CONVENIENCE. The
+     three bars are only ever read against EACH OTHER, and the strip needs one
+     cool saturated hue to sit beside desaturated slate and warm orange: cyan is
+     the only family in this palette that is neither, and it separates from both
+     by saturation as well as by hue, which is what the block above requires of
+     these bars in every deficiency. It is also not --color-danger and not
+     --color-royale-accent2, the two colours that already mean something
+     specific.
+
+     Not remapped under [data-cb] for the same reason its neighbours are not. */
+  --color-boost:   var(--color-royale-accent);
 
   /* SECONDARY TEXT, THE CAPTION LAYER. Short labels that name the thing next
      to them -- and are not the thing itself. Headings and values stay plain
@@ -258,16 +395,48 @@
 .tscale { font-size: calc(1em * var(--text-scale)); }
 
 
-/* The HUD lays out inside this box rather than the raw viewport, so safe zone
-   and ultrawide clamping are applied once instead of per component. */
+/* The HUD lays out inside this box rather than the raw viewport, so the safe
+   zone is applied once instead of per component.
+
+   ═══ IT MUST NOT BE TRANSFORMED, AND IT USED TO BE ═══
+
+   This carried `left: 50%; width: var(--usable-w); transform: translateX(-50%)`
+   -- an ultrawide clamp that narrowed and re-centred the HUD past ~21:9. Two
+   separate failures came out of those three lines (#231):
+
+   1. A TRANSFORMED ANCESTOR IS THE CONTAINING BLOCK FOR `position: fixed`
+      DESCENDANTS. This file already says so about `.page` sixty lines down,
+      where it cost every menu in the game. Here it silently captured the
+      vitals strip, which is `fixed` precisely BECAUSE the --map-* variables
+      are viewport-true coordinates of the real radar -- so at 32:9 the health
+      and shield bars were displaced 305px from the minimap they are supposed
+      to sit under, while the notice stack, `fixed` at App level and outside
+      this box, did not move at all.
+
+   2. THE CLAMP ONLY EVER REACHED WHAT WAS INSIDE. Chat and notices render
+      outside `.hud-safe`, so it pulled some of the minimap-anchored column in
+      and left the rest where it was.
+
+   The inward pull it was hand-rolling is the engine's own job, and Lua now
+   reads the engine's answer instead of approximating one, so nothing is lost
+   by deleting it. check-ui R12 fails the build if a transform comes back.
+
+   THE HORIZONTAL PADDING IS THE HUD'S FRAME, NOT THE SAFE ZONE, for the reason
+   --hud-left carries: past 16:9 the minimap stays inside the engine's centred
+   layout box while the safe zone follows the panel, and this box is meant to
+   describe where the HUD lives. The vertical padding is still the safe zone's,
+   which is the same thing.
+
+   AND NONE OF IT POSITIONS ANYTHING. Every child in Hud.tsx is `absolute` or
+   `fixed`, and an out-of-flow box resolves against its ancestor's PADDING box
+   -- which is the full viewport here, padding included. So this declaration is
+   the box's own description and the children each name an edge; changing it
+   moves nothing on its own, and leaving it disagreeing with them would be a
+   trap for whoever adds the first in-flow child. */
 .hud-safe {
   position: fixed;
-  left: 50%;
-  top: 0;
-  transform: translateX(-50%);
-  width: var(--usable-w);
-  height: 100%;
-  padding: var(--safe-y) var(--safe-x);
+  inset: 0;
+  padding: var(--safe-y) var(--hud-right) var(--safe-b) var(--hud-left);
   box-sizing: border-box;
   pointer-events: none;
 }
@@ -1002,6 +1171,31 @@ html, body, #root {
   border: 1px solid rgba(239, 68, 68, 0.9);
   animation: mateHit 700ms ease-out both;
 }
+/* A PLAYER'S NAME, INSIDE A NOTICE.
+
+   Owner, 2026-08-31: "Any time we mention a player by name in a toast their
+   name should be bold."
+
+   700 AND NOT 600. Barlow 400/500/600/700 are all really loaded (main.tsx), so
+   neither weight synthesises and both are honest choices. 600 is this project's
+   ORDINARY emphasis -- `.micro-label`, chat author names, `.body-text` itself --
+   which is exactly why it is wrong here: a notice is one short sentence at
+   0.8125rem read peripherally while the player is doing something else, and a
+   one-step lift inside it is not a distinction anybody finds at a glance.
+
+   A CLASS AND NOT AN INLINE STYLE, though it has exactly one caller
+   (hud/Notices.tsx's NoticeText). Two surfaces draw notices -- the live stack
+   and the pause menu's history -- and the weight a name is drawn at is a
+   design-system fact about this interface rather than a decision that component
+   makes. It is also what tools/check_notice_names.lua grips to prove the built
+   bundle is not stale, which nothing else in a notice can be.
+
+   NO SIZE, NO COLOUR, NO SCALING. It inherits all three from the sentence it
+   sits in, which is what keeps a name inside a `warn` row the same colour as
+   the words either side of it -- and what keeps it out of the `.ts` / `tscale`
+   trap documented at the end of this file. */
+.notice-name { font-weight: 700; }
+
 .mate-stamp { animation: stampIn 430ms var(--ease-snap) both; }
 .mate-pulse { animation: matePulse 800ms ease-in-out infinite; }
 /* The drain is slower than .bar-fill's normal move, so a death does not read

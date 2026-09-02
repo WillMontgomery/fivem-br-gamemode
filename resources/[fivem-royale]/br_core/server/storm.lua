@@ -34,6 +34,58 @@ local function publish(m)
     BR.Broadcast.toMatch(m, BR.Net.STORM_SYNC, m.storm)
 end
 
+-- ═══ THE SOUND THE WALL MAKES WHEN IT STARTS MOVING ═══
+--
+--   "We also need a sound for when the storm starts moving"
+--                                          -- owner, 2026-08-22
+--
+-- WHICH MOMENT THAT IS. A phase has two halves. `enterPhase` is when the next
+-- circle is DRAWN and the wall STOPS -- the hold. The wall starts moving at the
+-- other end of that hold, when BR.StormAt stops answering HOLDING and starts
+-- answering SHRINKING. That edge is what this cues, and it is cued eight times
+-- a match rather than once.
+--
+-- ═══ WHY THE SERVER OWNS THE EDGE AND NOT THE CLIENT ═══
+--
+-- Every client already solves the wall for itself -- that is the whole design,
+-- and it means every client COULD notice this boundary on its own. It must not:
+-- that is eight latches in eight frame loops, each drifting by a frame, each
+-- needing its own "have I already played this" state, and each getting it wrong
+-- for a player who joined or respawned mid-phase. The server runs one 1 Hz job
+-- that is already looking at exactly this record, so the edge is detected once,
+-- in one place, and ADDRESSED to the match. "Everyone hears it once" then
+-- follows from the fan-out rather than from eight clients agreeing.
+--
+-- UP TO ONE SECOND LATE, AND THAT IS FINE. The job ticks at 1 Hz, so the cue
+-- can trail the true boundary by up to a second. A shrink runs 40 to 360
+-- seconds and the wall is a kilometre wide; nobody can perceive the offset, and
+-- paying for exactness would mean putting this in a frame loop.
+local MOVE_CUE = 'storm.move'
+
+--- Tell a whole match the wall has begun to move -- at most once per phase.
+---
+--- THE LATCH IS ON THE MATCH, NOT ON THE PHASE NUMBER, and that difference is
+--- real: `brphase` and `brstormfreeze off` both RE-ENTER a phase from wherever
+--- the wall is standing, which gives it a fresh hold and a fresh sweep. Keyed on
+--- the number, a thaw would hold its peace while the wall visibly set off again.
+--- `enterPhase` clears it, so every entry -- first, forced or thawed -- arms it.
+---
+--- FINISHED COUNTS AS MOVED. The state to watch is SHRINKING, but a scheduler
+--- stall long enough to skip every tick of a sweep would step straight from
+--- HOLDING to FINISHED and the cue would be lost with nothing to say so. A wall
+--- that has finished moving has moved, so the latch trips either way.
+--- @param m table
+local function cueMovementOnce(m, st)
+    if m.stormMoveCued then return end
+    if st ~= BR.StormPhase.SHRINKING and st ~= BR.StormPhase.FINISHED then return end
+    m.stormMoveCued = true
+    -- A CUE KEY, NEVER A SOUND NAME. The wire carries `storm.move` and the
+    -- client resolves it against its own BR.Config.Audio.cues, which is what
+    -- lets the owner re-point it with /brsfx bind without a line of this file
+    -- changing. See br_lib/shared/protocol.lua's SFX_CUE.
+    BR.Broadcast.toMatch(m, BR.Net.SFX_CUE, { c = MOVE_CUE })
+end
+
 --- Build and publish the record that shrinks toward phases[phase], starting
 --- from the given circle. The next centre is drawn HERE, at phase entry, so
 --- players see where to rotate for the whole hold.
@@ -103,6 +155,12 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     m.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
         now, (waitSec or p.wait) * 1000 * timeScale,
         shrinkSec * 1000 * timeScale, p.dps)
+
+    -- ARMED FOR THIS PHASE'S SWEEP. Every route into a phase comes through
+    -- here -- the first one, the next one, `brphase`, and the thaw -- so this
+    -- one line is what makes "once per hold-to-shrink transition" true for all
+    -- four of them rather than for the ordinary one only.
+    m.stormMoveCued = false
 
     print(('[br_core] storm: match %d phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs (furthest %.0fm), %.1f dps')
         :format(m.id, phase, r0, p.radius,
@@ -200,6 +258,52 @@ end
 --- Which player states the storm can hurt. Airborne players are untouchable
 --- -- they cannot steer out of a wall they are falling through, and the drop
 --- grace exists for the same reason -- and lobby/warmup are not in the match.
+---
+--- ═══ A VEHICLE IS NOT ON THIS LIST AND NEVER WILL BE (owner, 2026-08-21, #194
+---     question 4) ═══
+---
+---   "no, vehicles will never grant storm immunity. that's not a thing. the
+---    only exception is the ambulance and ONLY while they're in `rescue` state
+---    - so if they hop in an ambulance and drive off they are not granted any
+---    sort of immunity."
+---
+--- WHICH IS WHAT THIS FILE ALREADY DOES, and #194 §4 established that before the
+--- question was asked: the damage loop below is a position check against the
+--- solved circle and a server-side ledger. It holds no ped handle and no vehicle
+--- handle, so a player driving through the wall takes exactly what a player
+--- walking through it takes. Nothing was added to keep it that way. The test in
+--- tools/test_roster.lua's `storm.vehicles` block is what stops it drifting,
+--- because "we never wrote the exemption" is not a property anything can check.
+---
+--- ═══ THE ONE EXCEPTION, NOW THAT #191 HAS LANDED ═══
+---
+--- This block used to say the exemption could not be written yet, because it was
+--- conditioned on a `rescue` state that existed nowhere -- and a flag with no
+--- writer is a flag that reads false forever while looking like a working
+--- feature. #191 (the CPR kit) built the writer, so the sentence is code now:
+--- `and not e.rescue` on the `BR.Roster.each` filter in `storm.damage` below,
+--- which is exactly the one-condition change this block specified in advance.
+---
+--- THE TWO PROHIBITIONS IT WAS WRITTEN WITH ARE BOTH HONOURED, and they are
+--- restated rather than deleted because they are what makes the flag safe:
+---
+---   * NOT A CLIENT-ASSERTED FLAG. Storm damage is the subsystem specifically
+---     built so a client cannot influence it (#194 §4); an exemption a client can
+---     assert is storm immunity a client can assert. `e.rescue` is written in
+---     exactly two places, both in server/rescue.lua -- when the server GRANTS a
+---     rescue and when it ENDS one -- and no net event sets it. There is no
+---     client->server event in this whole feature that carries a payload at all.
+---   * NOT A TEST ON THE VEHICLE. The owner's rule is about the rescue, not about
+---     the ambulance -- a player who drives one off has no exemption, so a model
+---     check would grant exactly the thing that sentence refuses. Nothing below
+---     reads a model, a vehicle handle or a seat; the flag is on the PLAYER, and
+---     it is set only for a player the server itself put in an ambulance.
+---
+--- AND IT IS BOUNDED. server/rescue.lua's deadline is checked unconditionally on
+--- every tick and every path out of a rescue clears the flag, so there is no
+--- branch on which a player stays exempt -- which matters more here than
+--- anywhere else, because the failure would be silent and would look exactly
+--- like a player who is simply good at staying inside the circle.
 local DAMAGEABLE = {
     [BR.PlayerState.ALIVE] = true,
     [BR.PlayerState.DBNO]  = true,
@@ -214,6 +318,12 @@ BR.Sched.every(1000, 'storm.phase', function()
 
         local rec = m.storm
         local _, _, _, st = BR.StormAt(rec, GetGameTimer())
+
+        -- BEFORE the advance, not after. The advance replaces `m.storm` with a
+        -- record that is HOLDING again, so a cue evaluated afterwards would be
+        -- reading the NEXT phase's hold and would never fire at all.
+        cueMovementOnce(m, st)
+
         if st == BR.StormPhase.FINISHED and rec.phase < #cfg.phases then
             enterPhase(m, rec.phase + 1, rec.cx1, rec.cy1, rec.r1, GetGameTimer())
         end
@@ -256,7 +366,13 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         m.stormCarry = carry
 
         BR.Roster.each(
-            function(e) return e.matchId == m.id and DAMAGEABLE[e.state] end,
+            -- `not e.rescue` IS #191'S AMBULANCE EXEMPTION and is the only
+            -- exception to "a vehicle never grants storm immunity" that will
+            -- ever exist here. See the block above DAMAGEABLE for the two things
+            -- it is forbidden from becoming.
+            function(e)
+                return e.matchId == m.id and DAMAGEABLE[e.state] and not e.rescue
+            end,
             function(src, e)
                 if not e.pos then return end   -- not sampled yet (OneSync warning covers why)
 

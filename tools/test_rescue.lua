@@ -1,0 +1,2679 @@
+-- Unit tests for the CPR kit's routing arithmetic (#191).
+--
+-- ═══ WHY THIS IS ITS OWN SUITE ═══
+--
+-- The destination rule is the one part of this feature that is both load-bearing
+-- and effectively untestable in game. "Prefer a point that will be inside the
+-- storm circle WHEN THE AMBULANCE ARRIVES" only differs from the obvious wrong
+-- implementation -- test the circle as it stands NOW -- during a shrink, on a
+-- route long enough for the wall to move past a candidate. Producing that in a
+-- real match means waiting several minutes into a phase and then dying in the
+-- right place, and the failure it would catch is invisible when it happens: the
+-- player is simply delivered into the storm, which reads as bad luck.
+--
+-- So it is driven here instead, against a hand-built storm record and a clock
+-- this file owns, where "the circle at dispatch and the circle on arrival
+-- disagree" is three lines to set up.
+--
+-- ═══ WHAT IS NOT HERE ═══
+--
+-- The server's stuck-versus-destroyed arbitration is a scheduler, a roster and
+-- BR.Combat away from pure, and it belongs in tools/test_roster.lua where those
+-- already exist. What IS here is the one piece of it that is pure --
+-- BR.RescueMoved, the progress threshold -- because the interesting cases are a
+-- vehicle creeping along just under the bar and a position that never refreshed,
+-- and neither is convenient to stage anywhere else.
+
+local fakeTime = 0
+function GetGameTimer() return fakeTime end
+
+local RES = 'resources/[fivem-royale]/'
+local ROOT = RES .. 'br_lib/'
+local function loadAt(root, f)
+    local chunk, err = loadfile(root .. f)
+    if not chunk then
+        print('\27[31mload error\27[0m ' .. f .. ': ' .. tostring(err))
+        os.exit(1)
+    end
+    chunk()
+end
+local function load(f) loadAt(ROOT, f) end
+--- A br_core module, by its path under resources/[fivem-royale]/.
+local function loadCore(f) loadAt(RES, f) end
+
+for _, f in ipairs({
+    'shared/enums.lua',
+    'shared/geo.lua',
+    -- BR.PointInPolygon: BR.RescueFreeSpawn keeps its ring walk inside the map
+    -- boundary, so the free-spawn path cannot be driven without it.
+    'shared/polygon.lua',
+    -- BR.Net, for the two blocks at the foot of this file that drive real
+    -- event handlers rather than pure solvers.
+    'shared/protocol.lua',
+    'config/match.lua',
+    'config/overrides.lua',
+    'config/storm.lua',
+    'shared/storm_solve.lua',
+    'config/map.lua',
+    'config/loot.lua',
+    -- BR.LootLabel, which server/inventory.lua's public projection calls on
+    -- every push.
+    'shared/rng.lua',
+    'shared/loot_gen.lua',
+    -- BR.Config.Fuel.healthMax: the denominator the condition bar uses, and so
+    -- the one client/rescue.lua's wreck test measures against.
+    'config/fuel.lua',
+    'config/rescue.lua',
+    'shared/rescue_solve.lua',
+}) do load(f) end
+
+local pass, fail = 0, 0
+local group = ''
+local function describe(n) group = n end
+local function ok(cond, name, detail)
+    if cond then pass = pass + 1 else
+        fail = fail + 1
+        print('\27[31mFAIL\27[0m ' .. group .. ' > ' .. name ..
+            (detail and ('\n       ' .. tostring(detail)) or ''))
+    end
+end
+
+local R = BR.Config.Rescue
+
+--- The shipped config with the trip ceiling lifted.
+---
+--- ═══ WHY THE CIRCLE TESTS MUST NOT SEE `maxTripM` ═══
+---
+--- Every block below that is about the STORM RULE -- the arrival circle, the
+--- purple circle, the minimum trip, "the filter is not a score" -- used the real
+--- config, so its fixtures had to be drawn inside whatever the ceiling happened
+--- to be that week. When the owner moved it from 2000m to 1000m on 2026-08-29,
+--- four of those assertions went red without a single one of the rules they test
+--- having changed, and the previous fix had been to drag the coordinates inward
+--- ("Pulled in from 3000 so `purple` sits under maxTripM").
+---
+--- That is the fixture agreeing with the config instead of testing the code, and
+--- it is one step from this suite's signature failure: a case that passes for a
+--- reason nobody intended. A candidate refused by the CEILING when the point was
+--- to watch the CIRCLE refuse it proves nothing about the circle.
+---
+--- So the geometry tests run against a config whose only difference is that the
+--- ceiling cannot bite, and the ceiling gets its own block below -- against the
+--- SHIPPED number, which is the one thing that block is for.
+local RFAR = setmetatable({ maxTripM = math.huge }, { __index = R })
+
+-- ---------------------------------------------------------------------------
+describe('eta')
+do
+    -- The estimate is monotonic in distance and never zero, because both of
+    -- those are properties the deadline depends on: a deadline that does not
+    -- grow with the route is #191's stated failure ("a long route fails a short
+    -- timer"), and a zero one would expire on the tick it was set.
+    local a = BR.RescueDriveMs(100.0, R)
+    local b = BR.RescueDriveMs(1000.0, R)
+    ok(a > 0, 'a short drive still takes time', a)
+    ok(b > a, 'a longer drive takes longer', ('%.0f vs %.0f'):format(b, a))
+
+    -- ROAD DISTANCE EXCEEDS THE STRAIGHT LINE, which is the whole of what
+    -- etaRouteFactor is for -- asserted as an inequality rather than against a
+    -- magic number so retuning the factor does not break the test that proves it
+    -- is being applied at all.
+    local straight = (1000.0 / R.etaSpeed) * 1000.0
+    ok(b > straight, 'and it allows for roads being longer than the straight line',
+        ('%.0f vs straight %.0f'):format(b, straight))
+
+    -- THE CLAMPS ARE THE POINT OF THE DEADLINE, at BOTH ends.
+    ok(BR.RescueDeadlineMs(1.0, R) >= R.etaFloorMs,
+        'a trivial route still gets the floor -- a deadline shorter than the '
+            .. 'fade would expire before the ride began',
+        BR.RescueDeadlineMs(1.0, R))
+    -- THE CEILING BOUNDS THE SLACK ON AN ORDINARY ROUTE...
+    local ordinary = 600.0
+    ok(BR.RescueDeadlineMs(ordinary, R) <= R.etaCeilMs,
+        'an ordinary route is bounded by the ceiling',
+        BR.RescueDeadlineMs(ordinary, R))
+
+    -- ...AND NEVER AT THE COST OF UNDER-CUTTING THE DRIVE, which is the property
+    -- that actually matters and the one a plain clamp got wrong. #191's stated
+    -- failure is "a long route fails a short timer"; a ceiling applied without
+    -- this guarantee IS a short timer, just one nobody configured on purpose.
+    -- Asserted across the whole plausible range rather than at one point,
+    -- because the bug only appears past wherever the ceiling happens to bite.
+    for _, d in ipairs({ 1.0, 100.0, 600.0, 2000.0, 5000.0, 9000.0 }) do
+        ok(BR.RescueDeadlineMs(d, R) > BR.RescueDriveMs(d, R),
+            ('the deadline is longer than the drive it is derived from (%.0fm)'):format(d),
+            ('deadline %.0f vs drive %.0f')
+                :format(BR.RescueDeadlineMs(d, R), BR.RescueDriveMs(d, R)))
+    end
+end
+
+-- ---------------------------------------------------------------------------
+describe('nearest')
+do
+    local pts = {
+        { id = 'a', x = 0.0,    y = 0.0 },
+        { id = 'b', x = 500.0,  y = 0.0 },
+        { id = 'c', x = 5000.0, y = 0.0 },
+    }
+    local p, d = BR.RescueNearest(pts, 480.0, 0.0)
+    ok(p and p.id == 'b', 'the pickup is the closest authored point',
+        p and p.id)
+    ok(math.abs(d - 20.0) < 0.01, 'and its distance comes back with it', d)
+
+    local none, nd = BR.RescueNearest({}, 0.0, 0.0)
+    ok(none == nil, 'no points means no pickup rather than a crash')
+    ok(nd == math.huge, 'and an infinite distance rather than zero -- zero would '
+        .. 'read as "it is right here"', nd)
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.inCircle')
+do
+    -- A STATIC circle at the origin, radius 400. Two candidates inside it and
+    -- one far outside.
+    local storm = {
+        phase = 1,
+        cx0 = 0.0, cy0 = 0.0, r0 = 400.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 400.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+    local pts = {
+        { id = 'far_inside',  x = 0.0,    y = 0.0 },
+        { id = 'near_inside', x = 200.0,  y = 0.0 },
+        { id = 'outside',     x = 3000.0, y = 0.0 },
+    }
+
+    -- Dispatching from x = 400: `near_inside` is 200m away, `far_inside` is 400m.
+    -- Both qualify and both clear minTripM, so the SHORTEST wins.
+    --
+    -- THE FIXTURE MOVED WHEN minTripM ARRIVED. It used to put `near_inside` 50m
+    -- from the dispatch point, which the floor now refuses -- so the case was
+    -- asserting the right property with numbers that had stopped being able to
+    -- express it. Both candidates are past the floor now and the ordering is
+    -- still what is under test.
+    local d, dist, inside = BR.RescueDestination(pts, 400.0, 0.0, storm, 0, RFAR)
+    ok(d and d.id == 'near_inside',
+        'among points inside the circle, the shortest route wins', d and d.id)
+
+    -- ═══ THE PICKUP CANNOT BE THE DESTINATION ═══
+    --
+    -- Owner, 2026-08-28, on the first ride that ran: "It drove for maybe 30
+    -- seconds successfully, but then de-spawned and put me back at the point
+    -- where it spawned."
+    --
+    -- The pickup is one of the same surveyed points the destination is chosen
+    -- from, and it is ZERO metres from itself, so it won every time. The ride
+    -- was a circle and the delivery was a teleport to where it began.
+    local here = { id = 'here', x = 400.0, y = 0.0 }
+    local withHere = { here, pts[1], pts[2], pts[3] }
+    local d2 = BR.RescueDestination(withHere, 400.0, 0.0, storm, 0, RFAR, here)
+    ok(d2 and d2.id ~= 'here',
+        'the point the ambulance was built at is never the place it drives to',
+        d2 and d2.id)
+
+    -- And the floor covers the same failure without an explicit exclusion: two
+    -- surveyed car parks in one forecourt would produce the same non-journey.
+    local d3 = BR.RescueDestination(
+        { { id = 'next_door', x = 420.0, y = 0.0 }, pts[2] },
+        400.0, 0.0, storm, 0, RFAR)
+    ok(d3 and d3.id ~= 'next_door',
+        'a destination inside minTripM of the pickup is refused', d3 and d3.id)
+    ok(inside == true, 'and it is reported as a qualifying pick')
+    ok(math.abs(dist - 200.0) < 0.01, 'with the distance it was chosen on', dist)
+
+    -- THE FILTER IS NOT A SCORE, AND THIS IS THE ASSERTION THAT PROVES IT.
+    -- Dispatch from just outside the wall, where the OUTSIDE point is nearer
+    -- than either qualifying one. A weighted score would take it; a filter
+    -- followed by a minimum cannot.
+    -- DISTANCES SIT UNDER maxTripM (2000m, owner 2026-08-29). They used to be
+    -- 3000 and 3100, which the cap now refuses -- so the case would have passed
+    -- or failed on the ceiling rather than on the rule it is here to test.
+    local pts2 = {
+        { id = 'inside',       x = 0.0,    y = 0.0 },
+        { id = 'closer_but_out', x = 1900.0, y = 0.0 },
+    }
+    local d2 = BR.RescueDestination(pts2, 1800.0, 0.0, storm, 0, RFAR)
+    ok(d2 and d2.id == 'inside',
+        'a NEARER point outside the circle never beats a further one inside it '
+            .. '-- the rule is a filter, not a trade-off',
+        d2 and d2.id)
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.predictsTheShrink')
+do
+    -- ═══ THE TEST THIS SUITE EXISTS FOR ═══
+    --
+    -- A circle that is about to collapse from 4000m to 200m, centred on the
+    -- origin, with the shrink already under way. A candidate sitting at 1500m is
+    -- COMFORTABLY INSIDE the wall right now and will be well OUTSIDE it by the
+    -- time an ambulance could get there.
+    --
+    -- An implementation that tests the circle as it stands at dispatch picks it
+    -- and delivers the player into the storm. One that solves forward does not.
+    local storm = {
+        phase = 1,
+        cx0 = 0.0, cy0 = 0.0, r0 = 4000.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 200.0,
+        tStart = 0, tWait = 0, tShrink = 30000, dps = 5.0,
+    }
+
+    local doomed = { id = 'doomed', x = 1500.0, y = 0.0 }
+    local safe   = { id = 'safe',   x = 120.0,  y = 0.0 }
+
+    -- Sanity: at dispatch the doomed point really is inside, so the test is
+    -- testing what it claims to. Without this the assertion below could pass for
+    -- the wrong reason -- a point that was never eligible at all.
+    local cx, cy, r = BR.StormAt(storm, 0)
+    ok(BR.InCircle(doomed.x, doomed.y, cx, cy, r),
+        'the doomed point IS inside the circle at the moment of dispatch',
+        ('r now %.0f, point at %.0f'):format(r, doomed.x))
+
+    -- ...and by the time an ambulance drives there from 2000m out, it is not.
+    local eta = BR.RescueDriveMs(BR.Dist(2000.0, 0.0, doomed.x, doomed.y), R)
+    local _, _, rLater = BR.StormAt(storm, eta)
+    ok(rLater < doomed.x,
+        'and outside it by the time an ambulance could arrive',
+        ('r on arrival %.0f, point at %.0f'):format(rLater, doomed.x))
+
+    local d, _, inside = BR.RescueDestination({ doomed, safe }, 2000.0, 0.0, storm, 0, RFAR)
+    ok(d and d.id == 'safe',
+        'so the destination is solved against the circle ON ARRIVAL, not the '
+            .. 'one at dispatch -- this is the whole rule',
+        d and d.id)
+    ok(inside == true, 'and the surviving point still qualifies')
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.perCandidateTiming')
+do
+    -- Each candidate is timed SEPARATELY, because a further point is reached
+    -- later and meets a smaller circle. A single shared prediction would
+    -- systematically over-qualify distant points -- exactly the ones most likely
+    -- to be outside the wall on arrival.
+    --
+    -- Two points at the same bearing, one twice as far. The shrink is tuned so
+    -- the near one is still inside on ITS arrival and the far one is not on
+    -- ITS. If both were judged against one prediction they would pass or fail
+    -- together.
+    --
+    -- THE FINAL RADIUS MOVED 100 -> 500 WHEN THE PURPLE RULE LANDED. At 100
+    -- neither candidate was inside the circle the storm is shrinking toward, so
+    -- both were refused and this case stopped being able to express its own
+    -- property -- the same way it stopped expressing it when minTripM arrived.
+    -- At 500 the near one clears both circles and the far one is still refused
+    -- by its own later, smaller arrival circle, which is what is under test.
+    local storm = {
+        phase = 1,
+        cx0 = 0.0, cy0 = 0.0, r0 = 3000.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 500.0,
+        tStart = 0, tWait = 0, tShrink = 60000, dps = 5.0,
+    }
+    local near = { id = 'near', x = 400.0,  y = 0.0 }
+    local far  = { id = 'far',  x = 1200.0, y = 0.0 }
+
+    local etaNear = BR.RescueDriveMs(BR.Dist(0.0, 0.0, near.x, near.y), R)
+    local etaFar  = BR.RescueDriveMs(BR.Dist(0.0, 0.0, far.x,  far.y),  R)
+    local _, _, rNear = BR.StormAt(storm, etaNear)
+    local _, _, rFar  = BR.StormAt(storm, etaFar)
+
+    ok(rNear > rFar, 'the further candidate is judged against a smaller circle',
+        ('near r %.0f, far r %.0f'):format(rNear, rFar))
+
+    local d = BR.RescueDestination({ far, near }, 0.0, 0.0, storm, 0, RFAR)
+    ok(d ~= nil, 'a destination is still chosen')
+    ok(d.id == 'near' or rFar >= far.x,
+        'and a candidate is never qualified by another candidate\'s arrival time',
+        d.id)
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.refusesRatherThanFallsBack')
+do
+    -- ═══ THE FALLBACK IS GONE, AND THIS BLOCK IS THE REVERSAL ═══
+    --
+    -- Owner, 2026-08-28: "If no destinations are available within the PURPLE
+    -- storm circle - then cprkits are not available for use."
+    --
+    -- This used to assert the OPPOSITE -- that nothing qualifying still yielded
+    -- a destination, the point nearest the predicted centre, on the reasoning
+    -- that refusing would burn an ultra-rare item for nothing. THAT PREMISE WAS
+    -- FALSE and the block below (`begin.refusalDoesNotSpendTheKit`) is what now
+    -- holds it to account: the kit is not spent until after this has answered,
+    -- so a refusal costs the player nothing.
+    local storm = {
+        phase = 4,
+        cx0 = 0.0, cy0 = 0.0, r0 = 50.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 50.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 10.0,
+    }
+    local pts = {
+        { id = 'miles_away', x = 6000.0, y = 0.0 },
+        { id = 'closest',    x = 900.0,  y = 0.0 },
+    }
+
+    local d, dist, inside = BR.RescueDestination(pts, 5000.0, 0.0, storm, 0, RFAR)
+    ok(d == nil,
+        'no point inside the circle means NO DESTINATION -- there is no '
+            .. 'consolation drop nearest the centre any more',
+        d and d.id)
+    ok(inside == false, 'and it is reported as not qualifying')
+    ok(dist == math.huge, 'with an infinite distance rather than a real one', dist)
+
+    -- An empty list is the half-landed-config case: BR.Config.Rescue.points
+    -- ships empty on purpose (the owner's 23 authored points had not reached dev
+    -- when this was written), and the feature must be inert rather than broken.
+    local none = BR.RescueDestination({}, 0.0, 0.0, storm, 0, RFAR)
+    ok(none == nil, 'and no points at all yields no destination rather than a crash')
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.thePurpleCircle')
+do
+    -- ═══ THE CASE THE OWNER WATCHED, AND IT ONLY EXISTS DURING A HOLD ═══
+    --
+    -- "the destination was not inside the PURPLE storm circle, and it should
+    -- have been."
+    --
+    -- A storm HOLDING: `tWait` has not elapsed, so BR.StormAt answers the
+    -- CURRENT circle for every arrival time inside the hold -- a huge one at the
+    -- origin. The purple circle (cx1/cy1/r1) has broken out to (3000, 0) with a
+    -- radius of 400, which config/storm.lua's BREAKOUT explicitly allows.
+    --
+    -- `tempting` is deep inside the current circle and nowhere near the purple
+    -- one. Solving StormAt forward -- the old rule, and a correct-looking one --
+    -- takes it every time, because through a hold "forward" is "now".
+    --
+    -- The current circle is WIDE enough to hold both candidates, which is what
+    -- makes the purple one the only thing that can separate them: if it also
+    -- refused the surviving point the case would pass for the wrong reason.
+    local storm = {
+        phase = 3,
+        cx0 = 0.0,    cy0 = 0.0, r0 = 4000.0,
+        -- Pulled in from 3000 so `purple` sits under maxTripM; the breakout
+        -- relationship this case tests is unchanged.
+        cx1 = 1800.0, cy1 = 0.0, r1 = 400.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 60000, dps = 2.0,
+    }
+    local tempting = { id = 'tempting', x = 400.0,  y = 0.0 }
+    local purple   = { id = 'purple',   x = 1750.0, y = 0.0 }
+
+    -- Sanity, so a pass cannot be for the wrong reason: the tempting point
+    -- really is inside the circle StormAt answers, at its own arrival time.
+    local eta = BR.RescueDriveMs(BR.Dist(0.0, 0.0, tempting.x, tempting.y), R)
+    local cx, cy, r = BR.StormAt(storm, eta)
+    ok(BR.InCircle(tempting.x, tempting.y, cx, cy, r),
+        'the tempting point IS inside the circle BR.StormAt answers on arrival '
+            .. '-- during a hold that is the CURRENT circle',
+        ('r %.0f at (%.0f, %.0f)'):format(r, cx, cy))
+    ok(not BR.InCircle(tempting.x, tempting.y, storm.cx1, storm.cy1, storm.r1),
+        '...and is nowhere near the purple one, which has broken out')
+
+    local d = BR.RescueDestination({ tempting, purple }, 0.0, 0.0, storm, 0, RFAR)
+    ok(d and d.id == 'purple',
+        'so the nearer point loses to the one inside the circle the storm is '
+            .. 'shrinking TOWARD -- this is the whole of the owner\'s rule',
+        d and d.id)
+
+    -- ...AND THE ARRIVAL CIRCLE IS STILL ASKED. Both, not either: a breakout
+    -- means neither implies the other, so a point deep inside the purple circle
+    -- can be in the middle of the wall when the ambulance gets there.
+    local onlyPurple = { id = 'only_purple', x = 2900.0, y = 0.0 }
+    local shrinking = {
+        phase = 3,
+        cx0 = 0.0, cy0 = 0.0, r0 = 3000.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 200.0,
+        tStart = 0, tWait = 0, tShrink = 30000, dps = 2.0,
+    }
+    local outThere = { id = 'out_there', x = 2900.0, y = 0.0 }
+    local dd = BR.RescueDestination({ outThere }, 0.0, 0.0, shrinking, 0, RFAR)
+    ok(dd == nil,
+        'a point outside the circle ON ARRIVAL is refused even when the purple '
+            .. 'circle would have taken it -- both circles are asked',
+        dd and dd.id)
+    ok(onlyPurple ~= nil, 'fixture sanity')
+
+    -- THE CIRCLE LIST ITSELF, since two callers will want to reason about it.
+    local circles = BR.RescueCircles(storm, 0)
+    ok(#circles == 2, 'a storm record yields two circles: on arrival, and purple',
+        #circles)
+    ok(#BR.RescueCircles(nil, 0) == 0,
+        'and no record yields none at all -- an empty list is "no constraint"')
+    ok(BR.RescueInside({}, 99999.0, 99999.0) == true,
+        'which is why an empty list admits every point on the map')
+
+    -- A COLLAPSED FINAL CIRCLE REFUSES EVERYTHING, and that is the honest
+    -- answer rather than a case to guard against: config/storm.lua's phase 8
+    -- really is `radius = 0.0`, so late enough in a match the kit stops working.
+    local collapsed = {
+        phase = 8,
+        cx0 = 0.0, cy0 = 0.0, r0 = 40.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 0.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 6.7,
+    }
+    ok(BR.RescueDestination({ { id = 'anywhere', x = 300.0, y = 0.0 } },
+                            0.0, 0.0, collapsed, 0, RFAR) == nil,
+        'a zero-radius purple circle refuses every point rather than quietly '
+            .. 'dropping the rule at the phase it matters most')
+end
+
+-- ---------------------------------------------------------------------------
+describe('arrived')
+do
+    -- ═══ EIGHT METRES WAS NEVER REACHED AND THE DEADLINE DELIVERED EVERY RIDE
+    --     ═══
+    --
+    -- Owner's console, 2026-08-28: "delivered to (2518, 4198) (the deadline
+    -- expired on a rescue that was driving)". The destinations are car parks and
+    -- TaskVehicleDriveToCoord routes to the road network, so the vehicle got
+    -- close, circled, and layer 4 resolved it.
+    --
+    -- The radius is the owner's own number: "Let's also change the arrival
+    -- radius to 50m please".
+    ok(R.arriveM == 50.0, 'the arrival radius is the owner\'s 50m', R.arriveM)
+
+    local arrived, why = BR.RescueArrived(40.0, 40.0, 0, R)
+    ok(arrived == true and why == 'at the point',
+        'inside the radius is arrival outright, with no waiting', why)
+
+    ok(BR.RescueArrived(R.arriveM, R.arriveM, 0, R) == true,
+        'and the radius is inclusive at the boundary')
+
+    ok(BR.RescueArrived(80.0, 80.0, 0, R) == false,
+        'a vehicle 80m out that only just got there has NOT arrived -- it may '
+            .. 'still be driving in')
+
+    -- ═══ ...AND THE CIRCLING CASE, WHICH IS WHAT THE SECOND RULE IS FOR ═══
+    --
+    -- A vehicle going round a car park is MOVING, at speed, on a road, making no
+    -- progress. What it cannot do is beat its own closest approach.
+    local a2, w2 = BR.RescueArrived(90.0, 80.0, R.arriveGiveUpMs, R)
+    ok(a2 == true and w2 == 'as close as it got',
+        'a vehicle that reached the neighbourhood and has stopped improving on '
+            .. 'its closest approach has arrived -- it is circling',
+        w2)
+
+    ok(BR.RescueArrived(90.0, 80.0, R.arriveGiveUpMs - 1, R) == false,
+        'but not before the give-up window has elapsed -- a lap of a car park '
+            .. 'takes less time than this, so a vehicle still driving IN cannot '
+            .. 'trip it')
+
+    -- ═══ THE GUARD THAT KEEPS A TRAFFIC JAM OUT OF THIS ═══
+    --
+    -- An ambulance wedged 800m from the destination is a STUCK one. That is the
+    -- server's judgement, on its own position samples, and the recovery ladder
+    -- has always owned it. Reporting arrival there would deliver a player half a
+    -- map from where they were promised.
+    ok(BR.RescueArrived(800.0, 800.0, 60000, R) == false,
+        'a vehicle that never got near the destination never arrives, however '
+            .. 'long it sits there -- that is the stuck ladder\'s case, not this '
+            .. 'one')
+    ok(R.arriveNearM > R.arriveM,
+        'and the neighbourhood is wider than the radius, or the second rule '
+            .. 'could never fire',
+        ('%s vs %s'):format(tostring(R.arriveNearM), tostring(R.arriveM)))
+
+    -- NIL-SAFE, on the same terms as BR.RescueMoved: the watch's first pass has
+    -- no closest approach yet.
+    ok(BR.RescueArrived(nil, nil, nil, R) == false,
+        'and nothing at all is not an arrival')
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.noStorm')
+do
+    -- Before the first circle is published there is nothing to be inside of.
+    -- Treating that as "nothing qualifies" would send every pre-storm rescue
+    -- down the fallback path for no reason.
+    local pts = {
+        { id = 'near', x = 200.0,  y = 0.0 },   -- past minTripM; 100 was not
+        { id = 'far',  x = 4000.0, y = 0.0 },
+    }
+    local d, _, inside = BR.RescueDestination(pts, 0.0, 0.0, nil, 0, RFAR)
+    ok(d and d.id == 'near',
+        'with no storm record the shortest route simply wins', d and d.id)
+
+    -- ═══ AND `inside` NOW SAYS "THERE WAS A CIRCLE", NOT "IT QUALIFIED" ═══
+    --
+    -- This asserted `true` while the fallback existed, because the flag's job
+    -- then was to tell a qualifying pick from a consolation one. There are no
+    -- consolation picks any more -- a non-nil answer has cleared every circle it
+    -- was shown -- so the only thing left for the flag to distinguish is whether
+    -- there were any circles at all. The server prints it as "no storm
+    -- published, so no circle to be inside of", which is exactly this case.
+    ok(inside == false,
+        'and it reports that nothing constrained it, rather than claiming to '
+            .. 'have cleared a circle that was never published')
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.theTripCeiling')
+do
+    -- ═══ THE CEILING'S OWN BLOCK, AGAINST THE SHIPPED NUMBER ═══
+    --
+    -- Every other destination case runs on `RFAR` so the ceiling cannot decide
+    -- them by accident. This one is the opposite on purpose: it reads
+    -- `R.maxTripM` and brackets it, so the rule is tested exactly once, in the
+    -- place that says it is testing it.
+    --
+    -- READ RATHER THAN HARDCODED. The owner has moved this number twice in two
+    -- days (4872m observed -> 2000m -> 1000m) and will move it again; a literal
+    -- here would turn the next change into a red suite that says nothing.
+    local cap = R.maxTripM
+    local storm = {
+        phase = 1,
+        cx0 = 0.0, cy0 = 0.0, r0 = 99999.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 99999.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+
+    -- A circle big enough to hold everything, so distance is the ONLY thing
+    -- that can refuse a candidate here.
+    local justInside  = { id = 'just_inside',  x = cap - 50.0, y = 0.0 }
+    local justOutside = { id = 'just_outside', x = cap + 50.0, y = 0.0 }
+
+    local d = BR.RescueDestination({ justOutside }, 0.0, 0.0, storm, 0, R)
+    ok(d == nil,
+        'a point past the trip ceiling is refused even with the whole map '
+            .. 'inside the circle -- the ceiling is a filter of its own',
+        d and d.id)
+
+    local d2 = BR.RescueDestination({ justOutside, justInside }, 0.0, 0.0, storm, 0, R)
+    ok(d2 and d2.id == 'just_inside',
+        '...and the one under it is taken, so the refusal above is the ceiling '
+            .. 'biting rather than the solver failing',
+        d2 and d2.id)
+
+    -- AND THE FLOOR STILL BRACKETS THE OTHER END, in the same block, because
+    -- "the band" is one rule with two edges and a change to either belongs here.
+    local tooClose = { id = 'too_close', x = (R.minTripM or 150.0) - 10.0, y = 0.0 }
+    ok(BR.RescueDestination({ tooClose }, 0.0, 0.0, storm, 0, R) == nil,
+        'and a point inside the floor is refused at the other edge of the band')
+end
+
+-- ---------------------------------------------------------------------------
+describe('spawn.clearOfPlayers')
+do
+    -- Owner, 2026-08-29: "make sure wherever the ambulance spawns there are no
+    -- other players within 500m", revised later the same day: "Please revise
+    -- that to 250m." The spawn is where a rescued player MATERIALISES --
+    -- board() fades out and teleports them in -- so this is the rule that stops
+    -- a kit dropping its owner into somebody's crosshair.
+    --
+    -- ═══ THE SHIPPED NUMBER IS PINNED, AND THE REST OF THIS BLOCK IS NOT ═══
+    --
+    -- Every case below reads the config, so the RULE is tested against whatever
+    -- the owner has set -- that is the RFAR argument at the top of this file
+    -- applied to a second knob, and it is why moving the number does not turn
+    -- this block red for reasons that have nothing to do with the rule.
+    --
+    -- Which leaves nothing at all watching the VALUE. He asked for a specific
+    -- number twice, and a config-reading suite would stay green through a
+    -- silent revert to 500 -- so exactly one assertion looks at it.
+    ok(R.clearOfPlayersM == 250.0,
+        'the shipped clearance is the 250m he revised it to, not the 500m he '
+            .. 'first asked for',
+        R.clearOfPlayersM)
+
+    local clear = R.clearOfPlayersM or 250.0
+
+    ok(BR.RescueClearOfPlayers(0.0, 0.0, {}, clear) == true,
+        'an empty world is clear')
+    ok(BR.RescueClearOfPlayers(0.0, 0.0, nil, clear) == true,
+        'and so is a nil list -- a solo match has nobody to be near')
+
+    ok(BR.RescueClearOfPlayers(0.0, 0.0, { { x = clear - 1.0, y = 0.0 } }, clear)
+           == false,
+        'somebody one metre inside the radius blocks the spawn')
+    ok(BR.RescueClearOfPlayers(0.0, 0.0, { { x = clear + 1.0, y = 0.0 } }, clear)
+           == true,
+        'and one metre outside it does not')
+
+    -- THE NEAREST ONE DECIDES, not the first in the list. A loop that returned
+    -- on its first PASS rather than its first FAIL would answer true here.
+    ok(BR.RescueClearOfPlayers(0.0, 0.0, {
+            { x = 4000.0, y = 0.0 },
+            { x = 10.0,   y = 0.0 },
+        }, clear) == false,
+        'a distant player does not excuse a close one -- every position is '
+            .. 'checked, not just the first')
+end
+
+-- ---------------------------------------------------------------------------
+describe('spawn.freeSpot')
+do
+    -- ═══ THE OWNER'S FIX FOR THE 1000m CAP ═══
+    --
+    -- "when not possible, start from a random point (nearest to the DBNO
+    -- location), <1000m from the destination, and make sure it starts on a road
+    -- node" (2026-08-29). Both ends of a ride used to come from the same 23-row
+    -- table; letting the SPAWN float is what makes a 1000m ceiling survivable.
+    --
+    -- The road node is NOT tested here and cannot be: the pathfind natives are
+    -- client-only. This solves a coordinate; client/rescue.lua snaps it.
+
+    -- ═══ A CIRCLE THE PLAYER CANNOT REACH FROM WHERE THEY FELL ═══
+    --
+    -- Small and far: every point inside it is 1800-2200m from the origin, and
+    -- the trip ceiling is 1000m. So NO spawn at the player's feet can reach it
+    -- -- not the surveyed point, and not a synthesised one either, since those
+    -- have to be inside the circle too. The walk has to travel, which is the
+    -- property this case exists to prove and the one a search that gave up on
+    -- its first ring would fail.
+    local far = {
+        phase = 1,
+        cx0 = 2000.0, cy0 = 0.0, r0 = 200.0,
+        cx1 = 2000.0, cy1 = 0.0, r1 = 200.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+    local dest = { id = 'target', x = 2000.0, y = 0.0 }
+    local spot, got, dist =
+        BR.RescueFreeSpawn(0.0, 0.0, {}, { dest }, far, 0, R, nil)
+
+    ok(spot ~= nil,
+        'a spawn is found by walking outward until a destination comes into '
+            .. 'the trip band -- the whole point of the fallback',
+        spot and ('(%.0f, %.0f)'):format(spot.x, spot.y) or 'nothing found')
+    ok(spot ~= nil and dist <= R.maxTripM and dist >= (R.minTripM or 150.0),
+        '...and the spot it picks is inside the band, not merely nearer', dist)
+    ok(got ~= nil, 'with a destination to go with it', got and got.id)
+
+    -- ═══ NEAREST, WHICH IS THE HALF A RING WALK COULD GET WRONG ═══
+    --
+    -- "nearest to the DBNO location". The first ring that can reach the circle
+    -- at all sits about (2000 - maxTripM) out, so a walk that stopped there is
+    -- right and one that wandered further has overshot a closer answer.
+    local walked = spot and BR.Dist(0.0, 0.0, spot.x, spot.y) or math.huge
+    -- THE BOUND INCLUDES THE CIRCLE'S RADIUS. A spawn does not have to reach
+    -- the CENTRE, only the nearest point inside the wall, so the closest
+    -- workable ring is (2000 - r0 - maxTripM) rather than (2000 - maxTripM).
+    ok(walked >= (2000.0 - 200.0 - R.maxTripM) - 1.0,
+        'it does not claim a spot closer than the geometry allows',
+        ('%.0fm from the player'):format(walked))
+    ok(walked <= (2000.0 - 200.0 - R.maxTripM) + 400.0,
+        'and it stops on the first ring that works rather than walking on',
+        ('%.0fm from the player'):format(walked))
+
+    -- ═══ THE CLEARANCE RULE IS OBEYED BY THE FALLBACK TOO ═══
+    local blocked = {}
+    if spot then blocked[1] = { x = spot.x, y = spot.y } end
+    local spot2 = BR.RescueFreeSpawn(0.0, 0.0, blocked, { dest }, far, 0, R, nil)
+    ok(spot2 == nil
+           or BR.RescueClearOfPlayers(spot2.x, spot2.y, blocked,
+                                      R.clearOfPlayersM) == true
+           or spot2.crowded == true,
+        'a spot with somebody standing on it is never returned as a clean one '
+            .. '-- it is either avoided or flagged crowded')
+
+    -- ═══ AND IT STAYS INSIDE THE MAP, BOTH ENDS ═══
+    --
+    -- A boundary is passed in play (BR.Config.Map.Boundary). A spawn outside it
+    -- begins the rescue in the storm and a DESTINATION outside it ends there,
+    -- so the ring walk skips both rather than trusting the circle to catch them.
+    local box = {
+        { x = -2000.0, y = -2000.0 }, { x = 2000.0, y = -2000.0 },
+        { x =  2000.0, y =  2000.0 }, { x = -2000.0, y = 2000.0 },
+    }
+    local wide = {
+        phase = 1,
+        cx0 = 0.0, cy0 = 0.0, r0 = 99999.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 99999.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+
+    -- ═══ STOOD AGAINST THE NORTH EDGE, WHICH IS WHAT MAKES THIS BITE ═══
+    --
+    -- The ring walk tries bearings in index order and bearing 0 is due north
+    -- (dy = fromY + cos(0) * r). From 1900 with a 150m floor, the FIRST
+    -- candidate it ever considers is (0, 2050) -- outside the box. So an
+    -- implementation that forgot the boundary test takes it, and one that
+    -- honours it walks round to another bearing.
+    --
+    -- The earlier version of this case put the player in the middle of a large
+    -- box, where every candidate was inside and the assertion passed whether the
+    -- check existed or not. Mutation testing is what found that.
+    local penned, pennedDest =
+        BR.RescueFreeSpawn(0.0, 1900.0, {}, {}, wide, 0, R, box)
+    ok(penned ~= nil and BR.PointInPolygon(penned.x, penned.y, box),
+        'the spawn it chooses is inside the boundary it was given',
+        penned and ('(%.0f, %.0f)'):format(penned.x, penned.y))
+    ok(pennedDest ~= nil
+           and BR.PointInPolygon(pennedDest.x, pennedDest.y, box),
+        'and so is the destination -- a synthesised drop-off cannot be off-map, '
+            .. 'even when the nearest one would be',
+        pennedDest and ('(%.0f, %.0f)'):format(pennedDest.x, pennedDest.y))
+
+    -- ═══ AND A PLAYER WHO WENT DOWN OUTSIDE THE MAP IS WALKED BACK IN ═══
+    --
+    -- "nearest to the DBNO location" starts the walk at the player's own feet,
+    -- and ring 0 is that spot exactly. Downed beyond the boundary -- in the
+    -- storm, off the edge, wherever the cull left no ground -- that first
+    -- candidate is off-map, and an implementation that only bounded the
+    -- DESTINATION would happily build the ambulance out there.
+    local outside, outsideDest =
+        BR.RescueFreeSpawn(0.0, 2100.0, {}, {}, wide, 0, R, box)
+    ok(outside ~= nil and BR.PointInPolygon(outside.x, outside.y, box),
+        'a player downed outside the boundary gets a spawn back inside it, not '
+            .. 'one at their feet',
+        outside and ('(%.0f, %.0f)'):format(outside.x, outside.y))
+    ok(outsideDest ~= nil,
+        '...and still gets somewhere to be driven to')
+end
+
+-- ---------------------------------------------------------------------------
+describe('spawn.neverRejects')
+do
+    -- ═══ THE RULE THAT REPLACED "cprkits are not available for use" ═══
+    --
+    -- Owner, 2026-08-29: "we should never reject a cprkit. Find a place to
+    -- spawn which is nearest to the player but <1000m from the destination and
+    -- on a road, and no other players nearby, then spawn it and go."
+    --
+    -- This reverses 2026-08-28's "If no destinations are available within the
+    -- PURPLE storm circle - then cprkits are not available for use", and the
+    -- block below is that reversal written down. Every case here USED to be a
+    -- refusal.
+
+    -- 1. NOT ONE SURVEYED POINT IN THE WHOLE CONFIG.
+    local storm = {
+        phase = 1,
+        cx0 = 0.0, cy0 = 0.0, r0 = 4000.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 4000.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+    local spot, dest = BR.RescueFreeSpawn(0.0, 0.0, {}, {}, storm, 0, R, nil)
+    ok(spot ~= nil and dest ~= nil,
+        'an empty surveyed table still yields a ride -- the destination is '
+            .. 'built rather than looked up',
+        spot and dest and dest.id)
+    ok(dest ~= nil and dest.free == true,
+        '...and it is MARKED as built, so the client knows its height is a '
+            .. 'guess and resolves the ground itself',
+        dest and tostring(dest.free))
+
+    -- 2. A LATE CIRCLE WITH NO AUTHORED POINT INSIDE IT. The real shape of the
+    --    refusal the owner hit: points exist, the storm has just left them all.
+    local late = {
+        phase = 8,
+        cx0 = 0.0, cy0 = 0.0, r0 = 300.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 300.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 10.0,
+    }
+    local miles = { { id = 'miles_away', x = 6000.0, y = 0.0 } }
+    local s2, d2 = BR.RescueFreeSpawn(0.0, 0.0, {}, miles, late, 0, R, nil)
+    ok(s2 ~= nil and d2 ~= nil,
+        'a circle with every surveyed point outside it still yields a ride',
+        s2 and d2 and d2.id)
+    ok(d2 ~= nil and BR.InCircle(d2.x, d2.y, 0.0, 0.0, 300.0),
+        '...and the built destination is INSIDE that circle -- never rejecting '
+            .. 'does not mean delivering into the storm',
+        d2 and ('(%.0f, %.0f)'):format(d2.x, d2.y))
+
+    -- 3. THE SURVIVORS ARE PACKED AND NOTHING IS `clearOfPlayersM` CLEAR.
+    --    The clearance is the rule that bends, because its failure is a worse
+    --    rescue rather than a broken one.
+    -- THE SEARCH IS PENNED IN so the crowd can actually cover it. With the
+    -- shipped 6000m reach the walk simply strolls past any crowd this fixture
+    -- could build and finds clean ground, which would make every assertion
+    -- below pass without the fallback existing at all -- checked by mutation,
+    -- and it did.
+    local RPEN = setmetatable({ spawnSearchM = 1000.0 }, { __index = R })
+
+    -- Rings every 250m out to the search limit, 72 bearings each: no point
+    -- inside 1000m of the origin is more than ~130m from somebody.
+    local crowd = {}
+    for i = 0, 71 do
+        local a = (2.0 * math.pi * i) / 72
+        for _, rad in ipairs({ 250.0, 500.0, 750.0, 1000.0 }) do
+            crowd[#crowd + 1] =
+                { x = math.sin(a) * rad, y = math.cos(a) * rad }
+        end
+    end
+    crowd[#crowd + 1] = { x = 0.0, y = 0.0 }
+
+    -- Sanity, so a pass cannot be for the wrong reason: the crowd really does
+    -- cover the whole searchable area.
+    local anyClear = false
+    for rad = 0, 1000, 100 do
+        for i = 0, 35 do
+            local a = (2.0 * math.pi * i) / 36
+            if BR.RescueRoom(math.sin(a) * rad, math.cos(a) * rad, crowd)
+                   >= R.clearOfPlayersM then
+                anyClear = true
+            end
+        end
+    end
+    ok(not anyClear,
+        'precondition: nothing inside the search radius is clear enough, so the '
+            .. 'fallback is the only thing that can answer')
+
+    local s3, d3 = BR.RescueFreeSpawn(0.0, 0.0, crowd, {}, storm, 0, RPEN, nil)
+    ok(s3 ~= nil and d3 ~= nil,
+        'a map with no clear spot on it STILL yields a ride rather than a '
+            .. 'refusal')
+
+    -- AND IT SAYS SO. A crowded spot that pretended to be clean would hide the
+    -- one compromise this design makes. Asserted flatly rather than as
+    -- "clear OR flagged": the precondition above has established that clear is
+    -- impossible here, so the only correct answer is the flag.
+    local room = s3 and BR.RescueRoom(s3.x, s3.y, crowd) or 0.0
+    ok(s3 ~= nil and s3.crowded == true,
+        '...and a spot that had to bend the clearance rule is flagged crowded '
+            .. 'rather than passed off as clear',
+        ('nearest player %.0fm, crowded=%s')
+            :format(room, tostring(s3 and s3.crowded)))
+
+    -- ROOMIEST, NOT MERELY FIRST. Two players standing on the player's own
+    -- spot: whatever is taken must have put real distance between them.
+    local pair = { { x = 0.0, y = 0.0 }, { x = 300.0, y = 0.0 } }
+    local s4 = BR.RescueFreeSpawn(0.0, 0.0, pair, {}, storm, 0, R, nil)
+    ok(s4 ~= nil and BR.RescueRoom(s4.x, s4.y, pair) >= 150.0,
+        'and when it must bend, it takes the roomiest spot it saw rather than '
+            .. 'the first one that had a destination',
+        s4 and ('nearest player %.0fm')
+            :format(BR.RescueRoom(s4.x, s4.y, pair)))
+end
+-- ---------------------------------------------------------------------------
+describe('point.saysWhichKind')
+do
+    -- ═══ THE OWNER ASKED WHY THE DESTINATION WAS A POI ═══
+    --
+    -- 2026-08-29: "for some reason you set the destination as a POI?"
+    --
+    -- It never was. He was reading `dest=senora_n`, and `senora_n` is a row in
+    -- BR.Config.Map.AmbulanceSpawns -- a surveyed car park -- whose id was named
+    -- after the POI beside it. Nothing in this feature reads BR.Config.Map.POIs.
+    --
+    -- The kind is attached to the name now, so the id can stay the human handle
+    -- the surveyed data needs while the line says what sort of thing it names.
+    -- These cases exist so a later tidy-up cannot quietly drop the kind again
+    -- and put the question back.
+    local surveyed = { id = 'senora_n', x = 1.0, y = 2.0 }
+    local invented = { id = 'invented drop-off', free = true, x = 3.0, y = 4.0 }
+
+    local sl = BR.RescuePointLabel(surveyed)
+    ok(sl:find('senora_n', 1, true) ~= nil,
+        'a surveyed point still prints its own id -- that is the handle '
+            .. 'somebody would search config/map.lua for', sl)
+    ok(sl:find('surveyed', 1, true) ~= nil,
+        '...and now says it is a surveyed point rather than leaving a '
+            .. 'POI-shaped name to speak for itself', sl)
+    ok(sl:find('invented', 1, true) == nil,
+        'and it is not called invented', sl)
+
+    local il = BR.RescuePointLabel(invented)
+    ok(il:find('invented', 1, true) ~= nil,
+        'a built point says it was invented, which is the distinction the '
+            .. 'console could not make', il)
+    ok(il:find('surveyed', 1, true) == nil,
+        'and it is never called surveyed', il)
+
+    -- THE TWO LABELS MUST DIFFER. Asserted as a pair rather than only
+    -- separately: a label that named the kind for one and not the other would
+    -- still leave the reader guessing on half the lines.
+    ok(sl ~= il, 'the two kinds do not read alike', sl .. ' / ' .. il)
+
+    ok(BR.RescuePointLabel(nil) == 'nowhere',
+        'and nothing is still "nowhere" -- the log line for a refusal is not a '
+            .. 'crash')
+
+    -- A ROW WITH NO id IS STILL LEGAL (config/rescue.lua's own empty-config
+    -- `points` table has none) and coordinates are the honest identifier for
+    -- one -- but the KIND must survive the fallback, which is the half an
+    -- implementation would forget.
+    local bare = BR.RescuePointLabel({ x = 12.0, y = -34.0 })
+    ok(bare:find('12', 1, true) ~= nil and bare:find('-34', 1, true) ~= nil,
+        'a point with no id falls back to its coordinates', bare)
+    ok(bare:find('surveyed', 1, true) ~= nil,
+        '...and still carries its kind', bare)
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.snapLimit')
+do
+    -- ═══ THE PROBABLE CAUSE OF THE CIRCLING, AS ARITHMETIC ═══
+    --
+    -- client/rescue.lua steers the AI at a road NODE, because a target off the
+    -- path-node graph is one the router closes on and then orbits. It refused
+    -- to snap when the nearest node was further than `arriveM` (50m) away.
+    --
+    -- That rule was written for SURVEYED car parks and is right for them. Since
+    -- 2026-08-29 most late destinations are INVENTED -- a bearing off a ring
+    -- walk with no road under it -- and a random coordinate is rarely within
+    -- 50m of tarmac, so the snap never landed and the ambulance was tasked at a
+    -- point in a field. The two kinds now get two different permissions.
+    local surveyed = { id = 'senora_n', x = 0.0, y = 0.0 }
+    local invented = { id = 'invented drop-off', free = true, x = 0.0, y = 0.0 }
+
+    ok(BR.RescueSnapLimitM(surveyed, R) == R.arriveM,
+        'a surveyed point may only be snapped within the arrival radius -- '
+            .. 'moving a spot somebody stood on would betray the survey, and '
+            .. 'the offset has to stay inside arriveNearM',
+        BR.RescueSnapLimitM(surveyed, R))
+
+    ok(BR.RescueSnapLimitM(invented, R) == R.freeSnapM,
+        'an invented one may be moved as far as freeSnapM -- there is no '
+            .. 'authored intent to preserve and no tarmac to be near',
+        BR.RescueSnapLimitM(invented, R))
+
+    -- THE WHOLE FIX IN ONE ASSERTION. A single limit for both is the shipped
+    -- bug, and it passes every case above that reads only one of them.
+    ok(BR.RescueSnapLimitM(invented, R) > BR.RescueSnapLimitM(surveyed, R),
+        'and the invented point is allowed to move FURTHER -- one limit for '
+            .. 'both kinds is the defect this splits',
+        ('%.0f vs %.0f'):format(BR.RescueSnapLimitM(invented, R),
+                                BR.RescueSnapLimitM(surveyed, R)))
+
+    ok(BR.RescueSnapLimitM(nil, R) == R.arriveM,
+        'no destination at all falls back to the tighter of the two, which is '
+            .. 'the safe direction to be wrong in')
+
+    -- `free` IS A FLAG, NOT A TRUTHY VALUE. The server sends `free = true` and
+    -- nothing else; a point that merely HAS the key must not be treated as
+    -- invented, because `0` is truthy in Lua and this repository has shipped
+    -- that defect nine times.
+    ok(BR.RescueSnapLimitM({ free = false }, R) == R.arriveM,
+        'and `free = false` is a surveyed point, not an invented one')
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.roadDistance')
+do
+    -- The only road knowledge a server-side script on this platform has:
+    -- BR.Config.Map.Roads, six authored corridors that exist for the loot
+    -- filler. GetClosestVehicleNode and its family are client natives with no
+    -- server equivalent.
+    local straight = {
+        { id = 'flat', points = {
+            { x = -1000.0, y = 0.0 }, { x = 1000.0, y = 0.0 },
+        } },
+    }
+
+    ok(BR.RescueRoadDistance(0.0, 0.0, straight) < 0.001,
+        'a point on the corridor reads zero')
+    ok(math.abs(BR.RescueRoadDistance(0.0, 50.0, straight) - 50.0) < 0.001,
+        'and one beside it reads its perpendicular distance',
+        BR.RescueRoadDistance(0.0, 50.0, straight))
+
+    -- ═══ SEGMENT, NOT VERTEX, AND THIS IS THE CASE THAT SPLITS THEM ═══
+    --
+    -- These corridors are authored with legs kilometres long -- the Great Ocean
+    -- Highway has eight points across nine kilometres. A distance measured to
+    -- the nearest authored VERTEX answers ~1001m for the point below, which
+    -- sits fifty metres from the road; the preference it feeds would then rank
+    -- a spot on the tarmac below one in a field near a bend.
+    ok(BR.RescueRoadDistance(0.0, 50.0, straight) < 100.0,
+        'a point halfway along a two-kilometre leg is measured to the LEG, not '
+            .. 'to the far-away vertices that define it',
+        BR.RescueRoadDistance(0.0, 50.0, straight))
+
+    -- ...and past the END of a leg it is the endpoint that answers, which is
+    -- the other half of a segment test: an unclamped projection would run the
+    -- corridor off to infinity and call the whole map roadside.
+    ok(math.abs(BR.RescueRoadDistance(1300.0, 0.0, straight) - 300.0) < 0.001,
+        'and a point beyond the end of the corridor measures to its end rather '
+            .. 'than to the infinite line through it',
+        BR.RescueRoadDistance(1300.0, 0.0, straight))
+
+    ok(BR.RescueRoadDistance(0.0, 0.0, nil) == math.huge,
+        'no corridors means no opinion, not "everywhere is a road"')
+    ok(BR.RescueRoadDistance(0.0, 0.0, {}) == math.huge,
+        'and neither does an empty list')
+
+    -- The shipped data really does load and really does answer, so the
+    -- preference is not silently inert in play.
+    ok(BR.RescueRoadDistance(0.0, 0.0, BR.Config.Map.Roads) < math.huge,
+        'the shipped corridors answer for a point in the middle of the map',
+        BR.RescueRoadDistance(0.0, 0.0, BR.Config.Map.Roads))
+end
+
+-- ---------------------------------------------------------------------------
+describe('destination.prefersARoad')
+do
+    -- ═══ AN INVENTED DROP-OFF IN A FIELD IS ONE THE AI CANNOT ROUTE TO ═══
+    --
+    -- BR.RescueSynthDestination used to take the FIRST qualifying bearing on
+    -- the nearest workable ring, which is a uniformly arbitrary spot in
+    -- whatever the circle left -- and most of this map is not tarmac.
+    --
+    -- The ring still wins outright; the bearing is where the corridors get a
+    -- vote. Bearing 0 is due north (dy = fromY + cos(0) * r), so from the
+    -- origin the FIRST candidate is always the one at +minTripM on the y axis
+    -- -- which is what an implementation with no preference returns, and what
+    -- these cases are measured against.
+    local south = {
+        { id = 'south', points = {
+            { x = -2000.0, y = -150.0 }, { x = 2000.0, y = -150.0 },
+        } },
+    }
+
+    -- No storm and no boundary: every bearing qualifies, so the ONLY thing that
+    -- can decide between them is the corridor.
+    local d = BR.RescueSynthDestination(0.0, 0.0, nil, 0, R, nil, south)
+    ok(d ~= nil, 'a destination is still built', d and d.id)
+    ok(d ~= nil and d.y < 0.0,
+        'it walks round to the southern bearing, where the corridor is, rather '
+            .. 'than taking the northern one it reaches first',
+        d and ('(%.0f, %.0f)'):format(d.x, d.y))
+    ok(d ~= nil and (d.roadM or math.huge) < 20.0,
+        '...and the point it takes is within twenty metres of the corridor',
+        d and tostring(d.roadM))
+
+    -- ═══ AND WITHOUT CORRIDORS IT IS EXACTLY WHAT SHIPPED ═══
+    --
+    -- This is not a tidiness case. `math.huge < math.huge` is false, so a
+    -- best-of-ring written without an explicit first-candidate arm rejects
+    -- EVERY bearing when no corridor is in range and the function returns
+    -- nothing at all -- which is the kit refusing, the one outcome the owner
+    -- ruled out. That defect was written and eleven existing assertions caught
+    -- it; these two say so directly.
+    local none = BR.RescueSynthDestination(0.0, 0.0, nil, 0, R, nil, nil)
+    ok(none ~= nil,
+        'with no corridors configured a destination is still built -- an '
+            .. 'un-scored ring must not be an empty one', none and none.id)
+    ok(none ~= nil and none.y > 0.0,
+        '...and it is the first bearing, due north, which is the behaviour '
+            .. 'that shipped before the preference existed',
+        none and ('(%.0f, %.0f)'):format(none.x, none.y))
+
+    -- THE PREFERENCE MAY NOT OVERRULE THE CIRCLE. It ranks candidates that
+    -- already qualified; a corridor outside the arrival circle must not pull
+    -- the drop-off out of it, because delivering a player outside the purple
+    -- wall is the failure this whole solver exists to avoid.
+    local tight = {
+        phase = 1,
+        cx0 = 0.0, cy0 = 200.0, r0 = 220.0,
+        cx1 = 0.0, cy1 = 200.0, r1 = 220.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+    local pulled = BR.RescueSynthDestination(0.0, 0.0, tight, 0, R, nil, south)
+    ok(pulled ~= nil and BR.InCircle(pulled.x, pulled.y, 0.0, 200.0, 220.0),
+        'a corridor outside the arrival circle does not drag the drop-off out '
+            .. 'of it -- the preference ranks, it does not admit',
+        pulled and ('(%.0f, %.0f)'):format(pulled.x, pulled.y))
+
+    -- AND IT IS STILL MARKED, because the client resolves the height of one of
+    -- these and the delivery is wrong if it does not know to.
+    ok(d ~= nil and d.free == true,
+        'a built destination is still flagged as built')
+end
+
+-- ---------------------------------------------------------------------------
+describe('drive.verdict')
+do
+    -- ═══ WHAT THE OWNER GETS INSTEAD OF DESCRIBING WHAT HE SAW ═══
+    --
+    -- Seven rounds, eleven changes to this drive, zero measurements of it. The
+    -- six ways it can fail look identical from the stretcher and want
+    -- completely different fixes, so client/rescue.lua samples the ride and
+    -- this decides which one happened.
+    --
+    -- Driven here rather than in game for the reason the whole file exists: the
+    -- interesting cases are a vehicle circling a point it cannot reach and a
+    -- task that is silently dropped, and staging either one means dying in the
+    -- right place several minutes into a phase.
+    local function sample(t, d, opts)
+        opts = opts or {}
+        return {
+            atMs = t, distM = d,
+            speed = opts.speed or 13.0,
+            mission = opts.mission or 6,
+            control = opts.control ~= false,
+            snapped = opts.snapped == true,
+        }
+    end
+
+    local code = BR.RescueDriveVerdict({}, R)
+    ok(code == 'NO_SAMPLES', 'a ride with no samples says so', code)
+    ok(select(1, BR.RescueDriveVerdict(nil, R)) == 'NO_SAMPLES',
+        'and so does a nil list')
+
+    -- ARRIVED. The last sample is inside the arrival radius, which is the one
+    -- outcome that is not a fault.
+    local arrived = BR.RescueDriveVerdict({
+        sample(0, 900.0), sample(30000, 400.0), sample(60000, 20.0),
+    }, R)
+    ok(arrived == 'ARRIVED', 'a ride that ended near the point ARRIVED', arrived)
+
+    -- ═══ THE ORDER IS CAUSAL, AND THESE THREE PROVE IT ═══
+    --
+    -- Every set below is ALSO a set that made no progress, so a classifier that
+    -- asked "is it orbiting" first would answer ORBITING for all of them and
+    -- send the next round after the driving style for the eighth time.
+    local noctl = BR.RescueDriveVerdict({
+        sample(0, 900.0, { control = false }),
+        sample(30000, 900.0, { control = false }),
+        sample(60000, 900.0),
+    }, R)
+    ok(noctl == 'NO_CONTROL',
+        'a client that did not own the ambulance is told that, not told it is '
+            .. 'circling -- nothing it said to the driver could take', noctl)
+
+    local never = BR.RescueDriveVerdict({
+        sample(0, 900.0, { mission = 0 }),
+        sample(30000, 900.0, { mission = 0 }),
+        sample(60000, 900.0, { mission = 0 }),
+    }, R)
+    ok(never == 'NEVER_TASKED',
+        'a vehicle with no drive mission on any poll was never tasked at all',
+        never)
+
+    local dropped = BR.RescueDriveVerdict({
+        sample(0, 900.0, { mission = 6 }),
+        sample(30000, 900.0, { mission = 0 }),
+        sample(60000, 900.0, { mission = 6 }),
+    }, R)
+    ok(dropped == 'TASK_DROPPED',
+        'one that held a task and lost it is a DIFFERENT fault from one that '
+            .. 'never had it, and it is reported as one', dropped)
+
+    -- ═══ THE TWO THAT LOOK THE SAME ON A DISTANCE READING ═══
+    local orbiting = BR.RescueDriveVerdict({
+        sample(0, 900.0), sample(30000, 63.0),
+        sample(60000, 71.0), sample(90000, 66.0),
+    }, R)
+    ok(orbiting == 'ORBITING',
+        'closed to sixty metres, then drove at speed for a minute without '
+            .. 'beating it -- this is the circling the owner has watched',
+        orbiting)
+
+    local stuck = BR.RescueDriveVerdict({
+        sample(0, 900.0), sample(30000, 630.0, { speed = 0.2 }),
+        sample(60000, 631.0, { speed = 0.1 }),
+        sample(90000, 630.0, { speed = 0.0 }),
+    }, R)
+    ok(stuck == 'STUCK',
+        'the same lack of progress at a standstill is wedged rather than lost '
+            .. '-- one is the recovery ladder, the other is the route', stuck)
+
+    -- ═══ THE SUBTLE ONE: A CREEP IS NOT PROGRESS ═══
+    --
+    -- A vehicle nudging against an obstruction improves its own distance
+    -- reading by a metre or two on every poll. A classifier that took any
+    -- strict improvement as progress would call that CONVERGING for ever --
+    -- which is exactly the reading that has let seven rounds of this bug pass
+    -- for "it just needs a bit longer". `driveStallM` is the bar.
+    local creep = {}
+    for i = 0, 12 do
+        creep[#creep + 1] = sample(i * 5000, 700.0 - i * 1.0)
+    end
+    ok(BR.RescueDriveVerdict(creep, R) == 'ORBITING',
+        'a metre of improvement per poll for a minute is not progress -- it is '
+            .. 'a stall wearing a monotonic distance',
+        select(1, BR.RescueDriveVerdict(creep, R)))
+
+    -- ...while a real drive over the same window is not accused of anything.
+    local real = {}
+    for i = 0, 12 do
+        real[#real + 1] = sample(i * 5000, 900.0 - i * 60.0)
+    end
+    ok(BR.RescueDriveVerdict(real, R) == 'CONVERGING',
+        'and a drive that is actually closing is left alone',
+        select(1, BR.RescueDriveVerdict(real, R)))
+
+    -- ═══ AND THE SENTENCE NAMES THE TARGET, WHICH IS THE OTHER HALF ═══
+    --
+    -- "Is the target on a road node or not" is the single most useful field in
+    -- the report: an invented destination that never snapped is the mechanism
+    -- this round is fixing, and the verdict has to say when that happened.
+    local _, rawWhy = BR.RescueDriveVerdict({
+        sample(0, 900.0), sample(30000, 63.0), sample(90000, 66.0),
+    }, R)
+    ok(rawWhy:find('raw destination', 1, true) ~= nil,
+        'a ride that never snapped says the AI was steered at the raw '
+            .. 'destination', rawWhy)
+
+    local _, nodeWhy = BR.RescueDriveVerdict({
+        sample(0, 900.0, { snapped = true }),
+        sample(30000, 63.0, { snapped = true }),
+        sample(90000, 66.0, { snapped = true }),
+    }, R)
+    ok(nodeWhy:find('road node', 1, true) ~= nil
+           and nodeWhy:find('raw destination', 1, true) == nil,
+        '...and one that did says it was steered at a road node', nodeWhy)
+end
+-- ---------------------------------------------------------------------------
+describe('moved')
+do
+    -- ═══ IT IS A SPEED NOW, SO EVERY CASE CARRIES A WINDOW ═══
+    --
+    -- Owner, 2026-08-29: "trigger the stuck fix if they are moving less than
+    -- 10mph for over 10 seconds". BR.RescueMoved took (prev, pos, cfg) and now
+    -- takes (prev, pos, elapsedMs, cfg) -- the distance alone cannot answer a
+    -- question about speed, and these cases pinned an implicit ~18mph floor
+    -- that only existed because tickMs happened to be 1000.
+    --
+    -- 10 mph = 4.4704 m/s, so one second needs 4.4704m and ten need 44.704m.
+
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 50.0, y = 0.0 }, 10000, R) == true,
+        'fifty metres in ten seconds is over 10mph, so it is moving')
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 0.5, y = 0.0 }, 10000, R) == false,
+        'half a metre against a kerb in ten seconds is not')
+
+    -- THE CASE THE OLD RULE GOT WRONG, and the reason he asked. A van covering
+    -- forty metres of dirt track in ten seconds is doing ~9mph -- it IS moving,
+    -- and the per-tick distance test called that healthy forever while it drove
+    -- in circles. It is now stuck, which is what he watched and wanted caught.
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 40.0, y = 0.0 }, 10000, R) == false,
+        'forty metres in ten seconds is under 10mph, so it counts as stuck')
+
+    -- And the same distance over a shorter window is fine: this is a rate.
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 40.0, y = 0.0 }, 5000, R) == true,
+        'the same forty metres in five seconds is over 10mph and is not')
+
+    -- THE NIL CASES ARE THE ONES THAT MATTER, and all answer "not moving".
+    -- `pos` is nil for a player the server has not sampled yet; treating an
+    -- absent sample as movement would mean a rescue could never be judged stuck
+    -- during the exact window in which it is most likely to be.
+    ok(BR.RescueMoved(nil, { x = 99.0, y = 0.0 }, 10000, R) == false,
+        'no previous sample is not evidence of movement')
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, nil, 10000, R) == false,
+        'and neither is a missing current one')
+
+    -- A zero or absent window cannot be divided by, and answering "moving"
+    -- there would excuse a stall for free on the first tick of every ride.
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 }, { x = 99.0, y = 0.0 }, 0, R) == false,
+        'a zero-length window is not evidence of movement either')
+
+    -- The boundary, explicitly: inclusive, so a vehicle sitting exactly on the
+    -- bar counts as moving rather than being recovered forever.
+    ok(BR.RescueMoved({ x = 0.0, y = 0.0 },
+                      { x = R.minSpeedMph * 0.44704, y = 0.0 }, 1000, R) == true,
+        'the speed threshold is inclusive at the boundary')
+end
+
+-- ---------------------------------------------------------------------------
+describe('config')
+do
+    -- ═══ THE READER IS POINTED AT THE OWNER'S OWN SURVEY ═══
+    --
+    -- He authored 23 points in game on 2026-08-23 with /brcoords, and they live
+    -- in config/map.lua as BR.Config.Map.AmbulanceSpawns -- which is where he
+    -- will edit them. THIS FILE'S OWN `points` TABLE IS EMPTY on purpose: a
+    -- second copy of twenty-three surveyed coordinates would drift from the
+    -- first, and the symptom would be ambulances arriving where a point used to
+    -- be.
+    --
+    -- ASSERTED AGAINST THE REAL TABLE RATHER THAN A FIXTURE, because the failure
+    -- worth catching is precisely the one that a fixture hides: the reader
+    -- naming a table that does not exist. An earlier draft of this feature read
+    -- `BR.Config.Map.RescuePoints`, which was a guess at the name and was wrong
+    -- -- and against a fixture that injected `RescuePoints` it passed happily
+    -- while the shipped feature would have found nothing and refused every
+    -- rescue.
+    ok(#BR.Config.Rescue.points == 0,
+        'this file holds no copy of the surveyed points',
+        #BR.Config.Rescue.points)
+    ok(type(BR.Config.Map.AmbulanceSpawns) == 'table'
+       and #BR.Config.Map.AmbulanceSpawns > 0,
+        'config/map.lua carries the owner-surveyed ambulance points',
+        BR.Config.Map.AmbulanceSpawns and #BR.Config.Map.AmbulanceSpawns)
+    ok(BR.Config.Rescue.Points() == BR.Config.Map.AmbulanceSpawns,
+        'and the rescue reads THAT table, not a name nobody writes',
+        #BR.Config.Rescue.Points())
+
+    -- Every point has to be routable and placeable: the solver measures against
+    -- x/y, and the ambulance is created at z facing `heading`. A row missing any
+    -- of the four is a rescue that spawns at the origin or under the map.
+    local bad = 0
+    for _, p in ipairs(BR.Config.Rescue.Points()) do
+        if type(p.x) ~= 'number' or type(p.y) ~= 'number'
+           or type(p.z) ~= 'number' or type(p.heading) ~= 'number' then
+            bad = bad + 1
+        end
+    end
+    ok(bad == 0, 'every surveyed point carries x, y, z and a heading', bad)
+
+    -- ═══ ...AND AN ID, WHICH IS WHAT THE DIAGNOSTIC PRINTS ═══
+    --
+    -- The owner's console from the first successful ride read `pickup=nil
+    -- dest=nil` beside two pairs of coordinates. An id is only ever used in a
+    -- log line, which is exactly why the absence of one cost a playtest round to
+    -- notice: nothing else in the tree could tell.
+    --
+    -- UNIQUENESS IS THE HALF WORTH ASSERTING. Two points sharing a name is a
+    -- copy-paste that makes the log line actively misleading -- "picked up at
+    -- strawberry, bound for strawberry" naming two different car parks -- and
+    -- the ids are derived from nearest POI, which is a mapping that could
+    -- collide the day a point moves.
+    local seen, dupes, missing = {}, 0, 0
+    for _, p in ipairs(BR.Config.Rescue.Points()) do
+        if type(p.id) ~= 'string' or p.id == '' then
+            missing = missing + 1
+        elseif seen[p.id] then
+            dupes = dupes + 1
+        else
+            seen[p.id] = true
+        end
+    end
+    ok(missing == 0, 'every surveyed point carries a stable id', missing)
+    ok(dupes == 0, 'and no two of them share one', dupes)
+
+    -- AND THE FEATURE IS INERT, NOT BROKEN, IF THAT TABLE EVER EMPTIES.
+    local saved = BR.Config.Map.AmbulanceSpawns
+    BR.Config.Map.AmbulanceSpawns = nil
+    ok(#BR.Config.Rescue.Points() == 0,
+        'with the survey gone the reader answers empty rather than erroring')
+    BR.Config.Map.AmbulanceSpawns = saved
+
+    -- THE ITEM IS RESOLVABLE AND UNROLLABLE, which is the airdrop-shelf pattern
+    -- and is what keeps the world layout byte-identical. Both halves are
+    -- asserted, because either one alone is a different (broken) feature: an
+    -- unresolvable id makes the airdrop pool silently drop it, and a bucketed
+    -- one puts CPR kits in crates at a weight nobody has chosen.
+    ok(BR.Config.ConsumableById['cprkit'] ~= nil,
+        'the CPR kit resolves by id, so the airdrop healing pool picks it up')
+    local bucketed = false
+    for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+        for _, c in ipairs(BR.Config.ConsumablesByRarity[r] or {}) do
+            if c.id == 'cprkit' then bucketed = true end
+        end
+    end
+    ok(not bucketed,
+        'and is in NO rarity bucket, so no world roll can ever produce it -- '
+            .. '#191 says the weight is not yet decided, so none is invented')
+
+    ok(BR.Config.CprKit.maxStack == 1 and BR.Config.CprKit.carryMax == 1,
+        'one kit is one life: the stack and the carry cap agree at 1')
+
+    -- THE AMBULANCE IS NOT INVINCIBLE (owner, 2026-08-23), and the config must
+    -- not grow a knob that makes it so. This is a guard against the issue body's
+    -- "godmode and bulletproof tyres" being re-added from the spec by somebody
+    -- reading it without the comment thread.
+    ok(R.godmode == nil and R.invincible == nil,
+        'there is no invincibility knob -- the owner reversed that and a knob '
+            .. 'would be an invitation to turn it back on')
+
+    -- ═══ THE STRETCHER IS THE OWNER'S MEASUREMENT, NOT A GUESS ═══
+    --
+    -- Authored in game with /brattach on 2026-08-23 and confirmed by looking at
+    -- it. Pinned as literals because the failure they guard against is silent:
+    -- a body in the wrong place still rides to the destination, and nobody finds
+    -- out until somebody watches a rescue.
+    --
+    -- THE ROLL IS ZERO ON PURPOSE. The placeholder these replaced carried 90, on
+    -- the reasonable-sounding theory that a ped must be rolled onto its back to
+    -- lie down. It does not, and this asserts the measured value so that theory
+    -- cannot quietly come back.
+    local S = R.stretcher
+    ok(S and math.abs(S.x - (-0.010)) < 1e-6
+         and math.abs(S.y - (-3.100)) < 1e-6
+         and math.abs(S.z - 1.690) < 1e-6,
+        'the stretcher offset is the one the owner measured',
+        S and ('%.3f, %.3f, %.3f'):format(S.x, S.y, S.z))
+    ok(S and S.pitch == 0.0 and S.roll == 0.0 and S.yaw == 1.0,
+        'and so is the rotation, roll included',
+        S and ('%.1f, %.1f, %.1f'):format(S.pitch, S.roll, S.yaw))
+
+    -- EXTRAS 1 AND 2 (owner, 2026-08-23). Asserted as a set rather than by
+    -- index, so reordering the list is not a failure but losing one is.
+    local want = { [1] = false, [2] = false }
+    for _, id in ipairs(R.extras or {}) do want[id] = true end
+    ok(want[1] and want[2],
+        'extras 1 and 2 are both configured to be enabled',
+        table.concat(R.extras or {}, ','))
+
+    -- ONE LIST FOR BOTH JOBS. The vehicle the rescue BUILDS must be one of the
+    -- models it RECOGNISES, or a rescue ambulance would not count as an
+    -- ambulance -- which is the kind of contradiction that only shows up as a
+    -- missing blip nobody can explain.
+    local built = false
+    for _, name in ipairs(R.models or {}) do
+        if name == R.model then built = true end
+    end
+    ok(built, 'the model the rescue spawns is one of the models it recognises',
+        R.model)
+end
+
+-- ---------------------------------------------------------------------------
+describe('discovered.doNotJoinTheRoute')
+do
+    -- ═══ AMBIENT AMBULANCES ARE BLIPS AND NOTHING ELSE ═══
+    --
+    -- Owner, 2026-08-23: ambulances spawn naturally, and one a player is seen
+    -- driving joins "our list of blips". It must NOT join the list the rescue
+    -- routes over: a pickup or drop-off has to be somewhere an ambulance can
+    -- stand and drive from, and a vehicle abandoned halfway up a mountain is not.
+    -- It would also be an exploit shaped like an invitation -- park an ambulance
+    -- somewhere terrible and rescues start routing there.
+    --
+    -- ASSERTED ON THE READER, which is the only thing that could ever merge
+    -- them: BR.Config.Rescue.Points() is what server/rescue.lua routes over, and
+    -- discovery writes to a table it does not consult.
+    local before = #BR.Config.Rescue.Points()
+    BR.Config.Rescue.discovered = { { id = 'stolen', x = 1.0, y = 1.0, z = 1.0 } }
+    ok(#BR.Config.Rescue.Points() == before,
+        'nothing a player parks can widen the set of points a rescue routes over')
+    BR.Config.Rescue.discovered = nil
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE TWO FAULTS FROM THE 2026-08-23 PLAYTEST
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Owner, testing 876acde:
+--
+--   "I tried using the CPR kit but upon dying I get no prompt to use the CPR
+--    kit. I thought perhaps I should have used it while standing to 'arm it' or
+--    something, and seems that was the written (but not acceptable) path(?),
+--    and produced this error on the server:
+--    @br_core/server/inventory.lua:883: attempt to perform arithmetic on a nil
+--    value (field 'useMs')
+--
+--    To be clear, this item should do absolutely nothing while the player is
+--    alive. While they're bleeding out there should be a 'Press [interact key]
+--    to use the CPR kit'"
+--
+-- Two faults, and neither was reachable by anything above this line: everything
+-- above is pure arithmetic over config, and both of these are BEHAVIOUR -- an
+-- event handler that threw, and a prompt loop whose output nobody had ever
+-- counted. So the two blocks below load the real modules against stub natives,
+-- which is tools/test_client.lua's arrangement rather than a new idea.
+--
+-- WHAT THEY CAN AND CANNOT SETTLE. They can settle what was SENT and what was
+-- DRAWN and where. They cannot settle whether the player can see it -- and that
+-- distinction is the whole story of fault 2, so it is worth being exact about:
+-- the prompt was always sent, and it was always drawn, and it was drawn
+-- underneath an opaque NUI placard.
+--
+-- ═══ THE SURFACE THESE ASSERTIONS PIN CHANGED ON 2026-08-24 ═══
+--
+-- Two native draws were tried and both were invisible, in opposite ways: at the
+-- shared prompt position the placard composited on top of it, and on the
+-- player's head anchor the ground-level downed camera put it behind the body.
+-- The owner's fix removes the contest -- "Why don't we just make it part of the
+-- bleed out timer card?" -- so the prompt is now a ROW OF THAT CARD, handed
+-- across as one boolean on the downed payload (BR.Dbno.setCpr).
+--
+-- The four assertions that used to pin the DUI draw now pin that: that nothing
+-- is drawn natively AT ALL, that the fact reaches the interface as a bare bit
+-- with no key label on it, and that it flips on change rather than per frame.
+-- The reasoning is in client/rescue.lua and in DbnoOverlay.tsx.
+
+-- ---------------------------------------------------------------------------
+describe('kit.inertWhileAlive')
+do
+    -- FAULT 1. `cprkit` is a CONSUMABLE with no `useMs`, deliberately -- it is
+    -- spent by the prompt while downed, not channelled from the inventory -- and
+    -- nothing refused it before `GetGameTimer() + c.useMs`.
+
+    local notes, sent = {}, {}
+    local handlers = {}
+
+    local roster = {}
+    BR.Roster = {
+        get  = function(src) return roster[src] end,
+        each = function(pred, fn)
+            for src, e in pairs(roster) do
+                if not pred or pred(e) then fn(src, e) end
+            end
+        end,
+    }
+    BR.Server = {
+        matchOf = function() return { state = BR.MatchState.PLAYING } end,
+        -- EVERY REFUSAL THIS FILE CAN PRODUCE LANDS HERE, which is what lets the
+        -- assertions below say "and it said nothing" rather than assuming it.
+        notify  = function(_, msg) notes[#notes + 1] = msg end,
+    }
+    BR.Sched = { every = function() end }
+
+    _G.RegisterNetEvent = function() end
+    _G.AddEventHandler  = function(name, fn) handlers[name] = fn end
+    _G.TriggerClientEvent = function(evt, src, d)
+        sent[#sent + 1] = { evt = evt, src = src, d = d }
+    end
+
+    loadCore('br_core/server/inventory.lua')
+
+    --- Deliver an event the way the platform does: `source` is a global.
+    local function fire(evt, src, payload)
+        _G.source = src
+        local okCall, err = pcall(handlers[evt], payload)
+        _G.source = nil
+        return okCall, err
+    end
+
+    local function player(src)
+        roster[src] = { src = src, state = BR.PlayerState.ALIVE,
+                        matchId = 1, hp = 100.0, armour = 0.0 }
+        BR.Inv.reset(src)
+        return BR.Inv.of(src)
+    end
+
+    -- ═══ THE CRASH, EXACTLY AS REPORTED ═══
+    local inv = player(1)
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    notes, sent = {}, {}
+
+    local okCall, err = fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(okCall, 'using a CPR kit while alive does not throw -- this is the line '
+        .. 'that took the server down (inventory.lua:883)', err)
+
+    -- ═══ ...AND IT DOES NOTHING, WHICH IS THE ACTUAL REQUIREMENT ═══
+    --
+    -- "this item should do absolutely nothing while the player is alive."
+    -- Not crashing is the floor. No channel, no message, no burnt kit.
+    ok(inv.using == nil, 'no channel is started',
+        inv.using and inv.using.item or 'nil')
+    ok(#notes == 0, 'and the player is told nothing at all -- a refusal message '
+        .. 'here would be the "AI slop" the owner has objected to',
+        notes[1])
+    ok(inv.slots[1] and inv.slots[1].item == 'cprkit',
+        'and the kit is still in the slot, unspent',
+        inv.slots[1] and inv.slots[1].item or 'gone')
+
+    -- ═══ THE CONTROL: AN ORDINARY CONSUMABLE STILL WORKS ═══
+    --
+    -- Without this the guard could be refusing every consumable in the game and
+    -- the three assertions above would still pass.
+    inv = player(2)
+    BR.Inv.give(2, { item = 'medkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.EPIC, count = 1 })
+    roster[2].hp = 10.0
+    fire(BR.Net.INV_USE, 2, { slot = 1 })
+    ok(inv.using ~= nil and inv.using.item == 'medkit',
+        'a med kit still channels -- the guard refuses a class, not the feature',
+        inv.using and inv.using.item or 'nothing started')
+    ok(inv.using and inv.using.ms == BR.Config.ConsumableById.medkit.useMs,
+        'for the duration its config declares',
+        inv.using and tostring(inv.using.ms))
+
+    -- ═══ AND THE CLASS, NOT JUST THE KIT ═══
+    --
+    -- The kit is the item that found this; it is not the last item that could.
+    -- A consumable that heals but declares no duration is the same crash with a
+    -- different name, and it would reach further into the handler than the kit
+    -- ever did -- past the "would this do nothing" refusals, which notify. This
+    -- registers exactly that item, drives it, and takes it away again.
+    BR.Config.ConsumableById.__probe = {
+        id = '__probe', label = 'Probe', kind = BR.ItemKind.CONSUMABLE,
+        rarity = BR.Rarity.COMMON, maxStack = 1, carryMax = 1,
+        health = 100, healthCap = 100,   -- ...and no useMs
+    }
+    inv = player(3)
+    BR.Inv.give(3, { item = '__probe', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.COMMON, count = 1 })
+    roster[3].hp = 10.0
+    notes = {}
+    okCall, err = fire(BR.Net.INV_USE, 3, { slot = 1 })
+    ok(okCall, 'ANY consumable with no useMs is refused rather than crashing -- '
+        .. 'the next one somebody adds is already covered', err)
+    ok(inv.using == nil and #notes == 0,
+        'silently, on the same rule', notes[1])
+    BR.Config.ConsumableById.__probe = nil
+
+    -- The config the guard reads. Asserted so that "the kit has no useMs" stays
+    -- a deliberate property of the item rather than something a later edit
+    -- papers over with a fake duration -- which is the one fix that would make
+    -- the crash go away AND give the kit a channel nothing can start.
+    ok(BR.Config.CprKit.useMs == nil,
+        'and the kit still declares no useMs, because it is not an inventory '
+            .. 'item -- the fix is the guard, not a made-up duration')
+end
+
+-- ---------------------------------------------------------------------------
+describe('begin.refusalDoesNotSpendTheKit')
+do
+    -- ═══ THE ASSERTION THE OWNER'S REFUSAL RULE RESTS ON ═══
+    --
+    -- 2026-08-28: "If no destinations are available within the PURPLE storm
+    -- circle - then cprkits are not available for use."
+    --
+    -- The paragraph that used to justify the fallback said refusing "would burn
+    -- an ultra-rare item for nothing". It would not, and that is a property of
+    -- ONE ORDERING inside BR.Rescue.begin: every refusal returns before
+    -- BR.Inv.take is reached. Orderings are exactly what a later edit moves
+    -- without noticing, and the cost of getting this wrong is a player losing
+    -- the rarest item in the game and staying dead anyway.
+    --
+    -- So it is driven for real -- the shipped server module, the shipped
+    -- inventory model, the owner's own 23 surveyed points -- rather than argued
+    -- from the source. It runs BEFORE the client block below, which replaces
+    -- _G.AddEventHandler and BR.Inv for its own purposes.
+
+    local roster, matches, sent = {}, {}, {}
+
+    -- ═══ THE SPAWN IS A REFUSAL LIKE ANY OTHER, AND IT IS THE NEWEST ONE ═══
+    --
+    -- The ambulance is created on the SERVER now (owner, 2026-08-28: "Other
+    -- players have to be able to see the ambulance. Local is not acceptable"),
+    -- through BR.Vehicles.spawnOwned, which can answer nil -- a refused model, a
+    -- throw from the type argument, a handle of 0. That call sits between the
+    -- destination solver and BR.Inv.take, so it is the most likely refusal in
+    -- the function and the one most likely to be moved by a later edit.
+    local spawnOk, spawned = true, 0
+    BR.Vehicles = {
+        spawnOwned = function()
+            if not spawnOk then return nil, nil, 'the allowlist refuses that model' end
+            spawned = spawned + 1
+            return 900 + spawned, 65534 - spawned, nil
+        end,
+    }
+
+    -- ═══ THE ONE LINE THE WHOLE FEATURE HANGS ON ═══
+    --
+    -- OneSync clones an entity to a client only if it is RELEVANT, and relevancy
+    -- is 2D distance against `overrideCullingRadius` falling back to 424 * 424
+    -- (ServerGameState.h, GetDistanceCullingRadius). The surveyed points average
+    -- 825m from an arbitrary map position, so at the default the ambulance is
+    -- created and never sent -- which is exactly the round that failed, and it
+    -- failed silently on both sides.
+    --
+    -- SET_ENTITY_DISTANCE_CULLING_RADIUS is the only thing that writes that
+    -- field. It is one line with no visible effect on this server and no error
+    -- if it goes, and its absence costs a playtest round -- which is the precise
+    -- shape of thing that should be pinned rather than trusted.
+    local culled = {}
+    _G.SetEntityDistanceCullingRadius = function(ent, radius)
+        culled[#culled + 1] = { ent = ent, radius = radius }
+    end
+
+    -- ═══ AND THE TWO STUBS THAT PIN THE ORDERING THAT LINE NOW DEPENDS ON ═══
+    --
+    -- Widening the ENTITY at creation is what cost the 2026-08-29 round. OneSync
+    -- gives an unowned entity to the first client that finds it relevant
+    -- (ServerGameState.cpp Tick: "relevant entity owned by nobody... try to yoink
+    -- it", over that client's synced set), so a map-wide radius at creation makes
+    -- every client in the match a candidate to own the ambulance -- and the drive
+    -- task can only be issued by the ONE machine that holds the medic ped.
+    --
+    -- So relevancy is opened on the PLAYER first, which reaches exactly one
+    -- client and makes the claim uncontested, and the entity is opened to the map
+    -- only once the server has confirmed who owns it. That ordering has no
+    -- visible effect on a passing test server and costs a playtest round when it
+    -- regresses, which is the precise shape of thing that gets pinned here.
+    local playerCulled = {}
+    _G.SetPlayerCullingRadius = function(src, radius)
+        playerCulled[#playerCulled + 1] = { src = src, radius = radius }
+    end
+
+    -- Who the server thinks owns each vehicle. -1 is "nobody", which is what
+    -- NETWORK_GET_ENTITY_OWNER answers server-side for an entity with no owning
+    -- client -- and, unlike the client-side native, it is a SERVER ID.
+    local owners = {}
+    _G.NetworkGetEntityOwner = function(veh) return owners[veh] or -1 end
+
+    BR.Roster = {
+        get    = function(src) return roster[src] end,
+        update = function(src, patch)
+            for k, v in pairs(patch) do roster[src][k] = v end
+        end,
+        each   = function() end,
+    }
+    BR.Server = { matches = matches, notify = function() end }
+    -- The schedules are KEPT rather than swallowed, because the ownership gate
+    -- is one of them and the widening it performs is the assertion below.
+    local sched = {}
+    BR.Sched  = { every = function(_, name, fn) sched[name] = fn end }
+    BR.Broadcast = { toMatch = function() end }
+    _G.RegisterNetEvent   = function() end
+    _G.AddEventHandler    = function() end
+    _G.RegisterCommand    = function() end
+    _G.TriggerClientEvent = function(evt, src, d)
+        sent[#sent + 1] = { evt = evt, src = src, d = d }
+    end
+
+    loadCore('br_core/server/rescue.lua')
+
+    --- A downed solo holding one kit, at a real surveyed point.
+    --- @return table inv
+    local function downedAt(src, x, y, storm)
+        matches[1] = { id = 1, state = BR.MatchState.PLAYING,
+                       mode = BR.Mode.SOLO.key, storm = storm }
+        roster[src] = { src = src, matchId = 1,
+                        state = BR.PlayerState.DBNO,
+                        pos = { x = x, y = y, z = 30.0 } }
+        BR.Inv.reset(src)
+        BR.Inv.give(src, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                           rarity = BR.Rarity.LEGENDARY, count = 1 })
+        return BR.Inv.of(src)
+    end
+
+    local function holdsKit(inv)
+        for i = 1, (BR.Config.Loot.slots or 5) do
+            local s = inv.slots[i]
+            if s and s.item == 'cprkit' then return true end
+        end
+        return false
+    end
+
+    -- ═══ THE REFUSAL. A COLLAPSED PURPLE CIRCLE, WHICH REALLY HAPPENS ═══
+    --
+    -- config/storm.lua's phase 8 is `radius = 0.0`. Nothing on the map can be
+    -- inside it, so no surveyed point qualifies and there is no rescue to grant.
+    local collapsed = {
+        phase = 8,
+        cx0 = 0.0, cy0 = 0.0, r0 = 40.0,
+        cx1 = 0.0, cy1 = 0.0, r1 = 0.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 6.7,
+    }
+    local inv = downedAt(1, 1687.58, 4796.53, collapsed)
+    sent = {}
+    ok(holdsKit(inv), 'fixture: the player starts holding a kit')
+
+    local granted = BR.Rescue.begin(1)
+    ok(granted == false, 'a rescue with no qualifying destination is refused',
+        tostring(granted))
+    ok(holdsKit(inv),
+        'AND THE KIT IS STILL IN THE SLOT -- the refusal happens before '
+            .. 'BR.Inv.take, so an ultra-rare item is not spent on a call that '
+            .. 'never routed',
+        'the kit was taken')
+    ok(#sent == 0,
+        'nothing was sent to the client either -- no ambulance is built and no '
+            .. 'camera is taken over',
+        #sent)
+    ok(roster[1].rescue == nil,
+        'and the storm-damage exemption was never written, so a refused player '
+            .. 'is not quietly made immortal',
+        tostring(roster[1].rescue))
+    ok(roster[1].state == BR.PlayerState.DBNO,
+        'the player is simply still downed, and may press the key again when '
+            .. 'the circle moves')
+
+    -- ═══ THE CONTROL: THE SAME PLAYER, A CIRCLE THEY CAN BE DELIVERED INTO ═══
+    --
+    -- Without this the four assertions above would pass just as happily against
+    -- a `begin` that refused everything.
+    local wide = {
+        phase = 1,
+        cx0 = 1600.0, cy0 = 4700.0, r0 = 4000.0,
+        cx1 = 1600.0, cy1 = 4700.0, r1 = 4000.0,
+        tStart = 0, tWait = 10 * 60 * 1000, tShrink = 1000, dps = 1.0,
+    }
+    inv = downedAt(2, 1687.58, 4796.53, wide)
+    sent = {}
+    ok(BR.Rescue.begin(2) == true,
+        'a rescue that CAN be routed is still granted -- the refusal is a rule, '
+            .. 'not a wall')
+    ok(not holdsKit(inv),
+        'and THAT one spends the kit, which is what makes the assertion above '
+            .. 'mean something')
+
+    -- Picked out of the traffic rather than counted: the grant also pushes the
+    -- inventory mirror (BR.Inv.push), so the client hears twice on this path
+    -- and exactly nothing on the refused one.
+    local begun = nil
+    for _, s in ipairs(sent) do
+        if s.evt == BR.Net.RESCUE_BEGIN then begun = s end
+    end
+    ok(begun ~= nil, 'with a RESCUE_BEGIN on its way to the client', #sent)
+    ok(begun and begun.d and begun.d.dest and begun.d.dest ~= begun.d.pickup,
+        'carrying a destination that is not the pickup')
+    ok(begun and begun.d and type(begun.d.netId) == 'number',
+        'and the net id of the ambulance the SERVER built -- the client adopts '
+            .. 'that entity rather than making one of its own, which is the only '
+            .. 'creation path sv_entityLockdown admits',
+        begun and begun.d and tostring(begun.d.netId))
+
+    -- ═══ AND A FAILED SPAWN IS A REFUSAL, NOT A HALF-STARTED RESCUE ═══
+    --
+    -- This is the assertion that pins the ORDERING the block is named for. The
+    -- creation call used to sit BELOW BR.Inv.take, which would have made the
+    -- most failure-prone step in the function the one exception to "a refusal
+    -- costs the player nothing" -- an ultra-rare item spent on an ambulance that
+    -- was never built.
+    spawnOk = false
+    inv = downedAt(3, 1687.58, 4796.53, wide)
+    sent = {}
+    ok(BR.Rescue.begin(3) == false,
+        'a rescue whose ambulance cannot be created is refused')
+    ok(holdsKit(inv),
+        'and the kit survives THAT refusal too -- the spawn is above the take, '
+            .. 'not below it',
+        'the kit was taken for an ambulance that never existed')
+    ok(#sent == 0 and roster[3].rescue == nil,
+        'with nothing sent and no storm exemption written')
+    spawnOk = true
+    ok(roster[2].rescue == true, 'and the storm exemption written for the ride')
+
+    -- ═══ ...AND THE AMBULANCE IS MADE VISIBLE BEYOND 424 UNITS -- IN TWO
+    --     STAGES, AND THE ORDER IS THE POINT ═══
+    --
+    -- STAGE ONE: the rescued player's own scope, and NOT the entity's. Widening
+    -- the entity here is the regression this pins: it would put the ambulance in
+    -- reach of every client in the match on the tick it was created, and Tick
+    -- hands an unowned entity to whichever of them it walks first.
+    ok(#culled == 0,
+        'the granted rescue does NOT widen the entity yet -- doing that at '
+            .. 'creation makes every client in the match a candidate to own the '
+            .. 'ambulance, and only the rescued player holds the medic ped that '
+            .. 'issues the drive task',
+        #culled)
+    -- Three players have been through `begin` in this block, so the log is read
+    -- per player rather than counted.
+    local function radiiFor(who)
+        local out = {}
+        for _, c in ipairs(playerCulled) do
+            if c.src == who then out[#out + 1] = c.radius end
+        end
+        return out
+    end
+
+    local mine = radiiFor(2)
+    ok(#mine == 1 and mine[1] >= 8000.0,
+        'it widens the RESCUED PLAYER\'s culling radius instead, which reaches '
+            .. 'exactly one client and makes the ownership claim uncontested -- '
+            .. 'and far enough to beat the 424-unit default the surveyed points '
+            .. 'average 825m past',
+        table.concat(mine, ','))
+
+    -- AND THE REFUSAL PATH PUTS IT BACK. Player 3's ambulance was refused after
+    -- the widening, which is the one exit between opening the scope and writing
+    -- the record -- so it is the one exit `finish` can never reach.
+    local refused = radiiFor(3)
+    ok(#refused == 2 and refused[1] >= 8000.0 and refused[2] == 0.0,
+        'and a rescue refused after the widening narrows the player again, '
+            .. 'because that exit writes no record for finish to clean up',
+        table.concat(refused, ','))
+
+    -- STAGE TWO: the gate fires only once the SERVER says the rescued player
+    -- owns it. Server-side NETWORK_GET_ENTITY_OWNER answers a server id, so this
+    -- is a real comparison -- the client-side native answers 31 for every
+    -- inbound clone whoever owns it, which is what made the failing round
+    -- unreadable.
+    ok(type(sched['rescue.own']) == 'function',
+        'and it registers an ownership gate to do the rest')
+
+    sched['rescue.own']()
+    ok(#culled == 0,
+        'which widens nothing while the ambulance is still unowned -- an '
+            .. 'unowned entity is exactly the one any client may take',
+        #culled)
+
+    owners[begun.d.netId] = 2          -- wrong key on purpose: the NET ID
+    sched['rescue.own']()
+    ok(#culled == 0,
+        'and it is keyed on the ENTITY, not the net id that goes on the wire -- '
+            .. 'a server native handed the wrong integer throws or silently '
+            .. 'widens somebody else\'s vehicle',
+        #culled)
+
+    -- The entity handle. spawnOwned's stub returns two clearly different numbers
+    -- so this can tell them apart.
+    local veh = BR.Rescue.live[2] and BR.Rescue.live[2].veh
+    owners[veh] = 2
+    sched['rescue.own']()
+    ok(#culled == 1 and culled[1].ent == veh,
+        'once the rescued player owns it, the entity is opened to the match -- '
+            .. 'and it cannot be taken away again, because the yoink fires only '
+            .. 'on an entity owned by nobody',
+        #culled)
+    ok(culled[1] and culled[1].radius >= 8000.0,
+        'map-wide, so "other players can see the ambulance" has no distance at '
+            .. 'which it quietly stops being true',
+        culled[1] and tostring(culled[1].radius))
+    mine = radiiFor(2)
+    ok(#mine == 2 and mine[2] == 0.0,
+        'and the player\'s own radius goes straight back, so one client is not '
+            .. 'left streaming the whole map for the rest of the round',
+        table.concat(mine, ','))
+
+    sched['rescue.own']()
+    ok(#culled == 1,
+        'and the widening happens exactly once, not on every pass of the gate',
+        #culled)
+    culled, playerCulled = {}, {}
+
+    -- -----------------------------------------------------------------------
+    --
+    -- ═══ AN AMBULANCE SOMEBODY FOUND IS REMEMBERED AND NOT DRAWN ═══
+    --
+    -- Owner, 2026-08-31: "let's not auto-show ambulance blips just because they
+    -- got in an ambulance - BUT do add the position to the table so when blips
+    -- are shown we can include any that other players have found along the way
+    -- (engine-spawned ones)."
+    --
+    -- THE REMOVAL IS THE HALF THAT NEEDS PINNING HERE. This module used to
+    -- publish a RESCUE_BLIP to the whole match, on its own tick, the moment
+    -- anybody sat in an ambulance -- so the map filled with icons for vans
+    -- nobody could use, in a match where nobody was down. Deleting two lines is
+    -- the entire fix and re-adding them is the entire regression, which is
+    -- exactly the shape that gets a test.
+    --
+    -- WHO DRAWS THEM NOW IS tools/test_ambulances' QUESTION, not this file's:
+    -- server/ambulances.lua reads this ledger through BR.Rescue.eachFound and
+    -- publishes it through the same gate as the 23 (a squadmate who is OUT, and
+    -- only their squad). Both suites have to pass for the feature to exist.
+    describe('ambient.rememberedRatherThanBlipped')
+
+    -- The two natives this path reads, and a world small enough to move by
+    -- hand. `sent` is TriggerClientEvent; `broadcast` is BR.Broadcast.toMatch,
+    -- which the harness swallows by default and which is the road the old blip
+    -- actually took -- swallowing it here would make the assertion vacuous.
+    local broadcast = {}
+    local realToMatch = BR.Broadcast.toMatch
+    BR.Broadcast.toMatch = function(m, evt, d)
+        broadcast[#broadcast + 1] = { m = m, evt = evt, d = d }
+    end
+
+    local vworld = {
+        [700] = { model = 'ambulance', x = 100.0, y = 200.0 },
+        [701] = { model = 'sultan',    x = 300.0, y = 400.0 },
+    }
+    _G.GetHashKey        = function(s) return ('h:' .. tostring(s)):len() * 7 end
+    _G.GetEntityModel    = function(v)
+        local e = vworld[v]
+        return e and GetHashKey(e.model) or 0
+    end
+    _G.DoesEntityExist   = function(v) return vworld[v] ~= nil end
+    _G.GetEntityCoords   = function(v)
+        local e = vworld[v]
+        return e and { x = e.x, y = e.y, z = 30.0 } or nil
+    end
+
+    matches[1] = { id = 1, state = BR.MatchState.PLAYING, mode = BR.Mode.SOLO.key }
+    local driver = { src = 9, matchId = 1, state = BR.PlayerState.ALIVE,
+                     pos = { x = 100.0, y = 200.0, z = 30.0 } }
+
+    sent, broadcast = {}, {}
+    BR.Rescue.noteVehicle(9, driver, 701)
+    local seen = {}
+    BR.Rescue.eachFound(1, function(k) seen[#seen + 1] = k end)
+    ok(#seen == 0,
+        'a player driving something that is not an ambulance is not recorded -- '
+            .. 'the model is checked against the one list config/rescue.lua keeps',
+        #seen)
+
+    BR.Rescue.noteVehicle(9, driver, 700)
+    seen = {}
+    BR.Rescue.eachFound(1, function(k, x, y) seen[#seen + 1] = k .. '@' .. x .. ',' .. y end)
+    ok(#seen == 1 and seen[1] == 'v:700@100.0,200.0',
+        'and driving an ambulance IS recorded, at the driver\'s own '
+            .. 'server-sampled position, under a `v:` key',
+        table.concat(seen, ' '))
+
+    -- ═══ AND THE VEHICLE HANDLE COMES OUT WITH IT ═══
+    --
+    -- Owner, 2026-08-31: "let's not show a blip for an ambulance while a player
+    -- is in that ambulance." Occupancy is a question about a VEHICLE, so
+    -- server/ambulances.lua needs the handle -- and it must get it from here
+    -- rather than by parsing `v:700` back apart, because the key is an opaque
+    -- string by construction and a consumer that unpicks it makes the format a
+    -- contract between two files.
+    --
+    -- ASSERTED BECAUSE NOTHING ELSE COULD SEE IT GO. tools/test_ambulances drives
+    -- that file through its own stub of this function, so dropping the fourth
+    -- argument here leaves both suites green and the blips simply stop being
+    -- withheld.
+    local handle = nil
+    BR.Rescue.eachFound(1, function(_, _, _, veh) handle = veh end)
+    ok(handle == 700,
+        '...and the handle itself is the fourth argument, so a consumer never '
+            .. 'has to take the key apart to find out which vehicle it is',
+        tostring(handle))
+
+    -- ═══ ONE OF THE 23 IS NOT A FIND ═══
+    --
+    -- "engine-spawned ONES". server/ambulances.lua already publishes every
+    -- station under an `s:<entity>` key and the client keeps its blips in one
+    -- table keyed on that string -- so a squadmate driving one of OUR vans would
+    -- put a second icon on it under `v:<entity>` and the map would claim there
+    -- are two ambulances where there is one.
+    --
+    -- ASKED OF THE FILE THAT MADE THEM. Stubbed here rather than loaded, because
+    -- what is under test is that this module ASKS: a list of station handles
+    -- kept in server/rescue.lua would be a second copy of something already
+    -- authoritative one file away.
+    vworld[702] = { model = 'ambulance', x = 500.0, y = 600.0 }
+    BR.Ambulances = { isStation = function(matchId, veh)
+        return matchId == 1 and veh == 702
+    end }
+    BR.Rescue.noteVehicle(9, driver, 702)
+    seen = {}
+    BR.Rescue.eachFound(1, function(k) seen[#seen + 1] = k end)
+    ok(#seen == 1,
+        'a STATION ambulance is not recorded as a find, however many squadmates '
+            .. 'drive it',
+        table.concat(seen, ' '))
+    BR.Ambulances = nil
+
+    -- ═══ AND NOTHING WENT ANYWHERE ═══
+    ok(#broadcast == 0 and #sent == 0,
+        'finding one puts NOTHING on anybody\'s map -- not a broadcast, not a '
+            .. 'direct send. This is the owner\'s "let\'s not auto-show '
+            .. 'ambulance blips just because they got in an ambulance"',
+        ('%d broadcast, %d direct'):format(#broadcast, #sent))
+
+    sched['rescue.found']()
+    ok(#broadcast == 0 and #sent == 0,
+        '...and the sweep that keeps the ledger honest publishes nothing either '
+            .. '-- it used to push all of them, every second, to the whole match',
+        ('%d broadcast, %d direct'):format(#broadcast, #sent))
+
+    -- ═══ THE POSITION FOLLOWS THE VEHICLE ═══
+    vworld[700].x, vworld[700].y = 850.0, 950.0
+    sched['rescue.found']()
+    seen = {}
+    BR.Rescue.eachFound(1, function(k, x, y) seen[#seen + 1] = x .. ',' .. y end)
+    ok(seen[1] == '850.0,950.0',
+        'a found ambulance somebody drives away keeps its record under it, so '
+            .. 'the blip it feeds is where the van is rather than where it was',
+        table.concat(seen, ' '))
+
+    -- ═══ HOW A STALE RECORD IS RETIRED, WHICH IS THE ONLY MECHANISM ═══
+    --
+    -- Ambient traffic despawns: the vehicle is destroyed, or the owning client's
+    -- population manager reclaims it once everybody has driven away, and either
+    -- way it stops existing on this server. A remembered position with nothing on
+    -- it is a blip a squad drives three minutes to for nothing.
+    vworld[700] = nil
+    sched['rescue.found']()
+    seen = {}
+    BR.Rescue.eachFound(1, function(k) seen[#seen + 1] = k end)
+    ok(#seen == 0,
+        'a record whose vehicle has stopped existing is dropped on the next '
+            .. 'sweep -- the same DoesEntityExist test the 23 live by, and the '
+            .. 'only staleness rule there is',
+        #seen)
+
+    -- ...AND THE MATCH IS THE OTHER END OF IT.
+    vworld[700] = { model = 'ambulance', x = 100.0, y = 200.0 }
+    BR.Rescue.noteVehicle(9, driver, 700)
+    matches[1].state = BR.MatchState.ENDED
+    sched['rescue.found']()
+    seen = {}
+    BR.Rescue.eachFound(1, function(k) seen[#seen + 1] = k end)
+    ok(#seen == 0,
+        'and nothing survives its match -- a round\'s knowledge of where the '
+            .. 'ambulances were does not carry into the next one',
+        #seen)
+
+    BR.Broadcast.toMatch = realToMatch
+    sent, broadcast = {}, {}
+end
+
+-- ---------------------------------------------------------------------------
+describe('kit.promptWhileDowned')
+do
+    -- FAULT 2. The prompt that never appeared.
+
+    local sends, screenDraws, worldDraws = {}, {}, {}
+
+    -- The client's own neighbours. BR.Inv is the SERVER model from the block
+    -- above; the client's mirror is a different object with a different reader,
+    -- so it is stubbed rather than borrowed.
+    local slots = {}
+    BR.Inv = BR.Inv or {}
+    BR.Inv.local_ = function() return { slots = slots } end
+
+    -- ═══ THE SURFACE. One boolean, onto the downed payload. ═══
+    --
+    -- BR.Dbno.setCpr is client/dbno.lua's merge into the envelope that feeds the
+    -- bleed-out card (ui-src/src/hud/DbnoOverlay.tsx). Stubbed rather than
+    -- loaded: dbno.lua is also the crawl, the camera and the revive, and none of
+    -- that is what this block is about. What is recorded here is the whole of
+    -- what rescue.lua now hands the interface.
+    --
+    -- TWO BITS NOW, NOT ONE. `setRiding` is the second (owner, 2026-08-28: the
+    -- HUD goes away in the ambulance, and the bleed-out card with it), and it
+    -- travels the same route for the same reason. Recorded separately so the
+    -- block below can say which of the two moved.
+    --
+    -- AND `setRiding` CARRIES A SECOND ARGUMENT NOW: the server's deadline for
+    -- the ride (owner, 2026-08-28: "let's add an on-screen timer showing their
+    -- time to revive please"). Recorded alongside the flag, because the claim
+    -- worth testing is that the two move TOGETHER -- a readout that knows it
+    -- should be on screen before it knows what to count to would draw a
+    -- placeholder.
+    local cpr, riding, rideEnds = {}, {}, {}
+    -- SEEDED false/0, because `mine.riding` and `mine.rideEndsAt` are. The real
+    -- BR.Dbno.setRiding refuses an unchanged answer, and a stub that recorded
+    -- every call would make "sixty frames of a ride cost one envelope"
+    -- untestable -- it would be measuring the LOOP's discipline rather than the
+    -- pair's. So the stub keeps the same latch the real one has, starting where
+    -- the real one starts, and latches on the PAIR exactly as it does.
+    local ridingLast, endsLast = false, 0
+    BR.Dbno = {
+        setCpr    = function(v) cpr[#cpr + 1] = v end,
+        setRiding = function(v, endsAt)
+            endsAt = v and (tonumber(endsAt) or 0) or 0
+            if v == ridingLast and endsAt == endsLast then return end
+            ridingLast, endsLast = v, endsAt
+            riding[#riding + 1] = v
+            rideEnds[#rideEnds + 1] = endsAt
+        end,
+    }
+
+    -- STILL STUBBED, AND THAT IS THE POINT: every one of these must stay empty.
+    -- The prompt used to go out through `send` and land through `drawScreen` or
+    -- `drawWorld`, and a second surface growing back would show up here.
+    BR.Dui = {
+        page       = function(n) return { name = n } end,
+        send       = function(_, m) sends[#sends + 1] = m end,
+        ready      = function() return true end,
+        drawScreen = function(_, x, y) screenDraws[#screenDraws + 1] = { x = x, y = y } end,
+        drawWorld  = function(_, x, y, z) worldDraws[#worldDraws + 1] = { x = x, y = y, z = z } end,
+        drawOnEntity = function() end,
+    }
+    BR.Keys       = { on = function() end, isHeld = function() return false end }
+    -- A TRIPWIRE, not a stub with a job. Nothing in this feature may resolve a
+    -- key label any more: ui/KeyCap.tsx draws the glyph from the binding the
+    -- interface already holds, and a letter sent from Lua is a second copy of
+    -- that binding which goes stale the moment the player rebinds interact.
+    local askedForKey = false
+    BR.Native     = { keyLabelForCommand = function()
+        askedForKey = true
+        return 'E'
+    end }
+    BR.Squadmates = { headAnchor = function() return 10.0, 20.0, 30.0 end }
+    _G.PlayerPedId     = function() return 1 end
+    _G.GetEntityCoords = function() return { x = 10.0, y = 20.0, z = 29.4 } end
+    _G.Citizen = { CreateThread = function() end, Wait = function() end }
+    _G.RegisterNetEvent = function() end
+    -- CAPTURED RATHER THAN DISCARDED, so the ride can actually be STARTED.
+    -- `ride` is a local in client/rescue.lua and the only door to it is
+    -- BR.Net.RESCUE_BEGIN; without this the block below could assert what the
+    -- flag does when there is no ride and nothing else.
+    --
+    -- Citizen.CreateThread stays a no-op on purpose, so `board` is registered
+    -- and never runs: it fades the screen in a loop bounded by GetGameTimer,
+    -- and this file's clock only moves when a test moves it -- an inline thread
+    -- would spin there for ever. What that costs is exercised below.
+    local chandlers = {}
+    _G.AddEventHandler  = function(name, fn) chandlers[name] = fn end
+    _G.TriggerServerEvent = function() end
+    _G.RegisterCommand  = function() end
+
+    loadCore('br_core/client/main.lua')
+
+    BR.State = {
+        me     = { src = 1, state = BR.PlayerState.ALIVE },
+        match  = { state = BR.MatchState.PLAYING, mode = BR.Mode.SOLO.key },
+        roster = {},
+    }
+
+    loadCore('br_core/client/rescue.lua')
+
+    local function frame(n)
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 16
+            BR.Loop.step(BR.Loop.FRAME)
+        end
+    end
+    local function shows()
+        local n = 0
+        for _, v in ipairs(cpr) do if v then n = n + 1 end end
+        return n
+    end
+
+    -- ═══ INERT WHILE ALIVE ═══
+    slots[1] = { id = 'cprkit' }
+    frame(30)
+    ok(shows() == 0,
+        'a living player carrying a kit is offered nothing, for thirty frames',
+        shows())
+
+    -- ═══ AND OFFERED, ONCE, WHILE BLEEDING OUT ═══
+    BR.State.me.state = BR.PlayerState.DBNO
+    cpr, sends, screenDraws, worldDraws = {}, {}, {}, {}
+    frame(60)
+
+    ok(shows() == 1,
+        'a downed solo carrying a kit gets EXACTLY ONE prompt across sixty '
+            .. 'frames -- one notification is the whole rule of this feature, '
+            .. 'and the card should not be re-rendered sixty times a second',
+        shows())
+
+    ok(cpr[1] == true, 'and it is a show rather than a hide',
+        tostring(cpr[1]))
+
+    -- ═══ RE-POINTED FROM THE DUI DRAW: THE PROMPT IS THE CARD ═══
+    --
+    -- Owner, 2026-08-23: "Why don't we just make it part of the bleed out timer
+    -- card?" -- after two native draws that were both invisible. At the shared
+    -- prompt position (0.5, 0.78) the sprite went UNDER
+    -- ui-src/src/hud/DbnoOverlay.tsx's `absolute inset-x-0 bottom-40`
+    -- `.panel-hot` at rgba(8, 9, 14, 0.94), because NUI composites above every
+    -- native draw and that placard is on screen at exactly and only the moment
+    -- this prompt is. Moved onto the head anchor it went BEHIND the body,
+    -- because client/dbno.lua parks the downed camera at ground level.
+    --
+    -- So the guard is no longer "which native draw" but "no native draw at all".
+    -- The three BR.Dui recorders above are still live; all three must be empty.
+    ok(#sends == 0 and #screenDraws == 0 and #worldDraws == 0,
+        'nothing native is drawn or sent for this prompt any more -- the card '
+            .. 'IS the surface, so there is no second one to be hidden behind '
+            .. 'or to composite over',
+        ('%d send(s), %d screen, %d world')
+            :format(#sends, #screenDraws, #worldDraws))
+
+    -- ═══ WHAT CROSSES THE BRIDGE IS ONE BIT, AND NOT A LETTER ═══
+    --
+    -- The wording ("Use the CPR kit", the owner's 2026-08-23 wording superseding
+    -- #191 step 2's "call a medic") lives in the component now, and so does the
+    -- key glyph -- ui/KeyCap.tsx resolves `brinteract` from the bindings the
+    -- interface already holds. A label sent from here would be a second copy of
+    -- the binding, stale the moment the player rebinds interact.
+    ok(type(cpr[1]) == 'boolean',
+        'it is a bare boolean on the downed payload, not a message with copy '
+            .. 'in it -- the card owns the wording',
+        type(cpr[1]))
+    ok(askedForKey == false,
+        'and no key label is resolved in Lua at all: the glyph follows the '
+            .. 'binding on the interface side',
+        tostring(askedForKey))
+
+    -- ═══ SO THE WORDING IS PINNED WHERE IT NOW LIVES ═══
+    --
+    -- These three used to be assertions on the DUI message's label/hint/key.
+    -- They are the same three claims, re-pointed at the file that owns them now
+    -- -- a text read rather than a render, which is all this process can do and
+    -- is stated so a pass is not read as more than it is. It is worth keeping:
+    -- the wording has been changed by hand twice, and the whole point of writing
+    -- it down was that the issue body still carries the superseded sentence.
+    local card = io.open('ui-src/src/hud/DbnoOverlay.tsx')
+    local cardSrc = card and card:read('a') or ''
+    if card then card:close() end
+
+    ok(cardSrc:find('Use the CPR kit', 1, true) ~= nil,
+        'the card carries the owner\'s wording, "Use the CPR kit"',
+        #cardSrc == 0 and 'DbnoOverlay.tsx did not open' or 'not in the file')
+    ok(cardSrc:find('call a medic', 1, true) == nil,
+        'and not #191 step 2\'s superseded "call a medic" -- it names the ITEM '
+            .. 'the player is holding, not the implementation detail')
+    ok(cardSrc:find('KeyCap', 1, true) ~= nil
+           and cardSrc:find('brinteract', 1, true) ~= nil,
+        'with the interact key drawn as a glyph by the shared KeyCap, which is '
+            .. 'how every other key in the interface is drawn')
+
+    -- ═══ AND IT IS POLLED EVERY FRAME, EVEN THOUGH IT IS SENT ONCE ═══
+    --
+    -- The loop is what notices `ride` starting, the kit going, or the player
+    -- getting back up -- nothing events any of those. It used to also carry the
+    -- per-frame draw; now it carries only the poll, so the thing worth pinning
+    -- is that sixty frames of an unchanged answer cost exactly one call.
+    ok(#cpr == 1,
+        'sixty frames of the same answer cost exactly one call across the '
+            .. 'bridge -- the loop polls, the send is on change',
+        #cpr)
+
+    -- ═══ THE THREE WAYS IT MUST GO AWAY ═══
+    local function goesAway(what, mutate, restore)
+        cpr = {}
+        mutate()
+        frame(5)
+        local hid = false
+        for _, v in ipairs(cpr) do if v == false then hid = true end end
+        ok(hid and shows() == 0, what, ('%d call(s)'):format(#cpr))
+        restore()
+        frame(5)
+        cpr = {}
+    end
+
+    goesAway('a squad player carrying a kit is offered nothing -- the kit is '
+                .. 'solos only, and the client asks before the server does',
+        function() BR.State.match.mode = BR.Mode.SQUAD.key end,
+        function() BR.State.match.mode = BR.Mode.SOLO.key end)
+
+    goesAway('a downed solo who is NOT carrying one is offered nothing',
+        function() slots[1] = nil end,
+        function() slots[1] = { id = 'cprkit' } end)
+
+    goesAway('and it stops being offered the moment they are back on their feet',
+        function() BR.State.me.state = BR.PlayerState.ALIVE end,
+        function() BR.State.me.state = BR.PlayerState.DBNO end)
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE RIDE TAKES THE SCREEN WITH IT (owner, 2026-08-28)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "I need you to make the bleed out timer completely go away while in the
+    --    ambulance. That time should not be relevant anymore once the ambulance
+    --    takes over"
+    --   "while in the ambulance, our HUD should be hidden just like in the bus"
+    --
+    -- ONE FLAG ANSWERS BOTH, because the bleed-out card is drawn inside the HUD
+    -- and App.tsx already hides the whole HUD for the Battle Bus. What this
+    -- block can settle is the LUA half: that the bit is published when a ride
+    -- starts, that it costs one envelope rather than sixty a second, and -- the
+    -- one that actually protects the player -- that it is taken back down on a
+    -- teardown path that is not an event. It cannot settle that the browser
+    -- hides anything; the two text reads at the end of the block pin the rule
+    -- to the line that does.
+
+    ok(#riding == 0,
+        'a downed player who is NOT on an ambulance costs no riding envelope at '
+            .. 'all -- the flag has never been sent up to this point',
+        ('%d call(s)'):format(#riding))
+
+    -- ═══ THE RIDE BEGINS ═══
+    --
+    -- `board` is a no-op here (Citizen.CreateThread is stubbed), which is
+    -- exactly the shape worth testing: the flag must ride the HANDLER setting
+    -- `ride`, not anything the boarding thread gets round to. A player whose
+    -- ambulance model is still streaming is already in the cutscene.
+    cpr = {}
+    -- `endsAt` IS DELIBERATELY A NUMBER NOTHING HERE COULD HAVE COMPUTED. The
+    -- clock in this file is `fakeTime`, a few thousand milliseconds in by now,
+    -- and the deadline solver would answer something derived from the route --
+    -- so a client that quietly built its own countdown instead of keeping the
+    -- server's could not produce 777777 by accident.
+    local SERVER_DEADLINE = 777777
+    chandlers[BR.Net.RESCUE_BEGIN]({
+        pickup = { x = 100.0, y = 200.0, z = 30.0, heading = 90.0 },
+        dest   = { id = 'dest', x = 900.0, y = 800.0, z = 30.0 },
+        endsAt = SERVER_DEADLINE,
+    })
+    frame(60)
+
+    ok(#riding == 1 and riding[1] == true,
+        'the moment a rescue begins the interface is told once, and the HUD '
+            .. 'rule in App.tsx has what it needs before the ambulance exists',
+        ('%d call(s), first=%s'):format(#riding, tostring(riding[1])))
+
+    ok(#cpr == 1 and cpr[1] == false,
+        'and the CPR row is withdrawn in the same beat -- this file\'s one '
+            .. 'notification has no surface left to be drawn on',
+        ('%d call(s), first=%s'):format(#cpr, tostring(cpr[1])))
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- #191 STEP 6: THE ONE READOUT THE RIDE PUTS BACK (owner, 2026-08-28)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- "let's add an on-screen timer showing their time to revive please"
+    --
+    -- The issue asks for this in the same breath as "this is the only
+    -- notification in the entire cycle", and the two coexist: one governs
+    -- interruptions, the other a readout. What this block settles is the half
+    -- that can be settled here -- that the number the interface counts down to
+    -- is the SERVER's deadline, arriving with the flag, and leaving with it.
+
+    ok(rideEnds[1] == SERVER_DEADLINE,
+        'the deadline the interface counts to is the server\'s own -- carried '
+            .. 'verbatim off RESCUE_BEGIN, never re-derived on this side, '
+            .. 'because a second deadline is a clock that disagrees with the '
+            .. 'one that ends the ride',
+        ('published %s, server said %s')
+            :format(tostring(rideEnds[1]), tostring(SERVER_DEADLINE)))
+
+    ok(#riding == #rideEnds and #riding == 1,
+        'and it travels ON the flag rather than behind it: one call carries '
+            .. 'both, so there is no frame in which the readout knows it is on '
+            .. 'screen and does not yet know what to count',
+        ('%d flag(s), %d deadline(s)'):format(#riding, #rideEnds))
+
+    frame(120)
+    ok(#riding == 1,
+        'and a hundred and eighty frames of an unchanged ride still cost that '
+            .. 'one envelope -- the loop polls, the send is on change',
+        ('%d call(s)'):format(#riding))
+
+    -- ═══ AND IT COMES BACK DOWN ON A PATH NOTHING EVENTS ═══
+    --
+    -- THIS IS THE ASSERTION THE WHOLE ARRANGEMENT EXISTS FOR. `cleanup` is
+    -- reached from four places and only two of them are messages from the
+    -- server; the other two -- the match ending under a ride, and this sanity
+    -- sweep -- are the client noticing on its own. A flag pushed from
+    -- RESCUE_BEGIN/RESCUE_END would survive both, and the symptom is a player
+    -- back on their feet with no HUD and no way to get one back.
+    --
+    -- The five stubs below are what `cleanup` touches on a ride that never
+    -- finished being built: no camera, no vehicle and no driver were made, so
+    -- those branches short-circuit on nil before they reach a native.
+    _G.IsWaypointActive      = function() return false end
+    _G.DetachEntity          = function() end
+    _G.ClearPedTasks         = function() end
+    _G.SetEntityVisible      = function() end
+    _G.FreezeEntityPosition  = function() end
+    _G.SetEntityCollision    = function() end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.SLOW)
+    frame(2)
+
+    ok(#riding == 2 and riding[2] == false,
+        'a ride torn down by the sanity sweep -- no RESCUE_END, no message at '
+            .. 'all -- gives the HUD straight back, because the flag is polled '
+            .. 'off `ride` rather than pushed from the two events',
+        ('%d call(s), last=%s'):format(#riding, tostring(riding[#riding])))
+
+    ok(BR.Rescue.riding() == false,
+        'and the ride really is over, so a second sweep has nothing to do',
+        tostring(BR.Rescue.riding()))
+
+    ok(rideEnds[2] == 0,
+        'and the deadline is taken back down with it -- a stale timestamp left '
+            .. 'on the payload is a countdown the interface could start again '
+            .. 'the next time anything re-pushes this envelope',
+        ('last deadline published was %s'):format(tostring(rideEnds[#rideEnds])))
+
+    BR.State.me.state = BR.PlayerState.DBNO
+    frame(2)
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE POSE IS PART OF THE OFFSET (owner, 2026-08-28)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- "please enforce the ped emote in the ambulance as we discussed. It should
+    -- be sunbathe"
+    --
+    -- WHAT MAKES THIS TESTABLE AT ALL is that it is a CONFIG fact with a
+    -- cross-file agreement, not a judgement about a body. Whether the ped looks
+    -- right on the stretcher is something only an eye in game can settle. What
+    -- can be settled here is that the clip named in config is the one the
+    -- offsets beside it were measured with, which is the property that makes
+    -- those six numbers mean anything -- and it is exactly the agreement a
+    -- later "tidy-up" breaks without noticing.
+
+    local P = (R.stretcher or {}).pose or {}
+    ok(P.dict == 'amb@world_human_sunbathe@male@back@base' and P.anim == 'base',
+        'the stretcher carries the pose its offsets were measured against',
+        ('%s / %s'):format(tostring(P.dict), tostring(P.anim)))
+
+    local tuneFh = io.open('resources/[fivem-royale]/br_core/client/attachtune.lua')
+    local tuneSrc = tuneFh and tuneFh:read('a') or ''
+    if tuneFh then tuneFh:close() end
+    ok(tuneSrc:find(P.dict or '\0', 1, true) ~= nil,
+        'and it is a pose /brattach itself offers -- the tool the owner authored '
+            .. 'the six numbers with, which is the whole reason they agree',
+        #tuneSrc == 0 and 'attachtune.lua did not open' or 'not in its POSES')
+
+    local resFh = io.open('resources/[fivem-royale]/br_core/client/rescue.lua')
+    local resSrc = resFh and resFh:read('a') or ''
+    if resFh then resFh:close() end
+
+    -- THE TRAP THE CONFIG WARNS ABOUT, AS A GATE. A scenario is the obvious way
+    -- to reach this pose and it is the wrong one: TaskStartScenarioInPlace is a
+    -- TASK, it sites the ped against the ground, and it fights
+    -- AttachEntityToEntity for the matrix -- so the body drifts off the offset
+    -- with nothing to say it did. attachtune.lua rejected it for that reason
+    -- before a single number was measured.
+    ok(resSrc:find('TaskPlayAnim', 1, true) ~= nil
+           and resSrc:find('TaskStartScenarioInPlace', 1, true) == nil,
+        'the ride poses with TaskPlayAnim and never with a scenario -- a '
+            .. 'scenario would quietly move the body off the measured offset')
+
+    local posedBand = nil
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'rescue.pose' then posedBand = s.band end
+    end
+    ok(posedBand == BR.Loop.TICK,
+        'and the pose is RE-ASSERTED on a loop band rather than set once: '
+            .. 'client/dbno.lua stops re-posing this ped for the whole ride, so '
+            .. 'nothing else would put it back',
+        tostring(posedBand))
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- ...AND THE RULE ON THE OTHER SIDE OF THE BRIDGE
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Text reads, on the same terms as the wording assertions above: this
+    -- process cannot render App.tsx, and what it is guarding against is not a
+    -- rendering fault but a SECOND MECHANISM growing. The owner asked for the
+    -- HUD to be hidden "just like in the bus", and the value of that is entirely
+    -- in there being one rule -- so the check is that the ride joins the bus's
+    -- line, and that the card does not also learn to hide itself.
+    local appFh = io.open('ui-src/src/App.tsx')
+    local appSrc = appFh and appFh:read('a') or ''
+    if appFh then appFh:close() end
+
+    ok(appSrc:find('ridingBus', 1, true) ~= nil
+           and appSrc:find('dbno.riding', 1, true) ~= nil,
+        'App.tsx hides the HUD for the ambulance on the same `hudUp` line it '
+            .. 'already hid it for the bus',
+        #appSrc == 0 and 'App.tsx did not open' or 'the ride is not on that rule')
+
+    local cardFh = io.open('ui-src/src/hud/DbnoOverlay.tsx')
+    local cardSrc2 = cardFh and cardFh:read('a') or ''
+    if cardFh then cardFh:close() end
+
+    ok(cardSrc2:find('dbno.riding', 1, true) == nil,
+        'and the card itself has no opinion about the ride -- the whole card '
+            .. 'goes with the HUD, so a second test inside it would be half a '
+            .. 'switch with its other half in another file')
+
+    -- ═══ ...AND THE READOUT IS OUTSIDE THE TREE THAT RULE HIDES ═══
+    --
+    -- Same terms, same limits: text reads, guarding a SHAPE rather than a
+    -- render. The timer is an exception to a rule the owner also asked for, and
+    -- the only way the two do not fight is that `hudUp` never learned an
+    -- exception -- the readout is a SIBLING of `Hud`, the way DeathVerdict
+    -- already is, rather than a child of it that hides itself back in.
+    local timerFh = io.open('ui-src/src/hud/RescueTimer.tsx')
+    local timerSrc = timerFh and timerFh:read('a') or ''
+    if timerFh then timerFh:close() end
+
+    ok(#timerSrc > 0 and appSrc:find('<RescueTimer', 1, true) ~= nil,
+        'the ride draws a timer, and App.tsx is what mounts it',
+        #timerSrc == 0 and 'RescueTimer.tsx did not open'
+            or 'App.tsx does not mount it')
+
+    local hudFh = io.open('ui-src/src/hud/Hud.tsx')
+    local hudSrc = hudFh and hudFh:read('a') or ''
+    if hudFh then hudFh:close() end
+
+    ok(hudSrc:find('RescueTimer', 1, true) == nil,
+        'and it is mounted OUTSIDE the HUD, not inside it -- `hudUp` still '
+            .. 'hides every surface in that tree, with no "everything '
+            .. 'except..." list for the next one to join by accident',
+        'Hud.tsx renders it, so the ride now has a hole in it')
+
+    ok(appSrc:find('show={ridingAmbulance && !tearingDown}', 1, true) ~= nil,
+        'gated on the SAME bit that hides the HUD, passed down rather than '
+            .. 'derived again, so the two can never disagree about whether a '
+            .. 'ride is happening -- and on the match not being decided, so '
+            .. 'the placard is never under the verdict screen',
+        'the gate is not `ridingAmbulance && !tearingDown`')
+
+    ok(timerSrc:find('rideEndsAt', 1, true) ~= nil
+           and timerSrc:find('Date.now() + offset', 1, true) ~= nil,
+        'and it counts the SERVER\'s deadline against the shared clock offset '
+            .. '-- the rule every other countdown in this interface follows, '
+            .. 'and the only way a browser can read a server timestamp at all')
+
+    -- ═══ IT IS THE BLEED-OUT CARD, AND THAT REPLACED THE OPPOSITE RULE ═══
+    --
+    -- This block used to assert the other thing: no `.panel-hot`, no cap, a
+    -- plain `.panel` and a bare numeral -- because that placard demands a text
+    -- label and breathes its border, and neither is true of a deadline that
+    -- ends in a delivery. The reasoning is still in RescueTimer.tsx and it is
+    -- still sound. The owner has looked at the result and overruled it:
+    --
+    --   "Please rebuild the revive timer UI to be the same card as the bleed
+    --    out card and timer." -- 2026-08-29
+    --
+    -- Recorded rather than quietly swapped, because a future reader finding the
+    -- old argument in the file's history should be able to see that it was
+    -- answered rather than forgotten.
+    --
+    -- ═══ SHARED, NOT COPIED -- AND WITHOUT MOVING INTO THE HUD ═══
+    --
+    -- The two surfaces cannot be siblings in the tree: the assertion above is
+    -- that Hud.tsx never renders this one, and that has to keep holding, since
+    -- the entire reason it exists is that the ride hides the HUD. So what they
+    -- share is the APPEARANCE, lifted into hud/HotCard.tsx.
+    --
+    -- BOTH ENDS ARE PINNED. A timer that drew its own `.panel-hot` would look
+    -- right on the day and drift the moment the placard changed -- which is
+    -- this repository's signature bug, two representations of one fact -- so
+    -- the assertion is that the timer uses the shared card AND that the card it
+    -- uses is the one the bleed-out placard draws.
+    local sharedFh = io.open('ui-src/src/hud/HotCard.tsx')
+    local sharedSrc = sharedFh and sharedFh:read('a') or ''
+    if sharedFh then sharedFh:close() end
+
+    ok(sharedSrc:find('className="panel%-hot') ~= nil,
+        'the placard has one home -- hud/HotCard.tsx',
+        #sharedSrc == 0 and 'HotCard.tsx did not open'
+            or 'it does not draw `.panel-hot`')
+
+    ok(timerSrc:find('<HotCard', 1, true) ~= nil
+           and timerSrc:find('<HotTime', 1, true) ~= nil,
+        'the ride\'s clock is drawn as that card, with that card\'s numeral -- '
+            .. '"the same card as the bleed out card and timer"',
+        'RescueTimer.tsx does not use the shared card')
+
+    ok(cardSrc2:find('<HotCard', 1, true) ~= nil
+           and cardSrc2:find('<HotTime', 1, true) ~= nil,
+        'and the bleed-out card is drawn from the same two pieces, so "the '
+            .. 'same card" cannot quietly become two cards that agree by '
+            .. 'memory',
+        'DbnoOverlay.tsx no longer shares it')
+
+    ok(timerSrc:find('className="panel%-hot') == nil
+           and timerSrc:find('className="hotbody"', 1, true) == nil,
+        'and it holds no second copy of the placard\'s markup')
+
+    -- ═══ ...AND IT HAS THE WORDS NOW, WHICH REVERSES THIS ASSERTION ═══
+    --
+    -- This used to assert the OPPOSITE -- no `cap`, no caption, the body alone
+    -- -- because the card treatment implies a heading and there was no heading
+    -- to give it: DbnoOverlay's says "You are down", which is false in an
+    -- ambulance, and inventing a replacement is the unsolicited UI copy this
+    -- project bans.
+    --
+    -- The owner looked at the capless result and rejected it: "the revive timer
+    -- is redone, but is not a proper card UI like the bleed out timer..... I
+    -- want you to make it look exactly like the bleed out timer, but instead of
+    -- RED use BLUE outlines" (2026-08-29). A card missing three of its four rows
+    -- WAS the complaint, so the rows are what "exactly like" means.
+    --
+    -- THE BAN DID NOT MOVE; THE WORDS CAME FROM HIM. "Medic en route" and "time
+    -- to revive" were picked by the owner from a list rather than written here,
+    -- which is the only way to satisfy both his instructions at once. That is
+    -- what these two assertions pin -- not that SOME cap exists, but that THESE
+    -- strings do, so a later tidy-up cannot quietly reword a surface whose whole
+    -- point is that nobody here chose its wording.
+    ok(timerSrc:find('cap="Medic en route"', 1, true) ~= nil,
+        'the card carries the heading the owner chose, verbatim',
+        'RescueTimer.tsx does not pass cap="Medic en route"')
+
+    ok(timerSrc:find('time to revive', 1, true) ~= nil,
+        '...and his caption under the numeral, which is his own phrase from the '
+            .. 'message that asked for this timer',
+        'the sub-label is not "time to revive"')
+
+    -- ═══ BLUE, AND NOT RED, WHICH IS THE OTHER HALF OF WHAT HE ASKED FOR ═══
+    --
+    -- `--hot` drives the border, the cap fill and the pulse together, so one
+    -- token settles the whole card. `--color-danger` is the one value it must
+    -- never take here: zero is not a threat on this clock -- a moving ambulance
+    -- whose deadline lands DELIVERS (server/rescue.lua's tick) -- and red would
+    -- be a lie about that on top of being the colour he asked to remove.
+    ok(timerSrc:find('var(--color-shield)', 1, true) ~= nil
+           and timerSrc:find('var(--color-danger)', 1, true) == nil,
+        'and it is drawn in blue rather than red -- a colourblind-remapped '
+            .. 'token, not a literal, so the one readout a downed player stares '
+            .. 'at follows the accessibility setting',
+        'the card is not --color-shield, or still reaches for --color-danger')
+
+    -- THE LOOP MUST STILL BE HEALTHY. A callback that throws five times running
+    -- is suspended for the rest of the session -- which would present as
+    -- exactly the symptom being fixed, and silently.
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'rescue.prompt' then
+            ok(s.errors == 0 and not s.suspended,
+                'and the prompt loop never threw -- a suspended callback is a '
+                    .. 'prompt that stops appearing and says nothing',
+                ('%d error(s), suspended=%s'):format(s.errors, tostring(s.suspended)))
+        end
+    end
+end
+
+print(('\n\27[32m%d passed\27[0m'):format(pass))
+if fail > 0 then
+    print(('\27[31m%d failed\27[0m'):format(fail))
+    os.exit(1)
+end

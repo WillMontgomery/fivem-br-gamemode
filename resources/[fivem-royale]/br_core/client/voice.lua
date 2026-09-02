@@ -384,6 +384,52 @@ local function onBus()
     return me ~= nil and me.state == BR.PlayerState.BUS
 end
 
+--- Is this player sitting in the lobby right now?
+---
+--- THE SAME SHAPE AS onBus(), DELIBERATELY, AND FOR THE SAME REASON: read off
+--- the mirrored player state on every call, never cached and never hung off a
+--- transition. A voice rule that latches on an edge is a rule that misses the
+--- edge it was not told about, and the lobby is reachable from more directions
+--- than any other state in this game -- connecting, a match ending, being
+--- returned by brforce, a party dissolving, a match destroyed underneath you.
+---
+--- IT IS `LOBBY` AND NOT WARMUP. Warmup is inside a match: the squads are
+--- formed, the radio channel exists, and players are shooting each other on the
+--- pad. The owner's word was "the lobby", and client/lobbycam.lua, locker.lua
+--- and spawn.lua all draw the same line at exactly this state.
+--- @return boolean
+local function inLobby()
+    local me = BR.State and BR.State.me
+    return me ~= nil and me.state == BR.PlayerState.LOBBY
+end
+
+--- WHAT THE PLAYER'S PREFERENCE RESOLVES TO, WITH NOTHING OVERLAID ON IT.
+---
+--- SPLIT OUT OF mode() RATHER THAN INLINED IN IT, and the split is load-bearing
+--- rather than tidiness. Two callers want different questions answered:
+---
+---   "WHAT IS IN FORCE" is mode(), overlays and all, and it is what every
+---   routing decision reads -- the radio join, the mute sweep, the gag.
+---   "WHAT DID THEY CHOOSE" is this, and exactly one thing asks it: the
+---   once-a-session notice, which is a sentence ABOUT the setting rather than
+---   an action taken because of it.
+---
+--- THAT NOTICE IS WHY THIS FUNCTION EXISTS AT ALL, and the reason is an
+--- ordering fact rather than a preference. It fires on the STATE broadcast for
+--- WARMUP -- and server/match.lua sends that broadcast BEFORE it moves anybody
+--- out of LOBBY (see BR.Match.onEnter: Broadcast.state runs in transition(),
+--- the Roster.setState loop runs after it). So at the instant the notice is
+--- composed, this client's mirrored state is still LOBBY. A notice reading
+--- mode() would therefore see 'off', return nil, and decline to say anything
+--- -- every match, forever, because the latch is spent on delivery and so
+--- never spent at all. The player would simply never be told the push-to-talk
+--- key, which is the one fact the removed HUD line used to carry.
+--- @return string  one of BR.VoiceMode
+function BR.Voice.chosenMode()
+    local m = BR.State and BR.State.match and BR.State.match.mode
+    return BR.VoiceModeFor(BR.Voice.pref, m)
+end
+
 --- THE MODE IN FORCE RIGHT NOW, RE-DERIVED ON EVERY CALL.
 ---
 --- Two saved preferences and the kind of match resolve to one mode
@@ -396,10 +442,106 @@ end
 ---
 --- THE LOBBY AND AN UNKNOWN MATCH BOTH RESOLVE TO THE SOLO PREFERENCE, which
 --- is BR.VoiceModeFor's rule rather than one invented here.
+---
+--- ═══ AND A SPECTATOR IS ON 'off', WHICH IS THE OWNER'S NEWEST WORD ═══
+---
+--- "On voice -- let's set voice to OFF while in spectate, and return it to
+--- their preferred setting once spectate is over" -- the owner, 2026-08-21.
+---
+--- THIS IS A BIGGER RULE THAN BR.Voice.silenced() AND IT REPLACES THAT
+--- FUNCTION'S SCOPE NOTE. `silenced()` closes the TRANSMIT half and says so at
+--- length: it leaves `audibleFor`, the mute sweep and the radio channel alone,
+--- so a spectator on 'nearby' still heard every stranger near their target and
+--- a spectator on 'squad' was still sat on the squad radio. That was written
+--- against "should NEVER be able to talk, only listen". The instruction above
+--- supersedes it, and 'off' in this project is not a synonym for muted -- the
+--- owner settled that already, on the version that only did the first half:
+---
+---   "'you are not transmitting' should also mean 'you are not listening',
+---    but alas both are false."
+---
+--- So OFF here means the whole mode, both columns of BR.VoiceRouting, and it
+--- reaches the receive half for free BECAUSE it is expressed as a mode rather
+--- than as a second gag: applyRadio() leaves the channel, audibleFor() returns
+--- the empty set and muteSweep() holds a mute on everybody. Nothing new is
+--- taught about spectating anywhere below this line.
+---
+--- ═══ NOTHING IS SAVED, SO NOTHING CAN FAIL TO BE RESTORED ═══
+---
+--- "Return it to their preferred setting" is the requirement, and the safest
+--- way to meet it is to never take the setting away. BR.Voice.pref is NOT
+--- written here and is not written anywhere on a spectate path -- this is an
+--- overlay on a derivation that is already recomputed on every call and
+--- deliberately never cached, so the preference comes back by ARITHMETIC the
+--- first time this function is asked after the session ends.
+---
+--- That is deliberate rather than tidy, and the alternative is the bug this
+--- project has already shipped once: br_ui/client/nui.lua's pushFocus carries
+--- a note about a stack that returned early and left a screen nothing could
+--- raise for a whole session. A saved-mode-and-restore-it design has that
+--- exact failure mode, and here it costs a player their voice for the rest of
+--- the round. There is no save, so there is no path -- disconnect mid-session,
+--- match ended under them, resource restarted, two sessions back to back --
+--- on which a restore can be skipped, and a preference changed DURING a
+--- session is simply the one that is in force when it ends.
+--- ═══ AND THE LOBBY IS 'off' TOO, ON THE SAME MECHANISM ═══
+---
+--- "the lobby should not allow talking or listening. period. zero voice in
+--- lobby." -- the owner, 2026-08-22.
+---
+--- BOTH HALVES, AND `period` IS DOING WORK IN THAT SENTENCE. Not muted-but-
+--- hearing, which is what the spectator rule was before it was widened, and not
+--- a proximity gag like the bus rule -- that one is deliberately narrow (a
+--- squad on the bus keeps its radio, which is the whole point of having one on
+--- the way to the drop) and it would leave the lobby's radio wide open. This is
+--- the whole mode, so it reaches applyRadio(), audibleFor() and muteSweep()
+--- without any of them being taught the word "lobby".
+---
+--- IT IS EXPRESSED HERE RATHER THAN AS A SECOND GAG FOR EXACTLY THE REASON THE
+--- SPECTATOR RULE IS, and the block below this one is the whole argument:
+--- nothing is saved, so nothing can fail to be restored. The preference comes
+--- back by ARITHMETIC on the first call after the player leaves the lobby --
+--- match start, a disconnect and reconnect, br_core restarting, pma-voice
+--- restarting underneath them. There is no exit path that has to remember.
+--- A player left permanently voiceless by a visit to the lobby would be a far
+--- worse bug than the one this fixes, and a save-and-restore design is how
+--- this repository would get there.
+---
+--- ═══ WHAT A LOBBY PLAYER HEARS WHILE A MATCH IS RUNNING: NOTHING ═══
+---
+--- Settled deliberately, and it falls out of the rule being written against
+--- THIS PLAYER'S state rather than the MATCH's. Somebody sitting in the lobby
+--- while a round plays out is in the lobby, so they are on 'off' -- they cannot
+--- hear the match and the match cannot hear them. That is the answer the owner
+--- asked for and it is also the only one that is safe: the lobby is where a
+--- player who just died and a player waiting for the next round both sit, and a
+--- lobby that could listen to a live match is a channel for exactly the intel a
+--- spectator was muted to stop carrying.
+---
+--- ═══ AND AN ADMIN IN THE LOBBY IS NOT DIFFERENT ═══
+---
+--- Unconditional, with no config key and no permission check -- the same shape
+--- as BR.Voice.silenced()'s "not varied by whether the session is a dead
+--- player's or an admin's". An admin who wants to hear a match has the spectate
+--- camera, and that is on 'off' as well.
 --- @return string  one of BR.VoiceMode
 function BR.Voice.mode()
-    local m = BR.State and BR.State.match and BR.State.match.mode
-    return BR.VoiceModeFor(BR.Voice.pref, m)
+    -- NIL-GUARDED THE SAME WAY BR.Voice.silenced() IS, and for the same
+    -- reason: this file loads with or without client/spectate.lua, and the
+    -- safe answer for "is a camera running" on a client that cannot say is no.
+    -- The cross-file name is pinned by the suite against spectate.lua itself,
+    -- because a rename on the other side fails OPEN and in silence.
+    if BR.Spectate and BR.Spectate.active and BR.Spectate.active() then
+        return BR.VoiceMode.OFF
+    end
+    -- NEEDS NO GUARD OF ITS OWN. BR.PlayerState is br_lib, which loads before
+    -- this file in every manifest, and inLobby() already tolerates a missing
+    -- BR.State by answering no -- which is the safe direction here: a client
+    -- that cannot say where it is has not been put in the lobby by this line.
+    if inLobby() then
+        return BR.VoiceMode.OFF
+    end
+    return BR.Voice.chosenMode()
 end
 
 --- The routing row for the mode this player has chosen. Never nil.
@@ -411,6 +553,94 @@ end
 --- @return table  { proximity = boolean, radio = boolean }
 function BR.Voice.routing()
     return BR.VoiceRoutingFor(BR.Voice.mode())
+end
+
+--- MAY THIS PLAYER TRANSMIT AT ALL, ON ANY PATH?
+---
+--- ═══ THIS IS A DIFFERENT QUESTION FROM gagged() AND SITS ABOVE IT ═══
+---
+--- `gagged()` answers about the PROXIMITY microphone and says so at length; it
+--- is deliberately true in 'squad', where the radio carries instead. That makes
+--- it the wrong place to hang a rule that must cover BOTH paths -- a spectator
+--- gagged only by that function would still key up the squad radio, which is
+--- the one channel their dead squadmates are certainly listening to.
+---
+--- ═══ SPECTATING IS THE ONLY REASON TODAY, AND IT IS UNCONDITIONAL ═══
+---
+--- "whoever is the spectator should NEVER be able to talk, only listen" -- the
+--- owner. Not a preference, not a config key, and not varied by whether the
+--- session is a dead player's or an admin's.
+---
+--- IT ONLY CLOSES THE TRANSMIT HALF, AND IT IS NO LONGER THE WHOLE RULE.
+--- Nothing here touches `audibleFor`, the mute sweep or the radio channel --
+--- the RECEIVE half now comes from BR.Voice.mode() returning 'off' for the
+--- length of a session, which is the owner's 2026-08-21 instruction and is
+--- argued where it is implemented. This function is deliberately left as the
+--- narrower rule rather than folded into that one:
+---
+---   IT IS THE EDGE. mode() is read by things that run on the 10 Hz band; this
+---   is read at the keypress and on every FRAME, which is what closes a radio
+---   already keyed up when the session starts. Dying with the key down is the
+---   ordinary way in, and a band that ticks every 100ms is 100ms of open
+---   microphone.
+---
+---   IT IS THE READOUT. gagged() consults this FIRST, so /brvoice and the
+---   settings screen say "spectating" rather than "off" -- the true reason
+---   rather than the mechanism.
+---
+---   AND IT DOES NOT DEPEND ON THE MODE BEING RIGHT. Two independent rules
+---   that both have to fail before a spectator transmits is the property the
+---   owner's `NEVER` asked for; collapsing them into one would be tidier and
+---   strictly weaker.
+---
+--- THE SERVER HOLDS THE SAME RULE and holds it harder -- server/voice.lua's
+--- BR.Voice.setSpectatorMuted mutes the connection at the Mumble server, which
+--- is the half a modified client cannot decline. This one exists because it is
+--- immediate, because it keeps /brvoice honest, and because it is what closes a
+--- radio key that is already held.
+---
+--- ═══ THE LOBBY IS THE SECOND REASON, AND IT IS HERE FOR THE FIRST OF THE
+---     THREE ARGUMENTS ABOVE RATHER THAN ALL OF THEM ═══
+---
+--- "zero voice in lobby" is already true from BR.Voice.mode(), which answers
+--- 'off' in the lobby and therefore shuts both halves. So this line is not what
+--- makes the rule hold -- it is what makes it hold IMMEDIATELY.
+---
+--- THE EDGE IS A REAL ONE AND IT IS THE ORDINARY WAY IN. The match ends while a
+--- player is holding push-to-talk on the squad radio; the roster moves them to
+--- LOBBY; mode() is read on the 10 Hz band, so without this the radio stays
+--- keyed for up to 100 ms of lobby. That is the same shape as dying with the
+--- key down, which is what put the spectator rule here, and 100 ms of open
+--- microphone is a word.
+---
+--- AND IT KEEPS /brvoice HONEST. gagged() consults this first, so the readout
+--- says "in the lobby" rather than "the player chose 'off'" -- the true reason
+--- rather than the mechanism, which is the whole reason this function returns a
+--- sentence at all.
+---
+--- WHAT IS DELIBERATELY NOT HERE: A SERVER HALF. The spectator rule has one
+--- (server/voice.lua's BR.Voice.setSpectatorMuted, MumbleSetPlayerMuted) because
+--- a modified client that transmits while watching a live match is carrying
+--- intel out of it. A lobby player is not looking at a match. More to the point,
+--- tools/check_spectator_mic.lua already argues at length that ONE authority
+--- must own a player's mute -- a second one bolted on beside it is how somebody
+--- comes back from the lobby still muted because each half assumed the other
+--- would lift it. One clock, and it is the client's.
+---
+--- RE-ASKED, NEVER LATCHED, exactly like gagged() and the proximity check: a
+--- player who starts or stops spectating mid-press is right on the next frame,
+--- and so is one whose match ends mid-press.
+--- @return boolean silenced
+--- @return string|nil reason  human-readable, for /brvoice
+function BR.Voice.silenced()
+    if BR.Spectate and BR.Spectate.active and BR.Spectate.active() then
+        return true, 'spectating -- a spectator listens and does not talk'
+    end
+    if inLobby() then
+        return true, 'in the lobby -- there is no voice chat in the lobby, '
+            .. 'in either direction'
+    end
+    return false, nil
 end
 
 --- Is our proximity microphone gagged, and why?
@@ -428,6 +658,12 @@ end
 --- @return boolean gagged
 --- @return string|nil reason  human-readable, for /brvoice
 function BR.Voice.gagged()
+    -- THE MASTER SWITCH FIRST, so it cannot be reasoned around by a mode. See
+    -- BR.Voice.silenced: a spectator does not transmit on any path, and this is
+    -- the proximity path.
+    local off, why = BR.Voice.silenced()
+    if off then return true, why end
+
     local r = BR.Voice.routing()
 
     -- MODES THAT DO NOT ROUTE PROXIMITY AT ALL. Derived from the routing table
@@ -894,10 +1130,27 @@ end
 --- screen for longer -- it lasts as long as the preference does, which is
 --- potentially every match they ever play.
 ---
---- So the only rows that still send one are squad-with-no-squad and 'alone': a
---- silence nobody asked for, and a radio with nobody else on it. Both are
---- states a player would want to be interrupted about. Neither is a choice they
---- just made.
+--- AND 'alone' HAS NOW GONE THE SAME WAY, WHICH LEAVES EXACTLY ONE ROW.
+--- Owner, 2026-08-22: "'Squad voice: nobody else on your squad radio yet' - how
+--- about instead of showing this text, we show something in the top squad panel
+--- next to each player which shows if they are muted, not listening, or
+--- talking."
+---
+--- THE SENTENCE WAS ANSWERING A QUESTION THE SQUAD PANEL ALREADY ANSWERS. "Who
+--- else is on your radio" is a list of people, and there is a list of people on
+--- the screen already -- so the line spent the bottom of the screen restating,
+--- in prose, something the player could count. That is the same fault as the
+--- two rows above it, arrived at from a different direction: not "this is
+--- furniture" but "this is a caption for a picture that is already drawn".
+---
+--- WHAT REPLACES IT IS NOT ON THIS CHANNEL AT ALL. The squad panel now marks
+--- each row with the state of that player's voice link -- see
+--- ui-src/src/hud/VoiceMark.tsx for the model and what it is allowed to claim.
+--- Nothing new is sent for it: the mark is built from the `talking` list this
+--- envelope has always carried and from `silent`/`chosen` below.
+---
+--- So the ONLY row that still sends a headline is squad-with-no-squad: a
+--- silence nobody asked for, in a mode the player cannot fix from the panel.
 ---
 --- `detail` IS UNAFFECTED AND STILL SET FOR EVERY ROW, INCLUDING 'off', because
 --- it goes to the SETTINGS SCREEN, which is a page the player opened on purpose.
@@ -942,19 +1195,42 @@ function BR.Voice.statusFor(mode, radio, mates)
         }
     end
 
-    -- "Hold N" or, when the player has no push-to-talk key at all, a sentence
+    -- "Hold [N]" or, when the player has no push-to-talk key at all, a sentence
     -- that says so instead of naming a key that does not exist. pttKeyLabel()
     -- returning nil is a real state -- cleared, or lost to a conflict -- and
     -- it is the one case where the honest answer is not a key name.
+    --
+    -- THE BOUND BRANCH NAMES THE COMMAND, NOT THE KEY (#209). BR.KeyToken is a
+    -- hole the interface fills with a drawn plate, so what crosses the
+    -- boundary is "Hold <the push-to-talk key>" rather than "Hold N" -- the
+    -- wording still Lua's, the glyph the page's, and the binding resolved at the
+    -- moment it is DRAWN rather than the moment it was composed. That last part
+    -- is what the label would have cost: this detail is read on a screen the
+    -- player can rebind the key from, so a substituted letter would go stale
+    -- under them mid-sentence.
+    --
+    -- pttKeyLabel() IS STILL CALLED, AND ONLY TO CHOOSE THE BRANCH. Whether a
+    -- key exists changes the SENTENCE, which is Lua's business; which key it is
+    -- changes the glyph, which is not.
     local key = BR.Voice.pttKeyLabel()
-    local holdIt = key and ('Hold %s'):format(key)
+    local holdIt = key and ('Hold %s'):format(BR.KeyToken(PTT_COMMAND))
         or 'Push to talk is not bound to any key -- bind it in Settings, '
         .. 'Controls, and then hold it'
 
     if mates <= 0 then
         return {
+            -- NO HEADLINE, AND THE CODE IS WHAT SURVIVES. `code` is still its
+            -- own row -- 'alone' and 'radio' are different states and the
+            -- envelope's dedup key is keyed on it (see the TICK band below), so
+            -- collapsing the two would stop a squad forming from pushing at
+            -- all. What went is the sentence painted over the game.
+            --
+            -- `silent` STAYS FALSE, and that is not an oversight. A radio with
+            -- one person on it can carry the moment a second joins; nothing is
+            -- refusing anybody. The squad panel's mark reads this field, so a
+            -- `true` here would put a "no voice" glyph on every row of a squad
+            -- whose radio is working.
             code = 'alone', silent = false, chosen = false,
-            headline = 'Squad voice: nobody else on your squad radio yet',
             detail = ('You are on squad radio %d and you are the only one on '
                   .. 'it. %s to speak once a squadmate joins.')
                   :format(radio, holdIt),
@@ -1244,6 +1520,19 @@ local PTT_CONTROL = 249
 --- and the radio has not been told yet, which is the window a latch lives in.
 local pttHeld = false
 
+--- Did WE key the radio up, and has nothing closed it since?
+---
+--- NOT THE SAME AS `pttHeld`, and the gap between them is the whole reason this
+--- exists: the key can be held while the radio is shut, which is exactly the
+--- state a player is in when they die mid-sentence and drop into spectating.
+--- The frame loop uses it to close the radio ONCE on that edge rather than
+--- spending an ExecuteCommand every frame for as long as the key is down.
+---
+--- IT DOES NOT GATE THE RELEASE HANDLER. That one stays unconditional for the
+--- reason argued below it -- a latch that has drifted must not be able to leave
+--- a microphone open with nothing left to close it.
+local radioOpen = false
+
 --- Drive pma-voice's radio push-to-talk. Guarded, never fatal.
 ---
 --- ExecuteCommand rather than an export because pma-voice offers no export for
@@ -1279,7 +1568,16 @@ BR.Keys.on(PTT_ACTION, function(pressed)
         -- and never on a mode name. A press in 'nearby' or 'off' has no radio
         -- to key up, and asking for one is how a mode learns about a channel
         -- it must not have.
-        if BR.Voice.routing().radio then radioTalk(true) end
+        --
+        -- AND ON THE MASTER SWITCH, which is the spectator half. It is checked
+        -- here as well as in the frame loop because this is the EDGE: without
+        -- it, a press taken while spectating opens the radio for the frame it
+        -- takes the loop to shut it again, and a frame of an open microphone is
+        -- a word.
+        if BR.Voice.routing().radio and not BR.Voice.silenced() then
+            radioTalk(true)
+            radioOpen = true
+        end
         return
     end
 
@@ -1295,12 +1593,26 @@ BR.Keys.on(PTT_ACTION, function(pressed)
     -- pma-voice's `-radiotalk` early-returns unless `radioChannel > 0 and
     -- radioPressed`, so it is a no-op for something it never started.
     pttHeld = false
+    radioOpen = false
     radioTalk(false)
 end)
 
 --- THE PROXIMITY HALF. One comparison per frame when the key is up.
 BR.Loop.register(BR.Loop.FRAME, 'voice.ptt', function()
     if not pttHeld then return end
+
+    -- THE SPECTATOR'S KEY IS DEAD IN BOTH HANDS, and the radio has to be shut
+    -- rather than merely not opened: dying with the key down is the ordinary
+    -- way into spectating, and the press that opened the radio happened while
+    -- the player was alive and entitled to it. Once, on the edge -- `radioOpen`
+    -- is what keeps this from being an ExecuteCommand every frame.
+    if BR.Voice.silenced() then
+        if radioOpen then
+            radioOpen = false
+            radioTalk(false)
+        end
+        return
+    end
     -- RE-ASKED EVERY FRAME, never latched at the press. A player who boards
     -- the bus, or whose match kind changes, while holding the key is gagged on
     -- the very next frame -- the same property the proximity check has, and
@@ -1343,6 +1655,14 @@ AddEventHandler(BR.Net.VOICE_SET, function(d)
     -- once at start.
     call('overrideProximityRange', s.nearby + 0.0, true)
     BR.Voice.apply()
+
+    -- A NEW SQUAD IS A NEW AUDIENCE, so this player re-asserts their voice bit
+    -- to it rather than assuming the server still holds one. This is the "at
+    -- the start of a squad in warmup" half of the owner's instruction, and it
+    -- is expressed as FORGETTING what was last sent rather than as a send: the
+    -- publish below is the only thing that talks to the server, so there is one
+    -- code path and one dedup, and this cannot double-send.
+    BR.Voice._sentOff = nil
 end)
 
 AddEventHandler('br:settings:changed', function(s)
@@ -1426,8 +1746,15 @@ end)
 --- PURE AND IT TAKES ITS INPUTS, so the suite can assert the owner's wording
 --- without a match, a key layer or a running game. Returns nil for the one
 --- case that must produce no notice at all.
+---
+--- `key` IS A BOOLEAN IN EVERYTHING BUT TYPE, and has been since #209. What it
+--- decides is which of two sentences to return -- one that names a key, one
+--- that says there is not one -- and the key it names is a `{key:...}` token
+--- carrying the COMMAND, resolved to a plate by the page. The LABEL passed in
+--- is never substituted into the string any more, so a caller that had a stale
+--- one would no longer be able to put a wrong letter on screen with it.
 --- @param mode string|nil  the voice mode in force
---- @param key string|nil   the push-to-talk key label, or nil when unbound
+--- @param key string|nil   the push-to-talk key label; only its presence is read
 --- @return string|nil
 function BR.Voice.noticeFor(mode, key)
     mode = BR.ToVoiceMode(mode)
@@ -1437,11 +1764,23 @@ function BR.Voice.noticeFor(mode, key)
     if not (r.proximity or r.radio) then return nil end
 
     local label = (mode == BR.VoiceMode.SQUAD) and 'squad' or 'nearby'
-    local hold = key and ('Hold %s to speak.'):format(key)
+    -- THE KEY IS A HOLE, NOT A LETTER (#209). THIS IS THE SENTENCE THE OWNER
+    -- WAS LOOKING AT when he asked for key glyphs, and the complaint was not
+    -- the wording -- every word of it is still his, in his order. It was that
+    -- the N sat in the middle of it as a letter of prose, so the line read as
+    -- hardcoded text rather than as the thing you press. BR.KeyToken marks the
+    -- gap and ui/KeyCap.tsx draws the plate; see the token's own note.
+    local hold = key and ('Hold %s to speak.'):format(BR.KeyToken(PTT_COMMAND))
         -- NO KEY MEANS NO KEY. Naming one here would be the exact lie #129's
         -- third round was: a prompt that names a key nothing is listening to
         -- turns "unavailable" into "broken" for somebody who has no way to
         -- tell those apart from a chair.
+        --
+        -- AND IT IS STILL A SENTENCE RATHER THAN AN UNBOUND GLYPH. A plate
+        -- drawing a dash is the right answer where a key is one word of
+        -- furniture beside a label; here the whole point of the notice is to
+        -- teach the player how to talk, and "Hold [--] to speak." teaches
+        -- nothing. The sentence says what is wrong, so it stays.
         or 'Push to talk is not bound to any key.'
     return ('Voice chat is set to %s. %s You can change your voice preference '
         .. 'and keybinds in Settings.'):format(label, hold)
@@ -1490,7 +1829,18 @@ AddEventHandler(BR.Net.STATE, function(d)
     -- made it once per MATCH.
     if noticed or d.state ~= BR.MatchState.WARMUP then return end
 
-    local text = BR.Voice.noticeFor(BR.Voice.mode(), BR.Voice.pttKeyLabel())
+    -- THE CHOSEN MODE, NOT THE MODE IN FORCE, AND THAT IS NOT A SHORTCUT.
+    --
+    -- This sentence is ABOUT THE SETTING -- "Voice chat is set to nearby" -- so
+    -- the setting is what it must read. The distinction only started to matter
+    -- when the lobby became an overlay, and it matters absolutely: the server
+    -- broadcasts WARMUP before it moves anybody out of LOBBY, so at this exact
+    -- line BR.Voice.mode() is still answering 'off' for the lobby the player has
+    -- not left yet. noticeFor() returns nil on 'off', the latch is spent on
+    -- delivery and so would never be spent, and the notice would be dead in
+    -- every match of every session with nothing on screen to say so. See
+    -- BR.Voice.chosenMode.
+    local text = BR.Voice.noticeFor(BR.Voice.chosenMode(), BR.Voice.pttKeyLabel())
     -- SPENT ON DELIVERY, NOT ON THE OPPORTUNITY. `text` is nil only for 'off',
     -- and a player who was on 'off' has been told nothing -- so there is
     -- nothing to have used up. Setting the latch before this line would mean a
@@ -1510,6 +1860,39 @@ AddEventHandler(BR.Net.STATE, function(d)
 end)
 
 -- ------------------------------------------------------ the talking indicator ---
+
+--- Did the one Mumble native this file reads actually say yes?
+---
+--- IN LUA `0` IS TRUTHY, AND A FiveM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. `MumbleIsPlayerTalking` is one of them, and this file believed it
+--- raw -- so the probe below answered "talking" for every audible player it
+--- asked about, on every tick, forever. server/voice.lua carries the same
+--- normaliser under the name `isYes` and client/spectate.lua under `didHit`;
+--- this is the ninth instance of the same fault in this repository.
+---
+--- THE RETURN SHAPE IS NOT INFERRED FROM THE NAME. pma-voice -- the resource
+--- that owns this engine, vendored at resources/[voice]/pma-voice and running
+--- on the box -- reads the same native in its own proximity loop as
+---
+---     local curTalkingStatus = MumbleIsPlayerTalking(PlayerId()) == 1
+---                              -- client/init/proximity.lua
+---
+--- so upstream compares it to a NUMBER on the same builds we run.
+---
+--- WHY THE BOOL GATE NEVER SAW IT, which is worth naming because the gate is
+--- otherwise the thing that catches this class. tools/bool_native_rules.lua
+--- reports a native in TRUTH POSITION -- `if IsX(...) then` -- and deliberately
+--- does not report one that was stored in a local first, because storing it is
+--- how the fix is written. The call here is `pcall(MumbleIsPlayerTalking, ply)`,
+--- which is both at once: the native is an ARGUMENT, and its answer is a local
+--- that is tested a line later. It is invisible to the gate by construction,
+--- and it is not in tools/bool_natives.baseline for that reason rather than
+--- because anybody decided it was safe.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
 
 --- WHO IS TALKING -- AND ONLY PEOPLE WE CAN ACTUALLY HEAR.
 ---
@@ -1585,10 +1968,93 @@ local function pushVoice(talking, names, st)
     end
 end
 
+--- TELL THE SERVER ONE BIT ABOUT THIS PLAYER'S VOICE, SO THEIR SQUAD CAN SEE IT.
+---
+--- ═══ WHAT IS SENT, AND WHY IT IS ONE BOOLEAN AND NOT THE MODE ═══
+---
+--- Owner, 2026-08-29: "the squad panel works, but doesn't accurately show when
+--- others in the squad have 'off' selected" -- and, on being told the fact was
+--- never on any wire, "Why can't we build another client -> server -> squad
+--- hop? It should only be processed at the start of a squad in warmup and
+--- whenever changes occur."
+---
+--- SO `off` AND NOTHING ELSE. It is the one voice fact about a player that is
+--- ABSOLUTE: nothing they say leaves and nothing reaches them, at any distance,
+--- from anybody. 'nearby' and 'squad' are deliberately indistinguishable here
+--- and must stay so -- a mate on 'nearby' is not on your radio but IS audible
+--- standing next to you, so "which mode" is only answerable by comparing
+--- positions, and a panel that lit up when a squadmate came within 25 m is a
+--- proximity sensor for players this client cannot otherwise see. That refusal
+--- is argued at length in ui-src/src/hud/VoiceMark.tsx and is now PINNED rather
+--- than merely written down: tools/check_squad_voice.lua permits this one field
+--- across the boundary and fails the build for anything wider.
+---
+--- IT IS BR.Voice.mode(), NOT BR.Voice.pref. The mode in force is what is true
+--- of this player -- so a spectator and a player sat in the lobby both publish
+--- `off`, because both of them genuinely carry nothing, and neither has to be
+--- taught about this function. Reading the stored preference instead would have
+--- a spectator's squad drawn a live microphone beside a dead man.
+---
+--- ═══ EDGE-TRIGGERED, WHICH IS THE OWNER'S "WHENEVER CHANGES OCCUR" ═══
+---
+--- This runs on the 10 Hz band because that is where the mode is already
+--- re-derived, and it sends NOTHING on all but the handful of ticks where the
+--- answer has actually moved -- the player opening the settings screen, a
+--- spectate session starting or ending, the lobby. `_sentOff` starts nil rather
+--- than false, so the FIRST tick of a session always sends: an unstated bit and
+--- a bit stated as false are different claims, and a fresh Lua state (a
+--- reconnect, br_core restarting) must not assume the server still holds one.
+--- VOICE_SET clears it for the same reason -- see the handler above.
+---
+--- THE RETURN HALF IS NOT SYMMETRICAL AND THAT IS DELIBERATE. Nothing new comes
+--- back on its own event: the bit rides SQUAD_POS, the squad beacon that is
+--- already leaving the server four times a second carrying positions, states,
+--- bleed deadlines and levels. A second server -> squad event would be MORE
+--- traffic than the one it replaced, and -- the part that actually matters --
+--- it would be a second clock over one membership list, which is how this
+--- project has repeatedly ended up with two answers that drift. The beacon is
+--- rebuilt whole on every push, so a stale bit is unrepresentable.
+local function publishVoiceState()
+    local off = BR.Voice.mode() == BR.VoiceMode.OFF
+    if BR.Voice._sentOff == off then return end
+    BR.Voice._sentOff = off
+    TriggerServerEvent(BR.Net.VOICE_STATE, { off = off })
+end
+
 --- Sent on CHANGE, never on the tick.
 local lastKey = ''
 BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
     local s = BR.Voice.state
+
+    -- THE RADIO CHANNEL CONVERGES HERE RATHER THAN ON AN EDGE, and this line is
+    -- the whole of "the restore cannot be forgotten".
+    --
+    -- WHAT IT FIXES. applyRadio() used to be reachable only from apply(), and
+    -- apply() is called from four events -- VOICE_SET, br:settings:changed, the
+    -- match STATE broadcast and pma-voice restarting. NONE OF THEM FIRE WHEN A
+    -- PLAYER DIES. Now that the mode goes to 'off' for the length of a spectate
+    -- session, that gap is not cosmetic: a session that began between two of
+    -- those events and ended between two more would leave `joined` at 0 with the
+    -- preference back on 'squad' -- a player who watched their squad die and
+    -- then spent the next round off the radio, with nothing on screen to say
+    -- why. That is the failure this whole change is under instruction to avoid.
+    --
+    -- IT IS THE SAME BAND AND THE SAME READ AS THE MUTE SWEEP, on purpose. The
+    -- two consequences of a mode are "which channel am I on" and "who am I
+    -- refusing", and they were previously driven by different clocks; the one
+    -- that ran on a clock at all was the only one that could not be missed.
+    --
+    -- AND IT IS FREE WHEN THERE IS NOTHING TO DO. applyRadio() diffs against
+    -- `joined` and returns on the first comparison, which is the state it is in
+    -- on all but the handful of ticks where the answer has actually moved. It
+    -- calls no export until the number changes.
+    BR.Voice.apply()
+
+    -- AND THE SQUAD IS TOLD, ON THE EDGE ONLY. Placed here rather than inside
+    -- the dedup below because that one is keyed on the talking list and the
+    -- status code -- a different question, on a different clock. This has its
+    -- own, narrower dedup and answers to nothing else.
+    publishVoiceState()
 
     -- WHO WE DO NOT REFUSE, from the one function that decides it. On 'nearby'
     -- that is everybody -- proximity is the SPEAKER's decision and we do not
@@ -1630,8 +2096,11 @@ BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
             -- is fed by a server broadcast precisely because this cannot see it.
             local ply = GetPlayerFromServerId(src)  -- scope-ok: proximity talking only; radio is handled below
             if ply and ply ~= -1 then
+                -- NORMALISED, NOT BELIEVED. `isTalking` is the engine's 1 or 0
+                -- and a bare test on it reads every silent player as speaking;
+                -- see isTrue above for why the bool gate cannot see this line.
                 local okT, isTalking = pcall(MumbleIsPlayerTalking, ply)
-                if okT and isTalking then
+                if okT and isTrue(isTalking) then
                     seen[src] = true
                     talking[#talking + 1] = src
                 end
@@ -1764,6 +2233,17 @@ RegisterCommand('brvoice', function()
         tostring(BR.State and BR.State.match and BR.State.match.mode)))
     print(('  %-14sproximity %s, squad radio %s -- NEVER BOTH'):format('routes',
         r.proximity and 'ON' or 'off', r.radio and 'ON' or 'off'))
+
+    -- THE MASTER SWITCH, PRINTED SEPARATELY FROM THE PROXIMITY ONE.
+    --
+    -- `prox mic` below is about one path and is expected to say NO in squad
+    -- mode; folding the spectator rule into it alone would leave a playtester
+    -- reading "proximity is off, which is normal for squad" while the radio was
+    -- shut too and nothing said so. Same function the gates call, so it cannot
+    -- describe a rule the code is not running.
+    local mute, muteWhy = BR.Voice.silenced()
+    print(('  %-14s%s'):format('transmit',
+        mute and ('NO, ON ANY PATH -- ' .. tostring(muteWhy)) or 'allowed'))
 
     -- TRANSMIT. One line, and it is the truth as the proximity check will
     -- answer it on its next call -- same function, not a description of it.

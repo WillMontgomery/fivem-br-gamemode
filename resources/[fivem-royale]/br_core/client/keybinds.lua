@@ -167,6 +167,25 @@ BR.Keys.bindings = {}
 --- Which action a group is filed under on the settings screen.
 local group = 'Combat'
 
+--- THE UNGATED DOOR, AND THIS FILE IS THE REASON IT EXISTS.
+---
+--- br_lib/shared/devgate.lua puts a dev-mode gate in front of RegisterCommand
+--- for the whole project (owner, 2026-08-31: "Yes I want all client and server
+--- commands gated behind devmode"). Every row below would be caught by it, and
+--- that would not cost the public box a diagnostic -- it would cost it the
+--- KEYBOARD. GTA has no keybind primitive; FiveM builds one out of a command
+--- plus RegisterKeyMapping, so `brslot3` is a console command in exactly the
+--- sense `brshop` is, and it is also the 3 key. Gate these and E does not pick
+--- anything up, TAB does not open the inventory, and M does not draw the map,
+--- on the box where real matches are played.
+---
+--- The fallback is the raw native rather than an error because it is only ever
+--- reached when devgate.lua did not load -- in which case RegisterCommand is
+--- itself unwrapped, and the two spellings mean the same thing. Same shape as
+--- br_ringmaster/server/kick.lua's appeal guard, and for the same reason: a key
+--- must work whatever else is wrong.
+local bindCommand = (BR.Dev and BR.Dev.rawCommand) or RegisterCommand
+
 --- Register a tap action: fires once on press.
 --- @param action string      internal name
 --- @param command string     console command / binding id
@@ -177,7 +196,7 @@ local group = 'Combat'
 ---                           is Escape, and Escape is not something
 ---                           RegisterKeyMapping can be given.
 local function tap(action, command, description, key, raw)
-    RegisterCommand(command, function()
+    bindCommand(command, function()
         -- The RAW LAYER WINS WHEN IT IS RUNNING. The command stays registered
         -- so GTA's own list still shows it, but firing from both paths would
         -- double-tap every action for a player whose chosen key happens to
@@ -254,13 +273,13 @@ end
 --- loses the ability to move one action on an old build, and is told so, which
 --- is a different thing entirely from the action silently going away.
 local function hold(action, command, description, key)
-    RegisterCommand('+' .. command, function()
+    bindCommand('+' .. command, function()
         if BR.Keys.rawHolds then return end
         -- The press is gated for the same reason the tap above is.
         if BR.Keys.uiOwnsKeyboard then return end
         fire(action, true)
     end, false)
-    RegisterCommand('-' .. command, function()
+    bindCommand('-' .. command, function()
         if BR.Keys.rawHolds then return end
         -- AND THE RELEASE IS NOT, DELIBERATELY, WHICH IS THE ASYMMETRY THAT
         -- MATTERS MOST IN THIS FILE.
@@ -314,16 +333,112 @@ tap ('deploy',      'brdeploy',    'Royale: Jump / deploy glider',       'SPACE'
 -- screen's reserved list, so anyone who dislikes it can move it.
 tap ('trail',       'brtrail',     'Royale: Toggle smoke trail',         'B')
 
+-- THE VEHICLE BOOST, AND LEFT SHIFT IS A RESEARCHED CHOICE RATHER THAN A HABIT.
+--
+--   "while holding SHIFT by default (remappable), and in the driver's seat"
+--                                                  -- owner, 2026-08-22, #203
+--
+-- 'LSHIFT' IS THE STRING THE ENGINE TAKES. There is no 'SHIFT' in the keyboard
+-- mapper table -- it is LSHIFT and RSHIFT -- and a key name RegisterKeyMapping
+-- does not recognise is a binding that never appears. The raw layer wants a
+-- different number for the same key; see DEFAULT_VK below, where LSHIFT maps to
+-- 0x10 and the reason is written out.
+--
+-- WHAT SHIFT ALREADY DOES IN A VEHICLE. Eight GTA controls default to left
+-- shift. The full list, what each does when the engine consumes it, and the
+-- finding that GTA's "drift mode" is a handling MOD with no key rather than an
+-- input on this one, are in br_lib/config/boost.lua's excludeClasses note.
+--
+-- THIS COMMENT USED TO SAY "only one of them can fire in a ground vehicle at
+-- all", AND THE PLAYTEST REFUTED IT. /brboostwhy 6 from the driver's seat of a
+-- car reported 21, 61, 340 and 352 all PRESSED on 590 of 686 frames. What that
+-- actually proves is narrower than it sounds -- IS_DISABLED_CONTROL_PRESSED
+-- answers the MAPPER, so four ids bound to one key all read down whenever that
+-- key is down -- but the old sentence was testable and it failed, so it is gone
+-- rather than softened. config/boost.lua carries the full reading.
+--
+-- Shift is still the right default: it is the most valuable key in a car that
+-- has no vanilla EFFECT there, and the same key sprints on foot, so one habit
+-- covers both. It is also the FiveM convention -- the open nitro scripts that
+-- ship a default ship this one, and the three that were read all read it as
+-- control 21 while driving.
+--
+-- THE COLLISIONS, AND WHAT IS DONE ABOUT EACH. RegisterKeyMapping does not
+-- suppress an engine control that shares its key (see the note on the removed
+-- 'ping' binding below for what that cost last time), so all of these are live:
+--
+--   AIRCRAFT   61 and 352 would climb a helicopter while we shoved it forward,
+--              from one press. Excluded in BR.Config.Boost.excludeClasses, which
+--              is the one place to change it.
+--   IN THE AIR 61 pitches a CAR that is airborne, and a boosted car is airborne
+--              far more often. Held down by client/boost.lua while the key is
+--              held in the driver's seat -- BR.Config.Boost.suppressControls.
+--   HYDRAULICS 340 would hop a lowrider fitted with them. Still a mod no car in
+--              this gamemode has fitted, so it remains SPECULATIVE that it can
+--              ever fire here -- the playtest did not confirm it, because what
+--              the playtest saw was the key being down, not a suspension
+--              moving. Suppressed anyway, on the same line as 61, because the
+--              suppression is free and the alternative is a bouncing Tornado
+--              nobody can explain.
+--
+-- INPUT_VEH_ROCKET_BOOST (351) IS NOT IN THAT LIST and is worth saying so about,
+-- because it is the control whose name suggests it should be. It is on E, not
+-- shift -- it is already suppressed at petrol pumps for exactly that reason
+-- (BR.Config.Fuel.hornControls) -- and it does nothing at all on a vehicle
+-- without FLAG_HAS_ROCKET_BOOST in its meta, which is no vehicle in this game.
+-- It is neither a help nor an obstacle here.
+hold('boost',       'brboost',     'Royale: Vehicle boost',              'LSHIFT')
+
 group = 'Combat'
 -- Inventory and interaction
 tap ('inventory',   'brinventory', 'Royale: Inventory',                  'TAB')
 hold('interact',    'brinteract',  'Royale: Interact / pick up / revive','E')
 tap ('drop',        'brdrop',      'Royale: Drop selected item',         'G')
--- R by default because RELOAD is exactly what a player reaches for when they
--- want the thing in their hands to do something, and reloading a shield potion
--- means nothing -- so the two never want the key at the same moment. Rebind it
--- in Settings > Key Bindings like everything else here.
-tap ('use',         'bruse',       'Royale: Use selected item',          'R')
+-- ═══ R IS THE RELOAD KEY, AND SINCE 2026-08-23 THERE IS A RELOAD ═══
+--
+-- This row chose R by arguing about a reload that did not exist yet:
+--
+--   "R by default because RELOAD is exactly what a player reaches for when they
+--    want the thing in their hands to do something, and reloading a shield
+--    potion means nothing -- so the two never want the key at the same moment."
+--
+-- Owner, 2026-08-23: "we need a manual reload button, which should default to
+-- R." R WAS ALREADY TAKEN -- by this line. Three ways out: put the reload
+-- somewhere the owner did not ask for, move `use` off the key his hands already
+-- know, or take the sentence above at its word.
+--
+-- IT IS TAKEN AT ITS WORD, AND THIS STAYS ONE BINDING. The claim was that the
+-- two can never both be answerable, and it holds exactly: a magazine with room
+-- in it over a live pool is a reload and nothing else, and every other state is
+-- a `use`. So one key answers one question -- "make the thing in my hands do
+-- something" -- and client/inventory.lua decides which, from what is in the
+-- hands rather than from anything about the key.
+--
+-- ═══ "IT HOLDS EXACTLY" WAS WRONG BY ONE STATE, AND #234 IS THAT STATE ═══
+--
+-- "every other state is a `use`" was the half that failed. A weapon in the hand
+-- with nothing to reload is not a `use` of anything the player is holding, and
+-- `use` reached three slots away for a consumable -- so pressing reload on a
+-- full gun put the gun away and drank a potion (owner, 2026-08-29: "strange").
+-- The binding is still one row and the argument below still stands; what
+-- changed is in client/inventory.lua, where the reach past the active slot now
+-- stops at a weapon. WITH A GUN IN THE HAND THIS KEY EITHER RELOADS IT OR DOES
+-- NOTHING, which is the sentence above being made true rather than abandoned.
+--
+-- WHY NOT A SECOND BINDING ALSO DEFAULTING TO R, which is the obvious shape and
+-- was written before this one. The raw layer would handle it -- it tracks edges
+-- per COMMAND, so two rows on 0x52 both fire -- but the ENGINE's half is an
+-- assumption nobody here can test: whether RegisterKeyMapping delivers BOTH
+-- commands for one key, or one of them. On a client without the raw natives
+-- that assumption is the difference between a working reload and a dead key,
+-- and this file has paid for input-layer assumptions three times over #129
+-- alone ("Welp, now trying to open a crate does nothing at all"). One binding
+-- needs no assumption on either layer.
+--
+-- The cost, stated: reload cannot be moved off `use`. They are one key by the
+-- owner's own request and by the argument this row was founded on, and the day
+-- somebody wants them apart is the day to find out what the engine does.
+tap ('use',         'bruse',       'Royale: Use item / reload',          'R')
 
 group = 'Slots'
 -- Slots. Direct slot keys beat scroll-wheel cycling under pressure.
@@ -390,12 +505,30 @@ hold('ptt',         'brptt',       'Royale: Push to talk',               'N')
 -- any resource on this server registers. The +radiotalk COMMAND is untouched
 -- and is still what `ptt` drives -- see voice.lua.
 --
--- STILL DEAD AND STILL BOUND, deliberately left for a round of their own
--- rather than swept up here: 'map' (M), 'specNext' (RIGHT), 'specPrev' (LEFT).
--- Same shape, same absence of any BR.Keys.on for them.
+--- NOTHING ON THIS SCREEN IS BOUND-BUT-DEAD ANY MORE, AND BOTH HALVES OF THAT
+--- WERE EARNED IN THE SAME WEEK.
+---
+--- THE SPECTATE ARROWS (#192). 'specNext' (RIGHT) and 'specPrev' (LEFT) stood
+--- in this paragraph from M3 until the round that built spectating, and
+--- client/spectate.lua is the subscriber they never had. Nothing about the two
+--- rows below moved: same actions, same commands, same defaults -- so a player
+--- who had already rebound a key they had no way to know was dead keeps the key
+--- they chose. The public site was corrected on 2026-08-21 to stop claiming they
+--- worked; it now says so again because they do.
+---
+--- 'map' (M) WAS THE LAST ONE (#199). It was registered here with no BR.Keys.on
+--- anywhere in the tree. br_ui/client/pause.lua subscribes to it now and opens
+--- the same map the pause menu's button opens -- one function, three callers.
 
 group = 'Map'
--- Map and spectating
+-- Map and spectating.
+--
+-- M, AND IT WAS ALREADY REGISTERED HERE BEFORE IT DID ANYTHING (#199). The row,
+-- the default and the settings-screen entry have existed since the binding
+-- table did; what was missing was a BR.Keys.on for it, which is the whole of
+-- what this issue asked for. Nothing below hardcodes M -- the listener fires on
+-- the ACTION, so a player who moves the row moves the map with it and every
+-- screen that draws a key follows through BR.Keys.push.
 tap ('map',         'brmap',       'Royale: Map',                        'M')
 -- CLEARING A WAYPOINT. GTA's own way to remove one is to open the pause map,
 -- find the flag and click it again -- which in a battle royale means opening a
@@ -462,6 +595,56 @@ BR.Keys.on('settingsMenu', function(pressed)
     if pressed then TriggerEvent('br:ui:settingsToggle') end
 end)
 
+--- WHERE THE MAP KEY IS ANSWERED, AND WHERE IT IS NOT (#199).
+---
+--- ONE PRESS, AND IT IS THE PAUSE MENU'S OWN MAP BUTTON. `br:ui:mapToggle`
+--- reaches the same BR.Pause.openMap() the Map card's PAUSE_ACTION callback
+--- calls -- one implementation of "open the map", switchable by `brmapmode`
+--- like it always was, with nothing here knowing which of the three routes it
+--- ends up taking. A second copy of that decision is exactly what the issue
+--- asked us not to write.
+---
+--- IT ALSO CLOSES, and that is a decision rather than an oversight of the
+--- owner's "one-key press to open". br_ui/client/pause.lua already states the
+--- rule for the other key that reaches the map: "whatever the map key turned
+--- on, the map key turns off. A player should never have to know WHICH native
+--- drew the thing in front of them to get rid of it." A dedicated map key that
+--- can only open leaves the player holding something they have to be told a
+--- different key to dismiss -- and in the default `frontend` route that key is
+--- Escape, which is the one this menu is replacing. Escape still closes it too;
+--- nothing was taken away.
+---
+--- EVERY STATE BUT THE LOBBY, which is the same answer the button gives.
+--- PauseMenu.tsx hides the Map card behind `!inLobby` and says why: the map
+--- route raises GTA's frontend, the lobby is drawn from MATCH STATE rather than
+--- from focus, and a lobby that keeps painting over a scaleform is #122
+--- verbatim. That reasoning is about the route, not about the button, so a key
+--- that skipped the gate would reintroduce the bug through a second door -- the
+--- exact shape #138 was ("PUBLIC BECAUSE THERE WAS A FOURTH DOOR"). So: bus,
+--- freefall, glide, alive, warmup, downed, dead and spectating all open the map;
+--- the lobby does not.
+---
+--- THE GATE IS HERE AND NOT IN br_ui BECAUSE THE STATE IS HERE. br_ui declares
+--- no dependency on br_core and cannot read BR.State at all -- ringmaster.lua:66
+--- records what happens to code that tries ("the first version of this read nil
+--- forever from over there"). The page's own `inLobby` is derived from what the
+--- bridge sends it, which is this same state by a longer road.
+---
+--- THE GATE NAMES THE ONE STATE THAT REFUSES, RATHER THAN THE EIGHT THAT ALLOW,
+--- so an unknown answer opens the map. `BR.State.me.state` is nil for the window
+--- between this file loading and the first state landing, and it would be nil
+--- again for any state added later -- an allowlist would refuse both, which is a
+--- key that silently does nothing on exactly the clients where something else
+--- has already gone wrong. The cost of the other direction is a map opened over
+--- a lobby for the length of that window; the cost of an allowlist is a dead key
+--- nobody can diagnose from a chair.
+BR.Keys.on('map', function(pressed)
+    if not pressed then return end
+    local st = BR.State and BR.State.me and BR.State.me.state
+    if st == BR.PlayerState.LOBBY then return end
+    TriggerEvent('br:ui:mapToggle')
+end)
+
 -- THE KILL PROMPT BORROWS TAB, AND THE BORROWING HAS TO HAPPEN HERE (#177).
 --
 -- br_ui shows the prompt -- it owns the toast and it writes the sentence -- but
@@ -490,12 +673,13 @@ end)
 
 --- Names of every registered action, for the debug overlay.
 BR.Keys.actions = {
-    'deploy', 'trail', 'inventory', 'interact', 'drop', 'use',
+    'deploy', 'trail', 'boost', 'inventory', 'interact', 'drop', 'use',
     'slot1', 'slot2', 'slot3', 'slot4', 'slot5',
     -- 'ping' is gone: it had no listener and the marker it was for is placed
-    -- by dropping a map waypoint now (client/markers.lua). 'map', 'specNext'
-    -- and 'specPrev' are in the same state and are NOT yet removed -- they are
+    -- by dropping a map waypoint now (client/markers.lua). 'specNext' and
+    -- 'specPrev' are still in that state and are NOT yet removed -- they are
     -- listed here so the debug overlay keeps naming them while they are.
+    -- 'map' was with them and is not any more (#199): it opens the map.
     'chatGlobal', 'chatSquad', 'ptt', 'map', 'specNext', 'specPrev',
     'clearWaypoint',
 }
@@ -580,6 +764,84 @@ local DEFAULT_VK = {
     -- skips the binding entirely and the row shows "Unbound" on a settings
     -- screen the player never touched -- see the note above this table.
     T = 0x54, Y = 0x59, Z = 0x5A, M = 0x4D, N = 0x4E, BACK = 0x08,
+    -- ═══ 'LSHIFT' IS THE ENGINE'S NAME AND 0x10 IS THE RAW LAYER'S, AND THEY
+    --     DELIBERATELY DISAGREE ═══
+    --
+    -- The vehicle boost is on left shift (brboost). RegisterKeyMapping's keyboard
+    -- table has no plain 'SHIFT' -- it is LSHIFT and RSHIFT -- so the ENGINE side
+    -- has to be told LSHIFT specifically.
+    --
+    -- The RAW side wants 0x10, which is VK_SHIFT, the GENERIC one. Three separate
+    -- reasons, and they all point the same way:
+    --
+    --   * the raw natives read GTA's own 256-slot keyboard array, indexed by
+    --     virtual-key code and fed from Windows keyboard messages -- and a
+    --     WM_KEYDOWN for either shift carries wParam = VK_SHIFT (0x10). The
+    --     side-specific 0xA0/0xA1 are never what lands in that slot.
+    --   * the settings screen's capture is a browser keydown and reads
+    --     `e.keyCode`, which is 16 for either shift. A rebind onto shift from our
+    --     own screen therefore produces 0x10, so the default has to be 0x10 or a
+    --     player who "rebound" it to the key it was already on would change its
+    --     behaviour.
+    --   * 0x10 is already in VK_NAME as 'Shift', so every prompt and every
+    --     settings row renders it correctly with no change. 0xA0 would fall off
+    --     the end of vkName and print '#160'.
+    --
+    -- The cost, stated: the boost answers to EITHER shift key rather than only
+    -- the left one. That is a superset of what the pause-menu row claims and is
+    -- the friendlier of the two errors.
+    --
+    -- ═══ AND ALL THREE OF THOSE REASONS ARE INFERENCES, WHICH IS WHY 0x10 IS NO
+    --     LONGER ASKED ALONE (#203) ═══
+    --
+    -- Not one of them is an observation of what this build puts in the keyboard
+    -- array: the first is a fact about Windows messages, the second about our own
+    -- rebinder, the third about printing. #203's playtest had the boost doing
+    -- nothing with the meter untouched, which is exactly what a key that never
+    -- reads down looks like -- and no source anywhere settles which slot a shift
+    -- press fills. The raw reader now asks 0x10, 0xA0 and 0xA1 for this binding;
+    -- see VK_ALSO at the frame loop for why that is a strict superset rather than
+    -- a second guess.
+    --
+    -- ═══ THE OBSERVATION ARRIVED, THE FIRST INFERENCE WAS WRONG, AND THIS ENTRY
+    --     STAYS 0x10 ANYWAY ═══
+    --
+    -- /brboostwhy 6, driver's seat, this build:
+    --
+    --     IsRawKeyDown 0x10    never                    VK_SHIFT
+    --     IsRawKeyDown 0xA0    DOWN on 590 of 686       VK_LSHIFT  -- left only
+    --     IsRawKeyDown 0xA1    never                    VK_RSHIFT  -- right only
+    --
+    -- So the keyboard array is filled SIDE-SPECIFICALLY and the generic slot is
+    -- never filled at all. The first of the three reasons above is dead: GTA does
+    -- not populate that array straight from the WM_KEYDOWN wParam. The other two
+    -- are untouched, because they were never about the array.
+    --
+    -- MOVING THIS ENTRY TO 0xA0 WOULD BREAK THE BINDING IT LOOKS LIKE IT WOULD
+    -- FIX, and that is the whole decision. VK_ALSO is keyed on the STORED code
+    -- and holds exactly one row, 0x10 -> {0xA0, 0xA1}. Store 0xA0 here and:
+    --
+    --   * the lookup misses -- there is no VK_ALSO[0xA0] -- so the raw layer
+    --     would ask 0xA0 and nothing else, and RIGHT shift, which works today,
+    --     would stop working;
+    --   * vkName(0xA0) is not in VK_NAME, so every prompt and the settings row
+    --     would print '#160' instead of 'Shift';
+    --   * the settings screen captures a browser keydown, whose keyCode is 16 for
+    --     either shift, so the moment a player rebound the boost onto the key it
+    --     was already on it would be stored as 0x10 -- back to the default this
+    --     change was meant to move away from, with the default and the stored
+    --     value now disagreeing about the same physical key.
+    --
+    -- 0x10 IS NOT A GUESS ABOUT THE KEYBOARD ANY MORE; IT IS THE NAME THIS LAYER
+    -- STORES, PRINTS AND REBINDS BY, and VK_ALSO is what turns that name into the
+    -- codes the array actually fills. The bet that failed has already been paid
+    -- off by the superset, which is why the boost works at all -- so the fix is
+    -- to stop calling VK_ALSO a hedge, not to move this line. See VK_ALSO.
+    --
+    -- AND IT HAS TO BE HERE AT ALL, which is the note above this table: a default
+    -- missing from DEFAULT_VK is a key the raw layer skips entirely, showing as
+    -- "Unbound" on a settings screen the player never touched.
+    LSHIFT = 0x10,
     LEFT = 0x25, RIGHT = 0x27, UP = 0x26, DOWN = 0x28,
     F1 = 0x70, F2 = 0x71, F3 = 0x72, F4 = 0x73, F5 = 0x74,
 }
@@ -814,6 +1076,30 @@ function BR.Keys.labelFor(command)
     return BR.Keys.vkName(code) or ('#' .. code), true
 end
 
+--- The virtual-key code a command is ACTUALLY driven on, or nil.
+---
+--- THE NUMERIC TWIN OF labelFor, AND IT APPLIES THE SAME RULE FOR THE SAME
+--- REASON. labelFor answers "what do I print"; this answers "what physical key
+--- is this", which is the question anything suppressing an ENGINE control on
+--- that key has to ask. Both defer to engineDrives: a row the engine is driving
+--- sits on its original default whatever the player has since chosen, because
+--- nothing can move a RegisterKeyMapping binding from script.
+---
+--- Derived from the same two helpers rather than re-deciding, for the reason
+--- written at engineDrives: two separately-written versions of "who owns this
+--- key" is how the world prompts came to name a key nothing was listening to.
+--- @param command string
+--- @return integer|nil
+function BR.Keys.boundTo(command)
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.command == command then
+            if engineDrives(b) then return engineCode(b) end
+            return load()[b.command] or nil
+        end
+    end
+    return nil
+end
+
 --- Is our pause menu the thing Escape opens?
 ---
 --- ASKED BEFORE THE ENGINE'S OWN MENU IS SUPPRESSED, and that is the whole
@@ -822,11 +1108,16 @@ end
 --- who rebinds our pause menu to something else has no pause menu at all and
 --- no way back. So the suppression follows the binding: hold Escape and the
 --- frontend is ours, give Escape up and it is the engine's again.
+---
+--- THE rawActive TEST STAYS IN FRONT AND IS NOT FOLDED INTO boundTo. Without
+--- the raw layer the engine drives this row, boundTo would answer with the
+--- engine's own Escape default (0x1B, the `raw` argument on the tap) and the
+--- frontend would be suppressed on precisely the client that has no other way
+--- to reach a pause menu -- see the second of the two guards at the binding.
 --- @return boolean
 function BR.Keys.ownsEscape()
     if not BR.Keys.rawActive then return false end
-    load()
-    return vk['brpausemenu'] == 0x1B
+    return BR.Keys.boundTo('brpausemenu') == 0x1B
 end
 
 --- Is this a command we registered?
@@ -1054,6 +1345,88 @@ local function truth(v)
     return true
 end
 
+--- ═══ ONE PHYSICAL KEY, MORE THAN ONE VIRTUAL-KEY CODE, AND NOBODY DOCUMENTS
+---     WHICH SLOT THE ENGINE FILLS ═══
+---
+--- IS_RAW_KEY_DOWN reads GTA's own keyboard array -- FiveM's InputNatives.cpp is
+--- `(*ioKeyboardKeys)[*ioKeyboardActive][key]` over 256 slots -- and the native's
+--- own documentation says the index is a WINDOWS VIRTUAL-KEY CODE, with an
+--- example of 32 for space. That much is settled.
+---
+--- WHAT IS NOT SETTLED, AND WAS SHIPPED AS IF IT WERE: which slot a SHIFT press
+--- lands in. DEFAULT_VK picks 0x10 (VK_SHIFT, the side-agnostic one) on three
+--- converging arguments, and every one of them is an inference:
+---
+---   * a WM_KEYDOWN for either shift carries wParam = VK_SHIFT -- true of
+---     Windows, and it assumes the game populates the array straight from that
+---     message rather than from a device layer that already knows the side;
+---   * the settings screen's capture reads `e.keyCode`, which is 16 for either
+---     shift -- true, and it is a fact about our own rebinder, not about the
+---     engine;
+---   * 0x10 is already in VK_NAME so it prints nicely -- true, and it is about
+---     printing.
+---
+--- NONE OF THE THREE IS AN OBSERVATION OF THIS BUILD, and the research says so
+--- out loud: no source -- the native declaration, InputNatives.cpp, the docs, or
+--- any forum thread -- states whether shift fills 0x10, the side-specific
+--- 0xA0/0xA1, or all three. FiveM's own mapper parameter table DOES distinguish
+--- LSHIFT from RSHIFT, so the engine knows the side somewhere, which is a
+--- reason to doubt that only the generic slot is filled.
+---
+--- SO ASK ALL OF THEM. This is a STRICT SUPERSET and that is the whole argument
+--- for doing it without waiting for a playtest to say which is true:
+---
+---   * if 0x10 is filled, this changes nothing -- the first read already
+---     answered and the others are never reached;
+---   * if only 0xA0/0xA1 are filled, a binding that could never fire now fires;
+---   * there is no third case in which asking MORE codes about the same
+---     physical key makes a binding worse.
+---
+--- ═══ THE PLAYTEST CAME BACK AND IT IS THE SECOND CASE. THIS TABLE IS NOW THE
+---     ONLY REASON THE BOOST WORKS ═══
+---
+--- /brboostwhy 6, driver's seat: 0x10 never read down over 686 frames, 0xA0 read
+--- down on 590 of them. The generic slot this project's DEFAULT_VK stores is not
+--- filled by this build at all -- so `rawDownFn(code)` on the first line of
+--- rawDownAny() below answers false on every single frame, forever, and every
+--- press of the boost key is caught by the loop over `also`.
+---
+--- WHICH MAKES THIS A LOAD-BEARING TABLE WEARING A HEDGE'S CLOTHES, and it is
+--- worth being loud about because "belt and braces" is exactly what somebody
+--- tidies away. DELETE THIS TABLE AND THE VEHICLE BOOST DIES SILENTLY -- no
+--- error, no log line, a full meter and a key that does nothing, which is #203's
+--- original report word for word. It is pinned by tools/test_client.lua's
+--- `#203 the boost, key to car` block, whose FILLS matrix runs a build that fills
+--- only 0xA0 and asserts the boost still starts.
+---
+--- THE SEMANTIC COST WAS ALREADY ACCEPTED, IN WRITING, AT DEFAULT_VK: "the boost
+--- answers to EITHER shift key rather than only the left one... the friendlier
+--- of the two errors." Nothing new is being given up here.
+---
+--- ONLY 0x10 NEEDS AN ENTRY, and that is not an oversight. This table is keyed
+--- on the code that can actually be STORED for a binding, and the only two
+--- writers are DEFAULT_VK (which uses 0x10) and the settings screen (whose
+--- browser keydown yields 16 for either shift). 0xA0 can never be the stored
+--- code, so a reverse entry would be a row nothing could ever look up.
+local VK_ALSO = {
+    [0x10] = { 0xA0, 0xA1 },   -- VK_SHIFT <- VK_LSHIFT, VK_RSHIFT
+}
+
+--- Is this binding's key down, asking every code that can mean it.
+--- @param code integer
+--- @return boolean
+local function rawDownAny(code)
+    -- NORMALISED HERE AND NOWHERE ELSE, for the reason written at truth(): the
+    -- native may answer 1/0, and 0 is truthy in Lua.
+    if truth(rawDownFn(code)) then return true end
+    local also = VK_ALSO[code]
+    if also == nil then return false end
+    for i = 1, #also do
+        if truth(rawDownFn(also[i])) then return true end
+    end
+    return false
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     if not BR.Keys.rawActive then return end
 
@@ -1103,7 +1476,11 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             -- of which test it with `== true`. Converting here means none of
             -- them can ever see the native's own shape. See truth() above for
             -- what went wrong when they did.
-            local down = truth(rawDownFn(code))
+            -- rawDownAny, NOT rawDownFn: one physical key can arrive as more
+            -- than one virtual-key code and no source settles which slot this
+            -- build fills for shift. See VK_ALSO above -- it is a superset, so
+            -- for every key that already worked this is the same call it was.
+            local down = rawDownAny(code)
             local was = rawDown[b.command] == true
 
             -- A HELD FLAG THAT IS ONLY EVER WRITTEN ON AN EDGE IS A LATCH, AND

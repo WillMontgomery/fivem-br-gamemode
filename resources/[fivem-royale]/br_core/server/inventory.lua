@@ -185,10 +185,37 @@ function BR.Inv.publicFor(src)
 end
 
 --- Send a player their inventory. Every mutation ends in one of these.
+---
+--- ═══ `opts.quiet` SUPPRESSES THE PICKUP CUE, AND ONLY THE CUE ═══
+---
+--- client/inventory.lua plays GTA's PICK_UP whenever an INV_SET shows the
+--- inventory GAINED something. That is right for every ordinary arrival -- the
+--- sound is the feedback that separates a pickup from a pickup that was refused
+--- -- and it is wrong for a grant the player did not just perform.
+---
+--- The warmup shop is the case that found it (owner, 2026-08-29: "when
+--- transitioning to state BUS, the pickup sound is heard again by anyone who has
+--- purchased an item"). The car token is handed out at wheels-up, minutes after
+--- the purchase, and everyone who bought one heard a pickup sound for something
+--- they could not see arriving.
+---
+--- A FLAG ON THE PUSH RATHER THAN A GUESS ON THE CLIENT. The client cannot tell
+--- a delivery from a pickup by looking at the payload -- both are simply "a slot
+--- gained an item" -- and any rule it invented (was I entering BUS? is the item
+--- a car?) would be a second, drifting answer to a question the server already
+--- knows. The server is the only thing that knows WHY the inventory changed, so
+--- it is what says whether it made a noise.
+---
+--- IT DOES NOT SUPPRESS ANYTHING ELSE. The slots still arrive, the panel still
+--- updates, the toast the shop already sends still speaks. Silence here means
+--- silence, not invisibility.
 --- @param src integer
-function BR.Inv.push(src)
+--- @param opts table|nil  { quiet = true } to deliver without the pickup cue
+function BR.Inv.push(src, opts)
     local payload = BR.Inv.publicFor(src)
-    if payload then TriggerClientEvent(BR.Net.INV_SET, src, payload) end
+    if not payload then return end
+    if type(opts) == 'table' and opts.quiet == true then payload.quiet = true end
+    TriggerClientEvent(BR.Net.INV_SET, src, payload)
 end
 
 --- Wipe an inventory back to empty and tell the owner.
@@ -224,6 +251,100 @@ local function addAmmo(inv, pool, amount)
     local next_ = math.min(cap, have + amount)
     inv.ammo[pool] = next_
     return next_ - have
+end
+
+--- THE RELOAD RULE. THERE IS EXACTLY ONE OF IT AND THIS IS IT.
+---
+--- Rounds out of the pool and into the magazine, up to what the magazine holds.
+--- It MOVES and it cannot MINT: `clip + pool` is the same number on both sides
+--- of this function, whatever it is given, which is the property the whole ammo
+--- model rests on and the one a reload KEY makes somebody able to press on
+--- demand. Every guard below is a `return 0` rather than a clamp, so there is no
+--- path through it that writes without the arithmetic above having balanced.
+---
+--- THREE CALLERS, AND THEY WERE TWO COPIES BEFORE THIS EXISTED (2026-08-23):
+---
+---   spendRound          an empty magazine refills when the last round is fired
+---   the INV_AMMO floor  ...and when the client reports it emptied unseen
+---   INV_RELOAD          the manual key, which is the reason this is shared
+---
+--- The first two keep their own `clip <= 0` test and this is a strict
+--- generalisation of what they used to do inline: at clip 0, `w.clip - 0` is
+--- `w.clip` and the arithmetic is identical to the line each of them held. The
+--- manual reload is the only caller that tops up a PARTIAL magazine, which is
+--- the whole difference between a reload key and waiting to run dry -- and it is
+--- the reason this is one function rather than a third copy that would have to
+--- be kept honest against the other two by hand.
+---
+--- @param inv table
+--- @param s table|false   a slot
+--- @return integer moved
+function BR.Inv.reload(inv, s)
+    if not inv or not s or s.kind ~= BR.ItemKind.WEAPON then return 0 end
+
+    local w = BR.Config.WeaponById[s.item]
+    -- Melee has no magazine and a throwable's "magazine" is its stack -- neither
+    -- is a thing rounds can be moved into.
+    if not w or w.melee or not w.clip or not w.ammo then return 0 end
+
+    local pool = inv.ammo[w.ammo] or 0
+    local clip = s.clip or 0
+    -- ROOM, NOT EMPTINESS, and `<= 0` on both rather than a truthiness test:
+    -- these are the two numbers a bare `if pool then` gets exactly backwards,
+    -- because 0 IS TRUTHY IN LUA and an empty pool is the case this function
+    -- exists to refuse.
+    local room = w.clip - clip
+    if room <= 0 or pool <= 0 then return 0 end
+
+    local moved = math.min(room, pool)
+    s.clip, inv.ammo[w.ammo] = clip + moved, pool - moved
+    return moved
+end
+
+--- STAMP A STACK THAT IS LEAVING SOMEBODY'S HANDS.
+---
+--- ═══ THE FOURTH DOOR (owner, 2026-08-23) ═══
+---
+--- "when I drop it and pick it back up it has 1 round in it now." His /brammo,
+--- on a railgun fired dry: the magazine went 0 -> 1 while the heavy pool stayed
+--- 0. A round was CREATED, not moved, and docs/terminology.md says an empty pool
+--- cannot conjure.
+---
+--- IT IS THE PICKUP, AND IT WAS NEVER ONE ROUND. BR.Inv.give ends by granting a
+--- clip's worth of reserve to any weapon that arrives -- "a found gun has to be
+--- usable" -- and it asked nothing about where the gun came from. So a railgun
+--- dropped with 0/0 came back with THREE in the heavy pool, out of nothing, and
+--- it COMPOUNDED: the same trip run three times measured 3, 6, 9. What the owner
+--- saw was smaller only because it had already been laundered -- the client
+--- pushes the conjured three onto the ped, the engine's own reading comes back
+--- lower, and the INV_AMMO floor below spends the difference and then reloads,
+--- which turns "+3 in the pool" into "1 in the magazine, pool 0". The row he
+--- photographed is the tail of it, not the size of it.
+---
+--- AND IT IS NOT RAILGUN-ONLY. A dry pistol makes the same trip and comes back
+--- with twelve light rounds. The railgun is simply the only weapon whose pool is
+--- normally 0, so it is the only one where a conjured round has nothing to hide
+--- behind -- exactly as the 2026-08-23 switch bug was found on the same gun for
+--- the same reason.
+---
+--- THE GRANT IS RIGHT AND ITS AUDIENCE WAS WRONG. A gun off the floor of the
+--- world, out of a crate, off the airdrop shelf, should arrive with something in
+--- it; that is a piece of loot being minted. A gun that has already been in an
+--- inventory has already been paid for -- its magazine travels with it and its
+--- reserve stayed with the player who had it -- so re-minting one is printing
+--- ammunition on demand.
+---
+--- So every stack that leaves an inventory is marked on the way out, and the
+--- grant asks. The mark is applied at the EXIT rather than stored on the slot:
+--- there are exactly four ways out (a drop, a death, a displaced swap, and this
+--- is all of them), each of them returns the slot table itself, and deriving the
+--- fact where it becomes true means there is no stale copy of it to go wrong.
+--- @generic T
+--- @param s T
+--- @return T
+local function released(s)
+    if s then s.carried = true end
+    return s
 end
 
 -- --------------------------------------------------------------------------
@@ -342,7 +463,7 @@ end
 --- @return boolean ok
 --- @return table|nil displaced
 --- @return string|nil reason
-function BR.Inv.give(src, stack)
+function BR.Inv.give(src, stack, opts)
     local inv = BR.Inv.of(src)
     if not inv or not stack then return false, nil, 'noinv' end
 
@@ -350,7 +471,7 @@ function BR.Inv.give(src, stack)
     if stack.kind == BR.ItemKind.AMMO then
         local taken = addAmmo(inv, stack.item, stack.count or 0)
         if taken <= 0 then return false, nil, 'ammofull' end
-        BR.Inv.push(src)
+        BR.Inv.push(src, opts)
         return true, nil, nil
     end
 
@@ -450,11 +571,11 @@ function BR.Inv.give(src, stack)
                 item = stack.item, kind = stack.kind,
                 rarity = stack.rarity, count = math.min(max, left),
             }
-            BR.Inv.push(src)
-            return true, displaced, nil
+            BR.Inv.push(src, opts)
+            return true, released(displaced), nil
         end
 
-        BR.Inv.push(src)
+        BR.Inv.push(src, opts)
         -- Partially taken: hand the remainder back so it stays in the world.
         if left > 0 then
             local rest = {}
@@ -535,14 +656,22 @@ function BR.Inv.give(src, stack)
         inv.active = at
     end
 
-    -- A found gun has to be usable. One clip's worth of reserve, capped by
+    -- A FOUND gun has to be usable. One clip's worth of reserve, capped by
     -- the pool -- enough to fight with, not enough to stop looting ammo.
-    if w and w.ammo then
+    --
+    -- `not stack.carried` IS THE WHOLE OF THE 2026-08-23 DROP/PICKUP FIX, and
+    -- the note on `released` above is why. This line used to run for every
+    -- weapon that arrived by any route, so a gun the player had just thrown on
+    -- the floor was minted a fresh magazine's worth of reserve when they picked
+    -- it up again -- out of an empty pool, repeatable, compounding. A weapon
+    -- that has been in an inventory is not found loot; it is the same weapon
+    -- coming back, and it comes back with what it left with.
+    if w and w.ammo and not stack.carried then
         addAmmo(inv, w.ammo, (w.clip or 0) * (L.weaponReserveClips or 1))
     end
 
-    BR.Inv.push(src)
-    return true, displaced, nil
+    BR.Inv.push(src, opts)
+    return true, released(displaced), nil
 end
 
 --- Take a whole slot out. Used by drops and by death.
@@ -555,7 +684,7 @@ function BR.Inv.take(src, slot)
     local s = inv.slots[slot]
     if not s then return nil end
     inv.slots[slot] = false
-    return s
+    return released(s)
 end
 
 --- Everything a player was carrying, emptied out. The death box's contents.
@@ -569,7 +698,7 @@ function BR.Inv.dropAll(src)
     for i = 1, SLOTS do
         local s = inv.slots[i]
         if s then
-            out[#out + 1] = s
+            out[#out + 1] = released(s)
             inv.slots[i] = false
         end
     end
@@ -685,6 +814,55 @@ AddEventHandler(BR.Net.INV_DROP, function(d)
     BR.Inv.push(src)
 end)
 
+-- THE MANUAL RELOAD KEY (owner, 2026-08-23: "we need a manual reload button,
+-- which should default to R").
+--
+-- ═══ IT MUST NOT BECOME DOOR NUMBER FIVE ═══
+--
+-- Four ways to conjure ammunition have been closed in two days -- the slot
+-- switch, an unrelated pickup, the post-landing sweep and the drop/pickup round
+-- trip -- and every one of them was something a player could REPEAT. A reload
+-- key is that shape by construction: it is a button, in the player's hand,
+-- pressable as fast as they like, and any version of it that can add a round can
+-- add all of them.
+--
+-- SO IT ADDS NOTHING AND CHOOSES NOTHING. It carries no payload, it names no
+-- slot, it reloads the slot THIS SIDE believes is active, out of the pool THIS
+-- SIDE holds, by BR.Inv.reload -- the same function spendRound and the INV_AMMO
+-- floor run. That function MOVES rounds, so `clip + pool` is identical on both
+-- sides of it, so pressing this key a thousand times at a pool of zero produces
+-- exactly what pressing it once does: nothing. There is no rate limit here and
+-- none is needed -- a spammed reload is a magazine that is already full, which
+-- the rule returns 0 for.
+--
+-- AND IT DOES NOT ASK THE ENGINE. The obvious implementation is to tell the
+-- client to call the reload native, but the ped's magazine is not the authority
+-- on anything here and never has been (see the header, and the whole of
+-- client/inventory.lua's `shortfall`). The server moves its own numbers and
+-- pushes; the ped learns about it through the INV_SET that follows, on the same
+-- path a reload the server paid for has always travelled.
+--
+-- THE SILENCE IS DELIBERATE. A full magazine, an empty pool, fists, a melee
+-- weapon in hand: all of them return without a word, because a key that talks
+-- back every time it has nothing to do becomes noise in a firefight -- and the
+-- one case worth explaining, an empty pool, is already on the HUD as a zero.
+RegisterNetEvent(BR.Net.INV_RELOAD)
+AddEventHandler(BR.Net.INV_RELOAD, function()
+    local src = source
+    local inv = liveInv(src)
+    if not inv then return end
+
+    -- SLOT ZERO IS FISTS and holds nothing; every other index is checked by
+    -- BR.Inv.reload, which refuses anything that is not a magazined weapon.
+    if BR.Inv.reload(inv, inv.slots[inv.active]) <= 0 then return end
+
+    -- Reloading interrupts a consumable, exactly as a slot switch does: both are
+    -- "what my hands are doing", and letting a med kit finish while a magazine
+    -- goes in would be a free heal mid-fight.
+    inv.using = nil
+    BR.Inv.push(src)
+end)
+
 RegisterNetEvent(BR.Net.INV_USE)
 AddEventHandler(BR.Net.INV_USE, function(d)
     local src = source
@@ -700,6 +878,44 @@ AddEventHandler(BR.Net.INV_USE, function(d)
 
     local c = BR.Config.ConsumableById[s.item]
     if not c then return end
+
+    -- ═══ `useMs` IS WHAT MAKES A CONSUMABLE USABLE FROM THE INVENTORY ═══
+    --
+    -- Owner, 2026-08-23, on the CPR kit: "this item should do absolutely
+    -- nothing while the player is alive." It did rather more than nothing --
+    -- it took the server down:
+    --
+    --     @br_core/server/inventory.lua:883: attempt to perform arithmetic on
+    --     a nil value (field 'useMs')
+    --
+    -- The kit is a CONSUMABLE and it is in BR.Config.ConsumableById, because it
+    -- has to be carried, dropped, labelled, propped and rolled into an airdrop
+    -- like any other. What it is NOT is a channelled item: it is spent by the
+    -- prompt while downed (BR.Net.RESCUE_CALL), which validates its own
+    -- conditions, so config/loot.lua gives it no `useMs` on purpose -- "a
+    -- `useMs` here would be a channel nothing can start". Nothing refused it
+    -- before the arithmetic below, so pressing use on it while standing threw.
+    --
+    -- ═══ WHY A GUARD HERE AND NOT A REQUIRED FIELD AT CONFIG LOAD ═══
+    --
+    -- Because the kit is not malformed. A load-time "every consumable must
+    -- declare useMs" check would be a rule the shipped config deliberately
+    -- breaks, so it would have to carry an exemption for `cprkit` -- which puts
+    -- the same decision in two files and makes the next non-channelled item a
+    -- config edit in both. A verify.sh gate has the same problem one step
+    -- further out: it cannot see which consumables are meant to be reachable
+    -- from a keypress, so it would be scanning for a fake field.
+    --
+    -- The honest statement is the POSITIVE one, and this line is it: a
+    -- consumable is usable through the inventory exactly when it declares how
+    -- long using it takes. Anything else is not an item with a missing field,
+    -- it is an item this path was never for -- and the whole class is refused
+    -- here rather than crashing on the next one somebody adds.
+    --
+    -- SILENTLY. No notify, no print, no INV_SET. "Absolutely nothing while the
+    -- player is alive" is the requirement, and a console line every time a
+    -- player mashes their kit slot is not nothing.
+    if type(c.useMs) ~= 'number' or c.useMs <= 0 then return end
 
     local e = BR.Roster.get(src)
 
@@ -723,6 +939,35 @@ AddEventHandler(BR.Net.INV_USE, function(d)
                     :format(c.label, math.floor(c.healthCap)),
             'warn')
         return
+    end
+
+    -- ═══ A CAR IS UNPACKED ON FOOT, AND THE PRESS IS THE FIRST OF TWO ASKS ═══
+    --
+    -- Owner, 2026-08-31: "let's make sure the player cannot use their purchased
+    -- vehicle spawn while already inside another vehicle. They can only use it
+    -- while on foot."
+    --
+    -- THE SAME `shopCar` COUPLING AND NO OTHER, which is the rule the effect
+    -- branch below states at length: this file does not know what a catalogue
+    -- is, so it asks BR.Shop about a consumable that carries that field and
+    -- knows nothing else about cars. A server with no shop rules nothing and
+    -- consumes nothing differently, exactly as it does at the effect.
+    --
+    -- REFUSED HERE RATHER THAN AT THE EFFECT, AND THAT IS THE WHOLE PLACEMENT.
+    -- The item is CONSUMED four lines above BR.Shop.unpack is called -- see the
+    -- note there, a purchase is never refunded -- so a rule enforced at the
+    -- effect would cost a player their car for standing in one. Enforced at the
+    -- channel it costs them nothing at all: they step out and press again.
+    --
+    -- THE BOOLEAN REFUSES; THE STRING ONLY SPEAKS. BR.Shop.refusesUse returns
+    -- them apart on purpose (its header says why), so a build with no wording
+    -- still refuses in silence rather than allowing the use.
+    if c.shopCar and BR.Shop and BR.Shop.refusesUse then
+        local refused, why = BR.Shop.refusesUse(src)
+        if refused then
+            if why then BR.Server.notify(src, why, 'warn') end
+            return
+        end
     end
 
     inv.using = {
@@ -772,6 +1017,71 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
     local s = inv.slots[slot]
     if not s then return end
 
+    -- ═══ THE FIFTH DOOR, AND IT OPENED THE MOMENT THIS HANDLER STOPPED
+    --     RETURNING (owner, 2026-08-23, third report) ═══
+    --
+    -- "I also picked up the railgun again this time, which came with ammo, and
+    -- was immediately drained of all railgun ammo..... didn't even do anything."
+    --
+    -- HE DIDN'T. THE ROUND TRIP DID. An INV_AMMO is a MEASUREMENT OF A MOMENT --
+    -- "you said 6, the gun holds 5" -- and until this line the arithmetic below
+    -- was applied to whatever this inventory happened to hold when the message
+    -- ARRIVED. Between those two instants sits one round trip, and a pickup
+    -- lands inside it comfortably: the loop speaks every 150ms and a LOOT_CLAIM
+    -- is answered in rather less.
+    --
+    -- So a report about the weapon he was holding a moment earlier arrived after
+    -- the airdrop railgun had been credited, and `lost` was computed against the
+    -- LARGER number. Three rounds in the magazine and three in the heavy pool
+    -- paid for the previous weapon's shots, in one write, before he fired it.
+    --
+    --     probe, 2026-08-23: a dry rpg in slot 1 over an empty heavy pool; a
+    --     found railgun lands in slot 2 (clip 3, pool 3); the in-flight
+    --     `{slot=1,total=0}` then arrives and the pool reads 0. Same probe with
+    --     the railgun landing in slot 1 itself: clip 3 pool 3 -> clip 0 pool 0.
+    --
+    -- AND IT WAS NEVER RAILGUN-ONLY -- a pistol arriving under an in-flight
+    -- report is zeroed identically. The railgun is where it SHOWS, for the two
+    -- reasons it always is: an explosive is charged for nothing the server can
+    -- see, so its report is the whole holding rather than a round, and HEAVY is
+    -- the one pool normally at 0, so there is nothing else in it to absorb the
+    -- loss. 951c6ea's floor is what made a stale report able to spend anything
+    -- at all; before it this handler returned outright under serverAmmo.
+    --
+    -- ═══ SO THE REPORT NAMES WHAT IT WAS MEASURED AGAINST, AND A MISMATCH IS
+    --     REFUSED RATHER THAN GUESSED AT ═══
+    --
+    -- `was` is what THIS SERVER last told that slot it holds, echoed back. It is
+    -- a compare-and-swap: the swap happens only if the value the client read is
+    -- still the value here. Nothing about it is trusted -- it is compared, never
+    -- used as a quantity -- so a client that lies about it achieves a refusal,
+    -- which is the one outcome that cannot cost anybody a round.
+    --
+    -- REFUSING CANNOT LOSE AMMUNITION, WHICH IS WHY THIS IS THE SAFE DIRECTION
+    -- AND NOT A HOLE IN 951c6ea. The client re-arms its baseline on every
+    -- INV_SET -- rebaseline(), client/inventory.lua -- and the push that
+    -- invalidated a report is itself an INV_SET, so a refused report is measured
+    -- again against the fresh numbers and re-sent within one cycle. Rounds an
+    -- explosive really burnt are still charged; they are charged against the
+    -- holding they were actually taken out of.
+    --
+    -- WHAT `was` MEANS PER KIND, and it is the same sentence in both: the number
+    -- this server states for that slot. A magazined weapon states `clip` plus
+    -- its pool; a throwable's whole statement is its stack.
+    local was = math.tointeger(d.was)
+    if not was or was < 0 then return end
+    do
+        local here
+        if s.kind == BR.ItemKind.THROWABLE then
+            here = s.count or 0
+        else
+            local w = BR.Config.WeaponById[s.item]
+            local pool = (w and w.ammo) and (inv.ammo[w.ammo] or 0) or 0
+            here = (s.clip or 0) + pool
+        end
+        if was ~= here then return end
+    end
+
     -- THROWABLES ARE COUNTED, NOT MAGAZINED.
     --
     -- A grenade's "ammo" IS its stack: the engine holds three of them and
@@ -814,20 +1124,65 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
 
     if s.kind ~= BR.ItemKind.WEAPON then return end
 
-    -- RETIRED BY M6, for magazined weapons only. Once the server counts rounds
-    -- off validated shot events it has a better answer than the client's, and
-    -- accepting both means two authorities for one number -- the reload the
-    -- server just paid for gets overwritten by a client report that has not
-    -- seen it yet.
-    --
-    -- Left registered rather than deleted for one reason: a client running
-    -- with server ammo disabled (`/brdamage off`) still needs this path, and
-    -- deleting the handler would make that a silent failure rather than a
-    -- config choice.
-    if (BR.Config.Combat or {}).serverAmmo then return end
-
     local w = BR.Config.WeaponById[s.item]
     if not w then return end
+
+    -- ═══ UNDER serverAmmo THIS IS A FLOOR, NOT AN AUTHORITY (2026-08-23) ═══
+    --
+    -- It used to be a flat `return`. M6 counts rounds off validated shot events,
+    -- so for the shots it SEES it has the better answer and a second opinion
+    -- would only overwrite the reload it just paid for. The part that was not
+    -- true is the part that mattered: BR.Damage.spendRound is reachable from
+    -- ONE place, the weaponDamageEvent handler, so a round burnt by anything
+    -- that raises no such event was charged to nobody and stayed on the books
+    -- forever. An explosive raises none at all -- server/damage.lua measured
+    -- that on 2026-08-08 -- which is the whole airdrop shelf, and the owner
+    -- found it on the railgun: fire it dry, switch slots, and client/inventory's
+    -- re-grant wrote the untouched server number back onto the ped.
+    --
+    -- So the client keeps ONE job here and it is the job only it can do: saying
+    -- that rounds are GONE. The TOTAL may fall and may do nothing else -- it
+    -- cannot rise (the arithmetic below is a subtraction), it cannot choose the
+    -- split, and it cannot trigger a reload the pool has not paid for. Under an
+    -- honest client this fires only when the server has fallen behind, which is
+    -- exactly the drift it exists to close; under a lying one the worst
+    -- available move is still to throw your own ammunition away.
+    if (BR.Config.Combat or {}).serverAmmo then
+        local pool     = w.ammo and (inv.ammo[w.ammo] or 0) or 0
+        local wasClip  = s.clip or 0
+        local lost     = (wasClip + pool) - total
+        if lost <= 0 then return end
+
+        -- OUT OF THE MAGAZINE FIRST, then the reserve, because that is the
+        -- order rounds leave a gun. Anything deeper than the magazine is a
+        -- burst that spanned a reload, and the reserve is what paid for it.
+        local newClip = wasClip - lost
+        local newPool = pool
+        if newClip < 0 then
+            newPool = math.max(0, newPool + newClip)
+            newClip = 0
+        end
+
+        s.clip = newClip
+        if w.ammo then inv.ammo[w.ammo] = newPool end
+
+        -- AND THE RELOAD IS STILL THE SERVER'S, by running the same rule
+        -- spendRound runs rather than a second copy of it: an empty magazine
+        -- over a non-empty pool refills, once, capped by the magazine. Doing it
+        -- here rather than waiting for the next shot keeps the two paths from
+        -- disagreeing about what an empty gun looks like -- and it moves rounds
+        -- without creating any, so the total is untouched.
+        --
+        -- `newClip <= 0` STAYS HERE AND IS NOT INSIDE BR.Inv.reload. That
+        -- function tops a magazine up to capacity, which is what a player
+        -- pressing the reload key asks for; this path is a REPORT of rounds
+        -- already gone, and topping up a partial magazine off the back of one
+        -- would reload the gun every time it was fired.
+        if newClip <= 0 then BR.Inv.reload(inv, s) end
+
+        BR.Inv.push(src)
+        return
+    end
 
     -- ONE NUMBER IS AUTHORITATIVE AND IT IS THE TOTAL.
     --
@@ -928,6 +1283,37 @@ BR.Sched.every(250, 'inv.use', function()
             -- so a dropped tick self-corrects on the next one instead of
             -- losing that increment for good.
             local c = BR.Config.ConsumableById[u.item]
+
+            -- ...AND THE SECOND ASK, WHICH IS THE ONE THAT ACTUALLY GUARDS IT.
+            --
+            -- "They can only use it while on foot" is a fact about the WHOLE
+            -- use, not about the frame it started on. This is a three-second
+            -- channel, so a player can press it standing in the road and be in
+            -- the passenger seat of a mate's car well before it lands -- and the
+            -- press-time refusal above sees none of that.
+            --
+            -- PLACED ABOVE THE PARTIALS AND ABOVE THE COMPLETION, so it runs on
+            -- every pass INCLUDING the one where `now >= u.endsAt`. That is what
+            -- makes it a guard rather than a courtesy: the item is consumed a
+            -- few lines below this point, and there is no pass on which it can
+            -- be spent without this test having just answered no.
+            --
+            -- CANCELLED, NOT COMPLETED-AND-DROPPED. cancelUse clears the channel
+            -- and pushes the inventory back without touching the slot -- "an
+            -- interrupted use costs nothing, which is why cancelling needs no
+            -- refund path at all" -- so the car survives to be spawned on foot.
+            --
+            -- THE SAME SENTENCE AS THE PRESS. config/shop.lua's note: the two
+            -- arms refuse for one reason and telling the player so in two
+            -- different wordings would read as two rules.
+            if c and c.shopCar and BR.Shop and BR.Shop.refusesUse then
+                local refused, why = BR.Shop.refusesUse(src)
+                if refused then
+                    BR.Inv.cancelUse(src, why)
+                    return
+                end
+            end
+
             if c and now < u.endsAt then
                 local total = math.max(1, u.ms or 1)
                 local pct = BR.Clamp((total - (u.endsAt - now)) / total, 0.0, 1.0)
@@ -942,6 +1328,14 @@ BR.Sched.every(250, 'inv.use', function()
                         (u.hp0 or 0) + c.health * pct)
                     partial.healthCap = c.healthCap
                 end
+                -- THE SERVER JUST TOLD THIS PLAYER TO GET HEALTHIER, so the
+                -- health audit in server/roster.lua must not read the rise as a
+                -- client lying about its own ped. Stamped where the effect is
+                -- ISSUED rather than where the use starts: these targets are
+                -- what the client actually climbs toward, and a window anchored
+                -- anywhere else would either open before there was anything to
+                -- excuse or close while the ped was still on its way up.
+                e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, partial)
                 return
             end
@@ -954,6 +1348,41 @@ BR.Sched.every(250, 'inv.use', function()
             inv.using = nil
 
             local c = BR.Config.ConsumableById[u.item]
+
+            -- ═══ A CAR IS A CONSUMABLE THAT DOES NOT HEAL ANYTHING (#224) ═══
+            --
+            -- The warmup shop's item is an ordinary consumable in every respect
+            -- the inventory cares about -- it occupies a slot, it stacks to one,
+            -- it drops, it is channelled by `useMs` and cancelled by damage --
+            -- and its EFFECT is a vehicle rather than a number on the ped. So it
+            -- branches here, at the one line where an effect is issued, and
+            -- nowhere else in this file.
+            --
+            -- ONE `shopCar` FIELD IS THE WHOLE COUPLING. server/inventory.lua
+            -- does not know what a catalogue is; it knows that a consumable
+            -- carrying that field is spent by asking BR.Shop to build what it
+            -- names. A server with no shop (BR.Shop absent) consumes the item
+            -- and issues nothing, which is the same shape as every other guard
+            -- in this file.
+            --
+            -- THE ITEM IS ALREADY GONE BY THIS LINE, and that is deliberate.
+            -- Owner, 2026-08-29, answer 3: a purchase is never refunded, and
+            -- that includes the known fault where a server-created vehicle
+            -- vanishes. A use that put the item back on a failed spawn would be
+            -- a use a player could repeat until the engine cooperated, which is
+            -- a second car for one payment. BR.Shop.unpack logs every failure
+            -- instead.
+            if c and c.shopCar then
+                if BR.Shop and BR.Shop.unpack then
+                    BR.Shop.unpack(src, c.shopCar)
+                else
+                    print(('^1[br_core] inventory: %d used "%s" and there is no '
+                           .. 'shop to build it^7'):format(src, tostring(u.item)))
+                end
+                BR.Inv.push(src)
+                return
+            end
+
             if c then
                 -- ANCHORED ON WHERE THIS USE STARTED, exactly like the partials
                 -- above -- and NOT on the roster's current reading.
@@ -979,6 +1408,10 @@ BR.Sched.every(250, 'inv.use', function()
                         (u.hp0 or 0) + c.health)
                     payload.healthCap = c.healthCap
                 end
+                -- The same stamp as the partials above, and the landing one
+                -- matters most: this is the payload that carries the FULL
+                -- target, so it is the largest single rise the ped will make.
+                e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, payload)
             end
 

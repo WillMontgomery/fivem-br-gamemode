@@ -50,7 +50,96 @@ local lastToggle = 0
 --- Whether GTA's own frontend is up because WE put it there, showing the map.
 --- Its watcher thread reads this every frame, so clearing it is how anything
 --- else asks the map to close.
+---
+--- IT IS AN INTENT, NOT AN OBSERVATION, AND THAT DISTINCTION IS #207. Read on
+--- its own it answers "we asked for a map" and nothing more; whether there is
+--- still a map on screen is a question only the game can answer, and until
+--- #207 nothing asked it. See mapFrontendUp() below -- everything outside this
+--- file's watcher goes through that and not through this.
 local frontendMap = false
+
+--- Whether the GAME has confirmed the frontend actually came up for this raise.
+--- Before that, its "not active" is the raise still being in flight and is not
+--- evidence of anything.
+local mapSeen = false
+
+--- The last moment the GAME said the frontend was on screen.
+---
+--- ANCHORED IN THE PAST RATHER THAN AT THE FIRST DOUBT, which is not a detail.
+--- A "when did we first notice it was gone" clock only starts when somebody
+--- asks -- so the first thing to ask after a dismissal would always be told
+--- "still up", and if that first asker is a keypress then the press is eaten
+--- and we are back in #207 with a smaller window. Recording when it was last
+--- SEEN makes the answer the same whoever asks and whenever, which is the whole
+--- property this file was missing.
+local mapLastUp = 0
+
+--- Which raise owns the shared flags.
+---
+--- WHY A GENERATION AND NOT A BOOLEAN (#207). The watcher thread's teardown
+--- used to write `frontendMap = false`, `br:map:frontend false` and
+--- announceFrontend(false) UNCONDITIONALLY, half a second after the player
+--- left the map. Anything that opened a new map inside that half second got a
+--- second thread -- and then the FIRST thread's teardown landed on the SECOND
+--- thread's flags, took br_core's frontend suppression back off standby
+--- underneath a menu that was mid-raise, and told the page to draw again. The
+--- new map died on the frame it appeared, and pressing the key again only
+--- started the cycle over. Stamping each raise and refusing to let a
+--- superseded one write anything is what ends that; it is the same reason
+--- `lastToggle` exists twenty lines up, applied to threads instead of presses.
+local mapGen = 0
+
+--- NORMALISE EVERY BOOL A NATIVE HANDS BACK.
+---
+--- IS_PAUSE_MENU_ACTIVE is a BOOL native and a FiveM BOOL native may answer
+--- `1` rather than `true`. In Lua `1 == true` is false and `0` is truthy, so
+--- `if IsPauseMenuActive() == true` and `if not IsPauseMenuActive()` are two
+--- different kinds of wrong on the same call. This project has shipped that
+--- mistake four times; client/inventory.lua, client/debug.lua and
+--- client/driveby.lua all keep a local `yes` for it and this is the fourth.
+local function yes(v) return v == true or v == 1 end
+
+--- Does the GAME say its frontend is on screen right now? (#207)
+---
+--- THE GRACE IS NOT CAUTION, IT IS PauseMenuceptionTheKick. Committing the map
+--- page RESTARTS the scaleform, and a restarting menu reads as "not active"
+--- for a frame or two -- so a bare `not IsPauseMenuActive()` would decide the
+--- player had dismissed the map on the very frame we finished opening it.
+--- IsPauseMenuRestarting covers the window the engine admits to; the 150ms
+--- covers the frames on either side of it that it does not. The cost of the
+--- grace is 150ms of a flag describing a map that has already gone, which
+--- nothing can observe; the cost of no grace is the map closing itself.
+local MAP_GONE_MS = 150
+
+local function gameSaysMapUp()
+    if not mapSeen then return true end
+    if yes(IsPauseMenuActive()) or yes(IsPauseMenuRestarting()) then
+        mapLastUp = GetGameTimer()
+        return true
+    end
+    return (GetGameTimer() - mapLastUp) < MAP_GONE_MS
+end
+
+--- IS THERE A MAP TO CLOSE? THE RECONCILED ANSWER (#207).
+---
+--- THIS FUNCTION IS THE FIX. The owner's report was "after opening the map a
+--- few times using M, I can no longer open the map ... is it maybe because I
+--- didn't use M to dismiss it but instead right clicked?", and yes, precisely:
+--- right-click is BACK, the frontend handles it ITSELF, and the only thing
+--- watching for the map going away was a list of CONTROL IDS. The watcher's
+--- own comment admits the hole -- "right mouse cannot be read raw ... which is
+--- why the list is broad rather than precise" -- so a right-click the list
+--- misses leaves `frontendMap` raised over a menu that is not there. The next
+--- press then reads as "close", clears a flag nobody is watching, and does
+--- nothing the player can see. No error, because nothing went wrong; the two
+--- ideas of the world had simply stopped matching.
+---
+--- So the flag is DERIVED rather than asserted: our intent AND the game
+--- agreeing there is something on screen. When they disagree the game wins,
+--- because the game is the one drawing it.
+local function mapFrontendUp()
+    return frontendMap and gameSaysMapUp()
+end
 
 --- Tell the PAGE that the engine's frontend owns the screen.
 ---
@@ -164,47 +253,257 @@ BR.Pause.PAGE = {
     MAP = 0,   -- the map's own fullscreen view, via GoDeeper + TheKick
 }
 
---- @param page integer|nil
-function BR.Pause.openFrontendMap(page)
-    if frontendMap then return end
-    BR.Pause.pendingPage = page
-    frontendMap = true
-    -- br_core suppresses GTA's frontend every frame now that Escape is ours.
-    -- This is the one time we WANT it, so it has to know to stand down --
-    -- otherwise the map opens into a menu that is being closed underneath it.
-    TriggerEvent('br:map:frontend', true)
-    -- AND THE PAGE STOPS DRAWING (#138). Latent rather than live until now only
-    -- because PauseMenu.tsx hides the Map card in the lobby, and the lobby is
-    -- the one screen that keeps painting through a cleared focus stack -- so
-    -- this was #122 waiting for somebody to unhide a card. Announced here, and
-    -- cleared at both exits below, for the same reason openFrontendPlain does:
-    -- the scaleform can be up on the very next frame.
-    announceFrontend(true)
+-- ===========================================================================
+-- THE MAP FRONTEND'S LIFE, ONE FRAME AT A TIME (#207)
+-- ===========================================================================
+--
+-- WHY THIS IS A STEP FUNCTION AND NOT A THREAD BODY. #199 shipped the exit
+-- watcher as a closure inside Citizen.CreateThread, and its own report said the
+-- consequence out loud: the thread "cannot be exercised in a Lua harness
+-- (Citizen.Wait is a no-op), so the thread is recorded and never run in the
+-- tests". Everything the suite could reach was the four lines before the first
+-- Wait -- and #207 is a bug in the part after it. A gate that cannot see the
+-- code where the bugs are is not a gate for that code.
+--
+-- So the thread is now `while BR.Pause.mapStep(st) do Citizen.Wait(0) end` and
+-- nothing else. There is no Wait inside the step, so tools/test_client.lua can
+-- drive as many frames as it likes with the game answering whatever it likes --
+-- a menu that never comes up, a menu that vanishes on its own, a second raise
+-- landing on top of the first. Those are the three cases the owner hit and none
+-- of them was reachable before.
+--
+-- The phases:
+--
+--   raising   we have asked for the frontend; wait for the game to put it up,
+--             bounded, because a menu that never arrives must not leave a
+--             thread spinning at Wait(0) for the rest of the session.
+--   paging    GoDeeper + TheKick, which is what commits the map page.
+--   watching  the map is up. It ends when the player asks out, when somebody
+--             else lowers the flag, or -- and this is the one that was missing
+--             -- when THE GAME says the frontend has gone.
+--   settling  we asked the frontend to go; insist for half a second, because
+--             the same press that got us here is still being handled by the
+--             scaleform and can bring it straight back.
 
-    Citizen.CreateThread(function()
-        -- FE_MENU_VERSION_MP_PAUSE, not SP: the multiplayer pause menu is the
-        -- one the map is the point of.
-        ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_MP_PAUSE'), false, -1)
+local MAP_RAISE_MS  = 5000
+local MAP_SETTLE_MS = 500
 
+-- WATCHING FOR THE WAY OUT, AND WATCHING IT EVERY WAY THERE IS.
+--
+-- Two rounds of this listened for controls 199/200/202 only, and both
+-- times the answer in game was "it is not working any differently"
+-- (user, 2026-08-09). While the frontend has the input, a control
+-- pressed inside it can arrive DISABLED, on a different index, or not
+-- as a control at all -- so this stops relying on any single reading:
+--
+--   * the frontend cancel/pause controls, enabled AND disabled;
+--   * INPUT_FRONTEND_RRIGHT/ACCEPT-adjacent ids used by the map page;
+--   * and Escape read RAW, straight off the keyboard, which is the one
+--     reading the frontend cannot intercept.
+--
+-- Right mouse cannot be read raw -- the raw natives are keyboard-only
+-- -- so it has to come through a control, which is why the list is
+-- broad rather than precise. A false positive here costs a map that
+-- closes slightly too eagerly; a false negative is a player stuck in
+-- a menu, which is what we have had twice.
+--
+-- ...AND "SLIGHTLY TOO EAGERLY" IS NOT WHAT A FALSE POSITIVE COSTS. It
+-- costs the map, mid-match, while the player is reading it -- which is
+-- the owner's re-report, made more than once and never addressed:
+-- "opening the pause menu, then map, within the match, then scrolling in
+-- quick succession, results in the map being dismissed."
+--
+-- AND #207 IS THE PRICE OF THE FALSE NEGATIVE, FINALLY PAID. "Broad rather
+-- than precise" was honest about the list being a guess; what nobody wrote
+-- down is that a MISS here used to be permanent. Right-click is BACK, the
+-- frontend acts on it itself, and if none of the ids below happened to fire on
+-- that frame then the menu went away while `frontendMap` stayed up. The loop
+-- had no other way to end, so it did not end. That is why the watching phase
+-- below asks the GAME as well as the keyboard: the input list is now one of two
+-- ways out instead of the only one, and the other one cannot be guessed wrong.
+--
+-- WHY THIS ROUTE AND NOT THE OTHER ONE, which is the question that was
+-- never asked. The engine's frontend has TWO openers in this file and
+-- they are the same scaleform:
+--
+--   openFrontendPlain (below) has NO watcher at all. It raises the menu
+--     and then polls IsPauseMenuActive() every 100ms, letting GTA own
+--     every input -- because the player has to WALK there themselves and
+--     "an exit watcher would close it the moment they tried to go
+--     anywhere". That is the route reachable from the lobby (Settings ->
+--     Voice / Graphics / GTA key bindings), and it is the one a previous
+--     round fixed by taking its watcher away.
+--
+--   this one keeps the watcher, because the map is entered SIDEWAYS --
+--     driven straight to a page whose own Back has nowhere sensible to
+--     go -- so something has to notice the player wanting out.
+--
+-- The in-match Map card is the only way in here (PauseMenu.tsx hides it
+-- in the lobby), so the fix for the lobby could not have reached this and
+-- the report is not a regression: it is the half that was never touched.
+-- Nothing in the page is involved -- while the frontend is up the whole
+-- NUI document is opacity 0 with pointer events off, and PauseMenu.tsx's
+-- keydown listener is unmounted with the menu -- and CEF is not receiving
+-- the wheel at all with the cursor released.
+--
+-- 195 WAS NOT A BUTTON. The comment above says these are "INPUT_FRONTEND_
+-- RRIGHT/ACCEPT-adjacent ids", and 194 is indeed INPUT_FRONTEND_RRIGHT --
+-- but ACCEPT is 201, and 195 is INPUT_FRONTEND_AXIS_X, an ANALOG AXIS.
+-- IsControlJustPressed on an analog control fires when the axis crosses
+-- its press threshold, so every pan and every scroll-driven zoom on the
+-- map page was being read as somebody asking to leave. That is a
+-- one-number typo doing exactly what the report describes, and it is
+-- removed rather than corrected: there is no button at 195 to want.
+local EXITS = { 202, 200, 199, 177, 194, 25 }
+
+-- AND USING THE MAP IS NOT LEAVING IT. Dropping 195 removes the id we
+-- can prove is wrong; this removes the CLASS. The wheel is bound to
+-- several control ids at once in the frontend and which of them the map
+-- page answers on is a question the game settles, not the documentation
+-- -- so rather than guess again, any frame in which the player is
+-- zooming, scrolling or panning suppresses the exit test outright, plus
+-- a short tail for the input the scaleform is still digesting.
+--
+--   241/242  INPUT_CURSOR_SCROLL_UP/DOWN
+--   180/181  INPUT_CELLPHONE_SCROLL_FORWARD/BACKWARD
+--   207/208  INPUT_FRONTEND_LT/RT      -- the map's own zoom pair
+--    14/15   INPUT_WEAPON_WHEEL_NEXT/PREV
+--   195..198 the frontend axes, which is what a pan is
+--
+-- JUST-pressed rather than held, deliberately: a held reading would let a
+-- drifting controller stick sit on the guard forever and make the map
+-- unleavable by mouse, which is a worse bug than the one being fixed. An
+-- edge fires once and the window expires on its own, while a wheel being
+-- spun produces one edge per notch and therefore keeps refreshing it --
+-- which is precisely the "in quick succession" case.
+local USING = { 241, 242, 180, 181, 207, 208, 14, 15, 195, 196, 197, 198 }
+local BUSY_MS = 300
+
+--- EVERY ONE OF THESE IS A BOOL NATIVE, so every one is read through `yes`.
+--- Unnormalised, a build that answers `0` for "not pressed" would make every
+--- id in both lists read as pressed on every frame -- `0` is truthy in Lua --
+--- and the map would shut itself on the frame it opened. The lists work today,
+--- which means these natives are answering booleans today; that is a fact
+--- about this build and not a property of the API.
+local function pressed(c)
+    return yes(IsControlJustPressed(2, c)) or yes(IsDisabledControlJustPressed(2, c))
+end
+
+--- @param st table  the live raise
+local function wantsOut(st)
+    -- ESCAPE FIRST AND OUTSIDE THE GUARD, so there is always one way
+    -- out that nothing above can suppress. IsRawKeyDown reports the HELD
+    -- state, so this fires on the frame it goes down and every frame
+    -- after -- which is fine, because the first one already leaves.
+    local ok, down = pcall(IsRawKeyDown, 0x1B)
+    if ok and yes(down) then
+        if BR.Pause.mapDebug then print('[br_ui] map: exit raw ESC') end
+        return true
+    end
+
+    for _, c in ipairs(USING) do
+        if pressed(c) then
+            if BR.Pause.mapDebug then
+                print(('[br_ui] map: using the map (control %d) -- holding the exit off'):format(c))
+            end
+            st.busyUntil = GetGameTimer() + BUSY_MS
+            return false
+        end
+    end
+    if GetGameTimer() < st.busyUntil then return false end
+
+    for _, c in ipairs(EXITS) do
+        if pressed(c) then
+            if BR.Pause.mapDebug then
+                print(('[br_ui] map: exit control %d'):format(c))
+            end
+            return true
+        end
+    end
+    return false
+end
+
+--- Put every flag back, and tell the two things that mirror them.
+---
+--- A SUPERSEDED RAISE MUST NEVER REACH HERE, WHICH IS THE OTHER HALF OF #207.
+--- An old thread's teardown running late is what turned one missed dismissal
+--- into a key that stayed dead: it handed br_core's frontend suppression back
+--- WHILE THE NEW RAISE WAS STILL COMING UP, so br_core closed the menu the new
+--- thread had just asked for, and the new thread then sat out its full
+--- five-second raise deadline. Press again inside that and the same thing
+--- happens again. Nothing about it is visible from a chair: no error, no menu,
+--- and a key that "stopped working".
+---
+--- THE GENERATION IS CHECKED IN ONE PLACE AND IT IS NOT HERE. mapStep's first
+--- line retires a stale raise before any of its branches can call this, and
+--- retireMap has just bumped the generation to itself -- so a guard here would
+--- be a second gate on a road with no second entrance. It was written, and then
+--- taken out again when mutation-testing showed it could not be reached: an
+--- unreachable safety check is not safety, it is a branch nothing can prove.
+--- @param st table|nil  the raise letting go, for BR.Pause.map's sake
+local function releaseMap(st)
+    frontendMap  = false
+    mapSeen      = false
+    mapLastUp    = 0
+    if BR.Pause.map == st then BR.Pause.map = nil end
+    -- Suppression resumes only once the frontend is genuinely down, so
+    -- there is no frame in which both are trying to own it.
+    TriggerEvent('br:map:frontend', false)
+    -- And the page draws again. Reached no matter which way the player
+    -- left the map, because every exit below comes through here.
+    announceFrontend(false)
+end
+
+--- Abandon whatever raise is live, without waiting for its thread to notice.
+---
+--- Bumping the generation is the point: it retires any watcher still out there
+--- in one assignment, so nothing it does afterwards can land on the flags. Used
+--- by closeMap when the game says the map has already gone -- there is no menu
+--- for that watcher to watch and no reason to let it keep a press-eating flag
+--- raised while it works that out for itself.
+local function retireMap()
+    mapGen = mapGen + 1
+    -- Abandoned outright, so the debug readout stops naming a raise nothing is
+    -- stepping any more. releaseMap only clears this for the raise that owns
+    -- it, and by here nobody owns it.
+    BR.Pause.map = nil
+    releaseMap(nil)
+end
+
+--- ONE FRAME OF THE MAP FRONTEND'S LIFE.
+--- @param st table     the raise, as built by openFrontendMap
+--- @return boolean     true while there is more to do
+function BR.Pause.mapStep(st)
+    -- A SUPERSEDED RAISE DOES NOTHING AT ALL -- not a native call, not an
+    -- event, not a flag. It does not even tidy up after itself, because the
+    -- raise that replaced it owns everything it would have tidied.
+    if st.gen ~= mapGen then return false end
+
+    if st.phase == 'raising' then
         -- The wait is the fix, but it cannot be unbounded: if the menu never
         -- comes up -- another resource holding the frontend, a state that
         -- refuses it -- this thread would spin at Wait(0) for the rest of the
         -- session, and a busy loop nobody can see is the worst kind.
-        local deadline = GetGameTimer() + 5000
-        while (not IsPauseMenuActive() or IsPauseMenuRestarting())
-              and GetGameTimer() < deadline do
-            Citizen.Wait(0)
+        if yes(IsPauseMenuActive()) and not yes(IsPauseMenuRestarting()) then
+            -- FROM HERE THE GAME'S ANSWER MEANS SOMETHING. Before it, "not
+            -- active" is the raise still in flight; after it, "not active" is
+            -- the player having left.
+            mapSeen      = true
+            mapLastUp    = GetGameTimer()
+            st.phase     = 'paging'
+            return true
         end
-        if not IsPauseMenuActive() then
+        if GetGameTimer() >= st.deadline then
             print('[br_ui] map: pause menu never became active; giving up')
-            frontendMap = false
-            TriggerEvent('br:map:frontend', false)
             -- Hidden for a frontend that never arrived. Without this the player
             -- is left looking at the world with no interface and no way back.
-            announceFrontend(false)
-            return
+            releaseMap(st)
+            return false
         end
+        return true
+    end
 
+    if st.phase == 'paging' then
         -- Consumed, not remembered. A page left set here would be reused by
         -- the NEXT open, which is how a one-off navigation becomes a
         -- permanent one.
@@ -216,156 +515,126 @@ function BR.Pause.openFrontendMap(page)
         end)
         print(('[br_ui] frontend page %d -- %s')
             :format(page, ok and 'ok' or ('FAILED ' .. tostring(err))))
+        st.phase = 'watching'
+        return true
+    end
 
-        -- WATCHING FOR THE WAY OUT, AND WATCHING IT EVERY WAY THERE IS.
-        --
-        -- Two rounds of this listened for controls 199/200/202 only, and both
-        -- times the answer in game was "it is not working any differently"
-        -- (user, 2026-08-09). While the frontend has the input, a control
-        -- pressed inside it can arrive DISABLED, on a different index, or not
-        -- as a control at all -- so this stops relying on any single reading:
-        --
-        --   * the frontend cancel/pause controls, enabled AND disabled;
-        --   * INPUT_FRONTEND_RRIGHT/ACCEPT-adjacent ids used by the map page;
-        --   * and Escape read RAW, straight off the keyboard, which is the one
-        --     reading the frontend cannot intercept.
-        --
-        -- Right mouse cannot be read raw -- the raw natives are keyboard-only
-        -- -- so it has to come through a control, which is why the list is
-        -- broad rather than precise. A false positive here costs a map that
-        -- closes slightly too eagerly; a false negative is a player stuck in
-        -- a menu, which is what we have had twice.
-        --
-        -- ...AND "SLIGHTLY TOO EAGERLY" IS NOT WHAT A FALSE POSITIVE COSTS. It
-        -- costs the map, mid-match, while the player is reading it -- which is
-        -- the owner's re-report, made more than once and never addressed:
-        -- "opening the pause menu, then map, within the match, then scrolling in
-        -- quick succession, results in the map being dismissed."
-        --
-        -- WHY THIS ROUTE AND NOT THE OTHER ONE, which is the question that was
-        -- never asked. The engine's frontend has TWO openers in this file and
-        -- they are the same scaleform:
-        --
-        --   openFrontendPlain (below) has NO watcher at all. It raises the menu
-        --     and then polls IsPauseMenuActive() every 100ms, letting GTA own
-        --     every input -- because the player has to WALK there themselves and
-        --     "an exit watcher would close it the moment they tried to go
-        --     anywhere". That is the route reachable from the lobby (Settings ->
-        --     Voice / Graphics / GTA key bindings), and it is the one a previous
-        --     round fixed by taking its watcher away.
-        --
-        --   this one keeps the watcher, because the map is entered SIDEWAYS --
-        --     driven straight to a page whose own Back has nowhere sensible to
-        --     go -- so something has to notice the player wanting out.
-        --
-        -- The in-match Map card is the only way in here (PauseMenu.tsx hides it
-        -- in the lobby), so the fix for the lobby could not have reached this and
-        -- the report is not a regression: it is the half that was never touched.
-        -- Nothing in the page is involved -- while the frontend is up the whole
-        -- NUI document is opacity 0 with pointer events off, and PauseMenu.tsx's
-        -- keydown listener is unmounted with the menu -- and CEF is not receiving
-        -- the wheel at all with the cursor released.
-        --
-        -- 195 WAS NOT A BUTTON. The comment above says these are "INPUT_FRONTEND_
-        -- RRIGHT/ACCEPT-adjacent ids", and 194 is indeed INPUT_FRONTEND_RRIGHT --
-        -- but ACCEPT is 201, and 195 is INPUT_FRONTEND_AXIS_X, an ANALOG AXIS.
-        -- IsControlJustPressed on an analog control fires when the axis crosses
-        -- its press threshold, so every pan and every scroll-driven zoom on the
-        -- map page was being read as somebody asking to leave. That is a
-        -- one-number typo doing exactly what the report describes, and it is
-        -- removed rather than corrected: there is no button at 195 to want.
-        local EXITS = { 202, 200, 199, 177, 194, 25 }
+    if st.phase == 'watching' then
+        -- SOMEBODY ASKED US TO CLOSE -- closeMap, from the map key or the
+        -- pause key. The menu is still on screen, so it has to be taken down.
+        if not frontendMap then return BR.Pause.mapSettle(st) end
 
-        -- AND USING THE MAP IS NOT LEAVING IT. Dropping 195 removes the id we
-        -- can prove is wrong; this removes the CLASS. The wheel is bound to
-        -- several control ids at once in the frontend and which of them the map
-        -- page answers on is a question the game settles, not the documentation
-        -- -- so rather than guess again, any frame in which the player is
-        -- zooming, scrolling or panning suppresses the exit test outright, plus
-        -- a short tail for the input the scaleform is still digesting.
-        --
-        --   241/242  INPUT_CURSOR_SCROLL_UP/DOWN
-        --   180/181  INPUT_CELLPHONE_SCROLL_FORWARD/BACKWARD
-        --   207/208  INPUT_FRONTEND_LT/RT      -- the map's own zoom pair
-        --    14/15   INPUT_WEAPON_WHEEL_NEXT/PREV
-        --   195..198 the frontend axes, which is what a pan is
-        --
-        -- JUST-pressed rather than held, deliberately: a held reading would let a
-        -- drifting controller stick sit on the guard forever and make the map
-        -- unleavable by mouse, which is a worse bug than the one being fixed. An
-        -- edge fires once and the window expires on its own, while a wheel being
-        -- spun produces one edge per notch and therefore keeps refreshing it --
-        -- which is precisely the "in quick succession" case.
-        local USING = { 241, 242, 180, 181, 207, 208, 14, 15, 195, 196, 197, 198 }
-        local BUSY_MS = 300
-        local busyUntil = 0
-
-        local function wantsOut()
-            -- ESCAPE FIRST AND OUTSIDE THE GUARD, so there is always one way
-            -- out that nothing above can suppress. IsRawKeyDown reports the HELD
-            -- state, so this fires on the frame it goes down and every frame
-            -- after -- which is fine, because the first one already leaves.
-            local ok, down = pcall(IsRawKeyDown, 0x1B)
-            if ok and down then
-                if BR.Pause.mapDebug then print('[br_ui] map: exit raw ESC') end
-                return true
+        -- IT WENT AWAY BY ITSELF, WHICH IS THE WHOLE OF #207. Right-click is
+        -- BACK and Escape is cancel; the frontend acts on both without asking
+        -- us, and the owner named both by name as dismissals that must keep
+        -- working. There is nothing to deactivate here -- the menu is already
+        -- gone -- so this exit does NOT go through settling. Half a second of
+        -- SetFrontendActive(false) aimed at a frontend that is not up is
+        -- precisely what used to shoot down the next map the player asked for.
+        if not gameSaysMapUp() then
+            if BR.Pause.mapDebug then
+                print('[br_ui] map: the frontend went away on its own -- reconciled')
             end
-
-            for _, c in ipairs(USING) do
-                if IsControlJustPressed(2, c) or IsDisabledControlJustPressed(2, c) then
-                    if BR.Pause.mapDebug then
-                        print(('[br_ui] map: using the map (control %d) -- holding the exit off'):format(c))
-                    end
-                    busyUntil = GetGameTimer() + BUSY_MS
-                    return false
-                end
-            end
-            if GetGameTimer() < busyUntil then return false end
-
-            for _, c in ipairs(EXITS) do
-                if IsControlJustPressed(2, c) or IsDisabledControlJustPressed(2, c) then
-                    if BR.Pause.mapDebug then
-                        print(('[br_ui] map: exit control %d'):format(c))
-                    end
-                    return true
-                end
-            end
+            releaseMap(st)
             return false
         end
 
-        while frontendMap and not wantsOut() do
-            Citizen.Wait(0)
-        end
+        if wantsOut(st) then return BR.Pause.mapSettle(st) end
+        return true
+    end
 
-        -- LEAVING IS SetFrontendActive(false) AND NOTHING ELSE.
-        --
-        -- The recipe kicks first, and that is what was putting GTA's pause
-        -- menu on screen instead of dismissing: the kick un-deepens the menu,
-        -- so it pops back UP to the tabs -- and then the deactivate lands a
-        -- frame or more later, leaving the frontend visible in between (user,
-        -- 2026-08-09: "right click shows the GTA V pause menu instead of
-        -- dismissing back to game"). Going straight out skips the page it was
-        -- surfacing.
-        SetFrontendActive(false)
-
+    if st.phase == 'settling' then
         -- AND IT IS RE-ASSERTED, because one call is not reliably enough:
         -- the same press that got us here is still being handled by the
         -- scaleform, which can bring the menu straight back on the next
         -- frame. Half a second of insisting costs nothing and removes the
         -- whole class of "it flickered back".
-        local until_ = GetGameTimer() + 500
-        while GetGameTimer() < until_ do
-            if IsPauseMenuActive() then SetFrontendActive(false) end
-            Citizen.Wait(0)
-        end
+        if yes(IsPauseMenuActive()) then SetFrontendActive(false) end
+        if GetGameTimer() < st.until_ then return true end
+        releaseMap(st)
+        return false
+    end
 
-        frontendMap = false
-        -- Suppression resumes only once the frontend is genuinely down, so
-        -- there is no frame in which both are trying to own it.
-        TriggerEvent('br:map:frontend', false)
-        -- And the page draws again. Reached no matter which way the player
-        -- left the map, because the loop above only ends when it is gone.
-        announceFrontend(false)
+    return false
+end
+
+--- Start taking the frontend down. Split out so both ways of asking share it.
+--- @return boolean  true, because settling always has frames left to run
+function BR.Pause.mapSettle(st)
+    -- THE PRESS-EATING FLAG COMES DOWN NOW, NOT IN HALF A SECOND (#207).
+    --
+    -- It used to be cleared at the END of the settle, which meant that for
+    -- 500ms after the map had visibly gone, closeMap still answered "yes there
+    -- is a map" -- so the next press was swallowed whole and the player saw
+    -- nothing happen. That is the single most reproducible half of the report:
+    -- dismiss the map, press M again straight away, nothing. What the frontend
+    -- still owes us is a deactivation, and that is what `settling` is for; it
+    -- is not a reason to keep telling the rest of the file there is a map up.
+    frontendMap  = false
+    mapSeen      = false
+    mapLastUp    = 0
+
+    -- LEAVING IS SetFrontendActive(false) AND NOTHING ELSE.
+    --
+    -- The recipe kicks first, and that is what was putting GTA's pause
+    -- menu on screen instead of dismissing: the kick un-deepens the menu,
+    -- so it pops back UP to the tabs -- and then the deactivate lands a
+    -- frame or more later, leaving the frontend visible in between (user,
+    -- 2026-08-09: "right click shows the GTA V pause menu instead of
+    -- dismissing back to game"). Going straight out skips the page it was
+    -- surfacing.
+    SetFrontendActive(false)
+
+    st.phase  = 'settling'
+    st.until_ = GetGameTimer() + MAP_SETTLE_MS
+    return true
+end
+
+--- @param page integer|nil
+function BR.Pause.openFrontendMap(page)
+    -- RECONCILED, NOT ASSUMED. The bare `if frontendMap then return end` this
+    -- replaces refused to open whenever the flag was stale -- which, after a
+    -- dismissal the watcher missed, was forever.
+    if mapFrontendUp() then return end
+    BR.Pause.pendingPage = page
+    frontendMap  = true
+    mapSeen      = false
+    mapLastUp    = 0
+    mapGen       = mapGen + 1
+    -- br_core suppresses GTA's frontend every frame now that Escape is ours.
+    -- This is the one time we WANT it, so it has to know to stand down --
+    -- otherwise the map opens into a menu that is being closed underneath it.
+    TriggerEvent('br:map:frontend', true)
+    -- AND THE PAGE STOPS DRAWING (#138). Latent rather than live until now only
+    -- because PauseMenu.tsx hides the Map card in the lobby, and the lobby is
+    -- the one screen that keeps painting through a cleared focus stack -- so
+    -- this was #122 waiting for somebody to unhide a card. Announced here, and
+    -- cleared at every exit in mapStep, for the same reason openFrontendPlain
+    -- does: the scaleform can be up on the very next frame.
+    announceFrontend(true)
+
+    local st = {
+        gen       = mapGen,
+        phase     = 'raising',
+        deadline  = GetGameTimer() + MAP_RAISE_MS,
+        busyUntil = 0,
+    }
+    -- EXPOSED, and for two readers rather than one: `brmapmode` prints it so a
+    -- playtester can say which phase a map that misbehaved was in, and
+    -- tools/test_client.lua drives mapStep against it directly.
+    BR.Pause.map = st
+
+    -- RAISED HERE AND NOT IN THE THREAD. It was inside the closure, which put
+    -- the one native that makes this function do anything on the far side of
+    -- the harness boundary. Nothing waits on it -- the raising phase is the
+    -- wait -- so there was never a reason for it to be a frame later.
+    --
+    -- FE_MENU_VERSION_MP_PAUSE, not SP: the multiplayer pause menu is the
+    -- one the map is the point of.
+    ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_MP_PAUSE'), false, -1)
+
+    Citizen.CreateThread(function()
+        while BR.Pause.mapStep(st) do Citizen.Wait(0) end
     end)
 end
 
@@ -387,8 +656,23 @@ end
 --- PauseMenuceptionGoDeeper reaches the map and not the Settings pages, which
 --- is why the voice button used to open the map (user, 2026-08-09).
 function BR.Pause.openFrontendPlain()
-    if frontendMap then return end
+    -- RECONCILED AND STAMPED, for the same reasons the map route is (#207).
+    -- This shares `frontendMap` with the map -- one frontend, one flag -- so it
+    -- has to share the discipline too: a stale flag must not refuse the
+    -- handover, and a map watcher that is still out there must not be able to
+    -- write over the settings menu's flags half a second from now.
+    --
+    -- `mapSeen` stays false for this route on purpose. It is what says "the
+    -- game has confirmed OUR map came up", and gameSaysMapUp() answers `true`
+    -- while it is false -- so mapFrontendUp() reduces to `frontendMap` here,
+    -- which is exactly the behaviour this route already had. The reconciliation
+    -- is for the map, which is driven to a page and watched; this one hands GTA
+    -- the whole screen and polls, and must not second-guess it.
+    if mapFrontendUp() then return end
+    mapGen      = mapGen + 1
+    local gen   = mapGen
     frontendMap = true
+    mapSeen     = false
     TriggerEvent('br:map:frontend', true)
     -- BEFORE the menu is raised, not after. The scaleform can be on screen on
     -- the very next frame, and a page still drawing on that frame is the
@@ -399,11 +683,16 @@ function BR.Pause.openFrontendPlain()
         ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
 
         local deadline = GetGameTimer() + 5000
-        while (not IsPauseMenuActive() or IsPauseMenuRestarting())
+        -- Normalised, like every other BOOL native in this file: `0` is truthy
+        -- in Lua, so an unnormalised `not IsPauseMenuActive()` on a build that
+        -- answers with numbers would fall straight through this wait and then
+        -- decide the menu was up.
+        while (not yes(IsPauseMenuActive()) or yes(IsPauseMenuRestarting()))
               and GetGameTimer() < deadline do
             Citizen.Wait(0)
         end
-        if not IsPauseMenuActive() then
+        if gen ~= mapGen then return end
+        if not yes(IsPauseMenuActive()) then
             print('[br_ui] settings: pause menu never became active; giving up')
             frontendMap = false
             TriggerEvent('br:map:frontend', false)
@@ -426,11 +715,16 @@ function BR.Pause.openFrontendPlain()
         -- reach adjusting a microphone; it exists so a frontend that somehow
         -- never reports closing cannot leave our suppression off forever.
         local until_ = GetGameTimer() + 600000
-        while IsPauseMenuActive() and GetGameTimer() < until_ do
+        while yes(IsPauseMenuActive()) and GetGameTimer() < until_ do
             Citizen.Wait(100)
         end
 
+        -- Superseded raises write nothing (#207). Ten minutes is a long time
+        -- for this thread to be holding a claim on flags somebody else is now
+        -- using.
+        if gen ~= mapGen then return end
         frontendMap = false
+        mapSeen     = false
         TriggerEvent('br:map:frontend', false)
         -- THE PAGE DRAWS AGAIN BEFORE IT IS CLICKABLE AGAIN, in that order.
         -- The loop above only ends when the frontend is genuinely gone, by
@@ -446,6 +740,152 @@ function BR.Pause.openFrontendPlain()
         TriggerEvent('br:ui:frontendClosed')
     end)
 end
+
+-- ===========================================================================
+-- OPENING AND CLOSING THE MAP, IN ONE PLACE EACH (#199)
+-- ===========================================================================
+--
+-- These two are lifted verbatim out of the Map card's PAUSE_ACTION branch and
+-- out of the `br:ui:pauseToggle` handler, and they are lifted for one reason:
+-- there is now a KEY that does the same thing, and the owner's instruction was
+-- "same function as our map button in the pause menu ... find what that button
+-- calls and call it".
+--
+-- A second copy would have been the easy version and the wrong one. `brmapmode`
+-- switches between three routes at runtime and each of them leaves a DIFFERENT
+-- flag behind for the closer to find; a key that opened the map by its own road
+-- would be a fourth door onto the same three states, which is the shape #138
+-- names ("PUBLIC BECAUSE THERE WAS A FOURTH DOOR") and the shape #122 came back
+-- through. One opener, one closer, and the routes stay a question this file
+-- answers on its own.
+
+--- Open the full-screen map, by whichever route `brmapmode` currently selects.
+---
+--- THREE ROUTES, SWITCHABLE, BECAUSE THIS IS A QUESTION THE GAME ANSWERS AND
+--- NOT ONE THE DOCUMENTATION DOES.
+---
+---   bigmap      SetBigmapActive -- the radar, expanded
+---   frontend    the real pause menu, driven to its map page (the default)
+---   fullscreen  PauseToggleFullscreenMap alone
+---
+--- OUR MENU COMES DOWN FIRST IN EVERY BRANCH, and unconditionally: BR.Pause
+--- .close() pops focus for a screen that may not hold it, which is safe by
+--- design and is what makes this callable from a keypress with no menu open.
+function BR.Pause.openMap()
+    if BR.Pause.mapMode == 'frontend' then
+        BR.Pause.close()
+        BR.Pause.openFrontendMap()
+        return
+    end
+
+    if BR.Pause.mapMode == 'fullscreen' then
+        -- PAUSE_TOGGLE_FULLSCREEN_MAP (0x2DE6C5E2E996F178, "toggles pause
+        -- menu map rendering") on its own, on the chance it draws the map
+        -- with no frontend at all. pcall because a native this obscure is
+        -- exactly the kind that is missing from a build, and a missing one
+        -- must not take the pause menu down with it.
+        BR.Pause.close()
+        local ok, err = pcall(PauseToggleFullscreenMap, true)
+        print(('[br_ui] map: PauseToggleFullscreenMap(true) %s')
+            :format(ok and 'ok' or ('FAILED ' .. tostring(err))))
+        BR.Pause.fullscreenMap = true
+        return
+    end
+
+    -- THE BIG MINIMAP, NOT GTA'S PAUSE MENU.
+    --
+    -- The question was whether the rest of the pause menu's scaleforms
+    -- can be suppressed when we only want the map. They cannot -- the
+    -- tabs are part of that scaleform and ActivateFrontendMenu's
+    -- component argument only chooses which one is FOCUSED (-1 is
+    -- already the map).
+    --
+    -- SET_BIGMAP_ACTIVE avoids the question entirely: it expands the
+    -- minimap to the full-screen map GTA Online uses, drawn over live
+    -- gameplay, with no frontend, no tabs and no pause. It is what every
+    -- resource that wants "just the map" actually uses, and it is better
+    -- than what was asked for -- the world keeps running underneath.
+    --
+    -- IT EXPANDS THE MINIMAP, which is the catch: br_core turns the radar
+    -- off in the lobby, so calling this from here worked exactly as
+    -- documented on a minimap that was not being drawn, and the button
+    -- looked dead (user, 2026-08-09). br_core owns the radar, so br_core
+    -- owns this -- one place decides whether the map is on screen.
+    BR.Pause.close()
+    TriggerEvent('br:map:big', true)
+    BR.Pause.bigmap = true
+    print('[br_ui] map: big map on')
+end
+
+--- Take down whatever the map put up, whichever route put it there.
+--- @return boolean  true if there was a map to take down
+---
+--- WHATEVER THE MAP KEY TURNED ON, THE MAP KEY TURNS OFF. A player should never
+--- have to know WHICH native drew the thing in front of them to get rid of it,
+--- and with `brmapmode` switchable at runtime they could not find out anyway.
+---
+--- THE FRONTEND IS CLEARED, NOT CLOSED, and that asymmetry is deliberate: its
+--- watcher thread owns the teardown and reads this flag every frame, so
+--- lowering it here is how anything asks the map to close. Two callers racing
+--- SetFrontendActive is how a frontend gets left up with nothing listening.
+---
+--- THE RETURN VALUE IS THE WHOLE INTERFACE. Both callers -- the pause key and
+--- the map key -- need to know whether they consumed the press on a map or
+--- should carry on to what they would otherwise have done, and neither of them
+--- can read these three flags for itself.
+function BR.Pause.closeMap()
+    if BR.Pause.bigmap then
+        TriggerEvent('br:map:big', false)
+        BR.Pause.bigmap = false
+        return true
+    end
+    if frontendMap then
+        -- THE ONE LINE THE REPORT IS ABOUT (#207).
+        --
+        -- `frontendMap` on its own answers "we asked for a map", and a press
+        -- was consumed on that answer alone. Dismiss the map the way the owner
+        -- did -- right-click, which is the frontend's own BACK, or Escape,
+        -- which is its own cancel -- and the menu goes away without the flag
+        -- coming down with it. Every press after that read as "close": it
+        -- lowered a flag nobody was watching, returned true, and the caller
+        -- went home. No map, no error, nothing to see.
+        --
+        -- Asking the game instead turns that press back into an open, because
+        -- when the game says there is no frontend on screen there is nothing
+        -- here to close and this is not our press to take.
+        if mapFrontendUp() then
+            -- Cleared and NOT torn down here: the watcher owns the teardown
+            -- and reads this flag every frame, so lowering it is how anything
+            -- asks the map to close. Two callers racing SetFrontendActive is
+            -- how a frontend gets left up with nothing listening.
+            frontendMap = false
+            return true
+        end
+        retireMap()
+        return false
+    end
+    if BR.Pause.fullscreenMap then
+        pcall(PauseToggleFullscreenMap, false)
+        BR.Pause.fullscreenMap = false
+        return true
+    end
+    return false
+end
+
+-- THE MAP HAS A KEY OF ITS OWN NOW (#199), and this is the whole of its far
+-- end. br_core/client/keybinds.lua registers the binding (M by default,
+-- rebindable, in the same table every other key is in), decides which player
+-- states may open a map at all, and fires this; the routing decision above
+-- stays here, where the three routes and their flags live.
+--
+-- ONE PRESS, EITHER DIRECTION. See closeMap's note: a key that could only open
+-- would leave the player holding a full-screen map and needing to be told about
+-- a different key to dismiss it -- and in the default `frontend` route that key
+-- is Escape, the one this menu exists to take over.
+AddEventHandler('br:ui:mapToggle', function()
+    if BR.Pause.closeMap() then return end
+    BR.Pause.openMap()
+end)
 
 RegisterNUICallback(BR.NuiCb.PAUSE_FOCUS, function(data, cb)
     if data and data.open then BR.Pause.open(data.tab) else BR.Pause.close() end
@@ -622,6 +1062,30 @@ AddEventHandler(BR.Net.ADMIN_STATE, function(payload)
     TriggerEvent('br:ui:sendLocal', BR.Nui.ADMIN, payload)
 end)
 
+-- WHERE OUR DISCORD IS, FORWARDED TO THE PAGE UNREAD. Same shape as the handler
+-- above and for the same reason, which is why it is written directly beside it.
+--
+-- This one carries no permission -- an invite is public and every player gets
+-- the envelope -- but the reason for not opening it is unchanged and is the
+-- stronger of the two. The value comes from an OVERRIDABLE KEY, and
+-- br_lib/config/overrides.lua's contract is that such a key is read on the
+-- server and nowhere else; tools/verify.sh greps every br_*/client/*.lua for the
+-- key names to keep it that way, and it filters only whole-line comments -- so
+-- even naming the key in a note at the end of this line would fail the build.
+-- Forwarding the table whole means this file never learns a name it is not
+-- allowed to say, and br_core/server/community.lua stays the one reader.
+--
+-- The type guard is the only inspection, and note what it does NOT decide: an
+-- empty table is a perfectly good payload here, meaning "this server publishes
+-- no Discord", and it has to reach the page so a card already on screen comes
+-- down. Only a nil -- which would cross the bridge as an empty envelope and
+-- leave the page unable to tell that from a malformed message -- is dropped.
+RegisterNetEvent(BR.Net.COMMUNITY)
+AddEventHandler(BR.Net.COMMUNITY, function(payload)
+    if type(payload) ~= 'table' then return end
+    TriggerEvent('br:ui:sendLocal', BR.Nui.COMMUNITY, payload)
+end)
+
 --- The verbs on the front page.
 ---
 --- EVERY ONE OF THEM IS br_core's TO PERFORM, not ours: leaving a match is a
@@ -632,59 +1096,7 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
     local action = tostring(data and data.action or '')
 
     if action == 'map' then
-        -- THREE ROUTES, SWITCHABLE, BECAUSE THIS IS A QUESTION THE GAME
-        -- ANSWERS AND NOT ONE THE DOCUMENTATION DOES.
-        --
-        --   bigmap      SetBigmapActive -- the radar, expanded (default)
-        --   frontend    the real pause menu, driven to its map page
-        --   fullscreen  PauseToggleFullscreenMap alone
-        --
-        -- `brmapmode` switches between them in game.
-        if BR.Pause.mapMode == 'frontend' then
-            BR.Pause.close()
-            BR.Pause.openFrontendMap()
-            cb({ ok = true })
-            return
-        end
-
-        if BR.Pause.mapMode == 'fullscreen' then
-            -- PAUSE_TOGGLE_FULLSCREEN_MAP (0x2DE6C5E2E996F178, "toggles pause
-            -- menu map rendering") on its own, on the chance it draws the map
-            -- with no frontend at all. pcall because a native this obscure is
-            -- exactly the kind that is missing from a build, and a missing one
-            -- must not take the pause menu down with it.
-            BR.Pause.close()
-            local ok, err = pcall(PauseToggleFullscreenMap, true)
-            print(('[br_ui] map: PauseToggleFullscreenMap(true) %s')
-                :format(ok and 'ok' or ('FAILED ' .. tostring(err))))
-            BR.Pause.fullscreenMap = true
-            cb({ ok = true })
-            return
-        end
-
-        -- THE BIG MINIMAP, NOT GTA'S PAUSE MENU.
-        --
-        -- The question was whether the rest of the pause menu's scaleforms
-        -- can be suppressed when we only want the map. They cannot -- the
-        -- tabs are part of that scaleform and ActivateFrontendMenu's
-        -- component argument only chooses which one is FOCUSED (-1 is
-        -- already the map).
-        --
-        -- SET_BIGMAP_ACTIVE avoids the question entirely: it expands the
-        -- minimap to the full-screen map GTA Online uses, drawn over live
-        -- gameplay, with no frontend, no tabs and no pause. It is what every
-        -- resource that wants "just the map" actually uses, and it is better
-        -- than what was asked for -- the world keeps running underneath.
-        --
-        -- IT EXPANDS THE MINIMAP, which is the catch: br_core turns the radar
-        -- off in the lobby, so calling this from here worked exactly as
-        -- documented on a minimap that was not being drawn, and the button
-        -- looked dead (user, 2026-08-09). br_core owns the radar, so br_core
-        -- owns this -- one place decides whether the map is on screen.
-        BR.Pause.close()
-        TriggerEvent('br:map:big', true)
-        BR.Pause.bigmap = true
-        print('[br_ui] map: big map on')
+        BR.Pause.openMap()
         cb({ ok = true })
         return
     end
@@ -808,29 +1220,12 @@ AddEventHandler('br:ui:pauseToggle', function()
     if now - lastToggle < 220 then return end
     lastToggle = now
 
-    -- THE BIG MAP IS A STATE THE SAME KEY GETS YOU OUT OF. It is drawn over
-    -- live gameplay with no cursor and no menu, so without this the only way
-    -- back would be a key the player has not been told about.
-    if BR.Pause.bigmap then
-        TriggerEvent('br:map:big', false)
-        BR.Pause.bigmap = false
-        return
-    end
-    -- Same rule for the frontend routes: whatever the map key turned on, the
-    -- map key turns off. A player should never have to know WHICH native drew
-    -- the thing in front of them to get rid of it.
-    if frontendMap then
-        -- Cleared, not closed here: the watcher thread owns the teardown, and
-        -- two callers racing SetFrontendActive is how a frontend gets left up
-        -- with nothing listening.
-        frontendMap = false
-        return
-    end
-    if BR.Pause.fullscreenMap then
-        pcall(PauseToggleFullscreenMap, false)
-        BR.Pause.fullscreenMap = false
-        return
-    end
+    -- THE MAP IS A STATE THE SAME KEY GETS YOU OUT OF. It is drawn over live
+    -- gameplay with no cursor and no menu, so without this the only way back
+    -- would be a key the player has not been told about. All three routes and
+    -- their flags live in BR.Pause.closeMap, which the map key also calls --
+    -- see the note above it for why there is one closer and not two.
+    if BR.Pause.closeMap() then return end
     if open then BR.Pause.close() else BR.Pause.open() end
 end)
 
@@ -879,6 +1274,13 @@ RegisterCommand('brmapmode', function(_, args)
     print('  fullscreen -- PauseToggleFullscreenMap alone, no frontend at all')
     print(('  debug: %s   (brmapmode debug -- print which input closes it)')
         :format(tostring(BR.Pause.mapDebug == true)))
+    -- WHAT THE FLAG SAYS AND WHAT THE GAME SAYS, SIDE BY SIDE (#207). The two
+    -- disagreeing is the whole bug, and "the map key does nothing" is not a
+    -- report anybody can act on without seeing which of them is wrong.
+    print(('  raise: %s gen %d   flag %s / game %s   -> map up: %s')
+        :format(BR.Pause.map and BR.Pause.map.phase or 'none',
+                mapGen, tostring(frontendMap), tostring(yes(IsPauseMenuActive())),
+                tostring(mapFrontendUp())))
     print('  usage: brmapmode bigmap | fullscreen | frontend [pageId]')
 end, false)
 
@@ -913,7 +1315,15 @@ AddEventHandler('onResourceStop', function(res)
     -- for would be a menu the player cannot leave by any route we told them
     -- about. The thread is going away with the resource, so close it here.
     if frontendMap then
-        frontendMap = false
+        -- The generation moves too, so any watcher still in flight stops
+        -- writing (#207). No announceFrontend here, unlike every other exit:
+        -- the page is going away with this resource and the bridge that would
+        -- carry the message is in it.
+        mapGen       = mapGen + 1
+        frontendMap  = false
+        mapSeen      = false
+        mapLastUp    = 0
+        BR.Pause.map = nil
         SetFrontendActive(false)
         TriggerEvent('br:map:frontend', false)
     end

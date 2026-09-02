@@ -171,11 +171,19 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   //   2. Minimap hidden but the vitals strip showing: just above the strip
   //      (which occupies the minimap's old lower edge).
   //   3. Both hidden: dropped to the strip's own line.
-  // 0.3rem above the map: the same breathing room the vitals strip keeps
-  // from the map's bottom edge, so the column reads as one unit.
+  // --vitals-gap above the map: the same breathing room the vitals strip keeps
+  // from the map's edge, so the column reads as one unit.
+  //
+  // AND THE CHAT MOVES UP WHEN THE VITALS STRIP COMES UP TO MEET IT. On a safe
+  // zone with no margin left below the radar, the health/shield strip cannot
+  // sit under the map without being cut off by the bottom of the screen, so it
+  // takes the slot directly above the map instead -- this one. --vitals-lift
+  // is how much room it needs, MEASURED from the rendered strip by
+  // hud/Hud.tsx, and it is 0 the rest of the time. "bump the chat up" is the
+  // owner's phrase for exactly this (2026-08-23, #231).
   const radarOn = screen?.radarOn ?? true
   const bottom = radarOn
-    ? 'calc(var(--map-bottom) + var(--map-h) + 0.3rem)'
+    ? 'calc(var(--map-bottom) + var(--map-h) + var(--vitals-gap) + var(--vitals-lift))'
     : barsVisible
       ? 'calc(var(--map-bottom) + 1.6rem)'
       : 'var(--map-bottom)'

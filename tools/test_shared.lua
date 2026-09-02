@@ -12,9 +12,19 @@ for _, f in ipairs({
     'shared/enums.lua',
     'shared/protocol.lua',
     'shared/names.lua',
+    -- BR.Notice, which server/combat.lua and server/party.lua compose their
+    -- name-bearing toasts with. Without it every one of those call sites
+    -- indexes nil and takes the suite down where the sentence is sent.
+    'shared/notice.lua',
     'shared/rng.lua',
     'shared/geo.lua',
+    -- BEFORE config/map.lua, whose InBounds wraps it -- and before
+    -- shared/storm_solve.lua, which calls InBounds to keep a circle on the map.
+    'shared/polygon.lua',
     'shared/clock.lua',
+    -- The world override -- the pinned noon, the fifteen weather names, and the
+    -- priority order that decides whose sky wins. Pure: no natives, no config.
+    'shared/world.lua',
     'shared/sched.lua',
     'shared/outbox.lua',
     'shared/identity.lua',
@@ -22,11 +32,37 @@ for _, f in ipairs({
     'config/storm.lua',
     'config/map.lua',
     'config/weapons.lua',
+    -- AFTER geo.lua, which it calls at LOAD time: BR.NormHash builds its
+    -- hash-keyed lookup, and loading it earlier would key every row on nil.
+    'config/vehicles.lua',
     'config/loot.lua',
+    -- The cue table and the sound catalogue /brsfx browses. Pure data plus three
+    -- pure lookups, which is exactly this suite's remit -- and the lookups are
+    -- the half of the audition tool that CAN be tested outside the game. What
+    -- a sound actually sounds like is a client's business and an ear's; which
+    -- rows the search hands the owner to listen to is arithmetic.
+    'config/audio.lua',
+    -- AFTER config/loot.lua AND config/weapons.lua, as the manifest orders it:
+    -- it resolves its payout pools out of their rarity buckets and id lookups
+    -- at LOAD time. Here for 'loot.rooftop', which asserts the airdrop crate's
+    -- and the Volts pile's drawn sizes against the numbers the owner gave.
+    'config/airdrop.lua',
     'shared/storm_solve.lua',
     'shared/loot_gen.lua',
     'shared/combat_solve.lua',
+    'shared/health_solve.lua',
+    -- AFTER enums.lua, which it does not read at load time but whose
+    -- BR.PlayerState the tests below build their views from.
+    'shared/spectate_solve.lua',
     'shared/evidence_buf.lua',
+    -- The domain and shortener lists chat_screen.lua reads. Loaded here for the
+    -- same reason br_core loads it: the module is the rules, this is the data,
+    -- and the suite below exercises the SHIPPED lists rather than a fixture --
+    -- a false positive in the real table is the failure that matters.
+    'config/chat.lua',
+    -- BEFORE incident_build.lua, which calls BR.ChatScreen.clamp when it builds
+    -- a refused-chat timeline entry.
+    'shared/chat_screen.lua',
     -- AFTER combat_solve, not before: it builds its severity table from
     -- BR.ShotRefusal's values at load time, so loading it first would leave every
     -- key nil and classify nothing -- silently, since a missing severity reads as
@@ -144,6 +180,209 @@ do
     end
     ok(sum == 1275, 'shuffle() preserves every element')
     ok(moved, 'shuffle() actually reorders')
+end
+
+-- ------------------------------------------------------------- key tokens ---
+
+describe('BR.KeyToken')
+do
+    -- ═══ WHAT THIS IS FOR ═══
+    --
+    -- Owner, 2026-08-22 (#209), about the start-of-match voice notice: "we
+    -- should make our own glyphs for keys. For example, this message looks too
+    -- bland and hard coded: 'Voice chat is set to nearby. Hold N to speak...'"
+    --
+    -- The wording is composed in Lua and the plate is drawn in TypeScript, so
+    -- what crosses the boundary is the sentence with a HOLE in it. This builds
+    -- the hole. ui-src/src/ui/KeyCap.tsx parses it; tools/check_key_glyphs.lua
+    -- is what checks the two agree, since nothing executes both languages.
+
+    -- IT NAMES THE COMMAND. That is the entire design: a command name cannot go
+    -- stale, and a key LABEL substituted at compose time is a photograph of the
+    -- binding at that instant. These strings outlive the instant -- a sticky
+    -- notice stays up for as long as the big map is open.
+    ok(BR.KeyToken('brptt') == '{key:brptt}',
+       'builds a hole naming the command', tostring(BR.KeyToken('brptt')))
+
+    -- DIFFERENT COMMANDS ARE DIFFERENT HOLES, which is only worth asserting
+    -- because a constant would satisfy the line above.
+    ok(BR.KeyToken('brpausemenu') == '{key:brpausemenu}',
+       'and a different command gives a different hole',
+       tostring(BR.KeyToken('brpausemenu')))
+    ok(BR.KeyToken('brptt') ~= BR.KeyToken('brinteract'),
+       'two commands never collapse to one token')
+
+    -- IT IS A PURE FUNCTION OF ITS ARGUMENT and reads no key layer at all.
+    -- Nothing here resolves a binding: that happens on the page, on every
+    -- rebind push. A version that reached for BR.Keys would reintroduce exactly
+    -- the compose-time snapshot the token exists to avoid, and it would do so
+    -- invisibly because the string would still look right on the day.
+    ok(BR.KeyToken('brptt') == BR.KeyToken('brptt'),
+       'the same command always gives the same token')
+
+    -- NO CRASH ON A NIL COMMAND. It is a programming error rather than a real
+    -- state, but this is called while composing a sentence that is about to go
+    -- on screen, and a hard error there costs the whole notice rather than one
+    -- glyph. tostring() makes it visible instead: '{key:nil}' draws a dash.
+    local okCall, out = pcall(BR.KeyToken, nil)
+    ok(okCall and type(out) == 'string',
+       'a nil command does not throw mid-sentence', tostring(out))
+end
+
+-- ------------------------------------------------------- notices with names ---
+
+describe('BR.Notice')
+do
+    -- ═══ WHAT THIS IS FOR ═══
+    --
+    -- Owner, 2026-08-31: "Any time we mention a player by name in a toast their
+    -- name should be bold."
+    --
+    -- A name is the one part of a notice a PLAYER writes, so the formatting
+    -- cannot be expressed IN the string. This module splits the sentence on our
+    -- own format string and sends the pieces; the page draws a `b` piece as a
+    -- bold text child and never parses it. ui-src/src/hud/Notices.tsx is the
+    -- other half; tools/check_notice_names.lua checks the two agree and that no
+    -- call site goes round them, since nothing executes both languages.
+
+    -- A SENTENCE THAT NAMES NOBODY IS STILL A STRING. This is what keeps the
+    -- forty-odd notices in this game that name no player on exactly the path
+    -- they were on -- nothing extra on the wire, nothing extra to render.
+    local plain = BR.Notice.line('You left the match.')
+    ok(type(plain) == 'string' and plain == 'You left the match.',
+        'a sentence with no name is returned as the string it was',
+        tostring(plain))
+
+    -- A HOLE FILLED WITH A NON-NAME IS ALSO STILL A STRING, and that is the
+    -- distinction the whole design rests on: `%s` does not mean "person", the
+    -- marker does. `Invite to %s expired.` fills its hole with the word `a
+    -- player` when nobody is known, and that word must not go bold.
+    local word = BR.Notice.line('Invite to %s expired.', 'a player')
+    ok(type(word) == 'string' and word == 'Invite to a player expired.',
+        'a hole filled with our own word stays prose', tostring(word))
+
+    -- A MARKED NAME SPLITS THE SENTENCE IN THREE.
+    local one = BR.Notice.line('%s is down!', BR.Notice.who('Wisp'))
+    ok(type(one) == 'table', 'a sentence that names somebody is a built notice')
+    ok(one.text == 'Wisp is down!',
+        'whose flat text is the sentence as a player reads it', one.text)
+    ok(#one.parts == 2
+       and one.parts[1].b == 'Wisp'
+       and one.parts[2].t == ' is down!',
+        'and whose parts hold the name on its own, outside the prose',
+        one.parts and #one.parts)
+
+    -- TWO NAMES KEEP THEIR ORDER. Four of the owner's revive-key lines name two
+    -- people, and a reversed pair still reads as a sentence -- which is exactly
+    -- why the order is asserted rather than eyeballed.
+    local two = BR.Notice.line('%s revived %s - they are back in!',
+                               BR.Notice.who('Ghost'), BR.Notice.who('Wisp'))
+    ok(two.text == 'Ghost revived Wisp - they are back in!',
+        'two names fill their holes in order', two.text)
+    local got = {}
+    for _, part in ipairs(two.parts) do
+        if part.b then got[#got + 1] = part.b end
+    end
+    ok(#got == 2 and got[1] == 'Ghost' and got[2] == 'Wisp',
+        'and stay in that order as parts', table.concat(got, ' / '))
+
+    -- A NAME AND A WORD IN ONE SENTENCE. `%s's invite expired -- %s.` is the
+    -- real call site: the first hole is a person and the second is our own
+    -- explanation, and only one of them may be bold.
+    local mixed = BR.Notice.line("%s's invite expired -- %s.",
+                                 BR.Notice.who('Wisp'), 'they readied up')
+    ok(mixed.text == "Wisp's invite expired -- they readied up.",
+        'a name and a word share a sentence', mixed.text)
+    local bolded = 0
+    for _, part in ipairs(mixed.parts) do
+        if part.b then bolded = bolded + 1 end
+    end
+    ok(bolded == 1,
+        'and only the person is a name -- marking is per hole, not per %s',
+        bolded)
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- AND NOW THE POINT OF ALL OF IT: A NAME CANNOT CARRY FORMATTING
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Every one of these is a name a player can actually pick. Under the two
+    -- obvious designs this module rejects -- markdown in the string, or a
+    -- `{b:...}` token -- each of them changes the rendering of the sentence
+    -- around it. Here they must come out as themselves, character for
+    -- character, and the sentence around them must be unchanged.
+    for _, nasty in ipairs({
+        '**bold**',                 -- markdown, if the page ever read any
+        '{b:x}',                    -- a bold token, if bold were a token
+        'Bob}',                     -- closing a token early
+        '{key:brptt}',              -- the token the page DOES understand
+        '%s',                       -- a format hole
+        '%',                        -- a lone percent
+        '<b>x</b>',                 -- markup, if anything ever set innerHTML
+        "O'Hara",                   -- an ordinary name with an apostrophe
+    }) do
+        local n = BR.Notice.line('%s is down!', BR.Notice.who(nasty))
+        ok(type(n) == 'table' and n.parts[1].b == nasty,
+            ('a player called %q reaches the page as those characters and '
+                .. 'nothing else'):format(nasty),
+            n.parts and n.parts[1] and n.parts[1].b)
+        ok(n.parts[2] and n.parts[2].t == ' is down!',
+            'and the sentence around them is untouched',
+            n.parts and n.parts[2] and n.parts[2].t)
+        -- THE FLAT TEXT CARRIES THEM TOO, unaltered. `text` is what the pause
+        -- menu matches on and what a consumer with no renderer would print, so
+        -- a name that survived the parts and was mangled here would be a second
+        -- rendering of one sentence.
+        ok(n.text == nasty .. ' is down!',
+            'and the flat spelling is the same sentence', n.text)
+    end
+
+    -- `%%` IS AN ESCAPED PERCENT, NOT A HOLE. No line in the game uses one
+    -- today; it is here because the scanner has to decide what to do with the
+    -- character and "treat it as a hole" would eat an argument silently.
+    ok(BR.Notice.line('100%% sure') == '100% sure',
+        'an escaped percent is one percent and consumes no argument',
+        tostring(BR.Notice.line('100%% sure')))
+
+    -- A HOLE WITH NO ARGUMENT WRITES NOTHING rather than the word `nil`. It is
+    -- a programming error either way, and this is composed a frame before it
+    -- goes on screen -- a gap is the least wrong thing to show while it is
+    -- being found.
+    ok(BR.Notice.line('Invite to %s expired.') == 'Invite to  expired.',
+        'a missing value leaves a gap, not the word nil',
+        tostring(BR.Notice.line('Invite to %s expired.')))
+
+    -- ═══ THE WIRE, AND THE CLEAN ON THE OTHER SIDE ═══
+
+    local flat, parts = BR.Notice.wire(one)
+    ok(flat == 'Wisp is down!' and type(parts) == 'table',
+        'wire() unpacks a built notice into text and parts', tostring(flat))
+    local flat2, parts2 = BR.Notice.wire('You left the match.')
+    ok(flat2 == 'You left the match.' and parts2 == nil,
+        'and a plain string into text and NOTHING -- so a notice naming nobody '
+            .. 'puts no second field on the wire', tostring(parts2))
+
+    -- ONLY THE TWO SHAPES THE PAGE HAS A BRANCH FOR survive the clean. This is
+    -- the receiving client's guard: br_core/client/state.lua rebuilds the parts
+    -- rather than forwarding them, for the same reason it forwards every other
+    -- field one at a time.
+    local cleaned = BR.Notice.clean({
+        { t = 'a' }, { b = 'B' }, { z = 'junk' }, 'not a table',
+        { t = 5 }, { b = {} },
+    })
+    ok(#cleaned == 2 and cleaned[1].t == 'a' and cleaned[2].b == 'B',
+        'clean() keeps only {t=string} and {b=string} parts', #cleaned)
+    ok(BR.Notice.clean({}) == nil and BR.Notice.clean('nope') == nil,
+        'and an empty or absent list travels as absent, never as an empty '
+            .. 'table -- which would reach the page as a JSON object rather '
+            .. 'than an array')
+
+    -- A MARKER IS A TABLE, WHICH IS WHY IT CANNOT BE FORGED FROM OUTSIDE. A
+    -- player supplies a string; only our own call sites can supply this.
+    local marker = BR.Notice.who('Wisp')
+    ok(type(marker) == 'table' and marker.b == 'Wisp',
+        'who() marks a value as a person', tostring(marker.b))
+    ok(BR.Notice.who(nil).b == '',
+        'and a nil name marks an empty person rather than throwing mid-sentence')
 end
 
 -- -------------------------------------------------------------------- geo ---
@@ -270,6 +509,152 @@ do
     end
     ok(allOn, 'chord endpoints sit on the circle')
     ok(allDistinct, 'chord endpoints are distinct')
+end
+
+-- ---------------------------------------------------------------- polygon ---
+
+describe('polygon')
+do
+    -- A UNIT SQUARE FIRST, because every answer in it can be checked by eye. If
+    -- the crossing rule is wrong, it is wrong here too, and here the expected
+    -- value is not a matter of opinion.
+    local sq = {
+        { x = 0.0, y = 0.0 }, { x = 10.0, y = 0.0 },
+        { x = 10.0, y = 10.0 }, { x = 0.0, y = 10.0 },
+    }
+    ok(BR.PointInPolygon(5.0, 5.0, sq), 'the middle of a square is inside')
+    ok(not BR.PointInPolygon(15.0, 5.0, sq), 'a point beside it is outside')
+    ok(not BR.PointInPolygon(5.0, -0.001, sq), 'a millimetre below the base is outside')
+    ok(BR.PointInPolygon(0.0, 0.0, sq), 'a corner is inside')
+    ok(BR.PointInPolygon(10.0, 10.0, sq), 'the opposite corner is inside')
+    ok(BR.PointInPolygon(5.0, 0.0, sq), 'the middle of an edge is inside')
+    ok(BR.PointInPolygon(0.0, 5.0, sq), 'and of a VERTICAL edge, which the ray runs along')
+
+    -- The vertex double-count. A ray cast through a vertex meets both edges
+    -- that share it; counting both flips the answer for a genuinely interior
+    -- point. `(a.y > y) ~= (b.y > y)` is what stops that, and a diamond puts a
+    -- vertex on the same horizontal as the point being tested.
+    local diamond = {
+        { x = 0.0, y = 0.0 }, { x = 10.0, y = -10.0 },
+        { x = 20.0, y = 0.0 }, { x = 10.0, y = 10.0 },
+    }
+    ok(BR.PointInPolygon(10.0, 0.0, diamond),
+        'the centre of a diamond is inside, with a vertex either side of it')
+    ok(not BR.PointInPolygon(-5.0, 0.0, diamond), 'and a point level with both is not')
+
+    -- Degenerate input degrades to false rather than erroring inside a match
+    -- transition, which is where BR.Config.Map.InBounds is called from.
+    ok(not BR.PointInPolygon(0.0, 0.0, nil), 'a nil polygon contains nothing')
+    ok(not BR.PointInPolygon(0.0, 0.0, {}), 'an empty polygon contains nothing')
+    ok(not BR.PointInPolygon(0.0, 0.0, { { x = 0.0, y = 0.0 }, { x = 1.0, y = 1.0 } }),
+        'two points are a line, not an area')
+
+    -- Shoelace and perimeter on the same square: 100 m^2 and 40m, counted on
+    -- fingers. The area is SIGNED, and this ring is counter-clockwise.
+    ok(near(BR.PolygonArea(sq), 100.0), 'square area', BR.PolygonArea(sq))
+    ok(near(BR.PolygonPerimeter(sq), 40.0), 'square perimeter', BR.PolygonPerimeter(sq))
+    local rev = { sq[4], sq[3], sq[2], sq[1] }
+    ok(near(BR.PolygonArea(rev), -100.0), 'walking it the other way flips the sign')
+    ok(BR.PointInPolygon(5.0, 5.0, rev), 'but not the containment answer')
+
+    -- A figure-eight must be REFUSED by the simplicity check rather than
+    -- silently answered. This is the shape a survey produces from two clicks in
+    -- the wrong order, and ray casting reports the crossed lobe as outside.
+    local bowtie = {
+        { x = 0.0, y = 0.0 }, { x = 10.0, y = 10.0 },
+        { x = 0.0, y = 10.0 }, { x = 10.0, y = 0.0 },
+    }
+    ok(BR.PolygonIsSimple(sq), 'a square is a simple ring')
+    ok(not BR.PolygonIsSimple(bowtie), 'a bow tie is not')
+
+    -- Distance to the outline is to the nearest SEGMENT, not the nearest
+    -- infinite line: past the end of an edge, the answer is the corner.
+    ok(near(BR.DistanceToPolygonEdge(5.0, 15.0, sq), 5.0),
+        'distance straight out from an edge')
+    ok(near(BR.DistanceToPolygonEdge(13.0, 14.0, sq), 5.0),
+        'distance past a corner is measured to the corner')
+    ok(near(BR.DistanceToPolygonEdge(5.0, 4.0, sq), 4.0),
+        'and it is unsigned -- an inside point still reports a positive distance')
+end
+
+describe('polygon.boundary')
+do
+    -- THE REAL SURVEYED RING, because that is the one POIs were deleted
+    -- against. A test on a square proves the algorithm; this proves the
+    -- algorithm against the data.
+    local B = BR.Config.Map.Boundary
+    ok(#B == 66, 'the boundary is the surveyed 66 points', #B)
+    ok(BR.PolygonIsSimple(B), 'and it does not cross itself')
+
+    -- CLEARLY INSIDE.
+    ok(BR.Config.Map.InBounds(0.0, 0.0), 'Los Santos is on the map')
+    ok(BR.Config.Map.InBounds(358.0, 1976.3), 'so is the survey centroid')
+    ok(BR.Config.Map.InBounds(1900.0, 3700.0), 'so is Sandy Shores')
+
+    -- CLEARLY OUTSIDE: the four corners of the old rectangle, which is the
+    -- whole reason this ring exists. Each is open ocean.
+    local A = BR.Config.Storm.mapAABB
+    local corners = 0
+    for _, c in ipairs({ { A.min.x, A.min.y }, { A.min.x, A.max.y },
+                         { A.max.x, A.min.y }, { A.max.x, A.max.y } }) do
+        if not BR.Config.Map.InBounds(c[1], c[2]) then corners = corners + 1 end
+    end
+    ok(corners == 4, 'every corner of mapAABB is off the map', ('%d of 4'):format(corners))
+
+    -- ON A VERTEX and ON AN EDGE. Both must answer INSIDE, deterministically:
+    -- a POI is deleted on this verdict, and the crossing count alone has no
+    -- defined answer for a point sitting on the line it is counting crossings
+    -- of. Every vertex is checked, not a sample -- there are only 66.
+    local onVertex, onEdge = 0, 0
+    for i = 1, #B do
+        local a = B[i]
+        local b = B[(i % #B) + 1]
+        if BR.Config.Map.InBounds(a.x, a.y) and BR.PointOnPolygonEdge(a.x, a.y, B) then
+            onVertex = onVertex + 1
+        end
+        local mx, my = (a.x + b.x) * 0.5, (a.y + b.y) * 0.5
+        if BR.Config.Map.InBounds(mx, my) and BR.PointOnPolygonEdge(mx, my, B) then
+            onEdge = onEdge + 1
+        end
+    end
+    ok(onVertex == #B, 'every vertex reads as on the outline and inside', onVertex)
+    ok(onEdge == #B, 'so does the midpoint of every edge', onEdge)
+
+    -- INSIDE THE BBOX, OUTSIDE THE SHAPE. The concave bits around the docks and
+    -- the airport are exactly this case, and they are the reason a bounding box
+    -- was never good enough: (-650, -2900) is 87m south of the shoreline the
+    -- owner drew between the LSIA approach and the container terminal, and sits
+    -- comfortably inside the bbox on both axes.
+    local minX, minY, maxX, maxY = BR.PolygonBounds(B)
+    local notch = { { -650.0, -2900.0 }, { -300.0, -3200.0 }, { -1500.0, -3400.0 } }
+    local inBox, outShape = 0, 0
+    for _, p in ipairs(notch) do
+        if p[1] > minX and p[1] < maxX and p[2] > minY and p[2] < maxY then
+            inBox = inBox + 1
+        end
+        if not BR.Config.Map.InBounds(p[1], p[2]) then outShape = outShape + 1 end
+    end
+    ok(inBox == #notch, 'the notch probes are inside the bounding box', inBox)
+    ok(outShape == #notch, 'and outside the shape', outShape)
+
+    -- The survey's own figures, so a silent edit to the table shows up in the
+    -- test suite as well as in tools/check_boundary.lua.
+    ok(near(BR.PolygonPerimeter(B), 34355.0, 10.0), 'perimeter matches the survey',
+        ('%.0fm'):format(BR.PolygonPerimeter(B)))
+    ok(near(math.abs(BR.PolygonArea(B)), 51057000.0, 10000.0),
+        'area matches the survey',
+        ('%.2f km^2'):format(math.abs(BR.PolygonArea(B)) / 1e6))
+
+    -- The rule the owner stated, asserted over the live tables.
+    local badPoi, badAmb = 0, 0
+    for _, p in ipairs(BR.Config.Map.POIs) do
+        if not BR.Config.Map.InBounds(p.x, p.y) then badPoi = badPoi + 1 end
+    end
+    for _, a in ipairs(BR.Config.Map.AmbulanceSpawns) do
+        if not BR.Config.Map.InBounds(a.x, a.y) then badAmb = badAmb + 1 end
+    end
+    ok(badPoi == 0, 'every POI is inside the surveyed boundary', badPoi)
+    ok(badAmb == 0, 'and every ambulance spawn is too', badAmb)
 end
 
 -- ------------------------------------------------------------------ storm ---
@@ -1622,6 +2007,90 @@ do
         'a centre already at sea still resolves rather than hanging')
 end
 
+describe('storm.bounds')
+do
+    -- THE OWNER'S ACTUAL REPORT, AS A TEST (2026-08-28): "we have too many
+    -- places where the storm can end outside the map and in the ocean."
+    --
+    -- storm.water above covers the five authored rectangles, which were never a
+    -- map outline -- they exist to stop LOOT generating in the Pacific, and the
+    -- gaps between them are where the storm went. This drives the WHOLE
+    -- sequence, anchor to phase 8, exactly as br_core/server/storm.lua drives
+    -- it, and asserts the final circle is somewhere a player can stand.
+    --
+    -- Before the surveyed boundary became the mask, this test failed on 20.2%
+    -- of seeds. That number is the reason it is a full-sequence simulation and
+    -- not a single call: one draw off a coastal anchor almost never lands in
+    -- the sea, and eight of them compounding is the bug.
+    local cfg = BR.Config.Storm
+    local pois = BR.Config.Map.POIs
+
+    local wps = {}
+    for _, options in ipairs(BR.Config.Bus.legs) do
+        for _, opt in ipairs(options) do
+            for _, wp in ipairs(opt) do wps[#wps + 1] = { x = wp.x, y = wp.y } end
+        end
+    end
+
+    local N = 400
+    local anchorsOut, endsOut, anyOut, worst = 0, 0, 0, 0.0
+    for seed = 1, N do
+        local rng = BR.Rng(seed * 7919 + 13)
+        local anchor = BR.PickStormAnchor(rng, wps, pois, cfg.anchorBand)
+        if not BR.Config.Map.InBounds(anchor.x, anchor.y) then
+            anchorsOut = anchorsOut + 1
+        end
+
+        -- The opening radius, computed the way server/storm.lua computes it:
+        -- far enough to cover every corner of the bounds, so nobody can land
+        -- outside circle 1.
+        local A = cfg.mapAABB
+        local r = cfg.radius0
+        for _, c in ipairs({ { A.min.x, A.min.y }, { A.min.x, A.max.y },
+                             { A.max.x, A.min.y }, { A.max.x, A.max.y } }) do
+            r = math.max(r, BR.Dist(anchor.x, anchor.y, c[1], c[2]))
+        end
+        r = r + cfg.openMargin
+
+        local cx, cy = anchor.x, anchor.y
+        local sawOut = false
+        for phase = 1, #cfg.phases do
+            local p = cfg.phases[phase]
+            local minDist = 0.0
+            if phase > #cfg.phases - cfg.edgeHugPhases then
+                minDist = math.max(0.0, (r - p.radius) - cfg.edgeHugM)
+            end
+            cx, cy = BR.NextStormCentre(rng, cx, cy, r, p.radius, cfg.edgeBiasMax,
+                cfg.mapAABB, minDist, BR.StormBreakoutFor(cfg, phase))
+            r = p.radius
+            if not BR.Config.Map.InBounds(cx, cy) then sawOut = true end
+        end
+
+        if sawOut then anyOut = anyOut + 1 end
+        if not BR.Config.Map.InBounds(cx, cy) then
+            endsOut = endsOut + 1
+            local d = BR.Config.Map.BoundaryDistance(cx, cy)
+            if d > worst then worst = d end
+        end
+    end
+
+    ok(anchorsOut == 0, 'every match anchor is inside the surveyed boundary',
+        ('%d of %d outside'):format(anchorsOut, N))
+    ok(endsOut == 0, 'and no match ends with its final circle off the map',
+        ('%d of %d, worst %.0fm out'):format(endsOut, N, worst))
+    ok(anyOut == 0, 'no phase of any match puts its centre off the map',
+        ('%d of %d matches'):format(anyOut, N))
+
+    -- The pull-back is a walk toward the PREVIOUS centre, and the previous
+    -- centre is on the map by induction from the anchor. A centre that is
+    -- already off the map breaks that induction and must still return rather
+    -- than loop -- brforce and the tests both reach it.
+    local ox, oy = BR.NextStormCentre(BR.Rng(11), 3900.0, 6900.0, 2000.0, 900.0,
+        1.0, nil)
+    ok(type(ox) == 'number' and type(oy) == 'number',
+        'a centre already off the map still resolves rather than hanging')
+end
+
 describe('storm.nesting')
 do
     -- THE critical invariant. If a new circle is not fully contained by the old
@@ -2030,24 +2499,81 @@ do
 
     -- The render ceiling again. A weapon whose range exceeds it promises the
     -- player a shot the engine will never let them take.
+    --
+    -- THE AIRDROP SHELF IS IN THIS WALK, and it was not until a mutation pass
+    -- gave the RPG a 900m range and nothing noticed. Those four are in no rarity
+    -- bucket, so every check that walks the loot tables misses them -- which is
+    -- exactly why each one has to be asked here by name.
     local over = {}
-    for _, w in ipairs(BR.Config.Weapons) do
-        if w.maxRange > 424.0 then over[#over + 1] = w.id end
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do
+            if w.maxRange > 424.0 then over[#over + 1] = w.id end
+        end
     end
     ok(#over == 0, 'no weapon out-ranges the 424u entity render ceiling',
         table.concat(over, ', '))
 
-    -- Excluded on purpose: these are the highest-value targets for a weapon
-    -- spawning cheat, and keeping them out of the table keeps them off the allowlist.
-    for _, banned in ipairs({
+    -- ALLOWED SINCE #88, AND THE OTHER HALF OF THE PROPERTY IS BELOW.
+    --
+    -- These four were excluded on anti-cheat grounds -- absent from the table,
+    -- therefore absent from the allowlist. The owner reversed it (2026-08-21)
+    -- on the argument that the allowlist asks "did we issue this", not "is this
+    -- dangerous", and that an airdrop can honestly answer yes. So they are
+    -- allowed now, and the invariant worth pinning has MOVED rather than gone:
+    -- allowed to CARRY, never rolled into the WORLD.
+    for _, w in ipairs({
         { 'RPG',              0xB1CA77B1 },
         { 'Minigun',          0x42BF8A85 },
         { 'Railgun',          0x6D544C99 },
         { 'Grenade Launcher', 0xA284510B },
     }) do
-        ok(not BR.Config.IsAllowedWeapon(banned[2]),
-            ('%s is not allowed'):format(banned[1]))
+        ok(BR.Config.IsAllowedWeapon(w[2]),
+            ('%s is allowed -- an airdrop can issue it'):format(w[1]))
     end
+
+    -- ...and the homing launcher is not, because nothing issues one. Absence is
+    -- still refusal here; #88 changed which hashes are written down, not the
+    -- shape of the rule.
+    ok(not BR.Config.IsAllowedWeapon(0x63AB0442),
+        'the homing launcher is still refused -- nothing hands one out')
+
+    -- THE WORLD NEVER PRODUCES ONE. The whole of "ultra rare airdrop loot" is
+    -- that they are registered into the id lookups and into no rarity bucket,
+    -- which is the only thing BR.RollLootStack rolls against.
+    local leaked = {}
+    for _, w in ipairs(BR.Config.AirdropWeapons) do
+        ok(BR.Config.WeaponById[w.id] == w,
+            ('%s resolves by id, so an airdrop pool can name it'):format(w.id))
+        for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            for _, x in ipairs(BR.Config.WeaponsByRarity[r] or {}) do
+                if x.id == w.id then leaked[#leaked + 1] = w.id end
+            end
+        end
+    end
+    ok(#leaked == 0,
+        'no airdrop weapon is in any rarity bucket, so no world roll can '
+        .. 'produce one', table.concat(leaked, ', '))
+
+    -- THE MINIGUN'S CYCLE IS THE FASTEST IN THE GAME, AND THAT IS A VALIDATOR
+    -- FACT RATHER THAN A BALANCE ONE. BR.ValidateShot refuses anything faster
+    -- than `minInterval * intervalSlack` as TOO_FAST, and TOO_FAST is a COUNTED
+    -- refusal -- so a minigun given a rifle's 85ms would refuse an honest
+    -- player's every round and then open an anticheat case on them for using a
+    -- gun the airdrop handed them. The number has to be at or below what the
+    -- engine actually does, and nothing offline can measure that; what can be
+    -- checked is the claim the config makes about it.
+    local fastest, fastestId = math.huge, nil
+    for _, w in ipairs(BR.Config.Weapons) do
+        if w.minInterval and w.minInterval < fastest then
+            fastest, fastestId = w.minInterval, w.id
+        end
+    end
+    local mg = BR.Config.WeaponById.minigun
+    ok(mg and mg.minInterval and mg.minInterval < fastest,
+        'the minigun cycles faster than anything in the world table',
+        ('minigun %s vs %s at %s'):format(
+            tostring(mg and mg.minInterval), tostring(fastestId),
+            tostring(fastest)))
 
     ok(BR.Config.IsAllowedWeapon(0x1B06D571), 'pistol is allowed')
     ok(BR.Config.IsAllowedWeapon(BR.Config.Gadgets.PARACHUTE), 'parachute gadget is allowed')
@@ -2507,7 +3033,7 @@ do
     -- take -- there is nothing to stand on.
     ok(vis[BR.PlayerState.FREEFALL] == true, 'a falling player is streamed loot')
     ok(take[BR.PlayerState.FREEFALL] == nil, 'but cannot pick it up mid-air')
-    ok(take[BR.PlayerState.DEAD] == nil, 'and a corpse takes nothing')
+    ok(take[BR.PlayerState.OUT] == nil, 'and a corpse takes nothing')
 
     -- Anything takeable must be visible, or the gates contradict each other.
     local contradiction = {}
@@ -3424,10 +3950,20 @@ local RES = 'resources/[fivem-royale]/'
 local SANDBOX_LIB = {
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
     'br_lib/shared/names.lua', 'br_lib/shared/rng.lua',
+    -- BR.Notice, beside names.lua because the two are about the same word:
+    -- server/combat.lua and server/party.lua build every toast that names a
+    -- player through it, so a sandbox without it dies at the first sentence.
+    'br_lib/shared/notice.lua',
     'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
+    -- The world override. Both halves of it are sandboxed below -- the client's
+    -- sky resolver and the server's two verbs -- and client/storm.lua now makes
+    -- its weather a CLAIM through this table rather than writing the native, so
+    -- the storm sandbox needs it too.
+    'br_lib/shared/world.lua',
     'br_lib/shared/sched.lua', 'br_lib/config/match.lua',
     'br_lib/config/storm.lua', 'br_lib/config/map.lua',
-    'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
+    'br_lib/config/weapons.lua', 'br_lib/config/vehicles.lua',
+    'br_lib/config/loot.lua',
     'br_lib/config/audio.lua', 'br_lib/config/peds.lua',
     'br_lib/config/market.lua', 'br_lib/shared/xp.lua',
     'br_lib/shared/storm_solve.lua', 'br_lib/shared/combat_solve.lua',
@@ -3616,7 +4152,7 @@ do
     -- DECLINING IS NOT IMMORTALITY, said with the clock rather than with a
     -- promise. The bleed clock owns this ending and still delivers it.
     S.tick(2000 + S.env.BR.Config.Match.dbnoBleedBase * 1000 + 500)
-    ok(S.roster[1].state == PS.DEAD,
+    ok(S.roster[1].state == PS.OUT,
         'the bleed clock still finishes them on time',
         tostring(S.roster[1].state))
 
@@ -3624,7 +4160,7 @@ do
     -- is the thing a lazy guard would trade away.
     ok(S.roster[2].state == PS.ALIVE, 'the mate is still standing')
     S.died(2, { cause = 'fall' })
-    ok(S.roster[2].state == PS.DEAD,
+    ok(S.roster[2].state == PS.OUT,
         'a live player with no standing mate left is still eliminated by their '
         .. 'own report',
         tostring(S.roster[2].state))
@@ -3810,6 +4346,10 @@ local function newClient(settleMs, streamMs)
     env.BR.Native.setDisplayHealth = function(hp)
         env.SetEntityHealth(1, env.BR.ToEngineHp(hp))
     end
+    -- The wash a revive performs (owner, 2026-08-28: "any time revive is
+    -- processed, please clean the ped"). A no-op here: this harness is about the
+    -- crawl, and WHEN the wash is asked for is driven in tools/test_client.lua.
+    env.BR.Native.cleanPed = function() end
     env.BR.Native.keyLabelForCommand = function() return 'E' end
     env.BR.Native.applyGameRules = function() end
     env.BR.Native.ALLY_GROUP = 1
@@ -4180,6 +4720,199 @@ do
 end
 
 -- ==========================================================================
+-- A SQUADMATE'S LEVEL, DERIVED FROM XP, ON THE SQUAD BEACON.
+-- ==========================================================================
+--
+-- Owner, 2026-08-22: "We need some way in the squad panel to see the levels of
+-- our teammates near their name."
+--
+-- Two properties carry this feature and neither is visible by looking at the
+-- panel. The AUDIENCE: a level was not published to anyone before this, and the
+-- obvious home -- roster.lua's PUBLIC_FIELDS -- hands it to every client in the
+-- match rather than to the squad the owner asked about. And the SOURCE: the
+-- profile row's stored `level` is written at match end and lags the `xp` beside
+-- it, so a player who levelled up last game would be shown their old number for
+-- the whole of the next one. A Ringmaster commit exists titled "Derive the level
+-- from xp, instead of trusting a field that goes stale"; this is that rule
+-- applied on this side of the boundary, and asserted rather than commented.
+
+describe('squad.level')
+do
+    local env = newSandbox()
+    local now, roster, out = 0, {}, {}
+
+    env.GetGameTimer = function() return now end
+    env.print = function() end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.GetPlayerName = function(s) return 'P' .. tostring(s) end
+    env.GetPlayers = function() return {} end
+    env.GetHashKey = function(s) return #tostring(s) end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand = function() end
+    env.AddEventHandler = function() end
+    env.TriggerEvent = function() end
+    env.TriggerClientEvent = function(ev, target, payload)
+        out[#out + 1] = { event = ev, target = target, payload = payload }
+    end
+    env.Citizen = { CreateThread = function() end, Wait = function() end,
+                    SetTimeout = function() end }
+
+    loadInto(env, SANDBOX_LIB)
+
+    env.BR.Roster = {
+        get = function(s) return roster[s] end,
+        each = function(pred, fn)
+            for src, e in pairs(roster) do
+                if (pred == nil or pred(e)) and fn then fn(src, e) end
+            end
+        end,
+        clearFields = function() end,
+        setMatch = function() end,
+        setState = function() end,
+    }
+    env.BR.Server = {
+        devMode = false, matches = {}, parties = {}, roster = roster,
+        isInMatch = function(st)
+            return st == env.BR.PlayerState.ALIVE or st == env.BR.PlayerState.BUS
+                or st == env.BR.PlayerState.FREEFALL or st == env.BR.PlayerState.GLIDE
+                or st == env.BR.PlayerState.DBNO or st == env.BR.PlayerState.WARMUP
+        end,
+        notify = function() end,
+    }
+    env.BR.Broadcast = { delta = function() end }
+    env.BR.Bus = { sendPreview = function() end }
+    env.BR.Inv = { reset = function() end }
+
+    loadInto(env, { 'br_core/server/party.lua' })
+
+    -- THE MARKET IS THE ONLY PLACE LIFETIME XP LIVES on this side, and its
+    -- accessor already answers nil for a player whose inventory has not come
+    -- back from the database. An absent key here IS that state -- which is why
+    -- the "not loaded" case below needs no flag, just a player nobody has set.
+    local lifetime = {}
+    env.BR.Market = {
+        lifetimeXp = function(s) return lifetime[s] end,
+    }
+
+    env.BR.Server.matches[1] = { id = 1, state = env.BR.MatchState.PLAYING,
+                                 mode = env.BR.Mode.SQUAD.key, players = { 1, 2 },
+                                 startedAt = 0 }
+    local PS = env.BR.PlayerState
+    for _, src in ipairs({ 1, 2 }) do
+        roster[src] = { src = src, name = 'P' .. src, matchId = 1, squadId = 'sq1',
+                        state = PS.ALIVE, pos = { x = src * 1.0, y = 0.0, z = 30.0 } }
+    end
+
+    --- One beacon pass, and the member record it produced for `src`.
+    local function beaconFor(src)
+        out = {}
+        now = now + 1000
+        env.BR.Sched.step(now)
+        for _, m in ipairs(out) do
+            if m.event == env.BR.Net.SQUAD_POS then
+                for _, member in ipairs(m.payload) do
+                    if member.src == src then return member end
+                end
+            end
+        end
+        return nil
+    end
+
+    local XP = env.BR.Xp
+
+    -- THE ORDINARY CASE. The xp is placed exactly on level 23's threshold, so
+    -- the expected answer is read off the same curve the server uses rather
+    -- than hardcoded -- a test that spelled out "23" would have to be edited
+    -- every time the curve was retuned, and would then be asserting the edit.
+    lifetime[1] = XP.thresholdFor(23)
+    local mate = beaconFor(1)
+    ok(mate ~= nil, 'a squad member is beaconed to their squad')
+    ok(mate and mate.level == 23,
+        'and carries the level their lifetime xp puts them on',
+        mate and ('level %s for %s xp'):format(tostring(mate.level),
+                                               tostring(lifetime[1])) or 'no member')
+
+    -- IT TRACKS THE XP WITH NOTHING RE-STORED. This is the whole of "derived,
+    -- not read": no writer ran between these two pushes, and the answer moved.
+    lifetime[1] = XP.thresholdFor(24)
+    local levelled = beaconFor(1)
+    ok(levelled and levelled.level == 24,
+        'and follows the xp up a level with no field anywhere rewritten',
+        levelled and tostring(levelled.level) or 'no member')
+
+    -- ...AND A STALE STORED LEVEL CANNOT WIN. The profile row really does carry
+    -- one, written at match end; if the beacon ever starts reading a field
+    -- instead of the curve, this is the assertion that catches it.
+    roster[1].level = 99
+    local stale = beaconFor(1)
+    ok(stale and stale.level == 24,
+        'a stale `level` sitting on the roster entry is ignored, not trusted',
+        stale and tostring(stale.level) or 'no member')
+    roster[1].level = nil
+
+    -- ZERO XP IS A LEVEL, NOT AN ABSENCE. In Lua 0 is truthy, and the bug this
+    -- pins is the other spelling: a guard written as `xp and xp > 0` drops the
+    -- brand-new account entirely, so the one player whose level is least
+    -- interesting is the one whose row silently loses its number.
+    lifetime[1] = 0
+    local fresh = beaconFor(1)
+    ok(fresh and fresh.level == 1,
+        'a player with 0 lifetime xp is level 1 -- present, not omitted',
+        fresh and tostring(fresh.level) or 'no member')
+
+    -- NOT LOADED IS ABSENT, AND ABSENT IS NOT LEVEL 1. These are different
+    -- facts and the panel draws them differently: a number, or nothing at all.
+    -- Collapsing them would paint a confident `1` over every squadmate for the
+    -- length of the database round trip and then correct itself.
+    lifetime[1] = nil
+    local unknown = beaconFor(1)
+    ok(unknown ~= nil, 'a mate whose profile has not loaded is still beaconed')
+    ok(unknown and unknown.level == nil,
+        'but carries no level at all -- not 0, and not a placeholder 1',
+        unknown and tostring(unknown.level) or 'no member')
+
+    -- THE WHOLE RESOURCE CAN BE MISSING. br_core boots without a market on a
+    -- server whose database is down, and a beacon that threw there would take
+    -- the squad blips and the bleed clock down with it.
+    local market = env.BR.Market
+    env.BR.Market = nil
+    local nomarket = beaconFor(1)
+    ok(nomarket ~= nil and nomarket.level == nil,
+        'with no market resource at all the beacon still goes out, levelless',
+        nomarket and tostring(nomarket.level) or 'no member -- the push threw')
+    env.BR.Market = market
+
+    -- THE AUDIENCE, WHICH IS THE POINT. The owner asked for his TEAMMATES'
+    -- levels; this asserts that is who gets them.
+    lifetime[1] = XP.thresholdFor(23)
+    beaconFor(1)
+    local strangers = 0
+    for _, m in ipairs(out) do
+        if m.event == env.BR.Net.SQUAD_POS then
+            local mt = roster[m.target]
+            if not mt or mt.squadId ~= 'sq1' then strangers = strangers + 1 end
+        end
+    end
+    ok(strangers == 0,
+        'the level reaches that player\'s own squad and nobody else',
+        ('%d sends went outside the squad'):format(strangers))
+
+    -- AND IT IS NOT ON THE PUBLIC ROSTER, asserted against the real allowlist.
+    -- A level is not positional and reveals nothing tactical -- but the test
+    -- that list applies is not "is this harmless", it is "does the whole lobby
+    -- need it", and the answer here is no.
+    local src = io.open(RES .. 'br_core/server/roster.lua', 'r')
+    local text = src and src:read('a') or ''
+    if src then src:close() end
+    local publicList = text:match('local PUBLIC_FIELDS = {(.-)}')
+    ok(publicList ~= nil, 'PUBLIC_FIELDS is where it was')
+    ok(publicList and not publicList:find('level', 1, true)
+       and not publicList:find('xp', 1, true),
+        'and the level is NOT on it: the squad was asked for, not the match',
+        publicList)
+end
+
+-- ==========================================================================
 -- THE REVIVE HOLD IS ONE NUMBER.
 -- ==========================================================================
 
@@ -4537,7 +5270,7 @@ do
         tostring(S.roster[1].state))
 
     S.tick(M.dbnoBleedBase * 1000 + 500)
-    ok(S.roster[1].state == PS.DEAD,
+    ok(S.roster[1].state == PS.OUT,
         'and the clock still finishes them, on the new number',
         tostring(S.roster[1].state))
 end
@@ -4593,8 +5326,12 @@ local function newReviver(mySrc, mateSrc, peds)
     env.DoesEntityExist = function() return true end
     env.GetEntityCoords = function(p) local q = at(p) return vec(q.x, q.y, q.z) end
     env.GetPedBoneCoords = function(p) local q = at(p) return vec(q.x, q.y, q.z + 0.3) end
-    env.GetEntityHeading = function() return 0.0 end
-    env.SetEntityHeading = function() end
+    -- THE HEADING IS READ BACK, not thrown away, because the reviver now turns
+    -- to face the body (owner, 2026-08-29) and a stub that answered a constant
+    -- would agree with a file that never wrote one.
+    C.heading = 0.0
+    env.GetEntityHeading = function() return C.heading end
+    env.SetEntityHeading = function(_, h) C.heading = h end
     env.GetEntityHealth = function() return env.BR.Config.Match.maxHealth end
     env.IsEntityDead = function() return false end
     env.IsPedFatallyInjured = function() return false end
@@ -4617,7 +5354,17 @@ local function newReviver(mySrc, mateSrc, peds)
     -- guards the call -- and the tests that measure the cover replace this with
     -- a recorder.
     env.SetEntityLocallyInvisible = function() end
-    env.DisableControlAction = function() end
+    -- ═══ WHICH CONTROLS WERE HELD ON THE FRAME JUST RUN ═══
+    --
+    -- CLEARED PER FRAME, WHICH IS THE ENTIRE POINT OF THE FIXTURE. A reviver is
+    -- frozen by re-asserting DisableControlAction every frame and by nothing
+    -- else -- there is no start call and no stop call -- so "are they still
+    -- frozen" is a question that can only be asked of ONE frame. A recorder
+    -- that accumulated across frames would answer "yes" forever after the first
+    -- hold and could never fail, which is exactly how a freeze that is never
+    -- released gets shipped green.
+    C.disabled = {}
+    env.DisableControlAction = function(_, id) C.disabled[id] = true end
     env.GetDisabledControlNormal = function() return 0.0 end
     env.GetControlNormal = function() return 0.0 end
     env.GetFrameTime = function() return 0.016 end
@@ -4627,10 +5374,36 @@ local function newReviver(mySrc, mateSrc, peds)
     env.GetPedCauseOfDeath = function() return 0 end
     env.NetworkGetNetworkIdFromEntity = function() return 0 end
     env.GetGamePool = function() return {} end
-    env.DoesAnimDictExist = function(d) return d == 'move_injured_ground' end
-    env.HasAnimDictLoaded = function(d) return d == 'move_injured_ground' end
+    -- TWO DICTIONARIES MATTER ON THIS PED NOW, and only these two exist: the
+    -- downed pose this player could end up in themselves, and the CPR clip they
+    -- play over a mate (owner, 2026-08-29). Anything else answers "no such
+    -- dictionary", which is what makes a typo in either name a failure here
+    -- rather than a silent no-op in the game.
+    local ANIMS = {
+        ['move_injured_ground']    = true,
+        ['mini@cpr@char_a@cpr_str'] = true,
+    }
+    env.DoesAnimDictExist = function(d) return ANIMS[d] == true end
+    env.HasAnimDictLoaded = function(d) return ANIMS[d] == true end
     env.RequestAnimDict = function() end
-    env.TaskPlayAnim = function() end
+
+    -- WHAT THIS PED IS PLAYING, BECAUSE THE EMOTE HAS NO OTHER OBSERVABLE.
+    -- It sends no message, pushes no envelope and writes no roster field --
+    -- the only evidence it exists is a task on a ped, so the rig keeps that
+    -- task. A fixture that threw it away could not tell a working emote from
+    -- no emote at all, which is the failure mode this project keeps shipping
+    -- green suites through.
+    --
+    -- StopAnimTask IS MODELLED AS THE NATIVE REALLY BEHAVES: it names the
+    -- dictionary and the clip, so it only clears the pose if that is what is
+    -- running. A stop aimed at the wrong clip therefore leaves the emote up
+    -- here, exactly as it would in the game.
+    C.anim = nil
+    env.TaskPlayAnim = function(_, d, a) C.anim = d .. '/' .. a end
+    env.StopAnimTask = function(_, d, a)
+        if C.anim == d .. '/' .. a then C.anim = nil end
+    end
+    env.ClearPedTasks = function() C.anim = nil end
     env.IsEntityPlayingAnim = function() return true end
     env.SetEntityAnimSpeed = function() end
     env.RequestClipSet = function() end
@@ -4668,6 +5441,11 @@ local function newReviver(mySrc, mateSrc, peds)
     loadInto(env, { 'br_core/client/main.lua' })
 
     env.BR.State.me = { src = mySrc, state = env.BR.PlayerState.ALIVE, squadId = 'sq1' }
+    -- A LIVE MATCH, because BR.State defaults to WAITING and a revive is not a
+    -- thing that happens in a lobby. client/state.lua is what writes this in
+    -- the game and it is not loaded here, so the rig writes it -- and any test
+    -- that ENDS a match has to move it by hand for the same reason.
+    env.BR.State.match.state = env.BR.MatchState.PLAYING
     env.BR.State.roster = {
         [mateSrc] = { src = mateSrc, name = 'P' .. mateSrc, squadId = 'sq1',
                       state = env.BR.PlayerState.ALIVE },
@@ -4681,6 +5459,7 @@ local function newReviver(mySrc, mateSrc, peds)
     env.BR.Native = env.BR.Native or {}
     env.BR.Native.knockdown = function() end
     env.BR.Native.setDisplayHealth = function() end
+    env.BR.Native.cleanPed = function() end
     env.BR.Native.keyLabelForCommand = function() return 'E' end
     env.BR.Native.applyGameRules = function() end
     env.BR.Native.ALLY_GROUP = 1
@@ -4729,7 +5508,21 @@ local function newReviver(mySrc, mateSrc, peds)
                 else t.wake = C.now + (tonumber(err) or 0) end
             end
         end
+        C.disabled = {}
         env.BR.Loop.step(env.BR.Loop.FRAME)
+    end
+
+    --- Is this player unable to move and unable to shoot, RIGHT NOW?
+    ---
+    --- Four ids rather than the whole list: the two movement axes and the two
+    --- trigger controls are the owner's sentence ("they can't move, they can't
+    --- shoot") reduced to the smallest thing that can be false. The full list
+    --- is checked separately, against DOWNED_BLOCKED parsed out of the real
+    --- file, so this helper stays readable at the call sites where it is used
+    --- eleven times.
+    function C.frozen()
+        return C.disabled[30] == true and C.disabled[31] == true
+           and C.disabled[24] == true and C.disabled[25] == true
     end
     return C
 end
@@ -5067,6 +5860,495 @@ do
     H.press(false)
 end
 
+-- ==========================================================================
+-- THE REVIVER'S CPR EMOTE, AND EVERY WAY A HOLD CAN END
+-- ==========================================================================
+--
+-- "Also, adding to our roll of emotes: in squads, while holding E to revive a
+--  squadmate, the one reviving should play the "CPR" emote and clear once the
+--  revive is processed, or after 10 seconds, whichever comes first."
+-- (owner, 2026-08-29.)
+--
+-- WHY IT IS TESTED HERE AND NOT BY LOOKING AT IT. The emote is one TaskPlayAnim
+-- on one ped; it sends nothing, pushes no envelope and writes no roster field,
+-- so the only thing a playtest can report about it is "it looked right" -- and
+-- the failure this is written against is not something a playtest ever sees.
+-- A hold can end in nine different ways and only one of them (the revive
+-- landing) happens in front of the player who was watching. The other eight are
+-- a refusal four times a second, a release, a switch to a nearer mate, the
+-- reviver being shot, the reviver being killed, the mate being picked up by
+-- somebody else, a match ending and a resource restart -- and an emote that
+-- survives ANY of them is a player performing chest compressions on thin air
+-- for the rest of the match, which is a bug the owner would report as
+-- "sometimes my ped gets stuck" a week later with nothing to reproduce.
+--
+-- SO EVERY ENDING IS DRIVEN, and the assertion is always the same one: the task
+-- is off the ped. The rig is the one the revive already uses -- the real
+-- client/dbno.lua and the real server/combat.lua over a real latency -- because
+-- most of these endings are the SERVER's decision and a client-only rig would
+-- have to invent them.
+describe('dbno.cpr')
+do
+    -- The pair taken from the emote list the owner browsed; see the block above
+    -- the constants in client/dbno.lua for the citation. Spelled out here
+    -- rather than read back out of the client, deliberately: a test that asked
+    -- the file under test what it was playing would pass for a typo.
+    local CPR = 'mini@cpr@char_a@cpr_str/cpr_pumpchest'
+
+    --- A knocked mate and a reviver standing over them with the key down.
+    --- @param rtt integer|nil
+    local function stoodOver(rtt)
+        local H = newReviveRig(rtt or 40)
+        H.knock()
+        H.pump(500)
+        H.press(true)
+        H.pump(200)
+        return H
+    end
+
+    -- ── 1. IT STARTS ON THE HOLD, AND ONLY ON THE HOLD ──────────────────────
+    do
+        local H = newReviveRig(40)
+        H.knock()
+        H.pump(500)
+        ok(H.cli.anim == nil,
+            'standing over a downed mate with nothing pressed plays no emote',
+            tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and their controls are their own')
+
+        H.press(true)
+        H.pump(200)
+        ok(H.cli.anim == CPR,
+            'and holding the interact key puts the reviver into CPR',
+            tostring(H.cli.anim))
+        ok(H.cli.frozen(),
+            'and takes their movement and their trigger away (owner: "they '
+            .. 'can\'t move, they can\'t shoot")')
+        H.press(false)
+    end
+
+    -- ── 1b. THE WHOLE LIST, AGAINST THE REAL DOWNED_BLOCKED ─────────────────
+    --
+    -- THE SAME INVARIANT tools/test_spectate.lua PINS, for the same reason and
+    -- in the same direction: a control a player with NO WEAPON is denied is one
+    -- an armed player kneeling over a body is certainly denied. Parsed out of
+    -- the real file so that adding an id to DOWNED_BLOCKED fails here until
+    -- this list catches up -- the drift that is allowed is the drift that is
+    -- safe.
+    do
+        local fh = io.open(RES .. 'br_core/client/dbno.lua', 'r')
+        local src = fh and fh:read('a') or ''
+        if fh then fh:close() end
+
+        local block = src:match('local DOWNED_BLOCKED = {(.-)}')
+        local ids = {}
+        for line in (block or ''):gmatch('[^\n]+') do
+            -- Comments first: these entries are annotated in prose, and a year
+            -- in a note would read as a control id.
+            for n in line:gsub('%-%-.*$', ''):gmatch('%d+') do
+                ids[#ids + 1] = tonumber(n)
+            end
+        end
+        ok(#ids >= 17,
+            'DOWNED_BLOCKED was found and parsed -- a pattern that matched '
+            .. 'nothing would make the subset check below vacuously true',
+            ('parsed %d id(s)'):format(#ids))
+
+        local H = newReviveRig(40)
+        H.knock()
+        H.pump(500)
+        H.press(true)
+        H.pump(200)
+
+        local gaps = {}
+        for _, id in ipairs(ids) do
+            if not H.cli.disabled[id] then gaps[#gaps + 1] = id end
+        end
+        ok(#gaps == 0,
+            'and every control a DOWNED player is denied, a REVIVING player is '
+            .. 'denied too',
+            'in DOWNED_BLOCKED but live while reviving: '
+                .. table.concat(gaps, ', '))
+
+        -- ...AND THE ONE ID THAT MUST NEVER BE IN THE LIST. 51 is INPUT_CONTEXT
+        -- -- the control the revive prompt draws its glyph from. Nothing about
+        -- the release actually depends on it (BR.Keys reads the raw keyboard,
+        -- and the engine fallback is a RegisterKeyMapping command with its own
+        -- id), but it is the single id whose suppression could plausibly be
+        -- confused with suppressing the key that ENDS this, and a hold that can
+        -- never end is a player frozen for the rest of the match.
+        ok(H.cli.disabled[51] ~= true,
+            'and INPUT_CONTEXT (51) is NOT among them -- nothing shaped like '
+            .. 'the interact key is ever suppressed by the freeze')
+        H.press(false)
+    end
+
+    -- ── 1c. THE REVIVER TURNS TO FACE THE BODY ──────────────────────────────
+    --
+    -- "Reviver should face the body if possible" (owner, 2026-08-29).
+    --
+    -- THE RIG PUTS THE MATE AT x=0 AND THE REVIVER AT x=0.8, so the body is due
+    -- WEST of them. A ped's forward vector in this file's own arithmetic is
+    -- (-sin h, cos h), which makes the heading that points at -x exactly 90
+    -- degrees. Written out rather than computed from the same expression the
+    -- file uses: a test that re-derived it would agree with a sign error.
+    do
+        local H = newReviveRig(40)
+        H.knock()
+        H.pump(500)
+        ok(math.abs(H.cli.heading - 0.0) < 0.001,
+            'the reviver starts facing north, which is not at the body',
+            tostring(H.cli.heading))
+
+        H.press(true)
+        H.pump(200)
+        ok(math.abs(H.cli.heading - 90.0) < 0.001,
+            'and holding turns them to face the body they are working on',
+            tostring(H.cli.heading))
+        H.press(false)
+    end
+
+    -- ── 2. IT CLEARS ONCE THE REVIVE IS PROCESSED ───────────────────────────
+    --
+    -- THE KEY IS STILL DOWN AT THE END OF THIS, which is the case worth having:
+    -- nobody lets go on the frame their mate stands up, and `holding` is
+    -- cleared by the server's `done` while the key is still held. An emote hung
+    -- off the KEY rather than off the hold would run until the player noticed.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up during the hold',
+           tostring(H.cli.anim))
+        ok(H.revived(6000), 'the revive lands')
+        ok(H.cli.anim == nil,
+            'and the emote clears once the revive is processed, without the '
+            .. 'player letting go of the key', tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'AND THEY HAVE THEIR CONTROLS BACK -- a player left frozen after a '
+            .. 'successful revive is the worst outcome this feature has')
+        H.press(false)
+    end
+
+    -- ── 3. THE TEN-SECOND CEILING ───────────────────────────────────────────
+    --
+    -- A HOLD THAT IS ACCEPTED AND NEVER FINISHES. dbnoReviveTime is 2.8s, so
+    -- there is no such thing in a real match -- which is exactly why the
+    -- ceiling needs a rig to be observed at all. The server's copy of the
+    -- number is stretched to a minute; everything else is a perfectly ordinary
+    -- hold, progressing, with the reviver in reach and the key down throughout.
+    do
+        local H = newReviveRig(40)
+        H.srv.env.BR.Config.Match.dbnoReviveTime = 60.0
+        H.knock()
+        H.pump(500)
+        H.press(true)
+        H.pump(200)
+        ok(H.cli.anim == CPR, 'a hold that will not finish starts the emote',
+           tostring(H.cli.anim))
+
+        H.pump(9000)
+        ok(H.cli.anim == CPR,
+            'and it is STILL up at nine seconds -- the ceiling is a ceiling, '
+            .. 'not a duration the emote waits out', tostring(H.cli.anim))
+
+        H.pump(1500)
+        ok(H.cli.anim == nil,
+            'and it clears at ten seconds with the key still down and the '
+            .. 'hold still running', tostring(H.cli.anim))
+
+        -- ...AND IT DOES NOT COME STRAIGHT BACK. A ceiling that re-armed on the
+        -- next frame would be a stutter rather than a limit, and the ped would
+        -- be doing CPR again a sixtieth of a second later.
+        H.pump(3000)
+        ok(H.cli.anim == nil,
+            'and it stays cleared for as long as the key stays down',
+            tostring(H.cli.anim))
+
+        -- THE HOLD IS UNTOUCHED. The ceiling is on the ANIMATION; the revive is
+        -- the server's business and this number is not shared with it.
+        ok(H.srv.roster[1].reviverSrc == 2,
+            'and the revive itself is still running -- the ceiling ends the '
+            .. 'emote, never the hold',
+            tostring(H.srv.roster[1].reviverSrc))
+
+        -- ...AND NEITHER DOES IT END THE FREEZE. The owner's rule is "frozen
+        -- until they release E", not "frozen for ten seconds": a player still
+        -- leaning on the key is still picking somebody up and still must not
+        -- walk off mid-hold. This is the one place the two rules part company
+        -- and it is the assertion that keeps them apart.
+        ok(H.cli.frozen(),
+            'and they are STILL frozen after the ceiling -- the ceiling is on '
+            .. 'the emote, not on the controls')
+
+        -- ...AND A SPENT CEILING IS SPENT FOR THAT RUN AND NOT FOR THE MATCH.
+        -- The stamp the ceiling is measured from is dropped when the hold ends,
+        -- so the next hold gets its own ten seconds. Left standing, a player
+        -- who once held a key for ten seconds would never see the emote again.
+        H.press(false)
+        H.pump(400)
+        H.press(true)
+        H.pump(300)
+        ok(H.cli.anim == CPR,
+            'and letting go and pressing again starts a fresh emote -- the '
+            .. 'ceiling is per hold, not per match', tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 3b. THE CEILING UNDER A HOLD THE SERVER REFUSES FOUR TIMES A SECOND ─
+    --
+    -- THIS IS THE ONE THAT MATTERS, and it is the case an obvious
+    -- implementation gets wrong. `holding` is not a stable object: a refused
+    -- REVIVE_START clears it, and dbno.revive re-arms it from the key's LEVEL
+    -- on the very next frame with a brand new `from` stamp -- four times a
+    -- second, for as long as the player leans on the key. A ceiling measured
+    -- from `holding.from` is therefore reset four times a second and NEVER
+    -- FIRES, on precisely the interaction it was written for: one that is
+    -- failing silently and could otherwise run for the rest of the match.
+    --
+    -- The refusal is a squad the server does not agree with. The reviver's own
+    -- client still sees a squadmate on the floor at 0.8m, so it arms, asks, is
+    -- refused, and arms again -- forever.
+    do
+        local H = newReviveRig(40)
+        H.knock()
+        H.pump(300)
+        H.srv.roster[1].squadId = 'sq2'
+        H.press(true)
+        H.pump(200)
+        ok(H.cli.anim == CPR,
+            'a hold the server is refusing still starts the emote -- the '
+            .. 'client cannot tell yet, and neither can the ring',
+            tostring(H.cli.anim))
+
+        H.pump(11000)
+        local led = H.cli.env.BR.Dbno.ledger
+        ok(led.refusals > 20,
+            'the server refused it over and over, which is what rebuilds '
+            .. '`holding` under the emote', tostring(led.refusals))
+        ok(H.cli.anim == nil,
+            'AND THE EMOTE STILL CLEARED AT TEN SECONDS -- the ceiling '
+            .. 'survives `holding` being destroyed and rebuilt four times a '
+            .. 'second', tostring(H.cli.anim))
+        ok(H.cli.frozen(),
+            'while the freeze rides the rebuild too -- a hold that is being '
+            .. 'refused is still a hold, and the key is still down')
+        H.press(false)
+        H.pump(100)
+        ok(not H.cli.frozen(),
+            'and letting go of a refused hold hands the controls straight back')
+    end
+
+    -- ── 4. THE KEY COMES UP ─────────────────────────────────────────────────
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+        H.press(false)
+        H.pump(100)
+        ok(H.cli.anim == nil, 'letting go of the key clears it',
+           tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and hands the controls back on the same frame -- which is the '
+            .. 'whole of "until they release E"')
+    end
+
+    -- ── 5. THE REVIVER ENDS UP OUT OF THE SERVER'S REACH ────────────────────
+    --
+    -- ═══ THIS TEST CHANGED MEANING WHEN THE FREEZE LANDED, AND IT IS KEPT ═══
+    --
+    -- It used to read "the reviver walks off", and a frozen reviver cannot walk
+    -- anywhere -- so the WALK is now unreachable while a hold is live. The
+    -- server's reach check is not: it is measured from the server's own
+    -- position samples and it must stay, because the server cannot trust a
+    -- freeze that runs on the client. A modified client, a teleport, a vehicle
+    -- carrying them, a shove, or simply this file's loop being suspended after
+    -- five throws all put a reviver out of reach with the key still down.
+    --
+    -- So the rig's moveTo -- which writes coordinates directly and does not go
+    -- anywhere near a control -- is now the RIGHT shape for it rather than a
+    -- convenience: it is precisely "they ended up out of reach by something
+    -- other than walking". The assertion is unchanged and the reason for it is
+    -- stronger.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+        H.moveTo(40.0)
+        H.pump(2000)
+        ok(H.srv.roster[1].reviverSrc == nil,
+           'a reviver who ends up out of reach still has the hold taken off '
+           .. 'them by the server, freeze or no freeze',
+           tostring(H.srv.roster[1].reviverSrc))
+        ok(H.cli.anim == nil,
+            'and the emote goes with it, with the key still down',
+            tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and so does the freeze -- a player the server has given up on is '
+            .. 'not held in place by this file')
+        H.press(false)
+    end
+
+    -- ── 6. THE REVIVER IS KNOCKED DOWN MID-HOLD ─────────────────────────────
+    --
+    -- `holding` DELIBERATELY OUTLIVES THIS for up to a round trip plus the
+    -- server's 250ms step: #163 moved the authority over a hold to the server
+    -- on purpose, and this client no longer ends one for anything it is not the
+    -- sole witness to. That is right for the REQUEST and wrong for the
+    -- ANIMATION -- a body on the floor doing chest compressions is the exact
+    -- picture the whole block exists to prevent -- so the emote, and only the
+    -- emote, is gated on still being upright.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+        H.cli.env.BR.State.me.state = H.cli.env.BR.PlayerState.DBNO
+        H.pump(50)
+        ok(H.cli.anim == nil,
+            'a reviver knocked down mid-hold stops doing CPR on the frame '
+            .. 'their OWN client knows, not a round trip later',
+            tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and gets their controls back at the same moment -- a downed '
+            .. 'player has their own control rules (DOWNED_BLOCKED) and must '
+            .. 'not be under two sets at once')
+        ok(H.srv.roster[1].reviverSrc == 2,
+            'and the hold itself is still the server\'s to end -- nothing here '
+            .. 'reached for it', tostring(H.srv.roster[1].reviverSrc))
+        H.press(false)
+    end
+
+    -- ── 7. THE MATCH ENDS MID-HOLD ──────────────────────────────────────────
+    --
+    -- ON THE EVENT AND NOT ON THE NEXT FRAME. A match ending is the one moment
+    -- a leftover frame of this is guaranteed to be looked at, so forgetAll
+    -- calls the same teardown by hand rather than waiting for the frame band.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+
+        -- BOTH HALVES, THE WAY THE REAL CLIENT DOES IT. One STATE envelope
+        -- reaches two handlers: client/state.lua writes the match mirror, and
+        -- client/dbno.lua runs forgetAll. Only the second is loaded here, so
+        -- the rig plays the part of the first.
+        --
+        -- AND THE MATE IS STILL DOWN AND THE KEY IS STILL HELD, deliberately.
+        -- That is the real shape of a match ending mid-revive -- the roster
+        -- sweep waits for the screen to go black (#124) -- and it is what makes
+        -- the frame band re-arm the hold a sixtieth of a second later.
+        H.cli.env.BR.State.match.state = H.cli.env.BR.MatchState.ENDED
+        H.cli.env.TriggerEvent(H.cli.env.BR.Net.STATE,
+                               { state = H.cli.env.BR.MatchState.ENDED })
+        ok(H.cli.anim == nil,
+            'a match that ends mid-hold takes the emote with it, on the event '
+            .. 'itself', tostring(H.cli.anim))
+        H.pump(200)
+        ok(H.cli.anim == nil,
+            'and the frame band re-arming the hold underneath it does not '
+            .. 'bring the emote back', tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and the freeze is gone on the very next frame -- a winner who '
+            .. 'cannot move through their own results screen would be this '
+            .. 'feature\'s worst possible bug')
+        H.press(false)
+    end
+
+    -- ── 8. THE RESOURCE STOPS MID-HOLD ──────────────────────────────────────
+    --
+    -- THE ONE ENDING THE FRAME LOOP CANNOT COVER, because the frame loop is
+    -- what is being stopped. `restart br_core` while somebody is holding would
+    -- otherwise leave a tasked animation on a ped with nothing left running to
+    -- take it off -- the same class as the movement clipset two lines above it
+    -- in that handler.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.anim == CPR, 'the emote is up', tostring(H.cli.anim))
+        H.cli.env.TriggerEvent('onClientResourceStop', 'br_core')
+        ok(H.cli.anim == nil,
+            'and stopping the resource mid-hold clears it too',
+            tostring(H.cli.anim))
+        H.press(false)
+    end
+
+    -- ── 8b. THE CALLBACK ITSELF STOPS RUNNING ───────────────────────────────
+    --
+    -- ═══ THE SAFETY ARGUMENT FOR THE FREEZE, DRIVEN RATHER THAN ASSERTED ═══
+    --
+    -- The emote is torn down by hand on a resource stop because a tasked
+    -- animation OUTLIVES the code that asked for it. The freeze deliberately is
+    -- NOT, and this is the test that says why that is safe rather than an
+    -- oversight: DisableControlAction lasts one frame, so the controls come
+    -- back the moment this loop stops asserting them -- whatever stopped it.
+    --
+    -- BR.Loop.setEnabled stands in for every one of those causes at once: a
+    -- resource stop, the registry suspending a callback after five consecutive
+    -- throws, `/brloop disable`, and the game being closed. `holding` is
+    -- deliberately left SET and the key deliberately left DOWN, so this is the
+    -- worst case -- the client still believes it is mid-revive -- and the
+    -- controls are live anyway.
+    do
+        local H = stoodOver(40)
+        ok(H.cli.frozen(), 'the reviver is frozen mid-hold')
+
+        H.cli.env.BR.Loop.setEnabled('dbno.revive', false)
+        H.pump(50)
+        ok(not H.cli.frozen(),
+            'and a dbno.revive that stops running for ANY reason -- a resource '
+            .. 'stop, five throws, /brloop disable -- hands the controls back '
+            .. 'on the next frame, with the hold still armed and the key still '
+            .. 'down. There is no latch to leak.')
+        H.press(false)
+    end
+
+    -- ── 9. NOTHING DOWN, NOTHING PLAYED ─────────────────────────────────────
+    --
+    -- WHICH IS EVERY FRAME OF A SOLO MATCH. BR.Mode.SOLO.dbno is false
+    -- (asserted at the top of this file), so no solo player is ever in the
+    -- state the emote is gated on, and every solo is their own squad besides.
+    -- The emote is unreachable there by construction rather than by a mode
+    -- check -- and this is the assertion that says so: the interact key held
+    -- down over nobody plays nothing at all, which is also the loot crate case
+    -- and the empty-hands case.
+    do
+        local H = newReviveRig(40)
+        H.press(true)
+        H.pump(1500)
+        ok(H.cli.anim == nil,
+            'holding the interact key with nobody down plays no emote',
+            tostring(H.cli.anim))
+        ok(not H.cli.frozen(),
+            'and does not take their controls away either -- a solo player '
+            .. 'leaning on the interact key must be able to run and shoot')
+        H.press(false)
+    end
+
+    -- ── 10. A DICTIONARY THAT IS NOT THERE ──────────────────────────────────
+    --
+    -- `0` IS TRUTHY IN LUA and HasAnimDictLoaded is declared BOOL, so a build
+    -- that hands numbers back answers the NUMBER ZERO for "not loaded" -- which
+    -- passes `if HasAnimDictLoaded(d) then`. Read raw, the emote would be
+    -- tasked on a dictionary that is not resident: nothing plays, and the
+    -- client believes it did, so it never asks the streamer again and the hold
+    -- runs its whole length with the ped standing there. This project has
+    -- shipped that read nine times.
+    do
+        local H = newReviveRig(40)
+        local asked = 0
+        H.cli.env.HasAnimDictLoaded = function() return 0 end
+        H.cli.env.RequestAnimDict = function(d)
+            if d == 'mini@cpr@char_a@cpr_str' then asked = asked + 1 end
+        end
+        H.knock()
+        H.pump(500)
+        H.press(true)
+        H.pump(300)
+        ok(H.cli.anim == nil,
+            'a build whose HasAnimDictLoaded answers the NUMBER 0 gets no '
+            .. 'emote tasked on a dictionary that is not there',
+            tostring(H.cli.anim))
+        ok(asked > 0,
+            'and it goes on asking the streamer for it instead of giving up',
+            tostring(asked))
+        H.press(false)
+    end
+end
+
 describe('dbno.refusal')
 do
     -- A REFUSAL THE CLIENT NEVER HEARS IS THE RING'S ALIBI. The prompt page runs
@@ -5363,6 +6645,380 @@ do
         .. 'because the beat re-offered the leak 76 times and this one-shot '
         .. 'offers it twice',
         ('%.3fm over %ds'):format(drift, SECONDS))
+end
+
+-- ==========================================================================
+-- #246: THE SECOND ARM, AND IT IS THE SCOPE CHANGE.
+-- ==========================================================================
+--
+-- "After a player dies and their ped is placed on the ground OR MOVES in the
+-- crawling position, then another player from outside the cell comes into the
+-- cell and arrives at the scene - the dead ped's position on the alive player's
+-- screen is in the same position where the death happened." (owner, 2026-08-30.)
+--
+-- WHAT IS TESTABLE OFF-ENGINE AND WHAT IS NOT, said first, because the block
+-- above had to make the same confession. There is no second machine in this
+-- process and no network, so nothing here can watch a clone. What CAN be driven
+-- is the whole of the decision: which src the server nudges, how many nudges
+-- thirty arrivals produce, that a quiet body produces none at all, and what the
+-- client spends one on. The engine's answer -- whether a step cancels a mover on
+-- a machine that has just built one -- is the owner's to report, and #164
+-- already established it for the machines that were watching all along.
+--
+-- THE ONE THAT WOULD BE INVISIBLE IN A PLAYTEST is the first: `data.player` and
+-- `data.for` are one word apart in the FiveM docs, and a build that reads the
+-- wrong one nudges the NEWCOMER instead of the body. That client is alive and
+-- not downed, so it drops the message on the floor and nothing anywhere errors
+-- -- the fix simply does not work, exactly as if it were not there.
+describe('dbno.scope.server')
+do
+    local S  = newServer()
+    local PS = S.env.BR.PlayerState
+    local NET = S.env.BR.Net
+
+    --- Every DBNO_RESYNC the server has sent, oldest first.
+    local function nudges()
+        local out = {}
+        for _, m in ipairs(S.out) do
+            if m.event == NET.DBNO_RESYNC then out[#out + 1] = m.target end
+        end
+        return out
+    end
+
+    --- One clone being built: `player` owns the body, `for` is the newcomer.
+    --- Shaped as FiveM shapes it -- both fields are fmt::sprintf("%d", ...) on
+    --- the C++ side, so they arrive as STRINGS, and a handler that used them as
+    --- table keys without tonumber would find nothing and fail open.
+    local function enters(bodySrc, newcomerSrc)
+        S.env.TriggerEvent('playerEnteredScope',
+            { player = tostring(bodySrc), ['for'] = tostring(newcomerSrc) })
+    end
+
+    --- Run the clock forward in DRAIN-SIZED STEPS.
+    ---
+    --- IT HAS TO BE STEPS AND NOT ONE JUMP, and the first draft of this block
+    --- was written with jumps and was worth nothing because of it. BR.Sched
+    --- fires a job at most once per call to step(), on its own nextRun, so
+    --- `S.tick(2100)` after a pass at 2000 does not run the drain AT ALL --
+    --- which means the branch under test never executes and the assertion
+    --- passes because nothing happened rather than because the right thing did.
+    --- A mutation that DROPPED a floored arm survived exactly that.
+    local T = 0
+    local function advance(ms)
+        local target = T + ms
+        while T < target do
+            T = math.min(T + 250, target)
+            S.tick(T)
+        end
+    end
+
+    -- ═══ AN ALIVE PLAYER IS NOT A BODY ═══
+    --
+    -- Their machine is writing a position every frame and their clone is built
+    -- from one that is at most a snapshot old. Nudging them would be a message
+    -- per player per scope crossing for the whole match, which is the cost that
+    -- makes people delete these events.
+    enters(1, 2)
+    advance(500)
+    ok(#nudges() == 0,
+        'walking into an ALIVE player\'s scope costs nothing',
+        ('%d nudges'):format(#nudges()))
+    -- ...AND IT IS REFUSED AT THE DOOR, not swept up by the drain. The drain
+    -- re-checks the state too -- deliberately, because a body can be revived
+    -- between the arm and the pass -- so `nudges` alone passes with the
+    -- handler's guard deleted. `entered` is the counter only the handler
+    -- increments, and it is the one that says a live player never got a row.
+    ok(S.env.BR.Combat.resyncStats.entered == 0,
+        'and it is refused where the event lands rather than being armed and '
+        .. 'then swept up -- otherwise every scope crossing in the match books '
+        .. 'a pending row for a player with nothing wrong with them',
+        ('entered %d'):format(S.env.BR.Combat.resyncStats.entered))
+
+    -- ═══ AND A DOWNED ONE IS ═══
+    S.env.BR.Combat.knock(1, 2)
+    ok(S.roster[1].state == PS.DBNO, 'player 1 is down')
+
+    enters(1, 2)
+    advance(500)
+    local n = nudges()
+    ok(#n == 1, 'a clone built of a DOWNED body buys exactly one nudge',
+        ('%d nudges'):format(#n))
+    -- THE ORIENTATION ASSERTION. `data.player` is the body and `data.for` is
+    -- the newcomer; reading them the other way round sends this to 2.
+    ok(n[1] == 1,
+        'AND IT IS ADDRESSED TO THE BODY, not to the player who walked up -- '
+        .. 'data.player is the owner of the ped being cloned, data.for is the '
+        .. 'client it is being cloned for',
+        ('sent to %s'):format(tostring(n[1])))
+
+    -- ═══ THIRTY SPECTATORS ARE ONE NUDGE ═══
+    --
+    -- The issue's own words. One step corrects every machine watching, so
+    -- thirty arrivals need one step between them -- and thirty tasks would be
+    -- the 500ms beat #164 removed, arriving by a different door.
+    local before = #nudges()
+    for i = 1, 30 do enters(1, 100 + i) end
+    advance(2000)
+    ok(#nudges() - before == 1,
+        'thirty clients entering scope at once produce ONE nudge, not thirty',
+        ('%d nudges for 30 arrivals'):format(#nudges() - before))
+
+    -- ═══ INSIDE THE FLOOR IS HELD, NOT DROPPED ═══
+    --
+    -- This is the half that is easy to get wrong in the cheap direction. A
+    -- newcomer whose clone was built one frame AFTER the last step is exactly
+    -- the report this issue is, so a floor that DISCARDS is a floor that
+    -- reproduces the bug on every thirty-first arrival.
+    --
+    -- THE DRAIN HAS TO ACTUALLY RUN INSIDE THE WINDOW for this to mean
+    -- anything -- see `advance` -- and the SEND it is inside the floor OF has
+    -- to be a known one. So the clock is walked one pass at a time from a
+    -- settled start: pass 1 sends, pass 2 is 250ms later and must hold, and the
+    -- pass at 1000ms must let it through.
+    advance(2000)              -- nothing pending, floor long expired
+    before = #nudges()
+    enters(1, 400)
+    advance(250)
+    ok(#nudges() - before == 1,
+        'a first arrival on a settled body goes out on the next drain pass',
+        ('%d nudges'):format(#nudges() - before))
+
+    enters(1, 401)
+    advance(250)
+    ok(#nudges() - before == 1,
+        'a second arrival 250ms later does not send -- the floor holds it',
+        ('%d nudges'):format(#nudges() - before))
+    advance(1000)
+    ok(#nudges() - before == 2,
+        'AND IS NOT THROWN AWAY -- it goes out as soon as the floor lets it. A '
+        .. 'floor that dropped would leave every newcomer after the first with '
+        .. 'the exact bug this issue is about',
+        ('%d nudges'):format(#nudges() - before))
+
+    -- ═══ AND A QUIET BODY IS NOT A CLOCK ═══
+    --
+    -- The property #164 paid for and this must not undo: nothing arms except an
+    -- arrival, so twenty seconds of nobody coming is twenty seconds of silence.
+    before = #nudges()
+    advance(20000)
+    ok(#nudges() - before == 0,
+        'and a downed body nobody has walked up to is written to NEVER -- the '
+        .. 'arm is the scope change, not the clock (#164)',
+        ('%d nudges over 20s of drain passes'):format(#nudges() - before))
+
+    -- ═══ A CORPSE IS ARMED TOO ═══
+    --
+    -- An OUT player leaves their ped in the world (client/spectate.lua: "a
+    -- spectator's ped is a corpse where they fell, deliberately"), so the owner's
+    -- "a player dies and their ped is placed on the ground" is a real body with
+    -- a real position and it is armed by the same event.
+    S.roster[1].state = PS.OUT
+    before = #nudges()
+    enters(1, 2)
+    advance(1000)
+    ok(#nudges() - before == 1,
+        'a corpse is streamed in the same way and is nudged the same way',
+        ('%d nudges'):format(#nudges() - before))
+
+    -- ═══ AND A BODY REVIVED BETWEEN THE ARM AND THE DRAIN IS DROPPED ═══
+    --
+    -- THE ARM HAS TO BE TAKEN WHILE THEY ARE STILL DOWN, which is the whole
+    -- point of this case and the thing the first draft got wrong: arming an
+    -- already-ALIVE player is refused at the door by the handler, so it proves
+    -- nothing about the drain. The sequence that matters is down -> armed ->
+    -- picked up -> drained, and it is not rare: BR.Combat.revive and this
+    -- event race every time a squadmate reaches somebody as a third player
+    -- rotates in.
+    S.roster[1].state = PS.DBNO
+    enters(1, 2)
+    S.roster[1].state = PS.ALIVE
+    before = #nudges()
+    advance(2000)
+    ok(#nudges() - before == 0,
+        'and an arm whose body stood up before the drain is discarded rather '
+        .. 'than delivered to a player with nothing to correct',
+        ('%d nudges'):format(#nudges() - before))
+end
+
+-- THE CLIENT HALF: WHAT ONE NUDGE IS SPENT ON.
+--
+-- Two bodies, two different repairs, and the whole point of driving them
+-- separately is that they share no mechanism at all:
+--
+--   THE DOWNED BODY spends it on resyncArm -- the pair, and NOT a re-task. A
+--   re-task is a FRESH MOVER on every clone (client/dbno.lua's #164 block says
+--   so in as many words), so re-tasking to cancel a mover creates the thing it
+--   is cancelling and costs every machine already watching a clip restart.
+--
+--   THE CORPSE has no task, no mover and no `hold`; dbno.controls returns on
+--   its first line. It spends the nudge on one zero-displacement position write,
+--   which exists only to dirty the position node.
+describe('dbno.scope.body')
+do
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local CLI = newReviver(1, 2, peds)
+    local env = CLI.env
+
+    local coordWrites = 0
+    env.SetEntityCoordsNoOffset = function(_, x, y, z)
+        coordWrites = coordWrites + 1
+        peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+    end
+    local tasks, anim = 0, nil
+    env.TaskPlayAnim = function(_, d, a) tasks = tasks + 1 anim = d .. '/' .. a end
+    env.IsEntityPlayingAnim = function() return anim ~= nil end
+
+    local function frames(n)
+        for _ = 1, n do CLI.now = CLI.now + 16 CLI.frame() end
+    end
+
+    -- A NUDGE TO A PLAYER WHO IS NEITHER DOWN NOR OUT DOES NOTHING. First,
+    -- because it is the state every client is in for most of a match and the
+    -- handler is addressed by src rather than by state -- a mistimed one lands
+    -- on somebody standing up.
+    env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+    frames(10)
+    ok(coordWrites == 0 and tasks == 0,
+        'a nudge that lands on a player who is neither down nor out writes '
+        .. 'nothing at all',
+        ('%d writes, %d tasks'):format(coordWrites, tasks))
+
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+    frames(200)
+
+    local baseWrites, baseTasks = coordWrites, tasks
+    local startX, startY = peds[5001].x, peds[5001].y
+
+    env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+    frames(10)
+
+    ok(coordWrites - baseWrites == 2,
+        'a nudge on a DOWNED body buys exactly one pair -- the step out and the '
+        .. 'step back',
+        ('%d writes'):format(coordWrites - baseWrites))
+    ok(tasks == baseTasks,
+        'AND NOT A RE-TASK. A fresh task is a fresh mover on every clone, so '
+        .. 'the obvious spelling -- playCrawl(true) -- creates the thing the '
+        .. 'step is there to cancel, and restarts the clip for everybody who '
+        .. 'was already watching',
+        ('%d tasks became %d'):format(baseTasks, tasks))
+    ok(math.abs(peds[5001].x - startX) < 1e-9
+       and math.abs(peds[5001].y - startY) < 1e-9,
+        'and the body ends the pair exactly where it started it',
+        ('%.6fm'):format(math.sqrt((peds[5001].x - startX) ^ 2
+                                  + (peds[5001].y - startY) ^ 2)))
+
+    -- AND IT IS STILL NOT A CLOCK ON THIS SIDE EITHER. One nudge, one pair,
+    -- and then silence for as long as nothing else asks.
+    baseWrites = coordWrites
+    frames(600)
+    ok(coordWrites == baseWrites,
+        'and ten seconds after the nudge nothing further has been written',
+        ('%d more writes'):format(coordWrites - baseWrites))
+end
+
+-- THE CORPSE, AND THE BOOL AXIS ON IT.
+--
+-- IsEntityDead IS DECLARED BOOL AND client/dbno.lua ALREADY CARRIES ONE RAW
+-- READ OF IT (tools/bool_natives.baseline records it). `0` is truthy in Lua, so
+-- the natural spelling -- `if IsEntityDead(ped) then` -- writes coordinates onto
+-- the ped of a LIVING player on every build that answers numbers. That player is
+-- the one client/spectate.lua's warning is about: an admin ghosting a match is
+-- OUT on the roster and very much alive on their own machine.
+--
+-- So both shapes are driven, the same way dbno.crawl.watchdog drives the
+-- watchdog, and the 1/0 half is the one that fails against a bare read.
+describe('dbno.scope.corpse')
+do
+    local SHAPES = {
+        { name = 'true/false', yes = true, no = false },
+        { name = '1/0',        yes = 1,    no = 0     },
+    }
+
+    for _, sh in ipairs(SHAPES) do
+        -- A DEAD PED THAT ANSWERS `sh.yes`. The write must happen, once, and
+        -- must move the body by nothing.
+        do
+            local peds = { [5001] = { x = 12.5, y = -3.25, z = 30.0 },
+                           [5002] = { x = 0.8,  y = 0.0,   z = 30.0 } }
+            local CLI = newReviver(1, 2, peds)
+            local env = CLI.env
+
+            local writes = {}
+            env.SetEntityCoordsNoOffset = function(_, x, y, z)
+                writes[#writes + 1] = { x = x, y = y, z = z }
+                peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+            end
+            env.IsEntityDead = function() return sh.yes end
+            env.BR.State.me.state = env.BR.PlayerState.OUT
+
+            env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+            ok(#writes == 1,
+                ('[%s] a nudge on an OUT player with a dead ped writes its '
+                 .. 'position exactly once'):format(sh.name),
+                ('%d writes'):format(#writes))
+            if #writes == 1 then
+                ok(math.abs(writes[1].x - 12.5) < 1e-9
+                   and math.abs(writes[1].y - (-3.25)) < 1e-9
+                   and math.abs(writes[1].z - 30.0) < 1e-9,
+                    ('[%s] and it writes the ped\'s OWN coordinates -- a '
+                     .. 'displacement of exactly zero, whose only job is to '
+                     .. 'make the position node dirty for a clone that has not '
+                     .. 'been built yet'):format(sh.name),
+                    ('%.3f, %.3f, %.3f'):format(writes[1].x, writes[1].y,
+                                                writes[1].z))
+            end
+        end
+
+        -- ...AND A PED THAT ANSWERS `sh.no`. This is the assertion the bare
+        -- read fails: on the 1/0 shape `no` is `0`, and `if IsEntityDead(ped)`
+        -- is TRUE for it.
+        do
+            local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                           [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+            local CLI = newReviver(1, 2, peds)
+            local env = CLI.env
+
+            local writes = 0
+            env.SetEntityCoordsNoOffset = function() writes = writes + 1 end
+            env.IsEntityDead = function() return sh.no end
+            env.BR.State.me.state = env.BR.PlayerState.OUT
+
+            env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+            ok(writes == 0,
+                ('[%s] and a ped that is NOT dead is not written to, whatever '
+                 .. 'shape the native answers in -- `0` is truthy in Lua and a '
+                 .. 'bare read moves a living admin\'s ped'):format(sh.name),
+                ('%d writes'):format(writes))
+        end
+    end
+
+    -- ...AND THE STATE IS CHECKED AS WELL AS THE PED, which is belt and braces
+    -- on purpose. The two guards fail in opposite directions and only one of
+    -- them is under this file's control: a state race can leave the roster
+    -- saying OUT while the ped is alive (a revive in flight), and an admin
+    -- ghosting a match is the reverse. Dropping either one is invisible in a
+    -- playtest, because the write moves the body by zero and looks like nothing
+    -- happening -- right up until it lands on somebody mid-ragdoll.
+    do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local writes = 0
+        env.SetEntityCoordsNoOffset = function() writes = writes + 1 end
+        env.IsEntityDead = function() return true end
+        -- The rig's default: ALIVE, and not downed.
+        env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+        ok(writes == 0,
+            'a nudge on a player the roster does not call OUT writes nothing, '
+            .. 'even with a ped that reads dead -- the corpse path is for '
+            .. 'corpses, and spectate.lua\'s warning is about the other case',
+            ('%d writes'):format(writes))
+    end
 end
 
 -- ==========================================================================
@@ -5741,6 +7397,365 @@ do
              .. 'cleared on every frame and nothing ever put the body back')
                 :format(shape.name),
             ('%.3fm over 20s of a mover the lock flags did not stop'):format(away))
+    end
+end
+
+-- ==========================================================================
+-- A BODY AN EXPLOSION THREW: NO EMOTE, AND A CLONE LEFT BEHIND.
+-- ==========================================================================
+--
+-- "when in squads, a squadmate died to an explosion, wherein their ped did not
+--  properly emote when in DBNO, and the ped location wasn't synced. I need you
+--  to force their ped to that." (owner, 2026-08-29, playtested.)
+--
+-- WHY EVERY RIG ABOVE IS BLIND TO THIS, said first, because it is the same
+-- confession dbno.quiet.body had to make one block up. All of them stub the
+-- engine as though a task always lands:
+--
+--     env.TaskPlayAnim = function(_, d, a) C.anim = d .. '/' .. a end
+--
+-- A ped that is being thrown by a blast does not take an animation, and a ped
+-- coming out of one runs a GETUP that outranks a looping clip -- which is not a
+-- guess here, it is the observation client/dbno.lua already carries in
+-- enterDowned's own words: "the collision ragdolls them and the getup task that
+-- follows outranks a looping animation (owner, in game)". With a stub that
+-- accepts everything, the whole class is unreachable.
+--
+-- ═══ WHICH PATH AN EXPLOSION TAKES, AND WHY IT IS THE UNGUARDED ONE ═══
+--
+-- server/damage.lua never takes explosion damage over -- the engine applies it
+-- on the victim's own machine and only `explosionEvent` reaches the server, for
+-- ATTRIBUTION ("Explosions and fire: attribution without ownership"). So the
+-- ped is genuinely DEAD when DBNO_SET arrives, exactly like a fall, and
+-- enterDowned takes the `fell` branch: resurrect, pose, no knockdown.
+--
+-- That branch's premise is written out in the file and it is only half true:
+-- "this player has already fallen". A FALL ends with a body lying still. A
+-- BLAST ends with a body still travelling -- and the `fell` branch is the one
+-- with NO re-pose beat, because it was written for the case where there is no
+-- ragdoll to wait out. The live-knock branch has one (KNOCKDOWN_LANDED) and
+-- says exactly why it needs it.
+--
+-- ═══ THE ONE THING THIS SUITE CANNOT KNOW, DRIVEN BOTH WAYS ═══
+--
+-- What does IsEntityPlayingAnim answer for a crawl task that was ACCEPTED and
+-- then overridden by physics? Nobody here has watched it. UNVERIFIED, and both
+-- answers are legitimate builds, so both are driven -- the same shape as the
+-- 1/0 BOOL pairs and dbno.quiet.body's confirmation latencies:
+--
+--   'the render'  -- it answers about the pose actually on the ped. The
+--                    unforced watchdog then re-tasks, and the fault is that
+--                    every one of those tasks is eaten by the getup, so the
+--                    body is upright for the whole of it.
+--   'the task'    -- it answers "a crawl task exists". The watchdog then
+--                    declines FOREVER, nothing is ever re-tasked, nothing
+--                    re-arms the clone resync, and both halves of the owner's
+--                    sentence are true at once.
+--
+-- Only a FORCED re-pose is right in both, because forcing is the only thing
+-- that does not ask. That is what the owner's "force their ped to that" buys
+-- and it is what is asserted here.
+--
+-- ═══ AND THE BODY IS THROWN IN TWO LEGS, WHICH IS NOT A CONTRIVANCE ═══
+--
+-- A body a grenade throws flies, hits the ground and tumbles again, so
+-- IsPedRagdoll and IsEntityInAir go quiet in the middle and come back. The lull
+-- matters: it is long enough for the clone-resync pair armed at the knock to
+-- run and SPEND itself, and after that nothing re-arms it -- so the second leg
+-- of the flight is carried by nothing at all and the clones keep the position
+-- from the middle of the throw. Ragdoll positions do not replicate reliably in
+-- their own right: citizenfx/fivem#2436 (OPEN, read 2026-08-29) -- "the
+-- position of a player is completely different from player to player and the
+-- local player of course".
+describe('dbno.blast.body')
+do
+    local CRAWL = 'move_injured_ground/front_loop'
+
+    -- HOW LONG A GETUP HOLDS THE BODY. It is a real task with a real length and
+    -- the number is not the point -- what matters is that it is longer than the
+    -- file's own retask interval, so an unforced watchdog cannot outlast it by
+    -- asking again. 1200ms is BR.Native.knockdown's own lower bound, reused
+    -- rather than invented.
+    local GETUP_MS = 1200
+
+    -- HOW SOON AFTER THE PHYSICS LET GO THE BODY MUST BE BACK IN THE POSE.
+    -- Deliberately NOT a tight frame count: this is the interval an enemy
+    -- across the street is looking at the body in, and the whole reason the
+    -- downed state looks different from death at a distance.
+    local POSE_BY_MS = 400
+
+    for _, ANSWER in ipairs({ 'the render', 'the task' }) do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        -- THE ENGINE, in the three states this fixture is about.
+        local dead       = true    -- the blast killed the ped outright
+        local loose      = true    -- ...and is still carrying it
+        local getupUntil = nil     -- the engine is standing the body up
+        local accepted   = false   -- a crawl task is on the ped
+        local pose       = nil     -- what the ped is ACTUALLY rendering
+        local pending    = nil
+        local tasks      = 0
+
+        env.IsEntityDead        = function() return dead end
+        env.IsPedFatallyInjured = function() return dead end
+        env.NetworkResurrectLocalPlayer = function() dead = false end
+        env.IsPedRagdoll  = function() return loose end
+        env.IsEntityInAir = function() return loose end
+        -- PREVENTATIVE, NOT INTERRUPTIVE -- it stops the NEXT ragdoll and does
+        -- nothing to the one in flight. Modelled as the no-op it is, which is
+        -- what makes the `fell` path's single call at the knock worth nothing
+        -- against a blast that is still going.
+        env.SetPedCanRagdoll = function() end
+
+        env.ClearPedTasksImmediately = function()
+            accepted, pose, pending, getupUntil = false, nil, nil, nil
+        end
+        env.ClearPedTasks = function() accepted, pose, pending = false, nil, nil end
+
+        env.TaskPlayAnim = function(_, d, a)
+            tasks = tasks + 1
+            if dead then return end          -- a corpse takes no animation
+            accepted = true
+            -- ...AND THE TWO STATES THAT SWALLOW IT. A ragdoll outranks a task
+            -- and so does a getup; the task is on the ped either way, which is
+            -- the whole of the ambiguity ANSWER exists to drive.
+            if loose then return end
+            if getupUntil and CLI.now < getupUntil then return end
+            pending = d .. '/' .. a          -- ...and lands on the NEXT frame
+        end
+        env.IsEntityPlayingAnim = function()
+            if ANSWER == 'the task' then return accepted end
+            return pose ~= nil
+        end
+
+        -- WHAT THE OTHER MACHINES HAVE BEEN TOLD. It moves on an explicit
+        -- position write and on nothing else -- which is client/dbno.lua's own
+        -- model of #164 ("from the network's point of view this ped is an
+        -- entity that has not changed position since the knock") plus #2436 for
+        -- the ragdoll half. A body carried by physics does not carry its clone
+        -- with it.
+        local clone = { x = 0.0, y = 0.0 }
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+            clone.x, clone.y = x, y
+        end
+
+        -- The blast carries the body a metre and a half a second, forward.
+        local DRAG = 1.5 * 0.016
+        local looseEndedAt, posedAt = nil, nil
+
+        local function run(ms)
+            local target = CLI.now + ms
+            while CLI.now < target do
+                if pending then pose, pending = pending, nil end
+                if loose then
+                    peds[5001].y = peds[5001].y + DRAG
+                    pose = nil          -- the physics own what is rendered
+                elseif getupUntil then
+                    if CLI.now >= getupUntil then getupUntil = nil
+                    else pose = nil end
+                end
+                if pose == CRAWL and looseEndedAt and not posedAt then
+                    posedAt = CLI.now
+                end
+                CLI.now = CLI.now + 16
+                CLI.frame()
+            end
+        end
+
+        local function letGo()
+            loose = false
+            getupUntil = CLI.now + GETUP_MS
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+        run(700)                 -- leg one: flying
+        letGo()
+        run(200)                 -- the lull: long enough to spend the armed pair
+        loose = true
+        run(900)                 -- leg two: tumbling again
+        letGo()
+        looseEndedAt = CLI.now
+        posedAt = nil
+        run(6000)                -- and the rest of the bleed, untouched
+
+        -- ═══ THE EMOTE ═══
+        ok(pose == CRAWL,
+            ('a body an explosion threw ends up in the downed pose, when the '
+             .. 'engine answers about %s -- BEFORE: the `fell` path has no '
+             .. 're-pose after a ragdoll (only the live-knock path does), so '
+             .. 'the pose was asked for once, mid-flight, where nothing could '
+             .. 'take it'):format(ANSWER),
+            ('rendering %s after %d task(s)'):format(tostring(pose), tasks))
+
+        ok(posedAt ~= nil and (posedAt - looseEndedAt) <= POSE_BY_MS,
+            ('and it is back in it within %dms of the physics letting go, not '
+             .. 'after a getup has finished standing it up (%s)')
+                :format(POSE_BY_MS, ANSWER),
+            posedAt and ('%dms later'):format(posedAt - looseEndedAt)
+                    or 'never posed at all')
+
+        -- ═══ THE POSITION ═══
+        local M    = env.BR.Config.Match
+        local STEP = (M.dbnoCrawlSpeed or 0.55) * 0.016
+        local body = peds[5001]
+        local gap  = math.sqrt((body.x - clone.x) ^ 2 + (body.y - clone.y) ^ 2)
+        ok(gap <= STEP * 1.5,
+            ('and the other machines have been told where it ended up (%s) -- '
+             .. 'BEFORE: the pair armed at the knock spends itself in the lull '
+             .. 'and nothing re-arms it, so the second leg of the throw is '
+             .. 'carried by nothing at all'):format(ANSWER),
+            ('%.2fm between the body and the last position the clones were '
+             .. 'given'):format(gap))
+
+        -- ═══ AND THE DIAGNOSTIC SAYS WHICH CONDITION IT WAS ═══
+        --
+        -- The record is the deliverable that survives a build where the fix is
+        -- wrong, so it is asserted rather than trusted: an explosion has to be
+        -- distinguishable from a fall in one paste, without the owner having to
+        -- describe what they saw.
+        local k = env.BR.Dbno.knock
+        ok(k.looseFrames > 0 and k.settles >= 2,
+            ('the knock record names the physics as the condition, and counts '
+             .. 'the re-poses that answered them (%s)'):format(ANSWER),
+            ('%d loose frames (%d ragdoll, %d air), %d settle re-pose(s)')
+                :format(k.looseFrames, k.ragdollFrames, k.airFrames, k.settles))
+    end
+
+    -- ═══ AND A KNOCK THE PHYSICS NEVER TOUCHED PAYS NOTHING FOR ANY OF IT ═══
+    --
+    -- The guard against the shape of the 2026-08-19 regression, and it is the
+    -- assertion that would catch this becoming a beat: the settle is an EDGE,
+    -- so a body that never leaves the ground must never fire it, whatever else
+    -- is happening. dbno.quiet.body already owns the excursion invariant across
+    -- forty seconds; this owns the count.
+    do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local tasks = 0
+        env.TaskPlayAnim = function() tasks = tasks + 1 end
+        env.IsEntityPlayingAnim = function() return false end
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+        for _ = 1, 20 * 62 do
+            CLI.now = CLI.now + 16
+            CLI.frame()
+        end
+
+        local k = env.BR.Dbno.knock
+        ok(k.settles == 0 and k.looseFrames == 0,
+            'a knock the physics never touched fires no settle re-pose at all, '
+            .. 'over twenty seconds of a clip that never confirms -- the settle '
+            .. 'is an edge off the ragdoll, not a beat',
+            ('%d settle(s), %d loose frames, %d tasks in 20s')
+                :format(k.settles, k.looseFrames, tasks))
+    end
+
+    -- ═══ AND A RAGDOLL NATIVE THAT FLICKERS IS THE 21.8-METRE SHAPE ═══
+    --
+    -- THE FAILURE THIS FIX HAD TO AVOID RE-INVENTING, driven rather than
+    -- argued. An EDGE is only as rare as the thing it is an edge off, and
+    -- IsPedRagdoll answering true/false on alternate frames turns one into a
+    -- per-frame path -- which is precisely what the 2026-08-19 regression was:
+    -- an unlimited arm on the frame band, sixty tasks a second, each one a
+    -- fresh mover on every clone and each one spending a step the body never
+    -- gave back.
+    --
+    -- A body settling out of a real ragdoll flickers. This is not a contrived
+    -- input.
+    --
+    -- TWO THINGS ARE PRICED HERE AND THEY ARE NOT THE SAME THING, which is the
+    -- lesson dbno.quiet.body paid for:
+    --
+    --   THE BOUND is that the settle takes no anchor. With one, phase 1 gets a
+    --   `hold` on the settle frame, the physics take the body before phase 2
+    --   can give the step back, and the next settle anchors on top of it --
+    --   0.176m over ten seconds, compounding, in the direction the body faces,
+    --   which is about two metres over the longest bleed config/match.lua can
+    --   produce. Without one, `hold` is nil on every settle frame and the pair
+    --   can never start, so the answer is exactly zero however often the edge
+    --   fires. Both rows driven, one revert at a time, against the real file.
+    --
+    --   THE RATE LIMIT is RETASK_EVERY_MS, and it owns the OTHER half of that
+    --   regression: the task storm. Thirty forced TaskPlayAnims a second is
+    --   thirty fresh movers a second on every clone, which is the "desync
+    --   between screens" half of the owner's 2026-08-19 sentence, whether or
+    --   not the local body moves a millimetre.
+    do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local frames, tasks = 0, 0
+        env.IsPedRagdoll  = function() return frames % 2 == 1 end
+        env.IsEntityInAir = function() return false end
+        env.TaskPlayAnim  = function() tasks = tasks + 1 end
+        -- The clip never confirms, so nothing here is held back by the "already
+        -- playing" test -- the worst case for both halves at once.
+        env.IsEntityPlayingAnim = function() return false end
+
+        local worst = 0.0
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+            local d = math.sqrt(x * x + y * y)
+            if d > worst then worst = d end
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+        local SECONDS = 10
+        for _ = 1, SECONDS * 62 do
+            frames = frames + 1
+            CLI.now = CLI.now + 16
+            CLI.frame()
+        end
+
+        local M    = env.BR.Config.Match
+        local STEP = (M.dbnoCrawlSpeed or 0.55) * 0.016
+        ok(worst <= STEP * 1.5,
+            'a ragdoll native that flickers cannot walk the body: the settle '
+            .. 'takes no anchor, so the resync pair is never handed a `hold` on '
+            .. 'the frame the edge fires and nothing can compound -- WITH an '
+            .. 'anchorHere() in settleBody, 0.365m in ten seconds and climbing',
+            ('%.3fm from the anchor over %ds of flicker, one step is %.4fm')
+                :format(worst, SECONDS, STEP))
+
+        -- Read out of the file rather than copied: copying a constant is how
+        -- this repo has produced green over broken code before.
+        local f = io.open(RES .. 'br_core/client/dbno.lua', 'r')
+        local src = f and f:read('a') or ''
+        if f then f:close() end
+        local every = tonumber(src:match('local RETASK_EVERY_MS%s*=%s*(%d+)'))
+        -- The watchdog gets its own allowance on the same interval, so two
+        -- paths at four a second is the ceiling, plus a couple for the knock.
+        local ceiling = 2 * math.ceil((SECONDS * 1000) / (every or 250)) + 4
+        ok(tasks <= ceiling,
+            'and it cannot storm the clones with tasks either: the settle is '
+            .. 'rate-limited on the file\'s own retask interval, so a native '
+            .. 'answering differently on every frame costs four re-poses a '
+            .. 'second and not thirty',
+            ('%d tasks in %ds, ceiling %d'):format(tasks, SECONDS, ceiling))
+
+        local k = env.BR.Dbno.knock
+        ok(k.settles <= math.ceil((SECONDS * 1000) / (every or 250)) + 2,
+            'and the record counts them, so a build where this starts storming '
+            .. 'says so in one line of /brdbno',
+            ('%d settle(s) over %d flickering frames')
+                :format(k.settles, k.looseFrames))
     end
 end
 
@@ -6447,7 +8462,7 @@ do
     S.tick(S.roster[1].dbnoUntil + 500)
     local out = cues()
 
-    ok(S.roster[1].state == PS.DEAD, 'the bleed clock finishes them')
+    ok(S.roster[1].state == PS.OUT, 'the bleed clock finishes them')
     ok(out[2] ~= nil and out[2].phase == 'out',
         'and DBNO -> out is its own cue to the squad',
         out[2] and tostring(out[2].phase) or 'nothing was sent')
@@ -6859,7 +8874,7 @@ do
         ok(C.toasts() == 1, 'offered once, and expired',
             ('%d'):format(C.toasts()))
 
-        C.be(PS.DEAD)
+        C.be(PS.OUT)
         C.slow(1000)
         C.be(PS.ALIVE)
         C.slow(1000)
@@ -6873,7 +8888,7 @@ do
 
         C.be(PS.DBNO)
         C.slow(1000)
-        C.be(PS.DEAD)                       -- bled out
+        C.be(PS.OUT)                       -- bled out
         C.slow(1000)
         C.be(PS.LOBBY)                      -- and back to the menu
         C.slow(1000)
@@ -6950,6 +8965,4792 @@ do
             'the match transition ALONE reopens the window -- no player state '
             .. 'was touched between the two offers',
             ('%d toasts'):format(C.toasts()))
+    end
+end
+
+-- ------------------------------------------------ airdrops on roofs (#88) ---
+--
+-- Owner, 2026-08-22: "Somehow these airdrops can happen on top of buildings
+-- where peds otherwise cannot access. Any tips on how to address that?"
+--
+-- ═══ THE CAUSE IS THE GROUND PROBE, NOT THE SITING ═══
+--
+-- The server picks an authored POI, which is a street-level landmark. The
+-- client then resolves the height with GetGroundZFor_3dCoord starting hundreds
+-- of metres up -- and that native is documented to return the highest ground
+-- "directly beneath" the start point, which over a building is the ROOF, every
+-- time, exactly as designed.
+--
+-- ═══ AND THE FIX IS THE MACHINERY THAT ALREADY EXISTS ═══
+--
+-- Since the same playtest removed the auto-open, the airdrop crate IS an
+-- ordinary loot registry entry -- so it inherits the repair round-trip that has
+-- relocated drowned and buried loot since 2026-08-06: the client probes, finds
+-- the point impossible, proposes somewhere better, and the server (which has no
+-- map at all) accepts it under a 30m bound. All that is added is a second
+-- reason to call a point impossible.
+--
+-- THIS BLOCK IS IN test_shared BECAUSE IT NEEDS THE DRAIN WORKER. The full
+-- client suite stubs Citizen.CreateThread to a no-op and CreateObjectNoOffset to
+-- 0, so no prop is ever built there and the probe path is never walked. Here the
+-- thread runs synchronously and objects are real handles, which is the only way
+-- to see what the client actually SENDS.
+
+describe('loot.rooftop')
+do
+    --- One client with the real client/loot.lua in it, a ground probe that can
+    --- be told there is a roof at a given point, and a synchronous spawn worker.
+    local function newProbeClient()
+        local env = newSandbox()
+        local C = { now = 5000, sent = {}, objects = {}, scaled = {},
+                    scaleAsks = {} }
+
+        --- ['x,y'] = the height the probe answers there. Absent means clean
+        --- ground at 30.
+        C.groundAt = {}
+        --- ['x,y'] = why a ped could not be there. Absent means they could.
+        C.roofAt = {}
+        local function key(x, y) return ('%.1f,%.1f'):format(x, y) end
+        C.key = key
+
+        env.GetGameTimer = function() return C.now end
+        env.print = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey = function(s) return s end
+        env.PlayerId = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+
+        loadInto(env, SANDBOX_LIB)
+        loadInto(env, { 'br_lib/config/airdrop.lua' })
+
+        local V = {}
+        V.__index = V
+        local function vec(x, y, z) return setmetatable({ x = x, y = y, z = z }, V) end
+
+        env.PlayerPedId       = function() return 1 end
+        env.GetEntityCoords   = function() return vec(0.0, 0.0, 30.0) end
+        env.GetEntityHeading  = function() return 0.0 end
+        env.IsPedInAnyVehicle = function() return false end
+        env.GetFrameTime      = function() return 0.016 end
+        env.RegisterNetEvent  = function() end
+        env.RegisterCommand   = function() end
+
+        -- THE PROBE. Answers a height for any point and a DIFFERENT height for
+        -- a point a test has put a building on -- which is what the real native
+        -- does over a roof.
+        -- WHAT THE PROBE'S BOOL ANSWERS WITH. A FiveM native declared BOOL may
+        -- hand back 1 or 0 rather than true or false, and 0 IS TRUTHY IN LUA --
+        -- five shipped bugs on this project. Driven, so both shapes are walked.
+        C.probeOk = true
+
+        -- ═══ THE COLLISION STREAM, WHICH IS WHAT A CRATE FALLS THROUGH ═══
+        --
+        -- Owner, 2026-08-23: an airdrop on a building "falls through the top of
+        -- the building as if it doesn't have collisions", and the crate then
+        -- "spawn[s] at ground level inside a building".
+        --
+        -- MODELLED RATHER THAN ASSERTED ABOUT, because the two halves of that
+        -- bug are one sequence: map collision arrives LATE, and until it does
+        -- the ground probe answers off the terrain that arrived first -- a
+        -- perfectly confident answer about the street under the building. So
+        -- `collisionAfter` says how many checks the building takes to stream in,
+        -- and `lateGroundAt` is a surface that does not exist until it has.
+        --
+        -- THE 1/0 SHAPE IS THE DEFAULT AND NOT AN EDGE CASE. A FiveM native
+        -- declared BOOL hands back 1 and 0, and 0 IS TRUTHY IN LUA -- six
+        -- shipped bugs. A rig that answered `true`/`false` here would pass a
+        -- wait that never waits.
+        C.collisionAsked   = {}
+        C.collisionChecks  = 0
+        C.collisionAfter   = nil     -- nil: already streamed, as it usually is
+        C.collisionLoaded  = 1
+        C.lateGroundAt     = {}
+        local function collisionIn()
+            return C.collisionAfter == nil
+                or C.collisionChecks > C.collisionAfter
+        end
+        C.collisionIn = collisionIn
+        env.RequestCollisionAtCoord = function(x, y, z)
+            C.collisionAsked[#C.collisionAsked + 1] = { x = x, y = y, z = z }
+        end
+        env.HasCollisionLoadedAroundEntity = function()
+            C.collisionChecks = C.collisionChecks + 1
+            if not collisionIn() then return 0 end
+            return C.collisionLoaded
+        end
+
+        env.GetGroundZFor_3dCoord = function(x, y)
+            local k = key(x, y)
+            -- A ROOF IS NOT THERE UNTIL ITS COLLISION IS. Before that the probe
+            -- finds the terrain and says so, which is exactly how a crate comes
+            -- to be created at street level inside a building.
+            if C.lateGroundAt[k] and collisionIn() then
+                return C.probeOk, C.lateGroundAt[k]
+            end
+            return C.probeOk, C.groundAt[k] or 30.0
+        end
+        env.GetWaterHeight = function() return false, 0.0 end
+
+        -- Real handles, so "was a prop built" is answerable. The whole point of
+        -- this rig.
+        local nextObj = 0
+        env.CreateObjectNoOffset = function(model, x, y, z)
+            nextObj = nextObj + 1
+            C.objects[nextObj] = { model = model, x = x, y = y, z = z }
+            return nextObj
+        end
+        env.CreateObject = env.CreateObjectNoOffset
+        env.DoesEntityExist = function(e) return C.objects[e] ~= nil end
+        env.DeleteEntity = function(e) C.objects[e] = nil end
+        env.IsModelValid = function() return true end
+        env.RequestModel = function() end
+        env.HasModelLoaded = function() return true end
+        env.SetModelAsNoLongerNeeded = function() end
+        for _, n in ipairs({
+            'SetEntityCollision', 'FreezeEntityPosition', 'SetEntityHeading',
+            'SetEntityCoords', 'SetEntityCoordsNoOffset', 'SetEntityRotation',
+            'SetEntityDynamic', 'SetEntityHasGravity', 'SetObjectPhysicsParams',
+            'ActivatePhysics', 'SetEntityAsMissionEntity',
+            'PlaceObjectOnGroundProperly', 'SetEntityVelocity',
+            'SetEntityDrawOutline', 'SetEntityDrawOutlineColor',
+            'SetEntityDrawOutlineShader', 'PlaySoundFrontend',
+            'AddBlipForCoord', 'RemoveBlip', 'SetBlipSprite', 'SetBlipScale',
+            'SetBlipColour', 'SetBlipAsShortRange', 'N_0x2c2b3493fbf51c71',
+        }) do env[n] = function() end end
+
+        -- ═══ THE HANDOVER TO PHYSICS, IN ORDER ═══
+        --
+        -- "Collision was requested" and "collision was requested BEFORE the box
+        -- was let go" are different claims and only the second one is the fix,
+        -- so these four are recorded in sequence rather than counted. A crate
+        -- released to gravity above a roof that has not streamed is a crate on
+        -- the street inside the building, and the ordering is the whole of what
+        -- stops it.
+        C.calls = {}
+        local function note(name)
+            return function(...) C.calls[#C.calls + 1] = { name, ... } end
+        end
+        env.FreezeEntityPosition = note('freeze')
+        env.SetEntityDynamic     = note('dynamic')
+        env.ActivatePhysics      = note('physics')
+        local noteAsk = env.RequestCollisionAtCoord
+        env.RequestCollisionAtCoord = function(x, y, z)
+            C.calls[#C.calls + 1] = { 'collision', x, y, z }
+            noteAsk(x, y, z)
+        end
+        -- WHERE THE PROP ACTUALLY ENDED UP. The re-seat after the collision
+        -- arrives is the half that stops a crate being BUILT inside a building
+        -- rather than falling into one, and it is invisible unless the rig moves
+        -- the recorded object with it.
+        env.SetEntityCoordsNoOffset = function(e, x, y, z)
+            C.calls[#C.calls + 1] = { 'move', e, x, y, z }
+            local o = C.objects[e]
+            if o then o.x, o.y, o.z = x, y, z end
+        end
+        --- Every recorded call of one name, in order.
+        function C.only(name)
+            local out = {}
+            for _, c in ipairs(C.calls) do
+                if c[1] == name then out[#out + 1] = c end
+            end
+            return out
+        end
+        --- The index of the first call of `name`, or nil.
+        function C.firstAt(name)
+            for i, c in ipairs(C.calls) do
+                if c[1] == name then return i end
+            end
+        end
+
+        env.GetEntityVelocity = function() return vec(0.0, 0.0, 0.0) end
+        env.GetEntityRotation = function() return vec(0.0, 0.0, 0.0) end
+        env.DoesBlipExist = function() return false end
+
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.TriggerEvent = function(n, ...)
+            for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+        end
+        env.TriggerServerEvent = function(n, ...)
+            C.sent[#C.sent + 1] = { name = n, args = { ... } }
+        end
+        -- SYNCHRONOUS, so the spawn worker finishes inside the pass that
+        -- queued it. Nothing here is testing concurrency.
+        env.Citizen = { CreateThread = function(fn) fn() end,
+                        Wait = function() end, SetTimeout = function() end }
+
+        loadInto(env, { 'br_core/client/main.lua' })
+
+        env.BR.State.me = { src = 1, state = env.BR.PlayerState.ALIVE }
+        env.BR.State.roster = {}
+        env.BR.Inv    = { lastGainAt = 0, count = function() return 0 end }
+        env.BR.Sfx    = { play = function() end }
+        env.BR.Keys   = { isHeld = function() return false end, on = function() end }
+        env.BR.Dui    = { page = function(n) return { name = n } end,
+                          send = function() end, drawWorld = function() end,
+                          drawScreen = function() end,
+                          drawOnEntity = function() end,
+                          ready = function() return true end }
+        env.BR.Native = {
+            keyLabelForCommand = function() return 'E' end,
+            blipName = function() end,
+            setDisplayHealth = function() end,
+            -- `scaled` MIRRORS THE REAL NATIVE: 1.0 is the absence of a scale,
+            -- not a scale of one, and BR.Native.propScale writes no matrix for
+            -- it. `scaleAsks` counts the CALL regardless, which is the only way
+            -- to tell "the crate is at authored size" apart from "the pass that
+            -- would have scaled it stopped running".
+            propScale = function(obj, k)
+                if obj then C.scaleAsks[obj] = (C.scaleAsks[obj] or 0) + 1 end
+                if obj and k and k ~= 1.0 then C.scaled[obj] = k end
+            end,
+            -- THE ROOFTOP ORACLE. The real one is a navmesh query; here a test
+            -- says where a ped could not be.
+            pedReachable = function(x, y)
+                local why = C.roofAt[key(x, y)]
+                if why then return false, why end
+                return true, 'ok'
+            end,
+        }
+
+        loadInto(env, { 'br_core/client/loot.lua' })
+
+        C.env = env
+        function C.slow(ms)
+            C.now = C.now + (ms or 1000)
+            env.BR.Loop.step(env.BR.Loop.SLOW)
+        end
+        function C.add(e)
+            env.TriggerEvent(env.BR.Net.LOOT_ADD, { e })
+        end
+        --- Every LOOT_FIX this client has proposed.
+        function C.fixes()
+            local out = {}
+            for _, s in ipairs(C.sent) do
+                if s.name == env.BR.Net.LOOT_FIX then out[#out + 1] = s.args[1] end
+            end
+            return out
+        end
+        --- How many props exist right now.
+        function C.props()
+            local n = 0
+            for _ in pairs(C.objects) do n = n + 1 end
+            return n
+        end
+        return C
+    end
+
+    local A = BR.Config.Airdrop
+
+    --- A sealed airdrop crate, exactly as server/airdrop.lua lays one.
+    local function crateAt(x, y)
+        return { id = 1, kind = 'chest', item = 'airdrop', prop = A.crateProp,
+                 x = x, y = y, z = 30.0, rarity = BR.Rarity.LEGENDARY, count = 1 }
+    end
+
+    -- 1. CLEAN GROUND CHANGES NOTHING AT ALL.
+    do
+        local C = newProbeClient()
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(#C.fixes() == 0, 'a reachable crate proposes no move')
+        ok(C.props() > 0, 'and its prop is built')
+    end
+
+    -- 2. A ROOFTOP CRATE ASKS TO BE MOVED.
+    do
+        local C = newProbeClient()
+        C.roofAt[C.key(5.0, 5.0)] = 'snapped 34.0m in z'
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        local f = C.fixes()
+        ok(#f == 1, 'a rooftop crate proposes exactly one move', #f)
+        if f[1] then
+            local d = math.sqrt((f[1].x - 5.0) ^ 2 + (f[1].y - 5.0) ^ 2)
+            ok(d > 0.5, 'somewhere else...', ('%.1fm'):format(d))
+            -- INSIDE THE SERVER'S OWN BOUND. server/loot.lua refuses a repair
+            -- further than FIX_RADIUS, so a suggestion past it is a suggestion
+            -- that is silently dropped -- which looks exactly like no bug.
+            ok(d <= 30.0, '...and inside the server\'s 30m bound',
+                ('%.1fm'):format(d))
+        end
+    end
+
+    -- 3. ═══ AND THE PROP IS STILL BUILT. THIS IS THE ONE THAT MATTERS. ═══
+    --
+    -- `gzOk` (dry and solid) and `reachOk` (a ped could be here) are two
+    -- different answers and only the first may withhold a prop. Folding them
+    -- together is the obvious implementation, and it would mean a rooftop
+    -- airdrop with no better point within 28m gets NO PROP AT ALL -- an
+    -- invisible, unopenable crate holding the best loot in the match, in
+    -- exactly the scenario the owner reported. The check runs on an untested
+    -- navmesh native against a curated flag set that says "no" about plenty of
+    -- good rural ground, so a false negative must cost a wasted suggestion and
+    -- nothing else.
+    do
+        local C = newProbeClient()
+        C.roofAt[C.key(5.0, 5.0)] = 'roof'
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(C.props() > 0,
+            'an unreachable crate is STILL BUILT -- the worst case of this '
+            .. 'feature is the behaviour that shipped without it')
+    end
+
+    -- 4. AND WHEN EVERYWHERE NEARBY IS A ROOF, NOTHING IS PROPOSED AND THE
+    --    CRATE STILL EXISTS. A suggestion that is no better than the original
+    --    would burn the server's cooldown to move a crate from one roof to
+    --    another.
+    do
+        local C = newProbeClient()
+        setmetatable(C.roofAt, { __index = function() return 'roof' end })
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(#C.fixes() == 0, 'no candidate clears the bar, so nothing is sent')
+        ok(C.props() > 0, 'and the crate is still there to be opened')
+    end
+
+    -- 5. ═══ IT IS ASKED OF THE AIRDROP CRATE AND OF NOTHING ELSE ═══
+    --
+    -- The narrowness is deliberate and load-bearing. ~3,200 generated entries
+    -- behind an untested navmesh native is a map with no loot on it if the
+    -- native misbehaves at scale -- the worst failure client/loot.lua has.
+    do
+        local C = newProbeClient()
+        -- ONLY THE CRATE'S OWN POINT IS A ROOF, so there IS somewhere better
+        -- within the search ring. Marking the whole world unreachable would
+        -- make this pass for the wrong reason: the search would find nothing,
+        -- send nothing, and the assertion could not tell that apart from the
+        -- question never being asked. A mutation pass proved exactly that.
+        C.roofAt[C.key(5.0, 5.0)] = 'roof'
+        C.add({ id = 2, kind = 'chest', item = 'chest',
+                prop = BR.Config.Loot.chestProp,
+                x = 5.0, y = 5.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1 })
+        C.slow(1000)
+        ok(#C.fixes() == 0,
+            'an ordinary crate on the same roof is not asked the question, '
+            .. 'even though a reachable point is right there')
+
+        -- ...and the airdrop crate on that identical point IS. Same rig, same
+        -- roof, same neighbours -- the only difference is the item id, which is
+        -- what makes this a statement about the narrowness rather than about
+        -- the rig.
+        local D = newProbeClient()
+        D.roofAt[D.key(5.0, 5.0)] = 'roof'
+        D.add(crateAt(5.0, 5.0))
+        D.slow(1000)
+        ok(#D.fixes() == 1,
+            'and the airdrop crate on that exact point is')
+    end
+
+    -- 6. THE SEA STILL WITHHOLDS THE PROP, which is what gzOk has always meant
+    --    and must keep meaning.
+    do
+        local C = newProbeClient()
+        C.groundAt[C.key(5.0, 5.0)] = -12.0     -- a seabed
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(C.props() == 0, 'a drowned entry builds no prop, as it always did')
+        ok(#C.fixes() == 1, 'and asks to be moved')
+    end
+
+    -- 6b. ═══ 0 IS TRUTHY IN LUA, AND THIS LINE WAS THE SIXTH TIME ═══
+    --
+    -- GetGroundZFor_3dCoord is declared BOOL and a FiveM native may answer 1 or
+    -- 0 rather than true or false. `if not ok then` is FALSE for a native that
+    -- failed with a zero, so the guard never fired -- and it has been survivable
+    -- only because a failed probe ALSO hands back z = 0, which the sea-level
+    -- rule below it catches. A guard working by accident is not a guard, and the
+    -- rooftop check now reads that height before the accident saves it.
+    --
+    -- The case that tells them apart: a failed probe that returns a PLAUSIBLE
+    -- height. Nothing may be built on an answer the native said it did not have.
+    do
+        local C = newProbeClient()
+        C.probeOk = 0                            -- failed, in the 1/0 shape
+        C.groundAt[C.key(5.0, 5.0)] = 42.0       -- ...with a believable height
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(C.props() == 0,
+            'a probe that failed with a ZERO builds nothing, even when the '
+            .. 'height it handed back looks fine')
+    end
+
+    -- 7. ═══ THE AIRDROP CRATE IS DRAWN AT AUTHORED SIZE, AND THAT IS THE FIX
+    --        (owner, 2026-08-23) ═══
+    --
+    -- "we need to tweak how the prop scaling works for the crate as it currently
+    -- clips. We may need to drop scaling altogether."
+    --
+    -- A matrix scale grows a model about its ORIGIN. A landed crate is a DYNAMIC
+    -- physics object whose height comes from resting on the ground with a 1x
+    -- collider, so at 2x the bottom half of the box is drawn underneath the
+    -- floor it is standing on -- and the obvious repair, lifting it by the extra
+    -- half-height, is undone by gravity on the next simulation step. There is no
+    -- number that fixes it; only a different MODEL would.
+    --
+    -- 1.0 IS THE ABSENCE OF A SCALE AND NOT A SCALE OF ONE, in the real
+    -- BR.Native.propScale and in the stub above alike: neither writes a matrix
+    -- for it. So the assertion is that nothing was applied.
+    do
+        local C = newProbeClient()
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        local obj = next(C.objects)
+        ok(A.crateScale == 1.0, 'crateScale is 1.0', tostring(A.crateScale))
+        ok(C.scaled[obj] == nil,
+            'so no matrix scale is written to the crate at all',
+            tostring(C.scaled[obj]))
+
+        -- AND THE 10Hz RE-ASSERTION IS STILL WIRED UP, which is a different
+        -- claim from "the crate is at authored size" and has to be checked
+        -- separately: /brpropscale can put a scale back on a live crate, and it
+        -- is the ruler the owner is asked to use. A container is a physics
+        -- object and physics owns the transform matrix, so a scale applied once
+        -- at spawn is one the next simulation step may throw away; the hover
+        -- pass that re-asserts it for loose items skips containers by design.
+        C.scaleAsks = {}
+        C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+        ok((C.scaleAsks[obj] or 0) > 0,
+            'and the crate pass still asks for the size on every container, so '
+            .. 'putting a scale back is one config line',
+            tostring(C.scaleAsks[obj]))
+    end
+
+    -- 8. AND SO IS THE VOLTS PILE, which is a loose item and therefore rides
+    --    the hover pass instead.
+    do
+        local C = newProbeClient()
+        C.add({ id = 3, kind = 'volts', item = 'volts', prop = A.voltsProp,
+                x = 5.0, y = 5.0, z = 30.0, rarity = BR.Rarity.LEGENDARY,
+                count = A.voltsAmount })
+        C.slow(1000)
+        local obj = next(C.objects)
+        ok(C.scaled[obj] == A.voltsScale,
+            'the Volts pile is drawn at voltsScale', tostring(C.scaled[obj]))
+    end
+
+    -- 9. ═══ NO CRATE IS HANDED TO PHYSICS BEFORE THE GROUND UNDER IT EXISTS
+    --        (owner, 2026-08-23) ═══
+    --
+    -- "when it lands on top of a building the loot crate falls through the top
+    -- of the building as if it doesn't have collisions. This leads to (when the
+    -- chute is removed) the actual crate prop spawning at ground level inside a
+    -- building."
+    --
+    -- A container is the ONE prop this file gives to the simulation: created
+    -- dynamic, unfrozen, gravity-bound, ActivatePhysics'd, because "drive into
+    -- one and it moves" (user, 2026-08-05). Map collision streams
+    -- asynchronously, so a crate released above a roof that has not arrived
+    -- falls through it and settles on the terrain -- and stays, because the 10Hz
+    -- pass then records that sunken pose and the husk inherits it.
+    --
+    -- ORDER, NOT PRESENCE. "RequestCollisionAtCoord was called" is satisfied by
+    -- calling it after the box has already been let go.
+    do
+        local C = newProbeClient()
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+
+        local asked = C.only('collision')
+        ok(#asked > 0, 'a crate asks for the collision under it', #asked)
+        if asked[1] then
+            ok(asked[1][2] == 5.0 and asked[1][3] == 5.0,
+                'at its own point, not the player\'s',
+                ('%.1f, %.1f'):format(asked[1][2], asked[1][3]))
+        end
+
+        local firstAsk = C.firstAt('collision')
+        local physics  = C.firstAt('physics')
+        ok(firstAsk and physics and firstAsk < physics,
+            'and it is asked for BEFORE gravity is switched on',
+            ('collision at %s, physics at %s'):format(tostring(firstAsk),
+                                                      tostring(physics)))
+        -- FROZEN ACROSS THE WAIT. The wait yields, which is the only place in
+        -- the spawn worker where the simulation gets a step before the prop is
+        -- configured -- so a crate that fell through the roof DURING its own
+        -- collision wait would be a very funny bug to have written.
+        local freezes = C.only('freeze')
+        ok(#freezes >= 2 and freezes[1][3] == true,
+            'the crate is frozen before the wait', #freezes)
+        ok(freezes[#freezes][3] == false,
+            'and released after it')
+    end
+
+    -- 10. ═══ AND THE PROBE IS TAKEN AGAIN AFTERWARDS, WHICH IS THE OTHER HALF
+    --         ═══
+    --
+    -- Before the building's collision arrives the ground probe is not wrong so
+    -- much as answering a different question: it finds the terrain, confidently,
+    -- and a crate placed on that is BUILT at street level inside the building
+    -- rather than falling into it. Waiting for collision without re-probing
+    -- fixes the fall and leaves the spawn.
+    do
+        local C = newProbeClient()
+        C.collisionAfter = 3                       -- the roof streams in late
+        C.lateGroundAt[C.key(5.0, 5.0)] = 64.0     -- ...and it is 34m up
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+
+        local obj = next(C.objects)
+        ok(obj ~= nil, 'the crate is built')
+        if obj then
+            ok(C.objects[obj].z > 60.0,
+                'and ends up on the roof that streamed in, not on the terrain '
+                .. 'the first probe found',
+                ('%.1f'):format(C.objects[obj].z))
+        end
+        ok(#C.only('move') > 0,
+            'because the re-probe moved it once the collision was really there')
+    end
+
+    -- 11. THE WAIT IS BOUNDED, AND A NATIVE THAT NEVER SAYS YES DOES NOT COST
+    --     THE MATCH ITS LOOT. Worst case is the behaviour that shipped before
+    --     any of this: a crate released exactly as it always was.
+    do
+        local C = newProbeClient()
+        C.collisionLoaded = 0                      -- never, in the 1/0 shape
+        C.add(crateAt(5.0, 5.0))
+        C.slow(1000)
+        ok(C.props() > 0, 'the crate is still built')
+        ok(C.firstAt('physics') ~= nil,
+            'and still handed to physics when the budget runs out')
+        local freezes = C.only('freeze')
+        ok(freezes[#freezes] and freezes[#freezes][3] == false,
+            'and not left frozen in mid-air for the rest of the match')
+    end
+
+    -- 12. A LOOSE ITEM PAYS NONE OF IT. Rifles and bandages are frozen and
+    --     cannot fall through anything, and 3,200 of them each opening a
+    --     streaming request would be a real cost for no gain.
+    do
+        local C = newProbeClient()
+        C.add({ id = 4, kind = 'consumable', item = 'bandage',
+                prop = 'prop_ld_health_pack',
+                x = 5.0, y = 5.0, z = 30.0, rarity = BR.Rarity.COMMON,
+                count = 1 })
+        C.slow(1000)
+        ok(C.props() > 0, 'the item is built')
+        ok(#C.only('collision') == 0,
+            'and nothing asked for a collision stream on its behalf',
+            #C.only('collision'))
+    end
+end
+
+-- -------------------------------------------------------- spectate policy ---
+--
+-- THE INFORMATION LEAK, ASSERTED (#192). A dead player with a working voice
+-- channel who can see an enemy is a spotter, so the target set is their own
+-- squad for as long as any of that squad is standing. These are the tests that
+-- have to fail if that ever stops being true -- which is why the rule lives in a
+-- pure function rather than in a server file that can only be exercised by
+-- playing a match.
+
+describe('spectate.squadRule')
+do
+    local S = BR.SpectateSolve
+
+    --- Four players, two squads of two. Everyone alive unless named in `dead`.
+    local function world(dead)
+        dead = dead or {}
+        local out = {}
+        for _, r in ipairs({
+            { src = 1, squadId = 'sq1', name = 'Me' },
+            { src = 2, squadId = 'sq1', name = 'Mate' },
+            { src = 3, squadId = 'sq2', name = 'Enemy1' },
+            { src = 4, squadId = 'sq2', name = 'Enemy2' },
+        }) do
+            r.living = not dead[r.src]
+            out[#out + 1] = r
+        end
+        return out
+    end
+
+    local function names(list)
+        local out = {}
+        for _, p in ipairs(list) do out[#out + 1] = p.name end
+        return table.concat(out, ',')
+    end
+
+    -- 1. THE WHOLE POINT. Dead, one squadmate alive, two enemies alive -- and
+    --    `free` ON, which is the strongest form of the claim: even with the
+    --    widening explicitly allowed, it must not be reachable.
+    local t, policy = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true, players = world({ [1] = true }),
+    })
+    ok(#t == 1 and t[1].src == 2,
+        'a dead player sees ONLY their living squadmate, even with free spectate on',
+        names(t))
+    ok(policy == 'squad', 'and the policy says so', policy)
+
+    -- 2. The same with free OFF, which must be identical -- the flag has no say
+    --    while a squadmate lives, and a test that only covered the off case
+    --    could not tell the two apart.
+    t = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = false, players = world({ [1] = true }),
+    })
+    ok(#t == 1 and t[1].src == 2, 'the free flag changes nothing while a mate lives',
+        names(t))
+
+    -- 3. A DEAD SQUADMATE IS NOT A TARGET. The wheel is living squadmates, not
+    --    squad membership -- otherwise the first thing a dead player sees is
+    --    another corpse.
+    t = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true,
+        players = world({ [1] = true, [2] = true }),
+    })
+    ok(#t == 2, 'once the whole squad is out, the set widens', names(t))
+    ok(t[1].src == 3 and t[2].src == 4, 'to the living players outside it', names(t))
+
+    -- 4. AND ONLY IF IT IS ALLOWED TO. Same wiped squad, free off: nothing.
+    local none
+    t, none = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = false,
+        players = world({ [1] = true, [2] = true }),
+    })
+    ok(#t == 0, 'refusing free spectate leaves a wiped squad with nobody to watch',
+        names(t))
+    ok(none == 'none', 'and says none rather than pretending it is a squad', none)
+
+    -- 5. NEVER MYSELF, on either branch.
+    t = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true,
+        players = world({ [1] = true, [2] = true }),
+    })
+    for _, p in ipairs(t) do
+        ok(p.src ~= 1, 'the spectator is never on their own list')
+    end
+
+    -- 6. SOLOS FALL OUT FOR FREE. No squadId means the squad list is empty on
+    --    the first pass, so a solo lands on the wider branch with no mode check
+    --    anywhere -- #192: "in solos this is moot".
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = nil, free = true,
+        players = {
+            { src = 1, living = false, name = 'Me' },
+            { src = 2, living = true,  name = 'Other' },
+        },
+    })
+    ok(#t == 1 and t[1].src == 2 and policy == 'free',
+        'a solo player reaches the wider set with no squad check to satisfy',
+        policy)
+
+    -- 7. A SQUAD OF ONE IS STILL A SQUAD, and it is empty the moment its only
+    --    member dies. This is the case a `squadId ~= nil` guard alone would get
+    --    wrong -- the id is set, and there is still nobody to watch.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = false,
+        players = { { src = 1, squadId = 'sq1', living = false, name = 'Me' } },
+    })
+    ok(#t == 0 and policy == 'none', 'a one-player squad wiped has no targets', policy)
+
+    -- 8. AN EMPTY WORLD IS NOT AN ERROR.
+    t = S.playerTargets({ mySrc = 1, squadId = 'sq1', free = true, players = {} })
+    ok(#t == 0, 'no players at all is an empty list, not a crash')
+    ok(#S.playerTargets({}) == 0, 'and neither is an empty view')
+end
+
+-- ------------------------------------------------------- spectate: killer ---
+--
+-- "If in solos, the default spectate target should be the killer (if there was
+-- one)." -- the owner, 2026-08-22.
+--
+-- The claims worth pinning are not "the killer appears somewhere". They are:
+-- SOLOS ONLY, FIRST rather than merely present, a NO-KILLER path that is the old
+-- answer unchanged, and -- the one that would actually leak -- that this cannot
+-- reach past the squad rule.
+
+describe('spectate.killerFirst')
+do
+    local S = BR.SpectateSolve
+
+    local function names(list)
+        local out = {}
+        for _, p in ipairs(list) do out[#out + 1] = p.name end
+        return table.concat(out, ',')
+    end
+
+    -- A solo world: me (dead), and three living strangers. src order is 2,3,4,
+    -- so `bySrc` alone would always answer 2 -- which is what makes 4 the
+    -- interesting killer to name.
+    local function solos(killerSrc, free)
+        return {
+            mySrc = 1, squadId = nil, free = free, killerSrc = killerSrc,
+            players = {
+                { src = 1, living = false, name = 'Me' },
+                { src = 2, living = true,  name = 'Alpha' },
+                { src = 3, living = true,  name = 'Bravo' },
+                { src = 4, living = true,  name = 'Killer' },
+            },
+        }
+    end
+
+    -- ═══ 1. THE SHIPPED CONFIGURATION, AND SOLOS ARE NOT SUBJECT TO IT ═══
+    --
+    -- An earlier version made the killer the WHOLE list when free spectate was
+    -- off. The owner rejected that (2026-08-22): "I'm not asking for their
+    -- killer to be the sole spectate option, just the first one they see. If
+    -- there are other players in the match available to spectate, they should
+    -- still be able to select between those."
+    --
+    -- So `free` no longer reaches a solo at all. It governs the case it was
+    -- written for -- a SQUAD player whose squad has been wiped -- and case 9
+    -- below is the leak test for that.
+    local t, policy = S.playerTargets(solos(4, false))
+    ok(#t == 3, 'a dead solo is offered every living player, free spectate or not',
+        names(t))
+    ok(t[1].src == 4, 'with the one who killed them first', names(t))
+    ok(t[2].src == 2 and t[3].src == 3,
+        'and the rest in src order behind them', names(t))
+    ok(policy == 'free',
+        'the policy says free, because a widened set is what they got',
+        policy)
+
+    -- 2. AND CYCLING REACHES THE OTHERS, which is the whole of the correction:
+    --    the earlier list of one could not be walked off.
+    ok(S.step(t, 4, 1).src == 2 and S.step(t, 4, -1).src == 3,
+        'and the arrows walk off the killer onto the rest of the lobby')
+
+    -- 3. NO KILLER IS NOT NO TARGETS ANY MORE. The storm, a fall, a car with
+    --    nobody in it (#194) all arrive as nil -- and a solo who died to the
+    --    storm still gets the lobby, just in plain src order.
+    t, policy = S.playerTargets(solos(nil, false))
+    ok(#t == 3 and policy == 'free',
+        'a solo killed by the storm still watches somebody', policy)
+    ok(t[1].src == 2, 'in src order, with nobody promoted', names(t))
+
+    -- 4. A KILLER WHO HAS SINCE DIED IS NOT PROMOTED. Same `living` test every
+    --    other candidate passes -- the killer is the front of a set, not an
+    --    exception to what may be in one. The set itself is unaffected.
+    local view = solos(4, false)
+    view.players[4].living = false
+    t, policy = S.playerTargets(view)
+    ok(#t == 2 and t[1].src == 2,
+        'a dead killer is not promoted, and the living rest remain', names(t))
+
+    -- 5. A KILLER WHO HAS LEFT. The server resolves a licence to a live id and
+    --    gets nothing, so the solver is handed an id that is on no row.
+    t, policy = S.playerTargets(solos(99, false))
+    ok(#t == 3 and t[1].src == 2,
+        'a killer who is gone is not invented, and promotes nobody', names(t))
+
+    -- 6. WITH FREE SPECTATE ON, NOTHING ABOUT A SOLO CHANGES. It used to be the
+    --    branch that widened them; now they were never narrowed, so the flag is
+    --    inert here and this asserts that rather than assuming it.
+    t, policy = S.playerTargets(solos(4, true))
+    ok(#t == 3, 'free spectate still offers everyone', names(t))
+    ok(t[1].src == 4, 'with the killer first', names(t))
+    ok(t[2].src == 2 and t[3].src == 3,
+        'and the rest still in src order behind them', names(t))
+    ok(policy == 'free',
+        'the policy still says free, because free is what admitted the list',
+        policy)
+
+    -- 7. FIRST IS WHAT "DEFAULT" MEANS. step() with no current target returns
+    --    list[1], so this is the assertion that the owner's word is satisfied
+    --    rather than the list merely being ordered.
+    ok(S.step(t, nil, 0).src == 4, 'so opening a session lands on the killer')
+
+    -- 8. AND CYCLING STILL WORKS off that front position.
+    ok(S.step(t, 4, 1).src == 2, 'next steps off the killer normally')
+
+    -- 9. THE SQUAD RULE IS NOT REACHABLE FROM HERE, WHICH IS THE LEAK TEST.
+    --    A squad player killed by an enemy, one mate still standing, free ON --
+    --    every knob turned the wrong way at once. The answer must still be the
+    --    mate and only the mate.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true, killerSrc = 4,
+        players = {
+            { src = 1, squadId = 'sq1', living = false, name = 'Me' },
+            { src = 2, squadId = 'sq1', living = true,  name = 'Mate' },
+            { src = 4, squadId = 'sq2', living = true,  name = 'Killer' },
+        },
+    })
+    ok(#t == 1 and t[1].src == 2 and policy == 'squad',
+        'a killer cannot be spectated past a living squadmate', names(t))
+
+    -- 10. SQUAD BEHAVIOUR IS UNCHANGED EVEN WHEN THE SQUAD IS WIPED. The owner
+    --     said solos; a squad player whose squad is gone gets the set they got
+    --     yesterday, in the order they got it, killer or no killer.
+    local base = {
+        { src = 1, squadId = 'sq1', living = false, name = 'Me' },
+        { src = 2, squadId = 'sq1', living = false, name = 'Mate' },
+        { src = 3, squadId = 'sq2', living = true,  name = 'Other' },
+        { src = 4, squadId = 'sq2', living = true,  name = 'Killer' },
+    }
+    local withKiller = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true, killerSrc = 4, players = base })
+    local without = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true, players = base })
+    ok(names(withKiller) == names(without) and names(without) == 'Other,Killer',
+        'a wiped SQUAD is not reordered by who killed them', names(withKiller))
+
+    -- 11. ...AND A WIPED SQUAD WITH FREE OFF STILL GETS NOTHING, rather than
+    --     picking up a killer-cam through the solos branch.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = false, killerSrc = 4, players = base })
+    ok(#t == 0 and policy == 'none',
+        'and free-off keeps a wiped squad with nobody to watch', policy)
+
+    -- 12. NEVER MYSELF, even if something upstream managed to name me. The
+    --     server guards it twice already (attributedKiller refuses a self-hit
+    --     and eliminate writes the licence only when killerSrc ~= src); this is
+    --     the third place it cannot happen.
+    t = S.playerTargets({
+        mySrc = 1, squadId = nil, free = false, killerSrc = 1,
+        players = { { src = 1, living = true, name = 'Me' } } })
+    ok(#t == 0, 'a player is never handed their own camera as a killer-cam')
+
+    -- 13. SERVER ID 0 IS A REAL ID AND `nil` IS THE ONLY "NO KILLER". In Lua 0
+    --     is truthy, so a `if view.killerSrc then` would behave identically here
+    --     -- but the same expression written as a truth test elsewhere is how
+    --     this repo has shipped that bug four times. Pinned from both ends.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = nil, free = false, killerSrc = 0,
+        players = {
+            { src = 0, living = true,  name = 'Zero' },
+            { src = 1, living = false, name = 'Me' },
+        } })
+    ok(#t == 1 and t[1].src == 0 and policy == 'free',
+        'a killer holding server id 0 is still promoted to the front', policy)
+
+    -- 14. AND AN ABSENT killerSrc IS NOT A KILLER AT ALL -- the view every
+    --     existing caller built before this field existed.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = nil, free = true,
+        players = {
+            { src = 2, living = true,  name = 'Alpha' },
+            { src = 1, living = false, name = 'Me' },
+        } })
+    ok(#t == 1 and t[1].src == 2 and policy == 'free',
+        'a view with no killerSrc behaves exactly as it did before', policy)
+end
+
+describe('spectate.adminPolicy')
+do
+    local S = BR.SpectateSolve
+    local everyone = {
+        { src = 1, name = 'Admin' },
+        { src = 5, name = 'Suspect' },
+    }
+
+    -- AN ADMIN IS NOT SUBJECT TO THE SQUAD RULE, and that is the whole reason
+    -- this is a second function rather than a flag on the first: the rule
+    -- protects players from each other, not players from moderation.
+    local t, policy = S.adminTargets({ want = 5, players = everyone })
+    ok(#t == 1 and t[1].src == 5 and policy == 'admin',
+        'an admin gets the person they named', policy)
+
+    -- ...BUT ONLY IF THAT PERSON IS HERE. A server id nobody is holding is the
+    -- recycled-id hazard, and the answer is nothing rather than a guess.
+    local miss
+    t, miss = S.adminTargets({ want = 9, players = everyone })
+    ok(#t == 0 and miss == 'none', 'and nobody at all when they are not connected',
+        miss)
+    ok(#S.adminTargets({}) == 0, 'an empty view is empty, not an error')
+
+    -- THE TWO POLICIES CANNOT BE CONFUSED FOR ONE ANOTHER. Handing the admin
+    -- view to the player policy is not a way to widen anything: it has no
+    -- squadId and no `living`, so it comes back empty rather than permissive.
+    ok(#S.playerTargets({ want = 5, players = everyone }) == 0,
+        'the player policy refuses an admin-shaped view rather than opening up')
+end
+
+describe('spectate.step')
+do
+    local S = BR.SpectateSolve
+    local list = {
+        { src = 2, name = 'B' }, { src = 4, name = 'D' }, { src = 7, name = 'G' },
+    }
+
+    ok(S.step(list, 2, 1).src == 4, 'next walks forward')
+    ok(S.step(list, 7, 1).src == 2, 'and wraps at the end')
+    ok(S.step(list, 2, -1).src == 7, 'previous wraps at the start')
+    ok(S.step(list, 4, -1).src == 2, 'and walks back otherwise')
+
+    -- 0 IS HOLD. In Lua `0` is truthy, so a careless `if dir then` would move on
+    -- a re-resolve -- and this is the direction the 4 Hz feed sends on every
+    -- single push. Getting it wrong is a camera that cycles targets four times
+    -- a second.
+    ok(S.step(list, 4, 0).src == 4, 'dir 0 holds the current target')
+    ok(S.step(list, 4).src == 4, 'and so does no direction at all')
+
+    -- A TARGET THAT IS NO LONGER ON THE LIST LANDS SOMEWHERE, rather than
+    -- ending the session. This is the path every death of a watched player
+    -- takes.
+    ok(S.step(list, 99, 1).src == 2, 'a lost target falls to the first candidate')
+    ok(S.step(list, 99, -1).src == 7, 'or the last one, going the other way')
+    ok(S.step(list, 99, 0).src == 2, 'and holding nothing lands on the first')
+
+    ok(S.step({}, 2, 1) == nil, 'an empty list has no next')
+    ok(S.step(nil, 2, 1) == nil, 'and neither does no list')
+
+    local one = { { src = 3, name = 'C' } }
+    ok(S.step(one, 3, 1).src == 3, 'a single candidate is its own next')
+    ok(S.step(one, 3, -1).src == 3, 'and its own previous')
+end
+
+-- --------------------------------------------------------- vehicles (#193) ---
+
+describe('vehicles.allowlist')
+do
+    local V = BR.Config.VehicleRefusal
+
+    -- THE POLARITY, ASSERTED FIRST, because it is the one thing about this table
+    -- that is the opposite of weapons.lua's and the one thing a careless edit
+    -- inverts. Absence is PERMISSION here.
+    ok(BR.Config.IsAllowedVehicle(0x00000001) == true,
+        'a model nobody wrote down is allowed')
+
+    local allowed, why = BR.Config.IsAllowedVehicle(0x2EA68690)   -- rhino
+    ok(allowed == false and why == V.TANK,
+        'a tank is refused, and #215 gave tanks their own half of the rule')
+
+    local _, ay = BR.Config.IsAllowedVehicle(0xB5EF4C33)          -- vigilante
+    ok(ay == V.ARMED, 'an armed car is refused on the weapons half')
+
+    local _, hy = BR.Config.IsAllowedVehicle(0x39D6E83F)          -- hydra
+    ok(hy == V.FLIES, 'a jet is refused, on the flight half')
+
+    -- THE SIGNED-HASH TRAP, AND IT IS THE BUG THIS PROJECT HAS SHIPPED FOUR
+    -- TIMES. GetEntityModel reports signed; the table authors positive. Sixty-
+    -- five of the hundred and thirty-two rows have the top bit set, so
+    -- unnormalised this whole feature would refuse nothing that matters and look
+    -- fine doing it.
+    ok(BR.Config.IsAllowedVehicle(0x2EA68690 - 0x100000000) == false,
+        'a tank is still refused when the hash arrives signed')
+    ok(BR.Config.IsAllowedVehicle(0xB39B0AE6 - 0x100000000) == false,
+        'and so is a fighter jet, whose hash has the top bit set')
+
+    -- ZERO IS TRUTHY IN LUA, so BR.NormHash(0) answers 0 rather than nil and 0
+    -- is in no row. A model the engine could not report must read as ordinary
+    -- rather than as a cheat.
+    ok(BR.Config.IsAllowedVehicle(0) == true, 'model 0 is allowed, not refused')
+    ok(BR.Config.IsAllowedVehicle(nil) == true, 'and so is no model at all')
+
+    -- THE BATTLE BUS. It is an aircraft, the rule refuses it, and that is safe
+    -- only because client/bus.lua never networks it. If this ever flips, the
+    -- reason is in config/vehicles.lua's header and the fix is not here.
+    ok(BR.Config.IsAllowedVehicle(0x761E2AD3) == false,
+        'the Battle Bus model is refused by the rule, as an aircraft')
+
+    -- Every authored row resolves, in both hash forms, to its own reason. The
+    -- gate proves this too; asserting it here means a broken table fails the
+    -- suite as well as the gate.
+    local rows, bad = 0, 0
+    for _, v in ipairs(BR.Config.RefusedVehicles) do
+        rows = rows + 1
+        local a1, w1 = BR.Config.IsAllowedVehicle(v.hash)
+        local signed = (v.hash & 0x80000000) ~= 0 and (v.hash - 0x100000000) or v.hash
+        local a2, w2 = BR.Config.IsAllowedVehicle(signed)
+        if a1 or a2 or w1 ~= v.why or w2 ~= v.why then bad = bad + 1 end
+    end
+    ok(rows > 0 and bad == 0,
+        'every refused row resolves to its own reason, signed and unsigned',
+        ('%d of %d rows did not'):format(bad, rows))
+
+    -- THE SECOND SIGNAL. Two of GetVehicleType's eight values mean flight.
+    ok(BR.Config.IsFlyingVehicleType('heli') == true,  'heli flies')
+    ok(BR.Config.IsFlyingVehicleType('plane') == true, 'plane flies')
+    ok(BR.Config.IsFlyingVehicleType('automobile') == false, 'a car does not')
+    ok(BR.Config.IsFlyingVehicleType('boat') == false,
+        'and neither does a boat -- the owner\'s rule does not reach them')
+    ok(BR.Config.IsFlyingVehicleType('submarine') == false, 'nor a submarine')
+    -- THE NATIVE ANSWERS nil FOR A NON-VEHICLE, and indexing a table with a nil
+    -- key is an error in Lua rather than a miss -- which is why this is a
+    -- function and not a bare lookup.
+    ok(BR.Config.IsFlyingVehicleType(nil) == false, 'no type does not fly')
+    ok(BR.Config.IsFlyingVehicleType(42) == false, 'and neither does a number')
+end
+
+-- ------------------------------------------------- vehicles: #215's widening --
+
+describe('vehicles.widening')
+do
+    local V = BR.Config.VehicleRefusal
+
+    -- THE THREE TANKS, BY NAME, BECAUSE "GTA HAS THREE" IS THE CLAIM THE TABLE
+    -- MAKES AND A DELETED ROW WOULD NOT OTHERWISE SHOW UP: every other assertion
+    -- about this table is about ROWS THAT ARE THERE.
+    local tanks = { [0x2EA68690] = 'rhino', [0xAA6F980A] = 'khanjali',
+                    [0xB53C6C52] = 'minitank' }
+    local missing = {}
+    for h, n in pairs(tanks) do
+        local a, w = BR.Config.IsAllowedVehicle(h)
+        if a or w ~= V.TANK then missing[#missing + 1] = n end
+    end
+    ok(#missing == 0, 'all three tanks are refused as tanks',
+        table.concat(missing, ', '))
+
+    -- ARENA WAR. Three spot checks rather than thirty-six, chosen for the three
+    -- ways the block can be got wrong: a stem whose base name IS the contender,
+    -- a stem whose base name is a road car, and the last variant of a stem --
+    -- the one a list truncated at "2" would drop.
+    ok(select(1, BR.Config.IsAllowedVehicle(0x20314B42)) == false,
+        'zr380 is refused -- a stem whose base name is itself a contender')
+    ok(select(1, BR.Config.IsAllowedVehicle(0x669EB40A)) == false,
+        'monster3 is refused -- the arena variant of a road-car stem')
+    ok(select(1, BR.Config.IsAllowedVehicle(0xA7DCC35C)) == false,
+        'zr3803 is refused -- the Nightmare variant, which a short list drops')
+
+    -- AND THE OTHER HALF OF THE ARENA WAR DLC IS STILL ALLOWED. The owner's rule
+    -- is about weapons, not about which box a car came in; refusing an Itali GTO
+    -- would be this file inventing a rule. This is the assertion that fails if
+    -- somebody ever pastes "the Arena War vehicle list" in wholesale.
+    ok(BR.Config.IsAllowedVehicle(0xEC3E3404) == true,
+        'italigto -- an ordinary Arena War road car -- is allowed')
+    ok(BR.Config.IsAllowedVehicle(0xEEF345EC) == true,
+        'and so is the rcbandito')
+    ok(BR.Config.IsAllowedVehicle(0x83070B62) == true,
+        'and so is the plain impaler, whose stem the contenders share')
+
+    -- The plain insurgent's rule, restated for the five class-19 exemptions:
+    -- armoured is not armed.
+    ok(BR.Config.IsAllowedVehicle(0xCEEA3F4B) == true,
+        'a barracks is not in the refused table')
+
+    -- Every exemption row resolves, in both hash forms. The gate proves this
+    -- too; asserting it here means a broken exemption fails the suite as well.
+    local exBad, exRows = 0, 0
+    for _, v in ipairs(BR.Config.ClassNetExempt) do
+        exRows = exRows + 1
+        local signed = (v.hash & 0x80000000) ~= 0 and (v.hash - 0x100000000) or v.hash
+        if BR.Config.ClassNetExemptByHash[BR.NormHash(v.hash)] == nil
+           or BR.Config.ClassNetExemptByHash[BR.NormHash(signed)] == nil then
+            exBad = exBad + 1
+        end
+    end
+    ok(exRows > 0 and exBad == 0,
+        'every class-net exemption resolves from both hash forms',
+        ('%d of %d did not'):format(exBad, exRows))
+end
+
+-- --------------------------------------------- vehicles: the single asker ----
+
+describe('vehicles.refusalFor')
+do
+    local V = BR.Config.VehicleRefusal
+    local R = BR.Config.VehicleRefusalFor
+
+    local function sig(t, c, seen)
+        return {
+            typeOf  = t ~= false and function() if seen then seen.type = true end return t end or nil,
+            classOf = c ~= false and function() if seen then seen.class = true end return c end or nil,
+        }
+    end
+
+    -- THE MODEL TABLE IS FIRST AND ITS ANSWER IS THE ANSWER. A Rhino is a tank
+    -- and not merely "class 19 military", and that distinction is the whole
+    -- reason the table runs before the nets.
+    local why, signal = R(0x2EA68690, sig('automobile', 19))
+    ok(why == V.TANK and signal == 'model',
+        'the model table rules first, and says which half', tostring(signal))
+
+    -- AND IT IS ASKED WITH THE HASH THE ENGINE ACTUALLY REPORTS.
+    ok(select(1, R(0x2EA68690 - 0x100000000, sig(nil, nil))) == V.TANK,
+        'and it answers the same from a signed hash')
+
+    -- THE NETS ARE NOT PAID FOR WHEN THE TABLE HAS ALREADY REFUSED. This is the
+    -- reason the signals arrive as functions rather than values, and the only
+    -- way to see it is to watch whether they were called.
+    local seen = {}
+    R(0x2EA68690, sig('heli', 19, seen))
+    ok(not seen.type and not seen.class,
+        'a model the table names costs no native reads at all')
+
+    -- THE TYPE NET, for an aircraft nobody wrote down.
+    local w2, s2 = R(0x00000001, sig('heli', 0))
+    ok(w2 == V.FLIES and s2 == 'type', 'an unlisted heli is caught by its type')
+
+    -- ...and the class net only when the type net had nothing to say.
+    local seen2 = {}
+    R(0x00000001, sig('heli', 19, seen2))
+    ok(seen2.type and not seen2.class,
+        'the class read is skipped once the type has already refused')
+
+    -- THE CLASS NET, which is the only signal that reaches the WEAPONS half.
+    local w3, s3 = R(0x00000001, sig('automobile', 19))
+    ok(w3 == V.ARMED and s3 == 'class',
+        'unlisted military hardware is caught by its class')
+    ok(select(2, R(0x00000001, sig('automobile', 15))) == 'class',
+        'and class 15 is an aircraft even when the type says otherwise')
+
+    -- AN ORDINARY CAR, WHICH IS EVERY CAR IN EVERY MATCH.
+    local w4, s4 = R(0x00000001, sig('automobile', 4))
+    ok(w4 == nil and s4 == nil, 'an ordinary car is allowed by all three')
+
+    -- CLASS 0 IS COMPACTS AND `0` IS TRUTHY IN LUA. An implementation that wrote
+    -- `if c then` would agree with this test; one that wrote `if not c then
+    -- return end` would refuse nothing in a Compact and nobody would notice.
+    -- What is asserted is the pair: 0 is read, and 0 is allowed.
+    ok(R(0x00000001, sig('automobile', 0)) == nil, 'class 0 is Compacts, allowed')
+
+    -- THE EXEMPTIONS. A Barracks IS class 19 and the class net must not take it.
+    ok(R(0xCEEA3F4B, sig('automobile', 19)) == nil,
+        'a barracks is class 19 and is still allowed')
+    ok(R(0x780FFBD2 - 0x100000000, sig('automobile', 19)) == nil,
+        'and from the signed hash the engine reports')
+    -- ...and the exemption is checked BEFORE the class, so it costs no read.
+    local seen3 = {}
+    R(0xCEEA3F4B, sig('automobile', 19, seen3))
+    ok(not seen3.class, 'and it costs no class read to find that out')
+
+    -- THE EXEMPTION IS FOR THE CLASS NET ONLY. If somebody ever adds a refused
+    -- model to it hoping to un-ban it, the model table still wins.
+    ok(select(1, R(0x2EA68690, sig(nil, nil))) == V.TANK,
+        'an exemption could not un-ban a table row even if one were added')
+
+    -- NO SIGNALS AT ALL is the shape a caller that could not read the natives
+    -- passes, and it must be "no opinion" rather than "refused".
+    ok(R(0x00000001, nil) == nil, 'no signals means no opinion')
+    ok(R(0x00000001, {}) == nil, 'and neither does an empty signal table')
+    ok(R(nil, sig('heli', 19)) == V.FLIES,
+        'a model the engine could not report still gets the nets')
+
+    -- A PROVIDER THAT ANSWERED NOTHING. pcall'd natives return nil on a stale
+    -- handle, and a nil KEY is an error in Lua rather than a miss -- which is
+    -- the whole reason this is a guarded lookup and not a bare index.
+    ok(R(0x00000001, sig(nil, nil)) == nil, 'providers that answer nil refuse nothing')
+    ok(R(0x00000001, sig(false, nil)) == nil, 'nor a missing type provider')
+    -- '19' AND NOT 'nineteen', AND THAT IS THE WHOLE TEST. `math.tointeger('19')`
+    -- IS 19 in Lua 5.4 -- numeric strings coerce -- so a guard written as
+    -- `if c ~= nil` would believe a native that answered a string and would
+    -- refuse a vehicle on a value that was never a class. 'nineteen' passes
+    -- either way and proves nothing; mutation testing said so.
+    ok(R(0x00000001, sig(nil, '19')) == nil,
+        'nor a class that came back as the STRING "19"')
+    ok(R(0x00000001, sig(nil, 'nineteen')) == nil,
+        'nor one that came back as prose')
+end
+
+-- ---------------------------------------------------------------------------
+-- The strip payload, which had no coverage at all until 2026-08-22.
+-- ---------------------------------------------------------------------------
+--
+-- WHY THAT GAP MATTERED MORE THAN A MISSING TEST USUALLY DOES.
+-- `BR.IncidentBuild.fromStrip` and `.fromVehicle` return the SAME payload block
+-- verbatim apart from one line, and `fromVehicle` is the one that was written
+-- second, by copying. So `fromStrip` was the specification for a function that
+-- had tests, while itself having none -- and every property the vehicle cases
+-- below assert was, on this side, merely believed.
+--
+-- IT IS ALSO THE HALF THAT DECIDES WHAT AN ADMIN READS. The two summaries are
+-- deliberately different sentences (see the note above `stripSummaryOf`): a
+-- strip says a weapon appeared in a hand, a refused vehicle says a vehicle
+-- appeared in the match, and the day those two converge is the day a moderation
+-- record describes one finding as the other. The owner reported exactly that
+-- failure on the corroboration channel on 2026-08-22; these cases pin the door
+-- it did NOT come through, so that it stays shut.
+--
+-- MUTATION TESTED. Each was broken on purpose and this suite watched to fail by
+-- name; the counts are what was observed rather than what was expected:
+--
+--   `fromStrip` reuses `summaryOf`                     2 cases
+--   `fromStrip` reuses `vehicleSummaryOf`              2 cases
+--   `fromStrip` drops the license guard                2 cases
+--   `stripSummaryOf` loses its singular/plural rule    1 case
+--   `fromStrip` grows a reporter                       1 case
+--   the strip severity becomes a hardcoded 'high'      1 case
+--   the vehicle severity becomes a hardcoded 'high'    1 case
+--   `fromStrip` reads the OLDEST evidence record       2 cases
+--
+-- TWO OF THOSE SURVIVED THE FIRST PASS AND BOTH ARE WORTH KNOWING. Hardcoding
+-- 'high' failed NOTHING, because `out.severity == BR.ShotTier[NO_WEAPON]`
+-- compares a value against the lookup that produced it -- the pre-existing
+-- vehicle case had the identical blind spot. Re-grading the table and watching
+-- the payload move is what closes it, and both blocks now do that. Reading
+-- `evidence[1]` instead of the newest record also failed nothing, because the
+-- case handed the builder ONE record; it now hands it two with different squads.
+
+describe('incident.strip')
+do
+    local LIC = 'license:hand'
+    local CLEAR = {}
+    local function ev(over)
+        local e = {
+            src = 4, name = 'Palmer', license = LIC, matchId = 9,
+            count = 2, seq = 1, at = 55000,
+        }
+        for k, v in pairs(over or {}) do
+            e[k] = (v ~= CLEAR) and v or nil
+        end
+        return e
+    end
+
+    ok(select(1, BR.IncidentBuild.fromStrip(nil, {})) == nil,
+        'no event files nothing rather than throwing')
+
+    local p, why = BR.IncidentBuild.fromStrip(ev({ license = CLEAR }), {})
+    ok(p == nil and why == 'no license',
+        'a strip with no license files nothing, and says why')
+    ok(select(1, BR.IncidentBuild.fromStrip(ev({ license = '' }), {})) == nil,
+        'an empty license is treated as no license')
+
+    local out = BR.IncidentBuild.fromStrip(ev(), {})
+    ok(out ~= nil, 'a licensed event files')
+    ok(out.kind == 'anticheat' and out.category == 'system',
+        'it reuses the anticheat shape rather than inventing a third')
+    ok(out.state == 'pending_review', 'and lands in the review queue')
+    ok(out.subjectLicense == LIC and out.subjectName == 'Palmer',
+        'the subject is the player whose hand it was in')
+    ok(out.matchId == 9 and out.atGameMs == 55000,
+        'the match and the GAME clock ride along -- br_ringmaster realises the clock')
+    ok(out.openedAt == nil,
+        'and openedAt is NOT set here: br_core has no clock worth putting in a record')
+
+    -- SEVERITY IS READ, NOT SPELLED, exactly as the vehicle cases below assert.
+    ok(out.severity == BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+        'severity comes from the taxonomy, not from a literal here')
+
+    -- ...AND THAT ASSERTION ALONE PROVES NOTHING, WHICH IS WORTH KNOWING.
+    -- `BR.ShotTier[NO_WEAPON]` is 'high' today, so the line above passes
+    -- identically against a hardcoded 'high' -- verified by making that
+    -- substitution and watching the whole suite stay green. Comparing a value
+    -- against the lookup that produced it cannot tell a lookup from a copy of
+    -- its answer.
+    --
+    -- SO THE TAXONOMY IS RE-GRADED AND THE PAYLOAD HAS TO FOLLOW. The tier is
+    -- read at CALL time, not captured at load, which is the property the claim
+    -- actually rests on: re-grade NO_WEAPON and every producer moves with it
+    -- instead of one of them disagreeing. Restored immediately -- this table is
+    -- global to the suite and every case after this one reads it.
+    local realTier = BR.ShotTier[BR.ShotRefusal.NO_WEAPON]
+    BR.ShotTier[BR.ShotRefusal.NO_WEAPON] = 'low'
+    local regraded = BR.IncidentBuild.fromStrip(ev(), {})
+    BR.ShotTier[BR.ShotRefusal.NO_WEAPON] = realTier
+    ok(regraded and regraded.severity == 'low',
+        're-grading the taxonomy re-grades the case, so it is genuinely read',
+        regraded and tostring(regraded.severity))
+    ok(BR.ShotTier[BR.ShotRefusal.NO_WEAPON] == realTier,
+        'and the table is put back for every case after this one')
+
+    -- NO REPORTER AT ALL -- absent rather than null, which is how the console
+    -- reads "the system filed this". A sentinel here would make an anticheat
+    -- filing look like a player report from nobody.
+    ok(out.reporterLicense == nil and out.reporterName == nil,
+        'no reporter key is set, so the console reads it as system-filed')
+
+    -- NO REFUSAL BLOCK. That field carries `count` and `windowMs` from the shot
+    -- validator and the console renders it as refused shots; a strip has neither
+    -- number, and inventing them would dress up the finding.
+    ok(out.refusal == nil, 'no refusal block is invented for a case with no shots')
+
+    -- ═══ THE SENTENCE, WHICH IS THE WHOLE POINT OF NOT REUSING summaryOf ═══
+    ok(BR.IncidentBuild.stripSummaryOf(1)
+        == '1 unissued weapon taken out of the hand this match',
+        'the summary is singular at one')
+    ok(BR.IncidentBuild.stripSummaryOf(2)
+        == '2 unissued weapons taken out of the hand this match',
+        'and plural above it')
+    ok(out.summary == BR.IncidentBuild.stripSummaryOf(2),
+        'the payload carries that summary rather than a second spelling of it')
+    -- NO SHOT WAS FIRED. `summaryOf` says "%d shots refused"; putting a number
+    -- of shots on a case that has none is the small lie this sentence exists to
+    -- avoid, and it is asserted as an absence so a re-wording cannot reintroduce
+    -- it.
+    ok(not out.summary:find('shot'),
+        'and it never claims a shot was refused', out.summary)
+    -- ...AND IT IS NOT THE VEHICLE ONE EITHER. The two functions are one copy
+    -- apart; this is the assertion that fails if they are ever collapsed.
+    ok(out.summary ~= BR.IncidentBuild.vehicleSummaryOf(2, nil)
+        and not out.summary:find('vehicle'),
+        'nor the refused-vehicle sentence', out.summary)
+
+    -- Rubbish in the count must not reach a moderation record as "nil".
+    ok(BR.IncidentBuild.stripSummaryOf(nil):find('^0 unissued weapons'),
+        'a missing count reads as zero rather than as nil')
+
+    -- ═══ THE SUBJECT ROW IS BUILT FROM THE NEWEST EVIDENCE RECORD ═══
+    --
+    -- It is what carries the squad the console needs to answer "were these two
+    -- on a team", and squads change during a match. TWO RECORDS RATHER THAN ONE,
+    -- with different squads, because a single record makes `evidence[#evidence]`
+    -- and `evidence[1]` the same value -- verified by making that substitution
+    -- and watching a one-record case stay green.
+    local older = {
+        key = 4, license = LIC, name = 'Palmer', matchId = 9, squadId = 2,
+        openedAt = 10000, leftAt = nil, chat = {}, kills = {},
+    }
+    local newer = {
+        key = 4, license = LIC, name = 'Palmer', matchId = 9, squadId = 5,
+        openedAt = 30000, leftAt = 40000, chat = {}, kills = {},
+    }
+    local withEv = BR.IncidentBuild.fromStrip(ev(), { older, newer })
+    ok(withEv.subjects and #withEv.subjects == 1, 'there is one subject')
+    ok(withEv.subjects[1].squadId == 5,
+        'the squad comes from the NEWEST record, not the first one in the list',
+        withEv.subjects[1] and tostring(withEv.subjects[1].squadId))
+    ok(withEv.subjects[1].left == true,
+        'and so does whether they had already gone',
+        withEv.subjects[1] and tostring(withEv.subjects[1].left))
+    ok(#withEv.evidence == 2, 'both evidence records are attached', #withEv.evidence)
+    ok(withEv.evidence[1].key == nil and withEv.evidence[2].key == nil,
+        'and the server id is on neither of them')
+
+    -- NO EVIDENCE IS NOT AN ERROR. A strip during warmup can precede anything
+    -- the buffer holds, and the case must still open.
+    ok(out.subjects and out.subjects[1] and out.subjects[1].squadId == nil,
+        'with no records the squad is absent rather than invented')
+    ok(out.subjects[1].left == false, 'and "already gone" is false rather than nil')
+end
+
+describe('incident.vehicle')
+do
+    local LIC = 'license:veh'
+    local V = BR.Config.VehicleRefusal
+    local CLEAR = {}
+    local function ev(over)
+        local e = {
+            src = 5, name = 'Driver', license = LIC, matchId = 3,
+            count = 2, seq = 1, why = V.FLIES, at = 60000,
+        }
+        for k, v in pairs(over or {}) do
+            e[k] = (v ~= CLEAR) and v or nil
+        end
+        return e
+    end
+
+    ok(select(1, BR.IncidentBuild.fromVehicle(nil, {})) == nil,
+        'no event files nothing rather than throwing')
+
+    local p, why = BR.IncidentBuild.fromVehicle(ev({ license = CLEAR }), {})
+    ok(p == nil and why == 'no license',
+        'a refused vehicle with no license files nothing, and says why')
+    ok(select(1, BR.IncidentBuild.fromVehicle(ev({ license = '' }), {})) == nil,
+        'an empty license is treated as no license')
+
+    local ok1 = BR.IncidentBuild.fromVehicle(ev(), {})
+    ok(ok1 ~= nil, 'a licensed event files')
+    ok(ok1.kind == 'anticheat' and ok1.category == 'system',
+        'it reuses the anticheat shape rather than inventing a third')
+    ok(ok1.state == 'pending_review', 'and lands in the review queue')
+    ok(ok1.subjectLicense == LIC and ok1.subjectName == 'Driver',
+        'the subject is the owning player')
+    ok(ok1.matchId == 3 and ok1.atGameMs == 60000, 'the match and clock ride along')
+
+    -- SEVERITY IS READ, NOT SPELLED. Comparing against the taxonomy rather than
+    -- against 'high' is the whole point: if somebody re-grades NO_WEAPON, this
+    -- follows instead of disagreeing.
+    ok(ok1.severity == BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+        'severity comes from the taxonomy, not from a literal here')
+
+    -- ...PROVED THE ONLY WAY IT CAN BE. See the identical note in
+    -- `incident.strip` above: the line above survives a hardcoded 'high'
+    -- verbatim, because it compares a value against the lookup that produced
+    -- it. Re-grading the table and watching the payload move is what makes the
+    -- claim testable at all.
+    local realTier = BR.ShotTier[BR.ShotRefusal.NO_WEAPON]
+    BR.ShotTier[BR.ShotRefusal.NO_WEAPON] = 'low'
+    local regraded = BR.IncidentBuild.fromVehicle(ev(), {})
+    BR.ShotTier[BR.ShotRefusal.NO_WEAPON] = realTier
+    ok(regraded and regraded.severity == 'low',
+        're-grading the taxonomy re-grades the case, so it is genuinely read',
+        regraded and tostring(regraded.severity))
+    ok(BR.ShotTier[BR.ShotRefusal.NO_WEAPON] == realTier,
+        'and the table is put back for every case after this one')
+
+    -- NO REPORTER AT ALL -- absent rather than null, which is how the console
+    -- reads "the system filed this".
+    ok(ok1.reporterLicense == nil and ok1.reporterName == nil,
+        'no reporter key is set, so the console reads it as system-filed')
+    -- NO REFUSAL BLOCK: that field carries shot counts and this case has none.
+    ok(ok1.refusal == nil, 'no refusal block is invented for a case with no shots')
+
+    -- The one line an admin reads. Singular and plural both, because the bar is
+    -- two and the corroborations climb from there -- a summary reading
+    -- "1 refused vehicles" is exactly the small lie the strip path avoided.
+    ok(BR.IncidentBuild.vehicleSummaryOf(1, V.FLIES)
+        == '1 refused vehicle this match -- vehicle flies',
+        'the summary is singular at one')
+    ok(BR.IncidentBuild.vehicleSummaryOf(3, V.ARMED)
+        == '3 refused vehicles this match -- vehicle has built-in weapons',
+        'and plural above it, carrying the rule\'s own words')
+    ok(ok1.summary == BR.IncidentBuild.vehicleSummaryOf(2, V.FLIES),
+        'the payload carries that summary rather than a second spelling of it')
+
+    -- Rubbish in the count must not reach a moderation record as "nil".
+    ok(BR.IncidentBuild.vehicleSummaryOf(nil, V.FLIES):find('^0 refused vehicles'),
+        'a missing count reads as zero rather than as nil')
+end
+
+-- ---------------------------------------------------------------------------
+-- The detector itself, not just the functions under it.
+-- ---------------------------------------------------------------------------
+--
+-- THIS REPO HAS TWICE HAD A MUTATION PASS BECAUSE EVERY PURE FUNCTION STAYED
+-- CORRECT WHILE THE CALLER WIRED THEM WRONGLY. `IsAllowedVehicle` being right is
+-- worth nothing if the handler tests it against the wrong entity, forgets the
+-- population guard, or files on the first offence. So the real
+-- br_core/server/vehicles.lua is loaded here and driven through the same event
+-- FiveM raises.
+
+--- @return table  a loaded server/vehicles.lua and the levers to drive it
+local function newVehicleServer()
+    local env = newSandbox()
+    -- THE CLOCK DOES NOT START AT ZERO, AND THAT IS NOT ARBITRARY. The throttle
+    -- uses `rec.at ~= 0` as its "never counted yet" sentinel -- server/strip.lua's
+    -- idiom, kept deliberately identical -- so a test clock at 0 makes the first
+    -- counted offence indistinguishable from no offence and the window never
+    -- opens. GetGameTimer() is milliseconds since the process started and is
+    -- never 0 by the time a player is in a match, so starting here is what the
+    -- real server looks like rather than a workaround.
+    local S = { now = 50000, roster = {}, filed = {}, cancels = 0, ents = {} }
+
+    env.GetGameTimer = function() return S.now end
+    env.print        = function() end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand  = function() end
+    -- COUNTED RATHER THAN STUBBED AWAY. The owner said "don't stop them", so a
+    -- cancel appearing in this file is a behaviour change and the suite should
+    -- say so rather than silently tolerate it.
+    env.CancelEvent = function() S.cancels = S.cancels + 1 end
+    env.Citizen = { CreateThread = function() end, Wait = function() end }
+
+    local handlers = {}
+    env.AddEventHandler = function(n, fn)
+        handlers[n] = handlers[n] or {}
+        handlers[n][#handlers[n] + 1] = fn
+    end
+    env.TriggerEvent = function(n, ...)
+        if n == 'br:core:vehicle' then
+            local a = { ... }
+            S.filed[#S.filed + 1] = a[1]
+        end
+        for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+    end
+
+    -- The entity, as the engine would answer for it.
+    local function e(h) return S.ents[h] or {} end
+    env.DoesEntityExist         = function(h) return e(h).exists end
+    env.GetEntityType           = function(h) return e(h).etype or 0 end
+    env.GetEntityModel          = function(h) return e(h).model or 0 end
+    env.GetEntityPopulationType = function(h) return e(h).pop end
+    env.GetVehicleType          = function(h)
+        local v = e(h)
+        if v.throws then error('Tried to access invalid entity') end
+        return v.vtype
+    end
+    env.NetworkGetEntityOwner   = function(h) return e(h).owner end
+
+    -- ═══ THE TWO SEAT NATIVES, AND THE FIRST ONE LIES ON PURPOSE ═══
+    --
+    -- citizenfx/fivem#4006, still OPEN: server-side GetVehiclePedIsIn answers the
+    -- vehicle a ped was LAST in when it is in none. Modelling that faithfully is
+    -- the whole value of this stub -- a version that answered 0 for a ped on foot
+    -- would make the bug untestable and would pass a `ridingIn` written as a bare
+    -- read of it. `S.lastVeh` is the stale answer; `S.seats` is the truth.
+    S.lastVeh, S.seats = {}, {}
+    env.GetVehiclePedIsIn   = function(ped) return S.lastVeh[ped] or 0 end
+    env.GetPedInVehicleSeat = function(veh, seat)
+        return (S.seats[veh] or {})[seat] or 0
+    end
+
+    loadInto(env, SANDBOX_LIB)
+    env.BR.Roster = {
+        get      = function(s) return S.roster[s] end,
+        licenseOf = function(s)
+            local r = S.roster[s]
+            return r and r.license or nil
+        end,
+        -- THE ROADKILL LEDGER'S TWO VERBS, and they are here because that half of
+        -- the file registers a scheduler job at LOAD time -- so without them this
+        -- sandbox cannot load the detector either. The ledger itself is driven in
+        -- tools/test_roster.lua against the real roster, real positions and real
+        -- combat; what it needs here is only to not explode.
+        each = function(pred, fn)
+            for s, e in pairs(S.roster) do
+                if not pred or pred(e) then fn(s, e) end
+            end
+        end,
+        sampleIntervalMs = function() return 250 end,
+    }
+    loadInto(env, { 'br_core/server/vehicles.lua' })
+
+    --- Raise `entityCreating` exactly as the platform raises it.
+    function S.create(handle, spec)
+        S.ents[handle] = spec
+        for _, fn in ipairs(handlers['entityCreating'] or {}) do fn(handle) end
+    end
+    function S.drop(src)
+        env.source = src
+        for _, fn in ipairs(handlers['playerDropped'] or {}) do fn() end
+    end
+    S.env = env
+    S.stats = function() return env.BR.Vehicles.stats() end
+    return S
+end
+
+describe('vehicles.detector')
+do
+    local RHINO = 0x2EA68690
+    local ADDER = 0xB779A091           -- an ordinary supercar; in no refused row
+    local MISSION, AMBIENT = 7, 5
+
+    local function alive(S, src)
+        S.roster[src] = { src = src, name = 'P' .. src, matchId = 1,
+                          state = S.env.BR.PlayerState.ALIVE,
+                          license = 'license:p' .. src }
+    end
+
+    local function scripted(model, owner, vtype)
+        return { exists = true, etype = 2, model = model, pop = MISSION,
+                 owner = owner, vtype = vtype or 'automobile' }
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- BR.Vehicles.ridingIn -- IS THIS PED IN A VEHICLE, REALLY
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Two features rule on this answer: the purchased car may only be unpacked on
+    -- foot (server/inventory.lua) and an ambulance loses its blip while somebody
+    -- is in it (server/ambulances.lua). Both WITHHOLD something when the answer is
+    -- yes, so a false yes is silent -- no error, no log, nothing on screen -- and
+    -- that is exactly what a bare GetVehiclePedIsIn produces on every build,
+    -- forever, for anybody who has ever driven.
+    --
+    -- THE STUB MODELS THE BUG (see `S.lastVeh` above). These cases are therefore
+    -- about the WORKAROUND rather than about Lua: a `ridingIn` written as the
+    -- obvious one-liner passes none of them.
+    do
+        local S = newVehicleServer()
+        local V = S.env.BR.Vehicles
+
+        -- ON FOOT, WITH A CAR IN HIS PAST. #4006 exactly: the ped left vehicle 50
+        -- ten minutes ago and the native still names it. Seat 50 holds nobody.
+        S.lastVeh[900] = 50
+        S.seats[50] = {}
+        ok(V.ridingIn(900) == nil,
+            'a ped who LEFT a vehicle reads as on foot -- citizenfx/fivem#4006 '
+                .. 'makes the first native name it forever, and the seat read is '
+                .. 'what refutes that',
+            tostring(V.ridingIn(900)))
+
+        -- DRIVING. Seat -1 is the driving seat.
+        S.seats[50] = { [-1] = 900 }
+        ok(V.ridingIn(900) == 50, 'a DRIVER is in their vehicle',
+            tostring(V.ridingIn(900)))
+
+        -- RIDING. A passenger answers no to the driving seat and yes to the
+        -- cabin, and "in that ambulance" plainly includes the back seat -- a squad
+        -- driving to fetch a mate is mostly passengers.
+        S.seats[50] = { [3] = 900 }
+        ok(V.ridingIn(900) == 50, 'and so is a PASSENGER, in any cabin seat',
+            tostring(V.ridingIn(900)))
+
+        -- NEVER IN ANYTHING AT ALL.
+        ok(V.ridingIn(901) == nil, 'a ped with no vehicle in its past is on foot')
+
+        -- ZERO IS NOT A PED, AND IN LUA IT IS TRUTHY. An empty seat answers 0 and
+        -- so does an absent native; a ped handle of 0 must not match either.
+        S.lastVeh[0] = 50
+        S.seats[50] = {}
+        ok(V.ridingIn(0) == nil, 'ped handle 0 is nobody, not somebody in seat 0')
+        ok(V.ridingIn(nil) == nil, 'and nil is not an error')
+
+        -- AN EMPTY VEHICLE DOES NOT SWALLOW A PED. Every seat answers 0, and the
+        -- ped under test is non-zero, so there is no reading on which they match.
+        S.lastVeh[902] = 51
+        S.seats[51] = {}
+        ok(V.ridingIn(902) == nil,
+            'and an empty vehicle holds nobody, however recently they were in it')
+    end
+
+    -- An ordinary car costs nothing and files nothing. This is every vehicle in
+    -- every match under Option A, so it is the path that must stay silent.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(ADDER, 1))
+        S.create(11, scripted(ADDER, 1))
+        ok(#S.filed == 0, 'an allowed model never files')
+        ok(S.stats().allowed == 2, 'and is counted as allowed')
+    end
+
+    -- THE BAR IS TWO, AND THE FIRST IS SILENT. Same cadence as strip.lua, for a
+    -- reason specific to this detector: one refused vehicle rests on one
+    -- ownership read, and ownership migrates by proximity.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'the first refused vehicle is recorded and announced to nobody')
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 1, 'the second opens the case')
+
+        local f = S.filed[1]
+        ok(f.count == 2 and f.seq == 1, 'carrying the offence count and the first seq')
+        ok(f.license == 'license:p1' and f.matchId == 1, 'and the subject and match')
+        ok(f.why == BR.Config.VehicleRefusal.TANK, 'and which half of the rule it tripped')
+        ok(f.model == RHINO, 'and the model, normalised, for the server log')
+
+        -- EVERY ONE AFTER IT ANNOUNCES, climbing by one, so a gap means a lost
+        -- message rather than quiet offences.
+        S.now = S.now + 1000
+        S.create(12, scripted(RHINO, 1))
+        ok(#S.filed == 2 and S.filed[2].count == 3 and S.filed[2].seq == 2,
+            'and every one after it corroborates, climbing by one')
+
+        ok(S.cancels == 0,
+            'nothing is ever cancelled -- the owner said do not stop them')
+    end
+
+    -- THE THROTTLE IS THE ONLY REAL BOUND ON A PATH THE ATTACKER CHOOSES THE
+    -- VOLUME OF. Two inside the window is one counted offence.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1))
+        S.now = S.now + 100
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'a second inside the throttle window does not reach the bar')
+        ok(S.stats().throttled == 1, 'and is counted as throttled')
+        S.now = S.now + 900
+        S.create(12, scripted(RHINO, 1))
+        ok(#S.filed == 1, 'the next one outside the window does')
+    end
+
+    -- THE GUARD THAT MATTERS MOST UNDER OPTION A. The map is full of vehicles
+    -- the engine placed; blaming a player for one would be the worst false
+    -- positive available here.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        for h = 10, 14 do
+            S.now = S.now + 1000
+            S.create(h, { exists = true, etype = 2, model = RHINO,
+                          pop = AMBIENT, owner = 1, vtype = 'automobile' })
+        end
+        ok(#S.filed == 0, 'a refused model the ENGINE placed files nothing')
+        ok(S.stats().ambient == 5, 'but is counted, because it is also the bypass signal')
+        ok(S.stats().models[RHINO] == 5, 'and the model is listed for a human to read')
+    end
+
+    -- THE SECOND SIGNAL: an aircraft config/vehicles.lua does not name is still
+    -- caught, because the engine knows it is a plane. This is what stops the
+    -- deny-list rotting into uniform permission.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(0x1234ABCD, 1, 'plane'))
+        S.now = S.now + 1000
+        S.create(11, scripted(0x1234ABCD, 1, 'heli'))
+        ok(#S.filed == 1, 'an unnamed aircraft is refused on its class alone')
+        ok(S.filed[1].why == BR.Config.VehicleRefusal.FLIES, 'as flight, not as weapons')
+        ok(S.stats().byType == 2, 'and is counted as a gap in the model table')
+    end
+
+    -- A NAMED MODEL KEEPS THE TABLE'S REASON. The class cannot tell "armed" from
+    -- "flies", so the table must win where it has an opinion.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1, 'plane'))
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1, 'plane'))
+        ok(S.filed[1].why == BR.Config.VehicleRefusal.TANK,
+            'a named model keeps its authored reason even when the class disagrees')
+    end
+
+    -- The native throws on a stale handle rather than answering. An uncaught
+    -- throw here would take the model check down with it.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, { exists = true, etype = 2, model = ADDER, pop = MISSION,
+                       owner = 1, throws = true })
+        ok(S.stats().allowed == 1,
+            'a throwing GetVehicleType is caught, and the model check still ran')
+    end
+
+    -- Things that are not this file's business.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, { exists = false, etype = 2, model = RHINO, pop = MISSION, owner = 1 })
+        ok(S.stats().vehicles == 0, 'an entity that does not exist is not examined')
+        S.create(11, { exists = true, etype = 1, model = RHINO, pop = MISSION, owner = 1 })
+        ok(S.stats().vehicles == 0, 'and neither is a ped')
+    end
+
+    -- ═══ THE NUMERIC BOOL, WHICH IS THIS CODEBASE'S MOST EXPENSIVE RECURRING
+    --     BUG AND HAS SHIPPED FIVE TIMES ═══
+    --
+    -- A FiveM native declared BOOL hands Lua a NUMBER on some builds. In Lua
+    -- `0` is TRUTHY, so `if DoesEntityExist(e) then` is TRUE for an entity that
+    -- does not exist. Testing only with `true`/`false` cannot see this: a
+    -- mutation replacing didHit with plain truthiness stayed green until these
+    -- two cases existed.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, { exists = 0, etype = 2, model = RHINO, pop = MISSION, owner = 1 })
+        ok(S.stats().vehicles == 0,
+            'DoesEntityExist answering the NUMBER 0 is still "no"')
+        S.now = S.now + 1000
+        S.create(11, { exists = 1, etype = 2, model = RHINO, pop = MISSION, owner = 1 })
+        ok(S.stats().vehicles == 1,
+            'and answering the NUMBER 1 is still "yes"')
+    end
+
+    -- A COUNT BELONGS TO A MATCH, NOT TO A CONNECTION. The same player carried
+    -- into the next round starts clean -- otherwise one offence last match plus
+    -- one this match opens a case about a round in which they did it once.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1))
+        S.roster[1].matchId = 2
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'a count does not carry across a match boundary')
+        S.now = S.now + 1000
+        S.create(12, scripted(RHINO, 1))
+        ok(#S.filed == 1 and S.filed[1].matchId == 2,
+            'the new match opens its own case at its own second offence')
+    end
+
+    -- SOURCE 0 IS THE SERVER CONSOLE AND `0` IS TRUTHY. A bare `if owner then`
+    -- would accept it and go looking for a roster entry that cannot exist.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, { exists = true, etype = 2, model = RHINO, pop = MISSION, owner = 0 })
+        S.create(11, { exists = true, etype = 2, model = RHINO, pop = MISSION, owner = -1 })
+        ok(S.stats().unowned == 2, 'owner 0 and owner -1 are both "nobody"')
+        ok(#S.filed == 0, 'and neither files')
+    end
+
+    -- Outside a match there is no timeline to put this on.
+    do
+        local S = newVehicleServer()
+        S.roster[1] = { src = 1, name = 'P1', matchId = nil,
+                        state = S.env.BR.PlayerState.LOBBY, license = 'license:p1' }
+        S.create(10, scripted(RHINO, 1))
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'a player in the lobby draws no case')
+    end
+
+    -- SERVER IDS ARE RECYCLED WITHIN THE MINUTE. A count left behind is
+    -- inherited by whoever lands in that slot next.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1))
+        S.drop(1)
+        alive(S, 1)
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'a disconnect clears the count rather than passing it on')
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Mad drivers: WHERE the pass measures "near the player" from.
+--
+-- "The NPC drivers are all too calm now, did something change?" -- the owner,
+-- 2026-08-22, one day after spectating went live.
+--
+-- Something had. client/gamerules.lua maddens ambient drivers within
+-- erraticRange of a point, and that point was PlayerPedId()'s coordinates. A
+-- spectator's ped is a corpse where they fell -- client/spectate.lua never
+-- moves it, deliberately, because an ADMIN spectator may be alive and
+-- mid-match -- while SET_FOCUS_ENTITY drags the streaming volume onto the
+-- target, so the traffic that populates and renders is the traffic around the
+-- TARGET. Every vehicle in the shot sat hundreds of metres outside the range
+-- test, none of them was ever re-tasked, and every driver the spectator could
+-- see was a calm commuter.
+--
+-- Both directions are pinned below, because only fixing one of them is how
+-- this comes back: a living player's anchor must STILL be their own ped.
+-- ---------------------------------------------------------------------------
+
+describe('mad drivers / anchor')
+do
+    local V = {}
+    V.__index = V
+    V.__sub = function(a, b)
+        return setmetatable({ x = a.x - b.x, y = a.y - b.y, z = a.z - b.z }, V)
+    end
+    V.__len = function(a) return math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) end
+    local function vec(x, y, z) return setmetatable({ x = x, y = y, z = z }, V) end
+
+    local PED = 1
+
+    --- One client with a vehicle pool, the real gamerules.lua on the real loop.
+    --- @param pos table  [handle] = {x,y,z} for the ped and every vehicle
+    local function newDriverClient(pos)
+        local env = newSandbox()
+        local C = { now = 1000, tasked = {}, pos = pos }
+
+        env.GetGameTimer = function() return C.now end
+        env.print = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey = function(s) return #tostring(s) end
+        env.PlayerId = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+        env.AddEventHandler = function() end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand = function() end
+        env.TriggerServerEvent = function() end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+
+        loadInto(env, SANDBOX_LIB)
+
+        env.PlayerPedId     = function() return PED end
+        env.DoesEntityExist = function(e) return C.pos[e] ~= nil end
+        env.GetEntityCoords = function(e)
+            local p = C.pos[e] or { x = 0.0, y = 0.0, z = 0.0 }
+            return vec(p.x, p.y, p.z)
+        end
+
+        -- THE POOL IS EVERY VEHICLE, wherever it is. That is the real
+        -- GetGamePool contract and it is what makes the range test the only
+        -- thing deciding who gets treated -- which is the whole subject here.
+        env.GetGamePool = function(kind)
+            if kind ~= 'CVehicle' then return {} end
+            local out = {}
+            for h in pairs(C.pos) do
+                if h ~= PED then out[#out + 1] = h end
+            end
+            table.sort(out)
+            return out
+        end
+
+        -- Every vehicle has a driver, and none of them is a player. Returning a
+        -- real Lua `false` is this build's contract; /brdrivers prints the raw
+        -- value precisely because another build may not honour it.
+        env.GetPedInVehicleSeat = function(veh) return veh + 100 end
+        env.IsPedAPlayer = function() return false end
+
+        env.SetDriverAbility        = function() end
+        env.SetDriverAggressiveness = function() end
+        env.SetPedKeepTask          = function() end
+        env.SetDriveTaskMaxCruiseSpeed = function() end
+        env.SetDriveTaskDrivingStyle   = function() end
+        env.SetDriverRacingModifier    = function() end
+        env.TaskVehicleDriveWander = function(_, veh)
+            C.tasked[veh] = (C.tasked[veh] or 0) + 1
+        end
+
+        loadInto(env, { 'br_core/client/main.lua' })
+        env.BR.Native = env.BR.Native or {}
+        env.BR.Native.applyGameRules = function() end
+        env.BR.State.me.state = env.BR.PlayerState.ALIVE
+
+        loadInto(env, { 'br_core/client/gamerules.lua' })
+
+        C.env = env
+        --- Run one SLOW pass, the band madDrivers is registered into.
+        function C.pass()
+            env.BR.Loop.step(env.BR.Loop.SLOW)
+            return env.BR.Gamerules.driverStats()
+        end
+        return C
+    end
+
+    -- A vehicle beside the ped, and one most of a kilometre away. erraticRange
+    -- is 250m, so exactly one of them is in range of whichever anchor wins.
+    local function layout()
+        return {
+            [PED] = { x = 0.0,   y = 0.0, z = 0.0 },   -- the ped / the corpse
+            [10]  = { x = 10.0,  y = 0.0, z = 0.0 },   -- next to the ped
+            [20]  = { x = 900.0, y = 0.0, z = 0.0 },   -- next to the target
+        }
+    end
+
+    -- ALIVE: unchanged, and that is half the point of the fix.
+    do
+        local C = newDriverClient(layout())
+        local S = C.pass()
+
+        ok(S.ran, 'an alive player runs the pass')
+        ok(S.anchorFrom == 'ped',
+           'with no spectate session the anchor is the local ped, as it always was')
+        ok(S.anchorOffPed < 0.001,
+           'and it is the ped exactly, not near it', S.anchorOffPed)
+        ok(C.tasked[10] == 1, 'the vehicle beside the player is re-tasked')
+        ok(C.tasked[20] == nil, 'the vehicle 900m away is left alone')
+        ok(S.treated == 1, 'one driver treated', S.treated)
+    end
+
+    -- SPECTATING: the anchor follows the shot, which is the regression.
+    do
+        local C = newDriverClient(layout())
+        -- The session client/spectate.lua would be running: the ped has not
+        -- moved and must not, and the camera is on somebody 900m away.
+        C.env.BR.Spectate = {
+            active = function() return true end,
+            watchPoint = function() return vec(900.0, 0.0, 0.0) end,
+        }
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
+
+        local S = C.pass()
+
+        ok(S.anchorFrom == 'spectate',
+           'a running session moves the anchor onto the point being watched')
+        ok(S.anchorOffPed > 800.0,
+           'which is nowhere near the spectator own ped', S.anchorOffPed)
+        ok(C.tasked[20] == 1,
+           'THE REGRESSION: the driver on screen is re-tasked. Before the fix '
+           .. 'this was nil -- nothing visible was ever in range')
+        ok(C.tasked[10] == nil,
+           'and the traffic around the corpse nobody is looking at is left alone')
+        ok(S.treated == 1, 'still exactly one driver treated', S.treated)
+    end
+
+    -- A session with no eased point yet (the first frames, before the feed
+    -- lands) must fall back rather than throw or anchor on nothing.
+    do
+        local C = newDriverClient(layout())
+        C.env.BR.Spectate = {
+            active = function() return true end,
+            watchPoint = function() return nil end,
+        }
+        local S = C.pass()
+        ok(S.anchorFrom == 'ped',
+           'a session with no point yet falls back to the ped rather than throwing')
+        ok(C.tasked[10] == 1, 'and still treats what is near the ped')
+    end
+
+    -- ═══ THE BUILD THAT ANSWERS 1 AND 0, WHICH NOTHING HERE USED TO COVER ═══
+    --
+    -- Every other case in this block stubs IsPedAPlayer to a real Lua `false`,
+    -- which is this build's contract -- and that is precisely why neither the
+    -- bare `not` nor the normaliser could be told apart by any assertion above.
+    -- Both mutants survived. On a build that answers `0` for "not a player",
+    -- `not 0` is FALSE and the pass treats NOBODY: it finds the cars, walks
+    -- them, refuses every one, and every commuter stays calm forever, looking
+    -- exactly like the feature being switched off.
+    --
+    -- This is the fifth time this repo has met that trap, so it gets a test
+    -- rather than a comment.
+    do
+        local C = newDriverClient(layout())
+        C.env.IsPedAPlayer = function(ped) return ped == 999 and 1 or 0 end
+        local S = C.pass()
+        ok(S.treated == 1,
+           'a build answering 1/0 still treats the driver in range',
+           S.treated)
+        ok(C.tasked[10] == 1,
+           'and the car beside the player is actually re-tasked on it',
+           tostring(C.tasked[10]))
+    end
+
+    -- AND THE PLAYER IS STILL EXCLUDED ON THAT BUILD, which is the half a
+    -- careless normaliser breaks: `yes(1)` must read as "this IS a player" and
+    -- skip them, or the pass starts re-tasking human drivers.
+    do
+        local C = newDriverClient(layout())
+        C.env.IsPedAPlayer = function() return 1 end
+        local S = C.pass()
+        ok(S.treated == 0,
+           'and a driver the engine calls a player with 1 is left alone',
+           S.treated)
+    end
+
+    -- The two gates, which /brdrivers exists to tell apart from "nothing in range".
+    do
+        local C = newDriverClient(layout())
+        C.env.BR.Config.Ambient.erratic = false
+        local S = C.pass()
+        ok(not S.ran and S.why:find('erratic'),
+           'erratic off is reported as erratic off, not as an empty pass')
+        ok(C.tasked[10] == nil, 'and nothing is touched')
+    end
+
+    do
+        local C = newDriverClient(layout())
+        C.env.BR.State.me.state = C.env.BR.PlayerState.WARMUP
+        local S = C.pass()
+        ok(not S.ran and S.why:find('warmup'),
+           'the warmup gate names the state that closed it')
+        ok(C.tasked[10] == nil, 'the island stays a stage')
+    end
+
+    -- The readout has to survive being read before the first pass, because the
+    -- first thing anybody will do is type /brdrivers.
+    do
+        local C = newDriverClient(layout())
+        local S = C.env.BR.Gamerules.driverStats()
+        ok(S ~= nil and not S.ran and S.why == 'not run yet',
+           'the readout answers before the first pass instead of erroring')
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- The storm: WHOSE BODY the client reads it from.
+--
+-- "Storms are not synced between screens when spectating" -- the owner,
+-- two-player playtest, 2026-08-23 (#225).
+--
+-- NOTHING HAD DESYNCED. The record goes to every src in the match with no state
+-- filter, and BR.StormAt is pure over (record, synced clock), so both screens
+-- solve the identical circle to the millisecond -- which is exactly why the
+-- purple curtain and the two map rings, drawn at absolute world coordinates,
+-- agreed on both. Everything else in client/storm.lua measured from
+-- GetEntityCoords(PlayerPedId()): a corpse lying wherever the spectator died.
+--
+-- BOTH DIRECTIONS OF THE REPORT ARE PINNED BELOW, because answering only one of
+-- them is how this comes back:
+--
+--   * watch somebody SAFE from a corpse out in the storm and the screen must
+--     stop being red and raining;
+--   * watch somebody CAUGHT from a corpse safe inside and the sky must go
+--     thunderous -- which "no storm effects for a ghost" would NOT do, and
+--     which is the second half the owner filed;
+--   * and a LIVING viewer -- including an admin spectating while mid-fight in
+--     their own match -- must still read their own body, or the fix trades one
+--     silent death for another.
+--
+-- All three bands are covered separately: the 10Hz readout, the per-frame
+-- distance push, and the column wall. A fix applied to one of them would be
+-- overwritten by the next.
+-- ---------------------------------------------------------------------------
+
+describe('storm / viewpoint')
+do
+    local function pt(x, y, z) return { x = x, y = y, z = z or 30.0 } end
+
+    local PED = 1
+
+    --- One client with the real client/storm.lua on the real loop.
+    local function newStormClient()
+        local env = newSandbox()
+        local C = {
+            now = 100000,
+            envelopes = {}, weather = {}, tc = {}, blips = {},
+            markers = {}, prints = {},
+            pedAt = pt(0.0, 0.0),
+        }
+
+        env.GetGameTimer = function() return C.now end
+        env.print = function(...)
+            local parts = {}
+            for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+            C.prints[#C.prints + 1] = table.concat(parts, ' ')
+        end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey       = function(s) return #tostring(s) end
+        env.PlayerId         = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+        env.AddEventHandler  = function() end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand  = function() end
+        env.TriggerServerEvent = function() end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+
+        loadInto(env, SANDBOX_LIB)
+
+        -- THE CORPSE NEVER MOVES ITSELF. client/spectate.lua leaves the body
+        -- where it fell on purpose, so this native answers the same point all
+        -- session long -- which is the whole shape of the bug.
+        env.PlayerPedId = function() return PED end
+        env.GetEntityCoords = function()
+            return pt(C.pedAt.x, C.pedAt.y, C.pedAt.z)
+        end
+
+        -- The HUD envelope is the only wire this file speaks on.
+        env.TriggerEvent = function(name, key, payload)
+            if name == 'br:ui:sendLocal' and key == env.BR.Nui.STORM then
+                C.envelopes[#C.envelopes + 1] = payload
+            end
+        end
+
+        -- The colour grade.
+        env.SetTimecycleModifier         = function(n) C.tc.name = n end
+        env.SetTimecycleModifierStrength = function(v) C.tc.strength = v end
+        env.ClearTimecycleModifier       = function() C.tc.name = nil end
+        env.AnimpostfxPlay = function() end
+        env.AnimpostfxStop = function() end
+
+        -- The sky. Only the overtime blend is a decision about who is being
+        -- watched; the rest is the drying schedule.
+        env.SetWeatherTypeOvertimePersist = function(w)
+            C.weather[#C.weather + 1] = w
+        end
+        env.SetWeatherTypeNowPersist = function() end
+        env.ClearWeatherTypePersist  = function() end
+        env.SetRainLevel             = function() end
+
+        env.DrawMarker = function(_, x, y, z)
+            C.markers[#C.markers + 1] = { x = x, y = y, z = z }
+        end
+        env.GetGroundZFor_3dCoord = function() return false, 0.0 end
+
+        -- Blips are tagged by the native that made them, so the arrow can be
+        -- told from the two radius rings without matching display text.
+        local handle = 100
+        local function newBlip(kind, x, y)
+            handle = handle + 1
+            C.blips[handle] = { kind = kind, x = x, y = y, exists = true }
+            return handle
+        end
+        env.AddBlipForCoord     = function(x, y) return newBlip('arrow', x, y) end
+        env.RemoveBlip          = function(h)
+            if C.blips[h] then C.blips[h].exists = false end
+        end
+        env.DoesBlipExist       = function(h)
+            return C.blips[h] ~= nil and C.blips[h].exists
+        end
+        env.SetBlipSprite       = function() end
+        env.SetBlipColour       = function() end
+        env.SetBlipScale        = function() end
+        env.SetBlipAsShortRange = function() end
+        env.SetBlipCoords       = function(h, x, y)
+            if C.blips[h] then C.blips[h].x, C.blips[h].y = x, y end
+        end
+        env.SetBlipRotation     = function(h, rot)
+            if C.blips[h] then C.blips[h].rot = rot end
+        end
+
+        loadInto(env, { 'br_core/client/main.lua' })
+        env.BR.Native = env.BR.Native or {}
+        env.BR.Native.radiusBlip = function(h, x, y)
+            if h and C.blips[h] and C.blips[h].exists then
+                C.blips[h].x, C.blips[h].y = x, y
+                return h
+            end
+            return newBlip('radius', x, y)
+        end
+        env.BR.Native.blipName = function(h, name)
+            if C.blips[h] then C.blips[h].name = name end
+        end
+
+        -- client/world.lua BEFORE client/storm.lua, exactly as the manifest
+        -- declares them. The storm's weather branches are claims made through
+        -- BR.World.want now, and this is the file that turns a winning claim
+        -- into the native call the assertions below read.
+        loadInto(env, { 'br_core/client/world.lua', 'br_core/client/storm.lua' })
+
+        env.BR.State.match.state = env.BR.MatchState.PLAYING
+        env.BR.State.me.state    = env.BR.PlayerState.ALIVE
+        -- A PHASE-2 HOLD, deliberately: the free-loot rule that zeroes dps is
+        -- `phase <= 1`, so a later phase's hold is the one shape where the
+        -- storm is both stationary and genuinely hurting. Nothing in these
+        -- cases then depends on how long the suite takes to run.
+        env.BR.State.storm = {
+            phase = 2,
+            cx0 = 0.0, cy0 = 0.0, r0 = 200.0,
+            cx1 = 0.0, cy1 = 0.0, r1 = 200.0,
+            tStart = 0, tWait = 600000, tShrink = 60000,
+            dps = 4.0,
+        }
+
+        C.env = env
+
+        --- Run TICK passes 1.5s apart -- past the sky's holdMs hysteresis, so a
+        --- settled decision has actually reached the weather.
+        function C.tick(n)
+            for _ = 1, (n or 1) do
+                C.now = C.now + 1500
+                env.BR.Loop.step(env.BR.Loop.TICK)
+            end
+        end
+
+        function C.frame()
+            C.now = C.now + 16
+            env.BR.Loop.step(env.BR.Loop.FRAME)
+        end
+
+        --- Put a session on this client. `point` is what the eased camera is
+        --- looking at; nil is the first frames, before the feed lands.
+        function C.spectate(point)
+            env.BR.Spectate = {
+                active     = function() return true end,
+                watchPoint = function() return point end,
+            }
+        end
+
+        function C.last() return C.envelopes[#C.envelopes] end
+
+        function C.arrow()
+            for _, b in pairs(C.blips) do
+                if b.exists and b.kind == 'arrow' then return b end
+            end
+            return nil
+        end
+
+        --- BR.Loop.step pcalls every callback and prints the failure, so a
+        --- storm callback that threw would leave a green suite behind it.
+        function C.errored()
+            for _, line in ipairs(C.prints) do
+                if line:find('errored', 1, true) then return line end
+            end
+            return nil
+        end
+
+        return C
+    end
+
+    local REDMIST = BR.Config.Storm.fx.timecycle
+
+    -- A LIVING PLAYER IS UNCHANGED, and that is half the point of the fix.
+    do
+        local C = newStormClient()
+        C.pedAt = pt(900.0, 0.0)
+        C.tick(3)
+
+        local e = C.last()
+        ok(C.errored() == nil, 'the storm callbacks run clean', C.errored())
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'a living player 900m out from a 200m circle reads 700m outside',
+           e and e.edgeDistance)
+        ok(C.arrow() ~= nil, 'and gets the way-home arrow')
+        ok(C.weather[#C.weather] == 'THUNDER', 'and a thunderstorm',
+           tostring(C.weather[#C.weather]))
+        ok(C.tc.name == REDMIST, 'and the storm colour grade',
+           tostring(C.tc.name))
+    end
+
+    -- THE REPORT, FIRST HALF: red and raining while the person on screen is
+    -- standing in the sun.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
+        C.pedAt = pt(900.0, 0.0)          -- the corpse, out in the storm
+        C.spectate(pt(0.0, 0.0))          -- the squadmate, dead centre
+        C.tick(3)
+
+        local e = C.last()
+        ok(C.errored() == nil, 'the spectating pass runs clean', C.errored())
+        ok(e ~= nil and near(e.edgeDistance, -200.0, 0.5),
+           'the HUD counts metres from the WATCHED player -- 200m inside, '
+           .. 'where they are actually standing -- not 700m out at the corpse',
+           e and e.edgeDistance)
+        ok(C.arrow() == nil,
+           'and there is no way-home arrow, because the person on screen is '
+           .. 'already home')
+        ok(C.weather[#C.weather] ~= 'THUNDER',
+           'the sky over the shot stays clear', tostring(C.weather[#C.weather]))
+        ok(C.tc.name == nil,
+           'and no REDMIST grade is laid over a player standing in the sun',
+           tostring(C.tc.name))
+    end
+
+    -- THE REPORT, SECOND HALF: "watch a squadmate die in the storm and your sky
+    -- stays clear". This is the case that rules out fixing it by switching a
+    -- spectator's storm off -- the effects have to move, not vanish.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
+        C.pedAt = pt(0.0, 0.0)            -- the corpse, safe in the middle
+        C.spectate(pt(900.0, 0.0))        -- the squadmate, out in it
+        C.tick(3)
+
+        local e = C.last()
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'the readout is the watched player 700m outside, not the corpse '
+           .. 'safe at the centre', e and e.edgeDistance)
+        ok(C.arrow() ~= nil, 'the way-home arrow appears for them')
+        ok(C.weather[#C.weather] == 'THUNDER',
+           'the sky over the shot goes thunderous',
+           tostring(C.weather[#C.weather]))
+        ok(C.tc.name == REDMIST,
+           'and the grade comes with it', tostring(C.tc.name))
+    end
+
+    -- ═══ THE EFFECTS GATE IS THE SESSION, NOT THE PLAYER STATE ═══
+    --
+    -- THIS CASE USED TO BE PINNED ON BR.PlayerState.SPECTATING, on the stated
+    -- premise that #233 was "the rework that finally assigns it". That premise
+    -- was backwards: #233 DELETED that state, because spectating is a session
+    -- and is possible WHILE a player is OUT rather than instead of it.
+    --
+    -- The premise was wrong; the case it protected is real, so it is re-pinned
+    -- rather than deleted. What it guards is somebody replacing the `from ==
+    -- 'spectate'` gate in client/storm.lua with a list of player states, which
+    -- would re-file half of #225 with nothing to point at.
+    --
+    -- SO IT IS RE-PINNED ON OUT, WHICH IS THE STATE A DEAD SPECTATOR IS REALLY
+    -- IN, and the teeth move to the GEOMETRY rather than to the state:
+    --
+    --   * The viewer's own ped is INSIDE the circle (0,0 against r=200).
+    --   * The shot is OUTSIDE it, 900m out.
+    --
+    -- So the two assertions below can only be satisfied by reading the WATCHED
+    -- player. Anyone who replaces `viewpoint()`'s session test with a player
+    -- state gets edge from the viewer's own ped, which is inside, which makes
+    -- `caught` false -- and the sky goes clear while the shot is in the storm.
+    -- That is #225's second half exactly, and it goes red here.
+    --
+    -- LOBBY WOULD HAVE BEEN THE SHARPER STATE and it does not work: storm.lua's
+    -- activeRecord() returns nil for a LOBBY player by design (a vista-menu
+    -- bystander shares match.state but not the match), so such a viewer has no
+    -- storm record to read at all. Checked, not assumed -- it fails outright.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
+        C.pedAt = pt(0.0, 0.0)
+        C.spectate(pt(900.0, 0.0))
+        C.tick(3)
+
+        local e = C.last()
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'an OUT viewer in a session reads the WATCHED player, not their own '
+           .. 'ped, which is safely inside the circle',
+           e and e.edgeDistance)
+        ok(C.weather[#C.weather] == 'THUNDER',
+           'and keeps the sky over the shot -- the session decides this, and no '
+           .. 'list of player states can stand in for it',
+           tostring(C.weather[#C.weather]))
+        ok(C.tc.name == REDMIST, 'and the grade with it', tostring(C.tc.name))
+    end
+
+    -- BOTH BODIES OUTSIDE, IN DIFFERENT DIRECTIONS. Everything above could in
+    -- principle pass on a client that merely switched the storm off while
+    -- spectating; this cannot. The arrow parks at the nearest safe point just
+    -- inside the target edge, so its coordinates name the body the bearing was
+    -- taken from.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
+        C.pedAt = pt(900.0, 0.0)          -- corpse: due EAST of the circle
+        C.spectate(pt(0.0, 900.0))        -- watched: due NORTH of it
+        C.tick(3)
+
+        local a = C.arrow()
+        ok(a ~= nil, 'both bodies are outside, so there is an arrow either way')
+        ok(a ~= nil and near(a.x, 0.0, 0.5) and near(a.y, 175.0, 0.5),
+           'and it points home from the WATCHED player north of the circle, '
+           .. 'not from the corpse east of it',
+           a and (tostring(a.x) .. ', ' .. tostring(a.y)))
+    end
+
+    -- AN ADMIN SPECTATOR IS STILL IN THEIR OWN MATCH. server/spectate.lua's
+    -- adminStart asks only that they be in game, so their body may be alive,
+    -- armed and outside the wall taking the server's damage for it. Moving
+    -- their readout onto the shot would be this same bug pointed the other
+    -- way: a HUD saying safe while the ledger bleeds them out.
+    do
+        local C = newStormClient()
+        C.pedAt = pt(900.0, 0.0)          -- their own body, out in the storm
+        C.spectate(pt(0.0, 0.0))          -- watching a suspect, safe inside
+        C.tick(3)
+
+        local e = C.last()
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'a LIVING viewer keeps their own distance while spectating',
+           e and e.edgeDistance)
+        ok(C.weather[#C.weather] == 'THUNDER',
+           'and their own weather, because their own body really is in it',
+           tostring(C.weather[#C.weather]))
+    end
+
+    -- The first frames of a session, before the 4Hz feed has landed a point.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
+        C.pedAt = pt(900.0, 0.0)
+        C.spectate(nil)
+        C.tick(3)
+
+        local e = C.last()
+        ok(C.errored() == nil,
+           'a session with no eased point yet does not throw', C.errored())
+        ok(e ~= nil and near(e.edgeDistance, 700.0, 0.5),
+           'it falls back to the ped rather than measuring from nothing',
+           e and e.edgeDistance)
+    end
+
+    -- ═══ THE FRAME BAND IS A SECOND READ, PINNED SEPARATELY ═══
+    --
+    -- storm.edge re-reads the position every frame -- that is the entire reason
+    -- it exists, the 10Hz number having "read as laggy" at a sprint -- so a fix
+    -- applied only to the 10Hz band would be overwritten by the next frame.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
+        C.pedAt = pt(0.0, 0.0)
+        local watched = pt(900.0, 0.0)
+        C.spectate(watched)
+        C.tick(1)
+        ok(near(C.last().edgeDistance, 700.0, 0.5),
+           'the tick band sets the baseline at the watched player',
+           C.last().edgeDistance)
+
+        -- A corpse cannot walk, but prove the frame band ignores it anyway.
+        C.pedAt = pt(1200.0, 0.0)
+        local before = #C.envelopes
+        C.frame()
+        ok(#C.envelopes == before,
+           'a frame that moves only the corpse pushes nothing at all',
+           #C.envelopes - before)
+
+        watched.x = 910.0
+        C.frame()
+        local e = C.last()
+        ok(#C.envelopes > before and near(e.edgeDistance, 710.0, 0.5),
+           'the watched player moving 10m moves the readout 10m, per frame',
+           e and e.edgeDistance)
+    end
+
+    -- ═══ AND THE COLUMN WALL, THE THIRD READ ═══
+    --
+    -- 'solid' ships and draws one cylinder at the circle's own coordinates,
+    -- which is precisely why the curtain agreed across both screens. The
+    -- column renderer behind /brwallstyle centres its arc on the viewer's
+    -- bearing and probes the ground beneath them, so it is the one part of the
+    -- wall that could disagree.
+    do
+        local C = newStormClient()
+        C.env.BR.State.me.state = C.env.BR.PlayerState.OUT
+        C.env.BR.Storm.wallStyle = 'columns'
+        -- Wide enough that the arc is a slice of the ring rather than all of
+        -- it: at r=200 every slot is drawn and centring cannot be observed.
+        C.env.BR.State.storm.r0 = 2000.0
+        C.env.BR.State.storm.r1 = 2000.0
+        C.pedAt = pt(2100.0, 0.0)         -- corpse just outside, due EAST
+        C.spectate(pt(0.0, 2100.0))       -- watched just outside, due NORTH
+        C.frame()
+
+        local north, east = 0, 0
+        for _, m in ipairs(C.markers) do
+            if m.y > 1000.0 then north = north + 1 end
+            if m.x > 1000.0 then east  = east + 1 end
+        end
+        ok(C.errored() == nil, 'the column renderer runs clean', C.errored())
+        ok(#C.markers > 0, 'the column renderer drew something', #C.markers)
+        ok(north == #C.markers and east == 0,
+           'every column stands on the arc the CAMERA is looking at, not the '
+           .. 'arc above the corpse',
+           ('north %d / east %d of %d'):format(north, east, #C.markers))
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('audio.catalogue')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "Can you make me something which plays GTA sounds with a console command
+--    so I can pick which one sounds good?"      -- owner, 2026-08-22
+--
+-- ═══ WHAT A TEST CAN REACH HERE, AND WHAT IT CANNOT ═══
+--
+-- IT CANNOT PROVE A SOUND PLAYS, and no test ever will: a wrong sound SET is
+-- silent rather than erroneous, which is the whole reason /brsfx exists and the
+-- whole reason two fuel-cue picks have now been rejected. Only a client with a
+-- person attached settles that.
+--
+-- WHAT IT DOES REACH is the half that decides what the person is ever shown. If
+-- the search hands back the wrong rows, the owner auditions the wrong sounds
+-- and the tool has failed at the only job it has -- and unlike the audio, that
+-- is arithmetic. So the filters are tested hard here and the sounds are not
+-- tested at all.
+do
+    local A = BR.Config.Audio
+
+    ok(type(A.catalogue) == 'table' and #A.catalogue > 0,
+       'the catalogue exists and is a non-empty ARRAY',
+       tostring(type(A.catalogue)) .. ' / ' .. tostring(#(A.catalogue or {})))
+
+    -- ------------------------------------------------------------ shape ---
+    local badShape, totalPairs, dupName = nil, 0, nil
+    local seenSet = {}
+    for _, entry in ipairs(A.catalogue) do
+        if type(entry.set) ~= 'string' or entry.set == '' then
+            badShape = 'a set with no name'
+        elseif type(entry.names) ~= 'table' or #entry.names == 0 then
+            badShape = entry.set .. ' has no names'
+        end
+        if seenSet[entry.set] then badShape = entry.set .. ' appears twice' end
+        seenSet[entry.set] = true
+
+        local seenName = {}
+        for _, n in ipairs(entry.names or {}) do
+            if type(n) ~= 'string' or n == '' then
+                badShape = entry.set .. ' has an empty name'
+            end
+            if seenName[n] then dupName = entry.set .. ' lists ' .. n .. ' twice' end
+            seenName[n] = true
+            totalPairs = totalPairs + 1
+        end
+    end
+    ok(badShape == nil, 'every row is a set name and a non-empty list of names', badShape)
+    ok(dupName == nil, 'and no set lists the same sound twice', dupName)
+
+    -- ═══ NO DLC BANKS, AND THIS IS THE ASSERTION WITH TEETH ═══
+    --
+    -- Pit_Stop_Complete was the on-theme candidate for fuel.done and was
+    -- rejected because it lives in DLC_H3_Circuit_Racing_Sounds -- a script
+    -- audio bank this gamemode never requests, so it would have played nothing
+    -- while looking perfectly correct in the config. Every DLC_*/dlc_* set was
+    -- filtered out of this catalogue for that reason. A catalogue that let one
+    -- back in would be a browsing tool that offers the owner sounds which
+    -- cannot play, which is worse than no tool: it manufactures exactly the
+    -- ambiguity the [silent?] marker exists to resolve.
+    local dlc = nil
+    for _, entry in ipairs(A.catalogue) do
+        if string.lower(entry.set):sub(1, 4) == 'dlc_' then dlc = entry.set end
+    end
+    ok(dlc == nil,
+       'no DLC audio bank is offered for browsing -- those are silent unless '
+           .. 'something requests them, and nothing here does', dlc)
+
+    -- ═══ THE ORDER IS FIXED IN THE SOURCE, NOT LEFT TO pairs() ═══
+    --
+    -- This list is something a person reads down, hears, and comes back to. Lua
+    -- does not specify `pairs()` order and it genuinely varies between runs, so
+    -- an unordered catalogue would reshuffle under the owner between two
+    -- invocations of the same command. The three sets at the top are the three
+    -- this codebase has HEARD -- a silence in one of those is a wrong NAME
+    -- rather than an absent bank, which is a different and much cheaper bug.
+    ok(A.catalogue[1].set == 'HUD_FRONTEND_DEFAULT_SOUNDSET'
+       and A.catalogue[2].set == 'HUD_AWARDS'
+       and A.catalogue[3].set == 'HUD_MINI_GAME_SOUNDSET',
+       'the three sets this codebase has actually heard sort first, in order',
+       A.catalogue[1].set .. ', ' .. A.catalogue[2].set .. ', ' .. A.catalogue[3].set)
+
+    local outOfOrder = nil
+    for i = 5, #A.catalogue do
+        local prev, cur = A.catalogue[i - 1].set:lower(), A.catalogue[i].set:lower()
+        if prev > cur then outOfOrder = prev .. ' before ' .. cur end
+    end
+    ok(outOfOrder == nil,
+       'and everything after them is alphabetical, so the same command twice '
+           .. 'prints the same list twice', outOfOrder)
+
+    -- ---------------------------------------------------------- sets() ---
+    ok(#A.sets() == #A.catalogue, 'sets() with no query is every set',
+       ('%d vs %d'):format(#A.sets(), #A.catalogue))
+    ok(#A.sets('') == #A.catalogue, 'and an empty query is the same as none')
+
+    local hud = A.sets('HUD')
+    ok(#hud > 0 and #hud < #A.catalogue, 'sets("HUD") narrows without emptying',
+       ('%d of %d'):format(#hud, #A.catalogue))
+    local notHud = nil
+    for _, s in ipairs(hud) do
+        if not s.set:find('HUD', 1, true) then notHud = s.set end
+    end
+    ok(notHud == nil, 'and every row it returns really contains the query', notHud)
+
+    -- CASE-INSENSITIVE, and asserted by EQUALITY of the two result sets rather
+    -- than by "lowercase finds something". A query typed the way the owner
+    -- reads it off the screen -- SHOUTING, because GTA's set names are -- must
+    -- find the same rows as one typed in a hurry.
+    ok(#A.sets('hud') == #A.sets('HUD') and #A.sets('hUd') == #A.sets('HUD'),
+       'sets() is case-insensitive in both directions',
+       ('%d / %d / %d'):format(#A.sets('hud'), #A.sets('HUD'), #A.sets('hUd')))
+
+    local awards = A.sets('HUD_AWARDS')
+    ok(#awards == 1 and awards[1].n == #A.namesIn('HUD_AWARDS'),
+       'and the count it reports is the real number of names in that set',
+       #awards == 1 and tostring(awards[1].n) or ('%d rows'):format(#awards))
+
+    ok(#A.sets('no such set anywhere') == 0, 'a query that matches nothing is empty')
+
+    -- ---------------------------------------------------------- find() ---
+    ok(#A.find() == totalPairs, 'find() with no query is every pair',
+       ('%d vs %d'):format(#A.find(), totalPairs))
+
+    local sel = A.find('SELECT')
+    ok(#sel > 0, 'find() by name returns something')
+    local wrongName = nil
+    for _, r in ipairs(sel) do
+        if not r.name:upper():find('SELECT', 1, true) then wrongName = r.name end
+    end
+    ok(wrongName == nil, 'and every row really matches the name query', wrongName)
+    ok(#A.find('select') == #A.find('SELECT'), 'find() is case-insensitive too',
+       ('%d vs %d'):format(#A.find('select'), #A.find('SELECT')))
+
+    -- ═══ THE TWO FILTERS ARE ANDed, NOT ORed ═══
+    --
+    -- "narrow it by set, by substring, or both" was the ask, and BOTH is the
+    -- case that matters: `find complete HUD` is how somebody looks for a
+    -- confirmation chime inside the sets this codebase has heard, which is the
+    -- search that would have settled fuel.done two rounds ago. An OR here would
+    -- return every HUD sound plus every "complete" sound -- a longer list that
+    -- looks like it is working.
+    local both = A.find('SELECT', 'HUD_AWARDS')
+    ok(#both == 0,
+       'find("SELECT", "HUD_AWARDS") is empty -- HUD_AWARDS has no SELECT, and '
+           .. 'an ORed implementation would have returned dozens of rows',
+       ('%d'):format(#both))
+
+    local go = A.find('GO', 'MINI')
+    ok(#go > 0 and #go < #A.find('GO'),
+       'and a set filter really cuts a name search down',
+       ('%d of %d'):format(#go, #A.find('GO')))
+    local outsideSet = nil
+    for _, r in ipairs(go) do
+        if not r.set:upper():find('MINI', 1, true) then outsideSet = r.set end
+    end
+    ok(outsideSet == nil, 'with nothing from outside the named set', outsideSet)
+
+    ok(#A.find(nil, 'HUD_AWARDS') == #A.namesIn('HUD_AWARDS'),
+       'find(nil, set) is the whole of one set',
+       ('%d vs %d'):format(#A.find(nil, 'HUD_AWARDS'), #A.namesIn('HUD_AWARDS')))
+
+    -- ═══ THE QUERY IS TEXT, NOT A LUA PATTERN ═══
+    --
+    -- Every sound name in this catalogue contains an underscore and the owner
+    -- will be typing them, so the search runs through string.find's PLAIN mode.
+    -- Without it `%` and `(` throw ("malformed pattern") and `.` matches
+    -- everything -- a search box that errors on a punctuation character, in a
+    -- tool whose entire job is to be typed into quickly.
+    local okPct, resPct = pcall(A.find, '%')
+    ok(okPct, 'a query containing % does not throw', not okPct and tostring(resPct) or nil)
+    ok(okPct and #resPct == 0, 'and finds nothing, because no name contains one')
+
+    local okParen = pcall(A.find, '(')
+    ok(okParen, 'nor does one containing an unclosed bracket')
+
+    -- `.` IS THE ONE THAT WOULD PASS QUIETLY. A pattern-mode `.` matches any
+    -- character, so it would return all the rows and look like a working
+    -- wildcard rather than a bug -- until somebody searched for `10_SEC` and
+    -- got a list that ignored the underscore.
+    ok(#A.find('.') == 0,
+       'and a lone dot matches nothing rather than everything -- it is a '
+           .. 'character to look for, not a wildcard', ('%d'):format(#A.find('.')))
+    ok(#A.find('_') > 0, 'while a real underscore matches the many names with one')
+
+    -- -------------------------------------------------------- namesIn() ---
+    --
+    -- EXACT, and deliberately not a substring match. This is what the
+    -- sequential audition walks, and a substring that matched two sets would
+    -- play through both -- leaving the owner with a sound they liked and no way
+    -- to know which set to write down, which is the one fact they need.
+    ok(A.namesIn('HUD_AWARDS') ~= nil, 'namesIn() finds a set by its exact name')
+    ok(A.namesIn('HUD_AWARD') == nil,
+       'and a near-miss returns nil rather than the set it nearly named')
+    ok(A.namesIn('hud_awards') == nil,
+       'and it is case-SENSITIVE, unlike the searches -- this one is an '
+           .. 'identifier being resolved, not a query being matched')
+    ok(A.namesIn('') == nil, 'an empty name resolves to no set')
+
+    -- ------------------------------------------------------ resolveSet() ---
+    --
+    --   "It seems I have no way to list all sfx within a given set."
+    --                                             -- owner, 2026-08-23
+    --
+    -- What `brsfx sounds <SET>` resolves its argument with, and the reason it
+    -- can be forgiving where namesIn() must not be: this hands back the
+    -- CATALOGUE'S OWN SPELLING and the command prints it, so a loose match is
+    -- announced rather than acted on quietly. namesIn() has no such channel --
+    -- it returns names, and an audition that quietly walked the wrong set would
+    -- leave somebody with a sound they liked and no idea what to write down.
+    local r, near = A.resolveSet('HUD_AWARDS')
+    ok(r == 'HUD_AWARDS', 'resolveSet() takes an exact set name', tostring(r))
+    ok(#near == 1, 'and offers exactly itself as the candidate list',
+       ('%d'):format(#near))
+
+    -- CASE-BLIND, WHICH IS THE HALF namesIn() REFUSES. GTA's set names SHOUT
+    -- and HUD_FRONTEND_WEAPONS_PICKUPS_SOUNDSET is 37 characters; requiring
+    -- them in caps is requiring a copy-paste from a list the owner is reading
+    -- off a console.
+    ok(A.resolveSet('hud_awards') == 'HUD_AWARDS',
+       'and the same name in lower case, unlike namesIn()',
+       tostring(A.resolveSet('hud_awards')))
+    ok(A.resolveSet('Hud_AwArDs') == 'HUD_AWARDS', 'in any mixture of cases')
+
+    -- ═══ A SUBSTRING RESOLVES ONLY WHEN IT IS UNAMBIGUOUS ═══
+    --
+    -- This is the whole design of the thing. `awards` means one set, so it is
+    -- an answer. `HUD` means thirteen, and picking the first would be this tool
+    -- GUESSING -- about the exact question it exists to stop people guessing
+    -- about, in a command whose failure mode is silence.
+    ok(A.resolveSet('awards') == 'HUD_AWARDS',
+       'a substring matching ONE set resolves to that set, spelled the '
+           .. 'catalogue\'s way so it can be pasted into `brsfx play`',
+       tostring(A.resolveSet('awards')))
+
+    local amb, hudNear = A.resolveSet('HUD')
+    ok(amb == nil, 'a substring matching several sets resolves to nothing',
+       tostring(amb))
+    ok(#hudNear > 1, 'and hands back every set it could have meant instead, '
+           .. 'because "no such set" and "which of these thirteen" are '
+           .. 'different answers and only one of them is useful',
+       ('%d'):format(#hudNear))
+    local strayNear = nil
+    for _, s in ipairs(hudNear) do
+        if not s:upper():find('HUD', 1, true) then strayNear = s end
+    end
+    ok(strayNear == nil, 'with nothing in it that does not contain the query',
+       strayNear)
+
+    -- ═══ EXACT BEATS CASE-BLIND BEATS SUBSTRING, AND THE FIXTURE FOR THAT HAS
+    --     TO BE INJECTED ═══
+    --
+    -- NO SET NAME IN TODAY'S CATALOGUE IS A SUBSTRING OF ANOTHER -- checked,
+    -- not assumed -- so every real query that matches exactly also matches
+    -- exactly one substring, and the three passes agree on every one of the 84.
+    -- That makes the ORDER of the passes untested by the real data: an
+    -- implementation that ran the substring pass first would be green on all 84
+    -- sets and wrong the day somebody adds `HUD_AWARDS_EXTRA`, at which point
+    -- typing the perfectly correct `HUD_AWARDS` would come back "could mean 2
+    -- sets". So the collision is built here and torn down after.
+    table.insert(A.catalogue, { set = 'ZZ_ORDER_TEST', names = { 'A' } })
+    table.insert(A.catalogue, { set = 'ZZ_ORDER_TEST_LONGER', names = { 'B' } })
+
+    ok(A.resolveSet('ZZ_ORDER_TEST') == 'ZZ_ORDER_TEST',
+       'a name typed EXACTLY resolves to itself even when it is also a '
+           .. 'substring of another set -- or a perfectly correct name starts '
+           .. 'being answered with "did you mean"',
+       tostring(A.resolveSet('ZZ_ORDER_TEST')))
+    -- THIS IS THE ASSERTION THAT PINS THE ORDER, and the one above is not.
+    -- A mutant that deletes the exact pass survives, because equality implies
+    -- case-blind equality -- see the comment on resolveSet, which says so. A
+    -- mutant that deletes the CASE-BLIND pass dies here: `zz_order_test`
+    -- matches two sets as a substring, so without it a name typed correctly
+    -- but in lower case comes back ambiguous.
+    ok(A.resolveSet('zz_order_test') == 'ZZ_ORDER_TEST',
+       'and a name typed correctly in the wrong CASE beats the substring pass '
+           .. 'too, rather than coming back as a "did you mean" over the two '
+           .. 'sets it is a substring of',
+       tostring(A.resolveSet('zz_order_test')))
+    local twoWay, twoNear = A.resolveSet('ZZ_ORDER')
+    ok(twoWay == nil and #twoNear == 2,
+       'while a substring of BOTH of them is still ambiguous, so the pass '
+           .. 'order is a precedence and not a short-circuit that ate the '
+           .. 'ambiguity check', ('%s / %d'):format(tostring(twoWay), #twoNear))
+
+    table.remove(A.catalogue)
+    table.remove(A.catalogue)
+    ok(A.resolveSet('ZZ_ORDER_TEST') == nil,
+       'and the injected sets are gone again, so nothing below sees them')
+
+    local no, noNear = A.resolveSet('nothing_is_called_this')
+    ok(no == nil and #noNear == 0,
+       'a query matching nothing resolves to nothing, with an EMPTY candidate '
+           .. 'list -- which is what lets the command tell the two cases apart')
+
+    -- ═══ THE EMPTY STRING IS THE ONE THAT WOULD PASS QUIETLY ═══
+    --
+    -- contains() treats '' as "matches everything" -- deliberately, so that
+    -- `sets()` and `sets('')` agree -- so a resolveSet that just forwarded to
+    -- sets() would answer all 84 for an empty argument, and `#near == 1` being
+    -- false would make that read as "ambiguous" rather than "you typed
+    -- nothing". Harmless-looking, and it is how `brsfx sounds ''` would come
+    -- back with a wall of set names instead of the usage line.
+    local blank, blankNear = A.resolveSet('')
+    ok(blank == nil and #blankNear == 0,
+       'an empty query resolves to nothing and offers NO candidates, rather '
+           .. 'than inheriting contains()\'s "empty matches everything"',
+       ('%s / %d'):format(tostring(blank), #blankNear))
+
+    local nilR, nilNear = A.resolveSet(nil)
+    ok(nilR == nil and #nilNear == 0, 'and so does a missing argument')
+    local okNum, numR = pcall(A.resolveSet, 42)
+    ok(okNum and numR == nil, 'and a non-string answers rather than throwing, '
+           .. 'because this is reached straight off a console command line',
+       not okNum and tostring(numR) or nil)
+
+    -- PLAIN TEXT, NOT A LUA PATTERN, for the same reason find() is: every set
+    -- name in here has underscores in it and the owner is typing them.
+    local okPat, patR = pcall(A.resolveSet, 'HUD_%')
+    ok(okPat and patR == nil, 'a query containing % does not throw',
+       not okPat and tostring(patR) or nil)
+
+    -- AND EVERY SET IN THE CATALOGUE RESOLVES TO ITSELF. The listing verb is
+    -- reached from `brsfx sets`, so anything that command can print must be
+    -- something this one accepts -- otherwise step 1 of the three-step flow
+    -- offers a name step 2 rejects.
+    local unresolvable = nil
+    for _, entry in ipairs(A.catalogue) do
+        if A.resolveSet(entry.set) ~= entry.set then unresolvable = entry.set end
+    end
+    ok(unresolvable == nil,
+       'every set `brsfx sets` prints is one `brsfx sounds` accepts, so step 1 '
+           .. 'of the browse flow cannot offer a name step 2 refuses',
+       unresolvable)
+
+    -- --------------------------------------------------- the cues agree ---
+    --
+    -- The catalogue is what the tool offers; the cue table is what the game
+    -- plays. They are two tables in one file and nothing but this makes them
+    -- agree.
+    -- ═══ EVERY CUE IS A PAIR, AND THE WHOLE PAIR IS IN THE CATALOGUE ═══
+    --
+    -- Set-level would be the softer rule and it is not enough: the two failures
+    -- this project has actually had were WIN and LOSER, which are perfectly good
+    -- names in a set that does not contain them. A pair-level check is the only
+    -- one that would have caught that, and every cue in the table today passes
+    -- it -- these are all calls GTA's own scripts make.
+    --
+    -- IF THE OWNER'S THIRD FUEL PICK IS NOT IN THE CATALOGUE, THIS FAILS, AND
+    -- THAT IS THE INTENDED WORKFLOW RATHER THAN AN OBSTACLE. Everything /brsfx
+    -- can browse is in here, so a sound chosen with the tool passes on the way
+    -- in. A pair from anywhere else is one nobody has evidence for, and the fix
+    -- is one line: add it to the catalogue, having HEARD it. The failure message
+    -- says so rather than leaving somebody to guess.
+    local strayCue = nil
+    local byPair = {}
+    for _, entry in ipairs(A.catalogue) do
+        for _, n in ipairs(entry.names) do byPair[entry.set .. '/' .. n] = true end
+    end
+    for cue, def in pairs(A.cues) do
+        if not byPair[tostring(def.set) .. '/' .. tostring(def.name)] then
+            strayCue = ('%s plays %s / %s, which the catalogue does not list -- '
+                .. 'if you have HEARD it, add it there'):format(cue, def.set, def.name)
+        end
+    end
+    ok(strayCue == nil,
+       'every configured cue is a pair GTA\'s own scripts play, so it can be '
+           .. 're-chosen with the same tool that found it', strayCue)
+    ok(seenSet['HUD_AWARDS'] == true,
+       'and the catalogue really is what that was checked against',
+       tostring(seenSet['HUD_AWARDS']))
+
+    -- AND storm.move IS ONE OF THEM. The cue the wall's first movement plays;
+    -- server/storm.lua sends this exact key and never looks it up.
+    local move = A.cues['storm.move']
+    ok(type(move) == 'table' and type(move.set) == 'string'
+       and type(move.name) == 'string',
+       'the storm-movement cue exists and names both halves of a sound',
+       move and (tostring(move.set) .. '/' .. tostring(move.name)) or 'nil')
+    local moveListed = false
+    for _, n in ipairs(A.namesIn(move.set) or {}) do
+        if n == move.name then moveListed = true end
+    end
+    ok(moveListed,
+       'and the exact pair it names is one the catalogue lists -- so it is a '
+           .. 'call GTA\'s own scripts make, not a name off a wiki',
+       move.set .. ' / ' .. move.name)
+end
+
+describe('health.audit')
+do
+    -- THE EXPLOIT THIS MEASURES, in one sentence: server/roster.lua samples the
+    -- ped's health four times a second and writes it into the same `entry.hp`
+    -- the damage arithmetic subtracts from, and the ped's health belongs to the
+    -- owning client -- so a modified client restores its own ledger 250ms after
+    -- every hit. These assertions are about the DETECTOR, which counts that and
+    -- changes nothing; the fix is a separate, playtested change.
+    local A = BR.Config.Combat.healthAudit
+    local ALIVE = { now = 10000, state = BR.PlayerState.ALIVE }
+
+    local function ctx(over)
+        local c = {}
+        for k, v in pairs(ALIVE) do c[k] = v end
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    -- ═══ THE SIGNAL ═══
+    local gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0, ctx(), A)
+    ok(gain == 70.0 and excuse == BR.HealthExcuse.COUNTED,
+        'a ped that reads a full bar over the ledger, with nothing to explain '
+            .. 'it, is counted in full',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- ═══ AND EVERY HONEST WAY TO READ HIGH, ONE AT A TIME ═══
+    --
+    -- Each of these is a REAL path in the running game, and if any of them ever
+    -- starts counting, the detector is broken and an honest player is about to
+    -- be accused. They are asserted separately rather than as one "no false
+    -- positives" case so that a failure names which window closed.
+
+    -- The world hurting somebody. The engine still owns falls, fire, drowning
+    -- and cars -- the server models none of them -- so the ledger FOLLOWS the
+    -- ped down. Wrong direction; never counted.
+    gain, excuse = BR.HealthUnexplainedGain(100.0, 30.0, ctx(), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.NONE,
+        'a fall, a fire or a car reads BELOW the ledger and is never the signal',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- The single largest source of honest divergence: the server subtracted
+    -- from the ledger and the client has not applied HIT_DAMAGE yet.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ lastHitAt = 10000 - (A.hurtGraceMs - 100) }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.HURT,
+        'damage still in flight to the client is excused, which is the window a '
+            .. 'bad ping lives in',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- ...AND THE GRACE ENDS. A window that never closed would excuse the whole
+    -- match for anybody who had been shot once.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ lastHitAt = 10000 - (A.hurtGraceMs + 100) }), A)
+    ok(gain == 70.0 and excuse == BR.HealthExcuse.COUNTED,
+        'and once the round trip is over the same reading counts',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- A med kit or shield. The server ISSUES the target and the client walks
+    -- its ped up to it, so the sampler reads the rise on the way past. This is
+    -- the one legitimate upward path the ledger does not already own, and it is
+    -- the reason a naive "refuse every rise" fix would break healing.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ healUntil = 10000 + 500 }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.HEALING,
+        'a med kit the SERVER issued is not a client inventing health',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- A revive or a respawn: here the LEDGER leads and the ped follows, so the
+    -- usual direction is reversed and the crossover can spike the other way.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ settleUntil = 10000 + 500 }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.SETTLING,
+        'a revive the server wrote is excused while the ped catches up',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- #191, AND IT LANDED THE SAME WEEK AS THIS DETECTOR. A downed player rides
+    -- an ambulance to a drop-off and BR.Combat.revive hands their health back on
+    -- arrival. A detector that cried wolf on the feature shipping beside it
+    -- would have been switched off in its first playtest.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+        ctx({ rescue = { id = 1 } }), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.RESCUE,
+        'a player being rescued (#191) is never the signal',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- Only a player who can be SHOT is worth defending. A dead player's ped gets
+    -- resurrected for the spectator camera; a lobby ped is whatever the lobby
+    -- left it on. Both would read high forever and neither means anything.
+    for _, st in ipairs({ BR.PlayerState.OUT, BR.PlayerState.LOBBY,
+                          BR.PlayerState.BUS, BR.PlayerState.DBNO }) do
+        gain, excuse = BR.HealthUnexplainedGain(30.0, 100.0,
+            ctx({ state = st }), A)
+        ok(gain == 0.0 and excuse == BR.HealthExcuse.NOT_LIVE,
+            ('a %s player is not audited'):format(tostring(st)),
+            ('%s / %s'):format(tostring(gain), tostring(excuse)))
+    end
+
+    -- Rounding. Two float pipelines, both floored.
+    gain, excuse = BR.HealthUnexplainedGain(30.0, 30.0 + A.toleranceHp, ctx(), A)
+    ok(gain == 0.0 and excuse == BR.HealthExcuse.TOLERANCE,
+        'a point of float disagreement is arithmetic, not evidence',
+        ('%s / %s'):format(tostring(gain), tostring(excuse)))
+
+    -- ═══ AND THE ARITHMETIC CANNOT BE DISABLED BY A BAD NUMBER ═══
+    --
+    -- `nan > x` is false for every x, so a NaN sliding through would read as "no
+    -- gain" and silently switch the detector off for that player -- which is the
+    -- one failure mode an anticheat must not have.
+    local nan = 0.0 / 0.0
+    gain, excuse = BR.HealthUnexplainedGain(nan, 100.0, ctx(), A)
+    ok(gain == 0.0, 'a NaN ledger does not throw', tostring(gain))
+    gain, excuse = BR.HealthUnexplainedGain(30.0, nan, ctx(), A)
+    ok(gain == 0.0, 'nor a NaN sample', tostring(gain))
+    gain = BR.HealthUnexplainedGain(nil, 100.0, ctx(), A)
+    ok(gain == 0.0, 'and a player with no ledger yet has no opinion to contradict',
+        tostring(gain))
+
+    -- ═══ THE TALLY ═══
+    --
+    -- CUMULATIVE, because that is what makes this a good signal: the excuses
+    -- above absorb every legitimate rise, so honest play sits at zero, while the
+    -- exploit has to repeat the lie four times a second to keep working.
+    local t = nil
+    t = BR.HealthTally(t, 70.0, BR.HealthExcuse.COUNTED)
+    t = BR.HealthTally(t, 40.0, BR.HealthExcuse.COUNTED)
+    ok(t.hp == 110.0 and t.samples == 2 and t.peak == 70.0,
+        'the tally accumulates, counts samples and remembers the worst one',
+        ('%s / %s / %s'):format(tostring(t.hp), tostring(t.samples),
+            tostring(t.peak)))
+
+    -- The excuse breakdown is the false-positive audit -- it is what `/brhealth`
+    -- prints beside the totals so an operator can see WHAT was thrown away.
+    t = BR.HealthTally(t, 0.0, BR.HealthExcuse.HURT)
+    t = BR.HealthTally(t, 0.0, BR.HealthExcuse.HURT)
+    t = BR.HealthTally(t, 0.0, BR.HealthExcuse.HEALING)
+    ok(t.excused[BR.HealthExcuse.HURT] == 2
+       and t.excused[BR.HealthExcuse.HEALING] == 1,
+        'and it records which excuse absorbed each sample',
+        ('%s / %s'):format(tostring(t.excused[BR.HealthExcuse.HURT]),
+            tostring(t.excused[BR.HealthExcuse.HEALING])))
+
+    -- ...BUT NOT `NONE`, which is every ordinary sample of every honest player.
+    -- 48 players at 4Hz is two hundred a second, and a counter that ticked on all
+    -- of them would be a number nobody could read anything out of.
+    local before = t.excused[BR.HealthExcuse.NONE]
+    t = BR.HealthTally(t, 0.0, BR.HealthExcuse.NONE)
+    ok(before == nil and t.excused[BR.HealthExcuse.NONE] == nil,
+        'the ordinary case is not tallied at all', tostring(before))
+
+    -- Totals unchanged by the excused samples: an excuse must not be able to
+    -- move the number the bar is measured against.
+    ok(t.hp == 110.0, 'an excused sample never adds to the total',
+        tostring(t.hp))
+
+    -- ═══ THE BAR, AND WHY IT FIRES ONCE ═══
+    ok(BR.HealthShouldReport({ hp = A.reportHp }, A),
+        'a whole bar of unissued health earns an operator line')
+    ok(not BR.HealthShouldReport({ hp = A.reportHp - 1 }, A),
+        'and one point short of it does not')
+    ok(not BR.HealthShouldReport({ hp = A.reportHp * 10, reportedAt = 1 }, A),
+        'a player already reported is not reported again -- a working exploit '
+            .. 'crosses the bar on EVERY sample after the first, and four console '
+            .. 'lines a second is the same as no detector')
+    ok(not BR.HealthShouldReport(nil, A), 'and an untouched player is not reported')
+end
+
+-- ------------------------------------------------------------ chat screen ---
+--
+-- ═══ THE FALSE-POSITIVE TABLE IS THE POINT OF THIS BLOCK ═══
+--
+-- A refused message is SHADOWED: the sender sees it post and nobody else ever
+-- receives it. So a player wrongly caught here is never told and cannot adapt,
+-- which makes a false positive strictly worse than a false negative and makes a
+-- suite that only feeds this obvious URLs worth nothing at all. The first table
+-- below is every shape that LOOKS like a domain and is not -- decimals, times,
+-- version numbers, file names, ratios, English sentences whose full stop has no
+-- space after it -- and it is longer than the table of things that must be
+-- caught, deliberately.
+
+describe('chat.screen.safe')
+do
+    local S = BR.ChatScreen
+
+    -- Numbers, which is where the naive `%a+%.%a+` rule dies first.
+    for _, s in ipairs({
+        '3.5', '12.30', '1.2.3', 'v1.2.3', '2.5:1', 'my k/d is 2.5',
+        'the storm is at 4.5km', 'he has 1,000 hp', 'score 10 - 7',
+        -- ═══ DOTTED NUMBERS THE OCTET RULE RESCUES ═══
+        --
+        -- A bare quad IS refused now (see chat.screen.ipv4). These are not
+        -- quads: an octet over 255, more than four parts, or more than three
+        -- digits. Validating 0-255 is what keeps a Windows build number and a
+        -- long version string out of a moderation queue.
+        '1.2.3.400', '999.1.1.1', '256.1.1.1', '1.2.3.256',
+        'build 10.0.22631.1', '1.2.3.4.5', '1.2.3.4567',
+        'build 22631.4890.1.2',
+    }) do
+        ok(S.screen(s) == nil, ('a number is not a link: %q'):format(s))
+    end
+
+    -- ═══ COORDINATES, WHICH IS THE FALSE POSITIVE THAT WOULD BITE THE OWNER ═══
+    --
+    -- He authors the map with /brcoords and /brsurveydump and pastes their
+    -- output constantly. Every position this project prints is comma-separated
+    -- -- `%.1f, %.1f, %.1f` in client/debug.lua, survey.lua, probe.lua,
+    -- rescue.lua -- so a coordinate has commas between its numbers and cannot
+    -- satisfy a rule that requires dots. These are real output lines copied from
+    -- those files' format strings.
+    for _, s in ipairs({
+        '[br_core] -1234.56, 789.01, 25.30   heading 178.5',
+        '  survey: point 3 at -455.1, 1204.8',
+        '  centroid   102.4, -55.9   (polygon, area-weighted)',
+        '     1250.0, -3096.4, 12.9,',
+        '  destination   Hospital at (295.8, -1446.2, 29.9)',
+        'im at 1234.5 678.9', 'x 100.5 y 200.5 z 30.1',
+    }) do
+        ok(S.screen(s) == nil, ('a pasted coordinate is not a link: %q'):format(s))
+    end
+
+    -- File names, including three whose extension IS a real country-code
+    -- domain. This repository is made of these strings.
+    for _, s in ipairs({
+        'config.lua', 'main.ts', 'README.md', 'check.sh', 'server.cfg',
+        'look at incident_build.lua', 'the file is chat.lua',
+    }) do
+        ok(S.screen(s) == nil, ('a filename is not a link: %q'):format(s))
+    end
+
+    -- English whose full stop has no space after it. Every one of these reaches
+    -- a two-letter country domain, and every one of those is off the list.
+    for _, s in ipairs({
+        'let me know.it works', 'i.win',
+        'call.me', 'log.in', 'on.top of the hill', 'that.is the one',
+        'over.at the tower', 'trust.me on this', 'we.are ready',
+    }) do
+        ok(S.screen(s) == nil, ('an English sentence is not a link: %q'):format(s))
+    end
+
+    -- ═══ A BARE WORD IS NOT A HOST ═══
+    --
+    -- The host list names `twitch.tv` and `discord.com`, never `twitch` or
+    -- `discord`, so an ordinary sentence about either is untouched. This falls
+    -- out of matching the whole host rather than its first label; it is asserted
+    -- because the tempting shortcut -- a keyword list -- would silently eat all
+    -- of these.
+    for _, s in ipairs({
+        'meet me on twitch', 'check discord', 'the discord is dead',
+        'streaming on twitch later', 'reddit is down', 'my steam name is bob',
+        'telegram me later', 'x marks the spot', 'i got a kick from that',
+        'medal of honor', 'im on youtube sometimes',
+    }) do
+        ok(S.screen(s) == nil, ('a bare word is not a host: %q'):format(s))
+    end
+
+    -- ═══ THE HOST BOUNDARY, WHICH IS THE WHOLE DIFFICULTY OF A HOST LIST ═══
+    --
+    -- A plain substring search for `bit.ly` would flag `bit.lyrics`. The right
+    -- boundary rejects it: the character after the match is a letter.
+    for _, s in ipairs({
+        'bit.lyrics', 'the bit.lyrics site', 'is.gdi', 't.mex', 'youtu.beam',
+        'redd.itch', 'x.commander', 'box.commander',
+    }) do
+        ok(S.screen(s) == nil,
+            ('a host followed by more letters is not that host: %q'):format(s))
+    end
+
+    -- ...and the LEFT boundary, which must still allow a subdomain. The short
+    -- official domains are where this earns its keep: `s.team` is Steam's
+    -- shortener and "his.team" is two words somebody typed.
+    for _, s in ipairs({
+        'shirt.me', 'meet.me', 'at.me', 'this.gd', 'gods.id', 'ov.gd',
+        'his.team', 'vs.team', 'from.me', 'team.me', 'big.me',
+    }) do
+        ok(S.screen(s) == nil,
+            ('a host preceded by more letters is not that host: %q'):format(s))
+    end
+
+    -- The same pair from the other side, for the hosts added after a live
+    -- probe: a letter on either end and it is not the host.
+    for _, s in ipairs({
+        'm.method', 'ig.member', 's.teams', 'dis.gdi', 'gg.ggg',
+        'discord.men', 'threads.network',
+    }) do
+        ok(S.screen(s) == nil, ('a short host inside a word is not it: %q'):format(s))
+    end
+end
+
+describe('chat.screen.boundary')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ CAUGHT, BUT NOT BY THE HOST RULE -- AND THE DIFFERENCE IS THE TEST ═══
+    --
+    -- `notbit.ly` and `taco.co` were put forward as strings the host list must
+    -- not fire on, and it does not. They are still REFUSED, because both are
+    -- genuine domain shapes and the generic TLD rule catches them: `notbit.ly`
+    -- is a registrable `.ly` domain and `taco.co` a registrable `.co` one.
+    --
+    -- SO THE ASSERTION IS ABOUT ATTRIBUTION, NOT ABOUT PASSING. If the host
+    -- boundary were broken these would come back as `shortener` -- the case
+    -- would tell a moderator the player posted a bit.ly link when they did not.
+    -- That is the failure worth pinning, and "it was refused" cannot see it.
+    ok(S.screen('notbit.ly') == S.LINK,
+        'notbit.ly is refused as a plain domain, NOT attributed to bit.ly')
+    ok(S.screen('taco.co') == S.LINK,
+        'taco.co is refused as a plain domain, NOT attributed to t.co')
+    ok(S.screen('somewhere.gg') == S.LINK,
+        'and a .gg domain that is not Discord is not called an invite')
+
+    -- The same string with a real boundary IS the host.
+    ok(S.screen('bit.ly/x') == S.SHORTENER, 'bit.ly with a path is the shortener')
+    ok(S.screen('go to bit.ly now') == S.SHORTENER, 'and so is bit.ly between spaces')
+
+    -- ONE REJECTED OCCURRENCE MUST NOT END THE SEARCH. The first `bit.ly` here
+    -- fails the right-hand boundary and the second passes it; a matcher that
+    -- gave up on the first would miss the advert sitting next to it.
+    ok(S.screen('bit.lyrics and bit.ly/x') == S.SHORTENER,
+        'a rejected match does not stop the scan')
+
+    -- Scheme and `www.` need no special handling -- both leave a boundary
+    -- character on the left of the host.
+    for _, s in ipairs({
+        'bit.ly/x', 'www.bit.ly/x', 'https://bit.ly/x', 'HTTPS://BIT.LY/X',
+        'http://www.bit.ly/x', 'sub.bit.ly/x', '(bit.ly/x)', 'see: bit.ly/x',
+    }) do
+        ok(S.screen(s) == S.SHORTENER,
+            ('the host is found with or without a scheme: %q'):format(s))
+    end
+
+    -- Abbreviations and ordinary chat.
+    for _, s in ipairs({
+        'e.g. the storm', 'U.S.A.', 'Mr. Smith', 'gg wp', 'nice shot!',
+        'player.name', 'im at the barn', 'rotate north now',
+    }) do
+        ok(S.screen(s) == nil, ('ordinary chat is not a link: %q'):format(s))
+    end
+
+    -- ═══ LATIN WITH ITS ACCENTS, WHICH IS THE OWNER'S SECOND ANSWER ═══
+    --
+    -- "Latin including accents. Allow é ñ ü å and friends -- European players
+    -- must be able to write normally, and to type their own names."
+    for _, s in ipairs({
+        'ça va, café, jalapeño',            -- French, Spanish
+        'Grüße aus München',                  -- German, including the eszett
+        'Zoë and Håkan and Æsir',            -- diaeresis, ring, ligature
+        'Łódź Kraków Poznań',               -- Polish
+        'Příliš žluťoučký kůň',        -- Czech
+        'Ngô Đình Diệm',                    -- Vietnamese (Latin Extended Add.)
+        'Şişli İstanbul',                     -- Turkish
+        'așezare română',                     -- Romanian (Latin Extended-B)
+        'naïve résumé — “quoted”',        -- curly quotes and an em dash
+        '€50 for the car',                     -- the euro sign
+    }) do
+        ok(S.screen(s) == nil, ('Latin with accents is accepted: %q'):format(s))
+    end
+
+    -- SYMBOLS AND EMOJI ARE NOT A SCRIPT. An interpretation, flagged as one in
+    -- chat_screen.lua -- but a chosen one, so it is pinned rather than left to
+    -- be discovered by a player who gets shadow-banned for typing "gg".
+    for _, s in ipairs({ 'gg 🔥', 'nice ✔', 'go → north', '☠ dead' }) do
+        ok(S.screen(s) == nil, ('an emoji is not a script: %q'):format(s))
+    end
+end
+
+describe('chat.screen.caught')
+do
+    local S = BR.ChatScreen
+
+    for _, s in ipairs({
+        'join https://evil.example/now', 'HTTP://SHOUTY.COM',
+        'go to http://a.b', 'www.evil.co.uk', 'WWW.EVIL.COM',
+        'come to evilserver.com', 'best.xyz now',
+        'my server 1.2.3.4:30120', 'try mysite.online today',
+        'x.io', 'shop.store', 'a.click here',
+    }) do
+        ok(S.screen(s) == S.LINK, ('a link is caught: %q'):format(s))
+    end
+
+    -- ═══ `.ly` -- THE OWNER OVERRULED THE ORIGINAL CALL ON 2026-08-30 ═══
+    --
+    -- These two were asserted SAFE in the first round of this feature, on the
+    -- reasoning that "definite.ly" and "actual.ly" are things people type. The
+    -- owner reversed it: new shorteners appearing is a certainty, a host list
+    -- only catches the ones somebody has named, and Libya's ccTLD is used almost
+    -- entirely by shorteners.
+    --
+    -- THEY ARE INVERTED RATHER THAN DELETED. A player typing "definite.ly" is
+    -- now shadowed, and that is a known and accepted cost rather than an
+    -- oversight -- so it is written down as a passing assertion. If somebody
+    -- later wonders whether anybody thought about it, this is the answer.
+    for _, s in ipairs({ 'definite.ly', 'actual.ly', 'friend.ly', 'simp.ly' }) do
+        ok(S.screen(s) == S.LINK,
+            ('ACCEPTED COST: an English word ending in .ly is shadowed: %q'):format(s))
+    end
+
+    for _, s in ipairs({
+        'привет всем', 'Привет', '你好', 'こんにちは', '안녕',
+        'مرحبا', 'שלום', 'สวัสดี', 'Γειά σου', 'გამარჯობა',
+    }) do
+        ok(S.screen(s) == S.SCRIPT, ('a non-Latin script is caught: %q'):format(s))
+    end
+
+    -- ONE LATIN LETTER SWAPPED FOR A CYRILLIC LOOKALIKE. The owner chose the
+    -- simple rule over mixed-script detection, and this still catches it --
+    -- not because anything understands the substitution, but because a
+    -- character outside Latin is refused wherever it appears.
+    local homo = 'disc' .. string.char(0xD0, 0xBE) .. 'rd.com'
+    ok(S.screen(homo) ~= nil, 'a Cyrillic lookalike inside a Latin word is caught')
+
+    -- INVISIBLE CHARACTERS ARE NOT PUNCTUATION. Zero-width and
+    -- direction-override codepoints live in the same Unicode block as the
+    -- quotes and dashes that ARE allowed, which is why that allowance is a
+    -- list of individual characters rather than a range.
+    ok(S.screen('a' .. string.char(0xE2, 0x80, 0x8B) .. 'b') == S.SCRIPT,
+        'a zero-width space is refused')
+    ok(S.screen('a' .. string.char(0xE2, 0x80, 0xAE) .. 'b') == S.SCRIPT,
+        'a right-to-left override is refused')
+
+    -- MALFORMED UTF-8 IS NOT TEXT. A lone continuation byte, and an overlong
+    -- encoding of '/' -- the oldest way there is to smuggle a character past a
+    -- reader that decodes and a check that does not.
+    ok(S.screen('ok' .. string.char(0x80)) == S.SCRIPT,
+        'a stray continuation byte is refused')
+    ok(S.screen(string.char(0xC0, 0xAF)) == S.SCRIPT,
+        'an overlong encoding is refused rather than decoded')
+
+    ok(S.screen('') == nil and S.screen(nil) == nil,
+        'an empty or absent line is not a refusal')
+
+    -- THE LINK IS REPORTED IN PREFERENCE TO THE SCRIPT when a line is both.
+    local both = 'привет evilserver.com'
+    ok(S.screen(both) == S.LINK,
+        'a Cyrillic advert reads as a link, which is the finding a reviewer wants')
+end
+
+describe('chat.screen.hosts')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ THE HOSTS NO TLD RULE REACHES, WHICH IS WHY THE LIST EXISTS ═══
+    --
+    -- Every one of these lives on a country domain that carries ordinary
+    -- traffic and must NOT be blanket-blocked -- `.gd`, `.gy`, `.at`, `.id`,
+    -- `.be`, `.me`, `.it`, `.re`, `.am`, `.ee`, `.de`, `.watch`, `.new`.
+    -- Without a host list they all go straight through.
+    local byTld = {
+        ['is.gd/x'] = S.SHORTENER, ['v.gd/x'] = S.SHORTENER,
+        ['rb.gy/x'] = S.SHORTENER, ['shorturl.at/x'] = S.SHORTENER,
+        ['s.id/x'] = S.SHORTENER, ['shrtco.de/x'] = S.SHORTENER,
+        ['surl.li/x'] = S.SHORTENER, ['linktr.ee/me'] = S.SHORTENER,
+        ['goo.gl/x'] = S.SHORTENER,
+        ['cfx.re/join/abcd'] = S.INVITE, ['discord.new'] = S.INVITE,
+        ['youtu.be/abc'] = S.SOCIAL, ['t.me/joinchat'] = S.SOCIAL,
+        ['wa.me/123'] = S.SOCIAL, ['fb.me/x'] = S.SOCIAL,
+        ['redd.it/x'] = S.SOCIAL, ['instagr.am/x'] = S.SOCIAL,
+        ['fb.watch/x'] = S.SOCIAL,
+    }
+    for s, want in pairs(byTld) do
+        ok(S.screen(s) == want,
+            ('a host no TLD rule reaches is caught: %q -> %s'):format(s, want))
+    end
+
+    -- ═══ THE ONE THAT MATTERS MOST ON A FiveM SERVER ═══
+    --
+    -- `cfx.re/join/<id>` is the link the FiveM client itself opens to connect,
+    -- which makes it exactly how a rival GTA RP server gets advertised in this
+    -- gamemode's chat. `.re` is on no TLD list and never will be.
+    ok(S.screen('come play cfx.re/join/9k2mvp') == S.INVITE,
+        'a cfx.re join link is an invite to another server')
+
+    -- ═══ A NAMED HOST BEATS THE GENERIC DOMAIN RULE ═══
+    --
+    -- All of these would be refused anyway by their TLD. Naming them changes
+    -- what the incident SAYS, which is the whole reason the reason exists: a
+    -- shortener is somebody hiding a destination, an invite is a named rival
+    -- community, and a bare domain is often a player linking their own clip.
+    local refined = {
+        ['discord.gg/abcdef'] = S.INVITE,   -- would be `link` via .gg
+        ['top.gg/x'] = S.INVITE,
+        ['guilded.gg/x'] = S.INVITE,
+        ['discord.com/invite/x'] = S.INVITE, -- would be `link` via .com
+        ['discordapp.com/invite/x'] = S.INVITE,
+        ['bit.ly/x'] = S.SHORTENER,          -- would be `link` via .ly
+        ['tinyurl.com/x'] = S.SHORTENER,
+        ['t.co/x'] = S.SHORTENER,            -- would be `link` via .co
+        ['twitch.tv/x'] = S.SOCIAL,          -- would be `link` via .tv
+        ['x.com/x'] = S.SOCIAL,
+        ['twitter.com/x'] = S.SOCIAL,
+        ['youtube.com/watch?v=x'] = S.SOCIAL,
+        ['steamcommunity.com/id/x'] = S.SOCIAL,
+        ['kick.com/x'] = S.SOCIAL,
+        ['medal.tv/x'] = S.SOCIAL,
+    }
+    for s, want in pairs(refined) do
+        ok(S.screen(s) == want,
+            ('a named host outranks the generic rule: %q -> %s'):format(s, want))
+    end
+
+    -- A SUBDOMAIN NEEDS NO ENTRY OF ITS OWN, because the left boundary allows a
+    -- dot. This is what keeps the config list short enough to maintain, and it
+    -- is why the official share hosts below need no lines in the config.
+    for _, s in ipairs({
+        'chat.whatsapp.com/x', 'vm.tiktok.com/x', 'vt.tiktok.com/x',
+        'clips.twitch.tv/x', 'api.whatsapp.com/send?phone=1',
+    }) do
+        ok(S.screen(s) == S.SOCIAL, ('a subdomain resolves to its host: %q'):format(s))
+    end
+    ok(S.screen('maps.app.goo.gl/x') == S.SHORTENER,
+        'and Google Maps share links resolve to goo.gl, which is still issued')
+
+    -- ═══ THE HOSTS THAT NEEDED A LIVE PROBE TO GET RIGHT ═══
+    --
+    -- Each of these was wrong in the first draft of the config, and each was
+    -- corrected against an HTTP request rather than a headline:
+    --
+    --   goo.gl        NOT dead. Google announced a total shutdown for
+    --                 2025-08-25 and then reversed it on 2025-08-01, keeping
+    --                 every link that was still being used.
+    --   adf.ly        NOT dead, despite the widely-used public shortener
+    --                 blocklists filing it as inactive: it was folded into
+    --                 Linkvertise and its paths still redirect.
+    --   threads.com   the primary Threads domain since April 2025;
+    --                 `threads.net` is now only a redirect to it.
+    --   invites.gg    the live service. `invite.gg` -- the spelling that gets
+    --                 remembered -- has had its origin down.
+    for _, s in ipairs({ 'goo.gl/x', 'adf.ly/1abcde', 'linkvertise.com/x' }) do
+        ok(S.screen(s) == S.SHORTENER, ('a live shortener is caught: %q'):format(s))
+    end
+    ok(S.screen('threads.com/@x') == S.SOCIAL, 'the current Threads domain is caught')
+    ok(S.screen('threads.net/@x') == S.SOCIAL, 'and so is the one it replaced')
+    ok(S.screen('invites.gg/x') == S.INVITE, 'the live invite service is caught')
+    ok(S.screen('invite.gg/x') == S.INVITE, 'and the spelling people misremember')
+end
+
+describe('chat.screen.ipv4')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ THE PORT WAS REQUIRED UNTIL THE OWNER OVERRULED IT ON 2026-08-30 ═══
+    --
+    -- "Can we also make it block IP addresses?" The original rule wanted
+    -- `1.2.3.4:30120`, because a bare `1.2.3.4` is also a plausible four-part
+    -- version number. `1.2.3.4` was asserted SAFE in the round before this one.
+    --
+    -- IT IS INVERTED RATHER THAN DELETED, like `definite.ly` before it. A player
+    -- typing a bare quad is now shadowed, and that is a known and accepted cost
+    -- written down as a passing assertion rather than left to be rediscovered as
+    -- a bug by whoever finds it.
+    ok(S.screen('1.2.3.4') == S.LINK,
+        'ACCEPTED COST: a bare quad that is also a version number is shadowed')
+    ok(S.screen('v1.2.3.4') == S.LINK,
+        'ACCEPTED COST: and so is the same thing with a v in front')
+
+    for _, s in ipairs({
+        '10.0.0.1', '127.0.0.1', '192.168.1.1', '8.8.8.8', '0.0.0.0',
+        '255.255.255.255', 'connect 1.2.3.4:30120', 'join 51.68.204.11 now',
+        'connect to 51.68.204.11:30120 for the good server',
+    }) do
+        ok(S.screen(s) == S.LINK, ('an address is caught: %q'):format(s))
+    end
+
+    -- A SENTENCE THAT ENDS ON AN ADDRESS still ends on an address. The
+    -- right-hand boundary rejects a dot only when a DIGIT follows it, which is
+    -- what tells `1.2.3.4.5` from `192.168.1.1.` at the end of a line.
+    ok(S.screen('the server is 192.168.1.1.') == S.LINK,
+        'a full stop after an address does not hide it')
+    ok(S.screen('1.2.3.4.5') == nil,
+        'but a fifth part means it was never an address')
+
+    -- ═══ THE OCTETS ARE VALIDATED, AND THAT IS A DELIBERATE CHOICE ═══
+    --
+    -- `%d+` alone would call all of these addresses. Requiring 0-255 in at most
+    -- three digits costs nothing in true positives -- an address somebody can
+    -- connect to is a valid one -- and it keeps long version strings out of a
+    -- moderation queue.
+    for _, s in ipairs({
+        '1.2.3.400', '999.1.1.1', '256.0.0.1', '1.1.1.256', '1234.1.1.1',
+        '10.0.22631.1',
+    }) do
+        ok(S.screen(s) == nil, ('not an address, so not a link: %q'):format(s))
+    end
+end
+
+describe('chat.screen.scheme')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ THE ONE FORM NO HOST LIST CAN CATCH ═══
+    --
+    -- `fivem://connect/<code>` is the protocol handler the FiveM client
+    -- registers. It joins a server in one click and it contains no hostname and
+    -- no dot -- so it satisfies neither the TLD rule nor the host rule, and a
+    -- filter built entirely out of domains would pass the single most direct
+    -- "come play over here" a player can type in this gamemode.
+    for _, s in ipairs({
+        'fivem://connect/abcdef', 'redm://connect/xyz',
+        'join fivem://connect/9k2mvp now', 'FIVEM://CONNECT/ABC',
+        'fivem://connect/127.0.0.1:30120',
+    }) do
+        ok(S.screen(s) == S.INVITE, ('a connect scheme is an invite: %q'):format(s))
+    end
+
+    -- AND IT MUST NOT FIRE ON THE WORD. "i play fivem" is a sentence; the
+    -- scheme needs its `://`.
+    for _, s in ipairs({
+        'i play fivem', 'fivem is great', 'redm too', 'connect to the server',
+        'fivem servers are busy',
+    }) do
+        ok(S.screen(s) == nil, ('the bare word is not a scheme: %q'):format(s))
+    end
+end
+
+describe('chat.screen.config')
+do
+    local S = BR.ChatScreen
+    local C = BR.Config.ChatScreen
+
+    -- ═══ THE LISTS ARE CONFIG, AND THE SUITE READS THE SHIPPED ONES ═══
+    --
+    -- The owner maintains these without a developer, so the thing worth pinning
+    -- is that the module actually READS them -- a module that had quietly kept
+    -- its own copy would pass every case above while ignoring anything he added.
+    ok(type(C) == 'table', 'the shipped config exists')
+    ok(#C.tlds > 0, 'and names some TLDs', tostring(#C.tlds))
+    ok(#C.hosts > 0, 'and some host groups', tostring(#C.hosts))
+
+    local total = 0
+    for _, g in ipairs(C.hosts) do total = total + #g.domains end
+    ok(total > 40, 'the host list is populated', tostring(total))
+
+    -- EVERY GROUP'S REASON MUST BE ONE THE REST OF THE SYSTEM KNOWS. A typo in
+    -- the config would otherwise reach `fromChat`, which refuses to file a case
+    -- for a reason with no sentence -- so the refusal would work and the
+    -- INCIDENT would silently not exist.
+    local known = {}
+    for _, r in ipairs(S.REASONS) do known[r] = true end
+    for _, g in ipairs(C.hosts) do
+        ok(known[g.reason] == true,
+            ('config group reason %q is a known reason'):format(tostring(g.reason)))
+        ok(BR.IncidentBuild.CHAT_REASON[g.reason] ~= nil,
+            ('config group reason %q has a sentence for the console'):format(
+                tostring(g.reason)))
+    end
+
+    -- AND EVERY REASON THE SCREEN CAN RETURN HAS ONE TOO, which is the same
+    -- contract from the other end.
+    for _, r in ipairs(S.REASONS) do
+        ok(BR.IncidentBuild.CHAT_REASON[r] ~= nil,
+            ('reason %q has a sentence in CHAT_REASON'):format(r))
+    end
+
+    -- NO BARE WORDS IN THE HOST LIST. An entry without a dot would match a
+    -- whole English word -- `twitch` would eat "meet me on twitch" -- and it
+    -- would do it silently, to every player who used that word, forever.
+    for _, g in ipairs(C.hosts) do
+        for _, h in ipairs(g.domains) do
+            ok(h:find('.', 1, true) ~= nil and h == h:lower(),
+                ('host %q is a dotted lowercase hostname'):format(h))
+        end
+    end
+
+    -- ═══ EVERY SHIPPED HOST IS ACTUALLY CAUGHT, GENERATED FROM THE CONFIG ═══
+    --
+    -- THIS EXISTS BECAUSE A HAND-WRITTEN TABLE MISSED ONE. Deleting `s.team`
+    -- from the config left the whole suite green -- the entry was in the config,
+    -- in the report count and in nobody's assertion, which is the same
+    -- "finished code nobody calls" this project keeps shipping. A list of
+    -- examples can only ever cover the examples somebody thought of.
+    --
+    -- GENERATED, SO THE NEXT ENTRY THE OWNER ADDS IS COVERED THE MOMENT HE ADDS
+    -- IT -- and an entry that cannot be matched at all (a typo, a stray space, a
+    -- leading dot) fails here rather than sitting in the file looking effective.
+    for _, g in ipairs(C.hosts) do
+        for _, h in ipairs(g.domains) do
+            ok(S.screen(h .. '/x') == g.reason,
+                ('shipped host %q is caught as %s'):format(h, g.reason),
+                tostring(S.screen(h .. '/x')))
+            -- ...and bare, with no path, which is how somebody types it in chat.
+            ok(S.screen('come to ' .. h) == g.reason,
+                ('shipped host %q is caught mid-sentence'):format(h))
+        end
+    end
+
+    -- The same for the schemes.
+    for _, g in ipairs(C.schemes or {}) do
+        for _, p in ipairs(g.prefixes or {}) do
+            ok(S.screen(p .. 'connect/abc') == g.reason,
+                ('shipped scheme %q is caught as %s'):format(p, g.reason))
+        end
+    end
+
+    -- ═══ AND A FIXED LIST, BECAUSE THE GENERATED ONE ABOVE IS BLIND IN EXACTLY
+    -- ONE DIRECTION ═══
+    --
+    -- A test that walks the config cannot notice an entry LEAVING it. Deleting
+    -- `s.team` from the config deletes its assertion along with it, and the
+    -- suite stays green -- which is precisely what happened when this was
+    -- mutated. The generated block still earns its place: it catches a typo, a
+    -- wrong reason, and an entry that cannot be matched at all, and it covers
+    -- whatever the owner adds next without anybody editing this file.
+    --
+    -- THIS BLOCK IS THE OTHER HALF. These are the hosts whose removal would
+    -- matter most -- the connect link, the invite hosts, the shorteners nothing
+    -- else reaches -- written down by hand so that taking one out of the config
+    -- is a decision somebody makes here as well as there.
+    local canaries = {
+        ['cfx.re/join/abc'] = S.INVITE,
+        ['discord.gg/x'] = S.INVITE, ['discord.com/invite/x'] = S.INVITE,
+        ['discordapp.com/invite/x'] = S.INVITE, ['dis.gd/x'] = S.INVITE,
+        ['dsc.gg/x'] = S.INVITE, ['invites.gg/x'] = S.INVITE,
+        ['bit.ly/x'] = S.SHORTENER, ['t.co/x'] = S.SHORTENER,
+        ['is.gd/x'] = S.SHORTENER, ['goo.gl/x'] = S.SHORTENER,
+        ['rb.gy/x'] = S.SHORTENER, ['tinyurl.com/x'] = S.SHORTENER,
+        ['linktr.ee/x'] = S.SHORTENER, ['linkvertise.com/x'] = S.SHORTENER,
+        ['youtu.be/x'] = S.SOCIAL, ['t.me/x'] = S.SOCIAL,
+        ['twitch.tv/x'] = S.SOCIAL, ['x.com/x'] = S.SOCIAL,
+        ['s.team/x'] = S.SOCIAL, ['ig.me/x'] = S.SOCIAL, ['m.me/x'] = S.SOCIAL,
+        ['redd.it/x'] = S.SOCIAL, ['wa.me/x'] = S.SOCIAL,
+        ['fb.me/x'] = S.SOCIAL, ['instagr.am/x'] = S.SOCIAL,
+        ['threads.com/x'] = S.SOCIAL,
+    }
+    for s, want in pairs(canaries) do
+        ok(S.screen(s) == want,
+            ('CANARY: %q must stay caught as %s'):format(s, want),
+            tostring(S.screen(s)))
+    end
+end
+
+describe('chat.screen.clamp')
+do
+    local S = BR.ChatScreen
+
+    -- ═══ THE SERVER MUST NOT BE THE THING THAT BREAKS THE ENCODING ═══
+    --
+    -- `text:sub(1, 200)` counts BYTES. A message at the length limit whose 200th
+    -- byte is the first half of an accent used to truncate mid-character, which
+    -- rendered as a replacement glyph and nothing worse. With the screen above
+    -- reading the result it becomes malformed UTF-8, which is refused -- so the
+    -- player who wrote two hundred bytes of accented French would be silently
+    -- talking to nobody. This is the assertion that says so out loud.
+    local long = string.rep('a', 199) .. 'é'
+    ok(#long == 201, 'the fixture really is over the limit')
+    ok(S.screen(long:sub(1, 200)) == S.SCRIPT,
+        'a BYTE-wise truncation of accented text produces a refusal')
+    ok(S.screen(S.clamp(long, 200)) == nil,
+        '...and clamping on a character boundary does not')
+    ok(#S.clamp(long, 200) == 199, 'the clamp drops the whole character, not half of it')
+
+    ok(S.clamp('abc', 200) == 'abc', 'a short line is untouched')
+    ok(S.clamp('abcdef', 3) == 'abc', 'an ASCII line cuts exactly')
+    ok(S.clamp('', 200) == '', 'an empty line survives')
+    ok(S.clamp('éé', 3) == 'é', 'the cut lands between characters, never inside one')
+    ok(S.clamp('a🔥b', 3) == 'a', 'a four-byte character is dropped whole')
+    ok(S.clamp('abc', 0) == '', 'a zero budget yields nothing rather than erroring')
+end
+
+-- ------------------------------------------------- refused chat as evidence ---
+
+describe('evidence.refused')
+do
+    local buf = BR.EvidenceBuf.new({ chatMax = 3, refusedMax = 2 })
+    local meta = { license = 'lic:a', name = 'Ana', matchId = 1, now = 10 }
+
+    for i = 1, 5 do
+        buf:noteChat(1, { text = 'chatter ' .. i, at = i }, meta)
+    end
+    for i = 1, 4 do
+        buf:noteRefusedChat(1, { text = 'ad ' .. i, at = 100 + i, reason = 'link' }, meta)
+    end
+
+    local r = buf:get(1)
+    ok(#r.chat == 3 and r.chatSeen == 5, 'the chat window drops the oldest and counts what it dropped')
+    ok(#r.refused == 2 and r.refusedSeen == 4,
+        'the refused list has its own cap and its own counter')
+    ok(r.refused[1].text == 'ad 3' and r.refused[2].text == 'ad 4',
+        'and it keeps the most recent, like everything else here')
+    ok(r.refused[1].reason == 'link', 'the reason travels with the line')
+
+    -- ═══ THE SEPARATION IS THE WHOLE DESIGN, SO IT GETS ITS OWN CASE ═══
+    --
+    -- If refused lines lived in `chat` behind a flag, a player could push their
+    -- own evidence out of the buffer by carrying on talking -- and the volume is
+    -- chosen by the offender, which makes it exactly the wrong place to store a
+    -- finding. Here: one advert, then a flood of ordinary chat.
+    local b2 = BR.EvidenceBuf.new({ chatMax = 3, refusedMax = 5 })
+    b2:noteRefusedChat(2, { text = 'joinmy.server', at = 1, reason = 'link' }, meta)
+    for i = 1, 50 do
+        b2:noteChat(2, { text = 'noise ' .. i, at = 10 + i }, meta)
+    end
+    local r2 = b2:get(2)
+    ok(#r2.refused == 1 and r2.refused[1].text == 'joinmy.server',
+        'fifty lines of ordinary chat cannot evict the one that was refused')
+
+    -- Promotion raises this cap with the others, and never downward.
+    local b3 = BR.EvidenceBuf.new({ refusedMax = 2 })
+    b3:noteRefusedChat(3, { text = 'a', at = 1, reason = 'link' }, meta)
+    b3:promote('lic:a')
+    ok(b3:get(3).refusedMax == BR.EvidenceBuf.PROMOTED.refusedMax,
+        'a case opening raises the refused cap with the rest')
+    b3:promote('lic:a', { refusedMax = 1 })
+    ok(b3:get(3).refusedMax == BR.EvidenceBuf.PROMOTED.refusedMax,
+        'and a second, smaller promotion never lowers it')
+
+    local st = b2:stats()
+    ok(st.refusedRows == 1 and st.refusedSeen == 1 and st.refusedDropped == 0,
+        'the counters reach stats(), where a non-zero value is the only signal '
+            .. 'this server produces that a message was delivered to nobody')
+end
+
+-- ---------------------------------------------- refused chat on the timeline ---
+
+describe('incident.chat')
+do
+    local LIC = 'license:talker'
+    local CLEAR = {}
+    local function ev(over)
+        local e = {
+            name = 'Rae', license = LIC, matchId = 3,
+            reason = 'link', count = 1, at = 4000,
+        }
+        for k, v in pairs(over or {}) do
+            e[k] = (v ~= CLEAR) and v or nil
+        end
+        return e
+    end
+
+    ok(select(1, BR.IncidentBuild.fromChat(nil, {})) == nil,
+        'no event files nothing rather than throwing')
+
+    local p, why = BR.IncidentBuild.fromChat(ev({ license = CLEAR }), {})
+    ok(p == nil and why == 'no license', 'no license files nothing, and says why')
+
+    -- ═══ A LOBBY REFUSAL FILES, AND CARRIES ITS LINE ═══
+    --
+    -- This used to decline outright, which left lobby advertising invisible to
+    -- moderation -- and the lobby is exactly where a bot can idle indefinitely
+    -- without ever playing. The evidence buffer is deliberately NOT involved:
+    -- `clearMatch` only drops records whose matchId matches, so a matchless one
+    -- is never torn down and holding lobby chat would leak. The line rides the
+    -- event instead.
+    local lob = BR.IncidentBuild.fromChat(
+        ev({ matchId = CLEAR, text = 'come to evilserver.com', channel = 'global' }), {})
+    ok(lob ~= nil, 'a refusal in the LOBBY files a case')
+    ok(lob.matchId == nil, 'with no match on it, because there was none')
+    ok(#lob.matchTimeline == 1,
+        'and a timeline of exactly one row', lob and #lob.matchTimeline)
+
+    local row = lob.matchTimeline[1]
+    ok(row.kind == BR.IncidentBuild.CHAT_KIND, 'which is a chat_block row')
+    ok(row.text == 'come to evilserver.com',
+        'CARRYING THE LINE, which the event is the only source of here', row.text)
+    ok(row.reason == 'link' and row.channel == 'global',
+        'with its reason and channel')
+    ok(row.at == 4000, 'stamped at the moment of the refusal')
+    ok(lob.matchTimelineComplete == true,
+        'and COMPLETE, because one line was refused and one line is recorded')
+
+    -- The console gates the match RECORD card on matchId and gates the TIMELINE
+    -- on nothing, so this row renders with no console change. Pinned here
+    -- because the shape is what makes that true.
+    ok(lob.matchStartedAt == nil and lob.matchCreatedAt == nil,
+        'no match times are invented for a case that had no match')
+
+    -- IT IS STILL AN ANTICHEAT CASE, not a second kind of record.
+    ok(lob.kind == 'anticheat' and lob.category == 'system' and lob.severity == 'low',
+        'a lobby case is shaped like every other chat case')
+
+    -- THE TEXT IS CLAMPED ON A CHARACTER BOUNDARY HERE TOO. A line arriving
+    -- over length must not reach DynamoDB as a broken sequence.
+    local MAXT = BR.IncidentBuild.TIMELINE_LIMITS.MAX_CHAT_TEXT
+    local huge = BR.IncidentBuild.fromChat(
+        ev({ matchId = CLEAR, text = string.rep('a', MAXT - 1) .. 'é' }), {})
+    ok(#huge.matchTimeline[1].text <= MAXT,
+        'an over-long lobby line is capped', #huge.matchTimeline[1].text)
+    ok(BR.ChatScreen.nonLatinIn(huge.matchTimeline[1].text) == false,
+        'and is never cut through the middle of a character')
+
+    -- A lobby refusal with no text at all still files -- the case is the record
+    -- that it happened -- and stores an empty string rather than a nil that
+    -- would make the row unrenderable.
+    local notext = BR.IncidentBuild.fromChat(ev({ matchId = CLEAR }), {})
+    ok(notext ~= nil and notext.matchTimeline[1].text == '',
+        'a lobby refusal with no text still files, with an empty line')
+
+    -- AND A MATCH CASE IS UNTOUCHED BY ALL OF THIS. It gets its timeline from
+    -- `attachTimeline` out of the evidence buffer, so `fromChat` must NOT build
+    -- one -- two writers for one field is how the buffer's rows get overwritten.
+    local inMatch = BR.IncidentBuild.fromChat(
+        ev({ text = 'come to evilserver.com' }), {})
+    ok(inMatch.matchTimeline == nil,
+        'a case filed IN a match builds no timeline here -- attachTimeline owns it')
+
+    p, why = BR.IncidentBuild.fromChat(ev({ reason = 'vibes' }), {})
+    ok(p == nil and why == 'not a chat refusal reason',
+        'an unknown reason files nothing rather than a case saying "vibes"')
+
+    local out = BR.IncidentBuild.fromChat(ev(), {})
+    ok(out ~= nil, 'a licensed, in-match refusal files')
+    ok(out.kind == 'anticheat' and out.category == 'system',
+        'it is system-filed, not a report')
+    ok(out.reporterLicense == nil and out.reporterName == nil,
+        'and carries no reporter, which is what makes the console read it as ours')
+    ok(out.severity == 'low',
+        'severity is the floor: advertising is against the rules and is not cheating')
+    ok(out.subjectLicense == LIC and out.matchId == 3 and out.atGameMs == 4000,
+        'the subject, the match and the GAME clock ride along')
+
+    -- ═══ NO PLAYER TEXT IN THE SUMMARY ═══
+    --
+    -- The summary is the QUEUE row. Putting the advert in it would publish the
+    -- advert to the one page every admin reads.
+    local ad = 'join evilserver.com now'
+    local withText = BR.IncidentBuild.fromChat(ev(), {
+        { license = LIC, refused = { { at = 4000, text = ad, reason = 'link' } },
+          refusedSeen = 1, chat = {}, kills = {}, strips = {} },
+    })
+    ok(not withText.summary:find('evilserver', 1, true),
+        'the refused text never reaches the queue summary')
+    ok(withText.summary:find('held back', 1, true) ~= nil,
+        'which still says what happened')
+    ok(BR.IncidentBuild.chatSummaryOf(1, 'link'):find('1 chat message ', 1, true),
+        'one message is singular')
+    ok(BR.IncidentBuild.chatSummaryOf(3, 'link'):find('3 chat messages', 1, true),
+        'and three are plural')
+    ok(BR.IncidentBuild.chatSummaryOf(2, 'script')
+        :find(BR.IncidentBuild.CHAT_REASON.script, 1, true) ~= nil,
+        'the reason is the taxonomy sentence, not the symbol')
+end
+
+describe('incident.chat.timeline')
+do
+    local LIC = 'license:talker'
+    local function records(refused, extra)
+        local r = {
+            license = LIC, name = 'Rae', matchId = 3, squadId = nil,
+            openedAt = 0, chat = {}, kills = {}, strips = {},
+            refused = refused, refusedSeen = (extra or {}).seen or #refused,
+            chatSeen = 0, killsSeen = 0, stripsSeen = 0,
+        }
+        return { r }
+    end
+
+    local KIND = BR.IncidentBuild.CHAT_KIND
+    ok(KIND == 'chat_block',
+        'the kind is the literal close.js discriminates on -- verify.sh compares them')
+
+    local t = BR.IncidentBuild.timelineOpen({
+        matchId = 3, matchStartedAt = 1000,
+        records = records({
+            { at = 2000, text = 'first.com', reason = 'link', channel = 'global' },
+            { at = 3000, text = 'привет', reason = 'script', channel = 'squad' },
+        }),
+    })
+
+    local rows = {}
+    for _, e in ipairs(t.matchTimeline) do
+        if e.kind == KIND then rows[#rows + 1] = e end
+    end
+    ok(#rows == 2, 'both refused lines reach the timeline the case is filed with')
+    ok(rows[1].text == 'first.com' and rows[2].text == 'привет',
+        'CARRYING THE CHAT CONTENT, which is the thing the owner asked for')
+    ok(rows[1].reason == 'link' and rows[2].reason == 'script',
+        'and which rule refused it -- for a non-Latin line the text will not say')
+    ok(rows[1].channel == 'global' and rows[2].channel == 'squad',
+        'and whether it went to the lobby or to three squadmates')
+    ok(t.matchTimeline[1].kind == 'match_start',
+        'the anchor is still first')
+    ok(t.matchTimelineComplete == true, 'and nothing was dropped')
+    ok(t.matchChatWritten == 2, 'the close is told what not to write twice')
+
+    -- CHRONOLOGICAL ACROSS ALL THREE KINDS. close.js takes the LAST n entries
+    -- when a close overflows, so a list that appended one kind after another
+    -- would truncate by KIND rather than by age -- an offender who kept talking
+    -- would push their own kills off the record.
+    local mixed = BR.IncidentBuild.timelineOpen({
+        matchId = 3, matchStartedAt = 0,
+        records = {{
+            license = LIC, name = 'Rae', matchId = 3, openedAt = 0,
+            chat = {}, kills = {}, chatSeen = 0, killsSeen = 0,
+            strips = { { at = 200, weapon = 42 } }, stripsSeen = 1,
+            refused = {
+                { at = 100, text = 'a.com', reason = 'link' },
+                { at = 300, text = 'b.com', reason = 'link' },
+            },
+            refusedSeen = 2,
+        }},
+    })
+    local order = {}
+    for _, e in ipairs(mixed.matchTimeline) do order[#order + 1] = e.at end
+    local sorted = true
+    for i = 2, #order do
+        if order[i] < order[i - 1] then sorted = false end
+    end
+    ok(sorted, 'refused chat merges into the timeline by TIME, not appended after it',
+        table.concat(order, ','))
+
+    -- TRUNCATION IS REPORTED, NEVER SILENT.
+    local over = {}
+    for i = 1, 70 do
+        over[i] = { at = 1000 + i, text = 'ad ' .. i, reason = 'link' }
+    end
+    local big = BR.IncidentBuild.timelineOpen({
+        matchId = 3, matchStartedAt = 0, records = records(over, { seen = 90 }),
+    })
+    local kept = 0
+    for _, e in ipairs(big.matchTimeline) do
+        if e.kind == KIND then kept = kept + 1 end
+    end
+    ok(kept == BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_CHAT,
+        'the timeline caps refused lines', tostring(kept))
+    ok(big.matchTimelineComplete == false,
+        'and SAYS it is incomplete rather than reading as the whole story')
+
+    ok(BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_CHAT
+        == BR.EvidenceBuf.PROMOTED.refusedMax,
+        'the timeline cap and the buffer cap are one number, not two opinions')
+
+    -- ═══ THE LINE THAT OPENED THE CASE IS NOT WRITTEN TWICE ═══
+    --
+    -- server/chat.lua notes the refusal and THEN announces it, so its `at`
+    -- equals the filing instant exactly; the close keeps only what came later.
+    local rs = records({
+        { at = 4000, text = 'opened.com', reason = 'link' },
+        { at = 9000, text = 'again.com', reason = 'link' },
+    })
+    local close = BR.IncidentBuild.timelineClose({
+        matchEndedAt = 20000, matchStartedAt = 0,
+        filedAtGameMs = 4000, records = rs, priorChat = 1,
+    })
+    local later = {}
+    for _, e in ipairs(close.matchTimeline) do
+        if e.kind == KIND then later[#later + 1] = e.text end
+    end
+    ok(#later == 1 and later[1] == 'again.com',
+        'the close carries only the lines that came after the filing')
+    ok(close.matchTimelineComplete == true,
+        'and counts the one already on the row as written')
+
+    -- The text is clamped on a character boundary here too, so a line that
+    -- somehow arrives over length cannot reach DynamoDB malformed.
+    local MAXT = BR.IncidentBuild.TIMELINE_LIMITS.MAX_CHAT_TEXT
+    local huge = string.rep('a', MAXT - 1) .. 'é'
+    local clamped = BR.IncidentBuild.timelineOpen({
+        matchId = 3, matchStartedAt = 0,
+        records = records({ { at = 5, text = huge, reason = 'link' } }),
+    })
+    for _, e in ipairs(clamped.matchTimeline) do
+        if e.kind == KIND then
+            ok(#e.text <= MAXT, 'the stored line is capped', tostring(#e.text))
+            ok(BR.ChatScreen.nonLatinIn(e.text) == false,
+                'and is never cut through the middle of a character')
+        end
+    end
+end
+
+-- ===========================================================================
+-- THE WORLD OVERRIDE: brtime AND brweather
+-- ===========================================================================
+--
+-- Owner, 2026-08-31: "can you make me a brtime command on the server which will
+-- set the time in-game? Recall we have the game locked at noon right now. Also I
+-- want one for brweather too." And the ruling that landed on top of it: "Yes I
+-- want all client and server commands gated behind devmode."
+--
+-- ═══ WHY THIS IS WORTH A SUITE AND NOT A PLAYTEST ═══
+--
+-- Every property that can go wrong here is invisible from inside the game:
+--
+--   THE GATES. A verb that refuses correctly and a verb that is simply broken
+--   print the same nothing on the wrong box, and the box where it matters --
+--   the public one -- is the box nobody is going to test this on. Both gates
+--   are asserted here as REFUSED PLUS UNCHANGED PLUS NOTHING SENT, because a
+--   gate that prints a refusal and then does the work anyway is the shape this
+--   would actually take.
+--
+--   THE YIELD. The interesting frame is the one where the storm wants THUNDER
+--   and the console has said EXTRASUNNY. In the game those are the same
+--   screenshot as any other clear sky; here the storm's claim is placed and the
+--   native calls are counted.
+--
+--   THE RESTORE. `brweather reset` does not write a sky at all -- it removes a
+--   claim and lets whatever was underneath win again. A version that snapped to
+--   EXTRASUNNY instead would look identical on nine playtests out of ten and
+--   wrong on the tenth, which is the one where a storm was running.
+--
+--   THE RESET OVER THE WIRE. `nil` cannot travel in a table, so the payload is
+--   rebuilt whole and a missing key IS the clear. A sender that merged instead
+--   would make `brtime reset` a no-op on every client and nothing would say so.
+-- ---------------------------------------------------------------------------
+
+describe('world / parsing')
+do
+    local W = BR.World
+
+    local function timeKind(...)
+        local kind = W.parseTime(...)
+        return kind
+    end
+
+    ok(timeKind(nil) == 'usage', 'brtime with no argument asks for usage')
+    ok(timeKind('') == 'usage', 'and so does an empty one')
+
+    local k, h, m = W.parseTime('21')
+    ok(k == 'set' and h == 21 and m == 0, 'brtime 21 is nine in the evening',
+       ('%s %s %s'):format(k, tostring(h), tostring(m)))
+
+    k, h, m = W.parseTime('21', '30')
+    ok(k == 'set' and h == 21 and m == 30, 'brtime 21 30 carries the minutes',
+       ('%s %s %s'):format(k, tostring(h), tostring(m)))
+
+    k, h, m = W.parseTime('21:30')
+    ok(k == 'set' and h == 21 and m == 30, 'and so does brtime 21:30',
+       ('%s %s %s'):format(k, tostring(h), tostring(m)))
+
+    k, h, m = W.parseTime('0', '0')
+    ok(k == 'set' and h == 0 and m == 0, 'midnight parses -- 0 is a real hour')
+
+    for _, word in ipairs({ 'reset', 'RESET', 'default', 'off' }) do
+        ok(timeKind(word) == 'reset', ('brtime %s puts the pin back'):format(word))
+    end
+
+    -- OUT OF RANGE IS REFUSED, NEVER CLAMPED (config/overrides.lua's rule). A
+    -- clamp answers a question nobody asked and reads as the verb not working.
+    local err
+    k, h, m, err = W.parseTime('24')
+    ok(k == 'error' and h == nil, 'hour 24 is refused rather than wrapped to 0')
+    ok(err and err:find('0 to 23'), 'and the refusal names the range', tostring(err))
+
+    ok(timeKind('-1') == 'error', 'a negative hour is refused')
+    ok(timeKind('12.5') == 'error', 'so is half past twelve spelled as a fraction')
+    ok(timeKind('noon') == 'error', 'and so is a word that is not a reset word')
+
+    k, h, m, err = W.parseTime('12', '60')
+    ok(k == 'error', 'minute 60 is refused rather than carried into the hour')
+    ok(err and err:find('0 to 59'), 'and names its own range', tostring(err))
+
+    ok(timeKind('12', 'half') == 'error', 'a minute that is not a number is refused')
+
+    -- ── the weather half ──
+    local name
+    ok((W.parseWeather(nil)) == 'usage', 'brweather with no argument asks for usage')
+    ok((W.parseWeather('reset')) == 'reset', 'brweather reset hands the sky back')
+
+    k, name = W.parseWeather('thunder')
+    ok(k == 'set' and name == 'THUNDER', 'lowercase in, canonical out',
+       tostring(name))
+
+    k, name = W.parseWeather('ThUnDeR')
+    ok(k == 'set' and name == 'THUNDER', 'however it was typed')
+
+    -- THE TRAP: `clear` is a WEATHER, not a reset word. If the two shared a
+    -- spelling then one of them would be unreachable and the other a surprise.
+    k, name = W.parseWeather('clear')
+    ok(k == 'set' and name == 'CLEAR',
+       'brweather clear is the CLEAR sky, not a reset', ('%s %s'):format(k, tostring(name)))
+
+    k, name, err = W.parseWeather('sunny')
+    ok(k == 'error' and name == nil, 'a name the engine does not have is refused')
+    ok(err and err:find('sunny'), 'and the refusal quotes what was typed', tostring(err))
+
+    local roundTripped = 0
+    for _, wx in ipairs(W.WEATHERS) do
+        local kk, nn = W.parseWeather(wx:lower())
+        if kk == 'set' and nn == wx then roundTripped = roundTripped + 1 end
+        if not W.WEATHER[wx] then roundTripped = -1000 end
+    end
+    ok(roundTripped == #W.WEATHERS,
+       'every listed weather parses back to itself -- the console list and the'
+       .. ' accepted set are one table',
+       ('%d of %d'):format(roundTripped, #W.WEATHERS))
+end
+
+describe('world / the override record')
+do
+    local W = BR.World
+    W.applyPayload(nil)
+
+    local h, m = W.clockHM()
+    ok(h == 12 and m == 0 and h == W.DEFAULT_HOUR,
+       'an unoverridden world reads high noon -- the pin natives.lua used to spell out')
+    ok(W.holdsTime() == false, 'and says it is not holding the clock')
+    ok(W.weatherName() == nil, 'and claims no sky')
+
+    W.setTime(21, 30)
+    W.setWeather('THUNDER')
+    h, m = W.clockHM()
+    ok(h == 21 and m == 30 and W.holdsTime() == true, 'a set override reads back')
+
+    local p = W.payload()
+    ok(p.hour == 21 and p.minute == 30 and p.weather == 'THUNDER',
+       'and travels whole')
+
+    -- THE RESET MECHANISM, WHICH IS THE ABSENCE OF A KEY. A merging receiver
+    -- would leave 21:30 pinned forever with nothing on either side to notice.
+    W.clearTime()
+    p = W.payload()
+    ok(p.hour == nil and p.weather == 'THUNDER',
+       'clearing the time leaves the sky alone and drops the hour from the payload')
+
+    -- EVERY ASSERTION BELOW SETS A REAL OVERRIDE FIRST. A receiver that MERGED
+    -- rather than replaced would pass any of these that started from an empty
+    -- table, because the answer it gets wrong -- "the key is missing, so leave
+    -- what I had" -- is indistinguishable from the right answer when what it
+    -- had was nothing. The first draft of this block did exactly that and a
+    -- merging applyPayload survived it.
+    W.setTime(21, 30)
+    W.applyPayload(p)
+    ok(W.holdsTime() == false and W.weatherName() == 'THUNDER',
+       'a payload with no hour clears a clock that WAS overridden',
+       ('holds %s, sky %s'):format(tostring(W.holdsTime()), tostring(W.weatherName())))
+
+    W.setTime(21, 30)
+    W.setWeather('THUNDER')
+    W.applyPayload({})
+    ok(W.holdsTime() == false and W.weatherName() == nil,
+       'an empty payload is the full reset -- which is what brtime reset and '
+       .. 'brweather reset send once both are back')
+
+    -- VALIDATED ON ARRIVAL. A half-set hour would make clockHM answer noon
+    -- while holdsTime said otherwise, and the two would disagree forever.
+    W.setTime(21, 30)
+    W.applyPayload({ hour = 3 })
+    ok(W.holdsTime() == false, 'an hour with no minute is not half an override')
+
+    W.setTime(21, 30)
+    W.applyPayload({ hour = 24, minute = 0 })
+    ok(W.holdsTime() == false, 'an out-of-range hour on the wire is refused too')
+
+    W.setWeather('THUNDER')
+    W.applyPayload({ weather = 'SUNNY' })
+    ok(W.weatherName() == nil, 'and a weather name the engine lacks never lands')
+
+    W.applyPayload({ hour = 21, minute = 30, weather = 'FOGGY' })
+    ok(W.holdsTime() and W.weatherName() == 'FOGGY', 'a whole payload lands whole')
+    W.applyPayload(nil)
+end
+
+describe('world / whose sky wins')
+do
+    local W = BR.World
+    local storm  = { name = 'THUNDER',    blend = 8.0 }
+    local island = { name = 'OVERCAST',   blend = 0.0 }
+    local over   = { name = 'EXTRASUNNY', blend = 0.0 }
+
+    ok((W.resolveSky({})) == nil, 'nobody claiming means nobody wins')
+    ok((W.resolveSky(nil)) == nil, 'and a missing table is not an error')
+
+    local name, blend = W.resolveSky({ island = island })
+    ok(name == 'OVERCAST' and blend == 0.0, 'the island alone gets its sky')
+
+    name = W.resolveSky({ island = island, storm = storm })
+    ok(name == 'THUNDER', 'the storm outranks the island -- gameplay over scenery')
+
+    name = W.resolveSky({ island = island, storm = storm, override = over })
+    ok(name == 'EXTRASUNNY', 'and the console outranks both')
+
+    -- THE RESTORE. Removing the top claim does not need anything to be
+    -- remembered separately: what was underneath is still underneath.
+    name = W.resolveSky({ island = island, storm = storm })
+    ok(name == 'THUNDER', 'lifting the override hands the sky back to the storm')
+    name = W.resolveSky({ island = island })
+    ok(name == 'OVERCAST', 'and lifting the storm hands it back to the island')
+
+    name, blend = W.resolveSky({ storm = storm })
+    ok(blend == 8.0, 'the winner brings its own blend', tostring(blend))
+
+    name = W.resolveSky({ weather = { name = 'RAIN' } })
+    ok(name == nil, 'a key that is not a ranked source is not a claim')
+end
+
+-- ---------------------------------------------------------------------------
+-- The client half: the real br_core/client/world.lua.
+-- ---------------------------------------------------------------------------
+
+describe('world / the client yields and restores')
+do
+    --- One client with the real client/world.lua and nothing else.
+    local function newWorldClient()
+        local env = newSandbox()
+        local C = { writes = {}, rain = {}, prints = {}, asks = 0 }
+
+        env.print = function(...)
+            local parts = {}
+            for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+            C.prints[#C.prints + 1] = table.concat(parts, ' ')
+        end
+        env.RegisterNetEvent = function() end
+
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.TriggerEvent = function(n)
+            if n == 'br:world:ask' then C.asks = C.asks + 1 end
+        end
+
+        -- The three sky natives, each recorded with how it was called, so a
+        -- snap can be told from a blend and both from a hand-back.
+        env.SetWeatherTypeNowPersist = function(w)
+            C.writes[#C.writes + 1] = { how = 'now', name = w }
+        end
+        env.SetWeatherTypeOvertimePersist = function(w, b)
+            C.writes[#C.writes + 1] = { how = 'over', name = w, blend = b }
+        end
+        env.ClearWeatherTypePersist = function()
+            C.writes[#C.writes + 1] = { how = 'clear' }
+        end
+        env.SetRainLevel = function(v) C.rain[#C.rain + 1] = v end
+
+        loadInto(env, SANDBOX_LIB)
+        loadInto(env, { 'br_core/client/world.lua' })
+
+        C.env = env
+        --- Deliver a BR.Net.WORLD_SET envelope, the way the server sends it.
+        C.tell = function(p)
+            for _, fn in ipairs(handlers[env.BR.Net.WORLD_SET] or {}) do fn(p) end
+        end
+        --- Deliver br_environment's island claim.
+        C.island = function(name, blend)
+            for _, fn in ipairs(handlers['br:world:island'] or {}) do fn(name, blend) end
+        end
+        C.last = function() return C.writes[#C.writes] end
+        return C
+    end
+
+    do
+        local C = newWorldClient()
+        ok(C.asks == 1,
+           'the client asks br_environment to re-announce its sky on load -- '
+           .. 'the start order where the island announced first is covered')
+    end
+
+    -- ── the island's claim is what a lobby stands under ──
+    do
+        local C = newWorldClient()
+        C.island('OVERCAST', 0.0)
+        ok(C.last() and C.last().name == 'OVERCAST' and C.last().how == 'now',
+           'the island claim from another resource reaches the sky')
+
+        C.island('EXTRASUNNY', 10.0)
+        ok(C.last().how == 'over' and C.last().blend == 10.0,
+           'and its ten-second clear is still a blend rather than a snap',
+           C.last().how .. ' ' .. tostring(C.last().blend))
+
+        local n = #C.writes
+        C.island('EXTRASUNNY', 10.0)
+        ok(#C.writes == n,
+           're-asserting the same sky writes nothing -- a repeated blend never '
+           .. 'finishes arriving')
+    end
+
+    -- ── THE YIELD. The override is set; the storm must not fight it. ──
+    do
+        local C = newWorldClient()
+        C.island('EXTRASUNNY', 10.0)
+        C.tell({ weather = 'FOGGY' })
+        ok(C.last().name == 'FOGGY' and C.last().how == 'now',
+           'the console sky snaps in over the island')
+        ok(C.rain[#C.rain] == -1.0,
+           'and the rain knob is handed back, so the chosen weather looks like itself',
+           tostring(C.rain[#C.rain]))
+
+        local n = #C.writes
+        C.env.BR.World.want('storm', 'THUNDER', 8.0)
+        ok(#C.writes == n,
+           'the storm claims THUNDER underneath and NOTHING is written -- the '
+           .. 'override is yielded to rather than fought')
+        ok((C.env.BR.World.sky()) == 'FOGGY', 'and the sky is still the console\'s')
+
+        -- ── THE RESTORE. Lifting it hands the sky to the storm, not to a guess.
+        C.tell({})
+        ok(C.last().name == 'THUNDER' and C.last().how == 'over'
+           and C.last().blend == 8.0,
+           'brweather reset gives the storm the sky it was claiming all along, '
+           .. 'blend and all',
+           C.last().name .. ' ' .. C.last().how)
+
+        -- ...and when the storm lets go, the island is still underneath IT.
+        C.env.BR.World.want('storm', nil)
+        ok(C.last().name == 'EXTRASUNNY',
+           'and under the storm, the island claim was never lost')
+
+        C.env.BR.World.want('island', nil)
+        ok(C.last().how == 'clear',
+           'with nobody claiming, the sky goes back to the engine rather than '
+           .. 'to a default this file invented')
+    end
+
+    -- ── a forced write, which the storm's drying snap depends on ──
+    do
+        local C = newWorldClient()
+        C.env.BR.World.want('storm', 'EXTRASUNNY', 0.0)
+        local n = #C.writes
+        C.env.BR.World.want('storm', 'EXTRASUNNY', 0.0)
+        ok(#C.writes == n, 'an unchanged claim is not re-written')
+        C.env.BR.World.want('storm', 'EXTRASUNNY', 0.0, true)
+        ok(#C.writes == n + 1,
+           'unless it is forced -- the drying snap exists to reset the rain '
+           .. 'memory and is a no-op visually by design')
+
+        -- ...AND THE FORCE IS ONLY THE WINNER'S TO ASK FOR. A yielding source
+        -- re-asserting somebody else's sky is a small wrong thing that makes
+        -- "the storm writes nothing while an override holds" untrue.
+        C.tell({ weather = 'FOGGY' })
+        n = #C.writes
+        C.env.BR.World.want('storm', 'EXTRASUNNY', 0.0, true)
+        ok(#C.writes == n,
+           'a forced write from a source that is NOT on screen writes nothing')
+    end
+
+    -- ── a source nobody ranked is not a claim ──
+    do
+        local C = newWorldClient()
+        C.env.BR.World.want('weather', 'RAIN', 0.0)
+        ok(#C.writes == 0, 'an unranked source writes nothing')
+        ok(#C.prints == 1 and C.prints[1]:find('not a sky source'),
+           'and says so on the console rather than storing a claim that could '
+           .. 'never win and would never be noticed',
+           C.prints[1] or 'nothing printed')
+    end
+
+    -- ── the clock is NOT this file's business ──
+    do
+        local C = newWorldClient()
+        C.tell({ hour = 21, minute = 30 })
+        ok(#C.writes == 0, 'a time-only override writes no weather')
+        local h, m = C.env.BR.World.clockHM()
+        ok(h == 21 and m == 30,
+           'and the value the pin in client/natives.lua reads is simply there')
+    end
+
+    -- ═══ ONE WRITER, COUNTED IN THE TREE ═══
+    --
+    -- Everything above is about what the resolver does with the claims it is
+    -- given. NONE of it can see a file that stopped making claims and went back
+    -- to calling the native, and that is the exact regression this design
+    -- replaces: client/storm.lua clearing the sky at match end would silently
+    -- wipe a console override, and br_environment/client/ipl.lua writing
+    -- OVERCAST at an island flip would silently wipe it again. Both look
+    -- completely correct in a diff.
+    --
+    -- So the writers are an ALLOWLIST, the same shape tools/verify.sh uses for
+    -- PlaySoundFrontend and for the same reason: the failure is silent, the
+    -- wrong spelling is the natural one, and the right one looks like paranoia.
+    --
+    -- COMMENT LINES ARE STRIPPED FIRST. This subject is heavily commented --
+    -- storm.lua, ipl.lua and client/world.lua all discuss these natives by name
+    -- in prose, because the whole point of those paragraphs is to say why the
+    -- call is not there any more. A check that counted prose would fail on the
+    -- explanation of why it exists, which is the fastest route to it being
+    -- deleted.
+    do
+        --- Read a file whole, or nil.
+        local function slurp(path)
+            local fh = io.open(path, 'r')
+            if not fh then return nil end
+            local text = fh:read('a')
+            fh:close()
+            return text
+        end
+
+        -- THE FILE LIST COMES OUT OF THE MANIFESTS, not out of a list written
+        -- here. A hand-written list would go stale the day somebody adds a
+        -- client file, and it would go stale SILENTLY -- the new file would
+        -- simply not be scanned, which is the same as passing.
+        local files, scanned = {}, 0
+        for _, res in ipairs({ 'br_core', 'br_environment' }) do
+            local manifest = slurp(RES .. res .. '/fxmanifest.lua') or ''
+            for rel in manifest:gmatch("'(client/[^']+%.lua)'") do
+                files[#files + 1] = res .. '/' .. rel
+            end
+        end
+
+        local writers = {}
+        for _, rel in ipairs(files) do
+            local text = slurp(RES .. rel)
+            if text then
+                scanned = scanned + 1
+                for line in text:gmatch('[^\n]+') do
+                    local code = line:gsub('%-%-.*$', '')
+                    if code:find('SetWeatherType%w*Persist%s*%(')
+                       or code:find('ClearWeatherTypePersist%s*%(') then
+                        writers[rel] = true
+                    end
+                end
+            end
+        end
+
+        ok(scanned > 30 and scanned == #files,
+           'the weather scan read every client file both manifests declare',
+           ('%d found, %d read'):format(#files, scanned))
+
+        local list = {}
+        for rel in pairs(writers) do list[#list + 1] = rel end
+        table.sort(list)
+        ok(#list == 1 and list[1] == 'br_core/client/world.lua',
+           'the weather natives are CALLED in exactly one client file -- the '
+           .. 'storm and the island make claims, they do not write the sky',
+           #list == 0 and 'nobody at all' or table.concat(list, ', '))
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- The server half: the real br_core/server/world.lua, both gates and all.
+-- ---------------------------------------------------------------------------
+
+describe('world / the console verbs')
+do
+    --- One server with the real server/world.lua behind stub natives.
+    --- @param devMode boolean
+    local function newWorldServer(devMode)
+        local env = newSandbox()
+        local S = { sent = {}, prints = {}, cmds = {}, restricted = {} }
+
+        env.print = function(...)
+            local parts = {}
+            for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+            S.prints[#S.prints + 1] = table.concat(parts, ' ')
+        end
+        env.RegisterNetEvent = function() end
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.RegisterCommand = function(name, fn, restricted)
+            S.cmds[name] = fn
+            S.restricted[name] = restricted
+        end
+        env.TriggerClientEvent = function(evt, target, payload)
+            S.sent[#S.sent + 1] = { event = evt, target = target, payload = payload }
+        end
+
+        loadInto(env, SANDBOX_LIB)
+        env.BR.Server = { devMode = devMode }
+        loadInto(env, { 'br_core/server/world.lua' })
+
+        S.env = env
+        --- Run a verb the way FiveM would. `src` 0 is the server console.
+        S.run = function(name, src, ...)
+            S.cmds[name](src, { ... })
+        end
+        --- A client finishing its load.
+        S.ready = function(src)
+            env.source = src
+            for _, fn in ipairs(handlers[env.BR.Net.READY] or {}) do fn() end
+            env.source = nil
+        end
+        S.saidSomethingAbout = function(needle)
+            for _, line in ipairs(S.prints) do
+                if line:find(needle, 1, true) then return true end
+            end
+            return false
+        end
+        return S
+    end
+
+    -- ── both verbs are RESTRICTED at registration, which is the outer fence ──
+    do
+        local S = newWorldServer(true)
+        ok(S.restricted['brtime'] == true and S.restricted['brweather'] == true,
+           'both verbs are registered restricted, so a client without br.admin '
+           .. 'never reaches the handler at all')
+    end
+
+    -- ══ GATE ONE: THE CONSOLE. `0` is truthy in Lua, so this is an equality ══
+    do
+        local S = newWorldServer(true)          -- dev mode ON, so only the
+        S.run('brtime', 1, '21')                -- console gate can refuse
+        ok(S.env.BR.World.holdsTime() == false,
+           'an admin client running brtime changes nothing')
+        ok(#S.sent == 0, 'and nothing goes out over the wire')
+        ok(S.saidSomethingAbout('server-console only'),
+           'and the console is told WHICH gate refused it, rather than nothing',
+           table.concat(S.prints, ' | '))
+
+        S.run('brweather', 1, 'thunder')
+        ok(S.env.BR.World.weatherName() == nil and #S.sent == 0,
+           'brweather is narrowed the same way')
+    end
+
+    -- ══ GATE TWO: DEV MODE (owner, 2026-08-31) ══
+    do
+        local S = newWorldServer(false)         -- console, but a live box
+        S.run('brtime', 0, '21', '30')
+        ok(S.env.BR.World.holdsTime() == false,
+           'the console on a non-dev box moves nothing')
+        ok(#S.sent == 0, 'and tells no client anything')
+        ok(S.saidSomethingAbout('dev-mode only'),
+           'and the refusal names the dev gate and the convar that opens it',
+           table.concat(S.prints, ' | '))
+        ok(S.saidSomethingAbout('br_devMode'),
+           'so the reader knows what to change', table.concat(S.prints, ' | '))
+
+        S.run('brweather', 0, 'thunder')
+        ok(S.env.BR.World.weatherName() == nil and #S.sent == 0,
+           'brweather carries the same gate')
+    end
+
+    -- ══ AND WITH BOTH OPEN, IT WORKS ══
+    do
+        local S = newWorldServer(true)
+        S.run('brtime', 0, '21', '30')
+        local h, m = S.env.BR.World.clockHM()
+        ok(h == 21 and m == 30, 'the console on a dev box moves the clock')
+        ok(#S.sent == 1 and S.sent[1].target == -1
+           and S.sent[1].event == S.env.BR.Net.WORLD_SET,
+           'and tells every client at once')
+        ok(S.sent[1].payload.hour == 21 and S.sent[1].payload.minute == 30,
+           'with the whole override in the envelope')
+
+        S.run('brtime', 0, '21:45')
+        h, m = S.env.BR.World.clockHM()
+        ok(h == 21 and m == 45, 'the hh:mm spelling works through the verb too')
+
+        S.run('brweather', 0, 'thunder')
+        ok(S.env.BR.World.weatherName() == 'THUNDER', 'and the sky is set')
+        ok(S.sent[#S.sent].payload.weather == 'THUNDER'
+           and S.sent[#S.sent].payload.hour == 21,
+           'each envelope carries BOTH halves -- a weather send must not read '
+           .. 'as "stop overriding the clock"')
+    end
+
+    -- ══ REVERSIBLE, AND THE TWO HALVES ARE INDEPENDENT ══
+    do
+        local S = newWorldServer(true)
+        S.run('brtime', 0, '3')
+        S.run('brweather', 0, 'foggy')
+
+        S.run('brtime', 0, 'reset')
+        local h, m = S.env.BR.World.clockHM()
+        ok(h == 12 and m == 0 and S.env.BR.World.holdsTime() == false,
+           'brtime reset puts the clock back on the pinned noon')
+        ok(S.env.BR.World.weatherName() == 'FOGGY',
+           'and leaves the sky exactly where it was')
+        ok(S.sent[#S.sent].payload.hour == nil
+           and S.sent[#S.sent].payload.weather == 'FOGGY',
+           'the reset travels as an ABSENT key, which is the only way nil can')
+
+        S.run('brweather', 0, 'reset')
+        ok(S.env.BR.World.weatherName() == nil, 'brweather reset hands the sky back')
+        ok(S.sent[#S.sent].payload.weather == nil
+           and S.sent[#S.sent].payload.hour == nil,
+           'and the envelope is now empty, which is the full stand-down')
+    end
+
+    -- ══ USAGE AND REFUSALS CHANGE NOTHING AND SEND NOTHING ══
+    do
+        local S = newWorldServer(true)
+        S.run('brtime', 0, '9')
+        local before = #S.sent
+
+        S.run('brtime', 0)
+        ok(#S.sent == before, 'brtime with no argument sends nothing')
+        local h = S.env.BR.World.clockHM()
+        ok(h == 9, 'and leaves the override alone')
+        ok(S.saidSomethingAbout('usage: brtime'), 'it prints usage')
+        ok(S.saidSomethingAbout('Ambient population is time-gated'),
+           'and says what moving the clock costs, which is the part a person '
+           .. 'cannot see coming')
+
+        S.run('brtime', 0, '25')
+        ok(#S.sent == before, 'a refused hour sends nothing')
+        ok(S.env.BR.World.clockHM() == 9, 'and leaves the last good value up')
+
+        S.prints = {}
+        S.run('brweather', 0)
+        ok(#S.sent == before, 'brweather with no argument sends nothing')
+        ok(S.saidSomethingAbout('THUNDER') and S.saidSomethingAbout('EXTRASUNNY'),
+           'and prints the names, which is the whole reason to type it bare',
+           table.concat(S.prints, ' | '))
+
+        S.prints = {}
+        S.run('brweather', 0, 'sunny')
+        ok(#S.sent == before, 'a bad name sends nothing')
+        ok(S.saidSomethingAbout('THUNDER'),
+           'and the refusal prints the list rather than only complaining')
+    end
+
+    -- ══ THE LATE JOINER ══
+    do
+        local S = newWorldServer(true)
+        S.run('brtime', 0, '21')
+        S.run('brweather', 0, 'thunder')
+        local before = #S.sent
+
+        S.ready(7)
+        ok(#S.sent == before + 1, 'a client finishing its load is sent one envelope')
+        ok(S.sent[#S.sent].target == 7,
+           'to itself and nobody else', tostring(S.sent[#S.sent].target))
+        ok(S.sent[#S.sent].payload.hour == 21
+           and S.sent[#S.sent].payload.weather == 'THUNDER',
+           'carrying the override the rest of the session is already standing in '
+           .. '-- without this the new client pins noon while everyone else is '
+           .. 'at dusk')
+
+        -- ...AND IT IS SENT EVEN WHEN IT IS EMPTY, for server/community.lua's
+        -- reason: a client reconnecting after a reset has to be told the
+        -- override is gone, and "no override" is a payload rather than silence.
+        S.run('brtime', 0, 'reset')
+        S.run('brweather', 0, 'reset')
+        before = #S.sent
+        S.ready(8)
+        ok(#S.sent == before + 1 and S.sent[#S.sent].target == 8,
+           'and an empty override is still sent rather than skipped')
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- THE DEV GATE (br_lib/shared/devgate.lua)
+--
+-- Owner, 2026-08-31: "Yes I want all client and server commands gated behind
+-- devmode." ~140 commands, gated by ONE wrap around RegisterCommand rather than
+-- 140 copies of a helper call -- so what has to be true is not a property of
+-- any one command, it is a property of the wrap, and none of it is visible to a
+-- text gate. tools/verify.sh checks that the wrap is still spelled the way it
+-- is spelled; this checks that it still DOES anything.
+--
+-- The file is loaded into a sandbox rather than at the top of this suite for
+-- the reason it exists: it REPLACES the global RegisterCommand, and doing that
+-- to this process would put a dev gate in front of every command every other
+-- block here registers.
+-- ---------------------------------------------------------------------------
+do
+    --- Stand devgate.lua up on its own, with a recording RegisterCommand.
+    --- @param convars table  what GetConvar answers
+    --- @return table
+    local function newGate(convars)
+        local env = newSandbox()
+        local G = { registered = {}, printed = {} }
+
+        env.GetConvar = function(name, default)
+            local v = convars[name]
+            if v == nil then return default end
+            return v
+        end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.print = function(s) G.printed[#G.printed + 1] = tostring(s) end
+        env.RegisterCommand = function(name, fn, restricted)
+            G.registered[name] = { fn = fn, restricted = restricted }
+        end
+
+        loadInto(env, { 'br_lib/shared/devgate.lua' })
+        G.env = env
+
+        --- Register a command through whatever RegisterCommand now is, and
+        --- return a runner for it.
+        --- @return function
+        function G.register(name, restricted)
+            local calls = {}
+            env.RegisterCommand(name, function(source, args, rawText)
+                calls[#calls + 1] = { source = source, args = args, raw = rawText }
+                return 'ran'
+            end, restricted)
+            return calls
+        end
+
+        --- Run a registered command the way FiveM would.
+        function G.run(name, source, args, rawText)
+            return G.registered[name].fn(source, args, rawText)
+        end
+
+        return G
+    end
+
+    describe('devgate.gated')
+
+    do
+        local G = newGate({})              -- neither convar set: a public box
+        local calls = G.register('brshop', true)
+
+        ok(G.registered['brshop'] ~= nil,
+           'a gated command is still REGISTERED on the public box -- the gate is'
+           .. ' on the run, not on the registration, so the name still exists')
+
+        local ret = G.run('brshop', 0, { 'x' }, 'brshop x')
+        ok(#calls == 0, 'and running it does not reach the handler')
+        ok(ret == nil, 'and it returns nothing rather than the answer a run would have given')
+
+        -- THE REFUSAL SAYS WHICH GATE CLOSED. A command that returns quietly is
+        -- indistinguishable from one that ran and did nothing, and after this
+        -- change that is what typing anything on the public box does.
+        ok(#G.printed == 1, 'the refusal prints exactly once', #G.printed)
+        local msg = G.printed[1] or ''
+        ok(msg:find('brshop', 1, true) ~= nil,
+           'and it names the verb that was refused', msg)
+        ok(msg:find('dev%-mode only') ~= nil,
+           'and says dev mode is the gate that closed it', msg)
+        ok(msg:find('br_devMode true', 1, true) ~= nil,
+           'and says what to do about it', msg)
+    end
+
+    do
+        -- THE RESTRICTED FLAG MUST SURVIVE THE WRAP. A wrapper that forwarded
+        -- only (name, fn) would drop every command's `true` third argument and
+        -- turn the whole restricted surface -- brroster, brkill, brgive -- into
+        -- commands any connected player can type. It would look perfect on a
+        -- dev box, where the console is the only caller anybody tries.
+        local G = newGate({ br_devMode = 'true' })
+        G.register('brkill', true)
+        G.register('brleavealike', false)
+        ok(G.registered['brkill'].restricted == true,
+           'a restricted command is still registered restricted through the wrap')
+        ok(G.registered['brleavealike'].restricted == false,
+           'and an unrestricted one is still unrestricted')
+    end
+
+    describe('devgate.open')
+
+    do
+        local G = newGate({ br_devMode = 'true' })
+        local calls = G.register('brshop', true)
+        local ret = G.run('brshop', 7, { 'a', 'b' }, 'brshop a b')
+
+        ok(#calls == 1, 'in dev mode the handler runs')
+        ok(ret == 'ran', 'and its return value comes back through the wrap')
+        ok(#G.printed == 0, 'and nothing is printed', G.printed[1])
+
+        -- All three arguments, because a wrapper that forwarded only `args`
+        -- would break every command that reads `source` -- which is every
+        -- console-only gate in the project: `tonumber(src) ~= 0`.
+        ok(calls[1].source == 7, 'source is forwarded')
+        ok(calls[1].args and calls[1].args[2] == 'b', 'args are forwarded')
+        ok(calls[1].raw == 'brshop a b', 'and the raw command line is forwarded')
+    end
+
+    do
+        -- EITHER NAME TURNS IT ON, and this is the case that decides whether the
+        -- client and the server agree. server/main.lua resolves dev mode from
+        -- sv_devMode OR br_devMode; a gate reading only one of them would call
+        -- a box started the other way a public server and refuse everything on
+        -- it, with the boot banner one line above saying devMode true.
+        local A = newGate({ sv_devMode = 'true' })
+        local aCalls = A.register('brstate2', true)
+        A.run('brstate2', 0)
+        ok(#aCalls == 1, 'sv_devMode alone opens the gate')
+
+        local B = newGate({ br_devMode = 'true' })
+        local bCalls = B.register('brstate2', true)
+        B.run('brstate2', 0)
+        ok(#bCalls == 1, 'br_devMode alone opens the gate')
+
+        -- ...and only the literal string. GetConvar answers TEXT, so anything
+        -- truthy-looking that is not 'true' is a public box.
+        local C = newGate({ br_devMode = '1' })
+        local cCalls = C.register('brstate2', true)
+        C.run('brstate2', 0)
+        ok(#cCalls == 0, 'and a convar set to "1" is not dev mode')
+    end
+
+    describe('devgate.exempt')
+
+    do
+        -- THE THREE VERBS THE PUBLIC BOX KEEPS. brkick and brspectate are the
+        -- admin console's Kick and Spectate buttons -- tools/dispatch.sh types
+        -- them into the server console over tmux -- and brring is the health
+        -- dump DEPLOY.md sends the operator to on the live box. Gating any of
+        -- them produces NO error anywhere the console can see: the button
+        -- posts, the SSH verb succeeds, the keystrokes land, and the player
+        -- stays exactly where they were.
+        local G = newGate({})              -- public box
+        for _, verb in ipairs({ 'brkick', 'brspectate', 'brring' }) do
+            local calls = G.register(verb, true)
+            local ret = G.run(verb, 0, { 'license:abc' }, verb)
+            ok(#calls == 1, verb .. ' runs on the public box')
+            ok(ret == 'ran', 'and ' .. verb .. ' returns its own answer')
+        end
+        ok(#G.printed == 0,
+           'and none of the three prints a refusal', G.printed[1])
+
+        -- REGISTERED THROUGH THE RAW NATIVE, not through a wrapper that decides
+        -- to forward. A closure that checks the name at RUN time would still be
+        -- a closure, and brkick would be one nil-index in devgate.lua away from
+        -- doing nothing on the live box.
+        ok(G.registered['brkick'].restricted == true,
+           'and brkick keeps its restricted flag')
+    end
+
+    do
+        -- THE FOURTH COMMAND IN br_ringmaster IS NOT EXEMPT, and that is a
+        -- decision rather than an oversight -- pinned here so reversing it is
+        -- deliberate. Nothing invokes bridents: dispatch.sh types only brkick
+        -- and brspectate, and no document sends an operator to it in
+        -- production. What it does do is print licenses, Discord ids and Steam
+        -- ids for every connected player at once.
+        local G = newGate({})
+        local calls = G.register('bridents', true)
+        G.run('bridents', 0, {}, 'bridents')
+        ok(#calls == 0, 'bridents is gated on the public box')
+        ok(#G.printed == 1, 'and says so', #G.printed)
+    end
+
+    describe('devgate.rawdoor')
+
+    do
+        -- THE KEYBOARD. GTA has no keybind primitive: FiveM builds one out of a
+        -- command plus RegisterKeyMapping, so `+brinteract`, `brslot3` and
+        -- `brmap` are console commands in exactly the sense brshop is -- and
+        -- they are also E, 3 and M. br_core/client/keybinds.lua registers all
+        -- 22 rows through this door, and /brleave, a documented player verb,
+        -- is the fourth use. Through the wrap instead, the public box would
+        -- have no controls at all.
+        local G = newGate({})              -- public box
+        local calls = {}
+        G.env.BR.Dev.rawCommand('+brinteract', function()
+            calls[#calls + 1] = true
+        end, false)
+        G.run('+brinteract', nil, {}, '+brinteract')
+        ok(#calls == 1, 'the raw door registers a keybind that still fires on the'
+           .. ' public box')
+        ok(#G.printed == 0, 'and refuses nothing')
+
+        ok(G.env.BR.Dev.rawCommand ~= G.env.RegisterCommand,
+           'and the raw door is NOT the wrapped RegisterCommand -- captured'
+           .. ' before the wrap replaced it')
+    end
+
+    describe('devgate.idempotent')
+
+    do
+        -- A file listed twice in one manifest must not wrap the wrap: two gates
+        -- in front of every command would print the refusal twice, and the
+        -- second print is the kind of thing that gets "fixed" by removing the
+        -- first gate.
+        local G = newGate({})
+        local rawBefore = G.env.BR.Dev.rawCommand
+        loadInto(G.env, { 'br_lib/shared/devgate.lua' })
+        G.register('brshop', true)
+        G.run('brshop', 0, {}, 'brshop')
+        ok(#G.printed == 1,
+           'loading devgate twice still refuses exactly once', #G.printed)
+
+        -- AND THE RAW DOOR IS STILL THE RAW NATIVE, which is the half of this
+        -- that costs the keyboard rather than a duplicated line. Capturing
+        -- rawCommand outside the installed-guard re-captures RegisterCommand
+        -- AFTER the wrap has replaced it, so on the second load every keybind
+        -- row registers through the gate while still reading like it goes
+        -- around it -- and the public box has no controls.
+        ok(G.env.BR.Dev.rawCommand == rawBefore,
+           'and the raw door is not re-captured as the wrapped RegisterCommand')
+
+        local fired = {}
+        G.env.BR.Dev.rawCommand('+brinteract', function()
+            fired[#fired + 1] = true
+        end, false)
+        G.run('+brinteract', nil, {}, '+brinteract')
+        ok(#fired == 1, 'so E still fires after a double load')
     end
 end
 

@@ -43,6 +43,18 @@ local islandCut = false -- this flight has already released the lobby island
 -- whole view with it: the "world snaps and rotates back" report.
 local smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
 
+--- IN LUA 0 IS TRUTHY, AND A FIVEM NATIVE DECLARED BOOL MAY ANSWER 1 RATHER
+--- THAN true. This file is the front half of the drop, and every model wait in
+--- it was read raw: `while not HasModelLoaded(m) do` is FALSE for the 0 that
+--- means "not loaded", so the wait ends immediately and CreateVehicle is handed
+--- a model that is not in memory. What comes back is nil, and the flight -- and
+--- with it everybody's jump -- is over before it started.
+--- @param v any
+--- @return boolean
+local function isTrue(v)
+    return v ~= nil and v ~= false and v ~= 0
+end
+
 local function angDiff(a, b)
     return ((a - b + 540.0) % 360.0) - 180.0
 end
@@ -55,11 +67,11 @@ local function cleanup()
         cam = nil
     end
     if pilot then
-        if DoesEntityExist(pilot) then DeleteEntity(pilot) end
+        if isTrue(DoesEntityExist(pilot)) then DeleteEntity(pilot) end
         pilot = nil
     end
     if bus then
-        if DoesEntityExist(bus) then DeleteEntity(bus) end
+        if isTrue(DoesEntityExist(bus)) then DeleteEntity(bus) end
         bus = nil
     end
     lastX, lastY, lastZ, lastT = nil, nil, nil, nil
@@ -94,6 +106,25 @@ local function clearCrumbs()
         routeDrawn = false
         crumbCount = 0
     end
+end
+
+--- IS THE BUS LINE ON THE MAP RIGHT NOW?
+---
+--- READ BY client/survey.lua, WHICH DRAWS ON THE SAME SURFACE. There is exactly
+--- ONE gps custom route -- the natives take no handle -- so a second
+--- StartGpsCustomRoute REPLACES this one, and drawCrumbs would later clobber
+--- whatever replaced it. /brsurvey refuses to arm while this is true and stands
+--- its own line down if a route arrives mid-survey; the bus always wins,
+--- because the bus is the game and the survey is a dev tool.
+---
+--- A FUNCTION RATHER THAN A FLAG ON BR.State, for the same reason
+--- BR.Rescue.riding() is one: `routeDrawn` is this file's local and the only
+--- thing the other file needs is whether it is set. Nil-safe at the call site,
+--- so load order between the two cannot matter.
+--- @return boolean
+BR.BusLine = BR.BusLine or {}
+function BR.BusLine.drawn()
+    return routeDrawn
 end
 
 --- Draw the flight as a SOLID LINE on the map and minimap.
@@ -177,10 +208,10 @@ local function board()
         local model = GetHashKey(BR.Config.Bus.model)
         RequestModel(model)
         local deadline = GetGameTimer() + 10000
-        while not HasModelLoaded(model) and GetGameTimer() < deadline do
+        while not isTrue(HasModelLoaded(model)) and GetGameTimer() < deadline do
             Citizen.Wait(50)
         end
-        if not HasModelLoaded(model) then
+        if not isTrue(HasModelLoaded(model)) then
             print('[br_core] bus: model never loaded; riding blind (camera only)')
         end
         -- STALE-BOARDING GUARD. Model streaming takes real time (longest
@@ -210,10 +241,10 @@ local function board()
         local pilotModel = GetHashKey('s_m_m_pilot_01')
         RequestModel(pilotModel)
         local pDeadline = GetGameTimer() + 5000
-        while not HasModelLoaded(pilotModel) and GetGameTimer() < pDeadline do
+        while not isTrue(HasModelLoaded(pilotModel)) and GetGameTimer() < pDeadline do
             Citizen.Wait(50)
         end
-        if HasModelLoaded(pilotModel) then
+        if isTrue(HasModelLoaded(pilotModel)) then
             pilot = CreatePed(4, pilotModel, route.sx, route.sy, route.alt, heading,
                               false, false)
             SetModelAsNoLongerNeeded(pilotModel)
@@ -348,8 +379,81 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     end
 end)
 
--- Fly the plane. Frame loop, active only while a bus exists; everyone
--- computes the same position from the same record and the same clock.
+-- ------------------------------------------------------ the runway pin ---
+--
+-- "Can you lock the camera movement while in the plane until the plane is off
+--  the runway?"                                            -- owner, #241
+--
+-- ═══ "OFF THE RUNWAY" IS route.rotateAt, AND IT WAS ALREADY THERE ═══
+--
+-- No geometry was invented for this. server/bus.lua stamps `rotateAt` onto the
+-- timed route -- "wheels leave the runway", the clock at `rotateIdx`, which is
+-- the LAST SAMPLE OF THE GROUND ROLL (the 32 uniform-acceleration samples from
+-- the spawn to `rotatePoint`, the surveyed end of the tarmac). It is the
+-- server's own answer to the owner's own words, it rides the same synced clock
+-- everything else on this flight is derived from, and TWO IN-FLIGHT EVENTS ARE
+-- ALREADY HUNG ON IT: the island handoff (rotateAt + 5500, above) and the
+-- bucket hop (rotateAt + 3500, server/bus.lua). A distance test, an altitude
+-- threshold or an IsEntityInAir read would each have been a THIRD opinion about
+-- a moment two other subsystems already agree on -- and the first two of those
+-- would disagree with each other on the northern exits, where the authored
+-- waypoints carry their own z.
+--
+-- The pin therefore covers the parked idle AND the roll -- boardSeconds (5) plus
+-- ~9.5s of tarmac -- and lifts on the frame the wheels come up.
+--
+-- ═══ A LEVEL, NOT A LATCH, WHICH IS THE WHOLE OF THE SAFETY ARGUMENT ═══
+--
+-- client/dbno.lua makes this case at length over REVIVING_BLOCKED and
+-- client/spectate.lua makes it again over its own list; this is the third
+-- reader of the same rule and it is here for the same reason. A PLAYER LEFT
+-- WITH A CAMERA THAT WILL NOT TURN CANNOT FIX IT THEMSELVES, so the mechanism
+-- has to be one that cannot be left on rather than one that is carefully turned
+-- off on every ending.
+--
+-- There is no start call and no stop call. `camPinned()` is asked every frame
+-- and answers from state that four separate things take away, so EVERY exit is
+-- the same exit -- this branch stops being taken:
+--
+--   THE JUMP           beginDrop -> cleanup(): cam destroyed, riding false.
+--   KILLED / MATCH TORN DOWN / BACK TO LOBBY / STATE FLAP
+--                      bus.board's `riding and me ~= BUS` branch -> cleanup().
+--   RESOURCE RESTART   onResourceStop -> cleanup(); and the file stops running,
+--                      which on its own is enough -- DisableControlAction lasts
+--                      exactly one frame.
+--   DISCONNECT/RECONNECT
+--                      a fresh client holds none of this.
+--
+-- ...AND IF EVERY ONE OF THOSE SOMEHOW FAILED, THE CLOCK STILL LIFTS IT. The
+-- predicate is bounded by a timestamp the server published before the flight
+-- began, so a wedged `riding` expires at wheels-up on its own. That is the
+-- property no teardown-by-name could have.
+--
+-- ═══ AND /brunstuck IS NOT THE NET, WHICH IS WORTH SAYING PLAINLY ═══
+--
+-- It would not lift this and it does not need to. Nothing here is latched, so
+-- there is nothing for `SetPlayerControl(..., true, 0)` to release; and its
+-- `DestroyAllCams` leaves this file's `cam` a stale non-nil handle, so the pin
+-- would keep being asserted for its remaining seconds either way. What that
+-- command WOULD do mid-flight is take the ride's camera down and hand the
+-- player the gameplay one -- degraded, but not stuck, and the clock still ends
+-- the pin. The escape hatch here is the timestamp, not the command.
+BR.Bus = BR.Bus or {}
+
+--- Is the camera pinned to the airframe this frame?
+---
+--- Read by bus.fly and by /brbus. Nil-safe at the call site for the reason
+--- BR.BusLine.drawn() is: it is this file's locals, and the only thing a reader
+--- outside needs is the answer.
+--- @return boolean
+function BR.Bus.camLocked()
+    if not riding or not cam or not route or not route.timed then return false end
+    return BR.Clock.now() < (route.rotateAt or route.tStart)
+end
+
+-- Fly the plane. Frame loop, active only while a bus exists AND the record it
+-- flies by has a clock stamped on it; everyone computes the same position from
+-- the same record and the same clock.
 --
 -- Coordinates are written every frame -- that is the authority, and what
 -- keeps 48 local planes identical. Velocity is ALSO set, from a finite
@@ -362,7 +466,28 @@ end)
 -- ped is parked at the airstrip -- without the focus hint, the entire route
 -- ahead is unstreamed ocean, which is precisely how flight 3 looked.
 BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
-    if not bus then return end
+    -- A PLANE IS NOT ENOUGH; THE ROUTE HAS TO HAVE A CLOCK ON IT. The record
+    -- arrives in two shapes: plan() publishes the warmup preview with no `t`
+    -- on any point, and depart() is the only thing that ever stamps one. An
+    -- untimed record landing under a LIVE plane -- `brforce warmup` out of BUS
+    -- republishes the preview while the plane is still up -- put nil into the
+    -- `t <= first.t` compare inside BR.PathPosAt sixty times a second, and
+    -- BR.Loop suspended this callback after five.
+    --
+    -- That suspension is the real damage, not the frames it lost: it is sticky
+    -- for the rest of the client session, and this callback is the ONLY writer
+    -- of the plane's coordinates, rotation, velocity and camera. Every later
+    -- flight that session then leaves without its rider -- the Titan parked at
+    -- the spawn with the ped attached to it while the clock-driven half of the
+    -- ride (island handoff, doors, the server's own eject) runs to schedule.
+    --
+    -- Six other readers of this same record already carry this test -- the
+    -- boarding gate, the island handoff, the doors beep, camLocked(), the
+    -- ghost-plane filter and /brbus. This was the one per-frame consumer
+    -- without it. There is nothing to fly by until depart() has stamped one,
+    -- so the plane holds still; /brbus prints this loop's error and suspend
+    -- counts so a frozen plane cannot be mistaken for a dead callback.
+    if not bus or not route or not route.timed then return end
 
     local t = BR.Clock.now()
     local x, y, z = BR.PathPosAt(route.points, t)
@@ -435,8 +560,38 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     -- Based on the SMOOTHED heading -- on the raw one, every waypoint step
     -- swung the entire view and snapped it back.
     if cam then
-        camYaw   = (camYaw - GetControlNormal(0, 1) * 8.0) % 360.0
-        camPitch = BR.Clamp(camPitch - GetControlNormal(0, 2) * 6.0, -75.0, 25.0)
+        -- THE RUNWAY PIN. See the block above camLocked() for what "off the
+        -- runway" is and why nothing has to restore this.
+        --
+        -- TWO ASSERTIONS, AND THEY ARE NOT ONE MADE TWICE.
+        --
+        --   THE DISABLE is what the player's hand meets: LOOK_LR and LOOK_UD
+        --   are the mouse and the right stick, and blocking them is this
+        --   project's standing idiom for "this input is not available right
+        --   now" (spectate.lua, dbno.lua, inventory.lua). It also keeps the
+        --   HIDDEN gameplay camera still while the scripted one is rendering,
+        --   which is what stops a player who mashed the mouse through the roll
+        --   being handed a view pointing somewhere else when the ride ends.
+        --
+        --   THE SKIP is what the ORBIT obeys, and it is deliberately not left
+        --   to fall out of the disable. GetControlNormal answers 0.0 for a
+        --   disabled control -- that is the contract dbno.lua's crawl relies on
+        --   from the other side, reading 30-35 back through
+        --   GetDisabledControlNormal -- so the accumulation below would already
+        --   be a no-op. Relying on that would make this feature a property of
+        --   engine semantics for disabled controls rather than of a line
+        --   anybody can read, and the next person to add a control to the list
+        --   would have no way of knowing which half was load-bearing.
+        --
+        -- Both are per-frame. Neither is undone anywhere, because neither is
+        -- done anywhere except on the frames it applies to.
+        if BR.Bus.camLocked() then
+            DisableControlAction(0, 1, true)   -- LOOK_LR
+            DisableControlAction(0, 2, true)   -- LOOK_UD
+        else
+            camYaw   = (camYaw - GetControlNormal(0, 1) * 8.0) % 360.0
+            camPitch = BR.Clamp(camPitch - GetControlNormal(0, 2) * 6.0, -75.0, 25.0)
+        end
 
         local dist = BR.Config.Bus.camDistance
         local yawRad   = math.rad((smoothHdg or 0.0) + 180.0 + camYaw)  -- 0 = behind
@@ -803,8 +958,8 @@ local ghosts = {}   -- [matchId] = { route, plane, pilot, hdg, spawning }
 local function removeGhost(id)
     local g = ghosts[id]
     if not g then return end
-    if g.pilot and DoesEntityExist(g.pilot) then DeleteEntity(g.pilot) end
-    if g.plane and DoesEntityExist(g.plane) then DeleteEntity(g.plane) end
+    if g.pilot and isTrue(DoesEntityExist(g.pilot)) then DeleteEntity(g.pilot) end
+    if g.plane and isTrue(DoesEntityExist(g.plane)) then DeleteEntity(g.plane) end
     ghosts[id] = nil
 end
 
@@ -818,10 +973,10 @@ local function spawnGhost(g)
         local model = GetHashKey(BR.Config.Bus.model)
         RequestModel(model)
         local deadline = GetGameTimer() + 10000
-        while not HasModelLoaded(model) and GetGameTimer() < deadline do
+        while not isTrue(HasModelLoaded(model)) and GetGameTimer() < deadline do
             Citizen.Wait(50)
         end
-        if not HasModelLoaded(model) or not g.route then
+        if not isTrue(HasModelLoaded(model)) or not g.route then
             g.spawning = false
             return
         end
@@ -836,10 +991,10 @@ local function spawnGhost(g)
         local pilotModel = GetHashKey('s_m_m_pilot_01')
         RequestModel(pilotModel)
         local pDeadline = GetGameTimer() + 5000
-        while not HasModelLoaded(pilotModel) and GetGameTimer() < pDeadline do
+        while not isTrue(HasModelLoaded(pilotModel)) and GetGameTimer() < pDeadline do
             Citizen.Wait(50)
         end
-        if HasModelLoaded(pilotModel) and DoesEntityExist(g.plane) then
+        if isTrue(HasModelLoaded(pilotModel)) and isTrue(DoesEntityExist(g.plane)) then
             g.pilot = CreatePed(4, pilotModel, p0.x, p0.y, p0.z,
                                 g.route.heading or 0.0, false, false)
             SetModelAsNoLongerNeeded(pilotModel)
@@ -899,7 +1054,7 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.ghosts', function()
             removeGhost(id)
         else
             if not g.plane and not g.spawning then spawnGhost(g) end
-            if g.plane and DoesEntityExist(g.plane) then
+            if g.plane and isTrue(DoesEntityExist(g.plane)) then
                 local x, y, z = BR.PathPosAt(r.points, t)
                 SetEntityCoordsNoOffset(g.plane, x, y, z, false, false, false)
 
@@ -928,6 +1083,18 @@ RegisterCommand('brbus', function()
     print('=== bus (client) ===')
     print(('  riding %s   bus %s   cam %s   dropStateGate %s'):format(
         tostring(riding), tostring(bus), tostring(cam), tostring(BR.State.me.state)))
+    -- THE RUNWAY PIN, AND WHEN IT COMES OFF (#241). "The camera is stuck" is a
+    -- sentence a playtester will produce for at least three different reasons --
+    -- the pin is on, the pin is off and the shot is broken, or there is no shot
+    -- at all -- and only the first of those has a deadline. Printed as the
+    -- deadline rather than as a bare boolean so a pin that is ON reads as
+    -- "lifts in 4.2s" and a pin that is somehow not lifting reads as a number
+    -- that stopped falling.
+    if route and route.timed then
+        print(('  camera %s   (wheels-up %+.1fs relative to now)'):format(
+            BR.Bus.camLocked() and 'PINNED to the airframe' or 'free',
+            ((route.rotateAt or route.tStart) - BR.Clock.now()) / 1000))
+    end
     print(('  clock  offset %.0fms  synced %s  now %d'):format(
         BR.Clock.offset, tostring(BR.Clock.synced), BR.Clock.now()))
     -- THE PROMPT AND THE KEY, BEFORE THE ROUTE, because "there was no prompt"
@@ -955,6 +1122,24 @@ RegisterCommand('brbus', function()
         print(('  browser NEVER READY -- %dms since it was created')
             :format(GetGameTimer() - promptCreatedAt))
     end
+    -- THE FLY LOOP'S OWN HEALTH, ABOVE THE TWO EARLY RETURNS BELOW. bus.fly is
+    -- the only writer of the plane's transform, and now that it no-ops on an
+    -- untimed route it FREEZES the plane rather than erroring -- so "moved 0m"
+    -- further down cannot tell a plane parked for a good reason from a callback
+    -- that died. `suspended` is the sticky one: it survives the match that
+    -- caused it, so a plane that never moves on a LATER flight is answered
+    -- here rather than by a second playtest. Printed before the route lines
+    -- because a route that is missing or untimed is exactly the case a sick
+    -- fly loop travels with.
+    local flyErrors, flySuspended
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'bus.fly' then
+            flyErrors, flySuspended = s.errors, s.suspended
+            break
+        end
+    end
+    print(('  bus.fly  errors %s  suspended %s')
+        :format(tostring(flyErrors), tostring(flySuspended)))
     if not route then print('  route  none') return end
     print(('  route  %d pts  %d crumbs  legs %s  timed %s')
         :format(#route.points, crumbCount,
@@ -967,11 +1152,11 @@ RegisterCommand('brbus', function()
                 (route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
     local x, y, z = BR.PathPosAt(route.points, now)
     print(('  route pos now   %.0f, %.0f, %.0f'):format(x, y, z))
-    if bus and DoesEntityExist(bus) then
+    if bus and isTrue(DoesEntityExist(bus)) then
         local c = GetEntityCoords(bus)
         print(('  bus entity pos  %.0f, %.0f, %.0f'):format(c.x, c.y, c.z))
         Citizen.SetTimeout(1000, function()
-            if bus and DoesEntityExist(bus) then
+            if bus and isTrue(DoesEntityExist(bus)) then
                 local c2 = GetEntityCoords(bus)
                 print(('  bus 1s later    %.0f, %.0f  (moved %.0fm)')
                     :format(c2.x, c2.y, BR.Dist(c.x, c.y, c2.x, c2.y)))

@@ -8,9 +8,11 @@ import Hud from './hud/Hud'
 import Chat from './chat/Chat'
 import Lobby from './screens/Lobby'
 import EndScreen from './screens/EndScreen'
+import DeathVerdict from './hud/DeathVerdict'
 import LeaveScreen from './screens/LeaveScreen'
 import InventoryPanel from './screens/InventoryPanel'
 import Notices from './hud/Notices'
+import RescueTimer from './hud/RescueTimer'
 import Settings from './screens/Settings'
 import Locker from './screens/Locker'
 import Market from './screens/Market'
@@ -69,8 +71,16 @@ export default function App() {
   useNuiEvent('voice',    (d) => s.setVoice(d))
   useNuiEvent('inv',      (d) => s.setInv(d))
   useNuiEvent('storm',    (d) => s.setStorm(d))
+  // The car under you, in any seat. Lua sends `show: false` on every way of
+  // leaving one -- on foot, pulled out, dead, or the vehicle destroyed -- so
+  // there is nothing to clear off a state transition the way the storm is.
+  useNuiEvent('vehicle',  (d) => s.setVehicle(d))
   useNuiEvent('dbno',     (d) => s.setDbno(d))
   useNuiEvent('spectate', (d) => s.setSpectate(d))
+  // Your own death, mid-match. Lua owns how long it stays -- it sends `show`
+  // false when the window closes, on the same clock that releases the spectate
+  // camera -- so there is nothing to time here.
+  useNuiEvent('death',    (d) => s.setDeath(d))
   useNuiEvent('summary',  (d) => s.setSummary(d))
   useNuiEvent('lobby',    (d) => s.setLobby(d))
   // One channel, two verbs: an invite arriving, and an invite being taken
@@ -96,11 +106,18 @@ export default function App() {
   useNuiEvent('locker',   (d) => s.setLocker(d))
   useNuiEvent('progress', (d) => s.setProgress(d))
   useNuiEvent('market',   (d) => s.setMarket(d))
+  // The warmup shop's plate, which is the ONLY thing that puts a Volts figure
+  // on the HUD. A flag, not a balance -- see the envelope's note.
+  useNuiEvent('shopplate', (d) => s.setShopPlate(d.show === true))
   useNuiEvent('players',  (d) => s.setPlayers(d))
   useNuiEvent('report',   (d) => s.setReportResult(d))
   // The Admin tab's availability, and any mint answer. Sent to one player, only
   // when the server has decided that player may have it.
   useNuiEvent('admin',    (d) => s.setAdmin(d))
+  // Where our Discord is. Sent to EVERY player on br:ready -- an invite is a
+  // public address -- and `{}` is a real answer meaning there is none, which is
+  // what takes the card back down if an operator clears it and restarts.
+  useNuiEvent('community', (d) => s.setCommunity(d))
   // A SQUADMATE WENT DOWN, OUT, OR CAME BACK UP -- and nothing here was
   // listening. Lua has sent `squadcue` since the squad audio landed and this
   // handler did not exist, so all three sounds were dropped by the router with
@@ -255,9 +272,58 @@ export default function App() {
   // flight, and the flight is over.
   const ridingBus = s.hud.state === 'bus' && !s.hud.landed
 
+  // ═══ AND THE AMBULANCE IS THE SECOND CUTSCENE (#191) ═══
+  //
+  // Owner, 2026-08-28: "while in the ambulance, our HUD should be hidden just
+  // like in the bus".
+  //
+  // THE SAME RULE, ONE LINE LOWER, RATHER THAN A SECOND MECHANISM. The two
+  // rides are the same shape: the player has no controls, no weapon and no
+  // decisions, a scripted camera is on their own body, and every readout on
+  // screen is about a game they are not currently playing. `hudUp` is the
+  // master switch that already expresses that for the bus, so the ambulance is
+  // made to look like the bus to it.
+  //
+  // WHY THE FACT COMES OFF THE DBNO PAYLOAD AND NOT `hud.state`. There is no
+  // player state for "on the ambulance" and there must not be one: the server
+  // keeps this player DBNO for the whole journey, because a failed rescue puts
+  // them straight back on the floor with a bleed clock that was only ever
+  // suspended (server/combat.lua, 37ef178). Inventing a state to hide a HUD
+  // would put a presentation concern into the roster.
+  //
+  // AND THIS IS ALSO THE ANSWER TO THE OTHER HALF OF HIS MESSAGE: "I need you
+  // to make the bleed out timer completely go away while in the ambulance.
+  // That time should not be relevant anymore once the ambulance takes over."
+  // DbnoOverlay is drawn INSIDE Hud, so hiding the HUD takes the whole card
+  // with it -- which is the right amount to take. "YOU ARE DOWN" is false once
+  // an ambulance has you, and a card reduced to a true heading over no content
+  // would be furniture. There is deliberately no `hideTimer` prop and no branch
+  // in DbnoOverlay: one flag, one rule, one thing to reason about.
+  //
+  // ═══ AND THE ONE THING THE RIDE PUTS BACK, WITHOUT TOUCHING THIS RULE ═══
+  //
+  // Owner, later the same day: "let's add an on-screen timer showing their time
+  // to revive please" -- #191 step 6, which the issue asks for in the same
+  // breath as "this is the only notification in the entire cycle". Those two
+  // lines are about different things (a readout versus an interruption) and
+  // both hold; hud/RescueTimer.tsx carries the argument in full.
+  //
+  // WHAT MATTERS HERE IS THAT `hudUp` DID NOT LEARN AN EXCEPTION. The obvious
+  // build is to keep the HUD up and teach the surfaces inside it which of them
+  // survive a ride -- and that turns the master switch into "everything
+  // except...", a list that the next surface added to the HUD joins by
+  // accident. So the readout is drawn OUTSIDE the hidden tree instead, as a
+  // sibling of `Hud` below, exactly the way DeathVerdict already is. Hiding the
+  // HUD still hides every part of the HUD.
+  //
+  // IT IS THE SAME BIT, NOT A SECOND TEST. `ridingAmbulance` is what turns the
+  // HUD off and what turns this on, passed down rather than re-derived, so the
+  // two can never end up disagreeing about whether a ride is happening.
+  const ridingAmbulance = s.dbno.riding === true
+
   // Whether the vitals strip is on screen -- chat and notices fall back to
   // its position when the radar is hidden, so they need to know.
-  const hudUp = !showLobby && !ridingBus && !tearingDown
+  const hudUp = !showLobby && !ridingBus && !ridingAmbulance && !tearingDown
 
   return (
     /* THE WHOLE INTERFACE, BEHIND ONE GATE (#122).
@@ -292,6 +358,29 @@ export default function App() {
           mount work mid-fight. Hidden under the pause menu -- the fullscreen
           map does not need our chrome floating over it. */}
       <Hud visible={hudUp && !s.hud.paused} />
+      {/* THE AMBULANCE CLOCK, AND IT IS A SIBLING OF THE HUD RATHER THAN A
+          CHILD OF IT ON PURPOSE (#191 step 6, owner 2026-08-28).
+
+          The ride hides the HUD -- also his call -- so this is an exception to
+          a rule he asked for, and the way the two are kept from fighting is
+          that the rule has no exception in it: `hudUp` still turns off
+          everything inside `Hud`, and this is not inside `Hud`. See the note on
+          `ridingAmbulance` above and the file itself.
+
+          IT DRAWS NOTHING UNLESS A RIDE IS RUNNING, so a `show` of false is not
+          an empty box in the clock slot; and it takes no props but that one bit
+          -- the deadline comes off the same payload the bit does.
+
+          ...AND NOT WHILE THE MATCH IS BEING DECIDED, which is the second half
+          of the 2026-08-29 double-verdict report. A ride does not end by a
+          message: client/rescue.lua's `rescue.sanity` sweep runs at 1 Hz and
+          nils the ride when the match stops being PLAYING, so `dbno.riding`
+          stays true for up to a second after the round is over -- and the
+          verdict screen mounts 500ms in. `tearingDown` is on this client the
+          instant the transition arrives, so this is the term that closes that
+          window. It is the same rule DeathVerdict is now under below: the
+          verdict is the end of the match and owns the screen. */}
+      <RescueTimer show={ridingAmbulance && !tearingDown} />
       {/* Chat vanishes with the rest of the in-match chrome the instant the
           match is decided -- a lingering kill-chatter log under the verdict
           slam reads as UI debris -- and it does NOT render under the lobby
@@ -308,6 +397,42 @@ export default function App() {
         visible={showLobby}
         under={LOBBY_SUBSCREENS.has(s.focus)}
       />
+      {/* YOUR OWN DEATH, MID-MATCH -- the word only, over a world that is still
+          running, for the ~10s before the spectator camera takes the screen.
+
+          MOUNTED ALONGSIDE THE VERDICT SCREEN AND NEVER WITH IT -- AND NOW
+          THAT IS ENFORCED HERE RATHER THAN ASSUMED.
+
+          It used to be assumed, in this comment, in these words: "they cannot
+          coincide -- Lua takes this down on MatchState.ENDED, which is the same
+          transition that raises `showEnd`". That is true of a death that has
+          already happened when the match ends. It says nothing about a death
+          that happens AFTER it, and one exists:
+
+          Owner, 2026-08-29: "When one player is in the ambulance and the only
+          other remaining player(s) die, the verdict shown is 'VICTORY ROYALE'
+          along with ALSO the cause of DBNO on top of it."
+
+          A player on the ambulance is DBNO, and DBNO is `isInMatch` -- so they
+          are the last squad standing, the match ends, and they are awarded the
+          win. Then server/rescue.lua's tick drops the rescue flag (the match is
+          no longer PLAYING), server/combat.lua's bleed clock is un-suspended
+          with a deadline that expired mid-ride, and they are eliminated a beat
+          LATER -- which raised this word over the verdict screen, after the one
+          dismissal that would have taken it down had already run. The cause is
+          fixed there, in server/combat.lua: a bleed clock belongs to a live
+          match and does not finish anybody after one is over.
+
+          This line is the rule the fix leaves behind, stated where the two
+          surfaces actually meet. `tearingDown` is "the match is decided", which
+          is precisely the moment the verdict screen becomes the surface for it.
+          Nothing that arrives after that gets to draw a second one.
+
+          STILL OUTSIDE the `Hud` wrapper, and this is NOT `hudUp` creeping in:
+          `hudUp` is four terms and would take this down for a ride, a bus and
+          the lobby as well. This is one of them, and it is the one that means
+          the thing this surface is about. */}
+      {!tearingDown && <DeathVerdict />}
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* The voluntary-leave interstitial covers EVERYTHING -- including
           the lobby that mounts underneath it mid-trip -- until Lua says

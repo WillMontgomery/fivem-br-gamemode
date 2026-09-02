@@ -46,6 +46,14 @@ local DEFAULTS = {
     chatMax = 50,
     killMax = 30,
     stripMax = 20,
+    -- Chat lines the server refused to deliver. A LIST OF ITS OWN RATHER THAN A
+    -- FLAG ON THE CHAT ROWS ABOVE, and the separation is the point: `chat` is a
+    -- drop-oldest window fifty lines deep, so a player who keeps talking after a
+    -- refused line pushes it out of the buffer -- with their own evidence. The
+    -- offender chooses that volume, which makes it exactly the wrong place to
+    -- store the finding. Sized like `stripMax` because it is the same kind of
+    -- fact: a small number of them says everything a large number would.
+    refusedMax = 20,
 }
 
 --- What a promoted record may hold. See `promote`.
@@ -64,6 +72,12 @@ local PROMOTED = {
     -- one-a-second report rate fits inside it; anything past that is truncated
     -- and SAYS it was truncated, which is the honest end of the trade.
     stripMax = 60,
+    -- SIXTY, FOR THE SAME REASON AND AGAINST THE SAME NUMBER -- see
+    -- MAX_TIMELINE_CHAT in incident_build.lua, which is this value. Chat is rate
+    -- limited to eight messages per ten seconds before the server starts
+    -- dropping them (BR.ChatLimits), so sixty refused lines is more than seventy
+    -- seconds of a player typing nothing but adverts.
+    refusedMax = 60,
 }
 
 --- @param opts table|nil { chatMax, killMax }
@@ -74,6 +88,7 @@ function BR.EvidenceBuf.new(opts)
     o.chatMax = opts.chatMax or DEFAULTS.chatMax
     o.killMax = opts.killMax or DEFAULTS.killMax
     o.stripMax = opts.stripMax or DEFAULTS.stripMax
+    o.refusedMax = opts.refusedMax or DEFAULTS.refusedMax
 
     -- Licences whose records are kept larger, because a case has been opened
     -- about them. See `promote` -- this is what makes the promotion apply to
@@ -120,12 +135,19 @@ local function newRecord(key, meta)
         -- at both ends -- so the gap between it and `#strips` is what the CAPS
         -- dropped and nothing more.
         strips    = {},
+        -- Chat lines this server accepted from the player and then delivered to
+        -- nobody but them. `refusedSeen` counts what the screen refused, which
+        -- is not the same as what this list kept -- the gap is what the cap
+        -- dropped, exactly as it is for the three above.
+        refused   = {},
         chatSeen  = 0,
         killsSeen = 0,
         stripsSeen = 0,
+        refusedSeen = 0,
         chatMax   = nil,
         killMax   = nil,
         stripMax  = nil,
+        refusedMax = nil,
     }
 end
 
@@ -190,6 +212,9 @@ function BR.EvidenceBuf:applyPromotion(r)
     if caps.stripMax and caps.stripMax > (r.stripMax or self.stripMax) then
         r.stripMax = caps.stripMax
     end
+    if caps.refusedMax and caps.refusedMax > (r.refusedMax or self.refusedMax) then
+        r.refusedMax = caps.refusedMax
+    end
 end
 
 --- Record one chat line against its sender.
@@ -233,6 +258,27 @@ function BR.EvidenceBuf:noteStrip(key, row, meta)
     local r = self:track(key, meta)
     r.stripsSeen = r.stripsSeen + 1
     push(r.strips, row, r.stripMax or self.stripMax)
+end
+
+--- Record one chat line the server refused to deliver.
+---
+--- ONE SIDE ONLY, like a strip and unlike a kill: a refused line is a fact about
+--- what one player tried to say and there is nobody else it is evidence about --
+--- least of all the people it was never delivered to.
+---
+--- SEPARATE FROM `noteChat` RATHER THAN A FLAG ON IT, and the caller raises
+--- BOTH for a refused line. `chat` stays the complete record of what this player
+--- said this match, holes in which would be their own kind of lie; `refused` is
+--- the short list a reviewer is actually reading, kept where the player's own
+--- chat volume cannot evict it. See DEFAULTS.refusedMax.
+--- @param key any
+--- @param row table  { at, text, channel, reason }
+--- @param meta table|nil
+function BR.EvidenceBuf:noteRefusedChat(key, row, meta)
+    local r = self:track(key, meta)
+    r.refusedSeen = (r.refusedSeen or 0) + 1
+    r.refused = r.refused or {}
+    push(r.refused, row, r.refusedMax or self.refusedMax)
 end
 
 --- Keep more about this player, because a case has been opened about them.
@@ -279,12 +325,14 @@ function BR.EvidenceBuf:promote(license, caps)
             chatMax = math.max(held.chatMax or 0, caps.chatMax or 0),
             killMax = math.max(held.killMax or 0, caps.killMax or 0),
             stripMax = math.max(held.stripMax or 0, caps.stripMax or 0),
+            refusedMax = math.max(held.refusedMax or 0, caps.refusedMax or 0),
         }
     else
         self.promoted[license] = {
             chatMax = caps.chatMax,
             killMax = caps.killMax,
             stripMax = caps.stripMax,
+            refusedMax = caps.refusedMax,
         }
     end
 
@@ -404,6 +452,7 @@ end
 function BR.EvidenceBuf:stats()
     local liveN, chat, kills, chatSeen, killsSeen = 0, 0, 0, 0, 0
     local strips, stripsSeen = 0, 0
+    local refused, refusedSeen = 0, 0
     local function count(r)
         chat      = chat + #r.chat
         kills     = kills + #r.kills
@@ -411,6 +460,8 @@ function BR.EvidenceBuf:stats()
         killsSeen = killsSeen + (r.killsSeen or 0)
         strips     = strips + #(r.strips or {})
         stripsSeen = stripsSeen + (r.stripsSeen or 0)
+        refused     = refused + #(r.refused or {})
+        refusedSeen = refusedSeen + (r.refusedSeen or 0)
     end
     for _, r in pairs(self.live) do
         liveN = liveN + 1
@@ -428,6 +479,13 @@ function BR.EvidenceBuf:stats()
         -- play; a strip is not.
         stripRows = strips, stripsSeen = stripsSeen,
         stripsDropped = stripsSeen - strips,
+        -- `refusedRows` IS ZERO ON A HEALTHY SERVER TOO, and it is the counter to
+        -- watch while the chat screen is new: it is the only number anywhere
+        -- that says how often a message was silently delivered to nobody. The
+        -- sender is never told, so nothing else on this server can be read as a
+        -- rate of false positives.
+        refusedRows = refused, refusedSeen = refusedSeen,
+        refusedDropped = refusedSeen - refused,
     }
 end
 

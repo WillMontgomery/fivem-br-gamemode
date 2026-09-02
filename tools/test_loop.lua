@@ -263,6 +263,272 @@ do
     BR.Loop.unregister(h)
 end
 
+-- ------------------------------------------------------- timing aggregation ---
+--
+-- THE SUITE THAT SHOULD HAVE EXISTED FIRST.
+--
+-- br_core shipped for months with every per-callback cost reading 0.000ms and
+-- every band reading "avg 0.000ms peak 0ms" over 6391 passes, and no gate
+-- noticed, because nothing here ever asserted that the instrument could produce
+-- a non-zero number. The stub above is itself a faithful model of the bug: it
+-- freezes GetGameTimer unless a test moves it, exactly as FiveM's frame-stamped
+-- clock freezes it within a frame.
+--
+-- So the property under test is not "the arithmetic is right". It is that the
+-- reducers can tell A MEASUREMENT OF ZERO from A FAILURE TO MEASURE, and say
+-- so, because reporting the second as the first is the entire defect.
+
+describe('reduceBench')
+do
+    -- The exact shape of the shipped bug: the clock never moved, so every
+    -- sample is 0. The honest answer is "no measurement", never "0ms/call".
+    local frozen = BR.Loop.reduceBench({ 0, 0, 0, 0, 0 }, { 0, 0, 0, 0, 0 }, 256)
+    ok(not frozen.resolved, 'a frozen clock does not resolve')
+    ok(frozen.perCallMs == nil, 'and reports NO number rather than zero',
+        ('perCallMs=%s'):format(tostring(frozen.perCallMs)))
+    ok(tostring(frozen.reason):find('never advanced') ~= nil,
+        'and says why', frozen.reason)
+
+    -- A real amplified measurement. 16ms idle frames; burst frames run the
+    -- callback 200 times and cost 36ms; so the callback costs 20/200 = 0.1ms.
+    local real = BR.Loop.reduceBench({ 16, 16, 17, 16, 16 }, { 36, 36, 37, 36, 36 }, 200)
+    ok(real.resolved, 'a real difference resolves', real.reason)
+    ok(math.abs(real.perCallMs - 0.1) < 1e-9,
+        'per-call cost is the frame delta over the iteration count',
+        ('got %s'):format(tostring(real.perCallMs)))
+    ok(real.deltaMs == 20, 'the delta is reported for sanity-checking',
+        ('got %s'):format(tostring(real.deltaMs)))
+
+    -- MEDIAN, not mean: one streamed asset landing mid-run must not become the
+    -- answer. With a mean, the 300ms outlier below would report ~0.35ms/call.
+    local spiked = BR.Loop.reduceBench({ 16, 16, 16, 16, 16 }, { 36, 36, 36, 36, 300 }, 200)
+    ok(math.abs(spiked.perCallMs - 0.1) < 1e-9,
+        'one hitched sample does not move the answer',
+        ('got %s'):format(tostring(spiked.perCallMs)))
+
+    -- Below the floor: the burst did not clear one clock tick. That is not
+    -- 0ms/call, it is "cheaper than this many iterations can see", and the
+    -- ceiling it proves is the useful thing to say.
+    local floored = BR.Loop.reduceBench({ 16, 16, 16, 16 }, { 16, 16, 16, 17 }, 500)
+    ok(not floored.resolved, 'a sub-tick difference does not resolve')
+    ok(floored.perCallMs == nil, 'and still refuses to invent a number')
+    ok(floored.perCallMaxMs == 1.0 / 500,
+        'but does report the ceiling it proves',
+        ('got %s'):format(tostring(floored.perCallMaxMs)))
+
+    -- More iterations means a lower ceiling. This is the whole reason
+    -- amplification works, so it is worth pinning.
+    local tighter = BR.Loop.reduceBench({ 16, 16, 16, 16 }, { 16, 16, 16, 17 }, 4000)
+    ok(tighter.perCallMaxMs < floored.perCallMaxMs,
+        'amplifying harder tightens the bound',
+        ('%s vs %s'):format(tostring(tighter.perCallMaxMs), tostring(floored.perCallMaxMs)))
+
+    local thin = BR.Loop.reduceBench({ 16 }, { 36 }, 200)
+    ok(not thin.resolved, 'too few samples does not resolve')
+    ok(thin.perCallMs == nil, 'and invents nothing')
+
+    local noIter = BR.Loop.reduceBench({ 16, 16, 16 }, { 36, 36, 36 }, 0)
+    ok(not noIter.resolved, 'zero iterations does not resolve (no division by it)')
+end
+
+describe('reduceAB')
+do
+    local frozen = {}
+    for i = 1, 30 do frozen[i] = 0 end
+    local dead = BR.Loop.reduceAB(frozen, frozen)
+    ok(not dead.resolved, 'a frozen clock does not resolve here either')
+    ok(dead.deltaMs == nil, 'and reports no delta rather than a zero one',
+        ('deltaMs=%s'):format(tostring(dead.deltaMs)))
+
+    local on, off = {}, {}
+    for i = 1, 30 do on[i], off[i] = 22, 16 end
+    local r = BR.Loop.reduceAB(on, off)
+    ok(r.resolved, 'on/off blocks resolve', r.reason)
+    ok(r.deltaMs == 6, 'the cost is the difference in median frame time',
+        ('got %s'):format(tostring(r.deltaMs)))
+
+    -- A callback that costs nothing measurable reads as ~0 -- and that IS a
+    -- measurement here, because the frames themselves were non-zero. This is
+    -- the distinction the whole suite exists for: same number, different
+    -- meaning, and the reducer has to get it right in both directions.
+    local same = {}
+    for i = 1, 30 do same[i] = 16 end
+    local innocent = BR.Loop.reduceAB(same, same)
+    ok(innocent.resolved, 'equal frame times ARE a measurement, not a failure')
+    ok(innocent.deltaMs == 0, 'and the honest answer there is zero',
+        ('got %s'):format(tostring(innocent.deltaMs)))
+
+    local short = { 1, 2, 3 }
+    ok(not BR.Loop.reduceAB(short, short).resolved, 'too few frames does not resolve')
+end
+
+describe('bench driver')
+do
+    -- Drive the real bench() with an injected frame yield, so the whole path --
+    -- burst, pair, reduce -- is exercised without a game. The fake clock only
+    -- advances when a frame ends, which is precisely how the real one behaves.
+    local ran = 0
+    local h = BR.Loop.register(BR.Loop.FRAME, 't.bench.target', function() ran = ran + 1 end)
+
+    -- 16ms idle frames; a frame that ran the burst costs 16 + 0.05ms x calls.
+    local burstThisFrame = 0
+    local function advance()
+        fakeTime = fakeTime + 16 + math.floor(burstThisFrame * 0.05)
+        burstThisFrame = 0
+    end
+    local counted = BR.Loop.register(BR.Loop.FRAME, 't.bench.counted', function()
+        burstThisFrame = burstThisFrame + 1
+    end)
+
+    local r = BR.Loop.bench('t.bench.counted', 200, 5, advance)
+    ok(r ~= nil, 'bench finds a registered callback')
+    ok(r.resolved, 'bench resolves against a clock that moves between frames',
+        r and r.reason)
+    ok(r.perCallMs ~= nil and math.abs(r.perCallMs - 0.05) < 0.005,
+        'bench recovers a per-call cost far below the clock resolution',
+        ('got %s'):format(tostring(r and r.perCallMs)))
+    ok(r.iterations == 200 and r.name == 't.bench.counted', 'bench labels its result')
+
+    -- AND THE REGRESSION ITSELF: with a clock that never moves -- the real
+    -- FiveM client -- bench must come back empty-handed rather than confident.
+    local frozenR = BR.Loop.bench('t.bench.counted', 200, 5, function() end)
+    ok(not frozenR.resolved, 'bench on a frozen clock does not resolve')
+    ok(frozenR.perCallMs == nil, 'bench on a frozen clock reports no number',
+        ('perCallMs=%s'):format(tostring(frozenR.perCallMs)))
+
+    ok(BR.Loop.bench('t.no.such.callback', 10, 2, advance) == nil,
+        'bench reports an unknown name as nil')
+
+    BR.Loop.unregister(h)
+    BR.Loop.unregister(counted)
+    BR.Loop.step(BR.Loop.FRAME)
+end
+
+describe('ab driver')
+do
+    local h = BR.Loop.register(BR.Loop.FRAME, 't.ab.target', function() end)
+
+    -- The callback is registered but the AB driver toggles `enabled`, so the
+    -- fake frame cost keys off that: 22ms while it is on, 16ms while it is off.
+    local function advance()
+        local on = false
+        for _, s in ipairs(BR.Loop.stats()) do
+            if s.name == 't.ab.target' then on = s.enabled end
+        end
+        fakeTime = fakeTime + (on and 22 or 16)
+    end
+
+    local r = BR.Loop.ab('t.ab.target', 3, 12, advance)
+    ok(r ~= nil and r.resolved, 'ab resolves', r and r.reason)
+    ok(r.deltaMs == 6, 'ab recovers the in-situ per-frame cost',
+        ('got %s'):format(tostring(r and r.deltaMs)))
+
+    -- It must leave the subsystem exactly as it found it. An instrument that
+    -- silently disables a gameplay callback is worse than no instrument.
+    local restored
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 't.ab.target' then restored = s.enabled end
+    end
+    ok(restored == true, 'ab restores the callback it toggled')
+
+    ok(BR.Loop.ab('t.no.such.callback', 2, 4, advance) == nil,
+        'ab reports an unknown name as nil')
+
+    BR.Loop.unregister(h)
+    BR.Loop.step(BR.Loop.FRAME)
+end
+
+describe('timing capability')
+do
+    -- The hot path must not accumulate ms it cannot measure, and every
+    -- reporting surface must be able to see that it did not. This is what
+    -- /brhitch now gates its "the stall was NOT br_core" verdict on -- that
+    -- sentence was previously reachable from a stopwatch that read zero, and so
+    -- exonerated br_core on every hitch it ever saw.
+    local t = BR.Loop.timing()
+    ok(t.perCallResolvable == false,
+        'per-call COST is unresolvable until a probe says otherwise')
+
+    BR.Loop.resetStats()
+    local h = BR.Loop.register(BR.Loop.TICK, 't.cap', function() end)
+    fakeTime = fakeTime + 100
+    for _ = 1, 5 do BR.Loop.step(BR.Loop.TICK) end
+
+    local found
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 't.cap' then found = s end
+    end
+    ok(found.calls == 5, 'call counts are still collected -- the clock cannot corrupt those')
+    ok(found.stalls == 0, 'a callback that never spans a frame records no stalls')
+    ok(found.peakMs == 0, 'and no peak')
+    ok(found.avgStallMs == 0, 'and the mean stall of zero stalls is zero, not a division by zero')
+    ok(BR.Loop.frameStats().attributable == false,
+        'frame stats say per-call cost is unattributable, so /brhitch withholds its verdict')
+
+    BR.Loop.unregister(h)
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- ═══ THE 55ms CASE, WHICH IS WHY THE STOPWATCH IS KEPT ═══
+    --
+    -- Owner's capture, 2026-08-23: one pass of airdrop.render in 113,237 read
+    -- 55ms and every other sample in the registry read 0. On a frame-stamped
+    -- clock that can only happen if the call SPANNED A FRAME -- it yielded, or
+    -- it blocked the main thread. Either way it is a stall with a name on it,
+    -- and it is the only signal this runtime gives that can name one.
+    --
+    -- So a callback that moves the clock must be COUNTED as a stall, sized by
+    -- its peak, and -- the part the old build got wrong -- must never have its
+    -- milliseconds divided by the call count and presented as an average.
+    BR.Loop.resetStats()
+    local spanner = BR.Loop.register(BR.Loop.SLOW, 't.cap.spanner', function()
+        fakeTime = fakeTime + 55      -- as if a frame boundary passed mid-call
+    end)
+    local quiet = BR.Loop.register(BR.Loop.SLOW, 't.cap.quiet', function() end)
+
+    BR.Loop.step(BR.Loop.SLOW)
+    for _ = 1, 999 do BR.Loop.step(BR.Loop.SLOW) end
+
+    local sp, qu
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 't.cap.spanner' then sp = s end
+        if s.name == 't.cap.quiet'   then qu = s end
+    end
+    ok(sp.stalls == 1000, 'every pass that moved the clock is counted as a stall',
+        ('stalls=%s'):format(tostring(sp.stalls)))
+    ok(sp.peakMs == 55, 'the stall is sized by its worst reading',
+        ('peak=%s'):format(tostring(sp.peakMs)))
+    ok(sp.avgStallMs == 55, 'the mean is over STALLS, so it agrees with the peak',
+        ('avgStall=%s'):format(tostring(sp.avgStallMs)))
+    -- The regression in one line: totalMs/calls for a single 55ms spike across
+    -- 113,237 passes is 0.000485, which prints as "avg 0.000ms" beside
+    -- "peak 55ms" and makes an operator distrust every other row.
+    ok(sp.avgStallMs > 0,
+        'an average printed beside a non-zero peak can never itself be zero')
+    ok(qu.stalls == 0 and qu.calls == 1000,
+        'a callback in the same band that never spans a frame stays at zero stalls')
+    ok(BR.Loop.bandStats()[BR.Loop.SLOW].stalls == 1000,
+        'the band records the stall too, since the pass spanned a frame as well')
+
+    BR.Loop.unregister(spanner)
+    BR.Loop.unregister(quiet)
+    BR.Loop.step(BR.Loop.SLOW)
+    BR.Loop.resetStats()
+
+    -- The probe itself, against the stub -- which is a faithful model of the
+    -- real client, because GetGameTimer here does not move unless a test moves
+    -- it, exactly as the game's does not move unless a frame ends. The probe
+    -- must come back saying "cannot resolve" rather than quietly enabling a
+    -- stopwatch that will read zero for ever.
+    local probe = BR.Loop.probeClock(4096)
+    ok(probe.moved == false, 'the probe sees a frozen clock for what it is')
+    ok(probe.resolvable == false, 'and reports per-call timing as unresolvable')
+    ok(probe.iterations > 0, 'having actually done the work to find out',
+        ('iterations=%s'):format(tostring(probe.iterations)))
+    ok(BR.Loop.timing().perCallResolvable == false,
+        'so per-call timing stays off after probing')
+    ok(BR.Loop.probeClock(4096) == probe, 'the probe is memoised, not re-run')
+end
+
 describe('dt')
 do
     local seen = {}

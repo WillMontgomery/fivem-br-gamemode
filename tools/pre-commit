@@ -53,6 +53,7 @@ if staged | grep -q '^js-src/br_ddb/src/'; then
         echo
         echo "  Fix:"
         echo "    cd js-src/br_ddb && npm run build"
+        echo "    bash tools/br_ddb_fingerprint.sh"
         echo "    git add resources/\[fivem-royale\]/br_ddb/dist"
         echo
         echo "  Override (only if you know the bundle is unaffected):"

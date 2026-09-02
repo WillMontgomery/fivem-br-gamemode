@@ -276,7 +276,7 @@ function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, 
         end
     end
 
-    -- AND NOT INTO THE SEA.
+    -- AND NOT OFF THE MAP.
     --
     -- The anchor is a POI and therefore always on land, but nothing stopped
     -- the per-phase drift from walking seaward one circle at a time -- eight
@@ -285,27 +285,48 @@ function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, 
     -- 2026-08-06: "rare (but possible) cases where the storm can close in to
     -- an anchor point in the ocean").
     --
-    -- Walked back along its own line toward the PREVIOUS centre, which is dry
-    -- by induction: phase 0 is the anchor POI. That makes this terminate, and
-    -- it keeps the draw's bearing -- the circle still moves the way the roll
-    -- said, just not as far. Containment is preserved for free, since every
-    -- step is strictly closer to the centre it was already contained by.
+    -- Walked back along its own line toward the PREVIOUS centre, which is on
+    -- the map by induction: phase 0 is the anchor POI, and every POI is inside
+    -- the boundary (tools/check_boundary.lua is what makes that true rather
+    -- than hoped). That makes this terminate, and it keeps the draw's bearing
+    -- -- the circle still moves the way the roll said, just not as far.
+    -- Containment is preserved for free, since every step is strictly closer
+    -- to the centre it was already contained by.
     --
-    -- The mask is the same coarse rectangle set the loot generator uses, so
-    -- this does not claim to keep every circle off every inlet -- it stops the
-    -- open-ocean case, which is the one that ends a match with nowhere to
-    -- stand.
-    local water = BR.Config and BR.Config.Map and BR.Config.Map.IsWater
-    if water and water(nx, ny) then
+    -- ═══ THE MASK IS THE SURVEYED BOUNDARY NOW, NOT JUST THE RECTANGLES ═══
+    --
+    -- It used to be BR.Config.Map.Water alone: five coarse rectangles authored
+    -- to stop LOOT generating in the Pacific. They were never a map outline,
+    -- and the gaps between them are where the storm went. Measured over 4000
+    -- simulated matches on the old rule, 20.2% of them ENDED with the final
+    -- circle's centre outside the playable shape -- which is the owner's report
+    -- ("we have too many places where the storm can end outside the map and in
+    -- the ocean", 2026-08-28) as a number rather than as an anecdote.
+    --
+    -- BOTH TESTS RUN, because neither contains the other. The boundary is the
+    -- island's outline and knows nothing about the water inside it; the Alamo
+    -- Sea rectangle sits wholly within the ring and is the case the boundary
+    -- cannot catch. The four ocean rectangles are wholly outside it and are now
+    -- redundant here -- kept because they cost one comparison and because
+    -- deleting a backstop to save a comparison is how backstops go missing.
+    local M = BR.Config and BR.Config.Map
+    local function offMap(x, y)
+        if not M then return false end
+        if M.IsWater and M.IsWater(x, y) then return true end
+        if M.InBounds and not M.InBounds(x, y) then return true end
+        return false
+    end
+
+    if offMap(nx, ny) then
         for attempt = 1, 8 do
             local t = 1.0 - attempt / 8.0
             local tx, ty = cx + (nx - cx) * t, cy + (ny - cy) * t
-            if not water(tx, ty) then
+            if not offMap(tx, ty) then
                 return tx, ty, broke
             end
         end
-        -- Every step of the way in was wet, which means the CURRENT centre is
-        -- too. Nothing better to offer than staying put.
+        -- Every step of the way in was off the map, which means the CURRENT
+        -- centre is too. Nothing better to offer than staying put.
         return cx, cy, broke
     end
 

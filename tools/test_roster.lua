@@ -23,8 +23,16 @@ function GetPlayerName(src) return playerNames[src] or ('Player' .. tostring(src
 -- src-derived stub they share one, which would make a report misattributed to
 -- them look correct. Tests that care set `licenseOf[src]`; everything else keeps
 -- the stable per-src default it was written against.
+--
+-- AND A CONNECTION CAN HAVE NO LICENSE AT ALL, which `noLicense` expresses. It
+-- is rare and it is real -- BR.Roster.licenseOf is written to return nil rather
+-- than invent a key, "a ban against the wrong human waiting to happen" -- and
+-- anything that compares two licenses has to decide what nil means. The spectate
+-- feed's answer is "not a match", and that answer is only testable with a player
+-- who has none.
 local licenseOf = {}
-function GetNumPlayerIdentifiers(src) return 1 end
+local noLicense = {}
+function GetNumPlayerIdentifiers(src) return noLicense[src] and 0 or 1 end
 function GetPlayerIdentifier(src, i)
     return 'license:' .. (licenseOf[src] or ('test' .. tostring(src)))
 end
@@ -75,13 +83,200 @@ end
 -- observes death, server eliminates.
 local pedHealth = {}
 function GetEntityHealth(ped) return pedHealth[ped] or 200 end
-function GetPedArmour() return 0 end
+
+-- ARMOUR IS SETTABLE FOR THE SAME REASON HEALTH IS, and it used to answer a
+-- flat 0. That was fine while armour was only ever a display value, and stopped
+-- being fine the moment the health audit started reading it: `entry.armour` is
+-- what BR.Damage.applyHit soaks a hit with BEFORE health is touched, and it is
+-- sampled off this native -- so a client pinning its armour at 100 regenerates
+-- the soak four times a second, which is the same exploit as the health one and
+-- costs the shooter more. A stub that could not express that could not test it.
+-- Defaults to 0, so every block written against the old constant is unchanged.
+local pedArmour = {}
+function GetPedArmour(ped) return pedArmour[ped] or 0 end
+
+-- ═══ THE TWO SERVER-SIDE VEHICLE NATIVES, AND ONE OF THEM LIES ═══
+--
+-- These are kept as two INDEPENDENT tables on purpose, and a test that sets
+-- only one of them is expressing something real rather than being lazy.
+--
+-- `GetVehiclePedIsIn` asks the PED and, on the builds this project runs,
+-- answers the vehicle it was LAST in when it is not in one at all --
+-- citizenfx/fivem#4006, "[Server] GetVehiclePedIsIn(ped, false) returns last
+-- vehicle when ped is not in any vehicle", still OPEN with no fix (checked
+-- 2026-08-22). The documented workaround gates it on `IsPedInAnyVehicle`, which does
+-- not exist server-side. So `pedVehicle` here is deliberately STICKY: `drive`
+-- writes it and `stepOut` does not clear it, exactly as the platform does not.
+--
+-- `GetPedInVehicleSeat` asks the VEHICLE, which is a live read, and `stepOut`
+-- clears that. A stub where both moved together would agree with a naive
+-- implementation and prove nothing -- which is rule 4 in docs/testing.md and
+-- the reason #129 survived six rounds of fixes with a green suite.
+--
+-- BOTH ANSWER 0 RATHER THAN nil for "nothing", because that is what the natives
+-- do and because 0 IS TRUTHY IN LUA. A server that tests `if veh then` passes
+-- against a nil-returning stub and puts every player on the map in a car
+-- against the real thing.
+--
+-- GET_HASH_KEY comes with them, because server/combat.lua's `describeCause`
+-- hashes weapon NAMES at runtime to translate the cause the client reports --
+-- and 'roadkill' is one of its answers. This is the real joaat rather than a
+-- lookup that agrees with config/weapons.lua's authored column, so a test that
+-- names WEAPON_RUN_OVER_BY_CAR and a table that names 0xA36D413E are two
+-- independent statements. (tools/check_weapons.lua carries the same twelve lines
+-- and the same WEAPON_PISTOL anchor; that is the gate that proves the column.)
+function GetHashKey(s)
+    local h = 0
+    s = tostring(s):lower()
+    for i = 1, #s do
+        h = (h + s:byte(i)) & 0xFFFFFFFF
+        h = (h + (h << 10)) & 0xFFFFFFFF
+        h = (h ~ (h >> 6))  & 0xFFFFFFFF
+    end
+    h = (h + (h << 3))  & 0xFFFFFFFF
+    h = (h ~ (h >> 11)) & 0xFFFFFFFF
+    h = (h + (h << 15)) & 0xFFFFFFFF
+    return h
+end
+
+local pedVehicle = {}   -- [ped]     = the vehicle the ped is or WAS in
+local vehSeat    = {}   -- [vehicle] = { [seat] = ped }
+function GetVehiclePedIsIn(ped) return pedVehicle[ped] or 0 end
+function GetPedInVehicleSeat(veh, seat)
+    local s = vehSeat[veh]
+    return (s and s[seat]) or 0
+end
+
+--- Put a player at the wheel of a vehicle.
+local function drive(src, veh, seat)
+    local ped = 1000 + src
+    pedVehicle[ped] = veh
+    vehSeat[veh] = vehSeat[veh] or {}
+    vehSeat[veh][seat or -1] = ped
+end
+
+--- Put an NPC at the wheel -- an ambient maniac driver, which is a real thing
+--- this gamemode creates on purpose (client/gamerules.lua) and must never bill
+--- a player for. The handle is outside the 1000+src range every player ped uses.
+local function driveNpc(veh)
+    vehSeat[veh] = vehSeat[veh] or {}
+    vehSeat[veh][-1] = 9000 + veh
+end
+
+--- Empty a vehicle's driving seat -- somebody got out.
+---
+--- THE PED'S OWN ANSWER IS LEFT BEHIND, because the platform leaves it behind:
+--- the ped goes on naming this vehicle forever. See the note above.
+local function stepOut(veh)
+    if vehSeat[veh] then vehSeat[veh][-1] = nil end
+end
+
+-- ═══ WHAT THE VEHICLE IS, FOR #211's OCCUPANCY DETECTOR ═══
+--
+-- The roadkill ledger never asked, so these did not exist: it cares that a
+-- player is driving, not what. The refused-vehicle detector cares about nothing
+-- else.
+--
+-- UNSET MEANS 0, AND 0 IS AN ALLOWED MODEL, which is the polarity
+-- BR.Config.IsAllowedVehicle documents ("zero is allowed, and that is the safe
+-- direction"). So every vehicle the older blocks put on the map stays an
+-- ordinary car and none of them starts filing incidents -- the alternative
+-- would have made the roadkill suite open cases as a side effect.
+--
+-- GetEntityModel ANSWERS THE SIGNED VALUE, because the real one does. Model
+-- hashes with the top bit set arrive NEGATIVE, and a detector that floors them
+-- to zero turns `buzzard` into an ordinary car. Tests set these through
+-- `setModel` below, which signs the hash exactly as GetHashKey would.
+local vehModel = {}
+local vehType  = {}
+function GetEntityModel(h) return vehModel[h] or 0 end
+--- The engine's class for a vehicle, or nil.
+---
+--- `throws` IS A REAL CASE AND IT IS WHY THIS IS NOT A TABLE INDEX. The native
+--- is built with the platform's makeEntityFunction wrapper, which RAISES on a
+--- stale handle rather than answering -- server/vehicles.lua pcalls it for that
+--- reason, and a stub that could not throw would never exercise the pcall.
+function GetVehicleType(h)
+    if vehType[h] == 'throw' then error('Tried to access invalid entity') end
+    return vehType[h]
+end
+
+--- Give a vehicle a model, as the engine would report it: SIGNED.
+local function setModel(veh, name)
+    local h = GetHashKey(name)
+    if h >= 0x80000000 then h = h - 0x100000000 end
+    vehModel[veh] = h
+end
 
 -- Routing buckets, captured for assertion: the lobby is per-player private,
 -- matches are shared.
 local buckets = {}
 function SetPlayerRoutingBucket(src, bucket) buckets[tonumber(src)] = bucket end
 function SetRoutingBucketPopulationEnabled() end
+function GetPlayerRoutingBucket(src) return buckets[tonumber(src)] end
+
+-- ═══ SERVER-SIDE VEHICLE CREATION, FOR `brcar` ═══
+--
+-- IT IS `CreateVehicleServerSetter` AND NOT `CreateVehicle`, WHICH IS #212.
+-- Server-side `CreateVehicle` is an RPC: it returns a ScriptGuid the server
+-- cannot resolve yet, so every makeEntityFunction native called on that handle
+-- -- SetEntityRoutingBucket among them -- THROWS "Tried to access invalid
+-- entity". The verb threw one line after creating the car and printed nothing.
+-- The server setter registers the entity before minting the handle, so the
+-- handle is real immediately.
+--
+-- IT ANSWERS A NUMBER AND ANSWERS 0 FOR FAILURE, which is the whole reason it is
+-- stubbed rather than assumed: 0 is truthy in Lua, so a stub that returned nil
+-- for failure would agree with a caller that tests `if veh then` and prove
+-- nothing. `createFail` makes the real failure path reachable.
+--
+-- AND IT THROWS ON A BAD TYPE, which is the other half of #212's lesson: the
+-- native does not answer 0 for an unrecognised type, it raises. A stub that
+-- returned 0 would let a caller that never guards the call pass this suite and
+-- then take the handler down on the real server.
+--
+-- Every call is RECORDED rather than counted. What the tests need to assert is
+-- that a refused model never reaches this function at all -- an assertion about
+-- absence, which needs the log rather than a return value.
+local created = {}
+local createFail = false
+local nextVehicle = 500
+local SETTER_TYPES = {
+    automobile = true, bike = true, boat = true, heli = true,
+    plane = true, submarine = true, trailer = true, train = true,
+}
+function CreateVehicleServerSetter(hash, vtype, x, y, z, heading)
+    created[#created + 1] = {
+        hash = hash, vtype = vtype, x = x, y = y, z = z, heading = heading,
+    }
+    if not SETTER_TYPES[vtype] then
+        error(('CREATE_VEHICLE_SERVER_SETTER: Invalid entity type %s')
+            :format(tostring(vtype)))
+    end
+    if createFail then return 0 end
+    nextVehicle = nextVehicle + 1
+    return nextVehicle
+end
+
+-- DOES_ENTITY_EXIST IS THE ONE ENTITY NATIVE THAT DOES NOT THROW, which is why
+-- brcar can use it to answer "did it actually appear?". It answers 1 rather
+-- than true, because that is what a FiveM BOOL does on some builds and 0 is
+-- truthy in Lua -- a caller that tests it bare passes against a boolean stub
+-- and reports success for a car that is not there.
+local existsFail = false
+function DoesEntityExist(h)
+    if h == nil or h == 0 or existsFail then return 0 end
+    return 1
+end
+
+-- The heading a ped is facing. Zero for everybody unless a test says otherwise,
+-- which makes the spawn offset arithmetic checkable by hand: facing north
+-- (heading 0) puts the car +SPAWN_AHEAD_M on Y and nothing on X.
+local pedHeading = {}
+function GetEntityHeading(ent) return pedHeading[ent] or 0.0 end
+
+local entityBucket = {}
+function SetEntityRoutingBucket(ent, bucket) entityBucket[ent] = bucket end
 
 -- Capture outbound traffic so tests can assert on what clients would receive.
 local sent = {}
@@ -124,6 +319,21 @@ local function runCommand(name, ...)
     return true
 end
 
+--- Run one AS SOMEBODY, which is the only way to reach a console-only gate.
+---
+--- runCommand always passes 0 -- the server console -- because that is how every
+--- verb in this project is meant to be typed. `brcar` is the first one whose
+--- refusal of everybody ELSE is a security boundary rather than a convenience,
+--- and a boundary nothing ever crosses in a test is a boundary nobody has
+--- checked. Source 0 is the console; anything else is a live client, including
+--- one holding the br.admin ACE that makes `RESTRICTED` let it through.
+local function runCommandAs(src, name, ...)
+    local fn = commands[name]
+    if not fn then return false end
+    fn(src, { ... }, name)
+    return true
+end
+
 -- br_stats asks whether br_ddb is running before it records anything, and
 -- answers 'not started' by doing nothing at all. Saying 'started' here is what
 -- lets the match-history block below drive the real write path; every other
@@ -137,8 +347,37 @@ function GetResourceState() return 'started' end
 -- timer would only delete bookkeeping the test wants to read.
 function SetTimeout() end
 
+--- The server console, swallowed but not thrown away.
+---
+--- This was `function print() end`, and that made the CONSOLE the one output of
+--- this server nothing could assert on. It is a real output: `brstate`,
+--- `brvehicles` and the whole debug family exist only as print, and #202 turned
+--- on a line of it -- a match born under a warmup hold used to log the departure
+--- time it was not going to keep, which is worse than silence because it argues
+--- the hold is off.
+---
+--- A RING RATHER THAN A LOG. Every block in this suite prints; keeping all of it
+--- would be a table growing without bound for the sake of the handful of lines
+--- anybody looks at. The last PRINT_KEEP lines are always there, which is more
+--- than any single assertion needs.
 local realPrint = print
-function print() end
+local PRINT_KEEP = 256
+local printed = {}
+function print(...)
+    local parts = {}
+    for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+    printed[#printed + 1] = table.concat(parts, '\t')
+    if #printed > PRINT_KEEP then table.remove(printed, 1) end
+end
+
+--- Did the console say this, recently? Substring, because the assertions worth
+--- writing are about the fact a line carries and not about its punctuation.
+local function printedSaying(needle)
+    for i = #printed, 1, -1 do
+        if printed[i]:find(needle, 1, true) then return printed[i] end
+    end
+    return nil
+end
 
 Citizen = { CreateThread = function() end, Wait = function() end,
             SetTimeout = function() end }
@@ -155,11 +394,32 @@ end
 local ROOT = 'resources/[fivem-royale]/'
 for _, f in ipairs({
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+    -- BR.Notice; server/combat.lua and server/party.lua compose the toasts that
+    -- name a player with it, and server/broadcast.lua unpacks them.
+    'br_lib/shared/notice.lua',
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
     'br_lib/shared/sched.lua',   -- BR.Sched; br_core/server/* registers into it
     'br_lib/shared/identity.lua',-- BR.Identity; BR.Roster.ringmaster resolves licenses
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
-    'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
+    'br_lib/config/weapons.lua',
+    -- AFTER geo.lua, not merely near it: it calls BR.NormHash at LOAD time to
+    -- build its hash-keyed lookup, and loading it earlier would key every row on
+    -- nil -- which reads exactly like a clean table. The fxmanifest says the
+    -- same thing beside the same line.
+    'br_lib/config/vehicles.lua',
+    'br_lib/config/loot.lua',
+    -- THE CUE TABLE. Loaded for ONE assertion in `match.storm.movecue` below --
+    -- that the cue key server/storm.lua puts on the wire is a key this table
+    -- actually holds. The server never reads it (it sends a key and the client
+    -- resolves it, which is the whole design), so nothing here needs it at
+    -- runtime; what it buys is that a rename on EITHER side reddens the build
+    -- instead of producing a storm cue that is silently ignored by every client.
+    'br_lib/config/audio.lua',
+    -- AFTER config/loot.lua and config/weapons.lua, exactly as br_core's
+    -- fxmanifest orders it. Loaded here for ONE number -- the size of the Volts
+    -- pile an airdrop lays -- so the claim block below asserts against the value
+    -- the game ships rather than a literal that can drift away from it.
+    'br_lib/config/airdrop.lua',
     -- AFTER the config tables it edits, exactly as br_core's fxmanifest orders
     -- it. Nothing here is overridden -- the load-time hook needs
     -- IsDuplicityVersion and this state has none, so every value stays the
@@ -168,8 +428,20 @@ for _, f in ipairs({
     -- maxSquadSize came from. A nil there would make that answer untestable.
     'br_lib/config/overrides.lua',
     'br_lib/shared/storm_solve.lua',
+    -- The CPR kit (#191). AFTER shared/storm_solve.lua, which BR.RescueDestination
+    -- calls to solve the circle forward to the ambulance's arrival, and AFTER
+    -- config/loot.lua, which registers the `cprkit` item the death fork reads.
+    'br_lib/config/rescue.lua',
+    -- The squad's revive key (#219 step 4). AFTER config/rescue.lua, whose
+    -- `models` list it reads at call time to know what an ambulance is.
+    'br_lib/config/revivekey.lua',
+    'br_lib/shared/rescue_solve.lua',
     'br_lib/shared/loot_gen.lua',
     'br_lib/shared/combat_solve.lua',
+    -- BR.HealthUnexplainedGain; server/roster.lua's sampler asks it whether the
+    -- ped it just read agrees with the ledger it is about to overwrite.
+    'br_lib/shared/health_solve.lua',
+    'br_lib/shared/spectate_solve.lua', -- the squad rule; server/spectate.lua asks it
     'br_lib/shared/evidence_buf.lua', -- BR.EvidenceBuf; server/evidence.lua wraps it
     'br_core/server/main.lua',
     'br_core/server/broadcast.lua',
@@ -182,6 +454,20 @@ for _, f in ipairs({
     'br_core/server/combat.lua',
     'br_core/server/storm.lua',
     'br_core/server/inventory.lua',
+    -- The CPR kit's rescue (#191). AFTER combat.lua and inventory.lua: it
+    -- eliminates and revives through the first and spends the kit through the
+    -- second. LOADING IT AT ALL IS THE POINT OF PUTTING IT HERE -- combat.lua's
+    -- `canBeDowned` asks `BR.Rescue.holdsKit` whether a solo's death is a knock,
+    -- and that call is guarded on `BR.Rescue ~= nil`, so a suite that omitted
+    -- this file would exercise the guard forever and never the rule.
+    'br_core/server/rescue.lua',
+    -- The squad's revive key (#219 step 4). LOADING IT AT ALL IS THE POINT OF
+    -- PUTTING IT HERE, exactly as it is for rescue.lua one line above:
+    -- server/combat.lua calls BR.ReviveKey.onEliminated guarded on
+    -- `BR.ReviveKey ~= nil`, so a suite that omitted this file would exercise
+    -- the guard for ever and never the rule. `combat.revivekey` asserts the
+    -- module is present before it asserts anything about it, for that reason.
+    'br_core/server/revivekey.lua',
     'br_core/server/loot.lua',
     'br_core/server/markers.lua',
     'br_core/server/voice.lua',
@@ -189,6 +475,18 @@ for _, f in ipairs({
     -- AFTER combat_solve, whose enum values it keys its severity table on.
     'br_lib/shared/incident_build.lua',
     'br_core/server/incident.lua',     -- BR.Incident; listens to the refusal event
+    -- BR.Vehicles. LOADED HERE FOR THE ROADKILL LEDGER rather than for the
+    -- refused-vehicle detector, which tools/test_shared.lua already drives in a
+    -- sandbox. The ledger is the opposite kind of thing: it reads the REAL
+    -- roster's sampled positions, the real health sampler and the real assist
+    -- window, and every one of those is a fixture that stops matching the game
+    -- the moment it is hand-built.
+    --
+    -- AFTER roster.lua, which it asks for the sampling rate at load, and after
+    -- combat.lua, whose two death paths call into it. It registers its own
+    -- scheduler job, so from here on every BR.Sched.step in this suite runs it --
+    -- harmlessly, because nobody is driving anything in any other block.
+    'br_core/server/vehicles.lua',
     -- BR.Grants: admin scopes, read from the DynamoDB grants table through
     -- br_ddb. Loaded BEFORE players.lua for the same reason the manifest
     -- declares it there -- the file that answers "may this license file a
@@ -208,6 +506,17 @@ for _, f in ipairs({
     -- report handler had no coverage at all, which is how "one report per
     -- target" could be wrong in a way only a playtest would find.
     'br_core/server/players.lua',      -- BR.Players; the list and the reports
+
+    -- BR.Spectate. LOADED HERE RATHER THAN IN A SUITE OF ITS OWN, because the
+    -- thing worth testing is the policy running against a REAL roster: who is
+    -- still in the fight, who shares a squad, and what a disconnect does to
+    -- both. Every one of those already exists in this file, and a hand-built
+    -- fixture of them is the fixture that stops matching the game.
+    --
+    -- It registers a `playerDropped` handler, so every leave() in this suite now
+    -- runs it -- harmlessly, since it returns immediately when nobody is
+    -- watching, which is every block but one.
+    'br_core/server/spectate.lua',
 
     -- br_stats, LOADED INTO THE ROSTER SUITE ON PURPOSE (#153).
     --
@@ -274,11 +583,55 @@ local function reset()
     for k in pairs(BR.Server.matches) do BR.Server.matches[k] = nil end
     BR.Server.partyHoldSince = nil
     for k in pairs(pedCoords) do pedCoords[k] = nil end
+    -- AND WHO IS IN WHAT. A driver left behind by the previous block would be
+    -- resolved as driving by the roadkill ledger for the whole of the next one,
+    -- which is the same class of cross-block leak the position wipe above exists
+    -- for -- and this one hands out kills rather than merely moving somebody.
+    for k in pairs(pedVehicle) do pedVehicle[k] = nil end
+    for k in pairs(vehSeat) do vehSeat[k] = nil end
+    -- AND WHAT THOSE VEHICLES WERE. A refused model left behind would be
+    -- inherited by the next block's reuse of the same handle, and that block
+    -- would file anticheat incidents it never asked for -- a failure whose
+    -- message would point at a feature with no connection to the cause.
+    for k in pairs(vehModel) do vehModel[k] = nil end
+    for k in pairs(vehType) do vehType[k] = nil end
     -- Back to the src-derived default. A block that made a recycled id belong
     -- to a different person (see the identifier stub) must not leave that
     -- opinion lying around: the next block asserts on `license:test<src>` and
     -- would fail somewhere with no visible connection to the cause.
     for k in pairs(licenseOf) do licenseOf[k] = nil end
+    for k in pairs(noLicense) do noLicense[k] = nil end
+
+    -- SPECTATE SESSIONS DO NOT LIVE ON THE ROSTER, so wiping it above does not
+    -- take them with it -- and a session left pointing at an id the next block
+    -- reuses would make that block's first resolve find a target it never set.
+    -- Cheap and total; no block in this suite uses an id anywhere near 64.
+    for src = 1, 64 do BR.Spectate.stop(src) end
+
+    -- And the flag the spectate blocks move. Committed default, restated here,
+    -- so a block that turns free spectate on cannot decide what a later one is
+    -- testing.
+    BR.Config.Spectate.freeAfterSquadOut = false
+
+    -- THE VEHICLE-CREATION LOG, which is read by absence as well as by content:
+    -- a block asserting that a refused model created nothing would pass on the
+    -- previous block's entries if this were not cleared.
+    for k in pairs(created) do created[k] = nil end
+    for k in pairs(pedHeading) do pedHeading[k] = nil end
+    for k in pairs(entityBucket) do entityBucket[k] = nil end
+    createFail = false
+
+    -- AND THE WARMUP HOLD, which is process-lifetime state by design (#202) --
+    -- so a block that leaves it on holds every warmup in every block after it,
+    -- and those blocks fail somewhere with no visible connection to the cause.
+    -- Cleared through the command rather than by hand, because the command is
+    -- the only thing that owns the flag -- which means borrowing dev mode for
+    -- one call and putting back whatever the block was using, since the thaw is
+    -- gated on it and reset() must not decide that for anybody.
+    local devWas = BR.Server.devMode
+    BR.Server.devMode = true
+    runCommand('brwarmupfreeze', 'off')
+    BR.Server.devMode = devWas
 end
 
 -- ------------------------------------------------ parallel-match helpers ---
@@ -361,6 +714,44 @@ local function eventsOf(name)
         if s.event == name then out[#out + 1] = s end
     end
     return out
+end
+
+--- Fire an INV_AMMO the way a real client does.
+---
+--- ═══ `was` IS A COMPARE-AND-SWAP TOKEN, NOT A QUANTITY (2026-08-23) ═══
+---
+--- An ammo report is a MEASUREMENT OF A MOMENT: "you said N, the engine holds
+--- M". The handler used to apply that difference to whatever it held when the
+--- message ARRIVED, and one round trip is comfortably long enough for a pickup
+--- to land in between -- which is how a found railgun arrived with three in the
+--- magazine and three in the pool and was empty before it was fired.
+---
+--- So the report now echoes what the server last said, and a mismatch is
+--- refused. `was` is DERIVED here rather than written out at each call site
+--- because that is what the client does: client/inventory.lua sends its
+--- rebaseline, which is the server's own last statement about that slot. A test
+--- that wants a STALE report passes its own `was` and gets the refusal.
+--- @param src integer
+--- @param slot integer
+--- @param total integer
+--- @param clip integer
+--- @param was integer|nil  override; nil means "current, like an honest client"
+local function ammoReport(src, slot, total, clip, was)
+    if was == nil then
+        local inv = BR.Inv.of(src)
+        local s   = inv and inv.slots[slot]
+        if s then
+            if s.kind == BR.ItemKind.THROWABLE then
+                was = s.count or 0
+            else
+                local w    = BR.Config.WeaponById[s.item]
+                local pool = (w and w.ammo) and (inv.ammo[w.ammo] or 0) or 0
+                was = (s.clip or 0) + pool
+            end
+        end
+    end
+    fire(BR.Net.INV_AMMO, src,
+         { slot = slot, was = was or 0, total = total, clip = clip })
 end
 
 -- ----------------------------------------------------------------- roster ---
@@ -515,25 +906,98 @@ do
         ('got %s'):format(tostring(BR.Roster.get(1).hp)))
     ok(BR.Roster.get(1).engineHp == mid, 'and the raw engine value is kept too')
 
+    --- What a health delta on the wire actually SAID, rather than merely that
+    --- one existed.
+    ---
+    --- ═══ THIS USED TO ASK "WAS THERE AN hp KEY", AND THAT WAS NOT ENOUGH ═══
+    ---
+    --- The old form set `sent = {}`, stepped once, flushed, and passed if any
+    --- delta carried an `hp` field at all. `sent = {}` clears the CAPTURED
+    --- events; it does not empty BR.Broadcast's pending buffer -- so the delta
+    --- it was reading was the PREVIOUS transition's (100 -> 0), flushed late,
+    --- and the assertion passed without the step under test having broadcast
+    --- anything. Measured 2026-08-23: with the sampler's upward write removed
+    --- the block still passed, on a delta that said `hp = 0`.
+    ---
+    --- So it proved "some health delta reached a client eventually", which is
+    --- true of almost any change to this file, when what it MEANT to prove is
+    --- "the change this step made was the change that went out". Flushing first
+    --- and reading the VALUE closes both halves.
+    local function hpDeltasFor(src)
+        local out = {}
+        for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+            for _, d in ipairs(s.args[1].deltas or {}) do
+                if d.src == src and d.e and d.e.hp ~= nil then
+                    out[#out + 1] = d.e.hp
+                end
+            end
+        end
+        return out
+    end
+
+    -- EMPTY THE BUFFER, not just the capture, so nothing below can be satisfied
+    -- by a delta from a step it did not run.
+    BR.Broadcast.flushNow()
+    sent = {}
+
+    -- ═══ A FALL IS BROADCAST, AND THIS HALF IS PERMANENT ═══
+    --
+    -- Health changes must reach clients or squad panels show stale bars, which
+    -- is the property the original block was written for and it is still the
+    -- property. Asserted DOWNWARD deliberately: the engine owns falls, fire,
+    -- drowning and cars, the server models none of them, so a sample that reads
+    -- below the ledger is ordinary play and will still be ordinary play under
+    -- any future change to who owns health.
+    --
+    -- THE SAME STEP THE OLD BLOCK USED, and the step count of this whole block
+    -- is unchanged on purpose: `fakeTime` is a suite-wide clock that later
+    -- blocks (match.busDescent, the storm anchor) read absolutely, so an extra
+    -- 1000ms spent proving a point here comes out of a timer over there.
     pedHealth[1001] = BR.Config.Match.healthFloor
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
+    BR.Broadcast.flushNow()
     ok(BR.Roster.get(1).hp == 0, 'a dead player reports zero display health',
         ('got %s'):format(tostring(BR.Roster.get(1).hp)))
-
-    -- Health changes must reach clients, or squad panels show stale bars.
+    local fell = hpDeltasFor(1)
+    ok(#fell == 1 and fell[1] == 0,
+        'a health change is broadcast to clients, carrying the new value',
+        table.concat(fell, ','))
     sent = {}
-    pedHealth[1001] = 200
+
+    -- ═══ AND A RISE IS TOO -- WHICH IS THE EXPLOIT, WRITTEN DOWN ═══
+    --
+    -- THIS ASSERTION DESCRIBES A KNOWN SECURITY WEAKNESS AND IS DELIBERATE.
+    --
+    -- `pedHealth` is the OWNING CLIENT's number. The sampler converts it and
+    -- writes it into `entry.hp` -- the same field BR.Damage.applyHit subtracts
+    -- from -- so a modified client that pins its ped at full has the server's
+    -- own damage ledger restored for it four times a second, and the
+    -- server-observed death check reads `engineHp`, which is the same
+    -- client-owned value, so the backstop misses it too. Everything below the
+    -- comment is one line of a cheat, expressed in the test harness.
+    --
+    -- IT IS PINNED RATHER THAN FIXED because closing it is a gameplay change
+    -- with a real blast radius -- med kits, shield potions, revives and
+    -- respawns are all legitimate upward moves, and a ledger that refused the
+    -- engine outright would refuse falls and fire with them -- so it goes behind
+    -- a playtest. What went in first is the DETECTOR (see `health.audit` in
+    -- tools/test_shared.lua and the block below), which counts this without
+    -- changing it.
+    --
+    -- WHOEVER LANDS THAT FIX: this is the assertion you are looking for. Invert
+    -- it on purpose, here, and say so -- do not delete it. The value it names is
+    -- the difference between the ledger the server computed and the number the
+    -- client asked for.
+    pedHealth[1001] = BR.Config.Match.maxHealth
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     BR.Broadcast.flushNow()
-    local sawHp = false
-    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
-        for _, d in ipairs(s.args[1].deltas or {}) do
-            if d.e and d.e.hp ~= nil then sawHp = true end
-        end
-    end
-    ok(sawHp, 'a health change is broadcast to clients')
+    local rose = hpDeltasFor(1)
+    ok(#rose == 1 and rose[1] == 100,
+        'a ped that claims more health than the ledger has REPLACES it -- the '
+            .. 'exploit, pinned here so a fix has to come past it',
+        table.concat(rose, ','))
 
     -- ...but an unchanged value must not be, or 48 players at 2Hz would flood
     -- the wire with deltas that say nothing.
@@ -713,7 +1177,7 @@ do
     ok(mstate() == BR.MatchState.PLAYING, 'starting from PLAYING')
     ok(BR.Server.squadsAlive() == 2, 'two solos are two teams')
 
-    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
 
@@ -744,14 +1208,14 @@ do
 
     ok(BR.Server.squadsAlive() == 2, 'four players in two squads are two teams')
 
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
     ok(BR.Server.squadsAlive() == 2, 'a squad with a survivor is still up')
 
     -- A downed player is not out: their squad is still contesting the match.
     BR.Roster.setState(2, BR.PlayerState.DBNO)
     ok(BR.Server.squadsAlive() == 2, 'a downed player still counts for their squad')
 
-    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.ENDED, 'wiping a squad ends the match')
@@ -1277,7 +1741,7 @@ do
     -- Placement counts teams still standing INCLUDING the one dying, so the
     -- first of four to die finishes 4th, not 1st.
     BR.Combat.eliminate(1, 'fall', nil)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD, 'eliminating marks the player dead')
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT, 'eliminating marks the player dead')
     ok(BR.Roster.get(1).placement == 4, 'first death of four takes last place',
         ('got %s'):format(tostring(BR.Roster.get(1).placement)))
 
@@ -1335,7 +1799,7 @@ do
     fakeTime = fakeTime + 2000
     BR.Sched.step(fakeTime)
 
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'the server eliminates on its own health reading, with no client report')
     ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
         'and leaves the healthy player alone')
@@ -1609,6 +2073,8 @@ do
 
     sent = {}
     local mleave = theMatch()
+    -- They found an airdrop before they walked out (#88).
+    BR.Roster.get(2).voltsPickedUp = 100
     fire(BR.Net.MATCH_LEAVE, 2)
     local e = BR.Roster.get(2)
     ok(e.state == BR.PlayerState.LOBBY, 'the leaver is back in the lobby')
@@ -1627,6 +2093,15 @@ do
     ok(e.placement == nil and e.diedAt == nil,
         'and the live entry is wiped, so last match does not ride into the next one',
         ('placement %s diedAt %s'):format(tostring(e.placement), tostring(e.diedAt)))
+    -- INCLUDING WHAT THEY PICKED UP (#88). A per-match counter left standing
+    -- follows them into the next match and is banked a second time there: one
+    -- airdrop, paid twice. Exactly the #161 failure with a newer field.
+    ok((e.voltsPickedUp or 0) == 0,
+        'and so are the Volts they picked up, so one airdrop is not paid twice',
+        ('got %s'):format(tostring(e.voltsPickedUp)))
+    ok(sealed and sealed.voltsPickedUp == 100,
+        'while the sealed copy keeps them -- that is the row that gets published',
+        ('got %s'):format(tostring(sealed and sealed.voltsPickedUp)))
     ok(#eventsOf(BR.Net.TO_LOBBY) == 1, 'and is sent home')
     ok(mstate() == BR.MatchState.PLAYING,
         'while the match plays on for everyone else')
@@ -1690,15 +2165,43 @@ do
     -- (it has to be, or it could never be withdrawn), and a test that pins
     -- the English is a test that fails every time the copy is edited while
     -- proving nothing about the behaviour.
-    local told, sticky = false, false
+    local told, sticky, text = false, false, nil
     for _, n in ipairs(noticesTo(1)) do
         if n.key == 'bus.landing' and not n.clear then
             told = true
             sticky = n.sticky == true
+            text = n.text
         end
     end
     ok(told, 'the first player down is told the match is waiting on the others')
     ok(sticky, 'and it is STICKY -- a four-second toast is gone before it matters')
+
+    -- ═══ AND THE SENTENCE ITSELF, CHARACTER FOR CHARACTER ═══
+    --
+    -- The paragraph above argues against pinning the English, and it is right
+    -- about the assertions it is attached to: `told`, `sticky` and the
+    -- withdrawal are about BEHAVIOUR and must not break when copy is edited.
+    -- This one is a different kind of assertion and it earns its place for the
+    -- opposite reason.
+    --
+    --   'Let''s change the "Waiting for other players to land" notification to
+    --    say "The match will start once all players have landed."'
+    --                                                  -- owner, 2026-08-22
+    --
+    -- WHEN THE OWNER GIVES WORDING, IT IS USED VERBATIM. That is a standing
+    -- rule on this project and it is pinned everywhere else it applies --
+    -- tools/test_fuel.lua does it for 'Hold to refuel' and even guards the
+    -- owner's one-L spelling of "fueling" against a helpful correction.
+    --
+    -- AND THIS SENTENCE HAS ALREADY BEEN SILENTLY REWORDED ONCE. It shipped as
+    -- exactly this string, was replaced with 'Waiting for the last players to
+    -- land' when the notice became sticky, and is now being asked for back.
+    -- Nothing failed when it changed, which is precisely the argument for
+    -- pinning it: a rewrite of the copy is a change to what the owner asked
+    -- for, and it should have to be deliberate.
+    ok(text == 'The match will start once all players have landed.',
+       "the notice says the owner's sentence exactly, trailing full stop and all",
+       tostring(text))
 
     -- ONCE. The tick runs four times a second; a notice per tick would be a
     -- wall of toasts for the whole descent.
@@ -1916,6 +2419,74 @@ do
     ok(not leak, 'no payload ever contains a player from another squad')
     ok(not wrongTarget, 'every recipient is in a squad')
 
+    -- ═══ ONE VOICE BIT, TO ONE SQUAD, ON THIS PUSH ═══
+    --
+    -- Owner, 2026-08-29: "the squad panel works, but doesn't accurately show
+    -- when others in the squad have 'off' selected" -- and, once told the fact
+    -- was on no wire at all, "Why can't we build another client -> server ->
+    -- squad hop? It should only be processed at the start of a squad in warmup
+    -- and whenever changes occur."
+    --
+    -- THE NEGATIVE CASE IS ASSERTED FIRST AND IT IS THE ONE THAT MATTERS. A
+    -- test that only ever checks `off == true` passes against a server that
+    -- hard-codes it, and the field would then be furniture on every row in
+    -- every match -- which is the failure the panel's own design spent three
+    -- rounds removing.
+    local function beaconEntry(target, who)
+        for _, p in ipairs(eventsOf(BR.Net.SQUAD_POS)) do
+            if p.target == target then
+                for _, m in ipairs(p.args[1]) do
+                    if m.src == who then return m end
+                end
+            end
+        end
+        return nil
+    end
+
+    ok(beaconEntry(1, 2) ~= nil and beaconEntry(1, 2).voiceOff == nil,
+        'a squadmate who has said nothing about their voice carries no bit at '
+            .. 'all -- absent, not false, so the panel draws nothing',
+        tostring(beaconEntry(1, 2) and beaconEntry(1, 2).voiceOff))
+
+    -- WHAT THE HANDLER KEEPS, ASSERTED OFF THE ROSTER ENTRY AND WITH NO CLOCK.
+    --
+    -- NO EXTRA BEACON IS STEPPED FOR ANY OF THIS, deliberately. `fakeTime` is
+    -- shared by every block after this one and match.busDescent measures
+    -- elapsed time against the bus route's deadlines -- so a test that helps
+    -- itself to even 300ms here reddens something a thousand lines away for a
+    -- reason nobody would ever connect to it. (Measured: it does.) The bit is
+    -- set here and READ OFF THE PUSH THE BLOCK ALREADY MAKES, further down.
+    --
+    -- IT IS A BIT, NOT A MODE. A client that volunteers its whole preference
+    -- gets exactly the boolean stored and nothing else kept: the server has no
+    -- field for a mode, so PUBLIC_FIELDS is never one edit away from being the
+    -- proximity oracle ui-src/src/hud/VoiceMark.tsx refuses to build.
+    fire(BR.Net.VOICE_STATE, 2, { off = true, mode = 'nearby' })
+    ok(BR.Roster.get(2).voiceOff == true
+       and BR.Roster.get(2).voiceMode == nil
+       and BR.Roster.get(2).mode == nil,
+        'a client saying its voice is off is believed about THAT, and the '
+            .. 'voice mode it volunteered alongside is dropped on the floor',
+        ('off=%s mode=%s'):format(tostring(BR.Roster.get(2).voiceOff),
+                                  tostring(BR.Roster.get(2).voiceMode)))
+
+    -- AND A TRUTHY NON-BOOLEAN IS NOT A YES. This arrives over the network from
+    -- a client and may be a number; in Lua a 0 is truthy, which this repository
+    -- has now shipped nine times -- most recently in the very indicator this
+    -- panel draws (b292b0f). Anything that is not `true` is false.
+    fire(BR.Net.VOICE_STATE, 2, { off = 0 })
+    ok(BR.Roster.get(2).voiceOff == false,
+        'and a zero off the wire is stored as false rather than believed',
+        tostring(BR.Roster.get(2).voiceOff))
+
+    -- A PLAYER WHO IS NOT ON THE ROSTER IS NOT A PLAYER. The idler never
+    -- queued; a state write for them would be a table growing on an id the
+    -- server has no match for.
+    fire(BR.Net.VOICE_STATE, 999, { off = true })
+    ok(BR.Roster.get(999) == nil, 'a stranger writes nothing at all')
+
+    fire(BR.Net.VOICE_STATE, 2, { off = true })
+
     -- A DEAD SQUADMATE STAYS ON THE PUSH (user, 2026-08-05). The client's
     -- membership model IS this list, so dropping the dead took their blip and
     -- their overhead name with them -- and where a teammate fell is exactly
@@ -1938,9 +2509,41 @@ do
     end
     ok(deadSeen, 'a dead squadmate is still broadcast to their squad')
     ok(survivorGot, 'the survivor keeps receiving the push')
-    ok(deadState == BR.PlayerState.DEAD,
+    ok(deadState == BR.PlayerState.OUT,
         'the payload carries the dead state, so the client can mark the tag',
         tostring(deadState))
+
+    -- AND THE VOICE BIT SET ABOVE IS ON THAT SAME PUSH, which is the whole
+    -- server half of the owner's hop: a squadmate said their voice was off,
+    -- and their squad -- and only their squad -- is now told.
+    --
+    -- READ OFF THE PUSH RATHER THAN THE ROSTER, because the roster entry being
+    -- right proves only that the handler ran. What the panel draws is this
+    -- payload, and the two were separate edits in separate files.
+    ok(beaconEntry(1, 2) ~= nil and beaconEntry(1, 2).voiceOff == true,
+        'a squadmate who has turned their voice off is reported as such to '
+            .. 'their own squad -- and stays reported once they are dead',
+        tostring(beaconEntry(1, 2) and beaconEntry(1, 2).voiceOff))
+
+    -- THE PRIVACY BOUNDARY, WHICH IS THE WHOLE REASON IT RIDES THIS PUSH AND
+    -- NOT PUBLIC_FIELDS. "That player cannot hear anything" is worth having
+    -- about a teammate and worth EXPLOITING about an enemy -- it is the
+    -- difference between flanking somebody who can be warned and somebody who
+    -- cannot. The other squad is in the same match, on the same map, and is
+    -- told nothing by anybody.
+    local bitLeaked = false
+    for _, p in ipairs(after) do
+        local targetSquad = BR.Roster.get(p.target)
+        targetSquad = targetSquad and targetSquad.squadId
+        if targetSquad ~= sq1 then
+            for _, m in ipairs(p.args[1]) do
+                if m.voiceOff ~= nil then bitLeaked = true end
+            end
+        end
+    end
+    ok(not bitLeaked,
+        'and no other squad in the match learns it -- squad-only, exactly like '
+            .. 'the bleed deadline beside it')
 
     -- The privacy boundary is unchanged by that: a dead player is still only
     -- ever shown to their OWN squad, never to the other one.
@@ -2122,6 +2725,20 @@ do
     ok(r ~= nil, 'the flight is drawn when warmup begins')
     ok(#eventsOf(BR.Net.BUS_ROUTE) >= 1, 'and the preview reaches every client')
     ok(r.timed == false, 'but it is not timed until departure')
+
+    -- AND `timed == false` IS A CLAIM ABOUT THE GEOMETRY, NOT JUST A FLAG. The
+    -- client's fly loop reads `points[n].t` directly and compares it to the
+    -- synced clock; the flag is only how it knows not to. Pinning the absence
+    -- here is what stops the client-side fixture in tools/test_client.lua from
+    -- drifting into testing a shape the server never sends -- which is the way
+    -- a guard written against this record stops being tested without failing.
+    local anyStamped = false
+    for _, p in ipairs(r.points) do
+        if p.t ~= nil then anyStamped = true end
+    end
+    ok(r.points[1].t == nil and not anyStamped,
+        'and not one of its points carries a timestamp for a client to fly by',
+        ('points %d, points[1].t %s'):format(#r.points, tostring(r.points[1].t)))
 
     ok(#r.legs == #BR.Config.Bus.legs, 'one option chosen per leg')
     local legsValid, wpIdx = true, 1
@@ -2423,7 +3040,7 @@ do
     -- this block. It is now the opposite: the server still sees them go down --
     -- which is the original regression, and still covered -- but a death before
     -- the match reaches PLAYING is held rather than banked.
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
         'the server still observes a death during BUS')
     ok(BR.Roster.get(2).revivePending == true,
         'but it is HELD for the start rather than banked (#144)')
@@ -2476,7 +3093,7 @@ do
     fakeTime = r2.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 2)
     fire(BR.Net.PLAYER_DIED, 2, { cause = 'fall' })
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD, 'a freefall death drops them too')
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT, 'a freefall death drops them too')
     ok(BR.Roster.get(2).revivePending == true, 'and is held just the same')
 
     fakeTime = r2.tEnd + 600
@@ -2736,7 +3353,7 @@ do
         fakeTime = fakeTime + 1000
         BR.Sched.step(fakeTime)
         local e = BR.Roster.get(2)
-        if e and e.state == BR.PlayerState.DEAD and not deadAt then deadAt = i end
+        if e and e.state == BR.PlayerState.OUT and not deadAt then deadAt = i end
     end
     ok(deadAt ~= nil,
         'the LEDGER eliminates a client that never applies its storm damage')
@@ -2990,6 +3607,187 @@ do
     BR.Config.Storm.edgeBiasMax = savedBias
 end
 
+describe('match.storm.movecue')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "We also need a sound for when the storm starts moving"
+    --                                          -- owner, 2026-08-22
+    --
+    -- ═══ THE MOMENT IS THE HOLD ENDING, NOT THE PHASE STARTING ═══
+    --
+    -- A phase begins by DRAWING the next circle and STOPPING -- `enterPhase`
+    -- publishes a record whose first tWait milliseconds are HOLDING. The wall
+    -- starts moving at the far end of that hold. Cueing on phase entry would
+    -- fire the sound one to three minutes before anything moved, which is a bug
+    -- that sounds exactly like a working feature and would never be reported as
+    -- anything but "the sound feels wrong".
+    --
+    -- ═══ WHAT MAKES THIS TESTABLE AT ALL ═══
+    --
+    -- Nothing about the moving wall is on the wire -- both sides SOLVE it from
+    -- one record against the clock. So "the storm started moving" is not an
+    -- event anybody sends; it is a boundary in a pure function. Putting the
+    -- edge detector on the server means it becomes an event, and an event is
+    -- something this suite can count. That is the argument for the design as
+    -- much as the once-per-transition rule is.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local rec = mstorm()
+    ok(rec ~= nil, 'storm up')
+
+    --- Every SFX_CUE sent since the last `sent = {}`.
+    local function cues() return eventsOf(BR.Net.SFX_CUE) end
+
+    -- ------------------------------------------ nothing during the hold ---
+    --
+    -- The load-bearing negative. A cue that fires on phase entry passes every
+    -- "does it fire" assertion there is; only the silence during the hold tells
+    -- the two designs apart.
+    sent = {}
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 0, 'the wall is holding, and nothing has been cued',
+        ('%d cue(s)'):format(#cues()))
+
+    -- Right up to the last tick before the sweep.
+    --
+    -- 1500ms SHORT OF THE BOUNDARY RATHER THAN 1ms, AND THAT IS THE HARNESS
+    -- RATHER THAN THE FEATURE. `storm.phase` is a 1 Hz job and BR.Sched.step
+    -- only runs a job once its interval has elapsed since its last run -- so
+    -- two steps a millisecond apart run it ONCE, and the second assertion would
+    -- pass without the code under test having executed at all. Every pair of
+    -- steps in this block is therefore more than a second apart. (docs/testing.md:
+    -- "Always advance fakeTime past the job interval before stepping, or the
+    -- test is vacuous".)
+    fakeTime = rec.tStart + rec.tWait - 1500
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 0, 'still nothing a second and a half before the wall moves',
+        ('%d cue(s)'):format(#cues()))
+
+    -- ------------------------------------------- exactly once, on the edge ---
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + 10
+    BR.Sched.step(fakeTime)
+    -- `onEdge`, not `fired` -- there is an outer `fired` in this suite holding
+    -- server-side TriggerEvent traffic, and shadowing it here would make this
+    -- block read as if it were asserting on that.
+    local onEdge = cues()
+    ok(#onEdge == 2, 'the moment the wall sets off, both players are cued',
+        ('%d cue(s)'):format(#onEdge))
+
+    local payload = onEdge[1] and onEdge[1].args and onEdge[1].args[1]
+    ok(type(payload) == 'table' and payload.c == 'storm.move',
+       'and the payload is a cue KEY, not a GTA sound name',
+       tostring(payload and payload.c))
+
+    -- THE KEY RESOLVES. The server sends a string and never looks it up -- the
+    -- client does. So the one thing that can go wrong silently is the two
+    -- spellings drifting apart, and this is the only place both halves are in
+    -- the same Lua state at the same time.
+    ok(payload and BR.Config.Audio.cues[payload.c] ~= nil,
+       'and that key is one br_lib/config/audio.lua actually defines -- a '
+           .. 'rename on either side reddens this rather than going quiet')
+
+    -- AND THE WIRE CARRIES NOTHING ELSE. A payload that also carried the set
+    -- and name would make the cue table a suggestion rather than the one place
+    -- a sound is chosen -- and would put a GTA sound-set name on the wire, which
+    -- is the property protocol.lua's SFX_CUE comment promises it does not.
+    local extra = nil
+    for k in pairs(payload or {}) do if k ~= 'c' then extra = tostring(k) end end
+    ok(extra == nil, 'and the message carries the key and nothing else', extra)
+
+    -- EVERY PLAYER IN THE MATCH, ONE EACH. `toMatch` is the scoping primitive,
+    -- so this also pins that the cue is not broadcast to the whole server.
+    local who = {}
+    for _, s in ipairs(onEdge) do who[s.target] = (who[s.target] or 0) + 1 end
+    ok(who[1] == 1 and who[2] == 1,
+       'one cue each, to exactly the players in this match',
+       ('p1 %s, p2 %s'):format(tostring(who[1]), tostring(who[2])))
+
+    -- ---------------------------------------- and NOT once per tick after ---
+    --
+    -- The failure this latch exists for. The job runs at 1 Hz for the whole
+    -- sweep -- 40 to 360 seconds -- so an unlatched check is a sound every
+    -- second for six minutes, per player.
+    sent = {}
+    for _ = 1, 20 do
+        fakeTime = fakeTime + 1000
+        BR.Sched.step(fakeTime)
+    end
+    ok(#cues() == 0, 'and twenty more ticks of the same sweep cue nothing',
+        ('%d cue(s)'):format(#cues()))
+
+    -- ------------------------------------------------ the NEXT phase re-arms ---
+    --
+    -- Eight phases, eight sweeps, eight cues. Latching per MATCH and never
+    -- clearing it would give the owner one sound at the start of the match and
+    -- silence for the other seven -- which reads as "it only worked once", and
+    -- is the shape of bug that gets diagnosed as a flaky sound.
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + rec.tShrink + 10
+    BR.Sched.step(fakeTime)      -- phase 1 FINISHED -> enterPhase(2)
+    local rec2 = mstorm()
+    ok(rec2 ~= nil and rec2.phase == 2, 'the storm advances to phase 2',
+        rec2 and tostring(rec2.phase) or 'nil')
+
+    sent = {}
+    fakeTime = rec2.tStart + rec2.tWait - 1500
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 0, "phase 2's hold is silent too")
+
+    sent = {}
+    fakeTime = rec2.tStart + rec2.tWait + 10
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 2, 'and phase 2 cues its own sweep', ('%d'):format(#cues()))
+
+    -- ------------------------------------------------- a re-entered phase ---
+    --
+    -- `brphase` and `brstormfreeze off` both re-enter a phase from wherever the
+    -- wall is standing, which gives it a fresh hold and a fresh sweep -- the
+    -- wall visibly sets off again, so it must sound again. This is why the latch
+    -- is cleared in `enterPhase` rather than keyed on the phase NUMBER, which
+    -- would have made a thaw silent.
+    sent = {}
+    BR.Server.devMode = true
+    runCommand('brphase', '2')
+    local rec3 = mstorm()
+    ok(rec3 ~= nil and rec3.phase == 2, 're-entering phase 2 is still phase 2')
+    sent = {}
+    fakeTime = rec3.tStart + rec3.tWait - 1500
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 0, 'and its fresh hold is silent')
+    sent = {}
+    fakeTime = rec3.tStart + rec3.tWait + 10
+    BR.Sched.step(fakeTime)
+    ok(#cues() == 2,
+       'and the re-entered phase cues again rather than remembering it '
+           .. 'already had a turn', ('%d'):format(#cues()))
+
+    -- ------------------------------------ a skipped sweep still gets its cue ---
+    --
+    -- If the scheduler stalls for longer than a whole sweep, the state steps
+    -- from HOLDING straight to FINISHED and a check that only watched for
+    -- SHRINKING would drop the cue entirely, with nothing anywhere to say so.
+    -- A wall that has finished moving has moved.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+    local rec4 = mstorm()
+    sent = {}
+    fakeTime = rec4.tStart + rec4.tWait + rec4.tShrink + 10
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.SFX_CUE) == 2,
+       'a stall that skips the entire sweep still cues it, late, rather than '
+           .. 'losing it', ('%d'):format(#eventsOf(BR.Net.SFX_CUE)))
+end
+
 describe('match.storm.cleanup')
 do
     -- Between matches the record must be gone: the next match's clients would
@@ -3162,6 +3960,9 @@ do
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     sent = {}
+    -- The console too, for the assertion below: what is being asserted is what
+    -- THIS step printed, not what some earlier block left in the ring.
+    printed = {}
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WARMUP, 'a match forms under the freeze')
     ok(mendsAt() > fakeTime + warmupMs,
@@ -3171,6 +3972,21 @@ do
     ok(born ~= nil and born.endsAt == mendsAt(),
         'and the state event that announced it carries the held deadline, so '
             .. 'no client is ever told the wrong one')
+
+    -- ...AND THE CONSOLE SAYS SO RATHER THAN THE OPPOSITE. The transition log
+    -- reports `secs` from the DURATION table, which the hold has just
+    -- overwritten -- so this line used to read `WAITING -> WARMUP (45s)` over a
+    -- match being held for a day. That was #202's second half: the one line in
+    -- the whole feature that printed anything about a held warmup was arguing
+    -- the freeze was off.
+    -- The MATCH's transition, not a player's: roster.setState logs
+    -- `lobby -> warmup` per player a moment later, and only the instance comes
+    -- from WAITING.
+    local logged = printedSaying(
+        BR.MatchState.WAITING .. ' -> ' .. BR.MatchState.WARMUP)
+    ok(logged ~= nil and logged:find('HELD', 1, true) ~= nil,
+        'and the transition log says HELD, not the departure it will not keep',
+        tostring(logged))
 
     -- ------------------------------- it does not lift itself, on purpose ---
     --
@@ -3188,8 +4004,435 @@ do
     ok(runCommand('brwarmupfreeze', 'thaw') and BR.Match.warmupFrozen() == false,
         "and 'thaw' is the same word, as it is for the storm")
 
+    -- ------------------------------ ...BUT IT DOES NOT SURVIVE THE SESSION ---
+    --
+    -- #202, and the owner's exact sequence: "I ran brwarmupfreeze but after all
+    -- players left and went back in, the warmup is still frozen."
+    --
+    -- THE TWO EVENTS THE BLOCK ABOVE AND THIS ONE SEPARATE ARE THE WHOLE FIX. A
+    -- match dissolving is a tester stepping into the lobby and it must not
+    -- disarm anything. A server with NOBODY CONNECTED is the session being over,
+    -- and a lobby rebuilt from scratch after that should not inherit a debug
+    -- switch from the last one. Asserted in that order, because a release hung
+    -- on the wrong one of those looks identical from either side alone.
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    runCommand('brwarmupfreeze')
+    ok(BR.Match.warmupFrozen() == true, 'the hold is on with two players in')
+
+    -- ONE OF THEM LEAVING IS NOT THE SERVER EMPTYING, and this is the assertion
+    -- that stops the fix from becoming the thing the command's note refuses.
+    leave(2)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Match.warmupFrozen() == true,
+        'one player leaving does not lift it -- somebody is still testing')
+
+    leave(1)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Match.warmupFrozen() == false,
+        'the LAST player leaving does: an empty server has no hold to inherit')
+
+    -- ...AND THE LOBBY THAT REBUILDS IS AN ORDINARY ONE. The owner's report is
+    -- about what happened after they came back, so the test goes there too:
+    -- asserting the flag alone would pass for a fix that cleared the flag and
+    -- left the next warmup held by some other route.
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.WARMUP, 'they come back and a warmup opens')
+    ok(mendsAt() == fakeTime + warmupMs,
+        'and it counts down like any other, rather than being born held',
+        ('endsAt %d, now %d, warmup %d'):format(mendsAt(), fakeTime, warmupMs))
+
+    fakeTime = fakeTime + warmupMs
+    BR.Sched.step(fakeTime)
+    ok(mstate() ~= BR.MatchState.WARMUP,
+        'and the bus comes, which is the whole of what the owner reported',
+        tostring(mstate()))
+
+    -- --------------------------- a held server SAYS it is held ---
+    --
+    -- The other half of #202. `brwarmupfreeze off` always worked; what did not
+    -- was finding out that anything needed releasing. BR.Match.warmupFrozen is
+    -- the reader `brstate` prints from, so it is asserted to be readable while a
+    -- hold is on rather than merely settable -- a private flag with no reader is
+    -- the version of this bug that survives the fix.
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    runCommand('brwarmupfreeze')
+    ok(BR.Match.warmupFrozen() == true and mendsAt() > fakeTime + warmupMs,
+        'the reader and the deadline agree while the hold is on')
+    runCommand('brwarmupfreeze', 'off')
+    ok(BR.Match.warmupFrozen() == false and mendsAt() == fakeTime + warmupMs,
+        'and they agree again after it is released')
+
     BR.Server.devMode = savedDev
     BR.Config.Match.maxPlayers = savedMax
+end
+
+describe('vehicles.devSpawn')
+do
+    --[[
+        brcar -- PUT A VEHICLE IN THE WORLD WITHOUT A TRAINER (#202).
+
+        Owner, 2026-08-22: "Probably related to our hardening but I can no
+        longer spawn a vehicle through vMenu. We should have dev tooling to do
+        this otherwise if vMenu won't be an option."
+
+        WHAT THESE ASSERTIONS CATCH THAT READING THE FILE DOES NOT. Three of the
+        four gates on this verb fail OPEN if they are written wrong, and every
+        one of them fails open silently:
+
+          * the console gate is an equality against 0, and `0` is truthy in Lua
+            -- `if src then` lets every player through and nothing looks wrong;
+          * the allowlist check happens BEFORE anything is created, so the thing
+            to assert is that the native was never reached, which is an
+            assertion about absence and needs the call log rather than a return
+            value;
+          * the create answers 0 for failure, and 0 is truthy again, so a caller
+            that tests the handle wrongly reports a success that did not happen.
+
+        The fourth is the routing bucket, which fails CLOSED and invisibly: the
+        car exists, in bucket 0, where nobody in a match can see it.
+
+        ═══ AND THEN IT SHIPPED AND DID NOTHING ANYWAY (#212) ═══
+
+        Owner, 2026-08-22: "It seems brcar doesn't do anything." Every gate
+        above was correct and every one of these assertions passed. The fault
+        was one line further on, in the only part of the verb this suite did not
+        model: the SPAWN.
+
+        Server-side `CreateVehicle` is an RPC. It returns a ScriptGuid of type
+        TempEntity -- no entity exists yet -- and every `makeEntityFunction`
+        native called on that handle THROWS "Tried to access invalid entity"
+        rather than answering. The verb called four of them bare, starting with
+        SetEntityRoutingBucket, so it threw immediately after creating the car
+        and printed none of its readout. citizenfx/fivem#1407 closed with the
+        rule: RPC creation is incompatible with routing buckets, and every match
+        here runs in one.
+
+        SO THE STUB NOW THROWS WHERE THE PLATFORM THROWS, and the verb uses
+        CreateVehicleServerSetter, which mints a real handle. The lesson worth
+        keeping: a stub that cannot fail the way the platform fails is a stub
+        that certifies a broken verb.
+    ]]
+
+    local savedDev = BR.Server.devMode
+
+    -- THE DETECTOR'S COUNTERS ARE MODULE-LIFETIME and reset() does not touch
+    -- them, so this block asks about its own DELTA rather than about zero. An
+    -- absolute assertion here would be a landmine for whoever adds a
+    -- refused-vehicle block above it, and it would fail with a message pointing
+    -- at the wrong feature.
+    local baseCounted = BR.Vehicles.stats().counted
+
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+
+    -- ------------------------------------------------- the console gate ---
+    --
+    -- RESTRICTED is not this gate. A live client holding br.admin reaches every
+    -- other verb in this family; #202's rule is that it must not reach this one.
+    ok(runCommandAs(1, 'brcar', '1'), 'brcar is registered')
+    ok(#created == 0,
+        'and a live client cannot spawn one, ACE or no ACE',
+        ('%d vehicle(s) created'):format(#created))
+    ok(runCommandAs(2, 'brcar', '1') and #created == 0,
+        'nor can any other')
+
+    -- ------------------------------------------------- the dev-mode gate ---
+    BR.Server.devMode = false
+    runCommand('brcar', '1')
+    ok(#created == 0, 'and the console itself cannot, outside dev mode')
+    BR.Server.devMode = true
+
+    -- ------------------------------------------------------ the allowlist ---
+    --
+    -- THE ONE THAT IS NOW THE WHOLE BOUNDARY, AND #212 MADE IT SO.
+    --
+    -- While the verb used the RPC, a refused model spawned here would still have
+    -- reached the `entityCreating` detector and opened a case against whichever
+    -- CLIENT the engine handed it to. CreateVehicleServerSetter raises
+    -- `serverEntityCreated` and NOT `entityCreating` (citizenfx/fivem#1737,
+    -- closed not_planned), and nothing in this resource listens to that -- so
+    -- there is no longer any backstop behind this check at all. A refused model
+    -- that got past it would be created, and NOTHING would notice: no case, no
+    -- count, not a line in brvehicles.
+    --
+    -- "Must not create" is therefore asserted on the native never being called,
+    -- rather than on any counter -- an assertion about absence.
+    runCommand('brcar', '1', 'buzzard')
+    ok(#created == 0,
+        'a refused model reaches the create native exactly never',
+        ('%d vehicle(s) created'):format(#created))
+    ok(BR.Vehicles.stats().counted == baseCounted,
+        'and nothing is counted against anybody for asking')
+
+    runCommand('brcar', '1', 'rhino')
+    ok(#created == 0, 'the armed half of the rule is refused too')
+
+    -- ...AND THE REFUSAL IS THE SAME ONE THE DETECTOR USES. Two independent
+    -- statements: the table says no, and the verb asks the table.
+    local deniedHeli = select(1, BR.Config.IsAllowedVehicle(GetHashKey('buzzard')))
+    local deniedTank = select(1, BR.Config.IsAllowedVehicle(GetHashKey('rhino')))
+    ok(deniedHeli == false and deniedTank == false,
+        'and config/vehicles.lua is what refused them, not a second list here')
+
+    -- --------------------------------------------------------- the spawn ---
+    --
+    -- Player 1 faces north (heading 0), so the forward vector is +Y and the car
+    -- lands 5m up-map with nothing on X. Hand-checkable on purpose: an offset
+    -- computed with sin and cos transposed still "works" from every angle
+    -- except the one somebody can do in their head.
+    setPos(1, 100.0, 200.0, 30.0)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    runCommand('brcar', '1')
+    ok(#created == 1, 'an allowed model is created', ('%d'):format(#created))
+    local c = created[1]
+    ok(c ~= nil and c.hash == GetHashKey('granger'),
+        'the default model is the one the file names, hashed')
+    ok(c ~= nil and math.abs(c.x - 100.0) < 0.001
+                and math.abs(c.y - 205.0) < 0.001,
+        'and it lands 5m in front of the player, not on top of them',
+        c and ('%.2f, %.2f'):format(c.x, c.y) or 'nothing created')
+    ok(c ~= nil and c.z == 30.0, 'at their own height')
+    -- THE TYPE IS THE SECOND ARGUMENT AND IT IS EASY TO PUT IN THE WRONG PLACE.
+    -- CreateVehicleServerSetter takes (model, TYPE, x, y, z, heading) where the
+    -- RPC took (model, x, y, z, heading, isNetwork, netMission) -- so a
+    -- half-finished port slides the coordinates one slot along and spawns the
+    -- car at the heading. The x/y/z assertions above and this one together are
+    -- what pin the argument order.
+    ok(c ~= nil and c.vtype == 'automobile',
+        'built as an automobile, which is the sync tree a granger needs',
+        c and tostring(c.vtype) or 'nothing created')
+    ok(c ~= nil and math.abs(c.heading - 90.0) < 0.001,
+        'and turned a quarter across them, so a door faces the player',
+        c and ('%.1f'):format(c.heading) or 'nothing created')
+
+    -- THE OFFSET ROTATES WITH THE PLAYER, which is the half of it that a
+    -- transposed sin and cos still gets right when everybody happens to face
+    -- north. Heading 90 is east, so the forward vector is (-1, 0) and the car
+    -- lands 5m DOWN on X with nothing on Y -- the opposite axis to the case
+    -- above, on purpose.
+    pedHeading[1001] = 90.0
+    runCommand('brcar', '1')
+    local east = created[#created]
+    ok(east ~= nil and math.abs(east.x - 95.0) < 0.001
+                   and math.abs(east.y - 200.0) < 0.001,
+        'the offset follows the heading rather than always pointing north',
+        east and ('%.2f, %.2f'):format(east.x, east.y) or 'nothing created')
+    ok(east ~= nil and math.abs(east.heading - 180.0) < 0.001,
+        'and so does the quarter turn')
+    pedHeading[1001] = nil
+
+    -- The routing bucket. A match's players live in the match's own bucket, so
+    -- a car left in bucket 0 is a car nobody in a round can see -- the failure
+    -- that looks like "the command did nothing".
+    ok(entityBucket[501] == buckets[1] and buckets[1] ~= nil,
+        "and it is put in the target's own routing bucket",
+        ('entity %s vs player %s'):format(
+            tostring(entityBucket[501]), tostring(buckets[1])))
+
+    -- A NAMED MODEL, and one that is not the default, so a verb that ignored
+    -- args[2] entirely would be caught.
+    local n = #created
+    runCommand('brcar', '2', 'sultan')
+    ok(#created == n + 1 and created[#created].hash == GetHashKey('sultan'),
+        'a named model is the one that is spawned')
+
+    -- ------------------------------------------- the refusals that are not ---
+    --
+    -- gates: a bad target, and an engine that says no. Both must print and
+    -- neither must create.
+    local before = #created
+    runCommand('brcar', '99')
+    ok(#created == before, 'an unconnected server id creates nothing')
+    runCommand('brcar')
+    ok(#created == before, 'and so does no argument at all -- that is the usage')
+
+    -- A PLAYER THE SERVER CANNOT RESOLVE A PED FOR: connected, on the roster,
+    -- and with no position to spawn beside -- OneSync off, or not spawned in
+    -- yet. Without the guard `GetEntityCoords(0)` answers the origin rather than
+    -- failing, so the car is created in the sea off Los Santos and the command
+    -- reports success. Nothing about that looks wrong in the console.
+    join(4, 'D')
+    noPed[4] = true
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    runCommand('brcar', '4')
+    ok(#created == before,
+        'and a player with no ped creates nothing, rather than a car at 0,0,0',
+        ('%d vs %d'):format(#created, before))
+    noPed[4] = nil
+
+    -- CREATEVEHICLE ANSWERS 0 FOR FAILURE AND 0 IS TRUTHY. There is no assertion
+    -- available on the return value here; what is asserted is that the failure
+    -- path is reached and survives -- a caller that treated 0 as a handle would
+    -- go on to hash it into a netId report.
+    createFail = true
+    runCommand('brcar', '1')
+    ok(#created == before + 1,
+        'a refused creation still reached the native (it is the engine saying '
+            .. 'no, not us)')
+    -- AND THE HANDLE OF 0 IS NOT TREATED AS ONE. This is the assertion with
+    -- teeth: `if veh then` is true for the platform's own failure value, and the
+    -- only visible consequence downstream is that the code goes on to bucket
+    -- entity 0 and read a netId off it. So that is what is asserted.
+    ok(entityBucket[0] == nil,
+        'and 0 is not mistaken for a handle -- nothing was done to entity 0',
+        tostring(entityBucket[0]))
+    createFail = false
+
+    -- ═══════════════════════════ #212: THE SPAWN ITSELF ═══════════════════════
+    --
+    -- The half no assertion reached when this verb shipped, and the half that
+    -- was broken.
+
+    -- A BAD TYPE IS REFUSED BEFORE THE NATIVE, because the native THROWS on one
+    -- rather than answering 0 -- and a throw inside the handler is exactly what
+    -- "brcar does nothing" was. Asserted on the native never being reached,
+    -- because a verb that let it through and caught the error afterwards would
+    -- pass a test that only checked for the absence of a crash.
+    do
+        local n = #created
+        runCommand('brcar', '1', 'granger', 'hovercraft')
+        ok(#created == n,
+            'a vehicle type the platform does not know never reaches the native',
+            ('%d vs %d'):format(#created, n))
+    end
+
+    -- ...AND A GOOD ONE IS PASSED THROUGH, so the check is a filter rather than
+    -- a wall. `boat` is a real sync tree and not the default, so a verb that
+    -- ignored args[3] would be caught here.
+    do
+        local n = #created
+        runCommand('brcar', '1', 'dinghy', 'boat')
+        ok(#created == n + 1 and created[#created].vtype == 'boat',
+            'a named type is the one that is built',
+            created[#created] and tostring(created[#created].vtype) or 'none')
+    end
+
+    -- ═══ AND IF THE NATIVE THROWS ANYWAY, THE VERB SAYS SO INSTEAD OF DYING ═══
+    --
+    -- THE REGRESSION TEST FOR #212 ITSELF. The type check above should stop
+    -- every throw the platform documents; this asserts what happens when it
+    -- does not -- because "should" is the word that put this verb in the issue
+    -- tracker once already. The stub is made to throw the way the platform
+    -- throws, and the requirement is that the command RETURNS rather than
+    -- propagating: a handler that dies mid-way is a verb that prints nothing,
+    -- and printing nothing is the whole bug.
+    do
+        local savedTypes = SETTER_TYPES.automobile
+        SETTER_TYPES.automobile = nil       -- the platform stops recognising it
+        local okCall = pcall(runCommand, 'brcar', '1')
+        SETTER_TYPES.automobile = savedTypes
+        ok(okCall,
+            'a throwing create is caught and reported, not propagated out of '
+                .. 'the handler',
+            tostring(okCall))
+    end
+
+    -- A CAR THE SERVER CANNOT SEE IS NOT A SUCCESS. DoesEntityExist is the one
+    -- entity native that answers rather than throwing, so it is the only honest
+    -- check available -- and it answers 1 rather than true, which is why the
+    -- verb normalises it. A caller testing it bare would report success here.
+    do
+        local n = #created
+        existsFail = true                  -- created, and already not there
+        local okCall = pcall(runCommand, 'brcar', '1')
+        existsFail = false
+        ok(okCall and #created == n + 1,
+            'a vehicle that vanishes on creation still leaves the verb standing',
+            ('%d vs %d'):format(#created, n + 1))
+        -- ...AND SAYS SO, which is the assertion with teeth. The native answers
+        -- 1 and 0 rather than true and false, and 0 IS TRUTHY IN LUA -- so a
+        -- verb that tests the result bare prints its whole success readout for
+        -- a car that is not there. The only difference between the two is this
+        -- line, so this line is what is asserted.
+        ok(printedSaying('THE SERVER DOES NOT SEE IT') ~= nil,
+            'and says the server cannot see it rather than reporting success')
+    end
+
+    -- ═══ AND EVERY REFUSAL SAYS WHY (#212's OTHER HALF) ═══
+    --
+    -- Owner: the verb "doesn't do anything" -- and the issue's title is "and
+    -- does not say why". A refusal nobody can read is the same as no refusal at
+    -- all to the person typing, so each gate is asserted to PRINT and not
+    -- merely to decline. Substring assertions, because the fact a line carries
+    -- is the contract and its punctuation is not.
+    do
+        printed = {}
+        runCommandAs(1, 'brcar', '1')
+        ok(printedSaying('server-console only') ~= nil,
+            'the console gate says it is the console gate')
+
+        printed = {}
+        BR.Server.devMode = false
+        runCommand('brcar', '1')
+        ok(printedSaying('dev-mode only') ~= nil, 'and the dev-mode gate says so')
+        BR.Server.devMode = true
+
+        printed = {}
+        runCommand('brcar')
+        ok(printedSaying('usage: brcar') ~= nil, 'no arguments prints the usage')
+
+        printed = {}
+        runCommand('brcar', '1', 'buzzard')
+        ok(printedSaying('REFUSED') ~= nil,
+            'a refused model says it was refused, and which rule did it')
+
+        printed = {}
+        runCommand('brcar', '99')
+        ok(printedSaying('no roster entry') ~= nil,
+            'an unconnected id says there is nobody by that name')
+
+        printed = {}
+        runCommand('brcar', '1', 'granger', 'hovercraft')
+        ok(printedSaying('not a vehicle type') ~= nil,
+            'and a bad vehicle type names the eight that work')
+    end
+
+    -- BUCKET 0 IS A REAL BUCKET AND IT IS TRUTHY. `if bucket then` and
+    -- `if not bucket then` both compile and both are wrong: the first skips the
+    -- set for bucket 0, the second skips it for every other. The lobby really
+    -- does put players in bucket 0, so this is the live case rather than a
+    -- contrived one -- and the failure it guards is invisible, because a car
+    -- left in the bucket it was already in looks exactly like a car that was
+    -- moved there.
+    do
+        SetPlayerRoutingBucket(1, 0)
+        runCommand('brcar', '1')
+        local veh = nextVehicle
+        ok(entityBucket[veh] == 0,
+            'a target in bucket 0 still has the car put in bucket 0',
+            ('entity %s'):format(tostring(entityBucket[veh])))
+    end
+
+    -- --------------------------- and the detector is untouched by any of it ---
+    --
+    -- The one number that would mean this feature opened a hole. Nothing above
+    -- filed, nothing above was counted, and no exemption was added anywhere for
+    -- it to have used.
+    local s = BR.Vehicles.stats()
+    ok(s.counted == baseCounted and s.tracked == 0,
+        'no refused-vehicle count was drawn by any of that',
+        ('counted %d (was %d), tracked %d')
+            :format(s.counted, baseCounted, s.tracked))
+
+    BR.Server.devMode = savedDev
 end
 
 describe('match.busSafetyNets')
@@ -3256,7 +4499,7 @@ do
         fakeTime = fakeTime + 250
         BR.Sched.step(fakeTime)
     end
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
         'a death on the ground is observed while others still fly')
     ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL,
         'a genuinely descending glider is never promoted')
@@ -3290,7 +4533,7 @@ do
         fakeTime = fakeTime + 250
         BR.Sched.step(fakeTime)
     end
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
         'a death once PLAYING is observed and kept')
     pedHealth[1002] = nil
     fakeTime = fakeTime + 3100
@@ -4003,17 +5246,244 @@ do
     sent = {}
     fire(BR.Net.LOOT_CLAIM, 1, { id = far.id })
     ok(m.loot.items[far.id] ~= nil, 'a claim from 400m away is refused')
-    local toldFar = false
+    -- MATCHED IN FULL, NOT BY SUBSTRING. This read `text:find('far')` and so
+    -- silently stopped testing anything the moment the sentence changed --
+    -- it passed for 'Too far away.' and would pass again for any wording
+    -- containing those three letters.
+    local refusal
     for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
-        if s.target == 1 and s.args[1].text:find('far') then toldFar = true end
+        if s.target == 1 then refusal = s.args[1].text end
     end
-    ok(toldFar, 'and audibly so')
+    ok(refusal == 'This crate has a lock on it and cannot be opened.',
+        'and audibly so', tostring(refusal))
 
     -- A dead player cannot loot.
     standOn(1, far)
-    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    BR.Roster.setState(1, BR.PlayerState.OUT)
     fire(BR.Net.LOOT_CLAIM, 1, { id = far.id })
     ok(m.loot.items[far.id] ~= nil, 'a corpse cannot pick things up')
+end
+
+-- THE REPAIR ROUND-TRIP, AND THE INSTRUMENT THAT READS IT (#195).
+--
+-- Owner, 2026-08-22: "I go to open the crate, the ring fills, then it refuses
+-- with 'Too far away' despite me standing right in front of it. I can only
+-- repro it on the same crate entity."
+--
+-- THE REPAIR PATH HAD NO TESTS AT ALL, which is how a permanent, per-entity
+-- trap lived in it unnoticed: every rule it enforces was reachable only by
+-- pushing a real crate with a real car on a real box, and the failure it
+-- produces is silent by design (a rejected repair tells the client nothing,
+-- for the same anti-oracle reason a rejected claim does not say why).
+--
+-- WHAT IS PINNED HERE IS THE BOUND, NOT THE TRAP. "A shove past the bound does
+-- not move the registry" is the anti-cheat property and must survive any fix:
+-- a client that could relocate a crate at will would open loot it is not
+-- standing next to. The two assertions marked THE TRAP describe the
+-- CONSEQUENCE of that bound as it currently stands -- a crate the registry has
+-- fallen behind on can be neither claimed nor re-anchored -- and they are the
+-- ones a fix is expected to change.
+--
+-- THE LOOSE-ITEM HALF OF THE REPAIR RULES IS PINNED IN `loot.repair` further
+-- down: once-only, the 30m bound, and the subscription. This block is the
+-- CONTAINER exemption to the first of those, which is the only path on which
+-- an entry can be repaired twice -- and therefore the only one on which the
+-- registry can fall behind a moving prop.
+describe('loot.repair.container')
+do
+    local m = lootMatch()
+
+    -- A CONTAINER, because only containers may be repaired more than once. The
+    -- exemption exists precisely because a crate is physical and can be shoved
+    -- around for as long as anyone cares to.
+    local crate
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == 'chest' then crate = e break end
+    end
+    ok(crate ~= nil, 'the layout contains a crate to shove')
+
+    local cx, cy = BR.LootCellOf(crate.x, crate.y)
+    standOn(1, crate)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+
+    local x0, y0, z0 = crate.x, crate.y, crate.z
+
+    ok(BR.Loot.inspect(1, 50.0) ~= nil, 'the inspector answers for a live player')
+    local function rowFor(id, radius)
+        local rows, info = BR.Loot.inspect(1, radius or 300.0)
+        for _, r in ipairs(rows or {}) do
+            if r.id == id then return r, info end
+        end
+        return nil, info
+    end
+
+    local at0 = rowFor(crate.id, 50.0)
+    ok(at0 and at0.reach == true,
+        'a crate underfoot reads as reachable before anything moves it')
+    ok(at0 and at0.fixAgeMs == nil,
+        'and reads as never repaired, because nothing has repaired it')
+
+    -- THE SLACK IS REAL, and it is the whole reason the client's prompt and the
+    -- server's check can normally disagree without anyone noticing: the roster
+    -- samples at 4Hz, so an honest claim arrives from up to a sprint-second
+    -- behind. A claim from five metres is PAST the client's prompt range and
+    -- still accepted here.
+    BR.Roster.get(1).pos = { x = x0 + 5.0, y = y0, z = z0 }
+    local slack, sinfo = rowFor(crate.id, 50.0)
+    ok(slack and slack.d > BR.Config.Loot.pickupDistance and slack.reach == true,
+        'a claim from beyond the prompt range is still inside the server bound',
+        slack and ('%.1fm vs prompt %.1fm'):format(slack.d, BR.Config.Loot.pickupDistance))
+    ok(sinfo and sinfo.reachMax > BR.Config.Loot.pickupDistance,
+        'and the inspector reports the bound WITH its slack, not the raw radius')
+    standOn(1, crate)
+
+    -- A SHOVE THE SERVER ACCEPTS. Inside FIX_RADIUS, so the registry follows
+    -- the prop -- this is #194's "a crate can be pushed by a car and still
+    -- opens", and it must keep working.
+    fakeTime = fakeTime + 2000
+    fire(BR.Net.LOOT_FIX, 1, { id = crate.id, x = x0 + 10.0, y = y0, z = z0 })
+    ok(math.abs(crate.x - (x0 + 10.0)) < 0.01,
+        'a shove inside the bound takes the registry with it',
+        ('%.1f'):format(crate.x - x0))
+
+    -- THE COOLDOWN, which is what stops a rolling crate flooding the server.
+    fire(BR.Net.LOOT_FIX, 1, { id = crate.id, x = x0 + 12.0, y = y0, z = z0 })
+    ok(math.abs(crate.x - (x0 + 10.0)) < 0.01,
+        'a second repair inside the cooldown is refused')
+    local cooling = rowFor(crate.id)
+    ok(cooling and cooling.fix == false and cooling.fixWhy == 'cooldown',
+        'and the inspector names the cooldown as the reason',
+        cooling and tostring(cooling.fixWhy))
+    ok(cooling and cooling.fixAgeMs == 0,
+        'and reports it was repaired just now',
+        cooling and tostring(cooling.fixAgeMs))
+
+    -- THE ANTI-CHEAT PROPERTY. A client must not be able to move a crate
+    -- somewhere convenient and open loot it is not standing next to.
+    fakeTime = fakeTime + 2000
+    local aged = rowFor(crate.id)
+    ok(aged and aged.fixAgeMs == 2000,
+        'the age of the last repair tracks the clock',
+        aged and tostring(aged.fixAgeMs))
+
+    fire(BR.Net.LOOT_FIX, 1, { id = crate.id, x = x0 + 100.0, y = y0, z = z0 })
+    ok(math.abs(crate.x - (x0 + 10.0)) < 0.01,
+        'a shove past the bound does not move the registry',
+        ('%.1f'):format(crate.x - x0))
+
+    -- THE OWNER'S SYMPTOM, REPRODUCED. The player is stood where the prop now
+    -- is; the registry is 100m behind it, on BOTH axes -- a crate is shoved
+    -- across a car park, not along a rail, and a distance that only looked at
+    -- one axis would read this as reachable.
+    BR.Roster.get(1).pos = { x = x0 + 70.0, y = y0 + 80.0, z = z0 }
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
+    local refused
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if s.target == 1 then refused = s.args[1].text end
+    end
+    ok(refused == 'This crate has a lock on it and cannot be opened.',
+        'the reported symptom, reproduced -- and a crate now blames a lock',
+        tostring(refused))
+    ok(m.loot.items[crate.id] ~= nil, 'and the crate is still sat there')
+
+    local row, info = rowFor(crate.id)
+    ok(row ~= nil, 'brlootnear finds the crate the claim just refused')
+    ok(row and math.abs(row.d - 100.0) < 0.5,
+        'and measures to the REGISTRY position, which is what refused it',
+        row and ('%.1f'):format(row.d))
+    ok(row and row.reach == false and row.d > info.reachMax,
+        'and gives the same verdict the claim handler gave, for the same reason')
+    ok(row and row.subbed == true,
+        'the entry is still subscribed, so this is not the oracle path')
+
+    -- THE TRAP ITSELF. Not reachable and not repairable is a crate that can see
+    -- out and never get back: every later repair is measured against the stale
+    -- position, so the gap can only grow. These two are what a fix changes.
+    ok(row and row.fix == false and row.fixWhy == 'too far',
+        'a repair from where the player stands is refused too',
+        row and tostring(row.fixWhy))
+    ok(row and not row.reach and not row.fix,
+        'so the crate is permanently unopenable: the registry has stopped '
+        .. 'following the prop and cannot catch up')
+
+    -- THE RADIUS IS THE SEARCH, and getting it wrong is how this instrument
+    -- would miss the very entry it exists to find: a stale registry position
+    -- can be hundreds of metres from the player, so a reader who trusts the
+    -- default and sees nothing must be seeing a real nothing.
+    ok(rowFor(crate.id, 50.0) == nil, 'a radius short of the entry excludes it')
+    ok(rowFor(crate.id, 300.0) ~= nil, 'and a radius past it includes it')
+
+    -- NEAREST FIRST. The command prints the first 24 rows, so an order that
+    -- was not by distance would drop the interesting entry off the bottom at
+    -- exactly a dense POI, where this is hardest to debug by eye.
+    local ordered = BR.Loot.inspect(1, 300.0)
+    local sorted = true
+    for i = 2, #(ordered or {}) do
+        if ordered[i].d < ordered[i - 1].d then sorted = false break end
+    end
+    ok(ordered and #ordered > 1 and sorted, 'rows come back nearest first',
+        ordered and ('%d rows'):format(#ordered))
+
+    -- AN ENTRY OUTSIDE THE SUBSCRIPTION READS AS OUTSIDE IT. On the wire that
+    -- case is deliberately indistinguishable from "already gone" -- see the
+    -- oracle note in server/loot.lua -- and the console is the one place the
+    -- difference may be shown, because it is the only place it is needed.
+    local unsub, unsubD
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and not m.loot.subs[1][e.cell] then
+            unsub = e
+            unsubD = BR.Dist(x0 + 70.0, y0 + 80.0, e.x, e.y)
+            break
+        end
+    end
+    ok(unsub ~= nil, 'the layout has an entry this player never subscribed to')
+    if unsub then
+        local urow = rowFor(unsub.id, unsubD + 10.0)
+        ok(urow and urow.subbed == false,
+            'and the inspector says so rather than reporting it as visible')
+    end
+
+    -- THE OTHER WAY inReach REFUSES, and the reason the inspector prints both
+    -- coordinates and a height delta rather than a verdict alone. A repaired
+    -- entry gets a height check, so "stood right in front of it" and "refused"
+    -- can ALSO mean a rooftop crate ground-probed to the street below -- which
+    -- looks identical from a chair and has a different fix.
+    BR.Roster.get(1).pos = { x = x0 + 10.0, y = y0, z = z0 + 20.0 }
+    local high, hinfo = rowFor(crate.id)
+    ok(crate.repaired == true, 'the crate is repaired, so height is checked')
+    ok(high and high.reach == false and high.d <= hinfo.reachMax,
+        'a claim from 20m overhead is refused on HEIGHT, not distance',
+        high and ('d %.1f'):format(high.d))
+    ok(high and math.abs(math.abs(high.dz) - 20.0) < 0.5,
+        'and the inspector reports the height delta that did it',
+        high and ('%.1f'):format(high.dz))
+
+    -- Back down to the same floor: the height clause stops refusing, and what
+    -- is left is the distance one. Without this the block above would pass
+    -- just as well against a check that refused everything.
+    BR.Roster.get(1).pos = { x = x0 + 10.0, y = y0, z = z0 }
+    local level = rowFor(crate.id)
+    ok(level and level.reach == true,
+        'and stood on the crate at its own height it is reachable again')
+
+    -- THE ORACLE LINE HOLDS IN THE INSPECTOR TOO. It is a server-console
+    -- reader, not a wire message -- nothing it prints reaches a client -- and
+    -- the claim handler's three-way reply is unchanged by its existence.
+    sent = {}
+    BR.Loot.inspect(1, 300.0)
+    ok(#eventsOf(BR.Net.NOTIFY) == 0 and #eventsOf(BR.Net.LOOT_ADD) == 0,
+        'inspecting sends a client nothing at all')
+
+    -- AND IT MUST NOT MUTATE WHAT IT READS. A diagnostic that consumed a
+    -- cooldown or flipped `repaired` would change the bug while looking at it.
+    local wasFixedAt, wasRepaired = crate.fixedAt, crate.repaired
+    BR.Loot.inspect(1, 300.0)
+    ok(crate.fixedAt == wasFixedAt and crate.repaired == wasRepaired
+        and math.abs(crate.x - (x0 + 10.0)) < 0.01,
+        'and changes nothing about the entry it reports on')
 end
 
 -- A REFUSED PICKUP HAS TO SAY SO (#171).
@@ -4985,17 +6455,25 @@ do
         ('%s -> %s'):format(tostring(meleeClipBefore),
                             tostring(BR.Inv.of(1).slots[1].clip)))
 
-    -- THE CLIENT REPORT IS REFUSED while this is on. Two authorities for one
-    -- number means the reload the server just paid for is overwritten by a
-    -- report that has not seen it yet.
+    -- THE CLIENT REPORT IS A FLOOR while this is on, and it used to be a flat
+    -- refusal (2026-08-23). The refusal was right about the risk -- two
+    -- authorities for one number means the reload the server just paid for is
+    -- overwritten by a report that has not seen it -- and wrong about the cost:
+    -- spendRound only runs on a weaponDamageEvent, so every round burnt by a
+    -- shot that raises none stayed on the books and came back on the next slot
+    -- switch. The client may now say the total FELL, and may say nothing else.
+    -- See inv.ammo.floorUnderServerAmmo for the whole contract.
     BR.Inv.reset(1)
     BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
                      rarity = 3, count = 1, clip = rifle.clip })
     BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM] = 60
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 5, clip = 5 })
-    ok(BR.Inv.of(1).slots[1].clip == rifle.clip,
-        'and a client ammo report is ignored outright',
-        tostring(BR.Inv.of(1).slots[1].clip))
+    ammoReport(1, 1, 5, 5)
+    ok((BR.Inv.of(1).slots[1].clip or 0)
+       + (BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM] or 0) == 5,
+        'a client ammo report may lower the total, and only lower it',
+        ('clip %s reserve %s'):format(
+            tostring(BR.Inv.of(1).slots[1].clip),
+            tostring(BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM])))
 end
 
 describe('combat.multivictim')
@@ -5605,6 +7083,39 @@ do
         ok(scattered > 0,
             'and a crate\'s contents come out of the crate, not out of nowhere',
             tostring(scattered))
+
+        -- AN ORIGIN IS A BIRTH EVENT, NOT A PROPERTY OF THE ENTRY.
+        --
+        -- The client has no clock but its own: it stamps the arrival the moment
+        -- the message lands, because there is nothing else to stamp it from. So
+        -- the origin may only ride the message that announces the birth. On
+        -- every other wire copy -- a cell subscription, a reconnect snapshot,
+        -- the repair re-announce -- it has to be absent, or a player walking
+        -- into the cell five minutes later watches loot fly out of a box that
+        -- was emptied while they were somewhere else.
+        BR.Roster.get(2).pos = { x = crate.x, y = crate.y, z = crate.z }
+        sent = {}
+        fire(BR.Net.LOOT_CELL, 2, { cx = ccx, cy = ccy })
+        local late, lateWithOrigin = 0, 0
+        for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+            for _, entry in ipairs(s.args[1]) do
+                late = late + 1
+                if entry.fx or entry.fy or entry.fl then
+                    lateWithOrigin = lateWithOrigin + 1
+                end
+            end
+        end
+        ok(late > 0 and lateWithOrigin == 0,
+            'but a player who subscribes afterwards is told no origin at all',
+            ('%d of %d entries carried one'):format(lateWithOrigin, late))
+
+        -- Same rule for the snapshot a reconnect is handed.
+        local snapOrigin = 0
+        for _, entry in ipairs(BR.Loot.viewFor(2) or {}) do
+            if entry.fx or entry.fy or entry.fl then snapOrigin = snapOrigin + 1 end
+        end
+        ok(snapOrigin == 0, 'nor does the reconnect snapshot carry one',
+            tostring(snapOrigin))
     else
         ok(false, 'no chest with contents in the layout to test against')
     end
@@ -5726,6 +7237,607 @@ do
         'but doing it over and over is refused and counted')
 end
 
+describe('damage.brshots')
+do
+    -- #93 CANNOT CLOSE ON brrefuse ALONE, and this block is the difference.
+    --
+    -- brrefuse INJECTS a refusal by name, which proves the reporting half
+    -- handles the reason. It proves nothing about whether BR.ValidateShot can
+    -- ever RETURN that reason from a real shot -- a reason the validator cannot
+    -- produce would pass brrefuse and be dead in the game. So every assertion
+    -- below drives the real weaponDamageEvent handler and reads the verdict out
+    -- of /brshots, which is the only window onto what was actually decided.
+    local PISTOL = 0x1B06D571
+
+    local function twoAlive()
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        -- Different squads, or SAME_SQUAD refuses before anything interesting.
+        BR.Roster.get(1).squadId = 11
+        BR.Roster.get(2).squadId = 22
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.of(1).active = 1
+    end
+
+    --- Put them this far apart, in the roster the validator actually reads.
+    local function apart(m)
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = m,   y = 0.0, z = 30.0 }
+    end
+
+    local function shoot(weapon)
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = weapon or PISTOL, hitComponent = 3,
+            weaponDamage = 26, hitGlobalIds = { 1002 },
+        })
+    end
+
+    -- THE CONSOLE GATE, asserted to PRINT and not merely to decline. A refusal
+    -- nobody can read is the same as no refusal to the person typing.
+    twoAlive()
+    printed = {}
+    runCommandAs(1, 'brshots')
+    ok(printedSaying('server-console only') ~= nil,
+        'brshots tells a live admin it is console-only')
+    ok(printedSaying('age') == nil,
+        'and prints no adjudications to them at all')
+
+    -- ...AND THAT IS THE #93 PROPERTY, not a style choice. RESTRICTED would
+    -- admit any holder of br.admin, and nobody is exempt from incidents -- so
+    -- an admin can be the SUBJECT of these rows. A restricted readout would
+    -- hand them the bound to stay under.
+    printed = {}
+    runCommandAs(99, 'brshots')
+    ok(printedSaying('server-console only') ~= nil,
+        'every non-zero source is refused, not just players in a match')
+
+    -- AN ALLOWED SHOT IS RECORDED TOO. A limit that is wrong in the GENEROUS
+    -- direction never refuses anything, so it prints no refusal line -- the
+    -- only place it can be seen is the margin on a row that passed.
+    apart(10.0)
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'a shot that passed is in the ring, not only the refusals')
+    ok(printedSaying('pistol') ~= nil, 'named by the weapon the server resolved')
+    -- 120m authored x1.35 +12 = 174m, and they are 10m apart.
+    ok(printedSaying('dist 10.0/174.0m') ~= nil,
+        'with the measured distance beside the limit it was judged against',
+        printedSaying('dist ') or 'no dist line')
+
+    -- THE NUMBERS ARE THE VALIDATOR'S OWN, not a second copy. If the readout
+    -- recomputed them it could print a bound nobody is enforcing -- so the
+    -- printed limit is asserted against BR.ShotRangeLimit directly.
+    local pistol = BR.Config.WeaponById['pistol']
+    ok(BR.ShotRangeLimit(pistol, BR.Config.Combat) == 174.0,
+        'BR.ShotRangeLimit is the one definition of the range bound',
+        tostring(BR.ShotRangeLimit(pistol, BR.Config.Combat)))
+    ok(math.abs(BR.ShotIntervalFloor(pistol, BR.Config.Combat) - 84.0) < 0.01,
+        'and BR.ShotIntervalFloor of the cadence bound',
+        tostring(BR.ShotIntervalFloor(pistol, BR.Config.Combat)))
+    -- An explosive has no cadence to refuse: the validator returns before ever
+    -- reaching the rate check.
+    --
+    -- THE RPG IS THE DISCRIMINATING CASE AND THE GRENADE IS NOT -- mutation
+    -- testing caught this. A grenade carries no minInterval at all, so it
+    -- answers nil even if the `w.explosive` test is deleted; the launchers are
+    -- explosive AND carry a real cadence, so they are the only rows that can
+    -- tell the two spellings apart.
+    ok(BR.Config.WeaponById['rpg'].minInterval == 1000,
+        'the RPG has a cadence of its own to be ignored')
+    ok(BR.ShotIntervalFloor(BR.Config.WeaponById['rpg'],
+                            BR.Config.Combat) == nil,
+        'and an explosive with a real cadence still has no floor to refuse on',
+        tostring(BR.ShotIntervalFloor(BR.Config.WeaponById['rpg'],
+                                      BR.Config.Combat)))
+
+    -- THE RANGE BOUND IS INCLUSIVE, which is the whole difference between `>`
+    -- and `>=` and is invisible to any test that does not stand on it. Slack
+    -- exists to stop an honest shot being refused, so a shot landing EXACTLY on
+    -- the limit must pass -- `>=` would refuse the one shot the slack was
+    -- calculated to allow.
+    local edge = BR.ShotRangeLimit(pistol, BR.Config.Combat)
+    local ctxOK = { sameMatch = true, shooterLive = true, victimLive = true,
+                    heldItem = 'pistol', clip = 12 }
+    ok(BR.ValidateShot({ weapon = PISTOL, dist = edge, sinceLastMs = 100000 },
+                       ctxOK, BR.Config.Combat) == true,
+        'a shot exactly on the range limit is allowed')
+    ok(BR.ValidateShot({ weapon = PISTOL, dist = edge + 0.01,
+                         sinceLastMs = 100000 }, ctxOK, BR.Config.Combat) == false,
+        'and a hair beyond it is refused')
+
+    -- The same edge on cadence: `<` not `<=`.
+    local cad = BR.ShotIntervalFloor(pistol, BR.Config.Combat)
+    ok(BR.ValidateShot({ weapon = PISTOL, dist = 5.0, sinceLastMs = cad },
+                       ctxOK, BR.Config.Combat) == true,
+        'a shot exactly on the cadence floor is allowed')
+    ok(BR.ValidateShot({ weapon = PISTOL, dist = 5.0, sinceLastMs = cad - 1 },
+                       ctxOK, BR.Config.Combat) == false,
+        'and one millisecond faster is refused')
+
+    -- 0 IS TRUTHY IN LUA and a FiveM BOOL may arrive as 1. Pinned directly,
+    -- because both of isTrue's callers hand it a real boolean -- so nothing
+    -- else in the suite can tell a correct normaliser from `if v then`.
+    ok(BR.Damage.isTrue(0) == false, 'isTrue(0) is false -- 0 is truthy in Lua')
+    ok(BR.Damage.isTrue(1) == true, 'isTrue(1) is true -- a BOOL native may say 1')
+    ok(BR.Damage.isTrue(true) == true, 'isTrue(true) is true')
+    ok(BR.Damage.isTrue(false) == false, 'isTrue(false) is false')
+    ok(BR.Damage.isTrue(nil) == false, 'isTrue(nil) is false')
+    -- Throw PLUS blast, which is a different bound and not a bigger slack.
+    local gren = BR.Config.WeaponById['grenade']
+    ok(math.abs(BR.ShotRangeLimit(gren, BR.Config.Combat)
+                - (45.0 * 1.35 + 10.0 + 12.0)) < 0.01,
+        'and an explosive reaches its throw plus its blast',
+        tostring(BR.ShotRangeLimit(gren, BR.Config.Combat)))
+
+    -- A REAL TOO_FAR, FROM A REAL SHOT, WITH BOTH NUMBERS ON THE ROW.
+    apart(400.0)
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots')
+    ok(printedSaying('TOO_FAR') ~= nil,
+        'BR.ValidateShot genuinely returns TOO_FAR from a weaponDamageEvent')
+    ok(printedSaying('*dist 400.0/174.0m') ~= nil,
+        'and the row shows the distance and the limit side by side, starred',
+        printedSaying('dist ') or 'no dist line')
+
+    -- THE STAR IS ON THE DECIDING COMPARISON, which is the entire readable
+    -- claim of the table. Starring the wrong column would make a wrong limit
+    -- look like a wrong cadence.
+    ok(printedSaying('*dist') ~= nil and printedSaying('*gap') == nil,
+        'the star marks range and not cadence when range decided it')
+
+    -- FILTERING BY REASON, so a long ring can be read for one thing.
+    printed = {}
+    runCommand('brshots', 'TOO_FAR')
+    ok(printedSaying('TOO_FAR') ~= nil, 'brshots <reason> keeps matching rows')
+    ok(printedSaying('ALLOWED') == nil, 'and drops the rest')
+
+    -- AN EMPTY RING EXPLAINS ITSELF rather than looking broken. A solo test
+    -- that shoots scenery produces no adjudications at all, and "(none)" with
+    -- no reason reads as a fault in the verb.
+    printed = {}
+    runCommand('brshots', 'NOT_A_REASON')
+    ok(printedSaying('(none)') ~= nil, 'no matching rows says so')
+    ok(printedSaying('HITS A PLAYER') ~= nil,
+        'and says why a table can legitimately be empty')
+
+    -- THE ROW YOU JUST CAUSED READS `now`, NOT `-`. The age column shares its
+    -- shape with debug.lua's secs(), which renders zero as a dash because a
+    -- duration of zero there means "never happened". Here zero means "this
+    -- millisecond" -- the shot the owner fired to see what it would say -- and
+    -- a dash on that row reads as missing data.
+    apart(10.0)
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying(' now  ') ~= nil,
+        'the shot just adjudicated is aged `now` rather than `-`',
+        printedSaying('pistol') or 'no row')
+end
+
+describe('damage.brtestfire')
+do
+    -- THE LEVER THAT MAKES THE OTHER THREE REASONS FIREABLE ON PURPOSE, and
+    -- the four independent guarantees that it cannot be left on.
+    local PISTOL  = 0x1B06D571
+    local GRENADE = 0x93E220BD
+
+    local function twoAlive()
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        BR.Roster.get(1).squadId = 11
+        BR.Roster.get(2).squadId = 22
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 10.0, y = 0.0, z = 30.0 }
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.of(1).active = 1
+    end
+
+    local function shoot(weapon)
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = weapon or PISTOL, hitComponent = 3,
+            weaponDamage = 26, hitGlobalIds = { 1002 },
+        })
+    end
+
+    local devWas = BR.Server.devMode
+
+    -- BOTH GATES, ASSERTED TO PRINT. Console-only AND dev-only, because this
+    -- one changes what the anticheat believes for every player at once.
+    twoAlive()
+    BR.Server.devMode = true
+    printed = {}
+    runCommandAs(1, 'brtestfire', 'far')
+    ok(printedSaying('server-console only') ~= nil,
+        'brtestfire refuses a live admin')
+
+    BR.Server.devMode = false
+    printed = {}
+    runCommand('brtestfire', 'far')
+    ok(printedSaying('dev-mode only') ~= nil, 'and refuses a non-dev box')
+    ok(printedSaying('public box') ~= nil,
+        'saying why, since bending the anticheat live is the risk')
+    BR.Server.devMode = true
+
+    -- THE SHIPPED CONSTANTS ARE NEVER TOUCHED. This is the difference between
+    -- a lever and an edit: `off` has to restore exactly, and it can only do
+    -- that if it never wrote over the original in the first place.
+    local shippedSlack = BR.Config.Combat.rangeSlack
+    local shippedGrace = BR.Config.Combat.explosiveGraceMs
+    printed = {}
+    runCommand('brtestfire', 'far')
+    ok(printedSaying('TEST FIRE ARMED') ~= nil, 'arming says so, loudly')
+    ok(printedSaying('FAR') ~= nil, 'and names the mode')
+    ok(BR.Config.Combat.rangeSlack == shippedSlack,
+        'and BR.Config.Combat is left exactly as shipped',
+        tostring(BR.Config.Combat.rangeSlack))
+
+    -- TOO_FAR, NOW AT TEN METRES INSTEAD OF A HUNDRED AND SEVENTY-FOUR.
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('TOO_FAR') ~= nil,
+        'with far armed, an ordinary ten-metre shot is out of range')
+    ok(printedSaying('*dist 10.0/2.4m') ~= nil,
+        'and the row shows the bent limit, so the bend is visible not implied',
+        printedSaying('dist ') or 'no dist line')
+    -- The BRACKET is part of the assertion: the trailer prose also contains the
+    -- word FORCED, and matching that instead would make this pass with no stamp
+    -- on any row at all.
+    ok(printedSaying('[FORCED far]') ~= nil,
+        'the row is stamped FORCED, so it can never be read as evidence')
+
+    -- A MANUFACTURED REFUSAL FILES NOTHING. Filing would open an incident
+    -- about a playtest, against the person running it, with screenshots.
+    local filed = 0
+    local realNote = BR.Damage.noteRefusal
+    BR.Damage.noteRefusal = function(...) filed = filed + 1; return realNote(...) end
+    fakeTime = fakeTime + 5000
+    shoot()
+    ok(filed == 0, 'a forced refusal never reaches noteRefusal', tostring(filed))
+
+    -- ...AND THE UNFORCED PATH STILL DOES, which is the half that would rot
+    -- silently if the guard were written as "never file" by accident.
+    runCommand('brtestfire', 'off')
+    BR.Roster.get(2).pos = { x = 400.0, y = 0.0, z = 30.0 }
+    fakeTime = fakeTime + 5000
+    shoot()
+    ok(filed == 1, 'a real refusal still files normally once disarmed',
+        tostring(filed))
+    BR.Damage.noteRefusal = realNote
+
+    -- OFF RESTORES THE SHIPPED BOUND, exactly.
+    ok(BR.Config.Combat.rangeSlack == shippedSlack,
+        'off leaves the shipped range slack in place')
+    twoAlive()
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'and a ten-metre shot is ordinary again')
+    ok(printedSaying('[FORCED') == nil, 'with no FORCED stamp on it')
+
+    -- TOO_FAST. The cadence floor, not the refusal bar -- two different
+    -- numbers that both describe "too many too quickly" and mean nothing
+    -- alike: this one is the weapon's action, and it refuses ONE shot.
+    twoAlive()
+    runCommand('brtestfire', 'fast')
+    fakeTime = fakeTime + 60000
+    shoot()                      -- the first has no predecessor to be fast for
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'the first shot of a burst is never too fast')
+    fakeTime = fakeTime + 100    -- 100ms, against a bent floor of 140*60
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('TOO_FAST') ~= nil,
+        'BR.ValidateShot genuinely returns TOO_FAST from a real second shot')
+    ok(printedSaying('*gap 100/8400ms') ~= nil,
+        'and the row shows the interval against the floor it missed',
+        printedSaying('gap ') or 'no gap line')
+    runCommand('brtestfire', 'off')
+
+    -- NOT_THROWN, AND THE GRACE WINDOW MUST BE THE THING THAT DECIDES IT.
+    --
+    -- MUTATION TESTING FOUND THIS. The first version of this block put a pistol
+    -- in the hand and no throw on the record, so `heldItem ~= w.id` refused it
+    -- on its own and the grace window was never consulted -- making the whole
+    -- `thrown` lever untested. Reverting liveCfg() to cfg inside threwRecently
+    -- left the suite green.
+    --
+    -- So the setup below is deliberately one where the HELD test alone is not
+    -- enough: the hand has moved on to the pistol AND the server watched the
+    -- throw. Under the shipped 30s grace that is an ordinary "throw it, switch,
+    -- it lands" and must pass. Under the lever the credit is gone and the same
+    -- blast is refused. Only the grace window differs between the two.
+    twoAlive()
+    BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                     rarity = 3, count = 3 })          -- slot 2
+    BR.Inv.of(1).active = 1                            -- pistol still in hand
+    BR.Damage.noteThrow(1, 'grenade')                  -- the server saw it leave
+    fakeTime = fakeTime + 1500
+    shoot(GRENADE)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'a grenade landing after a weapon swap is credited by the 30s grace')
+    ok(printedSaying('thrown yes') ~= nil,
+        'because the server watched the throw',
+        printedSaying('thrown ') or 'no thrown line')
+
+    -- The victim is stood back up between blasts: a grenade takes 90 off and a
+    -- second would kill them, at which point the refusal would be NOT_LIVE and
+    -- this block would assert nothing about explosives at all.
+    BR.Roster.get(2).hp = 100.0
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    runCommand('brtestfire', 'thrown')
+    ok(BR.Config.Combat.explosiveGraceMs == shippedGrace,
+        'arming thrown does not edit the shipped grace window')
+    fakeTime = fakeTime + 1500
+    shoot(GRENADE)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NOT_THROWN') ~= nil,
+        'BR.ValidateShot genuinely returns NOT_THROWN from a real blast')
+    ok(printedSaying('*held pistol') ~= nil,
+        'and the row names the slot the server actually had, starred',
+        printedSaying('held ') or 'no held line')
+    ok(printedSaying('thrown no') ~= nil,
+        'beside a throw credit that has expired')
+    runCommand('brtestfire', 'off')
+
+    -- NO_AMMO. Not a bent bound at all: the server is made to believe an empty
+    -- magazine, which is the real check. Draining the POOL too is load-bearing
+    -- -- spendRound refills from it the instant the clip reaches zero.
+    twoAlive()
+    printed = {}
+    runCommand('brtestfire', 'noammo', '1')
+    ok(printedSaying('EMPTY in the server') ~= nil,
+        'noammo says whose magazine it emptied')
+    ok(BR.Inv.of(1).slots[1].clip == 0, 'and the slot really is empty')
+    local pool = BR.Config.WeaponById['pistol'].ammo
+    ok((BR.Inv.of(1).ammo[pool] or 0) == 0,
+        'and so is the pool it would otherwise reload from',
+        tostring(BR.Inv.of(1).ammo[pool]))
+
+    fakeTime = fakeTime + 5000
+    shoot()
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NO_AMMO') ~= nil,
+        'BR.ValidateShot genuinely returns NO_AMMO from a real shot')
+    ok(printedSaying('*clip 0') ~= nil,
+        'and the row shows the magazine the server believed, starred',
+        printedSaying('clip ') or 'no clip line')
+
+    -- NO_AMMO IS NOT FORCED and must file normally: nothing was bent, the
+    -- server simply believes what it was told.
+    ok(printedSaying('[FORCED') == nil,
+        'a noammo refusal carries no FORCED stamp -- no bound was bent')
+
+    -- noammo REFUSES A HAND WITH NO MAGAZINE IN IT rather than silently doing
+    -- nothing. Fists cannot produce NO_AMMO at all.
+    twoAlive()
+    BR.Inv.reset(1)
+    printed = {}
+    runCommand('brtestfire', 'noammo', '1')
+    ok(printedSaying('not holding a weapon') ~= nil,
+        'noammo on empty hands says fists have no magazine')
+
+    -- THE HEARTBEAT, which is the guarantee that a lever left armed keeps
+    -- saying so rather than going quiet after the banner scrolls away.
+    twoAlive()
+    runCommand('brtestfire', 'far')
+    printed = {}
+    fakeTime = fakeTime + 16000
+    BR.Sched.step(fakeTime)
+    ok(printedSaying('STILL ARMED') ~= nil,
+        'an armed lever announces itself again fifteen seconds later')
+    ok(printedSaying('brtestfire off') ~= nil,
+        'and names the command that turns it off')
+
+    runCommand('brtestfire', 'off')
+    printed = {}
+    fakeTime = fakeTime + 16000
+    BR.Sched.step(fakeTime)
+    ok(printedSaying('STILL ARMED') == nil,
+        'and a disarmed one goes quiet -- the job is not a leaked loop')
+
+    -- THE MATCH ENDING CLEARS IT. One of the four guarantees, and the one a
+    -- playtester actually relies on.
+    twoAlive()
+    runCommand('brtestfire', 'far')
+    printed = {}
+    fire('br:match:destroyed', nil, { matchId = 1 })
+    ok(printedSaying('DISARMED by the match ending') ~= nil,
+        'a match ending disarms the lever and says so')
+    printed = {}
+    runCommand('brtestfire', 'status')
+    ok(printedSaying('nothing armed') ~= nil, 'and status agrees')
+
+    -- ...AND SO DOES THE RESOURCE STOPPING.
+    runCommand('brtestfire', 'far')
+    printed = {}
+    fire('onResourceStop', nil, 'br_core')
+    ok(printedSaying('DISARMED by br_core stopping') ~= nil,
+        'stopping br_core disarms it too')
+
+    -- ...but not somebody ELSE's resource stopping.
+    runCommand('brtestfire', 'far')
+    printed = {}
+    fire('onResourceStop', nil, 'some_other_resource')
+    ok(printedSaying('DISARMED') == nil,
+        'another resource stopping leaves it alone')
+    runCommand('brtestfire', 'off')
+
+    -- STATUS AND UNKNOWN MODES BOTH NAME THE MODE LIST, so a typo is a
+    -- correction rather than a silent no-op.
+    printed = {}
+    runCommand('brtestfire', 'sideways')
+    ok(printedSaying('unknown mode') ~= nil, 'an unknown mode says so')
+    ok(printedSaying('noammo') ~= nil, 'and lists the ones that work')
+
+    printed = {}
+    runCommand('brtestfire', 'off')
+    ok(printedSaying('nothing was armed') ~= nil,
+        'off with nothing armed is a statement, not a silent success')
+
+    BR.Server.devMode = devWas
+end
+
+describe('damage.notThrownIsReachable')
+do
+    -- IS NOT_THROWN REACHABLE FROM AN HONEST CLIENT AT ALL? (#93)
+    --
+    -- The owner had low confidence in this reason and asked whether it should
+    -- be tested or deleted. The answer is neither: it is reachable, it needs NO
+    -- bent bound to reach, and BOTH ways of reaching it are an honest player
+    -- doing an ordinary thing. Every assertion here runs against the SHIPPED
+    -- BR.Config.Combat -- nothing is armed, nothing is bent.
+    --
+    -- WHY IT HAPPENS. `ctx.threwRecently` is fed by BR.Damage.noteThrow, and
+    -- noteThrow is called from exactly one place: the THROWABLE branch of
+    -- inventory.lua's INV_AMMO handler. So for anything that is not
+    -- ItemKind.THROWABLE the throw credit is never written and is permanently
+    -- false -- which leaves `ctx.heldItem == w.id` as the entire test. That is
+    -- what weapons.lua's own note says it intends ("the held check still
+    -- applies and is the whole security story"). What it misses is that the
+    -- held check is evaluated when the BLAST lands, not when the trigger is
+    -- pulled, and those are seconds apart for a projectile.
+    --
+    -- The consequence is not cosmetic: NOT_THROWN is `high` in BR.ShotTier and
+    -- carries no BR.ShotBarOverride, so refusalBar.high = 1 -- ONE of these
+    -- opens an incident, with screenshots, against an honest player.
+    local RPG    = 0xB1CA77B1
+    local STICKY = 0x2C3731D9
+
+    local function pair2()
+        reset()
+        queueUp(1, 'A', BR.Mode.SOLO.key)
+        queueUp(2, 'B', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        BR.Roster.get(1).squadId = 11
+        BR.Roster.get(2).squadId = 22
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 10.0, y = 0.0, z = 30.0 }
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+    end
+
+    local function blast(hash)
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = hash, hitComponent = 0,
+            weaponDamage = 120, hitGlobalIds = { 1002 },
+        })
+    end
+
+    -- The launchers are ItemKind.WEAPON, so nothing ever writes a throw credit
+    -- for them. This is the fact the whole finding rests on.
+    ok(BR.Config.WeaponById['rpg'].explosive == true,
+        'the RPG takes the explosive path through the validator')
+    BR.Damage.forget(1)
+    ok(BR.Damage.threwRecently(1, 'rpg') == false,
+        'and the server can never have watched anyone "throw" one')
+
+    -- 1. FIRE A ROCKET, SWAP TO YOUR RIFLE, ROCKET LANDS.
+    pair2()
+    BR.Inv.give(1, { item = 'rpg', kind = BR.ItemKind.WEAPON,
+                     rarity = 5, count = 1, clip = 1 })
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 12 })
+    BR.Inv.of(1).active = 1
+    fakeTime = fakeTime + 5000
+    -- Still holding it when the rocket lands: the honest case that passes.
+    blast(RPG)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('ALLOWED') ~= nil,
+        'a rocket that lands while you still hold the launcher is fine')
+
+    pair2()
+    BR.Inv.give(1, { item = 'rpg', kind = BR.ItemKind.WEAPON,
+                     rarity = 5, count = 1, clip = 1 })
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 12 })
+    BR.Inv.of(1).active = 2        -- swapped to the pistol mid-flight
+    fakeTime = fakeTime + 5000
+    blast(RPG)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NOT_THROWN') ~= nil,
+        'but swapping weapons before it lands refuses it -- shipped config, '
+        .. 'no lever armed')
+    ok(printedSaying('[FORCED') == nil,
+        'and nothing was forced: this is the validator on its own numbers')
+
+    -- ...and it is a `high` refusal with a bar of one, so it opens a case on
+    -- the first occurrence. That is what makes this worth reporting rather
+    -- than noting.
+    local bar, tier = BR.ShotBarFor(BR.ShotRefusal.NOT_THROWN,
+                                    BR.Config.Combat.refusalBar)
+    ok(tier == 'high' and bar == 1,
+        'one NOT_THROWN opens an incident, so a weapon swap is enough',
+        ('tier=%s bar=%s'):format(tostring(tier), tostring(bar)))
+
+    -- 2. A STICKY BOMB DETONATED AFTER THE GRACE WINDOW.
+    --
+    -- A sticky is remote-detonated: sticking one to a wall and waiting is the
+    -- entire tactic. explosiveGraceMs is 30s, so any trap held longer than
+    -- that has lost its credit by the time it goes off.
+    pair2()
+    BR.Inv.give(1, { item = 'sticky', kind = BR.ItemKind.THROWABLE,
+                     rarity = 4, count = 3 })
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 12 })
+    BR.Inv.of(1).active = 1
+    BR.Damage.noteThrow(1, 'sticky')
+    fakeTime = fakeTime + 2000
+    ok(BR.Damage.threwRecently(1, 'sticky') == true,
+        'a sticky thrown two seconds ago is still credited')
+    fakeTime = fakeTime + (BR.Config.Combat.explosiveGraceMs + 1000)
+    ok(BR.Damage.threwRecently(1, 'sticky') == false,
+        'and one thrown before the grace window is not')
+
+    BR.Inv.of(1).active = 2        -- pistol out while waiting for the ambush
+    blast(STICKY)
+    printed = {}
+    runCommand('brshots', '1')
+    ok(printedSaying('NOT_THROWN') ~= nil,
+        'a sticky trap sprung after the grace window is refused too')
+end
+
 describe('inv.throwables')
 do
     -- UNLIMITED GRENADES, for one commit.
@@ -5749,7 +7861,7 @@ do
     local inv = BR.Inv.of(1)
     inv.active = 1
 
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = 2 })
+    ammoReport(1, 1, 2, 2)
     ok(inv.slots[1] and inv.slots[1].count == 2,
         'throwing one grenade leaves two, even with server ammo on',
         tostring(inv.slots[1] and inv.slots[1].count))
@@ -5795,10 +7907,10 @@ do
                      rarity = 3, count = 3 })
     inv = BR.Inv.of(1)
     inv.active = 1
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = 2 })
+    ammoReport(1, 1, 2, 2)
 
     -- A RISE IS STILL REFUSED. Decrease-only is the whole safety argument.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 9, clip = 9 })
+    ammoReport(1, 1, 9, 9)
     ok(inv.slots[1].count == 2, 'and a report that conjures more is ignored',
         tostring(inv.slots[1].count))
 
@@ -5811,7 +7923,7 @@ do
 
     -- Throwing the last one empties the slot, and the memory is what carries
     -- the detonation that follows.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 0, clip = 0 })
+    ammoReport(1, 1, 0, 0)
     ok(not inv.slots[1] or inv.slots[1] == false,
         'the last grenade empties the slot')
     ok(BR.Damage.threwRecently(1, 'grenade'),
@@ -5827,6 +7939,684 @@ do
     BR.Damage.forget(1)
     ok(not BR.Damage.threwRecently(1, 'grenade'),
         'and a disconnect forgets it outright')
+end
+
+describe('inv.ammo.floorUnderServerAmmo')
+do
+    -- THE ROUNDS THAT WERE CHARGED TO NOBODY (owner, 2026-08-23).
+    --
+    -- "once depleted, switching between slots gave me more ammo." The switch was
+    -- innocent: client/inventory.lua grants zero and then writes an explicit
+    -- number, so it can only hand out what the SERVER told it. The server was
+    -- the one with the wrong number.
+    --
+    -- BR.Damage.spendRound is reachable from exactly ONE place -- the
+    -- weaponDamageEvent handler -- so a round burnt by anything that raises no
+    -- such event was never charged. An explosive raises none at all, which this
+    -- file's own `damage.notThrownIsReachable` block and server/damage.lua's
+    -- 2026-08-08 capture both turn on, and that is the whole airdrop shelf: the
+    -- RPG, the grenade launcher and the railgun the owner was holding.
+    --
+    -- The INV_AMMO handler used to return outright while serverAmmo was on, so
+    -- the one observer that COULD see those rounds leave was silenced. It is now
+    -- a FLOOR: the client may say the total has fallen and may say nothing else.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+
+    lootMatch()
+    BR.Inv.reset(1)
+    local rail = BR.Config.WeaponById['railgun']
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.HEAVY] = rail.clip
+    local total = rail.clip + rail.clip
+
+    -- THE MAGAZINE PAYS FIRST, because that is the order rounds leave a gun.
+    ammoReport(1, 1, total - 1, 0)
+    ok(inv.slots[1].clip == rail.clip - 1,
+        'a round the server never saw still comes off the magazine',
+        tostring(inv.slots[1].clip))
+    ok(inv.ammo[BR.AmmoType.HEAVY] == rail.clip,
+        'and the reserve is untouched while the magazine has rounds in it',
+        tostring(inv.ammo[BR.AmmoType.HEAVY]))
+
+    -- ...AND THE CLIENT DOES NOT GET TO CHOOSE THE SPLIT. The report above said
+    -- `clip = 0` and the server did not believe it: with serverAmmo on the only
+    -- thing a client may move is the total. That is what keeps the reload the
+    -- server paid for from being overwritten by a report that has not seen it.
+    ok(inv.slots[1].clip ~= 0,
+        'the client cannot empty a magazine it still has rounds in',
+        tostring(inv.slots[1].clip))
+
+    -- SPENDING PAST THE MAGAZINE comes out of the reserve, and the server's own
+    -- reload rule then refills -- the same rule spendRound runs, so an empty gun
+    -- looks the same whichever path emptied it.
+    inv.slots[1].clip = 1
+    inv.ammo[BR.AmmoType.HEAVY] = 3
+    ammoReport(1, 1, 2, 0)
+    ok(inv.slots[1].clip + inv.ammo[BR.AmmoType.HEAVY] == 2,
+        'two rounds spent leave exactly what is left, wherever it sits',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+    ok(inv.slots[1].clip == 2 and inv.ammo[BR.AmmoType.HEAVY] == 0,
+        'and an empty magazine over a live pool reloads, once',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+
+    -- A RISE IS STILL REFUSED, WHICH IS THE WHOLE SAFETY ARGUMENT. Opening this
+    -- path must not open the 2026-08-06 unlimited-ammo round with it.
+    ammoReport(1, 1, 999, 999)
+    ok(inv.slots[1].clip == 2 and inv.ammo[BR.AmmoType.HEAVY] == 0,
+        'a client still cannot report itself more ammo with serverAmmo on',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+
+    -- RUNNING DRY STAYS DRY. An empty pool cannot conjure a magazine, because
+    -- there is nothing for the arithmetic to take it from -- and this is the
+    -- state a slot switch used to undo.
+    ammoReport(1, 1, 0, 0)
+    ok(inv.slots[1].clip == 0 and inv.ammo[BR.AmmoType.HEAVY] == 0,
+        'A DEPLETED WEAPON IS DEPLETED ON THE SERVER TOO',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+
+    -- ...and the result is pushed, because the reserve is the server's own
+    -- arithmetic and the client has no other way to learn it.
+    sent = {}
+    inv.slots[1].clip = 3
+    inv.ammo[BR.AmmoType.HEAVY] = 0
+    ammoReport(1, 1, 1, 1)
+    ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the corrected inventory is pushed back')
+
+    -- IT IS NOT RAILGUN-ONLY. The railgun is where the owner found it because
+    -- an explosive is charged for nothing at all; every other weapon leaks the
+    -- same way for every shot that raises no event, a miss included.
+    BR.Inv.reset(1)
+    local carbine = BR.Config.WeaponById['carbinerifle']
+    BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                     rarity = 3, count = 1, clip = carbine.clip })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.MEDIUM] = 0
+    ammoReport(1, 1, 0, 0)
+    ok(inv.slots[1].clip == 0 and inv.ammo[BR.AmmoType.MEDIUM] == 0,
+        'and an ordinary rifle emptied by misses is emptied on the server too',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.MEDIUM]))
+end
+
+describe('inv.ammo.dropPickup')
+do
+    -- ═══ THE FOURTH DOOR (owner, 2026-08-23) ═══
+    --
+    -- "when I drop it and pick it back up it has 1 round in it now." His
+    -- /brammo, on a railgun fired dry: the magazine went 0 -> 1 while the heavy
+    -- pool stayed 0. A round was CREATED, and docs/terminology.md says an empty
+    -- pool cannot conjure.
+    --
+    -- THE THREE DOORS ABOVE WERE RE-GRANTS -- the server's stale number written
+    -- back onto the ped -- AND THIS IS NOT ONE. Nothing drifted and no client
+    -- was believed: BR.Inv.give simply minted a clip's worth of reserve for any
+    -- weapon that arrived, and a weapon coming back off the floor is not found
+    -- loot. The whole trip is server-side, which is why it is pinned here rather
+    -- than in test_client: the drop, the world entry and the pickup are three
+    -- server calls and the client is not consulted by any of them.
+    --
+    -- MEASURED IN `held` -- magazine PLUS pool -- because that is the quantity
+    -- the invariant is about and the split is exactly what hid this. The owner's
+    -- own row moved 0 -> 1 in one column while the other stayed put.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+
+    local m = lootMatch()
+
+    --- Everything a player holds for one pool, magazines included.
+    local function held(src, pool)
+        local i = BR.Inv.of(src)
+        local n = i.ammo[pool] or 0
+        for s = 1, 5 do
+            local slot = i.slots[s]
+            local w = slot and BR.Config.WeaponById[slot.item]
+            if w and w.ammo == pool then n = n + (slot.clip or 0) end
+        end
+        return n
+    end
+
+    --- Drop slot 1 on the floor and pick the same entry straight back up, the
+    --- way a player does: two real events, through the real handlers.
+    --- @return table|nil entry  the world entry, before it was claimed
+    local function roundTrip(src, item)
+        -- A second between trips: the claim handler rate-limits to four a
+        -- second, and a loop that ran inside one millisecond would be measuring
+        -- that refusal rather than the pickup.
+        fakeTime = fakeTime + 1000
+        fire(BR.Net.INV_DROP, src, { slot = 1 })
+        local e
+        for id = m.loot.nextId, 1, -1 do
+            local cand = m.loot.items[id]
+            if cand and cand.item == item and cand.dropped then e = cand break end
+        end
+        if not e then return nil end
+        standOn(src, e)
+        local cx, cy = BR.LootCellOf(e.x, e.y)
+        fire(BR.Net.LOOT_CELL, src, { cx = cx, cy = cy })
+        fire(BR.Net.LOOT_CLAIM, src, { id = e.id })
+        return e
+    end
+
+    BR.Inv.reset(1)
+    local rail = BR.Config.WeaponById['railgun']
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+
+    -- A FOUND GUN STILL ARRIVES LOADED, which is the direction a careless fix
+    -- breaks and the reason the grant exists at all. Asserted first, so a fix
+    -- that simply deleted the grant cannot pass this block.
+    ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'a railgun off the floor arrives with a magazine and a reserve',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+
+    -- Fired dry, with the server none the wiser and then caught up by the floor
+    -- above: magazine 0, pool 0, which is the row the owner photographed.
+    inv.slots[1].clip = 0
+    inv.ammo[BR.AmmoType.HEAVY] = 0
+
+    local entry = roundTrip(1, 'railgun')
+    ok(entry ~= nil, 'the dropped railgun is on the ground as an entry')
+    ok(entry and entry.clip == 0,
+       'and it went down with its EMPTY magazine, not a full one',
+       tostring(entry and entry.clip))
+
+    -- THE ASSERTION THE WHOLE BLOCK IS FOR.
+    ok(held(1, BR.AmmoType.HEAVY) == 0,
+       'A DRY WEAPON DROPPED AND PICKED BACK UP IS STILL DRY -- nothing conjured',
+       ('held %d (clip %s, pool %s)'):format(
+           held(1, BR.AmmoType.HEAVY),
+           tostring(inv.slots[1] and inv.slots[1].clip),
+           tostring(inv.ammo[BR.AmmoType.HEAVY])))
+
+    -- AND IT DID NOT MERELY GET SMALLER. Before the fix this compounded -- the
+    -- same trip three times measured 3, 6, 9 -- so a version that granted half a
+    -- clip, or granted once and not twice, would still be an ammunition printer
+    -- with a longer duty cycle.
+    for _ = 1, 5 do roundTrip(1, 'railgun') end
+    ok(held(1, BR.AmmoType.HEAVY) == 0,
+       'and six trips in a row are still zero -- it does not compound',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+
+    -- A PARTLY LOADED GUN MAKES THE TRIP WITH EXACTLY WHAT IT HAD. Zero is the
+    -- case that exposed this; it is not the case the rule is about.
+    inv.slots[1].clip = 1
+    inv.ammo[BR.AmmoType.HEAVY] = 2
+    roundTrip(1, 'railgun')
+    ok(held(1, BR.AmmoType.HEAVY) == 3,
+       'a half-loaded railgun comes back half-loaded, to the round',
+       ('held %d'):format(held(1, BR.AmmoType.HEAVY)))
+
+    -- IT WAS NEVER RAILGUN-ONLY, and the railgun is only where it is VISIBLE.
+    -- Every weapon with a pool minted the same way; a pistol's twelve free
+    -- rounds simply look like loot when there is already ammo to hide them in.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 0 })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.slots[1].clip = 0
+    inv.ammo[BR.AmmoType.LIGHT] = 0
+    roundTrip(1, 'pistol')
+    ok(held(1, BR.AmmoType.LIGHT) == 0,
+       'and a dry PISTOL stays dry too -- this was never railgun-only',
+       tostring(held(1, BR.AmmoType.LIGHT)))
+
+    -- A DEATH BOX IS THE SAME FACT BY A DIFFERENT ROUTE. Everything a corpse was
+    -- carrying left an inventory, so a looter cannot re-mint it either -- and
+    -- the corpse's POOL is on the floor beside it, which is where those rounds
+    -- actually are.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    inv = BR.Inv.of(1)
+    inv.slots[1].clip = 0
+    inv.ammo[BR.AmmoType.HEAVY] = 0
+    BR.Roster.get(1).pos = { x = 300.0, y = 300.0, z = 30.0 }
+    BR.Loot.deathBox(m, 1)
+    local corpseGun
+    for id = m.loot.nextId, 1, -1 do
+        local cand = m.loot.items[id]
+        if cand and cand.item == 'railgun' then corpseGun = cand break end
+    end
+    ok(corpseGun ~= nil, 'the corpse scattered its railgun')
+
+    BR.Inv.reset(2)
+    BR.Roster.get(2).pos = { x = 300.0, y = 300.0, z = 30.0 }
+    standOn(2, corpseGun)
+    local ccx, ccy = BR.LootCellOf(corpseGun.x, corpseGun.y)
+    fire(BR.Net.LOOT_CELL, 2, { cx = ccx, cy = ccy })
+    fire(BR.Net.LOOT_CLAIM, 2, { id = corpseGun.id })
+    ok(held(2, BR.AmmoType.HEAVY) == 0,
+       'and looting a dead man\'s empty railgun does not load it',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ...AND A WEAPON PUSHED OUT OF A FULL INVENTORY IS THE THIRD WAY OUT.
+    -- `displaced` is a slot table like the other two, and a swap that dropped an
+    -- unmarked copy on the floor would reopen the door one indirection along.
+    BR.Inv.reset(1)
+    for _ = 1, 5 do
+        BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 0 })
+    end
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    local _, pushedOut = BR.Inv.give(1, { item = 'pistol',
+        kind = BR.ItemKind.WEAPON, rarity = 1, count = 1, clip = 0 })
+    ok(pushedOut and pushedOut.carried == true,
+       'a weapon displaced by a pickup is marked as having been carried',
+       tostring(pushedOut and pushedOut.carried))
+end
+
+describe('inv.ammo.staleReport')
+do
+    -- ═══ THE FIFTH DOOR, AND IT TAKES AMMUNITION RATHER THAN MAKING IT
+    --     (owner, 2026-08-23, third report) ═══
+    --
+    -- "I also picked up the railgun again this time, which came with ammo, and
+    -- was immediately drained of all railgun ammo..... didn't even do anything."
+    --
+    -- HE DIDN'T. THE ROUND TRIP DID. An INV_AMMO is a measurement of a moment --
+    -- "you said N, the engine holds M" -- and the handler applied that
+    -- difference to whatever this inventory held when the message ARRIVED. The
+    -- client speaks every 150ms and a LOOT_CLAIM is answered in rather less, so
+    -- a report about the weapon in hand and the pickup that credits the pool
+    -- cross in flight routinely. The new rounds then paid for the old weapon's
+    -- shots, in one write, before the gun was fired.
+    --
+    -- IT IS THE SAME FLOOR 951c6ea OPENED. Before that commit this handler
+    -- returned outright while serverAmmo was on, so a stale report could not
+    -- spend anything; making it a floor made it able to, and nothing in the
+    -- message said which holding it had been measured against.
+    --
+    -- AND IT IS NOT RAILGUN-ONLY -- the pistol case below is the same drain. The
+    -- railgun is where it SHOWS for the two reasons it always is: an explosive
+    -- is charged for nothing the server can see, so its report is the whole
+    -- holding rather than one round, and HEAVY is the one pool normally at zero,
+    -- so there is nothing else in it to absorb the loss.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+
+    -- Two live players, which is what the fixture hands out; the scenarios below
+    -- take one each and are reset between rather than needing a third.
+    lootMatch()
+
+    local rail   = BR.Config.WeaponById['railgun']
+    local rpg    = BR.Config.WeaponById['rpg']
+    local pistol = BR.Config.WeaponById['pistol']
+
+    local function held(src, pool)
+        local i = BR.Inv.of(src)
+        local n = i.ammo[pool] or 0
+        for s = 1, 5 do
+            local slot = i.slots[s]
+            local w = slot and BR.Config.WeaponById[slot.item]
+            if w and w.ammo == pool then n = n + (slot.clip or 0) end
+        end
+        return n
+    end
+
+    -- ── 1. THE OWNER'S OWN TRIP, ACROSS TWO SLOTS AND ONE SHARED POOL.
+    --
+    --    A dry RPG in the hand over an empty heavy pool. The client measured
+    --    `total = 0` against `was = 0` and the message is in flight. Meanwhile
+    --    the airdrop railgun lands: clip 3, and three more into the pool.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'rpg', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rpg.clip, carried = true })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.slots[1].clip = 0
+    inv.ammo[BR.AmmoType.HEAVY] = 0
+
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'a found railgun arrives with a magazine and a reserve -- 1f894ec intact',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+
+    -- The in-flight report lands. `was = 0` is what the server said when it was
+    -- taken, and the server no longer says it.
+    ammoReport(1, 1, 0, 0, 0)
+    ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'A REPORT MEASURED BEFORE THE PICKUP CANNOT SPEND WHAT THE PICKUP ADDED',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+    ok(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY] == rail.clip,
+       'and the reserve the railgun came with is still in the pool',
+       tostring(BR.Inv.of(1).ammo[BR.AmmoType.HEAVY]))
+
+    -- ── 2. THE SAME SLOT, A DIFFERENT WEAPON. A pickup that DISPLACES the held
+    --    weapon reuses the slot number the in-flight report is addressed to, so
+    --    the newcomer is charged for the departed gun's shots. This is the total
+    --    drain the owner photographed: three and three down to nothing.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 0, carried = true })
+    inv = BR.Inv.of(2)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.LIGHT] = 0
+    inv.slots[1] = false
+    BR.Inv.give(2, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    ammoReport(2, 1, 0, 0, 0)
+    ok(BR.Inv.of(2).slots[1].clip == rail.clip
+       and BR.Inv.of(2).ammo[BR.AmmoType.HEAVY] == rail.clip,
+       'a weapon that landed under an in-flight report is not emptied by it',
+       ('clip %s reserve %s'):format(
+           tostring(BR.Inv.of(2).slots[1].clip),
+           tostring(BR.Inv.of(2).ammo[BR.AmmoType.HEAVY])))
+
+    -- ── 3. AND IT IS NOT RAILGUN-ONLY, WHICH THE REPORT COULD NOT HAVE SAID.
+    --    A pistol arriving in the same window drains identically, and a pistol
+    --    emptied on pickup would be the more noticeable bug of the two.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                     rarity = 3, count = 1, clip = 0, carried = true })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.MEDIUM] = 0
+    inv.slots[1] = false
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = pistol.clip })
+    ammoReport(1, 1, 0, 0, 0)
+    ok(held(1, BR.AmmoType.LIGHT) == pistol.clip * 2,
+       'A PISTOL IS DRAINED THE SAME WAY -- this was never railgun-only',
+       tostring(held(1, BR.AmmoType.LIGHT)))
+
+    -- ── 4. THE OTHER DIRECTION, AND IT IS THE ONE THAT MATTERS MOST: 951c6ea
+    --    MUST STILL WORK. An explosive raises no weaponDamageEvent, so the
+    --    client's report is the ONLY thing that can charge it. A LIVE report --
+    --    one measured against what the server currently says -- still empties
+    --    the gun, or the leak this all started with is back.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    inv = BR.Inv.of(2)
+    inv.active = 1
+    local before = held(2, BR.AmmoType.HEAVY)
+    ok(before == rail.clip * 2, 'the railgun starts loaded', tostring(before))
+
+    -- Fired dry with the server none the wiser, exactly as an explosive is.
+    ammoReport(2, 1, 0, 0)
+    ok(held(2, BR.AmmoType.HEAVY) == 0,
+       'AN EXPLOSIVE STILL COSTS AMMUNITION -- 951c6ea intact',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ...and a partial one is charged partially, so this is not an all-or-
+    -- nothing gate that happens to pass the two extremes.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    BR.Inv.of(2).active = 1
+    ammoReport(2, 1, rail.clip * 2 - 2, 1)
+    ok(held(2, BR.AmmoType.HEAVY) == rail.clip * 2 - 2,
+       'and two rounds the server never saw cost exactly two',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ── 5. A REFUSED REPORT IS NOT A LOST ONE. The push that invalidated it
+    --    re-baselines the client, which measures again and re-sends -- so the
+    --    rounds are still charged one cycle later, against the numbers they were
+    --    actually taken out of. Without this the fix would trade a drain for a
+    --    leak, which is the trade that must not be made.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    ammoReport(1, 1, 0, 0, 999)          -- stale: refused
+    ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'a stale report changes nothing at all', tostring(held(1, BR.AmmoType.HEAVY)))
+    ammoReport(1, 1, 0, 0)               -- re-measured against the fresh numbers
+    ok(held(1, BR.AmmoType.HEAVY) == 0,
+       'and the re-sent one still empties the gun',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+
+    -- ── 6. THE INVARIANT, THROUGH THE WHOLE OF THIS. `clip + pool` may fall and
+    --    may not rise, and the refusal is a `return` before any write -- so a
+    --    hundred stale reports are exactly as harmless as none.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    BR.Inv.of(2).active = 1
+    for _ = 1, 100 do ammoReport(2, 1, 0, 0, 1) end
+    ok(held(2, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'a hundred stale reports do exactly what one does, which is nothing',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ...and a rise is STILL refused, which is the guard every one of the four
+    -- earlier doors was closed with. `was` must not become a way to smuggle one
+    -- past the subtraction.
+    ammoReport(2, 1, 9999, 9999)
+    ok(held(2, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'and a client still cannot report itself more ammunition',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ── 7. A THROWABLE'S STACK IS ITS `was`, AND THE SAME WINDOW EXISTS FOR IT.
+    --    A grenade thrown, then two more picked up, then the throw's report
+    --    arriving: the stack the pickup credited must not vanish.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                     rarity = 2, count = 1 })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    local grenSlot = inv.slots[1]
+    ok(grenSlot ~= nil and grenSlot.kind == BR.ItemKind.THROWABLE,
+       'the grenade is a throwable stack')
+    grenSlot.count = 3
+    ammoReport(1, 1, 0, 0, 1)            -- measured when only one was held
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 3,
+       'a throw reported after a pickup does not take the pickup with it',
+       tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
+    ammoReport(1, 1, 2, 2)
+    ok(BR.Inv.of(1).slots[1].count == 2,
+       'and a live throw report still costs a grenade',
+       tostring(BR.Inv.of(1).slots[1].count))
+end
+
+describe('inv.reload')
+do
+    -- THE MANUAL RELOAD KEY (owner, 2026-08-23: "we need a manual reload button,
+    -- which should default to R").
+    --
+    -- WHAT IS BEING PROVED IS A CONSERVATION LAW, NOT A FEATURE. Four ways to
+    -- conjure ammunition have been closed in two days and every one of them was
+    -- REPEATABLE; a reload key is that shape by construction, because it is a
+    -- button in the player's hand with no cooldown on it. So the assertions
+    -- below are almost all about `clip + pool` being the same number afterwards,
+    -- and the one that matters most is a hundred presses at a pool of zero.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+
+    lootMatch()
+
+    local carbine = BR.Config.WeaponById['carbinerifle']
+    local MED     = BR.AmmoType.MEDIUM
+
+    --- Arm slot 1 with a carbine at a chosen magazine and pool.
+    local function armed(clip, pool)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                         rarity = 3, count = 1, clip = carbine.clip })
+        local i = BR.Inv.of(1)
+        i.active = 1
+        i.slots[1].clip = clip
+        i.ammo[MED] = pool
+        return i
+    end
+
+    local function totalOf(i)
+        return (i.slots[1] and i.slots[1].clip or 0) + (i.ammo[MED] or 0)
+    end
+
+    -- A PARTIAL MAGAZINE IS TOPPED UP, which is the whole difference between a
+    -- reload KEY and waiting to run dry -- and the reason BR.Inv.reload is a
+    -- generalisation of the rule spendRound ran rather than a copy of it.
+    local inv = armed(10, 100)
+    local before = totalOf(inv)
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == carbine.clip,
+       'a manual reload fills the magazine',
+       ('clip %s of %d'):format(tostring(inv.slots[1].clip), carbine.clip))
+    ok(inv.ammo[MED] == 100 - (carbine.clip - 10),
+       'and the reserve pays for exactly what went in',
+       tostring(inv.ammo[MED]))
+    ok(totalOf(inv) == before,
+       'THE TOTAL IS UNTOUCHED -- rounds moved, none were made',
+       ('%d -> %d'):format(before, totalOf(inv)))
+
+    -- SPAMMING IT DOES NOTHING, and it does nothing by ARITHMETIC rather than by
+    -- a cooldown: the second press finds a full magazine, and a full magazine
+    -- has no room, and no room is a return before anything is written.
+    before = totalOf(inv)
+    for _ = 1, 100 do fire(BR.Net.INV_RELOAD, 1, {}) end
+    ok(totalOf(inv) == before and inv.slots[1].clip == carbine.clip,
+       'a hundred presses on a full magazine change nothing at all',
+       ('%d -> %d, clip %s'):format(before, totalOf(inv),
+                                    tostring(inv.slots[1].clip)))
+
+    -- ═══ AT EXACTLY ZERO POOL, WHICH IS THE ONE THAT MATTERS ═══
+    --
+    -- This is the railgun's ordinary state and it is where every one of this
+    -- week's bugs became visible. An empty pool cannot conjure a magazine
+    -- because there is nothing for the arithmetic to take it from -- so a key
+    -- that could make one here is a key that makes ammunition.
+    inv = armed(0, 0)
+    for _ = 1, 100 do fire(BR.Net.INV_RELOAD, 1, {}) end
+    ok(inv.slots[1].clip == 0 and inv.ammo[MED] == 0,
+       'A HUNDRED RELOADS AT ZERO POOL PRODUCE ZERO ROUNDS',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- A POOL SMALLER THAN THE MAGAZINE empties into it and stops. The clamp is
+    -- `min(room, pool)` and getting it the other way round is how a partial
+    -- reserve becomes a full magazine.
+    inv = armed(0, 3)
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == 3 and inv.ammo[MED] == 0,
+       'three rounds in reserve make a magazine of three, not of thirty',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == 3 and inv.ammo[MED] == 0,
+       'and pressing again on the empty pool adds nothing',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- FISTS. inv.active is 0, which is not a slot index at all, and a reload
+    -- there must be a quiet nothing rather than an error.
+    inv = armed(0, 60)
+    inv.active = 0
+    local okFists = pcall(fire, BR.Net.INV_RELOAD, 1, {})
+    ok(okFists, 'a reload on fists does not throw')
+    ok(inv.slots[1].clip == 0 and inv.ammo[MED] == 60,
+       'and it moves nothing, because fists have no magazine',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- A MELEE WEAPON IN HAND has a slot and no magazine, which is the other
+    -- half of the same guard and the one a `w.clip or 0` would get wrong.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'machete', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1 })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[MED] = 60
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == nil and inv.ammo[MED] == 60,
+       'a machete cannot be reloaded, and asking does not invent a magazine',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- A CONSUMABLE IN HAND. The same key is the `use` key; the server's answer
+    -- to "reload a bandage" has to be silence rather than a slot rewritten.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 2 })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].count == 2 and inv.slots[1].clip == nil,
+       'reloading a bandage does nothing to it')
+
+    -- AND IT IS GATED LIKE EVERY OTHER MUTATION. liveInv admits ALIVE and
+    -- WARMUP only, so a downed player cannot top up off the floor and a player
+    -- still in the air cannot either -- FREEFALL and GLIDE are not LIVE, which
+    -- is the server half of "arming is suspended in the air".
+    inv = armed(0, 60)
+    for _, st in ipairs({ BR.PlayerState.DBNO, BR.PlayerState.FREEFALL,
+                          BR.PlayerState.GLIDE, BR.PlayerState.OUT }) do
+        BR.Roster.setState(1, st)
+        fire(BR.Net.INV_RELOAD, 1, {})
+        ok(inv.slots[1].clip == 0 and inv.ammo[MED] == 60,
+           ('a reload in state %s is refused'):format(st),
+           ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                         tostring(inv.ammo[MED])))
+    end
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == carbine.clip,
+       '...and works again the moment their feet are on the ground',
+       tostring(inv.slots[1].clip))
+
+    -- IT INTERRUPTS A CONSUMABLE, exactly as a slot switch does. Both are what
+    -- the player's hands are doing, and a med kit finishing while a magazine
+    -- goes in would be a free heal mid-fight.
+    inv = armed(0, 60)
+    -- A SHIELD RATHER THAN A MED KIT: the harness's peds stand at full health,
+    -- and INV_USE refuses a heal that would do nothing before it ever starts
+    -- one. GetPedArmour answers 0, so the shield is the consumable that can
+    -- actually begin here.
+    BR.Inv.give(1, { item = 'shield', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 2, count = 1 })
+    local medSlot
+    for i = 1, 5 do
+        if inv.slots[i] and inv.slots[i].item == 'shield' then medSlot = i end
+    end
+    inv.active = medSlot
+    fire(BR.Net.INV_USE, 1, { slot = medSlot })
+    ok(inv.using ~= nil, 'the shield potion is going down')
+    inv.active = 1
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.using == nil, 'and a reload interrupts it, like a slot switch does')
+
+    -- THE PUSH. The split is the server's own arithmetic and the client has no
+    -- other way to learn it -- a reload nobody is told about is a magazine the
+    -- HUD keeps drawing empty.
+    inv = armed(0, 60)
+    sent = {}
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(#eventsOf(BR.Net.INV_SET) > 0, 'a real reload is pushed back')
+    sent = {}
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(#eventsOf(BR.Net.INV_SET) == 0,
+       'and one that did nothing says nothing -- no push, no notification',
+       tostring(#eventsOf(BR.Net.INV_SET)))
+
+    -- ONE RULE, THREE CALLERS. The automatic reload is the same function with a
+    -- `clip <= 0` test in front of it, so the gun that runs dry mid-burst and
+    -- the gun reloaded by hand cannot end up in different states.
+    inv = armed(1, 60)
+    BR.Damage.spendRound(1, carbine.hash)
+    ok(inv.slots[1].clip == carbine.clip and inv.ammo[MED] == 60 - carbine.clip,
+       'firing the last round still reloads automatically, by the same rule',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- ...AND THE AUTOMATIC ONE STILL WILL NOT TOP UP A PARTIAL MAGAZINE, which
+    -- is why that test stayed on the caller's side. If BR.Inv.reload were called
+    -- unguarded from spendRound, every shot would refill the gun.
+    inv = armed(10, 100)
+    BR.Damage.spendRound(1, carbine.hash)
+    ok(inv.slots[1].clip == 9 and inv.ammo[MED] == 100,
+       'and an ordinary shot spends a round without refilling the magazine',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
 end
 
 -- THE FALLBACK PATH, still live when `/brdamage off` turns the takeover back
@@ -5860,7 +8650,7 @@ do
     local total = pistol.clip + 40
 
     -- FIRING: five rounds leave the world. The magazine falls with the total.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total - 5, clip = pistol.clip - 5 })
+    ammoReport(1, 1, total - 5, pistol.clip - 5)
     ok(inv.slots[1].clip == pistol.clip - 5, 'firing empties the magazine',
         tostring(inv.slots[1].clip))
     ok(inv.ammo[BR.AmmoType.LIGHT] == 40,
@@ -5869,7 +8659,7 @@ do
 
     -- RELOADING: the total does not move at all. The split does, and the
     -- reserve pays exactly the rounds that went into the magazine.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total - 5, clip = pistol.clip })
+    ammoReport(1, 1, total - 5, pistol.clip)
     ok(inv.slots[1].clip == pistol.clip, 'a reload fills the magazine')
     ok(inv.ammo[BR.AmmoType.LIGHT] == 35,
         'and the reserve pays exactly the difference',
@@ -5878,7 +8668,7 @@ do
     -- A RISING TOTAL IS REFUSED. This is the entire fix: whatever was
     -- inflating the engine's number, the server simply does not believe it.
     local beforeClip = inv.slots[1].clip
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total + 500, clip = pistol.clip })
+    ammoReport(1, 1, total + 500, pistol.clip)
     ok(inv.ammo[BR.AmmoType.LIGHT] == 35,
         'a client cannot report itself more ammo',
         tostring(inv.ammo[BR.AmmoType.LIGHT]))
@@ -5889,7 +8679,7 @@ do
     -- arithmetic to take it from.
     inv.ammo[BR.AmmoType.LIGHT] = 2
     inv.slots[1].clip = 0
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = pistol.clip })
+    ammoReport(1, 1, 2, pistol.clip)
     ok(inv.slots[1].clip == 2, 'a reload is capped by what the reserve held',
         tostring(inv.slots[1].clip))
     ok(inv.ammo[BR.AmmoType.LIGHT] == 0, 'which is now empty')
@@ -5897,7 +8687,7 @@ do
     -- And a magazine cannot exceed the weapon's own capacity.
     inv.ammo[BR.AmmoType.LIGHT] = 500
     inv.slots[1].clip = 0
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 500, clip = 9999 })
+    ammoReport(1, 1, 500, 9999)
     ok(inv.slots[1].clip == pistol.clip, 'a magazine cannot hold more than a magazine',
         tostring(inv.slots[1].clip))
     ok(inv.ammo[BR.AmmoType.LIGHT] == 500 - pistol.clip,
@@ -5906,7 +8696,7 @@ do
 
     -- RUNNING DRY takes the magazine with it: a total below a full magazine
     -- cannot leave a full magazine behind.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 3, clip = 3 })
+    ammoReport(1, 1, 3, 3)
     ok(inv.slots[1].clip == 3 and inv.ammo[BR.AmmoType.LIGHT] == 0,
         'the last three rounds are all in the magazine and none in reserve',
         ('clip %s reserve %s'):format(inv.slots[1].clip,
@@ -5914,9 +8704,9 @@ do
 
     -- Nonsense is refused outright.
     local before = inv.slots[1].clip
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = -50, clip = -50 })
+    ammoReport(1, 1, -50, -50)
     ok(inv.slots[1].clip == before, 'a negative report is ignored')
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 1 })
+    ammoReport(1, 1, nil, 1)
     ok(inv.slots[1].clip == before, 'and so is one carrying no total at all')
 
     -- The client is told, because the reserve is the SERVER's arithmetic -- it
@@ -5924,11 +8714,21 @@ do
     inv.ammo[BR.AmmoType.LIGHT] = 400
     inv.slots[1].clip = pistol.clip
     sent = {}
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 400, clip = 4 })
+    ammoReport(1, 1, 400, 4)
     ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the result is pushed back')
 end
 
--- Fallback coverage ends here; the takeover is the default again.BR.Config.Combat.serverAmmo = savedServerAmmo
+-- Fallback coverage ends here; the takeover is the default again.
+--
+-- THIS RESTORE SPENT SOME TIME INSIDE THE COMMENT ABOVE IT -- the statement and
+-- the sentence were on one line, so it was never executed and `serverAmmo`
+-- stayed FALSE for every block after `inv.ammo`. Nothing failed, because a
+-- suite cannot notice a flag that is off: the ammo assertions before this point
+-- run with it on, and after it the rounds simply stopped being counted. Found
+-- while writing the #194 vehicle blocks, whose "a round into the bodywork still
+-- costs a round" assertion is the first thing after here that reads a magazine.
+BR.Config.Combat.serverAmmo = savedServerAmmo
+
 describe('inv.warmup')
 do
     -- A WARMUP INVENTORY IS A LIVE INVENTORY.
@@ -7026,7 +9826,7 @@ do
     local function killedBy(victimSrc, killerSrc)
         local v = BR.Roster.get(victimSrc)
         v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
-        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+        BR.Roster.setState(victimSrc, BR.PlayerState.OUT)
     end
 
     local function tokenFor(src, name)
@@ -7277,7 +10077,7 @@ do
     local function killedBy(victimSrc, killerSrc)
         local v = BR.Roster.get(victimSrc)
         v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
-        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+        BR.Roster.setState(victimSrc, BR.PlayerState.OUT)
     end
 
     --- Three solo players on the licenses named, in a live match.
@@ -7564,7 +10364,7 @@ do
     local function killedBy(victimSrc, killerSrc)
         local v = BR.Roster.get(victimSrc)
         v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
-        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+        BR.Roster.setState(victimSrc, BR.PlayerState.OUT)
     end
 
     local function three(a, b, c)
@@ -7920,6 +10720,337 @@ do
         'and a second filing in the same round says nothing to anybody')
 end
 
+describe('report.hintCap')
+do
+    --[[
+        ONE NOTICE PER MATCH, FROM ANY CREATION PATH, AND NOTHING THE OFFENDER
+        CAN READ (#214).
+
+        The owner's rule: an incident CREATED during a match, for any reason and
+        from any source including `system`, shows the rest of the round the "See
+        something suspicious?" notice -- once per match, total, minus the
+        offender and minus the reporter when there is one.
+
+        WHAT THE BLOCK ABOVE ALREADY COVERS: the audience of a single filing.
+        What it does not cover is the CAP under pressure, which is where this
+        feature can regress silently -- a second notice is not a crash, it is
+        just a second toast, and the only person who can tell it went wrong is
+        the cheater it went wrong for. So each of the three ways the cap is
+        asked to hold is asserted separately:
+
+          a second case      about a DIFFERENT player. The map `remember`
+                             derives "first" from is keyed by MATCH, not by
+                             subject -- if that ever became per-player, the
+                             round's second cheater would announce themselves
+                             and the block above would still pass.
+          a corroboration    on the first case. Driven through the real strip
+                             handler rather than by firing an acknowledgement,
+                             because "a corroboration is not a creation" is a
+                             property of which EVENT the handler picks and that
+                             is the thing worth pinning.
+          a mid-match join   after the notice went out. A newcomer must not
+                             re-arm anything, and must not be quietly told by
+                             the next filing.
+
+        AND THE #93 CASE THIS FILE SHIPPED WITHOUT. The offender exclusion is
+        resolved by comparing a live-read licence against the subject's. Both
+        skips used to be written `lic ~= nil and lic == ...`, so a player whose
+        licence did not resolve matched NEITHER and was told -- and when that
+        player is the subject, that is the anticheat handing the offender the
+        one notice it exists to withhold. It is asserted here rather than left
+        to the playtest because it is invisible from the outside: the log line
+        said "withheld from 0 subject(s)" and looked like a match where the
+        subject had already left.
+    ]]
+
+    --- Server ids that received the 'exists' notice, in order.
+    ---
+    --- A LIST RATHER THAN A SET, unlike `hintKinds` above, because the cap is a
+    --- statement about HOW MANY notices went out and a set cannot count two
+    --- notices to the same player.
+    local function hintTargets()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.event == BR.Net.REPORT_HINT and (s.args[1] or {}).kind == 'exists' then
+                out[#out + 1] = s.target
+            end
+        end
+        return out
+    end
+
+    local function toldSet()
+        local out = {}
+        for _, t in ipairs(hintTargets()) do out[t] = true end
+        return out
+    end
+
+    local function lic(src)
+        return BR.Identity.qualified('license', BR.Identity.licenseOf(src))
+    end
+
+    --- Three players in one match. `live` false leaves it on the warmup pad.
+    local function threeInAMatch(live)
+        reset()
+        fired = {}
+        licenseOf[1] = 'capReporter'
+        licenseOf[2] = 'capSubject'
+        licenseOf[3] = 'capBystander'
+        queueUp(1, 'Rae', BR.Mode.SOLO.key)
+        queueUp(2, 'Sid', BR.Mode.SOLO.key)
+        queueUp(3, 'Tam', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for _, s in ipairs({ 1, 2, 3 }) do
+            BR.Roster.setState(s,
+                live and BR.PlayerState.ALIVE or BR.PlayerState.WARMUP)
+        end
+        if live then theMatch().state = BR.MatchState.PLAYING end
+        return theMatch()
+    end
+
+    -- ------------------------------------ a second case, different subject ---
+    local m = threeInAMatch(true)
+    local subject = lic(2)
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-1', matchId = m.id, subjectLicense = subject,
+    })
+    ok(#hintTargets() == 2,
+        'the first case of a round tells everybody but the offender',
+        tostring(#hintTargets()))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-2', matchId = m.id, subjectLicense = lic(3),
+    })
+    ok(#hintTargets() == 0,
+        'a SECOND case, about a different player, tells nobody -- the cap is '
+        .. 'per match and not per subject',
+        tostring(#hintTargets()))
+
+    -- --------------------------------------------------- a mid-match join ---
+    --
+    -- Uma was not in the match when the notice went out. She does not get a
+    -- late copy, and her arrival does not re-arm anything for the next filing.
+    join(4, 'Uma')
+    licenseOf[4] = 'capNewcomer'
+    BR.Roster.get(4).matchId = m.id
+    BR.Roster.setState(4, BR.PlayerState.ALIVE)
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-3', matchId = m.id, subjectLicense = lic(3),
+    })
+    ok(#hintTargets() == 0,
+        'and a player who joined after the notice is not told by the next case',
+        tostring(#hintTargets()))
+
+    -- ------------------------------------------ a player who already left ---
+    --
+    -- A DEPARTED ENTRY KEEPS ITS matchId, so the roster filter still matches it
+    -- and only the LEFT check stops the send. That check is not a tidiness:
+    -- FiveM recycles server ids within the minute, so a TriggerClientEvent to a
+    -- departed id addresses WHOEVER LANDED IN THAT SLOT -- a player in another
+    -- match, or in the lobby, told about a round they are not in. Worse in the
+    -- one direction that matters here: the offender reconnecting into their own
+    -- old slot would receive the notice about themselves.
+    local mL = threeInAMatch(true)
+    local subjL = lic(2)
+    BR.Roster.setState(3, BR.PlayerState.LEFT)
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-left', matchId = mL.id, subjectLicense = subjL,
+    })
+    local leftTold = toldSet()
+    ok(leftTold[3] == nil,
+        'a player who has left the match is not addressed -- their id may '
+        .. 'belong to somebody else by now',
+        ('told: %s'):format(table.concat(hintTargets(), ',')))
+    ok(leftTold[1] == true,
+        'while the players still in it are told')
+
+    -- --------------------------------- an acknowledgement that arrives late ---
+    --
+    -- THE RETRY WINDOW IS THIRTY SECONDS, which is longer than the end of a
+    -- match. `br:match:destroyed` clears the map `remember` derives "first"
+    -- from, so a late acknowledgement is "first" all over again and DOES call
+    -- the announcer -- the cap does not stop this one.
+    --
+    -- WHAT STOPS IT IS THE AUDIENCE BEING GONE. server/match.lua calls
+    -- BR.Roster.setMatch(src, nil) for every player before it emits the
+    -- teardown, so nothing on the roster still answers to that matchId and the
+    -- notice addresses nobody. That is worth an assertion rather than a
+    -- comment: it is the reason no extra guard is needed here, and if the order
+    -- of those two steps ever changed, a dead match would start talking to
+    -- whoever inherited its id.
+    local mD = threeInAMatch(true)
+    local subjD = lic(2)
+    local destroyedId = mD.id
+    BR.Match.destroy(mD)
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-late', matchId = destroyedId, subjectLicense = subjD,
+    })
+    ok(#hintTargets() == 0,
+        'an acknowledgement arriving after the match was torn down announces '
+        .. 'to nobody -- the roster no longer answers to that match',
+        tostring(#hintTargets()))
+
+    -- ------------------------------------------- a corroboration is not it ---
+    --
+    -- THROUGH THE REAL HANDLER. The first strip opens a case; the second finds
+    -- `prior` non-empty and must take the corroboration branch -- which emits a
+    -- different event, mints no acknowledgement, and therefore cannot reach the
+    -- announcer at all.
+    local m2 = threeInAMatch(true)
+    local subj2 = lic(2)
+
+    fired = {}
+    sent = {}
+    fire('br:core:stripped', nil, {
+        src = 2, name = 'Sid', license = subj2, matchId = m2.id,
+        count = 2, seq = 1, at = GetGameTimer(),
+    })
+    ok(#firedOf('br:ringmaster:incident') == 1,
+        'the first strip of a round opens a case',
+        tostring(#firedOf('br:ringmaster:incident')))
+    ok(#hintTargets() == 0,
+        'and announces nothing yet -- the notice waits for the row to be durable',
+        tostring(#hintTargets()))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-strip', matchId = m2.id, subjectLicense = subj2,
+    })
+    ok(#hintTargets() == 2,
+        'the acknowledgement is what announces it', tostring(#hintTargets()))
+
+    fired = {}
+    sent = {}
+    fire('br:core:stripped', nil, {
+        src = 2, name = 'Sid', license = subj2, matchId = m2.id,
+        count = 3, seq = 2, at = GetGameTimer(),
+    })
+    ok(#firedOf('br:ringmaster:corroborate') == 1
+       and #firedOf('br:ringmaster:incident') == 0,
+        'a repeat corroborates the open case rather than creating a second',
+        ('%d corroborate, %d incident'):format(
+            #firedOf('br:ringmaster:corroborate'),
+            #firedOf('br:ringmaster:incident')))
+    ok(#hintTargets() == 0,
+        'and a corroboration announces nothing -- it is not a creation',
+        tostring(#hintTargets()))
+
+    -- ------------------------------------------------------------ warmup ---
+    --
+    -- THE OWNER WAS EMPHATIC THAT THIS COUNTS: "Granting yourself a weapon
+    -- through vMenu is exactly what NOBODY will do in the lobby. That's what
+    -- cheaters do." A match on the warmup pad has a matchId and an audience, so
+    -- a case filed there notifies exactly like one filed after the drop.
+    --
+    -- WHAT THIS CATCHES is the tempting `m.startedAt ~= nil` test. `startedAt`
+    -- is nil for the whole warmup, so gating the notice on it would leave this
+    -- assertion failing and every other one in the block passing.
+    local m3 = threeInAMatch(false)
+    ok(m3.startedAt == nil,
+        'the warmup fixture really has not started', tostring(m3.startedAt))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-warm', matchId = m3.id, subjectLicense = lic(2),
+    })
+    local warmTold = toldSet()
+    ok(warmTold[1] == true and warmTold[3] == true,
+        'a case filed during WARMUP tells the pad',
+        ('1=%s 3=%s'):format(tostring(warmTold[1]), tostring(warmTold[3])))
+    ok(warmTold[2] == nil, 'and still withholds it from the offender')
+
+    -- ------------------------------- a licence that will not resolve (#93) ---
+    --
+    -- Captured BEFORE the identifiers stop answering: the incident carries the
+    -- licence read at filing time, and this notice is sent seconds later off a
+    -- fresh read. The gap is the bug -- up to thirty seconds of DynamoDB retry,
+    -- during which the subject can be most of the way out of the server.
+    local m4 = threeInAMatch(true)
+    local subj4 = lic(2)
+    noLicense[2] = true
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-blind', matchId = m4.id, subjectLicense = subj4,
+    })
+    local blindTold = toldSet()
+    ok(blindTold[2] == nil,
+        'a subject whose licence no longer resolves is STILL not told -- the '
+        .. 'offender learns nothing, #93',
+        ('told: %s'):format(table.concat(hintTargets(), ',')))
+    ok(blindTold[1] == true and blindTold[3] == true,
+        'and the rest of the match is unaffected by one unreadable connection',
+        ('1=%s 3=%s'):format(tostring(blindTold[1]), tostring(blindTold[3])))
+
+    -- A BYSTANDER WE CANNOT NAME IS ALSO NOT TOLD, and that is the same rule
+    -- rather than a second one. The function cannot tell "unreadable bystander"
+    -- from "unreadable subject" -- that is precisely what it failed to do -- so
+    -- it fails closed for both. The cost is a nudge; the alternative cost is a
+    -- cheater who knows.
+    local m5 = threeInAMatch(true)
+    local subj5 = lic(2)
+    noLicense[3] = true
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-blind2', matchId = m5.id, subjectLicense = subj5,
+    })
+    local blind2 = toldSet()
+    ok(blind2[3] == nil,
+        'a bystander whose licence will not resolve is not told either -- the '
+        .. 'nil case fails closed rather than generous')
+    ok(blind2[1] == true,
+        'while everybody the server can still name is told as normal')
+
+    -- ------------------------------- every creation path, one notice each ---
+    --
+    -- NOT A LIST OF PATHS, AND DELIBERATELY SO. What is asserted is that the
+    -- announcer is downstream of the acknowledgement and of nothing else, which
+    -- is what makes a path nobody has written yet -- #211's aircraft occupancy
+    -- filing -- covered on the day it lands. Three detectors fire here and none
+    -- of them announces; the single acknowledgement does, once.
+    local m6 = threeInAMatch(true)
+    local subj6 = lic(2)
+
+    fired = {}
+    sent = {}
+    fire('br:core:stripped', nil, {
+        src = 2, name = 'Sid', license = subj6, matchId = m6.id,
+        count = 2, seq = 1, at = GetGameTimer(),
+    })
+    fire('br:core:vehicle', nil, {
+        src = 2, name = 'Sid', license = subj6, matchId = m6.id,
+        count = 1, seq = 1, why = 'vehicle flies', at = GetGameTimer(),
+    })
+    fire('br:ringmaster:refusal', nil, {
+        src = 2, name = 'Sid', license = subj6, matchId = m6.id,
+        count = 2, seq = 1, reason = BR.ShotRefusal.NO_WEAPON,
+        reasons = { [BR.ShotRefusal.NO_WEAPON] = 2 },
+        severity = 'high', at = GetGameTimer(),
+    })
+    ok(#hintTargets() == 0,
+        'no detector announces on its own -- a case that never files must not '
+        .. 'spend the round its one notice',
+        tostring(#hintTargets()))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-any', matchId = m6.id, subjectLicense = subj6,
+    })
+    ok(#hintTargets() == 2,
+        'and the acknowledgement announces once, whichever path produced it',
+        tostring(#hintTargets()))
+end
+
 describe('combat.attribution')
 do
     -- WHO GETS THE KILL, and why it cannot come from the client any more.
@@ -8073,13 +11204,13 @@ do
     -- The last standing mate is what makes it possible; without one it is a
     -- death however many bodies the squad still has on the floor.
     BR.Combat.defeat(2, 'gunshot', 1)
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
         'the last player of a squad dies rather than joining the pile',
         BR.Roster.get(2).state)
 
     -- Already down: running out of health again is the end of it.
     BR.Combat.defeat(1, 'gunshot', 2)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'defeating a player who is already down eliminates them')
 
     -- Solo has no downed state at all.
@@ -8091,7 +11222,7 @@ do
     BR.Roster.setState(1, BR.PlayerState.ALIVE)
     BR.Roster.setState(2, BR.PlayerState.ALIVE)
     BR.Combat.defeat(1, 'gunshot', 2)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'a solo player is never downed -- nobody could pick them up')
 
     -- A mate who is still on canopy counts: they can land and revive.
@@ -8108,9 +11239,104 @@ do
     ok(BR.Roster.get(2).state == BR.PlayerState.DBNO
        and BR.Roster.get(3).state == BR.PlayerState.DBNO, 'two of three are down')
     BR.Combat.defeat(1, 'gunshot', nil)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'the last one standing dies: two downed mates cannot revive anybody',
         BR.Roster.get(1).state)
+end
+
+describe('dbno.cprkit')
+do
+    -- ═══ THE CORE RULE CHANGE (#191) ═══
+    --
+    -- server/combat.lua's opening sentence is that being shot, burned or caught
+    -- by the wall "all knock a squad player down and all kill a solo". The CPR
+    -- kit makes the second half CONDITIONAL ON INVENTORY, which is a change to
+    -- the mode's core rule rather than an addition beside it -- so it is worth
+    -- the same pair of assertions from both directions.
+    --
+    -- THE CONTROL COMES FIRST, and it is not padding: `dbno.solo` above already
+    -- proves a solo dies, but it proves it in a suite where the kit did not
+    -- exist. Re-proving it HERE, in the same fixture, is what makes the second
+    -- assertion mean "the kit did this" rather than "something changed".
+    local function soloMatch()
+        reset()
+        BR.Server.devMode = true
+        queueUp(1, 'Kitted', BR.Mode.SOLO.key)
+        queueUp(2, 'Shooter', BR.Mode.SOLO.key)
+        tick(300)
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    end
+
+    soloMatch()
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+        'a solo carrying nothing still dies outright -- the mode default is '
+            .. 'untouched', BR.Roster.get(1).state)
+
+    soloMatch()
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    ok(BR.Rescue.holdsKit(BR.Roster.get(1)) == true,
+        'the kit is in the inventory the server can see')
+
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a solo CARRYING a CPR kit goes down instead of dying', BR.Roster.get(1).state)
+
+    -- ═══ AND NOBODY CAN PICK THEM UP ═══
+    --
+    -- #191: "No revive is possible -- the only exits are the item or the
+    -- bleed-out timer." This is the assertion that the solo knock did not
+    -- accidentally open the squad revive path to a player with no squad.
+    --
+    -- DRIVEN THROUGH THE REAL NET EVENT, and the first draft of this block did
+    -- not: it called `BR.Combat.reviveAllowed`, which is a FILE-LOCAL in
+    -- combat.lua. That resolved to nil, `nil ~= true` passed, and the assertion
+    -- proved nothing whatsoever -- while reading like the strongest claim here.
+    -- REVIVE_START is the only way in from outside, so it is what gets tested,
+    -- and `reviverSrc` is the server-side evidence a hold was accepted.
+    setPos(2, 0.0, 0.0, 30.0)
+    setPos(1, 0.0, 0.0, 30.0)
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == nil,
+        'and no other player may revive them -- a solo has no squadId, so the '
+            .. 'same-squad test refuses the hold outright',
+        tostring(BR.Roster.get(1).reviverSrc))
+
+    -- THE MODE FLAG ITSELF MUST NOT HAVE MOVED. The old note in combat.lua
+    -- predicted `BR.Mode.SOLO.dbno = true` as the change, and that is emphatically
+    -- not what was done: flipping it would knock down every solo in every match,
+    -- kit or no kit. The assertion above proves the kit works; this one proves it
+    -- was not bought by breaking the default.
+    ok(BR.Mode.SOLO.dbno == false,
+        'the mode still says solos have no downed state -- the kit is a '
+            .. 'per-player exception, not a mode change')
+
+    -- ═══ SQUADS ARE UNAFFECTED, AND THE WITHDRAWN LOCKOUT IS NOT BUILT ═══
+    --
+    -- Owner, 2026-08-23: "CPR kit only in solos", superseding his earlier
+    -- same-day description of a squad revive lockout. A squad player holding a
+    -- kit must get exactly what they always got.
+    m = squadMatch(2)
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    BR.Combat.defeat(1, 'gunshot', nil)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a squad player holding a kit is downed as normal')
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 0.0, 0.0, 30.0)
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == 2,
+        'and their mate may STILL revive them -- the squad revive lockout was '
+            .. 'withdrawn and must not be re-added',
+        tostring(BR.Roster.get(1).reviverSrc))
+
+    -- The kit cannot be called on in a squad either, which is the other half of
+    -- "solos only" and is enforced separately from the death fork.
+    local canCall = BR.Rescue.canCall(BR.Roster.get(1))
+    ok(canCall == false,
+        'and no squad player can call a medic, whatever they are carrying')
 end
 
 describe('dbno.deadPed')
@@ -8183,7 +11409,7 @@ do
     -- the ending and still delivers it, which is what makes the check above safe
     -- to give up rather than a hole to hide in.
     tick(BR.Config.Match.dbnoBleedBase * 1000 + 500)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'the bleed clock still finishes them on time',
         BR.Roster.get(1).state)
     ok(BR.Roster.get(1).placement ~= nil,
@@ -8265,7 +11491,7 @@ do
 
     -- ...and once they are out, the corpse is real.
     BR.Combat.eliminate(2, 'admin', nil)
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD, 'the mate is eliminated')
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT, 'the mate is eliminated')
 
     -- WHY THE GUARD IS ON THE STATE AND NOT ON THE NUMBER. An eliminated
     -- player's ledger health is never zeroed -- a knock parks it on the downed
@@ -9033,7 +12259,7 @@ do
         ok(C.alive(), 'the watch stands a falsely-dead mate up', C.describe())
 
         -- ...and now they are killed for real, by somebody else.
-        cenv.BR.State.roster[2].state = cenv.BR.PlayerState.DEAD
+        cenv.BR.State.roster[2].state = cenv.BR.PlayerState.OUT
         C.lethal(26)
         C.pump(2500)
         ok(not C.alive(),
@@ -9418,7 +12644,7 @@ do
         -- 2. A REAL CORPSE STAYS A CORPSE.
         local D = newClient(3, { settle = 100, src = 3 })
         D.env.BR.State.roster[3] =
-            { state = D.env.BR.PlayerState.DEAD, hp = 0.0 }
+            { state = D.env.BR.PlayerState.OUT, hp = 0.0 }
         D.lethal(0)
         D.pump(3000)
         ok(not D.alive() and D.calls.resurrect == 0,
@@ -9751,7 +12977,7 @@ do
         C.recv(B.Net.ROSTER_DELTA, {
             seq = seq or 2,
             deltas = { { op = 'update', src = 1,
-                         e = { state = B.PlayerState.DEAD, hp = 0.0 } } },
+                         e = { state = B.PlayerState.OUT, hp = 0.0 } } },
         })
     end
 
@@ -9910,7 +13136,7 @@ do
 
     -- Enough damage finishes them, and it is the FINISHER who is credited.
     BR.Damage.applyHit(3, 1, 500.0, { weapon = 0 })
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'running the clock out with gunfire finishes them')
     ok(BR.Roster.get(3).kills == 1,
         'and the kill goes to whoever finished them, not whoever knocked them',
@@ -9963,7 +13189,7 @@ do
 
     sent = {}
     tick(BR.Config.Match.dbnoBleedBase * 1000)
-    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
         'the clock running out is the death', BR.Roster.get(1).state)
     ok(BR.Roster.get(2).kills == 1,
         'and the knocker is still credited, long past the assist window',
@@ -10195,6 +13421,119 @@ do
         'and the disconnect clears it rather than freezing the ring')
 end
 
+describe('dbno.matchEndsUnderARide')
+do
+    -- ═══ THE SECOND VERDICT WAS A REAL DEATH, PUBLISHED AFTER THE MATCH ═══
+    --
+    -- Owner, 2026-08-29: "When one player is in the ambulance and the only
+    -- other remaining player(s) die, the verdict shown is 'VICTORY ROYALE'
+    -- along with ALSO the cause of DBNO on top of it."
+    --
+    -- Every link in the chain was individually correct. A rider is DBNO for the
+    -- whole journey, DBNO is `isInMatch`, so the last other player dying ends
+    -- the match and awardPlacements hands the rider first place. server/
+    -- rescue.lua's tick then drops the rescue record, because the match is no
+    -- longer PLAYING and finishing people is not that file's job -- and THAT
+    -- un-suspended a bleed clock whose deadline had expired somewhere on the
+    -- ride. The winner was eliminated for 'bledout' a quarter of a second after
+    -- winning, and the client put the death word back up over the verdict
+    -- screen it had already cleared its surfaces for.
+    --
+    -- So this drives the whole thing and asserts on the SERVER's tables and
+    -- wire, because that is where the second verdict is actually produced. The
+    -- UI half -- neither surface drawing once the match is decided -- is pinned
+    -- statically in tools/check_death_verdict.lua.
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'Rider', BR.Mode.SOLO.key)
+    queueUp(2, 'Chaser', BR.Mode.SOLO.key)
+    tick(300)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 0.0, 0.0, 30.0)
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).pos = { x = 0.0, y = 0.0, z = 30.0 }
+
+    local m = BR.Server.matchOf(1)
+    ok(m ~= nil, 'the two solos are in a match')
+    m.state = BR.MatchState.PLAYING
+    m.startSquads = 2
+
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'the kit carrier goes down rather than dying',
+        BR.Roster.get(1).state)
+
+    BR.Rescue.begin(1)
+    ok(BR.Roster.get(1).rescue ~= nil,
+        'an ambulance is dispatched and the ride is on the entry',
+        tostring(BR.Roster.get(1).rescue))
+
+    -- THE DEADLINE IS PUT IN THE PAST RATHER THAN WAITED OUT, and that is the
+    -- honest shape of the report rather than a shortcut: a bleed is
+    -- dbnoBleedBase seconds and a drive across the map is minutes, so on any
+    -- real rescue this clock expires somewhere in the back of the ambulance.
+    -- Waiting it out here would also run the RIDE's own deadline, which is a
+    -- different ending with a different test (tools/test_rescue.lua).
+    BR.Roster.get(1).dbnoUntil = fakeTime - 1
+
+    sent = {}
+    tick(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a deadline that lands while the ambulance has them does not finish '
+            .. 'them -- the ride suspends the clock, it does not clear it',
+        BR.Roster.get(1).state)
+
+    -- ...AND NOW THE MATCH ENDS UNDERNEATH THE RIDE.
+    BR.Combat.eliminate(2, 'test', 1)
+    tick(4000)   -- past WIN_GRACE_MS
+    ok(m.state == BR.MatchState.ENDED,
+        'the last other player dying ends the match', m.state)
+
+    -- WHAT HAPPENS TODAY, STATED RATHER THAN ASSUMED. A downed player being
+    -- declared the winner is a RULE question and not a UI one, and it is the
+    -- owner's to answer -- so this pins the current answer instead of quietly
+    -- changing it. If he decides a player in an ambulance may not win, this is
+    -- the assertion that has to move, and it will say so out loud.
+    ok(BR.Roster.get(1).placement == 1,
+        'and the player in the ambulance -- still DBNO -- takes first place, '
+            .. 'because DBNO is isInMatch and nothing else is left',
+        tostring(BR.Roster.get(1).placement))
+
+    sent = {}
+    tick(3000)
+
+    -- THE ASSERTION THE BUG WOULD FAIL. Three seconds is twelve passes of the
+    -- 250ms bleed tick and three of the 1Hz rescue tick -- long enough for the
+    -- rescue record to be dropped (which is what used to re-arm the clock) and
+    -- for that clock to fire a dozen times over.
+    ok(BR.Roster.get(1).state ~= BR.PlayerState.OUT,
+        'and the bleed clock does NOT finish them after the match is over -- '
+            .. 'a second verdict, drawn over the first, for a player who had '
+            .. 'already won', BR.Roster.get(1).state)
+
+    local latecomer = nil
+    for _, s in ipairs(eventsOf(BR.Net.KILL_FEED)) do
+        if s.args[1] and s.args[1].victimSrc == 1 then latecomer = s.args[1] end
+    end
+    ok(latecomer == nil,
+        'nothing goes out on the kill feed naming the winner as a victim -- '
+            .. 'that message is what the client turns into the death word',
+        latecomer and tostring(latecomer.cause) or nil)
+
+    -- AND THEY ARE NOT STRANDED ON THE FLOOR EITHER, which is the obvious worry
+    -- about a clock that stops. ENDED's own sweep is what takes every remaining
+    -- participant home once their screen is black, or on its deadline if no
+    -- client ever says so -- and it does not care what state they were in.
+    tick((BR.Config.Match.coverSweepMs or 8000) + 1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'the ENDED sweep still takes them home, downed or not',
+        BR.Roster.get(1).state)
+end
+
 describe('loot.deathbox')
 do
     local m = lootMatch()
@@ -10308,6 +13647,414 @@ do
     ok(m.loot.nextId == beforeHusk, 'and produces nothing')
 end
 
+describe('loot.scatter')
+do
+    -- WHERE A CONTAINER'S CONTENTS LAND (owner, 2026-08-23: "the loot doesn't
+    -- need to be spread equidistant from the crate").
+    --
+    -- The ring this replaced was `(i / n) * 2pi` at one fixed radius, and it was
+    -- a ring for reasons that have to survive the change: everything must land
+    -- visible and reachable, nothing may stack inside anything else (which is
+    -- what the airdrop's own wider `spread` exists for), and two players opening
+    -- the same chest must see the same arrangement. The last one is the one
+    -- worth a test, because it is the one a later edit can break silently -- an
+    -- unseeded roll would look perfectly good in play and make the same pinned
+    -- seed lay out differently on the second run.
+
+    --- Open the first crate holding three or more items in a match built from
+    --- `seed`, and hand back the crate and what came out of it.
+    local function burst(seed)
+        commands['brlootseed'](nil, { tostring(seed) }, '')
+        local mm = lootMatch()
+        local crate
+        for id = 1, mm.loot.nextId do
+            local e = mm.loot.items[id]
+            -- THREE OR MORE, because two items cannot look like a ring however
+            -- they are placed -- and the guarantees below are stated for the
+            -- case where the arrangement is legible as one.
+            if e and e.kind == 'chest' and e.contents and #e.contents >= 3 then
+                crate = e break
+            end
+        end
+        if not crate then return nil, nil end
+
+        local ccx, ccy = BR.LootCellOf(crate.x, crate.y)
+        local at = { x = crate.x, y = crate.y, z = crate.z }
+        standOn(1, crate)
+        fire(BR.Net.LOOT_CELL, 1, { cx = ccx, cy = ccy })
+
+        local first = mm.loot.nextId + 1
+        fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
+
+        local out = {}
+        for id = first, mm.loot.nextId do
+            local e = mm.loot.items[id]
+            if e then
+                out[#out + 1] =
+                    { dx = e.x - at.x, dy = e.y - at.y, dz = e.z - at.z }
+            end
+        end
+        return at, out
+    end
+
+    local SEED = 424242
+    local at1, a = burst(SEED)
+    local _,   b = burst(SEED)
+    commands['brlootseed'](nil, { 'off' }, '')
+
+    ok(at1 ~= nil and a ~= nil and #a >= 3,
+        'a crate with three or more items opens', a and tostring(#a) or 'none')
+
+    -- SAME CONTAINER, SAME LAYOUT, TWICE. Compared as exact floats on purpose:
+    -- these come out of BR.Rng, which is integer arithmetic all the way down, so
+    -- anything but an exact match means a source of entropy got in.
+    local same = a ~= nil and b ~= nil and #a == #b
+    if same then
+        for i = 1, #a do
+            if a[i].dx ~= b[i].dx or a[i].dy ~= b[i].dy then same = false end
+        end
+    end
+    ok(same, 'the same crate in the same match spills identically twice')
+
+    -- ...AND NOT ONTO A RING. Both halves of "equidistant", because the old
+    -- version was regular in both: every radius identical to six decimal places,
+    -- and every angular gap exactly 2pi/n.
+    local rs, angs, minR, maxR = {}, {}, math.huge, 0.0
+    for i, o in ipairs(a or {}) do
+        rs[i] = math.sqrt(o.dx * o.dx + o.dy * o.dy)
+        angs[i] = math.atan(o.dy, o.dx)
+        minR, maxR = math.min(minR, rs[i]), math.max(maxR, rs[i])
+    end
+    ok(#rs >= 3 and (maxR - minR) > 0.1,
+        'and it is not a ring -- the items sit at different distances',
+        ('%.2fm to %.2fm'):format(minR, maxR))
+
+    table.sort(angs)
+    local minGap, maxGap = math.huge, 0.0
+    for i = 1, #angs do
+        local nx = (i == #angs) and (angs[1] + math.pi * 2.0) or angs[i + 1]
+        local gap = nx - angs[i]
+        minGap, maxGap = math.min(minGap, gap), math.max(maxGap, gap)
+    end
+    ok(#angs >= 3 and (maxGap - minGap) > 0.05,
+        'nor evenly spaced around it',
+        ('gaps %.2f..%.2f rad'):format(minGap, maxGap))
+
+    -- VISIBLE AND REACHABLE, which is the constraint the ring existed to meet --
+    -- and, since 2026-08-23, the one that also protects the ground placement.
+    -- Every spilled position has to sit INSIDE the disc the old ring sat on the
+    -- rim of, so the spill can never offer an item a patch of terrain the ring
+    -- was not already willing to use.
+    local L = BR.Config.Loot
+    local spread = L.deathBoxSpread or 0.8
+    local bound  = math.max(spread, 0.55 * #rs * spread)
+    local far = false
+    for _, r in ipairs(rs) do if r > bound + 0.001 then far = true end end
+    ok(not far, 'nothing lands further out than the ring it replaces',
+        ('bound %.2fm'):format(bound))
+
+    -- ...nor inside the box, where it could be neither seen nor targeted.
+    local buried = false
+    for _, r in ipairs(rs) do
+        if r < (L.scatterClearance or 0.7) - 0.001 then buried = true end
+    end
+    ok(not buried, 'nor close enough to the box to end up inside it',
+        ('clearance %.2fm'):format(L.scatterClearance or 0.7))
+
+    -- AND THE SPILL HAS NO OPINION ABOUT HEIGHT AT ALL (owner, 2026-08-23: "We
+    -- have loot properly landing on the ground today. Nothing should change
+    -- there"). The server has no ground probe -- the natives are client-side --
+    -- so every z it hands out is the container's own hint, and the client is
+    -- what resolves the real one. A z that drifted here would be this function
+    -- inventing terrain it cannot see.
+    local moved = false
+    for _, o in ipairs(a or {}) do
+        if math.abs(o.dz) > 0.0001 then moved = true end
+    end
+    ok(not moved, 'and every item keeps the container\'s own z, untouched')
+
+    -- NOTHING STACKS INSIDE ANYTHING ELSE, the ring's other quiet job and the
+    -- whole reason the airdrop names a wider spread. 1.0m is the floor WITH
+    -- margin rather than the measured one: swept over 50,000 seeds the worst
+    -- pair is 1.07m for a 3-item crate and 1.44m at the airdrop's fourteen.
+    local closest = math.huge
+    for i = 1, #a do
+        for j = i + 1, #a do
+            local dx, dy = a[i].dx - a[j].dx, a[i].dy - a[j].dy
+            closest = math.min(closest, math.sqrt(dx * dx + dy * dy))
+        end
+    end
+    ok(closest > 1.0, 'and no two items land on top of each other',
+        ('closest pair %.2fm'):format(closest))
+end
+
+-- ------------------------------------ the airdrop crate opens by hand (#88) ---
+--
+-- Owner, 2026-08-22: "Also we don't need to auto-open the crate. I changed my
+-- mind on that."
+--
+-- WHAT THE AUTO-OPEN WAS DOING, AND WHICH PARTS STILL HAVE TO HAPPEN. It left a
+-- husk and it scattered the contents. Both of those are what a PLAYER open does,
+-- and this file has done exactly that for every crate on the map since long
+-- before airdrops existed -- so the auto-open was deleted rather than replaced,
+-- and what lands is one ordinary sealed container.
+--
+-- WHY THIS BLOCK IS HERE RATHER THAN IN tools/test_airdrop.lua. That suite can
+-- prove the crate is laid sealed, and does. It cannot prove the crate OPENS,
+-- because opening is the claim handler, the reach test, the subscription check
+-- and the husk swap -- none of which that suite loads. If the airdrop is going
+-- to inherit the container path instead of imitating it, the inheriting is the
+-- thing worth testing, and this is the only suite that can.
+
+describe('loot.airdrop.open')
+do
+    local m = lootMatch()
+
+    --- Lay a sealed airdrop crate exactly as server/airdrop.lua's land() does.
+    local A = BR.Config.Airdrop
+    local contents = {
+        { item = 'rpg', kind = BR.ItemKind.WEAPON, rarity = BR.Rarity.LEGENDARY,
+          count = 1, clip = 1 },
+        { item = 'volts', kind = 'volts', rarity = BR.Rarity.LEGENDARY,
+          count = A.voltsAmount, prop = A.voltsProp },
+    }
+    local crate = BR.Loot.spawnStack(m, {
+        item     = 'airdrop',
+        kind     = 'chest',
+        rarity   = BR.Rarity.LEGENDARY,
+        count    = 1,
+        prop     = A.crateProp,
+        contents = contents,
+        huskItem = 'airdrophusk',
+        -- ═══ DELIBERATELY NOT A.huskProp ═══
+        --
+        -- The airdrop's husk prop and the ordinary one are the SAME STRING
+        -- today (both `prop_box_wood05b` -- the owner asked for the same
+        -- models, only bigger), so asserting against A.huskProp cannot tell
+        -- "the crate's own husk prop was used" apart from "the config default
+        -- was used". A mutation pass proved exactly that by deleting the
+        -- plumbing and surviving. A distinct value here is what makes the
+        -- assertion below mean anything.
+        huskProp = 'prop_box_wood05b_airdrop_marker',
+        spread   = A.scatterSpread,
+        airdrop  = 1,
+    }, 200.0, 300.0, 25.0)
+
+    ok(crate ~= nil, 'the crate is laid')
+    ok(crate.kind == 'chest', 'as an ordinary container...')
+    ok(crate.contents and #crate.contents == 2, '...holding its payout')
+
+    -- ═══ IT IS SEALED, AND SEALED MEANS THE CONTENTS ARE NOT ON THE WIRE ═══
+    --
+    -- This is what the auto-open gave away for free and what the change buys
+    -- back: until somebody opens it, nobody knows what is in it. The same rule
+    -- wireEntry already enforces for every other crate.
+    local cx, cy = BR.LootCellOf(crate.x, crate.y)
+    standOn(1, crate)
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    local leaked = false
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.id == crate.id and entry.contents ~= nil then
+                leaked = true
+            end
+        end
+    end
+    ok(not leaked, 'and what is inside it never travels until it is opened')
+
+    local before = m.loot.nextId
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
+
+    -- ─── IT OPENS LIKE ANY OTHER CONTAINER ───
+    local husk = m.loot.items[crate.id]
+    ok(husk ~= nil, 'the entry survives the open')
+    ok(husk and husk.kind == 'husk', 'as a husk')
+    ok(m.loot.nextId == before + 2,
+        'and exactly its two items were laid on the ground',
+        ('%d new'):format(m.loot.nextId - before))
+
+    -- ─── WEARING ITS OWN HUSK, WHICH IS NOT DECORATION ───
+    --
+    -- The client resolves a prop's SIZE from its ITEM ID, and the owner asked
+    -- for the airdrop crate and husk at 2x. A husk that called itself 'husk'
+    -- like the other 1300 would snap back to normal size on the frame it was
+    -- opened -- a visible bug with no error anywhere.
+    ok(husk and husk.item == 'airdrophusk',
+        'it keeps an item id of its own, so it keeps its size')
+    ok(husk and husk.prop == 'prop_box_wood05b_airdrop_marker',
+        'and the husk prop the CRATE named, not the config default')
+
+    -- AND AN ORDINARY CRATE IS COMPLETELY UNCHANGED BY ALL OF THIS. The husk
+    -- fields are nil on every generated crate and the fallbacks are what those
+    -- have always used -- so this cannot have moved the other 1300.
+    local plain
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == 'chest' and e.contents and #e.contents > 0
+           and e.item ~= 'airdrop' then
+            plain = e
+            break
+        end
+    end
+    ok(plain ~= nil, 'the layout still has ordinary crates')
+    if plain then
+        standOn(1, plain)
+        local pcx, pcy = BR.LootCellOf(plain.x, plain.y)
+        fire(BR.Net.LOOT_CELL, 1, { cx = pcx, cy = pcy })
+        fire(BR.Net.LOOT_CLAIM, 1, { id = plain.id })
+        local ph = m.loot.items[plain.id]
+        ok(ph and ph.item == 'husk',
+            'and one of those still becomes a plain husk')
+        ok(ph and ph.prop == BR.Config.Loot.chestOpenProp,
+            'wearing the prop it always did')
+    end
+end
+
+-- ------------------------------------------------ the airdrop's Volts (#88) ---
+--
+-- Owner, 2026-08-21: "Yes Volts should be a loot item in the air drops, and they
+-- should be 100 Volts. This should be an item that does not go into inventory -
+-- they simply pick it up and it's gone. Simple notification that they collected
+-- 100 Volts, and that's it."
+--
+-- WHY THIS BLOCK IS IN THE ROSTER SUITE AND NOT IN tools/test_airdrop.lua. The
+-- pile is laid by the airdrop and everything interesting about it afterwards
+-- belongs to somebody else: the claim path in server/loot.lua, a counter on the
+-- roster entry, the results row in server/match.lua and the payout in
+-- br_stats/server/persist.lua. This is the only suite that loads all four, and
+-- the property worth pinning spans every one of them.
+--
+-- THE INVARIANT IS #88's OWN, RESTATED: nothing outside the match-end stats
+-- write may increase a balance. A pickup that credited immediately would be a
+-- second writer, and the whole no-pay-to-win argument rests on there being one.
+
+describe('loot.volts')
+do
+    local m = lootMatch()
+
+    --- Lay a Volts pile exactly as server/airdrop.lua's land() does -- an
+    --- ordinary registry entry, so it inherits the hardened claim path rather
+    --- than re-earning any of it.
+    local function lay(at)
+        return BR.Loot.spawnStack(m, {
+            item   = 'volts',
+            kind   = 'volts',
+            rarity = BR.Rarity.LEGENDARY,
+            count  = BR.Config.Airdrop.voltsAmount,
+            prop   = BR.Config.Airdrop.voltsProp,
+        }, at.x, at.y, at.z)
+    end
+
+    local anchor = m.loot.items[1]
+    local pile = lay(anchor)
+    ok(pile ~= nil, 'a Volts pile can be laid on the ground')
+
+    local cx, cy = BR.LootCellOf(pile.x, pile.y)
+    standOn(1, pile)
+    standOn(2, pile)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
+
+    local e1 = BR.Roster.get(1)
+    ok((e1.voltsPickedUp or 0) == 0, 'nobody has picked any up yet')
+
+    local slotsBefore = 0
+    for i = 1, 5 do if BR.Inv.of(1).slots[i] then slotsBefore = slotsBefore + 1 end end
+
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = pile.id })
+
+    ok(e1.voltsPickedUp == BR.Config.Airdrop.voltsAmount,
+        'claiming it credits exactly the amount that was on the ground',
+        ('got %s'):format(tostring(e1.voltsPickedUp)))
+    ok(m.loot.items[pile.id] == nil, 'and the pile is gone from the world')
+
+    -- IT DOES NOT GO INTO INVENTORY, which is the owner's own wording and the
+    -- one thing that makes this different from every other ground entry. Not
+    -- "it fits somewhere harmless" -- it never reaches BR.Inv.give at all.
+    local slotsAfter = 0
+    for i = 1, 5 do if BR.Inv.of(1).slots[i] then slotsAfter = slotsAfter + 1 end end
+    ok(slotsAfter == slotsBefore, 'no slot is taken',
+        ('%d -> %d'):format(slotsBefore, slotsAfter))
+    for i = 1, 5 do
+        local s = BR.Inv.of(1).slots[i]
+        ok(not s or s.item ~= 'volts', 'and nothing called volts is in one')
+    end
+
+    -- ONE NOTIFICATION, naming the number ("Simple notification that they
+    -- collected 100 Volts, and that's it").
+    local told = {}
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if s.target == 1 then told[#told + 1] = s.args[1] end
+    end
+    ok(#told == 1, 'the picker is told once', ('got %d'):format(#told))
+    ok(told[1] and told[1].text
+       and told[1].text:find(tostring(BR.Config.Airdrop.voltsAmount), 1, true),
+        'and the sentence carries the amount',
+        told[1] and told[1].text)
+
+    -- FIRST COME, FIRST SERVED, like every other entry: the second claimant
+    -- gets nothing and is not credited.
+    local e2 = BR.Roster.get(2)
+    fire(BR.Net.LOOT_CLAIM, 2, { id = pile.id })
+    ok((e2.voltsPickedUp or 0) == 0, 'the loser of the race is credited nothing',
+        ('got %s'):format(tostring(e2.voltsPickedUp)))
+
+    -- OUT OF REACH IS REFUSED, and refusing must not credit. The claim path's
+    -- distance check is the only thing between a Volts pile and a client that
+    -- names ids from across the map.
+    local far = lay(anchor)
+    local fcx, fcy = BR.LootCellOf(far.x, far.y)
+    fire(BR.Net.LOOT_CELL, 2, { cx = fcx, cy = fcy })
+    BR.Roster.get(2).pos = { x = far.x + 500.0, y = far.y + 500.0, z = far.z }
+    fire(BR.Net.LOOT_CLAIM, 2, { id = far.id })
+    ok((e2.voltsPickedUp or 0) == 0, 'a claim from 700m away credits nothing',
+        ('got %s'):format(tostring(e2.voltsPickedUp)))
+    ok(m.loot.items[far.id] ~= nil, 'and leaves the pile where it was')
+
+    -- TWO PILES STACK. A match could carry more than one drop (perMatch is a
+    -- number), and the counter has to be a sum rather than a flag.
+    standOn(2, far)
+    fire(BR.Net.LOOT_CLAIM, 2, { id = far.id })
+    local second = lay(anchor)
+    standOn(2, second)
+    local scx, scy = BR.LootCellOf(second.x, second.y)
+    fire(BR.Net.LOOT_CELL, 2, { cx = scx, cy = scy })
+    fire(BR.Net.LOOT_CLAIM, 2, { id = second.id })
+    ok(e2.voltsPickedUp == BR.Config.Airdrop.voltsAmount * 2,
+        'two piles are worth two piles',
+        ('got %s'):format(tostring(e2.voltsPickedUp)))
+end
+
+describe('loot.volts.payout')
+do
+    -- THE OTHER HALF OF THE INVARIANT: the number reaches the balance, and it
+    -- reaches it through the ONE write everything else uses.
+    local paid = BR.Config.marketPayout({ placement = 8, total = 16, kills = 2 })
+    local withVolts = BR.Config.marketPayout({
+        placement = 8, total = 16, kills = 2, voltsPickedUp = 100 })
+    ok(withVolts - paid == 100,
+        'a pile of 100 is worth exactly 100 on the bill -- not weighted, not '
+        .. 'halved with the rest of the curve',
+        ('%d -> %d'):format(paid, withVolts))
+
+    -- A missing field is zero rather than an error: every results row written
+    -- before #88 shipped, and every hand-built row in every other suite, has no
+    -- such key.
+    ok(BR.Config.marketPayout({ placement = 8, total = 16, kills = 2,
+                                voltsPickedUp = nil }) == paid,
+        'a row without the field pays what it always did')
+
+    -- AND A NEGATIVE ONE CANNOT PAY. There is no path that writes one today;
+    -- the guard is here because the alternative is a term that could subtract
+    -- from a balance, which is the one direction this formula must never go.
+    ok(BR.Config.marketPayout({ placement = 8, total = 16, kills = 2,
+                                voltsPickedUp = -5000 }) == paid,
+        'and a negative one is ignored rather than taking money away')
+end
+
 describe('loot.warmup')
 do
     -- The pad is a COMMUNAL bucket, so its loot is ONE shared layout -- two
@@ -10393,6 +14140,10 @@ describe('loot.repair')
 do
     -- Only a CLIENT can ground-probe, so a correction can only come from out
     -- there -- and the bound on it is what makes accepting one safe.
+    --
+    -- LOOSE ITEMS ONLY. Containers are exempt from the once-only rule below,
+    -- and that exemption is where the registry can fall behind a moving prop;
+    -- it is pinned in `loot.repair.container`, up beside the claim tests.
     local m = lootMatch()
     local target
     for id = 1, m.loot.nextId do
@@ -10440,6 +14191,46 @@ do
         fire(BR.Net.LOOT_FIX, 2, { id = far.id, x = fx + 5.0, y = far.y, z = 1.0 })
         ok(math.abs(m.loot.items[far.id].x - fx) < 0.01,
             'and only for cells they are actually subscribed to')
+    end
+
+    -- A REPAIR IS NOT A BIRTH. It re-announces an entry the client already
+    -- holds, under the same id, so that the position moves -- and the entry it
+    -- moves may well be one that WAS born with an origin, because a dropped
+    -- item is exactly the kind that lands somewhere the client then rejects.
+    -- Re-sending the origin on that message would fly the item out of the
+    -- dropper's hands a second time, from wherever they are standing now.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local dropped
+    sent = {}
+    fire(BR.Net.INV_DROP, 1, { slot = 1 })
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.item == 'pistol' and e.fx then dropped = e end
+    end
+    if dropped then
+        local dcx, dcy = BR.LootCellOf(dropped.x, dropped.y)
+        fire(BR.Net.LOOT_CELL, 1, { cx = dcx, cy = dcy })
+        sent = {}
+        fire(BR.Net.LOOT_FIX, 1,
+            { id = dropped.id, x = dropped.x + 6.0, y = dropped.y, z = 44.0 })
+        local reannounced, withOrigin = 0, 0
+        for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+            for _, entry in ipairs(s.args[1]) do
+                if entry.id == dropped.id then
+                    reannounced = reannounced + 1
+                    if entry.fx or entry.fy or entry.fl then
+                        withOrigin = withOrigin + 1
+                    end
+                end
+            end
+        end
+        ok(reannounced > 0 and withOrigin == 0,
+            'a repaired entry is re-announced without its birth origin',
+            ('%d of %d carried one'):format(withOrigin, reannounced))
+    else
+        ok(false, 'no dropped item to repair')
     end
 end
 
@@ -10652,6 +14443,13 @@ do
     local m = theMatch()
     local startedAt = m.startedAt
 
+    -- BOTH OF THEM REACHED AN AIRDROP (#88). Written onto the roster directly
+    -- rather than by claiming a pile -- the claim path has its own block above
+    -- (loot.volts); what is under test HERE is the journey afterwards, from a
+    -- counter on an entry to a number inside the one atomic write.
+    BR.Roster.get(1).voltsPickedUp = 100
+    BR.Roster.get(2).voltsPickedUp = 100
+
     -- Two minutes in, the quitter is eliminated...
     fakeTime = fakeTime + 120000
     BR.Combat.eliminate(2, 'weapon', 1)
@@ -10801,6 +14599,45 @@ do
             tostring(deltasBy['license:test1'].xp)))
     ok(winner and winner.voltsEarned == deltasBy['license:test1'].balance,
         'and so are the Volts -- including the level-up bonus the player was shown')
+
+    -- THE AIRDROP'S VOLTS TAKE THE SAME ROAD (#88), which is the whole reason
+    -- they are not credited at the pickup. The pile is on the ROW, the row is
+    -- what the payout formula reads, and the formula's answer is what the single
+    -- atomic ADD carries -- so "exactly one writer can increase a balance" is
+    -- still true with an airdrop in the match.
+    ok(byName.Survivor and byName.Survivor.voltsPickedUp == 100,
+        'the results row carries what the survivor picked up off the ground',
+        ('got %s'):format(tostring(byName.Survivor and byName.Survivor.voltsPickedUp)))
+    -- ...AND A SEALED ROW CARRIES IT TOO. The quitter's entry was frozen at
+    -- disconnect; a field added to newEntry but not to row() would be silently
+    -- zero for everybody who left, which is the #100 failure wearing a new key.
+    ok(byName.Quitter and byName.Quitter.voltsPickedUp == 100,
+        'and so does the row of the player who disconnected',
+        ('got %s'):format(tostring(byName.Quitter and byName.Quitter.voltsPickedUp)))
+
+    -- AND IT IS IN THE MONEY, PROVED BY DIFFERENCE RATHER THAN BY ARITHMETIC.
+    -- The same envelope, driven through the same real consumer, with the pile
+    -- taken out of it: whatever else the balance is made of -- placement, kills,
+    -- the level-up bonus persist.lua adds after the formula -- cancels, and what
+    -- is left is exactly the 100 that was on the ground.
+    local dry = { matchId = captured.matchId, mode = captured.mode,
+                  startedAt = captured.startedAt, endedAt = captured.endedAt,
+                  total = captured.total, players = {} }
+    for _, r in ipairs(captured.players) do
+        local copy = {}
+        for k, v in pairs(r) do copy[k] = v end
+        copy.voltsPickedUp = 0
+        dry.players[#dry.players + 1] = copy
+    end
+    local dryMark = #fired
+    fire('br:match:results', nil, dry)
+    local _, dryDeltas = since(dryMark)
+    ok(dryDeltas['license:test1']
+       and deltasBy['license:test1'].balance
+           - dryDeltas['license:test1'].balance == 100,
+        'the banked balance is exactly 100 higher because of the pile',
+        ('%s vs %s'):format(tostring(deltasBy['license:test1'].balance),
+            tostring(dryDeltas['license:test1'] and dryDeltas['license:test1'].balance)))
     ok(winner and winner.damage == deltasBy['license:test1'].damageDealt,
         'and the damage, floored the same way')
 
@@ -10928,7 +14765,7 @@ do
     fire(BR.Net.PLAYER_DIED, 1, { cause = 'fall' })
 
     local e1 = BR.Roster.get(1)
-    ok(e1.state == BR.PlayerState.DEAD, 'the death is observed')
+    ok(e1.state == BR.PlayerState.OUT, 'the death is observed')
     ok(e1.revivePending == true, 'and held for the start')
     ok(e1.diedAt == nil, 'no diedAt -- `died` and the survival clock both hang '
         .. 'off this one field')
@@ -11779,7 +15616,7 @@ do
     local function killedBy(victimSrc, killerSrc)
         local v = BR.Roster.get(victimSrc)
         v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
-        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+        BR.Roster.setState(victimSrc, BR.PlayerState.OUT)
     end
 
     --- Four players in a live match, on licenses this block names itself.
@@ -12312,6 +16149,2363 @@ do
 
     SetTimeout = function() end
     ok(m5 ~= nil, 'the fixtures built their matches')
+end
+
+-- ------------------------------------------------------------- spectating ---
+--
+-- THE POLICY AGAINST A REAL ROSTER (#192). br_lib's spectate_solve tests pin the
+-- rule itself; these pin that the server ASKS it -- with the right view, on every
+-- path, and that no path exists which skips it. The two halves are different
+-- failures: a correct solver nobody consults is the shape this project has
+-- shipped before.
+
+--- Set up one squad match: 1+2 on sq1, 3+4 on sq2, everybody alive.
+local function squadMatch()
+    reset()
+    join(1, 'Me'); join(2, 'Mate'); join(3, 'Enemy1'); join(4, 'Enemy2')
+    fakeMatch(BR.Mode.SQUAD and BR.Mode.SQUAD.key or 'squad')
+    for _, r in ipairs({ { 1, 'sq1' }, { 2, 'sq1' }, { 3, 'sq2' }, { 4, 'sq2' } }) do
+        BR.Roster.update(r[1], { squadId = r[2] })
+        BR.Roster.setState(r[1], BR.PlayerState.ALIVE)
+    end
+    sent = {}
+end
+
+--- The last target this player was told to watch, or nil if they were stopped.
+local function watching(src)
+    local last = nil
+    for _, s in ipairs(eventsOf(BR.Net.SPECTATE_SET)) do
+        if s.target == src then
+            last = s.args[1].stop and nil or s.args[1].targetSrc
+        end
+    end
+    return last
+end
+
+--- Was this player actually TOLD to stop?
+---
+--- NOT THE SAME QUESTION AS `watching(src) == nil`, and the difference is the
+--- one that makes several assertions below worth having. "No target" and "never
+--- heard anything at all" both read as nil, so a mutation that simply stops
+--- sending would pass a test written the lazy way -- which is exactly what
+--- happened the first time the disconnect fast path was mutated out.
+local function stopped(src)
+    local last = false
+    for _, s in ipairs(eventsOf(BR.Net.SPECTATE_SET)) do
+        if s.target == src then last = s.args[1].stop == true end
+    end
+    return last
+end
+
+--- The last stop reason this player was sent, if any.
+local function stopReason(src)
+    local last = nil
+    for _, s in ipairs(eventsOf(BR.Net.SPECTATE_SET)) do
+        if s.target == src then
+            last = s.args[1].stop and s.args[1].reason or nil
+        end
+    end
+    return last
+end
+
+describe('spectate.squadOnly')
+do
+    squadMatch()
+    BR.Roster.setState(1, BR.PlayerState.OUT)
+
+    -- THE HEADLINE. A dead player asks for a camera and is given their
+    -- squadmate. Asking repeatedly must never walk off the squad, because there
+    -- is nowhere off it to walk to.
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'a dead player is given their living squadmate',
+        tostring(watching(1)))
+
+    for _ = 1, 6 do fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 }) end
+    ok(watching(1) == 2, 'and cycling forward six times never reaches an enemy',
+        tostring(watching(1)))
+    for _ = 1, 6 do fire(BR.Net.SPECTATE_CYCLE, 1, { dir = -1 }) end
+    ok(watching(1) == 2, 'nor does cycling backwards', tostring(watching(1)))
+
+    -- AND THE FLAG THAT WIDENS IT HAS NO SAY WHILE A MATE LIVES. This is the
+    -- assertion that catches a check bolted on somewhere it can be bypassed.
+    BR.Config.Spectate.freeAfterSquadOut = true
+    sent = {}
+    for _ = 1, 6 do fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 }) end
+    ok(watching(1) == 2,
+        'turning free spectate ON does not widen the set while a squadmate lives',
+        tostring(watching(1)))
+end
+
+describe('spectate.widensOnlyWhenTheSquadIsGone')
+do
+    squadMatch()
+    BR.Roster.setState(1, BR.PlayerState.OUT)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'watching the mate to begin with')
+
+    -- The mate dies. With the widening REFUSED, the session ends rather than
+    -- silently becoming a view of the enemy team.
+    sent = {}
+    BR.Roster.setState(2, BR.PlayerState.OUT)
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(stopped(1), 'the squad is gone and the camera stops', tostring(watching(1)))
+    ok(stopReason(1) == 'no-targets', 'saying why', tostring(stopReason(1)))
+
+    -- With it ALLOWED, the same moment opens the wider set -- and not before.
+    squadMatch()
+    BR.Config.Spectate.freeAfterSquadOut = true
+    BR.Roster.setState(1, BR.PlayerState.OUT)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'still the mate while the mate is alive')
+
+    sent = {}
+    BR.Roster.setState(2, BR.PlayerState.OUT)
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    local now = watching(1)
+    ok(now == 3 or now == 4, 'and only once they die does an enemy become visible',
+        tostring(now))
+end
+
+-- ---------------------------------------------------- the killer, in solos ---
+--
+-- "If in solos, the default spectate target should be the killer (if there was
+-- one)." -- the owner, 2026-08-22.
+--
+-- br_lib's spectate_solve tests pin the ORDERING RULE against a hand-built view.
+-- These pin the half that a pure function cannot see: that the server records a
+-- killer at all, records it as a LICENCE, hands the solver a live server id, and
+-- that a death with no killer travels all the way through as nil.
+
+--- A solo match: three players, no squadIds, everybody alive.
+local function soloMatch()
+    reset()
+    join(1, 'Me'); join(2, 'Killer'); join(3, 'Bystander')
+    local m = fakeMatch(BR.Mode.SOLO.key)
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+    end
+    sent = {}
+    return m
+end
+
+describe('spectate.killerInSolos')
+do
+    -- THE HEADLINE, ON THE SHIPPED CONFIGURATION. freeAfterSquadOut is false in
+    -- config/match.lua and reset() restores it -- and it no longer reaches a
+    -- solo at all. The owner corrected an earlier version that made the killer
+    -- the whole list (2026-08-22): "I'm not asking for their killer to be the
+    -- sole spectate option, just the first one they see. If there are other
+    -- players in the match available to spectate, they should still be able to
+    -- select between those."
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'a dead solo opens on the player who killed them',
+        tostring(watching(1)))
+
+    -- AND THE ARROWS REACH EVERYONE ELSE, which is the correction. The earlier
+    -- list of one could not be walked off in either direction; this asserts that
+    -- it can, and that the killer is a starting POSITION rather than the set.
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) ~= nil and watching(1) ~= 2,
+        'and next walks off the killer onto the other survivor',
+        tostring(watching(1)))
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = -1 })
+    ok(watching(1) == 2, 'and previous comes back to them',
+        tostring(watching(1)))
+
+    -- NO KILLER IS NO LONGER NO TARGETS. The storm, a fall, a car with nobody in
+    -- it (#194) all arrive at eliminate() with nil -- and a solo who died that
+    -- way still gets the lobby, just with nobody promoted to the front.
+    soloMatch()
+    BR.Combat.eliminate(1, 'storm', nil)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) ~= nil,
+        'a solo killed by the storm still has somebody to watch',
+        tostring(watching(1)))
+
+    -- NOBODY IS THEIR OWN KILLER. eliminate() writes the licence inside the
+    -- `killerSrc ~= src` guard, so a self-credited death records nothing -- and
+    -- the player is still never handed their own camera, which is the half that
+    -- must survive the widening.
+    soloMatch()
+    BR.Combat.eliminate(1, 'explosion', 1)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) ~= nil and watching(1) ~= 1,
+        'and a player is never given their own corpse to watch',
+        tostring(watching(1)))
+end
+
+describe('spectate.theKillerIsLostAgain')
+do
+    -- THE TWO WAYS THE PROMOTED TARGET GOES AWAY. Both go through the retarget
+    -- paths that already existed -- and now that a solo holds a full list, the
+    -- session SURVIVES both, which is the behaviour the correction bought.
+
+    -- 1. THE KILLER DIES. The feed re-resolves every push. The list loses one
+    --    row and keeps the rest, so the camera moves rather than stopping.
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'precondition: watching the killer')
+
+    sent = {}
+    BR.Combat.eliminate(2, 'storm', nil)
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(not stopped(1),
+        'the killer dying moves the camera on rather than ending the session',
+        tostring(watching(1)))
+    ok(watching(1) ~= nil and watching(1) ~= 2,
+        'onto somebody still standing', tostring(watching(1)))
+
+    -- 2. THE KILLER LEAVES. playerDropped re-resolves the watchers; there IS
+    --    somebody left to move to now, so it retargets instead of stopping.
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'precondition: watching the killer')
+
+    sent = {}
+    leave(2)
+    ok(not stopped(1), 'the killer disconnecting does not stop the camera',
+        tostring(watching(1)))
+    ok(watching(1) ~= nil and watching(1) ~= 2,
+        'it lands on whoever is left', tostring(watching(1)))
+end
+
+describe('spectate.theKillerIsALicence')
+do
+    -- FIVEM RECYCLES SERVER IDS WITHIN THE MINUTE, and this record outlives the
+    -- moment it is written by design -- the victim watches this person for the
+    -- rest of their round. Storing `killerSrc` would eventually point a dead
+    -- player's camera at whoever inherited the slot, which is a different human.
+    --
+    -- Reproduced the way spectate.recycledServerId reproduces it: the entry goes
+    -- and comes back under a new licence with no drop event at all, so nothing
+    -- but the licence comparison can catch it.
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'precondition: watching the killer on server id 2')
+
+    BR.Roster.remove(2)
+    licenseOf[2] = 'somebodyelse'
+    BR.Roster.add(2)
+    BR.Roster.setMatch(2, BR.Roster.get(1).matchId)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    sent = {}
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(stopped(1), 'a stranger who inherits the killer\'s id is not the killer',
+        tostring(watching(1)))
+end
+
+describe('spectate.killerIsOrderOnlyWhenFreeIsOn')
+do
+    -- WITH THE WIDENING ALLOWED, NOTHING IS REMOVED TO MAKE ROOM. The set is
+    -- still every living player; the killer is merely where the camera starts,
+    -- and the arrows walk off them normally.
+    soloMatch()
+    BR.Config.Spectate.freeAfterSquadOut = true
+    BR.Combat.eliminate(1, 'headshot', 3)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 3, 'the camera opens on the killer even though 2 sorts first',
+        tostring(watching(1)))
+
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) == 2, 'and the other survivor is still reachable',
+        tostring(watching(1)))
+end
+
+describe('spectate.squadsAreUnchanged')
+do
+    -- THE OWNER SAID SOLOS. A squad player killed by an enemy, squad wiped,
+    -- widening ON -- every knob turned toward the new behaviour at once -- must
+    -- still get the set they got before this change, chosen the old way.
+    squadMatch()
+    BR.Config.Spectate.freeAfterSquadOut = true
+    BR.Combat.eliminate(1, 'headshot', 4)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 3,
+       'a wiped SQUAD still opens on the lowest src, not on their killer',
+       tostring(watching(1)))
+
+    -- ...AND WITH THE WIDENING OFF THEY STILL GET NOTHING, rather than picking
+    -- up a killer-cam through the solos branch.
+    squadMatch()
+    BR.Combat.eliminate(1, 'headshot', 4)
+    BR.Roster.setState(2, BR.PlayerState.OUT)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil,
+       'and free-off leaves a wiped squad with nobody to watch',
+       tostring(watching(1)))
+end
+
+describe('spectate.theKillerRecordIsPerMatch')
+do
+    -- A LICENCE DOES NOT GO STALE ON ITS OWN, unlike lastHitBy, which the
+    -- assist window retires after ten seconds. So it has to be cleared, and
+    -- BR.Match.resetPlayer is where the rest of the per-match record is.
+    soloMatch()
+    BR.Combat.eliminate(1, 'headshot', 2)
+    ok(BR.Roster.get(1).killedByLicense ~= nil, 'precondition: it was recorded')
+
+    BR.Match.resetPlayer(1, BR.Roster.get(1))
+    ok(BR.Roster.get(1).killedByLicense == nil,
+       'a new match forgets who killed them in the last one',
+       tostring(BR.Roster.get(1).killedByLicense))
+end
+
+describe('spectate.whoMayAsk')
+do
+    squadMatch()
+
+    -- A LIVING PLAYER GETS NOTHING. "Still in the match" is the same test that
+    -- decides whether they count toward the alive number, so being able to play
+    -- and being able to watch cannot come apart.
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil, 'an ALIVE player asking for a camera is refused')
+
+    BR.Roster.setState(1, BR.PlayerState.DBNO)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil, 'and so is a downed one -- they are still in the fight')
+
+    BR.Roster.setState(1, BR.PlayerState.OUT)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'only once they are out')
+
+    -- A LOBBY PLAYER HAS NO MATCH TO WATCH. They are out of the fight by the
+    -- same test, so the match check is the only thing standing between them and
+    -- somebody else's round.
+    reset()
+    join(1, 'Bystander'); join(2, 'Player')
+    fakeMatch()
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil, 'a lobby player cannot spectate a match they are not in')
+end
+
+describe('spectate.admin')
+do
+    squadMatch()
+    -- The admin is a bystander in the lobby; the target is mid-match on the
+    -- other squad. Neither the squad rule nor the liveness rule applies.
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(1, BR.PlayerState.LOBBY)
+    sent = {}
+    fired = {}
+
+    local okStart, detail = BR.Spectate.adminStart({
+        admin = 1, target = 3,
+        adminLicense = 'license:testadmin', targetLicense = 'license:test3',
+        commandId = 'cmd-1',
+    })
+    ok(okStart, 'an admin may be pointed at anyone', tostring(detail))
+    ok(watching(1) == 3, 'at the person the console named', tostring(watching(1)))
+
+    -- THE AUDIT ROW. The game emits the fact; the console writes it.
+    local rows = firedOf('br:ringmaster:spectate')
+    ok(#rows == 1 and rows[1] and rows[1].phase == 'start',
+        'a start is announced for the log', ('%d row(s)'):format(#rows))
+    ok(rows[1] and rows[1].commandId == 'cmd-1'
+       and rows[1].targetLicense == 'license:test3',
+        'carrying the join key and who was watched')
+
+    -- THE ARROWS DO NOT MOVE IT. The console named one person; the keys belong
+    -- to the player policy, and refusing here rather than in the client is the
+    -- same rule as everywhere else -- the client is not where this is decided.
+    for _ = 1, 4 do fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 }) end
+    ok(watching(1) == 3, 'and the spectate keys cannot walk it off that person',
+        tostring(watching(1)))
+
+    -- A DEAD TARGET IS STILL A TARGET for a moderator.
+    BR.Roster.setState(3, BR.PlayerState.OUT)
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(watching(1) == 3, 'a target who dies is still watched', tostring(watching(1)))
+
+    -- THE PAUSE-MENU EXIT, and its audit row.
+    fired = {}
+    fakeTime = fakeTime + 5000
+    fire(BR.Net.SPECTATE_STOP, 1)
+    ok(stopped(1), 'the in-game stop ends the session')
+    ok(stopReason(1) == 'stopped', 'with the reason it was stopped for',
+        tostring(stopReason(1)))
+    rows = firedOf('br:ringmaster:spectate')
+    ok(#rows == 1 and rows[1] and rows[1].phase == 'stop',
+        'and the log hears the end too', ('%d row(s)'):format(#rows))
+    -- Guarded rather than indexed straight: a mutation that files NO row must
+    -- report a named failure, not take the suite down two assertions later with
+    -- a nil index that says nothing about what broke.
+    ok(((rows[1] or {}).durationMs or 0) >= 5000, 'carrying how long it ran',
+        tostring(rows[1] and rows[1].durationMs))
+
+    -- WATCHING YOURSELF IS NOT A MODERATION TOOL.
+    ok(not BR.Spectate.adminStart({ admin = 1, target = 1, commandId = 'c' }),
+        'an admin cannot spectate themselves')
+    ok(not BR.Spectate.adminStart({ admin = 1, target = 77, commandId = 'c' }),
+        'nor an id nobody is holding')
+end
+
+describe('spectate.theTargetLeaves')
+do
+    -- "IF THE PLAYER BEING SPECTATED LEAVES WHILE BEING SPECTATED, THE 'STOP
+    -- SPECTATING' FUNCTION RUNS AUTOMATICALLY" -- the owner, verbatim. This is
+    -- the case #192 says will be got wrong.
+    squadMatch()
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(1, BR.PlayerState.LOBBY)
+    sent = {}
+    BR.Spectate.adminStart({ admin = 1, target = 3, commandId = 'cmd-2',
+                             targetLicense = 'license:test3' })
+    ok(watching(1) == 3, 'admin is watching')
+
+    sent = {}
+    leave(3)
+    ok(stopped(1), 'the target disconnecting stops the camera by itself')
+    ok(stopReason(1) == 'target-left', 'and says which of the endings it was',
+        tostring(stopReason(1)))
+
+    -- A PLAYER'S WHEEL LOSES A SPOKE RATHER THAN THE WHOLE SESSION. Two living
+    -- squadmates, one leaves: the dead player keeps watching the other.
+    reset()
+    join(1, 'Me'); join(2, 'MateA'); join(3, 'MateB')
+    fakeMatch('squad')
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.update(s, { squadId = 'sq1' })
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+    end
+    BR.Roster.setState(1, BR.PlayerState.OUT)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    local first = watching(1)
+    ok(first == 2, 'watching the first mate', tostring(first))
+
+    sent = {}
+    leave(2)
+    ok(watching(1) == 3, 'when they leave, the camera moves to the other mate',
+        tostring(watching(1)))
+end
+
+describe('spectate.recycledServerId')
+do
+    -- THE ONE THAT MATTERS MOST, AND THE ONE A DISCONNECT HANDLER ALONE CANNOT
+    -- COVER. FiveM recycles server ids within the minute. If the drop event is
+    -- ever missed -- a resource restart mid-session is the realistic way --
+    -- then the id the camera is pointed at is still a valid, connected player,
+    -- and it is a DIFFERENT HUMAN. Nothing about the session looks wrong; the
+    -- admin is simply watching somebody nobody authorised them to watch.
+    --
+    -- So the session remembers the licence and the feed re-checks the pair. This
+    -- block reproduces the missed event exactly: the roster entry goes and comes
+    -- back under a new licence, WITHOUT playerDropped ever firing.
+    squadMatch()
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(1, BR.PlayerState.LOBBY)
+    sent = {}
+    BR.Spectate.adminStart({ admin = 1, target = 3, commandId = 'cmd-3' })
+    ok(watching(1) == 3, 'admin is watching server id 3')
+
+    -- The same person, still here: the check must not stop a healthy session.
+    sent = {}
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(watching(1) == 3, 'an unchanged licence keeps the session running')
+
+    -- Now somebody else inherits the slot, with no drop event.
+    BR.Roster.remove(3)
+    licenseOf[3] = 'somebodyelse'
+    BR.Roster.add(3)
+    BR.Roster.setState(3, BR.PlayerState.ALIVE)
+
+    sent = {}
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(stopped(1), 'a recycled id is not the person the session opened on')
+    ok(stopReason(1) == 'target-left', 'so the camera stops rather than changing subject',
+        tostring(stopReason(1)))
+end
+
+describe('spectate.licencelessTarget')
+do
+    -- AND nil IS NOT A MATCH FOR nil. A connection with no licence has one
+    -- forever, so `stored == current` would be true for every recycled id in
+    -- that state -- the hole the check exists to close, reopened by the one
+    -- comparison that looks obviously correct.
+    squadMatch()
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(1, BR.PlayerState.LOBBY)
+    noLicense[3] = true
+    BR.Roster.get(3).license = nil
+    sent = {}
+
+    BR.Spectate.adminStart({ admin = 1, target = 3, commandId = 'cmd-4' })
+    ok(watching(1) == 3, 'the session opens -- nothing here refuses at the start')
+
+    sent = {}
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(stopped(1),
+        'but a target with no licence cannot be re-identified, so it stops')
+end
+
+describe('spectate.thePolicyRunsOnEveryPush')
+do
+    -- A PLAYER'S TARGET IS RE-RESOLVED ON EVERY FEED TICK, not only when
+    -- something obvious happens: the squad rule depends on who is still
+    -- standing, and a squadmate dying on the far side of the map raises no event
+    -- this file listens for.
+    --
+    -- A SQUAD OF FOUR, DELIBERATELY, so there are THREE candidates on the wheel.
+    -- With only one, a re-resolve that wrongly ADVANCED would wrap straight back
+    -- to the same person and this block would pass while the camera cycled
+    -- targets four times a second in a real match.
+    reset()
+    join(1, 'Me'); join(2, 'MateA'); join(3, 'MateB'); join(4, 'MateC')
+    fakeMatch('squad')
+    for _, s in ipairs({ 1, 2, 3, 4 }) do
+        BR.Roster.update(s, { squadId = 'sq1' })
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+    end
+    BR.Roster.setState(1, BR.PlayerState.OUT)
+    sent = {}
+
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    local held = watching(1)
+    ok(held == 2, 'watching the first mate', tostring(held))
+
+    -- Nothing is asked for; time simply passes, and the shot must not jump.
+    sent = {}
+    for _ = 1, 5 do
+        fakeTime = fakeTime + BR.Config.Spectate.feedMs
+        BR.Sched.step(fakeTime)
+    end
+    ok(watching(1) == held, 'five pushes later it is still the same person',
+        tostring(watching(1)))
+    ok(#eventsOf(BR.Net.SPECTATE_SET) == 5, 'and each one carried a position',
+        ('%d push(es)'):format(#eventsOf(BR.Net.SPECTATE_SET)))
+
+    -- AND THE ARROWS STILL WALK IT, over all three. A re-resolve that holds and
+    -- a wheel that cannot be turned look identical from a single assertion.
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) == 3, 'next moves to the second mate', tostring(watching(1)))
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) == 4, 'and on to the third', tostring(watching(1)))
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) == 2, 'wrapping back to the first', tostring(watching(1)))
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = -1 })
+    ok(watching(1) == 4, 'and the other arrow walks the other way',
+        tostring(watching(1)))
+end
+
+-- ------------------------------------------------------- M8: vehicles (#194) ---
+--
+-- FOUR QUESTIONS THE OWNER ANSWERED ON 2026-08-21, AND THREE OF THE ANSWERS WERE
+-- "THAT IS ALREADY WHAT IT DOES". Those three are pinned here and nowhere else,
+-- because "we never wrote the exemption" is not a property any gate can check --
+-- the only way an absence stays true is if something fails when it stops being.
+--
+--   1. in-vehicle ped damage is the same as out-of-vehicle damage    -> vehicles.cover
+--   2. a vehicle exploding with no killer is fine and by design      -> vehicles.explosion
+--   3. roadkill is attributed to the driver                          -> vehicles.roadkill
+--   4. vehicles never grant storm immunity                           -> storm.vehicles
+
+--- A live match with a driver (1), somebody on foot (2) and a bystander (3).
+---
+--- THE THIRD PLAYER IS LOAD-BEARING AND IS NOT PADDING: this is a SOLO match, so
+--- killing the second player with only two in it ends the match and tears the
+--- instance down underneath every assertion that follows the death.
+---
+--- Both players are sampled TWICE before returning. The roadkill ledger measures
+--- speed between two of the roster's own position samples and health against the
+--- previous one, so a fixture that returns after one sample would have every
+--- first assertion pass for the wrong reason -- no history is not the same fact
+--- as no roadkill.
+local function roadMatch()
+    reset()
+    queueUp(1, 'Driver', BR.Mode.SOLO.key)
+    queueUp(2, 'Walker', BR.Mode.SOLO.key)
+    queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+    theMatch().state = BR.MatchState.PLAYING
+
+    -- POSITIONS AND HEALTH BOTH FLOW PED -> SAMPLER -> ROSTER, never the other
+    -- way. Writing entry.pos or entry.hp here would be overwritten by
+    -- roster.positions before the ledger ever saw it.
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 10.0, 0.0, 30.0)
+    setPos(3, 500.0, 500.0, 30.0)
+    for s = 1, 3 do pedHealth[1000 + s] = 200 end
+
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    sent = {}
+    return theMatch()
+end
+
+describe('vehicles.roadkill')
+do
+    -- A ROADKILL WAS A FREE, UNATTRIBUTABLE, EVIDENCE-FREE KILL (#194 §3).
+    --
+    -- WEAPON_RAMMED_BY_CAR and WEAPON_RUN_OVER_BY_CAR are both environmental, so
+    -- server/damage.lua counts them and returns without writing lastHitBy;
+    -- server/combat.lua already had the word 'roadkill' for the feed and no
+    -- killer to put in front of it. The owner, 2026-08-21: "Roadkill should be
+    -- attributed to the driver."
+    roadMatch()
+    local victim = BR.Roster.get(2)
+
+    -- NOBODY IS DRIVING. A player losing health beside parked cars is nobody's
+    -- roadkill, and this is the assertion that stops the whole feature from
+    -- being "credit the nearest player".
+    pedHealth[1002] = 180
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == nil,
+        'health lost with nobody driving is credited to nobody',
+        tostring(victim.lastHitBy))
+
+    -- A CAR GOING PAST SOMEBODY IT DID NOT HIT IS NOT A ROADKILL. Same guard the
+    -- fire ledger states: only players ACTUALLY LOSING HEALTH are attributed.
+    drive(1, 7)
+    setPos(1, 5.0, 0.0, 30.0)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == nil,
+        'a car driven past an unharmed player credits nobody',
+        tostring(victim.lastHitBy))
+
+    -- ...and now it hits them. 5 m in 500 ms is 10 m/s, comfortably over
+    -- roadkillMinSpeedMs, and it ends up on top of them.
+    setPos(1, 10.0, 0.0, 30.0)
+    pedHealth[1002] = 120
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == 1,
+        'health lost under a moving player-driven car belongs to the driver',
+        tostring(victim.lastHitBy))
+    ok(victim.lastHitWeapon == 'roadkill', 'and names the cause as the weapon',
+        tostring(victim.lastHitWeapon))
+    ok(BR.Combat.attributedKiller(victim) == 1,
+        'so the attribution the kill feed reads finally has somebody in it',
+        tostring(BR.Combat.attributedKiller(victim)))
+    ok(BR.Vehicles.stats().roadkills >= 1, 'and it is counted for brvehicles')
+
+    -- IT EXPIRES LIKE EVERY OTHER ATTRIBUTION. A roadkill is not a claim on
+    -- somebody for the rest of the match.
+    fakeTime = fakeTime + BR.Config.Match.assistWindowMs + 1000
+    ok(BR.Combat.attributedKiller(victim) == nil,
+        'and expires with the assist window like any other hit',
+        tostring(BR.Combat.attributedKiller(victim)))
+end
+
+describe('vehicles.roadkill.refused')
+do
+    -- EVERY WAY OF NOT BEING A ROADKILL, because the expensive failure here is
+    -- not a missed credit -- it is a kill awarded to somebody who did nothing.
+
+    -- A PARKED CAR OWNS NOTHING. Without the speed floor, sitting in a car beside
+    -- a squadmate would collect their storm death.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        setPos(1, 10.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a stationary player-driven car on top of a dying player credits nobody',
+            tostring(victim.lastHitBy))
+    end
+
+    -- AND NEITHER DOES ONE ACROSS THE FIELD. The radius is generous because the
+    -- sample lags the collision; it is not a claim on everybody in the district.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        setPos(1, 60.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 80.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a car at speed 70m away credits nobody',
+            tostring(victim.lastHitBy))
+    end
+
+    -- A CAR ON THE OVERPASS IS NOT RUNNING YOU OVER. Los Santos stacks roads, so
+    -- the vertical allowance cannot be the horizontal one.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        setPos(1, 5.0, 0.0, 60.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 60.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a car at speed thirty metres overhead credits nobody',
+            tostring(victim.lastHitBy))
+    end
+
+    -- ═══ THE PLATFORM BUG, AND IT IS THE REASON THE DRIVER IS CONFIRMED FROM
+    --     THE SEAT RATHER THAN FROM THE PED ═══
+    --
+    -- citizenfx/fivem#4006: server-side GetVehiclePedIsIn(ped, false) answers the
+    -- vehicle a ped was LAST in when it is in none, and is still OPEN with no fix
+    -- (checked 2026-08-22). The documented workaround gates it on IsPedInAnyVehicle, and
+    -- that native does not exist on the server. Believing the ped alone would
+    -- turn every player who has ever driven anything into a permanent driver --
+    -- and this suite's stub reproduces the bug rather than hiding it, so a
+    -- version of the code that asks only the ped fails here.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        stepOut(7)                 -- out of the car; the PED still names it
+        setPos(1, 5.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a player who left a car is not still driving it, whatever the ped says',
+            tostring(victim.lastHitBy))
+        ok(BR.Vehicles.stats().driving == 0,
+            'and the server counts nobody at a wheel',
+            tostring(BR.Vehicles.stats().driving))
+    end
+
+    -- AN AMBIENT MANIAC IS NOBODY'S KILL, and the passenger is not on the hook
+    -- for it. client/gamerules.lua deliberately makes ambient drivers erratic
+    -- (ability 0.0, aggression 1.0), so a player being driven into somebody by an
+    -- NPC is a thing this gamemode actively causes. #194: "an ambient maniac
+    -- driver killing a player genuinely is nobody's kill."
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        driveNpc(7)                -- the NPC has seat -1
+        drive(1, 7, 0)             -- our player is only a passenger
+        setPos(1, 5.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'an NPC at the wheel credits nobody, and never the passenger',
+            tostring(victim.lastHitBy))
+    end
+
+    -- A CRASH IS NOT A ROADKILL. Two players racing side by side would otherwise
+    -- hand each other a kill every time one of them hit a wall.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        drive(2, 8)
+        setPos(1, 5.0, 0.0, 30.0)
+        setPos(2, 12.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a driver who loses health beside another car crashed, and it is nobody else\'s',
+            tostring(victim.lastHitBy))
+    end
+
+    -- ═══ AND NEITHER IS THE CRASH THAT HURTS THE PASSENGER (#213) ═══
+    --
+    -- THE GUARD ABOVE ONLY COVERS THE DRIVER, AND THE RULE IS WIDER THAN THAT.
+    -- config/match.lua states it as "a player lost health, THEY WERE ON FOOT,
+    -- and a vehicle a PLAYER was driving was on top of them and moving". A
+    -- passenger is not on foot -- and they sit about a metre from their own
+    -- driver, travelling at exactly their own driver's speed, so every other
+    -- term is satisfied by construction. A crash that hurt a passenger has
+    -- therefore always been creditable to the person at the wheel beside them.
+    --
+    -- #213 IS WHAT TURNS THAT FROM A CURIOSITY INTO THE ORDINARY CASE. Vehicles
+    -- are genuinely breakable now, so a squad car meeting a wall hurts everyone
+    -- in it -- and without this, the driver collects an elimination for each of
+    -- their own passengers, in the feed, called a roadkill. The owner settled
+    -- the shape on #194: "It's by design that vehicles in the game can explode
+    -- under normal circumstances, without a killer necessarily."
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)                -- player 1 at the wheel...
+        drive(2, 7, 0)             -- ...and the victim in the seat beside them
+        setPos(1, 5.0, 0.0, 30.0)
+        setPos(2, 5.5, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        setPos(2, 10.5, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a passenger hurt in the car they are riding in is nobody\'s roadkill',
+            tostring(victim.lastHitBy))
+        ok(victim.lastHitWeapon ~= 'roadkill',
+            'and the feed is not told their own driver ran them over',
+            tostring(victim.lastHitWeapon))
+    end
+
+    -- ...AND THE GUARD IS ABOUT THE SHARED CABIN, NOT ABOUT PASSENGERS.
+    --
+    -- STATED AS AN ASSERTION RATHER THAN LEFT TO INFERENCE, because the cheap
+    -- way to write the guard above is "refuse every victim who is in any
+    -- vehicle", and that is a wider rule than #194 asked for: a passenger in car
+    -- A killed by player B's car alongside is the fire ledger's exposure exactly
+    -- -- health went down and a thing was on top of them -- and narrowing it
+    -- further would need the server to know what hurt them.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)                -- somebody else's car...
+        drive(2, 8, 0)             -- ...and the victim is riding in a DIFFERENT one
+        setPos(1, 5.0, 0.0, 30.0)
+        setPos(2, 5.5, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        setPos(2, 10.5, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == 1,
+            'a rider in another car is still creditable to the car that hit it',
+            tostring(victim.lastHitBy))
+    end
+
+    -- ═══ AND THE PED'S OWN ANSWER IS NOT ALLOWED TO REFUSE A REAL ROADKILL ═══
+    --
+    -- citizenfx/fivem#4006 again, from the other direction. `GetVehiclePedIsIn`
+    -- on a ped who is in no vehicle answers the one they were LAST in, and this
+    -- suite's stub reproduces that rather than hiding it -- so a guard written on
+    -- that native would refuse to credit somebody run over by a car they had
+    -- climbed out of, forever. The guard asks the VEHICLE's seats instead, which
+    -- is a live read, and this is the block that fails if it is ever rewritten
+    -- as the cheaper ped comparison.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(2, 7, 0)             -- the victim rode in car 7...
+        drive(3, 7, 0)             -- ...and somebody else has that seat now
+        drive(1, 7)                -- while player 1 drives it at them
+        setPos(1, 5.0, 0.0, 30.0)
+        setPos(2, 5.5, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        setPos(2, 10.5, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == 1,
+            'a player who left a car can still be run over by it, whatever the ped says',
+            tostring(victim.lastHitBy))
+    end
+
+    -- ═══ A SERVER ID IS NOT A PERSON ═══
+    --
+    -- FiveM recycles ids within the minute, so the position sample left behind by
+    -- a driver who disconnects would be read as the PREVIOUS POSITION of whoever
+    -- lands in that slot next -- and the displacement between two humans standing
+    -- in two different places is a speed no car can reach, arriving at the exact
+    -- moment a fresh player is least able to have earned a kill. The playerDropped
+    -- handler clears the row; the licence carried on it is what covers the case
+    -- where that did not run, and it fails CLOSED.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        setPos(1, 5.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+
+        -- Same server id, different human.
+        BR.Roster.get(1).license = 'license:somebodyelse'
+
+        setPos(1, 10.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a recycled server id does not inherit the last holder\'s speed',
+            tostring(victim.lastHitBy))
+    end
+end
+
+describe('vehicles.occupancy')
+do
+    --[[
+        A STOLEN HELICOPTER FILES A CASE (#211).
+
+        Owner, 2026-08-22: "I did go to fort zancudo and steal a helicopter, but
+        for whatever reason that didn't create an incident."
+
+        THE DETECTOR THAT EXISTED WATCHED CREATION, and a Zancudo Buzzard was
+        created by nobody -- so `entityCreating` never fired and the owner's own
+        rule ("allow every vehicle except anything that flies or has built-in
+        weapons") was enforced only against vehicles a client conjured. These
+        cases are about the other half: a refused vehicle that was already in
+        the world, and a player in its driving seat.
+
+        WHY THEY LIVE IN THIS FILE AND NOT IN test_shared.lua. The creation
+        detector is driven there against a sandboxed roster, which is right for
+        an event handler. This one is a consumer of the roster's own 4 Hz sample
+        job -- real positions, real licences, real scheduler -- and the seat
+        stubs it depends on are the ones the roadkill ledger above already
+        proved. A sandbox would have to reproduce all of that and would then be
+        asserting against the reproduction.
+    ]]
+
+    --- A match with player 1 driving vehicle 7, and 7 being whatever we say.
+    local function heliMatch(model)
+        roadMatch()
+        setModel(7, model or 'buzzard')
+        drive(1, 7)
+        fired = {}
+        return BR.Vehicles.stats()
+    end
+
+    --- Advance `ms` of game time in the sampler's own 250 ms steps.
+    ---
+    --- ONE STEP PER SAMPLE, NOT ONE STEP OF `ms`. The dwell is measured across
+    --- CONSECUTIVE samples, so a single jump of three seconds would satisfy it
+    --- with one observation -- which is exactly the pass-through this feature
+    --- must not fire on, and a test that jumped would not notice.
+    local function run(ms)
+        for _ = 1, math.floor(ms / 250) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    -- ------------------------------------------------------- the dwell ---
+    do
+        local base = heliMatch().counted
+
+        -- HALF A SECOND IN A COCKPIT IS NOT TAKING AN AIRCRAFT. It is also what
+        -- an ejection looks like from the server's 4 Hz sample.
+        run(500)
+        ok(BR.Vehicles.stats().counted == base,
+            'a moment in a refused vehicle counts nothing',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+        ok(BR.Vehicles.stats().dwelling == 1,
+            'but the server can see them sitting in it',
+            tostring(BR.Vehicles.stats().dwelling))
+
+        -- ...AND JUST UNDER THE DWELL IS STILL NOTHING. The boundary is asserted
+        -- from both sides, because an off-by-one in the comparison is invisible
+        -- from either one alone.
+        run(2250)
+        ok(BR.Vehicles.stats().counted == base,
+            'and neither does just under three seconds of it',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+
+        run(500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'holding the seat past the dwell is counted',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+
+        -- THE FIRST ONE IS QUIET, exactly as the creation detector's first is.
+        -- The bar is two for both routes so that one case cannot be opened on a
+        -- lower standard than the other.
+        ok(#firedOf('br:core:vehicle') == 0,
+            'and announced to nobody, because the bar is two')
+
+        -- A FLIGHT IS ONE FINDING, NOT ONE PER SAMPLE. Without the per-sitting
+        -- latch this would be a corroboration every 250 ms for as long as they
+        -- fly, which is a case nobody can read and a queue nobody can use.
+        run(5000)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'and staying in it does not count again, however long the flight',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+    end
+
+    -- --------------------------------------- the second one files a case ---
+    do
+        -- 3500 RATHER THAN 3000, AND THE DIFFERENCE IS THE DWELL'S DEFINITION.
+        -- The clock starts at the FIRST sample that sees them at the wheel, not
+        -- at the moment they sat down -- the server cannot see the latter -- so
+        -- a three-second dwell needs three seconds AFTER that first sample.
+        -- Writing 3000 here fails, which is the boundary being asserted rather
+        -- than a number being fudged.
+        local base = heliMatch().counted
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1, 'the first sitting counts')
+
+        -- OUT, AND BACK IN. A fresh occupancy is a fresh act: they chose the
+        -- cockpit twice.
+        stepOut(7)
+        run(500)
+        drive(1, 7)
+        run(3500)
+
+        local f = firedOf('br:core:vehicle')
+        ok(#f == 1, 'the second sitting files exactly one announcement',
+            tostring(#f))
+        ok(f[1] and f[1].count == 2, 'carrying the count the bar is set against',
+            tostring(f[1] and f[1].count))
+        ok(f[1] and f[1].seq == 1, 'as the case-opening announcement',
+            tostring(f[1] and f[1].seq))
+        ok(f[1] and f[1].why == BR.Config.VehicleRefusal.FLIES,
+            'and the half of the rule it tripped, in the rule\'s own words',
+            tostring(f[1] and f[1].why))
+        ok(f[1] and f[1].license == 'license:test1',
+            'keyed to a LICENCE, never to a server id',
+            tostring(f[1] and f[1].license))
+        ok(f[1] and f[1].model == BR.NormHash(GetHashKey('buzzard')),
+            'and names the model as an unsigned hash',
+            tostring(f[1] and f[1].model))
+    end
+
+    -- ----------------------------------------------- and it is ONE ledger ---
+    --
+    -- THE POINT OF SHARING `fileRefusal`. A player who spawns one and then
+    -- steals one has done the same thing twice, so it must be one case with a
+    -- count of two -- not two cases of one, and not two counters that each
+    -- stall below the bar forever.
+    do
+        heliMatch()
+        local s = BR.Vehicles.stats()
+        ok(s.occupied >= 1 and s.counted >= s.occupied,
+            'occupancy findings are part of the same total, not a parallel one',
+            ('occupied %d, counted %d'):format(s.occupied, s.counted))
+    end
+
+    -- ------------------------------------------- every way of NOT filing ---
+
+    -- AN ORDINARY CAR IS THE COMMON CASE and it must cost nothing and say
+    -- nothing. Every match is full of them.
+    do
+        local base = heliMatch('granger').counted
+        run(6000)
+        ok(BR.Vehicles.stats().counted == base,
+            'driving an allowed vehicle for six seconds counts nothing',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+        ok(BR.Vehicles.stats().dwelling == 0,
+            'and does not even register as a dwell')
+    end
+
+    -- A PASSENGER DID NOT TAKE IT. They can be put in that seat by the person
+    -- who did -- a squadmate lands a Buzzard and you climb in -- and a rule that
+    -- files on any seat files against the passenger for somebody else's act.
+    do
+        roadMatch()
+        setModel(7, 'buzzard')
+        local base = BR.Vehicles.stats().counted
+        driveNpc(7)                -- seat -1 is taken by an NPC
+        drive(1, 7, 0)             -- our player is in seat 0
+        fired = {}
+        run(6000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a passenger in a refused vehicle files nothing',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- GETTING IN AND STRAIGHT BACK OUT IS NOT TAKING IT, which is the whole job
+    -- of the dwell. Asserted across REAL samples rather than one jump -- see
+    -- `run` above for why that distinction is the test.
+    do
+        local base = heliMatch().counted
+        run(1000)
+        stepOut(7)
+        run(6000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a pass-through through the cockpit files nothing',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- ...AND LEAVING RESTARTS THE CLOCK RATHER THAN PAUSING IT. Two-thirds of a
+    -- dwell, out, then two-thirds again is not a dwell, and an implementation
+    -- that accumulated would file here.
+    do
+        local base = heliMatch().counted
+        run(2000)
+        stepOut(7)
+        run(500)
+        drive(1, 7)
+        run(2000)
+        ok(BR.Vehicles.stats().counted == base,
+            'two part-dwells do not add up to one',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- ═══ THE PLATFORM BUG AGAIN, AND HERE IT WOULD FILE A CASE ═══
+    --
+    -- citizenfx/fivem#4006: server-side GetVehiclePedIsIn answers the vehicle a
+    -- ped was LAST in. This suite's stub reproduces that rather than hiding it.
+    -- A detector that trusted the ped would keep a player's dwell running for
+    -- the rest of the match after they walked away from a helicopter -- and
+    -- unlike the roadkill ledger, where the cost is a wrong kill credit, the
+    -- cost here is an anticheat case against somebody who is on foot.
+    do
+        local base = heliMatch().counted
+        run(1000)
+        stepOut(7)                 -- out; the PED still names the helicopter
+        run(10000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a player who left a helicopter is not still in it, whatever the ped says',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+        ok(BR.Vehicles.stats().dwelling == 0,
+            'and nobody is recorded as sitting in anything')
+    end
+
+    -- SWITCHING VEHICLES RESTARTS THE DWELL, and the handle is what says so. An
+    -- implementation keyed only on "is in something refused" would carry a
+    -- part-served dwell from one aircraft into another.
+    do
+        local base = heliMatch().counted
+        run(2000)
+        stepOut(7)
+        setModel(8, 'buzzard')
+        drive(1, 8)
+        run(2000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a dwell does not carry from one refused vehicle into another',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+        run(1500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'and the new one earns its own dwell')
+    end
+
+    -- A RECYCLED SERVER ID DOES NOT INHERIT A PART-SERVED DWELL. FiveM reuses
+    -- ids within the minute; a row left behind by a departing pilot would be
+    -- finished by the next person into that slot, and they would take the case.
+    do
+        local base = heliMatch().counted
+        run(2000)
+        BR.Roster.get(1).license = 'license:somebodyelse'
+        run(2000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a different human in the same slot starts the dwell again',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- ...AND NEITHER DOES THE SAME HUMAN AFTER A DISCONNECT. This is the case
+    -- the licence check CANNOT catch, and it is why `playerDropped` clears the
+    -- row as well: reconnect inside the minute and the licence matches, because
+    -- it is the same person. Without the clear, two-thirds of a dwell served
+    -- before dropping is two-thirds already banked on the way back in -- and
+    -- the case would be opened partly on time spent in a session that ended.
+    do
+        local base = heliMatch().counted
+        run(2000)
+        leave(1)
+        run(500)
+        -- Back, same id, same licence, and into the same helicopter.
+        join(1, 'A')
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.get(1).matchId = theMatch().id
+        setPos(1, 0.0, 0.0, 30.0)
+        drive(1, 7)
+        run(2000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a dwell does not survive the disconnect that interrupted it',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- ═══ THE SECOND SIGNAL, WHICH IS THE ONLY THING STOPPING THE MODEL TABLE
+    --     ROTTING INTO UNIFORM PERMISSION ═══
+    --
+    -- config/vehicles.lua is a DENY-list, so an aircraft nobody wrote down is
+    -- allowed by construction, forever, silently. The occupancy route asks
+    -- GetVehicleType for the same reason the creation route does, and this is
+    -- the assertion that it does -- a model the table has never heard of, which
+    -- the engine calls a helicopter.
+    do
+        roadMatch()
+        setModel(7, 'somethingnobodywrotedown')
+        vehType[7] = 'heli'
+        local base = BR.Vehicles.stats().counted
+        local baseByType = BR.Vehicles.stats().byType
+        drive(1, 7)
+        fired = {}
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'an aircraft the model table never named is still an aircraft',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+        ok(BR.Vehicles.stats().byType == baseByType + 1,
+            'and brvehicles says the table is the thing that needs fixing',
+            ('%d vs %d'):format(BR.Vehicles.stats().byType, baseByType + 1))
+    end
+
+    -- ═══ A MODEL HASH IS SIGNED, AND FLOORING IT TO ZERO WOULD BE A SILENT
+    --     AMNESTY ═══
+    --
+    -- GetEntityModel answers a SIGNED 32-bit integer, so every hash with the top
+    -- bit set arrives here NEGATIVE. This file's other handle-reading helper
+    -- (`entityFrom`) deliberately floors negatives to 0 because a negative
+    -- ENTITY handle means nothing -- and running a model through it would turn
+    -- half the refused table into 0, which is a hash in no row and therefore
+    -- allowed. That is a refusal quietly becoming permission, and nothing
+    -- downstream would ever say so.
+    --
+    -- SET DIRECTLY RATHER THAN THROUGH A MODEL NAME, so the case does not depend
+    -- on whether some particular aircraft happens to hash above 0x80000000
+    -- today. This is buzzard's hash as the engine would hand it over on a build
+    -- that signs it.
+    do
+        roadMatch()
+        local base = BR.Vehicles.stats().counted
+        vehModel[7] = GetHashKey('buzzard') - 0x100000000
+        ok(vehModel[7] < 0, 'the fixture really is a negative hash',
+            tostring(vehModel[7]))
+        drive(1, 7)
+        fired = {}
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'a refused model still refused when its hash arrives signed',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+    end
+
+    -- A THROWING GetVehicleType TAKES NOTHING DOWN. The native is built with the
+    -- platform's makeEntityFunction wrapper and RAISES on a stale handle -- and
+    -- a handle going stale between the seat read and the class read is exactly
+    -- the race a busy match produces. An uncaught throw inside a scheduler job
+    -- costs five of them before BR.Sched suspends the job entirely, which would
+    -- take the roadkill ledger down with it.
+    do
+        roadMatch()
+        setModel(7, 'granger')
+        vehType[7] = 'throw'
+        drive(1, 7)
+        run(3500)
+        ok(BR.Vehicles.stats().driving == 1,
+            'a throwing class read does not suspend the sample job',
+            tostring(BR.Vehicles.stats().driving))
+    end
+
+    -- NOBODY IS EXEMPT, INCLUDING ADMINS. The owner removed the admin exemption
+    -- from server/strip.lua the day it shipped -- "I don't want admins to be
+    -- exempt from any incidents please" -- and this route inherits that by
+    -- having no exemption to inherit. Asserted as an absence, because that is
+    -- the only way an exemption nobody wrote can be caught: a grant is put on
+    -- the player and the finding must be identical.
+    do
+        local base = heliMatch().counted
+        BR.Roster.get(1).admin = true
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'an admin in a stolen helicopter files exactly what anybody else does',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+    end
+
+    -- AND THE OFFENDER IS TOLD NOTHING (#93). The whole output of this detector
+    -- is one server-side TriggerEvent; a player who learns they are under
+    -- suspicion changes behaviour, which costs the case the evidence it was
+    -- going to be made of. Asserted ON THE WIRE, which is where a stray notify
+    -- would show up and where no server-side assertion would see it.
+    --
+    -- AGAINST A CONTROL RUN RATHER THAN AGAINST ZERO, because zero is the wrong
+    -- bar and would be a test that fails for the wrong reason forever: the
+    -- offender is a live player in a live match and goes on receiving roster
+    -- deltas, storm phases and everything else, exactly as they should. What
+    -- must not exist is a message they get BECAUSE they were caught. So the
+    -- identical scenario is run twice -- once in a Buzzard, once in a granger --
+    -- and the difference is by construction the detector's doing.
+    local function namesToSubject(model)
+        heliMatch(model)
+        sent = {}
+        run(3500)
+        stepOut(7); run(500); drive(1, 7); run(3500)
+        local seen = {}
+        for _, m in ipairs(sent) do
+            if m.target == 1 or m.target == '1' then seen[m.event] = true end
+        end
+        return seen
+    end
+    do
+        local caught  = namesToSubject('buzzard')
+        local control = namesToSubject('granger')
+        local extra = {}
+        for name in pairs(caught) do
+            if not control[name] then extra[#extra + 1] = tostring(name) end
+        end
+        table.sort(extra)
+        ok(#extra == 0,
+            'the offender receives nothing a player in an ordinary car does not',
+            #extra > 0 and table.concat(extra, ', ') or 'nothing extra')
+    end
+end
+
+describe('vehicles.roadkill.death')
+do
+    -- END TO END: the kill lands on the roster, on the wire, and in the feed's
+    -- own words.
+    roadMatch()
+    local victim = BR.Roster.get(2)
+
+    drive(1, 7)
+    setPos(1, 5.0, 0.0, 30.0)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    setPos(1, 10.0, 0.0, 30.0)
+    pedHealth[1002] = 120
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == 1, 'the ledger has the driver before the death arrives')
+
+    BR.Roster.get(1).kills = 0
+    sent = {}
+    -- THE CLIENT REPORTS A CAUSE AND A KILLER AND NEITHER IS BELIEVED. `killer`
+    -- is the netId GET_PED_SOURCE_OF_DEATH handed the victim's own machine, and
+    -- the server has ignored that field since M6.
+    fire(BR.Net.PLAYER_DIED, 2,
+         { cause = GetHashKey('WEAPON_RUN_OVER_BY_CAR'), killer = 4242 })
+
+    ok(BR.Roster.get(1).kills == 1, 'a roadkill increments the driver',
+        tostring(BR.Roster.get(1).kills))
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.killerSrc == 1, 'and the feed names them',
+        tostring(last and last.killerSrc))
+    ok(last and last.cause == 'roadkill', 'and calls it a roadkill',
+        tostring(last and last.cause))
+    -- The UI's CAUSE_PHRASE table already knows this word, so the row draws its
+    -- plain arrow rather than hunting for a weapon icon that does not exist.
+    ok(last and last.weapon == 'roadkill', 'and carries it as the weapon',
+        tostring(last and last.weapon))
+end
+
+describe('vehicles.roadkill.instant')
+do
+    -- THE ORDINARY CASE IS THE ONE THE 4 Hz LEDGER CANNOT SEE.
+    --
+    -- A car at speed turns a full-health player into a corpse between two
+    -- samples: the victim's client reports the death immediately and the death
+    -- handler runs before the sampler next fires, so there is no health drop for
+    -- the ledger to have noticed. server/combat.lua's `killerOf` gives an
+    -- otherwise unattributed death exactly one look at the same server-side
+    -- state, which is what this asserts -- note that NOTHING is stepped between
+    -- the car arriving and the death.
+    roadMatch()
+    local victim = BR.Roster.get(2)
+
+    drive(1, 7)
+    setPos(1, 4.0, 0.0, 30.0)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    setPos(1, 10.0, 0.0, 30.0)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == nil,
+        'the victim is untouched right up to the moment they are hit',
+        tostring(victim.lastHitBy))
+
+    BR.Roster.get(1).kills = 0
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 2, { cause = 'unknown' })
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.killerSrc == 1,
+        'a death with no ledger entry still resolves the driver at the death itself',
+        tostring(last and last.killerSrc))
+    ok(last and last.cause == 'roadkill',
+        'and the server names the cause the client never reported',
+        tostring(last and last.cause))
+end
+
+describe('vehicles.roadkill.forged')
+do
+    -- ═══ THE ONE THAT WOULD HAVE BEEN WORSE THAN NO FEATURE ═══
+    --
+    -- The owner's suggested route was GET_PED_SOURCE_OF_DEATH, which is read on
+    -- the victim's own machine and arrives in a payload of two client-authored
+    -- fields. Believing it would let two players farm eliminations by taking
+    -- turns dying and naming each other's car -- manufacturing kills that never
+    -- happened, which is strictly worse than losing kills that did.
+    --
+    -- So the label can be claimed and the CREDIT cannot: this death reports the
+    -- real run-over hash and a netId, with no vehicle anywhere on the server.
+    roadMatch()
+    sent = {}
+    BR.Roster.get(1).kills = 0
+    fire(BR.Net.PLAYER_DIED, 2,
+         { cause = GetHashKey('WEAPON_RUN_OVER_BY_CAR'), killer = 1001 })
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last ~= nil, 'the death is still processed')
+    ok(last and last.killerSrc == nil,
+        'but a roadkill the server cannot see credits nobody, whatever the client sent',
+        tostring(last and last.killerSrc))
+    ok(BR.Roster.get(1).kills == 0, 'and nobody is handed a kill',
+        tostring(BR.Roster.get(1).kills))
+    -- The cause still translates -- describeCause has mapped both car hashes to
+    -- this word since M7. A label is not a credit.
+    ok(last and last.cause == 'roadkill', 'the feed still calls it a roadkill',
+        tostring(last and last.cause))
+end
+
+describe('vehicles.roadkill.squad')
+do
+    -- QUESTION 5, AND THE ANSWER WAS "LEAVE IT" (owner, 2026-08-21): "VDM against
+    -- a squadmate can still kill them. That's not really an issue we need to
+    -- solve today tbh."
+    --
+    -- Friendly fire is gated on the engine team and on the damage validator's
+    -- SAME_SQUAD refusal; a car is neither, so driving into a squadmate goes on
+    -- working. Pinned because it is now ATTRIBUTED as well -- which is the change
+    -- -- and because an admin reading a griefing report wants the driver's name
+    -- on it rather than an anonymous accident.
+    squadMatch(3)
+    for s = 1, 3 do pedHealth[1000 + s] = 200 end
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 10.0, 0.0, 30.0)
+    setPos(3, 40.0, 0.0, 30.0)
+    tick(500); tick(500)
+
+    local victim = BR.Roster.get(2)
+    drive(1, 7)
+    setPos(1, 5.0, 0.0, 30.0)
+    tick(500)
+    setPos(1, 10.0, 0.0, 30.0)
+    pedHealth[1002] = 120
+    tick(500)
+
+    ok(victim.lastHitBy == 1,
+        'a squadmate at the wheel is credited exactly like anybody else',
+        tostring(victim.lastHitBy))
+
+    -- ...and it still costs the victim, which is the half the owner declined to
+    -- change. A squad knock rather than an elimination, because that is what
+    -- every other damage path does to a player with a standing mate.
+    pedHealth[1002] = 100
+    fire(BR.Net.PLAYER_DIED, 2, { cause = GetHashKey('WEAPON_RAMMED_BY_CAR') })
+    ok(victim.state == BR.PlayerState.DBNO,
+        'and the squadmate still goes down: VDM inside a squad is unchanged',
+        tostring(victim.state))
+    ok(victim.downedBy == 1, 'with the driver on the hook for it',
+        tostring(victim.downedBy))
+end
+
+describe('vehicles.cover')
+do
+    -- QUESTION 1, AND THE ANSWER WAS "NO DIFFERENCE" (owner, 2026-08-21): "yes,
+    -- in-vehicle ped damage should be the same and matters no differently from
+    -- out-of-vehicle damage. The engine blocks bullets going through anything
+    -- other than the vehicle's glass, which is a fair play if they do hit the
+    -- glass then the ped."
+    --
+    -- Which is what BR.Config.ExpectedDamage already does, by having no cover
+    -- term at all: weaponDamage x rarity x falloff x body part, and nothing in
+    -- there knows the victim is behind a car door. NOTHING WAS ADDED. This block
+    -- is the thing that makes the absence checkable -- a `vehicleOccupantMult`
+    -- appearing in that formula fails here.
+    reset()
+    queueUp(1, 'Shooter', BR.Mode.SOLO.key)
+    queueUp(2, 'Target', BR.Mode.SOLO.key)
+    queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+
+    local pistol = BR.Config.WeaponById['pistol']
+    local function arm()
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                         count = 1, clip = pistol.clip })
+        BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 40
+        BR.Inv.of(1).active = 1
+    end
+    local function shoot(ids)
+        fakeTime = fakeTime + 5000
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+            weaponDamage = 26, hitGlobalIds = ids,
+        })
+    end
+
+    for s = 1, 3 do BR.Roster.get(s).pos = { x = s * 2.0, y = 0.0, z = 30.0 } end
+
+    -- The same shot, twice, at a target who is standing and then sitting in a
+    -- car. Health is restored between them so the two are comparable.
+    arm()
+    BR.Roster.get(2).hp = 100.0
+    shoot({ 1002 })
+    local onFoot = 100.0 - BR.Roster.get(2).hp
+
+    arm()
+    BR.Roster.get(2).hp = 100.0
+    drive(2, 9)
+    shoot({ 1002 })
+    local inCar = 100.0 - BR.Roster.get(2).hp
+
+    ok(onFoot > 0.0, 'a pistol round hurts a player standing in the open',
+        tostring(onFoot))
+    ok(inCar == onFoot,
+        'and hurts them by exactly the same amount sitting in a car',
+        ('on foot %s, in a car %s'):format(tostring(onFoot), tostring(inCar)))
+
+    -- ═══ AND A ROUND THAT HITS THE CAR IS STILL NOTHING, INCLUDING NOT A
+    --     REFUSAL ═══
+    --
+    -- hitGlobalIds resolves through a map of PLAYER PEDS only, so a vehicle netId
+    -- answers nil and the whole victim loop is skipped: no damage, no refusal, no
+    -- record. That is what makes a car hard cover, which is the behaviour the
+    -- engine's own hit resolution produces and the owner accepted. The load-
+    -- bearing half is the SECOND assertion: a player emptying a magazine into a
+    -- car must not accumulate anticheat refusals for it.
+    -- TWO ROUNDS, NOT ONE, AND THE SECOND IS WHAT MAKES THIS A TEST. `NO_WEAPON`
+    -- sits at a bar of TWO -- docs/security.md: it is the catch-all bucket, as
+    -- much a gap in a lookup table as a dishonest shooter -- so ONE refusal files
+    -- nothing whatever the code does. A single shot here passed against a
+    -- deliberately broken handler that DID refuse it. One shot proves the counter
+    -- is quiet; two prove the case is.
+    arm()
+    BR.Roster.get(2).hp = 100.0
+    local refusalsBefore = BR.Damage.refusals or 0
+    local firedBefore = #firedOf('br:ringmaster:refusal')
+    shoot({ 5000 })                 -- a netId that is no player's ped
+    shoot({ 5000 })
+
+    ok(BR.Roster.get(2).hp == 100.0, 'a round into the bodywork hurts nobody',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusalsBefore,
+        'and is not a refusal, so shooting cars opens no case',
+        ('%d -> %d'):format(refusalsBefore, BR.Damage.refusals or 0))
+    ok(#firedOf('br:ringmaster:refusal') == firedBefore,
+        'and a second magazine into it files nothing with the Ringmaster',
+        ('%d -> %d'):format(firedBefore, #firedOf('br:ringmaster:refusal')))
+    -- ...but they still cost rounds. A miss costs a round too, which is the whole
+    -- difference between counting shots and counting hits.
+    ok(BR.Inv.of(1).slots[1].clip == pistol.clip - 2,
+        'while still spending the rounds, exactly as a miss does',
+        tostring(BR.Inv.of(1).slots[1].clip))
+end
+
+describe('vehicles.explosion')
+do
+    -- QUESTION 2, AND THE ANSWER WAS "THAT'S FINE" (owner, 2026-08-21): "It's by
+    -- design that vehicles in the game can explode under normal circumstances,
+    -- without a killer necessarily. It could be even the driver driving off a
+    -- cliff."
+    --
+    -- WEAPON_EXPLOSION is environmental, so server/damage.lua counts it and
+    -- returns; explosion type 7 (a car) is not one of the three this gamemode
+    -- issues, so the fire ledger declines it too -- tested from the other end in
+    -- combat.fire. Nothing was added. What is pinned here is that the whole path
+    -- stays quiet: no damage of ours, no attribution, and above all NO REFUSAL,
+    -- because an ambient blast that opened anticheat cases would accuse whoever
+    -- was standing near a petrol station.
+    roadMatch()
+    local victim = BR.Roster.get(2)
+    victim.lastHitBy, victim.lastHitAt = nil, nil
+    victim.hp = 100.0
+
+    local envBefore = BR.Damage.envHits or 0
+    local refusalsBefore = BR.Damage.refusals or 0
+
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = GetHashKey('WEAPON_EXPLOSION'),
+        hitComponent = 0, weaponDamage = 200, hitGlobalIds = { 1002 },
+    })
+
+    ok((BR.Damage.envHits or 0) == envBefore + 1,
+        'a vehicle explosion is recognised as the world\'s',
+        ('%d -> %d'):format(envBefore, BR.Damage.envHits or 0))
+    ok((BR.Damage.refusals or 0) == refusalsBefore,
+        'and is never a refusal',
+        ('%d -> %d'):format(refusalsBefore, BR.Damage.refusals or 0))
+    ok(victim.lastHitBy == nil, 'and writes no attribution',
+        tostring(victim.lastHitBy))
+
+    -- ...so the death that follows is nobody's, which is the design rather than
+    -- the gap. A driver going off a cliff has no killer and should not acquire
+    -- one.
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 2, { cause = GetHashKey('WEAPON_EXPLOSION') })
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.killerSrc == nil,
+        'a player killed by an exploding vehicle is nobody\'s kill, by design',
+        tostring(last and last.killerSrc))
+    ok(last and last.cause == 'explosion', 'and the feed says what happened',
+        tostring(last and last.cause))
+end
+
+describe('storm.vehicles')
+do
+    -- QUESTION 4, AND THE ANSWER WAS "NEVER" (owner, 2026-08-21): "no, vehicles
+    -- will never grant storm immunity. that's not a thing. the only exception is
+    -- the ambulance and ONLY while they're in `rescue` state - so if they hop in
+    -- an ambulance and drive off they are not granted any sort of immunity."
+    --
+    -- Which is already true, because server/storm.lua's damage loop is a position
+    -- check against a solved circle and a server-side ledger: it holds no ped
+    -- handle and no vehicle handle, so there is nothing there for a car to change.
+    --
+    -- THE ONE EXCEPTION IS NOW WRITTEN. #191 landed the CPR kit, so `e.rescue`
+    -- has a writer and the damage filter carries `and not e.rescue`. The block
+    -- at the end of this section asserts BOTH halves of the owner's sentence,
+    -- which is the pair that has to hold together: the flag exempts, AND a
+    -- vehicle still does not. Asserting only the first would let somebody
+    -- "simplify" the filter into a vehicle test and still pass.
+    --
+    -- Two players stand on the same square metre outside the wall. One is at the
+    -- wheel of a car and one is on foot, and they must be hurt identically -- an
+    -- equality rather than two independent thresholds, because "the driver took
+    -- SOME damage" would still pass if a car halved it.
+    reset()
+    queueUp(1, 'Driver', BR.Mode.SOLO.key)
+    queueUp(2, 'Walker', BR.Mode.SOLO.key)
+    queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local a0 = manchor()
+    for s = 1, 3 do setPos(s, a0.x, a0.y) end
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+
+    fakeTime = fakeTime + 1000
+    forceState(BR.MatchState.PLAYING)
+    for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+
+    local rec = mstorm()
+    local a   = manchor()
+    ok(rec ~= nil, 'the storm is running')
+
+    -- Both far outside, on the same spot; the bystander stays at the anchor so
+    -- the match cannot end underneath the assertions.
+    setPos(1, a.x + rec.r0 + 4000.0, a.y)
+    setPos(2, a.x + rec.r0 + 4000.0, a.y)
+    setPos(3, a.x, a.y)
+    -- The car exists and is stationary, which is what a shelter would be. It also
+    -- keeps the roadkill ledger out of this block: nothing is moving.
+    drive(1, 7)
+
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + 1000
+    BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+
+    local toDriver, toWalker, lastDriver, lastWalker = 0, 0, nil, nil
+    for _, h in ipairs(eventsOf(BR.Net.STORM_DAMAGE)) do
+        if h.target == 1 then toDriver = toDriver + 1 lastDriver = h.args[1] end
+        if h.target == 2 then toWalker = toWalker + 1 lastWalker = h.args[1] end
+    end
+
+    ok(toWalker >= 1, 'the player on foot outside the wall is hurt',
+        tostring(toWalker))
+    ok(toDriver == toWalker,
+        'and the one sitting in a car is hurt exactly as often',
+        ('driver %d, walker %d'):format(toDriver, toWalker))
+    ok(lastDriver and lastWalker and lastDriver.amount == lastWalker.amount,
+        'by exactly the same amount',
+        ('driver %s, walker %s'):format(
+            tostring(lastDriver and lastDriver.amount),
+            tostring(lastWalker and lastWalker.amount)))
+    ok(BR.Roster.get(1).stormHp ~= nil
+       and BR.Roster.get(1).stormHp == BR.Roster.get(2).stormHp,
+        'and the server-side ledger runs down at the same rate for both',
+        ('driver %s, walker %s'):format(tostring(BR.Roster.get(1).stormHp),
+                                        tostring(BR.Roster.get(2).stormHp)))
+
+    -- AND DRIVING DOES NOT HELP EITHER. "if they hop in an ambulance and drive
+    -- off they are not granted any sort of immunity" -- the rule is about the
+    -- rescue, not about being in a vehicle, so a moving one is worth its own
+    -- assertion rather than being assumed to follow from a parked one.
+    --
+    -- ASSERTED ON THE LEDGER RATHER THAN ON THE WIRE, and that is not a weaker
+    -- claim -- it is the stronger one. STORM_DAMAGE carries WHOLE engine points
+    -- and the fraction is carried forward, so at phase 1's rate a given tick
+    -- legitimately sends nothing; `stormHp` is the server-side number that
+    -- decides the elimination and it moves every tick without exception.
+    local before = BR.Roster.get(1).stormHp
+    setPos(1, a.x + rec.r0 + 4010.0, a.y)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(1).stormHp < before,
+        'a player driving through the storm goes on losing health to it',
+        ('%s -> %s'):format(tostring(before), tostring(BR.Roster.get(1).stormHp)))
+
+    -- ═══ AND THE ONE EXCEPTION, WHICH IS #191's ═══
+    --
+    -- "the only exception is the ambulance and ONLY while they're in `rescue`
+    -- state". Player 1 is the one in a car and has been taking storm damage for
+    -- every assertion above; setting the flag must stop it, and clearing it must
+    -- start it again. THE SAME PLAYER, IN THE SAME CAR, IN THE SAME PLACE is the
+    -- whole point -- nothing about them changes except the flag, so the flag is
+    -- provably the only thing doing the work.
+    local e1 = BR.Roster.get(1)
+    e1.rescue = true
+    local exempt0 = e1.stormHp
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(1).stormHp == exempt0,
+        'a player in `rescue` state stops losing health to the storm entirely',
+        ('%s -> %s'):format(tostring(exempt0), tostring(BR.Roster.get(1).stormHp)))
+
+    -- The walker beside them is NOT exempt, which proves the filter narrowed to
+    -- one player rather than the damage loop simply having stopped.
+    local w0 = BR.Roster.get(2).stormHp
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(2).stormHp < w0,
+        'while everybody else in the same storm keeps taking it',
+        ('%s -> %s'):format(tostring(w0), tostring(BR.Roster.get(2).stormHp)))
+
+    -- AND IT IS AN EXEMPTION, NOT A ONE-WAY DOOR. Every path out of a rescue
+    -- clears the flag; if clearing it did not restore damage, a delivered player
+    -- would be storm-immune for the rest of the match and nothing would ever
+    -- say so.
+    e1.rescue = nil
+    local back0 = BR.Roster.get(1).stormHp
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(1).stormHp < back0,
+        'and clearing the flag puts them straight back in the wall',
+        ('%s -> %s'):format(tostring(back0), tostring(BR.Roster.get(1).stormHp)))
+end
+
+describe('health.audit.live')
+do
+    -- THE DETECTOR, THROUGH THE REAL SAMPLER, rather than through the solver.
+    -- tools/test_shared.lua's `health.audit` block pins the arithmetic and every
+    -- excuse; this one proves the sampler actually asks it, with the stamps the
+    -- running server writes -- which is the half that a correct solver wired to
+    -- the wrong field would still fail.
+    local A = BR.Config.Combat.healthAudit
+
+    --- An ALIVE player in a PLAYING match, with the sampler already settled.
+    local function audited()
+        reset()
+        queueUp(1, 'Cheat', BR.Mode.SOLO.key)
+        queueUp(2, 'Honest', BR.Mode.SOLO.key)
+        queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+        theMatch().state = BR.MatchState.PLAYING
+        setPos(1, 0.0, 0.0, 30.0)
+        setPos(2, 50.0, 0.0, 30.0)
+        setPos(3, 500.0, 500.0, 30.0)
+        for s = 1, 3 do pedHealth[1000 + s] = BR.Config.Match.maxHealth end
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        sent = {}
+        return BR.Roster.get(1), BR.Roster.get(2)
+    end
+
+    -- ═══ AN HONEST PLAYER SCORES ZERO, AND THIS IS THE ASSERTION THAT MATTERS ═══
+    --
+    -- A detector that fires on honest play is worse than no detector, because it
+    -- gets switched off -- and the day it gets switched off is the day it was
+    -- needed. So this comes first.
+    do
+        local cheat, honest = audited()
+        -- The ordinary case: the ped agrees with the ledger, sample after
+        -- sample, which is what every honest client does four times a second.
+        for _ = 1, 8 do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+        ok((cheat.healthAudit or {}).hp == nil
+           or (cheat.healthAudit or {}).hp == 0.0,
+            'a player whose ped agrees with the ledger scores nothing',
+            tostring((cheat.healthAudit or {}).hp))
+
+        -- ...AND SO DOES A FALL. The engine owns falls, fire, drowning and
+        -- cars; the server models none of them, so the ledger FOLLOWS the ped
+        -- down. Counting that would mean counting ordinary play -- and it is not
+        -- the exploit anyway: a player who lowers their own health has cheated
+        -- themselves.
+        pedHealth[1001] = BR.ToEngineHp(20.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok((cheat.healthAudit or {}).hp == nil
+           or (cheat.healthAudit or {}).hp == 0.0,
+            'and neither does a fall, a fire or a drowning',
+            tostring((cheat.healthAudit or {}).hp))
+        ok(cheat.hp == 20, 'the world still hurts them, exactly as before',
+            tostring(cheat.hp))
+        ok(honest ~= nil, 'the second player exists')
+    end
+
+    -- ═══ THE EXPLOIT IS SEEN ═══
+    do
+        local cheat = audited()
+
+        -- The server hurts them for real, through the real path.
+        BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+        ok(cheat.hp == 60.0, 'the server ledger takes the damage',
+            tostring(cheat.hp))
+
+        -- THE CHEAT: the ped never applies it. `pedHealth` is the owning
+        -- client's number and it stays pinned at full.
+        --
+        -- Stepped past `hurtGraceMs` first, because the honest reading of a ped
+        -- that has not yet applied our damage is EXACTLY this shape -- that is
+        -- the whole reason the grace exists, and a detector that fired inside it
+        -- would accuse every player on a bad connection.
+        local steps = math.ceil((A.hurtGraceMs + 1000) / 500)
+        for _ = 1, steps do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+
+        ok((cheat.healthAudit or {}).hp and cheat.healthAudit.hp > 0.0,
+            'a ped pinned at full while the ledger says 60 is counted',
+            tostring((cheat.healthAudit or {}).hp))
+        ok(cheat.healthAudit.excused[BR.HealthExcuse.HURT] ~= nil,
+            'and the samples inside the grace were excused rather than missed -- '
+                .. 'which is what /brhealth prints to prove the window is right',
+            tostring(cheat.healthAudit.excused[BR.HealthExcuse.HURT]))
+
+        -- AND THE LEDGER IS STILL BEING OVERWRITTEN, because this change is a
+        -- detector and nothing else. If this assertion ever flips, somebody has
+        -- landed prevention -- which is a good day, and this block is one of the
+        -- places that has to be updated on purpose.
+        ok(cheat.hp == 100, 'the exploit still WORKS -- detection changed no '
+            .. 'gameplay, which is the whole safety story of this change',
+            tostring(cheat.hp))
+    end
+
+    -- ═══ A MED KIT IS NOT A CHEAT ═══
+    --
+    -- The one legitimate upward path the ledger does not already own: the server
+    -- issues INV_EFFECT with a target and the CLIENT walks its own ped up to it,
+    -- so the sampler reads the rise on the way past. This is also why the
+    -- eventual fix cannot simply refuse every rise.
+    do
+        local cheat = audited()
+        BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+        local steps = math.ceil((A.hurtGraceMs + 500) / 500)
+        for _ = 1, steps do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+        -- Wound the ped to match, so the rise below is a real rise.
+        pedHealth[1001] = BR.ToEngineHp(60.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        local baseline = (cheat.healthAudit or {}).hp or 0.0
+
+        -- The server issues a heal, exactly as server/inventory.lua does.
+        cheat.healUntil = fakeTime + A.healSettleMs
+        pedHealth[1001] = BR.Config.Match.maxHealth
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+
+        ok(((cheat.healthAudit or {}).hp or 0.0) == baseline,
+            'health the server ISSUED is not counted against the player',
+            ('%s -> %s'):format(tostring(baseline),
+                tostring((cheat.healthAudit or {}).hp)))
+        ok((cheat.healthAudit or {}).excused[BR.HealthExcuse.HEALING] ~= nil,
+            'and it is recorded as a heal rather than silently dropped')
+    end
+
+    -- ═══ #191: A PLAYER IN AN AMBULANCE IS NOT A CHEAT ═══
+    --
+    -- The CPR kit landed the same week as this detector, and it puts a downed
+    -- player inside a vehicle with their health restored on arrival. A detector
+    -- that cried wolf on the feature shipping beside it would have been switched
+    -- off in its first playtest, so the exemption is asserted rather than
+    -- assumed.
+    do
+        local cheat = audited()
+        BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+        cheat.rescue = { id = 1 }
+        local steps = math.ceil((A.hurtGraceMs + 1500) / 500)
+        for _ = 1, steps do
+            fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        end
+        ok(((cheat.healthAudit or {}).hp or 0.0) == 0.0,
+            'a player being rescued is never counted',
+            tostring((cheat.healthAudit or {}).hp))
+        ok((cheat.healthAudit or {}).excused[BR.HealthExcuse.RESCUE] ~= nil,
+            'and the exemption is visible in the breakdown')
+        cheat.rescue = nil
+    end
+
+    -- ═══ THE TALLY DOES NOT FOLLOW ANYBODY INTO THE NEXT MATCH ═══
+    --
+    -- #161's rule, and the bar depends on it: "a whole bar the server never
+    -- issued" only means anything inside one round. Carried over, a player who
+    -- collected honest jitter across three matches would be reported for having
+    -- played a lot.
+    do
+        local cheat = audited()
+        cheat.healthAudit = { hp = 500.0, samples = 9, peak = 90.0, excused = {} }
+        cheat.healUntil = fakeTime + 5000
+        cheat.healthSettleUntil = fakeTime + 5000
+        BR.Match.resetPlayer(1, cheat)
+        ok(cheat.healthAudit == nil,
+            'the per-match tally is wiped with the rest of the match record',
+            tostring(cheat.healthAudit))
+        ok(cheat.healUntil == nil and cheat.healthSettleUntil == nil,
+            'and so are both grace windows, which are deadlines on the OLD '
+                .. 'match clock -- a stale one would excuse the first seconds '
+                .. 'of the next round')
+    end
+
+    pedHealth[1001], pedHealth[1002] = nil, nil
+end
+
+
+describe('inv.quiet -- a delivery that makes no noise')
+-- ---------------------------------------------------------------------------
+--
+-- ═══ WHERE THE OWNER'S PICKUP-SOUND BUG IS ACTUALLY FIXED ═══
+--
+-- Owner, 2026-08-29: "when transitioning to state BUS, the pickup sound is
+-- heard again by anyone who has purchased an item."
+--
+-- The client plays GTA's PICK_UP whenever an INV_SET shows a slot gained
+-- something, which is right for a pickup and wrong for the warmup shop's car
+-- being handed out at wheels-up. Only the SERVER knows which of the two just
+-- happened, so it is the server that says so -- and this is the assertion that
+-- it does, and that it stays silent about it by default.
+do
+    local m = lootMatch()
+
+    -- ═══ AN ORDINARY GIVE SAYS NOTHING ABOUT NOISE ═══
+    --
+    -- Asserted first, because the failure that matters most is not "the shop is
+    -- loud" but "everything went quiet". `quiet` must be ABSENT rather than
+    -- false: every other caller of BR.Inv.give in the tree passes no options at
+    -- all, and if the default were to mark the push, the pickup cue would be
+    -- gone from the whole game.
+    BR.Inv.reset(1)
+    sent = {}
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 1 })
+    local pushes = eventsOf(BR.Net.INV_SET)
+    ok(#pushes > 0, 'an ordinary give pushes the inventory', #pushes)
+    ok(pushes[#pushes].args[1].quiet == nil,
+        'and says nothing about noise -- so the pickup cue still fires for '
+            .. 'everything that is actually picked up',
+        tostring(pushes[#pushes].args[1].quiet))
+
+    -- ═══ ...AND ONE ASKED FOR QUIETLY IS MARKED ═══
+    sent = {}
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 1 }, { quiet = true })
+    pushes = eventsOf(BR.Net.INV_SET)
+    ok(#pushes > 0 and pushes[#pushes].args[1].quiet == true,
+        'a give asked for quietly marks the push, which is what the shop '
+            .. 'delivery uses at wheels-up',
+        #pushes > 0 and tostring(pushes[#pushes].args[1].quiet) or 'no push')
+
+    -- ═══ THE ITEM STILL ARRIVES. SILENT IS NOT INVISIBLE ═══
+    --
+    -- The cue is the only thing suppressed. A "fix" that skipped the push
+    -- entirely would also be silent, and would lose the player their car.
+    local inv = BR.Inv.of(1)
+    local held = 0
+    for i = 1, 5 do
+        local s = inv.slots[i]
+        if s and s.item == 'bandage' then held = held + s.count end
+    end
+    ok(held >= 2,
+        'and the goods are in the inventory either way -- quiet suppresses a '
+            .. 'sound, not a delivery', held)
+
+    -- ═══ THE FLAG DOES NOT STICK ═══
+    --
+    -- One push is marked, not the connection. A player who is handed a car at
+    -- wheels-up must still hear the next crate they walk over.
+    sent = {}
+    BR.Inv.give(1, { item = 'minishield', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 2, count = 1 })
+    pushes = eventsOf(BR.Net.INV_SET)
+    ok(#pushes > 0 and pushes[#pushes].args[1].quiet == nil,
+        'the very next ordinary give is loud again -- the flag is a property '
+            .. 'of one push, not of the player')
+
+    -- And the bare push, which is the primitive the whole thing rests on.
+    sent = {}
+    BR.Inv.push(1)
+    ok(eventsOf(BR.Net.INV_SET)[1].args[1].quiet == nil,
+        'BR.Inv.push with no options is loud')
+    sent = {}
+    BR.Inv.push(1, { quiet = true })
+    ok(eventsOf(BR.Net.INV_SET)[1].args[1].quiet == true,
+        'BR.Inv.push with quiet is not')
+
+    -- ANYTHING THAT IS NOT `true` IS NOT QUIET, checked on the server side too:
+    -- the client refuses to be silenced by a 0, and nothing should be sending
+    -- one in the first place.
+    sent = {}
+    BR.Inv.push(1, { quiet = 0 })
+    ok(eventsOf(BR.Net.INV_SET)[1].args[1].quiet == nil,
+        'and a 0 does not buy silence at either end -- 0 is truthy in Lua')
+
+    if m then end
+end
+
+-- ---------------------------------------------------------------------------
+describe('combat.revivekey')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE KEY AND THE INVENTORY ARE ONE EDGE (#219, owner 2026-08-30)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- "The moment that bleed out timer ends and they go to spectate - their key
+    --  is created and their inventory is spilled on the ground" -- and, of the
+    -- other branch, "if they are revived in-person there, they can keep their
+    -- inventory, which is no different from today."
+    --
+    -- THIS IS THE BLOCK THAT PROVES IT AGAINST THE REAL PATH. tools/
+    -- test_revivekey.lua drives BR.ReviveKey in a sandbox and can assert every
+    -- rule about a key EXCEPT the one that matters most: that it is minted on
+    -- the same code path that forfeits an inventory and on no other. That is a
+    -- property of server/combat.lua, so it is asserted here, where the real
+    -- eliminate() runs against the real roster, the real loot table and the real
+    -- #144 hold.
+    --
+    -- WHY IT IS THE EDGE AND NOT THE OUTCOME. `BR.Loot.deathBox` returns early
+    -- for a player carrying nothing, and an empty-handed player must still be
+    -- recoverable -- so "a key exists exactly when items are on the floor" is
+    -- FALSE and is not what is tested. What is tested is that the two run
+    -- together on the elimination path and that neither runs on the hold path.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local m = theMatch()
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+    end
+    -- A SQUAD, SET DIRECTLY. The formation path is BR.Party's and is tested at
+    -- length elsewhere; what this block needs is the field eliminate() reads.
+    BR.Roster.get(1).squadId = 'sq_key'
+    BR.Roster.get(2).squadId = 'sq_key'
+    BR.Roster.get(3).squadId = 'sq_other'
+
+    ok(BR.ReviveKey ~= nil,
+        'server/revivekey.lua is loaded -- a suite that omitted it would '
+            .. 'exercise combat.lua\'s nil guard for ever and never the rule')
+
+    -- ═══ THE ELIMINATION PATH: BOTH HALVES, TOGETHER ═══
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local before = m.loot.nextId
+    BR.Combat.eliminate(2, 'weapon', 1)
+
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT, 'the player is OUT')
+    ok(m.loot.nextId > before,
+        'their inventory spilled -- the death box laid entries on the ground',
+        ('nextId %d -> %d'):format(before, m.loot.nextId))
+    local k2 = BR.Roster.get(2).reviveKey
+    ok(k2 ~= nil,
+        'AND the same edge minted a revive key -- one moment, not two')
+    ok(k2 and k2.held == false,
+        'which nobody holds yet: it is lying where they fell')
+    ok(k2 and k2.x == 402.0 and k2.y == 400.0,
+        'at the body, from the server\'s own position sample',
+        k2 and ('(%.1f, %.1f)'):format(k2.x, k2.y))
+    ok(k2 and k2.expiresAt == k2.mintedAt + BR.Config.ReviveKey.expiryMs,
+        'with the owner\'s three-minute clock on the pickup',
+        k2 and tostring((k2.expiresAt or 0) - (k2.mintedAt or 0)))
+
+    -- ═══ AN EMPTY-HANDED DEATH STILL MINTS ONE ═══
+    --
+    -- The case that makes "the edge, not the outcome" load-bearing:
+    -- BR.Loot.deathBox returns early with nothing to scatter, and the key must
+    -- not be conditional on what it returned.
+    BR.Inv.reset(1)
+    local beforeEmpty = m.loot.nextId
+    BR.Combat.eliminate(1, 'storm', nil)
+    ok(m.loot.nextId == beforeEmpty,
+        'a player carrying nothing scatters nothing',
+        ('nextId %d -> %d'):format(beforeEmpty, m.loot.nextId))
+    ok(BR.Roster.get(1).reviveKey ~= nil,
+        'and STILL gets a key -- the mint follows the edge, not the spill')
+
+    -- ═══ A SOLO GETS NONE. The gate is `squadId`, which they do not have ═══
+    BR.Roster.get(3).squadId = nil
+    BR.Combat.eliminate(3, 'fall', nil)
+    ok(BR.Roster.get(3).reviveKey == nil,
+        'a player with no squad leaves no key -- there is nobody to own it')
+
+    -- ═══ THE #144 HELD DEATH MINTS NOTHING, AND NEITHER DOES THE DEATH BOX ═══
+    --
+    -- The other half of the owner's table, and the reason the call site is BELOW
+    -- the `beforeTheMatch` guard rather than above it. A player who dies before
+    -- the match starts keeps their inventory and is revived for free; handing
+    -- their squad a 25-Volt entitlement for that would be paying them for a
+    -- death that is never recorded anywhere.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = mendsAt() + 1
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.BUS, 'a match on the bus, before it is live')
+
+    local m2 = theMatch()
+
+    -- OUT OF THE PLANE AND ON THE GROUND, because `beforeTheMatch` is not
+    -- "the match is in BUS" alone -- it is a player in FREEFALL, GLIDE, ALIVE or
+    -- DBNO while the match is. Somebody still aboard cannot die at all
+    -- (`canDie`), so a test that skipped the jump would prove nothing about the
+    -- hold and would pass for the wrong reason.
+    local r2 = BR.Bus.active(m2)
+    fakeTime = r2.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 2)
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'a player who jumped and landed while the match is still on the bus')
+
+    BR.Roster.get(2).squadId = 'sq_held'
+    BR.Roster.get(2).pos = { x = 500.0, y = 500.0, z = 30.0 }
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local heldBefore = m2.loot.nextId
+    BR.Combat.eliminate(2, 'fall', nil)
+
+    ok(BR.Roster.get(2).revivePending == true,
+        'the death is HELD for the start rather than banked (#144)')
+    ok(m2.loot.nextId == heldBefore,
+        'so their inventory stayed on their person',
+        ('nextId %d -> %d'):format(heldBefore, m2.loot.nextId))
+    ok(BR.Roster.get(2).reviveKey == nil,
+        'AND no key was minted -- the two halves agree on the branch they did '
+            .. 'NOT take, which is the half a second rule would get wrong')
+
+    -- ═══ AND A MATCH LEAVES NO KEY BEHIND IT ═══
+    --
+    -- BR.Match.resetPlayer is the one function both CLEANUP and leaveMatch go
+    -- through (#161). A key that survived it would be found by the next match's
+    -- sweep, where the squad ids have been reissued and it would belong to
+    -- strangers.
+    local e2 = BR.Roster.get(2)
+    e2.reviveKey = { x = 1.0, y = 2.0, z = 3.0, held = true }
+    BR.Match.resetPlayer(2, e2)
+    ok(e2.reviveKey == nil,
+        'BR.Match.resetPlayer clears the key, so nothing outlives the round')
+
+    if m then end
+end
+
+-- ---------------------------------------------------------------------------
+describe('combat.bleedout.spill')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE BLEED-OUT ROUTE INTO eliminate(), WHICH NOTHING HAS EVER DRIVEN
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-08-31: "Curiously the inventory doesn't always seem to spill
+    -- when going from DBNO to OUT, but before this push it did." And then, after
+    -- watching it again: "I don't think it spilled inventory until they revived,
+    -- and when they did the spills were all created locally?"
+    --
+    -- EVERY OTHER BLOCK IN THIS SUITE CALLS BR.Combat.eliminate() BY HAND, and
+    -- that is precisely the half the report is about. A bleed-out does not
+    -- arrive that way: it arrives through combat.lua's 250ms `combat.dbno` job,
+    -- through the per-player match gate, through stepDowned, past the revive
+    -- arm and the rescue arm, and out of `not entry.rescue and now >=
+    -- dbnoUntil`. Five pieces of code, none of them covered, all of them between
+    -- a knock and the death box -- so "is the spill still on the timer route"
+    -- was a question the suite could not answer.
+    --
+    -- SO THIS BLOCK KNOCKS SOMEBODY DOWN AND LETS THE CLOCK FINISH THEM. The
+    -- only thing it calls by hand is BR.Combat.knock; everything after that is
+    -- BR.Sched.step and the game's own scheduler.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local m = theMatch()
+    for _, s in ipairs({ 1, 2 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        -- THROUGH THE PED, NOT ONTO THE ENTRY. deathBox scatters around
+        -- `entry.pos`, which is the sampler's own reading -- so a hand-set
+        -- roster position would be overwritten by the first BR.Sched.step and
+        -- the ring would land somewhere this block never named.
+        setPos(s, 400.0 + s, 400.0, 30.0)
+        BR.Roster.get(s).squadId = 'sq_bleed'
+    end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    -- BOTH CLIENTS ARE LOOKING AT THE CELL, the way a real one is: the client
+    -- reports the cell it stands in and the server answers with a subscription.
+    -- This is what makes the announce assertion below mean anything -- without
+    -- it there is nobody for announce() to reach and the test would pass on an
+    -- empty loop.
+    local ccx, ccy = BR.LootCellOf(401.0, 400.0)
+    fire(BR.Net.LOOT_CELL, 1, { cx = ccx, cy = ccy })
+    fire(BR.Net.LOOT_CELL, 2, { cx = ccx, cy = ccy })
+
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    BR.Inv.give(2, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 3 })
+    local carried = 0
+    do
+        local inv = BR.Inv.of(2)
+        for i = 1, (BR.Config.Loot.slots or 5) do
+            if inv.slots[i] then carried = carried + 1 end
+        end
+        for _, pool in ipairs(BR.Config.AmmoOrder) do
+            if (inv.ammo[pool] or 0) > 0 then carried = carried + 1 end
+        end
+    end
+    ok(carried > 0, 'the player about to be knocked is actually carrying something',
+        tostring(carried))
+
+    sent = {}
+    local before = m.loot.nextId
+    BR.Combat.knock(2, 1)
+    ok(BR.Roster.get(2).state == BR.PlayerState.DBNO,
+        'a knock puts them down rather than killing them')
+    ok(m.loot.nextId == before,
+        'and a knock spills NOTHING -- "if they are revived in-person there, '
+            .. 'they can keep their inventory" (owner, 2026-08-30)',
+        ('nextId %d -> %d'):format(before, m.loot.nextId))
+
+    -- ═══ AND NOW THE CLOCK, WHICH IS THE WHOLE POINT OF THE BLOCK ═══
+    fakeTime = BR.Roster.get(2).dbnoUntil + 300
+    BR.Sched.step(fakeTime)
+
+    local e2 = BR.Roster.get(2)
+    ok(e2.state == BR.PlayerState.OUT,
+        'the bleed-out clock finished them with nobody calling eliminate()')
+    ok(m.loot.nextId - before == carried,
+        'AND EVERY STACK THEY WERE CARRYING IS ON THE GROUND -- the death box '
+            .. 'ran on the timer route, not just on the direct one',
+        ('carried %d, laid down %d'):format(carried, m.loot.nextId - before))
+
+    -- WHERE, AND IN WHOSE CELL. A ring laid down around a stale position is a
+    -- kit nobody can find, which reads from a chair exactly like a kit that was
+    -- never laid down at all -- and #246 is this project's own evidence that a
+    -- body's position is a thing two machines disagree about. So the ring is
+    -- measured against the SERVER's sample and against the cell the subscription
+    -- is filed under.
+    local ring, farthest = 0, 0.0
+    for id = before + 1, m.loot.nextId do
+        local it = m.loot.items[id]
+        if it then
+            ring = ring + 1
+            local d = BR.Dist(it.x, it.y, e2.pos.x, e2.pos.y)
+            if d > farthest then farthest = d end
+            ok(it.cell == BR.LootCellKeyAt(e2.pos.x, e2.pos.y),
+                ('entry %d is filed in the body\'s own cell'):format(id),
+                tostring(it.cell))
+        end
+    end
+    ok(ring == carried, 'every entry is in the registry and none was dropped',
+        ('%d of %d'):format(ring, carried))
+    ok(farthest <= (BR.Config.Loot.deathScatterRadius or 4.6) + 0.01,
+        'and the whole ring is inside the scatter radius, at the body',
+        ('%.2fm'):format(farthest))
+
+    -- ═══ "THE SPILLS WERE ALL CREATED LOCALLY" -- THE TESTABLE HALF OF IT ═══
+    --
+    -- Loot props ARE built locally: client/loot.lua's header opens with "EVERY
+    -- OBJECT HERE IS LOCAL AND NON-NETWORKED", because 1900 networked entities
+    -- would end the server. That is presentation over a server-owned registry
+    -- and it is not the question. The question is whether the REGISTRY entry
+    -- reaches everybody looking at that patch of ground, or only the client that
+    -- happened to be standing there -- because announce() sends to the cell's
+    -- subscribers and to nobody else, and a drop that reached one machine would
+    -- be a body only one player could loot.
+    local told = {}
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do told[s.target] = true end
+    ok(told[2] == true, 'the dying player is told about their own kit')
+    ok(told[1] == true,
+        'AND SO IS THE SQUADMATE STANDING OVER THEM -- the drop is a server '
+            .. 'record announced to every subscriber, not a local effect on one '
+            .. 'machine')
+
+    ok(e2.reviveKey ~= nil,
+        'and the same edge minted the key, one line below the death box')
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE SECOND DEATH, WHICH IS WHAT THE REPORT ACTUALLY IS
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- df6a624 gave this game its first OUT -> ALIVE path, and the ruling that
+    -- came with it is that a key-revived player comes back with NOTHING --
+    -- server/revivekey.lua: "anything that tried to hand kit back would be
+    -- DUPLICATING loot that is already scattered on the ground".
+    --
+    -- So a revived player's NEXT bleed-out reaches BR.Loot.deathBox with an
+    -- empty inventory, `#contents == 0` returns early, and nothing is scattered
+    -- -- while BR.ReviveKey.onEliminated, which follows the EDGE and explicitly
+    -- not the spill, mints a key anyway. "A key appears and the loot does not"
+    -- is therefore NOT the two halves coming apart: it is the documented
+    -- asymmetry meeting a state that did not exist before the push.
+    --
+    -- NOTHING IS LOST. The kit went on the floor at the FIRST death, at the
+    -- first body, and it is still there -- which is what the entry count below
+    -- is asserting as much as anything else.
+    local VAN = 500
+    pedCoords[VAN] = { x = 401.0, y = 400.0, z = 30.0 }
+    setModel(VAN, (BR.Config.Rescue.models or { 'ambulance' })[1])
+
+    -- GUARDED, so a mutation that stops the mint reports the assertion above
+    -- rather than taking the whole suite down on a nil index. Every block after
+    -- this one would otherwise never run, and a red suite that stops early is a
+    -- red suite that hides the next failure.
+    if e2.reviveKey then e2.reviveKey.held = true end
+    local backOk = BR.ReviveKey.revive(2, 1, VAN)
+    ok(backOk == true, 'the squad spends the key at the van and gets them back')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'they are alive again')
+
+    local backWith = 0
+    do
+        local inv = BR.Inv.of(2)
+        for i = 1, (BR.Config.Loot.slots or 5) do
+            if inv.slots[i] then backWith = backWith + 1 end
+        end
+        for _, pool in ipairs(BR.Config.AmmoOrder) do
+            backWith = backWith + (inv.ammo[pool] or 0)
+        end
+    end
+    ok(backWith == 0,
+        'and they came back with NOTHING -- the cause of everything below',
+        tostring(backWith))
+
+    local standing = m.loot.nextId
+    ok(standing - before == carried,
+        'their first kit is STILL on the ground where they fell -- the revive '
+            .. 'neither restored it nor took it away',
+        ('%d entries'):format(standing - before))
+
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    BR.Combat.knock(2, 1)
+    fakeTime = BR.Roster.get(2).dbnoUntil + 300
+    BR.Sched.step(fakeTime)
+
+    e2 = BR.Roster.get(2)
+    ok(e2.state == BR.PlayerState.OUT, 'they bleed out a second time')
+    ok(m.loot.nextId == standing,
+        'AND THIS ONE SCATTERS NOTHING, because there was nothing on them -- '
+            .. 'this is the "doesn\'t always spill" the owner saw',
+        ('nextId %d -> %d'):format(standing, m.loot.nextId))
+    ok(e2.reviveKey ~= nil,
+        'while the key is minted all the same: the mint follows the EDGE and '
+            .. 'never the spill (server/revivekey.lua), so a key with no ring '
+            .. 'around it is the design and not a fault')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

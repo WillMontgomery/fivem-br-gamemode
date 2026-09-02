@@ -350,3 +350,79 @@ function BR.ClassifyDescent(prevZ, prevAt, z, at, threshold)
     local rate = (prevZ - z) / dt              -- positive = descending
     return rate >= (threshold or 0.7) and 'falling' or 'still'
 end
+
+--- WHICH FACE OF A BOX A POINT IS NEAREST TO, IN THE BOX'S OWN AXES.
+---
+--- ═══ "A DUI THAT SHOWS ON THE NEAREST FACE OF THE VEHICLE" ═══
+---
+--- Owner, 2026-08-31, on the revive prompt at an ambulance: "What I want is a
+--- DUI that shows on the nearest face of the vehicle." Approach from the
+--- driver's side and the plate is on the driver's side; walk round the back and
+--- it moves to the back. This is the half of that which is arithmetic.
+---
+--- ═══ THE BOX IS THE MODEL'S, SO A VAN THIS CODE HAS NEVER SEEN IS RIGHT ═══
+---
+--- The four numbers come from GET_MODEL_DIMENSIONS, which is a fact about the
+--- model rather than a constant somebody measured against one ambulance. A
+--- longer van pushes its own sides out and its own tail back, and nothing here
+--- changes. That is the same reasoning BR.ShopSolve.signHeight is written to,
+--- and for the same reason: a plate tuned to one model is wrong on the next one.
+---
+--- ═══ THE RULE IS "WHICH FACE PLANE AM I FURTHEST OUT BEYOND" ═══
+---
+--- For each of the four faces, how far outside its plane the point lies; the
+--- largest wins. Standing at the driver's door on a 5m van that is the left
+--- face by two clear metres, which is the case the owner is describing.
+---
+--- IT AGREES WITH TRUE DISTANCE WHEREVER TRUE DISTANCE HAS AN OPINION. The
+--- distance from a point to a face RECTANGLE is equal for the two faces that
+--- meet at any corner the point is diagonally off -- the two right-angled
+--- triangles are congruent -- so every case this rule decides on its own is a
+--- case the honest metric calls a tie. It breaks those ties toward the face the
+--- point is more squarely in front of, which is the one a player would say they
+--- were standing at, and it does it with four subtractions and no square roots
+--- on a path that runs per frame.
+---
+--- A POINT INSIDE THE BOX still gets an answer -- all four distances go negative
+--- and the least negative wins, which is the nearest wall from inside. A caller
+--- drawing a sign does not have that case (you cannot stand inside a van's
+--- bodywork), and answering it anyway is cheaper than a guard that would have to
+--- invent a fallback face.
+---
+--- ZEROES IN, ZEROES OUT. A model whose dimensions have not streamed answers a
+--- box of zeroes; every distance is then the same and the nose wins by being
+--- first, with a reach of 0 -- the plate stands off the vehicle's origin rather
+--- than off its bodywork for the frame or two that lasts. That is a plate very
+--- slightly in the wrong place, which is the correct failure next to nan corners
+--- or no plate at all.
+---
+--- @param lx number    the point in the box's own axes: metres along its +X
+--- @param ly number    ...and along its +Y
+--- @param minx number  the box itself, in those same axes
+--- @param maxx number
+--- @param miny number
+--- @param maxy number
+--- @return number ux     the winning face's outward normal, in the box's axes --
+--- @return number uy     one of (0,1), (0,-1), (1,0), (-1,0)
+--- @return number reach  metres from the box's ORIGIN out to that face's plane.
+---                       Not the box's half-width: a model whose origin sits off
+---                       centre has a longer reach one way than the other, and
+---                       the caller wants the distance to the panel it is
+---                       standing a sign in front of.
+function BR.NearestBoxFace(lx, ly, minx, maxx, miny, maxy)
+    -- +Y, THE NOSE, IS THE SEED AND SO WINS EVERY TIE. Deliberate rather than
+    -- incidental: it is the face BR.Dui.drawFace has always used, so a caller
+    -- that hands this a degenerate box gets the plate that file already draws.
+    local best, ux, uy, reach = ly - maxy, 0.0, 1.0, maxy
+
+    local d = miny - ly
+    if d > best then best, ux, uy, reach = d, 0.0, -1.0, -miny end
+
+    d = lx - maxx
+    if d > best then best, ux, uy, reach = d, 1.0, 0.0, maxx end
+
+    d = minx - lx
+    if d > best then best, ux, uy, reach = d, -1.0, 0.0, -minx end
+
+    return ux, uy, reach
+end

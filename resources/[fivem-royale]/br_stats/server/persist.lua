@@ -153,6 +153,12 @@ local function deltasFor(p, ctx)
         -- Carried into the XP and payout functions so they can apply the same
         -- rule as `won` above, rather than each re-deriving it from placement.
         died       = p.died == true,
+        -- Volts picked up off the ground this match (#88's airdrop pile).
+        -- BR.Config.marketPayout adds it to the sum; BR.Xp.forMatch ignores it,
+        -- deliberately -- currency found on the floor is not experience earned
+        -- by playing, and paying XP for it would make a sprint to the crate the
+        -- fastest way to level.
+        voltsPickedUp = p.voltsPickedUp or 0,
     }
 
     local xpEarned = BR.Xp and BR.Xp.forMatch(r) or 0
@@ -392,10 +398,51 @@ AddEventHandler('br:match:results', function(res)
                 })
             end
 
+            -- BUILT AFTER THE LEVEL BONUS, ON PURPOSE. `deltas.balance` grows by
+            -- the level-up payout a few lines above, and that same figure is
+            -- what the verdict screen just told the player they EARNED -- so the
+            -- record is taken once that term is in and not before.
+            --
+            -- (It used to be built after the writes below. It was moved up when
+            -- #224 gave `deltas.balance` a second meaning further on -- the
+            -- warmup purchase was settled here and made it a NET movement. That
+            -- settle is gone, see the block below, so `deltas.balance` has one
+            -- meaning again; the ordering is kept because the level bonus still
+            -- has to be in it.)
+            history[#history + 1] =
+                historyRowFor(p, res, license, endedAt, deltas, xpEarned)
+
+            -- ═══ THE WARMUP SHOP'S BILL IS NO LONGER SETTLED HERE (#224) ═══
+            --
+            -- IT USED TO BE, and the shape is worth keeping because deleting it
+            -- silently would leave the next reader wondering where the purchase
+            -- went. A car bought during warmup was charged against br_core's
+            -- session cache, and `BR.Market.takeSpent(license)` was read HERE
+            -- and subtracted from `deltas.balance` -- so the one atomic ADD that
+            -- writes the match wrote the debit with it, and br_ddb kept exactly
+            -- one verb that could move a balance.
+            --
+            -- The cost of that was a debit nothing had written down until the
+            -- match ended: a player who disconnected first kept the Volts, and a
+            -- server restarted mid-match lost them. So the debit moved to its
+            -- own conditional write at the moment of the purchase --
+            -- `br:ddb:spend`, see br_core/server/market.lua -- and by the time
+            -- this runs the row has ALREADY been debited.
+            --
+            -- SUBTRACTING IT AGAIN HERE WOULD CHARGE FOR THE CAR TWICE, which is
+            -- why `takeSpent` was removed outright rather than left returning
+            -- zero: a function that exists and answers 0 is one an editor
+            -- re-wires. From here down `deltas.balance` means what this match
+            -- PAID, with no second meaning.
+
             -- KEEP br_core's INVENTORY CACHE HONEST. It read the row once on
             -- connect and holds it for the session; without this the lobby
             -- would show the balance and level the player had when they joined
             -- until they reconnected -- so a match would appear to pay nothing.
+            --
+            -- THE PAYOUT, which is now the whole of what this write moves. Any
+            -- purchase made during the match moved the cache and the row
+            -- together at the time it was made.
             --
             -- An event rather than a call: br_stats does not depend on br_core
             -- and must keep working on a server with no gamemode loaded.
@@ -412,14 +459,6 @@ AddEventHandler('br:match:results', function(res)
             SetTimeout(8000, function() pending[req] = nil end)
 
             TriggerEvent('br:ddb:statsApply', req, license, deltas)
-
-            -- BUILT AFTER THE LEVEL BONUS, ON PURPOSE. `deltas.balance` grows by
-            -- the level-up payout a few lines above, and that same figure is
-            -- what the verdict screen just told the player they earned. Building
-            -- the row before it would file a record that contradicts what they
-            -- watched.
-            history[#history + 1] =
-                historyRowFor(p, res, license, endedAt, deltas, xpEarned)
 
             written = written + 1
             if p.left then left = left + 1 end

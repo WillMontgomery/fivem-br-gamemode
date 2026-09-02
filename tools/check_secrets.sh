@@ -119,6 +119,29 @@ rule 'Discord client secret' '-i' \
     'discord_client_secret[[:space:]]*[=:][[:space:]]*.?[A-Za-z0-9_-]{20,}' \
     'Discord credentials belong in the environment.'
 
+# THE SAME SECRET UNDER OUR OWN NAME, and it is a second rule rather than trust
+# in the shape rule above for the reason the ingest secret has two spellings:
+# the shape rule matches Discord's THREE-SEGMENT token layout, and a token whose
+# segments do not happen to be 24/6/27 characters -- a regenerated one, or
+# whatever Discord issues next -- would sail past it. The convar name is ours and
+# cannot drift, so anchoring on it catches the paste regardless of the value.
+#
+# Note the alternation on the separator, exactly as the ingest rule has: this
+# lives as a convar on the host (`set br_discord_bot_token ...`, whitespace) and
+# as an env var nowhere yet, and writing it as `[=:]?[[:space:]]+` would silently
+# match neither. server.cfg.example uses <angle brackets>, which the placeholder
+# escape above lets through.
+#
+# IT ALSO MATCHES `br_discord_bot_token = SOME_LONG_IDENTIFIER`, i.e. a REFERENCE
+# rather than a value, and that is left alone rather than engineered around: the
+# fix is to name the fixture something short (tools/test_community.lua uses a
+# four-letter local), which is what a test file should be doing anyway. Loosening
+# the rule to tell a Lua identifier from a credential is more machinery than the
+# false positive is worth, and it is machinery on the failing side.
+rule 'Discord bot token convar' '' \
+    '\bbr_discord_bot_token([[:space:]]*[=:]|[[:space:]])[[:space:]]*.?[A-Za-z0-9._-]{16,}' \
+    'The Discord bot token for the guild-membership check. Convar on the host, never here.'
+
 rule 'session signing key' '' \
     '\bAUTH_SECRET[[:space:]]*[=:][[:space:]]*.?[A-Za-z0-9/+=_-]{16,}' \
     'Ringmaster session signing key. Environment only.'

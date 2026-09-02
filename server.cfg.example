@@ -44,6 +44,111 @@ sv_scriptHookAllowed 0
 sv_enforceGameBuild 3095
 
 # ---------------------------------------------------------------------------
+# Entity lockdown -- WHO IS ALLOWED TO CREATE A NETWORKED ENTITY
+#
+# ⚠ THIS ONE LINE IS THE WHOLE SETTING. It is a server-wide switch with
+#   consequences well beyond the vehicles #193 raised it for, and the mode is
+#   NOT SETTLED -- see "the unresolved part" below. Change the value, never the
+#   surrounding code.
+#
+# The four values the PARSER accepts, and nothing else:
+#
+#   inactive    Clients may create any networked entity. This is the platform
+#               default and therefore what this project has always run, whether
+#               or not anybody decided it.
+#   relaxed     Client-created entities are refused UNLESS the engine's own
+#               population placed them -- i.e. ambient traffic, parked cars,
+#               patrol and scenario vehicles and ambient peds all survive, and a
+#               trainer spawning a vehicle does not.
+#   no_dummy    NOT "relaxed but more" -- read the validator before reaching for
+#               it. It permits everything a client creates EXCEPT dummy objects,
+#               so it is closer to `inactive` than to `relaxed`. The docs
+#               describe it as "disables dummy object creation", which is
+#               accurate and reads stricter than it is.
+#   strict      NO entity may be created by a client. AT ALL.
+#
+# ⚠ THE DOCS ADVERTISE A FIFTH MODE CALLED `full` AND THE PARSER DOES NOT ACCEPT
+#   IT. docs.fivem.net's server-commands table lists `full` where the code reads
+#   `no_dummy`; the string was added to the docs alongside the GTAV Enhanced
+#   pages and never existed in the parser. Putting it here is an unknown value,
+#   not a stricter setting.
+#
+# ═══ WHAT `strict` COSTS, AND WHY IT IS NOT MERELY "relaxed BUT MORE" ═══
+#
+# The two modes differ in EXACTLY ONE BRANCH of the platform's entity validator,
+# and that branch is the carve-out admitting engine-placed population. Under
+# strict it is skipped, so RANDOM_AMBIENT, RANDOM_PARKED, RANDOM_PATROL,
+# RANDOM_PERMANENT and RANDOM_SCENARIO are all rejected.
+#
+# So on this gamemode, strict deletes:
+#
+#   * every ambient vehicle and every parked car -- which are the ENTIRE vehicle
+#     supply under #193's Option A, the option the owner chose;
+#   * every ambient ped;
+#   * and it does it by letting the client spawn them and then rejecting the
+#     clone, so the symptom is traffic that appears and vanishes rather than
+#     traffic that never comes.
+#
+# BR.Config.Ambient's `vehicles = 0.45` and `parked = 1.0` would still be written
+# every frame by client/natives.lua and would still do nothing.
+#
+# ═══ WHAT IS SAFE UNDER ANY MODE, so nobody re-tests it ═══
+#
+#   * The parachute. Lockdown broke parachutes once and the platform added an
+#     explicit carve-out for task attachments; it is NOT gated on the mode, so
+#     client/skydive.lua is unaffected by any value here.
+#   * Everything this gamemode creates. The Battle Bus and its pilot
+#     (client/bus.lua) and every loot prop (client/loot.lua) pass
+#     isNetwork = false, and lockdown governs only networked creation.
+#   * Control requests. Under strict the platform always refuses
+#     REQUEST_CONTROL_EVENT, which would break any code asking for an entity it
+#     does not own -- and nothing in this tree does. There is no
+#     NetworkRequestControlOfEntity call anywhere in resources/; client/state.lua
+#     documents deliberately not calling it.
+#   * Player peds, ragdoll and DBNO. The validator skips player entities
+#     entirely, and a downed player's ped is never recreated.
+#
+# What DOES change under relaxed or stricter: engine-created weapon pickups --
+# the objects GTA drops when a ped dies armed. This gamemode owns its own loot
+# and death boxes (server/loot.lua), so losing them is not a gameplay loss, but
+# it is a difference and it is not zero.
+#
+# ═══ THE MODE IS `relaxed`, AND IT WAS A CHOICE BETWEEN TWO DECISIONS ═══
+#
+# The owner's decisions on #193 were "enable entity lockdown" and "let's not
+# change ambient traffic". Under `strict` those two are INCOMPATIBLE: enabling
+# it IS changing ambient traffic, by removing it -- ValidateEntity gates the
+# whole random-population carve-out on the mode not being Strict, so ambient
+# traffic, parked cars and ambient peds all stop existing. Under Option A those
+# parked cars are the entire vehicle supply.
+#
+# `relaxed` satisfies both, and differs from `strict` in EXACTLY THAT ONE BRANCH
+# and nothing else. It keeps the population and still refuses client-created
+# entities, which is the property the vehicle allowlist and
+# br_core/server/vehicles.lua exist to enforce. The owner chose it on
+# 2026-08-21: "Relaxed is good."
+#
+# DO NOT "TIGHTEN" THIS TO `strict` AS AN IMPROVEMENT. It is not a stricter
+# version of the same setting; it is the same setting plus deleting the map's
+# traffic. And `full` is not a value -- the docs advertise it, the parser
+# rejects it.
+#
+# ═══ AND IT IS WHY A TRAINER CANNOT SPAWN A CAR HERE ANY MORE ═══
+#
+# Owner, 2026-08-22 (#202): "I can no longer spawn a vehicle through vMenu."
+# That is this line working, not a regression. The platform validates a client's
+# clone-create BEFORE raising `entityCreating`, so a refused vehicle is deleted
+# without br_core ever seeing it -- which is also why `brvehicles` stays at zero
+# while it happens.
+#
+# THE REPLACEMENT IS `brcar <serverId> [model] [type]`, at the server console. It
+# goes through CreateVehicleServerSetter, which builds the entity on the SERVER
+# rather than asking a client to -- so the validator above never sees it, and the
+# mode here does not reach it either. Console only, dev mode only, and only
+# models br_lib/config/vehicles.lua tolerates. See docs/running.md.
+sv_entityLockdown relaxed
+
+# ---------------------------------------------------------------------------
 # Identity
 # ---------------------------------------------------------------------------
 sv_hostname "FiveM Royale | Battle Royale"
@@ -173,6 +278,36 @@ exec "tunables.cfg"
 # same as any other setting in the block above.
 # ---------------------------------------------------------------------------
 # set br_discordUrl "https://discord.gg/abcdefg"
+
+# ---------------------------------------------------------------------------
+# HIDING THAT CARD FROM THE PEOPLE ALREADY IN THE DISCORD. BOTH OPTIONAL, AND
+# WITH NEITHER SET THE CARD SIMPLY SHOWS TO EVERYBODY -- which is the default and
+# is a perfectly good place to leave it.
+#
+# With both set, br_core asks Discord once per connection whether that player is
+# in the guild, and only a confirmed YES takes the card off their Help page. No
+# token, no answer, a timeout, a rate limit, or a player whose Discord desktop
+# client is not running all mean "we do not know", and the card shows.
+#
+# WHAT THE BOT NEEDS: to be a member of the guild, and nothing else. No
+# privileged intent -- SERVER MEMBERS INTENT is required to LIST a guild's
+# members and is not required to fetch ONE by id, which is all this does. It
+# cannot read messages and does not need to.
+#
+# IT IS NOT THE RINGMASTER BOT'S TOKEN BY NECESSITY, though it may be the same
+# one. The game does not ask the admin console anything -- the console may depend
+# on the game and never the reverse -- so this box holds its own copy.
+#
+# THE TOKEN IS A REAL CREDENTIAL and this file is committed. It goes in
+# server.cfg, which is gitignored for exactly this; the angle brackets below are
+# what stop tools/check_secrets.sh reading the line as a leaked one.
+#
+# The guild id is the Discord server's own id -- digits only. Turn on Developer
+# Mode in Discord, right-click the server, Copy Server ID. Anything that is not
+# a run of digits is refused at boot with a line saying so.
+# ---------------------------------------------------------------------------
+# set br_discord_bot_token "<the bot token, from the Discord developer portal>"
+# set br_discord_guild_id  "<the guild id, digits only>"
 
 # ---------------------------------------------------------------------------
 # Gamemode

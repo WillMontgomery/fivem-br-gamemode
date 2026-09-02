@@ -261,6 +261,60 @@ RegisterNUICallback(BR.NuiCb.SETTINGS_SAVE, function(data, cb)
     cb({ ok = true, settings = stored })
 end)
 
+--- THE PAGE REPORTS ITS RESOLVED PALETTE, FOR THE DOCUMENTS THAT CANNOT READ IT.
+---
+--- ═══ WHY A COLOUR TRAVELS FROM THE UI TO LUA, WHICH IS THE WRONG DIRECTION
+---     FOR EVERYTHING ELSE IN THIS FILE ═══
+---
+--- The world prompts (br_ui/dui/prompt.html) are a separate document rendered
+--- into a runtime texture. They share no stylesheet with the HUD, so they cannot
+--- read `--color-hp` -- and the warmup shop's price line has to BE --color-hp
+--- (owner, 2026-08-29: the price "needs to be increased in font size and make it
+--- green"). That token is one of the four the colourblind modes remap, so a
+--- fixed green would be the one thing on screen that ignores the setting.
+---
+--- THE ALTERNATIVES ALL DUPLICATE index.css. A hex in Lua, or a second copy of
+--- the :root[data-cb] blocks inside prompt.html, is a second representation of
+--- the accessibility palette -- and the day the green is retuned, one of the two
+--- goes stale in silence. This is the repository's signature defect and it is
+--- not worth a paint.
+---
+--- So the page -- which is the only thing that knows what the cascade resolved
+--- to -- says what the answer IS, one line after applying the attribute that
+--- decides it (ui-src/src/settings/apply.ts). index.css stays the sole place a
+--- green is written down.
+---
+--- A RAW CALLBACK NAME rather than a BR.NuiCb constant, and deliberately: this
+--- is not a setting. It is a derived value reported back, it is never stored,
+--- never validated against a range, and never round-tripped to the page.
+---
+--- NOT VALIDATED AS A COLOUR EITHER, because there is nothing to validate
+--- against and nothing to protect: the string is handed to a CSS `color`
+--- property in a texture-backed document with no DOM anybody can reach. A
+--- garbage value paints a prompt wrong until the next settings apply, which is
+--- the same failure as no value at all.
+--- TWO COLOURS NOW, AND THE SECOND ONE IS NOT AN ACCESSIBILITY TOKEN.
+---
+--- Owner, 2026-08-30: "the volts text should be orange - the same color we show
+--- in the market page." The Store screen paints its balance and its prices with
+--- `--color-royale-accent2`, so `volts` carries that token down the same wire
+--- the green already travels on. It is reported for the reason above -- one
+--- authored place for a colour -- and not because anything remaps it today.
+---
+--- ONE MESSAGE CARRYING BOTH, rather than a second callback: the page resolves
+--- them in the same breath (one getComputedStyle pass, one apply), and a reader
+--- that got a green and then a colour later would have a window where the plate
+--- was half-repainted.
+RegisterNUICallback('br/ui/palette', function(data, cb)
+    local d = type(data) == 'table' and data or {}
+    local hp = type(d.hp) == 'string' and d.hp ~= '' and d.hp or nil
+    local volts = type(d.volts) == 'string' and d.volts ~= '' and d.volts or nil
+    if hp or volts then
+        TriggerEvent('br:settings:palette', { hp = hp, volts = volts })
+    end
+    cb({ ok = true })
+end)
+
 RegisterNUICallback(BR.NuiCb.SETTINGS_FOCUS, function(data, cb)
     if data and data.open then
         TriggerEvent('br:ui:pushFocus', 'settings')

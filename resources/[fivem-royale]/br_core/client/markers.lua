@@ -94,6 +94,21 @@ end)
 BR.Loop.register(BR.Loop.TICK, 'markers.place', function()
     if not IsWaypointActive() then return end
 
+    -- THE RESCUE'S WAYPOINT IS NOT A PING. This pass consumes any fresh
+    -- waypoint and turns it into a squad marker -- correct for a player
+    -- clicking the map, and exactly wrong for the one client/rescue.lua sets to
+    -- show a downed player where the ambulance is taking them. Without this the
+    -- destination waypoint would be eaten on the tick after it was set.
+    if BR.Rescue and BR.Rescue.riding and BR.Rescue.riding() then return end
+
+    -- AND A SURVEY'S WAYPOINT IS NOT A PING EITHER. /brsurvey
+    -- (client/survey.lua) authors the map boundary out of this exact gesture --
+    -- the owner clicks a dozen or two corners on the pause map and each one
+    -- becomes a vertex -- and the two cannot both consume it. Same precedent as
+    -- the ride above, same shape of guard, and for the same reason: the tool
+    -- that wants the gesture says so, and this pass stands down while it does.
+    if BR.Survey and BR.Survey.active and BR.Survey.active() then return end
+
     local st = BR.State.me.state
     if st == BR.PlayerState.LOBBY or st == BR.PlayerState.LEFT then return end
 

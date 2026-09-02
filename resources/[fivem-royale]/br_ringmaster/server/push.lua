@@ -85,6 +85,25 @@ AddEventHandler('br:ringmaster:refusal', function(data)
     outbox:emit('refusal', data, GetGameTimer())
 end)
 
+--- An admin spectate session opening or closing (#192).
+---
+--- EVIDENCE, NOT STATE, and it is the reason this event exists alongside the
+--- `outcome` the command already reports. The outcome closes the console's own
+--- intent row and answers "did the button work"; this answers "who was watched,
+--- by whom, and for how long" -- and the STOP has no command behind it at all.
+--- An admin ends a session from the pause menu, or the target disconnects and it
+--- ends itself, and neither of those is anything the console asked for. Without
+--- this the log would record every start and no end.
+---
+--- ON THE EVENT CHANNEL for the same reason the outcome is: a snapshot is
+--- latest-wins and may be dropped, and a moderation record that may be dropped
+--- is not a record. Nothing else in the console acts on a player without leaving
+--- a row, and an admin watching somebody who does not know they are being
+--- watched is exactly that class of action.
+AddEventHandler('br:ringmaster:spectate', function(data)
+    outbox:emit('admin_spectate', data, GetGameTimer())
+end)
+
 -- Identity capture -> player_seen. main.lua calls this hook for every NEW
 -- license record (reconnects update the record without re-announcing).
 function BR.Ring.emitSeen(license, rec)
@@ -162,13 +181,30 @@ if cfg.configured() then
         end
         if not latest then return end
 
+        local snap = latest
+        latest = nil   -- consumed; a stale slot must not be re-sent
+
+        -- br_ddb's last reachability verdict, RIDING THE SNAPSHOT RATHER THAN
+        -- OPENING ANYTHING. Only something inside FXServer can ask that
+        -- question (see server/ddb.lua); this is the channel that already
+        -- leaves the box, so it costs one optional key on a body already being
+        -- sent -- no new endpoint, no new verb, no new secret.
+        --
+        -- ABSENT WHEN THERE IS NOTHING TO SAY, and that is the normal case:
+        -- br_ddb not started, no probe answered yet, or this whole file loaded
+        -- without ddb.lua beside it. Assigning nil leaves the key off the
+        -- table, json.encode omits it, and the console reads the absence as
+        -- "not told" rather than as a fault. Nothing here ever fills it in.
+        if BR.Ring.ddbProbe then
+            snap.ddb = BR.Ring.ddbProbe()
+        end
+
         local body = {
             v        = 1,
             kind     = 'snapshot',
             server   = serverBlock(),
-            snapshot = latest,
+            snapshot = snap,
         }
-        latest = nil   -- consumed; a stale slot must not be re-sent
 
         post(body, function(okay, status)
             stat.lastStatus = status

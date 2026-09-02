@@ -237,6 +237,129 @@ end
 --- restarts, which is why registration is lazy rather than done at start.
 local checked = {}
 
+-- ------------------------------------------------- the spectator's microphone ---
+
+--- Did a native declared BOOL actually say yes?
+---
+--- `MumbleIsPlayerMuted` is declared BOOL and a FiveM native declared BOOL may
+--- hand Lua a NUMBER on some builds -- and IN LUA `0` IS TRUTHY, so
+--- `if MumbleIsPlayerMuted(src) then` reads "muted" for a player who is not.
+--- This repo has shipped that exact bug four times; client/spectate.lua carries
+--- the same normaliser under the name `didHit`. Getting it wrong here would
+--- mean never taking the mute (every player looks already-muted) and never
+--- giving it back, so it is worth six lines.
+--- @param v any
+--- @return boolean
+local function isYes(v)
+    return v == 1 or v == true
+end
+
+--- Players WE are holding a transmit mute on, and nobody else.
+---
+--- THE SET EXISTS SO THE MUTE CAN BE GIVEN BACK WITHOUT STEALING SOMEBODY
+--- ELSE'S. pma-voice's own `/muteply` writes the same native, so "unmute on
+--- stop" as an unconditional call would quietly lift a moderator's mute the
+--- moment a muted player died and started spectating their squad.
+--- @type table<integer, boolean>
+local specMuted = {}
+
+--- Take or return a spectator's microphone. Server-side, and transmit only.
+---
+--- ═══ WHY THE SERVER AND NOT ONLY THE CLIENT ═══
+---
+--- "whoever is the spectator should NEVER be able to talk, only listen" -- the
+--- owner, and `NEVER` is why this is not left to client/voice.lua's gag alone.
+--- Under pma-voice the transmit decision genuinely is the speaker's, on the
+--- speaker's machine (the argument is at the top of this file), so a client-side
+--- gag is a rule a modified client simply declines to follow. `MumbleSetPlayerMuted`
+--- is applied by the Mumble server to the connection itself, so it is the half
+--- that holds when the client is hostile.
+---
+--- THE CLIENT GAG IS STILL THERE AND IS NOT REDUNDANT. It stops the honest
+--- client transmitting on the frame the session opens rather than on the round
+--- trip, it keeps `/brvoice` telling the truth, and it closes the radio key that
+--- may already be held. Two halves, different failure modes.
+---
+--- ═══ THIS HALF IS STILL ONLY A MUTE, AND THAT IS STILL DELIBERATE ═══
+---
+--- Mumble separates muted from deafened and only the first is taken here.
+---
+--- WHAT CHANGED ABOVE IT. The owner's 2026-08-21 word -- "let's set voice to
+--- OFF while in spectate, and return it to their preferred setting once
+--- spectate is over" -- means a spectator no longer hears anything either. That
+--- is implemented as a MODE, on the client, in br_core/client/voice.lua's
+--- BR.Voice.mode(): it leaves the radio channel and holds a mute on everybody,
+--- exactly as it does for a player who picks Off on the settings screen.
+---
+--- WHY IT IS NOT ALSO DONE FROM HERE, now that the rule wants both halves.
+---
+---   THE THREAT MODEL IS ASYMMETRIC, and it is the only reason this file has a
+---   half at all. A modified client that TRANSMITS while spectating is talking
+---   into a match it can see and is being fed the position of; that is why the
+---   microphone is taken at the Mumble server, which is the one place a client
+---   cannot argue with. A modified client that declines to go DEAF hears audio
+---   its own machine was already being sent. There is nothing to win there, and
+---   the server has no lever that fits anyway: this is a receive-side volume
+---   override on the listener's own mixer.
+---
+---   AND THE OBVIOUS SERVER LEVER IS STILL THE WRONG ONE. Evicting a spectator
+---   from their squad's radio channel from here would be a SECOND authority
+---   over a channel the client is already leaving on its own -- two owners of
+---   one membership, which is how a player comes back from a session onto no
+---   channel at all. The client leaves it because its mode says to, and rejoins
+---   it because its mode says to; there is one clock and it is that one.
+---   tools/check_spectator_mic.lua holds this function to that.
+---
+--- @param src integer
+--- @param on boolean  true to take the microphone, false to give it back
+function BR.Voice.setSpectatorMuted(src, on)
+    src = math.tointeger(tonumber(src))
+    if not src then return end
+    if MumbleSetPlayerMuted == nil then return end
+
+    if on then
+        if specMuted[src] then return end
+        -- ALREADY MUTED BY SOMEBODY ELSE: leave it entirely alone. We neither
+        -- take it nor record it, so the stop below will not hand back a mute we
+        -- were never holding.
+        if MumbleIsPlayerMuted ~= nil then
+            local ok, already = pcall(MumbleIsPlayerMuted, src)
+            if ok and isYes(already) then return end
+        end
+        local ok = pcall(MumbleSetPlayerMuted, src, true)
+        if not ok then
+            -- LOUD, because this is the security half failing open. The client
+            -- gag still applies, so an honest client is still silent; what is
+            -- lost is the guarantee against a modified one.
+            print(('[br_core] VOICE: could not mute spectator %d at the Mumble '
+                .. 'server. A modified client could transmit while spectating.')
+                :format(src))
+            return
+        end
+        specMuted[src] = true
+        -- pma-voice mirrors this native into a statebag its own client reads;
+        -- writing both is what keeps its UI from showing an open microphone.
+        pcall(function() Player(src).state.muted = true end)
+        return
+    end
+
+    if not specMuted[src] then return end
+    specMuted[src] = nil
+    pcall(MumbleSetPlayerMuted, src, false)
+    pcall(function() Player(src).state.muted = false end)
+end
+
+--- Drop our bookkeeping for a departed player.
+---
+--- The native call is pointless for a connection that is gone and the src will
+--- be handed to somebody else within the minute -- a stale `true` here would
+--- make the next holder of that id unmutable by this file.
+--- @param src integer
+function BR.Voice.forgetSpectatorMute(src)
+    src = math.tointeger(tonumber(src))
+    if src then specMuted[src] = nil end
+end
+
 local function guard(channel)
     if not channel or checked[channel] then return end
     if not present() then return end
@@ -479,6 +602,52 @@ AddEventHandler('onResourceStart', function(name)
             .. 'no voice chat -- no proximity, no squad radio. The gamemode '
             .. 'runs without it. See server.cfg.example for the install.')
     end
+end)
+
+-- --------------------------------------------- one bit back from the client ---
+
+--- THIS PLAYER SAYS THEIR VOICE CARRIES NOTHING.
+---
+--- Owner, 2026-08-29: "Why can't we build another client -> server -> squad
+--- hop? It should only be processed at the start of a squad in warmup and
+--- whenever changes occur."
+---
+--- ═══ WHAT IS STORED, AND WHERE IT IS DELIBERATELY NOT STORED ═══
+---
+--- One boolean, on the roster entry, and NOT in roster.lua's PUBLIC_FIELDS.
+--- That list is broadcast to every client in the match; this goes only to the
+--- sender's own squad, on the beacon in server/party.lua, which is the same
+--- boundary `dbnoUntil` and the squad level already sit on and is argued at
+--- their length there. tools/check_squad_voice.lua pins both halves: the field
+--- is permitted on the squad beacon and still forbidden on the public list.
+---
+--- THE MODE ITSELF IS NEVER STORED AND NEVER ASKED FOR. The client sends a
+--- boolean; anything else on this payload is ignored rather than kept for
+--- later. A server that quietly learned every player's voice mode would be one
+--- `PUBLIC_FIELDS` edit away from being a proximity oracle, and the cheapest
+--- way to make that edit impossible is to not have the value.
+---
+--- ═══ `source` IS THE IDENTITY. THE PAYLOAD IS NOT ═══
+---
+--- The sender is taken from `source` and the payload carries no src, so a
+--- client cannot state anything about anybody but itself. The worst a modified
+--- client can do here is lie about its OWN microphone -- which it could already
+--- do by simply not talking, and which costs nothing but a glyph on its own
+--- squad's panel.
+---
+--- ═══ IT IS NORMALISED, NOT BELIEVED ═══
+---
+--- `d.off == true` rather than `if d.off then`: this arrives from a NUI-driven
+--- client over the network and may be a number, a string or a table. Everything
+--- that is not the boolean true is stored as false, so the field on the roster
+--- entry is always exactly a boolean and the beacon cannot ship a stray 0 -- in
+--- Lua a 0 is truthy, and this repository has now shipped that nine times.
+RegisterNetEvent(BR.Net.VOICE_STATE)
+AddEventHandler(BR.Net.VOICE_STATE, function(d)
+    local src = source
+    local e = BR.Roster.get(src)
+    if not e then return end
+    e.voiceOff = type(d) == 'table' and d.off == true
 end)
 
 -- ------------------------------------------------------------------- the push ---
