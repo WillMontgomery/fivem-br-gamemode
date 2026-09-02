@@ -32,7 +32,7 @@ Everything uses stock GTA V assets — no custom models, maps, or streamed files
 | M6b | UI overhaul — lobby, HUD, inventory, end screen | **DONE** |
 | M7 | DBNO, revives, spectating, match summary, stats | **DONE** |
 | M7b | Persistence off the game host — DynamoDB / AWS serverless | **DONE** |
-| M8 | Vehicles, aerial supply drops, fuel, rescue | **SCOPING** |
+| M8 | Vehicles: fuel and petrol stations, boost, aerial supply drops, ambulance rescue and heals, the warmup showroom | **DONE** |
 | M9 | Moderation: incidents, in-game reports, artifacts, admin ACEs, the in-game console | **WIP** |
 
 **Working now:** the loop, end to end. Players queue from a lobby above Cayo
@@ -41,17 +41,21 @@ match's flight route is drawn on the map. Several matches run at once in separat
 routing buckets, sharing the warmup pad and watching each other's flights take
 off. The Battle Bus flies an authored tour over Los Santos and everyone skydives
 out wherever they choose. On the ground there is loot: weapons, ammo, shields,
-throwables and chests scattered across 107 points of interest and along the
+throwables and chests scattered across 120 points of interest and along the
 highways between them, streamed to each client cell by cell as they move. When
 the last player lands, the match goes live and the storm starts — a shrinking
 circle homed on a point of interest near the flight path, with a rendered wall,
 map circles, screen effects and server-authoritative damage. Squad members who
 run out of health go down rather than dying outright: they crawl, a bleed clock
 runs, and a squadmate can pick them up on a held key — more than once in a match,
-though each knock is shorter than the last. Once eliminated they spectate the
-rest of the match. Deaths (storm included) leave a lootable box, placements are
-assigned, and a match ends with a victory/elimination sequence, a summary screen,
-and XP and Volts written to DynamoDB.
+though each knock is shorter than the last. Running the clock out puts them
+into spectate but is no longer the end of their match: their kit spills where
+they fell and a **revive key** is minted with it, and a squadmate who collects it
+— or buys one for 25 Volts at an ambulance — holds six seconds at that ambulance
+to drop them back in from 150 m up, on full health. Deaths (storm included) leave
+a lootable box, placements are assigned, and a match ends with a
+victory/elimination sequence, a summary screen, and XP and Volts written to
+DynamoDB.
 
 **Damage is server-authoritative.** The server refuses impossible shots and
 computes the damage itself from our own weapon table, including per-body-part
@@ -63,9 +67,9 @@ weapon the gamemode never issued is taken out of the ped's hand *and recorded*,
 and nobody is exempt from that, admins included. See
 [Cheat resistance](docs/security.md).
 
-**Progression is live.** Matches pay XP and Volts, Volts buy cosmetics from a
-market, and the whole economy is config rather than code. See
-[XP and Volts](docs/progression.md).
+**Progression is live.** Matches pay XP and Volts; Volts buy cosmetics from a
+market and, during warmup, one vehicle from a showroom. The whole economy is
+config rather than code. See [XP and Volts](docs/progression.md).
 
 **Proximity voice** runs on pma-voice, vendored whole under `resources/[voice]/`.
 The three modes are **exclusive, not layered**: `nearby` is proximity and only
@@ -129,8 +133,39 @@ and its receipt are the same conditional write. See
 > without anyone deciding to. Every match-payout number moved the same day, so
 > nothing else in this file quotes a Volts figure that predates it.
 
-**Not working yet:** vehicles are ambient traffic only — no supply drops, fuel or
-rescue (M8).
+**Vehicles are live (M8).** GTA's ambient traffic and parked-car network are
+still the supply on the ground; five systems sit on top of it.
+
+* **Fuel** is measured in metres driven rather than engine seconds, so idling
+  and using a car as cover cost nothing. A 7,500 m tank puts two stops in a
+  crossing of the map, at one of 29 authored petrol stations, where pumping also
+  repairs the car.
+* **Boost** is four seconds of push and six to get it back, ramped over the
+  first two, with the spend charged to the same tank.
+* **One aerial supply drop** a match, between 3m30 and 7m00 after it goes live.
+  There is no airdrop native, so the crate and its cargo canopy are ours: the
+  descent is a pure function of one published record plus the synced clock, not
+  networked physics, so every client's crate is in the same place at the same
+  millisecond.
+* **Ambulances** do three jobs. 23 stand at surveyed stations from the moment the
+  bus doors open, blipped for a squad the instant a mate is out, and are where a
+  revive key is spent. Separately, the back of *any* ambulance in the world is a
+  15-second heal for a hurt player who is still alive — on the stretcher, siren
+  on, rear doors open, one at a time, and mortal throughout. In solos a **CPR
+  kit** is the third use: it downs you instead of killing you and an NPC medic
+  drives you back into the match, in a van that is deliberately not invincible.
+* **The showroom** parks thirteen vehicles on the warmup pad at 250–1,500 Volts,
+  one per player per match, paid out of the saved balance and delivered as an
+  ordinary inventory item. No refunds, and leaving the match forfeits an unused
+  purchase. Twelve of the thirteen are repainted from a curated palette once per
+  match, so the colour on the pad is the colour you drive away in.
+
+`br_lib/config/vehicles.lua` refuses anything that flies or carries built-in
+weapons — the flight half asked of `GetVehicleType` rather than of a list, so it
+cannot rot — and a client that spawns a refused vehicle files an incident rather
+than being blocked. Everything past that is a catalogue decision: **"a bought car
+must be transport, not an advantage"** is enforced by which models are written
+down, not by any check that could be written.
 
 ---
 
@@ -190,7 +225,7 @@ into one of three loops (per-frame, 10 Hz, 1 Hz) rather than spawning its own
 thread. Because gameplay is one resource, `resmon` can't attribute cost per
 subsystem — so the registry measures each callback itself.
 
-**Loot is client-rendered and server-owned.** ~3,370 items as networked entities
+**Loot is client-rendered and server-owned.** ~3,690 entries as networked entities
 would not survive contact with a real server. The server generates the layout
 from a seeded RNG and holds it as plain data; clients are streamed the entries
 near them, render local non-networked props (`CreateObjectNoOffset` with
@@ -213,7 +248,7 @@ Each of these stands on its own:
 | **[The arithmetic of a match](docs/match-math.md)** | Every number a match is built from and why it is that number — seeds, the flight chord, storm phases and pacing, breakout geometry, loot budgets and rarity, and the full damage formula. |
 | **[Cheat resistance](docs/security.md)** | Why the client is never the authority on anything that decides a match. The three layers, a table of concrete attacks and why each fails, and an explicit statement of what this is *not*. |
 | **[XP and Volts](docs/progression.md)** | The two currencies, what pays them, and the level curve. Both are computed at the end of a match and applied in a single atomic write. Tuning, not architecture — every number is a config edit. |
-| **[Running and developing](docs/running.md)** | Server setup, the UI build, `tools/verify.sh`, and the in-game diagnostic commands. |
+| **[Running and developing](docs/running.md)** | Server setup, the UI build, `tools/verify.sh`, and the in-game diagnostic commands — every one of which is behind a dev-mode switch, by construction, since 2026-08-31. |
 | **[Deploying](DEPLOY.md)** | Standing the server up on Ubuntu against standard FXServer Linux artifacts. |
 | **[Testing](docs/testing.md)** | The suites and gates, when to run them, the rules that keep them honest, and the real bugs each one has caught. |
 | **[Platform constraints](docs/platform.md)** | FiveM and CEF behaviours discovered the hard way — the ones that cost days — and what each one taught. |
