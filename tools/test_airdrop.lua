@@ -4868,7 +4868,12 @@ do
         .. 'when it is opened')
     eq(A.chuteScale, 2.5, 'and the canopy keeps its 2.5, which the owner asked '
         .. 'for by name')
-    eq(A.voltsScale, 5.0, 'the Volts pile is five times')
+    -- FOUR, AND THE FOURTH IS ALSO A REVERSAL NOW. The pile was asked for at 5x
+    -- on 2026-08-22 and cut to 3x on 2026-09-01 -- "The volts prop is still
+    -- about 40% too big", and 5.0 x 0.6 = 3.0. It is pinned here for the same
+    -- reason the three above are: the number is the whole fix, and a silent
+    -- drift back is the failure this assertion exists to catch.
+    eq(A.voltsScale, 3.0, 'the Volts pile is three times, his 40% off the five')
 end
 
 describe('client: a sited drop is a blip and NOTHING ELSE')

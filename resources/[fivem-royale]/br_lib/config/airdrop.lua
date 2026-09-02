@@ -837,10 +837,30 @@ BR.Config.Airdrop = {
     -- The prop the pile is drawn as. A vanilla money bundle: this is currency
     -- on the floor and it should read as currency on the floor.
     voltsProp   = 'prop_anim_cash_pile_01',
-    -- FIVE TIMES THE AUTHORED SIZE (owner, 2026-08-22: "The volts prop is
-    -- perfect but should be 5x the size."). See the PROP SIZE block below for
-    -- how a size is applied at all, and for what may stop it.
-    voltsScale  = 5.0,
+    -- THREE TIMES THE AUTHORED SIZE. Was five, asked for at five (owner,
+    -- 2026-08-22: "The volts prop is perfect but should be 5x the size.") and
+    -- cut to three on 2026-09-01: "The volts prop is still about 40% too big."
+    -- 5.0 x 0.6 = 3.0, which is his 40% applied to the number that was actually
+    -- rendering.
+    --
+    -- "STILL" REFERS TO A ROUND THAT NEVER TOUCHED THIS LINE, and that is worth
+    -- writing down because it is the reason one report had to be made twice.
+    -- The 2026-08-23 pass (835254d) was the prop-size round: it took crateScale
+    -- and huskScale from 2.0 back to 1.0 after the owner reported the landed box
+    -- clipping through the floor, and left chuteScale alone because he said the
+    -- canopy worked. This value was never in that diff -- his message that day
+    -- named the crate and the parachute, not the money pile -- so nothing has
+    -- ever moved it since it was introduced at 5.0 in 8c701ce. `git log -S
+    -- voltsScale` returns exactly one commit, which is the whole audit.
+    --
+    -- SO THE SCALE IS NOT SUSPECT AND THE NUMBER WAS. The matrix route
+    -- demonstrably renders -- 835254d established that from the other end, via a
+    -- crate that grew until it clipped -- and BR.Native.propScale renormalises
+    -- each axis before writing it, so re-applying it per frame is idempotent and
+    -- cannot compound a 3.0 into anything else. There is one scale path to this
+    -- prop (propScaleOf -> airdropScale('volts') in br_core/client/loot.lua) and
+    -- nothing else multiplies it. See the PROP SIZE block below.
+    voltsScale  = 3.0,
 
     -- How far out the contents land, per item, when it bursts open. Same
     -- construction as a crate's scatter ring, one radius wider because a dozen
