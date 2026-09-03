@@ -450,7 +450,7 @@ end
 --- ONE OF THEM WAS WATCHED:
 ---
 ---   * the QUEUE, guarded by BR.Match.startBlocker's `party` reason -- which
----     held the whole formation for partyGraceSeconds and then started the
+---     held the whole formation for a party grace and then started the
 ---     match WITH the lone partymate in it. That is the "few seconds", and the
 ---     hold was often already spent before it began: it was timed off one
 ---     global timestamp that nothing reset once a match had formed, so the

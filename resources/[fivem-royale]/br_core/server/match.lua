@@ -997,7 +997,7 @@ function BR.Match.startBlocker(mode)
         --   have to wait for some reason. They should go straight into warmup
         --   without waiting for the party." -- the owner.
         --
-        -- The room used to spend partyGraceSeconds before it would form a match
+        -- The room used to spend a party grace before it would form a match
         -- out of a queue that contained a half-readied party. That patience made
         -- sense while running out of it meant starting WITH the lone partymate:
         -- the wait bought the rest of their party a chance to arrive first. It

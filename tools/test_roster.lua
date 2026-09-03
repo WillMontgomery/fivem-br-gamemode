@@ -2758,6 +2758,12 @@ do
     -- foot of this file: `match.busDescent` and `match.storm.hold` are aligned
     -- to the suite clock, and a block that spends 45 fewer seconds than it used
     -- to fails both of them from here.
+    --
+    -- THE 45 IS A LITERAL because it no longer names anything: it was
+    -- BR.Config.Match.partyGraceSeconds, which was deleted on 2026-09-03 for
+    -- having had no reader in resources/ since the room stopped waiting. The
+    -- elapsed time is what this block needs, not the setting, so the number
+    -- moved here rather than the block losing it.
     reset()
     BR.Server.devMode = true
     BR.Config.Match.autofill = false
@@ -2768,7 +2774,7 @@ do
     fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SQUAD.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
+    fakeTime = fakeTime + 45 * 1000 + 1500
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WARMUP, 'the pair and the solo form a match')
     BR.Party.invite(1, 3); BR.Party.respond(3, true)   -- trio 1,2,3
@@ -3516,11 +3522,14 @@ do
     -- nothing forms at all and player 1 keeps their place for as long as it
     -- takes.
     --
-    -- THE STEP BELOW STILL SPENDS partyGraceSeconds, and it is the only reader
-    -- of that number left anywhere: it is what makes "no amount of patience"
-    -- mean something, and the suite clock after this block is aligned to the
-    -- instants it lands on (see the banner at the foot of this file). The room
-    -- itself no longer waits -- the second report of the day was an unpartied
+    -- THE STEP BELOW STILL SPENDS THE OLD PARTY GRACE, forty-five seconds,
+    -- written as a literal: it is what makes "no amount of patience" mean
+    -- something, and the suite clock after this block is aligned to the instants
+    -- it lands on (see the banner at the foot of this file). The number used to
+    -- be BR.Config.Match.partyGraceSeconds and this was its last reader, which
+    -- is exactly why the setting went on 2026-09-03 -- an operator could set the
+    -- convar, be told at boot that it took, and change nothing in the game. The
+    -- room itself no longer waits: the second report of the day was an unpartied
     -- player paying that grace for somebody else's party (party.heldAtTheDoor).
     --
     -- IT USED TO FORM WITH THEM, and that is exactly the report: "after a
@@ -3537,7 +3546,7 @@ do
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WAITING, 'held again next match')
-    fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
+    fakeTime = fakeTime + 45 * 1000 + 1500
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WAITING,
         'and no amount of patience admits them WITHOUT their party')
@@ -19140,9 +19149,11 @@ do
         'the ready-up keeps its place in the queue, which is what the '
             .. 'partymate\'s "your party is waiting" line is drawn from')
 
-    -- The wait does not run out. partyGraceSeconds is the ROOM's patience, and
-    -- spending it never admits the person it was spent on.
-    pump(BR.Config.Match.partyGraceSeconds * 1000 + 1000)
+    -- The wait does not run out. Forty-five seconds was the ROOM's patience --
+    -- the party grace, deleted on 2026-09-03 -- and spending it never admitted
+    -- the person it was spent on. The literal keeps the elapsed time this
+    -- assertion is worth making over.
+    pump(45 * 1000 + 1000)
     ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
         'and no amount of time admits them -- the wait is for the party, not '
             .. 'for a clock',
@@ -19176,7 +19187,7 @@ do
     -- #3 PASSES THE GATE ABOVE AND ALWAYS DID: it is a per-player predicate and
     -- an unpartied player has nobody to be waiting on. What held them was the
     -- ROOM's patience -- a queue containing a half-readied party formed no match
-    -- at all for partyGraceSeconds, and the whole of that wait was paid by the
+    -- at all for the party grace, and the whole of that wait was paid by the
     -- players who were already admissible. It bought the party nothing: the
     -- expiry forms the match out of `ready`, which is the same list, the same
     -- match and the same people forty-five seconds earlier.

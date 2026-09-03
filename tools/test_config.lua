@@ -85,6 +85,58 @@ local function readerFor(t)
     return function(name) return t[name] end
 end
 
+-- ---------------------------------------------------------- the zero row ---
+
+-- A SPEC ROW WHOSE MINIMUM IS ZERO, OWNED BY THIS FILE.
+--
+-- `if v then` is TRUE for 0 in Lua, so the bug this project has shipped over
+-- and over is not "0 was read as absent" -- it is code that tests truthiness
+-- and cannot tell 0 from 45. The only tunable that can be bitten by it is one
+-- whose floor is genuinely zero, and every int the game ships has min = 1 or
+-- min = 5.
+--
+-- The worked example used to be BORROWED from br_partyGraceSeconds, the one
+-- setting that allowed zero. That setting was deleted on 2026-09-03 for having
+-- had no reader in resources/ since the room stopped waiting for a party, and
+-- the coverage would have gone out with it -- coverage resting on a production
+-- number that can be retuned or removed by somebody who never opens this file.
+-- So the example is synthesised here instead.
+--
+-- IT IS A REAL SPEC ROW, NOT A MOCK, and that is what makes it worth as much as
+-- the borrowed one. apply() walks Ov.SPEC and finds it; parse() reads its min
+-- through Ov.bounds(); rangeText() publishes it; and apply() refuses to write a
+-- key BR.Config does not already hold, so the config side has to exist too.
+-- Every line it drives is the shipped parser, on the shipped path.
+local ZERO = {
+    convar  = 'br_testZeroFloor',
+    group   = 'Match',
+    key     = 'testZeroFloorSeconds',
+    kind    = 'int',
+    min     = 0,
+    max     = 300,
+    note    = 'a floor that is zero',
+    default = 45,
+}
+
+--- Install the zero-floor row into ONE sandbox, and hand back its spec.
+---
+--- Per-env, never global: each load() gets its own BR and its own SPEC table,
+--- so this row is invisible to every other block in the file.
+--- @param env table a fresh load()
+--- @return table spec
+local function withZeroFloor(env)
+    env.BR.Config[ZERO.group][ZERO.key] = ZERO.default
+
+    local spec = {
+        convar = ZERO.convar, group = ZERO.group, key = ZERO.key,
+        kind   = ZERO.kind,   min   = ZERO.min,   max = ZERO.max,
+        note   = ZERO.note,
+    }
+    local SPEC = env.BR.Config.Overrides.SPEC
+    SPEC[#SPEC + 1] = spec
+    return spec
+end
+
 -- The pristine copy. Nothing below ever overrides through this one, so it is
 -- what "the committed default" means for the rest of the file -- an
 -- independent load of the same file rather than a number retyped here.
@@ -196,15 +248,65 @@ end
 
 describe('the values Lua is worst at')
 do
-    -- ZERO. `if v then` is TRUE for 0 in Lua, so the classic bug here is the
-    -- opposite of the usual one: not "0 was treated as absent", but code that
-    -- tests truthiness and cannot tell 0 from 45. partyGraceSeconds 0 is a real
-    -- setting -- never wait for a straggler -- and it must survive as 0.
-    local env = load(nil)
-    local _, errors = env.BR.Config.Overrides.apply(readerFor({ br_partyGraceSeconds = '0' }))
-    ok(#errors == 0, 'partyGraceSeconds 0 is accepted', errors[1] and errors[1].why)
-    ok(env.BR.Config.Match.partyGraceSeconds == 0, 'and lands as the number 0',
-        tostring(env.BR.Config.Match.partyGraceSeconds))
+    -- ZERO, driven through the fixture row at the top of this file. The classic
+    -- bug here is the opposite of the usual one: not "0 was treated as absent",
+    -- but code that tests truthiness and cannot tell 0 from 45.
+    local env  = load(nil)
+    local Ov   = env.BR.Config.Overrides
+    local spec = withZeroFloor(env)
+
+    -- FIRST, THAT THE FIXTURE IS WORTH ANYTHING. Everything below would pass
+    -- vacuously on a row that had quietly lost its min, or on a default that
+    -- was already 0 -- so neither is assumed.
+    local lo, hi = Ov.bounds(spec)
+    ok(lo == 0, 'the fixture floor really is 0, not nil', tostring(lo))
+    ok(hi == 300, 'and its ceiling really is 300', tostring(hi))
+    ok(env.BR.Config[ZERO.group][ZERO.key] == ZERO.default and ZERO.default ~= 0,
+        'and its default is not already 0, so "lands as 0" means something',
+        tostring(env.BR.Config[ZERO.group][ZERO.key]))
+
+    -- THE PARSE. 0 is a value, not a failure, and nil is the only failure
+    -- sentinel overrides.lua uses.
+    local v, why = Ov.parse(spec, '0')
+    ok(v == 0 and math.type(v) == 'integer', "'0' parses to the integer 0",
+        why or tostring(v))
+    ok(why == nil, 'with no reason attached -- a parsed 0 is not a refusal', why)
+
+    -- THE FLOOR IS INCLUSIVE AT ZERO AND STILL A FLOOR. "min is 0" must not
+    -- collapse into "there is no minimum"; the refusal itself is run through the
+    -- full battery down in 'an invalid value is refused, not absorbed'.
+    ok(Ov.parse(spec, '-1') == nil, 'and -1, one step under that zero, is refused')
+
+    -- THE RANGE THE OPERATOR IS SHOWN STILL CARRIES THE ZERO -- it is what the
+    -- boot banner and the console's config page print, and a floor dropped on
+    -- the way out is an operator told a minimum that is not the enforced one.
+    ok(Ov.rangeText(spec) == '0..300',
+        'and the published range names the zero', Ov.rangeText(spec))
+
+    -- THE APPLY, which is the half that reaches the game. A truthiness test
+    -- anywhere between parse() and the assignment turns this into "refused,
+    -- default kept" -- which boots clean and then plays the wrong number.
+    local applied, errors = Ov.apply(readerFor({ [ZERO.convar] = '0' }))
+    ok(#errors == 0, 'apply() accepts 0', errors[1] and errors[1].why)
+    ok(env.BR.Config[ZERO.group][ZERO.key] == 0, 'and lands as the number 0',
+        tostring(env.BR.Config[ZERO.group][ZERO.key]))
+
+    local hit
+    for _, a in ipairs(applied) do if a.convar == ZERO.convar then hit = a end end
+    ok(hit ~= nil and hit.from == ZERO.default and hit.to == 0,
+        'and REPORTS it -- from 45 to 0, so the boot banner says so as well',
+        hit and ('from %s to %s'):format(tostring(hit.from), tostring(hit.to))
+            or 'apply() reported nothing for it')
+
+    -- And no shipped setting moved on the way past.
+    local zspill = nil
+    for _, s in ipairs(Ov.SPEC) do
+        if s.key ~= ZERO.key
+           and env.BR.Config[s.group][s.key] ~= PRISTINE.BR.Config[s.group][s.key] then
+            zspill = s.key
+        end
+    end
+    ok(zspill == nil, 'and no other setting moved', zspill)
 
     -- FALSE. Same shape, one type over: a boolean override that lands as nil
     -- instead of false reads as "not set" to every consumer.
@@ -239,7 +341,14 @@ do
         { convar = 'br_maxSquadSize',     raw = '4 ok',  why = 'trailing junk' },
         { convar = 'br_warmupSeconds',    raw = '0',     why = 'below the minimum' },
         { convar = 'br_warmupSeconds',    raw = '99999', why = 'above the maximum' },
-        { convar = 'br_partyGraceSeconds', raw = '-1',   why = 'below a minimum that IS zero' },
+        -- A MINIMUM THAT IS ZERO, one step under it. `fixture` installs the
+        -- synthesised row from the top of this file into that case's sandbox --
+        -- no shipped tunable has a floor of 0 any more, and this refusal is the
+        -- one that says "min = 0" never quietly became "no minimum at all". It
+        -- runs the same battery as every row above it, which is the point of it
+        -- being here rather than in a block of its own.
+        { convar = ZERO.convar,           raw = '-1',    fixture = true,
+          why = 'below a minimum that IS zero' },
         { convar = 'br_autofill',         raw = 'yes',   why = 'not a boolean this parser takes' },
         { convar = 'br_autofill',         raw = '2',     why = 'a number that is not 0 or 1' },
         -- THE CONSOLE ORIGIN (#23). Every one of these is a value that would
@@ -302,6 +411,7 @@ do
     for _, c in ipairs(cases) do
         local env = load(nil)
         local Ov  = env.BR.Config.Overrides
+        if c.fixture then withZeroFloor(env) end
 
         local spec
         for _, s in ipairs(Ov.SPEC) do if s.convar == c.convar then spec = s end end
