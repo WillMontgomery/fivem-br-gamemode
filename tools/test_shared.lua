@@ -3281,6 +3281,105 @@ do
         'LootLabel resolves consumables')
     ok(BR.LootLabel({ kind = BR.ItemKind.WEAPON, item = 'heavysniper' }) ~= 'Weapon',
         'LootLabel resolves weapons')
+
+    -- ---------------------------------------------------------------------
+    -- CRATE COMPOSITION (#254)
+    -- ---------------------------------------------------------------------
+    --
+    -- Owner, 2026-09-02: "when I get melee, it seems to be mostly melee in that
+    -- crate and melee isn't mixed in with other crates."
+    --
+    -- THE PRESENCE TEST ABOVE CANNOT FAIL ON THAT and neither could the
+    -- measurement that was run against it first: "does a crate contain melee"
+    -- is true just as often whether the slots are drawn independently or a
+    -- category is chosen once per crate and then fills the box. The two differ
+    -- only in COMPOSITION, so that is what is pinned here.
+
+    local hand = BR.LootComposition({
+        { kind = BR.ItemKind.WEAPON,     item = 'machete' },
+        { kind = BR.ItemKind.WEAPON,     item = 'heavysniper' },
+        { kind = BR.ItemKind.AMMO,       item = BR.AmmoType.HEAVY },
+        { kind = BR.ItemKind.CONSUMABLE, item = 'medkit' },
+        { kind = BR.ItemKind.THROWABLE,  item = 'grenade' },
+        { kind = 'volts',                item = 'volts' },
+    })
+    ok(hand.melee == 1 and hand.firearm == 1,
+        'LootComposition tells a machete from a rifle inside one WEAPON kind',
+        ('melee %d firearm %d'):format(hand.melee, hand.firearm))
+    ok(hand.ammo == 1 and hand.consumable == 1 and hand.throwable == 1
+        and hand.other == 1,
+        'LootComposition buckets the rest, and a volts pile is `other`')
+    ok(hand.items == hand.melee + hand.firearm + hand.ammo + hand.consumable
+        + hand.throwable + hand.other,
+        'LootComposition totals equal the sum of their parts')
+
+    local empty = BR.LootComposition(nil)
+    ok(empty.items == 0 and empty.melee == 0 and empty.firearm == 0,
+        'LootComposition of nothing is zeroes, not nil arithmetic')
+
+    -- The analytic prediction if -- and only if -- every slot is drawn
+    -- INDEPENDENTLY: melee is `meleeChance` of the WEAPON rolls, and a crate's
+    -- size comes off BR.Config.Loot.chestItems. Derived from the config rather
+    -- than written down as a number, so retuning either table moves the
+    -- expectation with it instead of failing this suite.
+    local pw, wsum = 0.0, 0.0
+    for _, k in ipairs(BR.Config.KindWeights) do wsum = wsum + k.weight end
+    for _, k in ipairs(BR.Config.KindWeights) do
+        if k.kind == BR.ItemKind.WEAPON then pw = k.weight / wsum end
+    end
+    local pMelee = pw * (BR.Config.Loot.meleeChance or 0.18)
+
+    local sizeW, ssum = {}, 0.0
+    for _, e in ipairs(BR.Config.Loot.chestItems.weights) do ssum = ssum + e.weight end
+    for _, e in ipairs(BR.Config.Loot.chestItems.weights) do
+        sizeW[#sizeW + 1] = { n = e.n, p = e.weight / ssum }
+    end
+
+    -- E[melee/n | at least one melee], mixed over the crate sizes.
+    local function choose(n, k)
+        local r = 1.0
+        for i = 1, k do r = r * (n - k + i) / i end
+        return r
+    end
+    local num, den = 0.0, 0.0
+    for _, sz in ipairs(sizeW) do
+        local e = 0.0
+        for k = 1, sz.n do
+            e = e + choose(sz.n, k) * pMelee ^ k
+                * (1.0 - pMelee) ^ (sz.n - k) * (k / sz.n)
+        end
+        num = num + sz.p * e
+        den = den + sz.p * (1.0 - (1.0 - pMelee) ^ sz.n)
+    end
+    local predicted = num / den
+
+    local cr = BR.Rng(254)
+    local N = 40000
+    local mCrates, mShareSum, mItems, allItems = 0, 0.0, 0, 0
+    for _ = 1, N do
+        local comp = BR.LootComposition(BR.LootChestContents(cr, 3))
+        allItems = allItems + comp.items
+        mItems = mItems + comp.melee
+        if comp.melee > 0 then
+            mCrates = mCrates + 1
+            mShareSum = mShareSum + comp.melee / comp.items
+        end
+    end
+    local observedRate  = mItems / allItems
+    local observedShare = mShareSum / mCrates
+
+    ok(math.abs(observedRate - pMelee) < pMelee * 0.06,
+        'melee is the share of crate ITEMS the config says it is',
+        ('%.4f observed vs %.4f authored'):format(observedRate, pMelee))
+
+    -- THE ONE THAT ANSWERS #254. Independent slots put this at about a third of
+    -- a crate; anything that picks a category once per crate drives it toward
+    -- 1.0, which is the shape the report describes. A 5% band is far tighter
+    -- than the gap between those two worlds.
+    ok(math.abs(observedShare - predicted) < 0.05,
+        'a crate that holds melee is about a THIRD melee, not mostly melee',
+        ('%.3f observed vs %.3f if slots are independent')
+            :format(observedShare, predicted))
 end
 
 -- ------------------------------------------------------------------ names ---

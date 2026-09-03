@@ -315,6 +315,56 @@ function BR.LootContentsRarity(contents)
     return best
 end
 
+--- What a container holds, counted in the buckets a PLAYER reads.
+---
+--- MELEE IS NOT A KIND, and that is the whole reason this exists. A machete
+--- rides BR.ItemKind.WEAPON (see the note in BR.RollLootStack -- deliberately,
+--- so every downstream path already works), so counting a crate by `kind`
+--- cannot tell the machete from the rifle. Every crate report this project has
+--- had turns on exactly that distinction, and each one so far has re-derived it
+--- inline.
+---
+--- COMPOSITION IS NOT PRESENCE (#254). Owner, 2026-09-02: "when I get melee, it
+--- seems to be mostly melee in that crate". A presence check -- does this crate
+--- contain melee, yes or no -- cannot answer that and was measured once already
+--- against the wrong question. Counts can: `melee / items` is the share he is
+--- describing, and `melee / (melee + firearm)` is the same share counted the way
+--- a player counts it, since ammo goes into a reserve and a shield into a bar
+--- while the weapon is the thing you walk away holding.
+---
+--- `items` ALWAYS EQUALS THE SUM OF THE BUCKETS, which is what `other` is for: a
+--- container may hold a stack that is none of these (the airdrop's `volts`), and
+--- a total that silently disagrees with its parts is how a share gets quoted
+--- against the wrong denominator.
+--- @param contents table[]|nil
+--- @return table  { items, melee, firearm, ammo, consumable, throwable, other }
+function BR.LootComposition(contents)
+    local c = {
+        items = 0, melee = 0, firearm = 0,
+        ammo = 0, consumable = 0, throwable = 0, other = 0,
+    }
+    for _, s in ipairs(contents or {}) do
+        c.items = c.items + 1
+        if s.kind == BR.ItemKind.WEAPON then
+            local w = BR.Config.WeaponById[s.item]
+            if w and w.melee then
+                c.melee = c.melee + 1
+            else
+                c.firearm = c.firearm + 1
+            end
+        elseif s.kind == BR.ItemKind.AMMO then
+            c.ammo = c.ammo + 1
+        elseif s.kind == BR.ItemKind.CONSUMABLE then
+            c.consumable = c.consumable + 1
+        elseif s.kind == BR.ItemKind.THROWABLE then
+            c.throwable = c.throwable + 1
+        else
+            c.other = c.other + 1
+        end
+    end
+    return c
+end
+
 --- Human-readable label for a stack, for the pickup prompt and the inventory.
 --- @param stack table
 --- @return string
