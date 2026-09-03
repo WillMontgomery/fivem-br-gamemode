@@ -352,6 +352,65 @@ if panel then
                  .. 'of the design, and being out of flow is also what keeps it '
                  .. 'from changing any row\'s height')
         end
+
+        -- ═══ AND THE RED BREATHES ═══
+        --
+        -- Owner, 2026-09-02: "For the red line on the squad bar - please make
+        -- the red pulse fade so it looks urgent."
+        --
+        -- ON THE FILL AND NOT THE TRACK, because he asked for the RED to pulse:
+        -- fading the black groove blinks the empty part of the line too, which
+        -- reads as the card's edge flickering. The two classes are asserted
+        -- TOGETHER on one element for that reason.
+        local fill = drain:match('className="([^"]*bar%-fill[^"]*)"')
+        if not fill then
+            fail('cannot find the pickup bar\'s fill element')
+        elseif not fill:find('mate%-pulse') then
+            fail('the pickup bar\'s red no longer pulses',
+                 'owner, 2026-09-02: "please make the red pulse fade so it '
+                 .. 'looks urgent". `.mate-pulse` is this panel\'s own beat -- '
+                 .. 'the one a downed mate\'s colour tag already wears -- so a '
+                 .. 'key on the ground and a mate bleeding out breathe in step')
+        end
+    end
+
+    -- ═══ AND WHATEVER PULSES IT MUST NOT TOUCH `transform` ═══
+    --
+    -- THIS IS THE ONE THAT WOULD NOT LOOK LIKE A BUG. The drain is an inline
+    -- `transform: scaleX()` written by a tick; a keyframe that animates
+    -- transform BEATS an inline style in the cascade, so the bar would pulse
+    -- exactly as asked and quietly stop draining -- and the nearest pulse to
+    -- hand, `.mate-talk`/`talkPulse` on this very row, does animate scale().
+    --
+    -- ui-src/scripts/check-ui.mjs R7 does NOT cover this. It refuses keyframes
+    -- that animate width, height, top, left, margin, padding or box-shadow;
+    -- #257 records that the list is those seven and no more, so transform --
+    -- which is exactly what it is supposed to encourage everywhere else -- is
+    -- invisible to it. Hence a gate here, against the keyframe by name.
+    do
+        local css = read(UI .. 'index.css', codeOfTs)
+        if css then
+            local pulse = css:match('@keyframes%s+matePulse%s*%b{}')
+            if not pulse then
+                fail('index.css no longer defines matePulse',
+                     'the pickup bar and every downed mate\'s colour tag are '
+                     .. 'animated by it')
+            else
+                if pulse:find('transform') then
+                    fail('matePulse animates transform',
+                         'the pickup bar\'s drain IS an inline transform, and a '
+                         .. 'keyframe beats an inline style -- so this change '
+                         .. 'would freeze the bar at full while it went on '
+                         .. 'pulsing, which looks like a working feature')
+                end
+                if not pulse:find('opacity') then
+                    fail('matePulse no longer fades',
+                         '"make the red pulse fade" is the request; opacity is '
+                         .. 'the only channel that does it without touching the '
+                         .. 'transform the drain owns or the layout thread')
+                end
+            end
+        end
     end
     do
         -- ...AND IT IS RENDERED ON THE PLATE, NOT INSIDE THE COLUMN. Asserted by
@@ -536,17 +595,32 @@ do
         -- that survives minification verbatim, and this one is read out of the
         -- SOURCE rather than spelled here for the reason the glyph is: a literal
         -- pins what somebody once wrote, not what ships.
+        --
+        -- BOTH OF THE BAR'S CLASS STRINGS, TRACK AND FILL. The fill's is what
+        -- carries `mate-pulse`, so pinning only the track would have gone green
+        -- on a bundle built before the owner asked for the red to breathe --
+        -- exactly the hole the `reviveKeyEndsAt` marker had before the bar.
+        -- Every future edit to either string invalidates a stale bundle on its
+        -- own, which is the property rather than these two particular classes.
         do
-            local cls = panel and panel:match(
-                'className="(absolute inset%-x%-0[^"]*)"')
-            if not cls then
+            local cls = {
+                panel and panel:match('className="(absolute inset%-x%-0[^"]*)"'),
+                panel and panel:match('className="([^"]*bar%-fill[^"]*)"'),
+            }
+            if not (cls[1] and cls[2]) then
                 fail('cannot read the pickup bar\'s classes out of SquadPanel.tsx',
                      'this gate compares them with the built bundle. If the bar '
                      .. 'was restructured, re-point this -- do not replace it '
                      .. 'with a literal')
-            elseif not js:find(cls, 1, true) then
-                fail('the built bundle does not contain the pickup drain bar',
-                     'the bundle is stale. Run: cd ui-src && npm run build')
+            else
+                for _, c in ipairs(cls) do
+                    if not js:find(c, 1, true) then
+                        fail('the built bundle does not contain the pickup '
+                             .. 'drain bar as it is written now',
+                             'the bundle is stale. Run: cd ui-src && npm run build')
+                        break
+                    end
+                end
             end
         end
     end
@@ -562,5 +636,6 @@ io.write('ok   a squadmate\'s revive key travels only to their own squad, folds\
     .. '     key beside the OUT stamp -- two shades, no caption, on a plate\n'
     .. '     that stops being faded to nothing. The pickup\'s own deadline\n'
     .. '     rides the same beacon and drains the bleed card\'s own bar along\n'
-    .. '     the foot of that card, in the token red, while something is\n'
-    .. '     still on the ground\n')
+    .. '     the foot of that card -- in the token red, breathing on the same\n'
+    .. '     pulse a downed mate\'s tag wears, on a channel the drain does not\n'
+    .. '     own -- while something is still on the ground\n')

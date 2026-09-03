@@ -228,6 +228,52 @@ function RowClock({ endsAt }: { endsAt: number }) {
  * out, which is when everybody is looking at it. A `totalRef` reset keyed to
  * `endsAt` is what makes the next key start full instead of inheriting the last
  * one's scale.
+ *
+ * ═══ AND THE RED BREATHES, WHICH IS THE SECOND HALF OF THE SAME REQUEST ═══
+ *
+ * Owner, 2026-09-02: "For the red line on the squad bar - please make the red
+ * pulse fade so it looks urgent."
+ *
+ * `.mate-pulse` -- THIS PANEL'S OWN PULSE, NOT A FOURTH ANIMATION. `matePulse`
+ * is opacity 1 -> 0.35 -> 1 over 800ms, and it is already what this row uses to
+ * say a state is live and cannot wait: the colour tag beside a DOWNED mate wears
+ * it. A key on the ground is the same kind of fact, so it gets the same beat
+ * rather than a private one, and the two pulse in step on a row that can carry
+ * both.
+ *
+ * THE OTHER TWO PULSES IN THIS INTERFACE WERE READ AND BOTH ARE WRONG HERE:
+ *
+ *   `hotEdge` (.panel-hot, the bleed card) animates BORDER-COLOUR, and it
+ *   animates it to `rgba(255,255,255,0.55)`. This bar has no border to breathe,
+ *   and the owner's rule for it is that the red stays `--color-danger` -- a
+ *   pulse that flips to white every 800ms is a second colour.
+ *
+ *   `talkPulse` (.mate-talk, the voice mark on this very row) animates opacity
+ *   AND `transform: scale()`. A transform keyframe on this element would WIN
+ *   over the inline `transform` the tick writes -- animations beat inline styles
+ *   in the cascade -- so the bar would pulse beautifully and stop draining
+ *   entirely. That is the failure this note exists to stop somebody making by
+ *   reaching for the nearest pulse.
+ *
+ * IT IS ON THE FILL, NOT ON THE TRACK. He asked for the RED to pulse; fading the
+ * track would blink the black groove and the empty part of the line with it,
+ * which reads as the card's edge flickering rather than as a countdown.
+ *
+ * OPACITY ONLY, WHICH KEEPS IT OFF THE LAYOUT THREAD -- and off the transform
+ * channel the drain owns. ui-src/scripts/check-ui.mjs R7 refuses a keyframe that
+ * animates width, height, top, left, margin, padding or box-shadow; #257 records
+ * that its list is seven properties long and would not have caught a transform
+ * here, so the guard against that one is the assertion in
+ * tools/check_squad_key.lua rather than R7.
+ *
+ * ⚠ IT DOES NOT TIGHTEN AS THE TIME RUNS OUT, and that is a decision. The bar's
+ * LENGTH is already the "how long" channel -- a 6% sliver and a full-width line
+ * do not look remotely alike -- so a pulse that also encoded time would be one
+ * object carrying two readings of one number, which is the trap KeyMark's header
+ * argues against next door. What the pulse is for is that the line is worth
+ * looking at AT ALL, and that is true at 180 seconds: the squad has to notice
+ * there is a key down and start running. He asked for urgent, not for a
+ * threshold; if he wants it to quicken at the end, that is one number.
  */
 function KeyDrain({ endsAt }: { endsAt: number }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -258,9 +304,12 @@ function KeyDrain({ endsAt }: { endsAt: number }) {
     // panel is clickable and a strip that could swallow a hover is a bug
     // waiting for the day something is.
     <div className="absolute inset-x-0 bottom-0 h-[0.2rem] overflow-hidden bg-black/60 pointer-events-none">
+      {/* `mate-pulse` FADES THE RED; `bar-fill` OWNS THE TRANSFORM. Two classes
+          on two different channels on purpose -- see the header. Do not move the
+          pulse onto a class that touches `transform`, or the drain stops. */}
       <div
         ref={ref}
-        className="bar-fill h-full"
+        className="bar-fill mate-pulse h-full"
         style={{ width: '100%', background: 'var(--color-danger)' }}
       />
     </div>
