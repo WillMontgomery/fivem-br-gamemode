@@ -1998,6 +1998,94 @@ do
     end
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('repairkit.reuse')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "Repair kit should spawn in loot crates, inventory item, maxCarry 1, can
+--    be used on the fly to repair any vehicle once."   -- owner, 2026-08-23
+--
+-- ═══ THE PROPERTY IS "ONE IMPLEMENTATION, TWO CALLERS" ═══
+--
+-- The station already restores the three health pools in the order they have to
+-- go in -- ENGINE FIRST, because SetVehicleFixed is documented not to fix a
+-- broken one -- then pops the deformation and washes the decals. A repair kit
+-- that carried its own copy of that sequence would be a second place for the
+-- ordering to be got wrong, and the wrong one would be the one nobody had
+-- played. So the kit's handler must CALL applyRepair rather than reimplement it.
+--
+-- TEXT, for the reason the prompt.copy block above gives at length:
+-- client/fuel.lua registers frame-band loops and calls a dozen client natives
+-- this suite does not stub, and stubbing them to reach one call would be a
+-- harness bigger than the file. What a pass proves is that the second caller
+-- exists and goes through the shared function; it cannot prove a car looks
+-- repaired, which needs a game.
+do
+    local fh = io.open(ROOT .. 'br_core/client/fuel.lua', 'r')
+    ok(fh ~= nil, 'client/fuel.lua is readable')
+    if fh then
+        local src = fh:read('a'); fh:close()
+        local code = src:gsub('%-%-%[%[.-%]%]', ' '):gsub('%-%-[^\n]*', '')
+
+        ok(code:find('AddEventHandler(BR.Net.VEH_FIX', 1, true) ~= nil,
+           'the client listens for the repair grant')
+
+        -- ═══ THERE IS EXACTLY ONE applyRepair, AND TWO CALLS OF IT ═══
+        --
+        -- Counted rather than merely found, and this is the assertion that
+        -- actually carries the property: a second DEFINITION is how the
+        -- ordering rule gets forked, and a handler that repaired without
+        -- calling it would show up as one call rather than two.
+        local defs = 0
+        for _ in code:gmatch('local function applyRepair%(') do defs = defs + 1 end
+        ok(defs == 1, ('there is one repair implementation in the file (saw %d)')
+            :format(defs))
+
+        -- MINUS THE DEFINITION, WHICH IS ALSO A `applyRepair(veh,`. The first
+        -- spelling of this counted the name and reported three callers for two,
+        -- which is the same trap test_shop.lua's `BR.Shop.unpack` assertion fell
+        -- into: a mention is not a call.
+        local mentions = 0
+        for _ in code:gmatch('applyRepair%(veh,') do mentions = mentions + 1 end
+        ok(mentions - defs == 2,
+           ('and both callers go through it -- the pump grant and the repair '
+            .. 'kit (saw %d)'):format(mentions - defs))
+
+        -- ═══ AND THE KIT'S CALLER IS INSIDE THE VEH_FIX HANDLER ═══
+        --
+        -- Two calls somewhere in a 1300-line file is not the same statement as
+        -- "the handler repairs". Anchored on the handler's own opening so this
+        -- cannot pass on a build where the second call drifted into the tick.
+        local at = code:find('AddEventHandler(BR.Net.VEH_FIX', 1, true)
+        local body = at and code:sub(at, at + 700) or ''
+        ok(body:find('applyRepair(veh, points)', 1, true) ~= nil,
+           'the VEH_FIX handler hands its grant to the shared function')
+
+        -- ═══ IT CHECKS THE CAR IT WAS SENT ═══
+        --
+        -- Between the server ruling and this arriving, a player can leave the
+        -- seat. Repairing whatever they are in NOW would spend a kit on a car
+        -- nobody aimed it at, so the network id on the wire is compared and a
+        -- mismatch does nothing.
+        ok(body:find('netOf(veh) ~= nid', 1, true) ~= nil,
+           'and refuses a vehicle that is not the one the server named')
+
+        -- 0 IS TRUTHY IN LUA. IsPedInAnyVehicle is declared BOOL; a bare read
+        -- here would repair for a player standing in a field.
+        ok(body:find('didHit(IsPedInAnyVehicle(ped, false))', 1, true) ~= nil,
+           'and reads the BOOL native through didHit rather than bare')
+
+        -- ═══ NO SECOND FUEL LEDGER ═══
+        --
+        -- The grant deliberately does NOT ride FUEL_SET: that message carries
+        -- the ledger's fraction and metres, and a client that receives one
+        -- writes them into `known`. A repair kit must not tell a client
+        -- anything about its tank.
+        ok(body:find('known[', 1, true) == nil,
+           'and it touches the fuel ledger not at all')
+    end
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))

@@ -2729,13 +2729,128 @@ do
         if c.health and c.healthCap > 100 then
             badCaps[#badCaps + 1] = c.id .. '(healthCap)'
         end
-        if c.useMs <= 0 or c.maxStack <= 0 then
+        -- ═══ EVERY CONSUMABLE DECLARES HOW LONG USING IT TAKES, AND ZERO IS A
+        --     LENGTH (#228) ═══
+        --
+        -- This read `c.useMs <= 0` and could not have said so. Two changes, and
+        -- both make it stricter rather than looser:
+        --
+        --   the TYPE is tested. The old line compared a field it had not proved
+        --   was a number, so a consumable that lost its `useMs` altogether
+        --   would have KILLED this suite -- "attempt to compare nil with
+        --   number" -- rather than failed it. That is exactly how the CPR kit
+        --   took the live server down through the same expression in
+        --   server/inventory.lua.
+        --
+        --   ZERO IS ALLOWED, BUT ONLY FOR AN ITEM THAT SAYS WHAT IT DOES
+        --   INSTANTLY. `useMs = 0` is what makes the repair kit instant, so a
+        --   flat ban on it is no longer expressible -- but a shield potion whose
+        --   channel was zeroed by accident is still caught, because it names no
+        --   instant effect. `repairVeh` is the only one today; a second one adds
+        --   itself to this test and to the branch in server/inventory.lua, which
+        --   is the same pair of places `shopCar` lives in.
+        if type(c.useMs) ~= 'number' or c.useMs < 0 or c.maxStack <= 0 then
             badCaps[#badCaps + 1] = c.id .. '(useMs/stack)'
+        elseif c.useMs == 0 and not c.repairVeh then
+            badCaps[#badCaps + 1] = c.id .. '(instant with no instant effect)'
         end
     end
     ok(#badCaps == 0, 'consumable caps are coherent', table.concat(badCaps, ', '))
 
     ok(BR.Config.ConsumableById['medkit'] ~= nil, 'consumable lookup is built')
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- The repair kit (#228)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "Repair kit should spawn in loot crates, inventory item, maxCarry 1,
+    --    can be used on the fly to repair any vehicle once."
+    --                                          -- owner, 2026-08-23
+    --
+    -- Every clause of that sentence is a field, and this is the block that says
+    -- which field. What it cannot prove is that a repaired car looks repaired;
+    -- that is client/fuel.lua's natives and it needs a game.
+    do
+        local kit = BR.Config.ConsumableById['repairkit']
+        ok(kit ~= nil, 'the repair kit is a consumable like any other')
+
+        ok(kit and kit.carryMax == 1 and kit.maxStack == 1,
+           '"maxCarry 1" -- and the field is carryMax, and the stack agrees '
+               .. 'with it so one slot cannot hold two',
+           kit and ('carryMax %s maxStack %s')
+               :format(tostring(kit.carryMax), tostring(kit.maxStack)))
+
+        ok(kit and kit.chestOnly == true,
+           '"spawn in loot crates" is the flag the bandage and the med kit '
+               .. 'already carry, not a comment')
+
+        -- ...AND THE FLAG REALLY REACHES THE TABLE THAT IS ROLLED. chestOnly is
+        -- not consulted at roll time -- the floor buckets are PRECOMPUTED
+        -- without it -- so asserting the field alone would pass on a build
+        -- where the filter had been removed.
+        local onFloor = false
+        for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            for _, c in ipairs(BR.Config.ConsumablesByRarityFloor[r] or {}) do
+                if c.id == 'repairkit' then onFloor = true end
+            end
+        end
+        ok(not onFloor, 'so no loose ground roll can ever produce one')
+
+        -- ...and it IS in the crate table, in the band this file chose. Both
+        -- halves, because "never on the floor" is also satisfied by an item
+        -- that is nowhere at all -- which is the CPR kit, and is not this.
+        local band = nil
+        for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            for _, c in ipairs(BR.Config.ConsumablesByRarity[r] or {}) do
+                if c.id == 'repairkit' then band = r end
+            end
+        end
+        ok(band == BR.Rarity.LEGENDARY,
+           'and it is the LEGENDARY consumable -- the one band that does not '
+               .. 'take the RARE fall-through off the Shield or halve the Med '
+               .. 'Kit. NOT THE OWNER\'S NUMBER: he has never given one',
+           tostring(band))
+
+        -- ═══ AND THE BANDS BELOW IT ARE UNDISTURBED, WHICH IS THE REASON THE
+        --     BAND ABOVE WAS CHOSEN ═══
+        --
+        -- The bucket walk goes DOWN, so an item added at RARE or EPIC does not
+        -- merely join a bucket -- it INTERCEPTS every roll that used to fall
+        -- past it. The Shield's 2026-08-17 buff and the Med Kit's share are
+        -- both fall-through effects, and both are undone silently by a repair
+        -- kit in the wrong band. This is what would catch that.
+        ok(#(BR.Config.ConsumablesByRarity[BR.Rarity.RARE] or {}) == 0,
+           'the RARE bucket is still empty, so a RARE roll still falls through '
+               .. 'to the Shield -- the owner asked for that on 2026-08-17')
+        local epic = BR.Config.ConsumablesByRarity[BR.Rarity.EPIC] or {}
+        ok(#epic == 1 and epic[1].id == 'medkit',
+           'and the Med Kit still has EPIC to itself')
+
+        -- ═══ "USED ON THE FLY" -- INSTANT, AND IT IS THE ZERO THAT SAYS SO ═══
+        ok(kit and kit.useMs == 0,
+           'the kit declares that using it takes no time, which is what makes '
+               .. 'it instant rather than a channel',
+           kit and tostring(kit.useMs))
+        ok(kit and kit.repairVeh == true,
+           'and names its effect on the row, the way the shop car names its '
+               .. 'catalogue id -- server/inventory.lua branches on this and '
+               .. 'knows nothing else about vehicles')
+
+        -- IT IS NOT A POTION. `health`/`armour` are interpolated across a
+        -- channel by the use tick, and an instant item has no channel to
+        -- interpolate across -- so either field here would be an effect that
+        -- silently never lands.
+        ok(kit and kit.health == nil and kit.armour == nil,
+           'and it moves nothing on the ped -- no health, no armour, and no '
+               .. 'refuel either: the owner asked for a repair kit')
+
+        -- THE CPR KIT IS THE OTHER ABSENCE AND MUST STAY DISTINCT. It is nil,
+        -- not zero, and that is the difference between "not usable by hand"
+        -- and "usable instantly".
+        ok(BR.Config.CprKit.useMs == nil,
+           'the CPR kit still declares NO useMs at all -- nil and 0 are two '
+               .. 'different statements now, and it makes the first one')
+    end
 
     -- Budget sanity. This is the number that justifies the local-prop design;
     -- if it ever creeps toward the thousands as networked entities it would be
@@ -3237,12 +3352,35 @@ do
     end
     ok(nilPicks == 0, 'no rarity produces a nil pick from any bucket')
 
-    -- Legendary is authored on weapons only; a legendary consumable roll must
-    -- pay out the best consumable that exists, not nothing and not a common.
+    -- A legendary consumable roll must pay out the best consumable that exists,
+    -- not nothing and not a common.
+    --
+    -- ═══ IT USED TO WALK DOWN TO THE MED KIT, AND #228 FILLED THE BUCKET ═══
+    --
+    -- The repair kit is the LEGENDARY consumable now, so this roll lands on its
+    -- own tier rather than falling a step. The property under test is unchanged
+    -- -- the best consumable that exists -- and only the answer moved. The two
+    -- assertions below are what make that a statement rather than a shrug: one
+    -- names the item, so a future edit that empties the bucket again fails here
+    -- rather than silently handing legendary crates a med kit; the other proves
+    -- the walk-down itself is still working, on the band that still needs it.
     local best = BR.LootPickOfRarity(BR.Rng(1), BR.Config.ConsumablesByRarity,
         BR.Rarity.LEGENDARY)
-    ok(best ~= nil and best.rarity == BR.Rarity.EPIC,
-        'a legendary consumable roll walks down to the epic med kit')
+    ok(best ~= nil and best.rarity == BR.Rarity.LEGENDARY
+       and best.id == 'repairkit',
+        'a legendary consumable roll pays out the repair kit',
+        best and best.id)
+
+    -- AND THE WALK DOWN IS STILL LIVE, on the band the Shield's 2026-08-17 buff
+    -- is made of: RARE is empty on purpose, so a RARE consumable roll has to
+    -- fall through to the UNCOMMON Shield. That fall-through is 28 points of
+    -- the Shield's share and nothing else in this suite would notice it going.
+    local rareRoll = BR.LootPickOfRarity(BR.Rng(1), BR.Config.ConsumablesByRarity,
+        BR.Rarity.RARE)
+    ok(rareRoll ~= nil and rareRoll.id == 'shield',
+        'and a rare one still falls through to the Shield, which is the whole '
+            .. 'of what moving it to UNCOMMON bought',
+        rareRoll and rareRoll.id)
 
     -- The rarity buckets must agree with the flat tables they were built from.
     local counted = 0

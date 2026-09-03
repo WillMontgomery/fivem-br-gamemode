@@ -915,7 +915,21 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     -- SILENTLY. No notify, no print, no INV_SET. "Absolutely nothing while the
     -- player is alive" is the requirement, and a console line every time a
     -- player mashes their kit slot is not nothing.
-    if type(c.useMs) ~= 'number' or c.useMs <= 0 then return end
+    --
+    -- ═══ AND ZERO IS A LENGTH, NOT AN ABSENCE (#228) ═══
+    --
+    -- The test was `<= 0` and is now `< 0`, which is a widening of exactly one
+    -- value and is the whole of what makes an INSTANT item expressible. The
+    -- sentence above is unchanged and still true word for word: a consumable is
+    -- usable through the inventory exactly when it declares how long using it
+    -- takes, and the repair kit declares that it takes no time.
+    --
+    -- THE CPR KIT IS STILL REFUSED HERE, which is the property that must not
+    -- move. Its `useMs` is nil -- not zero -- and nil is what "this item is not
+    -- reachable from a keypress" means; a nil is caught by the type test on the
+    -- left of this line, before any comparison happens. The two absences were
+    -- one value before this change and they are two now, deliberately.
+    if type(c.useMs) ~= 'number' or c.useMs < 0 then return end
 
     local e = BR.Roster.get(src)
 
@@ -968,6 +982,69 @@ AddEventHandler(BR.Net.INV_USE, function(d)
             if why then BR.Server.notify(src, why, 'warn') end
             return
         end
+    end
+
+    -- ═══ AN INSTANT ITEM IS RULED, SPENT AND APPLIED ON THIS PRESS (#228) ═══
+    --
+    --   "can be used on the fly to repair any vehicle once."
+    --                                          -- owner, 2026-08-23
+    --
+    -- EVERYTHING BELOW THIS BLOCK IS A CHANNEL, and a channel is the thing the
+    -- owner is contrasting with. So the branch is here, above `inv.using`, and
+    -- an instant use never opens one: nothing to cancel, nothing to interrupt,
+    -- no second pass to re-rule on.
+    --
+    -- ═══ WHICH IS WHY THIS ONE HAS NO SHOP-SHAPED HAZARD ═══
+    --
+    -- The shop car is consumed four lines before BR.Shop.unpack is called and
+    -- is never refunded, so its rule had to be enforced at the PRESS as well as
+    -- at the effect -- two asks, in two places, because three seconds separate
+    -- them. Here the press IS the effect. The ruling is one line above the
+    -- consume and there is no pass on which the two can disagree.
+    --
+    -- ═══ THE SERVER NAMES THE CAR. THE CLIENT IS NOT ASKED WHICH ONE ═══
+    --
+    -- INV_USE carries a SLOT and nothing else -- there is no vehicle in the
+    -- message and there must not be, because "repair the car I say I am in" is
+    -- a client repairing any car on the map. BR.Vehicles.drivenNetId answers
+    -- from the server's own reads of its own ped, and it answers nil for a
+    -- player on foot, a passenger, and a vehicle the platform does not network.
+    --
+    -- NIL-GUARDED ON THE MODULE, not on the answer, in the same shape as the
+    -- BR.Shop guards above: a build without server/vehicles.lua cannot rule this
+    -- and therefore refuses it, rather than spending a kit into silence.
+    --
+    -- ═══ REFUSED IN SILENCE, AND THAT IS A DECISION #228 HAS NOT MADE YET ═══
+    --
+    -- Nothing is said to a player who presses this on foot. server/shop.lua's
+    -- header is the standing convention -- the boolean refuses and the string
+    -- only speaks, so absent copy must never delete a rule -- and no wording for
+    -- this refusal has been agreed. Nothing is spent by it either way.
+    --
+    -- ═══ WHAT IT IS WORTH COMES FROM THE PUMP'S OWN CONFIG ═══
+    --
+    -- BR.Config.Fuel.healthMax, so the kit and the petrol station cannot drift
+    -- apart, and so that this file holds no opinion about vehicle health -- it
+    -- has none to hold: every vehicle-health native is client-only, which is why
+    -- this is a GRANT the client applies rather than a value the server sets.
+    -- Enough to cap all three pools, which is what makes the dents pop out; see
+    -- applyRepair in client/fuel.lua for the order that has to happen in.
+    if c.useMs == 0 then
+        if not c.repairVeh then return end
+        if not (BR.Vehicles and BR.Vehicles.drivenNetId) then return end
+
+        local netId = BR.Vehicles.drivenNetId(src)
+        if netId == nil then return end
+
+        s.count = s.count - 1
+        if s.count <= 0 then inv.slots[slot] = false end
+
+        TriggerClientEvent(BR.Net.VEH_FIX, src, {
+            n = netId,
+            r = (BR.Config.Fuel and tonumber(BR.Config.Fuel.healthMax)) or 1000.0,
+        })
+        BR.Inv.push(src)
+        return
     end
 
     inv.using = {

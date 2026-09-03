@@ -573,6 +573,32 @@ BR.Net = {
     -- an arbitrary one. See br_core/client/sfx.lua's playFrom.
     FUEL_SFX        = 'br:fuel:sfx',
 
+    -- S->C  { n = netId, r = health points } -- "the repair kit you just spent
+    -- fixes that car". #228.
+    --
+    -- ═══ WHY THIS IS NOT FUEL_SET WITH AN `r` ON IT ═══
+    --
+    -- FUEL_SET carries the ledger's fraction and metres, and a client that
+    -- receives one writes them into its `known` table. Sending one to move a
+    -- repair would either have to carry a fuel reading the server did not
+    -- measure, or teach that handler to distinguish a real push from a
+    -- borrowed one. The repair grant is the only field this message has any
+    -- business carrying, so it is its own message and the fuel ledger is not
+    -- touched by a repair kit at all.
+    --
+    -- IT IS THE SAME GRANT SHAPE, DELIBERATELY: the server does not read
+    -- vehicle health -- every vehicle-health native is client-only -- so what
+    -- it sends is POINTS EARNED, exactly as FUEL_SET's `r` is, and the client
+    -- applies them through the one function that already knows the order the
+    -- three pools and the cosmetic pass have to go in.
+    --
+    -- WHY THE NETWORK ID IS ON THE WIRE when the recipient could just repair
+    -- whatever it is sitting in: between the server's ruling and this arriving
+    -- the player can leave that seat, and a kit that repaired the next car they
+    -- touched would be a kit spent on the wrong thing. The client checks it,
+    -- the same way the FUEL_SET handler does.
+    VEH_FIX         = 'br:veh:fix',
+
     -- Vehicle boost. The CLIENT owns the meter, the push and its own flames --
     -- a twitch input cannot wait for a round trip -- so these two carry only
     -- what a client cannot do for itself.

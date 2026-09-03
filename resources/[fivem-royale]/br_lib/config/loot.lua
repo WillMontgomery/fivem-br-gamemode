@@ -124,6 +124,95 @@ BR.Config.Consumables = {
         health = 100, healthCap = 100,
         chestOnly = true,
     },
+    {
+        -- ═══ THE REPAIR KIT (#228) ═══
+        --
+        --   "Repair kit should spawn in loot crates, inventory item, maxCarry
+        --    1, can be used on the fly to repair any vehicle once."
+        --                                          -- owner, 2026-08-23
+        --
+        -- ═══ `useMs = 0` -- "ON THE FLY" READ AS INSTANT, AND ZERO IS A LENGTH
+        --     RATHER THAN AN ABSENCE ═══
+        --
+        -- server/inventory.lua's rule is that "a consumable is usable through
+        -- the inventory exactly when it declares how long using it takes", and
+        -- that sentence is left true word for word: this one declares that using
+        -- it takes NO time. It is not the CPR kit's `nil`, which means "this item
+        -- is not reachable from a keypress at all" and is still refused there.
+        --
+        -- WHY INSTANT RATHER THAN A CHANNEL. The petrol station is a HOLD while
+        -- parked; "on the fly" is the owner drawing the contrast with it. A
+        -- channel would also have been defensible -- it is a press-and-wait, not
+        -- a hold -- but instant is what makes the item usable in the one moment
+        -- it exists for, which is a smoking engine in a chase. It also deletes
+        -- the shop car's whole class of bug: press-time and effect-time are the
+        -- same line, so there is no window in which the kit is spent and the
+        -- rules then change under it.
+        --
+        -- ═══ `repairVeh` IS WHAT IT DOES, AND IT IS THE `shopCar` SHAPE ═══
+        --
+        -- A consumable whose effect is not a number on the ped names that effect
+        -- with a field, and server/inventory.lua branches on the field and knows
+        -- nothing else about it. `shopCar` established that for #224; this is the
+        -- second one. The value is `true` rather than a number because the kit
+        -- always does THE WHOLE JOB -- see below.
+        --
+        -- ═══ THE FULL JOB, NOT A FRACTION ═══
+        --
+        -- At a pump, letting go early buys part of the health back and keeps the
+        -- dents (client/fuel.lua: the cosmetic pass fires on the frame the body
+        -- reaches full). A kit is one press and cannot be let go of, so it grants
+        -- BR.Config.Fuel.healthMax -- enough to cap all three pools, which is
+        -- what makes the dents pop and the bullet decals wash. THAT NUMBER IS
+        -- NOT COPIED HERE: server/inventory.lua reads it off the fuel config, so
+        -- the kit and the pump cannot drift apart, and a partial kit is one field
+        -- on this row if the owner ever wants one.
+        --
+        -- ═══ RARITY IS LEGENDARY, AND IT IS A CHOICE THE OWNER HAS NOT MADE ═══
+        --
+        -- #228 has never named one. LEGENDARY is picked because it is the only
+        -- band that does not quietly undo a tuning decision already in this file:
+        --
+        --   RARE     the bucket walk goes DOWN, so RARE is empty ONLY so that a
+        --            RARE roll falls through to the Shield. Filling it takes the
+        --            Shield from 55% of consumable rolls back to ~27% -- exactly
+        --            the number the owner complained about on 2026-08-17.
+        --   UNCOMMON the same loss, from the other side.
+        --   EPIC     halves the Med Kit, whose share the KindWeights note above
+        --            was raised specifically to protect.
+        --   COMMON   a one-shot full vehicle repair as the most findable item in
+        --            the game, and a third off the Bandage.
+        --
+        -- WHAT LEGENDARY COSTS, STATED: the Med Kit loses the LEGENDARY
+        -- fall-through it collects today -- 1% of consumable rolls at tier 1 and
+        -- 5% at tier 3, so about a quarter of its share at a hot drop. That is
+        -- the smallest bill any band presents, and it is paid by the item best
+        -- able to afford it.
+        --
+        -- HOW OFTEN ONE IS FOUND, so the number is arguable rather than asserted:
+        -- consumables are 21% of crate items (KindWeights), LEGENDARY is 1/2/5%
+        -- of a roll by POI tier, and this is the only item in that bucket. So a
+        -- crate holds one about 0.6% of the time in the countryside and 3% of the
+        -- time in a named town -- roughly one player in four finds one in a match
+        -- they loot hard. A prize, not a staple, which is what a free full repair
+        -- should be.
+        id = 'repairkit', label = 'Repair Kit', plural = 'Repair Kits',
+        rarity = R.LEGENDARY,
+        -- The mechanic's chest. Vanilla, like every prop in this file; a model
+        -- this build did not have would draw the marker fallback and say so on
+        -- the console rather than spawning nothing (client/loot.lua).
+        kind = BR.ItemKind.CONSUMABLE, prop = 'prop_toolchest_01',
+        -- Scaled down for the same reason the Small Shield is: the chest is a
+        -- garage prop and full size it reads as scenery rather than as loot.
+        -- `/brpropscale repairkit <k>` retunes it live and prints the line to
+        -- paste back here.
+        propScale = 0.6,
+        useMs = 0, maxStack = 1, carryMax = 1,
+        repairVeh = true,
+        -- CRATE-ONLY, the flag the bandage and the med kit already carry. The
+        -- owner said "spawn in loot crates" and this is the field that means it.
+        chestOnly = true,
+    },
 }
 
 --- THE CPR KIT (#191). AN ORDINARY CONSUMABLE IN EVERY RESPECT BUT ONE: it is

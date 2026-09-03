@@ -1152,6 +1152,60 @@ AddEventHandler(BR.Net.FUEL_SET, function(d)
     end
 end)
 
+--- The repair kit landed (#228).
+---
+--- ═══ THE SAME applyRepair THE PUMP GRANT USES, AND THAT IS THE WHOLE POINT ═══
+---
+--- The petrol station already restores the three health pools in the order they
+--- have to go in -- engine before SetVehicleFixed, which is documented not to
+--- fix a broken one -- pops the deformation out and washes the bullet decals
+--- off. A second implementation of that would be a second place for the ordering
+--- rule to be got wrong, and the one that got it wrong would be the one nobody
+--- had played. So this handler does no repairing of its own: it resolves the
+--- vehicle, checks it is the one the server ruled on, and hands the grant to the
+--- same function FUEL_SET hands its `r` to.
+---
+--- IT IS NOT EXPOSED ON BR.Fuel, deliberately. Both callers are in this file, so
+--- there is nothing to share across one; a public entry point would be a way for
+--- some future file to apply vehicle health without the ordering note above it.
+---
+--- ═══ WHY THIS IS A FULL REPAIR AND THE PUMP'S IS NOT ═══
+---
+--- Nothing here decides that. The server grants BR.Config.Fuel.healthMax, which
+--- is enough to cap every pool -- and the cosmetic pass fires on the frame the
+--- BODY reaches full, which it now does on the first call. A driver who lets go
+--- of the pump early still gets their partial and keeps their dents, by exactly
+--- the same rule, because their grant was smaller.
+---
+--- ═══ THE THREE THINGS IT REFUSES, AND ALL THREE ARE THE SAME CASE ═══
+---
+--- A player who left the seat in the time this message took to arrive. Not in a
+--- vehicle, in a different vehicle, or in a vehicle whose network id is not the
+--- one the server named: nothing happens. The kit is already spent by then --
+--- the server consumed it before this went out -- and that is the shop car's
+--- known fault in a much smaller window, which is stated here rather than
+--- pretended away. Repairing whatever car they are in NOW would be the worse
+--- answer: it spends a kit on a car nobody aimed it at.
+---
+--- `didHit`, not a bare read. IsPedInAnyVehicle is declared BOOL and `0` is
+--- truthy in Lua; the FUEL_SET handler above reads it the same way.
+RegisterNetEvent(BR.Net.VEH_FIX)
+AddEventHandler(BR.Net.VEH_FIX, function(d)
+    if type(d) ~= 'table' then return end
+    local nid = math.tointeger(tonumber(d.n))
+    if nid == nil then return end
+
+    local points = tonumber(d.r) or 0.0
+    if points <= 0.0 then return end
+
+    local ped = PlayerPedId()
+    if not didHit(IsPedInAnyVehicle(ped, false)) then return end
+    local veh = GetVehiclePedIsIn(ped, false)
+    if netOf(veh) ~= nid then return end
+
+    applyRepair(veh, points)
+end)
+
 --- The pump cues, played from the car so everybody in it hears them.
 ---
 --- ═══ WHY THIS IS A MESSAGE AND NOT A LOCAL DECISION ═══

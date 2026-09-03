@@ -992,6 +992,50 @@ local function drivenVehicle(entry)
     return veh
 end
 
+--- The car this player is DRIVING, as a network id, or nil.
+---
+--- ═══ WHAT IT IS FOR, AND WHY IT IS RULED HERE ═══
+---
+--- The repair kit (#228). server/inventory.lua spends the item and has to name
+--- a vehicle on the wire; it must not take the client's word for which one,
+--- because "repair the car I say I am in" is a client repairing any car on the
+--- map. So the whole question is answered from the server's own reads, and the
+--- caller is handed a network id it did not choose.
+---
+--- ═══ IT IS `drivenVehicle`, WHICH IS THE POINT ═══
+---
+--- The same function the roadkill ledger rules on, so "is this player driving"
+--- has ONE answer on this server and citizenfx/fivem#4006 is handled in one
+--- place rather than in every caller that wants to ask. THE DRIVING SEAT IS THE
+--- RULE, and it is the pump's rule too (owner, on refuelling: "only be possible
+--- while in the driver's seat") -- a passenger is refused. That is not only
+--- consistency: the repair is applied by natives on the recipient's machine, and
+--- the driver is the client that owns the entity, so it is the one seat from
+--- which the write is certain to stick rather than be overwritten by the owner's
+--- next sync.
+---
+--- ═══ NIL IS EVERY NO, AND THERE IS NO SECOND RETURN ═══
+---
+--- On foot, in the passenger seat, an unresolvable ped, a vehicle the platform
+--- does not network (the Battle Bus answers 0 here, and `0` IS TRUTHY IN LUA, so
+--- it is compared rather than tested): all of them are nil, and the caller
+--- refuses without spending anything. There is deliberately no sentence to go
+--- with it -- see the `refusesUse` header in server/shop.lua for why a rule and
+--- the words about it are separate things.
+--- @param src integer
+--- @return integer|nil netId
+function BR.Vehicles.drivenNetId(src)
+    local e = BR.Roster.get and BR.Roster.get(src) or nil
+    if not e then return nil end
+
+    local veh = drivenVehicle(e)
+    if veh == nil then return nil end
+
+    local nid = entityFrom(NetworkGetNetworkIdFromEntity, veh)
+    if nid == 0 then return nil end
+    return nid
+end
+
 --- How fast this player was moving at the last sample, in m/s, or nil.
 --- @param src integer
 --- @return number|nil

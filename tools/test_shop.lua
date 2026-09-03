@@ -2558,9 +2558,23 @@ do
     -- assertion failed, because the first `BR.Shop.unpack` in the file had
     -- become prose. Anchored on the argument list, there is one match and it is
     -- the call.
+    --
+    -- ═══ AND THERE ARE TWO CONSUMES IN THAT FILE SINCE #228 ═══
+    --
+    -- The repair kit is INSTANT, so it is spent inside the INV_USE handler --
+    -- above the channel, and therefore above BOTH of the shop's own lines. A
+    -- bare `s.count = s.count - 1` finds that one now, and the shop assertions
+    -- below it would be reading an ordering they have nothing to do with. So
+    -- both of them anchor on the line UNDER the consume instead: the channel
+    -- spends `u.slot`, the instant path spends `slot`, and only one of those
+    -- two spellings is the pass a shop car is ever unpacked on.
     local invsrc = readFile(RES .. 'br_core/server/inventory.lua')
-    local consume = invsrc:find('s%.count = s%.count %- 1')
+    local CHANNEL_CONSUME =
+        's%.count = s%.count %- 1\n%s*if s%.count <= 0 then inv%.slots%[u%.slot%] = false end'
+    local consume = invsrc:find(CHANNEL_CONSUME)
     local ask = invsrc:find('BR%.Shop%.unpack%(src')
+    ok(consume ~= nil, 'the channelled consume is still spelled as this suite '
+        .. 'expects -- if this fails, the pattern is stale, not the ordering')
     ok(consume ~= nil and ask ~= nil and ask > consume,
         'the slot is emptied before BR.Shop.unpack is called')
 end
@@ -2673,7 +2687,12 @@ do
         asks[#asks + 1] = at
     end
     ok(#asks == 2, ('the use path asks twice, not once (saw %d)'):format(#asks))
-    local consume2 = invsrc2:find('s%.count = s%.count %- 1')
+    -- THE CHANNEL'S CONSUME, NOT THE FIRST ONE IN THE FILE. #228 put an instant
+    -- item's consume inside INV_USE, which is above the second ask -- so the
+    -- bare pattern this used to carry would now report the guard as being
+    -- BELOW the spend, on a file where nothing about the shop had changed.
+    local consume2 = invsrc2:find(
+        's%.count = s%.count %- 1\n%s*if s%.count <= 0 then inv%.slots%[u%.slot%] = false end')
     ok(consume2 ~= nil and asks[2] ~= nil and asks[2] < consume2,
         'and the second ask is above the line that spends the item, so no '
             .. 'pass can consume a car for somebody sitting in a car')

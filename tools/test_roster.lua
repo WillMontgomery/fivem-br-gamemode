@@ -408,6 +408,14 @@ for _, f in ipairs({
     -- same thing beside the same line.
     'br_lib/config/vehicles.lua',
     'br_lib/config/loot.lua',
+    -- THE PUMP'S NUMBERS, FOR THE REPAIR KIT (#228). server/inventory.lua's
+    -- instant branch grants BR.Config.Fuel.healthMax so that a kit and a full
+    -- tank stop at the same ceiling, and asserting that against a hardcoded
+    -- 1000 here would be asserting the FALLBACK rather than the coupling --
+    -- the file would go on passing after the two had drifted apart. Nothing
+    -- else in this suite reads it: server/fuel.lua is not loaded here, and the
+    -- config is inert on its own.
+    'br_lib/config/fuel.lua',
     -- THE CUE TABLE. Loaded for ONE assertion in `match.storm.movecue` below --
     -- that the cue key server/storm.lua puts on the wire is a key this table
     -- actually holds. The server never reads it (it sends a key and the client
@@ -6500,6 +6508,240 @@ do
         if t:find('already full') or t:find('only takes') then refused = true end
     end
     ok(refused, 'and says why')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('inv.repairkit')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "Repair kit should spawn in loot crates, inventory item, maxCarry 1, can
+--    be used on the fly to repair any vehicle once."   -- owner, 2026-08-23
+--
+-- ═══ WHY THIS BLOCK IS HERE AND NOT IN tools/test_fuel.lua ═══
+--
+-- The repair itself is client-side -- every vehicle-health native is -- so
+-- there is nothing about a repaired car for any suite to observe. What CAN be
+-- proven is the half that decides whether one happens at all, and all of it is
+-- server code this suite already stands up whole: BR.Vehicles.drivenNetId
+-- (server/vehicles.lua) and the instant branch of INV_USE
+-- (server/inventory.lua). test_fuel.lua covers the client half as source.
+do
+    lootMatch()
+
+    -- ═══ THE NETWORK ID IS NOT THE ENTITY HANDLE, AND THIS SUITE'S DEFAULT
+    --     STUB CANNOT TELL THEM APART ═══
+    --
+    -- The harness answers `NetworkGetNetworkIdFromEntity(e) = e` because for
+    -- PEDS that is all it ever needed. Left alone here it would pass a
+    -- BR.Vehicles.drivenNetId that returned the vehicle HANDLE -- which is
+    -- per-machine and means nothing at the far end -- so the two are made
+    -- different numbers for the length of this block. tools/test_fuel.lua's
+    -- harness header makes the same argument at length and for the same
+    -- registry-keying bug.
+    local realNetOf = NetworkGetNetworkIdFromEntity
+    NetworkGetNetworkIdFromEntity = function(e) return (tonumber(e) or 0) * 10 + 7 end
+
+    local VEH = 4242
+    local NID = VEH * 10 + 7
+
+    ok(BR.Roster.get(1).ped == 1001,
+        'precondition: the roster has sampled this player\'s ped')
+
+    -- ── the ruling ────────────────────────────────────────────────────────
+    ok(BR.Vehicles.drivenNetId(1) == nil,
+        'a player on foot is driving nothing',
+        tostring(BR.Vehicles.drivenNetId(1)))
+
+    drive(1, VEH, 0)   -- seat 0 is the front passenger
+    ok(BR.Vehicles.drivenNetId(1) == nil,
+        'and neither is a PASSENGER -- the driving seat is the rule, exactly '
+            .. 'as it is at the pump',
+        tostring(BR.Vehicles.drivenNetId(1)))
+
+    drive(1, VEH)      -- seat -1
+    ok(BR.Vehicles.drivenNetId(1) == NID,
+        'the driver gets the vehicle\'s NETWORK ID, not its entity handle',
+        tostring(BR.Vehicles.drivenNetId(1)))
+
+    -- A VEHICLE THE PLATFORM DOES NOT NETWORK ANSWERS 0, and `0` IS TRUTHY IN
+    -- LUA -- so a bare `if nid then` would send a repair for a car the far end
+    -- has never heard of. The Battle Bus is exactly this case.
+    NetworkGetNetworkIdFromEntity = function() return 0 end
+    ok(BR.Vehicles.drivenNetId(1) == nil,
+        'and a vehicle with no network id is no target, rather than target 0')
+    NetworkGetNetworkIdFromEntity = function(e) return (tonumber(e) or 0) * 10 + 7 end
+
+    -- ── the use ───────────────────────────────────────────────────────────
+    local kit = BR.Config.ConsumableById['repairkit']
+
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].item == 'repairkit',
+        'the kit takes an ordinary slot')
+
+    drive(1, VEH)
+    sent = {}
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+
+    -- INSTANT: "on the fly". No channel is opened at all, so there is nothing
+    -- for damage to interrupt and no later pass on which the rules could change
+    -- under a kit that was already spent.
+    ok(BR.Inv.of(1).using == nil,
+        'using it opens NO channel -- it is instant, not a hold')
+    ok(BR.Inv.of(1).slots[1] == false,
+        'and the press itself spends it -- "once"',
+        tostring(BR.Inv.of(1).slots[1]))
+
+    local fixes = eventsOf(BR.Net.VEH_FIX)
+    ok(#fixes == 1, ('exactly one repair goes out (saw %d)'):format(#fixes))
+    ok(fixes[1] and fixes[1].target == 1,
+        'to the player who spent it')
+    ok(fixes[1] and fixes[1].args[1].n == NID,
+        'naming the vehicle THE SERVER resolved -- INV_USE carries a slot and '
+            .. 'no vehicle, so a client cannot pick the car',
+        fixes[1] and tostring(fixes[1].args[1].n))
+    ok(fixes[1] and fixes[1].args[1].r == BR.Config.Fuel.healthMax,
+        'and the grant is the pump\'s own healthMax, which caps all three '
+            .. 'pools and is therefore the full job rather than a fraction',
+        fixes[1] and tostring(fixes[1].args[1].r))
+
+    -- AND THE CHANNEL NEVER FIRES ONE LATE. An instant use that also left an
+    -- `inv.using` behind would repair twice off one item.
+    sent = {}
+    fakeTime = fakeTime + 5000
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.VEH_FIX) == 0,
+        'and no second repair arrives on any later pass')
+    ok(#eventsOf(BR.Net.INV_EFFECT) == 0,
+        'nor any health or shield -- the kit moves nothing on the ped')
+
+    -- ── refused, and nothing is spent ─────────────────────────────────────
+    --
+    -- SILENTLY, which is a decision #228 has not made: no wording for this has
+    -- been agreed, and server/shop.lua's standing rule is that absent copy must
+    -- never delete a rule. The RULE is what is asserted here; the silence is
+    -- asserted separately so that adding a sentence later fails this one line
+    -- rather than passing unnoticed.
+    local function armAndUse(src)
+        BR.Inv.reset(src)
+        BR.Inv.give(src, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                           rarity = kit.rarity, count = 1 })
+        sent = {}
+        fire(BR.Net.INV_USE, src, { slot = 1 })
+    end
+
+    pedVehicle[1001] = 0
+    vehSeat[VEH] = {}
+    armAndUse(1)
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'a player on foot spends nothing')
+    ok(#eventsOf(BR.Net.VEH_FIX) == 0, 'and no repair goes out')
+    ok(BR.Inv.of(1).using == nil, 'and no channel is opened either')
+    ok(#eventsOf(BR.Net.NOTIFY) == 0,
+        'and nothing is said to them -- no wording for this refusal has been '
+            .. 'agreed, and a rule must not wait on one')
+
+    armAndUse(1)
+    drive(1, VEH, 0)
+    sent = {}
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1
+       and #eventsOf(BR.Net.VEH_FIX) == 0,
+        'and a passenger spends nothing')
+
+    -- ── `useMs == 0` IS NOT ON ITS OWN A LICENCE TO DO ANYTHING ───────────
+    --
+    -- The branch tests `c.repairVeh` after it tests the zero, and without this
+    -- block nothing would notice that second test going: the repair kit is the
+    -- only zero in the shipped config, so deleting the check changes no
+    -- behaviour anybody can see today. It would change the behaviour of the
+    -- NEXT instant item, which would silently repair cars.
+    --
+    -- A SYNTHETIC ROW, the way test_rescue.lua proves the nil-`useMs` guard:
+    -- the property is about the CLASS, so it cannot be stated with a member of
+    -- the class that also happens to satisfy it.
+    do
+        BR.Config.ConsumableById['testinstant'] = {
+            id = 'testinstant', label = 'Test Instant', plural = 'Test Instants',
+            rarity = BR.Rarity.COMMON, kind = BR.ItemKind.CONSUMABLE,
+            useMs = 0, maxStack = 1, carryMax = 1,
+            -- ...and NO repairVeh, which is the whole point.
+        }
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'testinstant', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = BR.Rarity.COMMON, count = 1 })
+        drive(1, VEH)
+        sent = {}
+        local okCall = pcall(fire, BR.Net.INV_USE, 1, { slot = 1 })
+        ok(okCall, 'an instant consumable that names no instant effect does '
+            .. 'not crash the handler')
+        ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+            'it is not consumed')
+        ok(#eventsOf(BR.Net.VEH_FIX) == 0,
+            'and it certainly does not repair a car -- `useMs = 0` says how '
+                .. 'long, never what')
+        ok(BR.Inv.of(1).using == nil, 'and it opens no channel either')
+        BR.Config.ConsumableById['testinstant'] = nil
+    end
+
+    -- ── the module guard ──────────────────────────────────────────────────
+    --
+    -- The same shape as the BR.Shop guards beside it: a build that cannot rule
+    -- this refuses it. Guarded on the MODULE and not on its answer, so a
+    -- missing server/vehicles.lua costs a keypress rather than a kit.
+    drive(1, VEH)
+    local realDriven = BR.Vehicles.drivenNetId
+    BR.Vehicles.drivenNetId = nil
+    armAndUse(1)
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1
+       and #eventsOf(BR.Net.VEH_FIX) == 0,
+        'with no BR.Vehicles.drivenNetId to ask, nothing is spent and nothing '
+            .. 'is sent')
+    BR.Vehicles.drivenNetId = realDriven
+
+    -- ── the ceiling ───────────────────────────────────────────────────────
+    --
+    -- THE FIRST ITEM IN THE GAME CAPPED AT ONE. Bandages and med kits are three
+    -- and every earlier cap equalled its own maxStack, so nothing had ever
+    -- exercised a cap of one that a player can actually walk into -- the CPR
+    -- kit's is only reachable from an airdrop.
+    BR.Inv.reset(1)
+    local gave1 = BR.Inv.give(1, { item = 'repairkit',
+        kind = BR.ItemKind.CONSUMABLE, rarity = kit.rarity, count = 1 })
+    local gave2, _, why2 = BR.Inv.give(1, { item = 'repairkit',
+        kind = BR.ItemKind.CONSUMABLE, rarity = kit.rarity, count = 1 })
+    ok(gave1 == true, 'one kit goes in')
+    ok(gave2 == false and why2 == 'carrymax',
+        'and the second is refused by the carry ceiling, not by a full bag',
+        tostring(why2))
+    ok(BR.Inv.of(1).slots[2] == false,
+        'so it does not quietly open a second slot',
+        tostring(BR.Inv.of(1).slots[2]))
+
+    -- ...AND A FULL BAG REFUSES IT LIKE ANY OTHER CONSUMABLE. Five slots, and
+    -- the kit is not exempt from them.
+    BR.Inv.reset(1)
+    for i = 1, 5 do
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+    end
+    local full = BR.Inv.of(1)
+    local occupied = 0
+    for i = 1, 5 do if full.slots[i] then occupied = occupied + 1 end end
+    ok(occupied == 5, 'precondition: five slots, all full',
+        tostring(occupied))
+    full.active = 1
+    local gaveFull, displaced = BR.Inv.give(1, { item = 'repairkit',
+        kind = BR.ItemKind.CONSUMABLE, rarity = kit.rarity, count = 1 })
+    ok(gaveFull == true and displaced and displaced.item == 'pistol',
+        'a full bag trades the ACTIVE slot for it, exactly as it would for a '
+            .. 'bandage -- the kit is an ordinary consumable in five ordinary '
+            .. 'slots')
+
+    NetworkGetNetworkIdFromEntity = realNetOf
+    pedVehicle[1001] = 0
+    vehSeat[VEH] = nil
 end
 
 describe('inv.serverammo')
