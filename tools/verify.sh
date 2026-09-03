@@ -504,6 +504,20 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# A xN on a notice means "again, while you were still looking at it" (owner,
+# 2026-09-02). The live stack cannot get that wrong -- it coalesces against the
+# rows that are still up. The pause menu's history coalesced against the whole
+# match, so two unrelated events twenty minutes apart read as one that happened
+# twice. The window is now the previous notice's OWN lifetime, which is the part
+# that rots: a `4000` written beside the log agrees with the row on screen for
+# every notice that took the default and disagrees for every one that did not.
+echo "${DIM}== notice repeats ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_notice_repeat.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # A key is drawn as a key (#209). The half that is a value -- the owner's
 # sentence, and that a resolved key LABEL never reaches it -- is unit-tested in
 # test_client. This gate is for what no suite can execute: that the token Lua
