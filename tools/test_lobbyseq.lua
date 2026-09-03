@@ -425,6 +425,26 @@ loadAll({
     'br_core/client/lobbyped.lua',
 })
 
+-- ═══ THE ASSIGNED CHARACTER IS PINNED, ONCE, AND ONLY IT ═══
+--
+-- client/locker.lua hands a player who has never picked one a RANDOM character
+-- and remembers it for as long as the client runs. reset() clears the kvp
+-- between blocks, so every block below that wears "the chosen character" wears
+-- that roll -- and block 12 picks `clown` and asserts the model CHANGED, which
+-- a roll that happened to land on clown would fail one run in seventy-nine.
+-- Verified by pinning it there: 288 passed, 1 failed.
+--
+-- So the roll is forced here, by asking for it with math.random pinned for
+-- exactly that one call. The real one goes straight back, because lobbyped.lua
+-- picks its idle emote the same way and a suite that pinned the generator for
+-- its whole run would be choosing that too.
+do
+    local realRandom = math.random
+    math.random = function() return 1 end
+    BR.Locker.chosen()
+    math.random = realRandom
+end
+
 -- ═══ THE CLOCK, AND THREADS THAT ACTUALLY RUN ═══
 
 local threads, timers = {}, {}

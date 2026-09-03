@@ -15519,6 +15519,284 @@ do
     PlaySoundFrontend = savedPlay
 end
 
+-- ======================================================================== --
+-- 30. A PLAYER WHO HAS NEVER OPENED THE LOCKER IS HANDED A RANDOM CHARACTER
+-- ======================================================================== --
+--
+-- THE REQUEST (owner, 2026-09-02): "please make the default ped a random one
+-- from our locker. If they've not chosen one, they'll get a random one. If
+-- they've already chosen one from a previous match we'll still respect it."
+--
+-- TWO HALVES, AND THE SECOND ONE IS THE ONE THAT BREAKS. The roll is three
+-- lines; what has to keep working is everything that reads the answer. The
+-- stored choice must still win, the roll must be the SAME id every time it is
+-- asked -- client/loading.lua holds the loading screen until this id's model is
+-- on the player and client/lobbyped.lua holds the entrance walk on the same
+-- comparison, so an id that changed per call is a gate nothing can satisfy --
+-- and the roll must end up in kvp, or "already chosen one from a previous
+-- match" would be false for every player who never opened the screen.
+--
+-- WHY THE FILE IS RELOADED PER SCENARIO. The roll is memoised in a local, which
+-- IS the feature: a second scenario run against the same chunk would be reading
+-- the first scenario's answer rather than making one. Every scenario below gets
+-- a client that has just started.
+--
+-- WHAT IS MEASURED IS THE CONSEQUENCE. No assertion asks whether some helper
+-- ran; they ask what BR.Locker.chosen() answered and what was left in kvp,
+-- because those two are what the rest of the game reads.
+do
+    describe('the default character is rolled once and then it is theirs')
+
+    local KVP = 'br:locker:ped'
+
+    local prev = {
+        Citizen         = Citizen,
+        GetHashKey      = GetHashKey,
+        register        = BR.Loop.register,
+        meState         = BR.State.me.state,
+        initHealthModel = BR.Native.initHealthModel,
+        addHandler      = AddEventHandler,
+        registerCommand = RegisterCommand,
+        random          = math.random,
+    }
+
+    do
+        local chunk, err = loadfile(ROOT .. 'br_lib/config/peds.lua')
+        if not chunk then
+            realPrint('\27[31mload error\27[0m peds.lua: ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    -- THREADS RUN INLINE. apply() does its whole swap -- and the kvp write that
+    -- makes a roll stick -- inside a Citizen thread, and this suite's default
+    -- no-op CreateThread would make every assertion about what was stored
+    -- vacuously true.
+    Citizen = { CreateThread = function(fn) fn() end,
+                Wait = function() end, SetTimeout = function() end }
+
+    -- A hash that is a function of the NAME. This suite's GetHashKey answers 1
+    -- for everything, which would make "this build does not have that model"
+    -- unstateable -- every model would be the same model, and the roster filter
+    -- the roll draws through could not be tested at all.
+    local function hashOf(s)
+        local h = 0
+        for i = 1, #tostring(s) do h = (h * 31 + tostring(s):byte(i)) % 2147483647 end
+        return h
+    end
+    GetHashKey = function(s) return hashOf(s) end
+
+    --- Models this simulated BUILD does not have, by hash.
+    local absent = {}
+    function IsModelInCdimage(h) return not absent[h] end
+    function IsModelAPed() return true end
+    function GetEntityHeading() return 0.0 end
+    function SetPedDefaultComponentVariation() end
+    function SetPedCanRagdoll() end
+
+    --- The model actually put on the player, or nil.
+    local swapped = nil
+    function SetPlayerModel(_p, hash) swapped = hash end
+
+    BR.Native.initHealthModel = function() end
+    BR.State.me.state = BR.PlayerState.LOBBY
+
+    -- locker.lua registers two loop callbacks BY NAME and BR.Loop.register
+    -- refuses a duplicate name outright, so the second reload below would throw.
+    -- Captured instead -- and `locker.initial` is the first-lobby tick, so
+    -- holding it is also how the "and then it is theirs" half gets driven.
+    local ticks = {}
+    BR.Loop.register = function(_band, name, fn) ticks[name] = fn; return {} end
+
+    -- The file's three handlers and its command are not what is under test, and
+    -- registering them once per reload would leave eighty copies behind for
+    -- anything added after this block.
+    AddEventHandler = function() end
+    RegisterCommand = function() end
+
+    --- What this client's generator answers, in order. Past the end it repeats
+    --- the last one, so a scenario states only as many as it cares about.
+    ---
+    --- IT STILL ANSWERS INSIDE THE RANGE IT WAS ASKED FOR, which is not
+    --- pedantry: the block below shrinks the roster to one entry, and a stub
+    --- that handed back "17" for math.random(1) would be testing a generator no
+    --- Lua has rather than the code that calls it.
+    local rolls, rollAt = { 1 }, 0
+    math.random = function(n)
+        rollAt = rollAt + 1
+        local v = rolls[rollAt] or rolls[#rolls] or 1
+        return ((v - 1) % (n or 1)) + 1
+    end
+
+    --- A client that has just started. Leaves kvp alone: a scenario says what a
+    --- previous session stored by writing it before calling this.
+    --- @param rollList table|nil
+    local function boot(rollList)
+        rolls, rollAt = rollList or { 1 }, 0
+        swapped = nil
+        ticks = {}
+        local chunk = assert(loadfile(ROOT .. 'br_core/client/locker.lua'))
+        chunk()
+    end
+
+    -- ---------------------------------------------------- the roll itself ---
+
+    describe('a fresh account is given a random character from the roster')
+    do
+        kvpStore[KVP] = nil
+        boot({ 3 })
+        ok(BR.Locker.chosen() == BR.Config.Peds[3].id,
+           'a player who has never picked one is handed the character the roll '
+               .. 'landed on', BR.Locker.chosen())
+
+        -- AND IT IS NOT THE OLD DEFAULT WEARING A NEW NAME. The roster's first
+        -- entry was the default until today; a change that kept returning it
+        -- would satisfy "an id from the list" and nothing the owner asked for.
+        kvpStore[KVP] = nil
+        boot({ 12 })
+        ok(BR.Locker.chosen() == BR.Config.Peds[12].id
+           and BR.Locker.chosen() ~= BR.Config.Peds[1].id,
+           'a different roll is a different character -- the first entry is no '
+               .. 'longer everybody', BR.Locker.chosen())
+    end
+
+    describe('every character in the locker can come up')
+    do
+        -- NOTHING IS QUIETLY HELD BACK. "A random one from our locker" is the
+        -- whole locker, and an exclusion list added later -- the costumes, say,
+        -- which the roster comment calls out as not what a default should look
+        -- like -- would be a decision he did not ask for. This is the assertion
+        -- that would notice one.
+        local seen, missing = {}, {}
+        for k = 1, #BR.Config.Peds do
+            kvpStore[KVP] = nil
+            boot({ k })
+            seen[BR.Locker.chosen()] = true
+        end
+        for _, p in ipairs(BR.Config.Peds) do
+            if not seen[p.id] then missing[#missing + 1] = p.id end
+        end
+        ok(#missing == 0,
+           'every one of the roster\'s characters is reachable by some roll',
+           #missing > 0 and table.concat(missing, ', ') or nil)
+    end
+
+    -- --------------------------------------------- the answer does not move ---
+
+    describe('the answer does not change between the reads that gate the lobby')
+    do
+        -- THE ASSERTION THE LOADING SCREEN DEPENDS ON. loading.lua and
+        -- lobbyped.lua both ask this question and compare the answer to the
+        -- model on the player; a roll made per call would be eight seconds of
+        -- black followed by a walk that starts on a ped nobody is waiting for.
+        kvpStore[KVP] = nil
+        boot({ 5, 9, 21, 2, 40 })
+        local first = BR.Locker.chosen()
+        local same = true
+        for _ = 1, 5 do
+            if BR.Locker.chosen() ~= first then same = false end
+        end
+        ok(same, 'asked six times, with the generator answering differently '
+                 .. 'every time, it is the same character', first)
+        ok(first == BR.Config.Peds[5].id,
+           'and it is the first roll, not the last', first)
+    end
+
+    -- ------------------------------------------------- the stored choice wins ---
+
+    describe('a character picked in a previous session is respected exactly')
+    do
+        -- THE ROLL IS SET TO SOMETHING ELSE ON PURPOSE. Pointing the generator
+        -- at the stored character would let a build that ignored kvp entirely
+        -- pass this by coincidence, which is exactly what it did the first time
+        -- it was written.
+        kvpStore[KVP] = 'clown'
+        boot({ 40 })
+        rollAt = 0
+        ok(BR.Locker.chosen() == 'clown'
+           and BR.Config.Peds[40].id ~= 'clown',
+           'a stored choice is what the player gets, not what the roll wanted',
+           BR.Locker.chosen())
+        -- AND THE GENERATOR IS NEVER CONSULTED, which is a stronger claim than
+        -- the one above and the one that survives a refactor: a build that
+        -- rolled first and then overwrote the answer with the stored id would
+        -- pass the assertion above and would have burned a roll to do it.
+        ok(rollAt == 0,
+           'and nothing was rolled at all -- the stored choice is read first',
+           rollAt)
+    end
+
+    -- ------------------------------------------------ and the roll is kept ---
+
+    describe('the first lobby stores the roll, so the next session is not somebody new')
+    do
+        kvpStore[KVP] = nil
+        boot({ 7 })
+        local handed = BR.Locker.chosen()
+
+        -- THE FIRST LOBBY TICK, WHICH IS WHERE THE CHARACTER IS ACTUALLY PUT ON.
+        ticks['locker.initial'](0)
+        ok(swapped == hashOf(BR.PedById(handed).model),
+           'the character the roll landed on is the one put on the player',
+           tostring(swapped))
+        ok(kvpStore[KVP] == handed,
+           'and it is stored, exactly as a pick in the locker would be',
+           tostring(kvpStore[KVP]))
+
+        -- ═══ THE NEXT SESSION ═══
+        --
+        -- A brand-new client, a generator that would answer something else, and
+        -- the kvp left exactly as the last one wrote it. This is the owner's
+        -- second sentence, and it is the half a re-roll-per-session build would
+        -- fail: 'respect it' has to hold for the character we handed out too.
+        boot({ 40 })
+        ok(BR.Locker.chosen() == handed,
+           'the next session is the same character, not another roll',
+           BR.Locker.chosen())
+    end
+
+    -- ---------------------------------- and only models this build actually has ---
+
+    describe('the roll cannot land on a model this build does not have')
+    do
+        -- EVERY MODEL NAME IN THE ROSTER IS HAND-TYPED and two already were
+        -- wrong (locker.lua, user 2026-08-09). A roll onto one of those spends
+        -- five seconds in RequestModel and leaves the player wearing GTA's own
+        -- ped through the whole of their first lobby -- a worse first
+        -- impression than the fixed default this replaces, and invisible from
+        -- the desk. So the draw is made through the verified roster.
+        local keep = BR.Config.Peds[#BR.Config.Peds]
+        absent = {}
+        for _, p in ipairs(BR.Config.Peds) do
+            if p.id ~= keep.id then absent[hashOf(p.model)] = true end
+        end
+
+        local wrong = {}
+        for _, k in ipairs({ 1, 2, 5, 17, 33, 60, #BR.Config.Peds }) do
+            kvpStore[KVP] = nil
+            boot({ k })
+            if BR.Locker.chosen() ~= keep.id then
+                wrong[#wrong + 1] = ('%d->%s'):format(k, BR.Locker.chosen())
+            end
+        end
+        ok(#wrong == 0,
+           'with one model left on the build, every roll lands on that one',
+           #wrong > 0 and table.concat(wrong, ' ') or nil)
+        absent = {}
+    end
+
+    Citizen                  = prev.Citizen
+    GetHashKey               = prev.GetHashKey
+    BR.Loop.register         = prev.register
+    BR.State.me.state        = prev.meState
+    BR.Native.initHealthModel = prev.initHealthModel
+    AddEventHandler          = prev.addHandler
+    RegisterCommand          = prev.registerCommand
+    math.random              = prev.random
+    kvpStore[KVP]            = nil
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
