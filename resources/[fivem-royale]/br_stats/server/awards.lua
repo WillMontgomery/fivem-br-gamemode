@@ -1,7 +1,7 @@
 --[[
     Paying for accurate reports (#168).
 
-    THE PROMISE: 250 Volts to the reporter and to every corroborator, when an
+    THE PROMISE: 100 Volts to the reporter and to every corroborator, when an
     incident resolves and an action was taken. If they are in the server they
     are told; if they are not, the Volts land anyway, because the award is on
     the account and not on the session.
@@ -52,7 +52,7 @@
 BR = BR or {}
 BR.Awards = {}
 
---- What an accurate report is worth (#168, owner: "250 Volts").
+--- What an accurate report is worth (#168, settled by #256).
 ---
 --- HERE RATHER THAN IN config/market.lua, and the line is worth the argument.
 --- That file holds what a MATCH pays, next to what things cost, so that the two
@@ -61,14 +61,21 @@ BR.Awards = {}
 --- market is tuned against, and putting it in that table would invite somebody
 --- to retune it alongside numbers it has nothing to do with.
 ---
---- 125 SINCE 2026-08-20, AND THE SEPARATION ABOVE IS EXACTLY WHY THIS LINE
---- NEEDED WRITING. The owner asked to "cut all Volts earnings by 50%" -- said
---- about a playtest, which is the match payout -- and the paragraph above is an
---- argument that this bounty is NOT part of that curve. It is still a Volts
---- earning, it is still paid out of the same balance, and leaving it whole
---- would have doubled what a report is worth relative to a match without
---- anybody deciding to. "All" was taken at its word.
-local AWARD_VOLTS = 125
+--- 100 SINCE 2026-09-02, AND IT IS A CHOSEN NUMBER RATHER THAN AN ARITHMETIC
+--- ONE. #168 asked for 250 and it shipped at 250. It became 125 on 2026-08-20,
+--- swept along by "cut all Volts earnings by 50%" -- an instruction given after
+--- a playtest and so about the match payout -- on the grounds that "all" was
+--- said and this is still Volts out of the same balance. That was collateral
+--- rather than a decision, and it sat unexamined for two weeks until #256 put
+--- the question to the owner: did the cut mean this too, 250 or 125? He answered
+--- with neither. Owner, 2026-09-02: "Let's change the report bounty to 100
+--- volts please."
+---
+--- WHICH MAKES THE SEPARATION ABOVE LOAD-BEARING INSTEAD OF ARGUED. 100 is not
+--- half of anything and not a proportion of what a match pays, so the next
+--- retune of that curve has nothing to divide here: moving this costs its own
+--- decision, which is the property the paragraph above was always claiming.
+local AWARD_VOLTS = 100
 
 --- How often to ask whether anything has been decided.
 ---
@@ -344,7 +351,7 @@ local function considerCase(entry, now)
         -- ITS OWN state -- see verdict.js. A case an admin closed with no
         -- action, and a case that carries no verdict at all, both settle here
         -- paying nobody, and the log tells them apart because they are
-        -- different facts about the same 250 Volts.
+        -- different facts about the same withheld bounty.
         if not v.payable then
             print(('[br_stats] case %s resolved with %s -- nobody paid')
                 :format(entry.incidentId,

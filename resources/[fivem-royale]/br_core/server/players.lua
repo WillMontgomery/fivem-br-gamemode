@@ -208,7 +208,8 @@ end
 
     ═══ WHAT THE EXPLOIT IS, BECAUSE IT DECIDES WHO IS AFFECTED ═══
 
-    An accurate report pays 250 Volts (br_stats/server/awards.lua), and what
+    An accurate report pays Volts -- `AWARD_VOLTS` in br_stats/server/awards.lua,
+    quoted nowhere else because it has moved twice -- and what
     makes a report "accurate" is a VERDICT written in the console. So the loop
     needs two halves: file the report, then resolve it with an action. Filing is
     free -- anybody in a match can do it -- and resolving is the half that takes
@@ -299,14 +300,14 @@ end
                   feature quietly stops working during exactly the outage nobody
                   is watching for. The harm lands on somebody innocent.
 
-      PAY         an admin earns 250 Volts they should not have. That is a soft
+      PAY         an admin earns one bounty they should not have. That is a soft
                   in-game currency, going to somebody who already holds
                   moderation powers, and they still had to get a colleague to
                   write a verdict in Ringmaster -- which is authorised
                   console-side and lands in the audit log.
 
     PAY. The cost of guessing wrong in one direction is a player wronged; in the
-    other it is 250 Volts and an audit trail. It is also rare by construction:
+    other it is one bounty and an audit trail. It is also rare by construction:
     BR.Grants primes at connect, minutes before anybody can report.
 
     NEVER SILENT, THOUGH. An unresolved check is this rule not being applied, so
@@ -314,7 +315,7 @@ end
     invisible for exactly as long as it is open.
 ]]
 
---- Does a report filed by this license, right now, earn its 250 Volts?
+--- Does a report filed by this license, right now, earn its bounty?
 ---
 --- @param license string|nil
 --- @param what string    which path is asking, for the log line

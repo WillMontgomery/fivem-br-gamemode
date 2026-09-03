@@ -116,19 +116,19 @@ for anything and waits, licensed by the fact that failure there costs an iframe
 and nothing else.
 
 **Accurate reports are paid for.** When a case a player filed is resolved by an
-admin and an action follows, that player and every corroborator are credited 125
+admin and an action follows, that player and every corroborator are credited 100
 Volts — hours or days later, across any number of restarts, because the debt is
 queued in DynamoDB rather than in memory, and exactly once, because the credit
 and its receipt are the same conditional write. See
 [XP and Volts](docs/progression.md).
 
-> **This said 250 Volts, which is what the owner originally asked for and what
-> the bounty paid until 2026-08-20.** It is half that now. The instruction was
-> "cut all Volts earnings by 50%", said about a playtest and so about the match
-> payout — but this is still a Volts earning paid out of the same balance, and
-> exempting it would have doubled what a report is worth relative to a match
-> without anyone deciding to. Every match-payout number moved the same day, so
-> nothing else in this file quotes a Volts figure that predates it.
+> **The bounty has been three numbers and 100 is the only one anybody chose for
+> it.** It shipped at the 250 the owner first asked for, then halved to 125 on
+> 2026-08-20 along with every match-payout number, under an instruction — "cut
+> all Volts earnings by 50%" — that was given about a playtest and so about the
+> match payout. That made it collateral rather than a decision, which is what
+> #256 raised. The owner set 100 outright on 2026-09-02, so it is now a fixed
+> bounty on a moderation outcome and not a fraction of anything the market pays.
 
 **In flight (M10):** finishing touches — the feature requests gathered after M8,
 and a security audit of both repos now that they are public. Landed so far: the

@@ -40,7 +40,7 @@ any more, so it is corrected here rather than left to be discovered:
 | verb | when | how much |
 |---|---|---|
 | `br:ddb:statsApply` | end of match, from `br_stats/server/persist.lua` | whatever the match earned |
-| `br:ddb:awardPay` | an incident the player reported resolves with an action taken | a flat 125 |
+| `br:ddb:awardPay` | an incident the player reported resolves with an action taken | a flat 100 |
 
 Both are **earned by what you did in a match** — playing it, or reporting
 somebody in it who turned out to be worth reporting. That is the property that
@@ -223,14 +223,22 @@ cleared with the rest of them so one airdrop cannot be banked twice.
 
 ---
 
-## Report rewards (#168, `e4f211d`)
+## Report rewards (#168, `e4f211d`; the figure settled by #256)
 
-**125 Volts to the reporter, and to every corroborator, when an incident they
+**100 Volts to the reporter, and to every corroborator, when an incident they
 filed resolves and an action was taken.** The number lives in
 `br_stats/server/awards.lua` as `AWARD_VOLTS` rather than in `market.lua`,
 deliberately: `market.lua` holds what a *match* pays next to what things cost so
 the two stay calibrated, and this is neither — it is a fixed bounty on a
 moderation outcome, outside the earn-per-hour curve.
+
+**That separation is why the figure needed deciding rather than deriving.** #168
+asked for 250 and it shipped at 250; the 2026-08-20 halving took it to 125 along
+with every match weight, because "cut all Volts earnings by 50%" was said about a
+playtest and this is still Volts out of the same balance. Sweeping it into a
+retune of a curve it is not part of was a side effect, not a choice — #256 asked
+the owner to make one, and on 2026-09-02 he set 100. It is not half of anything,
+and a future retune of the payout table below leaves it where it is.
 
 Nothing is paid for filing. The reward tracks the **verdict**, so a report that
 turns out to be nothing costs the reporter nothing and earns them nothing.
@@ -303,7 +311,7 @@ are logged as different facts.
 permanent one. A reader that reaches for it without narrowing on `action` gets
 `undefined` where a permanent ban gives `null` — two falsy values meaning
 entirely different things. Nothing here decides on it: a temporary ban and a
-permanent one are the same 125 Volts.
+permanent one are the same 100 Volts.
 
 ### The edges that are written down rather than discovered
 
@@ -357,7 +365,7 @@ the client never derives a level — it renders what the server sends.
 | Lobby | level, bar, balance | `MARKET_STATE`, from the profile row |
 | Verdict | XP gained, level-up, Volts earned | `MATCH_EARNED`, from br_stats |
 | Market | balance | `MARKET_STATE` |
-| A toast, whenever a sweep pays | "gifted 125 Volts… who has now been banned" | `br_stats/server/awards.lua`, keyed `report.reward` |
+| A toast, whenever a sweep pays | "gifted 100 Volts… who has now been banned" | `br_stats/server/awards.lua`, keyed `report.reward` — the figure is `AWARD_VOLTS`, formatted in, never retyped |
 | Ringmaster profile | level, total XP, balance | `br-players` directly |
 
 The reward toast names the **action** and nothing else. The admin's written

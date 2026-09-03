@@ -369,7 +369,7 @@ check(
 
 // ----------------------------------------------------------------- verdict ---
 //
-// THE RULE THAT DECIDES WHETHER 250 VOLTS ARE PAID TO A STRANGER, and the one
+// THE RULE THAT DECIDES WHETHER THE BOUNTY IS PAID TO A STRANGER, and the one
 // place in this repository that can be tested against the console's contract
 // without a table. The cases below are the contract's own edge list: absent is
 // not 'none', a pending row is not a decision, and a missing row is not a

@@ -1583,7 +1583,7 @@ on('br:ddb:artifactPut', (req, incidentId, index, encoding, capturedAt) => {
 /**
  * ═══ THE REWARD LEDGER -- ALL OF IT ON THE GAME'S OWN TABLE ═══
  *
- * #168 pays 250 Volts to a reporter, and to every corroborator, when an
+ * #168 pays a fixed bounty to a reporter, and to every corroborator, when an
  * incident resolves with an action taken. The verdict arrives HOURS after the
  * report and often after a deploy, so "remember who to pay" cannot live in Lua
  * memory: a restart between the report and the admin's decision would lose the

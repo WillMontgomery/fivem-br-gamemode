@@ -528,7 +528,7 @@ do
 end
 
 -- ========================================================================
--- server/awards.lua -- 250 Volts for an accurate report (#168)
+-- server/awards.lua -- 100 Volts for an accurate report (#168, #256)
 -- ========================================================================
 
 local INC = 'incident-abc'
@@ -642,14 +642,15 @@ do
     end
     -- THE AMOUNT IS PINNED, AND THE SENTENCE IS TIED TO IT RATHER THAN PINNED
     -- SEPARATELY. Both used to be the literal 250, which is two copies of one
-    -- constant in one test: halving the bounty (2026-08-20, "cut all Volts
-    -- earnings by 50%") would have failed both lines and invited whoever
-    -- retuned it to edit the number in two places and call it done. The pin
-    -- below is the deliberate one -- a silent retune must still fail here --
-    -- and everything downstream reads what was actually paid, so a payment and
-    -- a sentence that disagree is its own failure rather than a second pin.
+    -- constant in one test: a retune of the bounty would have failed both lines
+    -- and invited whoever moved it to edit the number in two places and call it
+    -- done. It has been retuned twice since -- 125 on 2026-08-20, 100 on
+    -- 2026-09-02 (#256) -- and each time this was the single line to change.
+    -- The pin is the deliberate one, because a silent retune must still fail
+    -- here, and everything downstream reads what was actually paid, so a payment
+    -- and a sentence that disagree is its own failure rather than a second pin.
     local AWARD = amounts[1]
-    ok(AWARD == 125 and amounts[2] == AWARD, 'each is worth 125 Volts',
+    ok(AWARD == 100 and amounts[2] == AWARD, 'each is worth 100 Volts',
         ('%s / %s'):format(tostring(amounts[1]), tostring(amounts[2])))
     ok(ids[ALICE] == INC and ids[BOB] == INC,
         'and each payment is keyed on the incident, which is what makes it idempotent')
