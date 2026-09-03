@@ -18408,6 +18408,209 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('combat.leaver')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- WALKING OUT IS AN ELIMINATION WITH NOBODY TO REVIVE (owner, 2026-09-02)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- "in squads, a player leaves the match and the others get 'x has bled out'
+    --  toasts."
+    --
+    -- BR.Match.leaveMatch routes a walk-out through BR.Combat.eliminate on
+    -- purpose -- "leaving while alive IS an elimination" -- so it reached
+    -- BR.ReviveKey.onEliminated too, minted a key and spoke `copy.bledOut` at
+    -- the squad. That sentence does not merely misdescribe the event: it SENDS
+    -- THE SQUAD SOMEWHERE, to fetch a key off a body that is not there.
+    --
+    -- ⚠ THE OBVIOUS ASSERTION IS GREEN ON THE BROKEN CODE, and it is the reason
+    -- this block calls eliminate() by hand before it calls leaveMatch(). Asking
+    -- `BR.Roster.get(2).reviveKey == nil` AFTER a leaveMatch passes either way:
+    -- BR.Match.resetPlayer nils that field a few lines later in the same call,
+    -- so the mint and its erasure both happen inside one function and the
+    -- observable end state is identical. Measured, not assumed -- reverting the
+    -- guard in server/combat.lua leaves a leaveMatch-only assertion green. What
+    -- separates the two versions is the state DURING the call and the toast that
+    -- escapes it, so both are pinned below.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    for _, s in ipairs({ 1, 2, 3 }) do
+        fire(BR.Net.QUEUE_JOIN, s, { mode = BR.Mode.SQUAD.key })
+    end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local m = theMatch()
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+    end
+    -- TWO SQUADS, so the audience assertion has somebody to EXCLUDE. A block
+    -- where everyone shares a squad cannot tell "told the squad" from "told the
+    -- server".
+    BR.Roster.get(1).squadId = 'sq_leave'
+    BR.Roster.get(2).squadId = 'sq_leave'
+    BR.Roster.get(3).squadId = 'sq_other'
+
+    ok(BR.ReviveKey ~= nil,
+        'server/revivekey.lua is loaded -- without it combat.lua\'s nil guard '
+            .. 'would make every assertion below pass for the wrong reason')
+
+    -- ═══ THE MINT IS REFUSED, AND THE DEATH BOX IS NOT ═══
+    --
+    -- The two lines sit one apart in eliminate() and share an `if m` guard, so
+    -- the risk in gating one of them is gating both. A leaver still spills what
+    -- they were carrying: walking out is not a way to take your kit home.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local before = m.loot.nextId
+    local notesBefore = #sent
+    BR.Combat.eliminate(2, 'left', nil)
+
+    ok(BR.Roster.get(2).reviveKey == nil,
+        'a player who walked out leaves NO revive key -- there is nobody left '
+            .. 'in the match for their squad to bring back')
+    ok(m.loot.nextId > before,
+        'but their inventory still spilled -- the death box is deliberately '
+            .. 'not gated with the mint',
+        ('nextId %d -> %d'):format(before, m.loot.nextId))
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
+        'and leaving is still an elimination in every other respect')
+    ok((BR.Roster.get(2).placement or 0) > 0,
+        'including the placement it records, which is what stops quitting '
+            .. 'being a cheaper exit than dying',
+        tostring(BR.Roster.get(2).placement))
+
+    -- ═══ AND THE SQUAD IS NOT SENT TO FETCH IT ═══
+    --
+    -- The owner's actual complaint. `copy.bledOut` is spoken from inside
+    -- onEliminated, so refusing the mint is what silences it -- asserted on the
+    -- WORDS rather than on the call, because a future edit that moved the
+    -- sentence somewhere else would still be the bug he reported.
+    local bled = 0
+    for i = notesBefore + 1, #sent do
+        local s = sent[i]
+        if s.event == BR.Net.NOTIFY and s.args[1]
+           and tostring(s.args[1].text or ''):find('bled out', 1, true) then
+            bled = bled + 1
+        end
+    end
+    ok(bled == 0,
+        'and NOBODY is told they bled out -- the squadmate quit, and that '
+            .. 'sentence would send them running for a key off a body that is '
+            .. 'not there',
+        ('%d such notices'):format(bled))
+
+    -- ═══ WHAT THE SQUAD IS TOLD INSTEAD, THROUGH THE REAL DOOR ═══
+    --
+    -- ⚠ THE WORDING IS THIS REPOSITORY'S GUESS AND THE OWNER HAS NOT SEEN IT.
+    -- It is asserted here so that it cannot change by accident, NOT because it
+    -- is settled -- see the ⚠ block above `tellSquadTheyLeft` in
+    -- server/match.lua. Both halves are already-shipped wording: server/party.lua
+    -- says '%s left the party.' and leaveMatch says 'You left the match.' to the
+    -- leaver.
+    --
+    -- DRIVEN THROUGH BR.Match.leaveMatch AND NOT BY CALLING THE HELPER, because
+    -- the thing that broke before was an ORDERING: the notice reads `squadId`
+    -- and `matchId`, and BR.Match.resetPlayer clears both a few lines further
+    -- down the same function. A direct call would prove the sentence composes
+    -- and nothing about whether it is composed while there is still a squad to
+    -- send it to.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    for _, s in ipairs({ 1, 2, 3 }) do
+        fire(BR.Net.QUEUE_JOIN, s, { mode = BR.Mode.SQUAD.key })
+    end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+    end
+    BR.Roster.get(1).squadId = 'sq_leave'
+    BR.Roster.get(2).squadId = 'sq_leave'
+    BR.Roster.get(3).squadId = 'sq_other'
+
+    --- Every NOTIFY text sent to `target` since index `from`.
+    local function textsTo(from, target)
+        local out = {}
+        for i = from + 1, #sent do
+            local s = sent[i]
+            if s.event == BR.Net.NOTIFY and s.target == target and s.args[1] then
+                out[#out + 1] = tostring(s.args[1].text or '')
+            end
+        end
+        return out
+    end
+
+    --- How many of those carry `needle`.
+    local function saying(list, needle)
+        local n = 0
+        for _, t in ipairs(list) do
+            if t:find(needle, 1, true) then n = n + 1 end
+        end
+        return n
+    end
+
+    local at = #sent
+    BR.Match.leaveMatch(2)
+
+    local toMate    = textsTo(at, 1)
+    local toLeaver  = textsTo(at, 2)
+    local toOutsider = textsTo(at, 3)
+
+    ok(saying(toMate, 'B left the match.') == 1,
+        'the squadmate is told, once, that B left the match',
+        table.concat(toMate, ' | '))
+    ok(saying(toMate, 'bled out') == 0,
+        'and is NOT told B bled out, which is the report this block is for',
+        table.concat(toMate, ' | '))
+    ok(saying(toLeaver, 'left the match.') == 1
+       and saying(toLeaver, 'B left the match.') == 0,
+        'the leaver hears only their own "You left the match." -- being told '
+            .. 'about yourself in the third person is the shape combat.lua\'s '
+            .. 'tellSquad excludes for the same reason',
+        table.concat(toLeaver, ' | '))
+    ok(saying(toOutsider, 'left the match.') == 0,
+        'and the other squad is told nothing -- this is squad traffic, not a '
+            .. 'match announcement',
+        table.concat(toOutsider, ' | '))
+
+    -- ═══ AND A SOLO'S DEPARTURE IS SILENT ═══
+    --
+    -- `squadId` is the gate, exactly as it is for the mint one screen up. A solo
+    -- has no squad, so there is no audience and nothing to say -- and a notice
+    -- that fell through to an empty list would be the same bug the mint had.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+    for _, s in ipairs({ 1, 2 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+        BR.Roster.get(s).squadId = nil
+    end
+
+    local atSolo = #sent
+    BR.Match.leaveMatch(2)
+    ok(saying(textsTo(atSolo, 1), 'left the match.') == 0,
+        'a solo walking out says nothing to anybody -- there is no squad to '
+            .. 'tell, and the gate is squadId rather than the mode',
+        table.concat(textsTo(atSolo, 1), ' | '))
+
+    if m then end
+end
+
+-- ---------------------------------------------------------------------------
 describe('combat.bleedout.spill')
 do
     -- ═══════════════════════════════════════════════════════════════════════

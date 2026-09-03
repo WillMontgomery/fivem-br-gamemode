@@ -1433,6 +1433,81 @@ end
 
 BR.Sched.every(250, 'match.tick', tick)
 
+--- Tell a squad that one of them has walked out -- and never tell the leaver.
+---
+--- ═══ WHY THIS SENTENCE EXISTS AT ALL ═══
+---
+--- Owner, playtest 2026-09-02: "in squads, a player leaves the match and the
+--- others get 'x has bled out' toasts."
+---
+--- They did, because leaving is routed through BR.Combat.eliminate and that
+--- function used to mint a revive key for anybody it eliminated. The key is gone
+--- now (see the `cause ~= 'left'` guard in server/combat.lua and the reasoning
+--- above it), and with it `BR.Config.ReviveKey.copy.bledOut` -- which is the
+--- half that actually hurt, because it did not merely misdescribe the event, it
+--- SENT THE SQUAD SOMEWHERE. A mate's body with a key on it is a place to run
+--- to; a mate who has quit is not.
+---
+--- THE SQUAD STILL HAS TO BE TOLD SOMETHING. Deleting the toast and stopping
+--- there would take a real event off their screen: three players are now two,
+--- the panel row goes quiet, and nothing anywhere says why. The complaint was
+--- that the sentence was WRONG, not that there was one.
+---
+--- ⚠ THE OWNER HAS NOT SEEN THIS WORDING, and it is one string in one place for
+--- him to overwrite -- the same way `copy.bledOut`'s `within %s` was left for
+--- him on 2026-09-02. It is not invented from nothing: BOTH HALVES ARE ALREADY
+--- SHIPPED WORDING and this only puts them together. server/party.lua says
+--- '%s left the party.' in this exact shape and tone for the neighbouring event,
+--- and BR.Match.leaveMatch says 'You left the match.' to the leaver themselves
+--- twenty lines below. The third-person form of the second, in the grammar of
+--- the first, is the sentence with the fewest new decisions in it.
+---
+--- ═══ THE AUDIENCE IS THE SQUAD MINUS THE SUBJECT ═══
+---
+--- The same envelope `tellSquad` in server/combat.lua addresses, for the same
+--- reason it gives: "you left the match" is not news to the person who pressed
+--- the button, and they are already being told so directly.
+---
+--- ═══ AND IT IS CALLED WHERE IT IS FOR TWO REASONS ═══
+---
+--- AFTER eliminate(), so it cannot announce a departure that the elimination
+--- refused -- and eliminate() does refuse: a player whose death is held for the
+--- start of the match (#144) is not a leaver, and a `canDie` refusal is not
+--- either. Both return before anything is written down.
+---
+--- BEFORE BR.Match.resetPlayer, WHICH IS THE HALF THAT WOULD FAIL SILENTLY.
+--- That function clears `squadId` and `matchId` a few lines later, and both are
+--- the filter below -- so a call moved past it would find an empty squad, send
+--- nothing, and look exactly like a call that worked.
+---
+--- ONLY FROM THE `eliminate('left')` BRANCH. A WARMUP player stepping off the
+--- pad has not left a match that started, and an OUT player leaving is already
+--- gone from the fight and was announced when they died.
+--- @param src integer   the leaver
+--- @param entry table   their roster entry, still carrying squadId and matchId
+local function tellSquadTheyLeft(src, entry)
+    if not entry.squadId or not entry.matchId then return end
+
+    local mates = {}
+    BR.Roster.each(
+        function(e)
+            return e.squadId == entry.squadId
+               and e.matchId == entry.matchId
+               and e.src ~= src
+        end,
+        function(mate) mates[#mates + 1] = mate end)
+
+    if #mates == 0 then return end
+
+    -- THE NAME IS AN ARGUMENT AND NOT PART OF THE STRING, which is the owner's
+    -- rule of 2026-08-31 ("any time we mention a player by name in a toast their
+    -- name should be bold") and the property tools/check_notice_names.lua
+    -- enforces across every call site in four resources.
+    BR.Server.notify(mates,
+        BR.Notice.line('%s left the match.', BR.Notice.who(entry.name)),
+        'warn')
+end
+
 --- Leave the current match, on the player's own initiative.
 ---
 --- The match must not notice beyond the elimination: leaving while alive IS an
@@ -1491,6 +1566,7 @@ function BR.Match.leaveMatch(src)
     elseif BR.Server.isInMatch(entry.state)
         or entry.state == BR.PlayerState.DBNO then
         BR.Combat.eliminate(src, 'left', nil)
+        tellSquadTheyLeft(src, entry)
     end
     -- OUT players fall through: already out of the fight, they only need the
     -- trip back to the lobby. A spectator is one of them.

@@ -320,7 +320,46 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- NOT GUARDED ON WHAT THE DEATH BOX RETURNED. It returns nil for a player
     -- who was carrying nothing, and an empty-handed player must still be
     -- recoverable -- the invariant is the EDGE, not the spill.
-    if m and BR.ReviveKey and BR.ReviveKey.onEliminated then
+    --
+    -- ═══ EXCEPT 'left', WHICH IS THE ONE ELIMINATION WITH NOBODY TO REVIVE ═══
+    --
+    -- Owner, playtest 2026-09-02: "in squads, a player leaves the match and the
+    -- others get 'x has bled out' toasts."
+    --
+    -- THE TOAST WAS THE SYMPTOM AND THE MINT WAS THE CAUSE. That sentence is
+    -- `BR.Config.ReviveKey.copy.bledOut` and it is spoken from inside
+    -- onEliminated, so the only way to stop a leaver's squad being sent to fetch
+    -- a key is to stop the leaver having one. Suppressing the line and keeping
+    -- the mint would leave a silent pickup on the ground that still cost 25
+    -- Volts to buy.
+    --
+    -- AND THE KEY WAS ALREADY UNSPENDABLE, WHICH IS WHY THIS IS A DELETION AND
+    -- NOT A POLICY. Every door out of a revive key is shut for a leaver before
+    -- the toast has finished drawing:
+    --
+    --   * `BR.Match.leaveMatch` calls this function and then, a few lines later,
+    --     runs `BR.Match.resetPlayer`, which sets `e.reviveKey = nil`. The record
+    --     this mint writes is destroyed in the same tick that wrote it.
+    --   * It then clears `matchId`, and both `BR.ReviveKey.forSquad` (what 25
+    --     Volts buys) and `reviveAllowed` filter on it -- so the purchase cannot
+    --     see the key and the revive cannot spend it.
+    --   * `reviveAllowed` also requires the subject to be OUT in a PLAYING
+    --     match, and a leaver is LOBBY in no match at all.
+    --
+    -- So the squad was told to run for a key that did not exist by the time they
+    -- read the sentence, could not be bought, and could not have been spent if
+    -- it had been. Nothing downstream loses a capability here; the roster entry
+    -- simply stops being written to for one instant before it is wiped.
+    --
+    -- THE DEATH BOX ABOVE IS DELIBERATELY NOT GATED WITH IT. A leaver still
+    -- spills what they were carrying -- walking out is not a way to take your
+    -- kit home, which is the same argument that routes leaving through this
+    -- function at all. So the two lines part company here, and
+    -- server/revivekey.lua's "minted on exactly the code path that forfeits an
+    -- inventory" is now the narrower claim its own header states: minted on
+    -- exactly the code path that forfeits an inventory AND leaves somebody in
+    -- the match to be brought back to.
+    if cause ~= 'left' and m and BR.ReviveKey and BR.ReviveKey.onEliminated then
         BR.ReviveKey.onEliminated(m, src)
     end
 

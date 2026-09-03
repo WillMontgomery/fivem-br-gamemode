@@ -116,12 +116,37 @@
 --   invariant is about the EDGE, not the outcome.
 --
 --   IT IS: the key is minted on exactly the code path that forfeits an
---   inventory, and on no other. Which makes the owner's table true by
---   construction rather than by two rules being kept in step:
+--   inventory AND leaves somebody in the match to be brought back to. Which
+--   makes the owner's table true by construction rather than by two rules being
+--   kept in step:
 --
 --     picked up in person during bleed-out -> never reaches eliminate() at all,
 --       so no deathBox and no key. Their kit is still on them.
 --     bleed-out expires -> eliminate() -> deathBox AND a key, together.
+--     walked out -> eliminate('left') -> deathBox, and NO key. See below.
+--
+-- ═══ AND 'left' IS THE ONE PLACE THE TWO LINES PART COMPANY (2026-09-02) ═══
+--
+-- Owner, playtest: "in squads, a player leaves the match and the others get 'x
+-- has bled out' toasts."
+--
+-- `BR.Match.leaveMatch` routes a walk-out through eliminate() on purpose --
+-- "leaving while alive IS an elimination" -- so it arrived here too, minted a
+-- key and spoke `copy.bledOut` at the squad. THE SECOND CLAUSE ABOVE IS WHAT IT
+-- FAILED: a leaver is detached from the match microseconds later and there is
+-- nobody left to revive. `BR.Match.resetPlayer` nils `reviveKey` in the same
+-- tick, and `forSquad` and `reviveAllowed` both filter on the `matchId` that
+-- call clears -- so the key could not be bought, found or spent, and the toast
+-- sent the squad running for something that had already ceased to exist.
+--
+-- THE GUARD IS IN server/combat.lua AND NOT IN THIS FILE, because `cause` is
+-- that function's own value and it already branches on `cause ~= 'left'` for the
+-- #144 hold. This module's contract is unchanged: it is still handed only the
+-- eliminations that are supposed to mint, and it still speaks for every one of
+-- them.
+--
+-- THE DEATH BOX IS DELIBERATELY NOT GATED WITH IT. A leaver still spills their
+-- kit -- walking out is not a way to take it home.
 --
 -- AND THE #144 HELD DEATH IS THE PROOF THAT THE PLACEMENT IS LOAD-BEARING. A
 -- player who dies before the match starts is routed through `holdForStart`,
@@ -390,6 +415,12 @@ end
 ---
 --- CALLED FROM server/combat.lua, BESIDE BR.Loot.deathBox, AND FROM NOWHERE
 --- ELSE. See this file's header for why that placement is the whole design.
+---
+--- AND NOT FOR EVERY ELIMINATION THAT REACHES IT: that call site refuses
+--- `cause == 'left'`, because a player who walked out is detached from the match
+--- in the same tick and has nobody to be revived to. The refusal lives there and
+--- not here -- see the header -- so this function has no opinion about WHY
+--- somebody stopped being in the match, only that they did.
 ---
 --- ═══ SOLOS GET NO KEY, AND THE GATE IS `squadId` RATHER THAN THE MODE ═══
 ---
