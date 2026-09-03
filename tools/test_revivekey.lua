@@ -79,12 +79,17 @@ for _, f in ipairs({
     -- fills the holes through BR.Notice.line, so the module cannot speak at all
     -- without this.
     'shared/notice.lua',
+    -- BR.Clock.words. The bled-out toast names the pickup's own duration out
+    -- loud since 2026-09-02 ("mention that the key expires and after how long"),
+    -- and it reads it off `expiryMs` through this rather than spelling three
+    -- minutes into the sentence -- so server/revivekey.lua cannot mint a key
+    -- without it.
+    'shared/clock.lua',
     -- BR.ShopSolve.signHeight, which is the ONE derivation behind how high a
-    -- plate hangs: client/revivekey.lua calls it for the plate on the van and
-    -- calls it again, minus the vehicle's origin, for the plate over a key on
-    -- the ground. "The same elevation as the 'press E to revive' DUI" (owner,
-    -- 2026-09-01) is a property of this function and is executed in
-    -- `plate.config` below.
+    -- plate hangs on a VEHICLE. (The plate over a key on the ground used to come
+    -- through it too, minus the vehicle's origin; since 2026-09-02 it is
+    -- anchored to its marker instead -- "It should be inside the 3dmarker" --
+    -- and is executed in `plate.config` below.)
     'shared/shop_solve.lua',
     'config/match.lua',
     'config/overrides.lua',
@@ -169,8 +174,23 @@ do
             -- one line in the table whose only guard is here.
             revive      = 'Revive your squad',
             reviveHold  = 'PRESS AND HOLD',
-            bledOut     = '%s has bled out! Get their revive key or purchase '
-                          .. 'it at an ambulance!',
+            -- ═══ AND THE ONE HE ASKED TO SAY MORE, 2026-09-02 ═══
+            --
+            -- "Perhaps the 'grab their key!' toast should also mention that the
+            -- key expires and after how long."
+            --
+            -- ⚠ `within %s` IS NOT HIS WORDING. He gave the fact and not the
+            -- sentence, and this is the smallest insertion that carries it --
+            -- his clause order, his two doors, his exclamation marks. It is
+            -- pinned here so that when he corrects it there is exactly one
+            -- other place to change.
+            --
+            -- THE SECOND HOLE IS A DURATION AND THE FIRST IS A NAME, which is
+            -- the thing to get right if this line is ever rewritten: the toast
+            -- reads them positionally (BR.Notice.line), so swapping them would
+            -- bold three minutes and print a player's name as a deadline.
+            bledOut     = '%s has bled out! Get their revive key within %s or '
+                          .. 'purchase it at an ambulance!',
             collect     = "You've collected %s's revive key. Get to an "
                           .. "ambulance to revive them!",
             collectedBy = "%s picked up %s's revive key! Get to an ambulance "
@@ -438,88 +458,172 @@ do
     -- left/right as well. in/out and up/down are great but can't do left/right
     -- right now" (2026-09-01).
     --
-    -- WHAT IS PINNED IS THAT ALL FIVE ARE NUMBERS AND NOT WHAT THEY ARE. None of
-    -- them is his yet, so asserting a value would freeze a placeholder; what
-    -- would actually break the plate is one of them arriving as a string, or as
-    -- a sixth key the client never reads.
+    -- ═══ AND SINCE 2026-09-02 IT IS FIVE PER FACE, WHICH IS WHAT HE SENT ═══
+    --
+    -- He walked round an ambulance with /brplate and pasted four blocks -- one
+    -- for each of `left`, `nose`, `right` and `tail`, which are the four words
+    -- BR.Dui.nearFace's answer is named by and the four keys the client looks a
+    -- set up under.
+    --
+    -- WHAT IS PINNED IS THE SHAPE AND THE FACES, NOT THE VALUES. The numbers are
+    -- his now, so a suite asserting them would be a suite that has to be edited
+    -- every time he refines one -- and the tool exists so he can. What would
+    -- actually break the plate is a number arriving as a string, a face key the
+    -- client never looks up, or a face going missing so its panel silently falls
+    -- back to the untuned defaults.
     local P = K.plate
     ok(type(P) == 'table', 'the plate\'s position lives in one table', type(P))
     if type(P) == 'table' then
-        local want = {
-            out = true, side = true, frac = true, lift = true, width = true,
-        }
-        local n = 0
-        for k, v in pairs(P) do
-            n = n + 1
-            ok(want[k] == true,
-                ('plate.%s is one of the five the client reads'):format(k))
-            ok(type(v) == 'number',
-                ('and plate.%s is a number rather than a string'):format(k),
-                tostring(v))
+        local faces = { 'left', 'nose', 'right', 'tail' }
+        local wantFace = {}
+        for _, f in ipairs(faces) do wantFace[f] = true end
+
+        local nf = 0
+        for k, set in pairs(P) do
+            nf = nf + 1
+            ok(wantFace[k] == true,
+                ('plate.%s is one of the four faces the client resolves'):format(k))
+            ok(type(set) == 'table',
+                ('and plate.%s is a set of five rather than a bare number -- '
+                 .. 'the flat table was one panel\'s numbers on four panels')
+                    :format(k), type(set))
         end
-        ok(n == 5, 'five of them, no more', n)
-        -- A width of zero draws nothing at all, and a negative one draws a
-        -- mirrored plate: BR.Dui.drawNearFace refuses both, so this is the
-        -- config saying the same thing where it can be seen.
-        ok((tonumber(P.width) or 0) > 0, 'the plate has a width', P.width)
-        ok((tonumber(P.out) or -1) >= 0,
-            'and stands off the panel rather than inside it', P.out)
-        -- AND `side` IS NOT HELD TO THAT. It is signed on purpose -- negative is
-        -- the left of the panel -- so the assertion is that it EXISTS and is a
-        -- number, which the loop above already made. Pinned as a comment rather
-        -- than as a `>= 0` somebody would add later by symmetry and break the
-        -- half of the axis he asked for.
-        ok(tonumber(P.side) ~= nil,
-            'and the lateral he asked for is there, signed -- negative is the '
-                .. 'left of the panel and that is half the axis', P.side)
+        ok(nf == 4, 'four faces, no more', nf)
+
+        for _, f in ipairs(faces) do
+            local set = P[f]
+            ok(type(set) == 'table',
+                ('plate.%s is present -- a missing face draws at the untuned '
+                 .. 'fallbacks, which looks like the plate having moved on its '
+                 .. 'own'):format(f))
+            if type(set) == 'table' then
+                local want = {
+                    out = true, side = true, frac = true, lift = true,
+                    width = true,
+                }
+                local n = 0
+                for k, v in pairs(set) do
+                    n = n + 1
+                    ok(want[k] == true,
+                        ('plate.%s.%s is one of the five the client reads')
+                            :format(f, k))
+                    ok(type(v) == 'number',
+                        ('and plate.%s.%s is a number rather than a string')
+                            :format(f, k), tostring(v))
+                end
+                ok(n == 5, ('five in plate.%s, no more'):format(f), n)
+
+                -- A width of zero draws nothing at all, and a negative one
+                -- draws a mirrored plate: BR.Dui.drawNearFace refuses both, so
+                -- this is the config saying the same thing where it can be seen.
+                ok((tonumber(set.width) or 0) > 0,
+                    ('plate.%s has a width'):format(f), set.width)
+
+                -- ⚠ `out` IS NOT HELD TO BEING POSITIVE ANY MORE, AND THAT IS
+                -- HIS CHANGE RATHER THAN A LOOSENING. This suite used to assert
+                -- `out >= 0` -- "it stands off the panel rather than inside it"
+                -- -- and all four of the numbers he measured are NEGATIVE: a
+                -- quad standing proud of an ambulance's slab side read as
+                -- floating beside the van, and he brought every one of them in.
+                -- Asserting the old sign would now fail on his own approved
+                -- numbers, which is the assertion being wrong rather than the
+                -- config. `side` is signed for the same kind of reason -- the
+                -- left of a panel is half the axis he asked for.
+                ok(tonumber(set.out) ~= nil and tonumber(set.side) ~= nil,
+                    ('plate.%s\'s out and side are both signed numbers -- '
+                     .. 'negative `out` is inside the bodywork and negative '
+                     .. '`side` is the left of the panel, and both are his')
+                        :format(f),
+                    ('out %s side %s'):format(tostring(set.out),
+                                              tostring(set.side)))
+            end
+        end
+
+        -- ═══ AND THE ASYMMETRY IS DELIBERATE, WHICH IS WORTH A TEST OF ITS OWN
+        --     ═══
+        --
+        -- `left.side` is 1.620 and `right.side` is -2.220. That looks like a
+        -- typo for a mirrored pair and it is not: an ambulance's model origin is
+        -- not on its centreline, so the same place on the bodywork is a
+        -- different distance along from either flank. The likeliest "fix"
+        -- anybody makes to this table is averaging them, so the difference is
+        -- pinned rather than left to a comment.
+        local l = P.left and tonumber(P.left.side)
+        local r = P.right and tonumber(P.right.side)
+        ok(l ~= nil and r ~= nil and math.abs(math.abs(l) - math.abs(r)) > 0.1,
+            'the two flanks are NOT mirror images of each other -- the model '
+                .. 'origin is off centre, so tidying these into a matched pair '
+                .. 'moves a plate the owner has already approved',
+            ('left %s right %s'):format(tostring(l), tostring(r)))
     end
 
-    -- ═══ "THE SAME ELEVATION AS THE PRESS E TO REVIVE DUI" ═══
+    -- ═══ "INSIDE THE 3DMARKER", WHICH IS THE FOURTH ANSWER AND A DIFFERENT
+    --     KIND OF ANSWER ═══
     --
-    -- Owner, 2026-09-01: "'take revive key' is still over the body. it should be
-    -- the same elevation as the 'press E to revive' DUI."
+    -- Owner, 2026-09-02: "The 'pickup key' DUI is still... again.... way too
+    -- high off the ground. I've stated this 3 times now. It should be inside the
+    -- 3dmarker, which should also be made about 25% taller btw."
     --
-    -- THE TWO PLATES ARE MEASURED FROM DIFFERENT ORIGINS, which is the whole
-    -- difficulty and the reason this is asserted as arithmetic rather than as a
-    -- pair of constants. BR.ShopSolve.signHeight answers metres above a
-    -- VEHICLE'S ORIGIN; the ground the van stands on is `bottom` below that
-    -- origin; so the height the two have to agree on is `signHeight(...) -
-    -- bottom`, and client/revivekey.lua's `plateGroundHeight` is that
-    -- subtraction. What is executed here is the property that makes it correct.
+    -- THE PREVIOUS THREE WERE ALL NUMBERS -- 1.1, then 0.6, then the ambulance
+    -- plate's own `frac`/`lift` with the van's origin subtracted out, which was
+    -- derived and still put the plate ~1.5m over a marker lying on the floor.
+    -- The suite used to execute that subtraction here. What it executes now is
+    -- the property that replaced it: the plate's height is a function of the
+    -- MARKER'S OWN two numbers and of nothing else, so the two cannot separate.
     do
-        local S = BR.ShopSolve
-        local frac, lift = 0.62, 0.11
+        local Mk = K.marker
 
-        -- THE ORIGIN DROPS OUT. Two boxes of the same HEIGHT with the origin in
-        -- completely different places -- one a van whose origin is near its
-        -- axles, one a model whose box starts at its own feet -- answer the same
-        -- height above the ground they stand on. This is the property a plain
-        -- `frac` copied across would NOT have, and copying `frac` is the
-        -- obvious wrong fix: it would put the two a van's ride height apart.
-        local a = S.signHeight(-0.86, 1.44, frac, lift) - (-0.86)
-        local b = S.signHeight(0.0, 2.30, frac, lift) - 0.0
-        ok(math.abs(a - b) < 1e-9,
-            'the height a plate hangs at ABOVE THE GROUND does not depend on '
-                .. 'where the vehicle\'s origin sits inside its box -- which is '
-                .. 'why the ground plate can share the van plate\'s numbers',
-            ('%.6f vs %.6f'):format(a, b))
+        -- `markerBand` in client/revivekey.lua is `lift, height`; the plate is
+        -- `lift + height * 0.5`. Written out here rather than called, because
+        -- there is no client state in this harness to call it in -- the source
+        -- pin in `describe('source')` is what ties this arithmetic to that file.
+        local function mid(lift, tall) return lift + tall * 0.5 end
 
-        -- ...AND IT IS THE SPAN, THE FRACTION AND THE LIFT, in that arrangement.
-        -- Written out longhand so a change to signHeight that still satisfies
-        -- the identity above -- squaring the fraction, say -- fails here.
-        ok(math.abs(a - (2.30 * frac + lift)) < 1e-9,
-            'and it is span * frac + lift, so nudging either number moves both '
-                .. 'plates by the same distance and they cannot come apart',
-            ('%.6f vs %.6f'):format(a, 2.30 * frac + lift))
+        local lift = tonumber(Mk and Mk.lift) or 0.06
+        local tall = tonumber(Mk and Mk.height) or 0.4
+        local z = mid(lift, tall)
 
-        -- A MODEL THAT HAS NOT ANSWERED. signHeight is handed the fallback span
-        -- rather than a box of zeroes, because `frac` of nothing is zero and a
-        -- plate at zero is one lying in the mud -- exactly the complaint being
-        -- fixed, arriving on the frames a van is still streaming in.
-        ok(S.signHeight(0.0, 2.3, frac, lift) - 0.0 > 1.0,
-            'and a fallback span still puts the plate at a readable height '
-                .. 'rather than on the floor')
+        -- INSIDE THE BAND, WHICH IS THE OWNER'S WORD. The marker occupies
+        -- [lift, lift + height] above the key's own z, and the plate is in it.
+        ok(z > lift and z < lift + tall,
+            'the plate over a loose key is INSIDE the marker\'s own vertical '
+                .. 'band rather than above it, which is the whole of the '
+                .. 'owner\'s fourth report',
+            ('%.3f in (%.3f, %.3f)'):format(z, lift, lift + tall))
+
+        -- IT MOVES WITH THE MARKER. A taller marker takes the plate up with it
+        -- and a marker lifted off the terrain takes it up one for one -- which
+        -- is the property the three previous answers each claimed and none had,
+        -- because each was pinned to something the marker knows nothing about.
+        ok(mid(lift, tall * 2.0) > z and mid(lift + 1.0, tall) == z + 1.0,
+            'and it is a function of the marker\'s own lift and height, so '
+                .. 'resizing or raising the marker moves the plate with it and '
+                .. 'there is no second number to edit')
+
+        -- AND IT IS UNDER A METRE. Not a tuning assertion -- a regression one.
+        -- Every rejected answer to this report was over a metre off the ground,
+        -- and 1.1, 0.6 and ~1.5 are all numbers somebody could reintroduce
+        -- believing they were derived. A marker is ankle height.
+        ok(z < 1.0,
+            'and it is a marker height off the ground rather than the metre-plus '
+                .. 'every rejected answer put it at', ('%.3f m'):format(z))
     end
+
+    -- ═══ AND THE MARKER IS THE ONE HE ASKED FOR, 25% TALLER ═══
+    --
+    -- ⚠ `height` IS THE AXIS AND `size` IS NOT. DrawMarker takes (scaleX,
+    -- scaleY, scaleZ) and the pass spends `size, size, height` -- so `size` is
+    -- metres ACROSS on both horizontal axes and `height` is the vertical one on
+    -- its own. Raising `size` for "taller" makes a wider marker, which is the
+    -- mistake this pins: the two are asserted in opposite directions so an edit
+    -- that moves the wrong one fails rather than passing quietly.
+    ok(math.abs((tonumber(K.marker and K.marker.height) or 0) - 0.5) < 1e-9,
+        'the marker is 0.5m tall -- 0.4 raised by the owner\'s 25%',
+        tostring(K.marker and K.marker.height))
+    ok(math.abs((tonumber(K.marker and K.marker.size) or 0) - 0.8) < 1e-9,
+        '...and `size` is untouched, because scaleX/scaleY is how WIDE it is '
+            .. 'and he asked for taller rather than bigger',
+        tostring(K.marker and K.marker.size))
 end
 
 -- ---------------------------------------------------------------------------
@@ -635,46 +739,67 @@ do
         'and the take plate carries a press, so it draws a key cap and the '
             .. 'player has to mean it')
 
-    -- ═══ A THIRD PIN, AND IT HAS NOW INVERTED ═══
+    -- ═══ A THIRD PIN, AND IT HAS NOW MOVED TWICE ═══
     --
     -- "the 'take revive key' DUI over a corpse is way too high off the ground"
-    -- put a constant of this file's own under the loose key, and this suite used
-    -- to assert exactly that: a ground plate and a vehicle plate MAY NOT SHARE
-    -- ONE CONSTANT, because 1.1m above a vehicle's origin is a plate over a roof
-    -- and the same number over a body is a plate in the air.
+    -- put a constant of this file's own under the loose key, and this suite once
+    -- asserted the two plates MAY NOT share a number. On 2026-09-01 he asked for
+    -- the opposite -- "it should be the same elevation as the 'press E to
+    -- revive' DUI" -- and the pin moved to the subtraction that made one
+    -- derivation place both.
     --
-    -- THE OWNER THEN ASKED FOR THE OPPOSITE PROPERTY, and it is not a
-    -- contradiction: "'take revive key' is still over the body. it should be the
-    -- same elevation as the 'press E to revive' DUI" (2026-09-01). What may not
-    -- be shared is the ORIGIN -- one is a van's centre and one is the ground. The
-    -- HEIGHT is now required to be the same, and the only way that survives the
-    -- next nudge of `frac` or `lift` is for one derivation to produce both.
+    -- ON 2026-09-02 HE REPORTED IT A FOURTH TIME AND NAMED THE ANCHOR: "It
+    -- should be inside the 3dmarker." That is not a third position in an
+    -- argument -- it is the end of the argument, because it is the only answer
+    -- that is about the thing the plate has to agree with. So the pin is now the
+    -- marker.
     --
-    -- SO THE PIN MOVES FROM THE SPLIT TO THE SUBTRACTION. What would silently go
-    -- wrong is somebody "tidying" plateGroundHeight into a constant again, or
-    -- into a second lerp beside signHeight's -- both of which look right and
-    -- both of which come apart the first time he tunes the van plate. The
-    -- arithmetic itself is executed in plate.config above; this pins that the
-    -- client is what runs it.
-    ok(clientCode:find('local function plateGroundHeight') ~= nil,
-        'the loose key\'s height is DERIVED rather than authored -- there is no '
-            .. 'constant left for the van plate to drift away from')
+    -- WHAT WOULD SILENTLY GO WRONG is somebody "tidying" `markerPlateHeight`
+    -- into a constant -- the exact edit that has been made and rejected three
+    -- times -- or re-coupling it to the van plate's numbers, which are four
+    -- per-face sets about an ambulance's bodywork and have nothing to say about
+    -- a key in a field. The arithmetic is executed in plate.config above; this
+    -- pins that the client is what runs it, and off what.
+    ok(clientCode:find('local function markerPlateHeight') ~= nil,
+        'the loose key\'s height is a FUNCTION OF THE MARKER rather than a '
+            .. 'number -- the three rejected answers were all numbers')
 
-    ok(clientCode:find('BR%.ShopSolve%.signHeight%(bottom, top, frac, lift%) %- bottom')
+    ok(clientCode:find('local lift, tall = markerBand%(%)%s*\n%s*return lift %+ tall %* 0%.5')
            ~= nil,
-        '...and it is the van plate\'s own derivation with the vehicle origin '
-            .. 'subtracted back out, not a second lerp beside it')
+        '...and it is the middle of the marker\'s own band, which is what '
+            .. '"inside the 3dmarker" means')
 
-    ok(clientCode:find('c%.z %+ plateGroundHeight%(%)') ~= nil,
-        '...added to the key\'s own z, which is the ground the body fell on')
+    ok(clientCode:find('c%.z %+ markerPlateHeight%(%)') ~= nil,
+        '...added to the key\'s own z, which is the same point the marker is '
+            .. 'drawn at')
 
-    -- AND BOTH READ ONE SET OF NUMBERS. `plateNumbers` is the only reader of the
-    -- config table, so the van plate and the ground plate cannot be given
-    -- different fracs by an edit that only touches one call site.
-    ok(select(2, clientCode:gsub('plateNumbers%(%)', '')) >= 2
-       and clientCode:find('local _, _, frac, lift = plateNumbers%(%)') ~= nil,
-        '...and the height it derives comes out of the SAME plateNumbers() the '
-            .. 'van plate reads, so there is one frac and one lift in this file')
+    -- ONE READER OF THE MARKER'S HEIGHT NUMBERS. If the marker pass kept its own
+    -- `tonumber(M.height) or 0.4` the plate and the marker would have two
+    -- authored defaults, and an unconfigured marker would draw with a plate
+    -- floating over it -- this report, again, in the one case nobody plays.
+    ok(clientCode:find('local function markerBand') ~= nil
+       and select(2, clientCode:gsub('markerBand%(%)', '')) >= 3
+       and select(2, clientCode:gsub('tonumber%(M%.height%)', '')) == 1,
+        '...and both the marker pass and the plate read those two numbers '
+            .. 'through markerBand -- `tonumber(M.height)` appears exactly once '
+            .. 'in the file, so there is no second copy of the height, and no '
+            .. 'second `or 0.4` for an unconfigured marker to disagree over')
+
+    -- AND THE VAN PLATE READS A FACE. `plateNumbers` takes the word
+    -- BR.Dui.nearFace's answer is named by, so the panel a player is standing at
+    -- and the five numbers the plate is drawn with are one decision.
+    ok(clientCode:find('local function plateNumbers%(face%)') ~= nil
+       and clientCode:find('local face = faceWord%(BR%.Dui%.nearFace%(veh, p%.x, p%.y%)%)')
+           ~= nil,
+        'and the plate ON A VAN picks its five numbers by the face the player '
+            .. 'is nearest to, resolved through the same call that draws it')
+
+    -- ...AND THE GROUND PLATE READS NONE OF THEM. Re-coupling the two is the
+    -- edit that looks like tidying and is the fourth report coming back.
+    ok(clientCode:find('plateGroundHeight') == nil
+       and clientCode:find('plateNumbers%(%)') == nil,
+        '...while the plate over a loose key reads no part of the van\'s table, '
+            .. 'so tuning one surface cannot move the other')
 
     -- ═══ AND THE MARKER THAT NOW STANDS WHERE THE BODY DOES NOT ═══
     --
@@ -733,15 +858,16 @@ do
     -- lower than.
     --
     -- THE PROPERTY THAT SURVIVES IS THE ANCHOR, which is what the old assertion
-    -- was really protecting. The two plates now share the HEIGHT the owner asked
-    -- them to share and still do not share the point it is measured from -- one
-    -- is a van's origin and one is the ground a body fell on. The only constant
-    -- left in this file is a fallback SPAN, which is a fact about how tall a van
-    -- is rather than about how high a plate hangs, and it is a span precisely so
-    -- that `frac` and `lift` still apply on the frames it is used.
-    ok(tonumber(clientCode:match('local FALLBACK_SPAN_M%s*=%s*([%d%.]+)')) ~= nil,
-        '...and the only number left is a van\'s HEIGHT, not a plate\'s lift',
-        clientCode:match('local FALLBACK_SPAN_M%s*=%s*([%d%.]+)'))
+    -- was really protecting: a plate has to be measured against the thing it is
+    -- supposed to look attached to. Since 2026-09-02 the ground plate's thing is
+    -- the marker at the same point, and the van plate's is the van -- so there
+    -- is no shared number between them left to be right for one and wrong for
+    -- the other, and the fallback SPAN this file used to keep for the ground
+    -- plate went with the coupling.
+    ok(clientCode:find('FALLBACK_SPAN_M') == nil,
+        '...and the ambulance-shaped fallback the ground plate used to lean on '
+            .. 'is gone with it -- a key in a field is not measured against a '
+            .. 'van at all now')
     ok(clientCode:find('local GROUND_LIFT') == nil,
         '...so the authored ground lift he reported three times is gone rather '
             .. 'than retuned a fourth time')
@@ -831,9 +957,10 @@ do
     local vanBody = clientCode:match('local function drawOnVan%(page, veh%)(.-)\nend')
     ok(vanBody ~= nil, 'the plate at a van is drawn by one function')
     ok(vanBody ~= nil
-       and vanBody:find('local out, side, frac, lift, width = plateNumbers%(%)')
+       and vanBody:find('local out, side, frac, lift, width = plateNumbers%(face%)')
            ~= nil,
-        'the draw reads the lateral out of the config')
+        'the draw reads the lateral out of the config -- out of THIS FACE\'S '
+            .. 'set of five, since 2026-09-02')
     ok(vanBody ~= nil
        and vanBody:find('drawNearFace%(page, veh, p%.x, p%.y, out, oz, width, side%)')
            ~= nil,
@@ -890,17 +1017,29 @@ do
         'and the control read goes through isTrue, because a BOOL native that '
             .. 'answers 0 is TRUE in Lua')
 
-    -- ═══ THE PASTE BLOCK STILL PASTES ═══
+    -- ═══ THE PASTE BLOCK STILL PASTES, AND IT PASTES ONE FACE ═══
     --
     -- The whole tool exists so he can send back numbers ("then fetch it I can
-    -- give you the coords"). A fifth number that is nudged, drawn and NOT
-    -- printed is the one failure that wastes his time rather than the code's: he
-    -- would position the plate, paste the block, and lose the axis he was asked
-    -- to measure.
-    ok(clientCode:find("print%(%('        side  = %%%.3f,'%):format%(side%)%)")
-           ~= nil,
-        'the paste block carries the lateral, so what he sends back is the '
+    -- give you the coords"). A number that is nudged, drawn and NOT printed is
+    -- the one failure that wastes his time rather than the code's: he would
+    -- position the plate, paste the block, and lose the axis he was measuring.
+    --
+    -- ALL FIVE, AND THE FACE THEY BELONG TO. Since 2026-09-02 the table holds a
+    -- set per panel, so a block printed without its face key is a block he
+    -- cannot paste anywhere -- and a whole `plate = { ... }` block would be
+    -- worse than useless: pasted, it would delete the three faces he was not
+    -- standing at.
+    local pasteRow = clientCode:match(
+        "print%(%('        %%%-5s = { out = %%%.3f, side = %%%.3f, frac = %%%.3f,'%)\n?%s*:format%(face, out, side, frac%)%)")
+    ok(pasteRow ~= nil,
+        'the paste block is ONE FACE\'S row, named by that face, carrying the '
+            .. 'lateral he asked for')
+    ok(clientCode:find(":format%(lift, width%)%)") ~= nil,
+        '...and the other two numbers with it, so what he sends back is the '
             .. 'whole position')
+    ok(clientCode:find("print%('    plate = {'%)") == nil,
+        '...and it is NOT a whole plate table, which pasted would delete the '
+            .. 'three faces he is not standing at')
 
     -- AND IT IS STILL GATED. br_lib/shared/devgate.lua wraps RegisterCommand for
     -- every br_core file loaded after it, so /brplate is gated by construction
@@ -2317,8 +2456,19 @@ do
     put(2, { squadId = 'A', x = 300.0, y = 300.5 })
     hush(); BR.ReviveKey.onEliminated(m, 1)
     ok(#said == 1, 'a mint says one thing', #said)
-    ok(said[1] and flat(said[1]) == K.copy.bledOut:format('P1'),
-        'and it is his bled-out line, naming the mate who is gone',
+    -- TWO HOLES NOW: the mate, and how long the pickup lasts. The duration is
+    -- computed the same way the module computes it -- off `expiryMs`, through
+    -- BR.Clock.words -- rather than written out here, so this asserts that the
+    -- toast SAYS THE CONFIGURED WINDOW and not that it says "3 minutes". Retune
+    -- `expiryMs` and this still passes, saying the new number; hardcode three
+    -- minutes into the sentence and it fails.
+    ok(said[1] and flat(said[1])
+           == K.copy.bledOut:format('P1', BR.Clock.words(K.expiryMs)),
+        'and it is his bled-out line, naming the mate who is gone and how long '
+            .. 'their key is on the ground',
+        said[1] and flat(said[1]))
+    ok(said[1] and flat(said[1]):find('3 minutes', 1, true) ~= nil,
+        '...which on today\'s expiryMs of 180000 reads "3 minutes"',
         said[1] and flat(said[1]))
     ok(said[1] and type(said[1].who) == 'table'
        and #said[1].who == 1 and said[1].who[1] == 2,

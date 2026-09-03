@@ -3021,16 +3021,13 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
         -- vanishes without warning reads as a bug; help with a stated duration
         -- reads as a grace period, and the player knows to use it now. Derived
         -- from the config so retuning minShownMs cannot leave the text lying.
-        local mins = (cfg.minShownMs or 60000) / 60000.0
-        local howLong
-        if mins >= 2.0 then
-            howLong = ('%d minutes'):format(math.floor(mins + 0.5))
-        elseif mins >= 1.0 then
-            howLong = '1 minute'
-        else
-            howLong = ('%d seconds'):format(
-                math.floor((cfg.minShownMs or 60000) / 1000 + 0.5))
-        end
+        --
+        -- THE THREE BRANCHES THAT USED TO BE WRITTEN OUT HERE ARE BR.Clock.words
+        -- NOW, unchanged in behaviour and moved because a second line in this
+        -- game quotes a config duration out loud since 2026-09-02 (the revive
+        -- key's bled-out toast). Two copies of "under a minute is seconds, one
+        -- minute is singular" is how one of them ends up saying "180 seconds".
+        local howLong = BR.Clock.words(cfg.minShownMs or 60000)
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = ('No loot nearby? Crates are marked on your map for %s.')
                 :format(howLong),

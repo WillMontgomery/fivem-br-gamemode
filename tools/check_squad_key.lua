@@ -268,28 +268,104 @@ if panel then
              :format(tostring(posGroup), tostring(posMark), tostring(posStamp)))
     end
 
-    -- THE PICKUP CLOCK, BESIDE THE MARK IT BELONGS TO.
+    -- ═══ THE PICKUP DEADLINE, WHICH IS A DRAINING LINE AND NOT A NUMBER ═══
     --
-    -- IT IS THE SAME COMPONENT THE BLEED DEADLINE USES, which is the assertion
-    -- rather than an implementation detail: one clock discipline (an interval,
-    -- the server deadline against Date.now() + clockOffset, written straight to
-    -- the node) and ONE FORMAT. A second countdown component is how one panel
-    -- ends up with `2:14` on one row and `134s` on the next, and the bleed clock
-    -- already runs from 120s so neither is obviously the odd one out.
+    -- Owner, 2026-09-02: "what if we put a red line at the bottom of the
+    -- player's card to represent the timer? The bar will become less filled
+    -- (akin to the bleed out timer card) as the time runs out"
+    --
+    -- It replaced a `142s` in the corner, which he had reported the same day:
+    -- "the timer is not clear either. It should be more obvious what that timer
+    -- means." So the field must still reach the panel, and what it drives must
+    -- still be a length rather than digits.
     if not panel:find('m%.reviveKeyEndsAt') then
-        fail('the squad panel no longer draws the pickup countdown',
+        fail('the squad panel no longer draws the pickup deadline',
              'owner, 2026-08-31: "If there is a timer to pickup their key, '
-             .. 'display it in the squad panel"')
+             .. 'display it in the squad panel", drawn since 2026-09-02 as the '
+             .. 'red line along the bottom of the card')
     end
     do
         local clocks = select(2, panel:gsub('function%s+RowClock%s*%(', ''))
             + select(2, panel:gsub('function%s+BleedClock%s*%(', ''))
         if clocks ~= 1 then
             fail(('the panel defines %d countdown components, not 1'):format(clocks),
-                 'the bleed deadline and the pickup deadline are two numbers on '
-                 .. 'one row. Two components is two answers to "what does a '
-                 .. 'countdown look like", and the disagreement shows up only '
-                 .. 'once both are on screen at once')
+                 'there is one number on this row -- the bleed deadline. A '
+                 .. 'second countdown component is how the pickup grows a '
+                 .. 'numeral again beside the bar that replaced it, and two '
+                 .. 'readings of one deadline is what the owner was looking at '
+                 .. 'when he asked for the bar')
+        end
+    end
+
+    -- ═══ AND IT IS THE BLEED CARD'S BAR, WHICH IS THE HALF HE NAMED ═══
+    --
+    --   THE TREATMENT. "(akin to the bleed out timer card)" is an instruction to
+    --   reuse, not to resemble. DbnoOverlay's bar is a `bg-black/60` track with
+    --   a `.bar-fill` child driven by `transform: scaleX()`; a hand-rolled
+    --   width animation here would look right on the day it was written and
+    --   drift the first time that card is touched.
+    --
+    --   THE COLOUR. "Red" is `--color-danger`, which is one of the four tokens
+    --   index.css remaps for colourblind modes -- the revive timer's own "blue"
+    --   is `--color-shield` and is not a blue hex. A literal red here is a bar
+    --   that silently stops matching the card it was asked to match, for the
+    --   players who need the remap most. DbnoOverlay's note reaches for
+    --   `--color-hp` "rather than a literal green" for the same reason.
+    --
+    --   WHERE IT SITS. "the bottom of the player's card" -- absolutely
+    --   positioned on the plate. Inside the `min-w-0` column it would stop at
+    --   the text's edge rather than crossing the card, which looks like a bar
+    --   that is nearly finished draining on a key that has just been minted.
+    local drain = panel:match('function KeyDrain.-\n}')
+    if not drain then
+        fail('the panel no longer draws the pickup as a draining line',
+             'owner, 2026-09-02: "put a red line at the bottom of the player\'s '
+             .. 'card to represent the timer"')
+    else
+        if not drain:find('bar%-fill') then
+            fail('the pickup bar is not the bleed card\'s `.bar-fill`',
+                 'he named that card as the reference. That class carries a '
+                 .. '300ms linear transition written to blend stepped writes '
+                 .. 'into continuous motion; a second bar implementation is a '
+                 .. 'second answer to what a draining bar looks like')
+        end
+        if not drain:find('scaleX', 1, true) then
+            fail('the pickup bar is no longer scaled by transform',
+                 '`.bar-fill` is `transform-origin: left center` and animates '
+                 .. 'transform only -- a width animation gets no transition at '
+                 .. 'all and steps once every 250ms')
+        end
+        if not drain:find('var%(%-%-color%-danger%)') then
+            fail('the pickup bar\'s red is not --color-danger',
+                 'that token is remapped by the colourblind modes and a hex is '
+                 .. 'not. It is also the exact colour of the bleed card he '
+                 .. 'asked this to look like, so the two can only stay matched '
+                 .. 'by naming the same token')
+        end
+        if drain:find('#%x%x%x') then
+            fail('the pickup bar carries a literal colour',
+                 'see above -- every colour on this panel is a token')
+        end
+        if not drain:find('absolute') or not drain:find('bottom%-0') then
+            fail('the pickup bar is not pinned to the bottom of the card',
+                 '"a red line at the bottom of the player\'s card" is the whole '
+                 .. 'of the design, and being out of flow is also what keeps it '
+                 .. 'from changing any row\'s height')
+        end
+    end
+    do
+        -- ...AND IT IS RENDERED ON THE PLATE, NOT INSIDE THE COLUMN. Asserted by
+        -- position, the way the key mark is above: the bar must come AFTER the
+        -- `flex-1 min-w-0` div opens and it must not be swallowed by it, which
+        -- is only checkable here as "it is the last thing in the plate".
+        local posCol = panel:find('flex%-1 min%-w%-0')
+        local posBar = panel:find('<KeyDrain')
+        local posBars = panel:find('<VitalBar')
+        if posCol and posBar and posBars and not (posBars < posBar) then
+            fail('the pickup bar is drawn above the row\'s own bars',
+                 'it belongs on the plate itself, after the column everything '
+                 .. 'else lays out in -- inside that column it stops at the '
+                 .. 'text\'s edge instead of crossing the card')
         end
     end
 
@@ -452,6 +528,27 @@ do
             fail('the built bundle does not know about the pickup deadline',
                  'the bundle is stale. Run: cd ui-src && npm run build')
         end
+
+        -- ...AND THE DRAIN BAR'S OWN CLASSES, WHICH IS THE MARKER FOR THIS
+        -- ROUND. `reviveKeyEndsAt` has been on this payload since 2026-08-31, so
+        -- it is satisfied by a bundle built before the owner replaced the
+        -- numeral with a line (2026-09-02). A class string is the other thing
+        -- that survives minification verbatim, and this one is read out of the
+        -- SOURCE rather than spelled here for the reason the glyph is: a literal
+        -- pins what somebody once wrote, not what ships.
+        do
+            local cls = panel and panel:match(
+                'className="(absolute inset%-x%-0[^"]*)"')
+            if not cls then
+                fail('cannot read the pickup bar\'s classes out of SquadPanel.tsx',
+                     'this gate compares them with the built bundle. If the bar '
+                     .. 'was restructured, re-point this -- do not replace it '
+                     .. 'with a literal')
+            elseif not js:find(cls, 1, true) then
+                fail('the built bundle does not contain the pickup drain bar',
+                     'the bundle is stale. Run: cd ui-src && npm run build')
+            end
+        end
     end
 end
 
@@ -464,5 +561,6 @@ io.write('ok   a squadmate\'s revive key travels only to their own squad, folds\
     .. '     into the panel as a tri-state that keeps its false, and draws a\n'
     .. '     key beside the OUT stamp -- two shades, no caption, on a plate\n'
     .. '     that stops being faded to nothing. The pickup\'s own deadline\n'
-    .. '     rides the same beacon and counts down on the clock the bleed\n'
-    .. '     timer already uses, only while something is still on the ground\n')
+    .. '     rides the same beacon and drains the bleed card\'s own bar along\n'
+    .. '     the foot of that card, in the token red, while something is\n'
+    .. '     still on the ground\n')

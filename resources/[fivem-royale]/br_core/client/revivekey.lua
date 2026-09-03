@@ -87,9 +87,9 @@
 --
 -- THE PLATE OVER A LOOSE KEY IS STILL A BILLBOARD, and that is not an
 -- inconsistency: there is no bodywork under it. It hangs over a point on the
--- ground where a body fell, so it stays BR.Dui.drawWorld -- at the height the
--- van plate's own numbers work out to above the ground, which is the owner's
--- "same elevation" and is `plateGroundHeight` below.
+-- ground where a body fell, so it stays BR.Dui.drawWorld -- INSIDE THE MARKER
+-- that stands at the same point, which is the owner's own instruction of
+-- 2026-09-02 and is `markerPlateHeight` below.
 --
 -- AND THE RING IS THE RESTING STATE NOW. "I want it by default to draw the empty
 -- circle around the E instead of a glyph that changes to the circle when
@@ -292,55 +292,48 @@ local PROMPT_SCALE = 1.6
 
 -- ═══ AND THE KEY ON THE GROUND IS NOT A VEHICLE, WHICH IS WHY IT NEEDED ONE ═══
 --
--- Owner, 2026-09-01: "'take revive key' is still over the body. it should be the
--- same elevation as the 'press E to revive' DUI."
+-- ═══ FOUR REPORTS OF ONE SENTENCE, AND THE FOURTH ONE NAMES THE ANCHOR ═══
 --
--- ═══ "STILL", BECAUSE THIS IS THE THIRD ANSWER TO THE SAME COMPLAINT ═══
+-- Owner, 2026-09-02: "The 'pickup key' DUI is still... again.... way too high off
+-- the ground. I've stated this 3 times now. It should be inside the 3dmarker,
+-- which should also be made about 25% taller btw."
 --
--- The plate over a loose key hangs off the key's RECORDED z rather than off a
--- van. That z is the corpse's own position at the moment of elimination
--- (server/revivekey.lua copies `entry.pos`), and a ped's root is at its FEET --
--- config/loot.lua says so where it measures `waistHeight = 0.75` up from it. So
--- the key's z is the GROUND the body is lying on.
+-- THE FIRST THREE ANSWERS WERE ALL THE SAME ANSWER: pick a number. 1.1m above
+-- the key's z; then 0.6 (f2d2041); then, on 2026-09-01, the height the ambulance
+-- plate's own `frac` and `lift` work out to once the van's origin is subtracted
+-- back out -- which was derived rather than authored and was still ~1.5m, which
+-- is still a sign hanging in the air over a marker on the floor. A fourth number
+-- would have been a fourth report.
 --
--- It was drawn 1.1m above that ("way too high off the ground", in game); f2d2041
--- brought it to 0.6, reasoning from where client/dbno.lua's approved plate ends
--- up over the same body; and he has now reported it a third time. So the third
--- answer stops guessing at a number and takes the one he actually named.
+-- ═══ SO IT IS ANCHORED TO THE MARKER, WHICH IS WHERE HE SAID IT GOES ═══
 --
--- ═══ MATCHING THE NUMBER IS NOT MATCHING THE APPEARANCE ═══
+-- The type-24 marker over the same key is drawn (see the marker pass below) at
 --
--- The plate he pointed at is measured from a VEHICLE'S ORIGIN and this one from
--- the GROUND, and an ambulance's origin is most of a metre off the ground -- so
--- copying `frac`, or copying the metres `plateHeight` returns, would put the two
--- a van's ride height apart and look like the fix had not been made. What has to
--- agree is the height above the ground each one is STANDING on:
+--     rz + M.lift            its base
+--     ...with scaleZ M.height, so its band is [rz+lift, rz+lift+height]
 --
---     the van plate, in the world     vehZ + signHeight(bottom, top, frac, lift)
---     the ground it stands on         vehZ + bottom
---     so its height above that        (top - bottom) * frac + lift
+-- and the plate is drawn at the MIDDLE of that band:
 --
--- `bottom` CANCELS, so the vehicle's origin drops out of the answer entirely and
--- what is left is a height off the ground -- which is the only thing the key's
--- own z can be added to. `plateGroundHeight` below is that subtraction, written
--- as `signHeight(...) - bottom` so it is literally the van plate's own
--- derivation with the origin removed rather than a second lerp beside it.
+--     c.z + markerBand-mid   =   c.z + (lift + height * 0.5)
 --
--- ═══ SO IT IS DERIVED, AND THAT IS WHAT MAKES IT STAY FIXED ═══
+-- `c.z` and `rz` are the same number -- both are `rec.z` off the squad beacon,
+-- the server's own coordinate, which is this file's header. So the plate is
+-- inside the marker by construction rather than by two numbers agreeing.
 --
--- A constant of 1.4 here would be level with today's plate and would come apart
--- the first time he nudges `frac` or `lift` with /brplate -- silently, with the
--- symptom being a fourth report of this same sentence. Reading the same two
--- config numbers means the pair he asked to be level move together and cannot
--- drift, which is the property he asked for rather than the value.
+-- ═══ WHY THAT IS DIFFERENT IN KIND FROM THE THREE ANSWERS BEFORE IT ═══
 --
--- THE FALLBACK IS A HEIGHT, NOT A LIFT. GetModelDimensions answers zeroes for a
--- model the model table has not got to yet, and `frac` of nothing is zero -- a
--- plate lying in the mud. So the span falls back rather than the answer: 2.3m is
--- about how tall a van is, `frac` and `lift` still apply, and a frame drawn
--- before the ambulance's real box arrives is a few centimetres out rather than
--- on the floor.
-local FALLBACK_SPAN_M = 2.3
+-- It reads the marker's OWN two numbers. Make the marker taller and the plate
+-- rises with it; lift the marker off the terrain and the plate goes too. There
+-- is no second edit to forget and no constant left in this file for the marker
+-- to drift away from -- which is the property the last three attempts each
+-- claimed and none of them had, because each was pinned to something the marker
+-- knows nothing about.
+--
+-- AND IT NO LONGER READS `plate` AT ALL. The ambulance plate's `frac` and `lift`
+-- were this plate's height until 2026-09-01, on his instruction that the two be
+-- level; they are now four per-face sets of the owner's own measuring, and a
+-- plate in a field has no face. The two surfaces are decoupled: tuning the van
+-- plate cannot move the one over a body, and vice versa.
 
 -- ---------------------------------------------------------------------------
 -- WHERE THE PLATE SITS ON THE VAN
@@ -355,6 +348,25 @@ local FALLBACK_SPAN_M = 2.3
 -- off the model rather than authored against the ambulance, so the day
 -- BR.Config.Rescue.models grows a longer van the plate is still on its panel.
 
+--- The marker block, or nil when nobody has configured one.
+---
+--- ═══ DECLARED HERE, ABOVE BOTH ITS READERS, AND THAT IS LOAD-BEARING ═══
+---
+--- It used to sit immediately over the marker pass, a thousand lines down, which
+--- was fine while the pass was its only reader. `markerBand` below is the second
+--- one -- the plate over a loose key is anchored to this marker now -- and a
+--- `local` read from a closure built EARLIER in the file resolves as a GLOBAL,
+--- which is nil, which does not error and would have hung every ground plate at
+--- 0.26m above the key with nothing on screen saying why.
+--- tools/check_forward_locals.lua exists because that has cost two playtest
+--- rounds; this is the declaration it wants.
+---
+--- AN ABSENT BLOCK IS A FEATURE NOBODY HAS CONFIGURED rather than one to invent
+--- numbers for, so the marker pass draws nothing at all when this is nil.
+--- Individual numbers inside it DO fall back, which is `plateNumbers`' split and
+--- the same reasoning.
+local M = (K and type(K.marker) == 'table') and K.marker or nil
+
 --- Model bounding boxes, cached by model hash.
 ---
 --- client/shop.lua's `signOffsets` keeps its own for the same reason and this is
@@ -365,7 +377,41 @@ local FALLBACK_SPAN_M = 2.3
 --- draws the corners.
 local DIMS = {}
 
---- The four numbers that put a plate on a van, with this file's own fallbacks.
+--- The four words a face is named by, from BR.Dui.nearFace's (ux, uy).
+---
+--- THE VAN'S OWN AXES, SAID OUT LOUD: +Y is the nose and +X is the right flank,
+--- which is the frame the model's box is written in and the frame
+--- BR.NearestBoxFace answers in.
+---
+--- ONE MAPPING, AND THE CONFIG'S KEYS ARE ITS RANGE. The four words this returns
+--- ARE the four keys of BR.Config.ReviveKey.plate and the four words /brplate
+--- prints in its readout -- so the panel a player is standing at, the set of five
+--- numbers the plate is drawn with, and the block the ruler tells him to paste
+--- are one answer rather than three that have to be kept in step.
+--- @param ux number|nil
+--- @param uy number|nil
+--- @return string|nil  'nose' | 'tail' | 'right' | 'left'
+local function faceWord(ux, uy)
+    if uy == 1.0  then return 'nose'  end
+    if uy == -1.0 then return 'tail'  end
+    if ux == 1.0  then return 'right' end
+    if ux == -1.0 then return 'left'  end
+    return nil
+end
+
+--- The five numbers that put a plate on ONE FACE of a van, with fallbacks.
+---
+--- ═══ FIVE PER FACE, BECAUSE HE MEASURED FIVE PER FACE ═══
+---
+--- The owner walked round an ambulance with /brplate on 2026-09-02 and produced
+--- four sets, one per panel; br_lib/config/revivekey.lua holds them under the
+--- same four words `faceWord` answers in and argues why one set could not have
+--- covered four panels. This is the lookup.
+---
+--- A FACE THIS HAS NO SET FOR FALLS BACK PER NUMBER, NOT TO ANOTHER FACE'S SET.
+--- Borrowing the nose's numbers for the tail is how a plate ends up two metres
+--- down the side of a van looking deliberate; the per-number fallbacks below put
+--- it somewhere obviously untuned instead, which is what a missing set is.
 ---
 --- FALLBACKS ON NUMBERS, WHICH IS NOT THE RULE ABOUT WORDS. A missing line of
 --- copy draws no plate at all (see the header); a missing distance draws the
@@ -377,14 +423,38 @@ local DIMS = {}
 --- oversight: a missing distance-off-the-panel or width has a sensible non-zero
 --- answer and a missing lateral has an exactly correct one -- centred, where the
 --- plate has always been.
+--- @param face string|nil  one of `faceWord`'s four; nil while no van is picked
 --- @return number out, number side, number frac, number lift, number width
-local function plateNumbers()
-    local p = (K and type(K.plate) == 'table') and K.plate or nil
+local function plateNumbers(face)
+    local P = (K and type(K.plate) == 'table') and K.plate or nil
+    local p = (P and face and type(P[face]) == 'table') and P[face] or nil
     return (p and tonumber(p.out)   or 0.35),
            (p and tonumber(p.side)  or 0.0),
            (p and tonumber(p.frac)  or 0.62),
            (p and tonumber(p.lift)  or 0.0),
            (p and tonumber(p.width) or 0.75)
+end
+
+--- The marker's own vertical band above the key's recorded z, in metres.
+---
+--- ═══ THE ONE READER OF THE MARKER'S TWO HEIGHT NUMBERS ═══
+---
+--- The marker pass draws `DrawMarker(kind, rx, ry, rz + lift, ..., size, size,
+--- tall, ...)` -- so `lift` is where its band starts above the key's z and
+--- `tall` is DrawMarker's scaleZ, the band's height. The plate over that key is
+--- drawn at the middle of the same band (`markerPlateHeight` below), which is
+--- the owner's "inside the 3dmarker".
+---
+--- BOTH CALLERS COME THROUGH HERE, WHICH IS THE WHOLE POINT. If the marker pass
+--- read `M.height` itself and the plate read it again, the two `or 0.4`
+--- fallbacks would be two authored numbers free to be edited apart -- and the
+--- symptom would be a plate floating above an unconfigured marker, which is the
+--- report this round exists to close for the fourth time.
+--- @return number lift  metres above the key's z where the marker's band starts
+--- @return number tall  the band's height, DrawMarker's scaleZ
+local function markerBand()
+    return (M and tonumber(M.lift)) or 0.06,
+           (M and tonumber(M.height)) or 0.4
 end
 
 --- How high up the van the plate's centre hangs, in metres from its origin.
@@ -411,52 +481,31 @@ local function plateHeight(veh, frac, lift)
     return BR.ShopSolve.signHeight(d.bottom, d.top, frac, lift)
 end
 
---- The ambulance's own z box, once the model table has answered for it.
+--- How high above the key's own z the plate over a LOOSE KEY hangs, in metres.
 ---
---- ASKED BY MODEL NAME AND NOT OFF A HANDLE, because the thing this is for --
---- the plate over a key lying in a field -- is drawn where there is no ambulance
---- within a kilometre. BR.Config.ReviveKey.models() is the feature's own
---- resolver (server/rescue.lua's one list), so this cannot end up measuring
---- against a van the revive would refuse.
+--- ═══ THE MIDDLE OF THE MARKER, AND THAT IS THE WHOLE DEFINITION ═══
 ---
---- LATCHED ON THE FIRST REAL ANSWER, never re-asked, and that is the point: a
---- model table that has not got to the ambulance yet answers a box of zeroes,
---- and half a metre is under every vehicle in the game, so the sentinel cannot
---- reject a real van. The answer is a constant per model, so the first good one
---- is the last one needed.
---- @return number|nil bottom, number|nil top
-local BOX = nil
-local function vanBox()
-    if BOX then return BOX.bottom, BOX.top end
-    local names = K and K.models and K.models()
-    local name = names and names[1]
-    if not name then return nil end
-    local a, b = GetModelDimensions(GetHashKey(name))
-    if not a or not b then return nil end
-    if math.abs(b.z - a.z) < 0.5 then return nil end
-    BOX = { bottom = a.z, top = b.z }
-    return BOX.bottom, BOX.top
-end
-
---- How high above the ground a revive plate hangs, in metres.
+--- Owner, 2026-09-02, reporting this plate for the fourth time: "It should be
+--- inside the 3dmarker."
 ---
---- THE VAN PLATE'S OWN DERIVATION WITH THE VEHICLE'S ORIGIN TAKEN BACK OUT. See
---- the block over FALLBACK_SPAN_M: `signHeight` answers metres above the
---- ORIGIN, the ground the van stands on is `bottom` below that origin, and the
---- difference is what the two plates have to agree on. It is one subtraction and
---- it is written as one, against BR.ShopSolve.signHeight, so there is no second
---- lerp here to drift from the one `plateHeight` calls a few lines up.
+--- `markerBand` answers where the marker's band starts above the key's z and how
+--- tall it is; half way up that band is inside it. Both numbers are the marker's
+--- own, read through the one accessor the marker pass itself draws from, so
+--- there is no arrangement of the config in which the two disagree -- resize the
+--- marker or lift it off the terrain and this moves with it, with no second edit
+--- anywhere. See "FOUR REPORTS OF ONE SENTENCE" above PROMPT_SCALE for why the
+--- three previous answers each failed by being a number instead.
 ---
---- READ EVERY FRAME A LOOSE KEY IS ON SCREEN, which is a table lookup and two
---- multiplications -- the box behind it is latched.
+--- IT READS NOTHING FROM `plate`. That table is four per-face sets measured
+--- against an ambulance's bodywork and a key lying in a field has no face; the
+--- two surfaces are decoupled on purpose, so tuning one cannot move the other.
+---
+--- READ EVERY FRAME A LOOSE KEY IS ON SCREEN, which is two table lookups, a
+--- multiply and an add.
 --- @return number
-local function plateGroundHeight()
-    local _, _, frac, lift = plateNumbers()
-    local bottom, top = vanBox()
-    if not bottom then
-        bottom, top = 0.0, FALLBACK_SPAN_M
-    end
-    return BR.ShopSolve.signHeight(bottom, top, frac, lift) - bottom
+local function markerPlateHeight()
+    local lift, tall = markerBand()
+    return lift + tall * 0.5
 end
 
 -- ---------------------------------------------------------------------------
@@ -1026,13 +1075,28 @@ local function drawOnVan(page, veh)
     -- costs the whole band after five of them.
     if not isTrue(DoesEntityExist(veh)) then return end
 
-    local out, side, frac, lift, width = plateNumbers()
+    local p = GetEntityCoords(PlayerPedId())
+
+    -- ═══ THE FACE IS ASKED FOR BEFORE ANY NUMBER IS READ, WHICH IS NEW ═══
+    --
+    -- The owner measured five numbers PER PANEL (2026-09-02), so "how far off
+    -- the panel" is not answerable until "which panel" is. BR.Dui.nearFace is
+    -- the same derivation drawNearFace runs a line later, handed the same point
+    -- in the same frame, so the set looked up here and the panel drawn on there
+    -- cannot come from two different answers -- see that function's header.
+    --
+    -- A MODEL WITH NO BOX YET ANSWERS nil, AND `plateNumbers(nil)` FALLS BACK
+    -- per number rather than borrowing a face's set. That is a plate somewhere
+    -- untuned for the frame or two a van takes to stream in, which is the same
+    -- failure `plateHeight` already chooses below and for the same reason.
+    local face = faceWord(BR.Dui.nearFace(veh, p.x, p.y))
+
+    local out, side, frac, lift, width = plateNumbers(face)
     local oz = plateHeight(veh, frac, lift)
     -- A MODEL THAT HAS NOT ANSWERED DRAWS NOTHING FOR A FRAME. Better than a
     -- plate at a guessed height on the frame the van streams in.
     if not oz then return end
 
-    local p = GetEntityCoords(PlayerPedId())
     -- `side` GOES TO THE SAME CALL, not to a second offset applied here. Which
     -- way "right" points is a fact about the face BR.Dui picked, and it is the
     -- only file that knows which face that was.
@@ -1050,7 +1114,17 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.draw', function()
     -- pay for a CEF instance this file did not need -- the page is shared, so
     -- whichever consumer asks first builds it and this one has no reason to be
     -- that consumer.
-    if shownKey == nil then return end
+    if shownKey == nil then
+        -- ...AND NO PLATE MEANS NO FACE, WHICH MATTERS NOW THAT A FACE SELECTS
+        -- NUMBERS. `faceX/faceY` are only ever written by `drawOnVan`, so
+        -- without this they would keep the last panel a plate was drawn on for
+        -- the rest of the session -- and `brplate lift 0.2`, typed after walking
+        -- away from a van, would edit a face the owner was nowhere near while
+        -- the readout said `-`. Cleared where the drawing stops, so "which face"
+        -- is always a fact about what is on screen.
+        faceX, faceY = nil, nil
+        return
+    end
     local page = promptPage()
 
     -- A HOLD IS DRAWN AT ITS OWN VAN, not at the key's point on the ground. The
@@ -1078,14 +1152,14 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.draw', function()
         -- paid its 25 Volts.
         drawOnVan(page, c.veh)
     else
-        -- THE SAME HEIGHT AS THE VAN PLATE, FROM A DIFFERENT ANCHOR. This is
-        -- the loose key, and `c.z` is the ground the body it fell from is lying
-        -- on -- so what is added is a height above the GROUND, which is what
-        -- plateGroundHeight answers and what the van plate's own numbers work
-        -- out to once the vehicle's origin is taken back out. See the block
-        -- over FALLBACK_SPAN_M: the two are level because they are one
-        -- derivation, not because two constants were set to the same value.
-        BR.Dui.drawWorld(page, c.x, c.y, c.z + plateGroundHeight(), PROMPT_SCALE)
+        -- INSIDE THE MARKER OVER THE SAME KEY, which is where the owner put it
+        -- on 2026-09-02 after reporting this plate four times. `c.z` is the key's
+        -- recorded z -- the server's own number, the same `rec.z` the marker pass
+        -- draws from -- and what is added is the middle of that marker's own
+        -- vertical band. The two objects are one derivation rather than two
+        -- numbers that happen to agree, so resizing the marker moves the plate
+        -- and there is nothing here to edit a second time.
+        BR.Dui.drawWorld(page, c.x, c.y, c.z + markerPlateHeight(), PROMPT_SCALE)
     end
 end)
 
@@ -1139,7 +1213,15 @@ end)
 -- once the pickup has expired there is nothing at the body to walk to at all. The
 -- blip stays in both cases, and that is the owner's answer to where a mate went
 -- down: he asked to keep it.
-local M = (K and type(K.marker) == 'table') and K.marker or nil
+--
+-- ═══ AND THE PLATE NOW HANGS OFF IT, WHICH IS WHY `M` IS DECLARED UP TOP ═══
+--
+-- Owner, 2026-09-02: "It should be inside the 3dmarker, which should also be
+-- made about 25% taller btw." So `lift` and `tall` below are no longer this
+-- pass's private numbers -- `markerBand` up beside `plateNumbers` is the one
+-- reader of them, and `markerPlateHeight` puts the take plate at the middle of
+-- the band they describe. Editing either one here moves both objects together,
+-- which is the property the previous three attempts at that report did not have.
 
 BR.Loop.register(BR.Loop.FRAME, 'revivekey.marker', function()
     -- NO BLOCK, NO MARKER. An absent config table is a feature nobody has
@@ -1155,9 +1237,13 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.marker', function()
     if GetGameTimer() - lastPush > STALE_MS then return end
 
     local kind  = math.tointeger(tonumber(M.kind)) or 24
+    -- `size` IS BOTH HORIZONTAL AXES AND `tall` IS THE VERTICAL ONE -- see
+    -- DrawMarker's (scaleX, scaleY, scaleZ) at the call below. The two height
+    -- numbers come through `markerBand` rather than being read here, because the
+    -- take plate is drawn from them too and a second `or 0.4` would be a second
+    -- authored default free to drift from this one.
     local size  = tonumber(M.size) or 0.8
-    local tall  = tonumber(M.height) or 0.4
-    local lift  = tonumber(M.lift) or 0.06
+    local lift, tall = markerBand()
     local reach = tonumber(M.drawM) or 120.0
     -- `~= false` RATHER THAN `== true`: an unset knob keeps the shipped
     -- behaviour, and only an explicit `false` turns the spin off.
@@ -1509,20 +1595,27 @@ local function text(x, y, s, scale)
     EndTextCommandDisplayText(x, y)
 end
 
---- The face BR.Dui.drawNearFace last reported, as a word.
+--- The face BR.Dui.drawNearFace last reported, as a word, or nil.
 ---
---- THE VAN'S OWN AXES, SAID OUT LOUD: +Y is the nose and +X is the right flank,
---- which is the frame the model's box is written in and the frame
---- BR.NearestBoxFace answers in. Naming them "nose/tail/left/right" rather than
---- printing (0,-1) is the difference between a readout that confirms the tool is
---- picking the face you are standing at and one that has to be decoded.
---- @return string
+--- ═══ IT IS NOT ONLY A LABEL ANY MORE -- IT SELECTS THE SET BEING TUNED ═══
+---
+--- Since 2026-09-02 the config holds five numbers PER PANEL, so the word this
+--- answers is the key the arrows write through and the block /brplate prints.
+--- That is exactly what the owner asked for: he walked round an ambulance and
+--- gave four sets, and refining any one of them means the tool has to tune the
+--- face he is standing at rather than one shared set.
+---
+--- `faceWord` IS THE MAPPING AND IT IS NOT REPEATED HERE. The plate is DRAWN
+--- through that function (see drawOnVan) and TUNED through this one; two copies
+--- of "+Y is the nose" would be how the ruler comes to edit the tail's numbers
+--- while standing at the nose, which is a tool that lies rather than a tool that
+--- breaks.
+---
+--- NIL RATHER THAN '-' WHEN NOTHING WAS DRAWN, because the callers now branch on
+--- it rather than only printing it. The readout spells the absence itself.
+--- @return string|nil
 local function faceName()
-    if faceY == 1.0  then return 'nose'  end
-    if faceY == -1.0 then return 'tail'  end
-    if faceX == 1.0  then return 'right' end
-    if faceX == -1.0 then return 'left'  end
-    return '-'
+    return faceWord(faceX, faceY)
 end
 
 --- Which van the ruler is drawing at, refreshed while it is on.
@@ -1637,6 +1730,45 @@ local function held(id)
     return isTrue(IsDisabledControlPressed(0, id))
 end
 
+--- The set of five the ruler is pointed at: the one for the face the plate was
+--- last drawn on, made in the config table if it is not there yet.
+---
+--- ═══ "TUNE THE FACE I AM STANDING AT" IS THE WHOLE OF WHAT CHANGED HERE ═══
+---
+--- The owner produced four sets by walking round an ambulance (2026-09-02), and
+--- he can only refine any of them if the arrows and the typed form write the one
+--- he is looking at. Every writer goes through this, so there is no path that
+--- edits a set for a panel he is not standing at.
+---
+--- THE TABLE IS WRITTEN, NOT A SHADOW COPY, so the readout, the paste block and
+--- the plate on the van are one set of numbers and the typed form (`brplate out
+--- 0.4`) and the arrows cannot disagree.
+---
+--- A FACE WITH NO SET IS SEEDED FROM WHAT IS ON SCREEN, not from zeroes. The
+--- plate for an unconfigured face draws at `plateNumbers`' per-number fallbacks,
+--- so seeding with anything else would make the first arrow press jump the plate
+--- somewhere else before it nudged it -- and a ruler whose first press moves the
+--- thing by half a metre is a ruler nobody can aim.
+---
+--- NIL WHEN THERE IS NO PLATE ON SCREEN TO TUNE, which the callers say out loud
+--- rather than silently writing into a face nobody picked.
+--- @return table|nil set, string|nil face
+local function tunedSet()
+    local P = (K and type(K.plate) == 'table') and K.plate or nil
+    if not P then return nil, nil end
+
+    local face = faceName()
+    if not face then return nil, nil end
+
+    local s = P[face]
+    if type(s) ~= 'table' then
+        local out, side, frac, lift, width = plateNumbers(face)
+        s = { out = out, side = side, frac = frac, lift = lift, width = width }
+        P[face] = s
+    end
+    return s, face
+end
+
 --- The arrows, per frame, while the ruler is on.
 ---
 --- FRAME AND NOT TICK, for the one reason that matters: DisableControlAction
@@ -1673,22 +1805,24 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.tunekeys', function()
     if now < nudgeAt then return end
     nudgeAt = now + REPEAT_MS
 
-    -- THE TABLE IS WRITTEN, NOT A SHADOW COPY, so the readout, the paste block
-    -- and the plate on the van are one set of numbers and the typed form
-    -- (`brplate out 0.4`) and the arrows cannot disagree. A config with no plate
-    -- table has nothing to nudge and says so through the command rather than
-    -- from a frame callback sixty times a second.
-    local P = (K and type(K.plate) == 'table') and K.plate or nil
+    -- THE FACE THE PLATE IS ON, AND NOTHING TO NUDGE WITHOUT ONE. A config with
+    -- no plate table, or a frame with no plate on screen, says so through the
+    -- command rather than from a frame callback sixty times a second.
+    local P = tunedSet()
     if not P then return end
 
     if dv ~= 0.0 then
         -- WHICH VERTICAL AXIS IS THE MODIFIER'S ANSWER. `lift` is the one with
         -- no modifier at all because it is the one he is looking at: metres
-        -- straight up, the same metres the plate over a key on the ground reads
-        -- (see plateGroundHeight), so a nudge here moves BOTH of the plates he
-        -- asked to be level and they stay level while he does it. `frac` is a
-        -- share of the model's height and stays on the typed form, where a
-        -- number between 0 and 1 can be entered as one.
+        -- straight up on this panel. `frac` is a share of the model's height and
+        -- stays on the typed form, where a number between 0 and 1 can be entered
+        -- as one.
+        --
+        -- IT MOVES THIS FACE'S PLATE AND NOTHING ELSE. Until 2026-09-02 it also
+        -- moved the plate over a key on the ground, which read the same `lift`;
+        -- that plate is anchored to its marker now (`markerPlateHeight`), so the
+        -- arrows are a tool for the panel in front of him and cannot reach a
+        -- surface he is not looking at.
         local axis = held(KEY.DEPTH) and 'out' or 'lift'
         P[axis] = clampNudge((tonumber(P[axis]) or 0.0) + dv)
     end
@@ -1707,7 +1841,12 @@ end)
 BR.Loop.register(BR.Loop.FRAME, 'revivekey.tuneread', function()
     if not tuning then return end
 
-    local out, side, frac, lift, width = plateNumbers()
+    -- THE FACE IS READ FIRST AND THE FIVE NUMBERS COME OUT OF ITS OWN SET, so
+    -- walking round the van changes what the readout says as well as where the
+    -- plate is -- which is what makes it possible to tell that the tool is
+    -- editing the panel being looked at.
+    local face = faceName()
+    local out, side, frac, lift, width = plateNumbers(face)
     -- WHICH AXIS THE VERTICAL ARROWS ARE POINTED AT, SAID IN COLOUR RATHER THAN
     -- IN WORDS. The rule over `text` is that this panel is numbers and nothing
     -- else; a modifier that silently changes what a key does is the one thing
@@ -1716,7 +1855,8 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.tuneread', function()
     local depth = held(KEY.DEPTH)
     local y = 0.34
     text(0.015, y, ('~b~revive plate~w~  %s')
-        :format(tuneVeh and ('face ' .. faceName()) or 'no ambulance in reach'))
+        :format((tuneVeh and face) and ('face ' .. face)
+                or (tuneVeh and 'face -' or 'no ambulance in reach')))
     y = y + 0.026
     text(0.015, y, ('%sout %6.3f~w~ m   side %6.3f m')
         :format(depth and '~b~' or '', out, side))
@@ -1745,6 +1885,19 @@ local PLATE_TUNABLE = {
 --- write the same table, so `brplate side 0` is how a lateral nudged too far
 --- comes back to nothing in one line instead of forty presses, and `frac` -- a
 --- share between 0 and 1 rather than a distance -- is only reachable this way.
+---
+--- ═══ IT TUNES THE FACE HE IS STANDING AT, AND PRINTS THAT FACE'S BLOCK ═══
+---
+--- Since 2026-09-02 the config holds a set of five per panel, because he
+--- measured four sets by walking round an ambulance. So both writers go through
+--- `tunedSet` -- the set for the face the plate is currently drawn on -- and the
+--- paste block is that face's row rather than a whole `plate = {}` table which,
+--- pasted, would delete the other three sets.
+---
+--- NOTHING IS WRITTEN WITHOUT A FACE. `brplate lift 0.2` with no plate on screen
+--- has no panel to be about, and guessing one would edit numbers he had already
+--- approved for a face he was nowhere near. The refusal says which two things to
+--- do about it.
 ---
 --- IT IS DEV-GATED, AND NOT BY ANYTHING WRITTEN HERE. br_lib/shared/devgate.lua
 --- wraps RegisterCommand for every file br_core loads after it, so this is
@@ -1782,7 +1935,13 @@ RegisterCommand('brplate', function(_, args)
                 .. 'nothing to tune (check br_lib/config/revivekey.lua)')
             return
         else
-            K.plate[name] = value
+            local set = tunedSet()
+            if not set then
+                print('[br_core] brplate: no plate on screen, so no face to '
+                    .. 'tune -- run `brplate on` and stand at an ambulance')
+                return
+            end
+            set[name] = value
         end
 
     elseif name ~= '' then
@@ -1793,29 +1952,36 @@ RegisterCommand('brplate', function(_, args)
     -- every invocation, including the ones that changed nothing -- `brplate`
     -- with no arguments is how he takes the reading once the arrows have put the
     -- plate where he wants it.
-    local out, side, frac, lift, width = plateNumbers()
+    --
+    -- IT IS ONE FACE'S ROW, NOT A `plate = {}` BLOCK. Four sets live in that
+    -- table and a whole-table paste would silently delete the three he is not
+    -- standing at -- which is the shape of mistake this tool exists to stop him
+    -- making by hand.
+    local face = faceName()
+    local out, side, frac, lift, width = plateNumbers(face)
     print('=== revive plate ===')
     print(('  preview   %s%s'):format(tuning and 'on' or 'off',
-        tuning and (tuneVeh and ('  (drawing, face ' .. faceName() .. ')')
+        tuning and (tuneVeh and ('  (drawing, face ' .. (face or '-') .. ')')
                              or '  (no ambulance in reach)') or ''))
+    print(('  face      %s'):format(face or '-  (nothing on screen to tune)'))
     print(('  out       %.3f m   off the panel the player is nearest to')
         :format(out))
     print(('  side      %.3f m   along that panel, + is the reader\'s right')
         :format(side))
     print(('  frac      %.3f     up the model box, 0 ground 1 roof'):format(frac))
-    print(('  lift      %.3f m   added after that, and it also sets the height '
-        .. 'of the plate over a key on the ground'):format(lift))
+    print(('  lift      %.3f m   added after that, on this face only'):format(lift))
     print(('  width     %.3f m   height follows the page'):format(width))
-    print('  paste into br_lib/config/revivekey.lua:')
-    print('    plate = {')
-    print(('        out   = %.3f,'):format(out))
-    print(('        side  = %.3f,'):format(side))
-    print(('        frac  = %.3f,'):format(frac))
-    print(('        lift  = %.3f,'):format(lift))
-    print(('        width = %.3f,'):format(width))
-    print('    },')
+    if face then
+        print('  paste into br_lib/config/revivekey.lua, over this face\'s row '
+            .. 'in the plate table:')
+        print(('        %-5s = { out = %.3f, side = %.3f, frac = %.3f,')
+            :format(face, out, side, frac))
+        print(('                  lift = %.3f, width = %.3f },')
+            :format(lift, width))
+    end
     print('  usage: brplate on | off   draw a plate at the nearest ambulance')
     print('         brplate out|side|frac|lift|width <value>')
+    print('  the five belong to ONE FACE -- walk round the van and tune each')
     print('  keys while on:  LEFT/RIGHT arrows   side, along the panel')
     print('                  UP/DOWN arrows      lift, straight up')
     print('                  CTRL + UP/DOWN      out, off the panel')

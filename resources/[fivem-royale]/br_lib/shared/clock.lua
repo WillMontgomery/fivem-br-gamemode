@@ -77,6 +77,44 @@ function BR.Clock.reset()
     BR.Clock.synced  = false
 end
 
+--- A duration, in the words a player reads.
+---
+--- ═══ WHY A SENTENCE ABOUT TIME LIVES IN THE CLOCK MODULE ═══
+---
+--- Because the alternative is the same three branches written again next to
+--- whichever config number is being quoted. br_core/client/loot.lua has had this
+--- shape since 2026-08-06 -- "help that vanishes without warning reads as a bug;
+--- help with a stated duration reads as a grace period" -- and the revive key's
+--- bled-out toast is the second line in this game to name a tuning number out
+--- loud (owner, 2026-09-02: "mention that the key expires and after how long").
+--- Two copies would let one of them start saying "180 seconds".
+---
+--- IT IS NOT COPY. There is no wording here that anybody's sentence depends on:
+--- the caller owns the sentence and this owns the unit, exactly as a number
+--- formatted with `%.1f` at a call site does. That is what keeps it clear of the
+--- rule that every player-facing string in a feature lives in that feature's own
+--- copy table.
+---
+--- ROUNDED TO THE UNIT THE READER WOULD USE. Under a minute is seconds -- "0
+--- minutes" is not an answer -- and a minute exactly is singular, because "1
+--- minutes" reads as a bug in the game rather than as a duration.
+---
+--- PURE, AND THAT IS DELIBERATE: it asks no clock and touches no state, so
+--- tools/test_shared.lua can execute every branch of it.
+--- @param ms number|nil  a duration in milliseconds
+--- @return string
+function BR.Clock.words(ms)
+    ms = tonumber(ms) or 0
+    if ms < 0 then ms = 0 end
+    local mins = ms / 60000.0
+    if mins >= 2.0 then
+        return ('%d minutes'):format(math.floor(mins + 0.5))
+    elseif mins >= 1.0 then
+        return '1 minute'
+    end
+    return ('%d seconds'):format(math.floor(ms / 1000 + 0.5))
+end
+
 --- Milliseconds remaining until `endsAt`, never negative.
 --- @param endsAt number  a server timestamp
 --- @return number

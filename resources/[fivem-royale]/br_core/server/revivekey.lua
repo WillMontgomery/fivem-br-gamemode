@@ -464,8 +464,25 @@ function BR.ReviveKey.onEliminated(m, src)
     -- subject is excluded: "you have bled out" is not news to the person
     -- watching their own body, and combat.lua's tellSquad excludes them from the
     -- cue for the same reason one screen above this call.
+    --
+    -- ═══ AND HOW LONG THEY HAVE, WHICH IS THE SECOND HOLE ═══
+    --
+    -- Owner, 2026-09-02: "Perhaps the 'grab their key!' toast should also
+    -- mention that the key expires and after how long."
+    --
+    -- THE NUMBER COMES OFF `expiryMs` AND IS NOT WRITTEN IN THE SENTENCE. The
+    -- console line four lines below already derives its seconds from the same
+    -- key, and a "3 minutes" typed into config/revivekey.lua's copy table would
+    -- be the third copy of one number and the one nobody would think to change.
+    -- BR.Clock.words turns it into the unit a player reads.
+    --
+    -- IT TRAVELS AS A VALUE, NOT AS A FORMATTED STRING, which is this file's one
+    -- rule: `line` stays character for character a member of
+    -- BR.Config.ReviveKey.copy and BR.Notice.line does the splitting. A duration
+    -- is not a BR.Notice.who, so it lands as prose and draws unbolded beside the
+    -- name that does not.
     say(squadSrcsExcept(e.squadId, e.matchId, src), copy().bledOut, 'warn',
-        BR.Notice.who(e.name))
+        BR.Notice.who(e.name), BR.Clock.words(tonumber(K.expiryMs) or 180000))
 
     print(('[br_core] revivekey: minted for %s (%d), squad %s, pickup at '
         .. '(%.1f, %.1f) for %.0fs')

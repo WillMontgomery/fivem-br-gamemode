@@ -229,6 +229,61 @@ do
        'a nil command does not throw mid-sentence', tostring(out))
 end
 
+-- ------------------------------------------------------ a duration in words ---
+
+describe('BR.Clock.words')
+do
+    -- ═══ WHAT THIS IS FOR ═══
+    --
+    -- Owner, 2026-09-02, on the revive key's bled-out toast: "Perhaps the 'grab
+    -- their key!' toast should also mention that the key expires and after how
+    -- long."
+    --
+    -- The "how long" is BR.Config.ReviveKey.expiryMs, and a sentence that spells
+    -- it out is the same number in two places -- so the toast carries a `%s` and
+    -- server/revivekey.lua fills it from the config through this. It lives in
+    -- clock.lua because client/loot.lua has quoted a config duration since
+    -- 2026-08-06 and now reads the same function: two copies of "under a minute
+    -- is seconds" is how one of them starts saying "180 seconds".
+    --
+    -- IT IS PURE, WHICH IS WHY IT IS TESTED HERE rather than pinned as source in
+    -- a feature suite. Every branch is one call.
+    ok(BR.Clock.words(180000) == '3 minutes',
+        'the shipped pickup window reads as "3 minutes"', BR.Clock.words(180000))
+    ok(BR.Clock.words(120000) == '2 minutes',
+        'and two is where minutes start being plural', BR.Clock.words(120000))
+
+    -- ONE MINUTE IS SINGULAR, and that is the whole reason the middle branch
+    -- exists: "1 minutes" reads as a bug in the game rather than as a duration.
+    ok(BR.Clock.words(60000) == '1 minute',
+        'exactly a minute is singular', BR.Clock.words(60000))
+    ok(BR.Clock.words(119999) == '1 minute',
+        'and so is anything short of two -- rounding DOWN, which understates '
+            .. 'the time a player has and is the only safe direction for a '
+            .. 'deadline', BR.Clock.words(119999))
+
+    -- UNDER A MINUTE IS SECONDS. "0 minutes" is not an answer, and a config
+    -- tuned to 45 seconds must not tell a squad they have none.
+    ok(BR.Clock.words(45000) == '45 seconds',
+        'under a minute it changes unit rather than rounding to zero',
+        BR.Clock.words(45000))
+    ok(BR.Clock.words(59999) == '60 seconds',
+        'and the boundary rounds within the unit it is already in',
+        BR.Clock.words(59999))
+
+    -- ...AND IT NEVER THROWS ON RUBBISH. It is called at a mint, on the path
+    -- that tells a squad their mate is gone, so a missing config key must cost a
+    -- wrong-looking sentence rather than the whole notice.
+    ok(BR.Clock.words(nil) == '0 seconds', 'a missing duration is zero seconds',
+        BR.Clock.words(nil))
+    ok(BR.Clock.words(-5000) == '0 seconds', 'and a negative one is too',
+        BR.Clock.words(-5000))
+    ok(BR.Clock.words('180000') == '3 minutes',
+        'and a number that arrived as a string still answers, because config '
+            .. 'values in this project are read with tonumber everywhere else',
+        BR.Clock.words('180000'))
+end
+
 -- ------------------------------------------------------- notices with names ---
 
 describe('BR.Notice')
