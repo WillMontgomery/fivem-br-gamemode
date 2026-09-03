@@ -89,10 +89,22 @@ BR.Config.Match = {
     minSquads       = 2,
     minSquadsDev    = 1,
 
-    -- How long the queue waits for an incomplete party before starting the
-    -- match without its stragglers (who can still late-join during warmup).
-    -- Zero patience started matches on the first Ready; infinite patience
-    -- hands one AFK partymate the whole lobby.
+    -- HOW LONG THE QUEUE WAITS FOR AN INCOMPLETE PARTY -- WHICH IS NO LONGER AT
+    -- ALL, AND NOTHING IN THE SERVER HAS READ THIS SINCE 2026-09-02.
+    --
+    -- The wait was worth having while running out of it meant starting the
+    -- match WITH the lone partymate in it. It stopped being worth having when
+    -- the room began forming the match out of the players who may actually be
+    -- in it: that is the same list before the wait and after it, so the party
+    -- gained nothing and everybody else paid three quarters of a minute for it
+    -- (BR.Match.startBlocker carries the report). The stragglers keep their
+    -- place in the queue and walk into that same warmup through the late-join
+    -- door the moment their party is whole.
+    --
+    -- THE NUMBER AND ITS CONVAR ARE STILL HERE ON PURPOSE: br_partyGraceSeconds
+    -- is this project's only tunable whose ZERO is a real setting rather than a
+    -- parse failure, and tools/test_config.lua drives the parse, the floor and
+    -- the refusal through it. Deleting it deletes that coverage with it.
     partyGraceSeconds = 45,
 
     -- THE LOBBY IS A CHARACTER SHOT NOW, not a landscape.

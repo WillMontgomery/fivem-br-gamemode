@@ -452,9 +452,12 @@ end
 ---   * the QUEUE, guarded by BR.Match.startBlocker's `party` reason -- which
 ---     held the whole formation for partyGraceSeconds and then started the
 ---     match WITH the lone partymate in it. That is the "few seconds", and the
----     hold was often already spent before it began: `partyHoldSince` is one
+---     hold was often already spent before it began: it was timed off one
 ---     global timestamp that nothing reset once a match had formed, so the
----     second party of a server's uptime got no patience at all.
+---     second party of a server's uptime got no patience at all. (BOTH THE
+---     TIMESTAMP AND THE WAIT IT MEASURED ARE GONE -- a room that gives up on a
+---     party forms the same match either way, so it no longer waits to do it.
+---     See BR.Match.startBlocker.)
 ---
 ---   * BR.Party.lateJoin, reached from BR.Lobby.join the moment ANY warmup of
 ---     the mode is open -- and NOT BEHIND THE GATE AT ALL. Every ready-up after

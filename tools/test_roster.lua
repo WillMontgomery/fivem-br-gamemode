@@ -594,7 +594,6 @@ local function reset()
     -- instance is the whole between-blocks cleanup (storm, anchor, descent
     -- and start-squad bookkeeping all live ON the instances now).
     for k in pairs(BR.Server.matches) do BR.Server.matches[k] = nil end
-    BR.Server.partyHoldSince = nil
     for k in pairs(pedCoords) do pedCoords[k] = nil end
     -- AND WHO IS IN WHAT. A driver left behind by the previous block would be
     -- resolved as driving by the roadkill ledger for the whole of the next one,
@@ -3502,13 +3501,19 @@ do
     ok(mstate() == BR.MatchState.WARMUP,
         'the second Ready releases it')
 
-    -- ═══ PATIENCE IS THE ROOM'S, NOT THE PARTY MEMBER'S (2026-09-02) ═══
+    -- ═══ NO CLOCK ADMITS A HALF-READIED PARTY (2026-09-02) ═══
     --
-    -- The hold still expires after partyGraceSeconds -- an AFK partymate cannot
-    -- keep everybody else out of a match forever. What expiry MEANS is what
-    -- changed: the match forms out of the players who may actually be in it,
-    -- and the half-readied party is not among them. Here that is the whole
-    -- queue, so nothing forms at all and player 1 keeps their place.
+    -- The match forms out of the players who may actually be in it, and the
+    -- half-readied party is not among them. Here that is the whole queue, so
+    -- nothing forms at all and player 1 keeps their place for as long as it
+    -- takes.
+    --
+    -- THE STEP BELOW STILL SPENDS partyGraceSeconds, and it is the only reader
+    -- of that number left anywhere: it is what makes "no amount of patience"
+    -- mean something, and the suite clock after this block is aligned to the
+    -- instants it lands on (see the banner at the foot of this file). The room
+    -- itself no longer waits -- the second report of the day was an unpartied
+    -- player paying that grace for somebody else's party (party.heldAtTheDoor).
     --
     -- IT USED TO FORM WITH THEM, and that is exactly the report: "after a
     -- period of a few seconds, the player who is readied up is dropped into
@@ -18917,12 +18922,28 @@ do
     ok(BR.Roster.get(1).matchId == BR.Roster.get(2).matchId,
         'in one match')
 
-    -- ── one AFK partymate does not brick the queue for everybody else ────
+    -- ── THE ROOM IS NOT SOMEBODY ELSE'S PARTY'S TO HOLD ──────────────────
     --
-    -- This is what the patience is FOR, and the half that must not regress.
-    -- The room waits partyGraceSeconds for the rest of a party, and then plays
-    -- without them -- WITHOUT them, rather than with the one who is left, which
-    -- is the line the old gate crossed.
+    -- ═══ THE SECOND 2026-09-02 REPORT ═══
+    --
+    -- "another squads issue in lobby - with 3 players, #1+#2 in a party and #3
+    -- is not. neither of the party occupants are ready, and #3 readies up but
+    -- they're told they have to wait for some reason. They should go straight
+    -- into warmup without waiting for the party." -- the owner.
+    --
+    -- #3 PASSES THE GATE ABOVE AND ALWAYS DID: it is a per-player predicate and
+    -- an unpartied player has nobody to be waiting on. What held them was the
+    -- ROOM's patience -- a queue containing a half-readied party formed no match
+    -- at all for partyGraceSeconds, and the whole of that wait was paid by the
+    -- players who were already admissible. It bought the party nothing: the
+    -- expiry forms the match out of `ready`, which is the same list, the same
+    -- match and the same people forty-five seconds earlier.
+    --
+    -- SO BOTH ANSWERS ARE GIVEN IN ONE TICK, and one queue holds both questions:
+    -- the strangers go now, the half-readied party keeps its place. That is the
+    -- arrangement neither half of this suite had -- match.partyGate's queue is
+    -- nothing but the party, and the block above opens its warmup before the
+    -- partied player presses anything.
     reset()
     BR.Server.devMode = true
     BR.Config.Match.minToStart = 1
@@ -18933,22 +18954,33 @@ do
     fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
     fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
     fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SQUAD.key })
-    pump(1000)
-    ok(theMatch() == nil,
-        'a half-readied party holds the room while the patience lasts')
 
-    pump(BR.Config.Match.partyGraceSeconds * 1000 + 1000)
+    -- Asked one call earlier than the tick asks it, because this is also the
+    -- function the lobby screen phrases "you have to wait" from: a `party`
+    -- reason HERE is the report itself, before a single tick has run.
+    local gate = BR.Match.startBlocker(BR.Mode.SQUAD.key)
+    ok(gate == nil,
+        'a queue with enough admissible players in it is not blocked by the '
+            .. 'ones who are waiting on a party',
+        gate and ('%s %s/%s'):format(tostring(gate.reason), tostring(gate.have),
+                                     tostring(gate.need)) or 'nil')
+
+    pump(250)
     local mAFK = theMatch()
     ok(mAFK ~= nil and mAFK.state == BR.MatchState.WARMUP,
-        'and when it runs out the others play anyway')
+        'ONE TICK, NOT A GRACE PERIOD -- the match forms out of the players who '
+            .. 'may be in it')
     ok(mAFK ~= nil and BR.Roster.get(3).matchId == mAFK.id
         and BR.Roster.get(4).matchId == mAFK.id,
         'the two strangers are in it')
+    ok(BR.Roster.get(3).state == BR.PlayerState.WARMUP
+        and BR.Server.queue[3] == nil,
+        'AN UNPARTIED PLAYER GOES STRAIGHT INTO WARMUP -- the report',
+        BR.Roster.get(3).state)
     ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY
         and BR.Roster.get(1).matchId == nil,
-        'THE HALF-READIED PARTY IS NOT -- patience running out forms the match '
-            .. 'without them rather than with one of them',
-        BR.Roster.get(1).state)
+        'AND THE HALF-READIED PARTY DOES NOT -- both answers, one queue, one '
+            .. 'tick', BR.Roster.get(1).state)
     ok(BR.Server.queue[1] ~= nil, 'and they are still queued, still waiting')
 
     -- ── the last partymate readies into the OPEN warmup ──────────────────
@@ -18969,21 +19001,30 @@ do
     ok(mAFK ~= nil and BR.Party.needsRebalance(mAFK) == false,
         'and the shape it lands in does not ask to be corrected again')
 
-    -- ── AND THE PATIENCE IS WHOLE AGAIN FOR THE NEXT PARTY ───────────────
+    -- ── AND THE SECOND ROUND ANSWERS THE SAME WAY ────────────────────────
     --
-    -- `BR.Server.partyHoldSince` is one timestamp for the whole server, and
-    -- until 2026-09-02 nothing reset it once a match had formed -- so the first
-    -- expiry of a server's uptime left it spent for good, and every party after
-    -- that got no patience at all. That is the other half of "after a period of
-    -- a few seconds": often it was no seconds. Same lobby, same party, second
-    -- round: the room must hold again.
+    -- The old gate kept ONE timestamp for the whole server and nothing reset it
+    -- once a match had formed, so the first expiry of a server's uptime left it
+    -- spent for good and every party after that got no patience at all. There
+    -- is no timestamp left to leave behind -- the room does not wait, so it has
+    -- nothing to remember -- and this is the block that would notice a clock
+    -- coming back: same lobby, same party, same stranger, next round.
     forceState(BR.MatchState.WAITING)
+    -- B IS NOT READY FOR THIS ROUND, SAID OUT LOUD. The arrangement has to be
+    -- "one stranger, one half-readied party" whatever the round before it left
+    -- behind -- otherwise a regression that keeps B queued would quietly turn
+    -- this into a complete party and the assertions below would pass on it.
+    fire(BR.Net.QUEUE_LEAVE, 2)
     fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
     fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
-    pump(1000)
-    ok(theMatch() == nil,
-        'the next half-readied party is held for its own patience rather than '
-            .. "the remains of somebody else's")
+    pump(250)
+    local m2 = theMatch()
+    ok(m2 ~= nil and BR.Roster.get(3).matchId == m2.id,
+        'the stranger opens the next round on the first tick as well')
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY
+        and BR.Server.queue[1] ~= nil,
+        'and the half-readied party is held through that round too',
+        BR.Roster.get(1).state)
 
     -- ── THE ESCAPE HATCH: A DISCONNECT ───────────────────────────────────
     --

@@ -988,38 +988,31 @@ function BR.Match.startBlocker(mode)
             return { reason = 'squads', have = squads, need = minSquads }
         end
 
-        -- PARTIES GET FIRST CLAIM ON THE ROOM -- with a patience limit. One
-        -- member readying up must not launch the match while the rest of their
-        -- party is still picking a mode (the first two-client squad test
-        -- started the instant the first Ready landed) -- but one AFK partymate
-        -- must not brick the queue for everyone either. So the hold lasts
-        -- partyGraceSeconds. The party panel marks who the room is waiting on
-        -- (check / ellipsis) the whole time.
+        -- AND NOBODY ELSE'S PARTY HOLDS THIS ROOM. There is deliberately no
+        -- clock here, and its absence is the whole of the second 2026-09-02
+        -- report:
         --
-        -- WHAT RUNNING OUT OF PATIENCE MEANS CHANGED ON 2026-09-02, and that is
-        -- half of the owner's report. It used to start the match WITH the lone
-        -- partymate in it -- which is the "after a period of a few seconds, the
-        -- player who is readied up is dropped into warmup" he watched happen,
-        -- and every second of it was the clock below. Now the patience is only
-        -- the ROOM's: when it runs out the match forms out of `ready`, which
-        -- never contained the stragglers, and they stay in the queue waiting
-        -- for their own party for as long as it takes.
+        --   "with 3 players, #1+#2 in a party and #3 is not. neither of the
+        --   party occupants are ready, and #3 readies up but they're told they
+        --   have to wait for some reason. They should go straight into warmup
+        --   without waiting for the party." -- the owner.
         --
-        -- `partyHoldSince` IS CLEARED BY THE TICK THAT FORMS A MATCH. It is one
-        -- timestamp for the whole server and nothing used to reset it, so the
-        -- first expiry of a server's uptime left it set forever: every party
-        -- after that got a hold that was already spent, which is why the "few
-        -- seconds" was often no seconds at all.
-        if #held > 0 then
-            BR.Server.partyHoldSince = BR.Server.partyHoldSince or GetGameTimer()
-            if GetGameTimer() - BR.Server.partyHoldSince
-               < (BR.Config.Match.partyGraceSeconds * 1000) then
-                return BR.Party.holdBlocker(held, mode)
-            end
-            -- Patience spent: form without them. They keep their place.
-        else
-            BR.Server.partyHoldSince = nil
-        end
+        -- The room used to spend partyGraceSeconds before it would form a match
+        -- out of a queue that contained a half-readied party. That patience made
+        -- sense while running out of it meant starting WITH the lone partymate:
+        -- the wait bought the rest of their party a chance to arrive first. It
+        -- stopped making sense the moment expiry began forming the match out of
+        -- `ready` instead, because `ready` is the same list before the wait and
+        -- after it -- the same match, with the same people in it, forty-five
+        -- seconds later. The party gained nothing (they walk into that warmup
+        -- through the late-join door the moment they are whole, and
+        -- BR.Party.lateJoin puts them in one squad when they do) and everybody
+        -- who was already admissible paid for it with an empty screen.
+        --
+        -- So the answer for a held player and the answer for everybody else are
+        -- given in the SAME TICK: BR.Party.mayEnter is a per-player predicate,
+        -- `held` is the players it refused, and nothing above this line consults
+        -- `held` except to explain a queue that is too small without them.
     end
 
     return nil
@@ -1417,11 +1410,6 @@ local function tick()
                     -- next door that opens.
                     local parts = BR.Lobby.admissible(mode)
                     if #parts > 0 then
-                        -- The patience the party gate spends is per FORMATION,
-                        -- not per server. Cleared here so the next party to
-                        -- half-ready gets the whole of it rather than the
-                        -- remains of somebody else's.
-                        BR.Server.partyHoldSince = nil
                         BR.Lobby.consume(parts)
                         BR.Match.create(mode, parts)
                     end
