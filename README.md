@@ -32,8 +32,9 @@ Everything uses stock GTA V assets — no custom models, maps, or streamed files
 | M6b | UI overhaul — lobby, HUD, inventory, end screen | **DONE** |
 | M7 | DBNO, revives, spectating, match summary, stats | **DONE** |
 | M7b | Persistence off the game host — DynamoDB / AWS serverless | **DONE** |
-| M8 | Vehicles, aerial supply drops, fuel, rescue | **SCOPING** |
-| M9 | Moderation: incidents, in-game reports, artifacts, admin ACEs, the in-game console | **WIP** |
+| M8 | Vehicles, aerial supply drops, fuel, rescue | **DONE** |
+| M9 | Moderation: incidents, in-game reports, artifacts, admin ACEs, the in-game console | **DONE** |
+| M10 | Finishing touches: feature requests gathered after M8, and a security audit of both repos | **WIP** |
 
 **Working now:** the loop, end to end. Players queue from a lobby above Cayo
 Perico, form persistent parties, and warm up on the island airstrip while the
@@ -82,7 +83,7 @@ settings screen like every other key.
 > longer hears the stranger they are fighting, and a `nearby` player gets no
 > special case for a squadmate across the island.
 
-**In flight (M9):** moderation, and the game's half of it now runs end to end.
+**Moderation (M9):** the game's half of it runs end to end.
 The anticheat and the in-game player list both file real rows in DynamoDB rather
 than logging and forgetting, and a case carries three things beyond the finding
 itself:
@@ -129,8 +130,11 @@ and its receipt are the same conditional write. See
 > without anyone deciding to. Every match-payout number moved the same day, so
 > nothing else in this file quotes a Volts figure that predates it.
 
-**Not working yet:** vehicles are ambient traffic only — no supply drops, fuel or
-rescue (M8).
+**In flight (M10):** finishing touches — the feature requests gathered after M8,
+and a security audit of both repos now that they are public. Landed so far: the
+warmup vehicle showroom, squad revive keys with a network of station ambulances,
+and a Discord card gated on real guild membership. Queued: a guided first run for
+new players, a repair kit, and in-game bug reports.
 
 ---
 
