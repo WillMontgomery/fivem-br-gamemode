@@ -42,6 +42,73 @@ function BR.Lobby.ids(mode)
     return ids
 end
 
+--- The mode a player is queued for, or nil if they are not queued.
+---
+--- BR.Party.mayEnter asks this about somebody ELSE -- "is my partymate coming
+--- with me" -- which is a question about the queue and belongs to the queue.
+--- @param src integer
+--- @return string|nil
+function BR.Lobby.queuedMode(src)
+    local q = queue[src]
+    return q and q.mode or nil
+end
+
+--- Split a mode's queue into the players a match may take and the ones being
+--- held for a party that is not all here yet.
+---
+--- ONE SPLIT, TWO CALLERS, and that is the point. BR.Match.startBlocker judges
+--- the match on `ready` and the formation tick consumes `ready`; the late-join
+--- sweep below admits `ready`. A player who is held is held at every door, and
+--- there is no second opinion anywhere for the two to drift apart by. See
+--- BR.Party.mayEnter for what "held" means and why it always ends.
+--- @param mode string
+--- @return integer[] ready
+--- @return integer[] held
+function BR.Lobby.admissible(mode)
+    local ready, held = {}, {}
+    for _, src in ipairs(BR.Lobby.ids(mode)) do
+        if BR.Party.mayEnter(src, mode) then
+            ready[#ready + 1] = src
+        else
+            held[#held + 1] = src
+        end
+    end
+    return ready, held
+end
+
+--- Walk everybody the door will now take into an open warmup of this mode.
+---
+--- Called from BR.Lobby.join (the press itself) and from the match tick (every
+--- 250ms, for a player whose party changed while they waited: the last mate
+--- readying up, or leaving, or disconnecting). Both routes matter -- a held
+--- player is not pressing anything, so without the tick their release would
+--- have to wait for somebody else's press.
+---
+--- SORTED, LOWEST ID FIRST, because BR.Lobby.ids sorts: a party admitted in
+--- one sweep puts its first member in a squad and every later member finds it
+--- (BR.Party.lateJoin's party scan), instead of each one being autofilled
+--- somewhere separate and repaired afterwards by the rebalance.
+---
+--- The match is re-read INSIDE the loop: admitting a player can fill it, and a
+--- full warmup is no longer a forming match. A party that runs out of room
+--- half-way through is the one case this cannot keep together -- the last
+--- member stays queued and forms the next match instead -- and that is the
+--- pre-existing behaviour of a full warmup rather than something the gate
+--- introduces: there is no slot to hold for them.
+--- @param mode string
+function BR.Lobby.admitWaiting(mode)
+    for _, src in ipairs(BR.Lobby.admissible(mode)) do
+        local m = BR.Server.formingMatch(mode)
+        if not m then return end
+
+        local entry = BR.Roster.get(src)
+        queue[src] = nil
+        print(('[br_core] %s (%d) readied into forming match %d (%s)')
+            :format(entry and entry.name or '?', src, m.id, mode))
+        BR.Party.lateJoin(src, m)
+    end
+end
+
 --- Remove a specific set of players from the queue -- the per-mode match
 --- formation consumes only ITS mode's queuers, leaving the other mode's
 --- queue waiting for its own match.
@@ -190,6 +257,21 @@ function BR.Lobby.join(src, mode)
         BR.Party.leave(src)
     end
 
+    -- THE QUEUE FIRST, EVEN FOR SOMEBODY WHO IS ABOUT TO WALK STRAIGHT PAST IT.
+    --
+    -- The late-join door below admits a whole party at once, and it reads the
+    -- queue to know who is coming (BR.Party.mayEnter). A player who is not in
+    -- it yet is invisible to their own admission: the last of two friends to
+    -- press Ready would be let in alone and the first left waiting, which is
+    -- the bug this change exists to remove, wearing the other member's name.
+    --
+    -- It is also what keeps the partymate's screen honest. "Ready up! Your
+    -- party is waiting." is drawn from the queued ids on LOBBY_STATUS, so a
+    -- player held at the door goes on saying they are ready for as long as they
+    -- are waiting -- the same trigger, the same string, now telling the truth
+    -- for the whole of the wait instead of the second before admission.
+    queue[src] = { mode = resolved.key, at = GetGameTimer() }
+
     -- While a match OF THE MODE THEY PICKED sits in open warmup (not full),
     -- readying up joins it directly instead of queueing for the one after
     -- it. Matches are homogeneous (user call, 2026-08-04): a solo queuer
@@ -198,23 +280,31 @@ function BR.Lobby.join(src, mode)
     -- match alongside the open one. Both warmups share the communal warmup
     -- bucket; the flights and everything after are separate.
     --
-    -- THIS PATH NEVER TOUCHES THE QUEUE, which is why it needs its own line as
-    -- much as the refusals do. A late joiner is admitted straight into warmup,
-    -- so nothing about them ever appears in the queue broadcast and the bottom
-    -- of this function is not reached -- the busiest door into a match was the
+    -- AND THIS DOOR IS GATED NOW (2026-09-02). It used to admit anybody who
+    -- pressed Ready, party or no party, which made the queue's party gate
+    -- irrelevant the moment any warmup was open -- see BR.Party.mayEnter for
+    -- the report and the mechanism. A player their party is not ready to
+    -- follow stays in the queue and is swept in by the match tick the moment
+    -- it is.
+    --
+    -- THIS PATH STILL NEEDS ITS OWN LINE, and BR.Lobby.admitWaiting prints it:
+    -- a late joiner leaves the queue in the same breath they entered it, so
+    -- nothing about them reaches the queue broadcast and the bottom of this
+    -- function is not reached -- the busiest door into a match was the
     -- quietest one in the log.
-    local forming = BR.Server.formingMatch(resolved.key)
-    if forming then
-        print(('[br_core] %s (%d) readied into forming match %d (%s)')
-            :format(entry.name, src, forming.id, resolved.key))
-        BR.Party.lateJoin(src, forming)
-        return
+    if BR.Server.formingMatch(resolved.key) then
+        BR.Lobby.admitWaiting(resolved.key)
+        if not queue[src] then return end
     end
 
-    queue[src] = { mode = resolved.key, at = GetGameTimer() }
-
-    print(('[br_core] %s (%d) queued for %s -- %d/%d')
-        :format(entry.name, src, resolved.key, BR.Lobby.count(), BR.Lobby.needed()))
+    -- ONE LINE PER PRESS, AND IT SAYS WHICH KIND OF WAIT THIS IS. A queue that
+    -- is one short of starting and a queue nobody in it may be admitted from
+    -- read identically as a number, and the second is the one that looks like
+    -- the server ignoring a button.
+    print(('[br_core] %s (%d) queued for %s -- %d/%d%s')
+        :format(entry.name, src, resolved.key, BR.Lobby.count(), BR.Lobby.needed(),
+                BR.Party.mayEnter(src, resolved.key) and ''
+                    or ' -- held until their party readies up'))
 end
 
 --- @param src integer

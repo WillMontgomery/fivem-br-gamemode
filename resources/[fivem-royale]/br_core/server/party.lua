@@ -431,6 +431,112 @@ function BR.Party.kick(src, targetSrc)
     return true
 end
 
+-- ------------------------------------------------------------ the door ----
+
+--- May this player walk into a match right now, or is their party still coming?
+---
+--- ═══ THE 2026-09-02 REPORT ═══
+---
+--- "in the lobby with squads selected, 2 players join a party. one readies up
+--- and the other one gets the 'your squad is waiting for you' message. BUT
+--- after a period of a few seconds, the player who is readied up is dropped
+--- into warmup -- they should be infinitely waiting for their party who is not
+--- yet ready. When this happens, if another non-full squad is in warmup,
+--- matchmaking is still taking over and split the party to match the warmup'd
+--- party player with a different squad. Seems like matchmaking doesn't know
+--- they have a party." -- the owner.
+---
+--- Matchmaking knew perfectly well. THERE WERE TWO DOORS INTO A MATCH AND ONLY
+--- ONE OF THEM WAS WATCHED:
+---
+---   * the QUEUE, guarded by BR.Match.startBlocker's `party` reason -- which
+---     held the whole formation for partyGraceSeconds and then started the
+---     match WITH the lone partymate in it. That is the "few seconds", and the
+---     hold was often already spent before it began: `partyHoldSince` is one
+---     global timestamp that nothing reset once a match had formed, so the
+---     second party of a server's uptime got no patience at all.
+---
+---   * BR.Party.lateJoin, reached from BR.Lobby.join the moment ANY warmup of
+---     the mode is open -- and NOT BEHIND THE GATE AT ALL. Every ready-up after
+---     the first warmup opens took this door, so the gate above stopped applying
+---     the instant it mattered most. That is the second half of the report: the
+---     lone partymate walks into a stranger's warmup and is autofilled into a
+---     stranger's squad, because their own partymate is still in the lobby with
+---     no squad to aim at.
+---
+--- ONE PREDICATE, ASKED AT BOTH DOORS, is the whole fix. BR.Lobby.admissible
+--- filters the queue with it and BR.Lobby.admitWaiting filters the late-join
+--- sweep with it, so there is no third answer for the two paths to differ by.
+---
+--- ═══ WHAT COUNTS AS "STILL COMING" ═══
+---
+--- Only a partymate STANDING IN THE LOBBY who has not readied up holds the
+--- door. Every other answer is somebody who cannot arrive, and an unescapable
+--- wait is worse than the bug it prevents:
+---
+---   * a mate already in a match -- this one or another -- is not in LOBBY, so
+---     they hold nothing. A partymate away in a live round must not lock their
+---     friend out of the server for twenty minutes, and they are already
+---     somewhere this player cannot follow.
+---   * a mate who disconnects, leaves the party or is kicked takes the party
+---     below two members, which disbands it (BR.Party.leave and
+---     BR.Party.removePlayer both enforce "a party of one is not a party"), and
+---     an ungrouped player is admitted by the first line of this function.
+---   * a mate queued for the same mode is arriving in the same breath: they are
+---     admitted together, sorted by id, so the first one in is the squad the
+---     rest aim at.
+---
+--- Because both doors ask this EVERY TICK rather than once at the press, all of
+--- those are self-clearing: nothing has to notice the party changed, and there
+--- is no state to leave behind.
+---
+--- SOLO IS EXEMPT, and not only because BR.Lobby.join drops the party before it
+--- queues a solo player. In solo every player is their own team, so there is no
+--- squad to be split off from -- and a party half-queued across the two modes
+--- would otherwise hold BOTH of its members at their own doors forever, each
+--- waiting for a mate in a queue they will never be admitted from.
+--- @param src integer
+--- @param mode string
+--- @return boolean
+function BR.Party.mayEnter(src, mode)
+    if mode == BR.Mode.SOLO.key then return true end
+
+    local party = BR.Party.of(src)
+    -- isGrouped's rule, inline: an invite that was never answered leaves a
+    -- party of one behind, and a party of one is nobody to wait for.
+    if not party or #party.members < 2 then return true end
+
+    for _, mate in ipairs(party.members) do
+        if mate ~= src then
+            local e = BR.Roster.get(mate)
+            if e and e.state == BR.PlayerState.LOBBY
+               and BR.Lobby.queuedMode(mate) ~= mode then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+--- The blocker line for a queue that is only short of somebody's party.
+---
+--- Shaped exactly like the one BR.Match.startBlocker used to build inline, and
+--- read the same way: the lobby screen phrases the `party` reason from nothing
+--- but the reason itself, and the console line names the count.
+--- @param held integer[]  ids BR.Party.mayEnter refused, lowest first
+--- @param mode string
+--- @return table
+function BR.Party.holdBlocker(held, mode)
+    local party = BR.Party.of(held[1])
+    if not party then return { reason = 'party', have = 0, need = 0 } end
+
+    local ready = 0
+    for _, mem in ipairs(party.members) do
+        if BR.Lobby.queuedMode(mem) == mode then ready = ready + 1 end
+    end
+    return { reason = 'party', have = ready, need = #party.members }
+end
+
 -- ------------------------------------------------------- squad formation ---
 
 --- Form in-match squads from parties and the queue.

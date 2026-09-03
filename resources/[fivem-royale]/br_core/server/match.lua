@@ -935,9 +935,13 @@ end
 --- not the one actually holding the match, so the player does the thing it
 --- asked for and nothing happens. One function, two callers, no disagreement.
 ---
---- Note there is no "a warmup is open" reason here: while one of this mode
---- is open, ready-ups late-join it instead of queueing, so the queue this
---- function reads only ever holds players waiting for a NEW match.
+--- Note there is no "a warmup is open" reason here, and it is not needed: this
+--- function is only ever CONSULTED while no warmup of the mode is open (the
+--- tick sweeps the queue into an open one instead of asking). The queue it
+--- reads is not necessarily empty at those moments any more, though -- a player
+--- waiting on their party sits in it through an entire warmup they were not
+--- admitted to (2026-09-02) -- which is why every count below is taken from
+--- BR.Lobby.admissible rather than from the queue itself.
 ---
 --- @param mode string|nil  the mode whose queue is being judged; defaults to
 ---        the dominant mode (the lobby status display's approximation)
@@ -952,9 +956,25 @@ function BR.Match.startBlocker(mode)
     end
 
     mode = mode or BR.Lobby.dominantMode()
-    local queued = #BR.Lobby.ids(mode)
+
+    -- THE MATCH IS JUDGED ON WHO MAY ACTUALLY BE IN IT. `ready` is the queue
+    -- minus the members of parties that are not all here yet (BR.Party.mayEnter
+    -- decides, BR.Lobby.admissible applies it), and it is the same list the
+    -- formation tick consumes -- so this function cannot clear a match into
+    -- existence out of players the tick will then refuse to put in it.
+    local ready, held = BR.Lobby.admissible(mode)
+    local queued = #ready
     local need   = BR.Lobby.needed()
     if queued < need then
+        -- WHOSE ABSENCE IS IT? A queue that is short only because somebody is
+        -- waiting on their party is a different sentence from a lobby that
+        -- needs more people, and the lobby screen phrases both from here. The
+        -- test is deliberately "would the held players close the gap": when
+        -- even the whole queue is too small, more players is the honest answer
+        -- and the party is not what is holding anything.
+        if #held > 0 and (queued + #held) >= need then
+            return BR.Party.holdBlocker(held, mode)
+        end
         return { reason = 'players', have = queued, need = need }
     end
 
@@ -962,44 +982,41 @@ function BR.Match.startBlocker(mode)
     -- queued as one party form a single squad, and a single squad has already
     -- met the win condition before the match starts.
     if mode ~= BR.Mode.SOLO.key then
-        local squads    = BR.Party.prospectiveSquads(BR.Lobby.ids(mode), mode)
+        local squads    = BR.Party.prospectiveSquads(ready, mode)
         local minSquads = BR.Config.Match.MinSquads(BR.Server.devMode)
         if squads < minSquads then
             return { reason = 'squads', have = squads, need = minSquads }
         end
 
-        -- PARTIES ENTER TOGETHER -- with a patience limit. One member
-        -- readying up must not launch the match while the rest of their
+        -- PARTIES GET FIRST CLAIM ON THE ROOM -- with a patience limit. One
+        -- member readying up must not launch the match while the rest of their
         -- party is still picking a mode (the first two-client squad test
-        -- started the instant the first Ready landed) -- but one AFK
-        -- partymate must not brick the queue for everyone either. So the
-        -- hold lasts partyGraceSeconds; after that the match forms without
-        -- the stragglers, and the warmup door they can still walk through
-        -- is the late-join path that already exists. The party panel marks
-        -- who the room is waiting on (check / ellipsis) the whole time.
-        local queuedSet = {}
-        for _, src in ipairs(BR.Lobby.ids(mode)) do queuedSet[src] = true end
-        local incomplete = nil
-        for src in pairs(queuedSet) do
-            local party = BR.Party.of(src)
-            if party then
-                local ready = 0
-                for _, mem in ipairs(party.members) do
-                    if queuedSet[mem] then ready = ready + 1 end
-                end
-                if ready < #party.members then
-                    incomplete = { reason = 'party', have = ready, need = #party.members }
-                    break
-                end
-            end
-        end
-        if incomplete then
+        -- started the instant the first Ready landed) -- but one AFK partymate
+        -- must not brick the queue for everyone either. So the hold lasts
+        -- partyGraceSeconds. The party panel marks who the room is waiting on
+        -- (check / ellipsis) the whole time.
+        --
+        -- WHAT RUNNING OUT OF PATIENCE MEANS CHANGED ON 2026-09-02, and that is
+        -- half of the owner's report. It used to start the match WITH the lone
+        -- partymate in it -- which is the "after a period of a few seconds, the
+        -- player who is readied up is dropped into warmup" he watched happen,
+        -- and every second of it was the clock below. Now the patience is only
+        -- the ROOM's: when it runs out the match forms out of `ready`, which
+        -- never contained the stragglers, and they stay in the queue waiting
+        -- for their own party for as long as it takes.
+        --
+        -- `partyHoldSince` IS CLEARED BY THE TICK THAT FORMS A MATCH. It is one
+        -- timestamp for the whole server and nothing used to reset it, so the
+        -- first expiry of a server's uptime left it set forever: every party
+        -- after that got a hold that was already spent, which is why the "few
+        -- seconds" was often no seconds at all.
+        if #held > 0 then
             BR.Server.partyHoldSince = BR.Server.partyHoldSince or GetGameTimer()
             if GetGameTimer() - BR.Server.partyHoldSince
                < (BR.Config.Match.partyGraceSeconds * 1000) then
-                return incomplete
+                return BR.Party.holdBlocker(held, mode)
             end
-            -- Patience spent: start without them.
+            -- Patience spent: form without them. They keep their place.
         else
             BR.Server.partyHoldSince = nil
         end
@@ -1374,9 +1391,18 @@ local function tick()
     -- up after every match of that mode is BUS-or-later or a full warmup.
     for _, modeDef in pairs(BR.Mode) do
         local mode = modeDef.key
-        if not BR.Server.formingMatch(mode) then
-            local parts = BR.Lobby.ids(mode)
-            if #parts > 0 then
+        if BR.Server.formingMatch(mode) then
+            -- A WARMUP OF THIS MODE IS OPEN AND THE QUEUE IS NOT NECESSARILY
+            -- EMPTY ANY MORE (2026-09-02). A player whose party had not all
+            -- readied up is held in the queue rather than admitted alone, and
+            -- nothing they do releases them -- the release is their PARTYMATE
+            -- readying up, leaving the party, or disconnecting. This is what
+            -- notices, 250ms later, and walks whoever is now clear through the
+            -- late-join door together.
+            BR.Lobby.admitWaiting(mode)
+        else
+            local queued = BR.Lobby.ids(mode)
+            if #queued > 0 then
                 -- Every reason to hold is checked BEFORE the queue is
                 -- consumed. The queue is spent on the way into WARMUP, so
                 -- refusing later would leave the players out of the queue
@@ -1385,8 +1411,20 @@ local function tick()
                 if blocker then
                     BR.Match.announceBlocker(blocker)
                 else
-                    BR.Lobby.consume(parts)
-                    BR.Match.create(mode, parts)
+                    -- ONLY THE ADMISSIBLE ONES, which is the same list
+                    -- startBlocker just judged. Anybody waiting on a party
+                    -- keeps their place in the queue and their claim on the
+                    -- next door that opens.
+                    local parts = BR.Lobby.admissible(mode)
+                    if #parts > 0 then
+                        -- The patience the party gate spends is per FORMATION,
+                        -- not per server. Cleared here so the next party to
+                        -- half-ready gets the whole of it rather than the
+                        -- remains of somebody else's.
+                        BR.Server.partyHoldSince = nil
+                        BR.Lobby.consume(parts)
+                        BR.Match.create(mode, parts)
+                    end
                 end
             end
         end

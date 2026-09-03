@@ -561,6 +561,19 @@ end
 local SHIPPED_MIN_TO_START = BR.Config.Match.minToStart
 
 local function reset()
+    -- WHOLE MILLISECONDS AGAIN. The storm blocks drive the clock off PRICED
+    -- durations -- `fakeTime = rec.tStart + rec.tWait + 10` -- and those are
+    -- floats that only come out integral when they clamp to a configured
+    -- floor or ceiling. One run where a phase prices somewhere in between
+    -- leaves every block after it with a fractional clock, and the next
+    -- `('endsAt %d'):format(mendsAt())` in a detail string DIES rather than
+    -- fails ("number has no integer representation") -- taking the rest of the
+    -- suite with it, on a difference of five hundredths of a millisecond.
+    --
+    -- A no-op against every value this suite currently produces, which is the
+    -- point: it costs nothing and removes the class.
+    fakeTime = math.floor(fakeTime)
+
     -- Suite default: matches need TWO queued players. Most blocks queue
     -- players one at a time and assert nothing starts early -- under the
     -- shipped dev minimum of 1 the match would start at the first queueUp
@@ -2723,22 +2736,37 @@ do
     -- emptier -- autofill is off here precisely so the two rules disagree:
     -- the party squad has two members, the solo's squad has one, and only
     -- the party preference sends player 3 to the fuller one.
+    --
+    -- PLAYER 3 JOINS THE PARTY AFTER THE MATCH HAS FORMED, and that reordering
+    -- is 2026-09-02's. The scenario used to be built by leaving 3 in the lobby
+    -- while their party started without them -- which is precisely what a
+    -- half-readied party is no longer allowed to do (see party.heldAtTheDoor),
+    -- so the match it needs would never have formed. Somebody invited into a
+    -- party that is already on the pad is the same arrangement reached by a
+    -- door that is still open: an incomplete party in the match, a late
+    -- arrival, and an emptier squad to go wrong towards.
+    -- THE CLOCK THIS BLOCK SPENDS IS UNCHANGED, DELIBERATELY, and it is held
+    -- by brwarmupfreeze rather than by the party gate now. The two steps below
+    -- land on the same two instants they always did -- see the banner at the
+    -- foot of this file: `match.busDescent` and `match.storm.hold` are aligned
+    -- to the suite clock, and a block that spends 45 fewer seconds than it used
+    -- to fails both of them from here.
     reset()
     BR.Server.devMode = true
     BR.Config.Match.autofill = false
+    runCommand('brwarmupfreeze', 'on')
     join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D')
-    BR.Party.invite(1, 2); BR.Party.respond(2, true)
-    BR.Party.invite(1, 3); BR.Party.respond(3, true)   -- trio 1,2,3
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)   -- pair 1,2
     for i = 1, 2 do fire(BR.Net.QUEUE_JOIN, i, { mode = BR.Mode.SQUAD.key }) end
     fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SQUAD.key })
-    -- Player 3's party is incomplete, so the party gate holds first (one
-    -- tick to engage its patience clock); the match forms once the patience
-    -- runs out. That is the door 3 will late-join through -- this scenario.
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
     fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
     BR.Sched.step(fakeTime)
-    ok(mstate() == BR.MatchState.WARMUP, 'match forms without player 3')
+    ok(mstate() == BR.MatchState.WARMUP, 'the pair and the solo form a match')
+    BR.Party.invite(1, 3); BR.Party.respond(3, true)   -- trio 1,2,3
+    ok(BR.Roster.get(3).state == BR.PlayerState.LOBBY,
+        'and player 3 joins their party from the lobby, mid-warmup')
     ok(BR.Roster.get(4).squadId ~= BR.Roster.get(1).squadId,
         'the solo has a squad of one -- the emptier target')
 
@@ -2747,6 +2775,7 @@ do
         "a late partymate lands on their party's squad, not the emptier one",
         ('got %s, wanted %s'):format(tostring(BR.Roster.get(3).squadId),
                                      tostring(BR.Roster.get(1).squadId)))
+    runCommand('brwarmupfreeze', 'off')
     BR.Config.Match.autofill = true
 
     -- From BUS onward the door is shut: late arrivals queue for the NEXT match.
@@ -3473,9 +3502,21 @@ do
     ok(mstate() == BR.MatchState.WARMUP,
         'the second Ready releases it')
 
-    -- Patience: an AFK partymate cannot brick the queue. The hold expires
-    -- after partyGraceSeconds and the match forms without them (they can
-    -- still late-join during warmup).
+    -- ═══ PATIENCE IS THE ROOM'S, NOT THE PARTY MEMBER'S (2026-09-02) ═══
+    --
+    -- The hold still expires after partyGraceSeconds -- an AFK partymate cannot
+    -- keep everybody else out of a match forever. What expiry MEANS is what
+    -- changed: the match forms out of the players who may actually be in it,
+    -- and the half-readied party is not among them. Here that is the whole
+    -- queue, so nothing forms at all and player 1 keeps their place.
+    --
+    -- IT USED TO FORM WITH THEM, and that is exactly the report: "after a
+    -- period of a few seconds, the player who is readied up is dropped into
+    -- warmup -- they should be infinitely waiting for their party who is not
+    -- yet ready." The seconds were this clock.
+    --
+    -- What happens when there ARE other players to form a match out of -- and
+    -- the escape from a wait with nothing left to wait for -- is party.heldAtTheDoor.
     forceState(BR.MatchState.ENDED)
     forceState(BR.MatchState.CLEANUP)
     forceState(BR.MatchState.WAITING)
@@ -3485,8 +3526,10 @@ do
     ok(mstate() == BR.MatchState.WAITING, 'held again next match')
     fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
     BR.Sched.step(fakeTime)
-    ok(mstate() == BR.MatchState.WARMUP,
-        'but patience runs out and the match forms without the idler')
+    ok(mstate() == BR.MatchState.WAITING,
+        'and no amount of patience admits them WITHOUT their party')
+    ok(BR.Server.queue[1] ~= nil,
+        'their ready-up keeps its place in the queue rather than being spent')
 end
 
 describe('match.busDescent')
@@ -3518,15 +3561,30 @@ do
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
 
     -- Past the ceiling with 2 visibly descending: BUS holds.
-    setPos(2, 0.0, 0.0, 400.0)
-    fakeTime = mendsAt() + 600
-    BR.Sched.step(fakeTime)
+    --
+    -- THE ALTITUDE IS PRICED FROM THE GAP, NOT WRITTEN DOWN, and that is a
+    -- 2026-09-02 repair to this block rather than a change of intent. What the
+    -- tick measures is a RATE (BR.ClassifyDescent, descendRate 0.7 m/s) and the
+    -- gap between this sample and the last one is whatever the route had left
+    -- -- seventy-odd seconds, drawn per match. A flat 50m drop across it came
+    -- out at 0.706 m/s: this block passed by nine parts in a thousand, on the
+    -- length of the flight the RNG happened to deal, and any change anywhere in
+    -- the suite that draws one more random number moved it under the bar. The
+    -- descent it means to describe is now stated as one.
+    local FALL_MPS = 3.0     -- comfortably clear of descendRate, at any gap
+    local z2 = 450.0
+    local function fallTo(deadline)
+        z2 = z2 - (deadline - fakeTime) * 0.001 * FALL_MPS
+        setPos(2, 0.0, 0.0, z2)
+        fakeTime = deadline
+        BR.Sched.step(fakeTime)
+    end
+
+    fallTo(mendsAt() + 600)
     ok(mstate() == BR.MatchState.BUS,
         'a live descender holds the BUS past the route timer')
 
-    setPos(2, 0.0, 0.0, 300.0)
-    fakeTime = mendsAt() + 600
-    BR.Sched.step(fakeTime)
+    fallTo(mendsAt() + 600)
     ok(mstate() == BR.MatchState.BUS, 'and keeps holding while falling')
 
     -- Altitude freezes (a hung client): the grace stops paying and the
@@ -18558,6 +18616,260 @@ do
         'while the key is minted all the same: the mint follows the EDGE and '
             .. 'never the spill (server/revivekey.lua), so a key with no ring '
             .. 'around it is the design and not a fault')
+end
+
+describe('party.heldAtTheDoor')
+do
+    -- ═══ THE 2026-09-02 REPORT, DRIVEN THROUGH THE DOOR IT USED ═══
+    --
+    -- "in the lobby with squads selected, 2 players join a party. one readies
+    -- up and the other one gets the 'your squad is waiting for you' message.
+    -- BUT after a period of a few seconds, the player who is readied up is
+    -- dropped into warmup -- they should be infinitely waiting for their party
+    -- who is not yet ready. When this happens, if another non-full squad is in
+    -- warmup, matchmaking is still taking over and split the party to match the
+    -- warmup'd party player with a different squad." -- the owner.
+    --
+    -- ═══ WHY match.partyGate COULD NOT SEE IT ═══
+    --
+    -- That block has one match's worth of players and no warmup open, so every
+    -- ready-up it fires goes through the QUEUE -- the one door that was
+    -- guarded. The report is about the other one: BR.Lobby.join hands a
+    -- ready-up straight to BR.Party.lateJoin the moment any warmup of the mode
+    -- is open, and nothing on that path had ever asked about a party. So the
+    -- first scenario below opens a warmup around a stranger BEFORE the partied
+    -- player presses anything, which is the whole of the difference.
+    --
+    -- Nothing here calls lateJoin, formSquads or needsRebalance. The inputs are
+    -- QUEUE_JOIN events, a disconnect, a Leave party, and the clock -- because
+    -- a test that calls the admission function directly cannot catch a bug
+    -- about WHICH DOOR was used.
+    local capWas = BR.Config.Match.maxSquadSize
+
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    -- ── the report, one press at a time ──────────────────────────────────
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 2
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+
+    -- The stranger presses Ready first and a warmup opens around them. This is
+    -- the "another non-full squad is in warmup" of the report.
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    pump(500)
+    local m = theMatch()
+    ok(m ~= nil and m.state == BR.MatchState.WARMUP,
+        'a stranger opens a warmup with room in it')
+    ok(BR.Roster.get(3).squadId ~= nil, 'and is put in a squad of their own')
+
+    -- A readies up. B has not, and is standing in the lobby.
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(3000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'A PARTIED PLAYER IS NOT DROPPED INTO THE OPEN WARMUP WITHOUT THEIR '
+            .. 'PARTY -- the report, at the door it used',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).matchId == nil, 'and belongs to no match')
+    ok(BR.Roster.get(1).squadId == nil,
+        'so there is no stranger squad for matchmaking to have put them in',
+        tostring(BR.Roster.get(1).squadId))
+
+    -- AND THE MESSAGE THE OTHER ONE IS LOOKING AT KEEPS ITS TRIGGER. "Ready
+    -- up! Your party is waiting." is drawn client-side from the queued ids on
+    -- LOBBY_STATUS -- so it says what it always said, for as long as the wait
+    -- lasts, because the held player is IN the queue rather than in a match.
+    ok(BR.Server.queue[1] ~= nil,
+        'the ready-up keeps its place in the queue, which is what the '
+            .. 'partymate\'s "your party is waiting" line is drawn from')
+
+    -- The wait does not run out. partyGraceSeconds is the ROOM's patience, and
+    -- spending it never admits the person it was spent on.
+    pump(BR.Config.Match.partyGraceSeconds * 1000 + 1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'and no amount of time admits them -- the wait is for the party, not '
+            .. 'for a clock',
+        BR.Roster.get(1).state)
+
+    -- ── B finally presses Ready ──────────────────────────────────────────
+    --
+    -- The warmup is long gone by now (the pump above outlasted it), so this
+    -- pair forms a match of their own -- which is the point: their place in
+    -- the queue was still theirs.
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(BR.Roster.get(1).squadId ~= nil and BR.Roster.get(2).squadId ~= nil,
+        'both partymates are placed once both have readied up')
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'AND THEY ARE IN ONE SQUAD -- the party enters together or not at all',
+        ('A=%s B=%s'):format(tostring(BR.Roster.get(1).squadId),
+                             tostring(BR.Roster.get(2).squadId)))
+    ok(BR.Roster.get(1).matchId == BR.Roster.get(2).matchId,
+        'in one match')
+
+    -- ── one AFK partymate does not brick the queue for everybody else ────
+    --
+    -- This is what the patience is FOR, and the half that must not regress.
+    -- The room waits partyGraceSeconds for the rest of a party, and then plays
+    -- without them -- WITHOUT them, rather than with the one who is left, which
+    -- is the line the old gate crossed.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 2
+    join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(theMatch() == nil,
+        'a half-readied party holds the room while the patience lasts')
+
+    pump(BR.Config.Match.partyGraceSeconds * 1000 + 1000)
+    local mAFK = theMatch()
+    ok(mAFK ~= nil and mAFK.state == BR.MatchState.WARMUP,
+        'and when it runs out the others play anyway')
+    ok(mAFK ~= nil and BR.Roster.get(3).matchId == mAFK.id
+        and BR.Roster.get(4).matchId == mAFK.id,
+        'the two strangers are in it')
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY
+        and BR.Roster.get(1).matchId == nil,
+        'THE HALF-READIED PARTY IS NOT -- patience running out forms the match '
+            .. 'without them rather than with one of them',
+        BR.Roster.get(1).state)
+    ok(BR.Server.queue[1] ~= nil, 'and they are still queued, still waiting')
+
+    -- ── the last partymate readies into the OPEN warmup ──────────────────
+    --
+    -- Both of them walk through the late-join door in one sweep, lowest id
+    -- first, so the second finds the first's squad rather than being dealt
+    -- somewhere else and repaired afterwards.
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    ok(mAFK ~= nil and BR.Roster.get(1).matchId == mAFK.id
+        and BR.Roster.get(2).matchId == mAFK.id,
+        'the last Ready lets the WHOLE party into the warmup that was already open')
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'in one squad',
+        ('A=%s B=%s'):format(tostring(BR.Roster.get(1).squadId),
+                             tostring(BR.Roster.get(2).squadId)))
+    ok(BR.Roster.get(3).squadId ~= BR.Roster.get(1).squadId,
+        'with the strangers on the other team')
+    ok(mAFK ~= nil and BR.Party.needsRebalance(mAFK) == false,
+        'and the shape it lands in does not ask to be corrected again')
+
+    -- ── AND THE PATIENCE IS WHOLE AGAIN FOR THE NEXT PARTY ───────────────
+    --
+    -- `BR.Server.partyHoldSince` is one timestamp for the whole server, and
+    -- until 2026-09-02 nothing reset it once a match had formed -- so the first
+    -- expiry of a server's uptime left it spent for good, and every party after
+    -- that got no patience at all. That is the other half of "after a period of
+    -- a few seconds": often it was no seconds. Same lobby, same party, second
+    -- round: the room must hold again.
+    forceState(BR.MatchState.WAITING)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(theMatch() == nil,
+        'the next half-readied party is held for its own patience rather than '
+            .. "the remains of somebody else's")
+
+    -- ── THE ESCAPE HATCH: A DISCONNECT ───────────────────────────────────
+    --
+    -- An indefinite wait that cannot be escaped is worse than the bug. The
+    -- release is not a timer and nothing has to notice it: the party gate is
+    -- re-asked every tick, and a party that loses a member drops to one and
+    -- disbands (BR.Party.removePlayer), so the survivor is simply not partied
+    -- any more the next time the door is asked.
+    --
+    -- WITH A WARMUP ALREADY OPEN, which is the arrangement that needs the
+    -- SWEEP rather than the formation gate. The waiting player is not pressing
+    -- anything -- the event that frees them is somebody else's disconnect --
+    -- so if the tick did not re-ask, nobody would, and they would sit in the
+    -- queue watching a door they are now entitled to walk through.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    pump(500)
+    ok(BR.Server.formingMatch(BR.Mode.SQUAD.key) ~= nil, 'a warmup is open')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'A waits for B')
+
+    leave(2)
+    pump(1000)
+    ok(BR.Party.isGrouped(1) == false, 'B disconnecting disbands the party')
+    ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP,
+        'AND THE WAIT ENDS WITH IT -- the player is admitted rather than left '
+            .. 'queueing for somebody who is gone',
+        BR.Roster.get(1).state)
+    ok(BR.Server.queue[1] == nil, 'and their place in the queue is spent')
+
+    -- ── THE ESCAPE HATCH: LEAVING THE PARTY ──────────────────────────────
+    --
+    -- Same release, through the button a player actually has in front of them
+    -- while they wait, and again against an open warmup.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    pump(500)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'A waits for B again')
+
+    fire(BR.Net.SQUAD_LEAVE, 1)
+    pump(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP,
+        'and leaving the party while waiting admits them on the next tick',
+        BR.Roster.get(1).state)
+
+    -- ── SOLO IS NEVER HELD ───────────────────────────────────────────────
+    --
+    -- Queueing solo drops the party on the way past (BR.Lobby.join), so the
+    -- ordinary route never reaches the question. THIS ROUTE DOES: accepting an
+    -- invite AFTER queueing leaves a player partied and queued for solo at the
+    -- same time, and the party they are now in is one nothing will ever bring
+    -- into a solo match. Held, they would wait for a partymate who is waiting
+    -- for them from the other queue -- both of them, forever, with a Leave
+    -- party button as the only way out of a state neither of them asked for.
+    --
+    -- In solo every player is their own team, so there is no squad to be split
+    -- off from and nothing for the gate to protect.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 2   -- so a lone solo queuer stays in the queue
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    pump(500)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'a lone solo queuer waits for a second player')
+
+    BR.Party.invite(2, 1); BR.Party.respond(1, true)
+    ok(BR.Party.isGrouped(1),
+        'and is in a party while still queued for solo')
+
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SOLO.key })
+    pump(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP,
+        'SOLO IS NEVER HELD -- the solo round starts with them in it, party or '
+            .. 'no party',
+        BR.Roster.get(1).state)
+
+    BR.Config.Match.maxSquadSize = capWas
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
