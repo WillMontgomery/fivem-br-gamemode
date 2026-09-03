@@ -82,6 +82,12 @@ manual. What is currently baked in, and where it comes from:
 | Report rules — five at a time, three submissions a match, one per player per match | `br_lib/config/match.lua` → `BR.Config.Report` |
 | What an accurate report pays | `br_stats/server/awards.lua` → `AWARD_VOLTS`. **Not** in `market.lua`: it is a bounty on a moderation outcome, not part of the earn-per-hour curve |
 | That a trail slot has no visible default, and canopies and finishes do | `br_lib/config/market.lua` → the `hidden` flag on `trail_none`, filtered in `br_ui/client/market.lua` |
+| Revive key: the three-minute pickup, 25 Volts, the six-second hold, full health, the 150 m drop | `br_lib/config/revivekey.lua` → `expiryMs`, `price`, `reviveHoldMs`, `reviveHp`, `dropM`. `collectM` is the 2.5 m the manual does not quote |
+| "Twenty-three ambulances parked around the island" | `br_lib/config/map.lua` → `BR.Config.Map.AmbulanceSpawns`, counted through its only reader `BR.Config.Rescue.Points()` |
+| That ambulance blips appear the instant a squadmate is **out**, and not while they are down | `br_lib/config/ambulances.lua`, and the `BR.PlayerState.OUT` test in `br_core/server/ambulances.lua`. There is no knob for it |
+| Showroom: thirteen vehicles, 250–1,500 Volts, one per match | `br_lib/config/shop.lua` → the catalogue rows and `limit`. **One of the thirteen is a bike** (`vtype = 'bike'`), which the manual calls a car |
+| That showroom colours are rolled once per match, and that what is on the pad is what you drive | `br_lib/config/shop.lua` → `palette`, and `randomColour = false` on the ambulance row — the one car the roll skips |
+| "Nothing that flies and nothing with a weapon bolted to it" | `br_lib/config/vehicles.lua` → `BR.Config.RefusedVehicles` and `BR.Config.FlyingVehicleTypes` |
 
 **This table is the only thing standing between the manual and quiet drift, so
 it has to grow whenever the manual does.** It has already failed twice exactly
@@ -121,6 +127,17 @@ the key they chose. `Z` is gone entirely and `M` is still bound with no listener
 **The manual does not name the arrows and this note is not a licence to add
 them**: the row goes in when the owner decides on the wording, and until then the
 site is silent about a key that works, which is the harmless direction of the two.
+
+**Fourth failure, 2026-09-01, and it is the shape the first one had.** The
+manual grew two whole sections in one commit — bleeding out is not the end of
+your match, and the showroom — carrying eleven numbers between them, and this
+table did not grow at all. Nothing was wrong on the site; the rows simply were
+not there, so every one of those numbers was one config edit away from being
+wrong with nothing pointing at it. The rows above were added afterwards, on
+2026-09-02, which is the late half of the same failure the XP tables had: a
+number reaches players first and the pointer to it arrives when somebody
+notices. **The commit that adds a number to `index.html` is the commit that adds
+its row here.**
 
 **It should be generated, not typed** — a script in `tools/` emitting these
 tables into `index.html`, gated so the build fails when the committed output
