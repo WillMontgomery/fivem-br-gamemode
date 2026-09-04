@@ -242,19 +242,39 @@ BR.Config.Consumables = {
         -- At a pump, letting go early buys part of the health back and keeps the
         -- dents (client/fuel.lua: the cosmetic pass fires on the frame the body
         -- reaches full). The kit climbs the same way: server/inventory.lua
-        -- grants an interpolated slice of BR.Config.Fuel.healthMax every 250ms
-        -- and THE REMAINDER on completion, so the slices plus the last one are
-        -- exactly one healthMax and the bodywork climbs with the bar. THAT
-        -- NUMBER IS NOT COPIED HERE: server/inventory.lua reads it off the fuel
-        -- config, so the kit and the pump cannot drift apart.
+        -- grants an interpolated slice of BR.Config.Fuel.healthMax every 250ms,
+        -- so the bodywork climbs with the bar. THAT NUMBER IS NOT COPIED HERE:
+        -- server/inventory.lua reads it off the fuel config, so the kit and the
+        -- pump cannot drift apart.
         --
-        -- THE DENTS ARE THE ONE THING THE COMPLETION STILL DOES OUTRIGHT. They
-        -- cannot ride the climb -- GTA has no partial deformation -- and "the
-        -- body reached full" cannot be promised for a car that was being shot
-        -- while it mended, now that the grants sum to one kit rather than to one
-        -- kit on top of the damage. So the completion message carries a flag and
-        -- the client pops them on it. The owner's sentence is about the item:
-        -- "reach full once the item has been spent".
+        -- ═══ THE COMPLETION OFFERS A WHOLE CAP, AND THE CLAMP IS WHY ═══
+        --
+        -- The last message is not the remainder of a budget. It is the FULL
+        -- healthMax, every time, and the surplus is thrown away by the engine
+        -- rather than by us: applyRepair's `bump` is
+        -- `math.min(cap, cur + points)` (client/fuel.lua:350), so every pool
+        -- lands on the cap and no pool can be pushed past it.
+        --
+        -- THAT IS THE ONLY THING THAT MAKES THE OWNER'S SENTENCE TRUE -- "the
+        -- vehicle health should incrementally increase to finally reach full
+        -- once the item has been spent" (2026-09-03) -- FOR A CAR THAT WAS
+        -- BEING SHOT ALL THE WAY THROUGH. A completion that paid only what the
+        -- slices had not yet paid leaves that car short by exactly the damage
+        -- it took while mending, and it was tried: the remainder shipped in
+        -- e764a1b, could not promise a full body, and needed a second mechanism
+        -- -- a flag on the wire and an unconditional SetVehicleFixed -- to put
+        -- back what it had taken away. SetVehicleFixed is a whole repair rather
+        -- than a cosmetic one, so that mechanism handed out more health than the
+        -- ledger it was defending. 44eb77d deleted both.
+        --
+        -- SO DO NOT "OPTIMISE" THIS INTO A REMAINDER. Offering more points than
+        -- the car can hold costs nothing; offering fewer breaks the guarantee.
+        --
+        -- THE DENTS RIDE THE SAME CLAMP. They cannot climb -- GTA has no partial
+        -- deformation -- so applyRepair pops them on the frame the body reaches
+        -- full, which the whole-cap grant is what guarantees. There is no flag
+        -- on the wire and nothing outside applyRepair calls the cosmetic pass;
+        -- tools/test_fuel.lua fails the build if a second caller appears.
         --
         -- WHAT THAT LOOKS LIKE ON A BARELY SCRATCHED CAR: the grant is a flat
         -- fraction of `healthMax` because the SERVER CANNOT READ VEHICLE HEALTH
