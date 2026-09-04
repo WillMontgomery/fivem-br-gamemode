@@ -7182,16 +7182,16 @@ do
     -- sentence are two tests rather than one. `drivenNetId` answers nil for four
     -- different situations and the press speaks for one of them.
     --
-    -- ═══ AND THE PASSENGER'S SILENCE IS NOW AN ASYMMETRY, PINNED ON PURPOSE ═══
+    -- ═══ AND THE PASSENGER IS TOLD, WHICH CLOSED THE ASYMMETRY ═══
     --
-    -- The old sentence could not be said to a passenger without lying to them,
-    -- and that was the whole reason for this silence. The new one is TRUE of a
-    -- passenger -- and the mid-channel arm above DOES say it to one who slides
-    -- across. So the same player, in the same seat, is told two different things
-    -- depending on when they pressed. What is missing is a ruling, not a reason:
-    -- the owner named two moments and pressing from a passenger seat is a third
-    -- he has not been asked about. Asserted as it stands so that extending it is
-    -- a deliberate change to THIS line rather than a quiet one.
+    -- This block used to pin the opposite, and the note on it said the missing
+    -- piece was a ruling rather than a reason: the mid-channel arm said the
+    -- sentence to a player who slid out of the driver's seat, and the press said
+    -- nothing to the same player in the same seat. Owner, 2026-09-04, asked
+    -- about exactly that: "Passengers should get the toast too if they try to
+    -- use it." So both arms now answer the question the sentence is about --
+    -- `drivingHandle`, not `ridingIn` -- and a passenger is told at either
+    -- moment.
     armAndUse(1)
     drive(1, VEH, 0)
     sent = {}
@@ -7200,25 +7200,46 @@ do
        and #eventsOf(BR.Net.VEH_FIX) == 0
        and BR.Inv.of(1).using == nil,
         'and a passenger opens no channel')
-    ok(#eventsOf(BR.Net.NOTIFY) == 0,
-        'and is told nothing at the PRESS -- no wording for the passenger '
-            .. 'refusal has been agreed, though the mid-channel arm above now '
-            .. 'says the sentence to the same player in the same seat')
+    local pnote = eventsOf(BR.Net.NOTIFY)
+    ok(#pnote == 1 and pnote[1].args[1]
+       and pnote[1].args[1].text == 'You can only use this item while driving.',
+        'and IS told at the press, in the same sentence the mid-channel arm '
+            .. 'says to the same player in the same seat',
+        pnote[1] and tostring(pnote[1].args[1] and pnote[1].args[1].text))
 
-    -- ...AND WITH NO `ridingIn` TO ASK, THE RULE STILL REFUSES AND SAYS
-    -- NOTHING. Absent copy must never delete a rule -- the same shape as the
-    -- BR.Shop guards, and the reason the sentence is gated on the module rather
-    -- than assumed.
-    pedVehicle[1001] = 0
-    vehSeat[VEH] = {}
-    local realRiding = BR.Vehicles.ridingIn
-    BR.Vehicles.ridingIn = nil
+    -- ...AND A DRIVER THE PLATFORM WILL NOT NETWORK IS STILL REFUSED IN
+    -- SILENCE. The fourth situation, and the only one the sentence is false of:
+    -- they ARE at a wheel. `drivenNetId` answers nil, `drivingHandle` answers a
+    -- handle, and no wording for this case has ever been agreed.
+    sent = {}
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    drive(1, VEH, -1)
+    local realNet = BR.Vehicles.drivenNetId
+    BR.Vehicles.drivenNetId = function() return nil end
+    sent = {}
     armAndUse(1)
     ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1
        and #eventsOf(BR.Net.VEH_FIX) == 0,
-        'a build with no BR.Vehicles.ridingIn still refuses the on-foot use')
+        'a driver of an un-networked car is refused')
+    ok(#eventsOf(BR.Net.NOTIFY) == 0,
+        'and is told nothing -- they are driving, so the sentence would be a lie')
+    BR.Vehicles.drivenNetId = realNet
+
+    -- ...AND WITH NO `drivingHandle` TO ASK, THE RULE STILL REFUSES AND SAYS
+    -- NOTHING. Absent copy must never delete a rule -- the same shape as the
+    -- BR.Shop guards, and the reason the sentence is gated on the module rather
+    -- than assumed. THE GUARD IS TWO NESTED TESTS FOR THIS EXACT CASE: an absent
+    -- module read as "not driving" would say the sentence to every driver alive.
+    pedVehicle[1001] = 0
+    vehSeat[VEH] = {}
+    local realDriving = BR.Vehicles.drivingHandle
+    BR.Vehicles.drivingHandle = nil
+    armAndUse(1)
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1
+       and #eventsOf(BR.Net.VEH_FIX) == 0,
+        'a build with no BR.Vehicles.drivingHandle still refuses the on-foot use')
     ok(#eventsOf(BR.Net.NOTIFY) == 0, 'it just cannot say so')
-    BR.Vehicles.ridingIn = realRiding
+    BR.Vehicles.drivingHandle = realDriving
 
     -- ── the module guard ──────────────────────────────────────────────────
     --

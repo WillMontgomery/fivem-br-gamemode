@@ -1058,25 +1058,34 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     --
     -- THE BOOLEAN REFUSES AND THE STRING ONLY SPEAKS -- server/shop.lua's
     -- standing convention, and the reason these are two tests rather than one.
-    -- `drivenNetId` answers nil for FOUR different situations and the owner has
-    -- named the sentence for the one a player will meet: they pressed it
-    -- standing in the road. BR.Vehicles.ridingIn is the server's own answer to
-    -- "is this ped in a vehicle at all" (it exists because the bare native is
-    -- citizenfx/fivem#4006 and lies about it), so a ped in no vehicle is told,
-    -- and A PASSENGER, and a driver of a vehicle the platform does not network,
-    -- are refused in silence exactly as before.
+    -- `drivenNetId` answers nil for FOUR different situations and the sentence
+    -- is true of three of them.
     --
-    -- THE PASSENGER'S SILENCE IS NOW AN ASYMMETRY RATHER THAN A GAP, AND IT IS
-    -- FLAGGED RATHER THAN CLOSED. The old sentence could not be said to somebody
-    -- sitting in a car -- it would have been a lie -- and that was the whole
-    -- reason for the silence. The new one is TRUE of a passenger, and the
-    -- mid-channel arm below does say it to one. What is missing is not a reason
-    -- but a ruling: the owner named two moments ("switch seats", "leave the
-    -- vehicle") and pressing the key from a passenger seat is a third he has not
-    -- been asked about. Inventing the extension is how copy stops being his.
+    -- THE PASSENGER IS TOLD NOW, AND THAT WAS A RULING. The asymmetry this block
+    -- used to describe was real: the mid-channel arm said the sentence to a
+    -- player who slid out of the driver's seat, and this arm said nothing to the
+    -- same player in the same seat if that is where they pressed it. Asked about
+    -- it, the owner (2026-09-04): "Passengers should get the toast too if they
+    -- try to use it." So the test is no longer "is this ped in a vehicle at all"
+    -- but the question the sentence is actually about.
     --
-    -- ...AND A BUILD WITH NO `ridingIn` STILL REFUSES, it just says nothing.
-    -- Absent copy must never delete a rule.
+    -- BR.Vehicles.drivingHandle IS THAT QUESTION, and it is the same one the
+    -- mid-channel arm asks -- `drivenVehicle` exported, seat -1 or nothing --
+    -- so "is this player driving" still has ONE answer on this server. On foot
+    -- and passenger both answer nil and both are told. A DRIVER OF A CAR THE
+    -- PLATFORM WILL NOT NETWORK (the Battle Bus) is the fourth situation and is
+    -- still refused in silence: they ARE at a wheel, so the sentence would be a
+    -- lie, and no wording for that has been agreed.
+    --
+    -- `ridingIn` IS NO LONGER READ HERE. It answered a narrower question than
+    -- the sentence asks, which is exactly why it produced the asymmetry.
+    --
+    -- ...AND A BUILD WITH NO `drivingHandle` STILL REFUSES, it just says
+    -- nothing. Absent copy must never delete a rule -- and the guard is written
+    -- as two nested tests rather than one `and` chain on purpose: an absent
+    -- module read as "not driving" would say the sentence to every driver in
+    -- the game, which is how the mid-channel arm was first written and what its
+    -- test now pins.
     --
     -- ═══ NOTHING IS SPENT BY A REFUSAL, AND NOTHING IS SPENT BY THE PRESS ═══
     --
@@ -1088,8 +1097,10 @@ AddEventHandler(BR.Net.INV_USE, function(d)
 
         netId = BR.Vehicles.drivenNetId(src)
         if netId == nil then
-            if BR.Vehicles.ridingIn and BR.Vehicles.ridingIn(e.ped) == nil then
-                BR.Server.notify(src, USE_WHILE_DRIVING, 'warn')
+            if BR.Vehicles.drivingHandle then
+                if BR.Vehicles.drivingHandle(src) == nil then
+                    BR.Server.notify(src, USE_WHILE_DRIVING, 'warn')
+                end
             end
             return
         end
