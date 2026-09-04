@@ -573,8 +573,8 @@ BR.Net = {
     -- an arbitrary one. See br_core/client/sfx.lua's playFrom.
     FUEL_SFX        = 'br:fuel:sfx',
 
-    -- S->C  { n = netId, r = health points } -- "here is another slice of the
-    -- repair kit you are holding, for that car". #228.
+    -- S->C  { n = netId, r = health points, f = true on the last one } -- "here
+    -- is another slice of the repair kit you are holding, for that car". #228.
     --
     -- ═══ N MESSAGES PER KIT, NOT ONE ═══
     --
@@ -589,7 +589,21 @@ BR.Net = {
     --
     -- WHICH MEANS `r` IS A SLICE AND MUST BE ADDED, NOT ASSIGNED. The client
     -- hands it to applyRepair, which adds and clamps; the server keeps the
-    -- running total so the slices sum to exactly one kit.
+    -- running total so the slices sum to exactly one kit. THE LAST ONE CARRIES
+    -- THE REMAINDER and not another whole kit: for one day it carried the full
+    -- cap as a "harmless backstop", which was worth nearly two repairs on a car
+    -- that was taking fire while it mended.
+    --
+    -- ═══ `f` IS THE ONLY THING THE MESSAGE SAYS ABOUT ITSELF ═══
+    --
+    -- Present, and true, on the message that ENDS a kit; absent on every slice.
+    -- The client runs its cosmetic pass -- dents, deformation, decals -- when it
+    -- sees it. That cannot be deduced from `r`, because the remainder is
+    -- routinely zero, and it cannot be deduced from the health either: the
+    -- client's own rule (body reaches full) is right for a pump hold and cannot
+    -- promise anything for a car that was being shot at during the channel. GTA
+    -- has no partial deformation, so the pop happens on one frame whatever
+    -- happens, and this is the server naming which frame.
     --
     -- ═══ WHY THIS IS NOT FUEL_SET WITH AN `r` ON IT ═══
     --
@@ -615,8 +629,9 @@ BR.Net = {
     --
     -- AND IT IS WORTH MORE NOW THAT THERE ARE MANY. The server holds the netId
     -- it ruled on for the whole channel and refuses to grant against any other,
-    -- so the two ends agree on the car twice; what a mismatch costs has also
-    -- shrunk from the whole item to one 250ms slice of it.
+    -- so the two ends agree on the car twice; and a mismatch now costs nothing
+    -- at all -- one 250ms slice goes astray, and the item is not spent until the
+    -- completion, which the server's own seat guard will have cancelled first.
     VEH_FIX         = 'br:veh:fix',
 
     -- Vehicle boost. The CLIENT owns the meter, the push and its own flames --

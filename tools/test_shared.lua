@@ -2842,38 +2842,63 @@ do
                .. 'catalogue id -- server/inventory.lua branches on this and '
                .. 'knows nothing else about vehicles')
 
-        -- ═══ THE TWO FIELDS THAT MAKE IT DIVERGE, AND BOTH ARE OWNER RULINGS
-        --     ═══
+        -- ═══ THE ONE FIELD THAT MAKES IT DIVERGE, AND IT IS AN OWNER RULING ═══
         --
-        -- FIELDS RATHER THAN AN ID TEST, which is the property worth asserting:
+        -- A FIELD RATHER THAN AN ID TEST, which is the property worth asserting:
         -- server/inventory.lua's tick loop must never learn the string
-        -- 'repairkit'. If either of these is dropped from the row the item
-        -- silently rejoins the general rule -- it would start refunding itself
-        -- on an interruption, or start cancelling when the driver is shot --
-        -- and nothing else in the suite would notice.
-        ok(kit and kit.spendOnPress == true,
-           '"the actuation is a momentary press like anything else - then once '
-               .. 'it\'s spent, it\'s spent" (owner, 2026-09-03): the press '
-               .. 'debits it, so an interrupted channel costs the whole item')
+        -- 'repairkit'. If this is dropped from the row the item silently rejoins
+        -- the general rule -- it would start cancelling when the driver is shot
+        -- -- and nothing else in the suite would notice.
         ok(kit and kit.ignoresDamage == true,
-           'and "let\'s not use that to stop any type of bullet damage" '
+           '"let\'s not use that to stop any type of bullet damage" '
                .. '(owner, 2026-09-03): being shot does not interrupt it')
 
-        -- ...AND NOTHING ELSE OPTS OUT OF EITHER. Both fields exist for this
-        -- one row; a second item quietly acquiring one is a behaviour change to
-        -- an item nobody was looking at, which is precisely how the shop car
-        -- would inherit press-debit by accident.
+        -- ═══ AND IT IS SPENT BY ITS COMPLETION LIKE EVERYTHING ELSE ═══
+        --
+        -- ASSERTED AS AN ABSENCE, DELIBERATELY. For one day this row carried
+        -- `spendOnPress = true` and the item was debited by the keypress, which
+        -- emptied the slot the instant the bar appeared. The owner: "Any other
+        -- consumable doesn't get removed until the progress bar is full, and
+        -- that's why we have a progress bar - because it's in progress."
+        -- (2026-09-03). The field was deleted rather than set false -- a field
+        -- with no true case is scaffolding -- so what this line guards is that
+        -- nobody puts it back on this row while reading the old comments.
+        ok(kit and kit.spendOnPress == nil,
+           'and it declares nothing about WHO PAYS: the completion spends it, '
+               .. 'exactly as it spends a med kit, so an interrupted channel '
+               .. 'costs nothing')
+
+        -- ...AND NOTHING ELSE OPTS OUT OF DAMAGE-CANCEL. The field exists for
+        -- this one row; a second item quietly acquiring it is a behaviour change
+        -- to an item nobody was looking at.
         local divergent = {}
         for _, c in ipairs(BR.Config.Consumables) do
-            if c.id ~= 'repairkit' and (c.spendOnPress or c.ignoresDamage) then
+            if c.id ~= 'repairkit' and c.ignoresDamage then
                 divergent[#divergent + 1] = c.id
             end
         end
         ok(#divergent == 0,
-           'and no other consumable carries either field -- the med kit, the '
-               .. 'bandage, both shields and the shop car keep the general '
-               .. 'contract exactly',
+           'and no other consumable carries it -- the med kit, the bandage, '
+               .. 'both shields and the shop car keep the general contract '
+               .. 'exactly',
            table.concat(divergent, ', '))
+
+        -- ...AND NO ROW ANYWHERE STILL CARRIES THE RETIRED FIELD, including the
+        -- CPR kit and the shop car, which are consumables this loop does not
+        -- walk. A leftover here would be inert -- nothing reads it any more --
+        -- and inert scaffolding is exactly what this repo keeps learning gets
+        -- read as live.
+        local pressers = {}
+        for _, c in ipairs(BR.Config.Consumables) do
+            if c.spendOnPress ~= nil then pressers[#pressers + 1] = c.id end
+        end
+        if BR.Config.CprKit.spendOnPress ~= nil then
+            pressers[#pressers + 1] = 'cprkit'
+        end
+        ok(#pressers == 0,
+           'and `spendOnPress` is gone from the config entirely, not merely '
+               .. 'switched off',
+           table.concat(pressers, ', '))
 
         -- IT IS NOT A POTION. `health`/`armour` are interpolated across the
         -- channel by the use tick and land on the PED; this item's whole effect

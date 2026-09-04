@@ -6541,20 +6541,35 @@ describe('inv.repairkit')
 -- (server/vehicles.lua), the INV_USE press and the `inv.use` tick loop
 -- (server/inventory.lua). test_fuel.lua covers the client half as source.
 --
--- ═══ WHAT MOVED ON 2026-09-03 ═══
+-- ═══ WHAT MOVED, AND IT MOVED TWICE ═══
 --
--- The item shipped INSTANT: one press, one grant, no channel. The owner
--- reversed that, and it is now a 5s channel whose PRESS pays for it. So most of
--- what this block used to assert is now the opposite of the requirement, and
--- three properties carry the new design:
+-- The item shipped INSTANT: one press, one grant, no channel. The owner reversed
+-- that on 2026-09-03 and it became a 5s channel -- and the build that landed it
+-- also moved the DEBIT to the keypress, which he then corrected in turn:
 --
---   THE CHANNEL SURVIVES ITS OWN DEBIT. The tick loop drops a use whose slot no
---   longer holds what it started, which a press-time debit trips on pass one.
+--   "when using it the inventory item visually goes away immediately and the
+--    item function is applied immediately. BUT THEN the progress bar shows up.
+--    What we'd discussed earlier is not that. Any other consumable doesn't get
+--    removed until the progress bar is full, and that's why we have a progress
+--    bar - because it's in progress. For a repair kit, 'in progress' would be
+--    the car's health incrementally increasing throughout the timespan of the
+--    progress bar increasing."                  -- owner, 2026-09-03
 --
---   THE COMPLETION DOES NOT DEBIT AGAIN. `carryMax = 1` does not stop a second
---   kit reaching the emptied slot mid-channel.
+-- So four properties carry the design this block now pins:
 --
---   THE DRIVING SEAT IS RE-RULED EVERY PASS, and losing it costs the item.
+--   THE SLOT KEEPS THE KIT FOR THE WHOLE FIVE SECONDS. The completion is what
+--   spends it, exactly as it spends a med kit, so the bar draws over a plate
+--   that still has its icon, its label and its rarity band.
+--
+--   AN INTERRUPTED CHANNEL COSTS NOTHING and keeps the repair it earned. Both
+--   halves are the owner's ruling and neither is a bug to be fixed.
+--
+--   ONE KIT IS WORTH EXACTLY ONE KIT. The slices and the completion sum to a
+--   single BR.Config.Fuel.healthMax, even on a car that is being shot at -- for
+--   one day the completion sent the whole cap ON TOP of the slices.
+--
+--   THE DRIVING SEAT IS RE-RULED EVERY PASS, losing it cancels, and the cancel
+--   now SPEAKS the owner's sentence.
 do
     lootMatch()
 
@@ -6601,7 +6616,7 @@ do
         'and a vehicle with no network id is no target, rather than target 0')
     NetworkGetNetworkIdFromEntity = function(e) return (tonumber(e) or 0) * 10 + 7 end
 
-    -- ── the use: a channel, and the press is what pays for it ─────────────
+    -- ── the use: a channel, and the COMPLETION is what pays for it ────────
     --
     --   "instead of instantly burning the item it should have a progress bar
     --    akin to spawning a vehicle from inventory or using a consumable. As
@@ -6609,14 +6624,13 @@ do
     --    to finally reach full once the item has been spent."
     --                                          -- owner, 2026-09-03
     --
-    --   "we don't hold to 90, get bumped, and keep the item. The actuation is
-    --    a momentary press like anything else - then once it's spent, it's
-    --    spent."                               -- owner, 2026-09-03
+    --   "Any other consumable doesn't get removed until the progress bar is
+    --    full, and that's why we have a progress bar - because it's in
+    --    progress."                            -- owner, 2026-09-03
     --
     -- This block used to assert the opposite of all of it -- "opens NO channel",
-    -- "exactly one repair", "no second repair arrives on any later pass" -- and
-    -- that is why it is worth saying what changed rather than only what is true
-    -- now.
+    -- "exactly one repair", "the PRESS is what spends it" -- and that is why it
+    -- is worth saying what changed rather than only what is true now.
     local kit = BR.Config.ConsumableById['repairkit']
 
     BR.Inv.reset(1)
@@ -6636,26 +6650,29 @@ do
         'of the length the row declares, which is what the bar animates over',
         BR.Inv.of(1).using and tostring(BR.Inv.of(1).using.ms))
 
-    -- ═══ THE PRESS SPENDS IT, AND THE CHANNEL SURVIVES THAT ═══
+    -- ═══ THE PRESS SPENDS NOTHING, AND THE PLATE STAYS DRESSED ═══
     --
-    -- THIS PAIR IS THE WHOLE TRAP. The tick loop cancels a use whose slot no
-    -- longer holds the item it started -- a general rule that predates this
-    -- item -- so a press-time debit trips it on the very first pass and the
-    -- channel dies 250ms in with the kit already gone and no repair. The
-    -- `u.spent` gate is what stops it, and nothing else in this suite would
-    -- notice its removal: the first assertion below would still pass.
-    ok(BR.Inv.of(1).slots[1] == false,
-        'and the PRESS is what spends it -- "once it\'s spent, it\'s spent"',
-        tostring(BR.Inv.of(1).slots[1]))
+    -- THIS IS THE OWNER'S ACTUAL COMPLAINT, in the one form this suite can see
+    -- it. He watched the icon vanish the instant the bar appeared; `publicFor`
+    -- builds the bar's slot from `inv.slots[i]` and the fill from `inv.using`
+    -- as two independent props, so a populated slot here IS an icon, a count
+    -- and a rarity band under the fill.
+    local held = BR.Inv.of(1).slots[1]
+    ok(held and held.item == 'repairkit' and held.count == 1,
+        'the press spends NOTHING -- the kit is still in the slot, so the bar '
+            .. 'draws over a plate with its icon, its label and its rarity '
+            .. 'band on it',
+        tostring(held and held.count))
     ok(#eventsOf(BR.Net.VEH_FIX) == 0,
         'nothing is repaired on the press itself -- the grant rides the bar')
 
     fakeTime = t0 + 250
     BR.Sched.step(fakeTime)
     ok(BR.Inv.of(1).using ~= nil,
-        'and the channel SURVIVES the empty slot it just created -- the '
-            .. 'slot-identity guard is waived for an already-paid use, which '
-            .. 'is the one way this ships broken')
+        'and the channel runs on under the ordinary slot-identity guard, '
+            .. 'which is no longer waived for anything')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'the slot still holding the kit a quarter of a second in')
 
     -- ═══ THE CAR MENDS AS THE BAR FILLS ═══
     --
@@ -6681,6 +6698,8 @@ do
         'and it is a SLICE of the pump\'s healthMax rather than the whole job',
         tostring(slice1))
 
+    local granted = slice1
+
     sent = {}
     fakeTime = t0 + 2500
     BR.Sched.step(fakeTime)
@@ -6691,29 +6710,53 @@ do
             .. 'the ledger sends the DIFFERENCE, so the slices sum to one kit '
             .. 'rather than to however many ticks happened to fire',
         midFix[1] and tostring(midFix[1].args[1].r))
+    granted = granted + (midFix[1] and midFix[1].args[1].r or 0.0)
     ok(BR.Inv.of(1).using ~= nil, 'and the channel is still running')
 
-    -- ═══ AND IT REACHES FULL EXACTLY WHEN THE ITEM IS SPENT ═══
+    -- ═══ AND THE COMPLETION SENDS THE REMAINDER, NOT ANOTHER WHOLE KIT ═══
     --
-    -- THE COMPLETION SENDS THE WHOLE CAP, not the remainder, and that is a
-    -- backstop rather than an accident: applyRepair clamps, so an over-generous
-    -- last grant costs nothing and "reaches full once the item has been spent"
-    -- is true however many slices went astray. It is also the payload that
-    -- makes fixCosmetic fire, which is where GTA pops the dents -- there is no
-    -- partial deformation to animate.
+    -- THIS ASSERTION USED TO LOCK IN A DOUBLE PAYMENT. It read `last.r ==
+    -- healthMax` and called the full cap a harmless backstop, because
+    -- applyRepair clamps -- but the slices above have already telescoped to ~95%
+    -- of the cap by the last in-channel pass, so one kit put ~1950 points on the
+    -- wire. Invisible on an undamaged car; worth nearly two repairs on a car
+    -- taking fire, which is the exact situation `ignoresDamage` exists for, and
+    -- twice the pump this item was priced against.
     sent = {}
     fakeTime = t0 + kit.useMs
     BR.Sched.step(fakeTime)
     local doneFix = eventsOf(BR.Net.VEH_FIX)
     ok(#doneFix >= 1, 'the completion sends one last grant')
     local last = doneFix[#doneFix] and doneFix[#doneFix].args[1]
-    ok(last and last.r == BR.Config.Fuel.healthMax,
-        'and it is the pump\'s own healthMax in full -- enough to cap all '
-            .. 'three pools, which is what makes the dents pop and the decals '
-            .. 'wash',
+    for _, s in ipairs(doneFix) do
+        granted = granted + (s.args[1].r or 0.0)
+    end
+    ok(last and last.r > 0.0 and last.r < BR.Config.Fuel.healthMax,
+        'and it is the REMAINDER the ledger says is outstanding, not the '
+            .. 'pump\'s whole healthMax over again',
         last and tostring(last.r))
+    -- THE SUM IS THE PROPERTY, and the individual magnitudes are only how it is
+    -- reached. Epsilon rather than equality because the slices are interpolated
+    -- through floating point; anything a rounding error can hide is far below a
+    -- health point on GTA's 0..1000 scale.
+    ok(math.abs(granted - BR.Config.Fuel.healthMax) < 1e-6,
+        'so the whole channel is worth exactly ONE BR.Config.Fuel.healthMax -- '
+            .. 'one kit is one kit, and the pump\'s ten-second hold is still '
+            .. 'the same repair in twice the time',
+        ('%.6f'):format(granted))
+    ok(last and last.f == true,
+        'the last message is FLAGGED as the last, which is what pops the dents '
+            .. '-- the client cannot deduce it from a remainder that is '
+            .. 'routinely zero, and GTA has no partial deformation to animate',
+        last and tostring(last.f))
+    ok(midFix[1] and midFix[1].args[1].f == nil,
+        'and no slice carries the flag, so nothing pops them early')
     ok(last and last.n == NID, 'still aimed at the car the press ruled on')
     ok(BR.Inv.of(1).using == nil, 'and the channel is over')
+    ok(BR.Inv.of(1).slots[1] == false,
+        'and THIS is what spends the kit -- the completion, exactly as it '
+            .. 'spends a med kit',
+        tostring(BR.Inv.of(1).slots[1]))
     ok(#eventsOf(BR.Net.INV_EFFECT) == 0,
         'no health or shield ever lands -- the kit moves nothing on the ped, '
             .. 'and it does not stamp the health audit\'s amnesty window either')
@@ -6724,14 +6767,16 @@ do
     ok(#eventsOf(BR.Net.VEH_FIX) == 0,
         'and nothing arrives after it -- one kit, one channel, one car')
 
-    -- ── the completion must not eat a SECOND kit ──────────────────────────
+    -- ── an interrupted channel costs nothing ──────────────────────────────
     --
-    -- `carryMax = 1` stops a player holding two. It does NOT stop them holding
-    -- one while a channel they already paid for is running: the press emptied
-    -- the slot, so the cap permits a pickup, and BR.Inv.give fills the first
-    -- empty slot -- which is that one. The slot-identity guard then passes on
-    -- the NEW item, and a completion that debited unconditionally would take it
-    -- for a repair it did not pay for. A reachable double-spend.
+    -- THE GENERAL CONTRACT, WHICH THIS ITEM REJOINED. A slot switch is the
+    -- commonest way any channel dies -- INV_SELECT clears `inv.using` outright
+    -- -- and for one day it cost a legendary item, because the press had already
+    -- paid. It costs nothing now, and the repair the slices already granted is
+    -- kept, exactly as a cancelled med kit keeps its partial heal. The owner has
+    -- ruled on this twice; a build that "fixed" it by refunding the health or by
+    -- withholding it until completion would be undoing "because it's in
+    -- progress".
     BR.Inv.reset(1)
     BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
                      rarity = kit.rarity, count = 1 })
@@ -6739,20 +6784,26 @@ do
     sent = {}
     t0 = fakeTime
     fire(BR.Net.INV_USE, 1, { slot = 1 })
-    ok(BR.Inv.of(1).slots[1] == false, 'precondition: the press emptied slot 1')
-
-    local tookSecond = BR.Inv.give(1, { item = 'repairkit',
-        kind = BR.ItemKind.CONSUMABLE, rarity = kit.rarity, count = 1 })
-    ok(tookSecond == true and BR.Inv.of(1).slots[1]
-       and BR.Inv.of(1).slots[1].item == 'repairkit',
-        'a fresh kit picked up mid-channel lands in the slot the old one left')
-
-    fakeTime = t0 + kit.useMs
+    fakeTime = t0 + 250
     BR.Sched.step(fakeTime)
+    local partway = #eventsOf(BR.Net.VEH_FIX)
+    ok(partway >= 1, 'precondition: a slice has already landed')
+
+    fire(BR.Net.INV_SELECT, 1, { slot = 2 })
+    ok(BR.Inv.of(1).using == nil, 'switching slots mid-channel cancels the use')
     ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
-        'and the completion does NOT spend it -- the press bought the first '
-            .. 'kit and only the first kit',
+        'and the kit is STILL THERE -- "any other consumable doesn\'t get '
+            .. 'removed until the progress bar is full"',
         tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
+
+    sent = {}
+    fakeTime = t0 + kit.useMs + 250
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.VEH_FIX) == 0,
+        'no completion grant arrives for a channel that was cancelled, so the '
+            .. 'car keeps the part it earned and no more -- the repair already '
+            .. 'delivered is not taken back either, which is the same shape as '
+            .. 'a cancelled med kit\'s partial heal')
 
     -- ── bullets do not stop it ────────────────────────────────────────────
     --
@@ -6786,9 +6837,30 @@ do
     fakeTime = t0 + kit.useMs
     BR.Sched.step(fakeTime)
     local underFire = eventsOf(BR.Net.VEH_FIX)
-    ok(underFire[#underFire]
-       and underFire[#underFire].args[1].r == BR.Config.Fuel.healthMax,
-        'and the car still reaches full through the whole magazine')
+
+    -- ═══ AND A KIT SPENT UNDER FIRE IS STILL WORTH EXACTLY ONE KIT ═══
+    --
+    -- THE CASE THE DOUBLE PAYMENT WAS ACTUALLY VISIBLE IN, which is why the sum
+    -- is asserted here a second time rather than only on the clean run above. A
+    -- car that is not being shot at reaches its cap early and applyRepair clamps
+    -- the excess away, so an over-generous completion is invisible; a car losing
+    -- health throughout the channel banks every point of it. `ignoresDamage` is
+    -- the whole reason this item is ever used in that situation.
+    local underFireTotal = 0.0
+    for _, s in ipairs(underFire) do
+        underFireTotal = underFireTotal + (s.args[1].r or 0.0)
+    end
+    ok(math.abs(underFireTotal - BR.Config.Fuel.healthMax) < 1e-6,
+        'the whole magazine buys the driver one healthMax and not a point '
+            .. 'more, because the completion sends the remainder rather than '
+            .. 'the cap on top of the slices',
+        ('%.6f'):format(underFireTotal))
+    ok(underFire[#underFire] and underFire[#underFire].args[1].f == true,
+        'and the dents still pop at the end, on a car that may well finish '
+            .. 'below full -- the flag is the promise, not the health')
+    ok(BR.Inv.of(1).slots[1] == false,
+        'and the kit is spent by the completion, under fire or not',
+        tostring(BR.Inv.of(1).slots[1]))
 
     -- ...AND THE MED KIT IS UNTOUCHED BY THE EXEMPTION, which is the half that
     -- proves this is `ignoresDamage` on one row and not damage-cancel being
@@ -6815,15 +6887,16 @@ do
             .. 'completion is what consumes, so an interrupted use is free')
     pedHealth[1001] = nil
 
-    -- ── the driving seat, for the whole channel ───────────────────────────
+    -- ── the driving seat, for the whole channel, and it SPEAKS ────────────
     --
     -- The shop car's guard exactly: the seat is a fact about the WHOLE use and
     -- not about the frame it started on. Five seconds is long enough to be
     -- blown out of the car, to slide over, or for it to despawn.
     --
-    -- AND THERE IS NO REFUND, which is the owner's own ruling and the reason
-    -- the shop car's arm cannot simply be copied: that one cancels a use whose
-    -- item is still in the bag.
+    --   "if they switch seats before it is finished it should still apply, and
+    --    same if they leave the vehicle mid-use."  -- owner, 2026-09-04
+    --
+    -- "It" is the press-time sentence. This arm was silent until he wrote that.
     BR.Inv.reset(1)
     BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
                      rarity = kit.rarity, count = 1 })
@@ -6843,14 +6916,16 @@ do
     BR.Sched.step(fakeTime)
     ok(BR.Inv.of(1).using == nil,
         'leaving the driving seat mid-channel cancels the use')
-    ok(BR.Inv.of(1).slots[1] == false,
-        'and does NOT give the kit back -- "once it\'s spent, it\'s spent". '
-            .. 'The repair already granted is kept; the rest is not earned',
-        tostring(BR.Inv.of(1).slots[1]))
-    ok(#eventsOf(BR.Net.NOTIFY) == 0,
-        'and nothing is said about it -- no wording for this cancellation has '
-            .. 'been agreed, and a rule must not wait on one. Adding a '
-            .. 'sentence later fails THIS line rather than passing unnoticed')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'and the kit COMES BACK -- it was never taken, because the completion '
+            .. 'is what spends it and this channel never reached one',
+        tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
+    local leftSaid = nil
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do leftSaid = s.args[1].text end
+    ok(leftSaid == 'You can only use this item while driving.',
+        'and they are told why, in the owner\'s exact words -- the same '
+            .. 'sentence the press refuses with, because it is the same rule',
+        tostring(leftSaid))
 
     sent = {}
     fakeTime = t0 + kit.useMs + 250
@@ -6859,20 +6934,123 @@ do
         'and no completion grant ever arrives, so the car keeps the part it '
             .. 'earned and no more')
 
-    -- ...AND A CANCEL COSTS ONE SLICE, NOT THE WHOLE JOB. Stated as its own
-    -- assertion because "the player keeps what they earned" is the half of the
-    -- owner's ruling that makes the press-debit fair, and it would be silently
-    -- lost by a build that only sent the grant on completion.
+    -- ...AND A CANCEL COSTS ONE SLICE OF THE REPAIR AND NOTHING ELSE. Stated as
+    -- its own assertion because "the health climbs as the bar climbs" is the
+    -- owner's requirement -- "'in progress' would be the car's health
+    -- incrementally increasing throughout the timespan of the progress bar" --
+    -- and it would be silently lost by a build that only granted on completion.
     ok(before >= 1 and #eventsOf(BR.Net.VEH_FIX) == 0,
-        'a cut-off use leaves the car partly mended rather than untouched -- '
-            .. 'the petrol station\'s rule, in the owner\'s words: 60% of the '
-            .. 'bar is 60% of the repair')
+        'a cut-off use leaves the car partly mended rather than untouched, and '
+            .. 'the player still holding the kit')
+
+    -- ═══ SWITCHING SEATS SAYS IT TOO, AND STILL DRIVING DOES NOT ═══
+    --
+    -- The second of the two moments he named. It is a different situation from
+    -- the one above and reaches the same branch, so it is proved separately:
+    -- `ridingIn` answers a vehicle for a passenger, and only
+    -- BR.Vehicles.drivingHandle can tell that seat from a driver's.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    vehSeat[VEH] = {}
+    drive(1, VEH)
+    sent = {}
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(BR.Inv.of(1).using ~= nil, 'precondition: the channel is running')
+
+    vehSeat[VEH] = {}
+    drive(1, VEH, 0)          -- slid across into the front passenger seat
+    sent = {}
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    ok(BR.Inv.of(1).using == nil, 'sliding into a passenger seat cancels it')
+    local seatSaid = nil
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do seatSaid = s.args[1].text end
+    ok(seatSaid == 'You can only use this item while driving.',
+        'and says the same sentence -- they are in the car, and they are not '
+            .. 'driving it',
+        tostring(seatSaid))
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'and it costs them nothing')
+
+    -- ...AND THE SENTENCE IS NOT SAID TO SOMEBODY WHO IS DRIVING. Two of the
+    -- four situations that reach this branch are a player at a wheel: a car the
+    -- platform will not network, and a DIFFERENT car. "You can only use this
+    -- item while driving" is false to both, and no wording has been given for
+    -- either, so both cancel in silence. Driven here through the un-networked
+    -- case, which is the Battle Bus.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    vehSeat[VEH] = {}
+    drive(1, VEH)
+    sent = {}
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(BR.Inv.of(1).using ~= nil, 'precondition: the channel is running')
+
+    NetworkGetNetworkIdFromEntity = function() return 0 end
+    sent = {}
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    NetworkGetNetworkIdFromEntity = function(e) return (tonumber(e) or 0) * 10 + 7 end
+    ok(BR.Inv.of(1).using == nil,
+        'a car that stops being networked mid-channel still cancels the use')
+    ok(#eventsOf(BR.Net.NOTIFY) == 0,
+        'but says NOTHING, because that player is driving and the sentence '
+            .. 'would be a lie. No wording has been agreed for it')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'and it costs them nothing either')
+
+    -- ...AND A BUILD WITH NO `drivingHandle` STILL CANCELS. Absent copy must
+    -- never delete a rule -- the same shape as the `ridingIn` guard at the
+    -- press, and the reason the sentence is gated on the module.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    vehSeat[VEH] = {}
+    drive(1, VEH)
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    local realDriving = BR.Vehicles.drivingHandle
+    BR.Vehicles.drivingHandle = nil
+    stepOut(VEH)
+    sent = {}
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    BR.Vehicles.drivingHandle = realDriving
+    ok(BR.Inv.of(1).using == nil,
+        'with no BR.Vehicles.drivingHandle to ask, the seat rule still cancels')
+    ok(#eventsOf(BR.Net.NOTIFY) == 0,
+        'and it stays silent rather than guessing -- an absent module is not '
+            .. 'an answer of "not driving", and the first spelling of this '
+            .. 'said the sentence to every driver on such a build')
+
+    -- ═══ AND THE SEAT GUARD SITS ABOVE THE LINE THAT SPENDS THE ITEM ═══
+    --
+    -- tools/test_shop.lua pins exactly this for the shop car and there was no
+    -- mirror of it for the repair arm. It matters more now than it did: with the
+    -- debit back at the completion, this ordering is the whole of the difference
+    -- between "cancelled at 4.9 seconds" and "kit eaten for a repair nobody
+    -- received". Asserted as SOURCE ORDER because the pass that would prove it
+    -- at runtime is the pass that must not happen.
+    local ifh = io.open(ROOT .. 'br_core/server/inventory.lua')
+    local invsrc = ifh and ifh:read('a') or ''
+    if ifh then ifh:close() end
+    ok(#invsrc > 0, 'server/inventory.lua is readable')
+    local seatGuard = invsrc:find('if nid == nil or nid ~= u%.veh then')
+    local consume = invsrc:find(
+        's%.count = s%.count %- 1\n%s*if s%.count <= 0 then inv%.slots%[u%.slot%] = false end')
+    ok(seatGuard ~= nil and consume ~= nil and seatGuard < consume,
+        'the driving-seat re-rule is above the completion debit, so no pass '
+            .. 'can spend a kit for a player who has just left the wheel')
 
     -- ── refused, and nothing is spent ─────────────────────────────────────
     --
-    -- THE ORDERING IS THE POINT. Every one of these runs BEFORE the debit, so a
-    -- mis-press costs a keypress rather than a legendary item. The on-foot arm
-    -- is the only one with agreed wording.
+    -- Nothing is spent by a press at all any more, so what these prove is that
+    -- no CHANNEL opens and no repair goes out. The not-driving arm is the only
+    -- one with agreed wording.
     local function armAndUse(src)
         BR.Inv.reset(src)
         BR.Inv.give(src, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
@@ -6889,38 +7067,50 @@ do
     ok(#eventsOf(BR.Net.VEH_FIX) == 0, 'and no repair goes out')
     ok(BR.Inv.of(1).using == nil, 'and no channel is opened either')
 
-    -- ═══ ...AND THIS ONE SPEAKS (#228, 2026-09-03) ═══
+    -- ═══ ...AND THIS ONE SPEAKS (#228, 2026-09-04) ═══
     --
-    --   "trying to use it on foot should give a toast saying "You cannot use
-    --    this item while on foot""              -- owner, 2026-09-03
+    --   "the copy should be revised to 'You can only use this item while
+    --    driving.'"                            -- owner, 2026-09-04
     --
-    -- ASSERTED VERBATIM, INCLUDING THE MISSING FULL STOP. Every other toast in
-    -- this project ends in one; this is the owner's sentence as he wrote it and
-    -- he has not been asked to rule on the discrepancy, so it is preserved
-    -- exactly rather than tidied. If he later says "add the period", this line
-    -- is what has to change, deliberately.
+    -- ASSERTED VERBATIM, FULL STOP INCLUDED. It replaced "You cannot use this
+    -- item while on foot", which he had given the day before and which this line
+    -- pinned just as exactly -- down to the full stop that sentence was MISSING.
+    -- The wording is his both times; what changed is which fact it states. If he
+    -- revises it again, this line is what has to change, deliberately.
     local said = nil
     for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do said = s.args[1].text end
-    ok(said == 'You cannot use this item while on foot',
+    ok(said == 'You can only use this item while driving.',
         'and they are told why, in the owner\'s exact words',
         tostring(said))
 
     -- ═══ THE BOOLEAN REFUSES AND THE STRING ONLY SPEAKS ═══
     --
     -- server/shop.lua's standing convention, and the reason the refusal and the
-    -- sentence are two tests rather than one. `drivenNetId` answers nil for
-    -- four different situations; the owner has given wording for exactly one,
-    -- so a passenger is refused in SILENCE rather than told they are on foot.
+    -- sentence are two tests rather than one. `drivenNetId` answers nil for four
+    -- different situations and the press speaks for one of them.
+    --
+    -- ═══ AND THE PASSENGER'S SILENCE IS NOW AN ASYMMETRY, PINNED ON PURPOSE ═══
+    --
+    -- The old sentence could not be said to a passenger without lying to them,
+    -- and that was the whole reason for this silence. The new one is TRUE of a
+    -- passenger -- and the mid-channel arm above DOES say it to one who slides
+    -- across. So the same player, in the same seat, is told two different things
+    -- depending on when they pressed. What is missing is a ruling, not a reason:
+    -- the owner named two moments and pressing from a passenger seat is a third
+    -- he has not been asked about. Asserted as it stands so that extending it is
+    -- a deliberate change to THIS line rather than a quiet one.
     armAndUse(1)
     drive(1, VEH, 0)
     sent = {}
     fire(BR.Net.INV_USE, 1, { slot = 1 })
     ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1
-       and #eventsOf(BR.Net.VEH_FIX) == 0,
-        'and a passenger spends nothing')
+       and #eventsOf(BR.Net.VEH_FIX) == 0
+       and BR.Inv.of(1).using == nil,
+        'and a passenger opens no channel')
     ok(#eventsOf(BR.Net.NOTIFY) == 0,
-        'and is told nothing -- they are not on foot, and no wording for the '
-            .. 'passenger refusal has been agreed')
+        'and is told nothing at the PRESS -- no wording for the passenger '
+            .. 'refusal has been agreed, though the mid-channel arm above now '
+            .. 'says the sentence to the same player in the same seat')
 
     -- ...AND WITH NO `ridingIn` TO ASK, THE RULE STILL REFUSES AND SAYS
     -- NOTHING. Absent copy must never delete a rule -- the same shape as the

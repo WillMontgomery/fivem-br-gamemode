@@ -1169,23 +1169,39 @@ end)
 --- there is nothing to share across one; a public entry point would be a way for
 --- some future file to apply vehicle health without the ordering note above it.
 ---
---- ═══ WHY THIS IS A FULL REPAIR AND THE PUMP'S IS NOT ═══
+--- ═══ WHY A KIT IS A FULL REPAIR AND THE PUMP'S HOLD IS NOT ═══
 ---
---- Nothing here decides that. The server grants BR.Config.Fuel.healthMax, which
---- is enough to cap every pool -- and the cosmetic pass fires on the frame the
---- BODY reaches full, which it now does on the first call. A driver who lets go
---- of the pump early still gets their partial and keeps their dents, by exactly
---- the same rule, because their grant was smaller.
+--- Nothing here decides that. The server sends one of these every 250ms for the
+--- length of the channel and a last one at completion, and they sum to exactly
+--- BR.Config.Fuel.healthMax -- enough to cap every pool on a car that was not
+--- being shot at meanwhile. A driver who lets go of the pump early still gets
+--- their partial and keeps their dents, by exactly the same rule, because their
+--- grants were smaller.
+---
+--- ═══ `d.f` IS "THIS IS THE LAST ONE", AND IT IS THE DENTS (#228) ═══
+---
+--- applyRepair pops the deformation when the BODY reaches full, which is the
+--- right trigger for a pump hold and cannot be a promise for a kit: the grants
+--- now sum to one kit's worth rather than to one kit's worth ON TOP of whatever
+--- already landed, so a car that took fire during the five seconds can finish
+--- the channel below full. The owner's sentence is about the ITEM, not about the
+--- pools -- "reach full once the item has been spent" -- and GTA has no partial
+--- deformation to animate anyway, so the server marks the message that ends a
+--- kit and the cosmetic pass runs on it. It is SEPARATE from the grant, and runs
+--- even when the remainder is zero, because a completion whose slices already
+--- delivered everything is exactly the case where the dents most obviously ought
+--- to pop.
 ---
 --- ═══ THE THREE THINGS IT REFUSES, AND ALL THREE ARE THE SAME CASE ═══
 ---
 --- A player who left the seat in the time this message took to arrive. Not in a
 --- vehicle, in a different vehicle, or in a vehicle whose network id is not the
---- one the server named: nothing happens. The kit is already spent by then --
---- the server consumed it before this went out -- and that is the shop car's
---- known fault in a much smaller window, which is stated here rather than
---- pretended away. Repairing whatever car they are in NOW would be the worse
---- answer: it spends a kit on a car nobody aimed it at.
+--- one the server named: nothing happens. What that costs has shrunk to one
+--- slice -- the server re-rules the seat every pass and cancels the channel when
+--- it changes -- and the item itself is not spent until the completion, so a
+--- player who steps out mid-repair keeps the kit. Repairing whatever car they
+--- are in NOW would still be the worse answer: it spends a kit on a car nobody
+--- aimed it at.
 ---
 --- `didHit`, not a bare read. IsPedInAnyVehicle is declared BOOL and `0` is
 --- truthy in Lua; the FUEL_SET handler above reads it the same way.
@@ -1195,8 +1211,11 @@ AddEventHandler(BR.Net.VEH_FIX, function(d)
     local nid = math.tointeger(tonumber(d.n))
     if nid == nil then return end
 
+    -- `== true`, not a truth test: this comes off the wire, and every other
+    -- field in this file is read that carefully for the same reason.
+    local finishes = (d.f == true)
     local points = tonumber(d.r) or 0.0
-    if points <= 0.0 then return end
+    if points <= 0.0 and not finishes then return end
 
     local ped = PlayerPedId()
     if not didHit(IsPedInAnyVehicle(ped, false)) then return end
@@ -1204,6 +1223,9 @@ AddEventHandler(BR.Net.VEH_FIX, function(d)
     if netOf(veh) ~= nid then return end
 
     applyRepair(veh, points)
+    -- AFTER the grant, never instead of it: applyRepair puts the engine back,
+    -- and SetVehicleFixed inside fixCosmetic is documented not to.
+    if finishes then fixCosmetic(veh) end
 end)
 
 --- The pump cues, played from the car so everybody in it hears them.

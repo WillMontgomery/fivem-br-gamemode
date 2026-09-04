@@ -992,6 +992,30 @@ local function drivenVehicle(entry)
     return veh
 end
 
+--- The car this player is DRIVING, as an entity handle, or nil.
+---
+--- ═══ WHY THIS IS EXPORTED SEPARATELY FROM `drivenNetId` (#228, 2026-09-04) ═══
+---
+--- Because "is this player driving" and "what is the network id of the car this
+--- player is driving" stopped being the same question the moment a sentence hung
+--- on the answer. `drivenNetId` collapses FOUR nos into nil -- on foot, a
+--- passenger, an unresolvable ped, and a driver of a vehicle the platform does
+--- not network -- and the owner's copy ("You can only use this item while
+--- driving.") is TRUE of the first two and a LIE to the fourth. So the caller
+--- that has to choose between speaking and staying silent asks THIS one, which
+--- answers the seat and nothing about networkability.
+---
+--- IT IS THE SAME `drivenVehicle` BOTH OTHER READERS USE, exported rather than
+--- copied, so citizenfx/fivem#4006 goes on being handled in exactly one place
+--- and there is still one answer on this server to "is this player at a wheel".
+--- @param src integer
+--- @return integer|nil vehicle handle
+function BR.Vehicles.drivingHandle(src)
+    local e = BR.Roster.get and BR.Roster.get(src) or nil
+    if not e then return nil end
+    return drivenVehicle(e)
+end
+
 --- The car this player is DRIVING, as a network id, or nil.
 ---
 --- ═══ WHAT IT IS FOR, AND WHY IT IS RULED HERE ═══

@@ -163,10 +163,10 @@ BR.Config.Consumables = {
         --   AND IT SITS WITH THE SHIELD, the other five seconds in this file --
         --   the thing you commit to while somebody is shooting at you. The Med
         --   Kit's 8000 is deliberately not copied: that number means "a
-        --   commitment you can rarely afford", and since the press now SPENDS
-        --   the kit (below), an eight-second channel in a chase would turn a
-        --   legendary into a coin flip. The warmup shop's 3000 is no guide
-        --   either; nobody is being shot at in the warmup.
+        --   commitment you can rarely afford", and this item is meant to be
+        --   affordable in a chase -- eight seconds of driving in a straight line
+        --   without touching the slot keys is not. The warmup shop's 3000 is no
+        --   guide either; nobody is being shot at in the warmup.
         --
         -- AUTHORED HERE, NOT DERIVED FROM `refuelSeconds` IN CODE. The
         -- half-the-pump relationship is the ARGUMENT, not a formula: that value
@@ -182,29 +182,34 @@ BR.Config.Consumables = {
         -- second one. The value is `true` rather than a number because the kit
         -- always does THE WHOLE JOB by the time it is spent -- see below.
         --
-        -- ═══ `spendOnPress` -- THE PRESS BUYS IT, AND THE CHANNEL CANNOT GIVE
-        --     IT BACK ═══
+        -- ═══ THERE IS NO `spendOnPress`, AND THAT FIELD IS GONE RATHER THAN
+        --     FALSE (2026-09-03) ═══
         --
-        --   "we don't hold to 90, get bumped, and keep the item. The actuation
-        --    is a momentary press like anything else - then once it's spent,
-        --    it's spent."                       -- owner, 2026-09-03
+        -- One build of this row carried it, and the item was debited by the
+        -- keypress. The owner's correction:
         --
-        -- Every other consumable in this file is debited by its COMPLETION, so
-        -- an interrupted use costs nothing. This one is debited by its PRESS, so
-        -- an interrupted use costs everything -- and a player cut off at 60%
-        -- keeps 60% of the repair and no kit. THAT IS THE PETROL STATION'S OWN
-        -- RULE (config/fuel.lua: "one who lets go after three seconds gets 30%
-        -- of both"), which is why it needs no exploit story: the repair the
-        -- client has already been granted is genuinely earned and genuinely
-        -- kept, and there is nothing left to re-press.
+        --   "when using it the inventory item visually goes away immediately
+        --    and the item function is applied immediately. BUT THEN the progress
+        --    bar shows up. What we'd discussed earlier is not that. Any other
+        --    consumable doesn't get removed until the progress bar is full, and
+        --    that's why we have a progress bar - because it's in progress. For a
+        --    repair kit, 'in progress' would be the car's health incrementally
+        --    increasing throughout the timespan of the progress bar increasing."
         --
-        -- A SEPARATE FIELD FROM `repairVeh` ON PURPOSE, even though one item
-        -- carries both today. "Repairs a vehicle" and "is paid for at the press"
-        -- are two different facts, and the guards in server/inventory.lua's tick
-        -- loop that read this one are GENERAL inventory rules -- a reader of
-        -- those lines should not have to know that the first fact implies the
-        -- second. A later partial-repair variant the owner wanted debited at
-        -- completion would otherwise inherit press-debit by accident.
+        -- His earlier sentence -- "the actuation is a momentary press like
+        -- anything else - then once it's spent, it's spent" -- was about the
+        -- INPUT being a tap rather than a held key, which is what this channel
+        -- already is, and about the kit not returning afterwards. It was read as
+        -- "debited at the press" and it was not that. THE KIT IS DEBITED BY ITS
+        -- COMPLETION, so this row declares nothing about who pays and is an
+        -- ordinary consumable in that respect. The field is deleted rather than
+        -- set false because a field with no true case is scaffolding, and this
+        -- repo's standing lesson is that scaffolding gets read as live.
+        --
+        -- WHICH MEANS AN INTERRUPTED USE COSTS NOTHING AGAIN -- the same as a
+        -- med kit -- and the repair the slices already delivered is kept, the
+        -- same way a cancelled med kit's partial heal is kept. Both halves are
+        -- deliberate. server/inventory.lua's INV_USE note carries the rest.
         --
         -- ═══ `ignoresDamage` -- BEING SHOT DOES NOT STOP THE REPAIR ═══
         --
@@ -236,12 +241,20 @@ BR.Config.Consumables = {
         --
         -- At a pump, letting go early buys part of the health back and keeps the
         -- dents (client/fuel.lua: the cosmetic pass fires on the frame the body
-        -- reaches full). The kit now works the same way: server/inventory.lua
+        -- reaches full). The kit climbs the same way: server/inventory.lua
         -- grants an interpolated slice of BR.Config.Fuel.healthMax every 250ms
-        -- and the whole of it on completion, so the bar and the bodywork climb
-        -- together and the dents pop at the end. THAT NUMBER IS NOT COPIED
-        -- HERE: server/inventory.lua reads it off the fuel config, so the kit
-        -- and the pump cannot drift apart.
+        -- and THE REMAINDER on completion, so the slices plus the last one are
+        -- exactly one healthMax and the bodywork climbs with the bar. THAT
+        -- NUMBER IS NOT COPIED HERE: server/inventory.lua reads it off the fuel
+        -- config, so the kit and the pump cannot drift apart.
+        --
+        -- THE DENTS ARE THE ONE THING THE COMPLETION STILL DOES OUTRIGHT. They
+        -- cannot ride the climb -- GTA has no partial deformation -- and "the
+        -- body reached full" cannot be promised for a car that was being shot
+        -- while it mended, now that the grants sum to one kit rather than to one
+        -- kit on top of the damage. So the completion message carries a flag and
+        -- the client pops them on it. The owner's sentence is about the item:
+        -- "reach full once the item has been spent".
         --
         -- WHAT THAT LOOKS LIKE ON A BARELY SCRATCHED CAR: the grant is a flat
         -- fraction of `healthMax` because the SERVER CANNOT READ VEHICLE HEALTH
@@ -316,7 +329,6 @@ BR.Config.Consumables = {
         propScale = 0.6,
         useMs = 5000, maxStack = 1, carryMax = 1,
         repairVeh = true,
-        spendOnPress = true,
         ignoresDamage = true,
         -- CRATE-ONLY, the flag the bandage and the med kit already carry. The
         -- owner said "spawn in loot crates" and this is the field that means it.
