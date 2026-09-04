@@ -314,7 +314,22 @@ export default function Hud({ visible }: { visible: boolean }) {
             below: the two are the same edge at 16:9 and a quarter of the screen
             apart at 32:9, and this corner is part of the cluster the owner
             asked to keep with the map. */}
-        <div className="absolute" style={{ top: 'var(--hud-top)', right: 'var(--hud-right)' }}>
+        {/* ONE COLUMN, NOT TWO STACKED GUESSES. The kill feed used to be a
+            second absolute box at `--hud-top + 5rem`, and that 5rem was the
+            height of the counters as they stood in a SOLO match. In squads the
+            Alive plate grows a "3 squads" sub-line (see Counters.tsx), the
+            plate gets taller than the guess, and the first kill of the match
+            draws straight through it -- which is what the owner photographed on
+            2026-09-03.
+
+            A flex column removes the number rather than retuning it: the feed
+            starts wherever the counters actually end, at every mode, every
+            aspect ratio and every future plate. `items-end` keeps both hard
+            against --hud-right the way two separately-positioned boxes were. */}
+        <div
+          className="absolute flex flex-col items-end gap-2"
+          style={{ top: 'var(--hud-top)', right: 'var(--hud-right)' }}
+        >
           <Counters
             alive={hud.alive}
             squads={hud.squadsAlive}
@@ -328,13 +343,12 @@ export default function Hud({ visible }: { visible: boolean }) {
               ? squad.members.reduce((n, m) => n + (m.kills ?? 0), 0)
               : undefined}
           />
-        </div>
 
-        <div
-          className="absolute w-[16rem]"
-          style={{ top: 'calc(var(--hud-top) + 5rem)', right: 'var(--hud-right)' }}
-        >
-          <KillFeed entries={feed} />
+          {/* The feed keeps its own width so long names wrap inside it rather
+              than widening the column and dragging the counters left. */}
+          <div className="w-[16rem]">
+            <KillFeed entries={feed} />
+          </div>
         </div>
 
         {/* Left column, top to bottom: squad, chat (rendered separately), radar.
