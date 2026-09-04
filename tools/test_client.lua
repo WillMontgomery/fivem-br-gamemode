@@ -276,7 +276,40 @@ end
 function GetEntityForwardVector() return { x = 1.0, y = 0.0, z = 0.0 } end
 function GetEntityRotation() return { x = 0.0, y = 0.0, z = 0.0 } end
 function GetEntityVelocity() return { x = 0.0, y = 0.0, z = 0.0 } end
-function GetGroundZFor_3dCoord() return true, 30.0 end
+--- EVERY HORIZONTAL SURFACE IN THIS FAKE WORLD, as absolute heights.
+---
+--- One entry -- the terrain at 30 -- so every block written before this one
+--- probes from the sky and gets 30.0 back, exactly as the flat stub it replaces
+--- always answered. A second entry makes an OVERPASS: a deck and a road under
+--- it in the same column.
+---
+--- This exists because the harness could not express the 2026-09-03 bug at all.
+--- A stub that ignores `fromZ` and answers 30.0 has no deck and no underside,
+--- so the one thing that went wrong -- a probe from 1200m finding the structure
+--- over the player's head instead of the floor at their feet -- was invisible
+--- here and had to be found by reading the game.
+local ground = { levels = { 30.0 } }
+
+--- Rebuild the fake world's surfaces, lowest first or not, it does not matter.
+local function setGround(levels)
+    ground.levels = levels
+end
+
+--- THE HIGHEST GROUND BELOW THE PROBE START, which is what the real native
+--- does and the whole reason this bug exists. Started at 1200 over an overpass
+--- it answers with the DECK -- successfully, plausibly, and wrongly.
+---
+--- A probe started below every surface answers `false`, which is the real
+--- native's behaviour from inside a hillside and the case groundUnder's
+--- fallback to the sky probe is built for.
+function GetGroundZFor_3dCoord(_, _, fromZ)
+    local best
+    for _, z in ipairs(ground.levels) do
+        if (not fromZ or z <= fromZ) and (not best or z > best) then best = z end
+    end
+    if not best then return false, 0.0 end
+    return true, best
+end
 function GetWaterHeight() return false, 0.0 end
 function GetHashKey() return 1 end
 function GetWeapontypeModel() return 1 end
@@ -2595,6 +2628,124 @@ do
     } })
     ok(queuedNow() == 1, 'a container opened beyond prop range still does not',
         tostring(queuedNow()))
+end
+
+describe('an item dropped under a bridge is grounded at the ped, not on the deck')
+do
+    -- ═══ THE 2026-09-03 REPORT, IN THE ONE NUMBER IT IS ABOUT ═══
+    --
+    -- Owner: "any time an inventory item is dropped and the ped is under a
+    -- bridge or other structure, the item goes on the ground on the upper
+    -- structure and not on the ground around the ped".
+    --
+    -- The server's copy of the position was never wrong. groundZ() probed DOWN
+    -- FROM 1200m for every entry alike, and the highest ground below 1200 in
+    -- the column under an overpass is the DECK -- dry, solid, well above sea
+    -- level -- so the probe did not fail, it succeeded with the freeway. The
+    -- spawn height, PlaceObjectOnGroundProperly, `restZ` and the arrival arc
+    -- all inherit that one number.
+    --
+    -- WHAT IS ASSERTED IS THE PROBE, NOT THE PROP, and that is a real limit of
+    -- this harness rather than a choice: CreateObjectNoOffset is stubbed to 0,
+    -- so drain() takes the noProp branch and no prop height is ever computed
+    -- here. groundZ IS the input to every one of those heights, so pinning it
+    -- pins the bug; a prop that renders in the wrong place with a right `gz`
+    -- would be a different bug in a different function.
+    bootOn(true, true)
+    clearWorld()
+
+    local ITEM = BR.Config.Consumables[1].id
+
+    -- AN OVERPASS. The ped stands on the road at 30 -- pedPos.z, so the harness
+    -- already agrees -- with a deck 14m over their head.
+    setGround({ 30.0, 44.0 })
+
+    --- What /brloot says the ground under the nearest entry is.
+    local function groundNow()
+        local line = lootLine('ground%s+%-?%d')
+        return line and tonumber(line:match('ground%s+(%-?%d+%.%d+)'))
+    end
+
+    --- Announce one entry beside the player and read back its ground height.
+    --- @param id integer
+    --- @param pz number|nil  the vouched ped root, or nil for generated loot
+    --- @param z number       the entry's own z hint
+    local function groundOf(id, pz, z)
+        clearWorld()
+        fire(BR.Net.LOOT_ADD, { {
+            id = id, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+            x = 1.0, y = 0.0, z = z, rarity = BR.Rarity.COMMON, count = 1,
+            pz = pz,
+        } })
+        frames(2)
+        return groundNow()
+    end
+
+    -- THE BUG, PRESERVED. A generated entry has no ped vouching for it -- its z
+    -- was authored from map knowledge and for roadside filler it is 0.0 -- so
+    -- the sky probe is still the only honest answer, and under a bridge it
+    -- still finds the deck. That is not a regression to fix here: nobody is
+    -- standing at that point to say otherwise, and starting low would put loot
+    -- back under the map on the Chiliad massif (2026-08-23).
+    ok(groundOf(9101, nil, 0.0) == 44.0,
+        'a generated entry under a structure still grounds on the deck -- '
+        .. 'nothing vouches for the floor',
+        tostring(groundOf(9101, nil, 0.0)))
+
+    -- THE FIX. The server measured a ped standing on the road at 30 and said
+    -- so, so the probe starts just above THAT and finds the road.
+    ok(groundOf(9102, 30.0, 30.0) == 30.0,
+        'a dropped entry the server vouched for grounds at the ped\'s feet',
+        tostring(groundOf(9102, 30.0, 30.0)))
+
+    -- AND THE VOUCH IS WHAT DID IT, not the entry's z. The same z with no `pz`
+    -- beside it goes back on the deck -- which is the difference between "the
+    -- client trusts a height off the wire" (it does not, and must not) and "the
+    -- server told it this one height was measured".
+    ok(groundOf(9103, nil, 30.0) == 44.0,
+        'while the same z with no vouch is still probed from the sky')
+
+    -- THE FALLBACK, WHICH IS WHAT MAKES THE LIFT SAFE TO PICK. A death scatter
+    -- flings stacks up to 4.6m from the corpse, so on a bank the far side of
+    -- the ring can sit above the vouched root and the low probe finds nothing
+    -- at all. It must fall through to the sky probe, NOT lose the entry: a
+    -- failed probe means no prop, which is this file's worst failure.
+    --
+    -- 5.0 is below every surface in this world, so the low probe answers false.
+    -- A ground of 44 is the fallback having run; a ground of 7 -- the entry's
+    -- own z, which is what groundZ returns when the probe fails -- is the prop
+    -- being lost.
+    ok(groundOf(9104, 5.0, 7.0) == 44.0,
+        'a vouch with no ground under it falls back to the sky probe rather '
+        .. 'than losing the prop',
+        tostring(groundOf(9104, 5.0, 7.0)))
+
+    -- A REPAIR CLEARS THE VOUCH SERVER-SIDE, and the re-announce has to move
+    -- the entry back onto the sky probe here. It arrives at the same x/y -- the
+    -- only thing that changed is `pz` going away -- so the "did anything
+    -- change?" test in addEntries has to notice a height-only change or the
+    -- entry keeps a stale `gz` for as long as the player stands there.
+    clearWorld()
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9105, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 1.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+        pz = 30.0,
+    } })
+    frames(2)
+    ok(groundNow() == 30.0, 'a vouched entry starts at the floor',
+        tostring(groundNow()))
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9105, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 1.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+    } })
+    frames(2)
+    ok(groundNow() == 44.0,
+        'and a re-announce that dropped the vouch re-probes from the sky',
+        tostring(groundNow()))
+
+    -- FLAT GROUND AGAIN for everything downstream of this block.
+    setGround({ 30.0 })
+    clearWorld()
 end
 
 -- ------------------------------------------------------------------- voice ---

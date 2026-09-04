@@ -7730,6 +7730,219 @@ do
     end
 end
 
+describe('loot.vouch')
+do
+    -- ═══ "THE ITEM GOES ON THE GROUND ON THE UPPER STRUCTURE AND NOT ON THE
+    ---    GROUND AROUND THE PED" (owner, 2026-09-03) ═══
+    --
+    -- The client resolves every entry's height by probing DOWN FROM 1200m,
+    -- because only a client has a ground probe and because a lower start put
+    -- loot under the map on the Chiliad massif (2026-08-23). Under an overpass
+    -- the highest ground below 1200 in that column is the DECK, so the probe
+    -- succeeds with the freeway over your head.
+    --
+    -- `pz` is the one bit that breaks the tie: THE SERVER MEASURED A PED
+    -- STANDING ON THIS GROUND. What is tested here is the narrowness of it --
+    -- which entries get one, which must never get one, and the fact that unlike
+    -- an origin it is a PROPERTY and has to ride every announce.
+    --
+    -- The client half -- what the probe then does with it -- is in
+    -- test_client.lua, 'an item dropped under a bridge is grounded at the ped'.
+    local m = lootMatch()
+    BR.Inv.reset(1)
+    BR.Roster.get(1).pos = { x = 500.0, y = 500.0, z = 41.5 }
+
+    local cx, cy = BR.LootCellOf(500.0, 500.0)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    sent = {}
+    fire(BR.Net.INV_DROP, 1, { slot = 1 })
+    local dropped
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.item == 'pistol' then dropped = entry end
+        end
+    end
+
+    -- THE TIGHTEST CASE THERE IS: same x, same y, and a ped standing on that
+    -- exact spot at that exact moment. 41.5 is a nothing number chosen so it
+    -- cannot be confused with the layout's own heights.
+    ok(dropped and dropped.pz ~= nil and math.abs(dropped.pz - 41.5) < 0.01,
+        'a dropped item carries the ped root the server measured under it',
+        dropped and tostring(dropped.pz) or 'no drop announced')
+
+    -- AND THE GENERATED LAYOUT CARRIES NONE, which is the half that keeps the
+    -- hillside fix intact. Nobody is standing at a POI to say where its ground
+    -- is; its z was authored from map knowledge and for roadside filler it is
+    -- 0.0. Vouching for those would aim the probe below the surface, which is
+    -- the 2026-08-23 regression exactly.
+    local layoutVouched = 0
+    for _, e in pairs(m.loot.items) do
+        if not e.dropped and e.pz then layoutVouched = layoutVouched + 1 end
+    end
+    ok(layoutVouched == 0, 'while no generated entry carries one',
+        tostring(layoutVouched))
+
+    -- ═══ A VOUCH IS A PROPERTY, NOT A BIRTH EVENT, AND THAT IS THE ONE PLACE
+    ---    IT DIFFERS FROM fx/fy/fl ═══
+    --
+    -- An origin may only ride the birth message: replayed to a latecomer it
+    -- flies loot out of a hand that is not there any more. The ground under a
+    -- dropped gun is still that ground ten minutes later, so if the cell
+    -- subscription dropped this the latecomer would probe from the sky, find
+    -- the deck, and see the gun on the freeway while the dropper sees it at
+    -- their feet -- the reported bug, for everyone but one player.
+    BR.Roster.get(2).pos = { x = 500.0, y = 500.0, z = 41.5 }
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
+    local lateVouched, lateOrigin = 0, 0
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.item == 'pistol' then
+                if entry.pz then lateVouched = lateVouched + 1 end
+                if entry.fx or entry.fy or entry.fl then
+                    lateOrigin = lateOrigin + 1
+                end
+            end
+        end
+    end
+    ok(lateVouched > 0,
+        'and a player subscribing afterwards is told it too -- unlike an '
+        .. 'origin, this is a property of the entry',
+        tostring(lateVouched))
+    ok(lateOrigin == 0, 'though still no origin, which remains birth-only')
+
+    -- A DEATH SCATTER IS THE SAME FACT AT ARM'S LENGTH. The ring is 4.6m, close
+    -- enough that the corpse's root beats the sky, so a player killed under an
+    -- overpass has their kit land under it with them.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    BR.Roster.get(1).pos = { x = 300.0, y = 300.0, z = 27.25 }
+    local beforeDeath = m.loot.nextId
+    BR.Loot.deathBox(m, 1)
+    local scattered, scatterVouched = 0, 0
+    for id = beforeDeath + 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e then
+            scattered = scattered + 1
+            if e.pz and math.abs(e.pz - 27.25) < 0.01 then
+                scatterVouched = scatterVouched + 1
+            end
+        end
+    end
+    ok(scattered > 0 and scatterVouched == scattered,
+        'a death scatter vouches for every stack with the corpse\'s root',
+        ('%d of %d'):format(scatterVouched, scattered))
+
+    -- ═══ AND THE LANDING CRATES DO NOT, THOUGH THEY HAVE A PED ROOT TO HAND
+    ---    ═══
+    --
+    -- This is the trap in the whole mechanism and it is why `pz` means "a ped
+    -- stood at THIS x/y" rather than "this z came from a ped". landingCrates
+    -- scatters 55-130m away (config/loot.lua `landing`) -- a player touching
+    -- down in a valley would vouch for a crate on the hillside above them, the
+    -- probe would start inside the hill, and the crate would spawn under the
+    -- map or not at all. Exactly the bug PROBE_FROM_Z was raised to 1200 to
+    -- kill.
+    BR.Roster.get(1).pos = { x = 400.0, y = 400.0, z = 33.0 }
+    BR.Roster.get(1).landingLoot = nil
+    local beforeLanding = m.loot.nextId
+    BR.Loot.landingCrates(1)
+    local landed, landedVouched = 0, 0
+    for id = beforeLanding + 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e then
+            landed = landed + 1
+            if e.pz then landedVouched = landedVouched + 1 end
+        end
+    end
+    ok(landed > 0 and landedVouched == 0,
+        'a landing crate 55-130m away is NOT vouched for, though the player '
+        .. 'whose landing spawned it has a root the server measured',
+        ('%d of %d vouched'):format(landedVouched, landed))
+
+    -- ═══ AND A REPAIR TAKES IT AWAY ═══
+    --
+    -- `pz` says the SERVER measured this height. A repair moves the entry up to
+    -- 30m and writes a z that came straight off the wire, so carrying the vouch
+    -- across would relabel a client's claim as a server measurement -- the one
+    -- thing this mechanism must never do. Cleared, the entry probes from 1200m
+    -- again, which is what the repairing client used to work out the correction
+    -- in the first place.
+    local fixTarget
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.pz and not e.repaired and e.item == 'pistol' then
+            fixTarget = e break
+        end
+    end
+    if fixTarget then
+        local fcx, fcy = BR.LootCellOf(fixTarget.x, fixTarget.y)
+        BR.Roster.get(1).pos = { x = fixTarget.x, y = fixTarget.y,
+                                 z = fixTarget.z }
+        fire(BR.Net.LOOT_CELL, 1, { cx = fcx, cy = fcy })
+        sent = {}
+        fire(BR.Net.LOOT_FIX, 1,
+            { id = fixTarget.id, x = fixTarget.x + 6.0, y = fixTarget.y,
+              z = 999.0 })
+        ok(m.loot.items[fixTarget.id].pz == nil,
+            'a repaired entry loses its vouch -- its new z came from a client',
+            tostring(m.loot.items[fixTarget.id].pz))
+        local reannounced, stillVouched = 0, 0
+        for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+            for _, entry in ipairs(s.args[1]) do
+                if entry.id == fixTarget.id then
+                    reannounced = reannounced + 1
+                    if entry.pz then stillVouched = stillVouched + 1 end
+                end
+            end
+        end
+        ok(reannounced > 0 and stillVouched == 0,
+            'and the re-announce that moves it says so',
+            ('%d of %d still carried one'):format(stillVouched, reannounced))
+    else
+        ok(false, 'no vouched entry to repair')
+    end
+
+    -- ═══ AND AN NPC DROP NEVER HAD ONE ═══
+    --
+    -- There really is a ped root here, and the server never saw it: the corpse
+    -- is client-side, so all three floats arrived over the wire and the whole
+    -- handler is machinery for believing them only as far as is harmless. Its
+    -- bound is HORIZONTAL, so it cannot check a z at all. Vouching would let a
+    -- client choose where everyone else's ground probe starts.
+    --
+    -- The cost is honest: an NPC shot under an overpass still drops its pistol
+    -- on the deck. That is a known gap, not an oversight.
+    local npcWeapon
+    for _, w in pairs(BR.Config.WeaponById or {}) do
+        if w.ammo then npcWeapon = w break end
+    end
+    if npcWeapon then
+        BR.Roster.get(1).pos = { x = 700.0, y = 700.0, z = 35.0 }
+        local beforeNpc = m.loot.nextId
+        fire(BR.Net.NPC_DROP, 1, { item = npcWeapon.id, clip = 1,
+                                   x = 705.0, y = 700.0, z = 35.0 })
+        local npcMade, npcVouched = 0, 0
+        for id = beforeNpc + 1, m.loot.nextId do
+            local e = m.loot.items[id]
+            if e then
+                npcMade = npcMade + 1
+                if e.pz then npcVouched = npcVouched + 1 end
+            end
+        end
+        ok(npcMade > 0 and npcVouched == 0,
+            'an NPC drop is never vouched for -- its position is a client '
+            .. 'report, not a server measurement',
+            ('%d made, %d vouched'):format(npcMade, npcVouched))
+    else
+        ok(false, 'no firearm in the weapon table to drop from an NPC')
+    end
+end
+
 describe('combat.paths')
 do
     -- THREE ANSWERS TO "WHOSE HIT IS THIS", decided by weaponType.
