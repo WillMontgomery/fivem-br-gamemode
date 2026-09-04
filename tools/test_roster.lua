@@ -6564,9 +6564,11 @@ describe('inv.repairkit')
 --   AN INTERRUPTED CHANNEL COSTS NOTHING and keeps the repair it earned. Both
 --   halves are the owner's ruling and neither is a bug to be fixed.
 --
---   ONE KIT IS WORTH EXACTLY ONE KIT. The slices and the completion sum to a
---   single BR.Config.Fuel.healthMax, even on a car that is being shot at -- for
---   one day the completion sent the whole cap ON TOP of the slices.
+--   THE CAR IS AT FULL WHEN THE ITEM IS SPENT. "the vehicle health should
+--   incrementally increase to finally REACH FULL once the item has been spent"
+--   (owner, 2026-09-03) -- asserted as the OUTCOME on all three pools, on a car
+--   that took fire throughout as well as on one that did not, because for one
+--   day the completion sent a remainder and could not promise it.
 --
 --   THE DRIVING SEAT IS RE-RULED EVERY PASS, losing it cancels, and the cancel
 --   now SPEAKS the owner's sentence.
@@ -6591,6 +6593,55 @@ do
 
     ok(BR.Roster.get(1).ped == 1001,
         'precondition: the roster has sampled this player\'s ped')
+
+    -- ═══ WHAT "REACHED FULL" IS MEASURED AGAINST, AND WHY IT IS A MODEL ═══
+    --
+    --   "the vehicle health should incrementally increase to finally REACH FULL
+    --    once the item has been spent."          -- owner, 2026-09-03
+    --
+    -- THIS SUITE IS THE SERVER'S AND THERE IS NO CAR IN IT. Every vehicle-health
+    -- native is client-only, which is why the server sends GRANTS rather than
+    -- setting a value. So the grants this server actually put on the wire are
+    -- run through the one line of client/fuel.lua that consumes them, and what
+    -- gets asserted is the OUTCOME: three pools, at the cap, when the item is
+    -- spent. Magnitudes are how that is reached and are not the property.
+    --
+    -- ANCHORED ON THE REAL SOURCE RATHER THAN REMEMBERED, because a model that
+    -- had quietly drifted from applyRepair would re-encode the assumption under
+    -- test -- this suite's own named failure mode. The clamp is FOUND in the
+    -- file before it is imitated, and it is the whole of what matters here: `r`
+    -- is an OFFER, clamped per pool, so a grant larger than the damage cannot
+    -- over-repair the car and a grant smaller than it cannot reach full.
+    local ffh = io.open(ROOT .. 'br_core/client/fuel.lua')
+    local fuelsrc = ffh and ffh:read('a') or ''
+    if ffh then ffh:close() end
+    ok(fuelsrc:find('local want = math.min(cap, cur + points)', 1, true) ~= nil,
+        'precondition: client/fuel.lua clamps every pool it grants into, so a '
+            .. 'surplus on the wire is discarded rather than banked')
+
+    local VCAP = BR.Config.Fuel.healthMax
+
+    --- applyRepair's three pools, and nothing else about it. `at` is how much
+    --- health the car starts on, out of VCAP.
+    local function newCar(at) return { body = at, engine = at, tank = at } end
+    local function mend(car, points)
+        if (tonumber(points) or 0) <= 0.0 then return end
+        for k, cur in pairs(car) do
+            -- Engine health goes NEGATIVE on a wreck, which applyRepair floors
+            -- for the same reason this does.
+            if cur < 0.0 then cur = 0.0 end
+            car[k] = math.min(VCAP, cur + points)
+        end
+    end
+    local function shoot(car, points)
+        for k, cur in pairs(car) do car[k] = cur - points end
+    end
+    local function atFull(car)
+        return car.body >= VCAP and car.engine >= VCAP and car.tank >= VCAP
+    end
+    local function worst(car)
+        return math.min(car.body, car.engine, car.tank)
+    end
 
     -- ── the ruling ────────────────────────────────────────────────────────
     ok(BR.Vehicles.drivenNetId(1) == nil,
@@ -6698,7 +6749,7 @@ do
         'and it is a SLICE of the pump\'s healthMax rather than the whole job',
         tostring(slice1))
 
-    local granted = slice1
+    local grants = { slice1 }
 
     sent = {}
     fakeTime = t0 + 2500
@@ -6707,21 +6758,22 @@ do
     ok(#midFix == 1, ('another arrives on the next pass (saw %d)'):format(#midFix))
     ok(midFix[1] and midFix[1].args[1].r > slice1,
         'a bigger one, because more of the bar has filled since the last -- '
-            .. 'the ledger sends the DIFFERENCE, so the slices sum to one kit '
-            .. 'rather than to however many ticks happened to fire',
+            .. 'the in-channel ledger sends the DIFFERENCE, so the climb does '
+            .. 'not restart from zero on every tick that happens to fire',
         midFix[1] and tostring(midFix[1].args[1].r))
-    granted = granted + (midFix[1] and midFix[1].args[1].r or 0.0)
+    grants[#grants + 1] = midFix[1] and midFix[1].args[1].r or 0.0
     ok(BR.Inv.of(1).using ~= nil, 'and the channel is still running')
 
-    -- ═══ AND THE COMPLETION SENDS THE REMAINDER, NOT ANOTHER WHOLE KIT ═══
+    -- ═══ AND THE COMPLETION SENDS THE WHOLE CAP, WHICH IS WHAT BUYS "REACH
+    --     FULL" ═══
     --
-    -- THIS ASSERTION USED TO LOCK IN A DOUBLE PAYMENT. It read `last.r ==
-    -- healthMax` and called the full cap a harmless backstop, because
-    -- applyRepair clamps -- but the slices above have already telescoped to ~95%
-    -- of the cap by the last in-channel pass, so one kit put ~1950 points on the
-    -- wire. Invisible on an undamaged car; worth nearly two repairs on a car
-    -- taking fire, which is the exact situation `ignoresDamage` exists for, and
-    -- twice the pump this item was priced against.
+    -- NOT A REMAINDER, AND THAT IS DELIBERATE. `r` is an OFFER: applyRepair
+    -- clamps it into each pool, so the surplus on an already-mended car is
+    -- discarded rather than banked, and the cap is what makes the car full on
+    -- the frame the item is spent even when it lost health during the channel.
+    -- A build of this sent `cap - granted` for a day, on a finding that counted
+    -- points offered instead of health delivered; the outcome assertions below
+    -- are the ones a return to it would fail.
     sent = {}
     fakeTime = t0 + kit.useMs
     BR.Sched.step(fakeTime)
@@ -6729,29 +6781,50 @@ do
     ok(#doneFix >= 1, 'the completion sends one last grant')
     local last = doneFix[#doneFix] and doneFix[#doneFix].args[1]
     for _, s in ipairs(doneFix) do
-        granted = granted + (s.args[1].r or 0.0)
+        grants[#grants + 1] = s.args[1].r or 0.0
     end
-    ok(last and last.r > 0.0 and last.r < BR.Config.Fuel.healthMax,
-        'and it is the REMAINDER the ledger says is outstanding, not the '
-            .. 'pump\'s whole healthMax over again',
+    ok(last and last.r == VCAP,
+        'and it carries the whole BR.Config.Fuel.healthMax, because the client '
+            .. 'clamps every pool and a surplus costs the car nothing',
         last and tostring(last.r))
-    -- THE SUM IS THE PROPERTY, and the individual magnitudes are only how it is
-    -- reached. Epsilon rather than equality because the slices are interpolated
-    -- through floating point; anything a rounding error can hide is far below a
-    -- health point on GTA's 0..1000 scale.
-    ok(math.abs(granted - BR.Config.Fuel.healthMax) < 1e-6,
-        'so the whole channel is worth exactly ONE BR.Config.Fuel.healthMax -- '
-            .. 'one kit is one kit, and the pump\'s ten-second hold is still '
-            .. 'the same repair in twice the time',
-        ('%.6f'):format(granted))
-    ok(last and last.f == true,
-        'the last message is FLAGGED as the last, which is what pops the dents '
-            .. '-- the client cannot deduce it from a remainder that is '
-            .. 'routinely zero, and GTA has no partial deformation to animate',
-        last and tostring(last.f))
-    ok(midFix[1] and midFix[1].args[1].f == nil,
-        'and no slice carries the flag, so nothing pops them early')
     ok(last and last.n == NID, 'still aimed at the car the press ruled on')
+
+    -- ...AND NOTHING ON THE WIRE SAYS "THIS IS THE LAST ONE". A build carried an
+    -- `f` flag on the completion so the client would run its cosmetic pass on a
+    -- car the remainder had left below full. With the cap back, the client's own
+    -- rule -- the body reaching full -- fires on this message, and the flag is
+    -- scaffolding. Asserted as an absence for the reason this repo keeps
+    -- relearning: a field nothing sets gets read as live.
+    local flagged = 0
+    for _, m in ipairs({ firstFix[1], midFix[1], doneFix[#doneFix] }) do
+        if m and m.args[1].f ~= nil then flagged = flagged + 1 end
+    end
+    ok(flagged == 0,
+        'and no message carries a "last one" flag -- the client pops the dents '
+            .. 'off the health it was handed, not off a field',
+        tostring(flagged))
+
+    -- ═══ THE OUTCOME: A CAR THAT WAS NOT SHOT AT REACHES FULL ═══
+    --
+    -- Driven with the grants this server actually sent, in the order it sent
+    -- them, through client/fuel.lua's clamp. The starting damage is arbitrary
+    -- and deep: a car this far down is the case the item exists for.
+    local car = newCar(120.0)
+    for _, r in ipairs(grants) do mend(car, r) end
+    ok(atFull(car),
+        'the car is at FULL on the body, the engine AND the petrol tank once '
+            .. 'the kit is spent -- "the vehicle health should incrementally '
+            .. 'increase to finally reach full"',
+        ('%.1f of %.1f'):format(worst(car), VCAP))
+
+    -- ...AND IT WAS STILL CLIMBING ON THE WAY, which is the other half of his
+    -- sentence and the reason the slices exist at all.
+    local climbing = newCar(120.0)
+    mend(climbing, grants[1])
+    ok(climbing.body > 120.0 and climbing.body < VCAP,
+        'and it was part-way there a quarter of a second in, rather than '
+            .. 'jumping at the end -- the bar and the bodywork move together',
+        ('%.1f'):format(climbing.body))
     ok(BR.Inv.of(1).using == nil, 'and the channel is over')
     ok(BR.Inv.of(1).slots[1] == false,
         'and THIS is what spends the kit -- the completion, exactly as it '
@@ -6834,30 +6907,50 @@ do
     ok(BR.Inv.of(1).using ~= nil,
         'being shot does not interrupt the repair -- the driver is not the '
             .. 'thing being repaired')
+    -- EVERY PASS OF THE CHANNEL, not just its two ends: the slices telescope, so
+    -- a run that skips the middle of the bar leaves a remainder big enough to
+    -- hide the difference the assertion below is about.
+    for _, at in ipairs({ 1250, 2500, 3750 }) do
+        fakeTime = t0 + at
+        BR.Sched.step(fakeTime)
+    end
     fakeTime = t0 + kit.useMs
     BR.Sched.step(fakeTime)
     local underFire = eventsOf(BR.Net.VEH_FIX)
+    ok(#underFire >= 3,
+        ('precondition: the whole channel ran -- slices and a completion '
+         .. '(saw %d grants)'):format(#underFire))
 
-    -- ═══ AND A KIT SPENT UNDER FIRE IS STILL WORTH EXACTLY ONE KIT ═══
+    -- ═══ AND A CAR SHOT AT THROUGHOUT STILL REACHES FULL ═══
     --
-    -- THE CASE THE DOUBLE PAYMENT WAS ACTUALLY VISIBLE IN, which is why the sum
-    -- is asserted here a second time rather than only on the clean run above. A
-    -- car that is not being shot at reaches its cap early and applyRepair clamps
-    -- the excess away, so an over-generous completion is invisible; a car losing
-    -- health throughout the channel banks every point of it. `ignoresDamage` is
-    -- the whole reason this item is ever used in that situation.
-    local underFireTotal = 0.0
-    for _, s in ipairs(underFire) do
-        underFireTotal = underFireTotal + (s.args[1].r or 0.0)
+    -- THE CASE THE WHOLE DESIGN TURNS ON, and the one a remainder cannot serve.
+    -- A car that is not being shot at hits its cap partway through and every
+    -- later grant is clamped away, so almost any completion looks right on it. A
+    -- car losing health BETWEEN the slices spends them as they land, and only a
+    -- completion carrying the whole cap can put it back at full on the frame the
+    -- item is spent -- which is what the owner asked for by name, and
+    -- `ignoresDamage` is the reason a kit is ever used in that situation at all.
+    --
+    -- THE NUMBERS ARE CHOSEN TO SEPARATE THE TWO DESIGNS rather than to model a
+    -- particular firefight: 200 points between grants is more damage than the
+    -- outstanding remainder could ever cover, so a build that went back to
+    -- `cap - granted` finishes this loop several hundred points short and fails
+    -- the line below instead of passing it by luck.
+    local wreck = newCar(300.0)
+    for i, s in ipairs(underFire) do
+        if i > 1 then shoot(wreck, 200.0) end
+        mend(wreck, s.args[1].r or 0.0)
     end
-    ok(math.abs(underFireTotal - BR.Config.Fuel.healthMax) < 1e-6,
-        'the whole magazine buys the driver one healthMax and not a point '
-            .. 'more, because the completion sends the remainder rather than '
-            .. 'the cap on top of the slices',
-        ('%.6f'):format(underFireTotal))
-    ok(underFire[#underFire] and underFire[#underFire].args[1].f == true,
-        'and the dents still pop at the end, on a car that may well finish '
-            .. 'below full -- the flag is the promise, not the health')
+    ok(atFull(wreck),
+        'a car losing 200 points between every slice is still at FULL on all '
+            .. 'three pools when the kit is spent -- a completion that sent '
+            .. 'only the outstanding remainder would leave it short',
+        ('%.1f of %.1f'):format(worst(wreck), VCAP))
+    ok(underFire[#underFire] and underFire[#underFire].args[1].r == VCAP,
+        'because the last grant is the whole cap, which is also what pops the '
+            .. 'dents: applyRepair runs its cosmetic pass when the BODY reaches '
+            .. 'full, and no flag on the wire tells it to',
+        underFire[#underFire] and tostring(underFire[#underFire].args[1].r))
     ok(BR.Inv.of(1).slots[1] == false,
         'and the kit is spent by the completion, under fire or not',
         tostring(BR.Inv.of(1).slots[1]))

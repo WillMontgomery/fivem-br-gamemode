@@ -1121,13 +1121,17 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     -- repair is health on a car on somebody else's machine and there is nothing
     -- to take back. That is the med kit's contract exactly (its partial heal is
     -- kept too), it is what "in progress" means, and it is the owner's ruling
-    -- twice over. IT IS ALSO REPEATABLE: the vehicle ledger below lives on the
-    -- channel, so pressing, cancelling and pressing again starts a fresh one and
-    -- grants again from zero. A player who is willing to tap two keys in turn
-    -- can therefore mend a car for more than one kit's worth without spending
-    -- the kit. That is a known consequence of the shape he asked for, written
-    -- down rather than designed around; closing it means either taking the
-    -- climb away or building a per-vehicle ledger, and both are his call.
+    -- twice over.
+    --
+    -- AND IT IS RE-PRESSABLE, WHICH IS THIS CHANNEL'S EXISTING CONTRACT RATHER
+    -- THAN ANYTHING THE KIT INTRODUCED (#271). Press, tap a slot, press again:
+    -- the effect is granted a second time and no item is ever spent. Every
+    -- channelled consumable in this file behaves that way, the med kit included
+    -- -- `hp0` is re-read from the roster each time a channel opens (see
+    -- `inv.using` below), so a partial heal that already landed becomes the next
+    -- channel's baseline, and INV_SELECT/INV_SWAP clear `inv.using` with no
+    -- cooldown at all. It is tracked as #271 and it is the owner's call; nothing
+    -- about it is specific to this item, so nothing here tries to close it.
     inv.using = {
         slot   = slot,
         item   = s.item,
@@ -1427,9 +1431,9 @@ end
 -- WHAT AN INTERRUPTION LEAVES BEHIND IS NOT NOTHING, and that is deliberate: a
 -- cancelled med kit keeps the health its partials already applied, and a
 -- cancelled repair keeps the vehicle health its slices already granted. The item
--- comes back; the effect that was already delivered does not. See the note at
--- INV_USE for what that makes repeatable, and why it is written down rather than
--- closed.
+-- comes back; the effect that was already delivered does not. That is what makes
+-- a re-press worth something for every consumable in this file, which is #271
+-- and is the owner's call rather than this loop's; see the note at INV_USE.
 BR.Sched.every(250, 'inv.use', function()
     local now = GetGameTimer()
 
@@ -1481,21 +1485,21 @@ BR.Sched.every(250, 'inv.use', function()
             -- of reason and says so at length.
             --
             -- NOTE WHAT THIS REMOVES, AND IT IS NOT NOTHING. Damage-cancel is
-            -- the backstop that keeps a partial effect from being worth
-            -- repeating: it costs a player who re-presses under fire the rest of
-            -- their channel. An `ignoresDamage` item has no such brake, and the
-            -- ped partials do not need one -- they are TARGETS anchored on
-            -- `u.hp0`, so re-pressing recomputes from the new baseline and gains
-            -- exactly nothing. THE VEHICLE GRANT IS NOT A TARGET; it is a ledger
-            -- of increments on a value this server cannot read, so a cancelled
-            -- channel's slices are delivered and a fresh channel starts its
-            -- ledger at zero. Press, cancel, press again and the car gains twice.
-            -- That was previously argued away by the press-debit ("there is
-            -- nothing to re-press"), and the press-debit is gone -- so the
-            -- argument goes with it rather than being left standing as a claim
-            -- that has quietly stopped being true. The exposure is bounded by
-            -- what the owner asked for: he wants the health to climb WITH the
-            -- bar, which requires granting before the item is spent. See INV_USE.
+            -- one brake on re-pressing a channel for its partial effect: it
+            -- costs a player who does it under fire the rest of their channel.
+            -- An `ignoresDamage` item has no such brake.
+            --
+            -- IT IS A BRAKE ON AN OPEN ROAD, THOUGH, AND THE ROAD IS #271. The
+            -- re-press loop -- press, tap a slot, press again, effect granted
+            -- again, item never spent -- is this channel's existing contract for
+            -- EVERY consumable here, not something this row opened: INV_SELECT
+            -- and INV_SWAP clear `inv.using` with no cooldown, and INV_USE
+            -- re-reads `hp0` from the roster on each open, so a med kit's
+            -- partial heal becomes the next press's baseline and is farmed the
+            -- same way. Taking `ignoresDamage` off this row would narrow one
+            -- entry to it and fix none of it, and the owner has ruled on the
+            -- flag itself. #271 is where the loop is tracked and whose call it
+            -- is.
             if L.useCancelOnDamage and not (c and c.ignoresDamage)
                 and (e.hp or 0) < (u.hp0 or 0) then
                 BR.Inv.cancelUse(src, 'Interrupted.')
@@ -1599,6 +1603,11 @@ BR.Sched.every(250, 'inv.use', function()
             -- an INCREMENT, and the only way to make those increments add up to
             -- exactly one kit's worth across a jittering 250ms cadence is to
             -- keep the running total on the server and subtract it.
+            --
+            -- `u.vehGranted` IS THE CLIMB'S BOOKKEEPING AND NOTHING ELSE. It
+            -- exists so that two ticks 250ms apart do not each send the whole
+            -- fraction earned so far; it is NOT a budget, and the completion
+            -- below deliberately does not read it. See the note there for why.
             --
             -- WHAT THE INCREMENT IS A FRACTION OF: BR.Config.Fuel.healthMax, so
             -- the kit and the petrol station cannot drift apart, and so that
@@ -1731,45 +1740,58 @@ BR.Sched.every(250, 'inv.use', function()
                 return
             end
 
-            -- ═══ AND THE REPAIR FINISHES THE JOB -- WITH THE REMAINDER, NOT
-            --     WITH ANOTHER WHOLE ONE (#228) ═══
+            -- ═══ AND THE REPAIR FINISHES THE JOB, WITH THE WHOLE CAP (#228) ═══
             --
-            --   "...to finally reach full once the item has been spent."
+            --   "...the vehicle health should incrementally increase to finally
+            --    REACH FULL once the item has been spent."
             --                                          -- owner, 2026-09-03
             --
-            -- THE FIRST BUILD SENT THE FULL CAP HERE and called it a harmless
-            -- backstop, on the grounds that applyRepair clamps. IT WAS NOT
-            -- HARMLESS, AND THAT COMMENT WAS WRONG. The slices above already
-            -- telescope to about 95% of the cap by the last in-channel pass, so
-            -- one kit put ~1950 points on the wire instead of 1000 -- invisible
-            -- on a car that took no damage, and worth nearly two full repairs on
-            -- one that did, which is precisely the situation `ignoresDamage`
-            -- exists for. The kit was priced at "the pump's repair in half the
-            -- time" and was quietly worth twice the pump.
+            -- ═══ THE FULL CAP IS DELIBERATE. DO NOT "OPTIMISE" IT INTO A
+            --     REMAINDER ═══
             --
-            -- SO IT SENDS WHAT THE LEDGER SAYS IS OUTSTANDING. Slices plus this
-            -- equal exactly one BR.Config.Fuel.healthMax, whatever the cadence
-            -- did and whatever happened to the car in between -- one kit is one
-            -- kit.
+            -- THE POINTS ON THIS WIRE ARE AN OFFER, NOT A DEBIT.
+            -- client/fuel.lua's applyRepair clamps every pool it touches --
             --
-            -- `f = true` IS THE COSMETIC PASS, AND IT IS WHY THIS MESSAGE IS
-            -- SENT EVEN WHEN THE REMAINDER IS ZERO. client/fuel.lua pops the
-            -- dents when the BODY reaches full, which a remainder cannot promise
-            -- for a car that was being shot while it mended. The flag says "this
-            -- is the last message of a kit" and the far end runs the cosmetic
-            -- pass on it -- GTA has no partial deformation to animate, so the
-            -- bodywork was always going to snap straight on one frame, and this
-            -- is the frame the owner named: the one where the item is spent.
+            --     local want = math.min(cap, cur + points)   -- fuel.lua:350
+            --
+            -- -- so offering more than the car needs cannot over-repair it. The
+            -- surplus is discarded by the clamp, on the body, the engine and the
+            -- petrol tank alike, every time. Sending the cap is therefore not a
+            -- payment of a cap; it is "top all three pools up".
+            --
+            -- AND THE CLAMP IS THE ONLY REASON THE OWNER'S SENTENCE IS TRUE. The
+            -- slices above telescope toward one cap's worth across the channel,
+            -- but a car that was being shot at while it mended has already spent
+            -- some of them -- and `ignoresDamage` exists precisely so that a kit
+            -- CAN be used under fire. A completion that sent only the difference
+            -- between the cap and what the slices granted would leave exactly
+            -- that car short of full at the moment the item was spent, which is
+            -- the one thing he asked for by name.
+            --
+            -- A BUILD OF THIS SHIPPED THAT REMAINDER FOR A DAY, on a finding that
+            -- the full cap "double paid" ~1950 points for one kit. That counted
+            -- POINTS OFFERED rather than HEALTH DELIVERED; the clamp above
+            -- discards the difference, so there was never an over-payment to fix
+            -- and the remainder bought nothing but a broken guarantee. A future
+            -- reader who tightens this back into a subtraction will silently
+            -- reintroduce it, and no assertion about magnitudes will catch it --
+            -- which is why tools/test_roster.lua now asserts the OUTCOME, that
+            -- the three pools finish at the cap on a car that took fire.
+            --
+            -- SO THE COSMETIC PASS NEEDS NOTHING ON THE WIRE. applyRepair pops
+            -- the dents on the frame the BODY reaches full, and this grant is
+            -- what makes that frame this one.
             --
             -- `u.veh` RATHER THAN A FRESH READ: the guard above ran on this same
             -- pass and proved the player is still driving exactly that car.
+            -- GTA HAS NO PARTIAL DEFORMATION, which is why the bodywork snaps
+            -- straight on this message instead of un-denting with the bar; see
+            -- fixCosmetic in client/fuel.lua.
             if c and c.repairVeh then
-                local cap = (BR.Config.Fuel
-                    and tonumber(BR.Config.Fuel.healthMax)) or 1000.0
                 TriggerClientEvent(BR.Net.VEH_FIX, src, {
                     n = u.veh,
-                    r = math.max(0.0, cap - (u.vehGranted or 0.0)),
-                    f = true,
+                    r = (BR.Config.Fuel
+                        and tonumber(BR.Config.Fuel.healthMax)) or 1000.0,
                 })
                 BR.Inv.push(src)
                 return

@@ -2061,6 +2061,30 @@ do
         ok(body:find('applyRepair(veh, points)', 1, true) ~= nil,
            'the VEH_FIX handler hands its grant to the shared function')
 
+        -- ═══ ...AND IT DOES NOTHING ELSE TO THE CAR ═══
+        --
+        -- fixCosmetic's NAME IS A LIE ABOUT ITS FIRST LINE. It calls
+        -- SetVehicleFixed, which is a FULL repair native; only the deformation
+        -- and decal calls after it are cosmetic-only. That is harmless in the
+        -- one place it is called from -- inside applyRepair, on the frame
+        -- `body >= cap` has just been proven, where a full repair is a no-op --
+        -- and it is a free repair anywhere else. A build of the kit called it
+        -- unconditionally at completion, off a flag on the wire, which put a
+        -- damaged car back to full outside every rule that grants health.
+        --
+        -- COUNTED, MINUS THE DEFINITION, for the same reason the applyRepair
+        -- count above is: a mention is not a call, and `local function
+        -- fixCosmetic(veh)` matches the same pattern its callers do.
+        local cdefs = 0
+        for _ in code:gmatch('local function fixCosmetic%(') do
+            cdefs = cdefs + 1
+        end
+        local ccalls = 0
+        for _ in code:gmatch('fixCosmetic%(veh%)') do ccalls = ccalls + 1 end
+        ok(cdefs == 1 and ccalls - cdefs == 1,
+           ('and fixCosmetic has exactly ONE caller -- applyRepair, gated on '
+            .. 'the body reaching the cap (saw %d)'):format(ccalls - cdefs))
+
         -- ═══ IT CHECKS THE CAR IT WAS SENT ═══
         --
         -- Between the server ruling and this arriving, a player can leave the

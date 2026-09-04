@@ -573,8 +573,8 @@ BR.Net = {
     -- an arbitrary one. See br_core/client/sfx.lua's playFrom.
     FUEL_SFX        = 'br:fuel:sfx',
 
-    -- S->C  { n = netId, r = health points, f = true on the last one } -- "here
-    -- is another slice of the repair kit you are holding, for that car". #228.
+    -- S->C  { n = netId, r = health points } -- "here is another slice of the
+    -- repair kit you are holding, for that car". #228.
     --
     -- ═══ N MESSAGES PER KIT, NOT ONE ═══
     --
@@ -588,22 +588,21 @@ BR.Net = {
     -- because that is what the pump's `r` is.
     --
     -- WHICH MEANS `r` IS A SLICE AND MUST BE ADDED, NOT ASSIGNED. The client
-    -- hands it to applyRepair, which adds and clamps; the server keeps the
-    -- running total so the slices sum to exactly one kit. THE LAST ONE CARRIES
-    -- THE REMAINDER and not another whole kit: for one day it carried the full
-    -- cap as a "harmless backstop", which was worth nearly two repairs on a car
-    -- that was taking fire while it mended.
+    -- hands it to applyRepair, which adds and CLAMPS -- `math.min(cap, cur +
+    -- points)` on every pool, br_core/client/fuel.lua:350 -- and the server
+    -- keeps a running total across the channel so the in-flight slices
+    -- telescope instead of each re-sending the whole fraction earned so far.
     --
-    -- ═══ `f` IS THE ONLY THING THE MESSAGE SAYS ABOUT ITSELF ═══
+    -- ═══ THE MESSAGE SAYS NOTHING ABOUT ITSELF, AND DOES NOT NEED TO ═══
     --
-    -- Present, and true, on the message that ENDS a kit; absent on every slice.
-    -- The client runs its cosmetic pass -- dents, deformation, decals -- when it
-    -- sees it. That cannot be deduced from `r`, because the remainder is
-    -- routinely zero, and it cannot be deduced from the health either: the
-    -- client's own rule (body reaches full) is right for a pump hold and cannot
-    -- promise anything for a car that was being shot at during the channel. GTA
-    -- has no partial deformation, so the pop happens on one frame whatever
-    -- happens, and this is the server naming which frame.
+    -- The last one of a kit carries the FULL BR.Config.Fuel.healthMax rather
+    -- than the difference, because the clamp above makes `r` an offer rather
+    -- than a debit: a surplus is discarded, and the cap is what guarantees the
+    -- car is at full on the frame the item is spent even if it was being shot at
+    -- the whole time. The cosmetic pass then falls out of the client's own rule
+    -- -- dents pop when the body reaches full -- so there is no "this is the
+    -- last one" flag on the wire and none is wanted. A build carried one for a
+    -- day, alongside a remainder that made it necessary; both are gone.
     --
     -- ═══ WHY THIS IS NOT FUEL_SET WITH AN `r` ON IT ═══
     --
