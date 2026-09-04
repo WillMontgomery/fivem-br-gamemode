@@ -25,11 +25,19 @@ Transparent backgrounds. Square-ish source images look best — the renderer
 uses `object-fit: contain`, so a wide image letterboxes rather than stretches.
 
 The weapon ids are the `id` fields in `br_lib/config/weapons.lua`; the
-consumables are in `br_lib/config/loot.lua`. **Consumables are drawn on
+consumables are in `br_lib/config/loot.lua`. **Four consumables are drawn on
 purpose** (`shield`, `minishield`, `bandage`, `medkit`) — a shield and a cross
 are symbols rather than objects, and there is no photograph of them to take.
-A PNG dropped here under one of those ids would still be picked up. Ammo has no
+A PNG dropped here under one of those ids would still be picked up, and
+`repairkit.png` is exactly that: a consumable with real artwork, which is why
+it is the one PNG in this directory that is not a weapon render. Ammo has no
 artwork by design (there is nothing to draw) and never requests a file at all.
+
+**Do not add consumable ids to `CONSUMABLE_ICON` in `src/hud/ItemIcon.tsx` to
+"fix" a missing picture.** That map is consulted only *after* a file has failed
+to load, so an entry there would permanently mask a broken PNG behind a drawn
+symbol — a confident picture of the wrong thing, which is the failure the whole
+weapon-icon gate exists to prevent.
 
 ## Where the weapon art came from
 
@@ -55,9 +63,11 @@ matters in a slot. Do not "normalise" them: the renderer letterboxes with
 break the blob-id check below.
 
 That claim is checkable, and was checked on 2026-08-22: **every one of the 56
-files here has the same git blob id as the upstream file it came from.** Blob
-ids, not a `diff` of two worktrees — `.gitattributes` marks `*.png binary`, so
-the bytes are the bytes.
+weapon files here has the same git blob id as the upstream file it came from.**
+Blob ids, not a `diff` of two worktrees — `.gitattributes` marks `*.png
+binary`, so the bytes are the bytes. Note the directory holds 57 PNGs, not 56:
+`repairkit.png` is not from upstream and will not match anything there. See the
+section below.
 
     git ls-tree HEAD ui-src/public/items/
     curl -s "https://api.github.com/repos/R3DIANCE/GTA-V-Weapons-images/git/trees/master?recursive=1"
@@ -101,3 +111,18 @@ not quietly mistaken for a licence.** Two things follow:
 * If the position ever changes, the fix is not a licence — it is replacing the
   art. Every file is a plain PNG keyed by item id, so the set can be swapped
   wholesale without touching a line of code.
+
+## `repairkit.png` — the one file that came from somewhere else
+
+**Supplied by the owner on #228** (2026-09-03), attached to the issue, and
+committed as sent: 476×476 RGBA, 201 KiB, transparent-backed and square, which
+is the shape this file asks for above. It is not recompressed or resized —
+re-encoding the owner's own artwork to save a couple of hundred kilobytes on a
+local-disk `nui://` fetch buys nothing.
+
+**Where he got it, and on what terms, is not recorded here, because nobody has
+told us.** That is a gap in this document rather than a claim about the art: it
+is deliberately *not* described as GTA's own, as public domain, or as licensed,
+and the blob-id check above cannot say anything about it. **The owner should
+fill this paragraph in** — one sentence naming the source is enough, and it is
+the same judgement call, recorded the same way, as the weapon renders above.

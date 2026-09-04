@@ -2729,30 +2729,26 @@ do
         if c.health and c.healthCap > 100 then
             badCaps[#badCaps + 1] = c.id .. '(healthCap)'
         end
-        -- ═══ EVERY CONSUMABLE DECLARES HOW LONG USING IT TAKES, AND ZERO IS A
-        --     LENGTH (#228) ═══
+        -- ═══ EVERY CONSUMABLE DECLARES HOW LONG USING IT TAKES, AND ZERO IS
+        --     NOT A LENGTH (#228) ═══
         --
-        -- This read `c.useMs <= 0` and could not have said so. Two changes, and
-        -- both make it stricter rather than looser:
+        -- THE TYPE IS TESTED, and that half is unchanged and is the important
+        -- half: the original line compared a field it had not proved was a
+        -- number, so a consumable that lost its `useMs` altogether would have
+        -- KILLED this suite -- "attempt to compare nil with number" -- rather
+        -- than failed it. That is exactly how the CPR kit took the live server
+        -- down through the same expression in server/inventory.lua.
         --
-        --   the TYPE is tested. The old line compared a field it had not proved
-        --   was a number, so a consumable that lost its `useMs` altogether
-        --   would have KILLED this suite -- "attempt to compare nil with
-        --   number" -- rather than failed it. That is exactly how the CPR kit
-        --   took the live server down through the same expression in
-        --   server/inventory.lua.
-        --
-        --   ZERO IS ALLOWED, BUT ONLY FOR AN ITEM THAT SAYS WHAT IT DOES
-        --   INSTANTLY. `useMs = 0` is what makes the repair kit instant, so a
-        --   flat ban on it is no longer expressible -- but a shield potion whose
-        --   channel was zeroed by accident is still caught, because it names no
-        --   instant effect. `repairVeh` is the only one today; a second one adds
-        --   itself to this test and to the branch in server/inventory.lua, which
-        --   is the same pair of places `shopCar` lives in.
-        if type(c.useMs) ~= 'number' or c.useMs < 0 or c.maxStack <= 0 then
+        -- AND ZERO IS BANNED AGAIN. It was briefly allowed for an item naming
+        -- an instant effect, which is what the repair kit was before the owner
+        -- asked for a progress bar on it (2026-09-03). No shipped consumable
+        -- declares zero now, and server/inventory.lua refuses one at the press,
+        -- so a zeroed channel is a malformed row rather than a third behaviour
+        -- -- and this line is what says so before anybody has to find out in
+        -- game. The CPR kit's `nil` is caught by the type test, as it always
+        -- was, and the two absences are one value again.
+        if type(c.useMs) ~= 'number' or c.useMs <= 0 or c.maxStack <= 0 then
             badCaps[#badCaps + 1] = c.id .. '(useMs/stack)'
-        elseif c.useMs == 0 and not c.repairVeh then
-            badCaps[#badCaps + 1] = c.id .. '(instant with no instant effect)'
         end
     end
     ok(#badCaps == 0, 'consumable caps are coherent', table.concat(badCaps, ', '))
@@ -2826,20 +2822,63 @@ do
         ok(#epic == 1 and epic[1].id == 'medkit',
            'and the Med Kit still has EPIC to itself')
 
-        -- ═══ "USED ON THE FLY" -- INSTANT, AND IT IS THE ZERO THAT SAYS SO ═══
-        ok(kit and kit.useMs == 0,
-           'the kit declares that using it takes no time, which is what makes '
-               .. 'it instant rather than a channel',
+        -- ═══ IT IS A CHANNEL WITH A BAR, WHICH REVERSED THE FIRST BUILD ═══
+        --
+        --   "instead of instantly burning the item it should have a progress
+        --    bar akin to spawning a vehicle from inventory or using a
+        --    consumable."                       -- owner, 2026-09-03
+        --
+        -- The value asserted is the SHIPPED one rather than a bound, because
+        -- the length is an argument this config makes (half the pump's ten
+        -- seconds, alongside the Shield) and not a number anybody gave: a
+        -- silent retune should have to come past this line and say so.
+        ok(kit and kit.useMs == 5000,
+           'the kit is a five-second channel -- half the ten seconds the pump '
+               .. 'charges for the identical repair, and the Shield\'s own '
+               .. 'number. NOT THE OWNER\'S: he has never given a length',
            kit and tostring(kit.useMs))
         ok(kit and kit.repairVeh == true,
            'and names its effect on the row, the way the shop car names its '
                .. 'catalogue id -- server/inventory.lua branches on this and '
                .. 'knows nothing else about vehicles')
 
-        -- IT IS NOT A POTION. `health`/`armour` are interpolated across a
-        -- channel by the use tick, and an instant item has no channel to
-        -- interpolate across -- so either field here would be an effect that
-        -- silently never lands.
+        -- ═══ THE TWO FIELDS THAT MAKE IT DIVERGE, AND BOTH ARE OWNER RULINGS
+        --     ═══
+        --
+        -- FIELDS RATHER THAN AN ID TEST, which is the property worth asserting:
+        -- server/inventory.lua's tick loop must never learn the string
+        -- 'repairkit'. If either of these is dropped from the row the item
+        -- silently rejoins the general rule -- it would start refunding itself
+        -- on an interruption, or start cancelling when the driver is shot --
+        -- and nothing else in the suite would notice.
+        ok(kit and kit.spendOnPress == true,
+           '"the actuation is a momentary press like anything else - then once '
+               .. 'it\'s spent, it\'s spent" (owner, 2026-09-03): the press '
+               .. 'debits it, so an interrupted channel costs the whole item')
+        ok(kit and kit.ignoresDamage == true,
+           'and "let\'s not use that to stop any type of bullet damage" '
+               .. '(owner, 2026-09-03): being shot does not interrupt it')
+
+        -- ...AND NOTHING ELSE OPTS OUT OF EITHER. Both fields exist for this
+        -- one row; a second item quietly acquiring one is a behaviour change to
+        -- an item nobody was looking at, which is precisely how the shop car
+        -- would inherit press-debit by accident.
+        local divergent = {}
+        for _, c in ipairs(BR.Config.Consumables) do
+            if c.id ~= 'repairkit' and (c.spendOnPress or c.ignoresDamage) then
+                divergent[#divergent + 1] = c.id
+            end
+        end
+        ok(#divergent == 0,
+           'and no other consumable carries either field -- the med kit, the '
+               .. 'bandage, both shields and the shop car keep the general '
+               .. 'contract exactly',
+           table.concat(divergent, ', '))
+
+        -- IT IS NOT A POTION. `health`/`armour` are interpolated across the
+        -- channel by the use tick and land on the PED; this item's whole effect
+        -- is on a car, and either field here would heal the driver as a side
+        -- effect of mending their bumper.
         ok(kit and kit.health == nil and kit.armour == nil,
            'and it moves nothing on the ped -- no health, no armour, and no '
                .. 'refuel either: the owner asked for a repair kit')

@@ -573,8 +573,23 @@ BR.Net = {
     -- an arbitrary one. See br_core/client/sfx.lua's playFrom.
     FUEL_SFX        = 'br:fuel:sfx',
 
-    -- S->C  { n = netId, r = health points } -- "the repair kit you just spent
-    -- fixes that car". #228.
+    -- S->C  { n = netId, r = health points } -- "here is another slice of the
+    -- repair kit you are holding, for that car". #228.
+    --
+    -- ═══ N MESSAGES PER KIT, NOT ONE ═══
+    --
+    -- The first build sent exactly one of these, for the whole job, on the
+    -- keypress. The owner asked for a progress bar with the bodywork climbing
+    -- under it (2026-09-03), so server/inventory.lua now sends one every 250ms
+    -- for the length of the channel plus one at completion. NOTHING ABOUT THE
+    -- MESSAGE CHANGED -- only how many of them there are and how much each
+    -- carries -- and the paragraph below is why that was possible without
+    -- touching the handler: `r` was always POINTS EARNED rather than a target,
+    -- because that is what the pump's `r` is.
+    --
+    -- WHICH MEANS `r` IS A SLICE AND MUST BE ADDED, NOT ASSIGNED. The client
+    -- hands it to applyRepair, which adds and clamps; the server keeps the
+    -- running total so the slices sum to exactly one kit.
     --
     -- ═══ WHY THIS IS NOT FUEL_SET WITH AN `r` ON IT ═══
     --
@@ -597,6 +612,11 @@ BR.Net = {
     -- the player can leave that seat, and a kit that repaired the next car they
     -- touched would be a kit spent on the wrong thing. The client checks it,
     -- the same way the FUEL_SET handler does.
+    --
+    -- AND IT IS WORTH MORE NOW THAT THERE ARE MANY. The server holds the netId
+    -- it ruled on for the whole channel and refuses to grant against any other,
+    -- so the two ends agree on the car twice; what a mismatch costs has also
+    -- shrunk from the whole item to one 250ms slice of it.
     VEH_FIX         = 'br:veh:fix',
 
     -- Vehicle boost. The CLIENT owns the meter, the push and its own flames --
