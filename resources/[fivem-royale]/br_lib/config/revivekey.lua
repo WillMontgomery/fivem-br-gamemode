@@ -46,7 +46,7 @@
 -- These are two different clocks and reading them as one would delete the
 -- purchase path. "The pickup expires on a timer" and "They can STILL purchase
 -- the revive keys" are the same message: after three minutes the thing on the
--- ground is gone, and the 25 Volts still buys the key it was.
+-- ground is gone, and the 500 Volts still buys the key it was.
 --
 -- So `expiryMs` retires the WORLD PICKUP and nothing else. A key that was never
 -- collected stays purchasable for the rest of the match, which is also what
@@ -105,7 +105,7 @@
 -- BR.Config.Match.dbnoReviveHp, the same 30 a squadmate's pick-up hands back,
 -- "because it is the same act". It is not the same act, and he has said so. A
 -- squad revive costs a mate a few exposed seconds beside a body; a key costs a
--- death, an inventory spilled on the ground, a fetch across the map or 25
+-- death, an inventory spilled on the ground, a fetch across the map or 500
 -- Volts, and a six-second hold at a van. config/rescue.lua's `deliverHp = 100`
 -- already made exactly this trade for exactly this reason.
 --
@@ -177,15 +177,19 @@ BR.Config.ReviveKey = {
 
     -- "purchase the revive keys at an ambulance for 25 volts".
     --
-    -- 25, NOT THE 150 IN #219's BODY. The issue was written on 2026-08-23 and
-    -- the owner priced it on 2026-08-30; the later number is the decision.
-    price = 25,
+    -- THE QUOTE ABOVE IS HISTORY, NOT THE PRICE. It is left verbatim because it
+    -- is what he asked for on 2026-08-30, and #219's body said 150 before that.
+    -- Neither is the number any more: the owner re-priced it on 2026-09-03,
+    -- "Let's make the ambulance key buy cost 500 Volts." The latest number is
+    -- always the decision, and the older ones stay written down so the reading
+    -- of his messages can still be checked against them.
+    price = 500,
 
     -- "one purchase buys all revive keys for the squad".
     --
     -- NOT A KNOB, A STATEMENT -- and it is here so the reading is on the record
     -- rather than inferred from a loop. The owner asked for one reading to be
-    -- confirmed and this is it: 25 Volts makes every currently-eliminated
+    -- confirmed and this is it: 500 Volts makes every currently-eliminated
     -- squadmate REVIVABLE. It does not resurrect anybody. Each one still needs
     -- its own hold at an ambulance, which is step 5 and does not exist yet.
     buysAll = true,
@@ -577,13 +581,13 @@ BR.Config.ReviveKey = {
 ---
 --- ═══ `buy` CARRIES THE PRICE AS TEXT, AND THAT IS HIS SENTENCE ═══
 ---
---- "Buy revive keys — 25 Volts" is quoted verbatim, which means the 25 in the
---- string and the 25 in `price` above are two copies of one number. Left as
---- written rather than interpolated, because the words are his and the moment
---- this file starts assembling them out of parts is the moment his wording
---- stops being reproducible. If the price moves, both move -- and the console
---- line in /brkey prints `price` rather than this string, so the two can always
---- be compared.
+--- "Buy revive keys — 500 Volts" carries his wording with the current price in
+--- it, which means the number in the string and the one in `price` above are two
+--- copies of one value. Left as written rather than interpolated, because the
+--- words are his and the moment this file assembles them out of parts is the
+--- moment his wording stops being reproducible. If the price moves, BOTH MOVE --
+--- it moved from 25 to 500 on 2026-09-03 -- and the console line in /brkey prints
+--- `price` rather than this string, so the two can always be compared.
 BR.Config.ReviveKey.copy = {
     -- The world prompt over a key lying on the ground, and the press that takes
     -- it. See the note on `collectM`: this plate DOES carry a key glyph now,
@@ -599,7 +603,7 @@ BR.Config.ReviveKey.copy = {
     take      = 'Collect revive key',
 
     -- The world prompt at an ambulance, when this squad has something to buy.
-    buy       = 'Buy revive keys — 25 Volts',
+    buy       = 'Buy revive keys — 500 Volts',
 
     -- The world prompt AT AN AMBULANCE for a key the squad already owns: the
     -- hold that brings its owner back. It used to be drawn over the body; the

@@ -351,7 +351,7 @@ client_scripts {
     --     not actually care -- but a reader looking for who yields to whom
     --     should find them in this order.
     --   * ambheal.lua answers BR.AmbHeal.prompting(), which is what stops one
-    --     press behind an ambulance both starting a heal and spending 25 Volts.
+    --     press behind an ambulance both starting a heal and spending 500 Volts.
     --
     -- It needs client/main.lua for the loop registry, client/keybinds.lua for
     -- BR.Keys, client/dui.lua for the shared prompt page and client/natives.lua

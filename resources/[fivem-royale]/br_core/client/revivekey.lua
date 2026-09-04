@@ -53,7 +53,7 @@
 --     a mate who is still bleeding beats walking to a van for one who is not.
 --   * TO client/ambheal.lua, by standing BOTH AMBULANCE PLATES down while
 --     BR.AmbHeal.prompting() -- otherwise one press behind an ambulance would
---     start a heal AND spend 25 Volts, or start a heal AND a six-second revive.
+--     start a heal AND spend 500 Volts, or start a heal AND a six-second revive.
 --     It used to be only the buy plate that yielded, because the revive used to
 --     happen at a corpse; the revive moved to the van, so it inherits the same
 --     stand-down and for the same reason.
@@ -83,7 +83,7 @@
 -- exactly one candidate and the revive beats the buy (see its header), so the
 -- two never reach the browser in the same frame. That is also why they share one
 -- set of numbers: they are one plate at one van, and giving them two positions
--- would only mean the plate jumped the instant a squad paid its 25 Volts.
+-- would only mean the plate jumped the instant a squad paid its 500 Volts.
 --
 -- THE PLATE OVER A LOOSE KEY IS STILL A BILLBOARD, and that is not an
 -- inconsistency: there is no bodywork under it. It hangs over a point on the
@@ -768,7 +768,7 @@ local function choose(px, py)
     if heldSrc or owed then
         -- YIELD TO THE STRETCHER. Both plates would be drawn at the same van and
         -- both handlers would act on one press, so a hurt player behind an
-        -- ambulance with a mate down would heal AND spend 25 Volts, or heal AND
+        -- ambulance with a mate down would heal AND spend 500 Volts, or heal AND
         -- start a revive. The heal is the one that was there first and the one
         -- with a rear-arc test behind it, so this stands down. The residual cost
         -- is that neither ambulance plate is offered at the TAILGATE while hurt;
@@ -799,7 +799,7 @@ local function choose(px, py)
     -- ═══ THE PURCHASE ═══
     --
     -- Offered when this squad has ANY key it does not yet own -- including one
-    -- whose pickup has expired, which is the whole point of the 25 Volts: "The
+    -- whose pickup has expired, which is the whole point of the 500 Volts: "The
     -- pickup expires on a timer... They can still purchase the revive keys at an
     -- ambulance" is one sentence, and the second half is what this plate is.
     if owed and veh then
@@ -1149,7 +1149,7 @@ BR.Loop.register(BR.Loop.FRAME, 'revivekey.draw', function()
         -- the revive beats the buy, so the two are never on screen together and
         -- cannot overlap; drawing them in two different places would only mean
         -- the plate jumped from the roof to the bodywork the instant a squad
-        -- paid its 25 Volts.
+        -- paid its 500 Volts.
         drawOnVan(page, c.veh)
     else
         -- INSIDE THE MARKER OVER THE SAME KEY, which is where the owner put it
@@ -1286,7 +1286,7 @@ end)
 -- The two presses: taking one off the ground, and buying the lot
 -- ---------------------------------------------------------------------------
 
---- The press that takes a key, and the press that spends 25 Volts.
+--- The press that takes a key, and the press that spends 500 Volts.
 ---
 --- ═══ IT ACTS ON WHAT WAS DRAWN, NOT ON A FRESH SEARCH ═══
 ---

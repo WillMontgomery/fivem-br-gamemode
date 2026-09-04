@@ -323,7 +323,7 @@ end
 ---
 --- The goods here are a set of keys shared by a squad, and two presses from two
 --- DIFFERENT squadmates are two different sources with two different
---- reservations -- so the market would happily take 25 Volts from each of them
+--- reservations -- so the market would happily take 500 Volts from each of them
 --- for the same set of keys, and the second purchase would mark keys that were
 --- already held. One charge, one grant; a squad that is mid-purchase is refused.
 ---
@@ -564,7 +564,7 @@ function BR.ReviveKey.forSquad(squadId, matchId)
     return out
 end
 
---- How many of this squad's keys are still unheld -- i.e. what 25 Volts buys.
+--- How many of this squad's keys are still unheld -- i.e. what 500 Volts buys.
 --- @param squadId any
 --- @param matchId any
 --- @return integer
@@ -906,7 +906,7 @@ function BR.ReviveKey.canBuy(src, entry, netId)
 
     -- ═══ IS THERE ANYTHING TO BUY ═══
     --
-    -- Refused rather than charged-for-nothing. 25 Volts is not refundable
+    -- Refused rather than charged-for-nothing. 500 Volts is not refundable
     -- (config/shop.lua: "Purchases cannot be refunded") and a squad with every
     -- key already held would be paying for a no-op.
     local n = BR.ReviveKey.outstanding(entry.squadId, entry.matchId)

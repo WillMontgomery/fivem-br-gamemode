@@ -2515,7 +2515,7 @@ function pushSquadOrParty()
                 --   nil    there is no key for this mate. Draw nothing.
                 --   false  a key exists and the squad does NOT hold it -- on
                 --          the ground while the pickup lives, at an ambulance
-                --          for 25 Volts once it has expired. Both are "go and
+                --          for 500 Volts once it has expired. Both are "go and
                 --          get it", which is one mark.
                 --   true   the squad HOLDS it. This is the row the owner could
                 --          not read: a mate who is out and coming back.

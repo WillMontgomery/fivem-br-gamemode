@@ -120,8 +120,8 @@ do
     -- written a week earlier and says 150 Volts and nothing about expiry -- so
     -- these are asserted against his message rather than against the issue.
     ok(K.expiryMs == 180000, 'the pickup lives three minutes', K.expiryMs)
-    ok(K.price == 25, 'and a key costs 25 Volts, not the 150 in the issue body',
-        K.price)
+    ok(K.price == 500, 'and a key costs 500 Volts -- his 2026-09-03 re-price, '
+        .. 'not the 25 he first named nor the 150 in the issue body', K.price)
     ok(K.buysAll == true,
         'and one purchase covers all of the squad\'s outstanding keys')
 
@@ -145,7 +145,7 @@ do
     -- is a failure.
     --
     -- WHY VERBATIM. These are his words. A tidy-up that turned "Buy revive keys
-    -- — 25 Volts" into "Buy revive keys (25 Volts)" would be an agent editing
+    -- — 500 Volts" into "Buy revive keys (500 Volts)" would be an agent editing
     -- the owner's copy -- the exact thing the standing rule forbids -- and it
     -- would not error anywhere. The four new ones are the likeliest to be
     -- "improved": `revived` joins its clauses with a HYPHEN where this project's
@@ -160,7 +160,7 @@ do
     if type(C) == 'table' then
         local want = {
             take        = 'Collect revive key',
-            buy         = 'Buy revive keys — 25 Volts',
+            buy         = 'Buy revive keys — 500 Volts',
             -- ═══ THE TENTH LINE, AND THE REWRITE THAT CAME WITH IT ═══
             --
             -- Owner, 2026-09-01: "The ambulance DUI should say 'Revive your
@@ -1529,7 +1529,7 @@ do
         'and at 3.4m -- inside collectM plus its slack -- it lands')
 
     -- AND AN EXPIRED PICKUP IS NOT TAKEABLE, however close you stand. The three
-    -- minutes are what makes 25 Volts mean anything.
+    -- minutes are what makes 500 Volts mean anything.
     wipe()
     matches[1] = m
     local d3 = put(1, { squadId = 'A', x = 0.0, y = 0.0 })
@@ -1694,7 +1694,7 @@ do
     ok(why(2, 9201) == 'not in a playing match', 'and not after the match ends')
     m.state = BR.MatchState.PLAYING
 
-    -- NOTHING TO BUY. 25 Volts is not refundable (config/shop.lua), so a squad
+    -- NOTHING TO BUY. 500 Volts is not refundable (config/shop.lua), so a squad
     -- with every key already held must not be charged for a no-op.
     dead.reviveKey.held = true
     ok(why(2, 9201) == 'that squad has no outstanding keys',
@@ -1740,7 +1740,7 @@ do
 
     -- ═══ THE GOODS DO NOT EXIST BEFORE THE DEBIT DOES ═══
     ok(#charges == 1, 'the purchase went to the market', #charges)
-    ok(charges[1].amount == 25, 'for 25 Volts', charges[1].amount)
+    ok(charges[1].amount == 500, 'for 500 Volts', charges[1].amount)
     ok(d1.reviveKey.held == false and d2.reviveKey.held == false,
         'and NOTHING is granted while DynamoDB is still thinking -- a key handed '
             .. 'out before the write lands is a key a refusal cannot take back')
@@ -1933,7 +1933,7 @@ do
     --
     -- The one refusal that is the whole shape of the feature: a key lying on the
     -- ground is something to WALK TO or BUY. Only once the squad owns it is
-    -- there anything to spend. Get this wrong and the 25 Volts buys nothing that
+    -- there anything to spend. Get this wrong and the 500 Volts buys nothing that
     -- proximity did not already give away.
     local _, dead = downed({ held = false })
     press(2, 1)
@@ -2326,7 +2326,7 @@ do
     -- van is usually inside -- but a squad CAN drive an ambulance into the
     -- storm, and 150m up over a shrinking circle is not a promise of anything.
     --
-    -- WHAT IT WOULD LOOK LIKE IN GAME: a squad spends 25 Volts and six seconds
+    -- WHAT IT WOULD LOOK LIKE IN GAME: a squad spends 500 Volts and six seconds
     -- of standing in the open, their mate falls out of the sky on 30 hp, and
     -- dies again about a second later for no reason anyone can see. Being
     -- outside the wall is still a bad place to arrive -- that is the rule -- but
