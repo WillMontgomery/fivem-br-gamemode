@@ -28,6 +28,44 @@ BR.Net = {
     -- party" boolean, and when that stopped leaving the party there was no
     -- server-side rule to fall back on (user, 2026-08-09).
     MODE_SET        = 'br:mode:set',
+    -- C->S { on = boolean }. "I have started the guided first run", and "I am
+    -- finished with it" (#261).
+    --
+    -- ═══ WHY THE SERVER HEARS ABOUT A WALKTHROUGH AT ALL ═══
+    --
+    -- It is a stack of cards pointing at lobby controls, and for as long as
+    -- that was all it was the server had no business knowing. It stopped being
+    -- all it was on 2026-09-05: "if they're in the tutorial, they're not
+    -- actively on any warmup timer at all until the tutorial is complete. This
+    -- means matchmaking is not allowed to touch them and they cannot join a
+    -- party while the tutorial toggle is on" -- the owner. Those are three
+    -- refusals, and not one of them is enforceable where the cards live: the
+    -- formation tick, the late-join door and the party verbs are all on this
+    -- side of the wire. The greyed control is the courtesy and the refusal is
+    -- the rule -- server/shop.lua's convention, applied to a lobby.
+    --
+    -- IT CARRIES NO DEADLINE, NO STEP AND NO PROGRESS, and the absence is the
+    -- design. The server has exactly one question about the walkthrough --
+    -- "may this player be dealt into a match" -- so the only thing on the wire
+    -- is the answer to it. A step number here would be a field the server holds
+    -- and nothing reads, which is this project's signature defect.
+    --
+    -- WHAT BOUNDS THE TRUST IS WRITTEN OVER BR.Roster.setTutorial in
+    -- server/roster.lua, and it should be read before this is sent from
+    -- anywhere new. In short: `on = true` is a REQUEST, refused from anywhere
+    -- but a standing start, and it costs the sender their place in the queue
+    -- and their party. `on = false` is believed on sight, because giving the
+    -- exemption up is not a thing anybody needs stopping from doing.
+    --
+    -- ⚠ NOTHING SENDS THIS YET. The whole server half -- the flag, the three
+    -- refusals and their tests -- is landed and live, and the only thing missing
+    -- is the two lines in br_core/client/tutorial.lua that raise and lower it
+    -- alongside `running`. That is this project's orphaned-subsystem pattern
+    -- said out loud rather than discovered later: the walkthrough itself shipped
+    -- in 2294fe3 with nothing able to mount it. Until those two lines exist a
+    -- player CAN still be matchmade mid-tutorial, because the server has never
+    -- been told there is one.
+    TUTORIAL_SET    = 'br:tutorial:set',
     -- Parties are persistent; squads are formed from them per match. The events
     -- are named "squad" for continuity with the UI, but they operate on parties.
     SQUAD_INVITE    = 'br:squad:invite',     -- C->S  { target }
@@ -1097,6 +1135,14 @@ BR.NuiCb = {
     LOCKER_PICK  = 'br/locker/pick',
     LOCKER_SPIN  = 'br/locker/spin',
     LOCKER_FOCUS = 'br/locker/focus',
+    -- The guided first run (#261). { run = boolean }.
+    --
+    -- THE PAGE STARTS IT, SO THE PAGE HAS TO SAY SO. Pressing "Start tutorial"
+    -- is a button in React, and Lua is the only side that can tell the SERVER --
+    -- which has to know, because a player mid-walkthrough must not be matchmade
+    -- (BR.Roster.setTutorial). Without this callback the whole server-side hold
+    -- is unreachable: it would be a rule nothing ever switches on.
+    TUTORIAL_SET = 'br/tutorial/set',
     MARKET_FOCUS = 'br/market/focus',
     MARKET_BUY   = 'br/market/buy',
     -- EQUIP IS A SEPARATE VERB FROM BUY, and not a flag on it. Buying is a

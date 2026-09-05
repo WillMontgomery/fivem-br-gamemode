@@ -69,6 +69,27 @@ function BR.Tutorial.set(on)
     if on == running then return end
     running = on
     publish()
+
+    -- ═══ AND THE SERVER HAS TO HEAR IT, WHICH IS THE WHOLE POINT ═══
+    --
+    -- A player mid-walkthrough must not be matchmade, must be on no warmup
+    -- clock and must not be in a party (owner, 2026-09-04). All three are
+    -- enforced on the SERVER -- BR.Roster.setTutorial, and the refusals it
+    -- feeds in server/party.lua -- because a client that decides for itself
+    -- whether it may be matchmade is not a rule, it is a suggestion.
+    --
+    -- SO THIS LINE IS LOAD-BEARING AND ITS ABSENCE IS SILENT. Everything on the
+    -- far side of it was built and tested first, and until this call existed it
+    -- was a rule nothing switched on: the walkthrough would run and the player
+    -- would be dealt into a match halfway through it, with no error anywhere.
+    -- That is this project's orphaned-subsystem pattern and it is worth naming
+    -- at the one line that closes it.
+    --
+    -- `on = false` IS BELIEVED ON SIGHT at the far end; `on = true` is a request
+    -- the server rules on. See BR.Roster.setTutorial for what bounds it -- it is
+    -- granted only from a standing start, and it costs the player their place in
+    -- the queue and their party, which is what stops it being a dodge button.
+    TriggerServerEvent(BR.Net.TUTORIAL_SET, { on = running })
 end
 
 --- Show or hide the offer.
@@ -138,4 +159,21 @@ RegisterCommand('brtutorial', function(_, args)
 -- of the 27 client commands in this tree passes nothing here for the same
 -- reason. THE GATE IS STILL ON: br_lib/shared/devgate.lua wraps RegisterCommand
 -- for the whole project, and that is what makes this dev-only.
+end)
+
+-- ---------------------------------------------------------------------------
+-- The page starting it
+-- ---------------------------------------------------------------------------
+
+--- The player pressed "Start tutorial", or the walkthrough ended.
+---
+--- THE PAGE IS WHERE THE DECISION IS MADE and Lua is the only side that can
+--- reach the server, so this is the seam between them. It goes through
+--- BR.Tutorial.set rather than firing the net event directly, so there is ONE
+--- place that knows what "the walkthrough is running" means on this client --
+--- the flag the page mirrors, the flag the server is told, and the console
+--- command all end up at the same function.
+RegisterNUICallback(BR.NuiCb.TUTORIAL_SET, function(data, cb)
+    BR.Tutorial.set(type(data) == 'table' and data.run == true)
+    cb({ ok = true })
 end)

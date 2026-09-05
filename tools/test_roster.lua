@@ -20424,6 +20424,314 @@ do
     BR.Config.Match.maxSquadSize = capWas
 end
 
+describe('tutorial.hold')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE GUIDED FIRST RUN'S SERVER HALF (#261)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-09-05: "if they're in the tutorial, they're not actively on
+    -- any warmup timer at all until the tutorial is complete. This means
+    -- matchmaking is not allowed to touch them and they cannot join a party
+    -- while the tutorial toggle is on because their party will get into the
+    -- match while they're still in warmup doing the tutorial."
+    --
+    -- Three rules, and every one is asserted here THROUGH THE REAL DOORS -- a
+    -- fired QUEUE_JOIN, a run of the match tick, the party verbs the net
+    -- handlers call -- rather than by asking the predicates directly. A gate
+    -- tested by calling the gate passes whether or not anything consults it,
+    -- and this project has already paid for that: on 2026-09-02 the queue's
+    -- half of the party check was correct for weeks while the late-join door
+    -- beside it had no check in front of it at all.
+    local capWas = BR.Config.Match.maxSquadSize
+
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    -- ── RULE 2, AND RULE 1 FALLS OUT OF IT: THE FORMATION TICK ───────────
+    --
+    -- There is no separate "warmup timer" to suppress. The countdown is a field
+    -- on a match INSTANCE (m.endsAt), so a player who is never in an instance is
+    -- a player no clock can be pointed at -- which is why the assertion for "no
+    -- timer running against them" is that they are still standing in the lobby
+    -- after one has run out.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 4
+    join(1, 'Learner')
+
+    ok(BR.Roster.setTutorial(1, true) == true,
+        'the hold is granted to a player standing in the lobby')
+    ok(BR.Roster.inTutorial(1) == true, 'and the server knows it is held')
+
+    -- SOLO, AND SOLO FIRST, BECAUSE IT IS THE TRAP. BR.Party.mayEnter's first
+    -- line used to be `if mode == SOLO then return true end` -- every rule after
+    -- it is about teams, and solo has none. A tutorial check written one line
+    -- lower would refuse a squad warmup and wave the same player into a solo
+    -- one, which is the default mode a brand new player is looking at.
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    pump(1000)
+    ok(theMatch() == nil,
+        'MATCHMAKING DOES NOT TOUCH THEM -- no match forms around a lone '
+            .. 'queuer in the tutorial, in SOLO, where every other rule in '
+            .. 'mayEnter is switched off')
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY
+        and BR.Roster.get(1).matchId == nil,
+        'and they are still in the lobby, attached to nothing',
+        BR.Roster.get(1).state)
+
+    -- And the same answer in squads, where the party rules DO apply and an
+    -- unpartied player passes all of them.
+    fire(BR.Net.QUEUE_LEAVE, 1)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(theMatch() == nil, 'nor in squads, where they are in nobody\'s party')
+
+    -- ── NO CLOCK RUNS AGAINST THEM, EVEN WHILE ONE RUNS BESIDE THEM ──────
+    --
+    -- A warmup opened by somebody else is the arrangement that matters: it has a
+    -- real countdown, it expires, and it flies. The tutorial player must watch
+    -- all of that happen from the lobby.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    join(1, 'Learner'); join(2, 'B')
+
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    pump(500)
+    local open = theMatch()
+    ok(open ~= nil and open.state == BR.MatchState.WARMUP,
+        'somebody else opens a warmup, with a real clock on it',
+        open and open.state)
+
+    ok(BR.Roster.setTutorial(1, true) == true, 'the learner starts the walkthrough')
+
+    -- THE LATE-JOIN DOOR, WHICH IS THE ONE THE PARTY GATE WAS MISSING. With a
+    -- warmup of the mode already open, BR.Lobby.join walks the presser straight
+    -- through BR.Lobby.admitWaiting rather than queueing them -- so a rule that
+    -- only guarded the formation tick would be bypassed by the busiest door in
+    -- the lobby the moment anybody else was already waiting.
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    ok(BR.Roster.get(1).matchId == nil
+        and BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'THE LATE-JOIN DOOR REFUSES THEM TOO -- both doors, one predicate',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).squadId == nil,
+        'so there is no stranger squad for the warmup to have autofilled them into')
+
+    -- The warmup runs out and leaves without them. `warmupSeconds` is 45; this
+    -- outlasts it comfortably, and the point of the literal is that a whole
+    -- countdown has demonstrably elapsed.
+    pump(60 * 1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'THE COUNTDOWN IS NOT THEIRS -- a warmup can open, expire and fly '
+            .. 'without the player in the tutorial ever being on its clock',
+        BR.Roster.get(1).state)
+
+    -- ── AND IT ENDS WHEN THEY SAY IT ENDS ────────────────────────────────
+    --
+    -- Believed on sight, and it has to be: giving the hold up hands the player
+    -- back to matchmaking, so a refusal here is how somebody gets stranded
+    -- outside the queue with no control anywhere that puts them back in.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    join(1, 'Learner')
+    BR.Roster.setTutorial(1, true)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    pump(500)
+    ok(theMatch() == nil, 'held, as above')
+
+    ok(BR.Roster.setTutorial(1, false) == false, 'the walkthrough finishes')
+    ok(BR.Roster.inTutorial(1) == false, 'and the hold is gone')
+    pump(500)
+    ok(BR.Roster.get(1).matchId ~= nil,
+        'AND THE VERY NEXT TICK TAKES THEM -- the release needs no second press, '
+            .. 'because their place in the queue was never given up by the door',
+        BR.Roster.get(1).state)
+
+    -- ── B1: IT IS ONLY GRANTED FROM A STANDING START ─────────────────────
+    --
+    -- The exemption must never be an escape hatch. A player already in a match
+    -- who could claim it would have a dodge button, and that is the one shape of
+    -- this that takes something away from other people.
+    ok(BR.Roster.setTutorial(1, true) == false,
+        'THE HOLD IS REFUSED FROM INSIDE A MATCH -- it is not a way out of one')
+    ok(BR.Roster.inTutorial(1) == false, 'and nothing was written')
+    ok(printedSaying('asked for the tutorial hold') ~= nil,
+        'and the refusal is on the record rather than being a dead button')
+
+    -- LOBBY IS NOT ENOUGH ON ITS OWN. A player on the ENDED summary trip home is
+    -- in LOBBY with their matchId still attached -- that is what sweepHome
+    -- leaves behind -- and granting the hold there would pull somebody out of a
+    -- match that has not finished publishing their results.
+    local live = theMatch()
+    BR.Match.sweepHome(live)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY
+        and BR.Roster.get(1).matchId ~= nil,
+        'the summary trip home is LOBBY with a matchId still on it',
+        tostring(BR.Roster.get(1).matchId))
+    ok(BR.Roster.setTutorial(1, true) == false,
+        'AND THE HOLD IS REFUSED THERE TOO -- both halves of the standing '
+            .. 'start are load-bearing, and neither implies the other')
+
+    -- ── B2: THE GRANT COSTS THE QUEUE AND THE PARTY ──────────────────────
+    --
+    -- Held WHILE queued, the flag would make BR.Lobby.count lie to every lobby
+    -- screen in the room. Held while partied, it would hold that party at the
+    -- door indefinitely -- the exact hostage BR.Party.mayEnter's release
+    -- conditions were written to avoid.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Learner'); join(2, 'B')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    ok(BR.Server.queue[1] ~= nil and BR.Party.isGrouped(1),
+        'a queued, partied player')
+
+    BR.Roster.setTutorial(1, true)
+    ok(BR.Server.queue[1] == nil,
+        'THE GRANT DROPS THEM OUT OF THE QUEUE -- the flag is never held while '
+            .. 'queued, so no count anywhere is short of a player who is not coming')
+    ok(BR.Party.isGrouped(1) == false, 'AND OUT OF THEIR PARTY')
+    ok(BR.Party.isGrouped(2) == false,
+        'which takes the party of two down to one, and a party of one is not a party')
+
+    -- ── THE ROOM'S EXPLANATION OF ITS OWN WAIT STAYS HONEST ──────────────
+    --
+    -- BR.Match.startBlocker is both the gate and the sentence the lobby screen
+    -- phrases. A player in the walkthrough is refused by mayEnter and therefore
+    -- lands in `held` -- the same list a half-readied party lands in -- so
+    -- without partyHeld() the room would read the first refusal's party, find
+    -- none, and confidently tell everybody a party is holding the match.
+    --
+    -- The press below is a MODIFIED CLIENT, said out loud: an honest one has its
+    -- Ready button greyed, and the grant above has already taken their queue
+    -- slot away. This is what the server does when the courtesy is skipped.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 2
+    join(1, 'Learner'); join(2, 'B')
+    BR.Roster.setTutorial(1, true)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+
+    local blk = BR.Match.startBlocker(BR.Mode.SQUAD.key)
+    ok(blk ~= nil and blk.reason == 'players',
+        'a room short only of somebody in the tutorial is short of PLAYERS',
+        blk and blk.reason)
+    ok(blk ~= nil and blk.reason ~= 'party',
+        'AND IS NEVER BLAMED ON A PARTY THAT DOES NOT EXIST -- the lobby must '
+            .. 'not ask a player to do something that would not help')
+    ok(blk ~= nil and blk.have == 1 and blk.need == 2,
+        'and the tutorial player is not counted among the ready',
+        blk and ('%s/%s'):format(tostring(blk.have), tostring(blk.need)))
+
+    -- ── THE HOLD IS THIS PLAYER'S BUSINESS AND NOBODY ELSE'S ─────────────
+    ok(BR.Roster.public(BR.Roster.get(1)).tutorial == nil,
+        'the hold is not replicated to other clients')
+
+    -- ── NOBODY IN A MATCH CARRIES IT ─────────────────────────────────────
+    --
+    -- BR.Match.create is the one mint, and `brforce` is the caller that can hand
+    -- it somebody BR.Party.mayEnter would have refused: its `debugTarget`
+    -- fallback forms a match out of BR.Lobby.ids() -- the RAW queue, never put
+    -- through admissible. The command has to keep working (a dev verb that
+    -- silently left one player on the pad reads as the verb being broken), so
+    -- the flag gives way rather than the participant list -- and it must not
+    -- survive into the next lobby, where the walkthrough that would clear it is
+    -- long gone and no control on screen can.
+    --
+    -- Driven through the suite's own forceState, which reaches the same mint.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Learner')
+    BR.Roster.setTutorial(1, true)
+    forceState(BR.MatchState.WARMUP)
+    ok(BR.Roster.get(1).matchId ~= nil,
+        'brforce still starts a match out of whoever is standing there')
+    ok(BR.Roster.inTutorial(1) == false,
+        'AND THE MINT CLEARS THE HOLD -- a flag that outlived the match would '
+            .. 'hold this player out of every round after it, with nothing on '
+            .. 'screen that clears it')
+
+    -- ── RULE 3: THE PARTY DOORS ──────────────────────────────────────────
+    --
+    -- Four verbs, and each is a door the greyed control does not close. Every
+    -- refusal below carries NO SENTENCE: the owner writes player-visible copy
+    -- and has not written this one, so server/shop.lua's rule applies -- the
+    -- boolean is the ruling, the string is only what to say about it, and a
+    -- caller with no sentence still refuses.
+    reset()
+    BR.Config.Match.maxSquadSize = 4
+    join(1, 'Learner'); join(2, 'B'); join(3, 'C')
+    BR.Roster.setTutorial(1, true)
+
+    local invOk, invWhy = BR.Party.invite(1, 2)
+    ok(invOk == false, 'a player in the tutorial cannot invite')
+    ok(invWhy == nil, 'and the refusal invents no copy')
+    ok(BR.Party.of(1) == nil,
+        'AND NO PARTY WAS FORMED ON THE WAY TO THE REFUSAL -- BR.Party.ensure '
+            .. 'is the "form a party" verb, and a check below it would leave '
+            .. 'them sitting in one')
+
+    local toOk = BR.Party.invite(2, 1)
+    ok(toOk == false,
+        'AND THEY CANNOT BE INVITED EITHER -- the inviter is an ordinary player '
+            .. 'with nothing on their screen to say why')
+    ok(BR.Party.of(2) == nil,
+        'and that refusal mints no party around the inviter either')
+
+    local reqOk, reqWhy = BR.Party.requestJoin(1, 2)
+    ok(reqOk == false, 'and cannot ask to join one')
+    ok(reqWhy == nil, 'silently, like the rest')
+
+    -- ── THE TWO WINDOWS A PRESS-TIME CHECK CANNOT COVER ──────────────────
+    --
+    -- An invite and a join request both outlive the moment they were sent, so
+    -- each has a gap in which the walkthrough starts and a perfectly valid
+    -- answer is still in flight. The gate has to be asked again where the
+    -- membership is actually written.
+    reset()
+    join(1, 'Learner'); join(2, 'B')
+    ok(BR.Party.invite(2, 1) == true, 'an invite lands BEFORE the walkthrough starts')
+    BR.Roster.setTutorial(1, true)
+    local accOk = BR.Party.respond(1, true)
+    ok(accOk == false, 'and accepting it from inside the walkthrough is refused')
+    ok(BR.Party.isGrouped(1) == false, 'so no party was joined')
+
+    -- DECLINING STILL WORKS, and that is not a detail. A card that can be
+    -- neither accepted nor dismissed is worse than one that can only be
+    -- dismissed, and saying no is not joining a party.
+    reset()
+    join(1, 'Learner'); join(2, 'B')
+    BR.Party.invite(2, 1)
+    BR.Roster.setTutorial(1, true)
+    ok(BR.Party.respond(1, false) == true,
+        'DECLINING IS NOT JOINING -- an invite can still be turned down from '
+            .. 'inside the walkthrough')
+
+    reset()
+    BR.Config.Match.maxSquadSize = 4
+    join(1, 'Learner'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(2, 3); BR.Party.respond(3, true)
+    ok(BR.Party.requestJoin(1, 2) == true,
+        'a join request goes out before the walkthrough starts')
+    BR.Roster.setTutorial(1, true)
+    local ansOk = BR.Party.answerJoin(2, 1, true)
+    ok(ansOk == false,
+        'and the leader accepting it afterwards is refused -- the same window, '
+            .. 'from the other side')
+    ok(BR.Party.isGrouped(1) == false, 'so the requester is still unpartied')
+
+    BR.Config.Match.maxSquadSize = capWas
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))

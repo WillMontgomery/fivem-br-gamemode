@@ -157,6 +157,10 @@ export default function Lobby({
   const beginTutorial = () => {
     setTutorialOffer(false)
     setTutorialRun(true)
+    // AND TELL LUA, WHICH TELLS THE SERVER. A player mid-walkthrough must not be
+    // matchmade, must be on no warmup clock and must not be in a party -- all
+    // three enforced server-side. Without this the whole hold is unreachable.
+    void fetchNui(CB.TUTORIAL_SET, { run: true })
   }
   const [queued, setQueued] = useState(false)
   // WHY READY UP IS UNAVAILABLE, if it is. The party panel owns the answer --

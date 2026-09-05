@@ -1338,6 +1338,7 @@ export const CB = {
   KEYBINDS:       'br/settings/keybinds',
   LOCKER_PICK:    'br/locker/pick',
   LOCKER_SPIN:    'br/locker/spin',
+  TUTORIAL_SET:   'br/tutorial/set',
   LOCKER_FOCUS:   'br/locker/focus',
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',

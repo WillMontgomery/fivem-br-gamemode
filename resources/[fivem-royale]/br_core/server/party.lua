@@ -185,6 +185,29 @@ function BR.Party.invite(src, targetSrc)
     local target = BR.Roster.get(targetSrc)
     if not target then return false, 'That player is not connected.' end
 
+    -- ═══ NEITHER END OF AN INVITE MAY BE IN THE TUTORIAL (#261) ═══
+    --
+    -- ABOVE BR.Party.ensure, WHICH IS THE HALF THAT WOULD FAIL SILENTLY. That
+    -- call is the "form a party" verb -- it mints one around the inviter -- so a
+    -- refusal written one line lower would leave a player in the walkthrough
+    -- sitting in a party of one. That is half of what the owner refused, and it
+    -- is the half nothing on screen would show.
+    --
+    -- BOTH ENDS, BECAUSE THEY ARE TWO DIFFERENT MISTAKES. An inviter in the
+    -- tutorial is a client that drew none of the grey. A TARGET in the tutorial
+    -- is an ordinary player inviting somebody whose lobby happens to be showing
+    -- cards, with nothing on their own screen to tell them so.
+    --
+    -- REFUSED IN SILENCE, AND THE SILENCE IS A STANDING RULE RATHER THAN AN
+    -- OVERSIGHT. The owner writes every player-visible sentence and has not
+    -- written this one. server/shop.lua's convention holds: the boolean is the
+    -- ruling and the string is only what to say about it, so a caller with no
+    -- sentence still refuses. `result()` below sends { ok = false } with no
+    -- reason and client/state.lua falls back to its own already-shipped
+    -- 'Failed.' -- nothing is invented here to fill the hole.
+    if BR.Roster.inTutorial(src) then return false, nil end
+    if BR.Roster.inTutorial(targetSrc) then return false, nil end
+
     local party = BR.Party.ensure(src)
     if not party then return false, 'You are not on the roster yet.' end
 
@@ -296,6 +319,23 @@ function BR.Party.respond(src, accept)
         end
         return true
     end
+
+    -- ═══ AN ACCEPTANCE FROM INSIDE THE TUTORIAL IS REFUSED (#261) ═══
+    --
+    -- THIS IS THE WINDOW THE INVITE GATE CANNOT COVER. Invites live for their
+    -- full TTL, so a player invited perfectly legitimately and THEN starting the
+    -- walkthrough is holding a valid acceptance that invite() already let
+    -- through. The gate has to be asked again where the party membership is
+    -- actually written.
+    --
+    -- BELOW THE DECLINE, DELIBERATELY. Saying no is not joining a party, and it
+    -- has to keep working -- a card that can be neither accepted nor dismissed
+    -- is worse than one that can only be dismissed. The invite is spent either
+    -- way (it was cleared at the top of this function), which is the right
+    -- outcome: it was an invitation into a party this player may not be in.
+    --
+    -- Silent, for the reason spelled out over BR.Party.invite.
+    if BR.Roster.inTutorial(src) then return false, nil end
 
     local party = parties[inv.partyId]
     if not party then return false, 'That party no longer exists.' end
@@ -498,10 +538,44 @@ end
 --- squad to be split off from -- and a party half-queued across the two modes
 --- would otherwise hold BOTH of its members at their own doors forever, each
 --- waiting for a mate in a queue they will never be admitted from.
+---
+--- ═══════════════════════════════════════════════════════════════════════════
+--- AND SINCE #261, A SECOND REASON TO SAY NO, WHICH IS NOT ABOUT A PARTY
+--- ═══════════════════════════════════════════════════════════════════════════
+---
+--- A player inside the guided first run is refused here, and the placement is
+--- the point rather than a convenience. This function is the ONE predicate both
+--- doors are built on -- the same sentence twenty lines up -- so a rule written
+--- here is a rule at the formation tick AND at the late-join sweep, with no
+--- second answer for them to drift apart by. Every other place the tutorial
+--- hold could have been enforced is one of those two doors and not the other,
+--- which is precisely the failure the 2026-09-02 report was.
+---
+--- IT IS ABOVE THE SOLO LINE, AND THAT IS THE TRAP THIS COMMENT EXISTS FOR.
+--- Every rule in the rest of this function is about teams, so solo skipping them
+--- is right. The tutorial hold is not about teams at all: "matchmaking is not
+--- allowed to touch them" (the owner, 2026-09-05) is a sentence about every
+--- mode there is. Written one line lower, this would refuse a squad warmup and
+--- wave the same player straight into a solo one -- and solo is the default
+--- mode a brand new player is looking at while they read the cards.
+---
+--- THE FUNCTION IS STILL HONESTLY NAMED. `mayEnter` is the question; a party was
+--- only ever the first reason for the answer to be no.
+---
+--- AND THIS ONE IS NOT SELF-CLEARING THE WAY THE PARTY REASONS ARE. The three
+--- releases above all happen TO the held player -- a mate readies, leaves or
+--- drops -- and the tutorial hold ends only when the player themselves says so
+--- (BR.Roster.setTutorial, `on = false`) or when a match takes them anyway
+--- (BR.Match.create clears it). What keeps that from being an unescapable wait
+--- is that it is not a wait: nobody is holding them, they are not in the queue
+--- (the grant drops them from it), and the control that ends it is the one they
+--- are looking at.
 --- @param src integer
 --- @param mode string
 --- @return boolean
 function BR.Party.mayEnter(src, mode)
+    if BR.Roster.inTutorial(src) then return false end
+
     if mode == BR.Mode.SOLO.key then return true end
 
     local party = BR.Party.of(src)
@@ -1551,6 +1625,17 @@ function BR.Party.requestJoin(src, leaderSrc)
         return false, 'Leave your current party first.'
     end
 
+    -- The tutorial hold, at the third door (#261), silent as at the other two.
+    --
+    -- THE LEADER END NEEDS NO CHECK, and adding one would be a second rule for
+    -- the first to disagree with. A player in the walkthrough has no party to
+    -- lead: BR.Roster.setTutorial leaves whatever party they were in when the
+    -- hold was granted, and BR.Party.invite refuses to mint them a new one. So
+    -- `BR.Party.of(leaderSrc)` below finds nothing and the existing 'That player
+    -- is not leading a party.' already answers it -- in a sentence the owner has
+    -- already written, which is better than one he has not.
+    if BR.Roster.inTutorial(src) then return false, nil end
+
     local lp = BR.Party.of(leaderSrc)
     if not lp or lp.leader ~= leaderSrc then
         return false, 'That player is not leading a party.'
@@ -1594,6 +1679,12 @@ function BR.Party.answerJoin(leaderSrc, requesterSrc, accept)
         BR.Server.notify(requesterSrc, 'Your join request was declined.', 'warn')
         return true
     end
+
+    -- THE SAME WINDOW respond() HAS, FROM THE OTHER SIDE (#261). A join request
+    -- outlives the moment it was sent, so the requester may have started the
+    -- walkthrough while the leader was still deciding. Below the decline for the
+    -- same reason: turning somebody down is not putting them in a party.
+    if BR.Roster.inTutorial(requesterSrc) then return false, nil end
 
     local party = BR.Party.of(leaderSrc)
     if not party or party.leader ~= leaderSrc then

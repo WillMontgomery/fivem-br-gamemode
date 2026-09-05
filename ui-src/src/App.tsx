@@ -506,11 +506,17 @@ export default function App() {
           NOTHING BUT /brtutorial STARTS IT TODAY. The first-match checkbox and
           the persisted one-time offer are still to come; they will raise this
           same flag. */}
+      {/* BOTH ENDINGS RELEASE THE SERVER-SIDE HOLD, and both have to: a player
+          left flagged as in-tutorial is a player matchmaking will never touch
+          again for the life of the connection. `onAbandon` is the one that
+          matters -- it fires when a step's target has gone, which is a fault,
+          and a fault that ALSO stranded somebody outside the queue would be far
+          worse than the fault itself. */}
       {s.tutorialRun && (
         <TutorialLayer
           screen={s.focus}
-          onDone={() => s.setTutorialRun(false)}
-          onAbandon={() => s.setTutorialRun(false)}
+          onDone={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
+          onAbandon={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
           onStep={s.setTutorialStep}
         />
       )}

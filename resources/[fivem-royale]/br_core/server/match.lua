@@ -90,6 +90,31 @@ function BR.Match.create(mode, participants)
 
     for _, src in ipairs(participants or {}) do
         if BR.Roster.get(src) then
+            -- NOBODY IN A MATCH CARRIES THE TUTORIAL HOLD (#261). The hold means
+            -- "matchmaking may not touch this player"; once a match HAS them the
+            -- thing it was protecting them from has already happened, and a flag
+            -- left standing would follow them into the next lobby and hold them
+            -- out of every round after this one with no control on screen that
+            -- clears it -- the walkthrough they would have to finish is long
+            -- gone.
+            --
+            -- THE ORDINARY PATH NEVER REACHES THIS LINE, and that is the point
+            -- rather than an argument that it is dead. BR.Party.mayEnter has
+            -- already refused these players, so the formation tick below cannot
+            -- pass one in: it consumes BR.Lobby.admissible, which is the gate.
+            --
+            -- `brforce` CAN, AND IT IS THE CALLER THAT MAKES THIS REAL. Its
+            -- `debugTarget` fallback mints a match out of `BR.Lobby.ids()` --
+            -- the RAW queue, never filtered through admissible -- so a client
+            -- that pressed Ready anyway lands here with the flag still on. The
+            -- command has to keep working (a dev verb that silently left one
+            -- player standing on the pad would be reported as the verb being
+            -- broken), so the flag gives way rather than the participant list.
+            --
+            -- Asserting the invariant HERE, at the one mint every match passes
+            -- through, is what makes it true for that caller and for the next
+            -- one nobody has written yet.
+            BR.Roster.setTutorial(src, false)
             BR.Roster.setMatch(src, m.id)
         end
     end
@@ -925,6 +950,36 @@ function BR.Match.shortenWarmupIfFull(m)
     BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'lobbyFull' })
 end
 
+--- Of everybody BR.Lobby.admissible refused, the ones it refused FOR A PARTY.
+---
+--- ═══ SOMEBODY IN THE TUTORIAL IS NOT SOMEBODY THE ROOM IS WAITING FOR ═══
+---
+--- BR.Party.mayEnter says no for two unrelated reasons since #261, so `held` no
+--- longer means one thing. Handing the mixed list to BR.Party.holdBlocker makes
+--- it read the FIRST refused player's party -- and a player in the walkthrough
+--- has none, by construction -- so the room would tell every lobby screen in it
+--- that a party has 0/0 readied up. That is a reason which is not the one
+--- holding the match, stated confidently, which is the precise failure the
+--- gate-and-explanation-in-one-function rule below exists to prevent.
+---
+--- AND IT IS NOT ONLY A WORDING BUG. `(queued + #held) >= need` is the test for
+--- "would the held players close the gap", and a player in the tutorial never
+--- closes it -- they are not coming, and nothing anybody else does brings them.
+--- Counting them makes a room blame a party for a shortfall whose honest answer
+--- is more players.
+---
+--- A NEW ARRAY RATHER THAN AN EDIT IN PLACE, because the list belongs to the
+--- caller's own BR.Lobby.admissible call rather than to this function.
+--- @param held integer[]  ids BR.Party.mayEnter refused, lowest first
+--- @return integer[]
+local function partyHeld(held)
+    local out = {}
+    for _, src in ipairs(held) do
+        if not BR.Roster.inTutorial(src) then out[#out + 1] = src end
+    end
+    return out
+end
+
 --- Why the next match OF A MODE cannot form yet, or nil if it can.
 ---
 --- THE GATE AND THE EXPLANATION ARE THE SAME FUNCTION, deliberately.
@@ -972,8 +1027,13 @@ function BR.Match.startBlocker(mode)
         -- test is deliberately "would the held players close the gap": when
         -- even the whole queue is too small, more players is the honest answer
         -- and the party is not what is holding anything.
-        if #held > 0 and (queued + #held) >= need then
-            return BR.Party.holdBlocker(held, mode)
+        --
+        -- `partyHeld` and not `held`: since #261 the refused list also carries
+        -- players in the guided first run, and they are neither waiting nor
+        -- waited on. See the note over that function.
+        local waiting = partyHeld(held)
+        if #waiting > 0 and (queued + #waiting) >= need then
+            return BR.Party.holdBlocker(waiting, mode)
         end
         return { reason = 'players', have = queued, need = need }
     end
