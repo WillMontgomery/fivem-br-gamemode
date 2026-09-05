@@ -509,6 +509,25 @@ html, body, #root {
      and is applied per-element (.font-display) rather than inherited -- it has
      no lowercase personality and is unreadable as body text. */
   font-family: 'Barlow', 'Segoe UI', system-ui, sans-serif;
+
+  /* THE TUTORIAL'S FACE, AND ONLY THE TUTORIAL'S (#261). A token rather than a
+     hardcoded stack so the one exception to the type spec is declared in the
+     same place as the rule it breaks -- and so that finding everything Nunito
+     touches is a search for one name. Nothing outside the guided first run may
+     use it; if a second surface wants a casual voice, that is a decision about
+     the type spec and not a copy-paste. */
+  --font-tutorial: 'Nunito Variable', 'Nunito', 'Barlow', 'Segoe UI', system-ui,
+    sans-serif;
+
+  /* HIS TWO WEIGHTS, NAMED (owner, 2026-09-04: "font weight 700 on the
+     titles/headers, and font weight 350 on the body"). Tokens rather than
+     numbers at the use site, because 350 is an unusual value that reads as a
+     typo -- and a future reader "correcting" it to 400 would quietly undo the
+     one thing that makes these cards sound different from the rest of the UI.
+     350 is a REAL weight here and not a synthesised one: the variable axis runs
+     200-1000 in steps of 1. */
+  --font-tutorial-body: 350;
+  --font-tutorial-head: 700;
   color: white;
 }
 

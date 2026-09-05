@@ -21,6 +21,29 @@ import '@fontsource/barlow/latin-500.css'
 import '@fontsource/barlow/latin-600.css'
 import '@fontsource/barlow/latin-700.css'
 
+// NUNITO IS THE TUTORIAL'S VOICE AND NOTHING ELSE'S (#261). Owner, 2026-09-04,
+// on the guided first run: the flyout cards "should feel more casual than our
+// existing fonts -- the flyouts are a deliberate exception to the rest of the
+// UX and should read as one".
+//
+// THE VARIABLE CUT, AND THAT IS FORCED RATHER THAN PREFERRED. He asked for
+// "font weight 700 on the titles/headers, and font weight 350 on the body", and
+// 350 is not a weight Fontsource ships as a static file -- the static package
+// stops at 200/300/400/... So this is @fontsource-variable, whose axis is
+// 200-1000 in steps of 1 and therefore has a real 350 rather than a browser
+// faking one by smearing 300 and 400.
+//
+// FIVE @font-face BLOCKS, ONE DOWNLOAD. `wght.css` declares latin, latin-ext,
+// cyrillic, cyrillic-ext and vietnamese, each behind its own unicode-range, so
+// a player fetches only the subset their text actually needs. The other four
+// ship in the resource and are never read; that is how the format works and is
+// cheaper than hand-writing an @font-face against a hashed filename.
+//
+// FONTSOURCE, LIKE THE OTHER TWO, so this stays a self-hosted OFL font in the
+// bundle rather than a request to Google on a machine that may have no route to
+// it -- and so it costs nothing, which is the standing rule on UI dependencies.
+import '@fontsource-variable/nunito/wght.css'
+
 import './index.css'
 
 // Install these BEFORE rendering. A crash during the first render is exactly the
