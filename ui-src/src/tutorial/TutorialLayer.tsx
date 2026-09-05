@@ -111,7 +111,20 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const [i, setI] = useState(0)
   const [rect, setRect] = useState<Rect | null>(null)
   const [leaving, setLeaving] = useState(false)
-  const [clicked, setClicked] = useState(false)
+  // WHICH STEP THE PRESS WAS FOR, not whether one happened.
+  //
+  // THIS IS THE STEP-SKIPPING BUG. It was a boolean, and a boolean cannot tell
+  // "the player clicked the thing this card is about" from "the player clicked
+  // something a moment ago": advancing swaps `step`, React batches the state
+  // updates, and the advance effect ran again against the NEW step before the
+  // reset landed -- so one release on the interface-size slider walked past the
+  // text-size card, and one press on Locker walked past two (owner, 2026-09-04:
+  // "when using the interface size slider like it tells me to, upon releasing my
+  // mouse it skips over the text size slider hint", and "I clicked Locker and it
+  // immediately took me to step 12, then jumped to 13").
+  //
+  // Holding the step's OWN id makes the match exact and the race unrepresentable.
+  const [clickedFor, setClickedFor] = useState<string | null>(null)
   const rectRef = useRef<Rect | null>(null)
 
   const steps: Step[] = LOBBY_STEPS
@@ -145,14 +158,13 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // ── the real click, observed and never intercepted ──────────────────────
   useEffect(() => {
     if (!step || step.advance !== 'click') return
-    setClicked(false)
 
     const onClick = (ev: MouseEvent) => {
       const t = ev.target
       if (!(t instanceof Element)) return
       // `closest`, because the press lands on whatever is inside the button --
       // a label, an icon -- and the attribute is on the control.
-      if (t.closest(`[data-tut="${step.target}"]`)) setClicked(true)
+      if (t.closest(`[data-tut="${step.target}"]`)) setClickedFor(step.id)
     }
 
     // CAPTURE, AND PASSIVE. Capture so the note is taken even if the button
@@ -185,10 +197,11 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     onAbandonRef.current = p.onAbandon
   })
 
-  // A CLICK STEP ADVANCES ITSELF once the player has pressed the real control.
+  // A CLICK STEP ADVANCES ITSELF once the player has pressed the real control --
+  // and only for the step the press was actually for.
   useEffect(() => {
-    if (step && step.advance === 'click' && clicked) go(i + 1)
-  }, [clicked, step, i, go])
+    if (step && step.advance === 'click' && clickedFor === step.id) go(i + 1)
+  }, [clickedFor, step, i, go])
 
   // ── a target that is not there ──────────────────────────────────────────
   //
@@ -258,7 +271,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         fromX={fromX}
         fromY={fromY}
         leaving={leaving}
-        onNext={() => go(i + 1)}
+        onNext={step.advance === 'next' ? () => go(i + 1) : null}
         onBack={i > 0 ? () => go(i - 1) : null}
       />
     </>

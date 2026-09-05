@@ -102,7 +102,15 @@ export type CardProps = {
    */
   fromX: number
   fromY: number
-  onNext: () => void
+  /**
+   * Null on a step that wants the player to press the REAL control.
+   *
+   * Owner, 2026-09-04: "don't have a next button on that one actually because
+   * we want them to click Settings... Really any navigational steps should not
+   * have a Next button." A card that both says "open Settings" and offers a way
+   * past Settings is asking for one thing and accepting another.
+   */
+  onNext: (() => void) | null
   /** Null on the first step, which has nothing behind it. */
   onBack: (() => void) | null
   /** Raised by the layer one frame before it unmounts, to play the exit. */
@@ -190,20 +198,15 @@ export default function AnnotationCard(p: CardProps) {
               Last
             </Btn>
           ) : null}
-          {/* ALWAYS PRESENT, INCLUDING ON A STEP THAT WANTS A REAL PRESS.
-              It used to be absent there, on the reasoning that the only live
-              thing on screen should be the control the card points at. With
-              Skip gone that left a card whose only button was Last, which
-              reads as broken -- owner, 2026-09-04: "when I get to the settings
-              step (3 of 14) there's no Next button."
-
-              THE REAL CONTROL STILL ADVANCES IT. Pressing the thing the card
-              is pointing at moves on exactly as before; Next is a second door
-              out of the same room, for a player who has already opened that
-              menu once or does not want to. */}
-          <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onNext}>
-            Next
-          </Btn>
+          {/* ABSENT ON A NAVIGATIONAL STEP, which is the owner's rule: the
+              only way past "open Settings" is to open Settings. The card is
+              then the instruction and the ringed control is the only live
+              thing on screen, which is the whole point of pointing at it. */}
+          {p.onNext ? (
+            <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onNext}>
+              Next
+            </Btn>
+          ) : null}
         </span>
       </div>
     </div>
