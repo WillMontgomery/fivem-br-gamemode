@@ -282,10 +282,17 @@
      this, such as the font used in 'Display name' and our keybind rows like
      'Use selected item' -- the color there works better too").
 
-     0.70 IS THAT COLOUR, READ OFF THE ROWS HE NAMED. Both are `text-white/70`:
+     0.70 IS THAT COLOUR, READ OFF THE ROWS HE NAMED. Both were `text-white/70`:
      Settings' Display name field label and Keybinds' action labels. He was not
      picking a shade in the abstract, he was pointing at two rows on screen and
      saying those are right, so this is measured off them rather than chosen.
+
+     ONE OF THE TWO IS GONE, AND THE MEASUREMENT IS NOT. The Display name field
+     went with the whole Identity section (#262, 2026-09-04). Keybinds' action
+     labels are the surviving twin and still render at exactly this value, so
+     the number is still checkable against something on screen -- but the quote
+     above names a row that no longer exists, and a reader who goes looking for
+     it should find this note rather than conclude the token drifted.
 
      AND PROSE EARNS THE EXTRA CONTRAST. On the same pause-menu plate that
      --color-text-dim is measured against -- rgba(20,24,34,0.94) compositing to
@@ -582,9 +589,12 @@ html, body, #root {
    SO IT IS COPIED OFF THOSE TWO ROWS RATHER THAN INVENTED -- BUT OFF WHAT THEY
    RENDER, NOT WHAT THEY SAY, AND #148 GOT THAT WRONG (#156).
 
-   Both rows are, to the character, `text-[0.82rem] text-white/70 tscale`:
+   Both rows WERE, to the character, `text-[0.82rem] text-white/70 tscale`:
    Settings' Display name field label (Settings.tsx) and Keybinds' action
-   labels (Keybinds.tsx). #148 read the 0.82rem off the source and copied it.
+   labels (Keybinds.tsx). The first went with the Identity section (#262,
+   2026-09-04); Keybinds is the one still on screen and the reasoning below is
+   unchanged, because it was always about how `.tscale` resolves rather than
+   about either row. #148 read the 0.82rem off the source and copied it.
    They do not render at 0.82rem. `.tscale` is declared after Tailwind's
    utilities at the same specificity, so it WINS over `text-[0.82rem]`, and it
    resolves to `calc(1em * var(--text-scale))` -- the PARENT's size. Measured in
