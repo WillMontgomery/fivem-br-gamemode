@@ -1124,6 +1124,33 @@ function BR.Native.buildGroups()
         GROUPS[n] = GetHashKey(groupName(n))
         AddRelationshipGroup(groupName(n))
     end
+
+    -- ═══ AND EVERY ONE OF THEM HATES THE STOCK `PLAYER` GROUP ═══
+    --
+    -- THIS IS NOT ABOUT PVP AND IT IS NOT DECORATIVE. It is what BR_ALLY used to
+    -- do, it was dropped when BR_ALLY was replaced, and dropping it put a red
+    -- search-area blip on the minimap every time a player fired (owner,
+    -- 2026-09-04: "whenever I shoot, regardless of target, there's now a red
+    -- blip on my map around me which quickly shrinks around my ped and goes
+    -- away. I never asked for that").
+    --
+    -- WHY A BLIP AND NOT A POLICE CAR: firing while in a group that is not
+    -- hostile to the ambient world registers as a CRIME, which grants a pending
+    -- wanted level. The wanted suppression in applyGameRules is closed-loop and
+    -- clears it on the very next frame -- so no stars, no cops, no pursuit --
+    -- but the wanted POSITION is part of the same replicated node
+    -- (CPlayerWantedAndLOSDataNode) and the engine has already drawn the search
+    -- area by then. What the owner saw is that blip being born and animating
+    -- out inside one frame's worth of wanted level.
+    --
+    -- SET ONCE, HERE, because it never changes: no squad is ever friendly with
+    -- the ambient world, so this belongs beside the registrations rather than in
+    -- applyGroup's per-squad row.
+    local stock = GetHashKey('PLAYER')
+    for _, g in pairs(GROUPS) do
+        SetRelationshipBetweenGroups(5, g, stock)
+        SetRelationshipBetweenGroups(5, stock, g)
+    end
 end
 
 --- Which relationship group this client's ped should announce, and whether it

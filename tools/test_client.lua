@@ -10790,7 +10790,13 @@ do
         -- The group announcement and the one row of the matrix it writes. Both
         -- are the feature under test now, so both are cleared between cases or
         -- a case would be reading the previous case's squad.
+        --
+        -- ...AND THE BUILD-TIME ROWS ARE PUT BACK, because in the real client
+        -- they are written once at resource start and never again. Clearing
+        -- them and not replaying them would make the PLAYER-hate assertion below
+        -- test the harness rather than the code.
         relGroupOf, rel = {}, {}
+        N.buildGroups()
         N.forgetTeam()
         -- The rule latch is a memo like the team's, and for the same reason;
         -- a suite that forgot one and not the other would be measuring a
@@ -10874,6 +10880,23 @@ do
         'and hates every other group in both directions -- no stale peace '
             .. 'treaty with the squad this client just left',
         ('%d cross pairs, all hate: %s'):format(sawOther, tostring(hatesAll)))
+
+    -- ═══ AND HATES THE STOCK `PLAYER` GROUP, WHICH IS NOT ABOUT PVP ═══
+    --
+    -- REGRESSION-DETECTING, and the regression already happened once. BR_ALLY
+    -- hated PLAYER; the per-squad groups did not, and the first playtest of
+    -- them put a red wanted-search blip on the minimap on every shot (owner,
+    -- 2026-09-04). Firing from a group that is not hostile to the ambient world
+    -- is a CRIME, the closed-loop wanted suppression clears the level on the
+    -- next frame, and the search area is drawn and animated out in between.
+    -- Nothing else in the suite would catch its removal.
+    local stock = GetHashKey('PLAYER')
+    ok(rel[g] and rel[g][stock] == 5 and rel[stock] and rel[stock][g] == 5,
+        'and hates the stock PLAYER group in both directions, so firing is not '
+            .. 'a crime and no wanted search area is ever drawn',
+        ('group->PLAYER %s, PLAYER->group %s')
+            :format(tostring(rel[g] and rel[g][stock]),
+                    tostring(rel[stock] and rel[stock][g])))
 
     -- The memo: the matrix is ~127 natives, so it is written on change and not
     -- sixty times a second. The GROUP announcement is idempotent and rides the
