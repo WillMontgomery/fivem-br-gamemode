@@ -1626,14 +1626,19 @@ html, body, #root {
 
 .tut-card {
   position: absolute;
-  z-index: 60;
+  /* ABOVE .page (50), which is what the settings half needs: those cards point
+     at controls on a sub-screen and would otherwise be painted under it. */
+  z-index: 55;
   width: 19rem;
   max-width: 34vw;
   padding: 0.85rem 0.95rem 0.7rem;
-  border-radius: var(--r-panel);
-  background: rgba(11, 16, 20, 0.94);
-  /* The accent edge is the only colour on the card, and it is the same blade
-     the kill feed uses for a row that concerns you. One vocabulary. */
+  /* NO BACKGROUND OF ITS OWN. `.panel` is on the element and paints the same
+     surface every other card in the game uses -- the owner asked for the
+     tutorial to "follow the same visual and button structure as the existing
+     UI", and a bespoke box was the thing that made it look imported. The FONT
+     stays the exception, because that one he asked for. */
+  /* The accent edge is the only colour added, and it is the same blade the
+     kill feed uses for a row that concerns you. One vocabulary. */
   border-left: 3px solid var(--color-royale-accent);
   box-shadow: 0 1.2rem 2.4rem rgba(0, 0, 0, 0.55);
   font-family: var(--font-tutorial);
@@ -1735,32 +1740,10 @@ html, body, #root {
 
 .tut-acts { display: inline-flex; gap: 0.35rem; }
 
-.tut-btn {
-  font-family: var(--font-tutorial);
-  font-weight: var(--font-tutorial-head);
-  font-size: 0.78rem;
-  padding: 0.28rem 0.7rem;
-  border-radius: calc(var(--r-panel) * 0.6);
-  background: rgba(255, 255, 255, 0.09);
-  color: rgba(255, 255, 255, 0.9);
-  transition: transform 120ms var(--ease-snap), background 120ms linear;
-}
-
-.tut-btn:hover  { background: rgba(255, 255, 255, 0.16); transform: translateY(-1px); }
-.tut-btn:active { transform: translateY(0) scale(0.97); }
-
-.tut-btn--go {
-  background: var(--color-royale-accent);
-  color: #05121a;
-}
-.tut-btn--go:hover { background: var(--color-royale-accent); filter: brightness(1.12); }
-
-.tut-btn--quiet {
-  background: transparent;
-  color: rgba(255, 255, 255, 0.42);
-  font-weight: var(--font-tutorial-body);
-}
-.tut-btn--quiet:hover { background: rgba(255, 255, 255, 0.07); color: rgba(255, 255, 255, 0.7); }
+/* The buttons are the project's own `Btn` (see AnnotationCard.tsx), so there
+   are no button rules here. There were, and deleting them is the point: a
+   second button vocabulary is exactly what made the first version read as a
+   web widget rather than as part of this game's interface. */
 
 /* ═══ THE SPOTLIGHT ═══
 
@@ -1774,7 +1757,7 @@ html, body, #root {
    that cannot wait. One pulse in the interface, not two. */
 .tut-ring {
   position: absolute;
-  z-index: 59;
+  z-index: 54;
   border-radius: calc(var(--r-panel) * 0.9);
   border: 2px solid var(--color-royale-accent);
   box-shadow: 0 0 0 0.28rem rgba(56, 208, 246, 0.16);

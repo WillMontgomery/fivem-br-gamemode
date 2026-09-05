@@ -48,6 +48,8 @@
 
 import { useEffect, useState } from 'react'
 
+import Btn from '../ui/Btn'
+
 /**
  * Split the owner's two emphasis marks into elements.
  *
@@ -122,7 +124,22 @@ export default function AnnotationCard(p: CardProps) {
 
   return (
     <div
-      className={`tut-card tscale${p.leaving ? ' tut-card--leaving' : ''}`}
+      // `panel interactive tscale` -- THE PROJECT'S OWN VOCABULARY, and two of
+      // those three are load-bearing rather than cosmetic:
+      //
+      //   `panel`       the same surface every other card in the game uses.
+      //                 Owner, 2026-09-04: "our whole tutorial [needs] to
+      //                 follow the same visual and button structure as the
+      //                 existing UI". The FONT is the one sanctioned exception
+      //                 and it stays; the box is not, and a bespoke one was
+      //                 wrong.
+      //   `interactive` pointer-events: auto. The page root is
+      //                 pointer-events: none and only this class takes clicks
+      //                 back -- which is why the first version DREW and could
+      //                 not be pressed (owner: "the buttons don't work").
+      //   `tscale`      the player's text-size preference, as every surface
+      //                 takes it.
+      className={`tut-card panel interactive tscale${p.leaving ? ' tut-card--leaving' : ''}`}
       style={{
         left: p.left,
         top: p.top,
@@ -158,23 +175,32 @@ export default function AnnotationCard(p: CardProps) {
           {p.index} of {p.total}
         </span>
 
+        {/* THE PROJECT'S OWN BUTTON, NOT A BESPOKE ONE. `Btn` carries the
+            variants, the sizes, the hover and press cues and the disabled
+            treatment that every other control in the game already has, so
+            these read and sound like the rest of the interface instead of
+            like a web widget that wandered in.
+
+            `ghost` for Skip and `default` for Last, because Next is the one
+            loud object on the card and `primary` is reserved for exactly one
+            per screen -- the same rule the lobby's Ready up follows. */}
         <span className="tut-acts">
-          <button type="button" className="tut-btn tut-btn--quiet" onClick={p.onSkip}>
+          <Btn variant="ghost" size="sm" cue="ui.select" onPress={p.onSkip}>
             Skip
-          </button>
+          </Btn>
           {p.onBack ? (
-            <button type="button" className="tut-btn" onClick={p.onBack}>
+            <Btn variant="default" size="sm" cue="ui.select" onPress={p.onBack}>
               Last
-            </button>
+            </Btn>
           ) : null}
           {/* ABSENT, NOT DISABLED, while the step waits for the real control.
               A greyed Next invites a click that does nothing; no Next at all
               leaves the only live thing on screen being the button the card is
               pointing at, which is the instruction. */}
           {p.onNext ? (
-            <button type="button" className="tut-btn tut-btn--go" onClick={p.onNext}>
+            <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onNext}>
               Next
-            </button>
+            </Btn>
           ) : null}
         </span>
       </div>

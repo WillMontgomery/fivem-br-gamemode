@@ -186,7 +186,6 @@ export default function Lobby({
 
   return (
     <div
-      data-tut="lobby-root"
       className="fixed inset-0 transition-opacity duration-200"
       style={{
         opacity: visible ? 1 : 0,
@@ -239,6 +238,7 @@ export default function Lobby({
           so without this the base menu showed through both -- two screens
           stacked instead of one navigating (user, 2026-08-09). */}
       <div
+        data-tut="lobby-menu"
         className={`interactive absolute inset-y-0 left-0 w-[38rem] max-w-[62vw]
                    flex flex-col justify-center px-[3.5rem] py-[3rem]
                    transition-opacity duration-700${under ? ' page-under' : ''}`}

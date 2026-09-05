@@ -92,7 +92,13 @@ export type Step = {
 export const LOBBY_STEPS: Step[] = [
   {
     id: 'welcome',
-    target: 'lobby-root',
+    // THE MENU COLUMN, NOT THE SCREEN. This pointed at the lobby's outermost
+    // `fixed inset-0` element, whose rect IS the viewport -- so `place` had no
+    // side to sit on, fell through to its last resort and put the first card
+    // the player ever sees in the dead centre of the screen, nowhere near the
+    // menu it was talking about (owner, 2026-09-04). A target has to be the
+    // thing being described, not the surface it sits on.
+    target: 'lobby-menu',
     title: 'Welcome to Blitz Royale',
     body: 'This is the lobby. Everything you do between matches happens on this screen, and this walkthrough covers all of it. Press **Next** to begin.',
     advance: 'next',
