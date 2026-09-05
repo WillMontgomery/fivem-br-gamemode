@@ -198,7 +198,16 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // and say so, because a tutorial that confidently points at nothing is worse
   // than one that admits it is broken. The caller decides whether that burns
   // the one-time offer.
-  const missing = step !== undefined && rect === null
+  //
+  // ...AND A STEP WAITING FOR ITS SCREEN IS NOT MISSING. This is what ended the
+  // owner's run at "6 of 9" (2026-09-04): the settings-scoped steps kept
+  // measuring while Settings was not the screen on top, found nothing -- because
+  // nothing was rendered -- and the 1.2s timer killed the whole walkthrough.
+  // A step whose screen is not up has not failed; it has not started.
+  const waitingForScreen = step !== undefined
+    && step.screen !== undefined
+    && step.screen !== p.screen
+  const missing = step !== undefined && rect === null && !waitingForScreen
   useEffect(() => {
     if (!missing) return
     const t = setTimeout(() => {
@@ -217,7 +226,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       }
     }, 1200)
     return () => clearTimeout(t)
-  }, [missing, step])
+  }, [missing, step, waitingForScreen])
 
   if (!step || rect === null) return null
   // A step scoped to a child screen waits until that screen is actually on top.

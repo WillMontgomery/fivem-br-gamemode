@@ -273,9 +273,14 @@ function Slider({
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, tut }: {
+  title: string
+  children: React.ReactNode
+  /** `data-tut` anchor for the guided first run (#261). Optional. */
+  tut?: string
+}) {
   return (
-    <section>
+    <section data-tut={tut}>
       <h3 className="font-display text-[0.95rem] uppercase tracking-[0.2em] text-white/40 mb-3">
         {title}
       </h3>
@@ -315,10 +320,11 @@ type Tab = typeof TABS[number]['id']
 
 function Tabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
   return (
-    <div className="flex gap-2 mb-6 flex-wrap">
+    <div className="flex gap-2 mb-6 flex-wrap" data-tut="settings-tabs">
       {TABS.map((t) => (
         <button
           key={t.id}
+          data-tut={`settings-tab-${t.id}`}
           type="button"
           className={`btn plate px-4 py-2 font-display uppercase tracking-[0.12em]
                       text-[0.8rem]${tab === t.id ? ' is-active' : ''}`}
@@ -629,7 +635,7 @@ export default function Settings({
               )}
           </Section>
 
-          <Section title="Audio">
+          <Section title="Audio" tut="settings-audio">
               <Slider
                 label="Interface sounds" value={draft.volUi} dflt={DEFAULT_SETTINGS.volUi}
                 min={0} max={1} step={0.01}
@@ -649,7 +655,7 @@ export default function Settings({
                   back on is one component rather than a migration. */}
           </Section>
 
-          <Section title="Voice">
+          <Section title="Voice" tut="settings-voice">
               {/* WHO HEARS YOU. The server decides which rooms exist and who
                   may be in them; this only chooses which of the ones you were
                   given you actually use -- so it can decline a room, never
@@ -1014,9 +1020,13 @@ export default function Settings({
               announces a match starting, and hearing it for "Save" in the pause
               menu makes the one moment it belongs to mean nothing (owner,
               2026-08-17). Cancel keeps `ui.back` -- the pair reads correctly. */}
-          <Btn variant="primary" size="lg" cue="ui.select" onPress={save}>
-            {saving ? 'Saving…' : 'Save'}
-          </Btn>
+          {/* data-tut: the guided first run points here to say "you are done,
+              close this" (#261). On a wrapper so Btn needs no prop. */}
+          <span data-tut="settings-save" className="contents">
+            <Btn variant="primary" size="lg" cue="ui.select" onPress={save}>
+              {saving ? 'Saving…' : 'Save'}
+            </Btn>
+          </span>
           <Btn variant="default" size="lg" cue="ui.back" onPress={cancel}>
             Cancel
           </Btn>

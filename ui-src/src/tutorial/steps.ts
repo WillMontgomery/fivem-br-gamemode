@@ -96,8 +96,7 @@ export const LOBBY_STEPS: Step[] = [
     // `fixed inset-0` element, whose rect IS the viewport -- so `place` had no
     // side to sit on, fell through to its last resort and put the first card
     // the player ever sees in the dead centre of the screen, nowhere near the
-    // menu it was talking about (owner, 2026-09-04). A target has to be the
-    // thing being described, not the surface it sits on.
+    // menu it was talking about (owner, 2026-09-04).
     target: 'lobby-menu',
     title: 'Welcome to Blitz Royale',
     body: 'This is the lobby. Everything you do between matches happens on this screen, and this walkthrough covers all of it. Press **Next** to begin.',
@@ -110,41 +109,100 @@ export const LOBBY_STEPS: Step[] = [
     body: '**Solo** is one life against everybody. **Squads** puts you in a team of up to four who can revive each other. You can change this any time before you ready up.',
     advance: 'next',
   },
+
+  // ═══ SETTINGS, AND IT IS THE LONGEST STRETCH ON PURPOSE ═══
+  //
+  // Owner, 2026-09-04: "The interface size/text size was all that's shown in
+  // general? Nothing about interface sounds, voice chat? Nothing on the
+  // controls page or accessibility? The workflow moved forward before it told
+  // me to close the settings page."
+  //
+  // All four were fair. The walkthrough showed two sliders out of a screen with
+  // five sections and three tabs, and then left the player standing in it. It
+  // now covers Interface, Audio, Voice, both other tabs, and ends by telling
+  // them to close it.
   {
     id: 'settings',
     target: 'settings',
     title: 'Make it readable first',
-    body: 'Open **Settings**. Before anything else it is worth setting the interface and text size to suit your screen — everything in this walkthrough will follow along as you change them.',
+    body: 'Open **Settings**. Before anything else it is worth making the game fit your screen and your ears.',
     advance: 'click',
   },
   {
-    id: 'settings-scale',
+    id: 'settings-uiscale',
     target: 'settings-uiscale',
     title: 'Interface size',
-    body: 'This scales every panel in the game. Drag it and watch this card move with it — *that is what it will look like in a match*.',
+    body: 'This scales every panel in the game. Drag it and let go — *watch this card resize with it*.',
+    // CLICK, NOT NEXT. Owner: "on sliders, progress the workflow automatically
+    // if they click and release on the slider itself." A `click` event is
+    // exactly a press and release on the control, so the card gets out of the
+    // way the moment they have done the thing it asked for.
+    advance: 'click',
+    screen: 'settings',
+  },
+  {
+    id: 'settings-textscale',
+    target: 'settings-textscale',
+    title: 'Text size',
+    body: 'This scales the words on their own, on top of the interface size. Set both so you can read a toast without leaning in.',
+    advance: 'click',
+    screen: 'settings',
+  },
+  {
+    id: 'settings-audio',
+    target: 'settings-audio',
+    title: 'Sound',
+    body: 'Interface sounds are the clicks and cues this menu makes. Turn them down here if you would rather hear the game.',
     advance: 'next',
     screen: 'settings',
   },
   {
-    id: 'settings-text',
-    target: 'settings-textscale',
-    title: 'Text size',
-    body: 'This one scales the words on their own, on top of the interface size. Set both so you can read a toast without leaning in.',
+    id: 'settings-voice',
+    target: 'settings-voice',
+    title: 'Talking to people',
+    body: 'Voice chat is set separately for **solos** and **squads**, so you can be heard by your team without being heard by strangers.',
     advance: 'next',
     screen: 'settings',
   },
+  {
+    id: 'settings-controls',
+    target: 'settings-tab-controls',
+    title: 'Your keys',
+    body: 'Open **Controls** to see every key the game uses, and to change any of them.',
+    advance: 'click',
+    screen: 'settings',
+  },
+  {
+    id: 'settings-accessibility',
+    target: 'settings-tab-accessibility',
+    title: 'Accessibility',
+    body: 'And **Accessibility** has colour-blind modes, with a preview so you can see the difference before you commit to it.',
+    advance: 'click',
+    screen: 'settings',
+  },
+  {
+    id: 'settings-done',
+    target: 'settings-save',
+    title: 'That is Settings',
+    body: 'Press **Save** to keep your changes and close this screen. You can come back at any time, from here or from the pause menu.',
+    advance: 'click',
+    screen: 'settings',
+  },
+
   {
     id: 'locker',
     target: 'locker',
     title: 'Your character',
-    body: 'The **Locker** is where you choose who you look like. It changes nothing about how you play — nobody has an advantage here.',
+    body: 'The **Locker** is where you choose who you look like.',
     advance: 'click',
   },
   {
     id: 'market',
     target: 'market',
     title: 'Spending Volts',
-    body: 'Volts are what you earn for playing well. The **Market** is the only place to spend them, and everything in it is cosmetic.',
+    // HIS WORDS, VERBATIM (2026-09-04). The sentence this replaced was mine and
+    // said the Market was the only place to spend Volts, which is not true.
+    body: "Volts are the currency of the game. You can use them to buy things within the game, or within the **Market**, where you'll find cosmetics.",
     advance: 'click',
   },
   {

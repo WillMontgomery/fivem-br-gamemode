@@ -150,20 +150,17 @@ export default function AnnotationCard(p: CardProps) {
       aria-live="polite"
       aria-label={p.title}
     >
-      {/* THE BEAK. Drawn after the card lands, rotated to face the subject.
-          aria-hidden because it is a line, and the card's own label already
-          says what this is about. */}
-      <span
-        aria-hidden
-        className="tut-beak"
-        style={{
-          // DEGREES, COMPUTED HERE. See the note over @keyframes tutBeak: CSS
-          // atan2() is Chrome 111 and this bundle targets Chrome 103.
-          ['--beak-deg' as string]:
-            `${(Math.atan2(p.fromY, p.fromX) * 180) / Math.PI}deg`,
-        }}
-      />
+      {/* THE BEAK IS GONE. It was a 2px gradient meant to point from the card
+          to its subject, and because it was positioned at the card's own
+          centre it drew as a short blue line THROUGH the middle of the text
+          (owner, 2026-09-04: "There seems to be a blue line though the center
+          of the cards right in the center, kinda small. Not sure what that
+          is."). A connector nobody can identify is not a connector.
 
+          NOT REPOSITIONED, REMOVED. The ring around the subject already says
+          which control the card is about, and it says it at the subject rather
+          than asking the eye to follow a line. Two indicators for one fact was
+          the mistake underneath the bug. */}
       <div className={`tut-title${landed ? ' tut-in' : ''}`}>{p.title}</div>
       <p className={`tut-body${landed ? ' tut-in' : ''}`}>{emphasise(p.body)}</p>
 

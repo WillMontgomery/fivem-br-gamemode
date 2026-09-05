@@ -1632,11 +1632,20 @@ html, body, #root {
   width: 19rem;
   max-width: 34vw;
   padding: 0.85rem 0.95rem 0.7rem;
-  /* NO BACKGROUND OF ITS OWN. `.panel` is on the element and paints the same
-     surface every other card in the game uses -- the owner asked for the
-     tutorial to "follow the same visual and button structure as the existing
-     UI", and a bespoke box was the thing that made it look imported. The FONT
-     stays the exception, because that one he asked for. */
+  /* `.panel`'S SURFACE, DARKENED. The class is on the element and gives the
+     card the same look as every other panel in the game -- the owner asked for
+     the tutorial to "follow the same visual and button structure as the
+     existing UI".
+
+     THE ONE DEPARTURE IS OPACITY, and he asked for that too: "The cards should
+     be more opaque. See screenshot where it can be a bit hard to read." A panel
+     normally sits over the HUD or a dimmed screen; this one sits over the LOBBY
+     CAMERA, which is a bright, moving, high-contrast image, and 0.70 was not
+     enough to read 350-weight prose against it. The gradient sheen is kept so
+     it is the same surface, just a more opaque one. */
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 42%),
+    rgba(8, 9, 14, 0.95);
   /* The accent edge is the only colour added, and it is the same blade the
      kill feed uses for a row that concerns you. One vocabulary. */
   border-left: 3px solid var(--color-royale-accent);
@@ -1667,28 +1676,10 @@ html, body, #root {
 /* THE BEAK DRAWS ITSELF AFTER THE CARD LANDS, so the connection reads as a
    consequence of the arrival rather than part of it. scaleX from the card
    outward, pointed by the layer's unit vector. */
-.tut-beak {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 2.2rem;
-  height: 2px;
-  background: linear-gradient(90deg, var(--color-royale-accent), transparent);
-  transform-origin: 0 50%;
-  animation: tutBeak 260ms var(--ease-out) 220ms both;
-  pointer-events: none;
-}
-
-/* THE ANGLE IS COMPUTED IN JS AND ARRIVES AS DEGREES, and that is a browser
-   floor rather than a preference. CSS `atan2()` is Chrome 111 and the
-   individual `rotate:`/`scale:` properties are Chrome 104; check-css holds this
-   bundle to CHROME 103, which is the CEF the game actually ships. The layer
-   already has the unit vector, so it costs one Math.atan2 and stays inside one
-   composited `transform`. */
-@keyframes tutBeak {
-  0%   { opacity: 0;    transform: rotate(var(--beak-deg)) scaleX(0); }
-  100% { opacity: 0.85; transform: rotate(var(--beak-deg)) scaleX(1); }
-}
+/* The beak -- a line from the card to its subject -- is gone. Positioned at the
+   card's own centre it drew straight through the text as a short blue dash
+   nobody could identify (owner, 2026-09-04). The ring around the subject
+   already says which control the card is about, and says it AT the control. */
 
 /* THE TITLE AND THE BODY ARRIVE SEPARATELY, sixty milliseconds apart. Cheap,
    and it is the whole difference between a card appearing and a card being
