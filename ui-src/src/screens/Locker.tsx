@@ -172,7 +172,11 @@ export default function Locker() {
             </div>
           </div>
 
-          <div className="mt-6">
+          {/* data-tut: the guided first run waits on this press (#261). The
+              player is told what the Locker is for and to press Done when they
+              are ready; pressing it is what moves the walkthrough on to the
+              Market. On the wrapper, so Btn needs no prop of its own. */}
+          <div className="mt-6" data-tut="locker-done">
             <Btn variant="primary" size="lg" cue="ui.back" onPress={() => { close() }}>
               Done
             </Btn>

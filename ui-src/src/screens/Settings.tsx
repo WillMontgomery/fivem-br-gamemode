@@ -305,9 +305,11 @@ function Section({ title, children, tut }: {
  * first (size, volume) before the things most people never change.
  */
 const TABS = [
-  // GENERAL absorbs Interface, Audio and Identity. Five tabs for what is
+  // GENERAL absorbs Interface, Display, Audio and Voice. Five tabs for what is
   // really eight controls made the screen look bigger than it is, and made
   // the player click three times to see three sliders (user, 2026-08-09).
+  // (Identity was a fifth section under here until #262 removed it; the
+  // argument for one General tab is the same without it.)
   // Controls and Accessibility stay separate because each is genuinely its
   // own thing: one is a twenty-row table, the other is a decision with a
   // preview.
@@ -372,11 +374,6 @@ export default function Settings({
     void fetchNui(CB.SETTINGS_FOCUS, { open: false })
   }
 
-  // The SERVER's rule, mirrored here so the field can explain itself. It
-  // accepts a rename only while the player is in the LOBBY state -- see
-  // BR.Roster.setName. `hud.state` is the server's word on where we are, so
-  // this stays a mirror rather than a second opinion.
-  const nameLocked = useUi((s) => s.hud.state !== 'lobby')
   // SQUAD VOICE ONLY EXISTS IN SQUADS. In solo there is no squad room to
   // route to. The Squad button is still DRAWN in that case -- see the Voice
   // section for why hiding it was worse than showing it disabled -- and this
@@ -405,8 +402,6 @@ export default function Settings({
   const [draft, setDraft] = useState<Draft>(stored)
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState<Tab>('general')
-  /** Why the last save refused the name, if it did. */
-  const [nameError, setNameError] = useState<string | null>(null)
 
   // WHAT CANCEL GOES BACK TO. Captured once, when the screen opens -- and the
   // screen is conditionally rendered, so mounting IS opening.
@@ -447,22 +442,34 @@ export default function Settings({
   // event, not a second press.
   const save = async () => {
     setSaving(true)
-    setNameError(null)
+    // `field` AND `reason` ARE STILL ON THE WIRE, AND ARE DELIBERATELY LEFT IN
+    // THIS TYPE THOUGH NOTHING READS THEM NOW. They are what
+    // br_ui/client/settings.lua actually replies with, and describing the
+    // callback as narrower than it is would be a lie the next reader has to
+    // discover by opening the Lua.
     const res = await fetchNui<Draft, {
       ok: boolean; settings?: SettingsPayload; field?: string; reason?: string
     }>(CB.SETTINGS_SAVE, draft)
     setSaving(false)
 
-    // A REFUSED NAME KEEPS THE SCREEN OPEN. Closing on a failed save would
-    // discard the thing the player typed and tell them nothing -- the only
-    // sign would be their old name still on the roster, which reads as the
-    // save silently not working (user, 2026-08-09).
+    // A REFUSED SAVE KEEPS THE SCREEN OPEN. Closing on a failure would tell
+    // the player nothing -- the only sign would be the setting they changed
+    // not having changed, which reads as the save silently not working (user,
+    // 2026-08-09).
+    //
+    // IT NO LONGER SAYS WHY, AND THAT IS WHAT #262 COST. This branch used to
+    // paint `reason` under the Display name field and jump the player to the
+    // tab holding it; with the field gone there is nowhere to paint and
+    // nothing to correct, so a refusal is one `ui.error` and a screen that
+    // stays put. Lua still runs BR.ValidateName over `draft.gamertag` on every
+    // save -- but the only gamertag that can be in the draft is one KVP
+    // already accepted through that same check, so reaching this line requires
+    // a stored name that a LATER build of the rule rejects. If that ever
+    // happens the player is stuck saving anything at all, and the fix is a
+    // notice, not a field: no user-facing copy has been invented here for a
+    // case that is currently unreachable.
     if (res && res.ok === false) {
       play('ui.error')
-      if (res.field === 'gamertag') {
-        setNameError(res.reason ?? 'That name is not available.')
-        setTab('general')
-      }
       return
     }
 
@@ -553,7 +560,7 @@ export default function Settings({
               looks wrong" and "the interface is too small" are the same
               complaint arriving from two directions, and a player who came
               here for one should see the other. */}
-          <Section title="Display">
+          <Section title="Display" tut="settings-display">
               <div className="flex flex-col gap-1.5">
                 <div className="micro-label">In the game&apos;s own menu</div>
                 {/* THE LIST IN THE #148 SCREENSHOT. It was `micro-label` with
@@ -636,18 +643,29 @@ export default function Settings({
           </Section>
 
           <Section title="Audio" tut="settings-audio">
-              <Slider
-                label="Interface sounds" value={draft.volUi} dflt={DEFAULT_SETTINGS.volUi}
-                min={0} max={1} step={0.01}
-                format={(v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`)}
-                onChange={(v) => {
-                  set('volUi', v)
-                  // Audible immediately, at the new level. A volume slider
-                  // that makes no sound while you drag it is a slider you
-                  // have to set by guessing.
-                  play('ui.hover')
-                }}
-              />
+              {/* TWO ANCHORS OVER ONE SLIDER, ON PURPOSE (#261).
+                  `settings-audio` on the Section is the ring the walkthrough
+                  draws around the whole heading -- it is what a player is
+                  being shown. `settings-volui` is what they have to USE for
+                  the step to advance, and the Section is far too coarse to
+                  mean that: a click on the heading, or anywhere in the
+                  section's padding, would count as having moved the slider.
+                  Wrapper div rather than a prop, the same way
+                  `settings-uiscale` does it, because Slider spreads nothing.*/}
+              <div data-tut="settings-volui">
+                <Slider
+                  label="Interface sounds" value={draft.volUi} dflt={DEFAULT_SETTINGS.volUi}
+                  min={0} max={1} step={0.01}
+                  format={(v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`)}
+                  onChange={(v) => {
+                    set('volUi', v)
+                    // Audible immediately, at the new level. A volume slider
+                    // that makes no sound while you drag it is a slider you
+                    // have to set by guessing.
+                    play('ui.hover')
+                  }}
+                />
+              </div>
               {/* THE MUSIC SLIDER IS GONE until there is music (owner,
                   2026-08-09). A control for a system that does not exist is a
                   control that can only ever do nothing, and its own caption
@@ -866,81 +884,27 @@ export default function Settings({
                 </button>
               )}
           </Section>
-          <Section title="Identity">
-              {/* LOCKED IN A MATCH, AND IT SAYS SO IN THREE WAYS: the field is
-                  disabled, it wears a lock, and the line underneath explains
-                  WHY rather than just that. The server already refuses a
-                  rename outside the lobby (br_core/server/roster.lua), so
-                  without this the player could type a new name, press Save,
-                  and watch nothing happen with no explanation offered --
-                  which reads as a broken field rather than as a rule (user,
-                  2026-08-09). */}
-              <label className="block">
-                <span className="block text-[0.82rem] text-white/70 mb-1.5 tscale">
-                  Display name
-                </span>
-                <div className="relative">
-                  <input
-                    value={draft.gamertag}
-                    maxLength={20}
-                    disabled={nameLocked}
-                    placeholder={nameLocked ? '' : 'Your platform name'}
-                    onChange={(e) => { setNameError(null); set('gamertag', e.target.value) }}
-                    onKeyDown={(e) => e.stopPropagation()}
-                    className={`plate w-full px-3 py-2 bg-transparent outline-none
-                                text-[0.9rem] placeholder:text-white/25${
-                                  nameLocked ? ' pr-9 cursor-not-allowed' : ''}`}
-                    style={{
-                      ['--edgec' as string]: nameError
-                        ? 'var(--color-danger)' : 'rgba(255,255,255,0.16)',
-                      ['--plate-fill' as string]: nameError
-                        ? 'rgba(52,20,24,0.92)' : 'rgba(24,28,40,0.94)',
-                      ['--cut-max' as string]: '0.45rem',
-                      color: nameLocked ? 'rgba(255,255,255,0.4)' : undefined,
-                    }}
-                  />
-                  {nameLocked && (
-                    <span
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
-                      style={{ color: 'rgba(255,255,255,0.35)' }}
-                      aria-hidden="true"
-                    >
-                      {/* Drawn, not a glyph: there is no icon font here and a
-                          unicode padlock renders as a different picture on
-                          every platform. */}
-                      <svg width="0.95rem" height="0.95rem" viewBox="0 0 24 24">
-                        <path
-                          fill="currentColor"
-                          d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0
-                             2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3H9V7a3 3
-                             0 0 1 3-3zm0 11a2 2 0 0 1 1 3.73V20h-2v-1.27A2 2 0 0 1 12 15z"
-                        />
-                      </svg>
-                    </span>
-                  )}
-                </div>
-              </label>
-              {/* THE LINE THE OWNER NAMED IN #148: this was `micro-label`
-                  with nothing cancelling it, so two sentences of help text
-                  under the name field rendered in tracked-out capitals. It is
-                  prose in both branches now -- the error only recolours it,
-                  rather than being the one branch that got a readable size. */}
-              <p
-                className="body-text"
-                style={nameError ? { color: 'var(--color-danger)' } : undefined}
-              >
-                {/* SHORT, BOTH WAYS. The locked line explained the reasoning
-                    and the unlocked line explained the rule; neither is what
-                    somebody standing at a text box wants to read (owner,
-                    2026-08-09). Say what is true and stop. */}
-                {nameError
-                  ? nameError
-                  : nameLocked
-                    ? 'You cannot change this while in a match.'
-                    : 'A preferred name. It can obscure other identifiers in game.'
-                      + ' Leave it empty to use your platform name.'}
-              </p>
-          </Section>
+          {/* THERE IS NO IDENTITY SECTION, AND THAT IS THE DECISION RATHER
+              THAN AN OVERSIGHT (#262 -- owner, 2026-09-04: "Please remove all
+              UI for 'identity' (display name etc)").
+
+              WHAT STOOD HERE: a "Display name" field bound to draft.gamertag,
+              a padlock and a line explaining the server's lobby-only rename
+              rule, and the inline refusal message the save path painted under
+              it when BR.ValidateName said no.
+
+              THE STORED VALUE IS NOT GONE, ONLY THE WAY TO TYPE ONE. gamertag
+              stays in SettingsPayload and DEFAULT_SETTINGS, so a name already
+              in KVP still round-trips through the save and still reaches
+              BR.Roster.setName -- br_ui/client/settings.lua fires
+              BR.Net.SETTINGS_NAME on EVERY save, not only when the name
+              changed, so no Lua handler lost its caller here. Same reasoning
+              as the music slider above: a stored field with no control is one
+              component away from returning, where a schema migration is not.
+
+              AND NOTHING TOOK ITS PLACE ON SCREEN. No "your platform name is
+              used now" line: an absent control does not need a sentence
+              explaining itself, and nobody asked for one. */}
           </div>
         )}
 
@@ -1008,7 +972,7 @@ export default function Settings({
 
 
         {tab === 'controls' && (
-          <Section title="Controls">
+          <Section title="Controls" tut="settings-controls-body">
             <Keybinds />
           </Section>
         )}

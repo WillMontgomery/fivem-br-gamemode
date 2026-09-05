@@ -237,6 +237,19 @@ export interface UiState {
    * it is a control the player is operating, not a fact about the world.
    */
   tutorialChecked: boolean
+  /**
+   * The step currently on screen, by id, or null.
+   *
+   * THE LOBBY NEEDS THIS FOR ONE THING and it is worth naming: the second
+   * toggle -- the offer of the in-game tutorial -- must appear "immediately
+   * after they come back from the Help page, which will be more seamless than
+   * appearing out of nowhere and drawing their attention away from the tutorial
+   * itself" (owner, 2026-09-04). That moment is the `ready` step beginning, and
+   * the id is the only thing that names it.
+   */
+  tutorialStep: string | null
+  /** The in-game tutorial's own toggle. On by default, like the first. */
+  tutorialGameOn: boolean
 
   /** True while the voluntary-leave interstitial covers the screen: black
    *  plus a quiet "Leaving the match" while the world swaps underneath. */
@@ -281,6 +294,8 @@ export interface UiState {
   setTutorialRun: (v: boolean) => void
   setTutorialOffer: (v: boolean) => void
   setTutorialChecked: (v: boolean) => void
+  setTutorialStep: (v: string | null) => void
+  setTutorialGameOn: (v: boolean) => void
   setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
   setScreen: (s: ScreenPayload) => void
@@ -663,6 +678,8 @@ export const useUi = create<UiState>((set, get) => {
   tutorialRun: false,
   tutorialOffer: false,
   tutorialChecked: true,
+  tutorialStep: null,
+  tutorialGameOn: true,
   leaving: false,
   curtain: 'leaving',
   invite: null,
@@ -749,6 +766,8 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialRun: (tutorialRun) => set({ tutorialRun }),
   setTutorialOffer: (tutorialOffer) => set({ tutorialOffer }),
   setTutorialChecked: (tutorialChecked) => set({ tutorialChecked }),
+  setTutorialStep: (tutorialStep) => set({ tutorialStep }),
+  setTutorialGameOn: (tutorialGameOn) => set({ tutorialGameOn }),
   setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),
   // THE SCOPE FLAG NEVER TOUCHES THE METRICS.

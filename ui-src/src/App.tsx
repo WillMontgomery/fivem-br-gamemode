@@ -511,6 +511,7 @@ export default function App() {
           screen={s.focus}
           onDone={() => s.setTutorialRun(false)}
           onAbandon={() => s.setTutorialRun(false)}
+          onStep={s.setTutorialStep}
         />
       )}
       {/* THE ADMIN CONSOLE (#23), IN THE FRAME `/help` GETS AND NOT THE PAUSE

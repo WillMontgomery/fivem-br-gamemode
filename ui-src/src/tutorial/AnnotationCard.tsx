@@ -111,8 +111,10 @@ export type CardProps = {
    * past Settings is asking for one thing and accepting another.
    */
   onNext: (() => void) | null
-  /** Null on the first step, which has nothing behind it. */
+  /** Null on the first step, and null across a doorway -- see TutorialLayer. */
   onBack: (() => void) | null
+  /** Set only on the final card, which ends the run rather than advancing. */
+  onDismiss: (() => void) | null
   /** Raised by the layer one frame before it unmounts, to play the exit. */
   leaving: boolean
 }
@@ -205,6 +207,14 @@ export default function AnnotationCard(p: CardProps) {
           {p.onNext ? (
             <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onNext}>
               Next
+            </Btn>
+          ) : null}
+          {/* THE END. Owner, 2026-09-04: the last card "should only have a
+              'Dismiss button' and the lobby tutorial is now over. This is when
+              the 'ready up' button should release." */}
+          {p.onDismiss ? (
+            <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onDismiss}>
+              Dismiss
             </Btn>
           ) : null}
         </span>

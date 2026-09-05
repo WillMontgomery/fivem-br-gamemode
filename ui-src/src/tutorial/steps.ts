@@ -50,8 +50,16 @@ export type Advance =
   /**
    * The real control. The card waits, the player presses the thing being
    * described, and its normal handler runs untouched.
+   *
+   * NO NEXT BUTTON ON THESE. Owner, 2026-09-04: "Really any navigational steps
+   * should not have a Next button." The ringed control is the only way on.
    */
   | 'click'
+  /**
+   * The end. One button, Dismiss, and the walkthrough is over -- which is also
+   * the moment Ready up is released.
+   */
+  | 'dismiss'
 
 export type Step = {
   /** Stable id. Persisted progress and every log line key on this. */
@@ -92,39 +100,24 @@ export type Step = {
 export const LOBBY_STEPS: Step[] = [
   {
     id: 'welcome',
-    // THE MENU COLUMN, NOT THE SCREEN. This pointed at the lobby's outermost
-    // `fixed inset-0` element, whose rect IS the viewport -- so `place` had no
-    // side to sit on, fell through to its last resort and put the first card
-    // the player ever sees in the dead centre of the screen, nowhere near the
-    // menu it was talking about (owner, 2026-09-04).
     target: 'lobby-menu',
     title: 'Welcome to Blitz Royale',
-    body: 'This is the lobby. Everything you do between matches happens on this screen, and this walkthrough covers all of it. Press **Next** to begin.',
+    body: 'This is the lobby. Everything you do between matches happens on this screen, and this walkthrough covers all of it.',
     advance: 'next',
   },
   {
     id: 'mode',
     target: 'mode-picker',
-    title: 'Pick how you play',
-    body: '**Solo** is one life against everybody. **Squads** puts you in a team of up to four who can revive each other. You can change this any time before you ready up.',
+    title: 'Solo or Squads',
+    body: '**Solo** is one life against everybody. Pick **Squads** and you are put in a team of up to four who can revive each other — you can queue alone and be filled in with strangers, or make a party first and go in together.',
     advance: 'next',
   },
 
-  // ═══ SETTINGS, AND IT IS THE LONGEST STRETCH ON PURPOSE ═══
-  //
-  // Owner, 2026-09-04: "The interface size/text size was all that's shown in
-  // general? Nothing about interface sounds, voice chat? Nothing on the
-  // controls page or accessibility? The workflow moved forward before it told
-  // me to close the settings page."
-  //
-  // All four were fair. The walkthrough showed two sliders out of a screen with
-  // five sections and three tabs, and then left the player standing in it. It
-  // now covers Interface, Audio, Voice, both other tabs, and ends by telling
-  // them to close it.
+  // ═══ SETTINGS ═══
   {
     id: 'settings',
     target: 'settings',
-    title: 'Make it readable first',
+    title: 'Make it yours first',
     body: 'Open **Settings**. Before anything else it is worth making the game fit your screen and your ears.',
     advance: 'click',
   },
@@ -133,10 +126,6 @@ export const LOBBY_STEPS: Step[] = [
     target: 'settings-uiscale',
     title: 'Interface size',
     body: 'This scales every panel in the game. Drag it and let go — *watch this card resize with it*.',
-    // CLICK, NOT NEXT. Owner: "on sliders, progress the workflow automatically
-    // if they click and release on the slider itself." A `click` event is
-    // exactly a press and release on the control, so the card gets out of the
-    // way the moment they have done the thing it asked for.
     advance: 'click',
     screen: 'settings',
   },
@@ -149,18 +138,27 @@ export const LOBBY_STEPS: Step[] = [
     screen: 'settings',
   },
   {
-    id: 'settings-audio',
-    target: 'settings-audio',
-    title: 'Sound',
-    body: 'Interface sounds are the clicks and cues this menu makes. Turn them down here if you would rather hear the game.',
+    id: 'settings-display',
+    target: 'settings-display',
+    title: 'Graphics and display',
+    body: 'Resolution, fullscreen and the graphics quality are the *game’s own* settings, not ours — this panel points you at where GTA keeps them. Nothing to change here.',
     advance: 'next',
+    screen: 'settings',
+  },
+  {
+    id: 'settings-volui',
+    target: 'settings-volui',
+    title: 'Sound',
+    body: 'Interface sounds are the clicks and cues these menus make. Drag it and let go to set them.',
+    advance: 'click',
     screen: 'settings',
   },
   {
     id: 'settings-voice',
     target: 'settings-voice',
     title: 'Talking to people',
-    body: 'Voice chat is set separately for **solos** and **squads**, so you can be heard by your team without being heard by strangers.',
+    // HIS WORDS, VERBATIM (2026-09-04).
+    body: 'Voice chat is set separately for **solos** and **squads**, so you can hear your team without hearing strangers. You can change your input/output settings here as well.',
     advance: 'next',
     screen: 'settings',
   },
@@ -168,8 +166,16 @@ export const LOBBY_STEPS: Step[] = [
     id: 'settings-controls',
     target: 'settings-tab-controls',
     title: 'Your keys',
-    body: 'Open **Controls** to see every key the game uses, and to change any of them.',
+    body: 'Open **Controls**.',
     advance: 'click',
+    screen: 'settings',
+  },
+  {
+    id: 'settings-controls-body',
+    target: 'settings-controls-body',
+    title: 'Every key, in one place',
+    body: 'This is every key the game uses and what it does. Click any row to rebind it, and anything you change is yours from the next match on.',
+    advance: 'next',
     screen: 'settings',
   },
   {
@@ -184,24 +190,31 @@ export const LOBBY_STEPS: Step[] = [
     id: 'settings-done',
     target: 'settings-save',
     title: 'That is Settings',
-    body: 'Press **Save** to keep your changes and close this screen. You can come back at any time, from here or from the pause menu.',
+    body: 'Press **Save** to keep your changes and close this screen.',
     advance: 'click',
     screen: 'settings',
   },
 
+  // ═══ THE LOBBY'S OTHER DOORS ═══
   {
     id: 'locker',
     target: 'locker',
     title: 'Your character',
-    body: 'The **Locker** is where you choose who you look like.',
+    body: 'Open the **Locker**.',
     advance: 'click',
+  },
+  {
+    id: 'locker-inside',
+    target: 'locker-done',
+    title: 'Who you look like',
+    body: 'Pick the character you want to drop in as. It is how other players see you and nothing more. Press **Done** when you are ready.',
+    advance: 'click',
+    screen: 'locker',
   },
   {
     id: 'market',
     target: 'market',
     title: 'Spending Volts',
-    // HIS WORDS, VERBATIM (2026-09-04). The sentence this replaced was mine and
-    // said the Market was the only place to spend Volts, which is not true.
     body: "Volts are the currency of the game. You can use them to buy things within the game, or within the **Market**, where you'll find cosmetics.",
     advance: 'click',
   },
@@ -209,14 +222,22 @@ export const LOBBY_STEPS: Step[] = [
     id: 'help',
     target: 'help',
     title: 'The manual',
-    body: '**Help** explains every system in the game and it is always here. You can also restart this walkthrough from that page at any time.',
+    body: 'Open **Help**.',
     advance: 'click',
+  },
+  {
+    id: 'help-inside',
+    target: 'help-body',
+    title: 'Everything else',
+    body: 'The player guide lives here and explains every system in the game. There is a button to copy its link if you would rather read it in a browser, and a link to our **Discord** — which is the fastest way to reach us.',
+    advance: 'next',
+    screen: 'help',
   },
   {
     id: 'ready',
     target: 'ready',
     title: 'That is the lobby',
-    body: 'That covers this screen. When you are ready, **Ready up** puts you in the queue for the next match.',
-    advance: 'next',
+    body: 'That covers this screen. **Ready up** whenever you want to play.',
+    advance: 'dismiss',
   },
 ]

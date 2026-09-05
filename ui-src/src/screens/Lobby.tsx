@@ -23,6 +23,78 @@ import { CB } from '../bridge/types'
  * Mounted always, shown only when the match is WAITING, so the transition costs
  * no mount work.
  */
+/**
+ * The tutorial toggle (#261).
+ *
+ * ═══ A TOGGLE, NOT A CHECKBOX, AND NOT AN <input> ═══
+ *
+ * Owner, 2026-09-04: "Instead of a checkbox can we try a toggle for the
+ * tutorial?" A checkbox is a form field you agree to; a toggle is a thing that
+ * is ON, and this one arrives on.
+ *
+ * DRAWN RATHER THAN NATIVE, for the reason every control on this screen is
+ * drawn: a platform checkbox or a platform switch in CEF brings styling that
+ * matches nothing else in the game, and this sits directly above the loudest
+ * button on the screen.
+ *
+ * `plate` IS THE SURFACE, so it belongs to the lobby rather than to the
+ * tutorial -- the owner's rule that the whole feature follow "the same visual
+ * and button structure as the existing UI". The edge takes the accent when on,
+ * which is what accent means everywhere else: this concerns you.
+ *
+ * TRANSFORM ONLY on the knob, so it cannot cost layout while the lobby camera
+ * is flying behind it.
+ */
+function TutorialToggle({ on, onChange, label }: {
+  on: boolean
+  onChange: (v: boolean) => void
+  label: string
+}) {
+  return (
+    // `btn` IS NOT DECORATION AND check-ui ENFORCES IT (R3): a bare button has
+    // no press travel, no hover state and no sound, which is three ways this
+    // would have felt unlike every other control on the screen. The cues below
+    // are played by hand because a toggle is not a `Btn` -- it has two states
+    // rather than one action -- but the feel is shared.
+    //
+    // THE COMMENT IS OUT HERE FOR A REASON. check-ui reads the opening tag by
+    // scanning to the first `>` at brace-depth zero, so a comment INSIDE the tag
+    // containing a literal angle bracket truncates the tag before `className`
+    // and the rule fails on a button that satisfies it. Cost me a round.
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      className="btn interactive plate w-full flex items-center gap-3 px-4 py-2.5 mb-2.5 text-left"
+      style={{ ['--edgec' as string]: on
+        ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)' }}
+      onPointerEnter={() => play('ui.hover')}
+      onClick={() => { play('ui.select'); onChange(!on) }}
+    >
+      <span
+        aria-hidden
+        className="relative shrink-0"
+        style={{
+          width: '2.1rem', height: '1.05rem',
+          background: on ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.14)',
+          transition: 'background 140ms linear',
+        }}
+      >
+        <span
+          className="absolute top-[0.14rem] left-[0.14rem]"
+          style={{
+            width: '0.77rem', height: '0.77rem',
+            background: on ? '#04222a' : 'rgba(255,255,255,0.75)',
+            transform: on ? 'translateX(1.05rem)' : 'translateX(0)',
+            transition: 'transform 160ms var(--ease-snap), background 140ms linear',
+          }}
+        />
+      </span>
+      <span className="tscale text-[0.85rem] text-white/80">{label}</span>
+    </button>
+  )
+}
+
 export default function Lobby({
   visible, under = false,
 }: {
@@ -50,9 +122,21 @@ export default function Lobby({
   // starts TRUE: "A checkbox, default on".
   const tutorialOffer = useUi((s) => s.tutorialOffer)
   const tutorialChecked = useUi((s) => s.tutorialChecked)
+  const tutorialRun = useUi((s) => s.tutorialRun)
+  const tutorialStep = useUi((s) => s.tutorialStep)
+  const tutorialGameOn = useUi((s) => s.tutorialGameOn)
+  const setTutorialGameOn = useUi((s) => s.setTutorialGameOn)
   const setTutorialChecked = useUi((s) => s.setTutorialChecked)
   const setTutorialRun = useUi((s) => s.setTutorialRun)
   const setTutorialOffer = useUi((s) => s.setTutorialOffer)
+
+  // ONCE SHOWN, IT STAYS. The second toggle appears on the `ready` step and must
+  // not vanish when that step is dismissed -- it is an offer about the next
+  // thing, and the player has to be able to reach it afterwards.
+  const [tutorialGameShown, setTutorialGameShown] = useState(false)
+  useEffect(() => {
+    if (tutorialStep === 'ready') setTutorialGameShown(true)
+  }, [tutorialStep])
 
   /** Ready up reads Start tutorial only while the box is both offered and ticked. */
   const startTutorial = tutorialOffer && tutorialChecked
@@ -452,55 +536,53 @@ export default function Lobby({
               )}
               {/* ═══ THE ONE-TIME OFFER (#261) ═══
 
-                  A checkbox, DEFAULT ON, immediately above Ready up, shown
-                  only while Lua says this player is being offered the guided
-                  first run. Owner: "A checkbox, default on, near the Ready up
-                  button", and "When it's checked, Ready up becomes Start
-                  tutorial".
+                  A TOGGLE, DEFAULT ON, immediately above Ready up, shown only
+                  while Lua says this player is being offered the guided first
+                  run. Owner: "A checkbox, default on, near the Ready up
+                  button", then on 2026-09-04: "Instead of a checkbox can we try
+                  a toggle for the tutorial?"
 
-                  `plate` AND NOT A BESPOKE BOX, for the reason the cards
-                  learned: this is part of the lobby and has to read as part of
-                  it. The tick is drawn rather than an <input>, because a native
-                  checkbox in CEF brings its own platform styling that matches
-                  nothing else on this screen.
-
-                  PLACEHOLDER COPY. The label is mine and he has not written
-                  one -- see the note in ui-src/src/tutorial/steps.ts. */}
+                  A TOGGLE SAYS SOMETHING A CHECKBOX DOES NOT, and it is why the
+                  swap is an improvement rather than a preference: a checkbox is
+                  a form field you agree to, a toggle is a thing that is ON. This
+                  one arrives already on, and the sentence beside it changes with
+                  it, so the state is readable without knowing which way round a
+                  tick means yes. */}
               {tutorialOffer && (
-                <button
-                  type="button"
-                  className="interactive plate w-full flex items-center gap-2.5
-                             px-4 py-2.5 mb-2.5 text-left"
-                  style={{ ['--edgec' as string]: tutorialChecked
-                    ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)' }}
-                  onPointerEnter={() => play('ui.hover')}
-                  onClick={() => { play('ui.select'); setTutorialChecked(!tutorialChecked) }}
-                  aria-pressed={tutorialChecked}
-                >
-                  <span
-                    aria-hidden
-                    className="grid place-items-center shrink-0"
-                    style={{
-                      width: '1.05rem', height: '1.05rem',
-                      border: `1px solid ${tutorialChecked
-                        ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.35)'}`,
-                      background: tutorialChecked
-                        ? 'var(--color-royale-accent)' : 'transparent',
-                      color: '#04222a',
-                      fontSize: '0.72rem', lineHeight: 1,
-                    }}
-                  >
-                    {tutorialChecked ? '✓' : ''}
-                  </span>
-                  <span className="tscale text-[0.85rem] text-white/80">
-                    Show me how to play
-                  </span>
-                </button>
+                <TutorialToggle
+                  on={tutorialChecked}
+                  onChange={setTutorialChecked}
+                  label="Show me how to play"
+                />
               )}
-              {/* data-tut: the guided first run points at this (#261). On the
-                  WRAPPER and not the control, so the annotation needs no prop
-                  on a shared component and cannot alter how the button
-                  behaves -- see ui-src/src/tutorial/TutorialLayer.tsx. */}
+
+              {/* ═══ THE SECOND OFFER, AND WHEN IT ARRIVES (#261) ═══
+
+                  Owner, 2026-09-04: "When the lobby tutorial is done, a new
+                  toggle should show (on by default) that offers them an in-game
+                  tutorial as well... This second toggle should show immediately
+                  after they come back from the Help page, which will be more
+                  seamless than appearing out of nowhere and drawing their
+                  attention away from the tutorial itself."
+
+                  SO IT IS KEYED TO A STEP, NOT TO THE END OF THE RUN. `ready`
+                  is the card that begins the moment Help closes, so the toggle
+                  is already sitting there when the last card appears rather
+                  than popping in beside it. That is the whole of what he asked
+                  for and it is why the layer publishes its step id at all.
+
+                  IT OUTLIVES THE RUN. Once shown it stays, because it is an
+                  offer about the NEXT thing and the player has to be able to
+                  reach it after dismissing the card that introduced it.
+
+                  PLACEHOLDER COPY -- the label is mine. */}
+              {(tutorialStep === 'ready' || tutorialGameShown) && (
+                <TutorialToggle
+                  on={tutorialGameOn}
+                  onChange={setTutorialGameOn}
+                  label="Show me how to play in the match too"
+                />
+              )}
               {/* THE SAME BUTTON, TWO JOBS. Owner: "When ticked, the box should
                   change the 'ready up' button to a 'start tutorial' button." It
                   does not queue in that state -- the walkthrough holds them in
@@ -509,7 +591,22 @@ export default function Lobby({
               <span data-tut="ready" className="block">
                 <Btn
                   variant="primary" size="xl" full cue="ui.ready"
-                  disabled={(maintenanceBlock ?? readyBlock) != null}
+                  // ═══ HELD WHILE THE WALKTHROUGH IS RUNNING (#261) ═══
+                  //
+                  // Owner, 2026-09-04: "While the tutorial is actively in
+                  // progress, please grey out the 'Ready up' button and release
+                  // the button once the Tutorial is complete."
+                  //
+                  // It is the last card's Dismiss that releases it, because
+                  // `tutorialRun` is what the walkthrough sets and clears -- so
+                  // the button comes back at exactly the moment the run ends,
+                  // however it ended.
+                  //
+                  // NO EXPLANATION BESIDE IT. A disabled control with a
+                  // sentence apologising for itself is worse than a disabled
+                  // control, and the card on screen is already telling them
+                  // what to do.
+                  disabled={tutorialRun || (maintenanceBlock ?? readyBlock) != null}
                   onPress={startTutorial ? beginTutorial : queue}
                 >
                   {startTutorial ? 'Start tutorial' : 'Ready up'}

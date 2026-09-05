@@ -105,6 +105,8 @@ export type TutorialLayerProps = {
   onDone: () => void
   /** A step whose target no longer exists. Skip is gone; see AnnotationCard. */
   onAbandon: (why: 'missing') => void
+  /** Which step is on screen, by id. The lobby reads it -- see the store. */
+  onStep?: (id: string | null) => void
 }
 
 export default function TutorialLayer(p: TutorialLayerProps) {
@@ -197,6 +199,15 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     onAbandonRef.current = p.onAbandon
   })
 
+  // WHICH STEP IS ON SCREEN, published for the lobby. Cleared on the way out so
+  // a finished run cannot leave the second toggle keyed to a step that is gone.
+  const onStepRef = useRef(p.onStep)
+  onStepRef.current = p.onStep
+  useEffect(() => {
+    onStepRef.current?.(step?.id ?? null)
+    return () => onStepRef.current?.(null)
+  }, [step])
+
   // A CLICK STEP ADVANCES ITSELF once the player has pressed the real control --
   // and only for the step the press was actually for.
   useEffect(() => {
@@ -217,9 +228,25 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // measuring while Settings was not the screen on top, found nothing -- because
   // nothing was rendered -- and the 1.2s timer killed the whole walkthrough.
   // A step whose screen is not up has not failed; it has not started.
+  //
+  // ═══ AND A LOBBY STEP WAITS FOR THE LOBBY TO BE BARE ═══
+  //
+  // A step with NO `screen` is about the lobby's own front page, so it must not
+  // draw over a sub-screen the player has opened. That is what makes the Market
+  // behave the way the owner asked: "if they click on the market button please
+  // hide the tutorial until they come back to the main lobby screen. We don't
+  // have much to show them in the market yet, so we'll leave them to their own
+  // devices there." (2026-09-04)
+  //
+  // It is a general rule rather than a special case for the Market, because it
+  // is true of every un-scoped step: a card explaining Ready up has nothing to
+  // say while the Locker is covering it.
+  //
+  // `none` IS THE BARE LOBBY -- store/index.ts's initial `focus`.
   const waitingForScreen = step !== undefined
-    && step.screen !== undefined
-    && step.screen !== p.screen
+    && (step.screen !== undefined
+      ? step.screen !== p.screen
+      : p.screen !== undefined && p.screen !== 'none')
   const missing = step !== undefined && rect === null && !waitingForScreen
   useEffect(() => {
     if (!missing) return
@@ -241,9 +268,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     return () => clearTimeout(t)
   }, [missing, step, waitingForScreen])
 
-  if (!step || rect === null) return null
-  // A step scoped to a child screen waits until that screen is actually on top.
-  if (step.screen !== undefined && step.screen !== p.screen) return null
+  if (!step || rect === null || waitingForScreen) return null
 
   const vw = window.innerWidth
   const vh = window.innerHeight
@@ -272,7 +297,22 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         fromY={fromY}
         leaving={leaving}
         onNext={step.advance === 'next' ? () => go(i + 1) : null}
-        onBack={i > 0 ? () => go(i - 1) : null}
+        // ═══ NO WAY BACK ACROSS A DOORWAY ═══
+        //
+        // Owner, 2026-09-04: "if they just came from a different menu, like
+        // going from Settings/Controls to Locker, we shouldn't have a Last
+        // button either." Last would have to reopen the screen the player has
+        // just left and put them where they were in it, and it does not do
+        // that -- so it would take them back to a card describing a control
+        // that is no longer on screen.
+        onBack={
+          i > 0 && steps[i - 1] !== undefined
+            && steps[i - 1]!.screen === step.screen
+            ? () => go(i - 1)
+            : null
+        }
+        // The last card ends the run rather than advancing into nothing.
+        onDismiss={step.advance === 'dismiss' ? () => go(steps.length) : null}
       />
     </>
   )

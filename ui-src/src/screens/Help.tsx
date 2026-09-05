@@ -155,7 +155,11 @@ export default function Help({ inline = false, onDone }:
   }
 
   const body = (
-    <div className="flex flex-col gap-3">
+    // data-tut: the guided first run points here to describe the page (#261) --
+    // the player guide, the button that copies its link for a browser, and the
+    // Discord card. On the body rather than on any one of the three, because the
+    // card is about the page as a whole.
+    <div className="flex flex-col gap-3" data-tut="help-body">
       {/* `flex-wrap` AND A shrink-0 RIGHT-HAND GROUP. Three things share this
           line now and the third can grow (see below), so the failure mode worth
           engineering against is the address being squeezed into a four-character
