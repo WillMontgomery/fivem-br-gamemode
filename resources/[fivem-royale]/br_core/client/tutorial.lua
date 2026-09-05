@@ -167,13 +167,20 @@ end)
 
 --- The player pressed "Start tutorial", or the walkthrough ended.
 ---
---- THE PAGE IS WHERE THE DECISION IS MADE and Lua is the only side that can
---- reach the server, so this is the seam between them. It goes through
---- BR.Tutorial.set rather than firing the net event directly, so there is ONE
---- place that knows what "the walkthrough is running" means on this client --
---- the flag the page mirrors, the flag the server is told, and the console
---- command all end up at the same function.
-RegisterNUICallback(BR.NuiCb.TUTORIAL_SET, function(data, cb)
-    BR.Tutorial.set(type(data) == 'table' and data.run == true)
-    cb({ ok = true })
+--- ═══ THE CALLBACK IS NOT HERE, AND IT CANNOT BE ═══
+---
+--- The page is SERVED BY br_ui, so `fetchNui` posts to `cfx-nui-br_ui` and only
+--- br_ui can answer it. A RegisterNUICallback in this resource registers under
+--- br_core's own namespace, which nothing is asking, and the page gets a bare
+--- HTTP 404 -- owner, 2026-09-04: "clicking the 'Start tutorial' button just
+--- greys out the 'ready up' button and nothing else happens", with
+--- `callback br/tutorial/set: Error: HTTP 404` beside it. Every other callback
+--- in the project lives in br_ui/client/ for exactly this reason.
+---
+--- SO br_ui TAKES THE CALL AND HANDS IT OVER, on a plain client event -- the
+--- same seam, in reverse, that `br:ui:sendLocal` already uses to get messages
+--- from here to the page. Separate Lua states cannot share a function; they
+--- share events.
+AddEventHandler('br:tutorial:set', function(run)
+    BR.Tutorial.set(run == true)
 end)

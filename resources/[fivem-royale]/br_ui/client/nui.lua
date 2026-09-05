@@ -594,3 +594,32 @@ AddEventHandler('onClientResourceStart', function(res)
     -- Ask br_core for a full snapshot; it may have started first.
     TriggerEvent('br:ui:ready')
 end)
+
+-- ---------------------------------------------------------------------------
+-- The guided first run (#261)
+-- ---------------------------------------------------------------------------
+
+--- The page starting or ending the lobby walkthrough.
+---
+--- ═══ IT LIVES HERE BECAUSE ONLY br_ui CAN ANSWER IT ═══
+---
+--- The page is served by THIS resource, so `fetchNui` posts to `cfx-nui-br_ui`
+--- and a RegisterNUICallback anywhere else registers under a namespace nothing
+--- is asking. The first version of this sat in br_core/client/tutorial.lua and
+--- the page got a bare HTTP 404 -- owner, 2026-09-04: "clicking the 'Start
+--- tutorial' button just greys out the 'ready up' button and nothing else
+--- happens". Everything the walkthrough needs on the far side of it -- the
+--- server-side hold that keeps a learner off the warmup clock and out of
+--- matchmaking -- was unreachable behind that 404.
+---
+--- ═══ AND IT HANDS OVER RATHER THAN ACTING ═══
+---
+--- The flag itself belongs to br_core, which is the resource that talks to the
+--- server. Separate Lua states cannot share a function, so this forwards on a
+--- plain client event -- the same seam `br:ui:sendLocal` already uses to carry
+--- messages the other way. br_ui stays what it is: the page's doorway, holding
+--- no game state of its own.
+RegisterNUICallback(BR.NuiCb.TUTORIAL_SET, function(data, cb)
+    TriggerEvent('br:tutorial:set', type(data) == 'table' and data.run == true)
+    cb({ ok = true })
+end)

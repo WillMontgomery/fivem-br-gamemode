@@ -515,6 +515,7 @@ export default function App() {
       {s.tutorialRun && (
         <TutorialLayer
           screen={s.focus}
+          subscreenUp={LOBBY_SUBSCREENS.has(s.focus)}
           onDone={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
           onAbandon={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
           onStep={s.setTutorialStep}

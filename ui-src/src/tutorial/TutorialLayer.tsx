@@ -101,6 +101,18 @@ function place(r: Rect, vw: number, vh: number) {
 export type TutorialLayerProps = {
   /** Which sub-screen is on top, so `screen`-scoped steps can run. */
   screen?: string
+  /**
+   * Is a lobby SUB-screen covering the lobby right now?
+   *
+   * PASSED IN RATHER THAN DERIVED HERE, because App.tsx already owns the list
+   * (`LOBBY_SUBSCREENS`) and a second copy would be a second answer. It exists
+   * because "the lobby is on screen" is NOT `screen === 'none'` -- the lobby's
+   * own focus values are `lobby` and `squad`, and reading it as `none` hid every
+   * un-scoped card the moment the walkthrough started (owner, 2026-09-04:
+   * "clicking the 'Start tutorial' button just greys out the 'ready up' button
+   * and nothing else happens").
+   */
+  subscreenUp?: boolean
   /** Every step finished. The award, when there is one, is the caller's. */
   onDone: () => void
   /** A step whose target no longer exists. Skip is gone; see AnnotationCard. */
@@ -246,7 +258,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const waitingForScreen = step !== undefined
     && (step.screen !== undefined
       ? step.screen !== p.screen
-      : p.screen !== undefined && p.screen !== 'none')
+      : p.subscreenUp === true)
   const missing = step !== undefined && rect === null && !waitingForScreen
   useEffect(() => {
     if (!missing) return
