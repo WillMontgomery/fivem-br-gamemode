@@ -186,6 +186,7 @@ export default function Lobby({
 
   return (
     <div
+      data-tut="lobby-root"
       className="fixed inset-0 transition-opacity duration-200"
       style={{
         opacity: visible ? 1 : 0,
@@ -280,7 +281,7 @@ export default function Lobby({
             a pair of buttons in a row. The tile carries what the mode MEANS --
             "one life, 47 rivals" is the actual difference, and it was nowhere
             on the old screen. */}
-        <div className="mt-8">
+        <div className="mt-8" data-tut="mode-picker">
           <div className="micro-label">Mode</div>
           <div className="flex gap-2.5 mt-2">
             {([

@@ -202,7 +202,19 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   useEffect(() => {
     if (!missing) return
     const t = setTimeout(() => {
-      if (rectRef.current === null) onAbandonRef.current('missing')
+      if (rectRef.current === null) {
+        // NAMED, LOUDLY. Silence here cost a debugging round on 2026-09-04: the
+        // first step pointed at a `data-tut` nobody had added, so the run ended
+        // 1.2 seconds in and the owner saw the command succeed and NOTHING
+        // DRAW. "Nothing happened" is the one report this failure can produce,
+        // so it has to say which target it could not find.
+        console.warn(
+          `[tutorial] step "${step.id}" wants [data-tut="${step.target}"] and ` +
+            'nothing on screen has it -- ending the run. Either the control was ' +
+            'renamed, or the anchor was never added.',
+        )
+        onAbandonRef.current('missing')
+      }
     }, 1200)
     return () => clearTimeout(t)
   }, [missing, step])

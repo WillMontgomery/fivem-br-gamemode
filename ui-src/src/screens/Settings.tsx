@@ -514,18 +514,25 @@ export default function Settings({
         {tab === 'general' && (
           <div className="flex flex-col gap-8">
           <Section title="Interface">
-              <Slider
-                label="Interface size" value={draft.uiScale} dflt={DEFAULT_SETTINGS.uiScale}
-                min={0.8} max={1.3} step={0.01}
-                format={(v) => `${Math.round(v * 100)}%`}
-                onChange={(v) => set('uiScale', v)}
-              />
-              <Slider
-                label="Text size" value={draft.textScale} dflt={DEFAULT_SETTINGS.textScale}
-                min={0.9} max={1.15} step={0.01}
-                format={(v) => `${Math.round(v * 100)}%`}
-                onChange={(v) => set('textScale', v)}
-              />
+              {/* data-tut: the guided first run points at these two (#261),
+                  and they are the pair it walks a new player through changing.
+                  On a wrapper so Slider needs no prop of its own. */}
+              <div data-tut="settings-uiscale">
+                <Slider
+                  label="Interface size" value={draft.uiScale} dflt={DEFAULT_SETTINGS.uiScale}
+                  min={0.8} max={1.3} step={0.01}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => set('uiScale', v)}
+                />
+              </div>
+              <div data-tut="settings-textscale">
+                <Slider
+                  label="Text size" value={draft.textScale} dflt={DEFAULT_SETTINGS.textScale}
+                  min={0.9} max={1.15} step={0.01}
+                  format={(v) => `${Math.round(v * 100)}%`}
+                  onChange={(v) => set('textScale', v)}
+                />
+              </div>
           </Section>
 
           {/* DISPLAY IS ITS OWN HEADING, and that is the entire discoverability

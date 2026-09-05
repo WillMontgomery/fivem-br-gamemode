@@ -81,4 +81,11 @@ RegisterCommand('brtutorial', function(_, args)
     print('[br_core] tutorial: running -- the lobby walkthrough is on screen')
     print('  it draws only while the LOBBY is up; open it if you see nothing')
     print('  /brtutorial off  stops it')
-end, true)
+-- NO `restricted` ARGUMENT, AND THAT IS NOT AN OVERSIGHT. Passing `true` makes
+-- this an ace-restricted command, and FiveM's CLIENT console refuses those in
+-- production mode outright -- "Command brtutorial is disabled in production
+-- mode" (owner, 2026-09-04), before our own gate is ever consulted. Every one
+-- of the 27 client commands in this tree passes nothing here for the same
+-- reason. THE GATE IS STILL ON: br_lib/shared/devgate.lua wraps RegisterCommand
+-- for the whole project, and that is what makes this dev-only.
+end)
