@@ -416,13 +416,19 @@ export default function Lobby({
                   {maintenanceBlock ?? readyBlock}
                 </p>
               )}
-              <Btn
-                variant="primary" size="xl" full cue="ui.ready"
-                disabled={(maintenanceBlock ?? readyBlock) != null}
-                onPress={queue}
-              >
-                Ready up
-              </Btn>
+              {/* data-tut: the guided first run points at this (#261). On the
+                  WRAPPER and not the control, so the annotation needs no prop
+                  on a shared component and cannot alter how the button
+                  behaves -- see ui-src/src/tutorial/TutorialLayer.tsx. */}
+              <span data-tut="ready" className="block">
+                <Btn
+                  variant="primary" size="xl" full cue="ui.ready"
+                  disabled={(maintenanceBlock ?? readyBlock) != null}
+                  onPress={queue}
+                >
+                  Ready up
+                </Btn>
+              </span>
             </>
           )}
         </div>
@@ -451,16 +457,18 @@ export default function Lobby({
                   unavailable until it arrives (owner, 2026-08-29). No
                   explanation on purpose: this is the same disabled plate every
                   other unavailable control on this screen uses. */}
-              <Btn
-                variant="default" size="md" full cue="ui.select"
-                disabled={locker.locked === true}
-                onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
-              >
-                Locker
-              </Btn>
+              <span data-tut="locker" className="block">
+                <Btn
+                  variant="default" size="md" full cue="ui.select"
+                  disabled={locker.locked === true}
+                  onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
+                >
+                  Locker
+                </Btn>
+              </span>
             </div>
           )}
-          <div className="flex-1">
+          <div className="flex-1" data-tut="market">
             <Btn
               variant="default" size="md" full cue="ui.select"
               onPress={() => { void fetchNui(CB.MARKET_FOCUS, { open: true }) }}
@@ -472,7 +480,7 @@ export default function Lobby({
               where a new player stands before they have anything to pause,
               and it is the one moment they have time to read (user,
               2026-08-09). Same component, standalone frame. */}
-          <div className="flex-1">
+          <div className="flex-1" data-tut="help">
             <Btn
               variant="default" size="md" full cue="ui.select"
               onPress={() => { void fetchNui(CB.HELP_FOCUS, { open: true }) }}
@@ -480,7 +488,7 @@ export default function Lobby({
               Help
             </Btn>
           </div>
-          <div className="flex-1">
+          <div className="flex-1" data-tut="settings">
             <Btn
               variant="default" size="md" full cue="ui.select"
               onPress={() => { void fetchNui(CB.SETTINGS_FOCUS, { open: true }) }}

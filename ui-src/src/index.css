@@ -1610,3 +1610,197 @@ html, body, #root {
 .xp-readout { display: grid; justify-items: end; }
 .xp-readout > * { grid-area: 1 / 1; transition: opacity 480ms ease; }
 .xp-readout__gone { opacity: 0; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE GUIDED FIRST RUN (#261)
+
+   THE ONE PLACE --font-tutorial IS USED. The owner asked for the flyouts to
+   read as "a deliberate exception to the rest of the UX", so the exception
+   lives here, beside the type spec it breaks, and nowhere else.
+
+   EVERY ANIMATION BELOW IS transform AND opacity ONLY. This page shares a
+   frame with the game and the lobby camera is flying while these are on
+   screen; anything that lays out or paints per frame is a stutter in the exact
+   moment a new player is deciding whether to stay.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.tut-card {
+  position: absolute;
+  z-index: 60;
+  width: 19rem;
+  max-width: 34vw;
+  padding: 0.85rem 0.95rem 0.7rem;
+  border-radius: var(--r-panel);
+  background: rgba(11, 16, 20, 0.94);
+  /* The accent edge is the only colour on the card, and it is the same blade
+     the kill feed uses for a row that concerns you. One vocabulary. */
+  border-left: 3px solid var(--color-royale-accent);
+  box-shadow: 0 1.2rem 2.4rem rgba(0, 0, 0, 0.55);
+  font-family: var(--font-tutorial);
+  /* THROWN FROM ITS SUBJECT, overshooting and settling. --from-x/--from-y are
+     set per card by the layer to the direction the target lies in. */
+  animation: tutIn 340ms var(--ease-snap) both;
+  transform-origin: center;
+}
+
+.tut-card--leaving {
+  /* It leaves the way it came, back toward the thing it was about. */
+  animation: tutOut 180ms var(--ease-out) both;
+}
+
+@keyframes tutIn {
+  0%   { opacity: 0; transform: translate(var(--from-x), var(--from-y)) scale(0.86); }
+  100% { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+
+@keyframes tutOut {
+  0%   { opacity: 1; transform: translate(0, 0) scale(1); }
+  100% { opacity: 0; transform: translate(calc(var(--from-x) * 0.4),
+                                          calc(var(--from-y) * 0.4)) scale(0.9); }
+}
+
+/* THE BEAK DRAWS ITSELF AFTER THE CARD LANDS, so the connection reads as a
+   consequence of the arrival rather than part of it. scaleX from the card
+   outward, pointed by the layer's unit vector. */
+.tut-beak {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2.2rem;
+  height: 2px;
+  background: linear-gradient(90deg, var(--color-royale-accent), transparent);
+  transform-origin: 0 50%;
+  animation: tutBeak 260ms var(--ease-out) 220ms both;
+  pointer-events: none;
+}
+
+/* THE ANGLE IS COMPUTED IN JS AND ARRIVES AS DEGREES, and that is a browser
+   floor rather than a preference. CSS `atan2()` is Chrome 111 and the
+   individual `rotate:`/`scale:` properties are Chrome 104; check-css holds this
+   bundle to CHROME 103, which is the CEF the game actually ships. The layer
+   already has the unit vector, so it costs one Math.atan2 and stays inside one
+   composited `transform`. */
+@keyframes tutBeak {
+  0%   { opacity: 0;    transform: rotate(var(--beak-deg)) scaleX(0); }
+  100% { opacity: 0.85; transform: rotate(var(--beak-deg)) scaleX(1); }
+}
+
+/* THE TITLE AND THE BODY ARRIVE SEPARATELY, sixty milliseconds apart. Cheap,
+   and it is the whole difference between a card appearing and a card being
+   delivered to somebody. */
+.tut-title,
+.tut-body {
+  opacity: 0;
+  transform: translateY(0.35rem);
+  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+}
+
+.tut-title.tut-in { opacity: 1; transform: none; }
+.tut-body.tut-in  { opacity: 1; transform: none; transition-delay: 60ms; }
+
+.tut-title {
+  font-weight: var(--font-tutorial-head);
+  font-size: 1.02rem;
+  line-height: 1.2;
+  color: #ffffff;
+  text-shadow: var(--shadow-text);
+}
+
+.tut-body {
+  margin: 0.35rem 0 0;
+  font-weight: var(--font-tutorial-body);
+  font-size: 0.9rem;
+  line-height: 1.42;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.tut-body b { font-weight: var(--font-tutorial-head); color: #ffffff; }
+.tut-body i { font-style: italic; }
+
+.tut-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.7rem;
+}
+
+.tut-count {
+  font-weight: var(--font-tutorial-body);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+.tut-acts { display: inline-flex; gap: 0.35rem; }
+
+.tut-btn {
+  font-family: var(--font-tutorial);
+  font-weight: var(--font-tutorial-head);
+  font-size: 0.78rem;
+  padding: 0.28rem 0.7rem;
+  border-radius: calc(var(--r-panel) * 0.6);
+  background: rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.9);
+  transition: transform 120ms var(--ease-snap), background 120ms linear;
+}
+
+.tut-btn:hover  { background: rgba(255, 255, 255, 0.16); transform: translateY(-1px); }
+.tut-btn:active { transform: translateY(0) scale(0.97); }
+
+.tut-btn--go {
+  background: var(--color-royale-accent);
+  color: #05121a;
+}
+.tut-btn--go:hover { background: var(--color-royale-accent); filter: brightness(1.12); }
+
+.tut-btn--quiet {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.42);
+  font-weight: var(--font-tutorial-body);
+}
+.tut-btn--quiet:hover { background: rgba(255, 255, 255, 0.07); color: rgba(255, 255, 255, 0.7); }
+
+/* ═══ THE SPOTLIGHT ═══
+
+   A RING AROUND THE SUBJECT, NOT A DIMMED SCREEN. A full-screen scrim is the
+   obvious version and it is wrong here: the player has to CLICK the real
+   control, so anything covering it either has to be pierced with a hole that
+   tracks a moving rect, or it swallows the click. A ring costs neither and
+   still says "this one".
+
+   IT BREATHES on the same 800ms beat the squad panel already uses for a fact
+   that cannot wait. One pulse in the interface, not two. */
+.tut-ring {
+  position: absolute;
+  z-index: 59;
+  border-radius: calc(var(--r-panel) * 0.9);
+  border: 2px solid var(--color-royale-accent);
+  box-shadow: 0 0 0 0.28rem rgba(56, 208, 246, 0.16);
+  pointer-events: none;
+  animation: tutRingIn 300ms var(--ease-snap) both, matePulse 1600ms 300ms infinite;
+}
+
+@keyframes tutRingIn {
+  0%   { opacity: 0; transform: scale(1.35); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* A ring on a step the player has to CLICK gets a second, slower halo, so
+   "press this" and "read this" are distinguishable at a glance. */
+.tut-ring--click::after {
+  content: '';
+  position: absolute;
+  inset: -0.35rem;
+  border-radius: inherit;
+  border: 1px solid var(--color-royale-accent);
+  opacity: 0;
+  animation: tutHalo 1800ms var(--ease-out) infinite;
+}
+
+@keyframes tutHalo {
+  0%   { opacity: 0.55; transform: scale(1); }
+  70%  { opacity: 0;    transform: scale(1.22); }
+  100% { opacity: 0;    transform: scale(1.22); }
+}
