@@ -40,7 +40,25 @@ BR.Tutorial = BR.Tutorial or {}
 --- Is the lobby walkthrough running right now?
 local running = false
 
---- Start or stop it, and tell the page.
+--- Is the lobby OFFERING it -- the checkbox beside Ready up?
+---
+--- ═══ TWO FLAGS, BECAUSE THEY ARE TWO MOMENTS ═══
+---
+--- `offer` is the one-time invitation a brand new player meets: a checkbox,
+--- default on, that turns Ready up into Start tutorial. `running` is the
+--- walkthrough itself. A player can be offered it and decline, and a player can
+--- be running it without ever having been offered -- which is the Help page
+--- re-run (#261). Collapsing them into one flag would make the re-run impossible
+--- to express.
+local offering = false
+
+--- Push both flags to the page.
+local function publish()
+    TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL,
+                 { run = running, offer = offering })
+end
+
+--- Start or stop the walkthrough, and tell the page.
 ---
 --- IDEMPOTENT, deliberately. `/brtutorial` twice in a row is a person checking
 --- whether it worked, not a request to restart from the top -- and restarting
@@ -50,7 +68,16 @@ function BR.Tutorial.set(on)
     on = on == true
     if on == running then return end
     running = on
-    TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL, { run = running })
+    publish()
+end
+
+--- Show or hide the offer.
+--- @param on boolean
+function BR.Tutorial.offer(on)
+    on = on == true
+    if on == offering then return end
+    offering = on
+    publish()
 end
 
 --- @return boolean
@@ -70,17 +97,40 @@ end
 --- A second opinion here would be a rule in two places that could disagree, and
 --- the one on the page is the one that can actually see.
 RegisterCommand('brtutorial', function(_, args)
-    local off = args and (args[1] == 'off' or args[1] == 'stop')
-    BR.Tutorial.set(not off)
+    local arg = args and args[1]
+    local off = arg == 'off' or arg == 'stop'
 
     if off then
-        print('[br_core] tutorial: stopped')
+        BR.Tutorial.set(false)
+        BR.Tutorial.offer(false)
+        print('[br_core] tutorial: stopped, and the offer is hidden')
         return
     end
 
-    print('[br_core] tutorial: running -- the lobby walkthrough is on screen')
-    print('  it draws only while the LOBBY is up; open it if you see nothing')
-    print('  /brtutorial off  stops it')
+    -- ═══ THE OFFER, NOT THE WALKTHROUGH, AND THAT IS THE OWNER'S ASK ═══
+    --
+    -- 2026-09-04: "When I use brtutorial I want to see the full checkbox and
+    -- 'start tutorial' button." So the bare command reproduces what a brand new
+    -- player actually meets -- the checkbox beside Ready up, ticked -- rather
+    -- than jumping straight into the cards. Pressing the button is what starts
+    -- it, exactly as it will be for a real first-timer.
+    --
+    -- `/brtutorial run` skips the offer, for looking at a single card without
+    -- clicking through the lobby to get there.
+    if arg == 'run' then
+        BR.Tutorial.set(true)
+        print('[br_core] tutorial: running -- the walkthrough is on screen')
+        print('  it draws only while the LOBBY is up; open it if you see nothing')
+        print('  /brtutorial off  stops it')
+        return
+    end
+
+    BR.Tutorial.offer(true)
+    print('[br_core] tutorial: the offer is up -- look beside Ready up')
+    print('  the checkbox is ticked by default, and Ready up now reads')
+    print('  Start tutorial; pressing it begins the walkthrough')
+    print('  /brtutorial run  starts it without the offer')
+    print('  /brtutorial off  hides both')
 -- NO `restricted` ARGUMENT, AND THAT IS NOT AN OVERSIGHT. Passing `true` makes
 -- this an ace-restricted command, and FiveM's CLIENT console refuses those in
 -- production mode outright -- "Command brtutorial is disabled in production

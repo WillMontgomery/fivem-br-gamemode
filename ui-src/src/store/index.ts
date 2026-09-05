@@ -229,6 +229,14 @@ export interface UiState {
   frontendUp: boolean
   /** The guided first run is on screen (#261). Lua owns it; this mirrors it. */
   tutorialRun: boolean
+  /** The lobby is OFFERING it -- the checkbox beside Ready up. Lua owns it. */
+  tutorialOffer: boolean
+  /**
+   * The checkbox itself. DEFAULT ON, which is the owner's word: "A checkbox,
+   * default on, near the Ready up button" (#261). The page owns this one --
+   * it is a control the player is operating, not a fact about the world.
+   */
+  tutorialChecked: boolean
 
   /** True while the voluntary-leave interstitial covers the screen: black
    *  plus a quiet "Leaving the match" while the world swaps underneath. */
@@ -271,6 +279,8 @@ export interface UiState {
   setFocus: (f: FocusPayload['screen'], tab?: string) => void
   setFrontendUp: (v: boolean) => void
   setTutorialRun: (v: boolean) => void
+  setTutorialOffer: (v: boolean) => void
+  setTutorialChecked: (v: boolean) => void
   setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
   setScreen: (s: ScreenPayload) => void
@@ -651,6 +661,8 @@ export const useUi = create<UiState>((set, get) => {
   worldReady: import.meta.env.DEV,
   frontendUp: false,
   tutorialRun: false,
+  tutorialOffer: false,
+  tutorialChecked: true,
   leaving: false,
   curtain: 'leaving',
   invite: null,
@@ -735,6 +747,8 @@ export const useUi = create<UiState>((set, get) => {
   setFocus:    (focus, focusTab) => set({ focus, focusTab }),
   setFrontendUp: (frontendUp) => set({ frontendUp }),
   setTutorialRun: (tutorialRun) => set({ tutorialRun }),
+  setTutorialOffer: (tutorialOffer) => set({ tutorialOffer }),
+  setTutorialChecked: (tutorialChecked) => set({ tutorialChecked }),
   setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),
   // THE SCOPE FLAG NEVER TOUCHES THE METRICS.

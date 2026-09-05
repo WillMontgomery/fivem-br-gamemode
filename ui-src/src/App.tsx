@@ -100,7 +100,10 @@ export default function App() {
   // this true for as long as the engine's frontend is up, because Lua is the
   // only thing that can see the frontend at all.
   useNuiEvent('frontend', (d) => s.setFrontendUp(d.up === true))
-  useNuiEvent('tutorial', (d) => s.setTutorialRun(d.run === true))
+  useNuiEvent('tutorial', (d) => {
+    s.setTutorialRun(d.run === true)
+    if (d.offer !== undefined) s.setTutorialOffer(d.offer === true)
+  })
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
   // the player's interface would silently revert for the rest of the session.

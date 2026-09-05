@@ -103,8 +103,8 @@ export type TutorialLayerProps = {
   screen?: string
   /** Every step finished. The award, when there is one, is the caller's. */
   onDone: () => void
-  /** Skip, or a step whose target no longer exists. */
-  onAbandon: (why: 'skipped' | 'missing') => void
+  /** A step whose target no longer exists. Skip is gone; see AnnotationCard. */
+  onAbandon: (why: 'missing') => void
 }
 
 export default function TutorialLayer(p: TutorialLayerProps) {
@@ -258,9 +258,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         fromX={fromX}
         fromY={fromY}
         leaving={leaving}
-        onNext={step.advance === 'next' ? () => go(i + 1) : null}
+        onNext={() => go(i + 1)}
         onBack={i > 0 ? () => go(i - 1) : null}
-        onSkip={() => onAbandonRef.current('skipped')}
       />
     </>
   )

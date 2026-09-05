@@ -102,11 +102,9 @@ export type CardProps = {
    */
   fromX: number
   fromY: number
-  /** Null while the step is waiting for the player to press the real control. */
-  onNext: (() => void) | null
+  onNext: () => void
   /** Null on the first step, which has nothing behind it. */
   onBack: (() => void) | null
-  onSkip: () => void
   /** Raised by the layer one frame before it unmounts, to play the exit. */
   leaving: boolean
 }
@@ -181,24 +179,31 @@ export default function AnnotationCard(p: CardProps) {
             `ghost` for Skip and `default` for Last, because Next is the one
             loud object on the card and `primary` is reserved for exactly one
             per screen -- the same rule the lobby's Ready up follows. */}
+        {/* NO SKIP. Owner, 2026-09-04: "let's remove the skip button." The way
+            out is the walkthrough's own end, the Escape the rest of the
+            interface already answers, or simply not starting it -- the
+            checkbox is opt-out before it begins, which is the moment a player
+            actually decides. */}
         <span className="tut-acts">
-          <Btn variant="ghost" size="sm" cue="ui.select" onPress={p.onSkip}>
-            Skip
-          </Btn>
           {p.onBack ? (
             <Btn variant="default" size="sm" cue="ui.select" onPress={p.onBack}>
               Last
             </Btn>
           ) : null}
-          {/* ABSENT, NOT DISABLED, while the step waits for the real control.
-              A greyed Next invites a click that does nothing; no Next at all
-              leaves the only live thing on screen being the button the card is
-              pointing at, which is the instruction. */}
-          {p.onNext ? (
-            <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onNext}>
-              Next
-            </Btn>
-          ) : null}
+          {/* ALWAYS PRESENT, INCLUDING ON A STEP THAT WANTS A REAL PRESS.
+              It used to be absent there, on the reasoning that the only live
+              thing on screen should be the control the card points at. With
+              Skip gone that left a card whose only button was Last, which
+              reads as broken -- owner, 2026-09-04: "when I get to the settings
+              step (3 of 14) there's no Next button."
+
+              THE REAL CONTROL STILL ADVANCES IT. Pressing the thing the card
+              is pointing at moves on exactly as before; Next is a second door
+              out of the same room, for a player who has already opened that
+              menu once or does not want to. */}
+          <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onNext}>
+            Next
+          </Btn>
         </span>
       </div>
     </div>

@@ -41,6 +41,39 @@ export default function Lobby({
   // while the opaque backdrop fades OUT to the world.
   const worldReady = useUi((s) => s.worldReady)
   const locker = useUi((s) => s.locker)
+
+  // ═══ THE GUIDED FIRST RUN'S OFFER (#261) ═══
+  //
+  // `tutorialOffer` is Lua's -- it decides whether this player is being offered
+  // the walkthrough at all. `tutorialChecked` is the page's, because it is a
+  // control the player is operating rather than a fact about the world, and it
+  // starts TRUE: "A checkbox, default on".
+  const tutorialOffer = useUi((s) => s.tutorialOffer)
+  const tutorialChecked = useUi((s) => s.tutorialChecked)
+  const setTutorialChecked = useUi((s) => s.setTutorialChecked)
+  const setTutorialRun = useUi((s) => s.setTutorialRun)
+  const setTutorialOffer = useUi((s) => s.setTutorialOffer)
+
+  /** Ready up reads Start tutorial only while the box is both offered and ticked. */
+  const startTutorial = tutorialOffer && tutorialChecked
+
+  /**
+   * Begin the walkthrough instead of queueing.
+   *
+   * THE OFFER IS SPENT EITHER WAY, and that is the owner's rule: "Unchecking the
+   * box will burn the one-time offer... Then they proceed into the match and the
+   * box is gone." Taking it burns it too, so the checkbox comes down here as
+   * well -- it has done its job and a walkthrough with its own invitation still
+   * on screen behind it reads as unfinished.
+   *
+   * NOTHING IS PERSISTED YET. The flag that makes this a genuinely ONE-time
+   * offer across sessions is the next piece of work; today the offer is raised
+   * by /brtutorial and lives as long as the page does.
+   */
+  const beginTutorial = () => {
+    setTutorialOffer(false)
+    setTutorialRun(true)
+  }
   const [queued, setQueued] = useState(false)
   // WHY READY UP IS UNAVAILABLE, if it is. The party panel owns the answer --
   // it knows which way the player said they wanted a squad and whether they
@@ -417,17 +450,69 @@ export default function Lobby({
                   {maintenanceBlock ?? readyBlock}
                 </p>
               )}
+              {/* ═══ THE ONE-TIME OFFER (#261) ═══
+
+                  A checkbox, DEFAULT ON, immediately above Ready up, shown
+                  only while Lua says this player is being offered the guided
+                  first run. Owner: "A checkbox, default on, near the Ready up
+                  button", and "When it's checked, Ready up becomes Start
+                  tutorial".
+
+                  `plate` AND NOT A BESPOKE BOX, for the reason the cards
+                  learned: this is part of the lobby and has to read as part of
+                  it. The tick is drawn rather than an <input>, because a native
+                  checkbox in CEF brings its own platform styling that matches
+                  nothing else on this screen.
+
+                  PLACEHOLDER COPY. The label is mine and he has not written
+                  one -- see the note in ui-src/src/tutorial/steps.ts. */}
+              {tutorialOffer && (
+                <button
+                  type="button"
+                  className="interactive plate w-full flex items-center gap-2.5
+                             px-4 py-2.5 mb-2.5 text-left"
+                  style={{ ['--edgec' as string]: tutorialChecked
+                    ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)' }}
+                  onPointerEnter={() => play('ui.hover')}
+                  onClick={() => { play('ui.select'); setTutorialChecked(!tutorialChecked) }}
+                  aria-pressed={tutorialChecked}
+                >
+                  <span
+                    aria-hidden
+                    className="grid place-items-center shrink-0"
+                    style={{
+                      width: '1.05rem', height: '1.05rem',
+                      border: `1px solid ${tutorialChecked
+                        ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.35)'}`,
+                      background: tutorialChecked
+                        ? 'var(--color-royale-accent)' : 'transparent',
+                      color: '#04222a',
+                      fontSize: '0.72rem', lineHeight: 1,
+                    }}
+                  >
+                    {tutorialChecked ? '✓' : ''}
+                  </span>
+                  <span className="tscale text-[0.85rem] text-white/80">
+                    Show me how to play
+                  </span>
+                </button>
+              )}
               {/* data-tut: the guided first run points at this (#261). On the
                   WRAPPER and not the control, so the annotation needs no prop
                   on a shared component and cannot alter how the button
                   behaves -- see ui-src/src/tutorial/TutorialLayer.tsx. */}
+              {/* THE SAME BUTTON, TWO JOBS. Owner: "When ticked, the box should
+                  change the 'ready up' button to a 'start tutorial' button." It
+                  does not queue in that state -- the walkthrough holds them in
+                  the lobby, which is the whole point of it being an alternative
+                  to readying up rather than a step before it. */}
               <span data-tut="ready" className="block">
                 <Btn
                   variant="primary" size="xl" full cue="ui.ready"
                   disabled={(maintenanceBlock ?? readyBlock) != null}
-                  onPress={queue}
+                  onPress={startTutorial ? beginTutorial : queue}
                 >
-                  Ready up
+                  {startTutorial ? 'Start tutorial' : 'Ready up'}
                 </Btn>
               </span>
             </>

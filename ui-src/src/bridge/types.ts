@@ -1269,7 +1269,7 @@ export type Envelope =
   /* The guided first run (#261). Lua owns whether it is running and the page
      mirrors it, the same shape `frontend` above uses -- so a reload or a
      re-focus cannot leave the walkthrough on with nothing driving it. */
-  | { k: 'tutorial'; d: { run: boolean } }
+  | { k: 'tutorial'; d: { run: boolean; offer?: boolean } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
   | { k: 'progress'; d: ProgressPayload }
