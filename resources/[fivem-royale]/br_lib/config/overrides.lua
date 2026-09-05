@@ -53,7 +53,6 @@
 --
 -- So, excluded on purpose:
 --
---   engineTeams      client-read (br_core/client/natives.lua decides the team).
 --   dbnoRevive*      client-read (br_core/client/squadmates.lua).
 --   storm phases     client-read; br_core/client/storm.lua renders from the
 --                    same table, and docs/match-math.md's arithmetic is built

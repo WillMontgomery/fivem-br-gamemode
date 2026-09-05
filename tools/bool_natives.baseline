@@ -45,7 +45,7 @@
 1	resources/[fivem-royale]/br_core/client/screen.lua	IsPlayerFreeAiming
 2	resources/[fivem-royale]/br_core/client/spectate.lua	DoesCamExist
 2	resources/[fivem-royale]/br_core/client/squadmates.lua	DoesBlipExist
-3	resources/[fivem-royale]/br_core/client/squadmates.lua	DoesEntityExist
+2	resources/[fivem-royale]/br_core/client/squadmates.lua	DoesEntityExist
 1	resources/[fivem-royale]/br_core/client/squadmates.lua	HasEntityBeenDamagedByEntity
 1	resources/[fivem-royale]/br_core/client/squadmates.lua	IsSphereVisible
 4	resources/[fivem-royale]/br_core/client/state.lua	DoesEntityExist

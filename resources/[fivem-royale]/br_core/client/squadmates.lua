@@ -140,7 +140,6 @@ function BR.Squadmates.headAnchor(ped)
     return c.x, c.y, c.z + 0.6
 end
 
-local PLAYER_GROUP = GetHashKey('PLAYER')
 
 -- Every ped we have ever moved into BR_ALLY, so leaving the squad (or the
 -- squad dissolving) can hand ALL of them back -- the group is no longer
@@ -166,9 +165,18 @@ end
 --- because the relationship group is real and does drive the AI and melee
 --- paths.
 local function releaseAlly(ped)
-    if DoesEntityExist(ped) then
-        SetPedRelationshipGroupHash(ped, PLAYER_GROUP)
-    end
+    -- THE GROUP WRITE THAT USED TO BE HERE IS GONE, and so is the reason for
+    -- it (#267). It handed an ex-mate's clone back to the stock PLAYER group,
+    -- to undo the BR_ALLY this file used to write on the way in. Neither write
+    -- ever landed: a ped's relationship group is a SYNCED field authored by the
+    -- machine that owns the ped, so both were overwritten by that player's own
+    -- next broadcast. Squad membership is now announced by each player about
+    -- their own ped -- see BR.Native.groupFor -- and leaving a squad changes
+    -- what THEY announce, which is the only write that was ever going to work.
+    --
+    -- THE BOOKKEEPING STAYS. `allied` is this file's own record of who it is
+    -- drawing a tag for, and every path that stops considering a ped an ally
+    -- still goes through here.
     allied[ped] = nil
 end
 
@@ -334,16 +342,23 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         --
         -- WHERE THE FIX LIVES NOW: client/natives.lua, on the only channel
         -- that replicates -- facts a client authors ABOUT ITSELF. Each squad
-        -- gets a GTA team, and a player with a live squadmate closes the
-        -- engine's friendly-fire gate, so the shooter's engine refuses to
-        -- compute the hit. Read the note above BR.Native.teamFor before
+        -- gets its own relationship group, every player announces their own,
+        -- and this client sets its own group friendly toward itself and hostile
+        -- toward every other. Read the note above BR.Native.groupFor before
         -- reaching for a per-clone native again.
         --
-        -- THE GROUP STAYS because it is what the AI and melee paths read, and
-        -- because releaseAlly is the path that hands an ex-mate back. It is
-        -- not load-bearing for #115 and must not be described as though it is.
+        -- ═══ AND THE GROUP WRITE THAT USED TO BE HERE IS GONE (#267) ═══
+        --
+        -- It set a squadmate's clone to BR_ALLY every tick. That was never a
+        -- no-op in the harmless sense -- it was a no-op in the WORST sense: the
+        -- ped's relationship group is a synced field (CPedAIDataNode), so the
+        -- mate's own machine was already broadcasting a group and this write was
+        -- overwritten by the next sync. It cost a native per mate per tick and
+        -- bought nothing, and its presence is part of why the group mechanism
+        -- was written off in the first place -- the three 2026-08-05
+        -- measurements that "disproved" relationship groups were measuring THIS
+        -- write, on a clone, with friendly fire globally on.
         if ped ~= 0 then
-            SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
             allied[ped]      = true
             stillAllied[ped] = true
         end
@@ -608,8 +623,8 @@ end)
 --
 -- WHAT IS LEFT HERE IS DELIBERATELY NOT REMOVED. Restoring health is the wrong
 -- fix for a corpse and the right fix for everything that gets through: the
--- window before a team assignment lands, a build where SET_PLAYER_TEAM does not
--- take, and BR.Config.Match.engineTeams = false. It repairs a ped that was
+-- window before a group announcement replicates, and a build where the
+-- relationship natives silently do nothing. It repairs a ped that was
 -- HURT, which is precisely the case the owner is willing to live with
 -- ("even if our health repair net catches that's fine ... it just needs to work
 -- consistently", 2026-08-19). It cannot repair one that was KILLED, and that is

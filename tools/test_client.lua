@@ -8686,10 +8686,20 @@ do
         'A SQUADMATE CLONE IS NEVER MARKED UNDAMAGEABLE -- disproven, #115',
         ('SetEntityCanBeDamaged on the mate: %s'):format(tostring(shielded[MATE])))
 
-    -- 2. REVERT-DETECTING. The group is not what stops a bullet and must not be
-    --    described as though it is, but the AI and melee paths do read it.
-    ok(grouped[MATE] == BR.Native.ALLY_GROUP,
-        'and IS still put in the ally group the AI and melee paths read',
+    -- 2. REVERT-DETECTING, AND IT NOW PINS THE OPPOSITE (#267). This file used
+    --    to write BR_ALLY onto a squadmate's clone every tick. That write never
+    --    landed: a ped's relationship group is a SYNCED field authored by the
+    --    machine that owns the ped, so the mate's own next broadcast undid it.
+    --    Worse, it is what the three 2026-08-05 "relationship groups do not stop
+    --    bullets" measurements were measuring -- a clone write, with friendly
+    --    fire globally on -- and that invalid result is why the group mechanism
+    --    was abandoned for the team system that broke squads PvP.
+    --
+    --    NOTHING IN THIS FILE MAY WRITE A GROUP AGAIN. Squad membership is
+    --    announced by each player about their OWN ped in client/natives.lua.
+    ok(grouped[MATE] == nil,
+        'and a squadmate clone is NEVER put in a relationship group either -- '
+            .. 'the owner announces their own, and this write never landed',
         ('group: %s'):format(tostring(grouped[MATE])))
 
     -- 3. OVERREACH-DETECTING. Whatever this file does, it does to squadmates
@@ -8708,8 +8718,16 @@ do
     fire(BR.Net.SQUAD_POS, {})
     tickBand()
     tickBand()
-    ok(grouped[MATE] == PLAYER_HASH,
-        'AND AN EX-SQUADMATE IS HANDED BACK to the default relationship group',
+    -- ...AND THERE IS NOTHING TO HAND BACK ANY MORE (#267). `releaseAlly` used
+    -- to restore the stock PLAYER group here, to undo a write that had itself
+    -- never landed. Both halves are gone: leaving a squad changes what the
+    -- EX-MATE announces about their own ped, which is the only write that was
+    -- ever going to replicate. nil is the passing answer and it is
+    -- revert-detecting -- PLAYER_HASH here means somebody put the clone write
+    -- back on the release path.
+    ok(grouped[MATE] == nil,
+        'and an ex-squadmate is not written to either, because nothing was '
+            .. 'written to them on the way in',
         ('group on the ex-mate: %s'):format(tostring(grouped[MATE])))
 
     ok(shielded[MATE] == nil and shielded[ENEMY] == nil,
@@ -10314,7 +10332,29 @@ do
 
     local function noop2() end
     SetCanAttackFriendly = noop2
-    SetPedRelationshipGroupHash = noop2
+    -- RECORDED, NOT DISCARDED (#267). The relationship group is now what decides
+    -- who may shoot whom, so the group this client announces about its own ped
+    -- and the one row of the matrix it writes are the whole feature -- and a
+    -- rule nothing can observe is a rule the next edit deletes for free.
+    -- `rel[a][b]` is the acquaintance from a toward b: 0 companion, 5 hate.
+    relGroupOf, rel = {}, {}
+    function SetPedRelationshipGroupHash(ped, g) relGroupOf[ped] = g end
+    function AddRelationshipGroup(_) end
+    function SetRelationshipBetweenGroups(n, a, b)
+        rel[a] = rel[a] or {}
+        rel[a][b] = n
+    end
+
+    -- DISTINCT HASHES, because the file-wide stub answers every GetHashKey with
+    -- 1 and sixty-four groups that are all the number 1 is one group -- which is
+    -- precisely the bug under test, and it would pass by construction. Any
+    -- injective function of the string will do; this is joaat's shape without
+    -- its exactness, which nothing here depends on.
+    function GetHashKey(s)
+        local h = 0
+        for i = 1, #tostring(s) do h = (h * 31 + tostring(s):byte(i)) % 2147483647 end
+        return h
+    end
     SetCreateRandomCops = countCops
     SetCreateRandomCopsNotOnScenarios = countCops
     SetCreateRandomCopsOnScenarios = countCops
@@ -10354,6 +10394,9 @@ do
     -- This is the last suite, so nothing downstream is measuring the stub.
     loadAll({ 'br_core/client/natives.lua' })
     local N = BR.Native
+    -- GROUPS is built here, once, and applyGroup's matrix depends on it. The
+    -- real client gets this from onResourceStart; the harness has to say so.
+    N.buildGroups()
 
     ok(type(N.teamFor) == 'function' and type(N.SOLO_TEAM) == 'number',
         'natives.lua exposes the team decision as something testable at all',
@@ -10744,6 +10787,10 @@ do
         copFlags, invincibleWrites = 0, 0
         dispatch.off, dispatch.kinds = {}, {}
         dispatch.writes, dispatch.sweeps = 0, 0
+        -- The group announcement and the one row of the matrix it writes. Both
+        -- are the feature under test now, so both are cleared between cases or
+        -- a case would be reading the previous case's squad.
+        relGroupOf, rel = {}, {}
         N.forgetTeam()
         -- The rule latch is a memo like the team's, and for the same reason;
         -- a suite that forgot one and not the other would be measuring a
@@ -10751,54 +10798,110 @@ do
         N.forgetRules()
     end
 
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE GROUP IS THE FEATURE NOW, AND THE TEAM IS GONE (#267)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- This block used to pin SetPlayerTeam and a gate that opened for solos.
+    -- The owner's playtest of 2026-09-03 falsified the inference underneath
+    -- both: two opposing squads hold DIFFERENT teams by construction and still
+    -- could not shoot each other, so the engine's friendly-fire check has no
+    -- team term. What it consults is whether the pair are FRIENDLY, and that is
+    -- decided by the relationship groups.
+    --
+    -- SO THE ASSERTIONS INVERT. The gate is closed for everybody, always, and
+    -- the asymmetry moves into one line of the matrix: my own squad's group is
+    -- companion toward itself, and every other pair is hate. A solo sets no
+    -- companion at all, which is what keeps two solos able to fight with the
+    -- gate closed.
+    local function myGroup() return relGroupOf[PlayerPedId()] end
+    local function selfRel(g) return g and rel[g] and rel[g][g] end
+
     reset()
     rules(1, twoSquads)
-    ok(team.last == select(1, seat(1, twoSquads)) and team.last ~= nil,
-        'IN A SQUAD, THE FRAME LOOP WRITES THE SQUAD TEAM',
-        ('SetPlayerTeam(%s), expected %s')
-            :format(tostring(team.last), tostring(select(1, seat(1, twoSquads)))))
+    local squadG = myGroup()
+    ok(squadG ~= nil and selfRel(squadG) == 0,
+        'IN A SQUAD, THE PLAYER ANNOUNCES THEIR SQUAD GROUP AND IT IS '
+            .. 'COMPANION TOWARD ITSELF -- the one line that protects a mate',
+        ('group %s, self-relationship %s')
+            :format(tostring(squadG), tostring(selfRel(squadG))))
 
     ok(gate.last == false and gate.kind == 'boolean',
         'and CLOSES the gate, with a real boolean and not a 1',
         ('NetworkSetFriendlyFireOption(%s) :: %s')
             :format(tostring(gate.last), tostring(gate.kind)))
 
-    -- THE ASSERTION THAT FAILS ON A GLOBAL FLIP, and the reason round seven's
-    -- recommendation was refused twice. A solo lobby with the gate closed is a
-    -- pacifist lobby, and solo is the DEFAULT MODE.
+    -- ═══ AND A SOLO IS HOSTILE TO THEMSELVES, WHICH IS THE WHOLE TRICK ═══
+    --
+    -- The old design kept the gate OPEN for solos, because with one shared group
+    -- a closed gate was a pacifist lobby. It is closed for them now and solo PvP
+    -- survives, because the solo group is never made companion toward itself --
+    -- so no two players in it are friendly and the gate has nobody to protect.
+    -- THIS IS THE ASSERTION THAT FAILS IF SOMEBODY MAKES THE COMPANION LINE
+    -- UNCONDITIONAL, which would switch off PvP for the default mode.
     reset()
     rules(1, mixed)
-    ok(gate.last == true and gate.kind == 'boolean',
-        'A SOLO LEAVES THE GATE OPEN -- PvP IS NOT SWITCHED OFF FOR THEM',
+    local soloG = myGroup()
+    ok(soloG ~= nil and soloG ~= squadG and selfRel(soloG) == 5,
+        'A SOLO IS IN THE SOLO GROUP AND IT HATES ITSELF -- PvP IS NOT '
+            .. 'SWITCHED OFF FOR THEM, EVEN WITH THE GATE CLOSED',
+        ('group %s (squad group %s), self-relationship %s')
+            :format(tostring(soloG), tostring(squadG), tostring(selfRel(soloG))))
+
+    ok(gate.last == false and gate.kind == 'boolean',
+        'and the gate is closed for them too -- it is a constant now, because '
+            .. 'friendliness is the groups\' business rather than the gate\'s',
         ('NetworkSetFriendlyFireOption(%s) :: %s')
             :format(tostring(gate.last), tostring(gate.kind)))
 
-    ok(team.last == N.SOLO_TEAM,
-        'and is put on the reserved solo team rather than left wherever it was',
-        ('SetPlayerTeam(%s)'):format(tostring(team.last)))
-
-    -- The memo: the team is a synced node, so it is written on change and on a
-    -- slow refresh, not sixty times a second.
+    -- ═══ A SQUAD GROUP HATES EVERY OTHER GROUP, IN BOTH DIRECTIONS ═══
+    --
+    -- The row and the column, because a stale relationship from a previous
+    -- squad would be a peace treaty with the squad this player just left.
     reset()
     rules(1, twoSquads)
-    rules(1, twoSquads)
-    rules(1, twoSquads)
-    ok(#team.writes == 1,
-        'the team is written once, not once a frame -- it dirties a sync node',
-        ('%d write(s)'):format(#team.writes))
+    local g = myGroup()
+    local hatesAll, sawOther = true, 0
+    for a, row in pairs(rel) do
+        for b, n in pairs(row) do
+            if (a == g or b == g) and a ~= b then
+                sawOther = sawOther + 1
+                if n ~= 5 then hatesAll = false end
+            end
+        end
+    end
+    ok(hatesAll and sawOther > 100,
+        'and hates every other group in both directions -- no stale peace '
+            .. 'treaty with the squad this client just left',
+        ('%d cross pairs, all hate: %s'):format(sawOther, tostring(hatesAll)))
 
-    fakeTime = fakeTime + 5000
+    -- The memo: the matrix is ~127 natives, so it is written on change and not
+    -- sixty times a second. The GROUP announcement is idempotent and rides the
+    -- heartbeat, which is what a fresh ped handle needs.
+    reset()
     rules(1, twoSquads)
-    ok(#team.writes == 2,
-        'and is re-asserted on a slow refresh, because a memo is only a belief',
-        ('%d write(s)'):format(#team.writes))
+    local afterOne = 0
+    for _ in pairs(rel) do afterOne = afterOne + 1 end
+    rules(1, twoSquads)
+    rules(1, twoSquads)
+    local afterThree = 0
+    for _ in pairs(rel) do afterThree = afterThree + 1 end
+    ok(afterOne > 0 and afterThree == afterOne,
+        'the matrix is written once, not once a frame -- it is 127 natives',
+        ('%d group rows after one frame, %d after three')
+            :format(afterOne, afterThree))
 
     reset()
     rules(1, twoSquads)
+    local first = myGroup()
     rules(3, twoSquads)
-    ok(#team.writes == 2 and team.last == select(1, seat(3, twoSquads)),
-        'a change of squad is written immediately, not at the refresh',
-        ('%d write(s), last %s'):format(#team.writes, tostring(team.last)))
+    local second = myGroup()
+    ok(first ~= nil and second ~= nil and first ~= second
+       and selfRel(second) == 0,
+        'a change of squad moves the player to the other squad\'s group '
+            .. 'immediately, and that group is companion toward itself',
+        ('%s -> %s, self-relationship %s')
+            :format(tostring(first), tostring(second), tostring(selfRel(second))))
 
     -- WARMUP PEACE IS A SEPARATE LEVER AND STAYS ONE. It is invincibility on
     -- the player's OWN ped -- owner-authored, which is why it has always
@@ -10811,8 +10914,9 @@ do
 
     reset()
     rules(1, mixed, BR.PlayerState.WARMUP)
-    ok(invincible == true and gate.last == true,
-        'including for a solo, whose gate is open the whole time',
+    ok(invincible == true and gate.last == false,
+        'including for a solo, whose gate is closed like everybody else\'s -- '
+            .. 'warmup peace is invincibility, and has never been the gate',
         ('invincible %s, gate %s')
             :format(tostring(invincible), tostring(gate.last)))
 
@@ -11244,32 +11348,31 @@ do
         ('%d sweep(s)'):format(dispatch.sweeps - baseSweeps))
 
     -- ==================================================================== --
-    -- 8. THE ONE-LINE WAY BACK
+    -- 8. NO TEAM IS EVER WRITTEN, AND THAT IS THE POINT
     -- ==================================================================== --
     --
-    -- The load-bearing inference cannot be settled from a desk, so the config
-    -- switch is the difference between a wrong guess costing one line and a
-    -- wrong guess costing a round. Pinned, because a kill switch nothing tests
-    -- is a kill switch that has stopped working by the time it is needed.
-
-    local was = BR.Config.Match.engineTeams
-    BR.Config.Match.engineTeams = false
+    -- This section used to pin `engineTeams = false`, the one-line way back
+    -- from an inference that could not be settled from a desk. The playtest
+    -- settled it -- against -- so the switch and the team it switched are both
+    -- gone, and what is pinned here now is their ABSENCE.
+    --
+    -- A KILL SWITCH FOR A MECHANISM THAT NO LONGER EXISTS IS WORSE THAN NO
+    -- SWITCH: an operator would set it, see no change, and conclude the fix had
+    -- failed. `SetPlayerTeam` survives only in /brnativecheck's probe, which
+    -- reports what the engine offers rather than using it.
     reset()
     rules(1, twoSquads)
+    rules(1, mixed)
+    rules(3, twoSquads)
     ok(#team.writes == 0,
-        'engineTeams = false NEVER TOUCHES SET_PLAYER_TEAM',
+        'SET_PLAYER_TEAM IS NEVER CALLED, in a squad or out of one -- the team '
+            .. 'predicate was falsified and the write went with it',
         ('%d write(s)'):format(#team.writes))
-    ok(gate.last == true and gate.kind == 'boolean',
-        'and holds the gate open exactly as e1f9f98 left it',
-        ('NetworkSetFriendlyFireOption(%s)'):format(tostring(gate.last)))
-    BR.Config.Match.engineTeams = was
 
-    reset()
-    rules(1, twoSquads)
-    ok(gate.last == false and #team.writes == 1,
-        'and turning it back on restores the gate on the next frame',
-        ('gate %s, %d team write(s)')
-            :format(tostring(gate.last), #team.writes))
+    ok(BR.Config.Match.engineTeams == nil,
+        'and the engineTeams switch is gone from the config rather than left '
+            .. 'as a lever that moves nothing',
+        tostring(BR.Config.Match.engineTeams))
 end
 
 -- ---------------------------------------------------------------------------

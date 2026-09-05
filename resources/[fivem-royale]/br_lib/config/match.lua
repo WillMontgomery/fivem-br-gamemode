@@ -64,23 +64,25 @@ BR.Config.Match = {
     -- squads (2 + 1), which puts the enemy case on the screen.
     maxSquadSize    = 4,
 
-    -- THE ENGINE'S OWN FRIENDLY-FIRE GATE (#115), and the one-line way back.
+    -- THE ENGINE'S FRIENDLY-FIRE GATE IS NO LONGER A SETTING (#267).
     --
-    -- true  each squad gets a GTA team (SET_PLAYER_TEAM) and a player with a
-    --       live squadmate closes the engine's friendly-fire gate, so the
-    --       shooter's engine never computes a hit on a teammate and the false
-    --       corpse cannot be created. Solos keep team 0 and an OPEN gate, so
-    --       solo play behaves exactly as it did before this existed.
-    -- false no team is ever set and the gate is always open -- byte-for-byte
-    --       the pre-#115 behaviour from e1f9f98.
+    -- `engineTeams` lived here: true gave each squad a GTA team and closed the
+    -- gate for anyone with a live squadmate, false reverted to the pre-#115
+    -- behaviour. It existed because the design rested on an inference nobody
+    -- could source -- that GTA refuses a hit when shooter and victim share a
+    -- TEAM -- and the note said, in as many words, "if squad matches suddenly
+    -- have no combat at all, set this false."
     --
-    -- The load-bearing inference is that GTA's damage path refuses a hit when
-    -- shooter and victim share a team and the gate is closed. Everything in
-    -- the record supports it (see the note above BR.Native.teamFor in
-    -- br_core/client/natives.lua) and no source states it in words, so this
-    -- switch exists to make a wrong guess cost one line rather than a round.
-    -- If squad matches suddenly have no combat at all, set this false.
-    engineTeams     = true,
+    -- THEY DID, AND IT WAS. Owner playtest, 2026-09-03: opposing squads could
+    -- not shoot each other. Two squads hold different teams by construction, so
+    -- the engine's check has no team term at all; the switch is deleted rather
+    -- than flipped, because it now selects between two spellings of a mechanism
+    -- that was never the one operating.
+    --
+    -- WHAT REPLACED IT is one relationship group per squad, announced by each
+    -- player about their own ped, with the gate closed for everybody -- see
+    -- BR.Native.groupFor in br_core/client/natives.lua. There is no lever here
+    -- any more because there is nothing left to choose between.
 
     -- A squad match needs somebody to fight. One squad means the win condition
     -- is already satisfied at the starting gun, which reads as "the match ended

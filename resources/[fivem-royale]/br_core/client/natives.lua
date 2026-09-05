@@ -15,7 +15,6 @@ BR.Native = {}
 -- The local relationship group holding me + my squadmates. A relationship
 -- group hash IS the joaat of its name, so this is constant and safe to read
 -- before applyWorldSetup registers the group.
-BR.Native.ALLY_GROUP = GetHashKey('BR_ALLY')
 
 -- Implementation switches. Flipped by /brnativecheck findings or by config.
 BR.Native.use = {
@@ -1043,27 +1042,168 @@ function BR.Native.teamFor(me, roster)
     return team, mine
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE SQUAD RELATIONSHIP GROUP (#267)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ONE GROUP PER SQUAD, AND THE PLAYER AUTHORS THEIR OWN. This replaces the
+-- single `BR_ALLY` every player in the match was put into, which is what made
+-- every player friendly to every other and, with the gate closed, stopped a
+-- squad player being able to aim at anybody at all (owner playtest, 2026-09-03:
+-- "opposing squads have friendly fire on and cannot kill each other").
+--
+-- ═══ IT WORKS BECAUSE THE GROUP REPLICATES, NOT IN SPITE OF IT ═══
+--
+-- A ped's relationship group is a SYNCED field -- `CPedAIDataNode` carries
+-- `relationShip` as 32 bits, in the player tree, beside CPlayerGameStateDataNode
+-- (citizenfx/fivem, SyncTrees_Five.h). The old design was written as though
+-- SetPedRelationshipGroupHash on your own ped were a local statement about your
+-- own view; it is a BROADCAST. So every client announced "I am BR_ALLY" and an
+-- enemy arrived inside your friendly group before you could say otherwise.
+--
+-- Announcing your SQUAD is the same broadcast carrying a true fact instead of a
+-- useless one. Nothing here writes to another player's clone -- the thing this
+-- project has failed at eight separate times -- because every ped's group is
+-- authored by the machine that owns it.
+--
+-- ═══ HATE IS THE DEFAULT AND COMPANION IS THE EXCEPTION ═══
+--
+-- Every group is set to hate every group INCLUDING ITSELF, and then this client
+-- sets exactly one relationship to companion: its own squad's group toward
+-- itself. That single asymmetry is the whole feature.
+--
+--   my squad's group -> my squad's group   companion  (cannot aim at, gate on)
+--   my squad's group -> anybody else       hate       (ordinary combat)
+--   anybody else -> me                     hate, decided on THEIR machine
+--
+-- A SOLO SETS NO COMPANION AT ALL, so their own group keeps hating itself and
+-- two solos can fight. That is why the exception is conditional rather than
+-- unconditional, and it is the same `mine` predicate teamFor already computes:
+-- a squad of one has nobody to protect and behaves as a solo.
+--
+-- ONLY PAIRS INVOLVING MY OWN GROUP ARE WRITTEN. Relationships are local
+-- configuration, and this machine only ever computes shots FROM this player --
+-- whether an enemy may shoot me is decided on the enemy's machine, against
+-- their group and mine. So the matrix is one row and one column, not 64x64.
+
+--- Group name for a squad index, and for the unsquadded.
+---
+--- NAMED, NOT HASHED BY HAND. GetHashKey is the engine's own joaat and the
+--- group registry is keyed by it, so the names only have to be stable and
+--- distinct -- and being readable in a `/brnativecheck` dump is worth more than
+--- saving a call.
+local function groupName(index)
+    if index == nil then return 'BR_SOLO' end
+    return ('BR_SQ%d'):format(index)
+end
+
+--- Every group this client will ever need, added once. Keyed by index, with
+--- `false` standing for the solo group so one table covers both.
+local GROUPS = {}
+
+--- Register every group and record its hash.
+---
+--- SPLIT OUT OF applyWorldSetup, which is where it is called from, because the
+--- registry is not "world setup" in the sense the rest of that function is --
+--- it is this feature's own one-time cost, and a test that wants a group matrix
+--- should not have to stub garbage trucks and police scanners to get one.
+---
+--- SIXTY-FOUR OF THEM AND THAT IS THE WHOLE COST: 64 registrations at resource
+--- start, once, against a squad index range that is teamFor's 1..63 (six bits,
+--- for the reason MAX_TEAM's note gives) plus the solo group. No relationships
+--- are written here -- they depend on which group is MINE, which is not known
+--- until a roster exists.
+---
+--- IDEMPOTENT. AddRelationshipGroup on a name that already exists hands back
+--- the existing hash rather than erroring, so calling this twice is a waste and
+--- not a fault.
+function BR.Native.buildGroups()
+    GROUPS[false] = GetHashKey(groupName(nil))
+    AddRelationshipGroup(groupName(nil))
+    for n = 1, MAX_TEAM do
+        GROUPS[n] = GetHashKey(groupName(n))
+        AddRelationshipGroup(groupName(n))
+    end
+end
+
+--- Which relationship group this client's ped should announce, and whether it
+--- has anybody to protect.
+---
+--- PURE, and split out for the same reason teamFor is: it decides who can shoot
+--- whom, and tools/test_client.lua is where that gets decided rather than in a
+--- playtest that cannot produce two squads with three clients.
+---
+--- THE SQUAD INDEX IS teamFor's, deliberately. Both read the same `m<match>sq<n>`
+--- shape and a second parser would be a second answer to one question. The
+--- fail-open rule is teamFor's too: an id in a shape this does not recognise
+--- means the squad system moved and this did not, and the safe answer is the one
+--- that leaves every gun working -- the solo group, no companion, hostile to
+--- everything.
+---
+--- @param me table|nil      BR.State.me -- { src, squadId }
+--- @param roster table|nil  BR.State.roster mirror, keyed by server id
+--- @return integer group    a relationship group hash
+--- @return boolean mine     true => this client has squadmates to protect
+function BR.Native.groupFor(me, roster)
+    local team, mine = BR.Native.teamFor(me, roster)
+    if team == BR.Native.SOLO_TEAM or not mine then
+        return GetHashKey(groupName(nil)), false
+    end
+    return GetHashKey(groupName(team)), true
+end
+
 -- SET_PLAYER_TEAM is memoised, not spammed. Writing the team marks the player
 -- sync node dirty, and re-sending it sixty times a second would put a node on
 -- the wire every frame for a value that changes about twice a match. The
 -- refresh is there because a memo is a belief about the engine's state, and the
 -- engine resets a good deal on respawn -- two seconds is cheap insurance
 -- against a belief that has gone stale without anything noticing.
-local lastTeam, lastTeamAt = nil, 0
-local TEAM_REFRESH_MS = 2000
+local lastGroup, lastGroupMine = nil, nil
 
---- @param team integer
-local function applyTeam(team)
-    local now = GetGameTimer()
-    if team == lastTeam and (now - lastTeamAt) < TEAM_REFRESH_MS then return end
-    lastTeam, lastTeamAt = team, now
-    SetPlayerTeam(PlayerId(), team)
+--- Announce this client's group and lay out the one row of the relationship
+--- matrix that governs its own shots.
+---
+--- ═══ WRITTEN ON CHANGE, NOT ON A CADENCE ═══
+---
+--- A squad changes about twice a match. The ped write is cheap and idempotent,
+--- but the relationship pass is ~127 natives, so it is memoised on the pair
+--- (group, mine) rather than run every heartbeat. `due` still re-announces the
+--- GROUP -- see the call site: a fresh ped handle comes up in the engine's
+--- default group and the memo would happily skip it.
+---
+--- ═══ HATE EVERYTHING, THEN FORGIVE EXACTLY ONE ═══
+---
+--- Both directions are written for every pair involving my group, so a stale
+--- row from a previous squad cannot survive as a peace treaty with the squad I
+--- just left. The self-relationship is last and is the only conditional line in
+--- the function: companion when I have somebody to protect, hate when I do not,
+--- which is what keeps two solos able to fight.
+---
+--- 0 = COMPANION, 5 = HATE. GTA's acquaintance scale, and the two ends of it.
+--- Respect (1) would also read as friendly and is not used, because "friendly"
+--- here is a binary the gate consumes rather than a shade of feeling.
+--- @param group integer  relationship group hash from BR.Native.groupFor
+--- @param mine boolean   true => this client has squadmates to protect
+--- @param ped integer
+local function applyGroup(group, mine, ped)
+    SetPedRelationshipGroupHash(ped, group)
+
+    if group == lastGroup and mine == lastGroupMine then return end
+    lastGroup, lastGroupMine = group, mine
+
+    for _, other in pairs(GROUPS) do
+        if other ~= group then
+            SetRelationshipBetweenGroups(5, group, other)
+            SetRelationshipBetweenGroups(5, other, group)
+        end
+    end
+    SetRelationshipBetweenGroups(mine and 0 or 5, group, group)
 end
 
 --- Forget the memo. Used by the test suite and by anything that knows the
---- engine's idea of the team has been reset underneath us.
+--- engine's idea of the group has been reset underneath us.
 function BR.Native.forgetTeam()
-    lastTeam, lastTeamAt = nil, 0
+    lastGroup, lastGroupMine = nil, nil
 end
 
 -- --------------------------------------------------------------- game rules ---
@@ -1118,7 +1258,7 @@ end
 --                                       the engine's state, and something else
 --                                       may have written it since
 --
--- That is the same shape as applyTeam's memo above, for the same reason, and
+-- That is the same shape as applyGroup's memo above, for the same reason, and
 -- it means no rule is ever more than a second stale WITHOUT any of the events
 -- that could plausibly clear it having happened. Across every event that
 -- could, it is not stale at all.
@@ -1525,47 +1665,64 @@ function BR.Native.applyGameRules()
     -- for it to be about. So it closes for exactly the players who have a
     -- squadmate to protect, and stays open for everybody else:
     --
-    --   solo                  -> team 0, gate OPEN. Unchanged from e1f9f98 in
-    --                            every respect, which is what keeps the
-    --                            DEFAULT MODE out of the blast radius if the
-    --                            team inference turns out to be wrong.
-    --   squad of one          -> own team, gate OPEN. Nobody to protect.
-    --   squad of two or more  -> squad team, gate CLOSED.
+    --   solo                  -> solo group, hostile to itself. Can fight.
+    --   squad of one          -> solo group. Nobody to protect.
+    --   squad of two or more  -> squad group, companion toward itself.
     --
-    -- A pair is only ever blocked when BOTH sides are on the same team, so
-    -- cross-squad and squad-versus-solo damage never depend on the gate at
-    -- all. BR.Config.Match.engineTeams = false reverts the whole thing to the
-    -- e1f9f98 behaviour in one line, without a code change, because this has
-    -- had eight rounds and the ninth should be cheap to undo.
-    local mcfg = BR.Config and BR.Config.Match
-    local team, shield = BR.Native.SOLO_TEAM, false
-    if not mcfg or mcfg.engineTeams ~= false then
-        team, shield = BR.Native.teamFor(BR.State.me, BR.State.roster)
-        applyTeam(team)
-    end
-
-    -- `not shield` rather than a number: these are BOOL natives and this
-    -- codebase has been bitten four times by 1/0 versus true/false. The value
-    -- handed to the engine is a real Lua boolean, and test_client.lua asserts
-    -- its TYPE as well as its value.
+    -- THE TABLE ABOVE IS WHAT THIS USED TO SAY IN TEAMS, and the teams are gone
+    -- (#267): the playtest that produced it showed two opposing squads, on
+    -- DIFFERENT teams, unable to shoot each other -- so the engine's check never
+    -- had a team term and the escape hatch that would have reverted it
+    -- (BR.Config.Match.engineTeams) has been deleted rather than flipped.
+    -- ═══ THE GATE IS A CONSTANT AGAIN, AND FALSE IS THE CONSTANT (#267) ═══
     --
-    -- ON CHANGE, NOT ON A CADENCE. The gate is a latching engine option and
-    -- `shield` is a decision about the roster, not about this frame -- it
-    -- changes about twice a match, when a squadmate joins or dies. Writing it
-    -- the instant it differs is strictly tighter than a heartbeat, and `due`
-    -- carries the respawn/boundary/heartbeat cases on top.
-    if due or shield ~= latch.shield then
-        latch.shield = shield
-        NetworkSetFriendlyFireOption(not shield)
+    -- It was `not shield` -- open for solos, closed for anyone with a squadmate
+    -- -- on the inference that the engine refuses a hit only when shooter and
+    -- victim share a TEAM. The owner's playtest of 2026-09-03 falsified that:
+    -- two opposing squads hold different teams by construction and still could
+    -- not shoot each other, so the engine's friendly-fire check has no team term
+    -- in it at all. What it does consult is whether the pair are FRIENDLY, and
+    -- that is now decided entirely by the relationship groups below.
+    --
+    -- SO THE GATE MEANS ONE THING NOW: "friendlies are protected". Who is
+    -- friendly is groupFor's business, per-pair, and a solo is friendly with
+    -- nobody -- so closing the gate for everybody costs a solo nothing and is
+    -- what makes squadmate protection work without a team.
+    --
+    -- STILL A REAL LUA BOOLEAN, not a number: these are BOOL natives and this
+    -- codebase has been bitten four times by 1/0 versus true/false.
+    -- test_client.lua asserts its TYPE as well as its value.
+    if due or latch.shield ~= false then
+        latch.shield = false
+        NetworkSetFriendlyFireOption(false)
     end
 
     -- THE RELATIONSHIP GROUP DIES WITH THE PED HANDLE, which is precisely why
     -- the old comment said "per-frame like the rest" -- and a respawn is the
     -- only thing that changes the handle. `due` is true on exactly that frame,
-    -- so the group is re-applied on the first frame of the new ped rather than
-    -- on all sixty of every second the old one was alive.
+    -- so the group is re-announced on the first frame of the new ped rather
+    -- than on all sixty of every second the old one was alive.
+    --
+    -- ...AND ALSO WHEN THE SQUAD CHANGES, which `due` does not carry: a mate
+    -- joining or dying moves this client between groups without touching the
+    -- ped handle, the state or the match. applyGroup memoises the expensive
+    -- half itself, so calling it on both triggers is free.
+    local group, mine = BR.Native.groupFor(BR.State.me, BR.State.roster)
+    if due or group ~= lastGroup or mine ~= lastGroupMine then
+        applyGroup(group, mine, ped)
+    end
+
+    -- UNABLE TO AIM AT A FRIENDLY, and it finally means what it says. This line
+    -- is unchanged and was never wrong; what was wrong was the set of people the
+    -- engine considered friendly. With one group per squad it is exactly "cannot
+    -- aim at my own squadmates", which is the owner's requirement: "a player
+    -- will both be safe and unsafe at the same time, but by different targets"
+    -- (2026-09-03).
+    --
+    -- NEVER (true, true). The native's own documentation warns that p2 = true
+    -- alongside toggle = true can leave a ped permanently unable to aim, and
+    -- that it cannot be undone by setting p2 back.
     if due then
-        SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
         SetCanAttackFriendly(ped, false, false)
     end
 
@@ -2053,16 +2210,14 @@ function BR.Native.applyWorldSetup()
     DistantCopCarSirens(false)
     SetAudioFlag('PoliceScannerDisabled', true)
 
-    -- The squad relationship group. Local to this client, like all
-    -- relationship state: MY view groups me and my squadmates together, an
-    -- enemy's view groups me with the default PLAYER crowd -- and since each
-    -- client's own shots are computed against its own view, both are right.
-    AddRelationshipGroup('BR_ALLY')
-    local player = GetHashKey('PLAYER')
-    -- 5 = hate: BR_ALLY (me + squad) will damage the PLAYER group (everyone
-    -- else) and vice versa. Within BR_ALLY, canAttackFriendly = false rules.
-    SetRelationshipBetweenGroups(5, BR.Native.ALLY_GROUP, player)
-    SetRelationshipBetweenGroups(5, player, BR.Native.ALLY_GROUP)
+    -- ═══ ONE GROUP PER SQUAD, PLUS ONE FOR EVERYBODY WITHOUT A SQUAD ═══
+    --
+    -- See the essay over BR.Native.groupFor. The registry is built here, once,
+    -- because AddRelationshipGroup is a REGISTRATION and the ped writes later
+    -- are just hashes -- a group a client never added is a hash the relationship
+    -- table has no row for, and the relationship silently does not apply.
+    --
+    BR.Native.buildGroups()
 end
 
 -- ------------------------------------------------------------ native check ---
@@ -2238,9 +2393,10 @@ function BR.Native.check()
     -- actually stick.
     --
     -- Read it as: the number after `team` is what the engine says my team is,
-    -- one line after being told. If it does not match, SET_PLAYER_TEAM is not
-    -- taking on this build and BR.Config.Match.engineTeams should go false --
-    -- and nothing further about #115 is worth writing in Lua.
+    -- one line after being told. NOTHING IN THE GAME READS IT ANY MORE -- the
+    -- team mechanism was deleted in #267 -- so this is a pure capability probe
+    -- kept because a build where SET_PLAYER_TEAM silently does nothing is worth
+    -- knowing about before somebody proposes teams again.
     --
     -- Restores whatever teamFor currently wants, so running /brnativecheck mid
     -- match cannot leave a player on a probe's team.
