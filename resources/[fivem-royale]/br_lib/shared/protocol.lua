@@ -944,6 +944,19 @@ BR.Nui = {
     -- envelopes Lua emits while tearing its own stack down cleared that flag
     -- again a frame later.
     FRONTEND  = 'frontend',  -- { up } -- GTA's menu is on screen; draw nothing
+    -- The guided first run (#261). { run } -- start or stop the lobby
+    -- walkthrough.
+    --
+    -- LUA OWNS WHETHER IT IS RUNNING, exactly as it owns FRONTEND above, and
+    -- for the same reason: the page mirrors state rather than holding it, so a
+    -- reload or a re-focus cannot leave the walkthrough running with nothing
+    -- driving it.
+    --
+    -- TODAY THE ONLY SENDER IS A DEV COMMAND, /brtutorial, which exists so the
+    -- cards can be looked at before the checkbox and the one-time offer that
+    -- will really start them are built. When those land they send this same
+    -- message and nothing on the page changes.
+    TUTORIAL  = 'tutorial',
     -- The player's own preferences, read back out of KVP on boot. Sent as a
     -- whole object rather than as deltas: there are a dozen of them, they
     -- change when a human drags a slider, and a merge protocol for that would

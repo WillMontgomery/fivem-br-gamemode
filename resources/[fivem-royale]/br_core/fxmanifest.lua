@@ -362,6 +362,12 @@ client_scripts {
     -- that needs no order at all: FiveM fans an event to every handler, and
     -- neither file reads the other's cache.
     'client/revivekey.lua',
+    -- The guided first run (#261). ORDER-FREE: it registers one dev command and
+    -- sends one NUI message, reads no other module at load, and is read by
+    -- none -- the page is what actually draws the walkthrough. Placed here
+    -- rather than at the end only so it sits near the other player-facing
+    -- features instead of among the diagnostics.
+    'client/tutorial.lua',
     -- The fuel gauge, the pump prompt and the station blips. AFTER dui.lua
     -- (it borrows the crate's prompt page) and AFTER keybinds.lua (it reads
     -- BR.Keys.isHeld('interact')); it reads BR.Native.blipName at call time, so

@@ -19,6 +19,7 @@ import Market from './screens/Market'
 import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
+import TutorialLayer from './tutorial/TutorialLayer'
 import Admin from './screens/Admin'
 import Page from './ui/Page'
 
@@ -99,6 +100,7 @@ export default function App() {
   // this true for as long as the engine's frontend is up, because Lua is the
   // only thing that can see the frontend at all.
   useNuiEvent('frontend', (d) => s.setFrontendUp(d.up === true))
+  useNuiEvent('tutorial', (d) => s.setTutorialRun(d.run === true))
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
   // the player's interface would silently revert for the rest of the session.
@@ -481,6 +483,33 @@ export default function App() {
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
       <Page show={s.focus === 'help'}><Help /></Page>
+
+      {/* ═══ THE GUIDED FIRST RUN (#261) ═══
+
+          HERE AND NOT IN Lobby.tsx, and the reason is the settings half of the
+          walkthrough: those cards have to draw while SETTINGS is the screen on
+          top, not the lobby, so a mount inside the lobby would unmount the
+          sequencer the moment the player did what it asked. `screen` is
+          `s.focus`, which is the same name the steps are scoped by.
+
+          INSIDE THIS ROOT, WHICH IS THE WHOLE OF HOW IT HIDES. The wrapper
+          above already fades everything here on `frontendUp` -- opacity 0,
+          pointer-events off, aria-hidden -- so the big map and the GTA V pause
+          menu take the annotations with them and give them back, with no code
+          of its own (owner, 2026-09-04). It must never be portalled out.
+
+          LAST IN SOURCE ORDER so it paints over the screens it points at.
+
+          NOTHING BUT /brtutorial STARTS IT TODAY. The first-match checkbox and
+          the persisted one-time offer are still to come; they will raise this
+          same flag. */}
+      {s.tutorialRun && (
+        <TutorialLayer
+          screen={s.focus}
+          onDone={() => s.setTutorialRun(false)}
+          onAbandon={() => s.setTutorialRun(false)}
+        />
+      )}
       {/* THE ADMIN CONSOLE (#23), IN THE FRAME `/help` GETS AND NOT THE PAUSE
           MENU'S TAB WELL -- which is the owner's call and the reason it is a
           screen at all: "the one in /help is much larger and would be most

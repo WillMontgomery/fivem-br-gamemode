@@ -1266,6 +1266,10 @@ export type Envelope =
    *  authority and holds it true for as long as the frontend is up -- see the
    *  note on BR.Nui.FRONTEND in br_lib/shared/protocol.lua. */
   | { k: 'frontend'; d: { up: boolean } }
+  /* The guided first run (#261). Lua owns whether it is running and the page
+     mirrors it, the same shape `frontend` above uses -- so a reload or a
+     re-focus cannot leave the walkthrough on with nothing driving it. */
+  | { k: 'tutorial'; d: { run: boolean } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
   | { k: 'progress'; d: ProgressPayload }
