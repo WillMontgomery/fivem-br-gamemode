@@ -941,6 +941,60 @@ end
 -- which is every hand for which R was never going to be a reload. What a gun in
 -- the hand now guarantees is that R can do one of two things: reload it, or
 -- nothing. It can no longer put the gun away.
+-- ---------------------------------------------------------------------------
+-- Sending a use
+-- ---------------------------------------------------------------------------
+
+--- The owner's sentence for a repair kit pressed on a car that does not need
+--- one. Owner, 2026-09-04: "if the vehicle is already full health, we shouldn't
+--- let them use it and give them a toast that says 'This vehicle is already at
+--- full health.'"
+local ALREADY_FULL = 'This vehicle is already at full health.'
+
+--- Ask the server to use a slot, unless this client can already see that the
+--- press would be wasted.
+---
+--- ═══ ONE DOOR, BECAUSE THERE WERE THREE (#228) ═══
+---
+--- INV_USE was sent from three places: the reload key falling through to a
+--- consumable, the NUI callback the inventory panel fires, and the attack
+--- button with a consumable in hand. A guard written into one of them is a
+--- guard two thirds of players never meet, and which of the three a player
+--- reaches is a matter of habit rather than intent.
+---
+--- ═══ THE ONLY RULE HERE IS THE ONE THE SERVER CANNOT MAKE ═══
+---
+--- A repair kit is spent by the completion on the server, and the server has no
+--- way to read vehicle health -- every one of those natives is client-only. So
+--- a kit pressed on an undamaged car is a LEGENDARY item spent on nothing, and
+--- this machine is the only one that can say so before it happens.
+---
+--- IT REFUSES NOTHING ELSE AND MUST NOT GROW TO. The seat rule, the on-foot
+--- rule and the spending itself are the server's and stay there. What makes a
+--- client-side rule the right shape here rather than a compromise is that there
+--- is nothing to gain by defeating it: a modified client that skips this line
+--- spends its own one-of-a-kind item on a car that did not need it.
+--- @param slot integer|nil
+local function sendUse(slot)
+    if not slot then return end
+
+    local s = inv.slots[slot]
+    local c = s and BR.Config.ConsumableById
+              and BR.Config.ConsumableById[s.item] or nil
+
+    -- GATED ON THE MODULE, in the shape the rest of this tree uses: a build
+    -- without client/fuel.lua cannot answer the question and therefore does not
+    -- refuse. Absent knowledge must never invent a rule.
+    if c and c.repairVeh and BR.Fuel and BR.Fuel.drivingAtFullHealth then
+        if BR.Fuel.drivingAtFullHealth() then
+            BR.Notify(ALREADY_FULL, 'warn')
+            return
+        end
+    end
+
+    TriggerServerEvent(BR.Net.INV_USE, { slot = slot })
+end
+
 BR.Keys.on('use', function(pressed)
     if not pressed or not canArm() then return end
 
@@ -986,7 +1040,7 @@ BR.Keys.on('use', function(pressed)
     if slot ~= inv.active then
         TriggerServerEvent(BR.Net.INV_SELECT, { slot = slot })
     end
-    TriggerServerEvent(BR.Net.INV_USE, { slot = slot })
+    sendUse(slot)
 end)
 
 -- The TAB panel. LUA OWNS WHETHER IT IS OPEN, because Lua owns the cursor:
@@ -1044,7 +1098,7 @@ AddEventHandler('br:ui:action', function(name, data)
     elseif name == BR.NuiCb.INV_DROP then
         TriggerServerEvent(BR.Net.INV_DROP, data)
     elseif name == BR.NuiCb.INV_USE then
-        TriggerServerEvent(BR.Net.INV_USE, data)
+        sendUse(data and data.slot)
     end
 end)
 
@@ -1542,7 +1596,7 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, 24, true)   -- ATTACK: no punching a potion
         DisableControlAction(0, 25, true)   -- AIM
         if IsDisabledControlJustPressed(0, 24) then
-            TriggerServerEvent(BR.Net.INV_USE, { slot = inv.active })
+            sendUse(inv.active)
         end
     end
 

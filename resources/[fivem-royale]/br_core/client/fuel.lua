@@ -413,6 +413,41 @@ local function healthPct(veh)
     return (worst / cap) * 100.0
 end
 
+--- Is the car this player is DRIVING already at full health?
+---
+--- ═══ THIS QUESTION CAN ONLY BE ASKED HERE (#228) ═══
+---
+--- Every vehicle-health native is client-only, so the server cannot answer it
+--- and never will: server/inventory.lua rules the seat and spends the item, and
+--- it does that without any idea what condition the car is in. A repair kit
+--- pressed on an undamaged car is therefore a LEGENDARY item spent on nothing,
+--- and the only machine that can see it coming is this one.
+---
+--- IT IS A COURTESY, NOT A SECURITY BOUNDARY, and that is what makes a
+--- client-side rule the right shape rather than a compromise. The single thing
+--- a modified client achieves by lying here is spending its own one-of-a-kind
+--- item on a car that did not need it. There is nothing to gain, so there is
+--- nothing to defend.
+---
+--- THE WORST POOL, exactly as the bar reads it -- see healthPct above. A car
+--- with pristine bodywork and a dying engine is not "full", and a kit would do
+--- real work on it.
+---
+--- EPSILON RATHER THAN `>= 100.0`, because the pools are floats and a car that
+--- has never been touched can read a hair under its own cap. A twentieth of a
+--- percent is far below anything a repair would restore and far above float
+--- noise.
+--- @return boolean full, integer|nil veh
+function BR.Fuel.drivingAtFullHealth()
+    local ped = PlayerPedId()
+    local veh = GetVehiclePedIsIn(ped, false)
+    if not veh or veh == 0 then return false, nil end
+    -- THE DRIVER'S SEAT ONLY, the same rule the kit itself is refused by. A
+    -- passenger is told something else entirely and must not be answered here.
+    if GetPedInVehicleSeat(veh, -1) ~= ped then return false, nil end
+    return healthPct(veh) >= 99.95, veh
+end
+
 --- Tell the interface what to draw, on change only.
 ---
 --- ═══ TWO BARS, NO WORDS ═══
