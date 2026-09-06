@@ -227,6 +227,15 @@ export interface UiState {
    * takes the mouse away and leaves the lobby painted where it was.
    */
   frontendUp: boolean
+  /**
+   * WHICH engine screen is up: the big map, or a menu.
+   *
+   * The suppression rule -- nothing we draw may sit on top of the engine's own
+   * screen -- is right for every menu and has exactly one exception, the guided
+   * first run over the big map (#261). This is what lets the page tell them
+   * apart; Lua does not know what a tutorial is and should not.
+   */
+  frontendReason: 'map' | 'menu'
   /** The guided first run is on screen (#261). Lua owns it; this mirrors it. */
   tutorialRun: boolean
   /** The lobby is OFFERING it -- the checkbox beside Ready up. Lua owns it. */
@@ -300,6 +309,7 @@ export interface UiState {
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen'], tab?: string) => void
   setFrontendUp: (v: boolean) => void
+  setFrontendReason: (v: 'map' | 'menu') => void
   setTutorialRun: (v: boolean) => void
   setTutorialOffer: (v: boolean) => void
   setTutorialChecked: (v: boolean) => void
@@ -685,6 +695,7 @@ export const useUi = create<UiState>((set, get) => {
   scoped: false,
   worldReady: import.meta.env.DEV,
   frontendUp: false,
+  frontendReason: 'menu',
   tutorialRun: false,
   tutorialOffer: false,
   tutorialChecked: true,
@@ -774,6 +785,7 @@ export const useUi = create<UiState>((set, get) => {
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus, focusTab) => set({ focus, focusTab }),
   setFrontendUp: (frontendUp) => set({ frontendUp }),
+  setFrontendReason: (frontendReason) => set({ frontendReason }),
   setTutorialRun: (tutorialRun) => set({ tutorialRun }),
   setTutorialOffer: (tutorialOffer) => set({ tutorialOffer }),
   setTutorialChecked: (tutorialChecked) => set({ tutorialChecked }),

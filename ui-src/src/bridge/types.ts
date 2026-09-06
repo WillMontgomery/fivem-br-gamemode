@@ -1265,7 +1265,7 @@ export type Envelope =
   /** GTA's own menu owns the screen; this page must not draw. Lua is the
    *  authority and holds it true for as long as the frontend is up -- see the
    *  note on BR.Nui.FRONTEND in br_lib/shared/protocol.lua. */
-  | { k: 'frontend'; d: { up: boolean } }
+  | { k: 'frontend'; d: { up: boolean; reason?: 'map' | 'menu' } }
   /* The guided first run (#261). Lua owns whether it is running and the page
      mirrors it, the same shape `frontend` above uses -- so a reload or a
      re-focus cannot leave the walkthrough on with nothing driving it. */

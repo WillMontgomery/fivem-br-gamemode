@@ -183,6 +183,24 @@ export const GAME_STEPS: Step[] = [
     advance: 'next',
   },
   {
+    id: 'game-map',
+    target: 'hud-counters',
+    title: 'The map',
+    body: 'Press **{key:brmap}** to open the full map.',
+    advance: 'next',
+  },
+  {
+    id: 'game-map-waypoint',
+    // THE ONE CARD IN THE GAME THAT DRAWS OVER THE BIG MAP. See App.tsx: the
+    // page normally hides behind every engine screen, and this subtree opts out
+    // for the map alone -- owner, 2026-09-04, "allow ONLY this tutorial to shine
+    // through".
+    target: 'hud-counters',
+    title: 'Waypoints',
+    body: 'Click anywhere on the map to drop a **waypoint** — the game will steer you to it. In **squads** your waypoint is visible to your team, so it is how you say "over here" without saying anything.',
+    advance: 'next',
+  },
+  {
     id: 'game-shop',
     target: 'hud-volts',
     title: 'The shop',

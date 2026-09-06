@@ -165,9 +165,28 @@ end
 ---
 --- So the flag is LUA'S, it is set before the frontend is raised and cleared
 --- only once the frontend is genuinely down, and the page mirrors it.
+--- ═══ AND IT SAYS WHICH FRONTEND, BECAUSE ONE SURFACE MAY OUTLIVE ONE OF THEM ═══
+---
+--- The rule this flag enforces is "nothing we draw may sit on top of the
+--- engine's own screen", and it is right for the pause menu, the settings
+--- screen and every other scaleform: those are screens the player was SENT to
+--- use, and our page over them is the bug #122 reported.
+---
+--- THE BIG MAP IS THE ONE EXCEPTION, and only for the guided first run. Owner,
+--- 2026-09-04: "tell them to press {map key} and when they do then tell them
+--- while the map is open how to set waypoints... This last point will break our
+--- current rule of 'don't show any NUI on the map' so you may need to change
+--- some code structure to allow ONLY this tutorial to shine through."
+---
+--- So the flag now carries WHY it went up, and the page decides. Lua does not
+--- know what a tutorial is and should not: this file's job is to report what the
+--- engine is showing, and the exception belongs where the exception is drawn.
+--- Nothing else reads `reason`, and the default keeps the old behaviour.
 --- @param up boolean
-local function announceFrontend(up)
-    TriggerEvent('br:ui:sendLocal', BR.Nui.FRONTEND, { up = up == true })
+--- @param reason string|nil  'map' or 'menu'
+local function announceFrontend(up, reason)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.FRONTEND,
+                 { up = up == true, reason = reason or 'menu' })
 end
 
 --- @param tab string|nil  which tab to land on ('help', 'notices', ...)
@@ -611,7 +630,7 @@ function BR.Pause.openFrontendMap(page)
     -- this was #122 waiting for somebody to unhide a card. Announced here, and
     -- cleared at every exit in mapStep, for the same reason openFrontendPlain
     -- does: the scaleform can be up on the very next frame.
-    announceFrontend(true)
+    announceFrontend(true, 'map')
 
     local st = {
         gen       = mapGen,

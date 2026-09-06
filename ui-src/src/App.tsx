@@ -100,7 +100,10 @@ export default function App() {
   // GTA'S OWN MENU IS ON SCREEN AND WE MUST NOT DRAW OVER IT (#122). Lua holds
   // this true for as long as the engine's frontend is up, because Lua is the
   // only thing that can see the frontend at all.
-  useNuiEvent('frontend', (d) => s.setFrontendUp(d.up === true))
+  useNuiEvent('frontend', (d) => {
+    s.setFrontendUp(d.up === true)
+    s.setFrontendReason(d.reason === 'map' ? 'map' : 'menu')
+  })
   useNuiEvent('tutorial', (d) => {
     s.setTutorialRun(d.run === true)
     if (d.offer !== undefined) s.setTutorialOffer(d.offer === true)
@@ -353,6 +356,7 @@ export default function App() {
      * all the scaleform needs, and pointer-events off means a page that is
      * invisible cannot also be quietly swallowing clicks.
      */
+    <>
     <div
       style={{
         opacity: s.frontendUp ? 0 : 1,
@@ -514,6 +518,35 @@ export default function App() {
           matters -- it fires when a step's target has gone, which is a fault,
           and a fault that ALSO stranded somebody outside the queue would be far
           worse than the fault itself. */}
+      {/* The manual, from the lobby. The same component the pause menu
+          embeds, in its own frame. */}
+      <Page show={s.focus === 'help'}><Help /></Page>
+
+      {/* ═══ THE GUIDED FIRST RUN (#261) ═══
+
+          HERE AND NOT IN Lobby.tsx, and the reason is the settings half of the
+          walkthrough: those cards have to draw while SETTINGS is the screen on
+          top, not the lobby, so a mount inside the lobby would unmount the
+          sequencer the moment the player did what it asked. `screen` is
+          `s.focus`, which is the same name the steps are scoped by.
+
+          INSIDE THIS ROOT, WHICH IS THE WHOLE OF HOW IT HIDES. The wrapper
+          above already fades everything here on `frontendUp` -- opacity 0,
+          pointer-events off, aria-hidden -- so the big map and the GTA V pause
+          menu take the annotations with them and give them back, with no code
+          of its own (owner, 2026-09-04). It must never be portalled out.
+
+          LAST IN SOURCE ORDER so it paints over the screens it points at.
+
+          NOTHING BUT /brtutorial STARTS IT TODAY. The first-match checkbox and
+          the persisted one-time offer are still to come; they will raise this
+          same flag. */}
+      {/* BOTH ENDINGS RELEASE THE SERVER-SIDE HOLD, and both have to: a player
+          left flagged as in-tutorial is a player matchmaking will never touch
+          again for the life of the connection. `onAbandon` is the one that
+          matters -- it fires when a step's target has gone, which is a fault,
+          and a fault that ALSO stranded somebody outside the queue would be far
+          worse than the fault itself. */}
       {/* ═══ THE IN-GAME HALF (#261) ═══
 
           THE SAME LAYER, A DIFFERENT SCRIPT. It points at the HUD rather than
@@ -555,5 +588,41 @@ export default function App() {
           screens draw and below only the curtain. */}
       <Page show={s.focus === 'pause'}><PauseMenu /></Page>
     </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════
+          THE GUIDED FIRST RUN, OUTSIDE THE FADE (#261)
+          ═══════════════════════════════════════════════════════════════════
+
+          IT USED TO LIVE INSIDE THE WRAPPER ABOVE, which fades everything on
+          `frontendUp` -- and that was right, and is still right for every
+          engine screen but one. The exception is the owner's, 2026-09-04: the
+          walkthrough has to explain WAYPOINTS, which means it has to be legible
+          while the big map is open. "This last point will break our current rule
+          of 'don't show any NUI on the map' so you may need to change some code
+          structure to allow ONLY this tutorial to shine through."
+
+          SO THE RULE IS RESTATED HERE RATHER THAN WEAKENED THERE. Everything
+          else in this page still disappears behind every frontend, unchanged;
+          this one subtree opts out for exactly one of them, and says so.
+
+          `reason` IS WHY THAT IS EXPRESSIBLE AT ALL. Lua now reports which
+          engine screen went up, because the page is the only side that knows
+          what a tutorial is -- br_ui/client/pause.lua holds no opinion about it.
+
+          AND ONLY THE IN-GAME HALF ESCAPES. The lobby walkthrough has nothing to
+          say over a map and hides like everything else; a card about the Locker
+          drawn over the world map would be the #122 overlay again wearing a
+          different hat. */}
+      <div
+        style={{
+          opacity: s.frontendUp && !(s.frontendReason === 'map' && s.tutorialGameRun) ? 0 : 1,
+          pointerEvents:
+            s.frontendUp && !(s.frontendReason === 'map' && s.tutorialGameRun)
+              ? 'none' : undefined,
+          transition: 'opacity 120ms linear',
+        }}
+      >
+      </div>
+    </>
   )
 }
