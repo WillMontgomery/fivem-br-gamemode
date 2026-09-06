@@ -656,7 +656,17 @@ function Row({ m, talking, silent }: {
                 and it is what lets the glyphs cross-fade instead of blinking.
                 See VoiceMark. */}
             <VoiceMark fs="0.72rem" talking={talking} silent={silent} />
-            <span className="text-[0.72rem] font-semibold truncate">{m.name}</span>
+            {/* data-tut: the in-game walkthrough outlines the NAME on its own
+                (#261) -- owner, 2026-09-04: "for smaller things we should draw a
+                box around them to show what part is being described."
+
+                EVERY PLATE CARRIES IT AND THE LAYER TAKES THE FIRST. The panel
+                is a list of identical rows, so a per-row id would be four
+                anchors describing one idea; querySelector returns the topmost
+                plate, which is the one a card pointing at "a squadmate" should
+                mean. */}
+            <span data-tut="squad-name"
+                  className="text-[0.72rem] font-semibold truncate">{m.name}</span>
             {/* NOTHING AT ALL WHEN THE SERVER HAS NOT SAID, which is the same
                 rule the bleed clock below follows. A missing level means the
                 mate's profile has not come back from the database yet -- so the
@@ -729,7 +739,7 @@ function Row({ m, talking, silent }: {
             {!!m.bleedEndsAt && <RowClock endsAt={m.bleedEndsAt} />}
           </div>
         ) : (
-          <div className="mt-1 flex flex-col gap-[0.2rem]">
+          <div data-tut="squad-bars" className="mt-1 flex flex-col gap-[0.2rem]">
             <VitalBar value={hp} colour="var(--color-hp)" dying={dying} />
             {/* SHIELD SHOWS ITS ZERO. Vitals hides a zero because its numeral
                 sits INSIDE the bar, where a lone 0 floating in an empty track

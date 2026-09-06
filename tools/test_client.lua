@@ -9099,15 +9099,28 @@ do
 
     describe('a screen that keeps input is untouched')
     do
-        -- THE ALLOWLIST IS READ, NOT RESTATED. `inventory` is the single entry
-        -- in BR.FocusKeepsInput and this asserts the real table rather than the
-        -- name: add a second screen there tomorrow and this test starts
-        -- describing that too.
+        -- THE ALLOWLIST IS READ, NOT RESTATED. This asserts the real
+        -- BR.FocusKeepsInput rather than a copy of its contents, so the
+        -- exercises below describe whatever is actually in it.
+        --
+        -- ═══ THE LIST IS PINNED BECAUSE GROWING IT IS THE HAZARD ═══
+        --
+        -- A screen that keeps input while holding the cursor turns every
+        -- keystroke into a movement key. That is not hypothetical here:
+        -- `playersReport` was removed from this table because typing a note in
+        -- its text field walked the player off a roof. So the test names the
+        -- members -- adding one has to be a deliberate edit HERE, with a reason.
+        --
+        --   inventory  a grid of slots. No text field.
+        --   tutorial   the guided first run's cards (#261). It needs the cursor
+        --              because the cards carry Next and Last, and it must keep
+        --              input because two of them send the player walking to the
+        --              crates. No text field anywhere in it.
         local keepers = {}
         for s in pairs(BR.FocusKeepsInput) do keepers[#keepers + 1] = s end
         table.sort(keepers)
-        ok(#keepers == 1 and keepers[1] == 'inventory',
-           'exactly one screen keeps game input, and it is the inventory',
+        ok(#keepers == 2 and keepers[1] == 'inventory' and keepers[2] == 'tutorial',
+           'exactly two screens keep game input, and neither has a text field',
            table.concat(keepers, ', '))
 
         bootOn(true, true)

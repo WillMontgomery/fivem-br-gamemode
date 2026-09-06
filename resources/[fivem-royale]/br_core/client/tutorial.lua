@@ -73,6 +73,15 @@ end
 --- whether it worked, not a request to restart from the top -- and restarting
 --- would throw away the step they were reading.
 --- @param on boolean
+--- Tell the SERVER whether this player is in the tutorial at all.
+---
+--- ONE FACT FOR TWO HALVES. Matchmaking, the warmup clock and party eligibility
+--- care only whether the player is in ANY of it -- see BR.Roster.setTutorial --
+--- so the server gets one boolean and this file owns the OR.
+local function tellServer()
+    TriggerServerEvent(BR.Net.TUTORIAL_SET, { on = running or inGame })
+end
+
 function BR.Tutorial.set(on)
     on = on == true
     if on == running then return end
@@ -113,7 +122,7 @@ function BR.Tutorial.set(on)
     -- the server rules on. See BR.Roster.setTutorial for what bounds it -- it is
     -- granted only from a standing start, and it costs the player their place in
     -- the queue and their party, which is what stops it being a dodge button.
-    TriggerServerEvent(BR.Net.TUTORIAL_SET, { on = running })
+    tellServer()
 end
 
 --- Start or stop the IN-GAME walkthrough.
@@ -129,8 +138,23 @@ function BR.Tutorial.game(on)
     if on == inGame then return end
     inGame = on
     publish()
-    -- The server only needs to know whether the player is in ANY of it.
-    BR.Tutorial.set(running or inGame)
+
+    -- ═══ THE CURSOR, BECAUSE THE CARDS HAVE BUTTONS ON THEM ═══
+    --
+    -- `tutorial` keeps game input (BR.FocusKeepsInput), so the player can still
+    -- walk while a card is up -- which they must, because the walkthrough sends
+    -- them to the crates.
+    TriggerEvent(on and 'br:ui:pushFocus' or 'br:ui:popFocus', 'tutorial')
+
+    -- AND THE SERVER IS TOLD, WITHOUT TOUCHING `running`.
+    --
+    -- This used to call BR.Tutorial.set(running or inGame), which was wrong in a
+    -- way that showed instantly: `set` is what RAISES `running`, so starting the
+    -- in-game half also started the LOBBY half, and both card stacks drew at
+    -- once (owner, 2026-09-04: "it shows me the lobby tutorial cards AND the
+    -- game tutorial cards"). Telling the server and setting a flag are two
+    -- different acts and had been written as one.
+    tellServer()
 end
 
 --- Show or hide the offer.

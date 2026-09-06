@@ -127,7 +127,29 @@ export const GAME_STEPS: Step[] = [
     // nothing. The staged squad has a downed mate in it on purpose -- the plate
     // states are half of what the card is describing.
     stage: 'squad',
-    body: 'One plate per squadmate, in their own colour — the same colour as their dot on the radar. The bars are their **health** and **shield**, the number is their eliminations, and a plate goes dark with a countdown when that mate is **down** and can still be revived.',
+    body: 'One plate per squadmate, in their own colour — the same colour as their dot on the radar.',
+    advance: 'next',
+  },
+  {
+    id: 'game-squad-name',
+    // THE PARTS GET THEIR OWN BOXES. Owner, 2026-09-04: "for smaller things we
+    // should draw a box around them to show what part is being described." A
+    // ring around the whole panel while the card talks about one row in it is a
+    // card pointing at four things and meaning one.
+    target: 'squad-name',
+    title: 'Who they are',
+    // The staged squad is still up: `stage` is re-declared so the panel does not
+    // blink out between these three cards.
+    stage: 'squad',
+    body: 'Their name, with a **speaker** beside it when they are talking and their **level** after it. The mark only appears while their voice is actually coming through.',
+    advance: 'next',
+  },
+  {
+    id: 'game-squad-bars',
+    target: 'squad-bars',
+    title: 'How they are doing',
+    stage: 'squad',
+    body: 'Health on top, **shield** underneath. When a mate goes **down** the bars are replaced by a countdown — that is how long you have to reach them before they are out for good.',
     advance: 'next',
   },
   {
@@ -158,6 +180,13 @@ export const GAME_STEPS: Step[] = [
     target: 'hud-inventory',
     title: 'What you are carrying',
     body: 'Five slots, and the number beside a weapon is the **ammo in the magazine** over what is left in reserve. Press **{key:brslot1}** to **{key:brslot5}** to switch between them.',
+    advance: 'next',
+  },
+  {
+    id: 'game-shop',
+    target: 'hud-volts',
+    title: 'The shop',
+    body: 'On the pad you can spend **Volts** on something to take into the match. **One purchase per match**, and it is **not refundable** — so buy it when you know what you want.',
     advance: 'next',
   },
   {

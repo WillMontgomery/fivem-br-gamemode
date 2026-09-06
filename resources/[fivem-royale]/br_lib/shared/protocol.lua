@@ -1253,7 +1253,21 @@ BR.NUI_ENVELOPE_VERSION = 1
 --- keystroke in it is also a movement key, so typing a note walked you off a
 --- roof. With view mode out of the table too, both modes want the same focus
 --- and the second screen was machinery doing nothing. See br_ui/client/players.lua.
-BR.FocusKeepsInput = { inventory = true }
+BR.FocusKeepsInput = { inventory = true, tutorial = true }
+
+-- `tutorial` IS THE SECOND ENTRY AND IT IS THE SAME ARGUMENT AS THE FIRST.
+--
+-- The in-game walkthrough draws cards with Next and Last on them, over a player
+-- who is standing on the warmup pad -- so it needs the CURSOR, or those buttons
+-- cannot be pressed at all (owner, 2026-09-04: "we need to capture the cursor
+-- while in warmup during the period where we have elements on the screen with
+-- buttons like 'next' and 'back' or else folks cannot click them").
+--
+-- IT KEEPS INPUT BECAUSE THE WALKTHROUGH ASKS THEM TO MOVE. Two of its cards
+-- send the player to the crates and one asks them to open the big map; a focus
+-- that swallowed movement would make the tutorial tell them to walk somewhere
+-- and then stop them walking. There is no text field anywhere in it, which is
+-- the hazard that kept `playersReport` out of this table.
 
 --- What the engine and the page should be told, for a given focus stack.
 ---
