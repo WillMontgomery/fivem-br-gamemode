@@ -60,6 +60,16 @@ shared_scripts {
     -- may sit either side of it.
     '@br_lib/config/vehicles.lua',
     '@br_lib/config/loot.lua',
+    -- The four permanent crates on the warmup island (owner, 2026-09-04): the
+    -- surveyed coordinates, the authored rarity ladder, and the roll that
+    -- guarantees a crate displays the rarity it was authored with. HERE, BESIDE
+    -- config/loot.lua, because it is about crates and reads its tables -- but it
+    -- reads them at CALL time and needs only enums.lua at load, so the ordering
+    -- is a reader's rather than the loader's. Both halves of the feature
+    -- (server/warmupcrates.lua and client/warmupcrates.lua) pull the anchors and
+    -- the reset's event name out of here, which is what keeps the surveyed
+    -- numbers written down exactly once.
+    '@br_lib/config/warmupcrates.lua',
     -- AFTER config/loot.lua AND config/weapons.lua, and not merely near them.
     -- It resolves its payout pools at LOAD time out of their rarity buckets and
     -- their id lookups -- including BR.Config.AirdropWeapons, the four explosives
@@ -275,6 +285,18 @@ client_scripts {
     -- loop registry; it is here because the mirror is what it reads.
     'client/driveby.lua',
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
+    -- The four permanent warmup crates, client side: the pin that freezes each
+    -- one on its surveyed coordinates, and the loot flying home when one resets.
+    --
+    -- AFTER client/loot.lua FOR A READER RATHER THAN FOR THE LOADER, and the
+    -- distinction is worth being exact about because the pin looks like a
+    -- dependency and is not one. It reads NOTHING out of that file -- it cannot,
+    -- every prop in there is a file-local -- and finds its objects through
+    -- GetClosestObjectOfType at coordinates it already knows. At load it needs
+    -- BR.Loop (client/main.lua, first) and BR.Config.Loot's two crate props;
+    -- everything else is call time. It is declared here so the two files that
+    -- are about crate props read as a pair.
+    'client/warmupcrates.lua',
     -- The airdrop's flares: how one is lit, and where they go WHILE THE CRATE
     -- FALLS. It needs client/main.lua for the loop registry and BR.Native
     -- (natives.lua) for the prop scale on the object route, and that is now the
@@ -544,6 +566,18 @@ server_scripts {
     -- as it did before, which is correct when there is nothing parked there.
     'server/ambulances.lua',
     'server/loot.lua',      -- world loot: layout, streaming, claim arbitration
+    -- The four permanent warmup crates (owner, 2026-09-04). AFTER server/loot.lua
+    -- AND THAT IS A REAL ORDER RATHER THAN A READER'S, though not at load: this
+    -- file reaches the shared warmup registry through three exports that only
+    -- exist once loot.lua has run -- BR.Loot.warmupZone, .remove and .reannounce
+    -- -- and it reaches all three off a scheduler tick, which is well after every
+    -- server file has loaded. At LOAD it needs BR.Sched and BR.Config and nothing
+    -- else.
+    --
+    -- IT CREATES NO ENTITIES AND NO VEHICLES. What it puts on the island is four
+    -- ordinary loot entries; the props are built client side like every other
+    -- crate's, which is the only shape sv_entityLockdown relaxed allows.
+    'server/warmupcrates.lua',
     -- Aerial supply drops. AFTER storm.lua and loot.lua for a reader rather
     -- than for the loader: it asks BR.StormAt where the circle will be when the
     -- crate arrives, and hands the contents to BR.Loot.spawnStack so they

@@ -315,7 +315,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # queue down for the interval Discord named. Its clock is stepped by hand for
     # the reason test_lobbyseq.lua models Citizen -- a no-op SetTimeout would make
     # every one of those assertions vacuously true.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_bool_natives.lua; do
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

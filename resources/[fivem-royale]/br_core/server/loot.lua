@@ -508,6 +508,70 @@ zoneFor = function(src)
     return nil
 end
 
+-- ═══ THE THREE DOORS INTO THIS REGISTRY, AND WHO USES THEM ═══
+--
+-- br_core/server/warmupcrates.lua owns four containers on the island that reset
+-- themselves forever (owner, 2026-09-04). It is a separate file because none of
+-- its behaviour belongs to world loot -- but it has to put its crates in the
+-- SAME registry every other warmup crate lives in, or they could not be opened:
+-- the claim handler resolves a player's zone through zoneFor() above, and an
+-- entry outside that zone is an entry it will never find.
+--
+-- So these three are exports of things this file already does, and each one is
+-- here rather than reimplemented over there for a reason worth naming:
+--
+--   * warmupZone   The zone is a LOCAL built on first use. A second copy of the
+--                  "is this player on the pad" decision is the drift that
+--                  BR.Config.LootVisibleStates was created to end.
+--   * remove       Retiring an entry is three table writes and a message to
+--                  everyone subscribed to its cell. Two of those are private
+--                  bookkeeping (`cells`, `items`) and the third has to reach the
+--                  same set of players `announce` reaches.
+--   * reannounce   Re-sending a MUTATED entry -- which is what a husk becoming
+--                  a sealed crate again is -- has to go out in the wire shape
+--                  wireEntry() defines. That shape has grown three fields this
+--                  month (`fx`/`fy`/`fl`, then `pz`), and a second writer of it
+--                  would have been wrong twice already.
+--
+-- NOTHING NEW HAPPENS HERE. These add no capability the loot system did not
+-- have; they name three existing ones so exactly one implementation of each
+-- survives. `born` is deliberately not exposed: an origin is a birth event
+-- (see wireEntry), and a reset is the opposite of a birth.
+
+--- The shared warmup zone, built on first use.
+---
+--- CALLING THIS BUILDS THE ISLAND LAYOUT if nobody has yet. That is a change of
+--- TIMING and not of behaviour -- the 220 crates were always going to be built
+--- the moment the first player subscribed to a pad cell -- and it is why the
+--- warmup crates place themselves off a scheduler tick rather than at load: the
+--- tick runs after every server file has finished loading, so BR.Config and
+--- BR.Rng are certainly there when the layout is generated.
+--- @return table zone
+function BR.Loot.warmupZone()
+    return warmup()
+end
+
+--- Retire one entry from a zone and tell everyone looking at it.
+--- @param m table
+--- @param e table
+function BR.Loot.remove(m, e)
+    if not m or not m.loot or not e then return end
+    retire(m, e)
+end
+
+--- Re-send an entry whose fields have just changed in place.
+---
+--- The mutation is the caller's; this is only the wire. Same id, same position:
+--- the client mutates the entry it already holds -- see the note on toHusk, and
+--- the `reskinned` branch of addEntries in br_core/client/loot.lua, which is
+--- what makes the model swap instant in either direction.
+--- @param m table
+--- @param e table
+function BR.Loot.reannounce(m, e)
+    if not m or not m.loot or not e then return end
+    announce(m, e)
+end
+
 -- --------------------------------------------------------------------------
 -- Streaming
 -- --------------------------------------------------------------------------

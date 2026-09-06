@@ -66,6 +66,15 @@ BR.Net = {
     -- player CAN still be matchmade mid-tutorial, because the server has never
     -- been told there is one.
     TUTORIAL_SET    = 'br:tutorial:set',
+    -- The four permanent warmup crates resealing (#261). S->C, an array of the
+    -- points whose loot is flying home.
+    --
+    -- HERE RATHER THAN IN config/warmupcrates.lua, where it was first written.
+    -- A config file is for numbers an operator may retune; an event NAME is a
+    -- contract between two Lua states, and the one place this project keeps
+    -- those is BR.Net. A second registry of wire names is how two halves come to
+    -- disagree about a string.
+    WARMUP_CRATE_RETURN = 'br:warmupcrate:return',
     -- Parties are persistent; squads are formed from them per match. The events
     -- are named "squad" for continuity with the UI, but they operate on parties.
     SQUAD_INVITE    = 'br:squad:invite',     -- C->S  { target }
