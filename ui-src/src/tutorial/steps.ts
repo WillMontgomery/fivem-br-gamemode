@@ -103,7 +103,7 @@ export type Step = {
    * IT WRITES INTO THIS CLIENT'S OWN STORE AND NOWHERE ELSE. Nothing is sent,
    * nothing is recorded, and no other player can see it.
    */
-  stage?: 'killfeed'
+  stage?: 'killfeed' | 'squad' | 'notice'
   /**
    * An extra button on the card that performs the thing being described.
    *

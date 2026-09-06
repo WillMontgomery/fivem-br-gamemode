@@ -122,7 +122,22 @@ export const GAME_STEPS: Step[] = [
     id: 'game-squad',
     target: 'hud-squad',
     title: 'Your squad',
-    body: 'One plate per squadmate, in their colour — the same colour as their marker on the map and their dot on the radar. The bars are their health and shield, and a plate goes dark when they are down.',
+    // STAGED, for the same reason the feed is: a solo player has no panel and a
+    // squad of one has a single plate, so on the pad this card usually points at
+    // nothing. The staged squad has a downed mate in it on purpose -- the plate
+    // states are half of what the card is describing.
+    stage: 'squad',
+    body: 'One plate per squadmate, in their own colour — the same colour as their dot on the radar. The bars are their **health** and **shield**, the number is their eliminations, and a plate goes dark with a countdown when that mate is **down** and can still be revived.',
+    advance: 'next',
+  },
+  {
+    id: 'game-notice',
+    target: 'hud-counters',
+    title: 'Notifications',
+    // The card is about what a notification looks like, so it stages one and
+    // holds it until they move on.
+    stage: 'notice',
+    body: 'Anything the game needs to tell you arrives like this — a squadmate going down, a crate you have opened, the storm about to move. They stack up in the pause menu if you miss one.',
     advance: 'next',
   },
   {

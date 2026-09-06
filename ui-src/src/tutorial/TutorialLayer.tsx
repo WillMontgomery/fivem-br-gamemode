@@ -66,6 +66,36 @@ const MARGIN = 16
  * handles on purpose: a demo that says PLAYER_ONE teaches the shape of the row
  * and nothing about what it looks like in a match.
  */
+/**
+ * A staged squad, for the card that explains the panel.
+ *
+ * A SOLO PLAYER HAS NO PANEL AT ALL and a squad of one has a single plate, so on
+ * the warmup pad this card usually points at nothing. Owner, 2026-09-04: "then
+ * show a fake populated squad panel and point that out and what each piece
+ * indicates in it."
+ *
+ * THREE MATES AND ONE OF THEM DOWN, deliberately: the plate states are half of
+ * what the card is describing, and a panel of three healthy rows cannot show
+ * what "down" looks like. Colours are BR.SquadColours in order, so they match
+ * the real thing exactly.
+ *
+ * PLACEHOLDER NAMES, mine, unapproved -- the same four handles the feed uses, so
+ * a player who reads both sees one cast rather than seven strangers.
+ */
+const DEMO_SQUAD = {
+  id: 'tutorial',
+  you: 1,
+  members: [
+    { src: 1, name: 'You',     state: 'alive' as const, hp: 100, armour: 50, colour: '#60A5FA', kills: 2 },
+    { src: 2, name: 'Vance',   state: 'alive' as const, hp: 74,  armour: 0,  colour: '#4ADE80', kills: 1 },
+    { src: 3, name: 'Okonkwo', state: 'dbno' as const,  hp: 0,   armour: 0,  colour: '#FBBF24', kills: 0 },
+    { src: 4, name: 'Marlowe', state: 'alive' as const, hp: 100, armour: 100, colour: '#F87171', kills: 4 },
+  ],
+}
+
+/** The staged notification's key, so the same card can take it back down. */
+const DEMO_NOTICE_KEY = 'tutorial-demo'
+
 const DEMO_FEED = [
   { killer: 'Vance',  victim: 'Okonkwo', weapon: 'carbinerifle', headshot: true,  mine: false, died: false },
   { killer: 'Marlowe', victim: 'Vance',  weapon: 'pumpshotgun',  headshot: false, mine: false, died: false },
@@ -306,6 +336,35 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     })
     return () => timers.forEach((t) => window.clearTimeout(t))
   }, [step, pushFeed])
+
+  // ── the staged squad, and the staged notification ───────────────────────
+  //
+  // BOTH ARE PUT BACK ON THE WAY OUT. A demo that outlives its card is a lie
+  // the player carries into the match -- a squad they do not have, or a notice
+  // nothing sent. The cleanup runs on every path out of the step, including the
+  // run being abandoned, because that is what `useEffect`'s teardown is.
+  const setSquad = useUi((st) => st.setSquad)
+  const pushNotice = useUi((st) => st.pushNotice)
+  const realSquad = useUi((st) => st.squad)
+  const realSquadRef = useRef(realSquad)
+  if (step?.stage !== 'squad') realSquadRef.current = realSquad
+
+  useEffect(() => {
+    if (!step || step.stage !== 'squad') return
+    const restore = realSquadRef.current
+    setSquad(DEMO_SQUAD)
+    return () => setSquad(restore)
+  }, [step, setSquad])
+
+  useEffect(() => {
+    if (!step || step.stage !== 'notice') return
+    // STICKY, because the card is about what a notification looks like and one
+    // that expires while they are reading about it demonstrates the opposite.
+    // Owner: "It should be persistent until they click next."
+    pushNotice({ text: 'Hi! Thanks for taking the tutorial', tone: 'info',
+                 key: DEMO_NOTICE_KEY, sticky: true })
+    return () => pushNotice({ text: '', key: DEMO_NOTICE_KEY, clear: true })
+  }, [step, pushNotice])
 
   // ── a screen opening ends the step ──────────────────────────────────────
   //
