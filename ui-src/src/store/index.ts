@@ -250,6 +250,15 @@ export interface UiState {
   tutorialStep: string | null
   /** The in-game tutorial's own toggle. On by default, like the first. */
   tutorialGameOn: boolean
+  /**
+   * The IN-GAME walkthrough is running.
+   *
+   * SEPARATE FROM `tutorialRun`, because they are two runs over two scripts in
+   * two places: one points at the lobby's buttons, the other at the HUD, and a
+   * single flag could not say which. `tutorialGameOn` is the OFFER of this one;
+   * this is the run.
+   */
+  tutorialGameRun: boolean
 
   /** True while the voluntary-leave interstitial covers the screen: black
    *  plus a quiet "Leaving the match" while the world swaps underneath. */
@@ -296,6 +305,7 @@ export interface UiState {
   setTutorialChecked: (v: boolean) => void
   setTutorialStep: (v: string | null) => void
   setTutorialGameOn: (v: boolean) => void
+  setTutorialGameRun: (v: boolean) => void
   setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
   setScreen: (s: ScreenPayload) => void
@@ -680,6 +690,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialChecked: true,
   tutorialStep: null,
   tutorialGameOn: true,
+  tutorialGameRun: false,
   leaving: false,
   curtain: 'leaving',
   invite: null,
@@ -768,6 +779,7 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialChecked: (tutorialChecked) => set({ tutorialChecked }),
   setTutorialStep: (tutorialStep) => set({ tutorialStep }),
   setTutorialGameOn: (tutorialGameOn) => set({ tutorialGameOn }),
+  setTutorialGameRun: (tutorialGameRun) => set({ tutorialGameRun }),
   setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),
   // THE SCOPE FLAG NEVER TOUCHES THE METRICS.

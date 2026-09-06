@@ -115,6 +115,16 @@ export type CardProps = {
   onBack: (() => void) | null
   /** Set only on the final card, which ends the run rather than advancing. */
   onDismiss: (() => void) | null
+  /**
+   * An extra button that does the thing the card is describing.
+   *
+   * THE ESCAPE HATCH. A card advanced only by a key the player physically
+   * cannot press is a card that traps them -- owner, 2026-09-04, on the player
+   * list: "give them a button which will open it for them. This is best for
+   * players who may not have realized their keyboard layout doesn't allow them
+   * to use tilde or they need to make a macro."
+   */
+  action: { label: string; onPress: () => void } | null
   /** Raised by the layer one frame before it unmounts, to play the exit. */
   leaving: boolean
 }
@@ -195,6 +205,11 @@ export default function AnnotationCard(p: CardProps) {
             checkbox is opt-out before it begins, which is the moment a player
             actually decides. */}
         <span className="tut-acts">
+          {p.action ? (
+            <Btn variant="default" size="sm" cue="ui.select" onPress={p.action.onPress}>
+              {p.action.label}
+            </Btn>
+          ) : null}
           {p.onBack ? (
             <Btn variant="default" size="sm" cue="ui.select" onPress={p.onBack}>
               Last

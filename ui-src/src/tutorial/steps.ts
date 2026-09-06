@@ -43,6 +43,8 @@
  * where a tag can be pasted; see `emphasise` in AnnotationCard.
  */
 
+import type { CallbackName } from '../bridge/types'
+
 /** What ends a step and moves to the next one. */
 export type Advance =
   /** The card's own Next button. For anything with nothing to press. */
@@ -60,6 +62,18 @@ export type Advance =
    * the moment Ready up is released.
    */
   | 'dismiss'
+  /**
+   * A screen opening. The card waits until `awaitScreen` is what is on top.
+   *
+   * FOR THE THINGS A KEY OPENS. The player list and the inventory menu are
+   * reached by a keypress, and the page cannot read game keys -- but it can see
+   * the screen that keypress produces, which is the same fact one step later
+   * and needs no new wire. It also means the card's own button and the player's
+   * keyboard advance it identically, which is the point: owner, 2026-09-04,
+   * "tell them to 'press {player list key}' or give them a button which will
+   * open it for them... so they don't get stuck in the tutorial."
+   */
+  | 'screen'
 
 export type Step = {
   /** Stable id. Persisted progress and every log line key on this. */
@@ -74,6 +88,28 @@ export type Step = {
    */
   body: string
   advance: Advance
+  /** For `advance: 'screen'` -- the screen whose arrival ends the step. */
+  awaitScreen?: string
+  /**
+   * A demonstration staged when the card opens.
+   *
+   * SOME OF THIS WALKTHROUGH IS ABOUT THINGS THAT ARE NOT HAPPENING. A new
+   * player on the warmup pad has an empty kill feed and, usually, no squad --
+   * so pointing at either shows them a blank corner. The owner asked for the
+   * feed to be demonstrated ("then should simulate 4 fake kill stream events
+   * and point those out"), and a staged demo is the only way to point at
+   * something that is not there.
+   *
+   * IT WRITES INTO THIS CLIENT'S OWN STORE AND NOWHERE ELSE. Nothing is sent,
+   * nothing is recorded, and no other player can see it.
+   */
+  stage?: 'killfeed'
+  /**
+   * An extra button on the card that performs the thing being described.
+   *
+   * THE ESCAPE HATCH FOR A KEY THEY CANNOT PRESS. See `advance: 'screen'`.
+   */
+  action?: { label: string; cb: CallbackName }
   /**
    * Hide Last, even where the automatic rule would show it.
    *

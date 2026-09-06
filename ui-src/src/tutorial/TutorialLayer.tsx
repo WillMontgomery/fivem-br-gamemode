@@ -41,6 +41,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { fetchNui } from '../bridge/nui'
+import { useUi } from '../store'
 import AnnotationCard from './AnnotationCard'
 import { LOBBY_STEPS, type Step } from './steps'
 
@@ -51,6 +53,58 @@ const CARD_H = 172
 const GAP = 18
 /** Never closer than this to the viewport edge. */
 const MARGIN = 16
+
+/**
+ * The four staged kill-feed rows.
+ *
+ * NEGATIVE IDS, so they cannot collide with a real entry -- the server's ids are
+ * positive and monotonic, and a demo row sharing one would evict a real death
+ * from the list.
+ *
+ * PLACEHOLDER NAMES, and they are mine. The owner writes every player-visible
+ * string in this project and has not written these. They read as ordinary
+ * handles on purpose: a demo that says PLAYER_ONE teaches the shape of the row
+ * and nothing about what it looks like in a match.
+ */
+const DEMO_FEED = [
+  { killer: 'Vance',  victim: 'Okonkwo', weapon: 'carbinerifle', headshot: true,  mine: false, died: false },
+  { killer: 'Marlowe', victim: 'Vance',  weapon: 'pumpshotgun',  headshot: false, mine: false, died: false },
+  { killer: '',        victim: 'Reyes',  weapon: 'storm',        headshot: false, mine: false, died: false },
+  { killer: 'Okonkwo', victim: 'Marlowe', weapon: 'sniperrifle', headshot: true,  mine: false, died: false },
+]
+
+/** Windows VK for the backtick/tilde key. */
+const VK_TILDE = 0xc0
+
+/**
+ * Put the player's ACTUAL keys into a card's prose.
+ *
+ * ═══ THE BINDING, NEVER THE DEFAULT ═══
+ *
+ * `{key:brplayers}` becomes whatever that command is bound to on THIS machine.
+ * A walkthrough that prints the default tells a player who rebound it to press
+ * a key that does nothing, and this one is the walkthrough they are taking
+ * BECAUSE they do not know the game yet.
+ *
+ * `{tilde:brplayers}` adds "(above TAB on your keyboard)" and ONLY when that
+ * command is still on tilde -- owner, 2026-09-04. Tilde is the one default here
+ * a player may genuinely be unable to find: on a good many non-US layouts it is
+ * moved, dead, or somewhere else entirely. So the suffix is a LOCATION rather
+ * than a name, and it disappears the moment the key is not that key.
+ *
+ * UNBOUND READS AS "unbound" rather than as an empty gap, because a sentence
+ * that says "press  to open" is a sentence that looks broken. The card's own
+ * action button is what actually gets that player through.
+ */
+function withKeys(body: string, binds: Array<{ command: string; key?: string; vk?: number }>): string {
+  return body
+    .replace(/\{key:([a-z]+)\}/gu, (_m, cmd: string) =>
+      binds.find((b) => b.command === cmd)?.key || 'unbound')
+    .replace(/\{tilde:([a-z]+)\}/gu, (_m, cmd: string) =>
+      binds.find((b) => b.command === cmd)?.vk === VK_TILDE
+        ? ' (above TAB on your keyboard)'
+        : '')
+}
 
 type Rect = { x: number; y: number; w: number; h: number }
 
@@ -119,6 +173,17 @@ export type TutorialLayerProps = {
   onAbandon: (why: 'missing') => void
   /** Which step is on screen, by id. The lobby reads it -- see the store. */
   onStep?: (id: string | null) => void
+  /**
+   * The script to run. Defaults to the lobby's.
+   *
+   * A PROP RATHER THAN A SECOND COMPONENT, because the in-game walkthrough is
+   * the same machine pointed at different anchors: it measures a rect, places a
+   * card, waits for a press. Everything that differs between the two halves is
+   * DATA -- which control, which sentence, what ends the step -- and a second
+   * copy of the sequencer would be a second place for the step-skipping bug to
+   * live.
+   */
+  steps?: Step[]
 }
 
 export default function TutorialLayer(p: TutorialLayerProps) {
@@ -141,7 +206,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const [clickedFor, setClickedFor] = useState<string | null>(null)
   const rectRef = useRef<Rect | null>(null)
 
-  const steps: Step[] = LOBBY_STEPS
+  const steps: Step[] = p.steps ?? LOBBY_STEPS
   const step = steps[i]
 
   // ── the measure loop ────────────────────────────────────────────────────
@@ -219,6 +284,38 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     onStepRef.current?.(step?.id ?? null)
     return () => onStepRef.current?.(null)
   }, [step])
+
+  // ── the staged demonstration ────────────────────────────────────────────
+  //
+  // Four kill-feed rows, written into THIS CLIENT'S OWN STORE. Nothing is sent
+  // and nothing is recorded; no other player can see them and they expire on the
+  // feed's normal timer like any other row.
+  //
+  // SPACED, NOT DUMPED. Four rows arriving in one frame is a block of text; four
+  // arriving 700ms apart is a firefight happening somewhere, which is what the
+  // card is describing. It is also how they really arrive.
+  const pushFeed = useUi((st) => st.pushFeed)
+  const keybinds = useUi((st) => st.keybinds)
+  useEffect(() => {
+    if (!step || step.stage !== 'killfeed') return
+    const timers: number[] = []
+    DEMO_FEED.forEach((row, n) => {
+      timers.push(window.setTimeout(() => {
+        pushFeed({ ...row, id: -1 - n })
+      }, 250 + n * 700))
+    })
+    return () => timers.forEach((t) => window.clearTimeout(t))
+  }, [step, pushFeed])
+
+  // ── a screen opening ends the step ──────────────────────────────────────
+  //
+  // The page cannot read a game key, but it can see the screen the key opened --
+  // the same fact one step later, needing no new wire. The card's own button and
+  // the player's keyboard therefore advance it identically.
+  useEffect(() => {
+    if (!step || step.advance !== 'screen') return
+    if (step.awaitScreen !== undefined && p.screen === step.awaitScreen) go(i + 1)
+  }, [step, p.screen, i, go])
 
   // A CLICK STEP ADVANCES ITSELF once the player has pressed the real control --
   // and only for the step the press was actually for.
@@ -300,7 +397,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       <AnnotationCard
         key={step.id}
         title={step.title}
-        body={step.body}
+        body={withKeys(step.body, keybinds)}
         index={i + 1}
         total={steps.length}
         left={left}
@@ -325,6 +422,12 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         }
         // The last card ends the run rather than advancing into nothing.
         onDismiss={step.advance === 'dismiss' ? () => go(steps.length) : null}
+        action={
+          step.action
+            ? { label: step.action.label,
+                onPress: () => { void fetchNui(step.action!.cb, { open: true }) } }
+            : null
+        }
       />
     </>
   )

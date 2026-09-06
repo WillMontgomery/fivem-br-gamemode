@@ -330,6 +330,10 @@ export default function Hud({ visible }: { visible: boolean }) {
           className="absolute flex flex-col items-end gap-2"
           style={{ top: 'var(--hud-top)', right: 'var(--hud-right)' }}
         >
+          {/* data-tut: the in-game walkthrough's second card (#261). On a
+              wrapper for the reason SquadPanel's is -- a component that does not
+              spread its props swallows the attribute silently. */}
+          <span data-tut="hud-counters" className="block">
           <Counters
             alive={hud.alive}
             squads={hud.squadsAlive}
@@ -343,10 +347,12 @@ export default function Hud({ visible }: { visible: boolean }) {
               ? squad.members.reduce((n, m) => n + (m.kills ?? 0), 0)
               : undefined}
           />
+          </span>
 
           {/* The feed keeps its own width so long names wrap inside it rather
               than widening the column and dragging the counters left. */}
-          <div className="w-[16rem]">
+          {/* data-tut: the in-game walkthrough stages four rows here (#261). */}
+          <div className="w-[16rem]" data-tut="hud-feed">
             <KillFeed entries={feed} />
           </div>
         </div>
@@ -382,12 +388,20 @@ export default function Hud({ visible }: { visible: boolean }) {
                --safe-x on 16:9. */
             style={{ top: 'var(--hud-top)', left: 'var(--hud-left)' }}
           >
+            {/* data-tut ON A WRAPPER, NOT ON THE COMPONENT. TypeScript does not
+                type-check hyphenated JSX attributes, so `data-tut` on
+                <SquadPanel> compiles clean and then vanishes -- the component
+                does not spread its props, so nothing reaches the DOM and the
+                walkthrough finds no anchor. The same trap Section fell into.
+                A wrapper has a box and cannot be ignored (#261). */}
+            <span data-tut="hud-squad" className="block">
             <SquadPanel
               squad={squad}
               talking={talking}
               voiceSilent={voiceSilent}
               voiceChosen={voiceChosen}
             />
+            </span>
           </div>
         )}
 
@@ -449,7 +463,10 @@ export default function Hud({ visible }: { visible: boolean }) {
             style={{ height: 'var(--vitals-drop)', visibility: 'hidden' }}
             aria-hidden
           />
-          <Vitals hp={hud.hp} armour={hud.armour} stamina={hud.stamina} />
+          {/* data-tut: the in-game walkthrough's first card (#261). */}
+          <span data-tut="hud-vitals" className="block">
+            <Vitals hp={hud.hp} armour={hud.armour} stamina={hud.stamina} />
+          </span>
         </div>
 
         {/* Bottom right, clear of the radar on the left and of the kill feed
@@ -487,7 +504,11 @@ export default function Hud({ visible }: { visible: boolean }) {
                 RENDERS null WHEN THERE IS NO VEHICLE, so the column is exactly
                 what it was before for a player on foot -- see VehicleBars. */}
             <VehicleBars vehicle={vehicle} />
-            <InventoryBar inv={inv} volts={shopVolts} currency={currency} />
+            {/* data-tut: the in-game walkthrough points at the slots and,
+                separately, at the ammo counter inside them (#261). */}
+            <span data-tut="hud-inventory" className="block">
+              <InventoryBar inv={inv} volts={shopVolts} currency={currency} />
+            </span>
           </div>
         )}
 

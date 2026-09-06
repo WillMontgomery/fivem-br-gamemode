@@ -20,6 +20,7 @@ import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
 import TutorialLayer from './tutorial/TutorialLayer'
+import { GAME_STEPS } from './tutorial/gameSteps'
 import Admin from './screens/Admin'
 import Page from './ui/Page'
 
@@ -103,6 +104,7 @@ export default function App() {
   useNuiEvent('tutorial', (d) => {
     s.setTutorialRun(d.run === true)
     if (d.offer !== undefined) s.setTutorialOffer(d.offer === true)
+    if (d.game !== undefined) s.setTutorialGameRun(d.game === true)
   })
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
@@ -512,6 +514,24 @@ export default function App() {
           matters -- it fires when a step's target has gone, which is a fault,
           and a fault that ALSO stranded somebody outside the queue would be far
           worse than the fault itself. */}
+      {/* ═══ THE IN-GAME HALF (#261) ═══
+
+          THE SAME LAYER, A DIFFERENT SCRIPT. It points at the HUD rather than
+          the lobby, so it carries no `subscreenUp`: the HUD is what is on screen
+          during warmup, and a sub-screen covering it is the player opening
+          something the walkthrough is about to ask them to open anyway.
+
+          IT RUNS INSIDE THE SERVER-SIDE WARMUP HOLD, so no clock can run out
+          mid-card. The last step is what releases it. */}
+      {s.tutorialGameRun && (
+        <TutorialLayer
+          steps={GAME_STEPS}
+          screen={s.focus}
+          onDone={() => s.setTutorialGameRun(false)}
+          onAbandon={() => s.setTutorialGameRun(false)}
+        />
+      )}
+
       {s.tutorialRun && (
         <TutorialLayer
           screen={s.focus}

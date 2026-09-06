@@ -52,10 +52,19 @@ local running = false
 --- to express.
 local offering = false
 
---- Push both flags to the page.
+--- Is the IN-GAME walkthrough running?
+---
+--- A THIRD FLAG, AND THEY ARE THREE MOMENTS. `offering` is the invitation in
+--- the lobby, `running` is the lobby walkthrough, and this is the one that runs
+--- over the HUD during warmup. They are not stages of one thing -- a player can
+--- take the lobby half and decline the match half, and the Help page re-run
+--- reaches the lobby half having never been offered anything.
+local inGame = false
+
+--- Push all three flags to the page.
 local function publish()
     TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL,
-                 { run = running, offer = offering })
+                 { run = running, offer = offering, game = inGame })
 end
 
 --- Start or stop the walkthrough, and tell the page.
@@ -92,6 +101,23 @@ function BR.Tutorial.set(on)
     TriggerServerEvent(BR.Net.TUTORIAL_SET, { on = running })
 end
 
+--- Start or stop the IN-GAME walkthrough.
+---
+--- IT SHARES THE SERVER-SIDE HOLD WITH THE LOBBY HALF, deliberately: both are
+--- "this player is in the tutorial" as far as matchmaking, the warmup clock and
+--- parties are concerned, and the server has one flag for that fact. So this
+--- goes through BR.Tutorial.set for the net message rather than sending its own,
+--- and the hold lifts when BOTH halves are done.
+--- @param on boolean
+function BR.Tutorial.game(on)
+    on = on == true
+    if on == inGame then return end
+    inGame = on
+    publish()
+    -- The server only needs to know whether the player is in ANY of it.
+    BR.Tutorial.set(running or inGame)
+end
+
 --- Show or hide the offer.
 --- @param on boolean
 function BR.Tutorial.offer(on)
@@ -122,6 +148,7 @@ RegisterCommand('brtutorial', function(_, args)
     local off = arg == 'off' or arg == 'stop'
 
     if off then
+        BR.Tutorial.game(false)
         BR.Tutorial.set(false)
         BR.Tutorial.offer(false)
         print('[br_core] tutorial: stopped, and the offer is hidden')
@@ -138,6 +165,14 @@ RegisterCommand('brtutorial', function(_, args)
     --
     -- `/brtutorial run` skips the offer, for looking at a single card without
     -- clicking through the lobby to get there.
+    if arg == 'game' then
+        BR.Tutorial.game(true)
+        print('[br_core] tutorial: the IN-GAME walkthrough is running')
+        print('  it points at the HUD, so it draws in a match or on the pad')
+        print('  /brtutorial off  stops everything')
+        return
+    end
+
     if arg == 'run' then
         BR.Tutorial.set(true)
         print('[br_core] tutorial: running -- the walkthrough is on screen')
@@ -150,7 +185,8 @@ RegisterCommand('brtutorial', function(_, args)
     print('[br_core] tutorial: the offer is up -- look beside Ready up')
     print('  the checkbox is ticked by default, and Ready up now reads')
     print('  Start tutorial; pressing it begins the walkthrough')
-    print('  /brtutorial run  starts it without the offer')
+    print('  /brtutorial run   starts the lobby half without the offer')
+    print('  /brtutorial game  starts the in-game half, over the HUD')
     print('  /brtutorial off  hides both')
 -- NO `restricted` ARGUMENT, AND THAT IS NOT AN OVERSIGHT. Passing `true` makes
 -- this an ace-restricted command, and FiveM's CLIENT console refuses those in
