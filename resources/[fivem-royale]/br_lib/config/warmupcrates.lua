@@ -162,6 +162,134 @@ BR.Config.WarmupCrates = {
     pinRadius    = 6.0,
     pinTolerance = 0.35,
 
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE BOBBING MARKER OVER EACH CRATE
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-09-04: "we'll draw their attention to these items by drawing
+    -- a bobbing 3dmarker type 0 over these crates... The color of each marker
+    -- above the crate will correspond to the rarity of it's loot."
+    --
+    -- ═══ IT IS OFF UNTIL SOMEBODY ASKS FOR IT ═══
+    --
+    -- There is no `enabled` here on purpose, and its absence is the design.
+    -- These markers exist to serve the guided first run (#261) -- they are the
+    -- tutorial pointing at four boxes -- and a player on their fiftieth warmup
+    -- does not need four cones burning over the pad. So the switch is a
+    -- RUNTIME one (BR.WarmupCrates.markers(on) in client/warmupcrates.lua), not
+    -- a config one: the tutorial turns them on when it starts and off when it
+    -- ends, and a config flag would be a second, slower answer to a question
+    -- that has to change several times per player per session.
+    --
+    -- What IS here is the shape of the thing once it is on. Turning the whole
+    -- feature off is `BR.Config.WarmupCrates.enabled = false`, which takes the
+    -- crates with it -- which is correct, because a marker over nothing is not
+    -- a state worth being able to reach.
+    --
+    -- ⚠ ONE OF THESE IS THE OWNER'S NUMBER AND THE REST ARE NOT. He named the
+    -- marker TYPE and the colour RULE and nothing else; every distance, size
+    -- and duration below is a starting point chosen to be readable, in the same
+    -- spirit as config/revivekey.lua's `marker` block. They are expected to
+    -- come back from the first playtest changed.
+    marker = {
+        -- HIS NUMBER, AND THE ONLY ONE HERE THAT IS. Named explicitly rather
+        -- than left as a literal at the draw call so that "3dmarker type 0" is
+        -- greppable from his own words.
+        --
+        -- WHAT TYPE 0 ACTUALLY DRAWS IS NOT VERIFIED HERE. It is the number he
+        -- asked for, passed through -- client/loot.lua's `fallbackMarkerOf`
+        -- carries the same disclaimer for the same reason: two published
+        -- versions of this enum have disagreed with the game's own parser on
+        -- this project before, so nothing in this file claims to know what
+        -- appears on screen.
+        kind = 0,
+
+        -- `size` IS BOTH HORIZONTAL AXES AND `height` IS THE VERTICAL ONE --
+        -- see DrawMarker's (scaleX, scaleY, scaleZ) at the call in
+        -- client/warmupcrates.lua. Same split, same names and same meaning as
+        -- config/revivekey.lua's marker, so the two read as one idea.
+        --
+        -- Smaller than the revive key's 0.8: that one stands alone on open
+        -- ground and this one stands over a metre-wide box in a row of four
+        -- crates 6-8m apart. Four large cones over four boxes at that spacing
+        -- read as one wall of colour rather than as four separate promises,
+        -- which is the whole point of the rarity ladder.
+        size   = 0.55,
+        height = 0.55,
+
+        -- ═══ HOW HIGH IT FLOATS, MEASURED FROM THE CRATE'S SURVEYED z ═══
+        --
+        -- The anchor z is the crate's BASE -- the number the owner read off
+        -- standing on the spot, and the height the pin holds the prop at -- so
+        -- this has to clear the box itself before it clears anything else.
+        -- The sealed container model is roughly a metre tall, and the marker
+        -- wants to be read from across the pad rather than to sit on the lid.
+        --
+        -- ⚠ THE FIRST NUMBER TO CHECK IN A PLAYTEST. It is derived from the
+        -- model's rough height and nothing more; whether type 0's origin is its
+        -- point, its base or its centre is exactly the thing the note on `kind`
+        -- above refuses to guess at, and this number absorbs whichever it is.
+        lift = 1.60,
+
+        -- ═══ THE BOB ═══
+        --
+        -- `bobM` is how far it travels either side of `lift`, in metres, and
+        -- `bobMs` is one complete up-and-down.
+        --
+        -- DELIBERATELY NOT DrawMarker's OWN `bobUpAndDown` FLAG, which the
+        -- engine offers for free and which client/loot.lua uses on the
+        -- no-prop fallback marker. Two reasons, and the second is the one that
+        -- settles it:
+        --
+        --   The engine's bob is a fixed amplitude and a fixed rate. The owner
+        --   asked for a bob and the request behind it is "draw their
+        --   attention" -- which is a thing to TUNE against a real pad with real
+        --   crates on it, and a flag has no numbers to turn.
+        --
+        --   And these four are a ROW. A sine driven off the shared game clock
+        --   puts all four markers on the same phase, so the pad rises and falls
+        --   as one object and reads as a set that was placed; four independent
+        --   engine bobs would be four things that happen to be near each other.
+        --
+        -- THE DRAW PASSES `false` FOR THAT FLAG, and it has to: the two bobs
+        -- would otherwise stack into a beat nobody authored. That is written
+        -- down at the call as well, because it is the kind of thing a later
+        -- reader turns on "to make it bob".
+        --
+        -- 2.2 seconds and 14cm is a float rather than a bounce, matching
+        -- client/loot.lua's shine pulse, whose note is the precedent: the fast
+        -- version "read as flashing", and this is "a fade you notice without
+        -- being nagged by it".
+        bobM  = 0.14,
+        bobMs = 2200,
+
+        -- ═══ TWO ALPHAS, BECAUSE A CRATE HAS TWO STATES ═══
+        --
+        -- The RGB is never authored here -- it is BR.RarityInfo[rarity].rgb,
+        -- the same table client/loot.lua paints its rarity discs from and the
+        -- same one the NUI borders come out of. That is the owner's "the color
+        -- ... will correspond to the rarity", and a palette in this file would
+        -- be a second spelling of it free to drift.
+        --
+        -- Alpha is the one channel left, and it carries the OTHER fact: whether
+        -- there is anything in the box right now. `open` is the husk -- looted,
+        -- and about to reseal itself once everybody walks away. It is dimmed
+        -- rather than hidden; the argument for that is at `markerAlpha` in
+        -- client/warmupcrates.lua, where the nil case lives too.
+        alpha     = 200,
+        openAlpha = 70,
+
+        -- How far away it is drawn, in metres.
+        --
+        -- WIDER THAN THE PROP RANGE, WHICH IS THE POINT. BR.Config.Loot's
+        -- `propDistance` is 180m and the pad's own layout is 460m across, so a
+        -- marker gated on the prop would only appear once the player was
+        -- already close enough to see the crate -- which is a signpost that
+        -- lights up after you have arrived. The marker is drawn from the
+        -- surveyed coordinates and needs no prop, so it can outrun one.
+        drawM = 250.0,
+    },
+
     -- The reset's own message, S->C: which items are flying home and where they
     -- are flying to. Named here rather than in br_lib/shared/protocol.lua beside
     -- BR.Net -- which is where it belongs and where it should move -- because

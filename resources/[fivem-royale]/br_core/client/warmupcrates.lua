@@ -1,7 +1,7 @@
 -- The four permanent crates on the warmup island: the half that can see them.
 --
 -- ═══════════════════════════════════════════════════════════════════════════
--- TWO JOBS, AND NEITHER OF THEM CREATES A CRATE
+-- THREE JOBS, AND NONE OF THEM CREATES A CRATE
 -- ═══════════════════════════════════════════════════════════════════════════
 --
 -- br_core/server/warmupcrates.lua puts four ordinary loot entries on the island
@@ -9,7 +9,7 @@
 -- other 220. Nothing here spawns, streams, targets, prompts or claims anything:
 -- all of that already works and a second copy of it would only be a second thing
 -- to keep in step. What is left is the two things the loot pipeline gets
--- deliberately wrong for these four:
+-- deliberately wrong for these four, and one thing it was never asked to do:
 --
 --   THE PIN     Owner, 2026-09-04: "The position of these entities must be
 --               frozen... The husks' position should be frozen as well btw."
@@ -25,6 +25,17 @@
 --   THE RETURN  Owner: "any loot from the crate will animate back into the
 --               crate". The server retires whatever is left of the spill; this
 --               flies a copy of each prop into the crate's mouth on the way out.
+--
+--   THE MARKER  Owner: "we'll draw their attention to these items by drawing a
+--               bobbing 3dmarker type 0 over these crates... The color of each
+--               marker above the crate will correspond to the rarity of it's
+--               loot."
+--
+--               An ADDITION rather than a correction -- the two above undo
+--               something the loot pipeline does on purpose, and this is a
+--               thing nothing in the game did at all. Off by default; see the
+--               marker section below for what turns it on and why that is a
+--               switch rather than a config flag.
 --
 -- ═══ WHY THE PIN HUNTS FOR THE PROP INSTEAD OF BEING HANDED IT ═══
 --
@@ -42,10 +53,25 @@
 -- and `pinTolerance` in config/warmupcrates.lua is what turns that from a
 -- coincidence into a test.
 --
--- ═══ NOTHING HERE IS THE TUTORIAL'S MARKER ═══
+-- ═══ WHY THE MARKER IS HERE AND NOT IN THE TUTORIAL ═══
 --
--- The bobbing marker over each crate, coloured by its rarity, belongs to the
--- tutorial and is not built here. BR.WarmupCrates.all() below is what it reads.
+-- The note that stood in this spot said the marker belonged to client/
+-- tutorial.lua and that BR.WarmupCrates.all() was what it would read. That was
+-- the wrong seam, and the split it described is now drawn one step over: the
+-- TUTORIAL owns WHEN -- it calls BR.WarmupCrates.markers(true) when the
+-- walkthrough sends a player to the crates and markers(false) when it is done
+-- -- and THIS FILE owns WHAT.
+--
+-- Because everything the draw needs is already here, and half of it is
+-- file-local: the anchors, the pinned handles that say whether a crate is open
+-- right now, and the two loop bands the draw has to be split across. A marker
+-- drawn from outside would have to re-derive the sealed state through a public
+-- accessor ten times a second, allocating four tables each time, and would
+-- still be reading a copy rather than the pin's own view.
+--
+-- BR.WarmupCrates.all() is unchanged and is still what the tutorial reads to
+-- ASK QUESTIONS about the crates. The switch below is the only thing it calls
+-- to change one.
 
 BR = BR or {}
 BR.WarmupCrates = BR.WarmupCrates or {}
@@ -477,6 +503,329 @@ AddEventHandler('onResourceStop', function(res)
 end)
 
 -- ---------------------------------------------------------------------------
+-- The marker
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-09-04: "we'll draw their attention to these items by drawing a
+-- bobbing 3dmarker type 0 over these crates... The color of each marker above
+-- the crate will correspond to the rarity of it's loot."
+--
+-- ═══ WHY THIS IS TWO LOOPS AND NOT ONE ═══
+--
+-- DrawMarker draws for exactly one frame, so the CALL has to be on the frame
+-- band -- there is no version of this that decides and draws at 10Hz and is
+-- still visible. But almost nothing about the decision changes between frames:
+-- which crates are in range, whether each is a husk, and what colour each one
+-- is are answers good for a tenth of a second, and three of them cost natives.
+--
+-- So the TICK pass answers them into a small list and the FRAME pass does
+-- nothing but walk it. The steady state on a frame is one integer comparison
+-- and four DrawMarker calls, and every native that could have been called sixty
+-- times a second is called ten times instead. This is the split client/loot.lua
+-- arrived at the hard way for its glow, and BR.Loop's own band comments name it:
+-- FRAME is "markers, prompts, control disables" and TICK is "proximity scans".
+--
+-- THE LAG THAT BUYS IS ONE TICK. A player sprinting past `drawM` keeps a marker
+-- for up to 100ms after they should have lost it, at 250m, at the edge of
+-- visibility. Turning the markers OFF is not subject to it -- the setter zeroes
+-- the list itself, because "the tutorial ended" must be instant.
+
+--- The marker's shape, or nil if nobody has configured one.
+---
+--- NO BLOCK, NO MARKER, which is config/revivekey.lua's rule and its reasoning:
+--- an absent table is a feature nobody has set up rather than one to invent a
+--- size and a colour for. Individual NUMBERS inside it do fall back, because a
+--- number nobody has tuned is a starting point rather than an invention.
+local M = W.marker
+
+--- Is the tutorial (or /brwarmupmarkers) asking for these right now?
+---
+--- OFF BY DEFAULT AND THAT IS THE SPECIFICATION. These four cones exist to serve
+--- the guided first run; a player on their fiftieth warmup has not asked to be
+--- pointed at anything. See BR.WarmupCrates.markers below for the switch.
+local markersOn = false
+
+--- [anchorIndex] = { r, g, b } for that crate's authored rarity.
+---
+--- ═══ RESOLVED ONCE, AT LOAD, AND THAT IS SAFE FOR EXACTLY ONE REASON ═══
+---
+--- A crate's rarity is CONSTANT for the life of the server -- the contents are
+--- rerolled every cycle and the rarity never is (BR.WarmupCrateStack takes it
+--- from the anchor, not from a roll) -- so there is nothing here that can go
+--- stale. The note on `rarity` in all() below states that invariant and this is
+--- the table that spends it.
+---
+--- BR.RarityInfo AND NOT A PALETTE OF OUR OWN. Owner: "The color of each marker
+--- ... will correspond to the rarity of it's loot", and the game already has one
+--- answer to what a rarity looks like -- the same `rgb` client/loot.lua paints
+--- its rarity discs with and the same row the NUI's `hex` borders come from.
+--- Inventing a second set of four colours here would be a second thing to keep
+--- in step with a table whose entire stated purpose is stopping that.
+local MARKER_RGB = {}
+do
+    for i = 1, #W.anchors do
+        -- Falling back to COMMON on an unknown rarity, exactly as
+        -- client/loot.lua's glow does: a crate with a colour nobody recognises
+        -- should be grey, not invisible and not a crash.
+        local info = BR.RarityInfo[W.anchors[i].rarity]
+                  or BR.RarityInfo[BR.Rarity.COMMON]
+        MARKER_RGB[i] = info.rgb
+    end
+end
+
+--- What the FRAME pass draws: reused rows, never rebuilt.
+---
+--- `drawN` IS THE LENGTH, not `#draw`. The rows are allocated once and then
+--- written over forever, so the array stays four long while the count varies --
+--- which is the whole point. A fresh table per crate per tick is 40 tables a
+--- second of garbage for a feature whose answer changes about twice a match.
+local draw  = {}
+local drawN = 0
+
+local TAU = math.pi * 2.0
+
+--- Is this anchor's crate currently sealed? true / false / nil.
+---
+--- NIL IS "NOTHING IS PINNED THERE YET" and is a third answer rather than a
+--- missing one: the prop has not been built (out of range, or streaming in), so
+--- this client has not seen the crate and cannot say. all() hands the same
+--- tri-state out and its note carries the warning.
+--- @param i integer
+--- @return boolean|nil
+local function isSealed(i)
+    local obj = pinned[i]
+    if obj and isTrue(DoesEntityExist(obj)) then
+        return GetEntityModel(obj) == MODELS[1]
+    end
+    return nil
+end
+
+--- How solid the marker over a crate in this state should be.
+---
+--- ═══ AN OPEN CRATE KEEPS ITS MARKER, DIMMED. IT DOES NOT LOSE IT ═══
+---
+--- Hiding it was the other candidate and it is wrong for two separate reasons,
+--- either of which would be enough:
+---
+---   THE CRATE COMES BACK, AND SOON. These four reseal after `settleMs` (5s) of
+---   nobody standing within `leaveRadius` -- so hiding the marker means it winks
+---   out under the player who just opened it and winks back on BEHIND them as
+---   they walk to the next one. Four crates 6-8m apart, all inside each other's
+---   leave radius, makes that a row of markers flickering on and off at a
+---   player's back. Nothing they did causes the return and nothing on screen
+---   explains it.
+---
+---   AND THE MARKER'S JOB IS THE PLACE, NOT THE CONTENTS. It exists to say
+---   "there is a crate here, and it pays this tier" to somebody being walked
+---   through the game for the first time. A husk is still a place where a crate
+---   is, and is about to be one again. The tutorial pointing at three of four
+---   boxes because the fourth is mid-cycle is the pointer failing, not the
+---   crate.
+---
+--- So the state goes in the ALPHA, which is the one channel the rarity is not
+--- already using: full for a sealed crate, faint for a husk. "Already got this
+--- one, it will fill up again" in a channel that costs nothing and cannot be
+--- confused with the colour.
+---
+--- ═══ AND NIL IS TREATED AS SEALED, DELIBERATELY ═══
+---
+--- Tested as `sealed == false` and NOT as `not sealed`, which is the entire
+--- difference between this working and this flickering. `not sealed` and
+--- `sealed ~= true` both answer the same for nil and for false, and nil is the
+--- ordinary case at range: the marker is drawn from the SURVEYED coordinates and
+--- needs no prop (see `drawM`, which outruns the prop distance on purpose), so
+--- for most of the way across the pad there is no pinned object to ask.
+---
+--- Treating that as "open" would draw every marker faint until its crate
+--- streamed in and then snap it to full -- the exact failure all()'s own note
+--- warns about, one line up from the accessor this replaces.
+---
+--- Sealed is also the right GUESS, not merely the safe one. A crate spends
+--- almost all of its life closed; it is a husk only between somebody opening it
+--- and the reset five seconds after they leave. So nil -> sealed means the
+--- common case never changes appearance when the prop arrives, and the only
+--- visible transition is the one a player caused by opening the box they are
+--- standing at.
+--- @param sealed boolean|nil
+--- @return integer alpha
+local function markerAlpha(sealed)
+    if sealed == false then return math.tointeger(tonumber(M.openAlpha)) or 70 end
+    return math.tointeger(tonumber(M.alpha)) or 200
+end
+
+-- ═══ 10 Hz: WHICH MARKERS, WHAT COLOUR, HOW SOLID ═══
+--
+-- Everything that is not the draw call itself.
+BR.Loop.register(BR.Loop.TICK, 'warmupcrates.markers', function()
+    -- CLEARED FIRST, UNCONDITIONALLY. Every refusal below leaves the list empty
+    -- rather than leaving yesterday's list standing -- the failure otherwise is
+    -- four markers frozen over the island for the rest of the match because the
+    -- pass that would have removed them returned before it got to the removal.
+    -- client/loot.lua's clearOutline carries the same note and the same scar.
+    drawN = 0
+
+    if not markersOn then return end
+    if not M then return end
+    if W.enabled == false then return end
+
+    -- WARMUP AND NOTHING ELSE, for the reason onIsland() states: these anchors
+    -- are a fixed point on the warmup island, and in any other state the player
+    -- is kilometres away in a world where there is nothing standing there.
+    if not onIsland() then return end
+
+    -- FROM THE PED, NOT THE RENDERED CAMERA. client/markers.lua measures its
+    -- beams from GetFinalRenderedCamCoord because they have to read from the bus
+    -- 5km up, where the ped is nowhere near the view. Nothing like that happens
+    -- here: onIsland() has already restricted this to WARMUP, where the player
+    -- is on their own two feet behind their own camera, and the marker is
+    -- something to walk to. revivekey.lua's chevron makes the same call in the
+    -- same words.
+    --
+    -- A SECOND GetEntityCoords IN THE SAME TICK as the pin pass above, and left
+    -- that way on purpose: sharing it would couple two passes that are otherwise
+    -- independent (one can be disabled by /brloop without the other changing
+    -- behaviour) to save one native call ten times a second.
+    local p = GetEntityCoords(PlayerPedId())
+    local reach = tonumber(M.drawM) or 250.0
+    local reach2 = reach * reach
+
+    for i = 1, #W.anchors do
+        local a = W.anchors[i]
+        if BR.Dist2(p.x, p.y, a.x, a.y) <= reach2 then
+            drawN = drawN + 1
+            local row = draw[drawN]
+            if not row then
+                row = {}
+                draw[drawN] = row
+            end
+            local c = MARKER_RGB[i]
+            row.x = a.x
+            row.y = a.y
+            -- THE SURVEYED z PLUS THE LIFT, and never a live read of the prop.
+            -- The prop is pinned to this exact height by the pass above, so the
+            -- two agree -- and this one is answerable when there is no prop at
+            -- all, which is what lets the marker be up before the crate streams
+            -- in. The bob is added per frame; this is the middle of its travel.
+            row.z = a.z + (tonumber(M.lift) or 1.60)
+            row.r, row.g, row.b = c[1], c[2], c[3]
+            row.a = markerAlpha(isSealed(i))
+        end
+    end
+end)
+
+-- ═══ EVERY FRAME: THE DRAW, AND THE BOB ═══
+--
+-- REGISTERED ALWAYS, RUNS ALMOST NEVER -- the same shape as the return pass
+-- above and for the same reason. Markers are off for the whole of a normal
+-- session, so this callback's cost is one integer comparison per frame.
+BR.Loop.register(BR.Loop.FRAME, 'warmupcrates.markers.draw', function()
+    if drawN == 0 then return end
+
+    -- `M` IS NOT NIL-CHECKED HERE AND DOES NOT NEED TO BE. drawN is zero unless
+    -- the tick pass filled the list, and that pass refuses on `not M` before it
+    -- can. The check belongs there rather than in both: this runs sixty times a
+    -- second and that one answers the question ten.
+    local kind = math.tointeger(tonumber(M.kind)) or 0
+    local size = tonumber(M.size)   or 0.55
+    local tall = tonumber(M.height) or 0.55
+    local amp  = tonumber(M.bobM)   or 0.14
+    -- FLOORED AT 1 BECAUSE IT IS A DIVISOR. A `bobMs` of 0 in the config would
+    -- otherwise be a division by zero producing nan, and a nan z is a marker
+    -- that silently never appears -- which is a config typo presenting as a
+    -- broken feature.
+    --
+    -- `tonumber` AND NOT `math.tointeger`, which is the opposite of the choice
+    -- made for `kind` two lines up and is right for the opposite reason. `kind`
+    -- is handed to a native that takes an int, so a fractional one is nonsense
+    -- and the default is the better answer. This is a divisor in Lua
+    -- arithmetic, where 2200.5 is a perfectly good period -- and tointeger
+    -- would answer nil for it and silently swap in the shipped 2200, which is a
+    -- retune that appears to do nothing.
+    local per  = math.max(1, tonumber(M.bobMs) or 2200)
+
+    -- ONE PHASE, DRIVEN OFF THE SHARED CLOCK, SO ALL FOUR RISE TOGETHER.
+    -- Computed once outside the loop rather than per marker: it is the same
+    -- number for every one of them, which is the effect being asked for -- the
+    -- row reads as one placed object rather than four things near each other.
+    local bob = math.sin((GetGameTimer() % per) / per * TAU) * amp
+
+    for i = 1, drawN do
+        local d = draw[i]
+        DrawMarker(kind, d.x, d.y, d.z + bob,
+            0.0, 0.0, 0.0,      -- direction: unused for an axis-aligned marker
+            0.0, 0.0, 0.0,      -- rotation: likewise
+            size, size, tall,
+            d.r, d.g, d.b, d.a,
+            -- THE ENGINE'S OWN BOB IS OFF, AND THAT IS NOT AN OVERSIGHT. This
+            -- argument is DrawMarker's `bobUpAndDown` and turning it on would
+            -- stack a second, untunable oscillation on the sine above -- two
+            -- bobs at two rates beating against each other. The bob here is the
+            -- `bobM`/`bobMs` pair in config/warmupcrates.lua, which carries the
+            -- full argument for why it is done in Lua. If you are here to make
+            -- it bob, it already does: turn those numbers up.
+            false,
+            -- faceCamera off: a cone is a solid that reads from any angle, and
+            -- billboarding one makes it swim as the player turns. Same reason
+            -- rotate (below) is off -- a cone is rotationally symmetric about z,
+            -- so spinning it costs a flag and shows nothing.
+            false,
+            2, false, nil, nil, false)
+    end
+end)
+
+--- Turn the crate markers on or off. THE TUTORIAL'S ONLY WRITE INTO THIS FILE.
+---
+--- Owner's requirement is that they are off by default and exist to serve the
+--- guided first run (#261), so this is a switch rather than a config flag: it is
+--- expected to be thrown several times per player per session, and the caller is
+--- br_core/client/tutorial.lua.
+---
+--- IDEMPOTENT, AND `on == true` RATHER THAN TRUTHINESS. BR.Tutorial.game's
+--- convention, field for field: anything that is not exactly `true` is off, so a
+--- caller that passes a native's 1/0 or a nil from a lookup cannot turn markers
+--- on by accident.
+---
+--- OFF TAKES EFFECT ON THIS LINE, not on the next tick. The tick pass would
+--- clear the list within 100ms anyway, but "the tutorial ended and there are
+--- still cones up" is a visible wrong state and this costs one assignment to
+--- make impossible.
+--- @param on boolean
+function BR.WarmupCrates.markers(on)
+    on = on == true
+    if on == markersOn then return end
+    markersOn = on
+    if not on then drawN = 0 end
+end
+
+--- Are they on? For a caller that has to ask rather than assert.
+--- @return boolean
+function BR.WarmupCrates.markersOn()
+    return markersOn
+end
+
+-- NO TEARDOWN HANDLER, AND THE ABSENCE IS DELIBERATE. clearFlying above exists
+-- because an un-deleted local OBJECT outlives the resource that made it; a
+-- marker is not an object. It is a draw call that stops happening the moment
+-- this file stops running, so there is nothing left behind to clean up.
+
+-- The dev toggle. Markers are off in every ordinary session, so the only way to
+-- look at them without running the whole tutorial is to ask for them.
+--
+-- NO THIRD ARGUMENT. br_lib/shared/devgate.lua wraps RegisterCommand for every
+-- file that loads after it, so this is dev-gated for free; passing `true` would
+-- make it ace-restricted instead, which FiveM's client console refuses outright
+-- in production mode. Same rule, same reason, as /brwarmupcrates below.
+RegisterCommand('brwarmupmarkers', function()
+    BR.WarmupCrates.markers(not markersOn)
+    -- WHY IT MIGHT STILL SHOW NOTHING, printed rather than left to be guessed
+    -- at: on the lobby menu, or in a match, these anchors are kilometres away
+    -- and the tick pass refuses. That is two of the three ways a toggled-on
+    -- marker stays invisible and both are visible in this line.
+    print(('[br_core] warmup crate markers: %s (warmup=%s, drawing=%d)')
+        :format(markersOn and 'on' or 'off', tostring(onIsland()), drawN))
+end)
+
+-- ---------------------------------------------------------------------------
 -- What the tutorial reads
 -- ---------------------------------------------------------------------------
 
@@ -510,21 +859,22 @@ end)
 --- was handed it could edit the owner's surveyed coordinates by accident.
 --- @return table[]
 function BR.WarmupCrates.all()
-    local sealedHash = MODELS[1]
     local out = {}
     for i = 1, #W.anchors do
         local a = W.anchors[i]
-        local obj = pinned[i]
-        local sealed = nil
-        if obj and isTrue(DoesEntityExist(obj)) then
-            sealed = GetEntityModel(obj) == sealedHash
-        end
         out[i] = {
             index   = i,
             x = a.x, y = a.y, z = a.z,
             heading = a.heading,
             rarity  = a.rarity,
-            sealed  = sealed,
+            -- THROUGH isSealed, WHICH THE MARKER PASS ALSO CALLS. This used to
+            -- compare the model against MODELS[1] here, in its own words, and
+            -- the marker section needed exactly the same answer -- so the
+            -- tri-state that two readers depend on would have been spelled out
+            -- twice, in two places, free to disagree about what nil means. It
+            -- is spelled out once, up beside markerAlpha, which is where the
+            -- argument about nil lives.
+            sealed  = isSealed(i),
         }
     end
     return out
