@@ -159,6 +159,29 @@ export default function Lobby({
     if (tutorialRun && focus === 'settings') setTutorialOffer(false)
   }, [tutorialRun, focus, setTutorialOffer])
 
+  // ═══ AND SQUADS IS PUT BACK TO SOLO ON THE WAY OUT OF SETTINGS ═══
+  //
+  // Owner, 2026-09-04: "when they come back from the settings page, please
+  // automatically switch them back to solos."
+  //
+  // The walkthrough MADE them pick Squads, because the party controls only
+  // exist on this screen in that mode and a card explaining them over a solo
+  // lobby points at nothing. That is a demonstration, not a choice -- so
+  // leaving it set would queue a brand new player into squads because the
+  // tutorial needed the buttons on screen for one card.
+  //
+  // ON THE WAY BACK, not on the way in, so the switch happens behind the
+  // Settings screen -- the same reason the offer is retired there. The lobby is
+  // rearranged while nobody is looking at it.
+  const wasInSettings = useRef(false)
+  useEffect(() => {
+    if (focus === 'settings') { wasInSettings.current = true; return }
+    if (wasInSettings.current && tutorialRun) {
+      wasInSettings.current = false
+      pickMode('solo')
+    }
+  }, [focus, tutorialRun])
+
   /** Ready up reads Start tutorial only while the box is both offered and ticked. */
   const startTutorial = tutorialOffer && tutorialChecked
 

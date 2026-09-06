@@ -77,6 +77,21 @@ function BR.Tutorial.set(on)
     on = on == true
     if on == running then return end
     running = on
+
+    -- ═══ TAKING THE OFFER SPENDS IT, AND LUA HAS TO BE THE ONE TO SAY SO ═══
+    --
+    -- The page cleared its own copy of `offer` when the player pressed Start
+    -- tutorial, and Lua did not -- so the next `publish()` re-asserted
+    -- `offer = true` and the toggle came back, which it did the moment the run
+    -- ended and Ready up unlocked (owner, 2026-09-04: "After completing the
+    -- lobby tutorial for some reason the 'new player tutorial' toggle
+    -- re-appears when the 'ready up' button unlocks.").
+    --
+    -- THE PAGE MIRRORS THIS FLAG, IT DOES NOT OWN IT. That is the whole point of
+    -- Lua holding it, and it means a page-side clear is a repaint rather than a
+    -- decision -- correct until the next push, and then silently undone.
+    if running then offering = false end
+
     publish()
 
     -- ═══ AND THE SERVER HAS TO HEAR IT, WHICH IS THE WHOLE POINT ═══
