@@ -1133,14 +1133,12 @@ export interface FocusPayload {
          *  incidents, and `/help` already establishes that a framed page gets
          *  the full-screen treatment. */
         | 'admin'
-        /** The in-game walkthrough (#261), while it holds the cursor so its
-         *  cards can be pressed. IT IS NOT A SCREEN THIS PAGE DRAWS -- the HUD
-         *  stays exactly as it was underneath -- which is why it is also in
-         *  BR.FocusKeepsInput: the player has to be able to walk to the crates
-         *  while a card is up. It is in this union because Lua really does send
-         *  it and code that compares against it was being told, wrongly, that
-         *  the comparison could never match. */
-        | 'tutorial'
+        /* `tutorial` was briefly a member and is gone, alongside its entry in
+         * BR.FocusKeepsInput. The in-game walkthrough held the cursor so its
+         * Next and Last could be pressed; it is driven by the arrow keys now and
+         * takes no focus at all, so Lua can no longer send this. Deleted rather
+         * than left in the union for a value nothing produces -- the same rule
+         * `playersReport` above was removed under. */
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel
@@ -1277,7 +1275,42 @@ export type Envelope =
   /* The guided first run (#261). Lua owns whether it is running and the page
      mirrors it, the same shape `frontend` above uses -- so a reload or a
      re-focus cannot leave the walkthrough on with nothing driving it. */
-  | { k: 'tutorial'; d: { run: boolean; offer?: boolean; game?: boolean } }
+  | {
+      k: 'tutorial'
+      d: {
+        run: boolean
+        offer?: boolean
+        game?: boolean
+        /**
+         * How many of the four warmup crates this player has opened during the
+         * in-game half.
+         *
+         * COUNTED IN LUA BECAUSE THE PAGE CANNOT SEE IT. Opening a crate puts
+         * nothing in the inventory, br_core/client/loot.lua sends no NUI message
+         * at all, and the server sends nothing on the chest path -- the whole
+         * receipt is the crate being re-announced as its husk, which never
+         * leaves Lua. So this is the one fact in the walkthrough that genuinely
+         * had to be told rather than observed.
+         *
+         * ON THIS ENVELOPE AND NOT A NEW ONE: it is the walkthrough's own
+         * channel, Lua already owns every field on it, and its only reader is
+         * the walkthrough -- so this cannot become a field nothing reads.
+         */
+        crates?: number
+      }
+    }
+  /**
+   * An arrow pressed while an in-game walkthrough card is up (#261).
+   *
+   * THE ONE THING THE PAGE IS TOLD ABOUT A KEY. Everywhere else in this
+   * interface Lua reads a key, changes state, and the page mirrors the state --
+   * but these cards take no focus (so CEF gets no keyboard events) and there is
+   * no state to mirror: which card you are on lives here, not in Lua.
+   *
+   * `seq` IS WHAT MAKES IT AN EVENT. Two presses of Next are two identical
+   * payloads, so the page acts on the sequence advancing rather than on `dir`.
+   */
+  | { k: 'tutorialnav'; d: { dir: 'next' | 'back' | 'action'; seq: number } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
   | { k: 'progress'; d: ProgressPayload }

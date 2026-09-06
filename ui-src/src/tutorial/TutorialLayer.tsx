@@ -233,6 +233,19 @@ export type TutorialLayerProps = {
   /** Which step is on screen, by id. The lobby reads it -- see the store. */
   onStep?: (id: string | null) => void
   /**
+   * Are these cards driven by the arrow keys rather than by a cursor?
+   *
+   * TRUE FOR THE IN-GAME HALF ONLY. It takes no NUI focus -- so there is no
+   * pointer to press a button with, and the presses arrive from Lua over the
+   * `tutorialnav` envelope instead.
+   *
+   * IT IS NOT ABSOLUTE, AND THE EXCEPTION IS PER CARD. A step scoped to one of
+   * OUR screens (`screen`, e.g. the player list) draws while that screen holds
+   * the cursor on its own account -- and that same focus takes game input away,
+   * so the arrows are dead there. Those cards get buttons.
+   */
+  keyDriven?: boolean
+  /**
    * The script to run. Defaults to the lobby's.
    *
    * A PROP RATHER THAN A SECOND COMPONENT, because the in-game walkthrough is
@@ -369,10 +382,38 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     return () => cancelAnimationFrame(raf)
   }, [step])
 
+  // ── the arrow keys, arriving from Lua ───────────────────────────────────
+  //
+  // ACTED ON WHEN THE SEQUENCE MOVES, never on `dir`: two presses of Next are
+  // two identical payloads and only the counter tells them apart. The first
+  // render must not act at all, so the baseline is whatever the counter already
+  // read when this layer mounted.
+  const nav = useUi((st) => st.tutorialNav)
+  const navSeen = useRef(nav.seq)
+  useEffect(() => {
+    if (nav.seq === navSeen.current) return
+    navSeen.current = nav.seq
+    if (!step || !p.keyDriven || step.screen !== undefined) return
+
+    if (nav.dir === 'next') {
+      // ONLY WHERE A BUTTON WOULD HAVE BEEN. An arrow must not walk past a card
+      // that is waiting for the player to do something -- that is the owner's
+      // rule about Next buttons, and a key is a Next button with no pixels.
+      if (step.advance === 'next') go(i + 1)
+      else if (step.advance === 'dismiss') go(steps.length)
+      else if (stuck) go(i + 1)
+    } else if (nav.dir === 'back') {
+      if (i > 0 && !step.noBack && steps[i - 1] !== undefined) go(i - 1)
+    } else if (nav.dir === 'action' && step.action) {
+      void fetchNui(step.action.cb, {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav])
+
   // ── the way out of a step that is waiting on the player ─────────────────
   useEffect(() => {
     setStuck(false)
-    if (!step || step.advance !== 'pickup') return
+    if (!step || (step.advance !== 'pickup' && step.advance !== 'crate')) return
     const t = setTimeout(() => setStuck(true), STUCK_MS)
     return () => clearTimeout(t)
   }, [step])
@@ -552,6 +593,22 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
 
+  // ── opening a warmup crate ends the step ────────────────────────────────
+  //
+  // THE ONE FACT THE WALKTHROUGH IS TOLD RATHER THAN OBSERVING. See the `crate`
+  // Advance variant. Baselined the same way the pickup count is, so a player who
+  // opened one on the way to the card does not walk straight past it.
+  const crates = useUi((st) => st.tutorialCrates)
+  const cratesAtStart = useRef(crates)
+  useEffect(() => {
+    if (step?.advance === 'crate') cratesAtStart.current = crates
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step])
+  useEffect(() => {
+    if (!step || step.advance !== 'crate') return
+    if (crates - cratesAtStart.current >= (step.crates ?? 1)) go(i + 1)
+  }, [step, crates, i, go])
+
   useEffect(() => {
     if (!step || step.advance !== 'pickup') return
     const before = startedWith.current
@@ -686,12 +743,17 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         fromX={fromX}
         fromY={fromY}
         leaving={leaving}
+        // KEYS ON THE BARE HUD, BUTTONS OVER A SCREEN. A card scoped to one of
+        // our own screens draws while that screen holds the cursor -- and that
+        // focus has taken game input, so the arrows cannot reach Lua at all.
+        keys={p.keyDriven === true && step.screen === undefined}
         // ...OR AFTER A LONG WAIT ON A STEP THAT HAS NO OTHER WAY OUT. See
         // `stuck`. Never on a `click` or `screen` step: those name a control
         // that is on screen and working, so a second route past them is the
         // "asking for one thing and accepting another" the owner ruled out.
         onNext={
-          step.advance === 'next' || (stuck && step.advance === 'pickup')
+          step.advance === 'next'
+          || (stuck && (step.advance === 'pickup' || step.advance === 'crate'))
             ? () => go(i + 1)
             : null
         }

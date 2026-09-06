@@ -274,6 +274,22 @@ export interface UiState {
    * READ THROUGH `selHudSquad`, never directly. See `setTutorialSquad`.
    */
   tutorialSquad: SquadPayload | null
+  /**
+   * Warmup crates opened during the in-game walkthrough.
+   *
+   * MIRRORED FROM LUA, which counts them -- see the `tutorial` envelope. The
+   * page has no other way to know: opening a crate changes nothing this store
+   * can see.
+   */
+  tutorialCrates: number
+  /**
+   * The last arrow press Lua reported while an in-game card was up.
+   *
+   * `seq` COUNTS PRESSES; `dir` says which. Held as a pair because the page
+   * reacts to the number changing -- two Nexts in a row are otherwise one
+   * indistinguishable value. See the `tutorialnav` envelope.
+   */
+  tutorialNav: { dir: 'next' | 'back' | 'action'; seq: number }
 
   /** True while the voluntary-leave interstitial covers the screen: black
    *  plus a quiet "Leaving the match" while the world swaps underneath. */
@@ -315,6 +331,8 @@ export interface UiState {
    * NULL IS THE ORDINARY STATE and means "show what the server said".
    */
   setTutorialSquad: (s: SquadPayload | null) => void
+  setTutorialCrates: (n: number) => void
+  setTutorialNav: (n: { dir: 'next' | 'back' | 'action'; seq: number }) => void
   setParty: (p: SquadPayload) => void
   setTalking: (ids: number[], names?: string[]) => void
   setVoice: (v: VoicePayload) => void
@@ -721,6 +739,8 @@ export const useUi = create<UiState>((set, get) => {
   tutorialGameOn: true,
   tutorialGameRun: false,
   tutorialSquad: null,
+  tutorialCrates: 0,
+  tutorialNav: { dir: 'next', seq: 0 },
   leaving: false,
   curtain: 'leaving',
   invite: null,
@@ -772,6 +792,8 @@ export const useUi = create<UiState>((set, get) => {
   },
   setSquad:    (squad) => set({ squad }),
   setTutorialSquad: (tutorialSquad) => set({ tutorialSquad }),
+  setTutorialCrates: (tutorialCrates) => set({ tutorialCrates }),
+  setTutorialNav: (tutorialNav) => set({ tutorialNav }),
   setParty:    (party) => set({ party }),
   // Names default to empty rather than to the ids: a bar reading "Currently
   // Talking: 27" is worse than no bar, and an id is what is left when the

@@ -189,6 +189,8 @@ export const GAME_STEPS: Step[] = [
     awaitScreen: 'players',
     // THE ESCAPE HATCH. A player whose layout has no usable tilde, or who needs
     // a macro, must not be stuck on this card.
+    // ON THE DOWN ARROW IN GAME, not a click: these cards take no cursor. The
+    // card prints the key; see AnnotationCard's `keys`.
     action: { label: 'Open it for me', cb: 'br/players/focus' },
   },
   {
@@ -231,14 +233,24 @@ export const GAME_STEPS: Step[] = [
     target: 'hud-inventory',
     title: 'Crates',
     body: 'Those four marked crates on the pad are yours to practice on — they refill themselves, so take as long as you like. The **marker color is the rarity** of what is inside, and they get better left to right. **Go and open one.**',
-    advance: 'next',
+    // NO NEXT BUTTON: the card sends them somewhere, so the only way past it is
+    // going (owner, 2026-09-05). The escape hatch after 45s is in TutorialLayer
+    // and exists so a miscount cannot trap anybody -- see `stuck`.
+    advance: 'crate',
+    crates: 1,
   },
   {
     id: 'game-pickup',
     target: 'hud-inventory',
     title: 'Take what you want',
     // OBSERVED, not reported: the store already knows what they are carrying.
-    body: 'Walk over anything on the ground to pick it up. **Take two things** from the crate you opened.',
+    //
+    // "Walk over anything on the ground to pick it up" was the first version and
+    // it described a mechanic this game does not have -- loot is claimed by
+    // holding the interact key against a prompt, not by walking through it. The
+    // key is printed from the player's own binding, like every other key in this
+    // script.
+    body: 'Stand over anything on the ground and hold **{key:brinteract}** to pick it up. **Take two things** from the crate you opened.',
     advance: 'pickup',
     pickups: 2,
   },
@@ -281,9 +293,9 @@ export const GAME_STEPS: Step[] = [
     body: 'Press **{key:brinventory}** to open it properly — you can move things between slots and drop what you do not want.',
     advance: 'screen',
     awaitScreen: 'inventory',
-    // NO BUTTON HERE, AND THE ASYMMETRY IS DELIBERATE. There is no callback that
+    // NO ACTION HERE, AND THE ASYMMETRY IS DELIBERATE. There is no callback that
     // opens the inventory -- the panel is client-side, opened by the key and
-    // nothing else -- and inventing one to give this card a button would be
+    // nothing else -- and inventing one to give this card a way through would be
     // plumbing built for a walkthrough rather than for the game.
     //
     // The escape hatch exists on the PLAYER LIST card because that key is tilde,

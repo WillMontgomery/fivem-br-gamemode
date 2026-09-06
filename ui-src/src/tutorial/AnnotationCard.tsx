@@ -51,6 +51,23 @@ import { useEffect, useState } from 'react'
 import Btn from '../ui/Btn'
 
 /**
+ * One "← Last" hint: the key, then what it does.
+ *
+ * NOT A BUTTON AND NOT PRETENDING TO BE ONE. It carries no press handler, no
+ * hover and no focus ring -- the same call hud/SpectateHint.tsx makes, whose own
+ * header says "IT LOOKS LIKE A BUTTON AND IS NOT ONE". A thing that looks
+ * pressable and is not is the cruellest control on a screen with no pointer.
+ */
+function KeyHint(p: { cap: string; children: React.ReactNode }) {
+  return (
+    <span className="tut-key">
+      <kbd>{p.cap}</kbd>
+      {p.children}
+    </span>
+  )
+}
+
+/**
  * Split the owner's two emphasis marks into elements.
  *
  * ═══ A GRAMMAR, NOT A PARSER, AND CERTAINLY NOT HTML ═══
@@ -129,6 +146,21 @@ export type CardProps = {
   action: { label: string; onPress: () => void } | null
   /** Raised by the layer one frame before it unmounts, to play the exit. */
   leaving: boolean
+  /**
+   * Show which KEY does each thing, instead of a button that does it.
+   *
+   * ═══ THE IN-GAME CARDS HAVE NOTHING TO CLICK WITH ═══
+   *
+   * Owner, 2026-09-05: "In-game we should actually get rid of the mouse pointer
+   * for these cards altogether I think and use left/right arrow keys instead."
+   * They take no NUI focus, so there is no cursor at all -- a `Btn` there would
+   * be a control nobody can reach, which is worse than no control.
+   *
+   * SAME SLOTS, SAME ORDER, SAME WORDS. The hints sit exactly where the buttons
+   * sit and read the same, so the two halves of the walkthrough do not feel like
+   * two products; only the way you answer them differs.
+   */
+  keys?: boolean
 }
 
 export default function AnnotationCard(p: CardProps) {
@@ -208,31 +240,50 @@ export default function AnnotationCard(p: CardProps) {
             actually decides. */}
         <span className="tut-acts">
           {p.action ? (
-            <Btn variant="default" size="sm" cue="ui.select" onPress={p.action.onPress}>
-              {p.action.label}
-            </Btn>
+            p.keys ? (
+              // DOWN, AND THE CHOICE IS EXPLAINED IN br_core/client/tutorial.lua:
+              // it is in the same cluster as the other two and nothing else in
+              // the project claims it. Enter opens chat.
+              <KeyHint cap="↓">{p.action.label}</KeyHint>
+            ) : (
+              <Btn variant="default" size="sm" cue="ui.select" onPress={p.action.onPress}>
+                {p.action.label}
+              </Btn>
+            )
           ) : null}
           {p.onBack ? (
-            <Btn variant="default" size="sm" cue="ui.select" onPress={p.onBack}>
-              Last
-            </Btn>
+            p.keys ? (
+              <KeyHint cap="←">Last</KeyHint>
+            ) : (
+              <Btn variant="default" size="sm" cue="ui.select" onPress={p.onBack}>
+                Last
+              </Btn>
+            )
           ) : null}
           {/* ABSENT ON A NAVIGATIONAL STEP, which is the owner's rule: the
               only way past "open Settings" is to open Settings. The card is
               then the instruction and the ringed control is the only live
               thing on screen, which is the whole point of pointing at it. */}
           {p.onNext ? (
-            <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onNext}>
-              Next
-            </Btn>
+            p.keys ? (
+              <KeyHint cap="→">Next</KeyHint>
+            ) : (
+              <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onNext}>
+                Next
+              </Btn>
+            )
           ) : null}
           {/* THE END. Owner, 2026-09-04: the last card "should only have a
               'Dismiss button' and the lobby tutorial is now over. This is when
               the 'ready up' button should release." */}
           {p.onDismiss ? (
-            <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onDismiss}>
-              {p.dismissLabel ?? 'Dismiss'}
-            </Btn>
+            p.keys ? (
+              <KeyHint cap="→">{p.dismissLabel ?? 'Dismiss'}</KeyHint>
+            ) : (
+              <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onDismiss}>
+                {p.dismissLabel ?? 'Dismiss'}
+              </Btn>
+            )
           ) : null}
         </span>
       </div>

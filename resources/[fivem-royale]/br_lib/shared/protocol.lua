@@ -1021,6 +1021,21 @@ BR.Nui = {
     -- will really start them are built. When those land they send this same
     -- message and nothing on the page changes.
     TUTORIAL  = 'tutorial',
+    -- The player pressing an arrow while an in-game card is up (#261).
+    --
+    -- ═══ A KEY THE PAGE CANNOT READ FOR ITSELF ═══
+    --
+    -- Owner, 2026-09-05: "In-game we should actually get rid of the mouse
+    -- pointer for these cards altogether I think and use left/right arrow keys
+    -- instead." Without NUI focus CEF receives no keyboard events at all, so the
+    -- arrows have to be read in Lua as controls and sent across -- which is the
+    -- one thing in this walkthrough that genuinely could not be observed.
+    --
+    -- EDGE-SHAPED, WITH A SEQUENCE. A press is an event, and an envelope is a
+    -- state: `{ dir = 'next' }` arriving twice is indistinguishable from one
+    -- press re-sent unless something changes between them. `seq` is that
+    -- something, and the page acts on it changing rather than on `dir`.
+    TUTORIAL_NAV = 'tutorialnav',
     -- The player's own preferences, read back out of KVP on boot. Sent as a
     -- whole object rather than as deltas: there are a dozen of them, they
     -- change when a human drags a slider, and a merge protocol for that would
@@ -1273,21 +1288,26 @@ BR.NUI_ENVELOPE_VERSION = 1
 --- keystroke in it is also a movement key, so typing a note walked you off a
 --- roof. With view mode out of the table too, both modes want the same focus
 --- and the second screen was machinery doing nothing. See br_ui/client/players.lua.
-BR.FocusKeepsInput = { inventory = true, tutorial = true }
+BR.FocusKeepsInput = { inventory = true }
 
--- `tutorial` IS THE SECOND ENTRY AND IT IS THE SAME ARGUMENT AS THE FIRST.
+-- ═══ `tutorial` WAS THE SECOND ENTRY AND IS GONE AGAIN (2026-09-06) ═══
 --
--- The in-game walkthrough draws cards with Next and Last on them, over a player
--- who is standing on the warmup pad -- so it needs the CURSOR, or those buttons
--- cannot be pressed at all (owner, 2026-09-04: "we need to capture the cursor
--- while in warmup during the period where we have elements on the screen with
--- buttons like 'next' and 'back' or else folks cannot click them").
+-- It was added because the in-game cards carried Next and Last, which need a
+-- cursor to press -- and it kept input because two of those cards send the
+-- player walking to the crates. Both halves were true and the combination was
+-- the fault: keeping input keeps ALL of it, so every drag toward a button also
+-- swung the camera (owner, 2026-09-05: "the cursor isn't exclusively set to NUI
+-- -- it's still moving the game camera while in the game tutorial"), and the
+-- cursor made every invisible control on the faded lobby clickable.
 --
--- IT KEEPS INPUT BECAUSE THE WALKTHROUGH ASKS THEM TO MOVE. Two of its cards
--- send the player to the crates and one asks them to open the big map; a focus
--- that swallowed movement would make the tutorial tell them to walk somewhere
--- and then stop them walking. There is no text field anywhere in it, which is
--- the hazard that kept `playersReport` out of this table.
+-- THE CARDS TAKE NO FOCUS AT ALL NOW. They are driven by the arrow keys, read
+-- in Lua as controls and sent over BR.Nui.TUTORIAL_NAV -- the shape
+-- client/spectate.lua already uses, and for the same reason its own note gives:
+-- joining the focus stack "would silently kill the arrow keys that ARE the
+-- feature". A card that draws over one of OUR screens (the player list) still
+-- gets buttons, because that screen has taken the cursor on its own account.
+--
+-- SO THE LIST IS BACK TO ONE, and tools/test_client.lua pins it there.
 
 --- What the engine and the page should be told, for a given focus stack.
 ---

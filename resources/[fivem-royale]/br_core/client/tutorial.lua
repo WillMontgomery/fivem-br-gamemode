@@ -37,6 +37,40 @@
 BR = BR or {}
 BR.Tutorial = BR.Tutorial or {}
 
+--- A FiveM BOOL is 1 or 0, and 0 is TRUTHY in Lua.
+---
+--- The file-local every client module in this tree carries, for the reason
+--- tools/verify.sh's bool-natives ratchet exists: `if IsDisabledControlJustPressed(...)`
+--- is true on every frame, pressed or not.
+local function isTrue(v) return v == true or v == 1 end
+
+--- The arrows, and what each one does to a card.
+---
+--- ═══ THE CARDS TAKE NO CURSOR, SO THE KEYS ARE READ HERE ═══
+---
+--- Owner, 2026-09-05: "In-game we should actually get rid of the mouse pointer
+--- for these cards altogether I think and use left/right arrow keys instead."
+---
+--- The page cannot do this for itself. Without NUI focus CEF receives no
+--- keyboard events at all, so a `keydown` listener in React would never fire --
+--- which is exactly why client/spectate.lua reads its own arrows and its header
+--- records that joining the focus stack "would silently kill the arrow keys that
+--- ARE the feature". Same shape, same reason.
+---
+--- IDS VERIFIED IN-TREE, not guessed: client/revivekey.lua's ruler names
+--- 172/173/174/175 as UP/DOWN/LEFT/RIGHT and blocks the same four.
+---
+--- DOWN IS THE CARD'S ACTION, and it is the one choice here that is mine. One
+--- card offers to open the player list for a player whose keyboard cannot reach
+--- their bound key; with no cursor that offer needs a key of its own. DOWN is in
+--- the same cluster as the other two, and nothing else in this project claims
+--- it. Enter was the other candidate and was rejected because it opens chat.
+local NAV = {
+    [174] = 'back',
+    [175] = 'next',
+    [173] = 'action',
+}
+
 --- What the cards take away from the game while they are on screen.
 ---
 --- ═══ THE CURSOR AND THE CAMERA WERE FIGHTING OVER ONE MOUSE ═══
@@ -56,16 +90,19 @@ BR.Tutorial = BR.Tutorial or {}
 --- The click that presses Next is the click that fires the weapon, so without
 --- these a player works through the walkthrough emptying a magazine into the
 --- pad. Warmup damage is off; the noise, the recoil and the empty gun are not.
-local BLOCKED = {
-    1,    -- LOOK_LR
-    2,    -- LOOK_UD
-    220,  -- LOOK_LR alternate (the one a gamepad's right stick drives)
-    221,  -- LOOK_UD alternate
-    24,   -- ATTACK
-    25,   -- AIM
-    257,  -- ATTACK2
-    263,  -- MELEE_ATTACK1
-}
+--- THE LOOK AND ATTACK BLOCKS ARE GONE WITH THE CURSOR. They existed because
+--- the cards held NUI focus with input kept, so a drag toward a button swung the
+--- camera and a click on one fired the weapon. With no focus there is no cursor,
+--- no drag and no click -- the player is simply playing the game with three keys
+--- borrowed. Blocking the camera now would stop them looking at the crates they
+--- are being sent to.
+---
+--- WHAT IS BLOCKED IS THE THREE KEYS THEMSELVES, so a press that moves a card
+--- cannot also do whatever else that arrow is bound to. `specNext`/`specPrev`
+--- default to RIGHT/LEFT (client/keybinds.lua) and are only live while
+--- spectating, which never overlaps warmup -- but a default is not a guarantee
+--- once the player has rebound anything, and this costs one native per key.
+local BLOCKED = { 172, 173, 174, 175 }
 
 --- Is the lobby walkthrough running right now?
 local running = false
@@ -91,10 +128,28 @@ local offering = false
 --- reaches the lobby half having never been offered anything.
 local inGame = false
 
---- Push all three flags to the page.
+--- How many of the four warmup crates this player has opened during the run.
+---
+--- ═══ COUNTED HERE BECAUSE THE PAGE CANNOT SEE IT AT ALL ═══
+---
+--- Owner, 2026-09-05: "'go and open one' should not have a 'next' button as
+--- we're waiting for their action as we've directed them." So the card needs a
+--- fact -- "they opened one" -- and the page has no version of it: opening a
+--- crate puts nothing in the inventory, br_core/client/loot.lua sends no NUI
+--- message of any kind, and the server sends no notification on the chest path.
+--- The whole receipt is the crate being re-announced as its husk, which is a
+--- Lua-side fact in another file.
+---
+--- ZEROED WHEN THE RUN STARTS, not accumulated across a session: the card asks
+--- for one crate opened NOW, and a player on their second run through the Help
+--- page would otherwise walk past it having opened one an hour ago.
+local crates = 0
+
+--- Push the walkthrough's state to the page.
 local function publish()
     TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL,
-                 { run = running, offer = offering, game = inGame })
+                 { run = running, offer = offering, game = inGame,
+                   crates = crates })
 end
 
 --- Start or stop the walkthrough, and tell the page.
@@ -167,14 +222,22 @@ function BR.Tutorial.game(on)
     on = on == true
     if on == inGame then return end
     inGame = on
+    -- FROM ZERO EVERY TIME. See `crates`.
+    if on then crates = 0 end
     publish()
 
-    -- ═══ THE CURSOR, BECAUSE THE CARDS HAVE BUTTONS ON THEM ═══
+    -- ═══ NO FOCUS, AND THAT IS THE POINT ═══
     --
-    -- `tutorial` keeps game input (BR.FocusKeepsInput), so the player can still
-    -- walk while a card is up -- which they must, because the walkthrough sends
-    -- them to the crates.
-    TriggerEvent(on and 'br:ui:pushFocus' or 'br:ui:popFocus', 'tutorial')
+    -- This used to push a `tutorial` focus so the cards' Next and Last buttons
+    -- could be clicked. It cost more than it bought: the focus kept game input
+    -- so the buttons could be reached without freezing the player, and keeping
+    -- input keeps ALL of it -- so the same mouse drove both the cursor and the
+    -- camera, and the cursor made every invisible control on the faded lobby
+    -- clickable underneath (owner, 2026-09-05, both faults).
+    --
+    -- The cards are driven by `tutorial.nav` above instead. Nothing is pushed,
+    -- nothing has to be popped, and a run that ends badly cannot strand anybody
+    -- holding a focus nothing will release.
 
     -- ═══ AND THE MARKERS OVER THE FOUR CRATES GO UP WITH IT ═══
     --
@@ -217,10 +280,27 @@ end
 -- this way: the frame after `inGame` goes false, nothing is disabled. A flag
 -- left set by a crash or a resource restart cannot leave a player unable to
 -- aim, which is the failure a SetPlayerControl-shaped fix would risk.
-BR.Loop.register(BR.Loop.FRAME, 'tutorial.controls', function()
+--- Monotonic, so the page can tell one press from the same press re-sent.
+local navSeq = 0
+
+BR.Loop.register(BR.Loop.FRAME, 'tutorial.nav', function()
     if not inGame then return end
+
     for i = 1, #BLOCKED do
         DisableControlAction(0, BLOCKED[i], true)
+    end
+
+    -- READ DISABLED, WHICH IS THE PROJECT'S OWN IDIOM. A control disabled this
+    -- frame is invisible to IsControlJustPressed and only the Disabled reader
+    -- still sees it -- the same disabled-then-read pattern client/inventory.lua
+    -- and client/revivekey.lua use. `isTrue`, because these natives answer 1/0
+    -- and 0 is truthy in Lua.
+    for id, dir in pairs(NAV) do
+        if isTrue(IsDisabledControlJustPressed(0, id)) then
+            navSeq = navSeq + 1
+            TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL_NAV,
+                         { dir = dir, seq = navSeq })
+        end
     end
 end)
 
@@ -232,6 +312,33 @@ function BR.Tutorial.offer(on)
     offering = on
     publish()
 end
+
+--- One of the four warmup crates was opened BY THIS PLAYER.
+---
+--- FIRED FROM client/loot.lua's husk-reskin branch, which is the only line in
+--- the tree that means "the crate I claimed has actually opened": it is
+--- server-confirmed, so a refused claim cannot satisfy the card, and it is
+--- opener-only, so standing next to somebody else's crate does nothing.
+---
+--- MATCHED BY POSITION, because that is what tells one of the owner's four from
+--- the thirteen hundred other crates on the map. The anchors are 6-8m apart, so
+--- a couple of metres of tolerance cannot be ambiguous; the crate is built at
+--- the anchor's own x/y, so in practice the distance is zero.
+---
+--- ONLY WHILE THE IN-GAME HALF IS RUNNING. Outside it there is no card waiting
+--- on this and the count would be bookkeeping nobody reads.
+AddEventHandler('br:loot:opened', function(_, x, y)
+    if not inGame then return end
+    if not BR.WarmupCrates or not BR.WarmupCrates.all then return end
+
+    for _, c in ipairs(BR.WarmupCrates.all()) do
+        if BR.Dist(x, y, c.x, c.y) <= 3.0 then
+            crates = crates + 1
+            publish()
+            return
+        end
+    end
+end)
 
 --- They finished the whole thing -- pay them.
 ---

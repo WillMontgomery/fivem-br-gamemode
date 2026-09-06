@@ -1733,11 +1733,31 @@ local function addEntries(list)
                     -- ACTUALLY opened, so it cannot play for a claim the
                     -- server refused; the claimedByMe check is what stops it
                     -- firing for everyone standing nearby (user, 2026-08-05).
-                    if reskinned and d.kind == 'husk' and L.openSound
-                       and claimedByMe[d.id] then
+                    if reskinned and d.kind == 'husk' and claimedByMe[d.id] then
                         claimedByMe[d.id] = nil
-                        PlaySoundFrontend(-1, L.openSound.name,
-                            L.openSound.set, true)
+                        if L.openSound then
+                            PlaySoundFrontend(-1, L.openSound.name,
+                                L.openSound.set, true)
+                        end
+                        -- ═══ AND ANYONE ELSE WHO WANTS TO KNOW (#261) ═══
+                        --
+                        -- The guided first run has a card that says "go and open
+                        -- one" and must not offer a way past it, so it needs the
+                        -- one fact this line already establishes: THIS player
+                        -- opened THAT crate, confirmed by the server.
+                        --
+                        -- A CLIENT-LOCAL EVENT, NOT A WIRE. Both ends are in
+                        -- br_core, so this is the same seam `br:keys:changed`
+                        -- and `br:shop:bought` already use -- no protocol entry,
+                        -- nothing serialised, and nothing the server has to know
+                        -- about a walkthrough.
+                        --
+                        -- CARRIES THE POSITION because the listener has to tell
+                        -- one of the four warmup anchors from the 1300 other
+                        -- crates on the map, and position is what distinguishes
+                        -- them. The id would not: it is a loot-registry id with
+                        -- nothing in it that says "warmup".
+                        TriggerEvent('br:loot:opened', d.id, d.x, d.y)
                     end
                     despawn(have)
                     have.x, have.y, have.z = d.x, d.y, d.z

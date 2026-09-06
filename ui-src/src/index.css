@@ -1772,6 +1772,45 @@ html, body, #root {
    second button vocabulary is exactly what made the first version read as a
    web widget rather than as part of this game's interface. */
 
+/* ═══ AND THE IN-GAME HALF HAS NO BUTTONS AT ALL ═══
+
+   Those cards take no NUI focus, so there is no cursor to press one with; they
+   name the KEY instead (owner, 2026-09-05: "get rid of the mouse pointer for
+   these cards altogether... and use left/right arrow keys instead").
+
+   IT MUST NOT LOOK PRESSABLE. No hover, no active state, no focus ring and no
+   pointer cursor -- the same call hud/SpectateHint.tsx makes and for the same
+   reason. Something that looks like a button and cannot be clicked is worse on
+   a screen with no pointer than plain text would be.
+
+   THE CAP IS THE ONLY LOUD PART, so the eye lands on the key rather than on the
+   word, which is the thing the player has to act on. */
+.tut-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-weight: var(--font-tutorial-body);
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.62);
+  white-space: nowrap;
+}
+
+.tut-key kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.2rem;
+  /* SQUARE, like every other box in this interface. */
+  border: 1px solid var(--color-volts);
+  color: var(--color-volts);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: var(--font-tutorial-head);
+  line-height: 1;
+}
+
 /* ═══ THE SPOTLIGHT ═══
 
    A RING AROUND THE SUBJECT, NOT A DIMMED SCREEN. A full-screen scrim is the

@@ -108,6 +108,13 @@ export default function App() {
     s.setTutorialRun(d.run === true)
     if (d.offer !== undefined) s.setTutorialOffer(d.offer === true)
     if (d.game !== undefined) s.setTutorialGameRun(d.game === true)
+    if (d.crates !== undefined) s.setTutorialCrates(d.crates)
+  })
+  // THE ARROWS, READ IN LUA. These cards take no NUI focus, so CEF never sees a
+  // keypress -- see the `tutorialnav` envelope for why this is the one key in
+  // the interface that travels as data.
+  useNuiEvent('tutorialnav', (d) => {
+    if (typeof d?.seq === 'number') s.setTutorialNav({ dir: d.dir, seq: d.seq })
   })
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
@@ -665,10 +672,13 @@ export default function App() {
           // step that WANTS a screen names it in `screen`, and the layer
           // compares that instead (see `waitingForScreen`).
           //
-          // `none` IS THE BARE HUD once the cursor is gone, and `tutorial` is
-          // the bare HUD while the walkthrough still holds focus -- neither is
-          // something covering the controls these cards point at.
-          subscreenUp={s.focus !== 'none' && s.focus !== 'tutorial'}
+          // `none` IS THE BARE HUD. The walkthrough itself takes no focus, so
+          // anything else on the stack is genuinely something the player opened
+          // over the controls these cards point at.
+          subscreenUp={s.focus !== 'none'}
+          // AND THE CARDS ARE DRIVEN BY THE ARROW KEYS, not by a cursor there
+          // is no longer any way to produce. See `keyDriven`.
+          keyDriven
           onDone={() => {
             s.setTutorialGameRun(false)
             void fetchNui(CB.TUTORIAL_SET, { game: false, done: true })

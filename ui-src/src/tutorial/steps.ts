@@ -96,6 +96,19 @@ export type Advance =
    * must not be answered by one box. See `tally` in TutorialLayer.
    */
   | 'pickup'
+  /**
+   * The player opening one of the four warmup crates.
+   *
+   * Owner, 2026-09-05: "'go and open one' should not have a 'next' button as
+   * we're waiting for their action as we've directed them."
+   *
+   * TOLD, NOT OBSERVED, AND IT IS THE ONLY ONE. Every other advance in this file
+   * reads state the page already holds. Opening a crate changes nothing the page
+   * can see -- nothing lands in the inventory, no NUI message is sent, and the
+   * server's whole receipt is the crate being re-announced as its husk in Lua.
+   * So br_core counts them and the count rides the walkthrough's own envelope.
+   */
+  | 'crate'
 
 export type Step = {
   /** Stable id. Persisted progress and every log line key on this. */
@@ -112,8 +125,10 @@ export type Step = {
   advance: Advance
   /** For `advance: 'screen'` -- the screen whose arrival ends the step. */
   awaitScreen?: string
-  /** For `advance: 'pickup'` -- how many more filled slots end the step. */
+  /** For `advance: 'pickup'` -- how many more ITEMS end the step. See `tally`. */
   pickups?: number
+  /** For `advance: 'crate'` -- how many warmup crates end the step. Default 1. */
+  crates?: number
   /**
    * For `advance: 'dismiss'` -- what the last button says, when "Dismiss" is
    * the wrong word for it.

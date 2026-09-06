@@ -9112,15 +9112,19 @@ do
         -- members -- adding one has to be a deliberate edit HERE, with a reason.
         --
         --   inventory  a grid of slots. No text field.
-        --   tutorial   the guided first run's cards (#261). It needs the cursor
-        --              because the cards carry Next and Last, and it must keep
-        --              input because two of them send the player walking to the
-        --              crates. No text field anywhere in it.
+        --
+        -- `tutorial` WAS HERE AND WAS TAKEN BACK OUT (2026-09-06), which is the
+        -- second time this table has shrunk and the second time for the same
+        -- reason: keeping input keeps ALL of it. The walkthrough's cards held
+        -- the cursor so their Next and Last could be pressed, and every drag
+        -- toward a button swung the camera while the cursor made the faded
+        -- lobby's invisible buttons clickable. The cards are driven by the arrow
+        -- keys now, read in Lua, and take no focus at all.
         local keepers = {}
         for s in pairs(BR.FocusKeepsInput) do keepers[#keepers + 1] = s end
         table.sort(keepers)
-        ok(#keepers == 2 and keepers[1] == 'inventory' and keepers[2] == 'tutorial',
-           'exactly two screens keep game input, and neither has a text field',
+        ok(#keepers == 1 and keepers[1] == 'inventory',
+           'exactly one screen keeps game input, and it has no text field',
            table.concat(keepers, ', '))
 
         bootOn(true, true)
