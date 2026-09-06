@@ -704,7 +704,11 @@ end
 --- Run the two marker passes the way the game runs them: decide, then draw.
 local function tickAndFrame(ms)
     gameMs = gameMs + (ms or 100)
-    loops['warmupcrates.pin']()
+    -- `warmupcrates.track` was `warmupcrates.pin` until 2026-09-06. It adopts
+    -- the prop handle at each anchor and no longer touches the object -- which
+    -- is what the marker pass needs, since `isSealed` reads the MODEL off that
+    -- handle to decide solid or dimmed.
+    loops['warmupcrates.track']()
     loops['warmupcrates.markers']()
     drawn = {}
     loops['warmupcrates.markers.draw']()

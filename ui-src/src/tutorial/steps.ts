@@ -80,13 +80,20 @@ export type Advance =
    *
    * OBSERVED, NOT REPORTED. Owner, 2026-09-04: "Upon opening one, they should
    * get an instruction to pick up 2 loot items." The inventory is already in
-   * this store, pushed on every change, so counting filled slots needs no new
-   * wire and no new event -- and it is the same fact the player can see, which
-   * is what the card is asking them to do.
+   * this store, pushed on every change, so this needs no new wire and no new
+   * event -- and it is the same fact the player can see, which is what the card
+   * is asking them to do.
    *
-   * IT COUNTS SLOTS, NOT STACK SIZES: picking up a second bandage into an
-   * existing stack is not "another item" as a new player understands it, and
-   * the card is teaching what picking things up looks like.
+   * IT COUNTS ITEMS, NOT SLOTS, and it used to count slots. That was the bug
+   * the owner walked into on 2026-09-05 ("I took 2 things from the crate and the
+   * next step never appeared"): br_core/server/inventory.lua's `give` opens with
+   * "Ammo never occupies a slot", and fills existing stacks before opening a new
+   * one -- so of the three things a warmup crate drops, two kinds routinely
+   * arrive without the slot count moving at all. A card asking for two items was
+   * unsatisfiable by the loot it was pointing at.
+   *
+   * AMMO IS ONE PICKUP PER POOL. A box adds thirty rounds, and "take two things"
+   * must not be answered by one box. See `tally` in TutorialLayer.
    */
   | 'pickup'
 

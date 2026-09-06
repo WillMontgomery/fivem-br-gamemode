@@ -39,7 +39,7 @@
  * and never blocks one.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { fetchNui } from '../bridge/nui'
 import { useUi } from '../store'
@@ -178,6 +178,16 @@ const SETTLE_FRAMES = 5
  */
 const SETTLE_DEADLINE = 40
 
+/**
+ * How long a step that waits on the player may wait before offering a Next.
+ *
+ * FORTY-FIVE SECONDS, which is longer than any of these tasks takes and shorter
+ * than somebody's patience with a walkthrough that has stopped responding. It is
+ * a safety net, not a shortcut: a player doing what the card asked will have
+ * advanced long before it appears.
+ */
+const STUCK_MS = 45000
+
 function place(r: Rect, vw: number, vh: number) {
   let left = r.x + r.w + GAP
   let fromX = -1
@@ -280,6 +290,25 @@ export default function TutorialLayer(p: TutorialLayerProps) {
    * must not be trusted. An id cannot be stale without being visibly wrong.
    */
   const [settledFor, setSettledFor] = useState<string | null>(null)
+  /**
+   * Has this step been waiting long enough that it is probably not coming?
+   *
+   * ═══ NO CARD MAY BE A DEAD END ═══
+   *
+   * A step that ends on something the player DOES -- opening a crate, picking
+   * loot up -- deliberately has no Next button: the owner's rule is that a card
+   * telling somebody to do a thing must not also offer a way past the thing
+   * (2026-09-05, on the crate card: "should not have a 'next' button as we're
+   * waiting for their action as we've directed them").
+   *
+   * That rule is right and it is not a licence to trap anybody. The owner sat on
+   * `game-pickup` with the requirement already met by a counter that was asking
+   * the wrong question, and there was no way out of the walkthrough at all. So
+   * after STUCK_MS the button appears -- late enough that nobody who is getting
+   * on with it will ever see one, and early enough that a miscount costs a
+   * confusing card rather than the run.
+   */
+  const [stuck, setStuck] = useState(false)
 
   const steps: Step[] = p.steps ?? LOBBY_STEPS
   const step = steps[i]
@@ -338,6 +367,14 @@ export default function TutorialLayer(p: TutorialLayerProps) {
 
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
+  }, [step])
+
+  // ── the way out of a step that is waiting on the player ─────────────────
+  useEffect(() => {
+    setStuck(false)
+    if (!step || step.advance !== 'pickup') return
+    const t = setTimeout(() => setStuck(true), STUCK_MS)
+    return () => clearTimeout(t)
   }, [step])
 
   // ── the real click, observed and never intercepted ──────────────────────
@@ -468,24 +505,65 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // may already be carrying something they found on the way to the crates, and
   // a card that asks for two and is satisfied by what is already in their hands
   // has taught them nothing.
-  const invSlots = useUi((st) => st.inv.slots)
-  const filled = invSlots.filter(Boolean).length
-  const startedWith = useRef(filled)
+  // COUNTING FILLED SLOTS WAS THE WRONG QUESTION, and it trapped the owner on
+  // this very card (2026-09-05: "I took 2 things from the crate and the next
+  // step never appeared after that"). Two of the three things a warmup crate
+  // drops cannot raise the slot count at all:
+  //
+  //   * AMMO OCCUPIES NO SLOT. br_core/server/inventory.lua's `give` opens with
+  //     "Ammo never occupies a slot" and returns before the slot code runs.
+  //   * A SECOND CONSUMABLE TOPS UP THE FIRST. The same function fills existing
+  //     stacks before opening a new one, so two bandages are one slot.
+  //
+  // A crate rolls three items at 55/18/21/6 weapon/ammo/consumable/throwable, so
+  // "take two things" routinely moves the slot count by one, or by none.
+  //
+  // THE FIX IS PAGE-SIDE AND NEEDS NO WIRE. The payload already carries
+  // `slots[i].count` and an `ammo` map, so this side can ask the right question
+  // from what it already receives -- rather than adding a counter to the
+  // protocol that only a walkthrough would ever read.
+  const inv = useUi((st) => st.inv)
+
+  /**
+   * Everything they are carrying, by id, so two of a thing is two.
+   *
+   * AMMO IS COUNTED AS ONE PICKUP PER POOL, NOT PER ROUND. One ammo box adds
+   * thirty to a pool, and a card that says "take two things" must not be
+   * satisfied by a single box. So a pool that rose is worth exactly 1, and
+   * everything else is worth however much of it arrived.
+   */
+  const tally = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const s of inv.slots) {
+      if (!s) continue
+      m.set(s.id, (m.get(s.id) ?? 0) + (s.count ?? 1))
+    }
+    for (const [pool, n] of Object.entries(inv.ammo ?? {})) {
+      m.set('@' + pool, n)
+    }
+    return m
+  }, [inv])
+
+  const startedWith = useRef(tally)
   useEffect(() => {
-    if (step?.advance === 'pickup') startedWith.current = filled
+    if (step?.advance === 'pickup') startedWith.current = tally
     // Only when the STEP changes -- re-running this on every pickup would move
     // the baseline up with them and the card would never be satisfied.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
+
   useEffect(() => {
     if (!step || step.advance !== 'pickup') return
-    if (filled - startedWith.current >= (step.pickups ?? 1)) go(i + 1)
-    // AND THE CARD MUST NOT BE UNSATISFIABLE. A player who arrives at this step
-    // already carrying five things cannot pick up a sixth, and this step has no
-    // Next button by design -- so a full inventory counts as done rather than as
-    // a walkthrough that will not let them out.
-    else if (filled >= invSlots.length) go(i + 1)
-  }, [step, filled, invSlots.length, i, go])
+    const before = startedWith.current
+    let got = 0
+    for (const [k, n] of tally) {
+      const was = before.get(k) ?? 0
+      if (n <= was) continue
+      // A POOL THAT ROSE IS ONE PICKUP. See `tally`.
+      got += k.startsWith('@') ? 1 : n - was
+    }
+    if (got >= (step.pickups ?? 1)) go(i + 1)
+  }, [step, tally, i, go])
 
   // ── a screen opening ends the step ──────────────────────────────────────
   //
@@ -608,7 +686,15 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         fromX={fromX}
         fromY={fromY}
         leaving={leaving}
-        onNext={step.advance === 'next' ? () => go(i + 1) : null}
+        // ...OR AFTER A LONG WAIT ON A STEP THAT HAS NO OTHER WAY OUT. See
+        // `stuck`. Never on a `click` or `screen` step: those name a control
+        // that is on screen and working, so a second route past them is the
+        // "asking for one thing and accepting another" the owner ruled out.
+        onNext={
+          step.advance === 'next' || (stuck && step.advance === 'pickup')
+            ? () => go(i + 1)
+            : null
+        }
         // ═══ NO WAY BACK ACROSS A DOORWAY ═══
         //
         // Owner, 2026-09-04: "if they just came from a different menu, like

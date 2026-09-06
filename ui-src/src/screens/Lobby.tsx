@@ -350,9 +350,36 @@ export default function Lobby({
 
   return (
     <div
-      className="fixed inset-0 transition-opacity duration-200"
+      // NO `transition-opacity` CLASS: the transition is written out below
+      // because it now carries a second property with a delay on it.
+      className="fixed inset-0"
       style={{
         opacity: visible ? 1 : 0,
+        // ═══ INVISIBLE AND STILL CLICKABLE, WHICH IS ITS OWN BUG ═══
+        //
+        // Owner, 2026-09-05, during warmup: "the lobby buttons aren't visible
+        // but still clickable somehow...."
+        //
+        // `opacity: 0` removes nothing from hit testing, and `pointer-events`
+        // on this root is NOT a guard: `.interactive` (index.css) and `.btn`
+        // both re-declare `pointer-events: auto` on descendants, so every
+        // button in the faded menu is its own hit target regardless of what
+        // their ancestor says. The lobby has been an invisible click surface
+        // for as long as anything has put a cursor on screen over it -- the
+        // player list and chat do it too. The walkthrough only made it routine.
+        //
+        // `visibility` is the property that cannot be undone from inside,
+        // because it INHERITS and nothing in this subtree overrides it, and a
+        // `visibility: hidden` element is not a hit target at all.
+        //
+        // THE DELAY IS WHAT KEEPS THE FADE. Switching visibility at the same
+        // instant as opacity would make the menu pop instead of dissolving, so
+        // it is held for the length of the fade on the way out and switched
+        // immediately on the way in.
+        visibility: visible ? 'visible' : 'hidden',
+        transition: visible
+          ? 'opacity 200ms linear'
+          : 'opacity 200ms linear, visibility 0s linear 200ms',
         pointerEvents: visible ? 'auto' : 'none',
         // A SCRIM WEIGHTED TO THE LEFT, not a centred vignette.
         //

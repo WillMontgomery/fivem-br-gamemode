@@ -128,8 +128,12 @@ local flySeq = 0
 --- Diagnostics. /brwarmupcrates reads them, and each one separates two failures
 --- that look identical from a chair.
 BR.WarmupCrates.stats = {
-    pins     = 0,   -- props adopted (a husk swap makes a new object, so this rises)
-    corrects = 0,   -- times a pinned prop had drifted and was put back
+    -- `found` was `pins` until the pin was deleted (2026-09-06). It counts the
+    -- same event -- a prop adopted at an anchor -- and no longer implies that
+    -- anything was done to it. `corrects` went with the pin: nothing corrects a
+    -- crate's position any more, so a counter of corrections would only ever
+    -- read zero.
+    found    = 0,   -- props adopted (a husk swap makes a new object, so this rises)
     returns  = 0,   -- return messages handled
     flown    = 0,   -- props that actually flew
     missed   = 0,   -- items whose prop could not be found or copied
@@ -190,80 +194,85 @@ local function findProp(a)
     return nil
 end
 
---- Hold one prop on its surveyed coordinates.
----
---- ═══ WHAT EACH LINE IS FOR, BECAUSE THREE OF THEM UNDO A DELIBERATE DECISION
----     IN client/loot.lua ═══
----
----   FreezeEntityPosition   The whole of it. A frozen object takes no simulation
----                          step, so gravity, the crate's own mass and a car
----                          driving into it all stop applying. This is the same
----                          native that file uses to hold LOOSE items still, and
----                          the same one it hands a crate during its collision
----                          wait -- so a frozen container is a state the pipeline
----                          already produces, briefly, on its own.
----   SetEntityHasGravity    Belt to that brace. If anything ever unfreezes one of
----                          these for a frame -- the spawn path does exactly that
----                          when it finishes building a husk -- it must not
----                          spend that frame falling.
----   the coordinate write   The prop was built at a PROBED height (`gz +
----                          restLift`), which is not the surveyed one. This is
----                          where the owner's z is honoured, and it is the only
----                          place it can be: the server has no ground probe.
----
---- RE-ASSERTED EVERY PASS, NOT ONCE. The spawn worker unfreezes a container
---- after its collision wait and the physics is re-activated at the same moment,
---- so a one-shot pin would be undone by the very next husk swap and there would
---- be nothing to see it happen. Written only when it has actually drifted, so
---- the steady state is two comparisons and no matrix writes.
---- @param a table
---- @param obj integer
-local function pin(a, obj)
-    FreezeEntityPosition(obj, true)
-    SetEntityHasGravity(obj, false)
-
-    -- HEADING BEFORE POSITION. SetEntityHeading rebuilds the entity's axis
-    -- vectors; it does not move it. The order does not matter here and is
-    -- written this way to match the spawn worker's pose-then-place convention,
-    -- so the two read the same way.
-    --
-    -- COMPARED THE WAY ANGLES HAVE TO BE. A heading is modulo 360, so a crate
-    -- authored at 0.0 and sitting at 359.98 is 0.02 degrees out and reads as
-    -- 359.98 to a straight subtraction -- which would fail this test forever and
-    -- buy a matrix write ten times a second, silently, for as long as the server
-    -- ran. None of the owner's four is near the wrap; the next one might be.
-    local dh = math.abs((GetEntityHeading(obj) - a.heading + 180.0) % 360.0 - 180.0)
-    if dh > 0.1 then
-        SetEntityHeading(obj, a.heading)
-    end
-
-    local c = GetEntityCoords(obj)
-    if math.abs(c.x - a.x) > 0.01 or math.abs(c.y - a.y) > 0.01
-       or math.abs(c.z - a.z) > 0.01 then
-        SetEntityCoordsNoOffset(obj, a.x, a.y, a.z, false, false, false)
-        BR.WarmupCrates.stats.corrects = BR.WarmupCrates.stats.corrects + 1
-    end
-end
-
--- ═══ 10 Hz, ON THE SAME BAND AS THE CRATE PHYSICS IT IS CORRECTING ═══
+-- ---------------------------------------------------------------------------
+-- The pin, and why there isn't one
+-- ---------------------------------------------------------------------------
 --
--- client/loot.lua's own `loot.crates` pass runs here, and it is the pass that
--- records each container's pose into the table a husk inherits when the crate is
--- opened. Running at the same rate means the pose it records is the pinned one
--- rather than a half-settled one, so the husk is BORN at the surveyed point --
--- which is what makes the freeze survive the swap without a visible jump.
+-- ═══ THIS FILE USED TO HOLD THE FOUR CRATES ON THEIR SURVEYED COORDINATES ═══
 --
--- THE WINDOW THIS LEAVES IS ONE PASS. A newly built prop is unpinned for at most
--- 100ms, and it is not falling during them: the spawn worker freezes a container
--- for the whole of its collision wait (up to 1.5s) before it ever hands it to
--- physics.
-BR.Loop.register(BR.Loop.TICK, 'warmupcrates.pin', function()
+-- A 10 Hz pass found each prop, called FreezeEntityPosition, turned its gravity
+-- off, and wrote the anchor's x/y/z into it with SetEntityCoordsNoOffset. It was
+-- built to honour the owner's survey, and it was the cause of both faults he
+-- reported on 2026-09-05:
+--
+--   "The crates still don't spawn, though their 3d markers do... they only
+--    spawned after I left the area and came back, and even then they weren't
+--    properly on the ground even though every other crate we've spawned in this
+--    game has been. Potentially they're getting frozen too early?"
+--
+-- HE WAS RIGHT, AND THE FIRST HALF IS THE SIMPLER HALF. The surveyed z is a
+-- number the owner read off his own screen STANDING on the tarmac -- a ped root.
+-- SetEntityCoordsNoOffset applies no model offset, which is what NoOffset means,
+-- so that number became the CRATE'S ORIGIN: the middle of the box put at ground
+-- level, half of it under the apron. Every other container in this game reaches
+-- its height by settling -- client/loot.lua builds it at `gz + restLift` with
+-- gravity on, waits out `awaitCollision`, re-probes and lets it fall the last
+-- 35cm -- and these four were the only ones in the game whose height was
+-- ASSERTED instead.
+--
+-- AND THE SECOND HALF FALLS OUT OF THE FIRST. The pin reached a new prop within
+-- one 10 Hz tick of CreateObjectNoOffset returning, so the crate was frozen
+-- before it had fallen any of that 35cm. The spawn worker then finishes its own
+-- build on its own clock: it unfreezes the container, makes it dynamic, gives it
+-- gravity and 4800kg, and calls ActivatePhysics -- on a body now interpenetrating
+-- the tarmac. Depenetration throws it clear, and `findProp` only matched within
+-- 0.35m of the anchor, so once thrown it was never re-pinned and never found
+-- again. A crate that is somewhere else is a crate that did not spawn.
+--
+-- ═══ SO THERE IS NO PIN, AND THE SURVEY IS STILL HONOURED ═══
+--
+-- Owner, 2026-09-05: "perhaps freezing the position of the crates is
+-- unimportant. we can remove that part."
+--
+-- Nothing is lost by removing it, which is the part worth stating plainly. The
+-- spawn worker already builds every entry at `e.x, e.y` -- the anchor's own
+-- coordinates, exactly (client/loot.lua, `local sx, sy, sz = e.x, e.y, ...`) --
+-- so the two numbers the owner actually surveyed are still the two numbers the
+-- crate stands on. Only the THIRD was ever in dispute, and the ground is a
+-- better authority on it than a ped's feet. "No those coords are very
+-- specifically placed. Don't change them" (2026-09-04) is kept.
+--
+-- These four now go through the same path as the other ~1300 crates on the map,
+-- which is the path the owner says works.
+--
+-- ⚠ IF THEY STILL FAIL TO APPEAR after this, the next suspect is `e.gzOk`
+-- (client/loot.lua): it is the one gate in the pipeline that yields no object at
+-- all, it gates the marker too, and the pipeline's only RequestCollisionAtCoord
+-- calls live INSIDE awaitCollision -- which cannot run until an object exists.
+-- A ground probe that fails because collision has not streamed therefore has no
+-- way to bootstrap itself, and walking closer is the only thing that fixes it.
+-- That is a second, independent mechanism with the same symptom; it is not being
+-- fixed speculatively here because removing the pin may well be the whole of it.
+
+-- ═══ WHAT THE PASS STILL DOES: IT WATCHES, IT DOES NOT TOUCH ═══
+--
+-- The handle cache outlived the pin and had to. `isSealed(i)` answers "is there
+-- a crate or a husk standing here" by reading the MODEL off the object at each
+-- anchor, and that is what decides whether a marker draws solid or dimmed. So
+-- the loop below still finds each prop and remembers it -- and then leaves it
+-- alone, which is the whole of the change.
+--
+-- STILL 10 Hz, and for a smaller reason than before: a husk swap deletes one
+-- object and builds another, so a cached handle goes stale roughly once per
+-- crate cycle and the marker would otherwise show the wrong state until
+-- something else refreshed it.
+BR.Loop.register(BR.Loop.TICK, 'warmupcrates.track', function()
     if W.enabled == false then return end
 
     if not onIsland() then
         -- NOT DELETED, JUST FORGOTTEN. These objects belong to client/loot.lua,
         -- which despawns them on its own terms; holding a dead handle across a
-        -- state change is how a pin lands on whatever the engine reissues that
+        -- state change is how a read lands on whatever the engine reissues that
         -- number to next.
         if next(pinned) then pinned = {} end
         return
@@ -273,9 +282,7 @@ BR.Loop.register(BR.Loop.TICK, 'warmupcrates.pin', function()
     -- an entry within `propDistance` and tears it down past that plus the
     -- hysteresis; beyond it there is nothing on the island to find, and hunting
     -- for it would be four searches an anchor, ten times a second, for the whole
-    -- of a warmup spent at the other end of a kilometre-wide island. The pad's
-    -- layout is 460m across and the prop radius is 180, so this is the ordinary
-    -- case rather than an edge one.
+    -- of a warmup spent at the other end of a kilometre-wide island.
     local p = GetEntityCoords(PlayerPedId())
     local reach = (L.propDistance or 180.0) + (L.propHysteresis or 15.0)
     local reach2 = reach * reach
@@ -288,21 +295,14 @@ BR.Loop.register(BR.Loop.TICK, 'warmupcrates.pin', function()
             -- handle we are holding names nothing. Dropped rather than kept:
             -- a stale handle is one the engine is free to reissue.
             pinned[i] = nil
-        else
-            local obj = pinned[i]
-
-            if not obj or not isTrue(DoesEntityExist(obj)) then
-                -- Gone, or never found. A husk swap deletes one object and
-                -- builds another, so this is the ordinary path once per cycle
-                -- rather than an error path.
-                obj = findProp(a)
-                pinned[i] = obj
-                if obj then
-                    BR.WarmupCrates.stats.pins = BR.WarmupCrates.stats.pins + 1
-                end
+        elseif not pinned[i] or not isTrue(DoesEntityExist(pinned[i])) then
+            -- Gone, or never found. A husk swap deletes one object and builds
+            -- another, so this is the ordinary path once per cycle rather than
+            -- an error path.
+            pinned[i] = findProp(a)
+            if pinned[i] then
+                BR.WarmupCrates.stats.found = BR.WarmupCrates.stats.found + 1
             end
-
-            if obj then pin(a, obj) end
         end
     end
 end)
@@ -904,9 +904,8 @@ end
 RegisterCommand('brwarmupcrates', function()
     local S = BR.WarmupCrates.stats
     local p = GetEntityCoords(PlayerPedId())
-    print(('[br_core] warmup crates: island=%s  pins=%d corrects=%d returns=%d flown=%d missed=%d')
-        :format(tostring(onIsland()), S.pins, S.corrects, S.returns,
-                S.flown, S.missed))
+    print(('[br_core] warmup crates: island=%s  found=%d returns=%d flown=%d missed=%d')
+        :format(tostring(onIsland()), S.found, S.returns, S.flown, S.missed))
     for _, s in ipairs(BR.WarmupCrates.all()) do
         local info = BR.RarityInfo[s.rarity]
         local obj = pinned[s.index]
