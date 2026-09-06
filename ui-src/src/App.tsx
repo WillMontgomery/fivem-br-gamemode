@@ -596,35 +596,6 @@ export default function App() {
           standing start -- LOBBY, no match -- and this half runs on the pad, in
           a match. So a long reader can be put on the bus mid-card today. See
           the ⚠ over BR.Net.TUTORIAL_SET for what closing it would take. */}
-      {s.tutorialGameRun && (
-        <TutorialLayer
-          steps={GAME_STEPS}
-          screen={s.focus}
-          onDone={() => {
-            s.setTutorialGameRun(false)
-            void fetchNui(CB.TUTORIAL_SET, { game: false, done: true })
-          }}
-          onAbandon={() => {
-            s.setTutorialGameRun(false)
-            // NO `done`. This fires when a card's anchor has gone, which is a
-            // fault -- paying for it would pay a learner for the walkthrough
-            // breaking under them. The flag still drops, because a player left
-            // holding it keeps the cursor and the layer with nothing driving
-            // either.
-            void fetchNui(CB.TUTORIAL_SET, { game: false })
-          }}
-        />
-      )}
-
-      {s.tutorialRun && (
-        <TutorialLayer
-          screen={s.focus}
-          subscreenUp={LOBBY_SUBSCREENS.has(s.focus)}
-          onDone={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
-          onAbandon={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
-          onStep={s.setTutorialStep}
-        />
-      )}
       {/* THE ADMIN CONSOLE (#23), IN THE FRAME `/help` GETS AND NOT THE PAUSE
           MENU'S TAB WELL -- which is the owner's call and the reason it is a
           screen at all: "the one in /help is much larger and would be most
@@ -672,7 +643,57 @@ export default function App() {
               ? 'none' : undefined,
           transition: 'opacity 120ms linear',
         }}
+        aria-hidden={
+          s.frontendUp && !(s.frontendReason === 'map' && s.tutorialGameRun)
+            ? true : undefined
+        }
       >
+      {s.tutorialGameRun && (
+        <TutorialLayer
+          steps={GAME_STEPS}
+          screen={s.focus}
+          // ═══ ANY SCREEN THE STEP DID NOT ASK FOR TAKES THE CARDS DOWN ═══
+          //
+          // Owner, 2026-09-05: "if they press ESC through any of this to open
+          // the settings menu all other cards should be hidden until the
+          // settings page is dismissed."
+          //
+          // OUR pause menu is a React screen, not the engine's, so `frontendUp`
+          // is false while it is open and the fade above never fired -- the
+          // cards sat on top of it. This is the same rule the lobby half has
+          // always had, applied to the HUD's screens, and it costs nothing: a
+          // step that WANTS a screen names it in `screen`, and the layer
+          // compares that instead (see `waitingForScreen`).
+          //
+          // `none` IS THE BARE HUD once the cursor is gone, and `tutorial` is
+          // the bare HUD while the walkthrough still holds focus -- neither is
+          // something covering the controls these cards point at.
+          subscreenUp={s.focus !== 'none' && s.focus !== 'tutorial'}
+          onDone={() => {
+            s.setTutorialGameRun(false)
+            void fetchNui(CB.TUTORIAL_SET, { game: false, done: true })
+          }}
+          onAbandon={() => {
+            s.setTutorialGameRun(false)
+            // NO `done`. This fires when a card's anchor has gone, which is a
+            // fault -- paying for it would pay a learner for the walkthrough
+            // breaking under them. The flag still drops, because a player left
+            // holding it keeps the cursor and the layer with nothing driving
+            // either.
+            void fetchNui(CB.TUTORIAL_SET, { game: false })
+          }}
+        />
+      )}
+
+      {s.tutorialRun && (
+        <TutorialLayer
+          screen={s.focus}
+          subscreenUp={LOBBY_SUBSCREENS.has(s.focus)}
+          onDone={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
+          onAbandon={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
+          onStep={s.setTutorialStep}
+        />
+      )}
       </div>
     </>
   )

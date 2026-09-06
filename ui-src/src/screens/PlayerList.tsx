@@ -1222,9 +1222,17 @@ export default function PlayerList() {
                    allowance is not the panel's to talk about, and a player who
                    has spent it is told so by the refusal, in the same toast
                    that would have carried any other reason. */
+                /* data-tut ON A WRAPPER, NOT ON <Btn>. TypeScript does not
+                   type-check hyphenated JSX attributes, so `data-tut` on a
+                   component that does not spread its props compiles clean and
+                   then vanishes -- the walkthrough finds no anchor and ends the
+                   run. `inline-block` because a wrapper with no layout box
+                   measures 0x0 and the ring draws in the corner (#261). */
+                <span data-tut="players-report" className="inline-block">
                 <Btn variant="ghost" size="sm" cue="ui.select" onPress={enterReport}>
                   Report player
                 </Btn>
+                </span>
               )}
             </div>
           </div>

@@ -428,19 +428,35 @@ do
     -- The settle must not run while the player who opened it is still picking
     -- things up. Held open for well past settleMs, which is the case that would
     -- eat loot out from under them.
-    standAt(1, a.x, a.y, 5.0)
+    -- ═══ THE INVARIANT THE RADIUS MUST NEVER BREAK ═══
+    --
+    -- The owner cut leaveRadius to "like a 10ft radius" (2026-09-05). Ten feet
+    -- is 3.05m and BR.Config.Loot.pickupDistance is 3.5, so the literal number
+    -- would put the reseal timer INSIDE arm's reach -- a player still close
+    -- enough to pick loot up, watching it animate home. Pinned here rather than
+    -- left to a comment, because the next person to tighten it will read a test
+    -- failure and not a paragraph.
+    ok((W.leaveRadius or 0) > (BR.Config.Loot.pickupDistance or 3.5),
+        'the leave radius is wider than a player can reach',
+        ('leaveRadius %.2f vs pickupDistance %.2f')
+            :format(W.leaveRadius or 0, BR.Config.Loot.pickupDistance or 3.5))
+
+    -- ═══ SOMEBODY IS STANDING THERE ═══ (continued)
+    --
+    -- At arm's reach, which is the case that would eat loot out from under the
+    -- player who just opened it. Held open for well past settleMs.
+    standAt(1, a.x, a.y, 2.0)
     for _ = 1, 40 do step() end   -- 10 seconds, twice the settle
     eq(entriesAt()[3].kind, 'husk', 'a player within reach holds it open')
     eq(spillCount(a), W.items or 3, 'and nothing of theirs is taken away')
 
-    -- Just outside pickup range is still standing there: `leaveRadius` is much
-    -- wider than the 3.5m reach on purpose.
-    standAt(1, a.x, a.y, (W.leaveRadius or 22.0) - 2.0)
+    -- And just inside the boundary itself, wherever the owner has put it.
+    standAt(1, a.x, a.y, (W.leaveRadius or 4.0) - 0.5)
     for _ = 1, 40 do step() end
     eq(entriesAt()[3].kind, 'husk', 'and so is standing just inside leaveRadius')
 
     -- ═══ AND NOW THEY WALK AWAY ═══
-    standAt(1, a.x, a.y, (W.leaveRadius or 22.0) + 5.0)
+    standAt(1, a.x, a.y, (W.leaveRadius or 4.0) + 5.0)
 
     -- Not instantly: settleMs is the difference between "stepped back" and
     -- "left".

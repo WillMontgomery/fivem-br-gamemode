@@ -262,7 +262,7 @@ export const LOBBY_STEPS: Step[] = [
     id: 'settings-accessibility',
     target: 'settings-tab-accessibility',
     title: 'Accessibility',
-    body: 'And **Accessibility** has colour-blind modes, with a preview so you can see the difference before you commit to it.',
+    body: 'And **Accessibility** has color-blind modes, with a preview so you can see the difference before you commit to it.',
     advance: 'click',
     screen: 'settings',
   },

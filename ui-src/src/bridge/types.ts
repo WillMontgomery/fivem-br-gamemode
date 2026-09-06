@@ -1133,6 +1133,14 @@ export interface FocusPayload {
          *  incidents, and `/help` already establishes that a framed page gets
          *  the full-screen treatment. */
         | 'admin'
+        /** The in-game walkthrough (#261), while it holds the cursor so its
+         *  cards can be pressed. IT IS NOT A SCREEN THIS PAGE DRAWS -- the HUD
+         *  stays exactly as it was underneath -- which is why it is also in
+         *  BR.FocusKeepsInput: the player has to be able to walk to the crates
+         *  while a card is up. It is in this union because Lua really does send
+         *  it and code that compares against it was being told, wrongly, that
+         *  the comparison could never match. */
+        | 'tutorial'
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel

@@ -159,6 +159,25 @@ function sameRect(a: Rect | null, b: Rect | null): boolean {
  * card TOWARD the subject, which is what the arrival animation and the beak
  * both consume.
  */
+/**
+ * How many identical frames make a target "settled" enough to place a card at.
+ *
+ * FIVE, which is ~83ms at 60fps -- long enough to outlast a panel's mount
+ * transition and comfortably inside the 180ms exit the outgoing card is playing,
+ * so the wait is invisible.
+ */
+const SETTLE_FRAMES = 5
+
+/**
+ * ...and how long to wait for that before placing anyway.
+ *
+ * A target that never holds still would otherwise mean a card that never draws.
+ * Forty frames is two thirds of a second: past every transition in this
+ * interface, and short enough that a genuinely animated anchor costs a beat
+ * rather than the walkthrough.
+ */
+const SETTLE_DEADLINE = 40
+
 function place(r: Rect, vw: number, vh: number) {
   let left = r.x + r.w + GAP
   let fromX = -1
@@ -237,14 +256,53 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const rectRef = useRef<Rect | null>(null)
   /** Where this step's card was placed, and what that placement was valid for. */
   const placedRef = useRef<{ key: string; at: ReturnType<typeof place> } | null>(null)
+  /**
+   * The step whose target has stopped moving, or null.
+   *
+   * ═══ THIS IS WHAT SHUFFLED EVERY CARD ON THE SCREEN ═══
+   *
+   * Latching the card's position (so it would stop sliding as the kill feed grew
+   * under it) was right. Latching it on the FIRST RENDER OF A NEW STEP was not:
+   * `rect` is state, the measure loop is an effect, and effects run AFTER render
+   * -- so on the frame a step advanced, `rect` still held THE PREVIOUS STEP'S
+   * TARGET. Every card was therefore pinned where its predecessor's control had
+   * been, and pinned there for good.
+   *
+   * It read as eight unrelated faults. Owner, 2026-09-05: "the 'make it yours
+   * first' card should be next to the settings button, not the squads button"
+   * -- Settings is the step after Squads -- then steps 4, 7, 9, 10, 11, 12, 13
+   * and 16 in the lobby and most of the in-game half. The ones that still looked
+   * right were the ones whose predecessor's target happened to sit next to their
+   * own: three settings sliders in a column hide this bug completely.
+   *
+   * HOLDING A STEP ID RATHER THAN A BOOLEAN IS THE WHOLE FIX. A boolean is still
+   * true on the first render of the next step, which is exactly the frame that
+   * must not be trusted. An id cannot be stale without being visibly wrong.
+   */
+  const [settledFor, setSettledFor] = useState<string | null>(null)
 
   const steps: Step[] = p.steps ?? LOBBY_STEPS
   const step = steps[i]
 
   // ── the measure loop ────────────────────────────────────────────────────
+  //
+  // IT MEASURES FOREVER AND SETTLES ONCE. The ring has to follow its subject
+  // every frame -- a target can arrive late, reflow, or grow -- but the CARD is
+  // prose somebody is reading, and prose that slides out from under the eye is
+  // worse than prose a few pixels off its subject.
   useEffect(() => {
     if (!step) return
     let raf = 0
+    // THE PREVIOUS STEP'S MEASUREMENT IS NOT EVIDENCE ABOUT THIS ONE. Cleared
+    // here rather than left to be overwritten, so there is no frame in which
+    // `rect` and `step` describe two different controls.
+    rectRef.current = null
+    setRect(null)
+    setSettledFor(null)
+    placedRef.current = null
+
+    let same = 0
+    let frames = 0
 
     const tick = () => {
       const el = document.querySelector<HTMLElement>(`[data-tut="${step.target}"]`)
@@ -257,7 +315,23 @@ export default function TutorialLayer(p: TutorialLayerProps) {
 
       if (!sameRect(rectRef.current, next)) {
         rectRef.current = next
+        same = 0
         setRect(next)
+      } else if (next !== null) {
+        same += 1
+      }
+
+      frames += 1
+      // SETTLED: the same box for SETTLE_FRAMES running, which is long enough to
+      // outlast a mount transition and short enough to sit inside the outgoing
+      // card's 180ms exit.
+      //
+      // ...OR OUT OF PATIENCE. A target that never stops moving -- a spinner, a
+      // ticking clock, an element with a looping animation -- would otherwise
+      // mean a card that never draws at all, which is a worse failure than one
+      // placed against a moving box. The deadline is the escape.
+      if (next !== null && (same >= SETTLE_FRAMES || frames >= SETTLE_DEADLINE)) {
+        setSettledFor(step.id)
       }
       raf = requestAnimationFrame(tick)
     }
@@ -288,6 +362,18 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const go = useCallback(
     (to: number) => {
       setLeaving(true)
+      // ═══ AND THE PRESS IS FORGOTTEN, WHICH IS WHAT MAKES "LAST" WORK ═══
+      //
+      // Owner, 2026-09-05: "the 'last' button doesn't seem to return to the last
+      // step...." It did -- for one frame. `clickedFor` holds the id of the step
+      // whose control was pressed and was never cleared, so stepping BACK onto a
+      // `click` step landed on a card whose advance condition was already
+      // satisfied by the press that left it in the first place. The layer sent
+      // them straight forward again, and the button looked dead.
+      //
+      // Cleared for every move, not just backwards: a step reached twice is a
+      // step whose control must be pressed twice.
+      setClickedFor(null)
       // Let the exit animation play before the next card is built. 180ms is
       // tutOut's duration; a longer wait is dead air and a shorter one clips.
       setTimeout(() => {
@@ -471,7 +557,10 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     return () => clearTimeout(t)
   }, [missing, step, waitingForScreen])
 
-  if (!step || rect === null || waitingForScreen) return null
+  // NOT UNTIL THE BOX BELONGS TO THIS STEP AND HAS STOPPED MOVING. See
+  // `settledFor` -- this one comparison is what keeps a card from being pinned
+  // to the control the PREVIOUS card was about.
+  if (!step || rect === null || waitingForScreen || settledFor !== step.id) return null
 
   // ── where the card goes, decided ONCE per step ──────────────────────────
   //

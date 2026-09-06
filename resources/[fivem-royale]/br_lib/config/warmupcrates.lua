@@ -93,12 +93,26 @@ BR.Config.WarmupCrates = {
     -- A player who steps back four metres to look at what fell out has not left,
     -- and resetting under them would eat loot they were about to pick up.
     --
-    -- 22m is outside BR.Config.Loot.pickupDistance (3.5) by a wide margin and
-    -- inside `glowDistance` (25) by a small one -- so a player who can still see
-    -- the crate glowing is still holding it open. The crates are 6-8m apart, so
-    -- this radius also means standing at one holds its NEIGHBOURS open, which is
-    -- correct: a player working along the row has not left the row.
-    leaveRadius = 22.0,
+    -- ═══ ABOUT TEN FEET, WHICH IS THE OWNER'S NUMBER ═══
+    --
+    -- 2026-09-05: "walking away from a special crate for it to refill should only
+    -- be like a 10ft radius from it." This was 22m, chosen so that a player who
+    -- could still SEE the crate glowing was holding it open -- and the argument
+    -- was wrong about what a player wants. These four exist to be opened over
+    -- and over; taking two steps back and having one reset is the behaviour, not
+    -- a hazard.
+    --
+    -- 4.0m RATHER THAN 3.05m, AND THE HALF-METRE IS LOAD-BEARING. Ten feet is
+    -- 3.05m, which is INSIDE BR.Config.Loot.pickupDistance (3.5) -- so a crate
+    -- set to exactly ten feet would start its reseal timer on a player who is
+    -- still close enough to pick the loot up, and five seconds later animate it
+    -- home out of their hands. Whatever this number becomes it must stay above
+    -- pickupDistance, or the reset eats loot the player can still reach.
+    --
+    -- AND IT NO LONGER HOLDS THE NEIGHBOURS OPEN. The crates are 6-8m apart, so
+    -- at 22m standing at one kept all four awake and at 4.0m each is on its own
+    -- -- which is what makes "walk away and it refills" mean anything.
+    leaveRadius = 4.0,
     -- ...AND HAS BEEN GONE THIS LONG. Long enough that a lap around the crate
     -- does not trip it, short enough that the next player up the beach finds it
     -- sealed. It is the whole of the "infinitely" in the request: nothing else

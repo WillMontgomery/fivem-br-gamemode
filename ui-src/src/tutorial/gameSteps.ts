@@ -131,7 +131,7 @@ export const GAME_STEPS: Step[] = [
     // STAGED, because a new player on the pad has an empty feed and a card
     // pointing at a blank corner teaches nothing.
     stage: 'killfeed',
-    body: 'Every elimination in the match shows up here, with the weapon that did it. **Your own** kills and deaths are picked out in colour so you can find them at a glance. The storm counts as a killer too.',
+    body: 'Every elimination in the match shows up here, with the weapon that did it. **Your own** kills and deaths are picked out in color so you can find them at a glance. The storm counts as a killer too.',
     advance: 'next',
   },
   {
@@ -143,7 +143,7 @@ export const GAME_STEPS: Step[] = [
     // nothing. The staged squad has a downed mate in it on purpose -- the plate
     // states are half of what the card is describing.
     stage: 'squad',
-    body: 'One plate per squadmate, in their own colour — the same colour as their dot on the radar.',
+    body: 'One plate per squadmate, in their own color — the same color as their dot on the radar.',
     advance: 'next',
   },
   {
@@ -192,13 +192,45 @@ export const GAME_STEPS: Step[] = [
     action: { label: 'Open it for me', cb: 'br/players/focus' },
   },
   {
+    id: 'game-report',
+    // ═══ THE CARD THAT ONLY EXISTS INSIDE THE PLAYER LIST ═══
+    //
+    // Owner, 2026-09-05: "After clicking 'open it for me' they should see an
+    // explanation of how to report players for cheating or harassment etc, then
+    // a prompt to close the playerlist."
+    //
+    // SCOPED TO THE SCREEN, so it draws only while the list is actually up --
+    // and points at the button rather than at the panel, which is the owner's
+    // standing rule for anything smaller than a whole surface.
+    target: 'players-report',
+    screen: 'players',
+    title: 'Reporting somebody',
+    body: 'If a player is **cheating**, or is abusive in voice or chat, press **Report player** and pick them from this list. A moderator reads every one — you do not need to catch them at it, and reporting somebody never tells them you did.',
+    advance: 'next',
+  },
+  {
+    id: 'game-players-close',
+    target: 'players-report',
+    screen: 'players',
+    title: 'Close it when you are done',
+    // ENDS ON THE LIST GOING AWAY, which is the same key that opened it. There
+    // is no `advance` kind for "a screen closed" because there did not need to
+    // be: `screen` is whatever is on top, and the bare HUD is `none`.
+    body: 'Press **{key:brplayers}** again, or **Escape**, to close the list.',
+    advance: 'screen',
+    awaitScreen: 'none',
+    // NO BACK BUTTON ACROSS THE DOORWAY. Last would have to reopen a screen the
+    // player is being asked to close.
+    noBack: true,
+  },
+  {
     id: 'game-crates',
     // The markers over the four crates are what this card points at in the
     // world; on screen it anchors to the inventory, which is where the loot it
     // is about to talk about will land.
     target: 'hud-inventory',
     title: 'Crates',
-    body: 'Those four marked crates on the pad are yours to practise on — they refill themselves, so take as long as you like. The **marker colour is the rarity** of what is inside, and they get better left to right. **Go and open one.**',
+    body: 'Those four marked crates on the pad are yours to practice on — they refill themselves, so take as long as you like. The **marker color is the rarity** of what is inside, and they get better left to right. **Go and open one.**',
     advance: 'next',
   },
   {
