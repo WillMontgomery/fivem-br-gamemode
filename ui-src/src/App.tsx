@@ -223,6 +223,39 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // ═══ THE WALKTHROUGH CROSSING FROM THE LOBBY INTO THE MATCH (#261) ═══
+  //
+  // Owner, 2026-09-05: "when in the lobby and the tutorial is complete, the
+  // 'continue' toggle is on but it doesn't start the game tutorial when I get
+  // into warmup." It did not, because `tutorialGameOn` was an offer nothing
+  // read -- this project's orphaned-subsystem pattern, for the third time in
+  // this one feature. This is the line that reads it.
+  //
+  // ON THE EDGE INTO WARMUP, NOT ON BEING IN IT. Warmup is a state the page
+  // sees on every payload for forty-five seconds; the transition happens once,
+  // which is how often a walkthrough should start.
+  //
+  // AND THE OFFER IS SPENT BY TAKING IT. Without that, walking out of a match
+  // and into the next one would start the walkthrough again for somebody who
+  // has already had it -- and the 500 Volts is paid once, so the second run
+  // would be twenty minutes for nothing.
+  //
+  // ASKS LUA RATHER THAN SETTING THE FLAG HERE. Lua owns whether either half is
+  // running (see br_core/client/tutorial.lua) and it has work to do on the way
+  // in that the page cannot: the cursor, and the markers over the crates.
+  useEffect(() => {
+    if (s.match.state !== 'warmup') return
+    if (!s.tutorialGameOn || s.tutorialGameRun) return
+    // A BYSTANDER IS NOT IN THIS MATCH. `participant === false` is a player
+    // sitting in the lobby while somebody else's round runs, and starting a HUD
+    // walkthrough over a lobby they are still looking at would point every card
+    // at nothing.
+    if (s.match.participant === false) return
+    s.setTutorialGameOn(false)
+    void fetchNui(CB.TUTORIAL_SET, { game: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.match.state, s.match.participant, s.tutorialGameOn, s.tutorialGameRun])
+
   // WARMUP is not a lobby. Players are standing in the world on the warmup pad,
   // so they get the HUD -- an earlier version hid it, which combined with the
   // Lobby only rendering when focus === 'lobby' (which nothing ever set) left
@@ -554,14 +587,32 @@ export default function App() {
           during warmup, and a sub-screen covering it is the player opening
           something the walkthrough is about to ask them to open anyway.
 
-          IT RUNS INSIDE THE SERVER-SIDE WARMUP HOLD, so no clock can run out
-          mid-card. The last step is what releases it. */}
+          THE LAST CARD IS WHAT ENDS IT, and ending it is what pays the 500
+          Volts -- see BR.Net.TUTORIAL_DONE. Only `onDone` pays; `onAbandon`
+          fires when an anchor has gone, which is a fault rather than a finish.
+
+          ⚠ THE WARMUP CLOCK IS STILL RUNNING UNDERNEATH IT. The hold the owner
+          asked for exists (BR.Roster.setTutorial) but is granted only from a
+          standing start -- LOBBY, no match -- and this half runs on the pad, in
+          a match. So a long reader can be put on the bus mid-card today. See
+          the ⚠ over BR.Net.TUTORIAL_SET for what closing it would take. */}
       {s.tutorialGameRun && (
         <TutorialLayer
           steps={GAME_STEPS}
           screen={s.focus}
-          onDone={() => s.setTutorialGameRun(false)}
-          onAbandon={() => s.setTutorialGameRun(false)}
+          onDone={() => {
+            s.setTutorialGameRun(false)
+            void fetchNui(CB.TUTORIAL_SET, { game: false, done: true })
+          }}
+          onAbandon={() => {
+            s.setTutorialGameRun(false)
+            // NO `done`. This fires when a card's anchor has gone, which is a
+            // fault -- paying for it would pay a learner for the walkthrough
+            // breaking under them. The flag still drops, because a player left
+            // holding it keeps the cursor and the layer with nothing driving
+            // either.
+            void fetchNui(CB.TUTORIAL_SET, { game: false })
+          }}
         />
       )}
 

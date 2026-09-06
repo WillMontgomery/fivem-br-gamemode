@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
-  useUi, selHud, selStorm, selSquad, selFeed, selDbno, selMatch, selInv,
+  useUi, selHud, selStorm, selHudSquad, selFeed, selDbno, selMatch, selInv,
   selVehicle,
 } from '../store'
 import { useScreenMetrics } from './useScreenMetrics'
@@ -213,7 +213,7 @@ export default function Hud({ visible }: { visible: boolean }) {
   const scoped = useUi((s) => s.scoped)
   const hud   = useUi(selHud)
   const storm = useUi(selStorm)
-  const squad = useUi(selSquad)
+  const squad = useUi(selHudSquad)
   const talking = useUi((s) => s.talking)
   // TWO PRIMITIVES RATHER THAN THE ENVELOPE, on purpose. Selecting `s.voice`
   // would re-render this component -- the whole HUD -- on every push that

@@ -115,6 +115,8 @@ export type CardProps = {
   onBack: (() => void) | null
   /** Set only on the final card, which ends the run rather than advancing. */
   onDismiss: (() => void) | null
+  /** What that button says. "Dismiss" unless the step overrides it. */
+  dismissLabel?: string
   /**
    * An extra button that does the thing the card is describing.
    *
@@ -229,7 +231,7 @@ export default function AnnotationCard(p: CardProps) {
               the 'ready up' button should release." */}
           {p.onDismiss ? (
             <Btn variant="primary" size="sm" cue="ui.select" onPress={p.onDismiss}>
-              Dismiss
+              {p.dismissLabel ?? 'Dismiss'}
             </Btn>
           ) : null}
         </span>

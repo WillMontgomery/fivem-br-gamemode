@@ -25,6 +25,12 @@ function AddEventHandler(name, fn)
     table.insert(handlers[name], fn)
 end
 
+-- A NO-OP, AND THAT IS WHAT IT IS ON THE SERVER TOO. RegisterNetEvent only
+-- marks a name as reachable from a client; the handler is still AddEventHandler.
+-- So a test that fires the name directly exercises exactly the same function the
+-- network would reach, and stubbing this to nothing loses no coverage.
+function RegisterNetEvent(_) end
+
 --- Every br_ddb request this file made, in order. The test answers them by
 --- firing the matching result event, exactly as the JS half would.
 local asked = {}
@@ -1072,6 +1078,95 @@ do
     local bad = brvolts('3', '5000')
     TriggerEvent('br:ddb:statsResult', bad.args[1], false, { error = 'throttled' })
     ok(seen == nil, 'a refused write leaves the cache alone')
+end
+
+-- ---------------------------------------------------------------------------
+describe('the tutorial reward (#261)')
+-- ---------------------------------------------------------------------------
+do
+    --- Fire BR.Net.TUTORIAL_DONE as player `src`.
+    ---
+    --- `source` IS A GLOBAL ON THE REAL SERVER -- FiveM sets it around a net
+    --- event handler and the handler reads it in its first line. Setting it here
+    --- is what makes this the same call the network makes.
+    local function finish(src)
+        local before = #asked
+        source = src
+        TriggerEvent(BR.Net.TUTORIAL_DONE)
+        source = nil
+        for i = before + 1, #asked do
+            if asked[i].name == 'br:ddb:awardPay' then return asked[i] end
+        end
+        return nil
+    end
+
+    online = { [7] = { 'license:cccccccc', 'steam:110000100000007' } }
+    sent = {}
+
+    local req = finish(7)
+
+    ok(req ~= nil, 'finishing the walkthrough asks br_ddb to pay')
+    ok(req and req.args[2] == 'license:cccccccc',
+        'for the license derived on the server, not one the client sent',
+        req and tostring(req.args[2]))
+    ok(req and req.args[3] == 'tutorial',
+        'under a fixed key, which is what makes it once per account forever',
+        req and tostring(req.args[3]))
+    ok(req and req.args[4] == BR.Config.Market.tutorialReward
+            and req.args[4] == 500,
+        'for the configured amount, which is 500',
+        req and tostring(req.args[4]))
+
+    -- ═══ THE REWARD IS NOT A SECOND CURRENCY ═══
+    local seen = nil
+    AddEventHandler('br:market:credited', function(lic, xp, volts)
+        seen = { lic = lic, xp = xp, volts = volts }
+    end)
+
+    TriggerEvent('br:ddb:awardPayResult', req.args[1], true,
+                 { paid = true, balance = 1500 })
+
+    ok(seen ~= nil and seen.volts == 500,
+        "a paid reward moves br_core's session cache",
+        seen and tostring(seen.volts))
+    ok(seen ~= nil and seen.xp == 0,
+        'and pays no XP -- XP is what matches are for')
+
+    local told = nil
+    for _, m in ipairs(sent) do
+        if m.name == BR.Net.NOTIFY and m.src == 7 then told = m end
+    end
+    ok(told ~= nil, 'and the player is told')
+    ok(told and told.payload and told.payload.text:find('500', 1, true) ~= nil,
+        'with the amount in the sentence',
+        told and told.payload and told.payload.text)
+
+    -- ═══ THE SECOND CLAIM IS REFUSED BY THE DATABASE, AND SAYS NOTHING ═══
+    --
+    -- The Help page can re-run the walkthrough, so a second claim is an ordinary
+    -- event rather than an attack. Paying nothing is right; TELLING them they
+    -- were gifted 500 Volts they did not receive is the bug this pins.
+    seen, sent = nil, {}
+    local again = finish(7)
+    ok(again ~= nil, 'a second finish still asks -- the lock is the database')
+    TriggerEvent('br:ddb:awardPayResult', again.args[1], true,
+                 { paid = false, alreadyPaid = true })
+    ok(seen == nil, 'an already-paid claim moves no cache')
+    ok(#sent == 0, 'and tells the player nothing')
+
+    -- ═══ A FAILED WRITE PAYS NOBODY AND PROMISES NOBODY ═══
+    seen, sent = nil, {}
+    local bad = finish(7)
+    TriggerEvent('br:ddb:awardPayResult', bad.args[1], false, { error = 'throttled' })
+    ok(seen == nil and #sent == 0, 'a failed write credits nothing and says nothing')
+
+    -- ═══ NO LICENSE, NO PAYMENT ═══
+    --
+    -- Inventing a key here would credit the wrong human later, which is the same
+    -- reason BR.Roster.licenseOf leaves a licenseless connection nil.
+    online = { [9] = { 'steam:110000100000009' } }
+    sent = {}
+    ok(finish(9) == nil, 'a connection with no license is not paid')
 end
 
 print = realPrint

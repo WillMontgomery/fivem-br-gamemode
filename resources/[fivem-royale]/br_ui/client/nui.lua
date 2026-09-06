@@ -620,6 +620,19 @@ end)
 --- messages the other way. br_ui stays what it is: the page's doorway, holding
 --- no game state of its own.
 RegisterNUICallback(BR.NuiCb.TUTORIAL_SET, function(data, cb)
-    TriggerEvent('br:tutorial:set', type(data) == 'table' and data.run == true)
+    data = type(data) == 'table' and data or {}
+
+    -- TWO HALVES, ONE DOORWAY, AND THE KEYS ARE CHECKED FOR PRESENCE RATHER
+    -- THAN TRUTH. `data.run == true` alone cannot tell "the lobby half ended"
+    -- from "this message was about the in-game half and said nothing about the
+    -- lobby" -- both arrive as false -- and acting on the second would stop a
+    -- walkthrough nobody asked to stop.
+    if data.run ~= nil then
+        TriggerEvent('br:tutorial:set', data.run == true)
+    end
+    if data.game ~= nil then
+        TriggerEvent('br:tutorial:game', data.game == true, data.done == true)
+    end
+
     cb({ ok = true })
 end)

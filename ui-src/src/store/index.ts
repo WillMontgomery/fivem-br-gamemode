@@ -268,6 +268,12 @@ export interface UiState {
    * this is the run.
    */
   tutorialGameRun: boolean
+  /**
+   * The squad the walkthrough is pretending this player has, or null.
+   *
+   * READ THROUGH `selHudSquad`, never directly. See `setTutorialSquad`.
+   */
+  tutorialSquad: SquadPayload | null
 
   /** True while the voluntary-leave interstitial covers the screen: black
    *  plus a quiet "Leaving the match" while the world swaps underneath. */
@@ -297,6 +303,18 @@ export interface UiState {
   setMatch: (m: MatchPayload) => void
   setHud: (h: HudPayload) => void
   setSquad: (s: SquadPayload) => void
+  /**
+   * A squad the WALKTHROUGH is staging, which the HUD prefers over the real one.
+   *
+   * SEPARATE FROM `squad` RATHER THAN WRITTEN OVER IT. br_core pushes a squad
+   * payload on a tick, so a demo written into `squad` is overwritten a fraction
+   * of a second later -- which is exactly what happened: the panel flashed and
+   * vanished, and the card pointing at a plate inside it ended the run when its
+   * anchor went with it (owner, 2026-09-05).
+   *
+   * NULL IS THE ORDINARY STATE and means "show what the server said".
+   */
+  setTutorialSquad: (s: SquadPayload | null) => void
   setParty: (p: SquadPayload) => void
   setTalking: (ids: number[], names?: string[]) => void
   setVoice: (v: VoicePayload) => void
@@ -702,6 +720,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialStep: null,
   tutorialGameOn: true,
   tutorialGameRun: false,
+  tutorialSquad: null,
   leaving: false,
   curtain: 'leaving',
   invite: null,
@@ -752,6 +771,7 @@ export const useUi = create<UiState>((set, get) => {
     set({ hud })
   },
   setSquad:    (squad) => set({ squad }),
+  setTutorialSquad: (tutorialSquad) => set({ tutorialSquad }),
   setParty:    (party) => set({ party }),
   // Names default to empty rather than to the ids: a bar reading "Currently
   // Talking: 27" is worse than no bar, and an id is what is left when the
@@ -930,6 +950,15 @@ export const selStorm    = (s: UiState) => s.storm
 export const selVehicle  = (s: UiState) => s.vehicle
 export const selMatch    = (s: UiState) => s.match
 export const selSquad    = (s: UiState) => s.squad
+/**
+ * The squad the HUD should draw: the walkthrough's staged one when it has one.
+ *
+ * DELIBERATELY NOT `selSquad` ITSELF. The lobby's party panel and the chat
+ * header read the real squad, and a demo leaking into either would tell a
+ * player they are in a party they are not in. Only the HUD -- which is the only
+ * surface the in-game walkthrough points at -- takes the override.
+ */
+export const selHudSquad = (s: UiState) => s.tutorialSquad ?? s.squad
 export const selInv      = (s: UiState) => s.inv
 export const selFeed     = (s: UiState) => s.feed
 export const selChat     = (s: UiState) => s.chat

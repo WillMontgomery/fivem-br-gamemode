@@ -13,17 +13,33 @@
  * ═══ IT RUNS INSIDE THE WARMUP HOLD ═══
  *
  * Owner, 2026-09-04: "if they're in the tutorial, they're not actively on any
- * warmup timer at all until the tutorial is complete." That hold is already
- * built and server-authoritative (`BR.Roster.setTutorial`), so nothing here has
- * to think about a clock running out mid-card. The last step is what releases
- * it — "when they click yes, they're put into whatever match type they selected
- * in the lobby and the warmup timer begins".
+ * warmup timer at all until the tutorial is complete."
+ *
+ * ⚠ THAT IS NOT TRUE YET, AND SAYING SO HERE IS THE POINT. The hold exists and
+ * is server-authoritative (`BR.Roster.setTutorial`), but its B1 grants it only
+ * from a STANDING START -- LOBBY, attached to no match -- and this half runs on
+ * the pad, in WARMUP, inside one. So `/brtutorial game` asks for the hold, the
+ * server prints a refusal, and the warmup clock goes on running under every
+ * card below. A slow reader gets put on the bus mid-walkthrough.
+ *
+ * B1 IS NOT AN OVERSIGHT TO WIDEN: it is what stops the hold being a dodge
+ * button for a fight or a results publish. Closing this properly means a
+ * per-match warmup hold, in the shape `brwarmupfreeze` already has -- owner,
+ * 2026-09-04: "when they click yes, they're put into whatever match type they
+ * selected in the lobby and the warmup timer begins".
  *
  * ═══ THE REWARD HANGS ON FINISHING THIS HALF ═══
  *
  * The 500 Volts is paid for the whole thing, lobby and match, and the lobby's
- * last card says so. Nothing here pays out; the award belongs to whatever
- * observes this list completing.
+ * last card says so. IT IS PAID WHEN THE FINAL CARD BELOW IS DISMISSED -- App
+ * sends `done` alongside `game = false`, br_core claims it on
+ * BR.Net.TUTORIAL_DONE and br_stats writes it. Abandoning on a missing anchor
+ * pays nothing, on purpose.
+ *
+ * ONCE PER ACCOUNT, FOREVER, and the lock is the database rather than any of
+ * this: br_ddb's `awardPay` credits and records in one conditional write. So
+ * the Help page re-run pays nothing the second time, and neither does a client
+ * that sends the claim without reading a word.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * WHAT IS HERE AND WHAT IS STAGED
@@ -176,6 +192,25 @@ export const GAME_STEPS: Step[] = [
     action: { label: 'Open it for me', cb: 'br/players/focus' },
   },
   {
+    id: 'game-crates',
+    // The markers over the four crates are what this card points at in the
+    // world; on screen it anchors to the inventory, which is where the loot it
+    // is about to talk about will land.
+    target: 'hud-inventory',
+    title: 'Crates',
+    body: 'Those four marked crates on the pad are yours to practise on — they refill themselves, so take as long as you like. The **marker colour is the rarity** of what is inside, and they get better left to right. **Go and open one.**',
+    advance: 'next',
+  },
+  {
+    id: 'game-pickup',
+    target: 'hud-inventory',
+    title: 'Take what you want',
+    // OBSERVED, not reported: the store already knows what they are carrying.
+    body: 'Walk over anything on the ground to pick it up. **Take two things** from the crate you opened.',
+    advance: 'pickup',
+    pickups: 2,
+  },
+  {
     id: 'game-inventory',
     target: 'hud-inventory',
     title: 'What you are carrying',
@@ -223,5 +258,23 @@ export const GAME_STEPS: Step[] = [
     // which a good many layouts do not have. This one is TAB, which every
     // keyboard has and every player can reach. If that ever stops being true the
     // callback is the fix, not a second default.
+  },
+  {
+    id: 'game-ready',
+    // THE END OF THE WHOLE THING, both halves. Owner, 2026-09-04: "So, are you
+    // ready to start?", and "when they click yes, they're put into whatever
+    // match type they selected in the lobby and the warmup timer begins."
+    //
+    // ANCHORED ON THE MATCH CLOCK, which is the thing the answer starts.
+    target: 'hud-counters',
+    title: 'That is everything',
+    body: 'So — are you ready to start?',
+    advance: 'dismiss',
+    dismissLabel: "I'm ready",
+    // NO BACK BUTTON PAST THE END. Stepping backwards out of the final card is
+    // the one move that would let a player re-dismiss it, and the reward is
+    // idempotent at the database rather than here -- so the second press would
+    // cost them nothing and teach them the button is broken.
+    noBack: true,
   },
 ]

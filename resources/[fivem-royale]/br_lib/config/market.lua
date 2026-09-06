@@ -593,6 +593,26 @@ BR.Config.Market.payout = {
     perRevive    = 10,    -- paid because it is the least selfish thing you can do
 }
 
+--- What finishing the guided first run pays (#261).
+---
+--- ═══ ONE NUMBER, PAID ONCE PER ACCOUNT, EVER ═══
+---
+--- Owner, 2026-09-04: nothing for the lobby half alone -- "once they've
+--- completed the lobby half, they are encouraged to continue into the match and
+--- upon completion they get the 500". So this is the whole thing's price and
+--- there is no partial payment to configure.
+---
+--- FIVE MATCHES' WORTH OF COMPLETION PAY, which is the calibration that matters
+--- and the reason it lives beside `payout` rather than in the walkthrough's own
+--- files: it has to be worth the twenty minutes without being worth more than
+--- playing. It buys about one thing in the shop, which is the point -- a new
+--- player finishes the tutorial able to make their first real choice.
+---
+--- ⚠ IT IS BOUNDED AT THE FAR END TOO. js-src/br_ddb/src/index.js refuses any
+--- single award over AWARD_MAX (5000) as a caller bug, so raising this past
+--- that is not a config change.
+BR.Config.Market.tutorialReward = 500
+
 --- What the currency is called, in ONE place.
 ---
 --- "Credits" is what every game calls this and it says nothing. Volts belongs

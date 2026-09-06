@@ -235,6 +235,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // Holding the step's OWN id makes the match exact and the race unrepresentable.
   const [clickedFor, setClickedFor] = useState<string | null>(null)
   const rectRef = useRef<Rect | null>(null)
+  /** Where this step's card was placed, and what that placement was valid for. */
+  const placedRef = useRef<{ key: string; at: ReturnType<typeof place> } | null>(null)
 
   const steps: Step[] = p.steps ?? LOBBY_STEPS
   const step = steps[i]
@@ -343,18 +345,26 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // the player carries into the match -- a squad they do not have, or a notice
   // nothing sent. The cleanup runs on every path out of the step, including the
   // run being abandoned, because that is what `useEffect`'s teardown is.
-  const setSquad = useUi((st) => st.setSquad)
+  //
+  // AN OVERRIDE, NOT A SWAP, AND THAT IS THE BUG THIS SHAPE FIXES. It used to
+  // save the real squad, write the demo into `squad`, and put the original back
+  // on the way out -- and br_core pushes a fresh squad payload on a TICK, so the
+  // next push overwrote the demo a fraction of a second after it appeared.
+  // Owner, 2026-09-05: "the squad panel doesn't really show", followed by the
+  // run ending on `squad-name` because the anchor it wanted had already gone.
+  //
+  // A separate field the HUD PREFERS means the bridge goes on writing `squad`
+  // as often as it likes and cannot touch this. It also deletes the
+  // save-and-restore entirely: there is nothing to put back, only something to
+  // stop preferring.
+  const setTutorialSquad = useUi((st) => st.setTutorialSquad)
   const pushNotice = useUi((st) => st.pushNotice)
-  const realSquad = useUi((st) => st.squad)
-  const realSquadRef = useRef(realSquad)
-  if (step?.stage !== 'squad') realSquadRef.current = realSquad
 
   useEffect(() => {
     if (!step || step.stage !== 'squad') return
-    const restore = realSquadRef.current
-    setSquad(DEMO_SQUAD)
-    return () => setSquad(restore)
-  }, [step, setSquad])
+    setTutorialSquad(DEMO_SQUAD)
+    return () => setTutorialSquad(null)
+  }, [step, setTutorialSquad])
 
   useEffect(() => {
     if (!step || step.stage !== 'notice') return
@@ -365,6 +375,31 @@ export default function TutorialLayer(p: TutorialLayerProps) {
                  key: DEMO_NOTICE_KEY, sticky: true })
     return () => pushNotice({ text: '', key: DEMO_NOTICE_KEY, clear: true })
   }, [step, pushNotice])
+
+  // ── picking things up ends the step ─────────────────────────────────────
+  //
+  // COUNTED FROM WHERE THEY STARTED, not from zero: a player reaching this card
+  // may already be carrying something they found on the way to the crates, and
+  // a card that asks for two and is satisfied by what is already in their hands
+  // has taught them nothing.
+  const invSlots = useUi((st) => st.inv.slots)
+  const filled = invSlots.filter(Boolean).length
+  const startedWith = useRef(filled)
+  useEffect(() => {
+    if (step?.advance === 'pickup') startedWith.current = filled
+    // Only when the STEP changes -- re-running this on every pickup would move
+    // the baseline up with them and the card would never be satisfied.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step])
+  useEffect(() => {
+    if (!step || step.advance !== 'pickup') return
+    if (filled - startedWith.current >= (step.pickups ?? 1)) go(i + 1)
+    // AND THE CARD MUST NOT BE UNSATISFIABLE. A player who arrives at this step
+    // already carrying five things cannot pick up a sixth, and this step has no
+    // Next button by design -- so a full inventory counts as done rather than as
+    // a walkthrough that will not let them out.
+    else if (filled >= invSlots.length) go(i + 1)
+  }, [step, filled, invSlots.length, i, go])
 
   // ── a screen opening ends the step ──────────────────────────────────────
   //
@@ -438,9 +473,29 @@ export default function TutorialLayer(p: TutorialLayerProps) {
 
   if (!step || rect === null || waitingForScreen) return null
 
+  // ── where the card goes, decided ONCE per step ──────────────────────────
+  //
+  // THE RING TRACKS, THE CARD DOES NOT. Owner, 2026-09-05: "the kill feed card
+  // moves around vertically when the kill feed div expands with the new
+  // content. The card's position should be fixed."
+  //
+  // The measure loop runs every frame because a target can arrive late, move
+  // under a layout change, or grow -- and the ring must follow it or it stops
+  // outlining the thing it is about. The CARD is prose the player is reading,
+  // and prose that slides out from under the eye as a list fills is worse than
+  // prose slightly off its subject. So the placement is computed on the first
+  // frame the target is measurable and then held.
+  //
+  // KEYED ON THE STEP AND THE VIEWPORT. A resize genuinely invalidates it --
+  // the whole point of `place` is that a card cannot be pushed off screen --
+  // so the latch is dropped when either changes, and only then.
   const vw = window.innerWidth
   const vh = window.innerHeight
-  const { left, top, fromX, fromY } = place(rect, vw, vh)
+  const latchKey = `${step.id}|${vw}x${vh}`
+  if (placedRef.current?.key !== latchKey) {
+    placedRef.current = { key: latchKey, at: place(rect, vw, vh) }
+  }
+  const { left, top, fromX, fromY } = placedRef.current.at
 
   return (
     <>
@@ -481,6 +536,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         }
         // The last card ends the run rather than advancing into nothing.
         onDismiss={step.advance === 'dismiss' ? () => go(steps.length) : null}
+        dismissLabel={step.dismissLabel}
         action={
           step.action
             ? { label: step.action.label,

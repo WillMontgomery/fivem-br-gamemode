@@ -418,3 +418,109 @@ RegisterCommand('brawards', function()
     BR.Awards.sweep()
     print('  ...swept now.')
 end, true)
+
+-- ---------------------------------------------------------------------------
+-- The guided first run's reward (#261)
+-- ---------------------------------------------------------------------------
+
+--- The idempotence key the tutorial's payment is written under.
+---
+--- ═══ IT SHARES `reportRewards` WITH THE REPORT REWARDS, AND THAT IS ON PURPOSE
+---
+--- br_ddb's `awardPay` is one conditional UpdateItem: it adds to `balance` and
+--- adds this string to the `reportRewards` string set in the same write, under
+--- `NOT contains(#paid, :id)`. So "have I already paid this?" is evaluated by
+--- DynamoDB at write time and the second claim is refused -- there is no window
+--- between deciding to pay and recording it, because there is no second write.
+---
+--- THE ATTRIBUTE NAME IS NOW A SMALL LIE and it is cheaper than the truth. It
+--- has meant "ids this account has been paid for" since #168 and it still does;
+--- only its NAME says report. Renaming it is a migration over every player row
+--- to fix a word nobody outside these two files reads. Whoever does rename it
+--- should grep for this constant, which is the other half of the pair.
+---
+--- NO MATCH ID, NO SESSION, NO DATE IN IT. The key is the whole reason the
+--- reward is once-per-account-forever rather than once-per-anything-else, and a
+--- key that varied would silently make it farmable.
+local TUTORIAL_KEY = 'tutorial'
+
+--- The player finished the walkthrough.
+---
+--- ═══ THE CLIENT IS BELIEVED, AND THE DATABASE IS WHY THAT IS SAFE ═══
+---
+--- There is no server-side record of which cards somebody read -- deliberately,
+--- and BR.Net.TUTORIAL_SET says why at length: the server has exactly one
+--- question about the walkthrough and holding a step number would be a field
+--- nothing reads. So this event is a claim, not a proof.
+---
+--- What bounds it is the conditional write above. A modified client sending
+--- this on connect is paid 500 Volts once and never again, which is precisely
+--- what an honest player gets for twenty minutes of reading. There is nothing
+--- to farm and nothing to take from anybody else, so a cap here would cost the
+--- feature more than it costs the cheat -- the same argument, and the same
+--- shape of argument, as BR.Roster.setTutorial's.
+---
+--- ⚠ AND IT REVERSES IF THE REWARD EVER GROWS. The moment this pays anything
+--- repeatable -- per match, per season, a second tier -- the key stops being a
+--- lock and the claim needs evidence. Whoever adds that should read this
+--- paragraph as addressed to them.
+RegisterNetEvent(BR.Net.TUTORIAL_DONE)
+AddEventHandler(BR.Net.TUTORIAL_DONE, function()
+    local src = source
+    local amount = (BR.Config and BR.Config.Market
+                    and BR.Config.Market.tutorialReward) or 0
+    if amount <= 0 then return end
+
+    -- THE LICENSE IS DERIVED HERE, not taken from the client. This resource
+    -- cannot see br_core's roster (separate Lua states), so it asks BR.Identity
+    -- directly -- the same call BR.Roster.licenseOf makes on the other side.
+    local byKind = BR.Identity and BR.Identity.ofPlayer(src)
+    local license = byKind and BR.Identity.qualified('license', byKind.license)
+    if not license then
+        print(('^3[br_stats] tutorial reward: %d has no license -- not paid^7')
+            :format(src))
+        return
+    end
+
+    ask('br:ddb:awardPay', function(ok, info)
+        info = info or {}
+
+        if not ok then
+            -- NOT RETRIED, AND NOT QUEUED. The report pipeline leaves a failed
+            -- payment on its queue because a sweep is already coming; there is
+            -- no sweep here and inventing one would be a second reward system.
+            -- The player keeps the tutorial marked as done on their own client,
+            -- so the honest recovery is running it again from the Help page.
+            print(('^3[br_stats] tutorial reward not paid to %s: %s^7')
+                :format(license, tostring(info.error)))
+            return
+        end
+
+        if info.alreadyPaid then
+            -- THE SECOND RUN IS NOT AN ERROR. The Help page can re-run the
+            -- walkthrough (#261) and a player who does is not being cheated
+            -- when it pays nothing -- but they must not be TOLD they were paid,
+            -- which is why the notification is inside the other branch.
+            print(('[br_stats] tutorial reward: %s has already been paid')
+                :format(license))
+            return
+        end
+
+        -- KEEP br_core's CACHE HONEST, exactly as settleCase does and for the
+        -- same reason: br_core read the balance once on connect and holds it
+        -- for the session. Zero XP -- the walkthrough pays Volts and nothing
+        -- else, because XP is what matches are for.
+        TriggerEvent('br:market:credited', license, 0, amount)
+
+        TriggerClientEvent(BR.Net.NOTIFY, src, {
+            text = ("You've been gifted %d %s for finishing the tutorial. Good luck out there!")
+                :format(amount, (BR.Config.Market.currency or 'Volts')),
+            tone = 'success',
+            key  = 'tutorial.reward',
+            ms   = 10000,
+        })
+
+        print(('[br_stats] tutorial reward: %d Volts to %s (%d)')
+            :format(amount, license, src))
+    end, license, TUTORIAL_KEY, amount)
+end)

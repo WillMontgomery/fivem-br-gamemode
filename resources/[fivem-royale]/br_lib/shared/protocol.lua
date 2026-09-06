@@ -57,15 +57,32 @@ BR.Net = {
     -- and their party. `on = false` is believed on sight, because giving the
     -- exemption up is not a thing anybody needs stopping from doing.
     --
-    -- ⚠ NOTHING SENDS THIS YET. The whole server half -- the flag, the three
-    -- refusals and their tests -- is landed and live, and the only thing missing
-    -- is the two lines in br_core/client/tutorial.lua that raise and lower it
-    -- alongside `running`. That is this project's orphaned-subsystem pattern
-    -- said out loud rather than discovered later: the walkthrough itself shipped
-    -- in 2294fe3 with nothing able to mount it. Until those two lines exist a
-    -- player CAN still be matchmade mid-tutorial, because the server has never
-    -- been told there is one.
+    -- IT IS SENT NOW, from br_core/client/tutorial.lua's `tellServer` -- which
+    -- ORs the two halves, because the server has one question and both halves
+    -- answer it the same way. This paragraph used to say nothing sent it, which
+    -- was this project's orphaned-subsystem pattern said out loud: the
+    -- walkthrough shipped in 2294fe3 with nothing able to mount it.
+    --
+    -- ⚠ AND THE IN-GAME HALF STILL CANNOT HOLD, which is a live gap rather
+    -- than a design. BR.Roster.setTutorial grants only from a STANDING START --
+    -- LOBBY, no match (its B1) -- and the in-game half runs on the pad, in
+    -- WARMUP, inside a match. So `/brtutorial game` sends `on = true`, the
+    -- server prints a refusal and the learner is on the warmup clock like
+    -- everybody else. Whoever closes it should read B1 first: the restriction is
+    -- what stops the hold being a dodge button, so the fix is a per-match warmup
+    -- hold rather than a wider grant.
     TUTORIAL_SET    = 'br:tutorial:set',
+    -- The walkthrough FINISHED, both halves, and the player has earned the
+    -- reward for it (#261). C->S, no payload.
+    --
+    -- A SEPARATE EVENT FROM TUTORIAL_SET, because they are different claims.
+    -- `TUTORIAL_SET on = false` means "stop holding me out of matchmaking" and
+    -- is believed on sight because giving up an exemption costs nobody
+    -- anything. This one asks for 500 Volts, and what bounds it is not trust:
+    -- br_ddb's `awardPay` is one conditional write keyed on the account, so the
+    -- second claim is refused by the database. A modified client sending this
+    -- on connect gets exactly what an honest player gets by finishing.
+    TUTORIAL_DONE   = 'br:tutorial:done',
     -- The four permanent warmup crates resealing (#261). S->C, an array of the
     -- points whose loot is flying home.
     --
@@ -1144,7 +1161,10 @@ BR.NuiCb = {
     LOCKER_PICK  = 'br/locker/pick',
     LOCKER_SPIN  = 'br/locker/spin',
     LOCKER_FOCUS = 'br/locker/focus',
-    -- The guided first run (#261). { run = boolean }.
+    -- The guided first run (#261). { run = boolean } for the lobby half,
+    -- { game = boolean } for the in-game one, and `done = true` alongside
+    -- `game = false` when the last card was DISMISSED rather than abandoned --
+    -- which is what pays the reward.
     --
     -- THE PAGE STARTS IT, SO THE PAGE HAS TO SAY SO. Pressing "Start tutorial"
     -- is a button in React, and Lua is the only side that can tell the SERVER --

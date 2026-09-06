@@ -74,6 +74,21 @@ export type Advance =
    * open it for them... so they don't get stuck in the tutorial."
    */
   | 'screen'
+  /**
+   * The player picking things up. The card waits until they are carrying
+   * `pickups` MORE items than when it opened.
+   *
+   * OBSERVED, NOT REPORTED. Owner, 2026-09-04: "Upon opening one, they should
+   * get an instruction to pick up 2 loot items." The inventory is already in
+   * this store, pushed on every change, so counting filled slots needs no new
+   * wire and no new event -- and it is the same fact the player can see, which
+   * is what the card is asking them to do.
+   *
+   * IT COUNTS SLOTS, NOT STACK SIZES: picking up a second bandage into an
+   * existing stack is not "another item" as a new player understands it, and
+   * the card is teaching what picking things up looks like.
+   */
+  | 'pickup'
 
 export type Step = {
   /** Stable id. Persisted progress and every log line key on this. */
@@ -90,6 +105,17 @@ export type Step = {
   advance: Advance
   /** For `advance: 'screen'` -- the screen whose arrival ends the step. */
   awaitScreen?: string
+  /** For `advance: 'pickup'` -- how many more filled slots end the step. */
+  pickups?: number
+  /**
+   * For `advance: 'dismiss'` -- what the last button says, when "Dismiss" is
+   * the wrong word for it.
+   *
+   * The lobby half ends on "Dismiss" because the owner asked for that word in
+   * as many words. The in-game half ends on a QUESTION -- "are you ready to
+   * start?" -- and Dismiss is not an answer to a question.
+   */
+  dismissLabel?: string
   /**
    * A demonstration staged when the card opens.
    *

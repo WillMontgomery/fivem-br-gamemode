@@ -37,6 +37,36 @@
 BR = BR or {}
 BR.Tutorial = BR.Tutorial or {}
 
+--- What the cards take away from the game while they are on screen.
+---
+--- ═══ THE CURSOR AND THE CAMERA WERE FIGHTING OVER ONE MOUSE ═══
+---
+--- Owner, 2026-09-05: "the cursor isn't exclusively set to NUI -- it's still
+--- moving the game camera while in the game tutorial." Both halves of that are
+--- working as built and the combination is the bug: `tutorial` is in
+--- BR.FocusKeepsInput so the player can walk to the crates, and keeping input
+--- keeps ALL of it -- so every drag toward a Next button also swung the camera.
+---
+--- SO IT IS SUBTRACTIVE RATHER THAN A DIFFERENT FOCUS. Taking the keyboard away
+--- instead would stop them walking, which two of these cards ask them to do.
+--- Naming the four controls that conflict with a cursor leaves movement,
+--- sprint, jump and the map key exactly as they were.
+---
+--- ATTACK AND AIM ARE IN HERE FOR THE SAME REASON AND NOT AS A SAFETY RULE.
+--- The click that presses Next is the click that fires the weapon, so without
+--- these a player works through the walkthrough emptying a magazine into the
+--- pad. Warmup damage is off; the noise, the recoil and the empty gun are not.
+local BLOCKED = {
+    1,    -- LOOK_LR
+    2,    -- LOOK_UD
+    220,  -- LOOK_LR alternate (the one a gamepad's right stick drives)
+    221,  -- LOOK_UD alternate
+    24,   -- ATTACK
+    25,   -- AIM
+    257,  -- ATTACK2
+    263,  -- MELEE_ATTACK1
+}
+
 --- Is the lobby walkthrough running right now?
 local running = false
 
@@ -146,6 +176,25 @@ function BR.Tutorial.game(on)
     -- them to the crates.
     TriggerEvent(on and 'br:ui:pushFocus' or 'br:ui:popFocus', 'tutorial')
 
+    -- ═══ AND THE MARKERS OVER THE FOUR CRATES GO UP WITH IT ═══
+    --
+    -- ON FOR THE WHOLE HALF RATHER THAN FOR THE ONE CARD THAT MENTIONS THEM,
+    -- deliberately. The crate card sends the player away from their screen to
+    -- walk the pad, and the next card is about what they picked up -- so a
+    -- marker that switched off the moment the card advanced would go out while
+    -- they were still standing over the crate. One switch, two edges, and both
+    -- of them are edges the player can see the reason for.
+    --
+    -- OFF BY DEFAULT, AND THAT IS THE CRATES' CALL, NOT THIS FILE'S. Every
+    -- warmup player may use these four (owner, 2026-09-04: "ANYONE can use
+    -- these crates in warmup"); only a learner needs them signposted.
+    --
+    -- Nil-guarded on the MODULE, the same shape as BR.Roster's cleanup calls:
+    -- a build without the crates is one where there is nothing to mark.
+    if BR.WarmupCrates and BR.WarmupCrates.markers then
+        BR.WarmupCrates.markers(on)
+    end
+
     -- AND THE SERVER IS TOLD, WITHOUT TOUCHING `running`.
     --
     -- This used to call BR.Tutorial.set(running or inGame), which was wrong in a
@@ -157,6 +206,24 @@ function BR.Tutorial.game(on)
     tellServer()
 end
 
+-- ═══ AND THE SUPPRESSION RUNS PER FRAME, BECAUSE IT HAS TO ═══
+--
+-- DisableControlAction lasts EXACTLY ONE FRAME -- the same note client/
+-- inventory.lua and client/attachtune.lua carry, for the same reason. A tick
+-- pass at 10Hz would leave the camera live five frames in six, which reads as
+-- the fix not working rather than as it working intermittently.
+--
+-- NOTHING TO RESTORE ON THE WAY OUT, which is the strongest part of doing it
+-- this way: the frame after `inGame` goes false, nothing is disabled. A flag
+-- left set by a crash or a resource restart cannot leave a player unable to
+-- aim, which is the failure a SetPlayerControl-shaped fix would risk.
+BR.Loop.register(BR.Loop.FRAME, 'tutorial.controls', function()
+    if not inGame then return end
+    for i = 1, #BLOCKED do
+        DisableControlAction(0, BLOCKED[i], true)
+    end
+end)
+
 --- Show or hide the offer.
 --- @param on boolean
 function BR.Tutorial.offer(on)
@@ -164,6 +231,22 @@ function BR.Tutorial.offer(on)
     if on == offering then return end
     offering = on
     publish()
+end
+
+--- They finished the whole thing -- pay them.
+---
+--- ═══ IT IS A SEPARATE CALL FROM STOPPING, AND THEY ARE SEPARATE FACTS ═══
+---
+--- `BR.Tutorial.game(false)` is what every ending does: the last card
+--- dismissed, a step whose anchor vanished, `/brtutorial off`. Only ONE of
+--- those earned anything, so the page says which by sending this first. Folding
+--- the reward into `game(false)` would pay a learner for the walkthrough
+--- breaking under them, and pay the dev command every time it is typed.
+---
+--- WHAT STOPS IT BEING FARMED IS THE DATABASE, NOT THIS FUNCTION. See
+--- BR.Net.TUTORIAL_DONE.
+function BR.Tutorial.finish()
+    TriggerServerEvent(BR.Net.TUTORIAL_DONE)
 end
 
 --- @return boolean
@@ -258,4 +341,15 @@ end)
 --- share events.
 AddEventHandler('br:tutorial:set', function(run)
     BR.Tutorial.set(run == true)
+end)
+
+--- The page ending the IN-GAME half. `done` is true only when the last card was
+--- dismissed, which is the one ending that pays.
+---
+--- THE REWARD IS CLAIMED BEFORE THE FLAG DROPS, deliberately: `game(false)`
+--- pops the cursor focus and unmounts the layer, and a claim sent after that is
+--- a claim sent from a resource that may already have stopped caring.
+AddEventHandler('br:tutorial:game', function(on, done)
+    if done == true and on ~= true then BR.Tutorial.finish() end
+    BR.Tutorial.game(on == true)
 end)
