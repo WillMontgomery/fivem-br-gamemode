@@ -986,7 +986,13 @@ export default function Settings({
               2026-08-17). Cancel keeps `ui.back` -- the pair reads correctly. */}
           {/* data-tut: the guided first run points here to say "you are done,
               close this" (#261). On a wrapper so Btn needs no prop. */}
-          <span data-tut="settings-save" className="contents">
+          {/* `inline-block`, NOT `contents`. A display:contents element has no
+              layout box at all, so getBoundingClientRect answers 0,0,0,0 and the
+              tutorial card that measures it lands in the top-left corner of the
+              screen (owner, 2026-09-04: "Step 12 should not be top left of the
+              screen. It should be under the Save button."). An anchor must have
+              a box, and inline-block gives this one exactly the button's. */}
+          <span data-tut="settings-save" className="inline-block">
             <Btn variant="primary" size="lg" cue="ui.select" onPress={save}>
               {saving ? 'Saving…' : 'Save'}
             </Btn>

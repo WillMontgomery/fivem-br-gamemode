@@ -176,10 +176,18 @@ export default function Locker() {
               player is told what the Locker is for and to press Done when they
               are ready; pressing it is what moves the walkthrough on to the
               Market. On the wrapper, so Btn needs no prop of its own. */}
-          <div className="mt-6" data-tut="locker-done">
-            <Btn variant="primary" size="lg" cue="ui.back" onPress={() => { close() }}>
-              Done
-            </Btn>
+          {/* THE ANCHOR IS ON THE BUTTON'S OWN BOX, not on the row. It was on
+              the `mt-6` div, which is full width -- so the ring the tutorial
+              draws stretched the whole column instead of outlining the button
+              (owner, 2026-09-04: "The border around the 'DONE' button on locker
+              is the wrong width and doesn't go around the button. It's far too
+              wide."). An `inline-block` wrapper shrinks to the control. */}
+          <div className="mt-6">
+            <span data-tut="locker-done" className="inline-block">
+              <Btn variant="primary" size="lg" cue="ui.back" onPress={() => { close() }}>
+                Done
+              </Btn>
+            </span>
           </div>
         </div>
       </div>

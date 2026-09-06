@@ -191,6 +191,16 @@
   --color-royale-panel:   #1d1e2b;
   --color-royale-edge:    #33354a;
   --color-royale-accent:  #22d3ee;
+  /* VOLTS. The signature gold, held BELOW `--color-royale-accent2` (#facc15) on
+     purpose: owner, 2026-09-04, "our signature gold/yellow color that Volts
+     uses, but not super bright."
+
+     accent2 is reserved for VICTORY and nothing else (see the palette note
+     above). A currency that shouted in the same voice as winning the match
+     would spend the loudest colour in the game on a number that is on screen
+     constantly. This is that hue with the glare taken off, so Volts read as
+     gold without competing with the one thing gold is for. */
+  --color-volts:          #d9ae35;
   --color-royale-accent2: #facc15;
 
   --color-hp:      #4ade80;

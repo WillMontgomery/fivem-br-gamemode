@@ -318,7 +318,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         // that -- so it would take them back to a card describing a control
         // that is no longer on screen.
         onBack={
-          i > 0 && steps[i - 1] !== undefined
+          i > 0 && !step.noBack && steps[i - 1] !== undefined
             && steps[i - 1]!.screen === step.screen
             ? () => go(i - 1)
             : null

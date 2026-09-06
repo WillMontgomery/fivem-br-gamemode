@@ -48,7 +48,8 @@ import { CB } from '../bridge/types'
 function TutorialToggle({ on, onChange, label }: {
   on: boolean
   onChange: (v: boolean) => void
-  label: string
+  /** A node rather than a string, so a label can colour part of itself. */
+  label: React.ReactNode
 }) {
   return (
     // `btn` IS NOT DECORATION AND check-ui ENFORCES IT (R3): a bare button has
@@ -125,6 +126,9 @@ export default function Lobby({
   const tutorialRun = useUi((s) => s.tutorialRun)
   const tutorialStep = useUi((s) => s.tutorialStep)
   const tutorialGameOn = useUi((s) => s.tutorialGameOn)
+  // Which screen is on top -- the offer is retired while Settings covers the
+  // lobby, so the control does not vanish under the cursor that pressed it.
+  const focus = useUi((s) => s.focus)
   const setTutorialGameOn = useUi((s) => s.setTutorialGameOn)
   const setTutorialChecked = useUi((s) => s.setTutorialChecked)
   const setTutorialRun = useUi((s) => s.setTutorialRun)
@@ -137,6 +141,23 @@ export default function Lobby({
   useEffect(() => {
     if (tutorialStep === 'ready') setTutorialGameShown(true)
   }, [tutorialStep])
+
+  // ═══ THE OFFER IS RETIRED BEHIND ANOTHER SCREEN, NOT IN FRONT OF THEM ═══
+  //
+  // Owner, 2026-09-04: "Once the 'start tutorial' button is clicked the first
+  // time, the 'show me how to play' toggle should disappear when they're in the
+  // 'settings' page. This is for the same reason as earlier, to not draw their
+  // attention to the fact that it's gone."
+  //
+  // It used to vanish on the press itself, which is a control disappearing under
+  // the cursor that just used it -- the eye goes straight to the gap. Settings
+  // is the first screen the walkthrough sends them to, so the lobby is
+  // rearranged while it is not being looked at, and they come back to a screen
+  // that simply is that way. Same argument as the second toggle arriving on the
+  // `ready` step rather than after it.
+  useEffect(() => {
+    if (tutorialRun && focus === 'settings') setTutorialOffer(false)
+  }, [tutorialRun, focus, setTutorialOffer])
 
   /** Ready up reads Start tutorial only while the box is both offered and ticked. */
   const startTutorial = tutorialOffer && tutorialChecked
@@ -155,7 +176,6 @@ export default function Lobby({
    * by /brtutorial and lives as long as the page does.
    */
   const beginTutorial = () => {
-    setTutorialOffer(false)
     setTutorialRun(true)
     // AND TELL LUA, WHICH TELLS THE SERVER. A player mid-walkthrough must not be
     // matchmade, must be on no warmup clock and must not be in a party -- all
@@ -412,6 +432,10 @@ export default function Lobby({
               <button
                 key={m.id}
                 type="button"
+                // data-tut per mode, so the walkthrough can require SQUADS
+                // specifically (#261) -- the party controls it goes on to
+                // explain only exist once Squads is picked.
+                data-tut={`mode-${m.id}`}
                 disabled={searching}
                 onPointerEnter={() => { if (!searching) play('ui.hover') }}
                 onClick={() => {
@@ -556,7 +580,14 @@ export default function Lobby({
                 <TutorialToggle
                   on={tutorialChecked}
                   onChange={setTutorialChecked}
-                  label="Show me how to play"
+                  label={
+                    <>
+                      New player tutorial —{' '}
+                      <b style={{ color: 'var(--color-volts)', fontWeight: 700 }}>
+                        earn 500 Volts for completing!
+                      </b>
+                    </>
+                  }
                 />
               )}
 
@@ -584,7 +615,7 @@ export default function Lobby({
                 <TutorialToggle
                   on={tutorialGameOn}
                   onChange={setTutorialGameOn}
-                  label="Show me how to play in the match too"
+                  label="Continue tutorial into the first match"
                 />
               )}
               {/* THE SAME BUTTON, TWO JOBS. Owner: "When ticked, the box should

@@ -75,6 +75,18 @@ export type Step = {
   body: string
   advance: Advance
   /**
+   * Hide Last, even where the automatic rule would show it.
+   *
+   * FOR THE FIRST CARD ON A PAGE THE `screen` RULE CANNOT SEE. Settings' tabs
+   * are all one `screen`, so the first card on the Controls tab looks like a
+   * sibling of the card that opened it -- and Last there returns to "open
+   * Controls", pointing at a tab that is already open, which does nothing when
+   * pressed (owner, 2026-09-04: "For the first instruction on each page like
+   * step 10, no 'last' button should be available. Currently, pressing it does
+   * nothing.").
+   */
+  noBack?: boolean
+  /**
    * Steps that only exist once the player has opened a child page. The layer
    * runs these when `screen` matches what is actually on top, which is how
    * "a second round of annotations explains everything inside it" works
@@ -107,10 +119,15 @@ export const LOBBY_STEPS: Step[] = [
   },
   {
     id: 'mode',
-    target: 'mode-picker',
+    // SQUADS SPECIFICALLY, AND THE STEP WAITS FOR IT. Owner, 2026-09-04: "The
+    // solos/squads demo should enforce that they select Squads to show them the
+    // controls of parties." The party controls do not exist on this screen until
+    // Squads is picked, so a card explaining them over a solo lobby is a card
+    // pointing at nothing.
+    target: 'mode-squad',
     title: 'Solo or Squads',
-    body: '**Solo** is one life against everybody. Pick **Squads** and you are put in a team of up to four who can revive each other — you can queue alone and be filled in with strangers, or make a party first and go in together.',
-    advance: 'next',
+    body: '**Solo** is one life against everybody. Pick **Squads** — you are put in a team of up to four who can revive each other, and the party controls appear so you can bring friends in with you.',
+    advance: 'click',
   },
 
   // ═══ SETTINGS ═══
@@ -173,6 +190,7 @@ export const LOBBY_STEPS: Step[] = [
   {
     id: 'settings-controls-body',
     target: 'settings-controls-body',
+    noBack: true,
     title: 'Every key, in one place',
     body: 'This is every key the game uses and what it does. Click any row to rebind it, and anything you change is yours from the next match on.',
     advance: 'next',
@@ -229,15 +247,32 @@ export const LOBBY_STEPS: Step[] = [
     id: 'help-inside',
     target: 'help-body',
     title: 'Everything else',
-    body: 'The player guide lives here and explains every system in the game. There is a button to copy its link if you would rather read it in a browser, and a link to our **Discord** — which is the fastest way to reach us.',
+    // HIS WORDING FOR THE DISCORD CLAUSE (2026-09-04).
+    body: 'The player guide lives here and explains every system in the game. There is a button to copy its link if you would rather read it in a browser, and a link to our **Discord** where you can connect with the Blitz community.',
     advance: 'next',
+    screen: 'help',
+  },
+  {
+    id: 'help-back',
+    // OUT THROUGH THE REAL DOOR. Owner: "Step 17 should also direct them to
+    // click the back button on the bottom of the screen (under the iframe)
+    // instead of next." A walkthrough that teaches a Next button teaches
+    // nothing about the screen it is standing on.
+    target: 'help-back',
+    title: 'Back to the lobby',
+    body: 'Press **Back** when you are done reading.',
+    advance: 'click',
     screen: 'help',
   },
   {
     id: 'ready',
     target: 'ready',
     title: 'That is the lobby',
-    body: 'That covers this screen. **Ready up** whenever you want to play.',
+    // THE CONDITION ON THE REWARD IS STATED HERE AND NOWHERE ELSE. Owner:
+    // "Step 18 should tell them the 500 Volts is only awarded if they continue
+    // the tutorial into the first match." The toggle above Ready up offers the
+    // second half; this is the only card that says the Volts depend on it.
+    body: 'That covers the lobby. Leave **Continue tutorial into the first match** switched on and finish it in game to earn your **500 Volts** — the reward is only paid for the whole thing.',
     advance: 'dismiss',
   },
 ]

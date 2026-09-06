@@ -255,9 +255,14 @@ export default function Help({ inline = false, onDone }:
           the ONLY action: there is nothing here to compete with it. */}
       {!inline && (
         <div>
-          <Btn variant="primary" size="md" cue="ui.back" onPress={close}>
-            Back
-          </Btn>
+          {/* data-tut: the guided first run sends them out through this rather
+              than through a Next on the card -- it is the real way off this
+              page and the walkthrough should teach the real way (#261). */}
+          <span data-tut="help-back" className="inline-block">
+            <Btn variant="primary" size="md" cue="ui.back" onPress={close}>
+              Back
+            </Btn>
+          </span>
         </div>
       )}
     </div>
