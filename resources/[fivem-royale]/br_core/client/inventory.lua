@@ -978,9 +978,22 @@ local ALREADY_FULL = 'This vehicle is already at full health.'
 local function sendUse(slot)
     if not slot then return end
 
+    -- ═══ `s.id`, NOT `s.item`, AND THE WHOLE GUARD WAS DEAD FOR WANT OF IT ═══
+    --
+    -- The server RENAMES the field on its way out: BR.Inv.publicFor sends
+    -- `id = s.item`, and the INV_SET handler stores those wire tables verbatim.
+    -- So a client-side slot has `id` and never `item` -- every other read in
+    -- this file agrees, and this one line did not.
+    --
+    -- IT FAILED SILENTLY, WHICH IS WHY IT SURVIVED. BR.Config.ConsumableById is
+    -- a plain table with no metatable, so indexing it with nil returns nil
+    -- rather than throwing: `c` was ALWAYS nil, the branch below was never
+    -- entered, and ALREADY_FULL -- a sentence the owner wrote -- could not be
+    -- reached by any path. A repair kit used on an undamaged car went straight
+    -- to the server and was spent for nothing.
     local s = inv.slots[slot]
     local c = s and BR.Config.ConsumableById
-              and BR.Config.ConsumableById[s.item] or nil
+              and BR.Config.ConsumableById[s.id] or nil
 
     -- GATED ON THE MODULE, in the shape the rest of this tree uses: a build
     -- without client/fuel.lua cannot answer the question and therefore does not

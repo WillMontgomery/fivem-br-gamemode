@@ -254,6 +254,56 @@ end
 -- That is a second, independent mechanism with the same symptom; it is not being
 -- fixed speculatively here because removing the pin may well be the whole of it.
 
+-- ---------------------------------------------------------------------------
+-- The blip
+-- ---------------------------------------------------------------------------
+
+--- The one map blip over the row of four, or nil while it is not up.
+---
+--- ONE FOR THE ROW. See BR.Config.WarmupCrates.blip for why four would be
+--- wrong; the short version is that the anchors are closer together than a blip
+--- is wide.
+local blip = nil
+
+--- Put it up, at the centroid of whatever anchors are configured.
+---
+--- COMPUTED RATHER THAN AUTHORED, so moving an anchor moves the blip and the two
+--- cannot drift. The owner's four coordinates are survey and are not to be
+--- edited (2026-09-04), which is exactly why nothing here restates them.
+local function showBlip()
+    local b = W.blip
+    if blip or not b or #W.anchors == 0 then return end
+
+    local sx, sy, sz = 0.0, 0.0, 0.0
+    for i = 1, #W.anchors do
+        local a = W.anchors[i]
+        sx, sy, sz = sx + a.x, sy + a.y, sz + a.z
+    end
+    local n = #W.anchors
+
+    blip = AddBlipForCoord(sx / n, sy / n, sz / n)
+    SetBlipSprite(blip, math.tointeger(tonumber(b.sprite)) or 1)
+    SetBlipColour(blip, math.tointeger(tonumber(b.colour)) or 0)
+    SetBlipScale(blip, (tonumber(b.scale) or 1.0) + 0.0)
+    SetBlipAsShortRange(blip, true)
+    BR.Native.blipName(blip, b.name or 'Practice Crates')
+end
+
+--- Take it down.
+---
+--- ENGINE BLIP HANDLES ARE RECYCLED, which client/storm.lua learned the
+--- expensive way -- "another system removing a stale handle can delete ours" --
+--- so the removal is guarded and the handle is dropped either way.
+local function hideBlip()
+    if not blip then return end
+    if isTrue(DoesBlipExist(blip)) then RemoveBlip(blip) end
+    blip = nil
+end
+
+AddEventHandler('onResourceStop', function(res)
+    if res == GetCurrentResourceName() then hideBlip() end
+end)
+
 -- ═══ WHAT THE PASS STILL DOES: IT WATCHES, IT DOES NOT TOUCH ═══
 --
 -- The handle cache outlived the pin and had to. `isSealed(i)` answers "is there
@@ -275,8 +325,11 @@ BR.Loop.register(BR.Loop.TICK, 'warmupcrates.track', function()
         -- state change is how a read lands on whatever the engine reissues that
         -- number to next.
         if next(pinned) then pinned = {} end
+        hideBlip()
         return
     end
+
+    showBlip()
 
     -- ONLY WHERE THERE COULD BE A PROP AT ALL. client/loot.lua builds a body for
     -- an entry within `propDistance` and tears it down past that plus the
@@ -431,6 +484,35 @@ AddEventHandler(BR.Net.WARMUP_CRATE_RETURN, function(d)
 
     local found = propsAt(d.items, d.z or 0.0)
 
+    -- ═══ WHERE HOME ACTUALLY IS, RATHER THAN WHERE THE WIRE SAYS ═══
+    --
+    -- Owner, 2026-09-06: "when the items go back into the crate before it closes
+    -- - they seem to all collect to a point with a higher Z than where they
+    -- spawned inside the crate."
+    --
+    -- `mouthLift` is documented as metres above the crate's BASE -- the same
+    -- number and the same meaning as BR.Config.Loot.crateMouthHeight, which is
+    -- where the contents came out. The destination was `d.z + lift`, and `d.z`
+    -- is the entry's authored z off the wire: for these four that is the
+    -- owner's SURVEYED number, a ped root read off his own screen, which is not
+    -- the base of the crate that is standing there now.
+    --
+    -- THE GROUND IS THE AUTHORITY, because the crate rests on it -- these four
+    -- go through the ordinary settle since the pin was deleted, so their base IS
+    -- the surface. Probed the way client/loot.lua's own groundZ probes:
+    -- `isTrue` on the BOOL first return, because these natives answer 1/0 and 0
+    -- is truthy in Lua, and a result at or below sea level is rejected rather
+    -- than believed.
+    --
+    -- FALLING BACK TO `d.z` AND NOT TO AN ITEM'S z. A spilled item's origin sits
+    -- its own half-height above the surface, so `hit.z + lift` aims HIGHER than
+    -- the mouth -- it would make the reported symptom worse. `d.z` is what the
+    -- entry was born at, which is the same answer the spawner falls back to when
+    -- its own probe fails.
+    local homeZ = d.z or 0.0
+    local gok, gz = GetGroundZFor_3dCoord(d.x, d.y, (d.z or 0.0) + 2.0, false)
+    if isTrue(gok) and type(gz) == 'number' and gz > 0.0 then homeZ = gz end
+
     for i = 1, #d.items do
         local hit = found[i]
         local ghost = hit and copyProp(hit) or nil
@@ -440,7 +522,7 @@ AddEventHandler(BR.Net.WARMUP_CRATE_RETURN, function(d)
             flying[flySeq] = {
                 obj = ghost,
                 fromX = hit.x, fromY = hit.y, fromZ = hit.z,
-                toX = d.x, toY = d.y, toZ = (d.z or hit.z) + lift,
+                toX = d.x, toY = d.y, toZ = homeZ + lift,
                 at = now, ms = math.max(1, ms),
             }
             S.flown = S.flown + 1

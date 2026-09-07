@@ -240,7 +240,7 @@ export const GAME_STEPS: Step[] = [
     // element for a thing in the world, so it draws centred with no ring, and
     // the four rarity cones over the crates are what points at the subject.
     title: 'Crates',
-    body: 'Those four marked crates on the pad are yours to practice on — they refill themselves, so take as long as you like. The **marker color is the rarity** of what is inside, and they get better left to right. **Go and open one.**',
+    body: 'There are four practice crates on the pad — look for the marker on your map. They refill themselves, so take as long as you like, and the **colored beam** over each one is the rarity of what is inside. **Go and open one.**',
     // NO NEXT BUTTON: the card sends them somewhere, so the only way past it is
     // going (owner, 2026-09-05). The escape hatch after 45s is in TutorialLayer
     // and exists so a miscount cannot trap anybody -- see `stuck`.

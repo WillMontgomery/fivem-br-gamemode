@@ -125,6 +125,33 @@ BR.Config.WarmupCrates = {
     -- would read as a different mechanism rather than the same one undone.
     returnMs = 520,
 
+    -- ═══ ONE BLIP ON THE MAP, SO THEY CAN BE FOUND AT ALL ═══
+    --
+    -- Owner, 2026-09-06: "we need to inform them that said crates even exist.
+    -- They may not have noticed, and they're not going to spawn facing the
+    -- crates necessarily. Perhaps we should put a blip on their map near the
+    -- crates?"
+    --
+    -- ONE FOR THE ROW, NOT FOUR. The anchors are 6-8m apart, which is less than
+    -- a blip is wide on the minimap at any zoom -- four would draw as one smear
+    -- and would say "four separate places to go" when the truth is one place
+    -- with four boxes in it. Placed at the centroid of the four, computed rather
+    -- than authored, so moving an anchor moves the blip.
+    --
+    -- SHORT RANGE, so it appears when they are near enough for it to be an
+    -- answer rather than sitting on the world map as a destination. Everyone in
+    -- warmup gets it, on the same argument the rarity markers now carry: these
+    -- crates are not a tutorial feature.
+    --
+    -- NO BLOCK, NO BLIP -- config/revivekey.lua's rule. Numbers inside it fall
+    -- back; the table's absence is an operator saying no.
+    blip = {
+        sprite = 478,          -- the loot-crate icon the airdrop uses
+        colour = 46,           -- Volts yellow, the same as the shop
+        scale  = 0.85,
+        name   = 'Practice Crates',
+    },
+
     -- WHERE IT FLIES TO: metres above the crate's base, i.e. its mouth. Same
     -- number and same meaning as BR.Config.Loot.crateMouthHeight, which is where
     -- the contents came OUT of when the crate was opened.

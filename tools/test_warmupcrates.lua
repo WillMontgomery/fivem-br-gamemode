@@ -671,6 +671,35 @@ function GetClosestObjectOfType(x, y, z, r, hash)
     return best or 0
 end
 
+-- ═══ THE MAP BLIP ═══
+--
+-- One blip over the row of four (#261). Recorded rather than ignored so the
+-- tests below can assert it goes up on the island and comes down off it -- a
+-- blip nobody removes is the failure client/storm.lua paid for once, and a
+-- recycled handle is how one system deletes another's.
+local blips = {}
+local nextBlip = 0
+function AddBlipForCoord(x, y, z)
+    nextBlip = nextBlip + 1
+    blips[nextBlip] = { x = x, y = y, z = z }
+    return nextBlip
+end
+function SetBlipSprite(b, v)   if blips[b] then blips[b].sprite = v end end
+function SetBlipColour(b, v)   if blips[b] then blips[b].colour = v end end
+function SetBlipScale(b, v)    if blips[b] then blips[b].scale = v end end
+function SetBlipAsShortRange(b, v) if blips[b] then blips[b].short = v end end
+function DoesBlipExist(b)      return blips[b] ~= nil and 1 or 0 end
+function RemoveBlip(b)         blips[b] = nil end
+BR.Native = BR.Native or {}
+function BR.Native.blipName(b, n) if blips[b] then blips[b].name = n end end
+
+--- How many blips are up right now.
+local function blipCount()
+    local n = 0
+    for _ in pairs(blips) do n = n + 1 end
+    return n
+end
+
 function DrawMarker(kind, x, y, z, _, _, _, _, _, _, sx, sy, sz,
                     r, g, b, a, bob, face, _, rot)
     drawn[#drawn + 1] = {
@@ -731,6 +760,45 @@ end
 
 BR.State.me.state = BR.PlayerState.WARMUP
 standAtAnchor(1, 2.0)
+
+describe('the map blip')
+do
+    -- The track pass is what puts it up, so run one before asking.
+    tickAndFrame()
+
+    -- ONE BLIP FOR THE ROW, and the count is the assertion. The anchors are
+    -- 6-8m apart -- closer together than a blip is wide -- so four would draw as
+    -- one smear and would claim four destinations where there is one.
+    eq(blipCount(), 1, 'one blip goes up for the four crates, not four')
+
+    -- AT THE CENTROID, COMPUTED. Moving an anchor has to move the blip, so the
+    -- position is derived rather than authored -- the owner's four coordinates
+    -- are survey and nothing may restate them.
+    local cx, cy = 0.0, 0.0
+    for i = 1, #W.anchors do cx, cy = cx + W.anchors[i].x, cy + W.anchors[i].y end
+    cx, cy = cx / #W.anchors, cy / #W.anchors
+    local only
+    for _, b in pairs(blips) do only = b end
+    ok(only and near(only.x, cx, 0.01) and near(only.y, cy, 0.01),
+       'and it sits at the centroid of whatever anchors are configured',
+       only and ('%.2f,%.2f want %.2f,%.2f'):format(only.x, only.y, cx, cy))
+    ok(only and only.name == (W.blip and W.blip.name),
+       'named from config rather than from a literal here')
+
+    -- ═══ AND IT COMES DOWN ═══
+    --
+    -- A blip nobody removes is the failure client/storm.lua paid for. Leaving
+    -- the island is the edge that takes it away, and it must come back.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    tickAndFrame()
+    eq(blipCount(), 0, 'leaving warmup takes it down')
+
+    BR.State.me.state = BR.PlayerState.WARMUP
+    tickAndFrame()
+    eq(blipCount(), 1, 'and coming back puts it up again, exactly once')
+    tickAndFrame()
+    eq(blipCount(), 1, 'idempotent: a second tick does not stack a second blip')
+end
 
 describe('markers: the switch')
 do
