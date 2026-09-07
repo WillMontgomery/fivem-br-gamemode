@@ -323,7 +323,7 @@ export const GAME_STEPS: Step[] = [
     // holding an open map with nothing telling them what to do next -- so this
     // is the other half of that gesture rather than an extra step.
     title: 'Nicely done',
-    body: 'Great job! Now press **Escape** to close the map.',
+    body: 'Great job! Now press [[Esc]] to close the map.',
     advance: 'mapclose',
     noBack: true,
     place: 'quarter',

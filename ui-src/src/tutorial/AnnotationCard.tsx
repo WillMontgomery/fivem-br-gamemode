@@ -108,6 +108,21 @@ function emphasise(text: string): React.ReactNode[] {
   //                  than a substituted letter, which is what lets a cap on
   //                  screen follow a live rebind (#209) -- a substituted letter
   //                  is a photograph of the binding at the moment it was made.
+  //   [[Esc]]        a LITERAL cap, for a key that is not a binding.
+  //
+  //                  ═══ ONE KEY IN THIS GAME NEEDS IT ═══
+  //
+  //                  Escape is not a rebindable command. keybinds.lua registers
+  //                  the pause menu as `tap('pause', 'brpausemenu', ..., 'F1',
+  //                  0x1B)` -- F1 is the binding and Escape is a RAW second key
+  //                  wired underneath it -- so `{key:brpausemenu}` resolves to
+  //                  "F1", which is not what the card is telling them to press.
+  //
+  //                  IT IS SPELLED DIFFERENTLY FROM {key:} ON PURPOSE. A literal
+  //                  cannot follow a rebind, so the two must not look alike at
+  //                  the point somebody writes one: a mistyped command name has
+  //                  to fail visibly rather than quietly become a picture of a
+  //                  key nothing binds. See KeyCap's `label`.
   //   ~Volts~        the currency, in the currency's own colour. Owner,
   //                  2026-09-06: "the '250 Volts' text needs to be our
   //                  signature volts color."
@@ -122,7 +137,8 @@ function emphasise(text: string): React.ReactNode[] {
   // BOUNDED AT DEPTH 2 BY THE PATTERN ITSELF: `[^*]+` cannot contain an
   // asterisk, so a bold run can hold a key or a currency mark and nothing else,
   // and neither of those recurses.
-  const pattern = /\*\*([^*]+)\*\*|\*([^*]+)\*|\{key:([A-Za-z0-9_]+)\}|~([^~]+)~/gu
+  const pattern =
+    /\*\*([^*]+)\*\*|\*([^*]+)\*|\{key:([A-Za-z0-9_]+)\}|\[\[([^\]]+)\]\]|~([^~]+)~/gu
   let last = 0
   let m: RegExpExecArray | null
 
@@ -138,8 +154,10 @@ function emphasise(text: string): React.ReactNode[] {
       out.push(<i key={out.length}>{emphasise(m[2])}</i>)
     } else if (m[3] !== undefined) {
       out.push(<KeyCap key={out.length} command={m[3]} fs="0.9rem" />)
+    } else if (m[4] !== undefined) {
+      out.push(<KeyCap key={out.length} label={m[4]} fs="0.9rem" />)
     } else {
-      out.push(<span key={out.length} className="tut-volts">{m[4]}</span>)
+      out.push(<span key={out.length} className="tut-volts">{m[5]}</span>)
     }
     last = m.index + m[0].length
   }
