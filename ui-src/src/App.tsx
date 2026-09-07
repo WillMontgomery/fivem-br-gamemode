@@ -252,16 +252,23 @@ export default function App() {
   // in that the page cannot: the cursor, and the markers over the crates.
   useEffect(() => {
     if (s.match.state !== 'warmup') return
-    if (!s.tutorialGameOn || s.tutorialGameRun) return
+    // ARMED, NOT TICKED. This read `tutorialGameOn` -- the CHECKBOX -- which
+    // defaults to ticked, so every player who entered warmup on a freshly loaded
+    // page started the walkthrough whether or not they had ever seen the lobby
+    // half (owner, 2026-09-06: "the in-game tutorial shows up every time I hop
+    // in a match until I `brtutorial off`"). The checkbox says what the player
+    // WOULD like; `tutorialGameArmed` says they finished the lobby half with it
+    // ticked, and only that may start anything. See the store.
+    if (!s.tutorialGameArmed || s.tutorialGameRun) return
     // A BYSTANDER IS NOT IN THIS MATCH. `participant === false` is a player
     // sitting in the lobby while somebody else's round runs, and starting a HUD
     // walkthrough over a lobby they are still looking at would point every card
     // at nothing.
     if (s.match.participant === false) return
-    s.setTutorialGameOn(false)
+    s.setTutorialGameArmed(false)
     void fetchNui(CB.TUTORIAL_SET, { game: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.match.state, s.match.participant, s.tutorialGameOn, s.tutorialGameRun])
+  }, [s.match.state, s.match.participant, s.tutorialGameArmed, s.tutorialGameRun])
 
   // WARMUP is not a lobby. Players are standing in the world on the warmup pad,
   // so they get the HUD -- an earlier version hid it, which combined with the
@@ -699,7 +706,15 @@ export default function App() {
         <TutorialLayer
           screen={s.focus}
           subscreenUp={LOBBY_SUBSCREENS.has(s.focus)}
-          onDone={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
+          onDone={() => {
+            s.setTutorialRun(false)
+            void fetchNui(CB.TUTORIAL_SET, { run: false })
+            // FINISHING THE LOBBY HALF WITH THE BOX TICKED IS WHAT ARMS THE
+            // MATCH HALF. Not the box on its own, and not `onAbandon` below --
+            // a run that died on a missing anchor did not end with the player
+            // agreeing to anything.
+            if (s.tutorialGameOn) s.setTutorialGameArmed(true)
+          }}
           onAbandon={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
           onStep={s.setTutorialStep}
         />

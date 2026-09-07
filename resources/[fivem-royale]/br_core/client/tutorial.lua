@@ -271,6 +271,30 @@ end
 -- this way: the frame after `inGame` goes false, nothing is disabled. A flag
 -- left set by a crash or a resource restart cannot leave a player unable to
 -- aim, which is the failure a SetPlayerControl-shaped fix would risk.
+-- ═══ AND IT ENDS WHEN THE PAD DOES ═══
+--
+-- The in-game half had no ending except its own last card. A player who did not
+-- finish it carried it out of warmup: onto the bus, into the fight, into the
+-- next lobby and the match after that, with the cards still drawing over the HUD
+-- and the arrow keys still being eaten. Owner, 2026-09-06: "the in-game tutorial
+-- shows up every time I hop in a match until I `brtutorial off`."
+--
+-- TICK RATHER THAN AN EVENT, because there is no client event for "my own state
+-- changed" -- client/warmupcrates.lua reads BR.State.me.state the same way, on
+-- the same band, for the same reason.
+--
+-- IT PAYS NOTHING. This is the abandon path, not the finish: BR.Tutorial.game
+-- takes the flag down and the reward is claimed only by the last card being
+-- dismissed. Leaving the pad early is not finishing.
+BR.Loop.register(BR.Loop.TICK, 'tutorial.leave', function()
+    if not inGame then return end
+    if BR.State and BR.State.me and BR.State.me.state == BR.PlayerState.WARMUP then
+        return
+    end
+    print('[br_core] tutorial: left warmup -- the in-game walkthrough is over')
+    BR.Tutorial.game(false)
+end)
+
 --- Monotonic, so the page can tell one press from the same press re-sent.
 local navSeq = 0
 

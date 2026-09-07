@@ -260,6 +260,26 @@ export interface UiState {
   /** The in-game tutorial's own toggle. On by default, like the first. */
   tutorialGameOn: boolean
   /**
+   * Is this player actually OWED the in-game half?
+   *
+   * ═══ SEPARATE FROM THE CHECKBOX, AND CONFLATING THEM SHIPPED A BUG ═══
+   *
+   * `tutorialGameOn` is the checkbox's own state and defaults to TICKED, which
+   * is right for a checkbox and was catastrophic as a trigger: the warmup effect
+   * in App read it directly, so EVERY player entering warmup on a freshly loaded
+   * page started the in-game walkthrough, whether or not they had ever taken the
+   * lobby half. Owner, 2026-09-06: "the in-game tutorial shows up every time I
+   * hop in a match until I `brtutorial off`."
+   *
+   * "The box is ticked" and "this player finished the lobby half with the box
+   * ticked" are two different claims, and only the second may start anything.
+   * This is the second one. It is raised when the lobby run ENDS, and spent the
+   * moment it is taken.
+   *
+   * DEFAULT FALSE, which is the whole point: nothing starts by default.
+   */
+  tutorialGameArmed: boolean
+  /**
    * The IN-GAME walkthrough is running.
    *
    * SEPARATE FROM `tutorialRun`, because they are two runs over two scripts in
@@ -351,6 +371,7 @@ export interface UiState {
   setTutorialChecked: (v: boolean) => void
   setTutorialStep: (v: string | null) => void
   setTutorialGameOn: (v: boolean) => void
+  setTutorialGameArmed: (v: boolean) => void
   setTutorialGameRun: (v: boolean) => void
   setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
@@ -737,6 +758,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialChecked: true,
   tutorialStep: null,
   tutorialGameOn: true,
+  tutorialGameArmed: false,
   tutorialGameRun: false,
   tutorialSquad: null,
   tutorialCrates: 0,
@@ -833,6 +855,7 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialChecked: (tutorialChecked) => set({ tutorialChecked }),
   setTutorialStep: (tutorialStep) => set({ tutorialStep }),
   setTutorialGameOn: (tutorialGameOn) => set({ tutorialGameOn }),
+  setTutorialGameArmed: (tutorialGameArmed) => set({ tutorialGameArmed }),
   setTutorialGameRun: (tutorialGameRun) => set({ tutorialGameRun }),
   setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),
