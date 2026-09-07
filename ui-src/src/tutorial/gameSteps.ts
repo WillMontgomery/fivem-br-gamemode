@@ -296,6 +296,10 @@ export const GAME_STEPS: Step[] = [
     body: 'Stand over anything on the ground and hold {key:brinteract} to pick it up. **Take two things** from the crate you opened. Nothing you pick up in warmup comes with you into the match.',
     advance: 'pickup',
     pickups: 2,
+    // NO WAY BACK. The card before this one is the crate card, and stepping back
+    // to it would ask them to open a crate they have already opened -- the
+    // walkthrough's own history is what makes that redundant, not a rule.
+    noBack: true,
   },
   {
     id: 'game-inventory',
@@ -305,6 +309,7 @@ export const GAME_STEPS: Step[] = [
     // ENDS WHEN THEY ACTUALLY SWITCH (owner, 2026-09-08). Which also removes the
     // Next button, because only `next` grants one.
     advance: 'slotswitch',
+    noBack: true,
   },
   {
     id: 'game-invpanel',

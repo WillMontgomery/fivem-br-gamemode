@@ -273,6 +273,17 @@ end
 --- in ui-src/src/tutorial/gameSteps.ts beside the card that needs it, which is
 --- where he can change it; this file owns the camera and never learns what a
 --- step is.
+--- The page saying which card is up, so a card can ask for the crate blip.
+---
+--- ONE CARD WANTS IT AND THE REST MUST TAKE IT AWAY, which is why this is driven
+--- by the step id rather than by the half starting: a blip left up after its card
+--- is clutter on a map somebody is planning a drop with.
+AddEventHandler('br:tutorial:step', function(id)
+    if BR.WarmupCrates and BR.WarmupCrates.blip then
+        BR.WarmupCrates.blip(inGame and id == 'game-crates')
+    end
+end)
+
 AddEventHandler('br:tutorial:cam', function(c)
     if type(c) == 'table' and tonumber(c.x) then
         camTo(tonumber(c.x), tonumber(c.y), tonumber(c.z), tonumber(c.heading))

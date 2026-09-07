@@ -710,7 +710,10 @@ export default function App() {
             // absence of a transition table. camTo's home branch early-returns
             // when no camera is live.
             const cam = (id && GAME_STEPS.find((st) => st.id === id)?.cam) || false
-            void fetchNui(CB.TUTORIAL_SET, { cam })
+            // `step` RIDES THE SAME POST. br_core turns the crate blip on for
+            // exactly one card and off for every other -- see br:tutorial:step.
+            // `false` for "no card", for the same Lua-nil reason `cam` uses.
+            void fetchNui(CB.TUTORIAL_SET, { cam, step: id ?? false })
             // ═══ THE CLOCK STARTS ON THE LAST CARD, NOT AFTER IT ═══
             //
             // Owner, 2026-09-07: "THIS is when matchmaking should take place and

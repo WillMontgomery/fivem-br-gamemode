@@ -219,11 +219,30 @@ function clipperOf(el: HTMLElement): Rect | null {
   let p = el.parentElement
   while (p && p !== document.body) {
     const o = getComputedStyle(p)
-    // `overflow-y: auto` on the pane is the real case; `hidden` and `scroll`
-    // clip identically and cost nothing to include.
-    if (/(auto|scroll|hidden)/.test(o.overflowY + o.overflowX)) {
+    // ═══ ONLY THE AXIS THAT IS ACTUALLY SCROLLING ═══
+    //
+    // Setting `overflow-y: auto` makes the browser compute `overflow-x` as auto
+    // too, so a pane that scrolls vertically reports as clipping BOTH ways -- and
+    // the anchor inside it is usually full width, so clipping horizontally ate
+    // the ring's own 4px inflation and with it the left and right borders. Owner,
+    // 2026-09-08: "settings page outlines are better, but now lack a visible left
+    // border... the settings/controls page only shows a visible right border."
+    //
+    // The test is therefore whether the content OVERFLOWS on that axis, not what
+    // the style says. An axis that fits is not hiding anything and must not clip.
+    const overY = /(auto|scroll|hidden)/.test(o.overflowY) && p.scrollHeight > p.clientHeight
+    const overX = /(auto|scroll|hidden)/.test(o.overflowX) && p.scrollWidth > p.clientWidth
+    if (overY || overX) {
       const b = p.getBoundingClientRect()
-      return { x: b.left, y: b.top, w: b.width, h: b.height }
+      // A NON-SCROLLING AXIS IS OPENED RIGHT UP rather than left out, so the
+      // caller needs no second flag: an inset computed against a box wider than
+      // the viewport clamps to zero and cuts nothing.
+      return {
+        x: overX ? b.left : -1e5,
+        y: overY ? b.top : -1e5,
+        w: overX ? b.width : 2e5,
+        h: overY ? b.height : 2e5,
+      }
     }
     p = p.parentElement
   }
@@ -422,6 +441,23 @@ export default function TutorialLayer(p: TutorialLayerProps) {
    * must not be trusted. An id cannot be stale without being visibly wrong.
    */
   const [settledFor, setSettledFor] = useState<string | null>(null)
+  /**
+   * Steps this run has already satisfied once.
+   *
+   * ═══ GOING BACK MUST NOT ASK FOR THE WORK AGAIN ═══
+   *
+   * Owner, 2026-09-08: "after using the arrow keys to go from 12 back to 11, I
+   * have to open a new crate to move back to 12 lol." Every observed advance
+   * baselines its counter on entry, which is right the FIRST time -- a player who
+   * opened a crate on the way to the card must not walk past it -- and wrong on
+   * the way back, where it demands a second crate for a card they already
+   * answered.
+   *
+   * SO THE BASELINE IS TAKEN ONCE PER STEP PER RUN. A step they have already
+   * satisfied keeps its old baseline, so re-entering it is instantly satisfied
+   * again and Last behaves like a reader turning a page rather than like undo.
+   */
+  const doneOnce = useRef(new Set<string>())
   /**
    * Has this step been waiting long enough that it is probably not coming?
    *
@@ -781,12 +817,17 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const slotSwitches = useUi((st) => st.tutorialSlots)
   const slotsAtStart = useRef(slotSwitches)
   useEffect(() => {
-    if (step?.advance === 'slotswitch') slotsAtStart.current = slotSwitches
+    if (step?.advance === 'slotswitch' && !doneOnce.current.has(step.id)) {
+      slotsAtStart.current = slotSwitches
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
   useEffect(() => {
     if (!step || step.advance !== 'slotswitch') return
-    if (slotSwitches > slotsAtStart.current) go(i + 1)
+    if (slotSwitches > slotsAtStart.current) {
+      doneOnce.current.add(step.id)
+      go(i + 1)
+    }
   }, [step, slotSwitches, i, go])
 
   // ── sending a chat message ends the step ───────────────────────────────────────────────────────────
@@ -797,12 +838,17 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const chatSent = useUi((st) => st.chatSent)
   const chatAtStart = useRef(chatSent)
   useEffect(() => {
-    if (step?.advance === 'chatsent') chatAtStart.current = chatSent
+    if (step?.advance === 'chatsent' && !doneOnce.current.has(step.id)) {
+      chatAtStart.current = chatSent
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
   useEffect(() => {
     if (!step || step.advance !== 'chatsent') return
-    if (chatSent > chatAtStart.current) go(i + 1)
+    if (chatSent > chatAtStart.current) {
+      doneOnce.current.add(step.id)
+      go(i + 1)
+    }
   }, [step, chatSent, i, go])
 
   // ── the map going AWAY ends the step ────────────────────────────────────
@@ -824,12 +870,17 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const waypoints = useUi((st) => st.tutorialWaypoints)
   const wpAtStart = useRef(waypoints)
   useEffect(() => {
-    if (step?.advance === 'waypoint') wpAtStart.current = waypoints
+    if (step?.advance === 'waypoint' && !doneOnce.current.has(step.id)) {
+      wpAtStart.current = waypoints
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
   useEffect(() => {
     if (!step || step.advance !== 'waypoint') return
-    if (waypoints > wpAtStart.current) go(i + 1)
+    if (waypoints > wpAtStart.current) {
+      doneOnce.current.add(step.id)
+      go(i + 1)
+    }
   }, [step, waypoints, i, go])
 
   // ── ...and closing the map without one puts the card away ───────────────
@@ -910,7 +961,9 @@ export default function TutorialLayer(p: TutorialLayerProps) {
 
   const startedWith = useRef(tally)
   useEffect(() => {
-    if (step?.advance === 'pickup') startedWith.current = tally
+    if (step?.advance === 'pickup' && !doneOnce.current.has(step.id)) {
+      startedWith.current = tally
+    }
     // Only when the STEP changes -- re-running this on every pickup would move
     // the baseline up with them and the card would never be satisfied.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -924,12 +977,17 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const crates = useUi((st) => st.tutorialCrates)
   const cratesAtStart = useRef(crates)
   useEffect(() => {
-    if (step?.advance === 'crate') cratesAtStart.current = crates
+    if (step?.advance === 'crate' && !doneOnce.current.has(step.id)) {
+      cratesAtStart.current = crates
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
   useEffect(() => {
     if (!step || step.advance !== 'crate') return
-    if (crates - cratesAtStart.current >= (step.crates ?? 1)) go(i + 1)
+    if (crates - cratesAtStart.current >= (step.crates ?? 1)) {
+      doneOnce.current.add(step.id)
+      go(i + 1)
+    }
   }, [step, crates, i, go])
 
   useEffect(() => {
@@ -974,7 +1032,10 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       if (newWeaponPools.has(k)) continue
       got += 1
     }
-    if (got >= (step.pickups ?? 1)) go(i + 1)
+    if (got >= (step.pickups ?? 1)) {
+      doneOnce.current.add(step.id)
+      go(i + 1)
+    }
   }, [step, tally, i, go])
 
   // ── a screen opening ends the step ──────────────────────────────────────

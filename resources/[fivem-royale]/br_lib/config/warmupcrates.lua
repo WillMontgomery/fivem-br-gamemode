@@ -146,10 +146,27 @@ BR.Config.WarmupCrates = {
     -- NO BLOCK, NO BLIP -- config/revivekey.lua's rule. Numbers inside it fall
     -- back; the table's absence is an operator saying no.
     blip = {
-        sprite = 478,          -- the loot-crate icon the airdrop uses
-        colour = 46,           -- Volts yellow, the same as the shop
+        -- ═══ THE COURTESY BLIP'S OWN ICON, DELIBERATELY ═══
+        --
+        -- Owner, 2026-09-08: "change the blip type to match the one used in
+        -- courtesy blips so they'll recognize courtesy blips when they see
+        -- them." 457 is the briefcase, and client/loot.lua's own note explains
+        -- the choice: "a courtesy blip is saying 'there is loot over there', and
+        -- a briefcase reads as loot at a glance where the generic 68 did not."
+        --
+        -- SO THIS IS TEACHING, NOT DECORATION. The four practice crates are the
+        -- first loot marker a new player ever sees; making it a different icon
+        -- from the real one would teach them to recognise something the game
+        -- never shows again. Colour 5 is that blip's too.
+        sprite = 457,
+        colour = 5,
         scale  = 0.85,
         name   = 'Practice Crates',
+        -- FLASHING, because it is up for one card and has to be found (owner,
+        -- 2026-09-08). The courtesy blip does not flash and must not start: it
+        -- is up for a whole match, and a flashing marker that never stops is a
+        -- thing players learn to ignore.
+        flash  = true,
     },
 
     -- WHERE IT FLIES TO: metres above the crate's base, i.e. its mouth. Same

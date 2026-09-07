@@ -273,6 +273,7 @@ local blip = nil
 local function showBlip()
     local b = W.blip
     if blip or not b or #W.anchors == 0 then return end
+    if not blipWanted then return end
 
     local sx, sy, sz = 0.0, 0.0, 0.0
     for i = 1, #W.anchors do
@@ -286,6 +287,9 @@ local function showBlip()
     SetBlipColour(blip, math.tointeger(tonumber(b.colour)) or 0)
     SetBlipScale(blip, (tonumber(b.scale) or 1.0) + 0.0)
     SetBlipAsShortRange(blip, true)
+    -- FLASHING IS OPT-IN AND IS ITS OWN CONFIG LINE, so the courtesy blip this
+    -- borrows its icon from cannot inherit it by accident.
+    if b.flash == true then SetBlipFlashes(blip, true) end
     BR.Native.blipName(blip, b.name or 'Practice Crates')
 end
 
@@ -298,6 +302,22 @@ local function hideBlip()
     if not blip then return end
     if isTrue(DoesBlipExist(blip)) then RemoveBlip(blip) end
     blip = nil
+end
+
+--- The walkthrough asking for it, or letting it go.
+---
+--- ON == true RATHER THAN TRUTHINESS, the convention every switch in this
+--- feature follows: a native's 1 reaching a tutorial switch means something
+--- upstream is already wrong.
+--- @param on boolean
+function BR.WarmupCrates.blip(on)
+    on = on == true
+    if on == blipWanted then return end
+    blipWanted = on
+    -- OFF TAKES EFFECT ON THIS LINE. The tick would clear it within 100ms
+    -- anyway, but "the card is gone and the blip is still up" is a visible wrong
+    -- state and this costs one call to make impossible.
+    if not on then hideBlip() end
 end
 
 AddEventHandler('onResourceStop', function(res)
@@ -619,6 +639,16 @@ end)
 --- size and a colour for. Individual NUMBERS inside it do fall back, because a
 --- number nobody has tuned is a starting point rather than an invention.
 local M = W.marker
+
+--- Is the walkthrough asking for the map blip right now?
+---
+--- ═══ THE BLIP IS A CARD'S, THE CONES ARE EVERYBODY'S ═══
+---
+--- Owner, 2026-09-08: "can you only show the crates blip when step 12 is shown?"
+--- The cones stay on for every warmup player -- the colour is a fact about the
+--- crate -- but a marker on the MAP is an instruction, and an instruction with
+--- no card next to it is clutter on a map somebody is using to plan a drop.
+local blipWanted = false
 
 --- Are the rarity cones drawing?
 ---

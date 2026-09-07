@@ -633,6 +633,11 @@ RegisterNUICallback(BR.NuiCb.TUTORIAL_SET, function(data, cb)
     if data.game ~= nil then
         TriggerEvent('br:tutorial:game', data.game == true, data.done == true)
     end
+    -- WHICH CARD IS UP. Sent on every step; br_core decides what to do with it.
+    if data.step ~= nil then
+        TriggerEvent('br:tutorial:step',
+                     type(data.step) == 'string' and data.step or nil)
+    end
     -- WHERE THE CARD WANTS THE CAMERA. A table goes there; anything else --
     -- including the absence of one -- comes home. See BR.Tutorial's camTo.
     if data.cam ~= nil then

@@ -688,6 +688,7 @@ function SetBlipSprite(b, v)   if blips[b] then blips[b].sprite = v end end
 function SetBlipColour(b, v)   if blips[b] then blips[b].colour = v end end
 function SetBlipScale(b, v)    if blips[b] then blips[b].scale = v end end
 function SetBlipAsShortRange(b, v) if blips[b] then blips[b].short = v end end
+function SetBlipFlashes(b, v)   if blips[b] then blips[b].flash = v end end
 function DoesBlipExist(b)      return blips[b] ~= nil and 1 or 0 end
 function RemoveBlip(b)         blips[b] = nil end
 BR.Native = BR.Native or {}
@@ -763,7 +764,19 @@ standAtAnchor(1, 2.0)
 
 describe('the map blip')
 do
-    -- The track pass is what puts it up, so run one before asking.
+    -- ═══ THE BLIP BELONGS TO A CARD, NOT TO WARMUP ═══
+    --
+    -- Owner, 2026-09-08: "can you only show the crates blip when step 12 is
+    -- shown?" The cones stay on for every warmup player -- the colour is a fact
+    -- about the crate -- but a MAP marker is an instruction, and an instruction
+    -- with no card beside it is clutter on a map somebody is planning a drop on.
+    --
+    -- SO THE DEFAULT IS OFF, and that is asserted before anything asks.
+    eq(blipCount(), 0, 'no blip until the walkthrough asks for one')
+    tickAndFrame()
+    eq(blipCount(), 0, 'and a tick on the island does not conjure one')
+
+    BR.WarmupCrates.blip(true)
     tickAndFrame()
 
     -- ONE BLIP FOR THE ROW, and the count is the assertion. The anchors are
@@ -789,6 +802,16 @@ do
     --
     -- A blip nobody removes is the failure client/storm.lua paid for. Leaving
     -- the island is the edge that takes it away, and it must come back.
+    -- IT MATCHES THE COURTESY BLIP, which is the whole point of the icon choice:
+    -- these four are the first loot marker a new player sees, and a different
+    -- icon would teach them to recognise something the game never shows again.
+    ok(only and only.sprite == 457 and only.colour == 5,
+       "it wears the courtesy blip's own briefcase and colour",
+       only and ('sprite %s colour %s'):format(tostring(only.sprite),
+                                               tostring(only.colour)))
+    ok(only and only.flash == true,
+       'and it flashes, because it is up for one card and has to be found')
+
     BR.State.me.state = BR.PlayerState.ALIVE
     tickAndFrame()
     eq(blipCount(), 0, 'leaving warmup takes it down')
@@ -819,6 +842,11 @@ do
     -- from every player at once, silently.
     eq(BR.WarmupCrates.markersOn(), true, 'and they are ON before anybody asks')
     eq(#tickAndFrame(), 4, 'all four draw for a player who asked for nothing')
+
+    -- AND THE WALKTHROUGH LETTING GO TAKES IT DOWN ON THE SPOT, not on the next
+    -- tick: "the card is gone and the blip is still up" is a visible wrong state.
+    BR.WarmupCrates.blip(false)
+    eq(blipCount(), 0, 'and the walkthrough letting go takes it down immediately')
 
     BR.WarmupCrates.markers(false)
     eq(BR.WarmupCrates.markersOn(), false, 'markers(false) turns them off')
