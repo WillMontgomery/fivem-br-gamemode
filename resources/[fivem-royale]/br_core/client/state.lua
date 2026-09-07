@@ -1266,6 +1266,13 @@ AddEventHandler(BR.Net.NOTIFY, function(n)
     -- should not be the thing that discovers a sender invented a field.
     TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
         text   = n.text or '',
+        -- A CUE KEY, AND ONLY EVER A KEY. The wire cannot name a GTA sound set:
+        -- br_ui/client/nui.lua hands this to BR.Sfx.play, which looks it up in
+        -- this client's own cue table and ignores anything it does not
+        -- recognise. Type-checked here like every other field on this handler,
+        -- for the reason the block below gives -- a net payload is whatever
+        -- reached the client.
+        cue    = type(n.cue) == 'string' and n.cue or nil,
         -- THE SENTENCE PRE-SPLIT, WHEN IT NAMES SOMEBODY. Rebuilt rather than
         -- forwarded, for this handler's own reason one level down: `parts` is
         -- the first field on this payload that is not a scalar, and
@@ -1303,6 +1310,10 @@ function BR.Notify(text, tone, opts)
         ms     = opts.ms,
         endsAt = opts.endsAt,
         sticky = opts.sticky,
+        -- THE SOUND THIS PARTICULAR TOAST MAKES, when the general one is wrong.
+        -- Read in br_ui/client/nui.lua's send(); absent means "the tone decides".
+        -- See the note there for why an override exists at all.
+        cue    = opts.cue,
     })
 end
 

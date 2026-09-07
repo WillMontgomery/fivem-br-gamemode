@@ -310,8 +310,12 @@ AddEventHandler(BR.Net.MARKET_STATE, function()
 end)
 
 --- Tell one player why something did not happen.
-local function refuse(src, text)
-    TriggerClientEvent(BR.Net.NOTIFY, src, { text = text, tone = 'warn', ms = 4000 })
+--- @param src integer
+--- @param text string
+--- @param cue string|nil  a cue key that REPLACES the general warn sound
+local function refuse(src, text, cue)
+    TriggerClientEvent(BR.Net.NOTIFY, src,
+        { text = text, tone = 'warn', ms = 4000, cue = cue })
 end
 
 RegisterNetEvent(BR.Net.MARKET_BUY)
@@ -507,7 +511,24 @@ end
 function BR.Market.tellShortfall(src, price)
     local need = math.floor((tonumber(price) or 0) - BR.Market.balanceOf(src))
     if need <= 0 then return end
-    refuse(src, ('You need %d more to buy that.'):format(need))
+    -- ═══ THE ONE FUNNEL EVERY SHORTFALL REACHES, WHICH IS WHY THE SOUND IS
+    --     HERE AND NOT AT THE FOUR CALL SITES ═══
+    --
+    -- Owner, 2026-09-08: "Shop insufficient funds" is what he picked
+    -- `shop.denied` for. Every refusal that speaks this sentence comes through
+    -- this function -- the warmup vehicle showroom (server/shop.lua), the
+    -- revive-key purchase, and both arms of BR.Market.charge -- so one line here
+    -- is every shop refusal in the game, and a fifth caller added later inherits
+    -- it without anybody remembering to.
+    --
+    -- CARRIED ON THE TOAST RATHER THAN SENT BESIDE IT. A separate SFX_CUE would
+    -- race the sentence and, worse, would play ON TOP of the general warn sound
+    -- br_ui/client/nui.lua gives every warn toast -- two sounds for one refusal.
+    -- Riding the payload makes it a REPLACEMENT by construction.
+    --
+    -- AND IT IS BELOW THE `need <= 0` GUARD, so a call that says nothing plays
+    -- nothing. The sound and the sentence are the same event or they are neither.
+    refuse(src, ('You need %d more to buy that.'):format(need), 'shop.denied')
 end
 
 --- Take Volts for something that is not a cosmetic, durably.

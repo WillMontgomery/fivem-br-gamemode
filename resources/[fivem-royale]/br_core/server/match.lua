@@ -489,6 +489,21 @@ function BR.Match.onEnter(m, state, from)
         -- whether this match gets one and when it becomes due.
         if BR.Airdrop then BR.Airdrop.begin(m) end
 
+        -- ═══ THE ROUND IS ON, AND IT SAYS SO ═══
+        --
+        -- His pick for "match start" (2026-09-08). Sent from the transition
+        -- rather than from a tick, so it is an EDGE by construction: this arm
+        -- runs once, on the way into PLAYING, and BR.Match.transition no-ops on
+        -- `from == state`.
+        --
+        -- THE WHOLE MATCH, WHICH AT THIS INSTANT IS EXACTLY THE RIGHT AUDIENCE.
+        -- BR.Broadcast.toMatch walks BR.Server.audience(m), and at the moment of
+        -- the flip nobody in this match has been eliminated yet -- everyone
+        -- hearing it is somebody the round just started for. A player in the
+        -- lobby or in another instance is not in that audience and hears
+        -- nothing, which is the whole reason this is not a global send.
+        BR.Broadcast.toMatch(m, BR.Net.SFX_CUE, { c = 'match.start' })
+
     elseif state == BR.MatchState.ENDED then
         -- ONCE PER MATCH, AND THE SECOND TIME IS WORSE THAN A DUPLICATE.
         --
@@ -1201,6 +1216,40 @@ local function winConditionMet(m)
     return BR.Server.squadsAlive(m) <= 1
 end
 
+--- Announce the last two squads -- at most once per match.
+---
+--- His pick for "Down to 2 squads or players in match" (2026-09-08).
+---
+--- ═══ ARMED BY OBSERVATION, NOT BY m.startSquads ═══
+---
+--- The count has to be SEEN above two while PLAYING before a two can mean
+--- anything. minSquads is 2 (br_lib/config/match.lua), so an ordinary production
+--- match STARTS at two squads and was never "down to" anything -- a rule keyed
+--- on m.startSquads would announce the endgame at the moment the bus took off.
+--- Arming on a >2 reading also covers the case startSquads cannot: a third squad
+--- that disconnected during the flight leaves startSquads at 3 and the live count
+--- at 2 on the very first PLAYING tick, which is not an endgame either.
+---
+--- ═══ AND THE LATCH IS THE MATCH INSTANCE, WITH NOTHING CLEARING IT ═══
+---
+--- Unlike server/storm.lua's stormMoveCued, which enterPhase re-arms every
+--- phase, this is once per ROUND: the fields die with the instance when
+--- BR.Server.matches[m.id] is dropped. That is what makes a revive safe --
+--- server/revivekey.lua puts an OUT player back to ALIVE mid-match, so the count
+--- really can go 3 -> 2 -> 3 -> 2, and only the latch stops the second two being
+--- announced as if it were news.
+--- @param m table
+local function cueFinalTwoOnce(m)
+    if m.final2Cued then return end
+    if m.state ~= BR.MatchState.PLAYING then return end
+    local n = BR.Server.squadsAlive(m)
+    if n > 2 then m.final2Armed = true return end
+    if not m.final2Armed or n ~= 2 then return end
+    m.final2Cued = true
+    -- A CUE KEY, NEVER A SOUND NAME. See br_lib/shared/protocol.lua's SFX_CUE.
+    BR.Broadcast.toMatch(m, BR.Net.SFX_CUE, { c = 'match.final2' })
+end
+
 --- How many of this match's players died before it started and are waiting to
 --- be picked back up (#144).
 ---
@@ -1442,6 +1491,12 @@ local function matchTick(m, now)
                 end
             end)
     end
+
+    -- BEFORE THE WIN CHECK, NOT AFTER. One squad left ends the match on this
+    -- very line, so a cue evaluated afterwards would never see a two on the tick
+    -- that mattered -- and on the tick that took the field from three to one it
+    -- would never see one at all.
+    cueFinalTwoOnce(m)
 
     if winConditionMet(m) then
         BR.Match.transition(m, BR.MatchState.ENDED)

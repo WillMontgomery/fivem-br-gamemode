@@ -55,6 +55,34 @@ local function send(kind, data)
         d = BR.NuiNormalise(data or {}),
         s = seq,
     })
+
+    -- ═══ ONE SOUND PER TOAST, AND THE TOAST MAY NAME ITS OWN ═══
+    --
+    -- Owner, 2026-09-08, picking a GTA pair for "Error toast notification
+    -- sound". Every toast in the project ends up here -- this function is the
+    -- only caller of SendNUIMessage -- so this is the one place the rule can be
+    -- stated once instead of at sixteen senders.
+    --
+    -- THE `cue` FIELD IS WHAT STOPS TWO SOUNDS FOR ONE EVENT. A shop refusal is
+    -- an error toast AND a shop refusal, and the owner named a DIFFERENT sound
+    -- for each ("Shop insufficient funds" -> shop.denied). Without an override a
+    -- shortfall would play both, which is precisely the collision
+    -- config/audio.lua's header exists to prevent -- two actions that sound
+    -- alike are worse than one that sounds wrong, and two sounds for ONE action
+    -- is worse still. So a sender that knows better says so, and everything else
+    -- falls through to the general tone.
+    --
+    -- THE THROTTLE IS THE CUE'S, NOT THIS FUNCTION'S. toast.warn carries a 400ms
+    -- floor in config/audio.lua's minInterval, applied inside BR.Sfx.play, which
+    -- is what makes a player leaning on a refused key one sound rather than four
+    -- a second.
+    if kind == BR.Nui.TOAST and type(data) == 'table' and data.clear ~= true then
+        if type(data.cue) == 'string' and data.cue ~= '' then
+            TriggerEvent('br:ui:sfx', data.cue)
+        elseif data.tone == 'warn' then
+            TriggerEvent('br:ui:sfx', 'toast.warn')
+        end
+    end
 end
 
 --- Public entry point for other resources (br_core) to reach the UI.

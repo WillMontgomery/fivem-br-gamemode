@@ -986,6 +986,19 @@ function BR.ReviveKey.buy(src, netId, done)
 
         if not paid then
             stat.refused = stat.refused + 1
+            -- ═══ NO CUE HERE, AND THAT IS DELIBERATE ═══
+            --
+            -- `shop.denied` belongs to the SENTENCE, not to this branch. Two of
+            -- the three ways `paid` comes back false are a shortfall, and both
+            -- go through BR.Market.tellShortfall, which now carries the cue on
+            -- the toast it sends -- so a refusal the player can act on already
+            -- speaks and already sounds. Adding a second send here would play it
+            -- twice on exactly that path.
+            --
+            -- The other reasons ("profile not loaded", "nothing to charge") say
+            -- nothing to the player by this feature's standing rule, and a sound
+            -- with no sentence would be worse than the silence: a noise the
+            -- player cannot account for.
             print(('[br_core] revivekey: %d was not charged -- %s')
                 :format(src, tostring(why2)))
             done(false, why2)
@@ -1011,6 +1024,31 @@ function BR.ReviveKey.buy(src, netId, done)
         -- actually granted.
         if n > 0 then
             say(squadSrcs(squadId, matchId), copy().bought, 'success')
+            -- ═══ THE BUYER, NOT THE SQUAD, AND ONCE PER PURCHASE ═══
+            --
+            --   "I didn't hear any noise when I bought my squad mate's key at
+            --    the ambulance"                          -- owner, 2026-09-07
+            --
+            -- There was nothing to hear: this path has never sent a cue on any
+            -- branch, and the client's press (client/revivekey.lua's
+            -- REVIVEKEY_BUY) plays nothing either.
+            --
+            -- `shop.buy` RATHER THAN `revivekey.pickup`, WHICH IS HIS
+            -- DISTINCTION. config/audio.lua carries his own heading for the
+            -- other cue -- "Picked up (NOT BOUGHT) revive key" -- so walking
+            -- over a key and paying for one are deliberately different sounds.
+            -- The two paths cannot collide: revivekey.pickup is sent from
+            -- BR.ReviveKey.take and the shared `grant` helper sends nothing.
+            --
+            -- ADDRESSED TO `src` ALONE, even though the sentence above goes to
+            -- the whole squad. A purchase-complete chime to three people who did
+            -- not press is a shop sound for a shop they are not standing in --
+            -- and this file already splits the two audiences this way where the
+            -- pickup cue goes to the collector while the sentences go wider.
+            --
+            -- INSIDE `n > 0` AND OUTSIDE THE LOOP, so one press that buys three
+            -- keys is one sound, exactly like the toast above it.
+            TriggerClientEvent(BR.Net.SFX_CUE, src, { c = 'shop.buy' })
         end
         stat.bought = stat.bought + 1
 
@@ -1325,6 +1363,33 @@ local function bringBack(src, e, reviverSrc, at)
     BR.Roster.update(src, { hp = hp + 0.0, armour = 0.0 })
     BR.Roster.setState(src, BR.PlayerState.ALIVE)
     TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = hp, armour = 0 })
+
+    -- ═══ AND THE SQUAD HEARS IT, WHICH THIS PATH NEVER DID ═══
+    --
+    --   "I didn't hear any noise ... when I used the ambulance to revive them
+    --    either."                                        -- owner, 2026-09-07
+    --
+    -- THE CUE WAS NEVER MISSING; THIS ROUTE WAS. `squad.revived` reaches a
+    -- client through the `mate` payload on BR.Net.DBNO_SET, which is written by
+    -- `tellSquad` in server/combat.lua -- and tellSquad is called from
+    -- BR.Combat.revive. THIS function is not that function: an ambulance revive
+    -- writes the roster itself, four lines above, because the player is also
+    -- being placed 150m over a van and the ordering of ped-then-ledger is the
+    -- whole point of the block above. So a CPR revive announced itself and an
+    -- ambulance revive did not, and nothing said so.
+    --
+    -- SENT HERE RATHER THAN BY CALLING BR.Combat.revive. That function would
+    -- undo this one: it hands back dbnoReviveHp and pushes its own DBNO_SET,
+    -- against a player who is mid-air over an ambulance on a different health
+    -- number. What is shared is the SENTENCE, not the mechanism.
+    --
+    -- EXCEPT THE SUBJECT, matching tellSquad exactly -- the revived player is
+    -- being told by the screen, the sky and the ground rushing up at them, and
+    -- a squad status cue about themselves would be the one player on the list it
+    -- is not news to.
+    for _, s2 in ipairs(squadSrcsExcept(e.squadId, e.matchId, src)) do
+        TriggerClientEvent(BR.Net.SFX_CUE, s2, { c = 'squad.revived' })
+    end
 
     -- SPECTATING IS ALREADY OVER BY HERE. It was ended a whole fade ago, at the
     -- moment the promise went out, so that the camera cut happened while there
