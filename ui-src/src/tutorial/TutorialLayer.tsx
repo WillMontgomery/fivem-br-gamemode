@@ -96,11 +96,32 @@ const DEMO_SQUAD = {
 /** The staged notification's key, so the same card can take it back down. */
 const DEMO_NOTICE_KEY = 'tutorial-demo'
 
+/**
+ * The staged kill feed.
+ *
+ * ═══ READ THIS LIST BOTTOM TO TOP ═══
+ *
+ * The feed puts the NEWEST row at the top and grows downward, so push order is
+ * chronology and the last entry here is the one the player's eye lands on. That
+ * also answers the owner's question of 2026-09-06 -- "the kill feed seems to
+ * fill from the bottom up?" -- which is the right observation about the wrong
+ * end: it fills top-down and EMPTIES bottom-up, because the oldest row is the
+ * lowest and is the one that fades out first.
+ *
+ * ONE OF THEM IS THEIRS, AND THAT IS THE POINT OF THE CARD. All four used to be
+ * `mine: false`, so the demo drew four identical grey rows under a card that
+ * promises "your own kills and deaths are picked out in color". It was
+ * demonstrating the opposite of what it said. The player's own kill is LAST so
+ * it lands at the top, in colour, where they are already looking.
+ *
+ * PLACEHOLDER NAMES, and they are mine and unapproved. `You` is DEMO_SQUAD's own
+ * member name so both demos share one cast rather than seven strangers.
+ */
 const DEMO_FEED = [
-  { killer: 'Vance',  victim: 'Okonkwo', weapon: 'carbinerifle', headshot: true,  mine: false, died: false },
-  { killer: 'Marlowe', victim: 'Vance',  weapon: 'pumpshotgun',  headshot: false, mine: false, died: false },
-  { killer: '',        victim: 'Reyes',  weapon: 'storm',        headshot: false, mine: false, died: false },
-  { killer: 'Okonkwo', victim: 'Marlowe', weapon: 'sniperrifle', headshot: true,  mine: false, died: false },
+  { killer: 'Vance',   victim: 'Reyes',   weapon: 'carbinerifle', headshot: true,  mine: false, died: false },
+  { killer: '',        victim: 'Okonkwo', weapon: 'storm',        headshot: false, mine: false, died: false },
+  { killer: 'Marlowe', victim: 'You',     weapon: 'pumpshotgun',  headshot: false, mine: false, died: true  },
+  { killer: 'You',     victim: 'Marlowe', weapon: 'sniperrifle',  headshot: true,  mine: true,  died: false },
 ]
 
 /** Windows VK for the backtick/tilde key. */
@@ -128,17 +149,21 @@ const VK_TILDE = 0xc0
  */
 function withKeys(body: string, binds: Array<{ command: string; key?: string; vk?: number }>): string {
   return body
-    // «», NOT BOLD. The substituted key comes out wrapped in the card's
-    // grammar for a key cap, so `{key:brmap}` renders as the same little outlined
-    // box the Back and Next hints use rather than as bold prose (owner,
-    // 2026-09-06: "why are all these {keys} not in our glyphs?"). See
-    // AnnotationCard's `emphasise`.
+    // ═══ IT NO LONGER TOUCHES {key:...} AND THAT IS THE POINT ═══
     //
-    // THE COMMAND NAME TAKES DIGITS, and it did not. `brslot1`..`brslot5` are
-    // real commands and the old `[a-z]+` could not match them, so those two
-    // tokens printed literally on the card that explains switching weapons.
-    .replace(/\{key:([a-z0-9]+)\}/gu, (_m, cmd: string) =>
-      '«' + (binds.find((b) => b.command === cmd)?.key || 'unbound') + '»')
+    // This used to replace the token with the bound letter, which made the key a
+    // word in a sentence. It is drawn as the project's own KeyCap now -- see
+    // AnnotationCard's `emphasise` -- so the COMMAND has to survive all the way
+    // to the renderer.
+    //
+    // THAT IS NOT ONLY COSMETIC. KeyCap subscribes to the binding, so a cap on
+    // screen follows a rebind (#209); a substituted letter is a photograph of
+    // the binding at the moment the substitution ran. The card that says "press
+    // this to open the map" is up for as long as the player wants it to be.
+    //
+    // (The old substitution also could not match `brslot1`..`brslot5`: its
+    // pattern took letters only, so the two commands with digits in their names
+    // printed as raw tokens on the card that explains switching weapons.)
     .replace(/\{tilde:([a-z0-9]+)\}/gu, (_m, cmd: string) =>
       binds.find((b) => b.command === cmd)?.vk === VK_TILDE
         ? ' (above TAB on your keyboard)'
@@ -352,6 +377,14 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     setSettledFor(null)
     placedRef.current = null
 
+    // A CARD WITH NOTHING TO POINT AT IS READY IMMEDIATELY. There is no rect to
+    // wait for, no ring to draw and nothing that can go missing -- so it settles
+    // on the spot and the measure loop never starts. See `Step.target`.
+    if (step.target === undefined) {
+      setSettledFor(step.id)
+      return
+    }
+
     let same = 0
     let frames = 0
 
@@ -414,7 +447,14 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     } else if (nav.dir === 'back') {
       if (i > 0 && !step.noBack && steps[i - 1] !== undefined) go(i - 1)
     } else if (nav.dir === 'action' && step.action) {
-      void fetchNui(step.action.cb, {})
+      // `{ open: true }`, NOT `{}`. br_ui/client/players.lua reads
+      // `data.open == true` and its own header states the rule -- "STATE, NOT
+      // TOGGLES. The page sends what it wants to be true" -- so an empty payload
+      // says CLOSE, and closing an already-closed panel early-returns and does
+      // nothing at all. That was the whole of "the button doesn't work" (owner,
+      // 2026-09-06): in game only this key path runs, and only this path was
+      // sending the wrong thing. The click path below has always sent it.
+      void fetchNui(step.action.cb, { open: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav])
@@ -422,7 +462,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // ── the way out of a step that is waiting on the player ─────────────────
   useEffect(() => {
     setStuck(false)
-    if (!step || (step.advance !== 'pickup' && step.advance !== 'crate')) return
+    if (!step || (step.advance !== 'pickup' && step.advance !== 'crate'
+                  && step.advance !== 'map')) return
     const t = setTimeout(() => setStuck(true), STUCK_MS)
     return () => clearTimeout(t)
   }, [step])
@@ -506,7 +547,20 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     const timers: number[] = []
     DEMO_FEED.forEach((row, n) => {
       timers.push(window.setTimeout(() => {
-        pushFeed({ ...row, id: -1 - n })
+        // NEGATIVE IDS, so a staged row cannot collide with a real one -- the
+        // server's are positive and monotonic, and a demo sharing one would
+        // evict a real death from the list.
+        //
+        // THE IDS ARE FIXED PER ROW rather than counted up, which is what makes
+        // re-entering this step safe: `Last` from the squad card comes straight
+        // back here, and a fresh id each time would stack a second copy of the
+        // whole demo on top of the first.
+        // ...AND THE PUSH ITSELF IS GUARDED, because `pushFeed` prepends
+        // unconditionally: a second entry with the same id would sit in the list
+        // as a visible duplicate until the first one's TTL removed both.
+        if (!useUi.getState().feed.some((f) => f.id === -1 - n)) {
+          pushFeed({ ...row, id: -1 - n })
+        }
       }, 250 + n * 700))
     })
     return () => timers.forEach((t) => window.clearTimeout(t))
@@ -548,6 +602,33 @@ export default function TutorialLayer(p: TutorialLayerProps) {
                  key: DEMO_NOTICE_KEY, sticky: true })
     return () => pushNotice({ text: '', key: DEMO_NOTICE_KEY, clear: true })
   }, [step, pushNotice])
+
+  // ── the engine's own map opening ends the step ──────────────────────────
+  //
+  // Owner, 2026-09-06: "While on step 14, opening the full map like it tells me
+  // to doesn't progress to step 15." It advanced on Next like any other card, so
+  // it asked for one thing and accepted another -- the exact rule the owner set
+  // for navigational steps.
+  //
+  // A RISING EDGE, and the baseline is what makes it one. A map somehow already
+  // up when the card appears must not walk straight past it; that is the same
+  // class as the `clickedFor` step-skipping bug above.
+  //
+  // TWO PRIMITIVE SELECTORS RATHER THAN ONE OBJECT, which is the store's own
+  // rule: a selector returning a fresh object re-renders on every push.
+  const frontendUp = useUi((st) => st.frontendUp)
+  const frontendReason = useUi((st) => st.frontendReason)
+  const mapWasUp = useRef(false)
+  useEffect(() => {
+    if (step?.advance === 'map') mapWasUp.current = frontendUp && frontendReason === 'map'
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step])
+  useEffect(() => {
+    if (!step || step.advance !== 'map') return
+    const up = frontendUp && frontendReason === 'map'
+    if (up && !mapWasUp.current) go(i + 1)
+    if (!up) mapWasUp.current = false
+  }, [step, frontendUp, frontendReason, i, go])
 
   // ── picking things up ends the step ─────────────────────────────────────
   //
@@ -680,7 +761,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     && (step.screen !== undefined
       ? step.screen !== p.screen
       : p.subscreenUp === true)
-  const missing = step !== undefined && rect === null && !waitingForScreen
+  const missing = step !== undefined && step.target !== undefined
+    && rect === null && !waitingForScreen
   useEffect(() => {
     if (!missing) return
     const t = setTimeout(() => {
@@ -704,7 +786,10 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // NOT UNTIL THE BOX BELONGS TO THIS STEP AND HAS STOPPED MOVING. See
   // `settledFor` -- this one comparison is what keeps a card from being pinned
   // to the control the PREVIOUS card was about.
-  if (!step || rect === null || waitingForScreen || settledFor !== step.id) return null
+  //
+  // A TARGETLESS CARD SKIPS THE RECT TEST, because it has none by design.
+  if (!step || waitingForScreen || settledFor !== step.id) return null
+  if (step.target !== undefined && rect === null) return null
 
   // ── where the card goes, decided ONCE per step ──────────────────────────
   //
@@ -726,21 +811,34 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const vh = window.innerHeight
   const latchKey = `${step.id}|${vw}x${vh}`
   if (placedRef.current?.key !== latchKey) {
-    placedRef.current = { key: latchKey, at: place(rect, vw, vh) }
+    placedRef.current = {
+      key: latchKey,
+      // CENTRED, AND ARRIVING FROM NOWHERE IN PARTICULAR. A card about the
+      // world or about the whole map has no direction to be thrown from, so the
+      // arrival vector is zero and it simply scales up in place.
+      at: rect === null
+        ? { left: (vw - CARD_W) / 2, top: (vh - CARD_H) / 2, fromX: 0, fromY: 0 }
+        : place(rect, vw, vh),
+    }
   }
   const { left, top, fromX, fromY } = placedRef.current.at
 
   return (
     <>
-      <div
-        className={`tut-ring${step.advance === 'click' ? ' tut-ring--click' : ''}`}
-        style={{
-          left: rect.x - 4,
-          top: rect.y - 4,
-          width: rect.w + 8,
-          height: rect.h + 8,
-        }}
-      />
+      {/* NO RING WITHOUT A SUBJECT. A targetless card is about something that
+          is not on this screen; a rectangle drawn anyway would be the walkthrough
+          pointing at nothing, which is the fault it is meant to prevent. */}
+      {rect !== null && (
+        <div
+          className={`tut-ring${step.advance === 'click' ? ' tut-ring--click' : ''}`}
+          style={{
+            left: rect.x - 4,
+            top: rect.y - 4,
+            width: rect.w + 8,
+            height: rect.h + 8,
+          }}
+        />
+      )}
       <AnnotationCard
         key={step.id}
         title={step.title}
@@ -762,7 +860,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         // "asking for one thing and accepting another" the owner ruled out.
         onNext={
           step.advance === 'next'
-          || (stuck && (step.advance === 'pickup' || step.advance === 'crate'))
+          || (stuck && (step.advance === 'pickup' || step.advance === 'crate'
+                        || step.advance === 'map'))
             ? () => go(i + 1)
             : null
         }

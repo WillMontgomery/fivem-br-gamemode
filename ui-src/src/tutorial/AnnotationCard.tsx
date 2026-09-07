@@ -49,6 +49,7 @@
 import { useEffect, useState } from 'react'
 
 import Btn from '../ui/Btn'
+import { KeyCap } from '../ui/KeyCap'
 
 /**
  * One "← Last" hint: the key, then what it does.
@@ -61,9 +62,17 @@ import Btn from '../ui/Btn'
 function KeyHint(p: { cap: string; children: React.ReactNode }) {
   return (
     <span className="tut-key">
-      {/* THE SAME CAP THE PROSE USES, so an arrow in the footer and a key name
-          in a sentence are visibly the same kind of thing. */}
-      <kbd className="tut-cap">{p.cap}</kbd>
+      {/* THE PROJECT'S OWN GLYPH, so an arrow in the footer and a key named in
+          a sentence are visibly the same object. `label` rather than `command`
+          because these three are raw GTA controls read in Lua, not bindings --
+          there is nothing to look up and nothing that can ever rebind them.
+
+          IT IS ALSO WHY THE ARROWS ARE HEAVY NOW. Owner, 2026-09-06: "the black
+          font used in your left/right/up/down arrow SVGs needs much more
+          weight. It's far too thin. Perhaps 3x." They were text in a hand-rolled
+          box; KeyCap draws Anton on a filled plate, which is both the weight he
+          asked for and what every other key in this game already looks like. */}
+      <KeyCap label={p.cap} fs="0.78rem" />
       {p.children}
     </span>
   )
@@ -89,16 +98,31 @@ function emphasise(text: string): React.ReactNode[] {
   // single-mark rule applied first reads `**x**` as an italic containing a
   // literal asterisk. The other two cannot collide with anything.
   //
-  //   **bold**   the owner's emphasis
-  //   *italic*   the owner's other emphasis
-  //   «KEY»    a key cap. NOT AUTHORED BY HAND -- `withKeys` produces these
-  //              when it substitutes a {key:command} token, so a card says
-  //              "press {key:brmap}" and the player sees their own binding in
-  //              the same little outlined box the Next hint uses (owner,
-  //              2026-09-06: "why are all these {keys} not in our glyphs?").
-  //   ~Volts~    the currency, in the currency's own colour. Owner, 2026-09-06:
-  //              "the '250 Volts' text needs to be our signature volts color."
-  const pattern = /\*\*([^*]+)\*\*|\*([^*]+)\*|«([^»]+)»|~([^~]+)~/gu
+  //   **bold**       the owner's emphasis
+  //   *italic*       the owner's other emphasis
+  //   {key:command}  THE PROJECT'S OWN TOKEN, rendered by the project's own
+  //                  KeyCap -- the same glyph the notice stack and the settings
+  //                  page draw. Owner, 2026-09-06: "why are all these {keys}
+  //                  not in our glyphs?" They were being substituted into bold
+  //                  prose before this. The COMMAND reaches the renderer rather
+  //                  than a substituted letter, which is what lets a cap on
+  //                  screen follow a live rebind (#209) -- a substituted letter
+  //                  is a photograph of the binding at the moment it was made.
+  //   ~Volts~        the currency, in the currency's own colour. Owner,
+  //                  2026-09-06: "the '250 Volts' text needs to be our
+  //                  signature volts color."
+  //
+  // ═══ AND IT RECURSES, WHICH IS WHY THE TOKENS WERE INERT ═══
+  //
+  // Five of the six key tokens in the scripts are written inside `**...**`. The
+  // bold branch emitted its captured text RAW, so a token wrapped in bold never
+  // reached any rule that could render it -- the first version of this grammar
+  // looked correct and did nothing on almost every card that used it.
+  //
+  // BOUNDED AT DEPTH 2 BY THE PATTERN ITSELF: `[^*]+` cannot contain an
+  // asterisk, so a bold run can hold a key or a currency mark and nothing else,
+  // and neither of those recurses.
+  const pattern = /\*\*([^*]+)\*\*|\*([^*]+)\*|\{key:([A-Za-z0-9_]+)\}|~([^~]+)~/gu
   let last = 0
   let m: RegExpExecArray | null
 
@@ -107,13 +131,13 @@ function emphasise(text: string): React.ReactNode[] {
     if (m[1] !== undefined) {
       out.push(
         <b key={out.length} style={{ fontWeight: 'var(--font-tutorial-head)' }}>
-          {m[1]}
+          {emphasise(m[1])}
         </b>,
       )
     } else if (m[2] !== undefined) {
-      out.push(<i key={out.length}>{m[2]}</i>)
+      out.push(<i key={out.length}>{emphasise(m[2])}</i>)
     } else if (m[3] !== undefined) {
-      out.push(<kbd key={out.length} className="tut-cap">{m[3]}</kbd>)
+      out.push(<KeyCap key={out.length} command={m[3]} fs="0.9rem" />)
     } else {
       out.push(<span key={out.length} className="tut-volts">{m[4]}</span>)
     }

@@ -104,6 +104,10 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
 
   return (
     <div
+      // The guided first run points a card at this stack (#261). Safe despite
+      // the empty-list early return above: that step stages a sticky notice on
+      // entry, so the element exists before the walkthrough looks for it.
+      data-tut="hud-notices"
       className="fixed flex flex-col-reverse items-start gap-1.5"
       style={{
         ...pos,

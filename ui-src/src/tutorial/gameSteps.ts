@@ -170,7 +170,10 @@ export const GAME_STEPS: Step[] = [
   },
   {
     id: 'game-notice',
-    target: 'hud-counters',
+    // THE STACK ITSELF, not the counters. Owner, 2026-09-06: "Step 7/8 card is
+    // not positioned near the notification and is outlining the alive/elims
+    // section." It was, because this named the counters as a placeholder.
+    target: 'hud-notices',
     title: 'Notifications',
     // The card is about what a notification looks like, so it stages one and
     // holds it until they move on.
@@ -180,7 +183,10 @@ export const GAME_STEPS: Step[] = [
   },
   {
     id: 'game-players',
-    target: 'hud-counters',
+    // THE ALIVE PLATE ON ITS OWN. "Everybody still playing" is literally what
+    // that number is, and ringing one plate rather than the pair is the owner's
+    // rule for anything smaller than a whole surface.
+    target: 'hud-alive',
     title: 'Everybody in the match',
     // {key:…} becomes the player's ACTUAL binding, {tilde:…} adds the location
     // suffix only while that command is still on tilde. See `withKeys`.
@@ -227,10 +233,12 @@ export const GAME_STEPS: Step[] = [
   },
   {
     id: 'game-crates',
-    // The markers over the four crates are what this card points at in the
-    // world; on screen it anchors to the inventory, which is where the loot it
-    // is about to talk about will land.
-    target: 'hud-inventory',
+    // NO ANCHOR, AND THAT IS THE HONEST ANSWER. This card is about four boxes
+    // standing on the pad; it used to borrow the inventory, so the ring outlined
+    // the slots while the words said "crates" (owner, 2026-09-06: "Step 11
+    // shouldn't say 'crates' while outlining inventory"). There is no HUD
+    // element for a thing in the world, so it draws centred with no ring, and
+    // the four rarity cones over the crates are what points at the subject.
     title: 'Crates',
     body: 'Those four marked crates on the pad are yours to practice on — they refill themselves, so take as long as you like. The **marker color is the rarity** of what is inside, and they get better left to right. **Go and open one.**',
     // NO NEXT BUTTON: the card sends them somewhere, so the only way past it is
@@ -263,10 +271,16 @@ export const GAME_STEPS: Step[] = [
   },
   {
     id: 'game-map',
-    target: 'hud-counters',
+    // THE MINIMAP. A rectangle over the engine's own radar exists for this --
+    // see Hud.tsx -- because there is no DOM for a radar the game draws itself,
+    // and this card was ringing the Elims/Alive plates instead.
+    target: 'hud-minimap',
     title: 'The map',
-    body: 'Press **{key:brmap}** to open the full map.',
-    advance: 'next',
+    body: 'Press {key:brmap} to open the full map.',
+    // AND IT ENDS WHEN THE MAP OPENS. It ended on Next before, so the card said
+    // "press this" and took anything (owner, 2026-09-06). `map` also removes the
+    // Next button for free -- only `next` grants one.
+    advance: 'map',
   },
   {
     id: 'game-map-waypoint',
@@ -274,14 +288,25 @@ export const GAME_STEPS: Step[] = [
     // page normally hides behind every engine screen, and this subtree opts out
     // for the map alone -- owner, 2026-09-04, "allow ONLY this tutorial to shine
     // through".
-    target: 'hud-counters',
+    //
+    // NO ANCHOR: the subject is the whole map surface. Every HUD element it
+    // could have borrowed is underneath a full-screen scaleform, so a ring would
+    // outline a rectangle nobody can see.
     title: 'Waypoints',
     body: 'Double click anywhere on the map to drop a **waypoint** — double click on it again to remove it. You will see this marker within the game too. In **squads** waypoints are visible to the whole team.',
     advance: 'next',
   },
   {
     id: 'game-shop',
-    target: 'hud-volts',
+    // NO ANCHOR, AND THIS ONE ENDED THE OWNER'S RUN. It named `hud-volts`, which
+    // is mounted only while the player is standing within a few metres of a shop
+    // car and never after they have spent -- so on the pad it does not exist,
+    // and a card whose anchor is missing for 1.2s abandons the walkthrough:
+    // "[tutorial] step \"game-shop\" wants [data-tut=\"hud-volts\"] and nothing on
+    // screen has it -- ending the run" (2026-09-06).
+    //
+    // The card is about a car parked somewhere on the pad, which is a thing in
+    // the world like the crates. Centred, no ring.
     title: 'The shop',
     body: 'On the pad you can spend **Volts** on something to take into the match. **One purchase per match**, and it is **not refundable** — so buy it when you know what you want.',
     advance: 'next',

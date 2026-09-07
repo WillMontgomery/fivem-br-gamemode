@@ -1772,19 +1772,18 @@ html, body, #root {
    second button vocabulary is exactly what made the first version read as a
    web widget rather than as part of this game's interface. */
 
-/* ═══ AND THE IN-GAME HALF HAS NO BUTTONS AT ALL ═══
+/* ═══ THE ARROW HINTS ═══
 
-   Those cards take no NUI focus, so there is no cursor to press one with; they
-   name the KEY instead (owner, 2026-09-05: "get rid of the mouse pointer for
-   these cards altogether... and use left/right arrow keys instead").
+   The cap itself is NOT styled here. It is the project's own `KeyCap`, the same
+   glyph the notice stack and the settings page draw -- owner, 2026-09-06: "why
+   are all these {keys} not in our glyphs?" A hand-rolled box lived here for one
+   day and its arrows were too thin, which is the same complaint from the other
+   direction: KeyCap draws Anton on a filled plate and needed no persuading.
 
-   IT MUST NOT LOOK PRESSABLE. No hover, no active state, no focus ring and no
-   pointer cursor -- the same call hud/SpectateHint.tsx makes and for the same
-   reason. Something that looks like a button and cannot be clicked is worse on
-   a screen with no pointer than plain text would be.
-
-   THE CAP IS THE ONLY LOUD PART, so the eye lands on the key rather than on the
-   word, which is the thing the player has to act on. */
+   THIS RULE IS ONLY THE ROW: cap, gap, word. It must not look pressable -- no
+   hover, no active state, no focus ring, no pointer -- because in game there is
+   no cursor to press anything with, and something that looks like a button and
+   is not is worse than plain text. Same call hud/SpectateHint.tsx makes. */
 .tut-key {
   display: inline-flex;
   align-items: center;
@@ -1795,46 +1794,9 @@ html, body, #root {
   white-space: nowrap;
 }
 
-/* ═══ THE KEY CAP ═══
-
-   Used in two places and it has to look the same in both: the footer hints
-   (← Last, → Next) and any key named inside a card's prose. The prose ones are
-   produced by `withKeys`, which wraps a substituted {key:command} token so the
-   card's own grammar renders it -- owner, 2026-09-06: "why are all these {keys}
-   not in our glyphs?"
-
-   THE ARROWS NEEDED REAL WEIGHT. Owner: "the black font used in your
-   left/right/up/down arrow SVGs needs much more weight. It's far too thin.
-   Perhaps 3x." They are text glyphs rather than SVGs, and font-weight does
-   almost nothing to an arrow: the weight axis of a variable text font does not
-   reach symbol glyphs, which usually come from a fallback face with one weight.
-
-   `-webkit-text-stroke` DOES, because it paints an outline in the glyph's own
-   colour whatever face it came from -- so the arrow thickens even though the
-   font cannot. Chrome has had it since 4; check-css.mjs's floor is 103. */
-.tut-cap {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.15rem;
-  height: 1.15rem;
-  padding: 0 0.25rem;
-  /* SQUARE, like every other box in this interface. */
-  border: 1px solid var(--color-volts);
-  color: var(--color-volts);
-  font-family: inherit;
-  font-size: 0.78rem;
-  font-weight: var(--font-tutorial-head);
-  line-height: 1;
-  -webkit-text-stroke: 0.6px currentColor;
-  /* A cap in the middle of a sentence must not push the line apart. */
-  vertical-align: baseline;
-  transform: translateY(0.12em);
-}
-
 /* THE CURRENCY, IN THE CURRENCY'S COLOUR. Owner, 2026-09-06, on the reporting
    card: "the '250 Volts' text needs to be our signature volts color." Written
-   `~250 Volts~` in the card's prose; see AnnotationCard's `emphasise`. */
+   `~100 Volts~` in the card's prose; see AnnotationCard's `emphasise`. */
 .tut-volts {
   color: var(--color-volts);
   font-weight: var(--font-tutorial-head);

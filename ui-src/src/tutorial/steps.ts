@@ -109,12 +109,36 @@ export type Advance =
    * So br_core counts them and the count rides the walkthrough's own envelope.
    */
   | 'crate'
+  /**
+   * The engine's own full-screen map coming up.
+   *
+   * Owner, 2026-09-06: "While on step 14, opening the full map like it tells me
+   * to doesn't progress to step 15." It did not, because that card advanced on
+   * Next like any other -- so the card said "press this" and accepted anything.
+   *
+   * A RISING EDGE, not a level: see the map effect in TutorialLayer. A map that
+   * is somehow already open must not skip the card on its first frame, which is
+   * the same class as the `clickedFor` step-skipping bug.
+   */
+  | 'map'
 
 export type Step = {
   /** Stable id. Persisted progress and every log line key on this. */
   id: string
-  /** `data-tut` value of the control this card is about. */
-  target: string
+  /**
+   * `data-tut` value of the control this card is about.
+   *
+   * OPTIONAL, AND AN ABSENT ONE IS A REAL KIND OF CARD. Some things a
+   * walkthrough has to explain are not on the HUD at all -- crates standing in
+   * the world, the whole surface of the open map, a shop car you are not next
+   * to yet. Those used to borrow whatever anchor was nearest, which is how the
+   * owner ended up with a card about crates outlining his inventory and three
+   * more ringing the Elims/Alive plates (2026-09-06).
+   *
+   * A targetless card draws CENTRED with no ring, waits for nothing, and cannot
+   * end the run by being unable to find itself.
+   */
+  target?: string
   /** 700-weight heading. Short — it is a label, not a sentence. */
   title: string
   /**

@@ -39,7 +39,7 @@ function useBump(value: number) {
  * a polygon, and anything drawn inside it gets sliced off by the chamfer.
  */
 function Counter({
-  value, label, sub, colour, big,
+  value, label, sub, colour, big, tut,
 }: {
   value: number
   label: string
@@ -47,11 +47,20 @@ function Counter({
   /** What the flash and the delta mean: cyan is yours, white is the world. */
   colour: string
   big?: boolean
+  /**
+   * `data-tut` for this plate, so the walkthrough can ring ONE of them.
+   *
+   * AN EXPLICIT PROP RATHER THAN A SPREAD, because this component does not
+   * spread and TypeScript does not type-check hyphenated JSX attributes -- a
+   * `data-tut` written on `<Counter>` compiles clean and silently vanishes.
+   * Same trap Section fell into (#261).
+   */
+  tut?: string
 }) {
   const bump = useBump(value)
 
   return (
-    <div className="relative">
+    <div className="relative" data-tut={tut}>
       <div className={`plate ${big ? 'px-4 py-2 min-w-[6.5rem]' : 'px-3 py-2'} text-right`}>
         <span
           // key restarts the punch: remounting is how every other animation in
@@ -116,6 +125,11 @@ export default function Counters({
       <Counter
         value={alive}
         label="Alive"
+        // The walkthrough rings THIS plate for the "everybody in the match"
+        // card, rather than the pair -- owner, 2026-09-04: "for smaller things
+        // we should draw a box around them to show what part is being
+        // described."
+        tut="hud-alive"
         // NOT GATED ON `mode` ALONE. It read "1 squads" in a solo match (user,
         // 2026-08-08) -- whatever the match reported, the mode string was not
         // what this assumed. So the test is now about the NUMBER, which cannot

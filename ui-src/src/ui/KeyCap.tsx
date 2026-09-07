@@ -52,9 +52,31 @@ import { useUi } from '../store'
  * push. A glyph is therefore honest about knowing nothing rather than guessing,
  * and it fills itself in the moment the push lands.
  */
-export function KeyCap({ command, fs = '1.15rem' }: {
-  /** The RegisterCommand name, e.g. 'brptt'. Never a key label. */
-  command: string
+export function KeyCap({ command, label, fs = '1.15rem' }: {
+  /**
+   * The RegisterCommand name, e.g. 'brptt'. Never a key label.
+   *
+   * Omitted only when `label` is given -- see it for the one case that is.
+   */
+  command?: string
+  /**
+   * A literal glyph, for a key that is NOT a rebindable command.
+   *
+   * ═══ EXACTLY ONE CALLER AND IT IS NOT A LOOPHOLE ═══
+   *
+   * The guided first run's in-game cards are driven by the raw arrow keys, read
+   * as GTA controls in br_core/client/tutorial.lua rather than through
+   * BR.Keys -- they are not bindings, there is no command to name, and nothing
+   * in the rebinder will ever move them. So there is no lookup to do and the
+   * glyph is the whole truth.
+   *
+   * IT MUST NOT BECOME THE WAY TO DRAW A BINDING. Every real key in this
+   * interface goes through `command`, because #209 requires a cap on screen to
+   * follow a live rebind and a literal cannot: it is a photograph of the
+   * binding at the moment it was written. If a second caller ever wants this
+   * for something a player can rebind, the answer is `command`.
+   */
+  label?: string
   /**
    * The plate's own size, and THE ONLY DIMENSION A CALLER SETS. Everything
    * else about the cap -- its floor width, its padding -- is expressed in `em`
@@ -85,6 +107,9 @@ export function KeyCap({ command, fs = '1.15rem' }: {
   // A STRING OUT OF THE STORE, NOT THE ROW. Returning the matched object would
   // hand zustand a fresh reference on every push and re-render every glyph in
   // the interface whenever any binding anywhere changed.
+  // THE HOOK RUNS EVEN FOR A LITERAL CAP, because hooks cannot be conditional.
+  // An undefined `command` simply matches nothing and the lookup costs one scan
+  // of a short array; the alternative is two components sharing one style block.
   const key = useUi((s) => s.keybinds.find((k) => k.command === command)?.key) || ''
 
   return (
@@ -206,7 +231,7 @@ export function KeyCap({ command, fs = '1.15rem' }: {
         transition: 'none',
       }}
     >
-      {key || '--'}
+      {label ?? (key || '--')}
     </span>
   )
 }

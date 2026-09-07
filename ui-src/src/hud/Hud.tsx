@@ -571,6 +571,31 @@ export default function Hud({ visible }: { visible: boolean }) {
             rem, so the outline could agree with itself while disagreeing with
             every surface it exists to check against. `fixed`, for the same
             reason the vitals strip is: --map-* are viewport-true. */}
+        {/* THE MINIMAP, AS SOMETHING THE WALKTHROUGH CAN POINT AT (#261).
+            The radar is drawn by the engine, so there is no element for it in a
+            shipped build and the card that says "press this to open the map"
+            was pointing at the Elims/Alive plates instead (owner, 2026-09-06).
+
+            AN EMPTY RECTANGLE OVER THE REAL ONE, reading the same --map-*
+            variables every other surface checks against, so it cannot drift
+            from what it is outlining. `fixed` for the same reason the vitals
+            strip is: those variables are viewport-true and .hud-safe carries no
+            transform.
+
+            NOT GATED ON THE RADAR BEING VISIBLE. A player who has hidden their
+            radar would otherwise take a card pointing at a missing anchor,
+            which ends the run -- a hidden radar is a preference, not a fault. */}
+        <div
+          data-tut="hud-minimap"
+          aria-hidden
+          className="fixed pointer-events-none"
+          style={{
+            left: 'var(--map-left)',
+            bottom: 'var(--map-bottom)',
+            width: 'var(--map-w)',
+            height: 'var(--map-h)',
+          }}
+        />
         {import.meta.env.DEV && (
           <div
             className="fixed border border-dashed border-white/20 rounded-md
