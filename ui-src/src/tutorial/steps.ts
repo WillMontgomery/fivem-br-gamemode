@@ -321,7 +321,7 @@ export const LOBBY_STEPS: Step[] = [
     // pointing at nothing.
     target: 'mode-squad',
     title: 'Solo or Squads',
-    body: '**Solo** is one life against everybody. Pick **Squads** — you are put in a team of up to four who can revive each other, and the party controls appear so you can bring friends in with you.',
+    body: '**Solo** is one life against everybody. Pick **Squads** - you are put in a team of up to four who can revive each other, and the party controls appear so you can bring friends in with you.',
     advance: 'click',
   },
 
@@ -337,7 +337,7 @@ export const LOBBY_STEPS: Step[] = [
     id: 'settings-uiscale',
     target: 'settings-uiscale',
     title: 'Interface size',
-    body: 'This scales every panel in the game. Drag it and let go — *watch this card resize with it*.',
+    body: 'This scales every panel in the game. Drag it and let go - *watch this card resize with it*.',
     advance: 'click',
     screen: 'settings',
   },
@@ -353,7 +353,7 @@ export const LOBBY_STEPS: Step[] = [
     id: 'settings-display',
     target: 'settings-display',
     title: 'Graphics and display',
-    body: 'Resolution, fullscreen and the graphics quality are the *game’s own* settings, not ours — this panel points you at where GTA keeps them. Nothing to change here.',
+    body: "Resolution, fullscreen and the graphics quality are the *game's own* settings, not ours - this panel points you at where GTA keeps them. Nothing to change here.",
     advance: 'next',
     screen: 'settings',
   },
@@ -467,7 +467,7 @@ export const LOBBY_STEPS: Step[] = [
     // "Step 18 should tell them the 500 Volts is only awarded if they continue
     // the tutorial into the first match." The toggle above Ready up offers the
     // second half; this is the only card that says the Volts depend on it.
-    body: 'That covers the lobby. Leave **Continue tutorial into the first match** switched on and finish it in game to earn your **500 Volts** — the reward is only paid for the whole thing.',
+    body: 'That covers the lobby. Leave **Continue tutorial into the first match** switched on and finish it in game to earn your **500 Volts** - the reward is only paid for the whole thing.',
     advance: 'dismiss',
   },
 ]

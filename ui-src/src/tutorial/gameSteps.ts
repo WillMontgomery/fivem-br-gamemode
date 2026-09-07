@@ -143,7 +143,7 @@ export const GAME_STEPS: Step[] = [
     // nothing. The staged squad has a downed mate in it on purpose -- the plate
     // states are half of what the card is describing.
     stage: 'squad',
-    body: 'One plate per squadmate, in their own color — the same color as their dot on the radar.',
+    body: 'One plate per squadmate, in their own color - the same color as their dot on the radar.',
     advance: 'next',
   },
   {
@@ -165,7 +165,7 @@ export const GAME_STEPS: Step[] = [
     target: 'squad-bars',
     title: 'How they are doing',
     stage: 'squad',
-    body: 'Health on top, **shield** underneath. When a mate goes **down** the bars are replaced by a countdown — that is how long you have to reach them before they are out for good.',
+    body: 'Health on top, **shield** underneath. When a mate goes **down** the bars are replaced by a countdown - that is how long you have to reach them before they are out for good.',
     advance: 'next',
   },
   {
@@ -178,7 +178,7 @@ export const GAME_STEPS: Step[] = [
     // The card is about what a notification looks like, so it stages one and
     // holds it until they move on.
     stage: 'notice',
-    body: 'Anything the game needs to tell you arrives like this — a squadmate going down, a purchase, a reward. They stack up in the pause menu if you miss one.',
+    body: 'Anything the game needs to tell you arrives like this - a squadmate going down, a purchase, a reward. They stack up in the pause menu if you miss one.',
     advance: 'next',
   },
   {
@@ -274,7 +274,7 @@ export const GAME_STEPS: Step[] = [
     // element for a thing in the world, so it draws centred with no ring, and
     // the four rarity cones over the crates are what points at the subject.
     title: 'Crates',
-    body: 'There are four practice crates on the pad — look for the marker on your map. These are special crates which refill automatically when you walk away. The **colored beam** over each one shows the rarity of what’s inside. **Go and open one.**',
+    body: "There are four practice crates on the pad - look for the marker on your map. These are special crates which refill automatically when you walk away. The **colored beam** over each one shows the rarity of what's inside. **Go and open one.**",
     // NO NEXT BUTTON: the card sends them somewhere, so the only way past it is
     // going (owner, 2026-09-05). The escape hatch after 45s is in TutorialLayer
     // and exists so a miscount cannot trap anybody -- see `stuck`.
@@ -308,7 +308,7 @@ export const GAME_STEPS: Step[] = [
     id: 'game-invpanel',
     target: 'hud-inventory',
     title: 'The full inventory',
-    body: 'Press **{key:brinventory}** to open it properly — you can move things between slots and drop what you do not want.',
+    body: 'Press **{key:brinventory}** to open it properly - you can move things between slots and drop what you do not want.',
     advance: 'screen',
     awaitScreen: 'inventory',
     // NO ACTION HERE, AND THE ASYMMETRY IS DELIBERATE. There is no callback that
@@ -345,7 +345,7 @@ export const GAME_STEPS: Step[] = [
     // could have borrowed is underneath a full-screen scaleform, so a ring would
     // outline a rectangle nobody can see.
     title: 'Waypoints',
-    body: 'Double click anywhere on the map to drop a **waypoint** — double click on it again to remove it. You will see this marker within the game too. In **squads** waypoints are visible to the whole team. **Try it yourself now.**',
+    body: 'Double click anywhere on the map to drop a **waypoint** - double click on it again to remove it. You will see this marker within the game too. In **squads** waypoints are visible to the whole team. **Try it yourself now.**',
     // ENDS ON A WAYPOINT ACTUALLY BEING PLACED. Owner, 2026-09-07: "should not
     // have a next/last button but instead encourage them to try it and only
     // proceed after they've placed a waypoint at least once."
@@ -379,6 +379,9 @@ export const GAME_STEPS: Step[] = [
     title: 'The shop',
     body: 'Items on the pad can be purchased with ~Volts~ and brought into the match with you. **One purchase is allowed per match and it is not refundable.**',
     place: 'quarter',
+    // NO WAY BACK FROM HERE. The card before it is the one that closed the map;
+    // stepping back would ask the player to close a map that is already closed.
+    noBack: true,
     // THE OWNER'S FRAMING OF THE SHOP CAR, surveyed by him (2026-09-07). The
     // camera flies here over 1.5s while this card is up and flies home when it
     // goes; the ped is frozen for the whole of it, because the player cannot see
@@ -401,7 +404,7 @@ export const GAME_STEPS: Step[] = [
     // their screen."
     target: 'hud-timer',
     title: 'Tutorial complete',
-    body: 'That is the countdown to your flight. When it runs out you drop with everyone else — so use what is left to grab what you want. Good luck out there.',
+    body: 'That is the countdown to your flight. When it runs out you drop with everyone else - so use what is left to grab what you want. Good luck out there.',
     advance: 'dismiss',
     // AND IT LEAVES BY ITSELF. Owner, 2026-09-07: "hide the card automatically
     // after 10 seconds." Nothing is left to ask for and the countdown behind it

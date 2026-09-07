@@ -181,12 +181,22 @@ export function KeyCap({ command, label, fs = '1.15rem' }: {
       className="plate ts font-display text-center"
       style={{
         ['--fs' as string]: fs,
-        ['--edgec' as string]: key
+        ['--edgec' as string]: (label !== undefined || key)
           ? 'rgba(255,255,255,0.22)'
           : 'rgba(255,255,255,0.12)',
         ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
         ['--cut-max' as string]: '0.3rem',
-        color: key ? '#ffffff' : 'rgba(255,255,255,0.3)',
+        // ═══ A LITERAL IS NEVER UNBOUND, AND THAT IS WHY IT WAS GREY ═══
+        //
+        // The dim colour means "this action has no key" -- it goes with the `--`
+        // the render draws instead of a letter. A LABEL cap has no command to
+        // resolve, so `key` was empty and every literal took the unbound
+        // treatment: [[Tab]], [[Enter]] and [[Esc]] all drew grey on cards that
+        // were telling the player to press them (owner, 2026-09-08, twice).
+        //
+        // A literal is a key that exists and cannot be rebound. It is never the
+        // thing the dim colour is describing.
+        color: (label !== undefined || key) ? '#ffffff' : 'rgba(255,255,255,0.3)',
         // ═══ THE CAP IS SQUARE, AND IT IS SQUARE IN `em` ═══
         //
         // Owner, 2026-08-22: "the glyphs work, but they draw way too wide and

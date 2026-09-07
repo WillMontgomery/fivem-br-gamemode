@@ -521,7 +521,7 @@ AddEventHandler(BR.Net.TUTORIAL_DONE, function()
             -- was written; the database refused the second credit, which is the
             -- outcome we wanted.
             TriggerClientEvent(BR.Net.NOTIFY, src, {
-                text = ('No %s this time — you have completed the tutorial '
+                text = ('No %s this time - you have completed the tutorial '
                     .. 'before, and the reward is paid once.')
                     :format(BR.Config.Market.currency or 'Volts'),
                 tone = 'info',
