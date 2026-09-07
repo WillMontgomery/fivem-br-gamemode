@@ -33,44 +33,8 @@ local ISLAND_PATHS    = 0xF74B1FFA4A15FBEA  -- island path nodes on/off
 local ISLAND_CENTRE   = vector3(4840.6, -5174.4, 2.0)
 local NEAR_ISLAND     = 2200.0   -- island is ~1.5km across; margin for the bus climb-out
 
--- Mainland IPLs. See the header before adding anything.
---
--- ch2_04 (Vinewood Hills, _hills/cityhills_02) -- THE MANSION HAS TO BE TOLD
--- WHICH MANSION IT IS. Build 3751 ("A Safehouse in the Hills", mp2025_02) added
--- 17 `apa_ch2_04_mansion_*` ymaps through update.rpf/dlc_patch/mpapartment, and
--- they are property-STATE variants: _original, _private, _shared, _generic. GTA
--- Online's property script picks one. FiveM never runs it, so on 3751 and above
--- nothing selects a state and the whole sector's HD tier stays gated behind the
--- choice -- including apa_ch2_04_strm_0 and _strm_2, which never even enter the
--- streamer. The symptom is a hole in the hills that survives everything you
--- would normally try, because nothing is missing: strlist shows every drawable,
--- texture, bound and ymap for the sector LOADED while none of it renders. We
--- request the _original (unowned) set, which is the state a server with no
--- property system should be showing anyway.
---
--- Diagnosed by bisecting sv_enforceGameBuild one build at a time: 3570 clean,
--- 3751 holed. If another hills sector vanishes on a future build, look for
--- *_mansion_* state ymaps in that sector's dlc_patch metadata RPF first.
-local MAINLAND_IPLS = {
-    'apa_ch2_04',
-    'apa_ch2_04_critical_0', 'apa_ch2_04_critical_1', 'apa_ch2_04_critical_2',
-    'apa_ch2_04_long_0', 'apa_ch2_04_long_1', 'apa_ch2_04_long_2',
-    'apa_ch2_04_long_3', 'apa_ch2_04_long_4', 'apa_ch2_04_long_5',
-    'apa_ch2_04_long_6', 'apa_ch2_04_long_7', 'apa_ch2_04_long_8',
-    'apa_ch2_04_long_9',
-    'apa_ch2_04_strm_0', 'apa_ch2_04_strm_1', 'apa_ch2_04_strm_2',
-    'apa_ch2_04_strm_3', 'apa_ch2_04_strm_4', 'apa_ch2_04_strm_5',
-    'apa_ch2_04_strm_6',
-    -- The property-state set. _private/_furniture/_firepit are owned-property
-    -- dressing and are deliberately left out.
-    'apa_ch2_04_mansion_original', 'apa_ch2_04_mansion_original_lod',
-    'apa_ch2_04_props_original', 'apa_ch2_04_props_original_lod',
-    'apa_ch2_04_mansion_generic', 'apa_ch2_04_mansion_generic_lod',
-    'apa_ch2_04_mansion_shared', 'apa_ch2_04_mansion_shared_lod',
-    'apa_ch2_04_mansion_grass', 'apa_ch2_04_mansion_player_bounds',
-    'apa_ch2_04_mansion_railings_m', 'apa_ch2_04_mansion_railings_p',
-    'apa_ch2_04_mansion_shutters',
-}
+-- Mainland IPLs. Empty on purpose -- see the header before adding anything.
+local MAINLAND_IPLS = {}
 
 -- The full Cayo Perico set: terrain + LODs, airstrip, beach, docks, tower,
 -- mansion, and the quadrant placement groups. Sourced from the known-good
