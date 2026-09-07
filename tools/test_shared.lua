@@ -11526,6 +11526,18 @@ do
         -- declares them. The storm's weather branches are claims made through
         -- BR.World.want now, and this is the file that turns a winning claim
         -- into the native call the assertions below read.
+        -- ═══ AND A RECORDING BR.Sfx, WHICH THIS HARNESS DID NOT HAVE ═══
+        --
+        -- client/storm.lua reaches for BR.Sfx.play three ways now: the wall
+        -- crossing cues (storm.out / storm.in) and the five-second pip before a
+        -- hold ends. With no stub those are `attempt to index a nil value`, and
+        -- BR.Loop.step pcalls every callback -- so the failure would arrive as a
+        -- line in C.prints that only C.errored() looks at, in cases that happen
+        -- not to cross an edge. Recorded rather than swallowed, because the
+        -- assertions below are about WHICH cue played and when.
+        C.sfx = {}
+        env.BR.Sfx = { play = function(cue) C.sfx[#C.sfx + 1] = cue end }
+
         loadInto(env, { 'br_core/client/world.lua', 'br_core/client/storm.lua' })
 
         env.BR.State.match.state = env.BR.MatchState.PLAYING
@@ -11820,6 +11832,162 @@ do
            'every column stands on the arc the CAMERA is looking at, not the '
            .. 'arc above the corpse',
            ('north %d / east %d of %d'):format(north, east, #C.markers))
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE THREE CUES THIS FILE PLAYS
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "help me find out why storm.move and storm.out don't play any sound"
+    --                                                    -- owner, 2026-09-07
+    --   "I want timer.final to play every single time the 'storm closing in'
+    --    timer gets to 5s"                                       -- same day
+    --
+    -- storm.out had no call site at all, which is the entire reason it was
+    -- silent, and timer.final still had none. Both are wired into this file's
+    -- 10 Hz job now, so both are tested here -- and the harness had no BR.Sfx
+    -- until this landed, which means a cue that threw would have arrived as a
+    -- pcall'd line in C.prints rather than as a red test.
+    local function played(C, cue)
+        local n = 0
+        for _, c in ipairs(C.sfx) do if c == cue then n = n + 1 end end
+        return n
+    end
+
+    -- ------------------------------------------------ crossing the wall ---
+    do
+        local C = newStormClient()
+        C.pedAt = pt(0.0, 0.0)            -- dead centre, r = 200
+        C.tick(2)
+        ok(C.errored() == nil, 'the cue path runs clean', C.errored())
+        ok(#C.sfx == 0,
+           'standing safe inside says nothing -- and neither does the FIRST '
+               .. 'tick, which only establishes where the player is',
+           table.concat(C.sfx, ','))
+
+        -- ═══ SPAWNING ALREADY OUTSIDE MUST NOT COUNT AS CROSSING ═══
+        --
+        -- The latch starts nil rather than false for exactly this: a player who
+        -- lands outside the circle, or whose first tick is a rejoin mid-storm,
+        -- has not crossed anything and must not be told they have.
+        local D = newStormClient()
+        D.pedAt = pt(900.0, 0.0)          -- well outside
+        D.tick(2)
+        ok(#D.sfx == 0,
+           'a player whose first tick is already outside hears nothing -- they '
+               .. 'crossed no boundary', table.concat(D.sfx, ','))
+
+        -- ...AND NOW A REAL CROSSING, IN BOTH DIRECTIONS.
+        C.pedAt = pt(900.0, 0.0)
+        C.tick(1)
+        ok(played(C, 'storm.out') == 1 and played(C, 'storm.in') == 0,
+           'walking out of the circle plays storm.out, once',
+           table.concat(C.sfx, ','))
+        C.tick(3)
+        ok(played(C, 'storm.out') == 1,
+           'and staying out does not keep playing it -- it is an EDGE, and the '
+               .. 'job runs at 10 Hz', table.concat(C.sfx, ','))
+
+        C.pedAt = pt(0.0, 0.0)
+        C.tick(1)
+        ok(played(C, 'storm.in') == 1,
+           'and walking back in plays storm.in', table.concat(C.sfx, ','))
+    end
+
+    -- ═══ A SPECTATOR HEARS NEITHER ═══
+    --
+    -- The colour grade and the sky deliberately follow the SHOT -- they are
+    -- world rendering, and what they paint is what somebody standing at the
+    -- camera would see. A cue is not world rendering: it is this interface
+    -- telling THIS player about THEIR position, and firing it for a boundary
+    -- somebody else crossed is a confusing noise.
+    do
+        local C = newStormClient()
+        C.pedAt = pt(0.0, 0.0)
+        C.spectate(pt(0.0, 0.0))
+        C.tick(2)
+        C.spectate(pt(900.0, 0.0))        -- the watched player runs out
+        C.tick(2)
+        ok(#C.sfx == 0,
+           'a spectator is told nothing when the player they are watching '
+               .. 'crosses the wall', table.concat(C.sfx, ','))
+    end
+
+    -- ------------------------------------- five seconds before it moves ---
+    do
+        local C = newStormClient()
+        C.pedAt = pt(0.0, 0.0)            -- inside, so no crossing cue muddies it
+        local rec = C.env.BR.State.storm
+
+        --- Advance the clock by an arbitrary amount and run one TICK pass.
+        ---
+        --- C.tick is fixed at 1500ms a step, which is the right shape for the
+        --- sky's hysteresis and the wrong one here: walking down a ten-minute
+        --- hold in 1500ms increments is four hundred passes. THE CLOCK MOVES AND
+        --- THE RECORD DOES NOT, which is the only faithful way to test this --
+        --- the latch is keyed on rec.tStart, so a test that nudged tStart to
+        --- change the countdown would re-arm the very latch it is checking.
+        local function step(ms)
+            C.now = C.now + (ms or 0)
+            C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+        end
+
+        -- Twenty seconds left on the hold, and it stays that record all the way
+        -- down.
+        rec.tStart = C.now - (rec.tWait - 20000)
+
+        step(0)
+        ok(C.errored() == nil, 'the pip path runs clean', C.errored())
+        ok(played(C, 'timer.final') == 0,
+           'twenty seconds out, nothing', table.concat(C.sfx, ','))
+
+        step(13000)                       -- 7s left
+        ok(played(C, 'timer.final') == 0,
+           'seven seconds out, still nothing -- the threshold is 5s and it is '
+               .. 'not approximate', table.concat(C.sfx, ','))
+
+        step(2000)                        -- 5s left, exactly
+        ok(played(C, 'timer.final') == 1,
+           'and at five seconds it pips, once', table.concat(C.sfx, ','))
+
+        -- THE LOAD-BEARING NEGATIVE. This job runs at 10 Hz, so without the
+        -- latch the last five seconds of every hold would be fifty pips.
+        step(1000) step(1000) step(1000) step(1000)
+        ok(played(C, 'timer.final') == 1,
+           'and every later tick of the same hold is silent',
+           ('%d'):format(played(C, 'timer.final')))
+
+        -- ═══ THE NEXT PHASE GETS ITS OWN, AND SO DOES A RE-ENTERED ONE ═══
+        --
+        -- The latch is keyed on the record's tStart rather than on its phase
+        -- number, because `brphase` and `brstormfreeze off` both RE-ENTER the
+        -- same phase from wherever the wall is standing. Every route in builds a
+        -- fresh record with a fresh tStart, so all of them re-arm -- which is
+        -- what this asserts, using the hardest case: the SAME phase number, a
+        -- new record.
+        rec.tStart = C.now - (rec.tWait - 4000)
+        step(0)
+        ok(played(C, 'timer.final') == 2,
+           'while a re-entered phase pips again -- the latch is on the record, '
+               .. 'not on the phase number', ('%d'):format(played(C, 'timer.final')))
+
+        -- ═══ AND A SHRINKING WALL NEVER PIPS ═══
+        --
+        -- Two numbers wear this placard. HOLDING counts down to the wall setting
+        -- off ("Storm moving in"); SHRINKING counts down to it stopping ("Storm
+        -- closing now"). Five seconds of warning before the map gets smaller is
+        -- something a player can act on; five seconds before the wall parks is
+        -- not, and a pip there would teach the sound to mean nothing.
+        local D = newStormClient()
+        D.pedAt = pt(0.0, 0.0)
+        local drec = D.env.BR.State.storm
+        -- Past the hold, four seconds from the end of the sweep.
+        drec.tStart = D.now - (drec.tWait + drec.tShrink - 4000)
+        D.env.BR.Loop.step(D.env.BR.Loop.TICK)
+        ok(played(D, 'timer.final') == 0,
+           'and the SHRINKING countdown does not pip at five seconds -- that '
+               .. 'clock ends with the wall stopping, which is not news',
+           table.concat(D.sfx, ','))
     end
 end
 

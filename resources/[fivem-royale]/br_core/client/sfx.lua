@@ -763,8 +763,24 @@ RegisterCommand('brsfx', function(_, args)
     print(('--- %s: %s / %s ---'):format(verb, def.set, def.name))
     Citizen.CreateThread(function()
         local verdict = playProbed(def.set, def.name, 0)
-        if verdict ~= 'ok' then
-            print(('  %s'):format(mark(verdict):gsub('^%s+', '')))
+        -- ═══ SUCCESS SAYS SO, LIKE THE RAW-PAIR PATH ABOVE ═══
+        --
+        -- This arm used to print NOTHING when the sound started, while
+        -- `brsfx play SET NAME` printed "the engine started it" for the same
+        -- outcome. Two spellings of one question answering differently is how
+        -- the owner came to report `brsfx storm.move` as broken while the raw
+        -- pair "works" -- a header with no verdict under it reads as a command
+        -- that did nothing, and there is no way to tell it apart from one that
+        -- really did.
+        if verdict == 'ok' then
+            print('  the engine started it')
+        elseif verdict == 'silent' then
+            print('  [silent?] the engine reported this finished before it could be')
+            print('  heard. Nearly always a SET that is not loaded on this build --')
+            print('  check the set name before blaming the sound.')
+        else
+            print('  [unprobed] it played, but the engine gave no answer about')
+            print('  whether it started -- judge this one by ear alone')
         end
     end)
 end, false)

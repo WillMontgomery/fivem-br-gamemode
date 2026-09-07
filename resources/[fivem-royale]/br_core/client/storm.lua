@@ -274,6 +274,30 @@ end
 -- vignette (weather.blendSec): fxLevel walks toward its target each tick
 -- and drives the timecycle STRENGTH, so entering the storm darkens the
 -- world over five seconds instead of snapping (user call, 2026-08-04).
+--- How long before the wall sets off the countdown pips.
+---
+---   "I want timer.final to play every single time the 'storm closing in' timer
+---    gets to 5s"                                       -- owner, 2026-09-07
+---
+--- THE HOLDING COUNTDOWN, NOT THE SHRINKING ONE. Two numbers wear this placard:
+--- while the wall is HOLDING it counts down to the wall setting off ("Storm
+--- moving in"), and while it is SHRINKING it counts down to the wall stopping
+--- ("Storm closing now"). "Closing in 5s" is the first of those -- five seconds
+--- of warning before the map gets smaller is a thing a player can act on, and
+--- five seconds before the wall parks is not.
+local FINAL_WARN_MS = 5000
+
+--- The storm record we have already pipped for, identified by its START.
+---
+--- KEYED ON tStart RATHER THAN ON THE PHASE NUMBER, and the difference is real:
+--- `brphase` and `brstormfreeze off` both RE-ENTER the same phase number from
+--- wherever the wall is standing, and server/storm.lua's own move-cue latch
+--- carries a note about exactly that. Every route into a phase builds a fresh
+--- record with a fresh tStart, so this re-arms for all of them without needing
+--- to be told. A freeze rebuilds the record once with a 24-hour hold, which is
+--- silent by construction rather than by a special case.
+local pippedFor = nil
+
 --- Was this player caught in the wall last tick? nil = not established yet.
 ---
 --- ═══ THE CUE RIDES `caught`, NOT `edge > 0`, AND THAT IS THE WHOLE DESIGN ═══
@@ -442,6 +466,7 @@ local function teardown()
     -- first tick of the NEXT match would read as a crossing back inside and
     -- play the all-clear over the bus.
     caughtWas = nil
+    pippedFor = nil
     -- Between matches the grade SNAPS off -- there is nothing to fade
     -- against once the world resets around a teleport home.
     fxTarget, fxLevel = 0.0, 0.0
@@ -470,6 +495,24 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
 
     local now = BR.Clock.now()
     local cx, cy, r, st, msLeft, dps = solveNow(rec)
+
+    -- ═══ FIVE SECONDS BEFORE THE WALL SETS OFF ═══
+    --
+    -- Not gated on being alive, on being inside, or on spectating, and that is
+    -- deliberate: this is a fact about the MATCH, like the storm.move cue the
+    -- server broadcasts to everybody in it. A player watching from a corpse is
+    -- still watching a round whose map is about to shrink.
+    --
+    -- THE LATCH IS THE WHOLE MECHANISM. This job runs at 10 Hz, so without it
+    -- the last five seconds of every hold would be fifty pips. With it the cue
+    -- lands on the first tick at or below the threshold -- up to 100ms late,
+    -- which nobody can hear against a five-second warning.
+    if st == BR.StormPhase.HOLDING and msLeft <= FINAL_WARN_MS then
+        if pippedFor ~= rec.tStart then
+            pippedFor = rec.tStart
+            BR.Sfx.play('timer.final')
+        end
+    end
 
     -- THE LOUDEST OF #225'S THREE READS. Everything below this line -- the HUD
     -- envelope, the direction blip, the grade and the sky -- is measured from
