@@ -128,6 +128,19 @@ BR.Loop.register(BR.Loop.TICK, 'markers.place', function()
         TriggerServerEvent(BR.Net.MARKER_CLEAR)
     else
         TriggerServerEvent(BR.Net.MARKER_SET, { x = c.x, y = c.y })
+        -- ═══ AND ANYONE ELSE WHO WANTED TO KNOW (#261) ═══
+        --
+        -- The guided first run has a card that asks the player to drop a
+        -- waypoint and must not offer a way past it, so it needs the one fact
+        -- this line already establishes: THIS player just placed one. Client
+        -- local, both ends in br_core, the same seam `br:loot:opened` uses --
+        -- no protocol entry and nothing the server has to know about a
+        -- walkthrough.
+        --
+        -- ON THE SET BRANCH ONLY. Clearing a marker by placing on top of it is
+        -- the same gesture and the opposite intent, and a card asking somebody
+        -- to place one is not answered by removing one.
+        TriggerEvent('br:markers:placed', c.x, c.y)
     end
 end)
 

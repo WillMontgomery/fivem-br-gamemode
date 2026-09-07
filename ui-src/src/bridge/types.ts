@@ -1297,6 +1297,10 @@ export type Envelope =
          * the walkthrough -- so this cannot become a field nothing reads.
          */
         crates?: number
+        /** Map waypoints dropped during the in-game half. Counted in Lua for
+         *  the same reason `crates` is: client/markers.lua consumes the
+         *  waypoint the tick it is placed, so nothing is left to observe. */
+        waypoints?: number
       }
     }
   /**

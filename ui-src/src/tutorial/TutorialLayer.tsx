@@ -659,6 +659,48 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     if (!up) mapWasUp.current = false
   }, [step, frontendUp, frontendReason, i, go])
 
+  // ── dropping a waypoint ends the step ───────────────────────────────────
+  //
+  // Owner, 2026-09-07: "encourage them to try it and only proceed after they've
+  // placed a waypoint at least once." Baselined on entry like the crates, so a
+  // player who pinged something on the way here does not walk straight past.
+  const waypoints = useUi((st) => st.tutorialWaypoints)
+  const wpAtStart = useRef(waypoints)
+  useEffect(() => {
+    if (step?.advance === 'waypoint') wpAtStart.current = waypoints
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step])
+  useEffect(() => {
+    if (!step || step.advance !== 'waypoint') return
+    if (waypoints > wpAtStart.current) go(i + 1)
+  }, [step, waypoints, i, go])
+
+  // ── ...and closing the map without one puts the card away ───────────────
+  //
+  // Owner: "if they close the map instead without placing a waypoint, close the
+  // cards and give them a toast instructing them to return to the map to finish
+  // the tutorial (right now the card still shows)."
+  //
+  // THE CARD IS NOT ABANDONED, IT IS WAITING -- the same distinction `screen`
+  // steps already make. It comes back when the map does, and the toast is what
+  // stops a player wondering where the walkthrough went. Keyed, so returning to
+  // the map twice does not stack two of them.
+  const mapClosedRef = useRef(false)
+  useEffect(() => {
+    if (!step || step.advance !== 'waypoint') { mapClosedRef.current = false; return }
+    const mapUp = frontendUp && frontendReason === 'map'
+    if (mapUp) { mapClosedRef.current = false; return }
+    if (mapClosedRef.current) return
+    mapClosedRef.current = true
+    pushNotice({
+      text: 'Open the map again and drop a waypoint to carry on.',
+      tone: 'info',
+      key: 'tutorial.waypoint',
+      ms: 8000,
+    })
+  }, [step, frontendUp, frontendReason, pushNotice])
+
+
   // ── picking things up ends the step ─────────────────────────────────────
   //
   // COUNTED FROM WHERE THEY STARTED, not from zero: a player reaching this card
@@ -800,6 +842,13 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     && (step.screen !== undefined
       ? step.screen !== p.screen
       : p.subscreenUp === true)
+
+  // A CARD ABOUT THE MAP DRAWS ONLY OVER THE MAP. Without this the waypoint
+  // card followed the player back out to the HUD and sat there over a control
+  // it says nothing about (owner, 2026-09-07: "right now the card still
+  // shows"). Waiting, not failing: it returns when the map does.
+  const waitingForMap = step !== undefined && step.advance === 'waypoint'
+    && !(frontendUp && frontendReason === 'map')
   const missing = step !== undefined && step.target !== undefined
     && rect === null && !waitingForScreen
   useEffect(() => {
@@ -827,7 +876,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // to the control the PREVIOUS card was about.
   //
   // A TARGETLESS CARD SKIPS THE RECT TEST, because it has none by design.
-  if (!step || waitingForScreen || settledFor !== step.id) return null
+  if (!step || waitingForScreen || waitingForMap || settledFor !== step.id) return null
   if (step.target !== undefined && rect === null) return null
 
   // ── where the card goes, decided ONCE per step ──────────────────────────

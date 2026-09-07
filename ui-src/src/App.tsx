@@ -109,6 +109,7 @@ export default function App() {
     if (d.offer !== undefined) s.setTutorialOffer(d.offer === true)
     if (d.game !== undefined) s.setTutorialGameRun(d.game === true)
     if (d.crates !== undefined) s.setTutorialCrates(d.crates)
+    if (d.waypoints !== undefined) s.setTutorialWaypoints(d.waypoints)
   })
   // THE ARROWS, READ IN LUA. These cards take no NUI focus, so CEF never sees a
   // keypress -- see the `tutorialnav` envelope for why this is the one key in

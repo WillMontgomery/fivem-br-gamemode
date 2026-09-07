@@ -163,11 +163,14 @@ local holding = false
 --- page would otherwise walk past it having opened one an hour ago.
 local crates = 0
 
+--- How many map waypoints they have dropped during the run. See the handler.
+local waypoints = 0
+
 --- Push the walkthrough's state to the page.
 local function publish()
     TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL,
                  { run = running, offer = offering, game = inGame,
-                   crates = crates })
+                   crates = crates, waypoints = waypoints })
 end
 
 --- Start or stop the walkthrough, and tell the page.
@@ -247,7 +250,7 @@ function BR.Tutorial.game(on)
     if on == inGame then return end
     inGame = on
     -- FROM ZERO EVERY TIME. See `crates`.
-    if on then crates = 0 end
+    if on then crates, waypoints = 0, 0 end
     -- THE HOLD RISES WITH THE CARDS AND CAN FALL BEFORE THEM. See `holding`.
     holding = on
     publish()
@@ -391,6 +394,21 @@ function BR.Tutorial.hold(on)
     holding = on
     tellServer()
 end
+
+--- The player dropped a map waypoint.
+---
+--- COUNTED HERE FOR THE SAME REASON THE CRATES ARE: the page cannot see it.
+--- The gesture is consumed by client/markers.lua the tick it happens -- the
+--- waypoint is read and immediately switched off, becoming a squad marker -- so
+--- there is no waypoint left on the map for anything to observe afterwards.
+---
+--- ONLY WHILE THE IN-GAME HALF IS RUNNING, so this is not bookkeeping nobody
+--- reads outside the one card that waits on it.
+AddEventHandler('br:markers:placed', function()
+    if not inGame then return end
+    waypoints = waypoints + 1
+    publish()
+end)
 
 --- They finished the whole thing -- pay them.
 ---

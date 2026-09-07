@@ -311,6 +311,8 @@ export interface UiState {
    * can see.
    */
   tutorialCrates: number
+  /** Waypoints dropped during the in-game half. Mirrored from Lua. */
+  tutorialWaypoints: number
   /**
    * The last arrow press Lua reported while an in-game card was up.
    *
@@ -361,6 +363,7 @@ export interface UiState {
    */
   setTutorialSquad: (s: SquadPayload | null) => void
   setTutorialCrates: (n: number) => void
+  setTutorialWaypoints: (n: number) => void
   setTutorialNav: (n: { dir: 'next' | 'back' | 'action'; seq: number }) => void
   setParty: (p: SquadPayload) => void
   setTalking: (ids: number[], names?: string[]) => void
@@ -773,6 +776,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialGameRun: false,
   tutorialSquad: null,
   tutorialCrates: 0,
+  tutorialWaypoints: 0,
   tutorialNav: { dir: 'next', seq: 0 },
   leaving: false,
   curtain: 'leaving',
@@ -826,6 +830,7 @@ export const useUi = create<UiState>((set, get) => {
   setSquad:    (squad) => set({ squad }),
   setTutorialSquad: (tutorialSquad) => set({ tutorialSquad }),
   setTutorialCrates: (tutorialCrates) => set({ tutorialCrates }),
+  setTutorialWaypoints: (tutorialWaypoints) => set({ tutorialWaypoints }),
   setTutorialNav: (tutorialNav) => set({ tutorialNav }),
   setParty:    (party) => set({ party }),
   // Names default to empty rather than to the ids: a bar reading "Currently
