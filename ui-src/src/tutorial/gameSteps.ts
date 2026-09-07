@@ -302,7 +302,9 @@ export const GAME_STEPS: Step[] = [
     target: 'hud-inventory',
     title: 'What you are carrying',
     body: 'Five slots, and the number beside a weapon is the **ammo in the magazine** over what is left in reserve. Press **{key:brslot1}** to **{key:brslot5}** to switch between them.',
-    advance: 'next',
+    // ENDS WHEN THEY ACTUALLY SWITCH (owner, 2026-09-08). Which also removes the
+    // Next button, because only `next` grants one.
+    advance: 'slotswitch',
   },
   {
     id: 'game-invpanel',

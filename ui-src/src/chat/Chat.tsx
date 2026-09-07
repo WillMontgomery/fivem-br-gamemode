@@ -128,6 +128,19 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   /** The single exit path. Everything that closes chat goes through here. */
   const release = (send: boolean) => {
     const text = draft.trim()
+
+    // AN EMPTY ENTER IS NOT AN ANSWER, and while the walkthrough's card is up it
+    // must not be an exit either. Everything below closes chat unconditionally,
+    // so pressing Enter before typing used to close it without sending -- the
+    // same dead end an outside click led to, and the card literally says "press
+    // Enter to send it", so it is the move the card invites.
+    //
+    // BEFORE THE CLOSE, not after: `closeChat()` is the first thing that runs.
+    if (staged && send && text.length === 0) {
+      inputRef.current?.focus()
+      return
+    }
+
     setDraft('')
     closeChat()
 
@@ -185,7 +198,12 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   const [faded, setFaded] = useState(false)
   useEffect(() => {
     setFaded(false)
-    if (open) return                    // never fade while typing
+    // NEVER WHILE TYPING, AND NEVER WHILE THE WALKTHROUGH IS POINTING AT IT.
+    // Owner, 2026-09-08: "the chat fades away after a few seconds but the user
+    // may not have read it yet." The card before this one runs with chat CLOSED
+    // by design, so the twelve-second timer was running from the moment the demo
+    // line was staged and the ring ended up circling an empty box.
+    if (open || staged) return
     const t = window.setTimeout(() => setFaded(true), FADE_AFTER_MS)
     return () => window.clearTimeout(t)
   }, [lines, open])
@@ -297,6 +315,30 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
             onBlur={(e) => {
               const next = e.relatedTarget as Node | null
               if (next && e.currentTarget.parentElement?.contains(next)) return
+
+              // ═══ THE WALKTHROUGH'S CHAT CARD IS NOT A DISMISS BUTTON ═══
+              //
+              // Owner, 2026-09-08: "using the mouse to click anywhere outside of
+              // the chat closes it?" A click on empty space, the HUD, or the
+              // tutorial card itself has a null relatedTarget, so it falls
+              // through to the close below.
+              //
+              // THAT IS RIGHT EVERYWHERE ELSE and is why this is a refocus
+              // rather than a bare return: the handler exists so DOM focus and
+              // Lua focus cannot disagree -- "no path that closes the input
+              // without telling Lua" -- and simply not closing would leave the
+              // player holding NUI focus with no visible input, unable to move.
+              //
+              // AND IT IS A TRAP HERE SPECIFICALLY. The card is scoped to the
+              // chat screen, so closing chat hides it; the arrows are dead over
+              // one of our screens; and the step has no Back. Card gone, chat
+              // gone, keyboard dead -- with the only recovery being a key the
+              // card is no longer on screen to name.
+              if (staged) {
+                inputRef.current?.focus()
+                return
+              }
+
               if (open) release(false)
             }}
             placeholder={channel === 'squad' ? 'Message your squad…' : 'Message everyone…'}

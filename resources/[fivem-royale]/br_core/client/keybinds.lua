@@ -42,6 +42,22 @@ BR.Keys = {
 --- of this file.
 BR.Keys.uiOwnsKeyboard = false
 
+--- Which of OUR screens is on top, or nil.
+---
+--- ═══ A SCREEN THAT KEEPS INPUT STILL OWNS ITS OWN ESCAPE ═══
+---
+--- `uiOwnsKeyboard` is derived from BR.FocusResolve's `keepInput`, so it is
+--- FALSE for the inventory -- the one screen deliberately in BR.FocusKeepsInput,
+--- which holds the cursor and lets the game go on reading the keyboard so a
+--- player can still move. That is right for movement and wrong for Escape:
+--- Escape is how the panel closes, and it was also reaching the pause menu, so
+--- one press did both (owner, 2026-09-07 and again 2026-09-08).
+---
+--- SO THIS RECORDS THE NAME RATHER THAN THE VERDICT. `uiOwnsKeyboard` answers
+--- "may the game read the keyboard"; this answers "is one of our screens up",
+--- which is the question Escape has to ask and the other flag cannot.
+BR.Keys.uiScreen = nil
+
 --- Subscribe to a key action.
 --- @param action string   e.g. 'inventory', 'revive'
 --- @param fn function      receives (pressed: boolean)
@@ -669,7 +685,18 @@ tap ('players',     'brplayers',   'Royale: Player list / report',       'F2', 0
 -- br_ui owns the pages; this owns the keys. TriggerEvent crosses resources,
 -- which is the same hop br_core already uses to reach the interface.
 BR.Keys.on('pause', function(pressed)
-    if pressed then TriggerEvent('br:ui:pauseToggle') end
+    -- ═══ ESCAPE BELONGS TO WHATEVER IS ALREADY ON SCREEN ═══
+    --
+    -- One of our screens being up means Escape is that screen's way out, not the
+    -- pause menu's way in. The inventory is the case that made this visible --
+    -- it is the one screen that keeps game input, so this handler stayed live
+    -- underneath it and Escape both closed the panel AND opened the menu behind
+    -- it (owner, twice).
+    --
+    -- THE OTHER SCREENS ARE UNAFFECTED because they take the keyboard outright:
+    -- `uiOwnsKeyboard` is already true for them and the raw layer never delivers
+    -- the key at all. This gate only changes the one screen where it did.
+    if pressed and not BR.Keys.uiScreen then TriggerEvent('br:ui:pauseToggle') end
 end)
 BR.Keys.on('players', function(pressed)
     if pressed then TriggerEvent('br:ui:playersToggle') end
@@ -1757,6 +1784,11 @@ end
 AddEventHandler('br:ui:focusChanged', function(screen)
     resyncing = true
     resyncFrames = 0
+    -- RECORDED HERE AND NOT IN setUiKeyboard, because that function early-returns
+    -- when its own answer has not changed -- and for the inventory it has not
+    -- (false before, false after), so the transition would be skipped exactly
+    -- where it matters.
+    BR.Keys.uiScreen = (screen ~= nil and screen ~= 'none') and screen or nil
     setUiKeyboard(screen)
 end)
 

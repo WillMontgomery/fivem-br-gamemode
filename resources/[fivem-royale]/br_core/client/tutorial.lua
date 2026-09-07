@@ -189,6 +189,9 @@ local crates = 0
 --- How many map waypoints they have dropped during the run. See the handler.
 local waypoints = 0
 
+--- How many times they have switched inventory slots during the run.
+local slots = 0
+
 -- ---------------------------------------------------------------------------
 -- The scripted look at the shop
 -- ---------------------------------------------------------------------------
@@ -282,7 +285,8 @@ end)
 local function publish()
     TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL,
                  { run = running, offer = offering, offerable = offerable,
-                   game = inGame, crates = crates, waypoints = waypoints })
+                   game = inGame, crates = crates, waypoints = waypoints,
+                   slots = slots })
 end
 
 --- Start or stop the walkthrough, and tell the page.
@@ -362,7 +366,7 @@ function BR.Tutorial.game(on)
     if on == inGame then return end
     inGame = on
     -- FROM ZERO EVERY TIME. See `crates`.
-    if on then crates, waypoints = 0, 0 end
+    if on then crates, waypoints, slots = 0, 0, 0 end
     -- THE HOLD RISES WITH THE CARDS AND CAN FALL BEFORE THEM. See `holding`.
     holding = on
     -- AND A CAMERA NEVER OUTLIVES THE RUN. Every ending comes through here --
@@ -540,6 +544,17 @@ end
 
 AddEventHandler('br:tutorial:decline', function()
     BR.Tutorial.decline()
+end)
+
+--- The player switched inventory slots.
+---
+--- COUNTED HERE FOR THE SAME REASON THE CRATES AND WAYPOINTS ARE, and it keeps
+--- one shape for all four of these facts: br_core sees the thing happen, counts
+--- it, and the number rides the walkthrough's own envelope.
+AddEventHandler('br:inv:slotChanged', function()
+    if not inGame then return end
+    slots = slots + 1
+    publish()
 end)
 
 --- The player dropped a map waypoint.

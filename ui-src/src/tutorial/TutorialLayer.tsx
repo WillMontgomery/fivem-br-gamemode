@@ -195,6 +195,41 @@ function withKeys(body: string, binds: Array<{ command: string; key?: string; vk
 
 type Rect = { x: number; y: number; w: number; h: number }
 
+/**
+ * The box that actually clips an anchor, or null when nothing does.
+ *
+ * ═══ A RING MUST NOT OUTLINE WHAT THE PAGE IS HIDING ═══
+ *
+ * Owner, 2026-09-07 and again 2026-09-08: "lobby tutorial step 10 outlines the
+ * entire div, even though the div itself is scrollable... the blue outline
+ * clipping through the top or bottom of the screen when the div is scrolled. The
+ * outline should be placed behind the top/bottom nav components just like the
+ * div it outlines."
+ *
+ * `getBoundingClientRect` answers the element's own border box and knows nothing
+ * about an ancestor's `overflow`. The Controls list is twenty-two rows inside a
+ * pane capped at `100vh - 18rem`, so the ring was drawn the height of the
+ * CONTENT and hung past both ends of the pane, over the header and the Save row.
+ *
+ * WALKS UP TO THE FIRST SCROLLING ANCESTOR and stops. Anything above that clips
+ * this one too, and the intersection of two boxes that already contain each
+ * other is the inner one -- so one step up is the whole answer.
+ */
+function clipperOf(el: HTMLElement): Rect | null {
+  let p = el.parentElement
+  while (p && p !== document.body) {
+    const o = getComputedStyle(p)
+    // `overflow-y: auto` on the pane is the real case; `hidden` and `scroll`
+    // clip identically and cost nothing to include.
+    if (/(auto|scroll|hidden)/.test(o.overflowY + o.overflowX)) {
+      const b = p.getBoundingClientRect()
+      return { x: b.left, y: b.top, w: b.width, h: b.height }
+    }
+    p = p.parentElement
+  }
+  return null
+}
+
 function sameRect(a: Rect | null, b: Rect | null): boolean {
   if (a === null || b === null) return a === b
   // A HALF PIXEL IS NOT A MOVE. Sub-pixel jitter from a scale transform would
@@ -358,6 +393,9 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // Holding the step's OWN id makes the match exact and the race unrepresentable.
   const [clickedFor, setClickedFor] = useState<string | null>(null)
   const rectRef = useRef<Rect | null>(null)
+  /** The scrolling box that hides part of the anchor, or null. See `clipperOf`. */
+  const [clip, setClip] = useState<Rect | null>(null)
+  const clipRef = useRef<Rect | null>(null)
   /** Where this step's card was placed, and what that placement was valid for. */
   const placedRef = useRef<{ key: string; at: ReturnType<typeof place> } | null>(null)
   /**
@@ -444,6 +482,14 @@ export default function TutorialLayer(p: TutorialLayerProps) {
           })()
         : null
 
+      // The clip box is measured on the same frame as the rect, so the two can
+      // never describe different scroll positions.
+      const nextClip = el ? clipperOf(el) : null
+      if (!sameRect(clipRef.current, nextClip)) {
+        clipRef.current = nextClip
+        setClip(nextClip)
+      }
+
       if (!sameRect(rectRef.current, next)) {
         rectRef.current = next
         same = 0
@@ -518,7 +564,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     // card says it exists.
     const waits = step.advance === 'pickup' || step.advance === 'crate'
       || step.advance === 'map' || step.advance === 'waypoint'
-      || step.advance === 'mapclose'
+      || step.advance === 'mapclose' || step.advance === 'chatsent'
+      || step.advance === 'slotswitch'
     if (!waits) return
     const t = setTimeout(() => setStuck(true), STUCK_MS)
     return () => clearTimeout(t)
@@ -726,7 +773,23 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   }, [step, steps.length, go])
 
 
-  // ── sending a chat message ends the step ────────────────────────────────
+  // ── switching inventory slots ends the step ─────────────────────────────
+  //
+  // Baselined on entry like every other count: the card before this one is the
+  // PICKUP card, and a pickup puts a weapon in the hand, which moves the active
+  // slot -- so without a baseline this would fire the instant it appeared.
+  const slotSwitches = useUi((st) => st.tutorialSlots)
+  const slotsAtStart = useRef(slotSwitches)
+  useEffect(() => {
+    if (step?.advance === 'slotswitch') slotsAtStart.current = slotSwitches
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step])
+  useEffect(() => {
+    if (!step || step.advance !== 'slotswitch') return
+    if (slotSwitches > slotsAtStart.current) go(i + 1)
+  }, [step, slotSwitches, i, go])
+
+  // ── sending a chat message ends the step ───────────────────────────────────────────────────────────
   //
   // NO WIRE AND NO LUA. The page is the thing that sends, so it counts its own
   // sends -- see `noteChatSent` in Chat. Baselined on entry like every other
@@ -830,14 +893,19 @@ export default function TutorialLayer(p: TutorialLayerProps) {
    */
   const tally = useMemo(() => {
     const m = new Map<string, number>()
+    // WHICH AMMO POOL EACH CARRIED WEAPON DRAWS FROM, so a pool that rose
+    // BECAUSE a gun arrived can be told from one that rose because a box did.
+    // `pool` is on the wire for exactly this linkage.
+    const pools = new Set<string>()
     for (const s of inv.slots) {
       if (!s) continue
       m.set(s.id, (m.get(s.id) ?? 0) + (s.count ?? 1))
+      if (s.pool) pools.add('@' + s.pool)
     }
     for (const [pool, n] of Object.entries(inv.ammo ?? {})) {
       m.set('@' + pool, n)
     }
-    return m
+    return { m, pools }
   }, [inv])
 
   const startedWith = useRef(tally)
@@ -868,7 +936,25 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     if (!step || step.advance !== 'pickup') return
     const before = startedWith.current
     let got = 0
-    for (const [k, n] of tally) {
+
+    // ═══ A GUN AND ITS AMMO ARE ONE PICKUP ═══
+    //
+    // Third report of this card advancing early, and this is why: picking up a
+    // WEAPON gives the weapon AND fills its ammo pool, so one grab raised two
+    // keys and the previous fix -- one point per key that rose -- counted it as
+    // two (owner, 2026-09-08).
+    //
+    // A POOL IS DISCOUNTED ONCE PER WEAPON THAT ARRIVED WITH IT. Not suppressed
+    // outright: an ammo box for a gun they are already carrying is a genuine
+    // second pickup, and that pool rises with no new weapon behind it.
+    const newWeaponPools = new Set<string>()
+    for (const s of inv.slots) {
+      if (!s || !s.pool) continue
+      // A weapon is a slot whose id was not there before.
+      if ((before.m.get(s.id) ?? 0) === 0) newWeaponPools.add('@' + s.pool)
+    }
+
+    for (const [k, n] of tally.m) {
       // ═══ ONE THING THAT ROSE IS ONE PICKUP, WHATEVER IT ROSE BY ═══
       //
       // This counted the MAGNITUDE for anything that was not ammo, so a single
@@ -882,7 +968,11 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       // direction here: the card waits, which is what it is for, and the crates
       // drop three different items so two grabs are two keys in the ordinary
       // case.
-      if (n > (before.get(k) ?? 0)) got += 1
+      if (n <= (before.m.get(k) ?? 0)) continue
+      // The pool that arrived with a new gun is that gun's, not a pickup of
+      // its own.
+      if (newWeaponPools.has(k)) continue
+      got += 1
     }
     if (got >= (step.pickups ?? 1)) go(i + 1)
   }, [step, tally, i, go])
@@ -1036,6 +1126,23 @@ export default function TutorialLayer(p: TutorialLayerProps) {
             top: rect.y - 4,
             width: rect.w + 8,
             height: rect.h + 8,
+            // ═══ CUT, DO NOT SHRINK ═══
+            //
+            // The ring keeps the anchor's true size -- shrinking it to the
+            // visible slice would draw a border ACROSS the middle of a list that
+            // continues, which reads as the list ending there. `clip-path`
+            // removes the parts the pane is already hiding and leaves the rest
+            // byte-for-byte as it was, so a fully visible anchor is unchanged
+            // and a scrolled one simply runs off under the header the way its
+            // own content does.
+            //
+            // INSETS ARE RELATIVE TO THIS ELEMENT'S OWN BOX, hence the offsets
+            // against the inflated rect rather than against the anchor.
+            clipPath: clip === null ? undefined : `inset(${
+              Math.max(0, clip.y - (rect.y - 4))}px ${
+              Math.max(0, (rect.x - 4 + rect.w + 8) - (clip.x + clip.w))}px ${
+              Math.max(0, (rect.y - 4 + rect.h + 8) - (clip.y + clip.h))}px ${
+              Math.max(0, clip.x - (rect.x - 4))}px)`,
           }}
         />
       )}

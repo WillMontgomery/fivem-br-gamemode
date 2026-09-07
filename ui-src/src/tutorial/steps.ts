@@ -154,6 +154,15 @@ export type Advance =
    * from Lua.
    */
   | 'chatsent'
+  /**
+   * The player switching inventory slots.
+   *
+   * Owner, 2026-09-08: "if the user uses any button to switch between inventory
+   * slots, automatically progress step 14." Counted in Lua off the edge
+   * client/inventory.lua already computes for the switch click, so it is true
+   * however the slot moved -- a number key, the wheel, a pickup, a drop.
+   */
+  | 'slotswitch'
 
 export type Step = {
   /** Stable id. Persisted progress and every log line key on this. */

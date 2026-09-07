@@ -2024,7 +2024,20 @@ function BR.Native.applyGameRules()
             -- owed, and answering it with our own menu is the report.
             if retake.asked then
                 retake.asked = false
-                TriggerEvent('br:ui:pauseToggle')
+                -- ═══ AND NOT WHILE ONE OF OUR SCREENS IS ALREADY UP ═══
+                --
+                -- The SECOND route to the pause menu, and it produces the same
+                -- symptom as the first: Escape under the open inventory leaks a
+                -- frontend frame, this block deactivates it, and the next pass
+                -- answers with our menu -- while the panel closes on its own
+                -- control read. Gating only the keybind route would have left
+                -- this one live and the fault half-fixed.
+                --
+                -- Same test as client/keybinds.lua's: a screen of ours being on
+                -- top means Escape is that screen's way out.
+                if not (BR.Keys and BR.Keys.uiScreen) then
+                    TriggerEvent('br:ui:pauseToggle')
+                end
             end
             retake.since, retake.gaveUp = 0, false
         elseif not retake.gaveUp then

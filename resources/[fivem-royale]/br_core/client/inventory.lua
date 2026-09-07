@@ -734,8 +734,23 @@ local function adopt(d)
     -- PlaySoundFrontend is local by definition.
     -- The switch click stays the engine's: it fires mid-fight and wants the
     -- same ducking the pickup does.
-    if inv.active ~= wasActive and L.switchSound then
-        PlaySoundFrontend(-1, L.switchSound.name, L.switchSound.set, true)
+    if inv.active ~= wasActive then
+        if L.switchSound then
+            PlaySoundFrontend(-1, L.switchSound.name, L.switchSound.set, true)
+        end
+
+        -- ═══ AND THE WALKTHROUGH IS TOLD (#261) ═══
+        --
+        -- Owner, 2026-09-08: "if the user uses any button to switch between
+        -- inventory slots, automatically progress step 14." This edge is
+        -- already computed here for the click, and it is the right one: the
+        -- client never guesses the active slot, it waits for the server's
+        -- receipt, so this fires when the slot REALLY changed -- whatever moved
+        -- it, a number key, the wheel, a pickup or a drop.
+        --
+        -- A CLIENT-LOCAL EVENT, the same seam `br:loot:opened` and
+        -- `br:markers:placed` already use. Nothing outside br_core hears it.
+        TriggerEvent('br:inv:slotChanged', inv.active)
     end
 
     applyActive(false)

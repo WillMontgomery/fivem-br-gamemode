@@ -1311,6 +1311,9 @@ export type Envelope =
          *  the same reason `crates` is: client/markers.lua consumes the
          *  waypoint the tick it is placed, so nothing is left to observe. */
         waypoints?: number
+        /** Inventory slot switches during the in-game half. Counted in Lua for
+         *  the same reason the others are -- one shape for all four facts. */
+        slots?: number
       }
     }
   /**

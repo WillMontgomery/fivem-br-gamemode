@@ -313,6 +313,8 @@ export interface UiState {
   tutorialCrates: number
   /** Waypoints dropped during the in-game half. Mirrored from Lua. */
   tutorialWaypoints: number
+  /** Inventory slot switches during the in-game half. Mirrored from Lua. */
+  tutorialSlots: number
   /** Does this ACCOUNT still have the offer? See the `tutorial` envelope. */
   tutorialOfferable: boolean
   /**
@@ -401,6 +403,7 @@ export interface UiState {
   setTutorialSquad: (s: SquadPayload | null) => void
   setTutorialCrates: (n: number) => void
   setTutorialWaypoints: (n: number) => void
+  setTutorialSlots: (n: number) => void
   setTutorialOfferable: (v: boolean) => void
   setTutorialChat: (m: ChatMessage | null) => void
   setTutorialChatSquad: (v: boolean) => void
@@ -818,6 +821,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialSquad: null,
   tutorialCrates: 0,
   tutorialWaypoints: 0,
+  tutorialSlots: 0,
   tutorialOfferable: false,
   tutorialChat: null,
   tutorialChatSquad: false,
@@ -876,6 +880,7 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialSquad: (tutorialSquad) => set({ tutorialSquad }),
   setTutorialCrates: (tutorialCrates) => set({ tutorialCrates }),
   setTutorialWaypoints: (tutorialWaypoints) => set({ tutorialWaypoints }),
+  setTutorialSlots: (tutorialSlots) => set({ tutorialSlots }),
   setTutorialOfferable: (tutorialOfferable) => set({ tutorialOfferable }),
   setTutorialChat: (tutorialChat) => set({ tutorialChat }),
   setTutorialChatSquad: (tutorialChatSquad) => set({ tutorialChatSquad }),

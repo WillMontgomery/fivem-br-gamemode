@@ -111,6 +111,7 @@ export default function App() {
     if (d.game !== undefined) s.setTutorialGameRun(d.game === true)
     if (d.crates !== undefined) s.setTutorialCrates(d.crates)
     if (d.waypoints !== undefined) s.setTutorialWaypoints(d.waypoints)
+    if (d.slots !== undefined) s.setTutorialSlots(d.slots)
   })
   // THE ARROWS, READ IN LUA. These cards take no NUI focus, so CEF never sees a
   // keypress -- see the `tutorialnav` envelope for why this is the one key in
@@ -690,6 +691,26 @@ export default function App() {
           keyDriven
           onStep={(id) => {
             s.setTutorialGameStep(id)
+
+            // ═══ THE CAMERA FOLLOWS THE CARD ═══
+            //
+            // This line existed, and a later edit to this handler dropped it --
+            // which is the whole of "the scripted camera for step 19 didn't
+            // happen" (owner, 2026-09-08). Nothing else in the chain was broken;
+            // `Step.cam` was authored and read by nobody.
+            //
+            // `false` AND NOT `null` FOR THE COME-HOME CASE, and this is the
+            // load-bearing detail. br_ui's callback gates on `data.cam ~= nil`,
+            // and a JSON null decodes to Lua nil -- so a null would fail that
+            // guard and the camera would stay parked on the shop car for the
+            // rest of the walkthrough. `false` clears the guard, is not a table,
+            // and falls through to the come-home branch.
+            //
+            // SENT ON EVERY STEP, which costs nineteen no-op posts and buys the
+            // absence of a transition table. camTo's home branch early-returns
+            // when no camera is live.
+            const cam = (id && GAME_STEPS.find((st) => st.id === id)?.cam) || false
+            void fetchNui(CB.TUTORIAL_SET, { cam })
             // ═══ THE CLOCK STARTS ON THE LAST CARD, NOT AFTER IT ═══
             //
             // Owner, 2026-09-07: "THIS is when matchmaking should take place and
