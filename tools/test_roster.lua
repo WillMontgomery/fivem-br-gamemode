@@ -3207,6 +3207,70 @@ do
         ('state %s, squadsAlive %d'):format(mstate(), BR.Server.squadsAlive()))
 end
 
+describe('a death on the warmup pad')
+do
+    -- ═══ THE PAD IS ABOUT TO BE ABLE TO KILL PEOPLE ═══
+    --
+    -- Owner, 2026-09-06: explosives are going into the practice crates, "If
+    -- players do manage to die in warmup ... please resurrect them immediately.
+    -- Today we don't handle the death in warmup at all, because we weren't
+    -- expecting a case where such event would be possible."
+    --
+    -- WARMUP is absent from canDie, so the report used to be dropped -- and that
+    -- was not neutral. The corpse survived to the WARMUP -> BUS flip, where the
+    -- entry enters a state canDie accepts with a corpse's engineHp still
+    -- sampled, and became a real elimination there. So the properties worth
+    -- pinning are BOTH halves: they get up, and nothing is recorded.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    ok(BR.Roster.get(2).state == BR.PlayerState.WARMUP,
+        'p2 is on the pad', tostring(BR.Roster.get(2).state))
+
+    local before = #sent
+    BR.Roster.get(2).engineHp = 0.0
+    fire(BR.Net.PLAYER_DIED, 2, { cause = 'explosion' })
+
+    ok(BR.Roster.get(2).state == BR.PlayerState.WARMUP,
+        'a death on the pad leaves them in WARMUP -- not OUT, and not ALIVE',
+        tostring(BR.Roster.get(2).state))
+
+    -- THE RESURRECTION RUNS ON THE MACHINE THAT OWNS THE PED and nowhere else,
+    -- so the only server-side evidence is the message going out.
+    local revived = false
+    for i = before + 1, #sent do
+        if sent[i].event == BR.Net.REVIVED and sent[i].target == 2 then
+            revived = true
+        end
+    end
+    ok(revived, 'and they are told to stand up')
+
+    -- ═══ THE STALE CORPSE READING IS CLEARED ═══
+    --
+    -- This is the half that made ignoring it dangerous: the position sampler's
+    -- last reading is up to a second old, and a corpse's engineHp left in place
+    -- is an opinion from before the resurrection that the bus would act on.
+    ok(BR.Roster.get(2).engineHp == nil,
+        'and the corpse health sample is dropped, not left to be read later',
+        tostring(BR.Roster.get(2).engineHp))
+
+    ok(BR.Roster.get(2).diedAt == nil and BR.Roster.get(2).placement == nil,
+        'nothing is banked: no death stamp, no placement')
+
+    -- NOBODY IS TOLD. A pad death is not an elimination, so none of the things
+    -- an elimination raises may appear -- the handler returns before all of it.
+    local feed = 0
+    for i = before + 1, #sent do
+        if sent[i].event == BR.Net.KILLFEED then feed = feed + 1 end
+    end
+    ok(feed == 0, 'and no kill feed entry is broadcast', tostring(feed))
+end
+
 describe('match.lastLanding')
 do
     -- BUS -> PLAYING is driven by the LAST landing, not the route timer --

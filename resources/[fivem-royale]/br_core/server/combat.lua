@@ -39,6 +39,60 @@ local function canDie(entry)
         or s == BR.PlayerState.GLIDE
 end
 
+--- Stand a player back up on the warmup pad, still in WARMUP.
+---
+--- ═══ WARMUP WAS NEVER MEANT TO BE SURVIVABLE OR FATAL ═══
+---
+--- Owner, 2026-09-06: "If players do manage to die in warmup (via explosives
+--- we're putting in these crates) please resurrect them immediately. Today we
+--- don't handle the death in warmup at all, because we weren't expecting a case
+--- where such event would be possible."
+---
+--- WARMUP is absent from canDie, so a death report from the pad was DROPPED: no
+--- elimination, no feed line, no stats -- and no resurrection either. The player
+--- simply lay there.
+---
+--- ⚠ AND IT DID NOT STAY HARMLESS. The drop is only a no-op for the rest of
+--- warmup: at the WARMUP -> BUS flip the entry enters a state canDie accepts, in
+--- a match state the death check accepts, with a corpse's engineHp still
+--- sampled -- so the body that had been ignored for a minute became a real
+--- elimination the moment the bus left. Leaving it unhandled was not a neutral
+--- choice.
+---
+--- A SIBLING OF reviveHeld, NOT A REUSE OF IT. Everything about the body is the
+--- same -- clear engineHp before the roster moves, resurrect on the machine that
+--- owns the ped, open the health-audit settle window, restore the numbers -- and
+--- exactly one thing differs: this player is NOT promoted to ALIVE. They are on
+--- the pad, the match has not started, and setting ALIVE here would deal them
+--- into a round that has not begun. A state is an argument, not a second
+--- function, but it is the argument that made this its own caller.
+---
+--- NOTHING IS TOLD. No feed entry, no elimination count, no stats row, no
+--- incident, no squad "mate down", no spectator camera: every one of those is
+--- raised further down the handler this returns before reaching.
+--- @param src integer
+--- @param entry table
+function BR.Combat.reviveWarmup(src, entry)
+    -- CLEARED BEFORE ANYTHING ELSE, for reviveHeld's reason: the sample is up to
+    -- a second old, and a stale corpse reading is an opinion from before the
+    -- resurrection. The pad's own death check reads it.
+    entry.engineHp = nil
+    entry.placement, entry.diedAt = nil, nil
+
+    TriggerClientEvent(BR.Net.REVIVED, src)
+
+    -- THE LEDGER LEADS AND THE PED FOLLOWS. For one round trip the entry says
+    -- 100 and the ped is still a corpse; the audit in server/roster.lua reads
+    -- this stamp so the crossover is not counted as a client inventing health.
+    entry.healthSettleUntil = GetGameTimer()
+        + ((BR.Config.Combat.healthAudit or {}).settleMs or 2000)
+
+    BR.Roster.update(src, { hp = 100.0, armour = 0.0 })
+
+    print(('[br_core] %s (%d) died in warmup -- stood back up, nothing recorded')
+        :format(entry.name, src))
+end
+
 --- Has this player left the bus into a match that has not started yet? (#144)
 ---
 --- THE WINDOW IS THE DESCENT AND WHAT FOLLOWS IT, NOT THE WARMUP PAD. Rescoped
@@ -1481,6 +1535,17 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
     if not entry then return end
 
     if not canDie(entry) then
+        -- ═══ A DEATH ON THE PAD IS UNDONE, NOT IGNORED ═══
+        --
+        -- Nothing on the warmup island was expected to be able to kill anybody
+        -- until explosives went into the crates. See BR.Combat.reviveWarmup for
+        -- why ignoring it was worse than it looked: the corpse survived to the
+        -- bus and became a real elimination there.
+        if entry.state == BR.PlayerState.WARMUP then
+            BR.Combat.reviveWarmup(src, entry)
+            return
+        end
+
         -- Not necessarily malicious: a report can arrive just after the server
         -- already eliminated them from its own health check.
         if BR.Server.devMode then
