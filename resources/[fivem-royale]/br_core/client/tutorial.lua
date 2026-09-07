@@ -489,6 +489,28 @@ function BR.Tutorial.offer(on)
     publish()
 end
 
+--- Put the account-level offer back, for testing.
+---
+--- ═══ /brtutorial HAS TO OUTRANK THE PROFILE ROW ═══
+---
+--- Owner, 2026-09-08: "again, the continue toggle did not appear. is this because
+--- I've already completed it once by chance? i should be able to again since I'm
+--- using `brtutorial`."
+---
+--- Yes, and the flag was doing its job: finishing writes 'done' to the profile
+--- row, the server stops offering, and the second toggle -- which is gated on
+--- that same answer -- correctly disappears. Correct for a player, useless for
+--- the person testing it twenty times a day.
+---
+--- LOCAL ONLY, AND IT WRITES NOTHING. The row still says 'done'; this raises the
+--- client's mirror of it so the lobby will draw the toggle. The next connect
+--- reads the row again and the offer is gone, which is what should happen.
+--- @param on boolean
+function BR.Tutorial.offerable(on)
+    offerable = on == true
+    publish()
+end
+
 --- One of the four warmup crates was opened BY THIS PLAYER.
 ---
 --- FIRED FROM client/loot.lua's husk-reskin branch, which is the only line in
@@ -638,6 +660,7 @@ RegisterCommand('brtutorial', function(_, args)
     -- `/brtutorial run` skips the offer, for looking at a single card without
     -- clicking through the lobby to get there.
     if arg == 'game' then
+        BR.Tutorial.offerable(true)
         BR.Tutorial.game(true)
         print('[br_core] tutorial: the IN-GAME walkthrough is running')
         print('  it points at the HUD, so it draws in a match or on the pad')
@@ -646,6 +669,8 @@ RegisterCommand('brtutorial', function(_, args)
     end
 
     if arg == 'run' then
+        -- The dev command outranks the profile row -- see BR.Tutorial.offerable.
+        BR.Tutorial.offerable(true)
         BR.Tutorial.set(true)
         print('[br_core] tutorial: running -- the walkthrough is on screen')
         print('  it draws only while the LOBBY is up; open it if you see nothing')
@@ -653,8 +678,11 @@ RegisterCommand('brtutorial', function(_, args)
         return
     end
 
+    BR.Tutorial.offerable(true)
     BR.Tutorial.offer(true)
     print('[br_core] tutorial: the offer is up -- look beside Ready up')
+    print('  (the account-level offer is forced on locally too, so this works')
+    print('   on an account that has already finished it -- the row is untouched)')
     print('  the checkbox is ticked by default, and Ready up now reads')
     print('  Start tutorial; pressing it begins the walkthrough')
     print('  /brtutorial run   starts the lobby half without the offer')

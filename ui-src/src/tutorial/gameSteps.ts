@@ -423,6 +423,20 @@ export const GAME_STEPS: Step[] = [
     // after 10 seconds." Nothing is left to ask for and the countdown behind it
     // is already running.
     autoDismissMs: 10000,
+    // THE LAST THING THEY ARE TOLD, and it is a correction rather than a
+    // farewell. Owner, 2026-09-08: "at the end of the tutorial we should give
+    // them a toast informing them that no crates will be marked when the match
+    // starts and they'll need to scavenge for loot on their own."
+    //
+    // A TOAST AND NOT A CARD because the walkthrough is over -- the cards are the
+    // walkthrough, and one more of them would be the walkthrough not ending. It
+    // rides the notice stack, which IS mounted in a match.
+    leaveNotice: {
+      text: 'Crates are only marked on the practice pad. In the match you will '
+          + 'have to find loot yourself.',
+      tone: 'info',
+      ms: 12000,
+    },
     dismissLabel: "I'm ready",
     // NO BACK BUTTON PAST THE END. Stepping backwards out of the final card is
     // the one move that would let a player re-dismiss it, and the reward is

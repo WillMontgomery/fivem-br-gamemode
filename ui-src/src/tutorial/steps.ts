@@ -250,6 +250,19 @@ export type Step = {
    */
   autoDismissMs?: number
   /**
+   * A toast to leave behind as this card advances.
+   *
+   * FOR SOMETHING THE PLAYER NEEDS AFTER THE WALKTHROUGH IS OVER, which a card
+   * cannot carry: the cards ARE the walkthrough, so one more of them would be the
+   * walkthrough not ending. Owner, 2026-09-08, on the last card: "we should give
+   * them a toast informing them that no crates will be marked when the match
+   * starts and they'll need to scavenge for loot on their own."
+   *
+   * IT RIDES THE NOTICE STACK, which is mounted in a match -- unlike in the
+   * lobby, where it is deliberately not.
+   */
+  leaveNotice?: { text: string; tone?: 'info' | 'warn' | 'success' | 'danger'; ms?: number }
+  /**
    * For `advance: 'dismiss'` -- what the last button says, when "Dismiss" is
    * the wrong word for it.
    *

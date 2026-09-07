@@ -671,6 +671,11 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     return () => document.removeEventListener('click', onClick, { capture: true })
   }, [step])
 
+  // HOISTED ABOVE `go`, which closes over it: a zustand action is a stable
+  // reference, but reading it below its own consumer is a trap for the next
+  // person to move code in this file.
+  const pushNotice = useUi((st) => st.pushNotice)
+
   const go = useCallback(
     (to: number) => {
       // ═══ A CARD CLOSES WHAT IT OPENED ═══
@@ -682,6 +687,15 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       const leaving = steps[i]
       if (leaving?.onLeave) {
         void fetchNui(leaving.onLeave.cb, leaving.onLeave.data ?? {})
+      }
+      // ...AND ANYTHING IT WANTED TO SAY ON THE WAY OUT. See `Step.leaveNotice`.
+      if (leaving?.leaveNotice) {
+        pushNotice({
+          text: leaving.leaveNotice.text,
+          tone: leaving.leaveNotice.tone ?? 'info',
+          key: `tutorial.leave.${leaving.id}`,
+          ms: leaving.leaveNotice.ms ?? 10000,
+        })
       }
       setLeaving(true)
       // ═══ AND THE PRESS IS FORGOTTEN, WHICH IS WHAT MAKES "LAST" WORK ═══
@@ -779,7 +793,6 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // save-and-restore entirely: there is nothing to put back, only something to
   // stop preferring.
   const setTutorialSquad = useUi((st) => st.setTutorialSquad)
-  const pushNotice = useUi((st) => st.pushNotice)
 
   // THE STAGED CHAT LINE, taken back down by the same teardown the squad uses --
   // and it MUST be, because `pushChat` has no removal and a demo line left in
@@ -1244,11 +1257,26 @@ export default function TutorialLayer(p: TutorialLayerProps) {
             //
             // INSETS ARE RELATIVE TO THIS ELEMENT'S OWN BOX, hence the offsets
             // against the inflated rect rather than against the anchor.
+            // ═══ MEASURED AGAINST THE ANCHOR, NOT AGAINST THE RING ═══
+            //
+            // The insets used to be computed from the ring's own inflated box,
+            // so an anchor sitting flush against the top of its pane -- which is
+            // exactly what "scrolled to the top" means -- had its top border
+            // clipped away: the border is OUTSIDE the anchor, so the pane's edge
+            // fell 4px inside the ring. Owner, 2026-09-08: "when scrolling to the
+            // top, I expect to see a top border where there is none visible
+            // today. Same for scrolling down."
+            //
+            // Measured from the ANCHOR's edge instead, a flush edge cuts nothing
+            // and keeps its border, and only content genuinely past the pane is
+            // removed. The cost is that the border bleeds 4px over the header at
+            // that one position, which is the trade the owner asked for: he wants
+            // to see where the list begins and ends.
             clipPath: clip === null ? undefined : `inset(${
-              Math.max(0, clip.y - (rect.y - 4))}px ${
-              Math.max(0, (rect.x - 4 + rect.w + 8) - (clip.x + clip.w))}px ${
-              Math.max(0, (rect.y - 4 + rect.h + 8) - (clip.y + clip.h))}px ${
-              Math.max(0, clip.x - (rect.x - 4))}px)`,
+              Math.max(0, clip.y - rect.y)}px ${
+              Math.max(0, (rect.x + rect.w) - (clip.x + clip.w))}px ${
+              Math.max(0, (rect.y + rect.h) - (clip.y + clip.h))}px ${
+              Math.max(0, clip.x - rect.x)}px)`,
           }}
         />
       )}
