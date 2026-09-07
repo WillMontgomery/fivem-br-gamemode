@@ -247,24 +247,27 @@ do
     ok(nonString == nil, 'and every key is a string', nonString)
 end
 
-describe('palette: his blocked picks survive as text')
+describe('palette: his picks survive, live or as text')
 do
     -- ═══ WHY A TEST READS COMMENTS ═══
     --
-    -- These twelve pairs cost the owner an afternoon with /brsfx and they are
-    -- the ONLY record of it. They cannot be cues today -- a DLC set is refused
-    -- by tools/test_shared.lua (no dlc_ in the catalogue) and by
-    -- tools/test_fuel.lua (every cue's set must be in the catalogue) -- so they
-    -- live in config/audio.lua as comments, where nothing can reach them and
-    -- nothing protects them. A later reader tidying a long file deletes them
-    -- and no test anywhere goes red.
+    -- These pairs cost the owner an afternoon with /brsfx and they are the ONLY
+    -- record of it. Most are now LIVE CUES (2026-09-08: "land the DLC cues"),
+    -- and the handful he has since rejected or that have no feature behind them
+    -- live in config/audio.lua as comments -- where nothing can reach them and
+    -- nothing protects them. A later reader tidying a long file deletes them and
+    -- no test anywhere goes red.
     --
-    -- SO THE TEXT IS THE ARTEFACT AND IT IS PINNED AS ONE. This asserts the
-    -- pairs are still WRITTEN DOWN. It asserts nothing about whether they play.
+    -- SO THE TEXT IS THE ARTEFACT AND IT IS PINNED AS ONE, whichever side of the
+    -- line a pair is on: the file must still CONTAIN both strings. It asserts
+    -- nothing about whether any of them plays.
     ok(AUDIO_SRC ~= nil, 'config/audio.lua is readable')
     if AUDIO_SRC then
         local BLOCKED = {
-            { 'DLC_H3_Drone_Tranq_Weapon_Sounds', 'Remote_Perspective_Fire', 'Damage hit sound' },
+            -- Remote_Perspective_Fire was his "Damage hit sound" and is NOT
+            -- pinned any more: he rejected it outright on 2026-09-08 ("those
+            -- are wrong sound clips") and the hitmarker cues are gone, so the
+            -- pair is no longer an artefact worth protecting.
             { 'DLC_H3_Drone_Tranq_Weapon_Sounds', 'Pilot_Perspective_Fire',  'Damage killed sound' },
             { 'DLC_AW_BB_Sounds',                 'Period_Start',            'alt timer start (airhorn)' },
             { 'DLC_IO_Warehouse_Mod_Garage_Sounds', 'Remove_Tracker',        'gas pump started' },
@@ -291,17 +294,21 @@ do
         -- tools/test_fuel.lua rather than this file, which is a confusing
         -- place to learn it. Asserted here too, where the reason is written
         -- down.
-        local live = nil
-        for cue, def in pairs(A.cues) do
-            if type(def) == 'table' and type(def.set) == 'string'
-                and def.set:lower():sub(1, 4) == 'dlc_' then
-                live = ('%s uses %s'):format(cue, def.set)
-            end
+        -- ═══ AND THE ONES HE REJECTED ARE NOT SECRETLY LIVE ═══
+        --
+        -- The inverse of what this used to assert. It once demanded that NO cue
+        -- name a DLC set, which was the gate the owner overruled; what matters
+        -- now is the narrower claim that the specific pairs he threw out have
+        -- not crept back in. `hit` and `hit.crit` are the ones he named, and
+        -- `fuel.start` is the cue he deleted outright.
+        local revived = nil
+        for _, key in ipairs({ 'hit', 'hit.crit', 'fuel.done' }) do
+            if A.cues[key] ~= nil then revived = key end
         end
-        ok(live == nil,
-           'and not one of them is a live cue -- promoting one means moving '
-               .. 'the two gates that refuse it, not just uncommenting a line',
-           live)
+        ok(revived == nil,
+           'the cues the owner removed have not come back -- he rejected the '
+               .. 'clips, so a later reader must not re-derive them from his '
+               .. 'original list', revived)
 
         -- HIS OWN FINDING ABOUT THE BOUNTY CUE, WHICH IS WORTH AS MUCH AS A
         -- PAIR THAT WORKS. He wrote "THIS NEEDS SCALEFORMS ^^^" under
@@ -316,67 +323,40 @@ end
 -- PART B -- the throttle
 -- =========================================================================
 
-describe('throttle: the hitmarker floor against the actual weapons')
-do
-    -- ═══ THE CROSS-FILE INVARIANT, WHICH IS THE ONLY REASON 60 IS DEFENSIBLE
-    --     ═══
-    --
-    -- A dropped hitmarker reads as a MISS: it is the only confirmation a
-    -- shooter gets that a shot connected. So the floor must sit at or below
-    -- the fastest weapon's cadence, or the game starts telling players they
-    -- missed shots they hit -- silently, and worst on whichever weapon is
-    -- fastest.
-    --
-    -- BOTH NUMBERS ARE READ, NEITHER IS WRITTEN OUT. This is the opposite
-    -- choice from Part A and deliberately so: Part A pins the owner's
-    -- decisions, which may not move. This pins a RELATIONSHIP between two
-    -- tables that both may move -- weapons get retuned, and the day somebody
-    -- adds a 50ms weapon this should go red rather than agree.
-    -- BR.Config.Weapons IS the array -- config/weapons.lua:97 assigns the list
-    -- straight to the name, with no `items` field to reach through.
-    local fastest, who = math.huge, nil
-    for _, w in ipairs(BR.Config.Weapons or {}) do
-        local iv = tonumber(w.minInterval)
-        if iv and iv > 0 and iv < fastest then fastest, who = iv, w.id end
-    end
-    ok(fastest < math.huge, 'the weapons table has fire intervals to compare against',
-       tostring(who))
-
-    if fastest < math.huge then
-        local floor = A.minInterval['hit']
-        ok(type(floor) == 'number', 'the hitmarker has a floor at all', tostring(floor))
-        ok(floor <= fastest,
-           ('the hitmarker floor (%s) is at or below the fastest weapon (%s, %sms), '
-            .. 'so no legitimate round is ever silent'):format(
-               tostring(floor), tostring(who), tostring(fastest)))
-
-        -- AND IT IS LONGER THAN A FRAME, which is the burst it DOES exist to
-        -- collapse: server/damage.lua fires DAMAGE_FEED per damage event, and
-        -- one shotgun shell lands as one event per pellet -- six to nine
-        -- inside a frame or two. 16ms is a 60fps frame.
-        ok(floor > 16,
-           ('and longer than a frame (%sms > 16ms), so one shotgun shell is one '
-            .. 'cue rather than nine'):format(tostring(floor)))
-
-        eq(A.minInterval['hit.crit'], floor,
-           'the headshot marker carries the same floor as the body marker')
-    end
-end
+-- ═══ THE HITMARKER/WEAPON CROSS-FILE INVARIANT USED TO LIVE HERE ═══
+--
+-- It pinned A.minInterval['hit'] at or below the fastest weapon's fire
+-- interval, so no legitimate round could ever be silent. Both the cues and
+-- their floors are gone (2026-09-08: "do not wire in any sound at all for hit
+-- or hit.crit -- those are wrong sound clips"), and a test that reads two
+-- tables neither of which still has the key is not a weaker test, it is a
+-- broken one. If a hitmarker ever comes back with a clip he likes, the
+-- invariant comes back with it: floor <= fastest weapon interval, and floor >
+-- one frame so a shotgun shell is one cue rather than nine pellets.
 
 describe('throttle: it actually limits, and it drops rather than queues')
 do
-    local gap = A.minInterval['hit']
+    -- ═══ DRIVEN ON toast.warn, BECAUSE `hit` NO LONGER EXISTS ═══
+    --
+    -- The owner removed the hitmarker cues entirely on 2026-09-08 ("do not wire
+    -- in any sound at all for hit or hit.crit"), and their floors went with
+    -- see config/audio.lua for why -- but a suite that drives a cue with no
+    -- sound behind it is testing the unknown-cue path by accident.
+    --
+    -- toast.warn carries a floor for the same reason: it can be asked for more
+    -- than once per event.
+    local gap = A.minInterval['toast.warn']
     plays = {}
 
     gameMs = 500000
-    BR.Sfx.play('hit')
+    BR.Sfx.play('toast.warn')
     eq(#plays, 1, 'the first call plays')
 
     -- INSIDE THE WINDOW, REPEATEDLY. This is the full-auto burst and the
     -- shotgun shell: many asks, one sound.
     for _ = 1, 20 do
         gameMs = gameMs + 1
-        BR.Sfx.play('hit')
+        BR.Sfx.play('toast.warn')
     end
     eq(#plays, 1, 'and twenty more inside the window play nothing at all')
 
@@ -388,7 +368,7 @@ do
     -- window opened -- which is the same hundred overlapping sounds #24 is
     -- about, moved half a second later.
     gameMs = gameMs + gap
-    BR.Sfx.play('hit')
+    BR.Sfx.play('toast.warn')
     eq(#plays, 2, 'and once the window is open exactly ONE more plays -- the '
                       .. 'suppressed calls were dropped, not stored')
 
@@ -397,12 +377,12 @@ do
     -- happens to equal the floor.
     plays = {}
     gameMs = 600000
-    BR.Sfx.play('hit')
+    BR.Sfx.play('toast.warn')
     gameMs = gameMs + gap - 1
-    BR.Sfx.play('hit')
+    BR.Sfx.play('toast.warn')
     eq(#plays, 1, 'one millisecond short of the floor is still inside it')
     gameMs = gameMs + 1
-    BR.Sfx.play('hit')
+    BR.Sfx.play('toast.warn')
     eq(#plays, 2, 'and exactly the floor is outside it')
 end
 
@@ -423,13 +403,17 @@ end
 
 describe('throttle: each cue has its own window')
 do
-    -- Two cues sharing one clock would make the hitmarker mute the elimination
-    -- that follows it by a frame -- the two events that are guaranteed to
-    -- arrive together.
+    -- Two cues sharing one clock would make a refusal toast mute the
+    -- elimination that follows it by a frame -- and a refusal is exactly the
+    -- moment another cue is most likely to arrive alongside it.
     plays = {}
     gameMs = 800000
-    BR.Sfx.play('hit')
-    BR.Sfx.play('hit.crit')
+    -- BOTH OF THESE ARE REAL CUES WITH REAL FLOORS. `ui.hover` carries a floor
+    -- and no cue definition, so it would fail this by playing nothing at all --
+    -- which looks identical to a shared clock and would send the next reader
+    -- into client/sfx.lua for a bug that isn't there.
+    BR.Sfx.play('toast.warn')
+    BR.Sfx.play('squad.waypoint')
     eq(#plays, 2, 'a throttled cue does not close the window on a different one')
 end
 
@@ -519,18 +503,18 @@ do
     -- whole feature exists to remove.
     fromEnt = {}
     gameMs = 950000
-    BR.Sfx.playFrom('fuel.done', 0)
+    BR.Sfx.playFrom('fuel.start', 0)
     eq(#fromEnt, 0, 'entity 0 plays nothing rather than playing into the void')
-    BR.Sfx.playFrom('fuel.done', nil)
+    BR.Sfx.playFrom('fuel.start', nil)
     eq(#fromEnt, 0, 'and neither does nil')
 
     local real = 12345
-    BR.Sfx.playFrom('fuel.done', real)
+    BR.Sfx.playFrom('fuel.start', real)
     eq(#fromEnt, 1, 'a real handle plays')
     if fromEnt[1] then
         eq(fromEnt[1].ent, real, 'from that entity')
-        eq(fromEnt[1].set, A.cues['fuel.done'].set, 'out of the configured set')
-        eq(fromEnt[1].name, A.cues['fuel.done'].name, 'with the configured name')
+        eq(fromEnt[1].set, A.cues['fuel.start'].set, 'out of the configured set')
+        eq(fromEnt[1].name, A.cues['fuel.start'].name, 'with the configured name')
         -- NOT NETWORKED. server/fuel.lua has already addressed every occupant
         -- and each is playing their own copy; a native that turned out to
         -- network after all would double the sound in the car.

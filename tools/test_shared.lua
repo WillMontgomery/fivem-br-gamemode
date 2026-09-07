@@ -4417,6 +4417,22 @@ local function newServer()
         notify = function(_, msg) S.notices[#S.notices + 1] = msg end,
         notifyClear = function() end,
         squadsAlive = function() return 2 end,
+        -- ═══ A DOUBLE, AND IT HAS TO BE ONE ═══
+        --
+        -- combat.lua's standingSquadsBesides asks this, and server/main.lua --
+        -- where the real one lives -- is not in this harness's load list. The
+        -- list is copied rather than referenced, so it can drift; what stops
+        -- that mattering is that it is only ever asked about ALIVE and DBNO
+        -- here, and both of those would have to be wrong before any assertion
+        -- in this file changed.
+        isInMatch = function(st)
+            return st == env.BR.PlayerState.ALIVE
+                or st == env.BR.PlayerState.DBNO
+                or st == env.BR.PlayerState.WARMUP
+                or st == env.BR.PlayerState.BUS
+                or st == env.BR.PlayerState.FREEFALL
+                or st == env.BR.PlayerState.GLIDE
+        end,
     }
     env.BR.Broadcast = { delta = function() end, toMatch = function() end }
     env.BR.Evidence  = { noteKill = function() end }
@@ -4425,14 +4441,25 @@ local function newServer()
 
     loadInto(env, { 'br_core/server/combat.lua' })
 
+    -- ═══ THREE PLAYERS IN TWO SQUADS, AND THE SECOND SQUAD IS SCENERY ═══
+    --
+    -- 1 and 2 are the pair every assertion below is about. 3 exists only to be
+    -- a second standing squad: BR.Combat.canBeDowned refuses the LAST knock of
+    -- a match outright (owner, 2026-09-07 -- "bleeding out shouldn'''t be a thing
+    -- if there'''s only one standing player or squad left"), so a one-squad
+    -- fixture would turn every knock in this file into a death and report it as
+    -- the DBNO asymmetry being broken.
     env.BR.Server.matches[1] = { id = 1, state = env.BR.MatchState.PLAYING,
                                  mode = env.BR.Mode.SQUAD.key,
-                                 players = { 1, 2 }, startedAt = 0 }
+                                 players = { 1, 2, 3 }, startedAt = 0 }
     for _, src in ipairs({ 1, 2 }) do
         S.roster[src] = { src = src, name = 'P' .. src, matchId = 1, squadId = 'sq1',
                           state = env.BR.PlayerState.ALIVE, hp = 100.0, armour = 0.0,
                           kills = 0, ped = 9000 + src }
     end
+    S.roster[3] = { src = 3, name = 'P3', matchId = 1, squadId = 'sq2',
+                    state = env.BR.PlayerState.ALIVE, hp = 100.0, armour = 0.0,
+                    kills = 0, ped = 9003 }
 
     S.env = env
     --- A client's death report, delivered exactly as FiveM delivers one.
@@ -11820,23 +11847,60 @@ do
     ok(badShape == nil, 'every row is a set name and a non-empty list of names', badShape)
     ok(dupName == nil, 'and no set lists the same sound twice', dupName)
 
-    -- ═══ NO DLC BANKS, AND THIS IS THE ASSERTION WITH TEETH ═══
+    -- ═══ A DLC BANK IS OFFERED ONLY IF SOMEBODY HEARD IT ═══
     --
     -- Pit_Stop_Complete was the on-theme candidate for fuel.done and was
     -- rejected because it lives in DLC_H3_Circuit_Racing_Sounds -- a script
     -- audio bank this gamemode never requests, so it would have played nothing
     -- while looking perfectly correct in the config. Every DLC_*/dlc_* set was
-    -- filtered out of this catalogue for that reason. A catalogue that let one
-    -- back in would be a browsing tool that offers the owner sounds which
-    -- cannot play, which is worse than no tool: it manufactures exactly the
-    -- ambiguity the [silent?] marker exists to resolve.
-    local dlc = nil
-    for _, entry in ipairs(A.catalogue) do
-        if string.lower(entry.set):sub(1, 4) == 'dlc_' then dlc = entry.set end
+    -- filtered out of the catalogue for that reason, and this assertion used to
+    -- demand there were none at all.
+    --
+    -- THAT WAS A HEURISTIC AND IT HAS BEEN OVERTAKEN BY EVIDENCE. The owner
+    -- auditioned five DLC banks with /brsfx on a running client and came back
+    -- with what each should be used for (2026-09-08, "land the DLC cues"),
+    -- which is the same class of evidence as `heard from this codebase` and
+    -- strictly better than a filter written because nobody had listened.
+    --
+    -- SO THE RULE MOVED RATHER THAN GOING AWAY, and it still has teeth: a DLC
+    -- set may appear ONLY inside the leading heard block. One appearing out in
+    -- the alphabetical body came from a dump, nobody has played it, and it puts
+    -- the owner back in front of sounds that cannot play -- which is worse than
+    -- no tool, because it manufactures the exact ambiguity [silent?] exists to
+    -- resolve.
+    local HEARD = 8   -- 3 heard from this codebase + 5 the owner auditioned
+    local strayDlc = nil
+    for i = HEARD + 1, #A.catalogue do
+        if string.lower(A.catalogue[i].set):sub(1, 4) == 'dlc_' then
+            strayDlc = A.catalogue[i].set
+        end
     end
-    ok(dlc == nil,
-       'no DLC audio bank is offered for browsing -- those are silent unless '
-           .. 'something requests them, and nothing here does', dlc)
+    ok(strayDlc == nil,
+       'no DLC audio bank is offered for browsing outside the heard block -- '
+           .. 'an unheard one is silent, and silent is indistinguishable from '
+           .. 'wrong', strayDlc)
+
+    -- AND EVERY SET IN THAT BLOCK CARRIES ITS MARK IN THE SOURCE, so the
+    -- exemption cannot be taken by simply sorting a new row upward.
+    local unmarked = nil
+    do
+        local fh = io.open(ROOT .. 'br_lib/config/audio.lua', 'r')
+        if fh then
+            local src = fh:read('a'); fh:close()
+            for i = 1, HEARD do
+                local set = A.catalogue[i].set
+                local pat = string.char(10) .. "%s*{ set = '" .. set
+                                .. "',[^" .. string.char(10) .. "]*"
+                local line = src:match(pat)
+                if not line or not line:find('heard', 1, true) then
+                    unmarked = set
+                end
+            end
+        end
+    end
+    ok(unmarked == nil,
+       'and every set in the heard block says on its own line who heard it',
+       unmarked)
 
     -- ═══ THE ORDER IS FIXED IN THE SOURCE, NOT LEFT TO pairs() ═══
     --
@@ -11852,8 +11916,16 @@ do
        'the three sets this codebase has actually heard sort first, in order',
        A.catalogue[1].set .. ', ' .. A.catalogue[2].set .. ', ' .. A.catalogue[3].set)
 
+    -- THEN THE OWNER'S FIVE, which are heard on the same terms and for the same
+    -- reason sort with them rather than into the body: a silence in one of
+    -- these is a wrong NAME, not an absent bank.
+    ok(A.catalogue[4].set == 'DLC_AW_Frontend_Sounds'
+       and A.catalogue[8].set == 'dlc_vw_koth_Sounds',
+       'and the five DLC banks the owner auditioned follow them',
+       A.catalogue[4].set .. ' .. ' .. A.catalogue[8].set)
+
     local outOfOrder = nil
-    for i = 5, #A.catalogue do
+    for i = HEARD + 2, #A.catalogue do
         local prev, cur = A.catalogue[i - 1].set:lower(), A.catalogue[i].set:lower()
         if prev > cur then outOfOrder = prev .. ' before ' .. cur end
     end

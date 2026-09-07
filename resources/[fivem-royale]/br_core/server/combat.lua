@@ -673,6 +673,37 @@ local function hasStandingMate(entry)
     return found
 end
 
+--- How many squads would still have somebody ON THEIR FEET if this player went
+--- down right now?
+---
+--- STANDING IS "IN THE MATCH AND NOT DBNO", which is deliberately wider than
+--- hasStandingMate's ALIVE/FREEFALL/GLIDE. That function asks "can anybody come
+--- and revive them", so a mate still on the bus is no use to it. This one asks
+--- "is there anybody left to fight", and a player who has not jumped yet is very
+--- much still in the fight -- counting only the landed would end a match while
+--- half the field was in the air.
+---
+--- SOLOS ARE THEIR OWN SQUAD, spelled the same way BR.Server.squadsAlive spells
+--- it, because these two counts answer the same question at two moments and must
+--- not disagree about what a team is.
+--- @param entry table  the player about to be knocked, excluded from the count
+--- @return integer
+local function standingSquadsBesides(entry)
+    local seen, n = {}, 0
+    BR.Roster.each(
+        function(e)
+            return e.src ~= entry.src
+               and e.matchId == entry.matchId
+               and e.state ~= BR.PlayerState.DBNO
+               and BR.Server.isInMatch(e.state)
+        end,
+        function(src, e)
+            local key = e.squadId or ('solo:' .. tostring(src))
+            if not seen[key] then seen[key] = true; n = n + 1 end
+        end)
+    return n
+end
+
 --- Would running out of health knock this player down rather than kill them?
 ---
 --- Public because BR.Damage.applyHit has to ask BEFORE it writes any health:
@@ -685,6 +716,46 @@ function BR.Combat.canBeDowned(entry)
 
     local m = entry.matchId and BR.Server.matches[entry.matchId]
     if not m then return false end
+
+    -- ═══ THE LAST KNOCK OF A MATCH IS A DEATH, WHOEVER IT LANDS ON ═══
+    --
+    --   "I just did a solos match and with only 2 players, while one was
+    --    bleeding out, the other hadn't won yet. Not sure why... bleeding out
+    --    shouldn't be a thing if there's only one standing player or squad
+    --    left."                                         -- owner, 2026-09-07
+    --
+    -- THE MATCH WAS CORRECT AND THE KNOCK WAS WRONG. BR.Server.isInMatch counts
+    -- DBNO -- deliberately, and every other thing that reads it needs that -- so
+    -- a downed player keeps their squad in BR.Server.squadsAlive and
+    -- winConditionMet goes on seeing two squads. The winner then waits out a
+    -- 40-120s bleed clock (bleedMsFor) for an opponent who, in solos, nobody can
+    -- revive: the last stretch of the match is a countdown with no play in it.
+    --
+    -- SO THE FIX IS HERE RATHER THAN IN THE WIN CONDITION. Making squadsAlive
+    -- ignore DBNO would end the match over a squad that is momentarily all down
+    -- and about to be revived, which is a real and common state in squads; and
+    -- it would end it over the player in the back of an ambulance, whose whole
+    -- feature is that being down is survivable. What is actually true is
+    -- narrower: a knock is only worth having if somebody is left to fight over
+    -- it, and when this player is the last one standing outside a single squad,
+    -- nobody is.
+    --
+    -- IT APPLIES TO BOTH ARMS BELOW, which is why it sits above them. The squad
+    -- arm mostly gets there on its own -- hasStandingMate is false for the last
+    -- member of a wipe -- but not always: two squads left, one with a standing
+    -- mate, and this rule is what stops the final knock of the match starting a
+    -- timer instead of ending it.
+    --
+    -- ═══ EXCEPT FOR THE ONE-SQUAD DEV MATCH, AND FOR THE SAME REASON AS THE
+    --     CARVE-OUT IN winConditionMet ═══
+    --
+    -- A lone developer in PLAYING has zero other standing squads by definition,
+    -- so without this they could never be knocked at all -- which would make the
+    -- CPR kit and the whole ambulance flow untestable by exactly the person who
+    -- has to test them. That match does not auto-end either (see winConditionMet),
+    -- so nothing is being held up by the bleed.
+    local lone = BR.Server.devMode and m.startSquads == 1
+    if not lone and standingSquadsBesides(entry) <= 1 then return false end
 
     -- ═══ SQUADS BY MODE, SOLOS BY INVENTORY (#191) ═══
     --

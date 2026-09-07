@@ -14869,8 +14869,12 @@ do
     HasSoundFinished = function() return finished end
 
     -- ═══ A CUE BY KEY, WHICH IS WHAT MAKES THE CONFIG AUDITIONABLE ═══
-    local done = BR.Config.Audio.cues['fuel.done']
-    brsfx('fuel.done')
+    -- DRIVEN ON fuel.start BECAUSE fuel.done NO LONGER EXISTS -- the owner
+    -- removed the completion cue on 2026-09-08 after two clips he disliked.
+    -- Any live key would do here; what is under test is that /brsfx resolves a
+    -- key against the table at all.
+    local done = BR.Config.Audio.cues['fuel.start']
+    brsfx('fuel.start')
     ok(#plays == 1 and plays[1].name == done.name and plays[1].set == done.set,
        '/brsfx <cue> plays whatever the cue table currently says',
        plays[1] and (tostring(plays[1].set) .. '/' .. tostring(plays[1].name)) or 'nothing')
@@ -15057,25 +15061,30 @@ do
            .. 'set of sounds somebody disliked', out:sub(-260))
     finished = false
 
-    -- ═══ bind: THE THIRD FUEL SOUND IS THE OWNER'S, AND THIS IS HOW THEY TRY IT ═══
+    -- ═══ bind: A CUE IS TRIED WHERE IT FIRES, NOT IN A MENU ═══
+    --
+    -- Written for the third fuel sound, which the owner never landed -- he
+    -- removed fuel.done rather than pick a third clip. The command outlives its
+    -- occasion: any cue can be re-pointed for the session and then heard in
+    -- place, which is the only way an audio choice is ever actually made.
     local wasSet, wasName = done.set, done.name
-    brsfx('bind', 'fuel.done', 'HUD_MINI_GAME_SOUNDSET', 'MEDAL_UP')
-    ok(BR.Config.Audio.cues['fuel.done'].set == 'HUD_MINI_GAME_SOUNDSET'
-       and BR.Config.Audio.cues['fuel.done'].name == 'MEDAL_UP',
+    brsfx('bind', 'fuel.start', 'HUD_MINI_GAME_SOUNDSET', 'MEDAL_UP')
+    ok(BR.Config.Audio.cues['fuel.start'].set == 'HUD_MINI_GAME_SOUNDSET'
+       and BR.Config.Audio.cues['fuel.start'].name == 'MEDAL_UP',
        'brsfx bind re-points a cue in the live table')
-    brsfx('fuel.done')
+    brsfx('fuel.start')
     ok(plays[1] and plays[1].name == 'MEDAL_UP',
        'and the cue really plays the new pair afterwards -- which is what lets '
            .. 'a candidate be judged at a pump instead of in a menu')
 
     -- IT REFUSES A KEY THAT IS NOT A CUE, rather than inventing one. A typo
-    -- that silently created `fuel.donne` would leave the owner auditioning a
+    -- that silently created `fuel.starrt` would leave the owner auditioning a
     -- cue nothing fires.
-    brsfx('bind', 'fuel.donne', 'HUD_AWARDS', 'WIN')
-    ok(BR.Config.Audio.cues['fuel.donne'] == nil,
+    brsfx('bind', 'fuel.starrt', 'HUD_AWARDS', 'WIN')
+    ok(BR.Config.Audio.cues['fuel.starrt'] == nil,
        'and a misspelled cue key is refused rather than quietly created')
 
-    BR.Config.Audio.cues['fuel.done'] = { set = wasSet, name = wasName }
+    BR.Config.Audio.cues['fuel.start'] = { set = wasSet, name = wasName }
 
     -- ═══ THE MATCH-WIDE CUE ARRIVING FROM THE SERVER ═══
     --

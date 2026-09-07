@@ -2811,28 +2811,38 @@ end
 describe('the sound and the words')
 -- ---------------------------------------------------------------------------
 do
-    -- ═══ NO NEW AUDIO CUE ═══
+    -- ═══ THE SHOP HAS ITS OWN CUE NOW, AND THE OWNER CHOSE IT ═══
     --
-    -- config/audio.lua's rule: two actions that sound identical are worse than
-    -- one that sounds wrong. A purchase IS something landing in an inventory,
-    -- so it is the pickup cue and there is nothing new to audition.
+    -- This block used to assert the opposite -- that `shop.buy` WAS
+    -- BR.Config.Loot.pickupSound, the same table by reference, on the reasoning
+    -- that "a purchase IS a pickup" and config/audio.lua's rule against two
+    -- actions sounding alike. That was a desk argument. The owner auditioned
+    -- sets on a running client and came back with a pair of his own for the shop
+    -- (2026-09-08, "land the DLC cues"), so config/shop.lua's install was
+    -- deleted and the pair is written in config/audio.lua like every other cue.
+    --
+    -- WHAT IS PINNED NOW IS THAT THEY ARE SEPARATE, which is the property the
+    -- deleted install would silently undo if somebody put it back: it ran at
+    -- load time and would overwrite the static entry with no error anywhere.
     local cli = readFile(RES .. 'br_core/client/shop.lua')
 
-    -- ═══ THE SAME TABLE, NOT A SECOND PAIR ═══
-    --
-    -- The cue is installed by BR.Config.Shop.register as a REFERENCE to
-    -- BR.Config.Loot.pickupSound. `==` on tables is identity in Lua, so this
-    -- fails the day somebody "tidies" it into a copy -- which is the edit that
-    -- would let the two drift the next time the owner re-points the pickup
-    -- sound.
     ok(shipped.cue == 'shop.buy',
         'the shipped config names one cue key')
-    ok(BR.Config.Audio.cues['shop.buy'] == BR.Config.Loot.pickupSound,
-        'and the shop cue IS BR.Config.Loot.pickupSound -- the same table, not '
-            .. 'a copy of its two strings')
+    local buy = BR.Config.Audio.cues['shop.buy']
+    ok(type(buy) == 'table' and type(buy.set) == 'string' and type(buy.name) == 'string',
+        'and shop.buy is a cue in the audio table, written there like any other',
+        buy and (tostring(buy.set) .. '/' .. tostring(buy.name)) or 'missing')
+    ok(buy ~= BR.Config.Loot.pickupSound,
+        'and it is NOT BR.Config.Loot.pickupSound -- the reference install in '
+            .. 'config/shop.lua was deleted, and putting it back would '
+            .. 'overwrite his pick at load time with nothing said')
+    local shopcfg = readFile(RES .. 'br_lib/config/shop.lua')
+    ok(shopcfg:find("Audio.cues%['shop%.buy'%]%s*=") == nil,
+        'and config/shop.lua installs no cue of its own')
     ok(BR.Config.Loot.pickupSound.name == 'PICK_UP'
            and BR.Config.Loot.pickupSound.set == 'HUD_FRONTEND_DEFAULT_SOUNDSET',
-        'which is PICK_UP / HUD_FRONTEND_DEFAULT_SOUNDSET')
+        'while the pickup sound is untouched -- PICK_UP / '
+            .. 'HUD_FRONTEND_DEFAULT_SOUNDSET')
 
     -- ═══ REACHED BY KEY, SO /brsfx CAN AUDITION IT ═══
     --

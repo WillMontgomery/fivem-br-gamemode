@@ -12448,14 +12448,28 @@ do
     -- proves a solo dies, but it proves it in a suite where the kit did not
     -- exist. Re-proving it HERE, in the same fixture, is what makes the second
     -- assertion mean "the kit did this" rather than "something changed".
+    -- ═══ THREE PLAYERS, NOT TWO, AND THE THIRD IS LOAD-BEARING ═══
+    --
+    -- This fixture was two solos until 2026-09-07, when the owner reported the
+    -- consequence: "with only 2 players, while one was bleeding out, the other
+    -- hadn't won yet". BR.Combat.canBeDowned now refuses the LAST knock of a
+    -- match outright -- a knock is only worth having if somebody is left to
+    -- fight over it -- so a two-player fixture would have proved the new rule
+    -- rather than the kit, and reported it as the kit failing.
+    --
+    -- 'Bystander' therefore exists to be alive somewhere else. They are never
+    -- shot, never moved and never asserted on; their whole job is to be a third
+    -- standing squad so that knocking player 1 is an ordinary mid-match knock.
     local function soloMatch()
         reset()
         BR.Server.devMode = true
         queueUp(1, 'Kitted', BR.Mode.SOLO.key)
         queueUp(2, 'Shooter', BR.Mode.SOLO.key)
+        queueUp(3, 'Bystander', BR.Mode.SOLO.key)
         tick(300)
         BR.Roster.setState(1, BR.PlayerState.ALIVE)
         BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        BR.Roster.setState(3, BR.PlayerState.ALIVE)
     end
 
     soloMatch()
@@ -12527,6 +12541,110 @@ do
     local canCall = BR.Rescue.canCall(BR.Roster.get(1))
     ok(canCall == false,
         'and no squad player can call a medic, whatever they are carrying')
+end
+
+describe('dbno.lastKnockIsADeath')
+do
+    -- ═══ THE MATCH THAT WOULD NOT END ═══
+    --
+    --   "I just did a solos match and with only 2 players, while one was
+    --    bleeding out, the other hadn't won yet. Not sure why... bleeding out
+    --    shouldn't be a thing if there's only one standing player or squad
+    --    left."                                         -- owner, 2026-09-07
+    --
+    -- NOTHING WAS BROKEN, WHICH IS WHY IT SURVIVED THE TESTS. A downed player
+    -- is `BR.Server.isInMatch` -- squads need that, and the ambulance depends on
+    -- it -- so BR.Server.squadsAlive counted two, winConditionMet was false, and
+    -- the last thirty to ninety seconds of the match were a bleed clock with
+    -- nobody able to do anything about it. In solos nobody can revive at all, so
+    -- there was not even a rescue to hope for.
+    --
+    -- THE RULE IS IN canBeDowned, NOT IN THE WIN CONDITION, and the difference
+    -- matters enough to test from both ends: a knock is only worth having if
+    -- somebody is left to fight over it.
+    local function solos(n)
+        reset()
+        BR.Server.devMode = true
+        for i = 1, n do
+            queueUp(i, 'P' .. i, BR.Mode.SOLO.key)
+        end
+        tick(300)
+        for i = 1, n do BR.Roster.setState(i, BR.PlayerState.ALIVE) end
+        local m = BR.Server.matchOf(1)
+        if m then m.state, m.startSquads = BR.MatchState.PLAYING, n end
+        -- The kit is the only thing that can down a solo at all, so the player
+        -- under test always carries one -- otherwise this would prove the mode
+        -- default rather than the new rule.
+        BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = BR.Rarity.LEGENDARY, count = 1 })
+        return m
+    end
+
+    -- ═══ TWO LEFT: THE OWNER'S MATCH ═══
+    local m = solos(2)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+       'the last player standing outside one squad dies instead of bleeding '
+           .. 'out -- kit or no kit, there is nobody left to fight over them',
+       BR.Roster.get(1).state)
+
+    tick(4000)   -- past WIN_GRACE_MS
+    ok(m.state == BR.MatchState.ENDED,
+       'and the match ends there rather than running a bleed clock nobody can '
+           .. 'interrupt', m and m.state)
+
+    -- ═══ THREE LEFT: NOTHING CHANGES ═══
+    --
+    -- The control, and the assertion that stops this rule quietly becoming "the
+    -- CPR kit does not work". Same fixture, same kit, one more standing squad.
+    solos(3)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+       'while a knock with two other squads standing is an ordinary knock',
+       BR.Roster.get(1).state)
+
+    -- ═══ A DOWNED PLAYER IS NOT A STANDING ONE ═══
+    --
+    -- Three players, one already down: the count that decides this must read
+    -- STANDING squads, not `squadsAlive`. If it read squadsAlive, the player on
+    -- the floor would keep the match alive and this would be a second bleed
+    -- clock with nothing behind it -- the exact bug, one player later.
+    solos(3)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'P1 is down first')
+    BR.Inv.give(3, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    BR.Combat.defeat(3, 'gunshot', 2)
+    ok(BR.Roster.get(3).state == BR.PlayerState.OUT,
+       'and the next one dies, because the only squad left standing is the '
+           .. 'shooter -- a body on the floor is not somebody to fight',
+       BR.Roster.get(3).state)
+
+    -- ═══ AND THE LONE DEV IS EXEMPT, DELIBERATELY ═══
+    --
+    -- winConditionMet already carves out a dev match that STARTED with one
+    -- squad so a developer can sit in PLAYING and poke at the world. Without
+    -- the same carve-out here they could never be knocked -- zero other
+    -- standing squads by definition -- which would make the CPR kit and the
+    -- whole ambulance flow untestable by the one person who has to test them.
+    -- BUILT WITH fakeMatch RATHER THAN solos(1), because a single queued player
+    -- never forms a match through the queue in this harness -- matchOf is nil,
+    -- canBeDowned refuses on the missing match, and the suite would pass for the
+    -- wrong reason. This is the same construction squadMatch uses for the same
+    -- lone-developer hold.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Dev')
+    BR.Roster.setState(1, BR.PlayerState.WARMUP)
+    local solo = fakeMatch(BR.Mode.SOLO.key)
+    solo.state, solo.startSquads = BR.MatchState.PLAYING, 1
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    BR.Combat.defeat(1, 'gunshot', nil)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+       'a lone developer in a one-squad dev match can still be knocked, so the '
+           .. 'kit and the ambulance stay testable', BR.Roster.get(1).state)
 end
 
 describe('dbno.deadPed')
@@ -14633,22 +14751,28 @@ do
     -- wire, because that is where the second verdict is actually produced. The
     -- UI half -- neither surface drawing once the match is decided -- is pinned
     -- statically in tools/check_death_verdict.lua.
+    -- THREE, FOR THE REASON dbno.cprkit's FIXTURE SPELLS OUT: canBeDowned
+    -- refuses the last knock of a match, so the rider has to be knocked while
+    -- somebody other than their killer is still standing. 'Spare' is that
+    -- somebody, and they die at the end alongside the chaser.
     reset()
     BR.Server.devMode = true
     queueUp(1, 'Rider', BR.Mode.SOLO.key)
     queueUp(2, 'Chaser', BR.Mode.SOLO.key)
+    queueUp(3, 'Spare', BR.Mode.SOLO.key)
     tick(300)
     BR.Roster.setState(1, BR.PlayerState.ALIVE)
     BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    BR.Roster.setState(3, BR.PlayerState.ALIVE)
     setPos(1, 0.0, 0.0, 30.0)
     setPos(2, 0.0, 0.0, 30.0)
     BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
     BR.Roster.get(2).pos = { x = 0.0, y = 0.0, z = 30.0 }
 
     local m = BR.Server.matchOf(1)
-    ok(m ~= nil, 'the two solos are in a match')
+    ok(m ~= nil, 'the three solos are in a match')
     m.state = BR.MatchState.PLAYING
-    m.startSquads = 2
+    m.startSquads = 3
 
     BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
                      rarity = BR.Rarity.LEGENDARY, count = 1 })
@@ -14677,7 +14801,10 @@ do
             .. 'them -- the ride suspends the clock, it does not clear it',
         BR.Roster.get(1).state)
 
-    -- ...AND NOW THE MATCH ENDS UNDERNEATH THE RIDE.
+    -- ...AND NOW THE MATCH ENDS UNDERNEATH THE RIDE. Both standing players go,
+    -- and they go by eliminate() rather than defeat() so the new last-knock rule
+    -- is not what is under test here -- this suite is about the clock.
+    BR.Combat.eliminate(3, 'test', 2)
     BR.Combat.eliminate(2, 'test', 1)
     tick(4000)   -- past WIN_GRACE_MS
     ok(m.state == BR.MatchState.ENDED,

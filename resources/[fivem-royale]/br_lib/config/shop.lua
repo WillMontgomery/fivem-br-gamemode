@@ -1240,21 +1240,22 @@ function BR.Config.Shop.register(refusedReason)
         }
     end
 
-    -- ═══ AND THE CUE, AS A REFERENCE RATHER THAN A COPY ═══
+    -- ═══ THE CUE IS THE SHOP'S OWN NOW, AND THIS INSTALL IS GONE ═══
     --
-    -- `= BR.Config.Loot.pickupSound`, not `= { set = ..., name = ... }`. The
-    -- same table, so there is one authored pair and re-pointing the pickup
-    -- sound re-points this with it. Same shape as BR.Config.AmbHeal.stretcher(),
-    -- which IS BR.Config.Rescue.stretcher for the same reason.
+    -- This used to point `shop.buy` at BR.Config.Loot.pickupSound -- the same
+    -- table, deliberately, because "a purchase IS a pickup". The owner has since
+    -- auditioned a pair specifically for a completed purchase
+    -- (dlc_ch_heist_finale_security_alarms_sounds / Metal_Detector_Online) and
+    -- asked for it to land, so the decision it encoded no longer holds.
     --
-    -- HERE RATHER THAN IN config/audio.lua because this is where the DECISION
-    -- lives -- "the shop reuses the pickup sound" is a fact about the shop --
-    -- and because doing it at call time needs no load order between two config
-    -- files that otherwise have none.
-    if S.cue and BR.Config.Audio and BR.Config.Audio.cues
-       and BR.Config.Loot and BR.Config.Loot.pickupSound then
-        BR.Config.Audio.cues[S.cue] = BR.Config.Loot.pickupSound
-    end
+    -- DELETED RATHER THAN LEFT AND OVERRIDDEN, which is the whole reason it is
+    -- worth a comment: it ran at CATALOGUE BUILD time and wrote into
+    -- BR.Config.Audio.cues, so a static entry in config/audio.lua would have
+    -- been silently replaced by this one and the owner's pair would never have
+    -- played. Two sources for one cue, with the quieter one winning.
+    --
+    -- `S.cue = 'shop.buy'` above is untouched: the shop still names its cue, it
+    -- simply no longer supplies the sound behind it.
 
     S.rows = rows
     return rows, rejects

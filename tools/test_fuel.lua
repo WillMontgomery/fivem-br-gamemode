@@ -601,7 +601,11 @@ do
     -- exists, carries both fields, and sounds like nothing else. That is one
     -- property over one table, and splitting it per subsystem is how the
     -- collision check below ends up comparing half the cues with the other half.
-    for _, name in ipairs({ 'fuel.start', 'fuel.done', 'storm.move' }) do
+    -- `fuel.done` was in this list until 2026-09-08. The owner removed the cue
+    -- ("also remove fuel.done") after two clips he disliked, so there is nothing
+    -- left to check the shape of -- see pump.cues.completion, which now pins its
+    -- ABSENCE and keeps the record of where it goes if he picks a third.
+    for _, name in ipairs({ 'fuel.start', 'storm.move' }) do
         local def = cues[name]
         ok(type(def) == 'table', ('the %s cue exists'):format(name))
         if type(def) == 'table' then
@@ -639,17 +643,33 @@ do
     --
     -- ASSERTED OVER THE WHOLE TABLE rather than per cue, because the next cue
     -- added is the one nobody will write a test for.
-    local catSets = {}
-    for _, entry in ipairs(BR.Config.Audio.catalogue or {}) do catSets[entry.set] = true end
-    local stray = nil
+    -- ═══ RELAXED ON 2026-09-08, DELIBERATELY ═══
+    --
+    -- This demanded that every cue's SET be one of the 84 base-game sets in the
+    -- catalogue, i.e. no DLC audio bank. That rule came from Pit_Stop_Complete,
+    -- rejected AT A DESK for living in a bank this gamemode never requests --
+    -- and the belief was never measured: nobody ever heard one be silent.
+    --
+    -- The owner auditioned a dozen DLC pairs on a running client and asked for
+    -- them: "land the DLC cues" (2026-09-08). A suite that overrules the only
+    -- person who has heard them is the original mistake pointed the other way.
+    --
+    -- WHAT SURVIVES IS THE HALF THAT IS STILL CHECKABLE FROM HERE: a cue must
+    -- name a set and a sound, and neither may be empty. A blank one plays
+    -- nothing and nothing on screen says so, which no amount of auditioning
+    -- would reveal -- there is nothing to hear either way.
+    local bad = nil
     for cue, def in pairs(cues) do
-        if type(def) == 'table' and def.set and not catSets[def.set] then
-            stray = ('%s uses %s, which is in no catalogue set'):format(cue, def.set)
+        if type(def) == 'table' then
+            if type(def.set) ~= 'string' or def.set == ''
+               or type(def.name) ~= 'string' or def.name == '' then
+                bad = ('%s has an empty set or name'):format(cue)
+            end
         end
     end
-    ok(stray == nil,
-       'every cue plays out of a set GTA\'s own scripts call -- no DLC audio '
-           .. 'bank, which would be silent rather than wrong', stray)
+    ok(bad == nil,
+       'every cue names a real set and a real sound -- a blank one plays '
+           .. 'nothing and nothing on screen says so', bad)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1483,25 +1503,22 @@ do
         return n
     end
 
-    ok(count(sfxTo(1), 'fuel.done') == 1,
-       'and reaching 100% plays the complete cue exactly once',
-       table.concat(sfxTo(1), ','))
-    ok(count(sfxTo(2), 'fuel.done') == 1,
-       'and the passenger hears that one too',
-       table.concat(sfxTo(2), ','))
-
-    -- ═══ AND HOLDING ON PAST FULL DOES NOT PLAY IT AGAIN ═══
+    -- ═══ AND REACHING FULL IS SILENT, 2026-09-08 ═══
     --
-    -- It is an EDGE. A player who keeps holding for the bodywork sends four
-    -- messages a second, and every one of them starts from a full tank.
-    clearSent()
-    for _ = 1, 6 do
-        fakeTime = fakeTime + BR.Config.Fuel.pumpSendMs
-        fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
-    end
+    -- This pair of assertions used to demand one `fuel.done` for the driver and
+    -- one for the passenger. The owner removed that cue after two clips he
+    -- disliked, so the edge fires and sends nothing. The check is inverted
+    -- rather than deleted: what would break the silence is somebody refilling
+    -- the empty branch in server/fuel.lua with a desk pick.
     ok(count(sfxTo(1), 'fuel.done') == 0,
-       'and holding on past full does not chime again',
+       'and reaching 100% is silent -- the owner rejected both completion clips',
        table.concat(sfxTo(1), ','))
+    ok(count(sfxTo(2), 'fuel.done') == 0,
+       'for the passenger too', table.concat(sfxTo(2), ','))
+
+    -- THE HOLD-PAST-FULL CASE IS COVERED BY THE SAME SILENCE and no longer
+    -- needs its own pass: it existed to prove the completion chime was an EDGE
+    -- rather than a state, and there is no chime to double.
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1927,40 +1944,36 @@ describe('pump.cues.completion')
 -- fields, and collide with nothing.
 do
     local cues = BR.Config.Audio and BR.Config.Audio.cues or {}
-    local done  = cues['fuel.done'] or {}
     local start = cues['fuel.start'] or {}
 
-    ok(done.name ~= 'CHALLENGE_UNLOCKED',
-       'the sound the owner heard as a warning is gone', tostring(done.name))
+    -- ═══ THERE IS NO COMPLETION CUE AT ALL AS OF 2026-09-08 ═══
+    --
+    -- "also remove fuel.done" -- owner. Two clips were tried and both were
+    -- wrong by ear: CHALLENGE_UNLOCKED read as a warning (his 2026-08-22 note
+    -- above), and the replacement he auditioned did not survive either. Rather
+    -- than leave a third desk pick in the table, the cue is gone and
+    -- server/fuel.lua's send with it.
+    --
+    -- WHAT THIS PINS IS THE ABSENCE, because the failure mode is a later reader
+    -- finding the once-per-fill edge in server/fuel.lua, seeing an empty
+    -- branch, and helpfully filling it back in with a sound nobody heard.
+    ok(cues['fuel.done'] == nil,
+       'there is no completion cue -- the owner rejected both clips, so this '
+           .. 'stays silent until he picks one by ear',
+       tostring(cues['fuel.done'] and cues['fuel.done'].name))
 
-    -- ═══ THIS ASSERTION USED TO READ `done.set == 'HUD_AWARDS'` AND WAS
-    --     DELIBERATELY LOOSENED, 2026-08-22 ═══
-    --
-    -- It was right while the fix was "change the NAME inside the one set the
-    -- owner had demonstrably heard". It became wrong the moment the owner was
-    -- handed /brsfx and told to go and choose: the third pick is theirs, it may
-    -- legitimately land in HUD_MINI_GAME_SOUNDSET or anywhere else, and a test
-    -- that reddened the build for the owner exercising the tool built for them
-    -- would simply be deleted by whoever landed their choice. A gate people
-    -- route around protects nothing.
-    --
-    -- WHAT REPLACES IT IS THE PROPERTY THAT ACTUALLY MATTERED ALL ALONG, and it
-    -- is stronger in the direction that has cost real rounds: the set must be
-    -- one of the 84 in BR.Config.Audio.catalogue. Those are the sets GTA's own
-    -- scripts call, with every DLC_*/dlc_* bank filtered out -- which is exactly
-    -- the check that would have rejected Pit_Stop_Complete (a real name, in a
-    -- real set, in a script audio bank this gamemode never requests, and
-    -- therefore silent). A wrong SET is the failure mode here; a name inside a
-    -- loaded set is at worst a sound somebody dislikes.
-    local inCatalogue = false
-    for _, entry in ipairs(BR.Config.Audio.catalogue or {}) do
-        if entry.set == done.set then inCatalogue = true end
+    local fh0 = io.open(ROOT .. 'br_core/server/fuel.lua', 'r')
+    if fh0 then
+        local fuel = fh0:read('a'); fh0:close()
+        ok(fuel:find("sfxToOccupants(netId, e.matchId, 'fuel.done')", 1, true) == nil,
+           'and the server does not send one -- a send naming a missing cue is '
+               .. 'not silence, it is an unknown-cue warning per refuel')
+
+        -- AND THE EDGE SURVIVES, which is the part worth keeping: finding the
+        -- once-per-fill moment again is the hard half of this feature.
+        ok(fuel:find('if before < tank and rec.left >= tank then', 1, true) ~= nil,
+           'while the once-per-fill edge is still there for the day he does')
     end
-    ok(inCatalogue,
-       'and whatever it is, its SET is one GTA\'s own scripts play -- so the '
-           .. 'third pick can be any sound the owner likes, but not a DLC bank '
-           .. 'that would be silent',
-       tostring(done.set))
 
     -- THE START SOUND IS OWNER-CONFIRMED AND IS NOT TO BE TOUCHED.
     ok(start.set == 'HUD_FRONTEND_DEFAULT_SOUNDSET' and start.name == 'SELECT',
@@ -1983,7 +1996,7 @@ do
         ok(sfx:find('local verb = args[1]', 1, true) ~= nil,
            '/brsfx still reads its first word from the command line')
         ok(sfx:find('BR.Config.Audio.cues[verb]', 1, true) ~= nil,
-           "/brsfx still resolves any cue by key, so `/brsfx fuel.done` "
+           "/brsfx still resolves any cue by key, so `/brsfx fuel.start` "
                .. 'auditions whatever this table says')
 
         -- ═══ AND THE OWNER CAN NOW CHANGE IT WITHOUT A CODE EDIT ═══

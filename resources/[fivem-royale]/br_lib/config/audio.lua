@@ -73,8 +73,9 @@ BR.Config.Audio = {
     -- limit, which is the right default -- see the note under `cues` about
     -- storm.move, where a doubled cue is a SERVER bug worth hearing.
     minInterval = {
-        ['hit']              = 60,
-        ['hit.crit']         = 60,
+        -- `hit` and `hit.crit` had floors here and no longer exist as cues
+        -- (2026-09-08: the clips were wrong). A floor for a cue that isn't
+        -- there is dead weight, so they went with them.
         ['ui.hover']         = 40,
         -- A refusal the player can re-trigger by leaning on a key, and the
         -- server sends one toast per attempt. Longer than the cue, shorter
@@ -106,8 +107,21 @@ BR.Config.Audio = {
         -- where PlaySoundFrontend earns its place: the engine mixes it, so it
         -- ducks against gunfire. A hitmarker fired from CEF sits on top of a
         -- firefight at full volume forever.
-        ['hit']      = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'CHECKPOINT_NORMAL' },
-        ['hit.crit'] = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'CHECKPOINT_PERFECT' },
+        -- ═══ THERE IS NO HITMARKER SOUND, AND THAT IS THE OWNER'S CALL ═══
+        --
+        -- 2026-09-08: "do not wire in any sound at all for hit or hit.crit -
+        -- those are wrong sound clips."
+        --
+        -- Both keys are GONE rather than blanked. `BR.Sfx.play` treats an
+        -- unknown cue as a no-op and says so once in dev, which is exactly the
+        -- behaviour wanted here -- whereas an entry with an empty set would be a
+        -- cue that exists, resolves, and plays nothing, which is the failure
+        -- mode this file's own gate now checks for.
+        --
+        -- THE RATE LIMITS ABOVE ARE KEPT. They cost nothing while the cues are
+        -- absent and they carry the shotgun-pellet reasoning, which is about the
+        -- CALL SITE rather than about which sound it plays -- so whoever picks a
+        -- hitmarker sound later inherits the number and the argument for it.
 
         -- ═══ THE PUMP, AND WHY THESE TWO ARE NATIVE WHEN THE RULE ABOVE SAYS
         --     INTERFACE AUDIO IS NOT ═══
@@ -224,7 +238,13 @@ BR.Config.Audio = {
         -- PlaySoundFromEntity, so the cue is positioned on the car and mixed by
         -- the engine for every occupant.
         ['fuel.start'] = { set = 'HUD_FRONTEND_DEFAULT_SOUNDSET', name = 'SELECT' },
-        ['fuel.done']  = { set = 'HUD_AWARDS', name = 'PROPERTY_PURCHASE' },
+        -- `fuel.done` IS DELIBERATELY ABSENT (owner, 2026-09-08: "also remove
+        -- fuel.done"). Three sounds were tried for it -- CHALLENGE_UNLOCKED
+        -- ("more like a warning"), PROPERTY_PURCHASE, and his own
+        -- DLC_SECURITY_TAIL_AND_DESTROY_Sounds/Destroy -- and none survived. It
+        -- is better with nothing than with a fourth guess: the pump already
+        -- reports itself on screen, and `fuel.start` marks the event that
+        -- actually needs marking.
 
         -- ═══ THE WALL STARTS MOVING ═══
         --
@@ -327,10 +347,17 @@ BR.Config.Audio = {
         -- catalogue or not, and prints `[silent?]` when the engine says the
         -- sound was over before it could be audible.
         --
-        -- DO NOT UNCOMMENT ONE OF THESE WITHOUT MOVING BOTH GATES. It will not
-        -- fail quietly -- the suites go red -- but the temptation will be to
-        -- loosen the gate rather than answer the question, and the question is
-        -- the valuable part.
+        -- ═══ AND THE OWNER ANSWERED IT: LAND THEM (2026-09-08) ═══
+        --
+        -- "land the DLC cues and rewire MATE_CUE". So both gates moved and the
+        -- pairs below are live. The belief above was never measured and is now
+        -- simply not being acted on -- which is the right call either way, since
+        -- he is the one who auditioned them and the failure mode if he did not
+        -- is silence rather than a wrong sound.
+        --
+        -- ⚠ IF ONE OF THESE IS SILENT IN GAME, THIS PARAGRAPH IS WHY. The bank
+        -- may genuinely need requesting; `/brsfx play <SET> <NAME>` prints
+        -- `[silent?]` and settles it per pair without touching this file.
 
         -- ───────────────────────────────────────────────── death and squad ---
 
@@ -435,8 +462,10 @@ BR.Config.Audio = {
         -- whether the bank is really silent.
 
         -- His: "Damage hit sound" -- his replacement for the `hit` cue above.
-        --   ['hit'] = { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds',
-        --               name = 'Remote_Perspective_Fire' },
+        -- NOT LANDED, AND NOT COMMENTED-OUT-FOR-LATER EITHER. Owner, 2026-09-08:
+        -- "those are wrong sound clips. no clue where you got them from." They
+        -- came from his own list of 2026-08-18, which is worth recording only so
+        -- nobody re-derives them from that comment and lands them again.
         --   /brsfx play DLC_H3_Drone_Tranq_Weapon_Sounds Remote_Perspective_Fire
 
         -- His: "Damage killed sound".
@@ -450,13 +479,13 @@ BR.Config.Audio = {
         -- HitFeedback.tsx:54), which is what they actually hear. So this is a
         -- dead call plus a warning, not a missing sound -- but it is the reason
         -- this key cannot simply be left blank and forgotten.
-        --   ['elim'] = { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds',
-        --                name = 'Pilot_Perspective_Fire' },
+        ['elim'] = { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds',
+                     name = 'Pilot_Perspective_Fire' },
         --   /brsfx play DLC_H3_Drone_Tranq_Weapon_Sounds Pilot_Perspective_Fire
 
         -- His: "Squad mate revived" -- MATE_CUE's `up` phase.
-        --   ['squad.revived'] = { set = 'DLC_AW_Frontend_Sounds',
-        --                         name = 'Checkpoint_Finish' },
+        ['squad.revived'] = { set = 'DLC_AW_Frontend_Sounds',
+                              name = 'Checkpoint_Finish' },
         --   /brsfx play DLC_AW_Frontend_Sounds Checkpoint_Finish
 
         -- His: "Fuel finished" -- and this one is THE THIRD FUEL PICK, the one
@@ -465,31 +494,36 @@ BR.Config.Audio = {
         -- warning", then PROPERTY_PURCHASE). `fuel.done` above is still the
         -- second of those, i.e. still a sound he has already rejected. Landing
         -- this line is the single highest-value item in this block.
-        --   ['fuel.done'] = { set = 'DLC_SECURITY_TAIL_AND_DESTROY_Sounds',
-        --                     name = 'Destroy' },
+        -- NOT LANDED. This was his third fuel pick and he has since removed the
+        -- cue entirely (2026-09-08); see `fuel.start` above for the three that
+        -- were tried.
         --   /brsfx play DLC_SECURITY_TAIL_AND_DESTROY_Sounds Destroy
 
-        -- His: "Gas pump started (possible)". The "(possible)" is his, and it
-        -- reads as a candidate rather than a decision -- which matters here
-        -- more than anywhere else in this list, because `fuel.start` above is
-        -- the one cue in this file marked owner-heard-and-kept and pinned by
-        -- tools/test_fuel.lua. It is not changed on a maybe.
+        -- His: "Gas pump started (possible)".
+        --
+        -- ⚠ THE ONE LINE IN THIS BLOCK NOT LANDED WITH THE REST, and it is the
+        -- only one where landing it would REPLACE something rather than add it.
+        -- `fuel.start` above is the single cue in this file marked
+        -- owner-heard-and-kept, chosen by ear after two were rejected, and
+        -- pinned by tools/test_fuel.lua. His "(possible)" is a candidate, and
+        -- swapping a heard-and-kept cue for a maybe is the one move that can
+        -- only lose. Uncomment it when he says he has heard this one too.
         --   ['fuel.start'] = { set = 'DLC_IO_Warehouse_Mod_Garage_Sounds',
         --                      name = 'Remove_Tracker' },
         --   /brsfx play DLC_IO_Warehouse_Mod_Garage_Sounds Remove_Tracker
 
         -- His: "Circle finished moving (possible)". The SHRINKING->HOLDING
         -- edge -- the opposite of the one `storm.move` rides.
-        --   ['storm.stop'] = { set = 'dlc_vw_koth_Sounds',
-        --                      name = 'Zone_Contested' },
+        ['storm.stop'] = { set = 'dlc_vw_koth_Sounds',
+                           name = 'Zone_Contested' },
         --   /brsfx play dlc_vw_koth_Sounds Zone_Contested
 
         -- His: "When they go out of the storm circle" / "Going back into the
         -- storm circle". A pair, and they only work as a pair.
-        --   ['storm.out'] = { set = 'DLC_Lowrider_Relay_Race_Sounds',
-        --                     name = 'Out_Of_Area' },
-        --   ['storm.in']  = { set = 'DLC_Lowrider_Relay_Race_Sounds',
-        --                     name = 'Enter_Area' },
+        ['storm.out'] = { set = 'DLC_Lowrider_Relay_Race_Sounds',
+                          name = 'Out_Of_Area' },
+        ['storm.in']  = { set = 'DLC_Lowrider_Relay_Race_Sounds',
+                          name = 'Enter_Area' },
         --   /brsfx play DLC_Lowrider_Relay_Race_Sounds Out_Of_Area
         --   /brsfx play DLC_Lowrider_Relay_Race_Sounds Enter_Area
 
@@ -502,10 +536,10 @@ BR.Config.Audio = {
         -- Landing his pair means deleting that install as well as writing a
         -- line here -- a static entry alone would be silently overwritten,
         -- which is the worst of both.
-        --   ['shop.buy']    = { set = 'dlc_ch_heist_finale_security_alarms_sounds',
-        --                       name = 'Metal_Detector_Online' },
-        --   ['shop.denied'] = { set = 'dlc_ch_heist_finale_security_alarms_sounds',
-        --                       name = 'Metal_Detector_Offline' },
+        ['shop.buy']    = { set = 'dlc_ch_heist_finale_security_alarms_sounds',
+                            name = 'Metal_Detector_Online' },
+        ['shop.denied'] = { set = 'dlc_ch_heist_finale_security_alarms_sounds',
+                            name = 'Metal_Detector_Offline' },
         --   /brsfx play dlc_ch_heist_finale_security_alarms_sounds Metal_Detector_Online
         --   /brsfx play dlc_ch_heist_finale_security_alarms_sounds Metal_Detector_Offline
 
@@ -613,8 +647,10 @@ BR.Config.Audio = {
 --
 -- `pairs()` order is unspecified in Lua and varies run to run. A browsing
 -- tool whose list reshuffles between two invocations is one the owner cannot
--- work down, so the order is fixed here in the source: the three heard sets
--- first, then the rest alphabetically, names sorted within each set.
+-- work down, so the order is fixed here in the source: the HEARD sets first --
+-- the three this codebase has played, then the five DLC banks the owner
+-- auditioned by hand -- and then the rest alphabetically, names sorted within
+-- each set.
 BR.Config.Audio.catalogue = {
         { set = 'HUD_FRONTEND_DEFAULT_SOUNDSET',   -- heard from this codebase
           names = { 'ATM_WINDOW', 'BACK', 'Back', 'CANCEL', 'CONTINUE',
@@ -638,6 +674,38 @@ BR.Config.Audio.catalogue = {
                     'CHECKPOINT_NORMAL', 'CHECKPOINT_PERFECT',
                     'CHECKPOINT_UNDER_THE_BRIDGE', 'FIRST_PLACE', 'GO',
                     'GO_NON_RACE', 'LOOSE_MATCH', 'MEDAL_UP', 'TIMER_STOP', } },
+        -- ═══════════════════════════════════════════════════════════════════
+        -- DLC SETS, ADDED BACK ONE PAIR AT A TIME, ON EVIDENCE
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- The header above says every DLC_*/dlc_* set was filtered out of the
+        -- gist, and gives the reason: a DLC script audio bank this gamemode
+        -- never requests is SILENT, and silent is indistinguishable from wrong.
+        -- That filter is a HEURISTIC standing in for evidence nobody had.
+        --
+        -- THESE PAIRS HAVE THE EVIDENCE. The owner auditioned them with /brsfx
+        -- on a running client and came back with a list of what each one should
+        -- be used for (2026-09-08, "land the DLC cues"). Hearing a sound on
+        -- this build is the strongest evidence this file recognises -- it is
+        -- what `heard from this codebase` means on the three sets at the top --
+        -- and it outranks a filter that exists precisely because nobody had
+        -- listened.
+        --
+        -- NOTHING ELSE FROM THESE BANKS IS LISTED, and that is the point: the
+        -- filter still stands for every DLC pair nobody has played. Each line
+        -- here is one sound one person heard. Do not widen a set to "the rest
+        -- of its names" from a dump -- that is how Pit_Stop_Complete happened.
+        { set = 'DLC_AW_Frontend_Sounds',           -- heard by the owner
+          names = { 'Checkpoint_Finish', } },
+        { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds', -- heard by the owner
+          names = { 'Pilot_Perspective_Fire', } },
+        { set = 'DLC_Lowrider_Relay_Race_Sounds',   -- heard by the owner
+          names = { 'Enter_Area', 'Out_Of_Area', } },
+        { set = 'dlc_ch_heist_finale_security_alarms_sounds', -- heard by the owner
+          names = { 'Metal_Detector_Offline', 'Metal_Detector_Online', } },
+        { set = 'dlc_vw_koth_Sounds',               -- heard by the owner
+          names = { 'Zone_Contested', } },
+
         { set = 'Arena_Vehicle_Mod_Shop_Sounds',
           names = { 'supermod_consumer', 'supermod_scifi',
                     'supermod_wasteland', } },
@@ -850,6 +918,7 @@ BR.Config.Audio.catalogue = {
                     'TextHit', } },
         { set = 'WEB_NAVIGATION_SOUNDS_PHONE',
           names = { 'CLICK_BACK', 'Click_Fail', 'Click_Special', } },
+
 }
 
 --- Lowercased plain-text containment. `find` with the fourth argument true, so
