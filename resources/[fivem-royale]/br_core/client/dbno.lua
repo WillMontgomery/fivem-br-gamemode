@@ -2038,18 +2038,30 @@ end)
 
 -- WHICH CUE A SQUADMATE'S PHASE CHANGE PLAYS.
 --
--- Named here rather than at the call site so the two strings that have to match
--- something in ui-src/src/audio/cues.ts sit on two adjacent lines, where a
--- rename can see both. They are NOT the subject's own cues: `hit.crit` (below,
--- native, mixed against gunfire) is what the player who went down hears, and
--- these are what everybody else hears -- which is the whole of the owner's
--- "they have their own sounds for this phase".
+-- Named here rather than at the call site so the three strings sit on three
+-- adjacent lines, where a rename can see all of them. They are NOT the
+-- subject's own cues: these are what everybody ELSE hears, which is the whole
+-- of the owner's "they have their own sounds for this phase".
 --
--- THREE PHASES, THREE SOUNDS, and the third is the only good one (owner,
--- 2026-08-18: "when a player is revived all squad mates should hear a success
--- sound"). It rides the same envelope for the same reason the other two do --
--- the SERVER decides the audience, because it is the only party that knows the
--- squad and knows not to address the subject.
+-- THREE PHASES, THREE SOUNDS (owner, 2026-08-18: "when a player is revived all
+-- squad mates should hear a success sound"). They ride the same envelope for
+-- the same reason: the SERVER decides the audience, because it is the only
+-- party that knows the squad and knows not to address the subject.
+--
+-- ═══ TWO OF THEM ARE NATIVE NOW, AND THE THIRD IS WAITING ON A CLIP ═══
+--
+-- "If I gave you any new sounds for #24, please use all of them including
+-- MATE_CUE being rewired to PlaySoundFrontend" -- owner, 2026-09-08. He named a
+-- set/name pair for the revive (`squad.revived`), `squad.out` already had one,
+-- and `squad.down` has none: he has not picked a sound for a squadmate going
+-- down, so there is nothing to play natively.
+--
+-- SO THE TIER IS DECIDED BY THE CUE TABLE RATHER THAN WRITTEN DOWN HERE. A cue
+-- config/audio.lua knows about goes to PlaySoundFrontend; one it does not falls
+-- through to the browser, which is where all three used to live. That is not a
+-- hedge -- it is what makes `squad.down` promote itself the day he picks a pair
+-- for it, with no line of this file changing, and it is what stops the two
+-- tiers ever playing the same cue at once.
 local MATE_CUE = {
     down = 'squad.down',
     out  = 'squad.out',
@@ -2068,18 +2080,27 @@ AddEventHandler(BR.Net.DBNO_SET, function(d)
     -- and returned from before a single field of `mine` is touched: falling
     -- through would read `d.downed` as nil and quietly stand a downed player up.
     --
-    -- The interface plays it. This side does not reach for BR.Sfx, because
-    -- config/audio.lua is deliberately COMBAT ONLY -- native audio earns its
-    -- place by ducking against gunfire, and a squad status cue is interface
-    -- audio in the same sense the elimination banner's is.
+    -- ═══ NATIVE WHERE THERE IS A PAIR, THE BROWSER WHERE THERE IS NOT ═══
+    --
+    -- The rule used to be that this side never reached for BR.Sfx at all, on
+    -- the grounds that config/audio.lua is COMBAT ONLY -- native audio earns
+    -- its place by ducking against gunfire, and a squad status cue is interface
+    -- audio in the same sense the elimination banner's is. The owner overruled
+    -- that on 2026-09-08 by handing over auditioned GTA pairs for these events
+    -- and asking for MATE_CUE to be rewired, so the cue table decides now. See
+    -- the note on MATE_CUE.
     if type(d.mate) == 'table' then
         local cue = MATE_CUE[d.mate.phase]
         if cue then
-            TriggerEvent('br:ui:sendLocal', 'squadcue', {
-                cue  = cue,
-                src  = d.mate.src,
-                name = d.mate.name,
-            })
+            if BR.Config.Audio and BR.Config.Audio.cues[cue] then
+                BR.Sfx.play(cue)
+            else
+                TriggerEvent('br:ui:sendLocal', 'squadcue', {
+                    cue  = cue,
+                    src  = d.mate.src,
+                    name = d.mate.name,
+                })
+            end
         end
         return
     end
@@ -2092,7 +2113,15 @@ AddEventHandler(BR.Net.DBNO_SET, function(d)
 
     if mine.downed and not was then
         enterDowned()
-        BR.Sfx.play('hit.crit')
+        -- ═══ AND THE PLAYER GOING DOWN HEARS NOTHING NATIVE ═══
+        --
+        -- This was BR.Sfx.play('hit.crit'). The owner deleted that cue on
+        -- 2026-09-08 ("do not wire in any sound at all for hit or hit.crit --
+        -- those are wrong sound clips"), and a call naming a cue that is not in
+        -- the table is not silence: it is an unknown-cue warning on every knock.
+        -- The screen still tells them -- enterDowned() above is the whole downed
+        -- interface -- so this is one channel quiet, not the event unreported.
+        -- If he picks a clip for it, add the cue and play it on this line.
     elseif was and not mine.downed then
         leaveDowned()
         -- Picked up, or finished. The two look identical from here except for

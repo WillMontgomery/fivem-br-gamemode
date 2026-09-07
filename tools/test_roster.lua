@@ -3980,9 +3980,78 @@ do
     sent = {}
     fakeTime = rec4.tStart + rec4.tWait + rec4.tShrink + 10
     BR.Sched.step(fakeTime)
-    ok(#eventsOf(BR.Net.SFX_CUE) == 2,
+    -- BOTH CUES, AND THAT IS THE HONEST ACCOUNT. The wall departed and the
+    -- wall arrived; the scheduler simply saw neither happen. storm.move and
+    -- storm.stop carry separate latches for exactly this reading, so the stall
+    -- pays out the departure it owes and the arrival it owes rather than
+    -- collapsing a whole sweep into one sound.
+    local byCue = {}
+    for _, e in ipairs(eventsOf(BR.Net.SFX_CUE)) do
+        local c = e.args and e.args[1] and e.args[1].c or '?'
+        byCue[c] = (byCue[c] or 0) + 1
+    end
+    ok(byCue['storm.move'] == 2 and byCue['storm.stop'] == 2,
        'a stall that skips the entire sweep still cues it, late, rather than '
-           .. 'losing it', ('%d'):format(#eventsOf(BR.Net.SFX_CUE)))
+           .. 'losing it -- both ends of it, once each, to both players',
+       ('move %s / stop %s'):format(tostring(byCue['storm.move']),
+                                    tostring(byCue['storm.stop'])))
+end
+
+describe('match.storm.stopcue')
+do
+    -- ═══ THE WALL COMING TO REST IS ITS OWN EVENT ═══
+    --
+    --   "Circle finished moving (possible)" -- owner, 2026-09-08, handing over
+    --   a DLC pair for it alongside the ones for leaving and re-entering the
+    --   circle.
+    --
+    -- The mirror image of match.storm.movecue above, and it is worth its own
+    -- block for the reason the two latches are separate: this one must be
+    -- SILENT for the entire sweep and speak once at the end, which is the
+    -- opposite failure from the one that block guards.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+    local rec = mstorm()
+    ok(rec ~= nil, 'a match with a wall')
+
+    local function only(cue)
+        local n = 0
+        for _, e in ipairs(eventsOf(BR.Net.SFX_CUE)) do
+            if e.args and e.args[1] and e.args[1].c == cue then n = n + 1 end
+        end
+        return n
+    end
+
+    -- MID-SWEEP: the wall is moving, so the departure has been cued and the
+    -- arrival has not.
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + math.floor(rec.tShrink / 2)
+    BR.Sched.step(fakeTime)
+    ok(only('storm.move') == 2 and only('storm.stop') == 0,
+       'half way through the sweep the wall has departed and not arrived',
+       ('move %d / stop %d'):format(only('storm.move'), only('storm.stop')))
+
+    -- AND AT THE END, ONCE.
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + rec.tShrink + 10
+    BR.Sched.step(fakeTime)
+    ok(only('storm.stop') == 2,
+       'and the finish cues both players exactly once',
+       ('%d'):format(only('storm.stop')))
+
+    -- ...AND NOT AGAIN ON THE NEXT TICK. The advance into the following phase
+    -- re-arms the latch, so this is asserted against a FRESH record rather than
+    -- by ticking the same one twice: what must not happen is the SAME finish
+    -- being announced repeatedly while the state sits at FINISHED.
+    sent = {}
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(only('storm.stop') == 0,
+       'and a wall that is still finished does not keep announcing it',
+       ('%d'):format(only('storm.stop')))
 end
 
 describe('match.storm.cleanup')

@@ -5835,7 +5835,12 @@ local function newReviver(mySrc, mateSrc, peds)
         [mySrc]   = { src = mySrc, name = 'P' .. mySrc, squadId = 'sq1',
                       state = env.BR.PlayerState.ALIVE },
     }
-    env.BR.Sfx = { play = function() end }
+    -- RECORDED RATHER THAN SWALLOWED. client/dbno.lua sends a squad cue down
+    -- one of two tiers -- native when config/audio.lua has the pair, the
+    -- browser when it does not -- so a suite that only watches the interface
+    -- envelopes cannot tell "nothing happened" from "it went native".
+    C.sfx = {}
+    env.BR.Sfx = { play = function(cue) C.sfx[#C.sfx + 1] = cue end }
     env.BR.Dui = { page = function(n) return { name = n } end, send = function() end,
                    drawWorld = function() end, drawScreen = function() end,
                    drawOnEntity = function() end, ready = function() return true end }
@@ -8931,24 +8936,43 @@ do
         'a mate going down reaches the interface as a cue',
         c and tostring(c.cue) or 'nothing was pushed')
 
+    -- ═══ AND THE OTHER TWO GO NATIVE, BECAUSE THE CUE TABLE HAS THEM ═══
+    --
+    -- The tier is not written down in client/dbno.lua; it is decided per cue by
+    -- whether config/audio.lua carries a set/name pair (owner, 2026-09-08 --
+    -- "MATE_CUE being rewired to PlaySoundFrontend"). `squad.down` has no pair
+    -- and stays on the browser; these two have one and do not. Both halves are
+    -- asserted, in both directions, because the failure that costs a round is a
+    -- cue that goes down BOTH tiers and plays twice.
     env.TriggerEvent(env.BR.Net.DBNO_SET,
         { mate = { src = 1, name = 'P1', phase = 'out' } })
-    c = lastUi('squadcue')
-    ok(c ~= nil and c.cue == 'squad.out',
+    ok(CLI.sfx[#CLI.sfx] == 'squad.out',
         'and going out is a DIFFERENT cue -- two events, two sounds',
-        c and tostring(c.cue) or 'nothing was pushed')
+        tostring(CLI.sfx[#CLI.sfx]))
+    ok(lastUi('squadcue').cue == 'squad.down',
+        'and it did NOT also go to the browser -- the last envelope there is '
+            .. 'still the down cue',
+        tostring(lastUi('squadcue').cue))
 
     -- THE CUE NAME IS THE DELIVERABLE HERE, and it is asserted rather than
-    -- described because it is a string that has to match one in
-    -- ui-src/src/audio/cues.ts. Nothing in Lua can check the far side, so the
-    -- least this side can do is fail loudly if the name it sends ever moves.
+    -- described because it is a string that has to match a key in
+    -- config/audio.lua. Nothing else checks that, so the least this side can do
+    -- is fail loudly if the name it plays ever moves.
     env.TriggerEvent(env.BR.Net.DBNO_SET,
         { mate = { src = 1, name = 'P1', phase = 'up' } })
-    c = lastUi('squadcue')
-    ok(c ~= nil and c.cue == 'squad.revived',
+    ok(CLI.sfx[#CLI.sfx] == 'squad.revived',
         'and being picked up is a THIRD cue -- squad.revived, the success '
-        .. 'sound the owner asked for',
-        c and tostring(c.cue) or 'nothing was pushed')
+        .. 'sound the owner asked for', tostring(CLI.sfx[#CLI.sfx]))
+    ok(env.BR.Config.Audio.cues['squad.out'] ~= nil
+       and env.BR.Config.Audio.cues['squad.revived'] ~= nil
+       and env.BR.Config.Audio.cues['squad.down'] == nil,
+        'which is exactly the split the cue table describes -- out and revived '
+            .. 'have pairs, down does not, and the code reads the table rather '
+            .. 'than repeating it')
+
+    -- THE BROWSER ENVELOPE STILL CARRIES WHO IT WAS, for the one cue that still
+    -- uses it. The interface says the name.
+    c = lastUi('squadcue')
     ok(c ~= nil and c.src == 1 and c.name == 'P1',
         'carrying who it was, so the interface can say the name',
         c and tostring(c.name) or nil)
@@ -8961,12 +8985,15 @@ do
         'and a cue about somebody else never writes our own downed state',
         'the DBNO envelope was rewritten by a message about a mate')
 
-    -- An unknown phase is dropped rather than guessed at.
+    -- An unknown phase is dropped rather than guessed at -- on BOTH tiers, or
+    -- the branch that chooses between them becomes a second place to get this
+    -- wrong.
+    local uiBefore, sfxBefore = #CLI.ui, #CLI.sfx
     env.TriggerEvent(env.BR.Net.DBNO_SET,
         { mate = { src = 1, name = 'P1', phase = 'sideways' } })
-    local n = 0
-    for _, e in ipairs(CLI.ui) do if e.kind == 'squadcue' then n = n + 1 end end
-    ok(n == 3, 'an unrecognised phase plays nothing', ('%d cues'):format(n))
+    ok(#CLI.ui == uiBefore and #CLI.sfx == sfxBefore,
+        'an unrecognised phase plays nothing',
+        ('%d ui / %d native'):format(#CLI.ui - uiBefore, #CLI.sfx - sfxBefore))
 end
 
 -- ==========================================================================

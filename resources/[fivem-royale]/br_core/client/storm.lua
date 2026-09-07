@@ -274,6 +274,23 @@ end
 -- vignette (weather.blendSec): fxLevel walks toward its target each tick
 -- and drives the timecycle STRENGTH, so entering the storm darkens the
 -- world over five seconds instead of snapping (user call, 2026-08-04).
+--- Was this player caught in the wall last tick? nil = not established yet.
+---
+--- ═══ THE CUE RIDES `caught`, NOT `edge > 0`, AND THAT IS THE WHOLE DESIGN ═══
+---
+--- `caught` is the condition the screen grade and the sky already use: outside
+--- AND the storm is actually doing damage right now. Cueing off the raw
+--- distance instead would fire for every player at once the moment phase 1's
+--- free-loot hold begins -- everybody is outside a circle that is not hurting
+--- anybody yet -- which is a chorus of alarms about nothing. Riding the same
+--- boolean means the sound, the vignette and the thunder are one event.
+---
+--- nil RATHER THAN false IS LOAD-BEARING. A player who spawns already outside
+--- must not hear the entry cue for a boundary they never crossed, and neither
+--- must one whose first tick lands mid-storm after a rejoin. The first tick
+--- only ESTABLISHES the value; the second is the first that can be an edge.
+local caughtWas = nil
+
 local fxLevel, fxTarget = 0.0, 0.0
 local fxApplied, postOn  = false, false
 local lastFxAt = 0
@@ -421,6 +438,10 @@ local function teardown()
     -- The frame job reads `solved` and nothing else. Leaving it set would
     -- keep it computing distances to a circle that no longer exists.
     solved, lastEdgeShown = nil, nil
+    -- AND THE CUE LATCH GOES BACK TO "NOT ESTABLISHED". Left as `true`, the
+    -- first tick of the NEXT match would read as a crossing back inside and
+    -- play the all-clear over the bus.
+    caughtWas = nil
     -- Between matches the grade SNAPS off -- there is nothing to fade
     -- against once the world resets around a teleport home.
     fxTarget, fxLevel = 0.0, 0.0
@@ -512,6 +533,28 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local caught = edge > 0 and dps > 0 and affected
     fxSet(caught)
     fxStep()
+
+    -- ═══ CROSSING THE WALL SAYS SO ═══
+    --
+    --   "When they go out of the storm circle" / "Going back into the storm
+    --    circle" -- owner, 2026-09-08, naming a pair of DLC sounds for it.
+    --
+    -- A SPECTATOR HEARS NEITHER, which is where this parts company with the
+    -- grade and the sky above. Those follow the shot deliberately -- they are
+    -- world rendering, and what they paint is what somebody standing at the
+    -- camera would see. A cue is not world rendering: it is this interface
+    -- telling THIS player something about THEIR position, and firing it for a
+    -- boundary somebody else crossed is just a confusing noise. So the latch is
+    -- reset rather than updated while spectating, and the first tick back in a
+    -- body establishes a fresh baseline instead of reporting an edge.
+    if from == 'spectate' then
+        caughtWas = nil
+    else
+        if caughtWas ~= nil and caught ~= caughtWas then
+            BR.Sfx.play(caught and 'storm.out' or 'storm.in')
+        end
+        caughtWas = caught
+    end
 
     -- The sky agrees with the vignette: thunder when caught outside,
     -- clearing on the way back in. Same condition as the screen FX so the
