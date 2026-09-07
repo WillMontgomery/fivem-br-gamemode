@@ -182,6 +182,20 @@ export type Step = {
    */
   place?: 'half' | 'quarter'
   /**
+   * Where to put the camera while this card is up, and nowhere is the default.
+   *
+   * Owner, 2026-09-07, on the shop card: "is it possible to make a smooth
+   * scripted camera transition to 4498.79, -4503.22, 5.45 heading 14.6 while the
+   * card is shown? Then reverse the camera move back to the ped when the card is
+   * hidden." The shop is a car parked somewhere on the pad, and a card
+   * describing it while the player looks at a crate is a card about nothing.
+   *
+   * THE PLACE IS AUTHORED HERE AND THE MECHANICS ARE IN LUA. This is the file
+   * the owner edits; br_core/client/tutorial.lua owns the interpolation, the
+   * freeze and every path that has to put the camera back.
+   */
+  cam?: { x: number; y: number; z: number; heading: number }
+  /**
    * For `advance: 'dismiss'` -- what the last button says, when "Dismiss" is
    * the wrong word for it.
    *

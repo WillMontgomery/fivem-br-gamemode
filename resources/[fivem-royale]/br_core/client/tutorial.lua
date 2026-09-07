@@ -166,6 +166,95 @@ local crates = 0
 --- How many map waypoints they have dropped during the run. See the handler.
 local waypoints = 0
 
+-- ---------------------------------------------------------------------------
+-- The scripted look at the shop
+-- ---------------------------------------------------------------------------
+
+--- The camera a card can borrow, or nil.
+---
+--- ═══ ONE CARD ASKS THE PLAYER TO LOOK AT SOMETHING ELSE ═══
+---
+--- Owner, 2026-09-07: "For step 16, is it possible to make a smooth scripted
+--- camera transition to 4498.79, -4503.22, 5.45 heading 14.6 while the card is
+--- shown? Then reverse the camera move back to the ped when the card is hidden.
+--- The transition should be 1.5s. The ped should remain frozen in place while
+--- the camera is in a scripted position."
+---
+--- The shop is a car parked somewhere on the pad. A card describing it while the
+--- player is looking at a crate is a card about nothing, and telling them to go
+--- and find it costs more attention than showing them.
+local cam = nil
+
+--- The gameplay camera, held until the move home is over.
+---
+--- SetCamActiveWithInterp BLENDS BETWEEN TWO LIVE CAMERAS, so destroying the one
+--- being interpolated away from ends the move -- the view snaps. client/
+--- lobbycam.lua learned that and its note is the reason this is a second local
+--- rather than a destroy at the top of camTo().
+local camOld = nil
+
+--- How long a move takes, both ways. The owner's number.
+local CAM_MS = 1500
+
+--- Point the camera at a place, from wherever it is now.
+---
+--- THE PED IS FROZEN FOR THE WHOLE OF IT, which is the owner's ask and is also
+--- the only honest answer: the camera is not where the player is, so their
+--- inputs would move a body they cannot see. Frozen and not SetPlayerControl --
+--- the same call client/attachtune.lua makes -- because a freeze is one flag
+--- with one owner, and a control lock left set by a crash is a player who
+--- cannot move and cannot fix it.
+--- @param x number|nil  nil goes back to the player
+local function camTo(x, y, z, heading)
+    local ped = PlayerPedId()
+
+    if x == nil then
+        if not cam then return end
+        -- HOME IS A GAMEPLAY CAMERA, not another scripted one: RenderScriptCams
+        -- with an interpolation blends the script camera back into the game's
+        -- own, which is what "reverse the camera move back to the ped" is.
+        RenderScriptCams(false, true, CAM_MS, true, true)
+        SetTimeout(CAM_MS + 50, function()
+            if cam and isTrue(DoesCamExist(cam)) then DestroyCam(cam, false) end
+            if camOld and isTrue(DoesCamExist(camOld)) then DestroyCam(camOld, false) end
+            cam, camOld = nil, nil
+        end)
+        FreezeEntityPosition(ped, false)
+        return
+    end
+
+    if cam then return end
+
+    -- FROM WHERE THE PLAYER IS LOOKING NOW, so the move reads as a move rather
+    -- than a cut. A camera created at the gameplay camera's own pose is the
+    -- source; the destination is the owner's coordinate.
+    local gp = GetGameplayCamCoord()
+    local gr = GetGameplayCamRot(2)
+    camOld = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
+                                 gp.x, gp.y, gp.z, gr.x, gr.y, gr.z, 60.0, false, 2)
+    cam = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
+                              x, y, z, 0.0, 0.0, heading or 0.0, 60.0, false, 2)
+
+    SetCamActive(camOld, true)
+    RenderScriptCams(true, false, 0, true, true)
+    FreezeEntityPosition(ped, true)
+    SetCamActiveWithInterp(cam, camOld, CAM_MS, 1, 1)
+end
+
+--- The page saying which card is up, and where it wants to be looking.
+---
+--- COORDINATES FROM THE STEP, MECHANICS FROM HERE. The owner authors the place
+--- in ui-src/src/tutorial/gameSteps.ts beside the card that needs it, which is
+--- where he can change it; this file owns the camera and never learns what a
+--- step is.
+AddEventHandler('br:tutorial:cam', function(c)
+    if type(c) == 'table' and tonumber(c.x) then
+        camTo(tonumber(c.x), tonumber(c.y), tonumber(c.z), tonumber(c.heading))
+    else
+        camTo(nil)
+    end
+end)
+
 --- Push the walkthrough's state to the page.
 local function publish()
     TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL,
@@ -253,6 +342,10 @@ function BR.Tutorial.game(on)
     if on then crates, waypoints = 0, 0 end
     -- THE HOLD RISES WITH THE CARDS AND CAN FALL BEFORE THEM. See `holding`.
     holding = on
+    -- AND A CAMERA NEVER OUTLIVES THE RUN. Every ending comes through here --
+    -- the last card, an abandoned run, /brtutorial off, leaving the pad -- so
+    -- this one line is what makes a frozen player impossible.
+    if not on then camTo(nil) end
     publish()
 
     -- ═══ NO FOCUS, AND THAT IS THE POINT ═══
@@ -321,6 +414,7 @@ BR.Loop.register(BR.Loop.TICK, 'tutorial.leave', function()
         return
     end
     print('[br_core] tutorial: left warmup -- the in-game walkthrough is over')
+    camTo(nil)
     BR.Tutorial.game(false)
 end)
 

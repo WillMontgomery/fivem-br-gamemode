@@ -633,6 +633,11 @@ RegisterNUICallback(BR.NuiCb.TUTORIAL_SET, function(data, cb)
     if data.game ~= nil then
         TriggerEvent('br:tutorial:game', data.game == true, data.done == true)
     end
+    -- WHERE THE CARD WANTS THE CAMERA. A table goes there; anything else --
+    -- including the absence of one -- comes home. See BR.Tutorial's camTo.
+    if data.cam ~= nil then
+        TriggerEvent('br:tutorial:cam', data.cam)
+    end
     -- THE OFFER, TURNED DOWN. Its own key because an abandoned RUN is not a
     -- decline -- the toggle deliberately survives that -- so the two cannot
     -- share a message. See BR.Net.TUTORIAL_DECLINE.

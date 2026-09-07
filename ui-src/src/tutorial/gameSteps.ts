@@ -340,6 +340,11 @@ export const GAME_STEPS: Step[] = [
     title: 'The shop',
     body: 'Items on the pad can be purchased with ~Volts~ and brought into the match with you. **One purchase is allowed per match and it is not refundable.**',
     place: 'quarter',
+    // THE OWNER'S FRAMING OF THE SHOP CAR, surveyed by him (2026-09-07). The
+    // camera flies here over 1.5s while this card is up and flies home when it
+    // goes; the ped is frozen for the whole of it, because the player cannot see
+    // the body their inputs would be moving.
+    cam: { x: 4498.79, y: -4503.22, z: 5.45, heading: 14.6 },
     advance: 'next',
   },
   {
