@@ -128,6 +128,24 @@ local offering = false
 --- reaches the lobby half having never been offered anything.
 local inGame = false
 
+--- Is the SERVER still holding this match's warmup for us?
+---
+--- ═══ THE CARDS AND THE CLOCK END AT DIFFERENT MOMENTS ═══
+---
+--- Owner, 2026-09-07: "The last part of the in-game tutorial should be showing
+--- them the timer - THIS is when matchmaking should take place and the timer
+--- appears for the first time on their screen."
+---
+--- So the last card is ABOUT the countdown, which means the countdown has to be
+--- running while they read it -- a card pointing at a timer frozen a day out is
+--- pointing at nothing. The hold is therefore released when they REACH that
+--- card, and the walkthrough itself ends when they dismiss it.
+---
+--- One flag could not say that: `inGame` is what draws the cards, and dropping
+--- it to start the clock would take the last card off the screen at the moment
+--- it appeared.
+local holding = false
+
 --- How many of the four warmup crates this player has opened during the run.
 ---
 --- ═══ COUNTED HERE BECAUSE THE PAGE CANNOT SEE IT AT ALL ═══
@@ -164,7 +182,13 @@ end
 --- care only whether the player is in ANY of it -- see BR.Roster.setTutorial --
 --- so the server gets one boolean and this file owns the OR.
 local function tellServer()
-    TriggerServerEvent(BR.Net.TUTORIAL_SET, { on = running or inGame })
+    -- TWO HOLDS, TWO ANSWERS. `on` is the matchmaking exemption, which only the
+    -- LOBBY half can hold (BR.Roster.setTutorial's B1). `game` is the warmup
+    -- hold, which only a player already on the pad can (setTutorialGame). They
+    -- are granted from opposite states, so one boolean could never have carried
+    -- both.
+    TriggerServerEvent(BR.Net.TUTORIAL_SET,
+                       { on = running or inGame, game = holding })
 end
 
 function BR.Tutorial.set(on)
@@ -224,6 +248,8 @@ function BR.Tutorial.game(on)
     inGame = on
     -- FROM ZERO EVERY TIME. See `crates`.
     if on then crates = 0 end
+    -- THE HOLD RISES WITH THE CARDS AND CAN FALL BEFORE THEM. See `holding`.
+    holding = on
     publish()
 
     -- ═══ NO FOCUS, AND THAT IS THE POINT ═══
@@ -355,6 +381,17 @@ AddEventHandler('br:loot:opened', function(_, x, y)
     end
 end)
 
+--- Give the match its clock back, without ending the walkthrough.
+---
+--- Called when the player reaches the last card, which is the one about the
+--- countdown. See `holding`.
+function BR.Tutorial.hold(on)
+    on = on == true
+    if on == holding then return end
+    holding = on
+    tellServer()
+end
+
 --- They finished the whole thing -- pay them.
 ---
 --- ═══ IT IS A SEPARATE CALL FROM STOPPING, AND THEY ARE SEPARATE FACTS ═══
@@ -471,6 +508,12 @@ end)
 --- THE REWARD IS CLAIMED BEFORE THE FLAG DROPS, deliberately: `game(false)`
 --- pops the cursor focus and unmounts the layer, and a claim sent after that is
 --- a claim sent from a resource that may already have stopped caring.
+--- The page reaching the last card, which is the one about the countdown.
+--- Gives the match its clock back while the card is still on screen.
+AddEventHandler('br:tutorial:hold', function(on)
+    BR.Tutorial.hold(on == true)
+end)
+
 AddEventHandler('br:tutorial:game', function(on, done)
     if done == true and on ~= true then BR.Tutorial.finish() end
     BR.Tutorial.game(on == true)

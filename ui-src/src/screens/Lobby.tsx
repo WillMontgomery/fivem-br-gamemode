@@ -126,6 +126,7 @@ export default function Lobby({
   const tutorialRun = useUi((s) => s.tutorialRun)
   const tutorialStep = useUi((s) => s.tutorialStep)
   const tutorialGameOn = useUi((s) => s.tutorialGameOn)
+  const setTutorialGameArmed = useUi((s) => s.setTutorialGameArmed)
   // Which screen is on top -- the offer is retired while Settings covers the
   // lobby, so the control does not vanish under the cursor that pressed it.
   const focus = useUi((s) => s.focus)
@@ -336,6 +337,26 @@ export default function Lobby({
   }
 
   const queue = async () => {
+    // ═══ READYING UP WITH THE BOX TICKED IS ALSO AN ANSWER TO IT ═══
+    //
+    // Owner, 2026-09-07: "leaving the game tutorial early results in the toggle
+    // still being available in the lobby - great, keep it - but readying up at
+    // that point to go into tutorial again doesn't work. just sends straight to
+    // normal warmup."
+    //
+    // It did not work because the only thing that armed the match half was the
+    // LOBBY half finishing. That is right for a first-timer and wrong for
+    // everybody who comes back: the toggle deliberately outlives the run (it is
+    // an offer about the NEXT thing), so a player who abandoned the walkthrough
+    // and wants another go has a ticked box and no way to spend it.
+    //
+    // ARMED HERE RATHER THAN BY THE TOGGLE ITSELF, and that distinction is the
+    // whole reason the last one misfired. A ticked box is a preference and can
+    // sit ticked forever; readying up is a discrete act with a moment attached.
+    // Arming on the preference is what started the walkthrough for every player
+    // on every match (2026-09-06).
+    if (tutorialGameShown && tutorialGameOn) setTutorialGameArmed(true)
+
     // Optimistic, but the server is the authority -- the next state envelope
     // will correct this if the queue was refused.
     setQueued(true)

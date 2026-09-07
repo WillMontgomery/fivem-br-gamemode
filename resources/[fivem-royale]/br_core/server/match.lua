@@ -950,6 +950,57 @@ function BR.Match.shortenWarmupIfFull(m)
     BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'lobbyFull' })
 end
 
+--- Hold this warmup while anybody in it is still reading tutorial cards.
+---
+--- ═══ THE ROOM WAITS, AND THE OWNER CHOSE THAT ═══
+---
+--- 2026-09-07: "freeze the room for the warmup timer". A warmup countdown is
+--- match-wide -- `m.endsAt` is one number for one instance, and every client
+--- derives its own display by subtracting from it -- so there is no per-player
+--- clock to hold. Holding a learner therefore means holding everybody on the pad
+--- with them. That is the trade, it was made deliberately, and it is bounded by
+--- the walkthrough ending: BR.Tutorial.game(false) fires on the last card, on an
+--- abandoned run, and on leaving warmup at all.
+---
+--- THE SAME MECHANISM `brwarmupfreeze` USES, and deliberately so rather than a
+--- second one: push `endsAt` a day out while held, and on release re-enter a
+--- WHOLE warmup from now. The pad gets an ordinary countdown rather than
+--- whatever was left of one twenty minutes ago, and `shortened` is re-armed so a
+--- full lobby is still cut short by the rule that was suppressed during the
+--- hold. Every change of endsAt is rebroadcast, because clients derive their
+--- countdown from it.
+---
+--- IT DEFERS TO THE DEV FREEZE. If brwarmupfreeze is on, that is already holding
+--- this warmup and re-entering one on release would thaw a match the operator
+--- froze on purpose.
+--- @param m table
+function BR.Match.tutorialHold(m)
+    local learners = BR.Roster.tutorialGameIn and BR.Roster.tutorialGameIn(m.id) or 0
+
+    if learners > 0 then
+        m.tutorialHeld = true
+        if not BR.Match.warmupFrozen() then
+            m.endsAt = GetGameTimer() + WARMUP_HOLD_MS
+        end
+        return
+    end
+
+    if not m.tutorialHeld then return end
+    m.tutorialHeld = nil
+
+    -- RELEASED. This is the moment the owner's design calls for: "THIS is when
+    -- matchmaking should take place and the timer appears for the first time on
+    -- their screen" (2026-09-07). The countdown starts here and the page reveals
+    -- it on the same edge.
+    if BR.Match.warmupFrozen() then return end
+
+    m.endsAt = GetGameTimer() + M.warmupSeconds * 1000
+    m.shortened = false
+    print(('[br_core] match %d: the tutorial is over -- warmup starts now (%ds)')
+        :format(m.id, M.warmupSeconds))
+    BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'tutorialDone' })
+end
+
 --- Of everybody BR.Lobby.admissible refused, the ones it refused FOR A PARTY.
 ---
 --- ═══ SOMEBODY IN THE TUTORIAL IS NOT SOMEBODY THE ROOM IS WAITING FOR ═══
@@ -1192,6 +1243,7 @@ local function matchTick(m, now)
     end
 
     if m.state == BR.MatchState.WARMUP then
+        BR.Match.tutorialHold(m)
         BR.Match.shortenWarmupIfFull(m)
     end
 

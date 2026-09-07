@@ -813,11 +813,28 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   if (placedRef.current?.key !== latchKey) {
     placedRef.current = {
       key: latchKey,
-      // CENTRED, AND ARRIVING FROM NOWHERE IN PARTICULAR. A card about the
-      // world or about the whole map has no direction to be thrown from, so the
-      // arrival vector is zero and it simply scales up in place.
+      // LOW AND CENTRED, ARRIVING FROM NOWHERE IN PARTICULAR.
+      //
+      // Owner, 2026-09-07: "step 11 and any other step that currently draws in
+      // the middle center of the screen should be moved to the lower 1/3 in the
+      // middle." Dead centre is where a card about the WORLD does the most
+      // damage -- it sits exactly over the four crates it is telling the player
+      // to go and look at. Low and centred is where a game puts a subtitle, and
+      // it leaves the middle of the screen to the thing being described.
+      //
+      // CLAMPED, so a tall card on a short viewport cannot be pushed off the
+      // bottom -- the same floor `place` applies to an anchored one.
+      //
+      // The arrival vector is zero: a card with no subject has no direction to
+      // be thrown from, so it simply scales up in place.
       at: rect === null
-        ? { left: (vw - CARD_W) / 2, top: (vh - CARD_H) / 2, fromX: 0, fromY: 0 }
+        ? {
+            left: (vw - CARD_W) / 2,
+            top: Math.min(vh * 0.72 - CARD_H / 2,
+                          Math.max(vh - CARD_H - MARGIN, MARGIN)),
+            fromX: 0,
+            fromY: 0,
+          }
         : place(rect, vw, vh),
     }
   }

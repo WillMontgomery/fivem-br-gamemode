@@ -686,12 +686,28 @@ export default function App() {
           // AND THE CARDS ARE DRIVEN BY THE ARROW KEYS, not by a cursor there
           // is no longer any way to produce. See `keyDriven`.
           keyDriven
+          onStep={(id) => {
+            s.setTutorialGameStep(id)
+            // ═══ THE CLOCK STARTS ON THE LAST CARD, NOT AFTER IT ═══
+            //
+            // Owner, 2026-09-07: "THIS is when matchmaking should take place and
+            // the timer appears for the first time on their screen." That card
+            // is ABOUT the countdown, so the countdown has to be running while
+            // they read it -- pointing at a timer frozen a day out is pointing
+            // at nothing.
+            //
+            // `hold`, NOT `game`: dropping `game` would take the card off the
+            // screen at the exact moment it appeared. See BR.Tutorial.hold.
+            if (id === 'game-timer') void fetchNui(CB.TUTORIAL_SET, { hold: false })
+          }}
           onDone={() => {
             s.setTutorialGameRun(false)
+            s.setTutorialGameStep(null)
             void fetchNui(CB.TUTORIAL_SET, { game: false, done: true })
           }}
           onAbandon={() => {
             s.setTutorialGameRun(false)
+            s.setTutorialGameStep(null)
             // NO `done`. This fires when a card's anchor has gone, which is a
             // fault -- paying for it would pay a learner for the walkthrough
             // breaking under them. The flag still drops, because a player left

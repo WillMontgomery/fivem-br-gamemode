@@ -329,15 +329,21 @@ export const GAME_STEPS: Step[] = [
     // callback is the fix, not a second default.
   },
   {
-    id: 'game-ready',
+    id: 'game-timer',
     // THE END OF THE WHOLE THING, both halves. Owner, 2026-09-04: "So, are you
     // ready to start?", and "when they click yes, they're put into whatever
     // match type they selected in the lobby and the warmup timer begins."
     //
-    // ANCHORED ON THE MATCH CLOCK, which is the thing the answer starts.
-    target: 'hud-counters',
+    // ANCHORED ON THE COUNTDOWN, WHICH APPEARS FOR THIS CARD AND NO EARLIER.
+    // The server has been holding this match's warmup for the whole walkthrough
+    // (BR.Match.tutorialHold) and the page has not drawn the clock at all;
+    // reaching this step releases the hold and reveals it together, so the card
+    // and its subject arrive on the same frame. Owner, 2026-09-07: "THIS is when
+    // matchmaking should take place and the timer appears for the first time on
+    // their screen."
+    target: 'hud-timer',
     title: 'That is everything',
-    body: 'So — are you ready to start?',
+    body: 'That is the countdown to the bus. When it runs out you drop with everyone else — so use what is left to grab what you want. Good luck out there.',
     advance: 'dismiss',
     dismissLabel: "I'm ready",
     // NO BACK BUTTON PAST THE END. Stepping backwards out of the final card is

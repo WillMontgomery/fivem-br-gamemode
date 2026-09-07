@@ -448,9 +448,82 @@ function BR.Roster.setTutorial(src, on)
     return true
 end
 
+--- Is this player taking the IN-GAME half, on the pad, right now?
+---
+--- ═══ A SECOND FLAG, BECAUSE B1 CANNOT BE WIDENED ═══
+---
+--- BR.Roster.setTutorial's hold is granted only from a standing start -- LOBBY,
+--- no match -- and that restriction is what stops it being a dodge button for a
+--- fight or a results publish. The in-game walkthrough runs INSIDE a match, on
+--- the warmup pad, so it can never hold that flag and asking it to was the gap
+--- the owner hit: the warmup clock ran under every card.
+---
+--- SO THIS ONE IS THE OPPOSITE SHAPE. It is granted ONLY from WARMUP with a
+--- match attached, and it buys nothing except time on the pad: no matchmaking
+--- exemption, no party exemption, no state change. What it does is hold the
+--- warmup of the match the player is already in -- see BR.Match.tutorialHold.
+---
+--- ⚠ AND IT COSTS THE ROOM, WHICH IS THE OWNER'S CALL RATHER THAN A FREE WIN.
+--- 2026-09-07: "freeze the room for the warmup timer". A warmup is match-wide --
+--- there is no per-player countdown to hold -- so one learner reading cards
+--- holds everybody else on the pad with them. That is the trade, it is
+--- deliberate, and it is why the flag dies the moment the walkthrough does.
+---
+--- PER-CONNECTION AND WRITTEN NOWHERE, like its sibling: it lives on the roster
+--- entry, dies with it, and never reaches KVP or DynamoDB.
+--- @param src integer
+--- @param on boolean
+--- @return boolean  whether the hold stands after this call
+function BR.Roster.setTutorialGame(src, on)
+    local entry = roster[src]
+    if not entry then return false end
+
+    on = on == true
+
+    -- GIVING IT UP IS BELIEVED ON SIGHT, and only this direction is. Ending it
+    -- hands the room its clock back, which nobody needs stopping from doing.
+    if not on then
+        entry.tutorialGame = nil
+        return false
+    end
+
+    if entry.tutorialGame then return true end
+
+    -- THE MIRROR OF B1. Only from the pad, and only inside a match: anywhere
+    -- else there is no warmup to hold and the flag would be a way to stop a
+    -- clock that is not running.
+    if entry.state ~= BR.PlayerState.WARMUP or entry.matchId == nil then
+        print(('[br_core] %s (%d) asked for the warmup hold from %s -- refused')
+            :format(entry.name, src, tostring(entry.state)))
+        return false
+    end
+
+    entry.tutorialGame = true
+    print(('[br_core] %s (%d) is taking the in-game tutorial -- match %s holds '
+        .. 'its warmup until they are done'):format(entry.name, src,
+                                                    tostring(entry.matchId)))
+    return true
+end
+
+--- Is anybody in this match still reading tutorial cards?
+--- @param matchId integer
+--- @return integer  how many
+function BR.Roster.tutorialGameIn(matchId)
+    local n = 0
+    BR.Roster.each(function(e)
+        return e.tutorialGame == true and e.matchId == matchId
+    end, function() n = n + 1 end)
+    return n
+end
+
 RegisterNetEvent(BR.Net.TUTORIAL_SET)
 AddEventHandler(BR.Net.TUTORIAL_SET, function(data)
-    BR.Roster.setTutorial(source, data and data.on)
+    data = type(data) == 'table' and data or {}
+    BR.Roster.setTutorial(source, data.on)
+    -- TWO FLAGS ON ONE MESSAGE, and they are two different holds -- see
+    -- BR.Roster.setTutorialGame. `game` is absent from every sender that
+    -- predates the in-game half, which reads as false and is correct for them.
+    BR.Roster.setTutorialGame(source, data.game)
 end)
 
 -- LEAVING THE SERVER IS THE SERVER'S TO DO. The client's own `disconnect`

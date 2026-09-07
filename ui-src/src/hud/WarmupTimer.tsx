@@ -26,7 +26,20 @@ export default function WarmupTimer() {
   const offset = useUi((s) => s.clockOffset)
   const timeRef = useRef<HTMLSpanElement>(null)
 
+  // ═══ HIDDEN FOR THE WHOLE WALKTHROUGH, REVEALED BY ITS OWN CARD ═══
+  //
+  // Owner, 2026-09-07: "don't display the timer card until they get to the last
+  // step (which tells them about the card)." The server is holding this match's
+  // warmup for as long as a learner is in it (BR.Match.tutorialHold), so during
+  // the walkthrough this would draw a countdown to a departure a day away --
+  // which is worse than no countdown, because it is a lie with a number on it.
+  //
+  // BOTH ENDS MOVE ON THE SAME EDGE. Reaching `game-timer` tells Lua to release
+  // the hold, so the moment this appears it is counting a real warmup down.
+  const tutorialRun = useUi((s) => s.tutorialGameRun)
+  const tutorialStep = useUi((s) => s.tutorialGameStep)
   const showing = match.state === 'warmup'
+    && (!tutorialRun || tutorialStep === 'game-timer')
   const endsAt = match.endsAt
 
   useEffect(() => {
@@ -73,6 +86,12 @@ export default function WarmupTimer() {
   // swap into -- it counts one thing and then unmounts -- so there is nothing
   // for a drop-in replay to mark.
   return (
+    // data-tut ON A WRAPPER, NOT ON <HotCard>. TypeScript does not type-check
+    // hyphenated JSX attributes, so one written on a component that does not
+    // spread its props compiles clean and then vanishes (#261). `inline-block`
+    // because a wrapper with no layout box measures 0x0 and the ring draws in
+    // the corner.
+    <span data-tut="hud-timer" className="inline-block">
     <HotCard hot="rgba(120,132,160,0.85)" cap="Dropping in" minWidth="13rem">
       <>
         {/* 1.4rem rather than `HotTime`'s 2rem default: that is the bleed-out
@@ -85,5 +104,6 @@ export default function WarmupTimer() {
         </span>
       </>
     </HotCard>
+    </span>
   )
 }

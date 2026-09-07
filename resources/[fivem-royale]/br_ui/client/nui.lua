@@ -633,6 +633,12 @@ RegisterNUICallback(BR.NuiCb.TUTORIAL_SET, function(data, cb)
     if data.game ~= nil then
         TriggerEvent('br:tutorial:game', data.game == true, data.done == true)
     end
+    -- THE WARMUP HOLD, WHICH ENDS BEFORE THE CARDS DO. See BR.Tutorial.hold:
+    -- the last card is about the countdown, so the countdown has to be running
+    -- while the player reads it.
+    if data.hold ~= nil then
+        TriggerEvent('br:tutorial:hold', data.hold == true)
+    end
 
     cb({ ok = true })
 end)

@@ -280,6 +280,15 @@ export interface UiState {
    */
   tutorialGameArmed: boolean
   /**
+   * Which IN-GAME card is on screen, by id, or null.
+   *
+   * The warmup countdown reads it: it is hidden for the whole walkthrough and
+   * revealed on the last card, which is the card ABOUT it. Owner, 2026-09-07:
+   * "don't display the timer card until they get to the last step (which tells
+   * them about the card)."
+   */
+  tutorialGameStep: string | null
+  /**
    * The IN-GAME walkthrough is running.
    *
    * SEPARATE FROM `tutorialRun`, because they are two runs over two scripts in
@@ -372,6 +381,7 @@ export interface UiState {
   setTutorialStep: (v: string | null) => void
   setTutorialGameOn: (v: boolean) => void
   setTutorialGameArmed: (v: boolean) => void
+  setTutorialGameStep: (id: string | null) => void
   setTutorialGameRun: (v: boolean) => void
   setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
@@ -759,6 +769,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialStep: null,
   tutorialGameOn: true,
   tutorialGameArmed: false,
+  tutorialGameStep: null,
   tutorialGameRun: false,
   tutorialSquad: null,
   tutorialCrates: 0,
@@ -856,6 +867,7 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialStep: (tutorialStep) => set({ tutorialStep }),
   setTutorialGameOn: (tutorialGameOn) => set({ tutorialGameOn }),
   setTutorialGameArmed: (tutorialGameArmed) => set({ tutorialGameArmed }),
+  setTutorialGameStep: (tutorialGameStep) => set({ tutorialGameStep }),
   setTutorialGameRun: (tutorialGameRun) => set({ tutorialGameRun }),
   setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),
