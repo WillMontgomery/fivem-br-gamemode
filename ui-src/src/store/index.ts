@@ -316,6 +316,41 @@ export interface UiState {
   /** Does this ACCOUNT still have the offer? See the `tutorial` envelope. */
   tutorialOfferable: boolean
   /**
+   * A chat line the WALKTHROUGH is staging, which the chat log shows alongside
+   * the real ones.
+   *
+   * AN OVERRIDE, NOT A PUSH, and the reason is the same one `tutorialSquad`
+   * gives: `pushChat` has no removal counterpart -- unlike `pushFeed`, which
+   * schedules its own -- so a demo line appended to `chat` would outlive the
+   * card and follow the player into their match. "A demo that outlives its card
+   * is a lie the player carries into the match."
+   *
+   * IT IS MERGED IN THE COMPONENT AND NEVER IN A SELECTOR. A selector returning
+   * a fresh array re-renders forever under the zustand this project pins.
+   */
+  tutorialChat: ChatMessage | null
+  /**
+   * Let the squad channel be used even in a solo match, for one card.
+   *
+   * Owner, 2026-09-06: "they may be in solos when this happens, where squads
+   * chat isn't available. It should be visible just for this moment." The two
+   * gates that refuse it are both page-side, so this is a page-side lie and
+   * nothing on the server has to know.
+   *
+   * IT COSTS NOTHING TO GET WRONG. A solo player's squad message already goes
+   * only to their own screen -- server/chat.lua answers `{ src }` when they have
+   * no squadId -- so this unlocks a channel that was already private.
+   */
+  tutorialChatSquad: boolean
+  /**
+   * How many chat messages this player has sent, ever, this session.
+   *
+   * A COUNTER RATHER THAN A BOOLEAN, so a card can baseline it and ask for one
+   * MORE -- the same shape the crate and waypoint counts use. Bumped by the page
+   * at the line that sends, so no wire and no Lua are involved at all.
+   */
+  chatSent: number
+  /**
    * The last arrow press Lua reported while an in-game card was up.
    *
    * `seq` COUNTS PRESSES; `dir` says which. Held as a pair because the page
@@ -367,6 +402,9 @@ export interface UiState {
   setTutorialCrates: (n: number) => void
   setTutorialWaypoints: (n: number) => void
   setTutorialOfferable: (v: boolean) => void
+  setTutorialChat: (m: ChatMessage | null) => void
+  setTutorialChatSquad: (v: boolean) => void
+  noteChatSent: () => void
   setTutorialNav: (n: { dir: 'next' | 'back' | 'action'; seq: number }) => void
   setParty: (p: SquadPayload) => void
   setTalking: (ids: number[], names?: string[]) => void
@@ -781,6 +819,9 @@ export const useUi = create<UiState>((set, get) => {
   tutorialCrates: 0,
   tutorialWaypoints: 0,
   tutorialOfferable: false,
+  tutorialChat: null,
+  tutorialChatSquad: false,
+  chatSent: 0,
   tutorialNav: { dir: 'next', seq: 0 },
   leaving: false,
   curtain: 'leaving',
@@ -836,6 +877,9 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialCrates: (tutorialCrates) => set({ tutorialCrates }),
   setTutorialWaypoints: (tutorialWaypoints) => set({ tutorialWaypoints }),
   setTutorialOfferable: (tutorialOfferable) => set({ tutorialOfferable }),
+  setTutorialChat: (tutorialChat) => set({ tutorialChat }),
+  setTutorialChatSquad: (tutorialChatSquad) => set({ tutorialChatSquad }),
+  noteChatSent: () => set((s) => ({ chatSent: s.chatSent + 1 })),
   setTutorialNav: (tutorialNav) => set({ tutorialNav }),
   setParty:    (party) => set({ party }),
   // Names default to empty rather than to the ids: a bar reading "Currently
@@ -1029,6 +1073,8 @@ export const selHudSquad = (s: UiState) => s.tutorialSquad ?? s.squad
 export const selInv      = (s: UiState) => s.inv
 export const selFeed     = (s: UiState) => s.feed
 export const selChat     = (s: UiState) => s.chat
+/** The walkthrough's staged chat line, or null. Merged in Chat, not here. */
+export const selTutorialChat = (s: UiState) => s.tutorialChat
 export const selDbno     = (s: UiState) => s.dbno
 export const selFocus    = (s: UiState) => s.focus
 export const selChatOpen = (s: UiState) => s.chatOpen

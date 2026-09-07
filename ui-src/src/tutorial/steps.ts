@@ -142,6 +142,18 @@ export type Advance =
    * close the map.' - after they've done so THAT is when step 17 should show."
    */
   | 'mapclose'
+  /**
+   * The player sending a chat message of their own.
+   *
+   * Owner, 2026-09-06: "require them to send a message before moving forward.
+   * Once they've sent it, proceed automatically."
+   *
+   * OBSERVED WITH NO WIRE AT ALL. The page is the thing that sends -- Chat's
+   * `release` posts the callback -- so it can simply count its own sends. This
+   * is the only advance in the file that needs neither Lua nor a store push
+   * from Lua.
+   */
+  | 'chatsent'
 
 export type Step = {
   /** Stable id. Persisted progress and every log line key on this. */
@@ -250,7 +262,7 @@ export type Step = {
    * IT WRITES INTO THIS CLIENT'S OWN STORE AND NOWHERE ELSE. Nothing is sent,
    * nothing is recorded, and no other player can see it.
    */
-  stage?: 'killfeed' | 'squad' | 'notice'
+  stage?: 'killfeed' | 'squad' | 'notice' | 'chat'
   /**
    * An extra button on the card that performs the thing being described.
    *

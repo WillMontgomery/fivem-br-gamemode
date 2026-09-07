@@ -182,6 +182,43 @@ export const GAME_STEPS: Step[] = [
     advance: 'next',
   },
   {
+    id: 'game-chat',
+    // ═══ THE CHAT SECTION (#261), AND IT STAGES A LINE TO POINT AT ═══
+    //
+    // Owner, 2026-09-06: "generate a random player name and send a fake message
+    // in the chat under that name, then call their attention to the chat and
+    // tell them to press {chatkey} to open it."
+    //
+    // STAGED, for the reason the feed and the squad panel are: a new player's
+    // chat log is empty, and a card pointing at a blank corner teaches nothing.
+    target: 'hud-chat',
+    stage: 'chat',
+    title: 'Chat',
+    body: 'Messages from other players land here. Press {key:brchat} to say something to everyone, or {key:brchatsquad} to talk to just your squad.',
+    // ENDS WHEN CHAT OPENS. The page sees the focus change, which is the same
+    // fact one step later and needs no new wire -- the player-list card works
+    // the same way.
+    advance: 'screen',
+    awaitScreen: 'chat',
+  },
+  {
+    id: 'game-chat-send',
+    // SCOPED TO THE CHAT SCREEN, and it has to be: the moment chat opens the
+    // focus becomes `chat`, and every un-scoped card hides itself.
+    target: 'hud-chat',
+    screen: 'chat',
+    stage: 'chat',
+    title: 'Say something',
+    // [[Tab]] IS A LITERAL CAP, NOT A BINDING, and that is not a shortcut.
+    // There is no change-channel command in this game: keybinds.lua has exactly
+    // two chat rows, `brchat` and `brchatsquad`, and the channel is switched by
+    // a hardcoded Tab inside the composer and by the ALL/SQUAD button. A
+    // {key:...} token would have to name a command that does not exist.
+    body: 'Press [[Tab]] to switch between **all** and **squad**, then type anything and press [[Enter]] to send it.',
+    advance: 'chatsent',
+    noBack: true,
+  },
+  {
     id: 'game-players',
     // THE ALIVE PLATE ON ITS OWN. "Everybody still playing" is literally what
     // that number is, and ringing one plate rather than the pair is the owner's

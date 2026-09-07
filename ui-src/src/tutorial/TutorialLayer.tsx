@@ -93,6 +93,29 @@ const DEMO_SQUAD = {
   ],
 }
 
+/**
+ * The staged chat line.
+ *
+ * ONE LINE, FROM THE CAST THE OTHER DEMOS USE. The feed and the squad panel
+ * share four handles on purpose -- a player who reads both sees one cast rather
+ * than seven strangers -- and a fresh random name here would break that for no
+ * gain. The owner asked for "a random player name"; this is that, drawn from
+ * the names already on screen.
+ *
+ * `from: -1` FOR THE REASON THE FEED USES NEGATIVE IDS: real senders are
+ * positive server ids and System is 0, so a demo can never be mistaken for
+ * either.
+ *
+ * PLACEHOLDER COPY, mine and unapproved, like every other sentence here.
+ */
+const DEMO_CHAT = {
+  channel: 'global' as const,
+  from: -1,
+  name: 'Vance',
+  text: 'anyone got a shield? south building',
+  at: 0,
+}
+
 /** The staged notification's key, so the same card can take it back down. */
 const DEMO_NOTICE_KEY = 'tutorial-demo'
 
@@ -459,7 +482,10 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   useEffect(() => {
     if (nav.seq === navSeen.current) return
     navSeen.current = nav.seq
-    if (!step || !p.keyDriven || step.screen !== undefined) return
+    // ARROWS ARE IGNORED OVER ONE OF OUR SCREENS, because that screen has taken
+    // game input and the keys cannot reach Lua -- EXCEPT once `stuck` has opened
+    // the escape, which must work everywhere or it is not an escape.
+    if (!step || !p.keyDriven || (step.screen !== undefined && !stuck)) return
 
     if (nav.dir === 'next') {
       // ONLY WHERE A BUTTON WOULD HAVE BEEN. An arrow must not walk past a card
@@ -627,6 +653,24 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   const setTutorialSquad = useUi((st) => st.setTutorialSquad)
   const pushNotice = useUi((st) => st.pushNotice)
 
+  // THE STAGED CHAT LINE, taken back down by the same teardown the squad uses --
+  // and it MUST be, because `pushChat` has no removal and a demo line left in
+  // the log would follow the player into their match.
+  const setTutorialChat = useUi((st) => st.setTutorialChat)
+  const setTutorialChatSquad = useUi((st) => st.setTutorialChatSquad)
+  useEffect(() => {
+    if (!step || step.stage !== 'chat') return
+    setTutorialChat(DEMO_CHAT)
+    // AND THE SQUAD CHANNEL IS UNLOCKED FOR THE MOMENT. In solos it is refused
+    // by two page-side lines in Chat; this lifts both, and Chat's own effect
+    // forces the composer back to global the instant it clears.
+    setTutorialChatSquad(true)
+    return () => {
+      setTutorialChat(null)
+      setTutorialChatSquad(false)
+    }
+  }, [step, setTutorialChat, setTutorialChatSquad])
+
   useEffect(() => {
     if (!step || step.stage !== 'squad') return
     setTutorialSquad(DEMO_SQUAD)
@@ -681,6 +725,22 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     return () => clearTimeout(t)
   }, [step, steps.length, go])
 
+
+  // ── sending a chat message ends the step ────────────────────────────────
+  //
+  // NO WIRE AND NO LUA. The page is the thing that sends, so it counts its own
+  // sends -- see `noteChatSent` in Chat. Baselined on entry like every other
+  // count, so a player who chatted on the way here does not walk past.
+  const chatSent = useUi((st) => st.chatSent)
+  const chatAtStart = useRef(chatSent)
+  useEffect(() => {
+    if (step?.advance === 'chatsent') chatAtStart.current = chatSent
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step])
+  useEffect(() => {
+    if (!step || step.advance !== 'chatsent') return
+    if (chatSent > chatAtStart.current) go(i + 1)
+  }, [step, chatSent, i, go])
 
   // ── the map going AWAY ends the step ────────────────────────────────────
   //
