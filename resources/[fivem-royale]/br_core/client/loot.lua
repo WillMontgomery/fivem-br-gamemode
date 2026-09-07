@@ -1285,6 +1285,9 @@ local function forget(id)
     if outlinedId == id then outlinedId = nil end
 end
 
+--- When the last cell subscription request went out, for the recovery re-ask.
+local lastCellAsk = 0
+
 local function forgetAll()
     clearOutline(entries)
     clearRetiring()
@@ -1942,9 +1945,42 @@ BR.Loop.register(BR.Loop.TICK, 'loot.cells', function()
     local p = GetEntityCoords(PlayerPedId())
     local cx, cy = BR.LootCellOf(p.x, p.y)
     local key = BR.LootCellKey(cx, cy)
-    if key == myCell then return end
+
+    -- ═══ THE LATCH IS OPTIMISTIC, SO IT NEEDS A WAY BACK ═══
+    --
+    -- `myCell` is written before the request goes out and nothing on the wire
+    -- confirms it -- there is no ack, and the server declines silently in five
+    -- places. Combined with the edge test below, a single declined request used
+    -- to be PERMANENT for as long as the player stayed inside one 256m cell.
+    --
+    -- That is what the owner hit (2026-09-07): /brloot on the pad reading
+    -- `cell 17,-18  entries 0`, crates that never appeared until he walked out
+    -- of the cell and back, claims that got no answer, and "Someone beat you to
+    -- it." for a crate nobody had touched -- server/loot.lua nils an entry the
+    -- claimant is not subscribed to, before every other test, and says that.
+    -- One lost subscription, three symptoms.
+    --
+    -- SO AN EMPTY REGISTRY RE-ASKS, and only an empty one. Holding nothing while
+    -- standing somewhere loot is visible is not a state that occurs in ordinary
+    -- play: the very first subscription fills the block. It is the exact
+    -- signature of a request that was dropped, and the `resync` flag is what
+    -- tells the server this is a recovery rather than a duplicate -- its own
+    -- "nothing moved" dedupe would otherwise swallow the retry.
+    --
+    -- ONCE A SECOND, not every tick. This costs one event per second per player
+    -- and only while something is actually wrong.
+    if key == myCell then
+        if next(entries) ~= nil then return end
+        local now = GetGameTimer()
+        if now - lastCellAsk < 1000 then return end
+        lastCellAsk = now
+        TriggerServerEvent(BR.Net.LOOT_CELL,
+                           { cx = cx, cy = cy, resync = true })
+        return
+    end
 
     myCell = key
+    lastCellAsk = GetGameTimer()
     TriggerServerEvent(BR.Net.LOOT_CELL, { cx = cx, cy = cy })
 end)
 

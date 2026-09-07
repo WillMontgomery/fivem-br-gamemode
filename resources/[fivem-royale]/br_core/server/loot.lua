@@ -601,6 +601,13 @@ function BR.Loot.viewFor(src)
     return out
 end
 
+--- How often one player may ask for a full re-seed of their 3x3 block.
+---
+--- TWO SECONDS. A genuine recovery needs one; the client only asks when it is
+--- holding nothing at all, and the first answer fixes that. Anything faster is
+--- somebody hammering a rebuild-and-send, which is the only cost this path has.
+local RESYNC_MS = 2000
+
 RegisterNetEvent(BR.Net.LOOT_CELL)
 AddEventHandler(BR.Net.LOOT_CELL, function(d)
     local src = source
@@ -652,9 +659,79 @@ AddEventHandler(BR.Net.LOOT_CELL, function(d)
     -- No notify: an honest client cannot produce this, and a dishonest one is
     -- being told which of its requests were noticed.
     if not e.pos then return end
-    if not BR.LootCellReachable(cx, cy, e.pos.x, e.pos.y) then return end
 
+    -- ═══ JUDGED AGAINST WHERE THEY ARE, NOT WHERE WE LAST LOOKED ═══
+    --
+    -- `e.pos` is the roster's own sample, taken at posSampleHz (4/s) off the
+    -- replicated ped, so it lags a teleport by up to 250ms -- and a ready-up is
+    -- exactly a teleport. The client subscribes from the LOBBY first (that
+    -- request succeeds), the ped is moved to the pad, the client asks again from
+    -- the pad within 100ms, and this test still saw the lobby. Lobby to pad is
+    -- two cells and the drift tolerance is one, so the second request was
+    -- refused -- silently, permanently, because the client latches `myCell`
+    -- before it sends and only ever asks again on a cell EDGE.
+    --
+    -- That was the whole of the owner's report (2026-09-07): "the crates don't
+    -- spawn until I go outside their near proximity and back in", with /brloot
+    -- showing `cell 17,-18  entries 0` while standing on the pad. Walking out of
+    -- the cell and back is a new edge, by which time the sample had caught up.
+    --
+    -- THE LIVE READ IS STRICTER, NOT LOOSER. It is the same rule -- you may
+    -- subscribe only near where you are -- asked of the truth rather than of a
+    -- quarter-second-old copy. The cached sample stays the fallback for the
+    -- moments a ped is not resolvable.
+    -- EITHER READING MAY SATISFY IT, AND THAT IS DELIBERATELY A SUPERSET OF THE
+    -- OLD RULE. Narrowing on the live position would refuse requests the sample
+    -- accepts today -- a player who asked while moving away -- and this is a
+    -- bug fix, not a tightening. An attacker still has to be within one cell by
+    -- one of two readings of their OWN position, which is the property
+    -- BR.LootCellReachable exists to enforce.
+    local ok = BR.LootCellReachable(cx, cy, e.pos.x, e.pos.y)
+
+    if not ok then
+        local ped = GetPlayerPed(src)
+        -- `ped ~= 0` IS THE EXISTENCE TEST. DoesEntityExist answers 1/0 and 0 is
+        -- TRUTHY in Lua, so `if DoesEntityExist(ped) then` is true for a ped
+        -- that is not there -- the trap tools/verify.sh keeps a ratchet for.
+        if ped and ped ~= 0 then
+            local live = GetEntityCoords(ped)
+            if live and live.x then
+                ok = BR.LootCellReachable(cx, cy, live.x, live.y)
+            end
+        end
+    end
+
+    if not ok then return end
+
+    -- ═══ AND A CLIENT THAT HAS LOST EVERYTHING MAY SAY SO ═══
+    --
+    -- The dedupe below is doing a real job at 10Hz and stays. What it could not
+    -- tell apart was a duplicate request from a client that still holds the cell
+    -- and one from a client whose registry was dropped underneath it --
+    -- `forgetAll` runs whenever the player leaves a loot-visible state, which a
+    -- match dissolving under them does, and the server keeps the subscription it
+    -- already recorded. `resync` is the client saying "I have nothing".
+    --
+    -- RATE-LIMITED, because it is a request to rebuild and send a 3x3 block. Once
+    -- every RESYNC_MS per player is far more than a genuine recovery needs and
+    -- far less than a spammer would want.
     local centre = BR.LootCellKey(cx, cy)
+
+    if d.resync == true then
+        local now = GetGameTimer()
+        local last = m.loot.resyncAt and m.loot.resyncAt[src] or 0
+        if now - last >= RESYNC_MS then
+            m.loot.resyncAt = m.loot.resyncAt or {}
+            m.loot.resyncAt[src] = now
+            -- Forget what we think they have, so the "entering scope" walk below
+            -- treats every cell as new and sends the lot.
+            m.loot.subs[src] = nil
+            m.loot.at[src] = nil
+            print(('[br_core] loot: %s (%d) asked to re-seed %s')
+                :format(e.name, src, centre))
+        end
+    end
+
     if m.loot.at[src] == centre then return end   -- nothing moved
     m.loot.at[src] = centre
 
@@ -1075,6 +1152,22 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     -- thing. Cells are 256m and the subscription is the 3x3 block around the
     -- player, so anything within pickup range is certainly inside it -- this
     -- cannot refuse a claim an honest client would make.
+    --
+    -- ⚠ THAT LAST SENTENCE WAS FALSE FOR AS LONG AS A SUBSCRIPTION COULD BE
+    -- LOST WITHOUT THE CLIENT KNOWING. It assumes the client's view and the
+    -- server's record of it agree, and until 2026-09-07 they could silently
+    -- diverge: the cell request was latched before it was sent, declined without
+    -- a reply, and never re-asked until the player crossed a cell boundary. A
+    -- player standing on the warmup pad with a sealed crate on screen, holding
+    -- E on it, got THIS sentence for a crate nobody had touched -- owner: "what
+    -- does 'someone beat you to it' even mean when trying to open these
+    -- crates..... wtf lol".
+    --
+    -- The recovery re-ask in client/loot.lua and the live-position test in the
+    -- LOOT_CELL handler are what make the sentence true again. The branch is
+    -- left exactly as it was on purpose: the ambiguity is anti-oracle design,
+    -- and the fix for an honest client reaching it is to stop it happening
+    -- rather than to explain it better.
     local subs = m.loot.subs[src]
     if item and not (subs and subs[item.cell]) then item = nil end
 
