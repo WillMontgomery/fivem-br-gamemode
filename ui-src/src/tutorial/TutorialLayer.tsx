@@ -222,6 +222,26 @@ const SETTLE_DEADLINE = 40
  */
 const STUCK_MS = 45000
 
+/**
+ * Where the CENTRE of an unanchored card sits, as a fraction of the viewport.
+ *
+ * See `Step.place`. Fractions rather than pixels because the card's own height
+ * moves with the player's interface scale, and a pixel authored here would be
+ * right at one setting only.
+ */
+const BAND = { half: 0.64, quarter: 0.80 }
+
+/**
+ * How much room a card always leaves below itself.
+ *
+ * Owner, 2026-09-07: "step 12/18 card should never touch the bottom of the
+ * screen." MARGIN is the general edge gap and is small enough that a card
+ * anchored to the inventory bar -- which is ITSELF at the bottom -- was pushed
+ * flat against the edge. This is the floor for the vertical clamp only, so the
+ * horizontal gap is unchanged.
+ */
+const FLOOR = 72
+
 function place(r: Rect, vw: number, vh: number) {
   let left = r.x + r.w + GAP
   let fromX = -1
@@ -240,7 +260,11 @@ function place(r: Rect, vw: number, vh: number) {
   }
 
   const wantTop = fromY === -1 ? r.y + r.h + GAP : r.y + r.h / 2 - CARD_H / 2
-  const top = Math.min(Math.max(wantTop, MARGIN), Math.max(vh - CARD_H - MARGIN, MARGIN))
+  // FLOOR, NOT MARGIN, ON THE BOTTOM. A card anchored to the inventory bar sits
+  // against the bottom of the screen otherwise -- the bar is already there --
+  // and two consecutive cards on the same anchor landed at visibly different
+  // heights because one of them hit the clamp and the other did not.
+  const top = Math.min(Math.max(wantTop, MARGIN), Math.max(vh - CARD_H - FLOOR, MARGIN))
 
   return { left, top, fromX, fromY }
 }
@@ -462,8 +486,13 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // ── the way out of a step that is waiting on the player ─────────────────
   useEffect(() => {
     setStuck(false)
-    if (!step || (step.advance !== 'pickup' && step.advance !== 'crate'
-                  && step.advance !== 'map')) return
+    if (!step) return
+    // EVERY ADVANCE THAT WAITS ON THE PLAYER, so none of them can be a dead end.
+    // The escape is the arrow only -- see the nav handler -- and nothing on the
+    // card says it exists.
+    const waits = step.advance === 'pickup' || step.advance === 'crate'
+      || step.advance === 'map' || step.advance === 'waypoint'
+    if (!waits) return
     const t = setTimeout(() => setStuck(true), STUCK_MS)
     return () => clearTimeout(t)
   }, [step])
@@ -704,10 +733,20 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     const before = startedWith.current
     let got = 0
     for (const [k, n] of tally) {
-      const was = before.get(k) ?? 0
-      if (n <= was) continue
-      // A POOL THAT ROSE IS ONE PICKUP. See `tally`.
-      got += k.startsWith('@') ? 1 : n - was
+      // ═══ ONE THING THAT ROSE IS ONE PICKUP, WHATEVER IT ROSE BY ═══
+      //
+      // This counted the MAGNITUDE for anything that was not ammo, so a single
+      // grab that happened to be a stack of two bandages read as two pickups and
+      // walked the card past on one item (owner, 2026-09-07: "step 12 still auto
+      // progresses to step 13 even when I have only picked up one item").
+      //
+      // The card asks for two THINGS, and a player counting what they did counts
+      // grabs, not units -- a box of thirty rounds is not thirty things and
+      // neither is a double stack of bandages. Under-counting is the safe
+      // direction here: the card waits, which is what it is for, and the crates
+      // drop three different items so two grabs are two keys in the ordinary
+      // case.
+      if (n > (before.get(k) ?? 0)) got += 1
     }
     if (got >= (step.pickups ?? 1)) go(i + 1)
   }, [step, tally, i, go])
@@ -813,7 +852,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   if (placedRef.current?.key !== latchKey) {
     placedRef.current = {
       key: latchKey,
-      // LOW AND CENTRED, ARRIVING FROM NOWHERE IN PARTICULAR.
+      // IN ITS BAND, CENTRED, ARRIVING FROM NOWHERE IN PARTICULAR.
       //
       // Owner, 2026-09-07: "step 11 and any other step that currently draws in
       // the middle center of the screen should be moved to the lower 1/3 in the
@@ -830,8 +869,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       at: rect === null
         ? {
             left: (vw - CARD_W) / 2,
-            top: Math.min(vh * 0.72 - CARD_H / 2,
-                          Math.max(vh - CARD_H - MARGIN, MARGIN)),
+            top: Math.min(vh * BAND[step.place ?? 'half'] - CARD_H / 2,
+                          Math.max(vh - CARD_H - FLOOR, MARGIN)),
             fromX: 0,
             fromY: 0,
           }
@@ -871,17 +910,17 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         // our own screens draws while that screen holds the cursor -- and that
         // focus has taken game input, so the arrows cannot reach Lua at all.
         keys={p.keyDriven === true && step.screen === undefined}
-        // ...OR AFTER A LONG WAIT ON A STEP THAT HAS NO OTHER WAY OUT. See
-        // `stuck`. Never on a `click` or `screen` step: those name a control
-        // that is on screen and working, so a second route past them is the
-        // "asking for one thing and accepting another" the owner ruled out.
-        onNext={
-          step.advance === 'next'
-          || (stuck && (step.advance === 'pickup' || step.advance === 'crate'
-                        || step.advance === 'map'))
-            ? () => go(i + 1)
-            : null
-        }
+        // NEVER ON A STEP THAT IS WAITING FOR THE PLAYER. Owner, 2026-09-07,
+        // twice: "should not have a 'next' button but instead use arrow keys or
+        // do it for them", "remove the next button from the card on this step
+        // too". A card that tells somebody to do a thing must not also offer a
+        // way past the thing.
+        //
+        // THE ANTI-TRAP ESCAPE SURVIVES AND IS INVISIBLE. `stuck` still opens
+        // the RIGHT ARROW after STUCK_MS on those steps -- see the nav handler
+        // -- so a miscount costs a confusing card rather than a run that cannot
+        // end, and nothing on screen invites anybody to skip.
+        onNext={step.advance === 'next' ? () => go(i + 1) : null}
         // ═══ NO WAY BACK ACROSS A DOORWAY ═══
         //
         // Owner, 2026-09-04: "if they just came from a different menu, like

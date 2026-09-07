@@ -121,6 +121,19 @@ export type Advance =
    * the same class as the `clickedFor` step-skipping bug.
    */
   | 'map'
+  /**
+   * The player dropping a waypoint on the open map.
+   *
+   * Owner, 2026-09-07: "only proceed after they've placed a waypoint at least
+   * once. If they close the map instead without placing a waypoint, close the
+   * cards and give them a toast instructing them to return to the map."
+   *
+   * So this advance has TWO exits and only one of them is forward. Closing the
+   * map with nothing placed does not fail the run and does not skip the card --
+   * it puts the card away and leaves a toast, and the card comes back when the
+   * map does.
+   */
+  | 'waypoint'
 
 export type Step = {
   /** Stable id. Persisted progress and every log line key on this. */
@@ -153,6 +166,21 @@ export type Step = {
   pickups?: number
   /** For `advance: 'crate'` -- how many warmup crates end the step. Default 1. */
   crates?: number
+  /**
+   * How low an UNANCHORED card sits. Ignored when the step has a `target`.
+   *
+   * The owner places these by eye and by band, card by card (2026-09-07: "the
+   * card should be in the lower 1/2 center", "let's also move step 11/18 to
+   * lower 1/4"). A band rather than a number, because the exact pixel depends on
+   * the player's interface scale and their aspect ratio, and a number authored
+   * here would be right on one screen only.
+   *
+   * `half` is just below the middle, for a card that is the only thing on
+   * screen. `quarter` is lower still, for one that must leave the middle clear
+   * -- the crates it is pointing at, the map underneath it, the shop car the
+   * camera has swung to look at.
+   */
+  place?: 'half' | 'quarter'
   /**
    * For `advance: 'dismiss'` -- what the last button says, when "Dismiss" is
    * the wrong word for it.

@@ -186,7 +186,14 @@ export const GAME_STEPS: Step[] = [
     // THE ALIVE PLATE ON ITS OWN. "Everybody still playing" is literally what
     // that number is, and ringing one plate rather than the pair is the owner's
     // rule for anything smaller than a whole surface.
-    target: 'hud-alive',
+    // NO ANCHOR. It named the Alive plate because "everybody still playing" is
+    // literally that number -- but the card is about a KEY, and the owner's
+    // answer settles it: "step 8 of 18 card should not be outlining the top
+    // right panel" (2026-09-07). A card about a keypress has no control on
+    // screen to ring.
+    //
+    // LOWER HALF, CENTRED (owner, 2026-09-07).
+    place: 'half',
     title: 'Everybody in the match',
     // {key:…} becomes the player's ACTUAL binding, {tilde:…} adds the location
     // suffix only while that command is still on tilde. See `withKeys`.
@@ -246,6 +253,7 @@ export const GAME_STEPS: Step[] = [
     // and exists so a miscount cannot trap anybody -- see `stuck`.
     advance: 'crate',
     crates: 1,
+    place: 'quarter',
   },
   {
     id: 'game-pickup',
@@ -268,6 +276,23 @@ export const GAME_STEPS: Step[] = [
     title: 'What you are carrying',
     body: 'Five slots, and the number beside a weapon is the **ammo in the magazine** over what is left in reserve. Press **{key:brslot1}** to **{key:brslot5}** to switch between them.',
     advance: 'next',
+  },
+  {
+    id: 'game-invpanel',
+    target: 'hud-inventory',
+    title: 'The full inventory',
+    body: 'Press **{key:brinventory}** to open it properly — you can move things between slots and drop what you do not want.',
+    advance: 'screen',
+    awaitScreen: 'inventory',
+    // NO ACTION HERE, AND THE ASYMMETRY IS DELIBERATE. There is no callback that
+    // opens the inventory -- the panel is client-side, opened by the key and
+    // nothing else -- and inventing one to give this card a way through would be
+    // plumbing built for a walkthrough rather than for the game.
+    //
+    // The escape hatch exists on the PLAYER LIST card because that key is tilde,
+    // which a good many layouts do not have. This one is TAB, which every
+    // keyboard has and every player can reach. If that ever stops being true the
+    // callback is the fix, not a second default.
   },
   {
     id: 'game-map',
@@ -294,7 +319,12 @@ export const GAME_STEPS: Step[] = [
     // outline a rectangle nobody can see.
     title: 'Waypoints',
     body: 'Double click anywhere on the map to drop a **waypoint** — double click on it again to remove it. You will see this marker within the game too. In **squads** waypoints are visible to the whole team.',
-    advance: 'next',
+    // ENDS ON A WAYPOINT ACTUALLY BEING PLACED. Owner, 2026-09-07: "should not
+    // have a next/last button but instead encourage them to try it and only
+    // proceed after they've placed a waypoint at least once."
+    advance: 'waypoint',
+    noBack: true,
+    place: 'quarter',
   },
   {
     id: 'game-shop',
@@ -308,25 +338,9 @@ export const GAME_STEPS: Step[] = [
     // The card is about a car parked somewhere on the pad, which is a thing in
     // the world like the crates. Centred, no ring.
     title: 'The shop',
-    body: 'On the pad you can spend **Volts** on something to take into the match. **One purchase per match**, and it is **not refundable** — so buy it when you know what you want.',
+    body: 'Items on the pad can be purchased with ~Volts~ and brought into the match with you. **One purchase is allowed per match and it is not refundable.**',
+    place: 'quarter',
     advance: 'next',
-  },
-  {
-    id: 'game-invpanel',
-    target: 'hud-inventory',
-    title: 'The full inventory',
-    body: 'Press **{key:brinventory}** to open it properly — you can move things between slots and drop what you do not want.',
-    advance: 'screen',
-    awaitScreen: 'inventory',
-    // NO ACTION HERE, AND THE ASYMMETRY IS DELIBERATE. There is no callback that
-    // opens the inventory -- the panel is client-side, opened by the key and
-    // nothing else -- and inventing one to give this card a way through would be
-    // plumbing built for a walkthrough rather than for the game.
-    //
-    // The escape hatch exists on the PLAYER LIST card because that key is tilde,
-    // which a good many layouts do not have. This one is TAB, which every
-    // keyboard has and every player can reach. If that ever stops being true the
-    // callback is the fix, not a second default.
   },
   {
     id: 'game-timer',
@@ -343,7 +357,7 @@ export const GAME_STEPS: Step[] = [
     // their screen."
     target: 'hud-timer',
     title: 'That is everything',
-    body: 'That is the countdown to the bus. When it runs out you drop with everyone else — so use what is left to grab what you want. Good luck out there.',
+    body: 'That is the countdown to your flight. When it runs out you drop with everyone else — so use what is left to grab what you want. Good luck out there.',
     advance: 'dismiss',
     dismissLabel: "I'm ready",
     // NO BACK BUTTON PAST THE END. Stepping backwards out of the final card is

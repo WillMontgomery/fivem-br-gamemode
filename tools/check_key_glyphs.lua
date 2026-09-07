@@ -195,11 +195,22 @@ do
         -- an empty string and fail on prose. What is checkable is the SHAPE --
         -- the literal must sit in front of the lookup as a fallback, never
         -- instead of it, so a cap given a command still resolves one.
-        if cap:find('label') and not cap:find("label %?%? %(key || '%-%-'%)") then
-            fail('KeyCap.label is no longer a fallback in front of the lookup',
+        --
+        -- TWO HALVES, ASSERTED SEPARATELY, because the render grew a third
+        -- branch when the arrows became drawn paths rather than characters:
+        -- a literal may be a glyph name OR a plain string. What must not change
+        -- is that the literal branch is ENTERED ONLY when there is no label to
+        -- resolve, and that the other branch still resolves one.
+        if cap:find('label') and not cap:find('label ~= nil')
+           and not cap:find('label !== undefined') then
+            fail('KeyCap.label is no longer gated on being supplied',
                  'a literal glyph cannot follow a rebind; it may stand in only '
-                 .. 'where there is no command to resolve, and the render has '
-                 .. 'to keep resolving one whenever a command is given')
+                 .. 'where there is no command to resolve')
+        end
+        if cap:find('label') and not cap:find("%(key || '%-%-'%)") then
+            fail('KeyCap no longer resolves the binding when given a command',
+                 'the lookup is what makes a cap follow a rebind, and the '
+                 .. 'literal must never replace it')
         end
 
         -- IT LOOKS LIKE A BUTTON AND IS NOT ONE. Inherited verbatim from the

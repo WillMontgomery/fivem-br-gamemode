@@ -52,6 +52,62 @@ import { useUi } from '../store'
  * push. A glyph is therefore honest about knowing nothing rather than guessing,
  * and it fills itself in the moment the push lands.
  */
+/**
+ * The four arrow keys, drawn rather than typed.
+ *
+ * ═══ ANTON HAS NO ARROWS, WHICH IS THE WHOLE PROBLEM ═══
+ *
+ * A cap's label is set in the display face, and that face carries letters,
+ * digits and punctuation. An arrow CHARACTER is not in it, so the browser
+ * silently substitutes some other installed font -- whatever it finds -- and
+ * what it finds is a thin, light, text-weight glyph sitting inside a heavy
+ * display cap. Owner, twice: "needs much more weight. It's far too thin. Perhaps
+ * 3x", then "the SVG arrow is still far too thin and now low contrast since you
+ * added a glyph around it."
+ *
+ * font-weight cannot fix it (the substituted face has one weight) and neither
+ * could stroking the glyph, which thickens an outline without giving the arrow
+ * any more body. So the arrow is a PATH, at a stroke width chosen against
+ * Anton's own stems rather than against a text font's.
+ *
+ * `currentColor` AND NOT A LITERAL, so it takes the cap's foreground -- white on
+ * the filled plate, dimmed with everything else when a cap is unbound. That is
+ * the contrast half of the same report: a thin grey arrow on a dark plate reads
+ * as low contrast because it is thin, not because it is grey.
+ *
+ * SIZED IN `em`, so it tracks the cap, which tracks the sentence, which tracks
+ * the player's text-size preference. Every other dimension in this file is `em`
+ * for the same reason (#159).
+ */
+const ARROWS: Record<string, string> = {
+  '←': 'M20 12 H6 M12 5 L5 12 L12 19',
+  '→': 'M4 12 H18 M12 5 L19 12 L12 19',
+  '↑': 'M12 20 V6 M5 12 L12 5 L19 12',
+  '↓': 'M12 4 V18 M5 12 L12 19 L19 12',
+}
+
+function Arrow({ d }: { d: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="1em"
+      height="1em"
+      fill="none"
+      stroke="currentColor"
+      // FOUR, MEASURED AGAINST THE CAP'S OWN LETTERS. Anton at this size has
+      // stems around a sixth of the glyph box; 4/24 is the same sixth, so an
+      // arrow and a letter carry equal weight inside the same plate.
+      strokeWidth={4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      style={{ display: 'block' }}
+    >
+      <path d={d} />
+    </svg>
+  )
+}
+
 export function KeyCap({ command, label, fs = '1.15rem' }: {
   /**
    * The RegisterCommand name, e.g. 'brptt'. Never a key label.
@@ -158,8 +214,20 @@ export function KeyCap({ command, label, fs = '1.15rem' }: {
         // smallest floor that still reads as a cap rather than a bar, measured
         // against `I`, `1` and `'`.
         minWidth: '1.75em',
-        padding: '0.1em 0.32em',
+        padding: '0.1em 0.4em',
         lineHeight: 1.4,
+        // ═══ TRACKING, BECAUSE ANTON IS CONDENSED ═══
+        //
+        // Owner, 2026-09-07: "the font inside the glyph looks great but can you
+        // increase the font spacing maybe 20%?" Anton sets tight by design,
+        // which is right for a headline and cramped for a two- or three-letter
+        // key label read at a glance. 0.06em is about a fifth of the natural
+        // side bearing at this size.
+        //
+        // THE TRAILING SPACE IS PAID BACK BY THE PADDING ABOVE. letter-spacing
+        // adds its gap AFTER the last glyph too, so a centred label drifts left
+        // by half of it; the extra horizontal padding restores the centre.
+        letterSpacing: '0.06em',
         // ═══ THE THREE PROPERTIES THAT MAKE IT WORK INSIDE A SENTENCE ═══
         //
         // inline-block, AND IT IS LOAD-BEARING RATHER THAN TIDINESS. On a bare
@@ -231,7 +299,9 @@ export function KeyCap({ command, label, fs = '1.15rem' }: {
         transition: 'none',
       }}
     >
-      {label ?? (key || '--')}
+      {label !== undefined
+        ? (ARROWS[label] ? <Arrow d={ARROWS[label]} /> : label)
+        : (key || '--')}
     </span>
   )
 }
