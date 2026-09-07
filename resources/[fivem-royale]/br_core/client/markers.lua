@@ -87,7 +87,12 @@ AddEventHandler(BR.Net.MARKER_SYNC, function(d)
     BR.Native.blipName(blip,
         who and who.name and (who.name .. "'s Marker") or 'Squad Marker')
     ownBlips[blip] = true
+    -- NEW MARKERS ONLY. Re-placing on top of an existing one is the same wire
+    -- message, and a cue for a mate adjusting their own ping is noise. The server
+    -- already excludes the sender, so this cannot fire for your own.
+    local isNew = markers[d.owner] == nil
     markers[d.owner] = { x = d.x, y = d.y, colour = hex, blip = blip }
+    if isNew then BR.Sfx.play('squad.waypoint') end
 end)
 
 -- The placement watcher: a fresh waypoint while in a match becomes a marker.

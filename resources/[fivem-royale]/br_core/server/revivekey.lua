@@ -655,6 +655,12 @@ BR.Sched.every(K and K.tickMs or 1000, 'revivekey.sweep', function()
                 -- this record for the rest of the match, because it is still
                 -- buyable.
                 say(squadSrcs(e.squadId, e.matchId), copy().expired, 'warn')
+                -- THE SAME AUDIENCE AS THE SENTENCE, and once per key: `lapsed`
+                -- above is the latch, and the sweep keeps walking this record
+                -- for the rest of the match because the key is still buyable.
+                for _, s in ipairs(squadSrcs(e.squadId, e.matchId)) do
+                    TriggerClientEvent(BR.Net.SFX_CUE, s, { c = 'revivekey.expired' })
+                end
                 print(('[br_core] revivekey: the pickup for %s (%d) expired -- '
                     .. 'still buyable')
                     :format(tostring(e.name), src))
@@ -762,6 +768,11 @@ function BR.ReviveKey.take(src, targetSrc)
     end
 
     grant(e, 'fetched')
+
+    -- TO THE COLLECTOR, ON THE SERVER'S CONFIRMATION. The client-side press is
+    -- not the pickup -- the server can refuse it silently -- so a cue there would
+    -- lie about a key they did not get.
+    TriggerClientEvent(BR.Net.SFX_CUE, src, { c = 'revivekey.pickup' })
 
     -- ═══ TWO SENTENCES, TWO AUDIENCES, BOTH HIS (2026-08-31) ═══
     --

@@ -250,6 +250,24 @@ export type Step = {
    */
   autoDismissMs?: number
   /**
+   * Advance when this card's own screen goes away, however it went.
+   *
+   * ═══ THE SILENT STALL THIS EXISTS TO PREVENT ═══
+   *
+   * A card scoped to a screen stops drawing when that screen closes -- which is
+   * right while the player is coming back, and fatal when they are not. On the
+   * report card two ordinary actions close the list: pressing Escape, and filing
+   * a report (which the server drops but answers as a success, after which br_ui
+   * closes the panel). Either left the run frozen with no card, no keys and no
+   * error -- the abandon timer is suppressed for a card that is merely waiting
+   * for its screen.
+   *
+   * So a card that has NOTHING LEFT TO ASK once its screen is gone says so, and
+   * the walkthrough moves on rather than waiting for a screen the player has
+   * finished with.
+   */
+  endOnScreenGone?: boolean
+  /**
    * A toast to leave behind as this card advances.
    *
    * FOR SOMETHING THE PLAYER NEEDS AFTER THE WALKTHROUGH IS OVER, which a card

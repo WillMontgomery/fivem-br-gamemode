@@ -3182,6 +3182,9 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
         -- before the timer means they know how this works.
         if gained or now - mercy.landedAt < (cfg.afterMs or 60000) then return end
         mercy.armedAt = now
+        -- ONCE PER MATCH, on the arm. The 1Hz pass below re-asserts the blips
+        -- every second and a cue there would be a siren.
+        BR.Sfx.play('blips.shown')
 
         -- THE NOTICE SAYS HOW LONG IT LASTS (user call, 2026-08-06). Help that
         -- vanishes without warning reads as a bug; help with a stated duration

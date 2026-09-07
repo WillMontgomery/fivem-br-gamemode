@@ -1208,10 +1208,19 @@ export default function PlayerList() {
               // reporting lives in both modes, it is always mounted while the
               // panel is, and it is small enough that a ring around it still
               // means "this row, here" rather than "somewhere on this screen".
-              data-tut="players-report"
               className="shrink-0 px-4 pt-3 pb-3.5"
               style={{ borderTop: '1px solid rgba(255,255,255,0.10)' }}
             >
+              {/* ═══ THE ANCHOR IS THIS WRAPPER, AND IT HAS TO BE ═══
+                  It was on the button, which report mode unmounts -- that
+                  abandoned the run. It was then on the footer strip, which is the
+                  panel's full width around a small button, and the ring looked
+                  like it meant the whole row (owner, twice).
+                  This wrapper is the only thing that is BOTH always mounted and
+                  tight: it holds whichever control the ternary below is showing,
+                  and nothing else. `inline-block` because a wrapper with no
+                  layout box measures 0x0. */}
+              <span data-tut="players-report" className="inline-block">
               {reporting ? (
                 <div className="flex items-center gap-2">
                   {/* SUBMIT ONLY EXISTS WITH A SELECTION. An always-present
@@ -1238,6 +1247,7 @@ export default function PlayerList() {
                   Report player
                 </Btn>
               )}
+              </span>
             </div>
           </div>
         </div>

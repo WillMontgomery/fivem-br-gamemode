@@ -262,6 +262,11 @@ export const GAME_STEPS: Step[] = [
     // walkthrough opened is the walkthrough's to close, and a whole card spent
     // on housekeeping is a card spent on nothing.
     onLeave: { cb: 'br/players/focus', data: { open: false } },
+    // AND IF THEY CLOSE THE LIST THEMSELVES, THE CARD IS STILL DONE. Escape, the
+    // list key, or filing a report all close the panel -- and each of them used
+    // to leave the run frozen with no card and no way forward. See
+    // `endOnScreenGone`.
+    endOnScreenGone: true,
     body: 'If a player is **cheating**, or is abusive in voice or chat, press **Report player** and pick them from this list. An admin reads every one, and every correct report is awarded ~100 Volts~.',
     advance: 'next',
   },

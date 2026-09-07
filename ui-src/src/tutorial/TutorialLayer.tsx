@@ -395,6 +395,15 @@ export type TutorialLayerProps = {
 
 export default function TutorialLayer(p: TutorialLayerProps) {
   const [i, setI] = useState(0)
+  /**
+   * The current index, readable from a closure that was built before it moved.
+   *
+   * `go` is memoised on the script rather than on the step, so anything inside it
+   * that needs to know WHERE WE ARE has to read it from here. See the note at
+   * `leaving`.
+   */
+  const iRef = useRef(0)
+  iRef.current = i
   const [rect, setRect] = useState<Rect | null>(null)
   const [leaving, setLeaving] = useState(false)
   // WHICH STEP THE PRESS WAS FOR, not whether one happened.
@@ -684,7 +693,22 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       // every one of them ends up in this function -- the arrow, the button, the
       // observed action -- and a tidy-up that only some exits performed would be
       // a screen left open on the others.
-      const leaving = steps[i]
+      // ═══ THE STEP BEING LEFT, READ FROM A REF ═══
+      //
+      // `go` is a useCallback whose deps are `[steps.length]` -- a constant for a
+      // given script -- so it is built ONCE, on the first render, and the `i` it
+      // closes over is frozen at its initial 0. `steps[i]` therefore read
+      // `steps[0]` forever, which is why `onLeave` had never fired for any step
+      // in this project's history and why the player list stayed open while the
+      // card advanced: the owner had to close it by hand, twice reported.
+      //
+      // The same freeze would have silently eaten the end-of-tutorial toast,
+      // which was written the same way an hour ago.
+      //
+      // A REF RATHER THAN A DEPENDENCY, because putting `i` in the deps rebuilds
+      // `go` every step -- and `go` is captured by half a dozen effects whose own
+      // deps include it, so each of those would re-run on every advance too.
+      const leaving = steps[iRef.current]
       if (leaving?.onLeave) {
         void fetchNui(leaving.onLeave.cb, leaving.onLeave.data ?? {})
       }
@@ -866,6 +890,18 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     return () => clearTimeout(t)
   }, [step, steps.length, go])
 
+
+  // ── a card whose screen has gone, and which has nothing left to ask ─────
+  //
+  // See `Step.endOnScreenGone`. It waits for the screen to have been up at least
+  // once, so a card cannot advance on the frame before its own screen opens.
+  const sawScreen = useRef(false)
+  useEffect(() => { sawScreen.current = false }, [step])
+  useEffect(() => {
+    if (!step || !step.endOnScreenGone || step.screen === undefined) return
+    if (p.screen === step.screen) { sawScreen.current = true; return }
+    if (sawScreen.current) go(i + 1)
+  }, [step, p.screen, i, go])
 
   // ── switching inventory slots ends the step ─────────────────────────────
   //
@@ -1294,7 +1330,13 @@ export default function TutorialLayer(p: TutorialLayerProps) {
         // KEYS ON THE BARE HUD, BUTTONS OVER A SCREEN. A card scoped to one of
         // our own screens draws while that screen holds the cursor -- and that
         // focus has taken game input, so the arrows cannot reach Lua at all.
-        keys={p.keyDriven === true && step.screen === undefined}
+        // KEYS EVERYWHERE THE WALKTHROUGH IS KEY-DRIVEN, INCLUDING OVER OUR OWN
+        // SCREENS. The gate used to exclude a screen-scoped card, which was the
+        // one card in the script that then rendered a clickable button -- and it
+        // contradicted the rest of this file, where the DOM listener is
+        // registered for exactly those cards. Arrows were live; the card just
+        // did not say so, and offered a button instead (owner, twice).
+        keys={p.keyDriven === true}
         // NEVER ON A STEP THAT IS WAITING FOR THE PLAYER. Owner, 2026-09-07,
         // twice: "should not have a 'next' button but instead use arrow keys or
         // do it for them", "remove the next button from the card on this step

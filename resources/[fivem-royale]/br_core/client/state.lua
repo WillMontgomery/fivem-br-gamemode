@@ -746,6 +746,10 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
                 if S.me.state == BR.PlayerState.OUT then
                     diedThisMatch = true
                     BR.NoteDeath()
+                    -- ON THE STATE EDGE, not inside BR.NoteDeath -- that returns
+                    -- early when the death verdict is switched off, and the sound
+                    -- is not part of the verdict.
+                    BR.Sfx.play('death.self')
                 end
                 noteMyState()
                 applyFocusForState(S.match.state)
