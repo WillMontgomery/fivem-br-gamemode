@@ -128,6 +128,7 @@ export default function Lobby({
   const tutorialGameOn = useUi((s) => s.tutorialGameOn)
   const setTutorialGameArmed = useUi((s) => s.setTutorialGameArmed)
   const pushNotice = useUi((s) => s.pushNotice)
+  const tutorialOfferable = useUi((s) => s.tutorialOfferable)
   // Which screen is on top -- the offer is retired while Settings covers the
   // lobby, so the control does not vanish under the cursor that pressed it.
   const focus = useUi((s) => s.focus)
@@ -687,8 +688,15 @@ export default function Lobby({
                   server's answer off the profile row -- it goes false the moment
                   somebody declines or finishes, and stays false on every future
                   connect. Owner, 2026-09-07: "after completing the tutorial and
-                  going back to the lobby, the toggle is still there btw." */}
-              {tutorialOffer && (tutorialStep === 'ready' || tutorialGameShown) && (
+                  going back to the lobby, the toggle is still there btw."
+
+                  `tutorialOfferable` AND NOT `tutorialOffer`. The latter is the
+                  CHECKBOX beside Ready up, cleared the moment the walkthrough
+                  starts -- so gating this on it hid this toggle completely: the
+                  owner finished the lobby half, was never shown this, and the
+                  walkthrough carried on into his match anyway because readying
+                  up arms that separately (2026-09-07). */}
+              {tutorialOfferable && (tutorialStep === 'ready' || tutorialGameShown) && (
                 <TutorialToggle
                   on={tutorialGameOn}
                   onChange={(v) => {

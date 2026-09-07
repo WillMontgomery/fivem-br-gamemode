@@ -1280,6 +1280,16 @@ export type Envelope =
       d: {
         run: boolean
         offer?: boolean
+        /**
+         * Has this ACCOUNT still got the offer to spend?
+         *
+         * NOT `offer`, which is the lobby CHECKBOX and is cleared the moment the
+         * walkthrough starts. The second toggle -- the one that carries them into
+         * the match -- appears after the lobby half is over, so gating it on the
+         * checkbox hid it completely (owner, 2026-09-07). This is the profile
+         * row's answer and it outlives the run.
+         */
+        offerable?: boolean
         game?: boolean
         /**
          * How many of the four warmup crates this player has opened during the

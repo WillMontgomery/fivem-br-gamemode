@@ -107,6 +107,7 @@ export default function App() {
   useNuiEvent('tutorial', (d) => {
     s.setTutorialRun(d.run === true)
     if (d.offer !== undefined) s.setTutorialOffer(d.offer === true)
+    if (d.offerable !== undefined) s.setTutorialOfferable(d.offerable === true)
     if (d.game !== undefined) s.setTutorialGameRun(d.game === true)
     if (d.crates !== undefined) s.setTutorialCrates(d.crates)
     if (d.waypoints !== undefined) s.setTutorialWaypoints(d.waypoints)

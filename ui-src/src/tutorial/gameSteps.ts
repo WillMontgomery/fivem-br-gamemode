@@ -178,7 +178,7 @@ export const GAME_STEPS: Step[] = [
     // The card is about what a notification looks like, so it stages one and
     // holds it until they move on.
     stage: 'notice',
-    body: 'Anything the game needs to tell you arrives like this — a squadmate going down, a crate you have opened, the storm about to move. They stack up in the pause menu if you miss one.',
+    body: 'Anything the game needs to tell you arrives like this — a squadmate going down, a purchase, a reward. They stack up in the pause menu if you miss one.',
     advance: 'next',
   },
   {
@@ -192,8 +192,7 @@ export const GAME_STEPS: Step[] = [
     // right panel" (2026-09-07). A card about a keypress has no control on
     // screen to ring.
     //
-    // LOWER HALF, CENTRED (owner, 2026-09-07).
-    place: 'half',
+    place: 'quarter',
     title: 'Everybody in the match',
     // {key:…} becomes the player's ACTUAL binding, {tilde:…} adds the location
     // suffix only while that command is still on tilde. See `withKeys`.
@@ -220,23 +219,14 @@ export const GAME_STEPS: Step[] = [
     target: 'players-report',
     screen: 'players',
     title: 'Reporting somebody',
+    // THE WALKTHROUGH CLOSES WHAT IT OPENED. There used to be a card telling
+    // them to close the list again -- owner, 2026-09-07: "let's just remove step
+    // 10 and close the player list for them and move on." A screen the
+    // walkthrough opened is the walkthrough's to close, and a whole card spent
+    // on housekeeping is a card spent on nothing.
+    onLeave: { cb: 'br/players/focus', data: { open: false } },
     body: 'If a player is **cheating**, or is abusive in voice or chat, press **Report player** and pick them from this list. An admin reads every one, and every correct report is awarded ~100 Volts~.',
     advance: 'next',
-  },
-  {
-    id: 'game-players-close',
-    target: 'players-report',
-    screen: 'players',
-    title: 'Close it when you are done',
-    // ENDS ON THE LIST GOING AWAY, which is the same key that opened it. There
-    // is no `advance` kind for "a screen closed" because there did not need to
-    // be: `screen` is whatever is on top, and the bare HUD is `none`.
-    body: 'Press **{key:brplayers}** again, or **Escape**, to close the list.',
-    advance: 'screen',
-    awaitScreen: 'none',
-    // NO BACK BUTTON ACROSS THE DOORWAY. Last would have to reopen a screen the
-    // player is being asked to close.
-    noBack: true,
   },
   {
     id: 'game-crates',
@@ -247,7 +237,7 @@ export const GAME_STEPS: Step[] = [
     // element for a thing in the world, so it draws centred with no ring, and
     // the four rarity cones over the crates are what points at the subject.
     title: 'Crates',
-    body: 'There are four practice crates on the pad — look for the marker on your map. They refill themselves, so take as long as you like, and the **colored beam** over each one is the rarity of what is inside. **Go and open one.**',
+    body: 'There are four practice crates on the pad — look for the marker on your map. These are special crates which refill automatically when you walk away. The **colored beam** over each one shows the rarity of what’s inside. **Go and open one.**',
     // NO NEXT BUTTON: the card sends them somewhere, so the only way past it is
     // going (owner, 2026-09-05). The escape hatch after 45s is in TutorialLayer
     // and exists so a miscount cannot trap anybody -- see `stuck`.
@@ -318,11 +308,23 @@ export const GAME_STEPS: Step[] = [
     // could have borrowed is underneath a full-screen scaleform, so a ring would
     // outline a rectangle nobody can see.
     title: 'Waypoints',
-    body: 'Double click anywhere on the map to drop a **waypoint** — double click on it again to remove it. You will see this marker within the game too. In **squads** waypoints are visible to the whole team.',
+    body: 'Double click anywhere on the map to drop a **waypoint** — double click on it again to remove it. You will see this marker within the game too. In **squads** waypoints are visible to the whole team. **Try it yourself now.**',
     // ENDS ON A WAYPOINT ACTUALLY BEING PLACED. Owner, 2026-09-07: "should not
     // have a next/last button but instead encourage them to try it and only
     // proceed after they've placed a waypoint at least once."
     advance: 'waypoint',
+    noBack: true,
+    place: 'quarter',
+  },
+  {
+    id: 'game-map-close',
+    // STILL OVER THE MAP, and it is the card that gets them out of it. The
+    // waypoint card ends the moment one is placed, which leaves the player
+    // holding an open map with nothing telling them what to do next -- so this
+    // is the other half of that gesture rather than an extra step.
+    title: 'Nicely done',
+    body: 'Great job! Now press **Escape** to close the map.',
+    advance: 'mapclose',
     noBack: true,
     place: 'quarter',
   },
@@ -361,9 +363,13 @@ export const GAME_STEPS: Step[] = [
     // matchmaking should take place and the timer appears for the first time on
     // their screen."
     target: 'hud-timer',
-    title: 'That is everything',
+    title: 'Tutorial complete',
     body: 'That is the countdown to your flight. When it runs out you drop with everyone else — so use what is left to grab what you want. Good luck out there.',
     advance: 'dismiss',
+    // AND IT LEAVES BY ITSELF. Owner, 2026-09-07: "hide the card automatically
+    // after 10 seconds." Nothing is left to ask for and the countdown behind it
+    // is already running.
+    autoDismissMs: 10000,
     dismissLabel: "I'm ready",
     // NO BACK BUTTON PAST THE END. Stepping backwards out of the final card is
     // the one move that would let a player re-dismiss it, and the reward is

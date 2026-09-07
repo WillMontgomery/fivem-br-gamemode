@@ -492,6 +492,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     // card says it exists.
     const waits = step.advance === 'pickup' || step.advance === 'crate'
       || step.advance === 'map' || step.advance === 'waypoint'
+      || step.advance === 'mapclose'
     if (!waits) return
     const t = setTimeout(() => setStuck(true), STUCK_MS)
     return () => clearTimeout(t)
@@ -518,6 +519,16 @@ export default function TutorialLayer(p: TutorialLayerProps) {
 
   const go = useCallback(
     (to: number) => {
+      // ═══ A CARD CLOSES WHAT IT OPENED ═══
+      //
+      // See `Step.onLeave`. Fired here rather than in each advance path because
+      // every one of them ends up in this function -- the arrow, the button, the
+      // observed action -- and a tidy-up that only some exits performed would be
+      // a screen left open on the others.
+      const leaving = steps[i]
+      if (leaving?.onLeave) {
+        void fetchNui(leaving.onLeave.cb, leaving.onLeave.data ?? {})
+      }
       setLeaving(true)
       // ═══ AND THE PRESS IS FORGOTTEN, WHICH IS WHAT MAKES "LAST" WORK ═══
       //
@@ -657,6 +668,29 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     const up = frontendUp && frontendReason === 'map'
     if (up && !mapWasUp.current) go(i + 1)
     if (!up) mapWasUp.current = false
+  }, [step, frontendUp, frontendReason, i, go])
+
+  // ── a card that dismisses itself ────────────────────────────────────────
+  //
+  // See `Step.autoDismissMs`. It takes the same exit a press would -- `go` past
+  // the end -- so the reward is claimed by the run ENDING and not by a button,
+  // and there is no second way out to keep in step with the first.
+  useEffect(() => {
+    if (!step || !step.autoDismissMs) return
+    const t = setTimeout(() => go(steps.length), step.autoDismissMs)
+    return () => clearTimeout(t)
+  }, [step, steps.length, go])
+
+
+  // ── the map going AWAY ends the step ────────────────────────────────────
+  //
+  // The mirror of `map` above, for the card that asks them to close it again.
+  // No rising-edge guard is needed and none would be right: this card is only
+  // ever reached WHILE the map is open -- the two before it require it -- so the
+  // first frame it draws is a frame the map is up.
+  useEffect(() => {
+    if (!step || step.advance !== 'mapclose') return
+    if (!(frontendUp && frontendReason === 'map')) go(i + 1)
   }, [step, frontendUp, frontendReason, i, go])
 
   // ── dropping a waypoint ends the step ───────────────────────────────────
@@ -847,7 +881,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // card followed the player back out to the HUD and sat there over a control
   // it says nothing about (owner, 2026-09-07: "right now the card still
   // shows"). Waiting, not failing: it returns when the map does.
-  const waitingForMap = step !== undefined && step.advance === 'waypoint'
+  const waitingForMap = step !== undefined
+    && (step.advance === 'waypoint' || step.advance === 'mapclose')
     && !(frontendUp && frontendReason === 'map')
   const missing = step !== undefined && step.target !== undefined
     && rect === null && !waitingForScreen

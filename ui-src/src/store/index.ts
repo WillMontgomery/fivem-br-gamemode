@@ -313,6 +313,8 @@ export interface UiState {
   tutorialCrates: number
   /** Waypoints dropped during the in-game half. Mirrored from Lua. */
   tutorialWaypoints: number
+  /** Does this ACCOUNT still have the offer? See the `tutorial` envelope. */
+  tutorialOfferable: boolean
   /**
    * The last arrow press Lua reported while an in-game card was up.
    *
@@ -364,6 +366,7 @@ export interface UiState {
   setTutorialSquad: (s: SquadPayload | null) => void
   setTutorialCrates: (n: number) => void
   setTutorialWaypoints: (n: number) => void
+  setTutorialOfferable: (v: boolean) => void
   setTutorialNav: (n: { dir: 'next' | 'back' | 'action'; seq: number }) => void
   setParty: (p: SquadPayload) => void
   setTalking: (ids: number[], names?: string[]) => void
@@ -777,6 +780,7 @@ export const useUi = create<UiState>((set, get) => {
   tutorialSquad: null,
   tutorialCrates: 0,
   tutorialWaypoints: 0,
+  tutorialOfferable: false,
   tutorialNav: { dir: 'next', seq: 0 },
   leaving: false,
   curtain: 'leaving',
@@ -831,6 +835,7 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialSquad: (tutorialSquad) => set({ tutorialSquad }),
   setTutorialCrates: (tutorialCrates) => set({ tutorialCrates }),
   setTutorialWaypoints: (tutorialWaypoints) => set({ tutorialWaypoints }),
+  setTutorialOfferable: (tutorialOfferable) => set({ tutorialOfferable }),
   setTutorialNav: (tutorialNav) => set({ tutorialNav }),
   setParty:    (party) => set({ party }),
   // Names default to empty rather than to the ids: a bar reading "Currently

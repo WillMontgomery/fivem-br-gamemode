@@ -93,7 +93,15 @@ function Arrow({ d }: { d: string }) {
       width="1em"
       height="1em"
       fill="none"
-      stroke="currentColor"
+      // ═══ BRIGHTER THAN THE CAP, NOT THE SAME AS IT ═══
+      //
+      // Owner, 2026-09-07: "the arrows themselves should be a brighter white,
+      // akin to the font in our custom glyphs." `currentColor` inherits the
+      // cap's foreground, which is right for a LETTER -- the letter is the
+      // label -- and slightly wrong for a stroked path: an outline of a given
+      // colour reads darker than a filled letter of the same colour, because
+      // there is less of it per pixel. So it is stated rather than inherited.
+      stroke="#ffffff"
       // FOUR, MEASURED AGAINST THE CAP'S OWN LETTERS. Anton at this size has
       // stems around a sixth of the glyph box; 4/24 is the same sixth, so an
       // arrow and a letter carry equal weight inside the same plate.

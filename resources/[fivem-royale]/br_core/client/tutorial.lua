@@ -60,15 +60,19 @@ local function isTrue(v) return v == true or v == 1 end
 --- IDS VERIFIED IN-TREE, not guessed: client/revivekey.lua's ruler names
 --- 172/173/174/175 as UP/DOWN/LEFT/RIGHT and blocks the same four.
 ---
---- DOWN IS THE CARD'S ACTION, and it is the one choice here that is mine. One
---- card offers to open the player list for a player whose keyboard cannot reach
---- their bound key; with no cursor that offer needs a key of its own. DOWN is in
---- the same cluster as the other two, and nothing else in this project claims
---- it. Enter was the other candidate and was rejected because it opens chat.
+--- UP IS THE CARD'S ACTION. One card offers to open the player list for a player
+--- whose keyboard cannot reach their bound key; with no cursor that offer needs a
+--- key of its own. It is in the same cluster as the other two, nothing else in
+--- this project claims it, and it points the way the thing it does goes -- Enter
+--- was the other candidate and opens chat.
 local NAV = {
     [174] = 'back',
     [175] = 'next',
-    [173] = 'action',
+    -- UP, NOT DOWN, AND THE DIRECTION IS THE ARGUMENT. Owner, 2026-09-07: "down
+    -- arrow is less appropriate to open something - it should be an up arrow."
+    -- The one card with an action offers to OPEN the player list, and down reads
+    -- as putting something away.
+    [172] = 'action',
 }
 
 --- What the cards take away from the game while they are on screen.
@@ -118,6 +122,25 @@ local running = false
 --- re-run (#261). Collapsing them into one flag would make the re-run impossible
 --- to express.
 local offering = false
+
+--- Has this ACCOUNT still got the offer to spend?
+---
+--- ═══ NOT THE SAME THING AS THE CHECKBOX, AND CONFLATING THEM HID A TOGGLE ═══
+---
+--- `offering` is the lobby checkbox beside Ready up, and it is cleared the moment
+--- the walkthrough STARTS -- taking the offer spends it, which is right for that
+--- control. The SECOND toggle, the one that carries them into the match, appears
+--- after the lobby half is over, by which time `offering` is long false.
+---
+--- Gating that second toggle on `offering` therefore hid it completely: the
+--- owner finished the lobby half, was never shown it, and the walkthrough carried
+--- on into his match anyway because the lobby run arms that separately
+--- (2026-09-07).
+---
+--- So this is the account-level fact -- the profile row's answer, off
+--- BR.Net.TUTORIAL_OFFER -- and it goes false only when somebody declines or
+--- finishes. It outlives the run, which is exactly what the second toggle needs.
+local offerable = false
 
 --- Is the IN-GAME walkthrough running?
 ---
@@ -258,8 +281,8 @@ end)
 --- Push the walkthrough's state to the page.
 local function publish()
     TriggerEvent('br:ui:sendLocal', BR.Nui.TUTORIAL,
-                 { run = running, offer = offering, game = inGame,
-                   crates = crates, waypoints = waypoints })
+                 { run = running, offer = offering, offerable = offerable,
+                   game = inGame, crates = crates, waypoints = waypoints })
 end
 
 --- Start or stop the walkthrough, and tell the page.
@@ -496,7 +519,12 @@ end
 --- lobby offers nothing, which is better than offering and withdrawing.
 RegisterNetEvent(BR.Net.TUTORIAL_OFFER)
 AddEventHandler(BR.Net.TUTORIAL_OFFER, function(data)
-    BR.Tutorial.offer(type(data) == 'table' and data.offer == true)
+    local may = type(data) == 'table' and data.offer == true
+    -- TWO FLAGS OFF ONE ANSWER. `offerable` is the account's standing -- see its
+    -- note -- and the checkbox is raised from it once, here, because this is the
+    -- moment we learn whether to show it at all.
+    offerable = may
+    BR.Tutorial.offer(may)
 end)
 
 --- The player unticked the box. Spend the offer for good.
@@ -505,6 +533,7 @@ end)
 --- lowered here so the toggle goes immediately, and the row is written on the
 --- far side so it is still gone tomorrow.
 function BR.Tutorial.decline()
+    offerable = false
     BR.Tutorial.offer(false)
     TriggerServerEvent(BR.Net.TUTORIAL_DECLINE)
 end

@@ -284,10 +284,9 @@ export default function AnnotationCard(p: CardProps) {
         <span className="tut-acts">
           {p.action ? (
             p.keys ? (
-              // DOWN, AND THE CHOICE IS EXPLAINED IN br_core/client/tutorial.lua:
-              // it is in the same cluster as the other two and nothing else in
-              // the project claims it. Enter opens chat.
-              <KeyHint cap="↓">{p.action.label}</KeyHint>
+              // UP, BECAUSE THE ACTION OPENS SOMETHING. See the NAV table in
+              // br_core/client/tutorial.lua for why this key and not another.
+              <KeyHint cap="↑">{p.action.label}</KeyHint>
             ) : (
               <Btn variant="default" size="sm" cue="ui.select" onPress={p.action.onPress}>
                 {p.action.label}

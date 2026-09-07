@@ -134,6 +134,14 @@ export type Advance =
    * map does.
    */
   | 'waypoint'
+  /**
+   * The engine's full-screen map going AWAY.
+   *
+   * The mirror of `map`, for the card that asks them to close it again. Owner,
+   * 2026-09-07: "once that's done, tell them 'Great job! Now press [escape] to
+   * close the map.' - after they've done so THAT is when step 17 should show."
+   */
+  | 'mapclose'
 
 export type Step = {
   /** Stable id. Persisted progress and every log line key on this. */
@@ -195,6 +203,31 @@ export type Step = {
    * freeze and every path that has to put the camera back.
    */
   cam?: { x: number; y: number; z: number; heading: number }
+  /**
+   * A callback to fire as this card ADVANCES, to tidy up after itself.
+   *
+   * Owner, 2026-09-07, on the card that told the player to close the player
+   * list: "let's just remove step 10 and close the player list for them and move
+   * on." A screen the walkthrough opened is the walkthrough's to close, and
+   * making the player do it is a card spent on housekeeping.
+   *
+   * ON THE WAY OUT, NOT ON THE WAY IN, so the screen stays up for as long as the
+   * card that needs it.
+   */
+  onLeave?: { cb: CallbackName; data?: Record<string, unknown> }
+  /**
+   * Dismiss this card by itself after this many milliseconds.
+   *
+   * ONE CARD USES IT AND IT IS THE LAST ONE. Owner, 2026-09-07: "hide the card
+   * automatically after 10 seconds." It is the only card with nothing left to
+   * ask for -- the walkthrough is over and the countdown behind it is already
+   * running -- so leaving it on screen until somebody presses a key is leaving
+   * furniture in front of the thing it just handed them.
+   *
+   * IT TAKES THE SAME EXIT A PRESS WOULD, which is what makes it safe: the
+   * reward is claimed by the run ENDING, not by the button.
+   */
+  autoDismissMs?: number
   /**
    * For `advance: 'dismiss'` -- what the last button says, when "Dismiss" is
    * the wrong word for it.
