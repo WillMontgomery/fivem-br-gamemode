@@ -128,9 +128,18 @@ const VK_TILDE = 0xc0
  */
 function withKeys(body: string, binds: Array<{ command: string; key?: string; vk?: number }>): string {
   return body
-    .replace(/\{key:([a-z]+)\}/gu, (_m, cmd: string) =>
-      binds.find((b) => b.command === cmd)?.key || 'unbound')
-    .replace(/\{tilde:([a-z]+)\}/gu, (_m, cmd: string) =>
+    // «», NOT BOLD. The substituted key comes out wrapped in the card's
+    // grammar for a key cap, so `{key:brmap}` renders as the same little outlined
+    // box the Back and Next hints use rather than as bold prose (owner,
+    // 2026-09-06: "why are all these {keys} not in our glyphs?"). See
+    // AnnotationCard's `emphasise`.
+    //
+    // THE COMMAND NAME TAKES DIGITS, and it did not. `brslot1`..`brslot5` are
+    // real commands and the old `[a-z]+` could not match them, so those two
+    // tokens printed literally on the card that explains switching weapons.
+    .replace(/\{key:([a-z0-9]+)\}/gu, (_m, cmd: string) =>
+      '«' + (binds.find((b) => b.command === cmd)?.key || 'unbound') + '»')
+    .replace(/\{tilde:([a-z0-9]+)\}/gu, (_m, cmd: string) =>
       binds.find((b) => b.command === cmd)?.vk === VK_TILDE
         ? ' (above TAB on your keyboard)'
         : '')

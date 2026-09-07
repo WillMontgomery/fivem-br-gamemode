@@ -538,12 +538,25 @@ end)
 --- number nobody has tuned is a starting point rather than an invention.
 local M = W.marker
 
---- Is the tutorial (or /brwarmupmarkers) asking for these right now?
+--- Are the rarity cones drawing?
 ---
---- OFF BY DEFAULT AND THAT IS THE SPECIFICATION. These four cones exist to serve
---- the guided first run; a player on their fiftieth warmup has not asked to be
---- pointed at anything. See BR.WarmupCrates.markers below for the switch.
-local markersOn = false
+--- ═══ ON BY DEFAULT, AND IT USED TO BE OFF ═══
+---
+--- Owner, 2026-09-06: "the colored markers over the crates should always be shown
+--- in warmup regardless of tutorial state, even for players not in the tutorial."
+---
+--- The first version reasoned that these four cones existed to serve the guided
+--- first run, so a player on their fiftieth warmup had not asked to be pointed at
+--- anything. That was wrong about what they are FOR. The colour is the crate's
+--- rarity -- a fact about the crate, not an instruction to a learner -- and a
+--- veteran deciding which of four to open wants it more than a beginner does. It
+--- is the same argument the crates themselves already carry: "ANYONE can use
+--- these crates in warmup, not just the tutorial folks."
+---
+--- THE SWITCH STAYS, and BR.WarmupCrates.markers still works. /brwarmupmarkers
+--- turns them off to look at the pad without them, which is worth keeping; the
+--- tutorial no longer touches it.
+local markersOn = true
 
 --- [anchorIndex] = { r, g, b } for that crate's authored rarity.
 ---
@@ -786,9 +799,9 @@ end)
 --- on by accident.
 ---
 --- OFF TAKES EFFECT ON THIS LINE, not on the next tick. The tick pass would
---- clear the list within 100ms anyway, but "the tutorial ended and there are
---- still cones up" is a visible wrong state and this costs one assignment to
---- make impossible.
+--- clear the list within 100ms anyway, but "switched off and there are still
+--- cones up" is a visible wrong state and this costs one assignment to make
+--- impossible.
 --- @param on boolean
 function BR.WarmupCrates.markers(on)
     on = on == true

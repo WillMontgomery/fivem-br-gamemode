@@ -207,7 +207,7 @@ export const GAME_STEPS: Step[] = [
     target: 'players-report',
     screen: 'players',
     title: 'Reporting somebody',
-    body: 'If a player is **cheating**, or is abusive in voice or chat, press **Report player** and pick them from this list. A moderator reads every one — you do not need to catch them at it, and reporting somebody never tells them you did.',
+    body: 'If a player is **cheating**, or is abusive in voice or chat, press **Report player** and pick them from this list. An admin reads every one, and every correct report is awarded ~250 Volts~.',
     advance: 'next',
   },
   {
@@ -250,7 +250,7 @@ export const GAME_STEPS: Step[] = [
     // holding the interact key against a prompt, not by walking through it. The
     // key is printed from the player's own binding, like every other key in this
     // script.
-    body: 'Stand over anything on the ground and hold **{key:brinteract}** to pick it up. **Take two things** from the crate you opened.',
+    body: 'Stand over anything on the ground and hold {key:brinteract} to pick it up. **Take two things** from the crate you opened. Nothing you pick up in warmup comes with you into the match.',
     advance: 'pickup',
     pickups: 2,
   },
@@ -276,7 +276,7 @@ export const GAME_STEPS: Step[] = [
     // through".
     target: 'hud-counters',
     title: 'Waypoints',
-    body: 'Click anywhere on the map to drop a **waypoint** — the game will steer you to it. In **squads** your waypoint is visible to your team, so it is how you say "over here" without saying anything.',
+    body: 'Double click anywhere on the map to drop a **waypoint** — double click on it again to remove it. You will see this marker within the game too. In **squads** waypoints are visible to the whole team.',
     advance: 'next',
   },
   {

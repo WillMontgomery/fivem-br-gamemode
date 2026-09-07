@@ -735,14 +735,26 @@ standAtAnchor(1, 2.0)
 describe('markers: the switch')
 do
     ok(type(BR.WarmupCrates.markers) == 'function',
-       'BR.WarmupCrates.markers is the switch the tutorial calls')
-    eq(BR.WarmupCrates.markersOn(), false, 'and it is OFF before anybody asks')
+       'BR.WarmupCrates.markers is the switch /brwarmupmarkers uses')
 
-    -- OFF MEANS NOTHING IS DRAWN, in warmup, standing on the pad, with the
-    -- crates in range. That is the requirement -- these serve the guided first
-    -- run and nobody else -- and it is the one a default flipped by accident
-    -- would break for every player at once.
-    eq(#tickAndFrame(), 0, 'and nothing is drawn over four crates in reach')
+    -- ═══ ON BY DEFAULT, AND IT USED TO BE OFF ═══
+    --
+    -- Owner, 2026-09-06: "the colored markers over the crates should always be
+    -- shown in warmup regardless of tutorial state, even for players not in the
+    -- tutorial." The colour is the crate's RARITY -- a fact about the crate
+    -- rather than an instruction to a learner -- and a veteran choosing between
+    -- four wants it more than a beginner does.
+    --
+    -- PINNED BOTH WAYS. The default is asserted, and so is the consequence:
+    -- standing on the pad in warmup with nobody having asked for anything, all
+    -- four draw. A default flipped by accident would take a shipped feature away
+    -- from every player at once, silently.
+    eq(BR.WarmupCrates.markersOn(), true, 'and they are ON before anybody asks')
+    eq(#tickAndFrame(), 4, 'all four draw for a player who asked for nothing')
+
+    BR.WarmupCrates.markers(false)
+    eq(BR.WarmupCrates.markersOn(), false, 'markers(false) turns them off')
+    eq(#tickAndFrame(), 0, 'and then nothing is drawn over four crates in reach')
 
     BR.WarmupCrates.markers(true)
     eq(BR.WarmupCrates.markersOn(), true, 'markers(true) turns them on')

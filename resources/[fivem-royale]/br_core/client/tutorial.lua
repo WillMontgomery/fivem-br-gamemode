@@ -239,24 +239,15 @@ function BR.Tutorial.game(on)
     -- nothing has to be popped, and a run that ends badly cannot strand anybody
     -- holding a focus nothing will release.
 
-    -- ═══ AND THE MARKERS OVER THE FOUR CRATES GO UP WITH IT ═══
+    -- ═══ THE MARKERS ARE NOT THIS FILE'S BUSINESS ANY MORE ═══
     --
-    -- ON FOR THE WHOLE HALF RATHER THAN FOR THE ONE CARD THAT MENTIONS THEM,
-    -- deliberately. The crate card sends the player away from their screen to
-    -- walk the pad, and the next card is about what they picked up -- so a
-    -- marker that switched off the moment the card advanced would go out while
-    -- they were still standing over the crate. One switch, two edges, and both
-    -- of them are edges the player can see the reason for.
-    --
-    -- OFF BY DEFAULT, AND THAT IS THE CRATES' CALL, NOT THIS FILE'S. Every
-    -- warmup player may use these four (owner, 2026-09-04: "ANYONE can use
-    -- these crates in warmup"); only a learner needs them signposted.
-    --
-    -- Nil-guarded on the MODULE, the same shape as BR.Roster's cleanup calls:
-    -- a build without the crates is one where there is nothing to mark.
-    if BR.WarmupCrates and BR.WarmupCrates.markers then
-        BR.WarmupCrates.markers(on)
-    end
+    -- This used to switch the four rarity cones on with the walkthrough and off
+    -- with it. They are on for everybody in warmup now (owner, 2026-09-06: "the
+    -- colored markers over the crates should always be shown in warmup
+    -- regardless of tutorial state, even for players not in the tutorial"), so
+    -- there is nothing here to turn on -- and a switch that ran on the tutorial's
+    -- edges would now be a way for the walkthrough ENDING to take a permanent
+    -- feature away from the player.
 
     -- AND THE SERVER IS TOLD, WITHOUT TOUCHING `running`.
     --

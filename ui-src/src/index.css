@@ -1795,13 +1795,30 @@ html, body, #root {
   white-space: nowrap;
 }
 
-.tut-key kbd {
+/* ═══ THE KEY CAP ═══
+
+   Used in two places and it has to look the same in both: the footer hints
+   (← Last, → Next) and any key named inside a card's prose. The prose ones are
+   produced by `withKeys`, which wraps a substituted {key:command} token so the
+   card's own grammar renders it -- owner, 2026-09-06: "why are all these {keys}
+   not in our glyphs?"
+
+   THE ARROWS NEEDED REAL WEIGHT. Owner: "the black font used in your
+   left/right/up/down arrow SVGs needs much more weight. It's far too thin.
+   Perhaps 3x." They are text glyphs rather than SVGs, and font-weight does
+   almost nothing to an arrow: the weight axis of a variable text font does not
+   reach symbol glyphs, which usually come from a fallback face with one weight.
+
+   `-webkit-text-stroke` DOES, because it paints an outline in the glyph's own
+   colour whatever face it came from -- so the arrow thickens even though the
+   font cannot. Chrome has had it since 4; check-css.mjs's floor is 103. */
+.tut-cap {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 1.15rem;
   height: 1.15rem;
-  padding: 0 0.2rem;
+  padding: 0 0.25rem;
   /* SQUARE, like every other box in this interface. */
   border: 1px solid var(--color-volts);
   color: var(--color-volts);
@@ -1809,6 +1826,18 @@ html, body, #root {
   font-size: 0.78rem;
   font-weight: var(--font-tutorial-head);
   line-height: 1;
+  -webkit-text-stroke: 0.6px currentColor;
+  /* A cap in the middle of a sentence must not push the line apart. */
+  vertical-align: baseline;
+  transform: translateY(0.12em);
+}
+
+/* THE CURRENCY, IN THE CURRENCY'S COLOUR. Owner, 2026-09-06, on the reporting
+   card: "the '250 Volts' text needs to be our signature volts color." Written
+   `~250 Volts~` in the card's prose; see AnnotationCard's `emphasise`. */
+.tut-volts {
+  color: var(--color-volts);
+  font-weight: var(--font-tutorial-head);
 }
 
 /* ═══ THE SPOTLIGHT ═══

@@ -61,7 +61,9 @@ import Btn from '../ui/Btn'
 function KeyHint(p: { cap: string; children: React.ReactNode }) {
   return (
     <span className="tut-key">
-      <kbd>{p.cap}</kbd>
+      {/* THE SAME CAP THE PROSE USES, so an arrow in the footer and a key name
+          in a sentence are visibly the same kind of thing. */}
+      <kbd className="tut-cap">{p.cap}</kbd>
       {p.children}
     </span>
   )
@@ -83,7 +85,20 @@ function KeyHint(p: { cap: string; children: React.ReactNode }) {
  */
 function emphasise(text: string): React.ReactNode[] {
   const out: React.ReactNode[] = []
-  const pattern = /\*\*([^*]+)\*\*|\*([^*]+)\*/gu
+  // FOUR MARKS, AND THE ORDER IS THE RULE. `**` is tested before `*` because a
+  // single-mark rule applied first reads `**x**` as an italic containing a
+  // literal asterisk. The other two cannot collide with anything.
+  //
+  //   **bold**   the owner's emphasis
+  //   *italic*   the owner's other emphasis
+  //   «KEY»    a key cap. NOT AUTHORED BY HAND -- `withKeys` produces these
+  //              when it substitutes a {key:command} token, so a card says
+  //              "press {key:brmap}" and the player sees their own binding in
+  //              the same little outlined box the Next hint uses (owner,
+  //              2026-09-06: "why are all these {keys} not in our glyphs?").
+  //   ~Volts~    the currency, in the currency's own colour. Owner, 2026-09-06:
+  //              "the '250 Volts' text needs to be our signature volts color."
+  const pattern = /\*\*([^*]+)\*\*|\*([^*]+)\*|«([^»]+)»|~([^~]+)~/gu
   let last = 0
   let m: RegExpExecArray | null
 
@@ -95,8 +110,12 @@ function emphasise(text: string): React.ReactNode[] {
           {m[1]}
         </b>,
       )
-    } else {
+    } else if (m[2] !== undefined) {
       out.push(<i key={out.length}>{m[2]}</i>)
+    } else if (m[3] !== undefined) {
+      out.push(<kbd key={out.length} className="tut-cap">{m[3]}</kbd>)
+    } else {
+      out.push(<span key={out.length} className="tut-volts">{m[4]}</span>)
     }
     last = m.index + m[0].length
   }
