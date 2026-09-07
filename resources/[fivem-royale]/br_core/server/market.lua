@@ -49,6 +49,7 @@ AddEventHandler('br:ddb:inventoryResult', function(req, i, extra) reply(req, i, 
 AddEventHandler('br:ddb:purchaseResult',  function(req, ok, extra) reply(req, ok, extra or {}) end)
 AddEventHandler('br:ddb:equipResult',     function(req, ok, extra) reply(req, ok, extra or {}) end)
 AddEventHandler('br:ddb:spendResult',     function(req, ok, extra) reply(req, ok, extra or {}) end)
+AddEventHandler('br:ddb:tutorialSetResult', function(req, ok, extra) reply(req, ok, extra or {}) end)
 
 --- Issue one br_ddb request with a timeout, so a bridge that never answers
 --- cannot leak a pending closure per attempt for the life of the server.
@@ -188,10 +189,16 @@ function BR.Market.load(src)
     inv[lic] = withDefaults({ balance = 0, spent = 0, xp = 0, owned = {}, equipped = {}, loaded = false })
 
     ask('br:ddb:inventoryFetch', function(i, extra)
-        local entry = { balance = 0, spent = 0, xp = 0, owned = {}, equipped = {}, loaded = true }
+        local entry = { balance = 0, spent = 0, xp = 0, owned = {}, equipped = {},
+                        tutorial = '', loaded = true }
 
         if i then
             entry.balance = tonumber(i.balance) or 0
+            -- WHERE THIS ACCOUNT STANDS WITH THE GUIDED FIRST RUN (#261).
+            -- '' is never answered, and it is the state every account is in
+            -- until somebody declines or finishes -- which is what makes the
+            -- offer reach players who have been here for months.
+            entry.tutorial = type(i.tutorial) == 'string' and i.tutorial or ''
             -- LIFETIME XP, not progress into a level. The curve derives both
             -- from this one number, so storing the derived form would mean
             -- storing something that can disagree with its own source.
@@ -214,6 +221,22 @@ function BR.Market.load(src)
         inv[lic] = withDefaults(entry)
         BR.Market.publishXp(lic)
         BR.Market.push(src)
+
+        -- ═══ AND THE OFFER, NOW THAT WE KNOW WHETHER TO MAKE IT (#261) ═══
+        --
+        -- Owner, 2026-09-07: "set the default for every single person (not just
+        -- new players) to have that tutorial enabled next time they join the
+        -- server." Nobody's row carries this field yet, so '' -- never answered
+        -- -- is what every account reads back, and every account is offered it
+        -- exactly once. There is no separate "new player" test and there does
+        -- not need to be.
+        --
+        -- HERE RATHER THAN ON CONNECT, because this is the line where the answer
+        -- exists. A read that failed leaves `entry.tutorial` at '' and the offer
+        -- is made -- the permissive direction, which costs a player one toggle
+        -- they can untick and costs nobody anything else.
+        TriggerClientEvent(BR.Net.TUTORIAL_OFFER, src,
+                           { offer = entry.tutorial == '' })
     end, lic)
 end
 
@@ -651,4 +674,77 @@ AddEventHandler('playerDropped', function()
         if other == lic then return end
     end
     inv[lic] = nil
+end)
+
+-- ---------------------------------------------------------------------------
+-- The guided first run's one persisted fact (#261)
+-- ---------------------------------------------------------------------------
+
+--- Has this account answered the tutorial offer, and how?
+---
+--- '' -- never. 'declined' -- they turned it down. 'done' -- they finished it.
+---
+--- READ OFF THE PROFILE ROW, which this file already fetches once per connect.
+--- It lives beside the balance because it is a fact about the ACCOUNT, and
+--- because putting it anywhere else would mean a second read on a path that
+--- already has one.
+--- @param license string|nil
+--- @return string
+function BR.Market.tutorialOf(license)
+    local e = license and inv[license]
+    return (e and type(e.tutorial) == 'string') and e.tutorial or ''
+end
+
+--- Write it, once, and remember it locally so the rest of the session agrees.
+---
+--- ═══ BOTH STATES ARE TERMINAL AND NEITHER OUTRANKS THE OTHER ═══
+---
+--- 'declined' and 'done' mean the same thing to every reader -- do not offer
+--- this again -- and are kept apart only so a human reading the row can tell
+--- why. So there is no precedence rule here and none in br_ddb: the last writer
+--- wins, and it cannot matter.
+---
+--- THE CACHE MOVES FIRST AND THE ROW FOLLOWS. A player who declines and then
+--- readies up must not be offered it again in the seconds before DynamoDB
+--- answers, and the write is idempotent, so a failure costs one re-offer on
+--- their next connect rather than a wrong answer now.
+--- @param license string|nil
+--- @param state string  'declined' or 'done'
+function BR.Market.setTutorial(license, state)
+    if type(license) ~= 'string' or license == '' then return end
+    if state ~= 'declined' and state ~= 'done' then return end
+
+    local e = inv[license]
+    if e then e.tutorial = state end
+
+    ask('br:ddb:tutorialSet', function(ok, extra)
+        if ok then return end
+        print(('^3[br_core] market: tutorial state (%s) not saved for %s: %s^7')
+            :format(state, license, tostring((extra or {}).error)))
+    end, license, state)
+end
+
+--- br_stats finished paying (or refusing) the tutorial reward.
+---
+--- A CLIENT-LOCAL EVENT BETWEEN TWO RESOURCES' SERVER HALVES, which is the seam
+--- `br:market:credited` already uses in the other direction. br_stats owns the
+--- payment and this file owns the profile cache; neither reaches into the other.
+AddEventHandler('br:market:tutorialDone', function(license)
+    BR.Market.setTutorial(license, 'done')
+end)
+
+--- The player unticked the box themselves.
+---
+--- AN ABANDONED RUN IS NOT THIS. Owner, 2026-09-07: "leaving the game tutorial
+--- early results in the toggle still being available in the lobby - great, keep
+--- it." Only an explicit decline closes the offer, which is why this is its own
+--- message rather than a flag on the one that ends a run.
+RegisterNetEvent(BR.Net.TUTORIAL_DECLINE)
+AddEventHandler(BR.Net.TUTORIAL_DECLINE, function()
+    local src = source
+    local lic = BR.Roster.licenseOf(src)
+    if not lic then return end
+    print(('[br_core] market: %d declined the tutorial -- not offering again')
+        :format(src))
+    BR.Market.setTutorial(lic, 'declined')
 end)

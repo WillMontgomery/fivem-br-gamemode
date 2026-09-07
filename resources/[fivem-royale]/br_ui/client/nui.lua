@@ -633,6 +633,12 @@ RegisterNUICallback(BR.NuiCb.TUTORIAL_SET, function(data, cb)
     if data.game ~= nil then
         TriggerEvent('br:tutorial:game', data.game == true, data.done == true)
     end
+    -- THE OFFER, TURNED DOWN. Its own key because an abandoned RUN is not a
+    -- decline -- the toggle deliberately survives that -- so the two cannot
+    -- share a message. See BR.Net.TUTORIAL_DECLINE.
+    if data.declined == true then
+        TriggerEvent('br:tutorial:decline')
+    end
     -- THE WARMUP HOLD, WHICH ENDS BEFORE THE CARDS DO. See BR.Tutorial.hold:
     -- the last card is about the countdown, so the countdown has to be running
     -- while the player reads it.

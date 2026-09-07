@@ -509,10 +509,25 @@ AddEventHandler(BR.Net.TUTORIAL_DONE, function()
         end
 
         if info.alreadyPaid then
-            -- THE SECOND RUN IS NOT AN ERROR. The Help page can re-run the
-            -- walkthrough (#261) and a player who does is not being cheated
-            -- when it pays nothing -- but they must not be TOLD they were paid,
-            -- which is why the notification is inside the other branch.
+            -- ═══ THE SECOND RUN IS NOT AN ERROR, AND IT IS NOT SILENT EITHER ═══
+            --
+            -- Owner, 2026-09-07: "after the in-game tutorial is done for a
+            -- second time, I'd like a toast that informs the player that volts
+            -- were not awarded because they'd already completed the tutorial
+            -- before."
+            --
+            -- WHAT THEY MUST NOT BE TOLD is that they were paid, which is why
+            -- this is its own sentence rather than the other branch's. Nothing
+            -- was written; the database refused the second credit, which is the
+            -- outcome we wanted.
+            TriggerClientEvent(BR.Net.NOTIFY, src, {
+                text = ('No %s this time — you have completed the tutorial '
+                    .. 'before, and the reward is paid once.')
+                    :format(BR.Config.Market.currency or 'Volts'),
+                tone = 'info',
+                key  = 'tutorial.reward',
+                ms   = 10000,
+            })
             print(('[br_stats] tutorial reward: %s has already been paid')
                 :format(license))
             return
@@ -524,8 +539,21 @@ AddEventHandler(BR.Net.TUTORIAL_DONE, function()
         -- else, because XP is what matches are for.
         TriggerEvent('br:market:credited', license, 0, amount)
 
+        -- ═══ AND THE OFFER IS SPENT FOR GOOD ═══
+        --
+        -- Finishing it is one of the two answers that closes the offer (the
+        -- other is declining), so the profile row records it and the lobby stops
+        -- showing the toggle -- owner, 2026-09-07: "after completing the
+        -- tutorial and going back to the lobby, the toggle is still there btw."
+        --
+        -- A CLIENT-LOCAL EVENT ACROSS TWO RESOURCES' SERVER HALVES, which is the
+        -- seam `br:market:credited` above already uses in the other direction.
+        TriggerEvent('br:market:tutorialDone', license)
+
+        -- THE AMOUNT IS WRAPPED FOR THE CURRENCY'S COLOUR (owner, 2026-09-07).
+        -- The page paints anything inside `~...~`; see KeyText.
         TriggerClientEvent(BR.Net.NOTIFY, src, {
-            text = ("You've been gifted %d %s for finishing the tutorial. Good luck out there!")
+            text = ("You've been gifted ~%d %s~ for finishing the tutorial. Good luck out there!")
                 :format(amount, (BR.Config.Market.currency or 'Volts')),
             tone = 'success',
             key  = 'tutorial.reward',

@@ -1148,6 +1148,20 @@ do
         'with the amount in the sentence',
         told and told.payload and told.payload.text)
 
+    -- THE AMOUNT IS MARKED FOR THE CURRENCY'S COLOUR (owner, 2026-09-07: "the
+    -- volts text and quantity are in our signature color"). The page paints
+    -- anything between tildes; the marks travelling is what this pins.
+    ok(told and told.payload and told.payload.text:find('~500 ', 1, true) ~= nil,
+        'and wrapped so the page can colour it',
+        told and told.payload and told.payload.text)
+
+    -- AND FINISHING SPENDS THE OFFER, so the lobby stops showing the toggle.
+    local closed = false
+    for _, a in ipairs(asked) do
+        if a.name == 'br:market:tutorialDone' then closed = true end
+    end
+    ok(closed, 'a paid finish closes the offer on the profile row')
+
     -- ═══ THE SECOND CLAIM IS REFUSED BY THE DATABASE, AND SAYS NOTHING ═══
     --
     -- The Help page can re-run the walkthrough, so a second claim is an ordinary
@@ -1159,7 +1173,26 @@ do
     TriggerEvent('br:ddb:awardPayResult', again.args[1], true,
                  { paid = false, alreadyPaid = true })
     ok(seen == nil, 'an already-paid claim moves no cache')
-    ok(#sent == 0, 'and tells the player nothing')
+
+    -- ═══ IT SAYS SOMETHING, AND WHAT IT MUST NOT SAY IS THE POINT ═══
+    --
+    -- Owner, 2026-09-07: "after the in-game tutorial is done for a second time,
+    -- I'd like a toast that informs the player that volts were not awarded
+    -- because they'd already completed the tutorial before." Silence read as the
+    -- reward failing; the hazard in fixing it is a sentence that thanks them for
+    -- a payment the database refused.
+    local second
+    for _, m in ipairs(sent) do
+        if m.name == BR.Net.NOTIFY and m.src == 7 then second = m end
+    end
+    ok(second ~= nil, 'a second finish tells them why nothing arrived')
+    ok(second and second.payload
+        and second.payload.text:find('completed the tutorial before', 1, true) ~= nil,
+        'naming the reason',
+        second and second.payload and second.payload.text)
+    ok(second and second.payload
+        and second.payload.text:find('gifted', 1, true) == nil,
+        'and never claiming they were paid')
 
     -- ═══ A FAILED WRITE PAYS NOBODY AND PROMISES NOBODY ═══
     seen, sent = nil, {}

@@ -127,6 +127,7 @@ export default function Lobby({
   const tutorialStep = useUi((s) => s.tutorialStep)
   const tutorialGameOn = useUi((s) => s.tutorialGameOn)
   const setTutorialGameArmed = useUi((s) => s.setTutorialGameArmed)
+  const pushNotice = useUi((s) => s.pushNotice)
   // Which screen is on top -- the offer is retired while Settings covers the
   // lobby, so the control does not vanish under the cursor that pressed it.
   const focus = useUi((s) => s.focus)
@@ -682,10 +683,41 @@ export default function Lobby({
                   reach it after dismissing the card that introduced it.
 
                   PLACEHOLDER COPY -- the label is mine. */}
-              {(tutorialStep === 'ready' || tutorialGameShown) && (
+              {/* SHOWN ONLY WHILE THE OFFER STANDS. `tutorialOffer` is the
+                  server's answer off the profile row -- it goes false the moment
+                  somebody declines or finishes, and stays false on every future
+                  connect. Owner, 2026-09-07: "after completing the tutorial and
+                  going back to the lobby, the toggle is still there btw." */}
+              {tutorialOffer && (tutorialStep === 'ready' || tutorialGameShown) && (
                 <TutorialToggle
                   on={tutorialGameOn}
-                  onChange={setTutorialGameOn}
+                  onChange={(v) => {
+                    setTutorialGameOn(v)
+                    if (v) return
+
+                    // ═══ TURNING IT OFF IS A DECISION, AND IT IS FINAL ═══
+                    //
+                    // Owner, 2026-09-07: "if they've actively turned down the
+                    // offer we need to save that somewhere and never offer
+                    // again!" Only THIS closes the offer -- an abandoned run
+                    // deliberately does not, because he asked for the toggle to
+                    // survive that.
+                    //
+                    // AND THEY ARE TOLD WHAT IT COSTS BEFORE IT IS GONE, which
+                    // is the whole reason it is a card and not a silent write:
+                    // "show a card informing them that 500 Volts will only be
+                    // awarded if they enable that... Also inform them the offer
+                    // is only valid for their first match."
+                    pushNotice({
+                      text: 'The ~500 Volts~ is only awarded if you finish the '
+                          + 'tutorial in your first match. Turning this off gives '
+                          + 'up the offer for good.',
+                      tone: 'warn',
+                      key: 'tutorial.declined',
+                      ms: 12000,
+                    })
+                    void fetchNui(CB.TUTORIAL_SET, { declined: true })
+                  }}
                   label="Continue tutorial into the first match"
                 />
               )}

@@ -1779,6 +1779,63 @@ console.log('\nspend: a refusal is not a failure')
   check('the real balance is read back for the message', res.extra.balance, 700)
 }
 
+console.log('\ntutorial: where an account stands with the guided first run')
+{
+  // ═══ THE READ, WHICH IS THE HALF EVERY CONNECT RUNS ═══
+  //
+  // Absent is the never-answered state and MUST come back as an empty string:
+  // nil does not survive the trip into Lua as a table field, so a reader could
+  // not tell "never offered" from "not sent" without help.
+  bridge.reset()
+  bridge.reply({ Item: marshall({ pk: LIC, sk: 'profile', balance: 1200 }) })
+  bridge.call('br:ddb:inventoryFetch', 60, LIC)
+  await bridge.settle()
+  check('a profile with no tutorial field reads as never answered',
+        lastEmit('br:ddb:inventoryResult').args[1].tutorial, '')
+
+  bridge.reset()
+  bridge.reply({ Item: marshall({ pk: LIC, sk: 'profile', tutorial: 'declined' }) })
+  bridge.call('br:ddb:inventoryFetch', 61, LIC)
+  await bridge.settle()
+  check('and a declined one comes back as it was written',
+        lastEmit('br:ddb:inventoryResult').args[1].tutorial, 'declined')
+
+  // A row that does not exist at all is somebody who has never finished a
+  // match, and they can still have declined -- so the default carries the
+  // field too.
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:inventoryFetch', 62, LIC)
+  await bridge.settle()
+  check('a missing row answers with the never-answered state as well',
+        lastEmit('br:ddb:inventoryResult').args[1].tutorial, '')
+
+  // ═══ THE WRITE, AND WHAT IT REFUSES ═══
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:tutorialSet', 63, LIC, 'declined')
+  await bridge.settle()
+  check('a decline is recorded', answer('br:ddb:tutorialSetResult').ok, true)
+  check('and says which state it wrote',
+        answer('br:ddb:tutorialSetResult').extra.state, 'declined')
+
+  // ONLY THE TWO TERMINAL STATES. Anything else is a caller bug and is refused
+  // loudly rather than written to a row every connect reads -- the same call
+  // awardPay's amount bound makes.
+  bridge.reset()
+  bridge.call('br:ddb:tutorialSet', 64, LIC, 'maybe')
+  await bridge.settle()
+  check('an unknown state is refused', answer('br:ddb:tutorialSetResult').ok, false)
+  check('and named as such',
+        answer('br:ddb:tutorialSetResult').extra.error, 'bad state')
+
+  bridge.reset()
+  bridge.call('br:ddb:tutorialSet', 65, '', 'done')
+  await bridge.settle()
+  check('and so is a write with no licence',
+        answer('br:ddb:tutorialSetResult').extra.error, 'no license')
+}
+
 // ------------------------------------------------------ the two-key gate ---
 //
 // THE PROPERTY UNDER TEST IS THAT A `discord:`-KEYED BAN CLOSES THE DOOR. Every
@@ -1986,7 +2043,8 @@ console.log('\nevery verb runs: no free variables anywhere in the bridge')
     'br:ddb:awardQueue': [17],
     'br:ddb:awardPay': [18, LIC, UUID, 500],
     'br:ddb:awardSettle': [19, UUID],
-    'br:ddb:selftest': [20],
+    'br:ddb:tutorialSet': [20, LIC, 'done'],
+    'br:ddb:selftest': [21],
   }
 
   check(

@@ -83,6 +83,26 @@ BR.Net = {
     -- second claim is refused by the database. A modified client sending this
     -- on connect gets exactly what an honest player gets by finishing.
     TUTORIAL_DONE   = 'br:tutorial:done',
+    -- The player turning the offer DOWN (#261). C->S, no payload.
+    --
+    -- ═══ THE ONE ANSWER THAT HAS TO OUTLIVE THE SESSION ═══
+    --
+    -- Owner, 2026-09-07: "if they've actively turned down the offer we need to
+    -- save that somewhere and never offer again!" An abandoned run does NOT
+    -- count -- he asked for the toggle to survive that on purpose -- so this is
+    -- sent only when somebody unticks the box themselves.
+    --
+    -- IT IS BELIEVED ON SIGHT, like every other giving-up in this feature. The
+    -- worst a forged one can do is take an offer away from the account that
+    -- sent it, which is a thing that account can do by clicking.
+    TUTORIAL_DECLINE = 'br:tutorial:decline',
+    -- Whether to make the offer at all. S->C, { offer = boolean }.
+    --
+    -- SENT ONCE THE PROFILE HAS LOADED, because the answer lives on it. Until
+    -- then the page shows nothing, which is correct: a lobby that offers a
+    -- tutorial and then withdraws it a second later is worse than one that takes
+    -- a second to offer.
+    TUTORIAL_OFFER  = 'br:tutorial:offer',
     -- The four permanent warmup crates resealing (#261). S->C, an array of the
     -- points whose loot is flying home.
     --

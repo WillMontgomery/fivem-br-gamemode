@@ -354,8 +354,17 @@ function BR.ShopSolve.boughtToast(cfg, balance, currency)
     local tmpl   = type(c.balanceToast) == 'string' and c.balanceToast or ''
     if tmpl == '' then return bought end
 
+    -- ═══ THE FIGURE IS MARKED FOR THE CURRENCY'S COLOUR ═══
+    --
+    -- Owner, 2026-09-07: "This should also be the case after purchasing an item
+    -- in the shop." The page paints anything between tildes -- see KeyText -- and
+    -- Lua composes this sentence, so the mark has to travel with it.
+    --
+    -- HERE AND NOT IN priceLine, which has a second caller: client/shop.lua
+    -- feeds it to the DUI price plate hanging over each car, and that surface
+    -- renders raw text. A tilde there would be a tilde on screen.
     local okFmt, line = pcall(string.format, tmpl,
-                              BR.ShopSolve.priceLine(balance, currency))
+                              '~' .. BR.ShopSolve.priceLine(balance, currency) .. '~')
     if not okFmt or type(line) ~= 'string' then return bought end
     if bought == '' then return line end
     return bought .. ' ' .. line

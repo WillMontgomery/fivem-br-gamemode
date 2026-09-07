@@ -333,6 +333,25 @@ export function KeyCap({ command, label, fs = '1.15rem' }: {
 const KEY_TOKEN = /\{key:([A-Za-z0-9_]+)\}/g
 
 /**
+ * The currency, in the currency's own colour: `~500 Volts~`.
+ *
+ * ═══ SAME SCANNER, BECAUSE IT IS THE SAME KIND OF HOLE ═══
+ *
+ * Owner, 2026-09-07: "In the final toast please make sure the volts text and
+ * quantity are in our signature color. This should also be the case after
+ * purchasing an item in the shop." Those sentences are LUA's -- the amount is a
+ * number the server worked out -- so the page cannot compose them, and Lua
+ * cannot paint them. What crosses is the sentence with a hole in it, which is
+ * exactly the argument KEY_TOKEN above already makes for keys.
+ *
+ * DELIBERATELY UNLIKE ANYTHING A HUMAN WOULD TYPE, for the same reason: this
+ * stack also carries player-authored names, and a tilde pair around a short run
+ * with no tilde inside it is not a shape a handle can be. A string that does not
+ * match is passed through untouched.
+ */
+const VOLTS_TOKEN = /~([^~]+)~/g
+
+/**
  * A sentence with its keys drawn as keys.
  *
  * Renders `text` as-is except for `{key:command}` tokens, each of which becomes
@@ -344,12 +363,24 @@ export function KeyText({ text, fs }: { text: string; fs?: string }) {
   // A FRESH REGEX PER CALL. A /g literal carries `lastIndex` between calls, so
   // a shared one would start the second notice's scan wherever the first
   // finished and silently miss its token.
-  const re = new RegExp(KEY_TOKEN.source, 'g')
+  // ONE PASS OVER BOTH MARKS, so a sentence may carry a key and an amount and
+  // neither swallows the other. A fresh regex per call: a /g literal carries
+  // `lastIndex` between calls, so a shared one would start the second notice's
+  // scan wherever the first finished and silently miss its token.
+  const re = new RegExp(`${KEY_TOKEN.source}|${VOLTS_TOKEN.source}`, 'g')
   const parts: ReactNode[] = []
   let last = 0
   let m: RegExpExecArray | null
 
   while ((m = re.exec(text)) !== null) {
+    if (m[2] !== undefined) {
+      if (m.index > last) parts.push(text.slice(last, m.index))
+      parts.push(
+        <span key={`${m.index}:v`} className="tut-volts">{m[2]}</span>,
+      )
+      last = m.index + m[0].length
+      continue
+    }
     // The capture group is not optional in the pattern, so it is always a
     // string here; the local is what tells the compiler so under
     // noUncheckedIndexedAccess, and it keeps the JSX below readable.

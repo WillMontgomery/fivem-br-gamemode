@@ -1891,7 +1891,7 @@ do
     -- so 250 is what the row holds and 250 is what the toast must say.
     ok(#notices == 1 and notices[1].text ==
         'Thanks for your purchase. It will be available in your inventory '
-        .. 'once the match starts. Your new balance is: 250 Volts.',
+        .. 'once the match starts. Your new balance is: ~250 Volts~.',
         'the toast is the owner\'s wording, exactly, both sentences of it',
         notices[1] and notices[1].text)
     ok(#notices == 1,
@@ -2866,21 +2866,31 @@ do
         shipped.balanceToast)
     ok(BR.ShopSolve.boughtToast(shipped, 250, 'Volts') ==
         'Thanks for your purchase. It will be available in your inventory '
-        .. 'once the match starts. Your new balance is: 250 Volts.',
+        .. 'once the match starts. Your new balance is: ~250 Volts~.',
         'and the two are joined into one toast, in his order')
     ok(BR.ShopSolve.boughtToast(shipped, 250.9, 'Volts')
            :find('250 Volts', 1, true) ~= nil,
         'the figure is floored, like every other Volts figure in the game')
     ok(BR.ShopSolve.boughtToast(shipped, 0, 'Volts')
-           :find('is: 0 Volts%.') ~= nil,
+           :find('is: ~0 Volts~%.') ~= nil,
         'a balance of nothing still reads as a number rather than as a blank')
 
     -- THE CURRENCY WORD IS NOT IN EITHER STRING. config/market.lua spells it
     -- once; the toast gets it through priceLine like the plate does.
     ok(shipped.balanceToast:find('Volts', 1, true) == nil,
         'and the word "Volts" is not written in the template')
+    -- ═══ AND THE FIGURE CARRIES ITS COLOUR MARK ═══
+    --
+    -- Owner, 2026-09-07: the Volts text and quantity are the signature
+    -- colour "after purchasing an item in the shop" too. Lua composes this
+    -- sentence, so the mark travels with it and the page paints between the
+    -- tildes. It is on the TOAST and not on priceLine, whose other caller
+    -- (client/shop.lua) feeds the DUI plate over each car -- raw text, where
+    -- a tilde would be a tilde on screen.
+    ok(BR.ShopSolve.priceLine(250, 'Volts') == '250 Volts',
+        'priceLine itself stays unmarked -- the price plate renders raw text')
     ok(BR.ShopSolve.boughtToast(shipped, 250, nil)
-           :find('250.', 1, true) ~= nil,
+           :find('~250~', 1, true) ~= nil,
         'so with no currency name to be had the balance is a bare number, the '
             .. 'same way the plate\'s price is')
 

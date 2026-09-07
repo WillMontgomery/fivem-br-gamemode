@@ -395,6 +395,30 @@ function BR.Tutorial.hold(on)
     tellServer()
 end
 
+--- The server has read the profile and says whether to make the offer.
+---
+--- ONE MESSAGE, ONE DIRECTION, AND IT ARRIVES LATE ON PURPOSE. The answer lives
+--- on the profile row, so it cannot be known at connect; until it arrives the
+--- lobby offers nothing, which is better than offering and withdrawing.
+RegisterNetEvent(BR.Net.TUTORIAL_OFFER)
+AddEventHandler(BR.Net.TUTORIAL_OFFER, function(data)
+    BR.Tutorial.offer(type(data) == 'table' and data.offer == true)
+end)
+
+--- The player unticked the box. Spend the offer for good.
+---
+--- THE PAGE OWNS THE GESTURE AND THE SERVER OWNS THE MEMORY. `offering` is
+--- lowered here so the toggle goes immediately, and the row is written on the
+--- far side so it is still gone tomorrow.
+function BR.Tutorial.decline()
+    BR.Tutorial.offer(false)
+    TriggerServerEvent(BR.Net.TUTORIAL_DECLINE)
+end
+
+AddEventHandler('br:tutorial:decline', function()
+    BR.Tutorial.decline()
+end)
+
 --- The player dropped a map waypoint.
 ---
 --- COUNTED HERE FOR THE SAME REASON THE CRATES ARE: the page cannot see it.
