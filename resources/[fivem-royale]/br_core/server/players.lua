@@ -736,6 +736,32 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
         return
     end
 
+    -- ═══ A REPORT FILED DURING THE WALKTHROUGH IS DROPPED ═══
+    --
+    -- Owner, 2026-09-08: "ignore any player reports they submit while in tutorial
+    -- as it could be a mistake or malicious." The walkthrough shows them the
+    -- report button and asks them to look at it, so a press there is a press it
+    -- invited -- and on the pad, where the only other players are strangers
+    -- warming up.
+    --
+    -- REFUSED HERE, ON THE SERVER, and that is the whole reason this is not a
+    -- page-side guard: a client saying "I am in a tutorial" is not evidence, and
+    -- a client saying "I am NOT" would be the interesting lie. The server has
+    -- already been told -- BR.Roster.setTutorialGame, granted only from WARMUP
+    -- inside a match -- so it can simply look.
+    --
+    -- ANSWERED AS A SUCCESS, deliberately. Telling them the report was dropped
+    -- teaches that reports can be dropped, and the honest alternative -- "not
+    -- while you are in the tutorial" -- is a sentence about our internals in the
+    -- middle of somebody's first ten minutes. Nothing is written; the console
+    -- never sees it.
+    if me.tutorialGame == true then
+        print(('[br_core] report from %d dropped -- they are in the tutorial')
+            :format(src))
+        answer(src, true, 0, nil)
+        return
+    end
+
     local byKind = BR.Identity and BR.Identity.ofPlayer(src)
     local reporter = byKind and BR.Identity.qualified('license', byKind.license)
     if not reporter then

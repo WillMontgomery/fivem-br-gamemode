@@ -553,6 +553,34 @@ export default function TutorialLayer(p: TutorialLayerProps) {
     return () => cancelAnimationFrame(raf)
   }, [step])
 
+  // ── the arrow keys, read from the DOM over one of our screens ───────────
+  //
+  // ═══ TWO SOURCES, NEVER BOTH AT ONCE ═══
+  //
+  // The Lua path reads GTA controls, which are dead the moment one of our
+  // screens takes game input -- which is why a screen-scoped card used to render
+  // buttons. But a focused screen means CEF has DOM focus, so the PAGE can hear
+  // the same keypress directly; App's own Escape listener relies on exactly that
+  // and says so.
+  //
+  // So the card is arrow-driven everywhere (owner, 2026-09-08: "should only have
+  // arrows"), and the source is whichever one can actually hear it: DOM while a
+  // screen is up, Lua otherwise. The two are mutually exclusive by construction,
+  // so a press cannot be counted twice.
+  const navRef = useRef<(dir: 'next' | 'back' | 'action') => void>(() => {})
+  useEffect(() => {
+    if (!step || !p.keyDriven || step.screen === undefined) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight') navRef.current('next')
+      else if (e.key === 'ArrowLeft') navRef.current('back')
+      else if (e.key === 'ArrowUp') navRef.current('action')
+      else return
+      e.preventDefault()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [step, p.keyDriven])
+
   // ── the arrow keys, arriving from Lua ───────────────────────────────────
   //
   // ACTED ON WHEN THE SEQUENCE MOVES, never on `dir`: two presses of Next are
@@ -561,6 +589,23 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // read when this layer mounted.
   const nav = useUi((st) => st.tutorialNav)
   const navSeen = useRef(nav.seq)
+
+  // THE BODY, SHARED BY BOTH SOURCES. One set of rules about what an arrow may
+  // do -- and in particular one place where "an arrow must not walk past a card
+  // that is waiting for the player" is enforced.
+  navRef.current = (dir) => {
+    if (!step) return
+    if (dir === 'next') {
+      if (step.advance === 'next') go(i + 1)
+      else if (step.advance === 'dismiss') go(steps.length)
+      else if (stuck) go(i + 1)
+    } else if (dir === 'back') {
+      if (i > 0 && !step.noBack && steps[i - 1] !== undefined) go(i - 1)
+    } else if (dir === 'action' && step.action) {
+      void fetchNui(step.action.cb, { open: true })
+    }
+  }
+
   useEffect(() => {
     if (nav.seq === navSeen.current) return
     navSeen.current = nav.seq

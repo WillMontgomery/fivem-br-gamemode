@@ -1197,6 +1197,18 @@ export default function PlayerList() {
             </div>
 
             <div
+              // ═══ THE ANCHOR IS THE FOOTER, NOT THE BUTTON ═══
+              //
+              // It was on a wrapper around "Report player", which the report-mode
+              // ternary below REPLACES with Cancel -- so clicking the very button
+              // the card was pointing at unmounted the anchor, and 1.2s later the
+              // walkthrough abandoned itself (owner, 2026-09-08).
+              //
+              // The footer is the same object at a coarser grain: it is where
+              // reporting lives in both modes, it is always mounted while the
+              // panel is, and it is small enough that a ring around it still
+              // means "this row, here" rather than "somewhere on this screen".
+              data-tut="players-report"
               className="shrink-0 px-4 pt-3 pb-3.5"
               style={{ borderTop: '1px solid rgba(255,255,255,0.10)' }}
             >
@@ -1222,17 +1234,9 @@ export default function PlayerList() {
                    allowance is not the panel's to talk about, and a player who
                    has spent it is told so by the refusal, in the same toast
                    that would have carried any other reason. */
-                /* data-tut ON A WRAPPER, NOT ON <Btn>. TypeScript does not
-                   type-check hyphenated JSX attributes, so `data-tut` on a
-                   component that does not spread its props compiles clean and
-                   then vanishes -- the walkthrough finds no anchor and ends the
-                   run. `inline-block` because a wrapper with no layout box
-                   measures 0x0 and the ring draws in the corner (#261). */
-                <span data-tut="players-report" className="inline-block">
                 <Btn variant="ghost" size="sm" cue="ui.select" onPress={enterReport}>
                   Report player
                 </Btn>
-                </span>
               )}
             </div>
           </div>

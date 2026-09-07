@@ -267,6 +267,12 @@ export const GAME_STEPS: Step[] = [
   },
   {
     id: 'game-crates',
+    // NO WAY BACK INTO THE PLAYER LIST. The card before this one closed that
+    // screen on its way out (its `onLeave`), so stepping back would land on a
+    // card scoped to a screen that is no longer up -- which draws nothing, and
+    // with no card on screen there is nothing left to move the run on. An
+    // unrecoverable stall, caught in review rather than in play.
+    noBack: true,
     // NO ANCHOR, AND THAT IS THE HONEST ANSWER. This card is about four boxes
     // standing on the pad; it used to borrow the inventory, so the ring outlined
     // the slots while the words said "crates" (owner, 2026-09-06: "Step 11

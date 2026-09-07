@@ -318,6 +318,25 @@ export interface UiState {
   /** Does this ACCOUNT still have the offer? See the `tutorial` envelope. */
   tutorialOfferable: boolean
   /**
+   * Has the second toggle been offered at all this session?
+   *
+   * ═══ IN THE STORE BECAUSE THE LOBBY UNMOUNTS ═══
+   *
+   * It was a `useState` inside Lobby, latched when the lobby run reached its last
+   * card. Lobby is not mounted while a match runs, so leaving warmup mid-tutorial
+   * reset the latch -- and it can never re-latch, because the thing that raises it
+   * is a lobby card that finished long ago. Owner, 2026-09-08: "leaving warmup
+   * mid-tutorial, I cannot see the 'continue tutorial' toggle in the lobby."
+   *
+   * IT DOES NOT REPLACE `tutorialOfferable`, it is ANDed with it. That one is the
+   * account's answer off the profile row and carries the decline veto; this one
+   * only says the offer has been made once. Dropping either would re-offer the
+   * walkthrough to somebody who turned it down.
+   */
+  tutorialGameOffered: boolean
+  /** Is the "you are giving up the reward" card on screen? See DECLINE_STEPS. */
+  tutorialDeclineCard: boolean
+  /**
    * A chat line the WALKTHROUGH is staging, which the chat log shows alongside
    * the real ones.
    *
@@ -405,6 +424,8 @@ export interface UiState {
   setTutorialWaypoints: (n: number) => void
   setTutorialSlots: (n: number) => void
   setTutorialOfferable: (v: boolean) => void
+  setTutorialGameOffered: (v: boolean) => void
+  setTutorialDeclineCard: (v: boolean) => void
   setTutorialChat: (m: ChatMessage | null) => void
   setTutorialChatSquad: (v: boolean) => void
   noteChatSent: () => void
@@ -823,6 +844,8 @@ export const useUi = create<UiState>((set, get) => {
   tutorialWaypoints: 0,
   tutorialSlots: 0,
   tutorialOfferable: false,
+  tutorialGameOffered: false,
+  tutorialDeclineCard: false,
   tutorialChat: null,
   tutorialChatSquad: false,
   chatSent: 0,
@@ -882,6 +905,8 @@ export const useUi = create<UiState>((set, get) => {
   setTutorialWaypoints: (tutorialWaypoints) => set({ tutorialWaypoints }),
   setTutorialSlots: (tutorialSlots) => set({ tutorialSlots }),
   setTutorialOfferable: (tutorialOfferable) => set({ tutorialOfferable }),
+  setTutorialGameOffered: (tutorialGameOffered) => set({ tutorialGameOffered }),
+  setTutorialDeclineCard: (tutorialDeclineCard) => set({ tutorialDeclineCard }),
   setTutorialChat: (tutorialChat) => set({ tutorialChat }),
   setTutorialChatSquad: (tutorialChatSquad) => set({ tutorialChatSquad }),
   noteChatSent: () => set((s) => ({ chatSent: s.chatSent + 1 })),

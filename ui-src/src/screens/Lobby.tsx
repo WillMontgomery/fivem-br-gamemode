@@ -127,7 +127,7 @@ export default function Lobby({
   const tutorialStep = useUi((s) => s.tutorialStep)
   const tutorialGameOn = useUi((s) => s.tutorialGameOn)
   const setTutorialGameArmed = useUi((s) => s.setTutorialGameArmed)
-  const pushNotice = useUi((s) => s.pushNotice)
+  const setTutorialDeclineCard = useUi((s) => s.setTutorialDeclineCard)
   const tutorialOfferable = useUi((s) => s.tutorialOfferable)
   // Which screen is on top -- the offer is retired while Settings covers the
   // lobby, so the control does not vanish under the cursor that pressed it.
@@ -140,7 +140,10 @@ export default function Lobby({
   // ONCE SHOWN, IT STAYS. The second toggle appears on the `ready` step and must
   // not vanish when that step is dismissed -- it is an offer about the next
   // thing, and the player has to be able to reach it afterwards.
-  const [tutorialGameShown, setTutorialGameShown] = useState(false)
+  // IN THE STORE, NOT HERE. See `tutorialGameOffered`: this component unmounts
+  // while a match runs, and a latch that cannot survive that cannot do its job.
+  const tutorialGameShown = useUi((s) => s.tutorialGameOffered)
+  const setTutorialGameShown = useUi((s) => s.setTutorialGameOffered)
   useEffect(() => {
     if (tutorialStep === 'ready') setTutorialGameShown(true)
   }, [tutorialStep])
@@ -716,14 +719,12 @@ export default function Lobby({
                     // "show a card informing them that 500 Volts will only be
                     // awarded if they enable that... Also inform them the offer
                     // is only valid for their first match."
-                    pushNotice({
-                      text: 'The ~500 Volts~ is only awarded if you finish the '
-                          + 'tutorial in your first match. Turning this off gives '
-                          + 'up the offer for good.',
-                      tone: 'warn',
-                      key: 'tutorial.declined',
-                      ms: 12000,
-                    })
+                    // A CARD, NOT A TOAST. `Notices` is not mounted while the
+                    // lobby is up -- deliberately, 2026-08-03 -- so the toast
+                    // this used to push had nowhere to draw, and worse, it kept
+                    // its twelve-second timer: readying up inside that window
+                    // would have shown it over the bus ride. See DECLINE_STEPS.
+                    setTutorialDeclineCard(true)
                     void fetchNui(CB.TUTORIAL_SET, { declined: true })
                   }}
                   label="Continue tutorial into the first match"

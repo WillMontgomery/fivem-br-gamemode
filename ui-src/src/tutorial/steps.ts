@@ -480,3 +480,38 @@ export const LOBBY_STEPS: Step[] = [
     advance: 'dismiss',
   },
 ]
+
+/**
+ * The one card that is not part of a walkthrough.
+ *
+ * ═══ A CARD, BECAUSE A TOAST DOES NOT EXIST IN THE LOBBY ═══
+ *
+ * Owner, 2026-09-08: "turning off the 'continue' toggle doesn't show any card
+ * about the volts reward for the tutorial." It did push a toast, and the toast
+ * had nowhere to draw: App mounts `Notices` only while the lobby is NOT up, and
+ * that is a deliberate decision of the owner's from 2026-08-03 -- "the lobby has
+ * its own feedback and floating toasts over it read as clutter".
+ *
+ * WORSE THAN SILENT, ACTUALLY. The row still went into the live stack with a
+ * twelve-second timer, so a player who declined and then readied up would have
+ * had it appear over the bus ride, explaining a decision they made a minute ago
+ * somewhere else entirely.
+ *
+ * SO IT IS A CARD, on the surface that already exists for talking to a player in
+ * the lobby, and it renders `~500 Volts~` in the currency colour because that
+ * grammar is the card's own.
+ *
+ * ITS OWN LIST RATHER THAN A STEP IN LOBBY_STEPS, because the toggle can be
+ * flipped long after the lobby run has ended and that layer has unmounted.
+ */
+export const DECLINE_STEPS: Step[] = [
+  {
+    id: 'decline',
+    title: 'Are you sure?',
+    body: 'The ~500 Volts~ is only paid for finishing the tutorial in your **first match**. Turning this off gives up the offer for good.',
+    advance: 'dismiss',
+    dismissLabel: 'Got it',
+    place: 'half',
+    noBack: true,
+  },
+]

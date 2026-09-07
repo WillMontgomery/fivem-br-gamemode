@@ -21,6 +21,7 @@ import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
 import TutorialLayer from './tutorial/TutorialLayer'
 import { GAME_STEPS } from './tutorial/gameSteps'
+import { DECLINE_STEPS } from './tutorial/steps'
 import Admin from './screens/Admin'
 import Page from './ui/Page'
 
@@ -741,6 +742,19 @@ export default function App() {
             // either.
             void fetchNui(CB.TUTORIAL_SET, { game: false })
           }}
+        />
+      )}
+
+      {/* THE DECLINE CARD, which is not a walkthrough and has no steps to run --
+          one card, dismissed, gone. It lives here rather than inside Lobby for
+          the reason every other card does: the layer is mounted at the root so a
+          screen change cannot unmount the thing explaining the screen. */}
+      {s.tutorialDeclineCard && (
+        <TutorialLayer
+          steps={DECLINE_STEPS}
+          screen={s.focus}
+          onDone={() => s.setTutorialDeclineCard(false)}
+          onAbandon={() => s.setTutorialDeclineCard(false)}
         />
       )}
 
