@@ -7383,6 +7383,73 @@ do
         end
     end
 
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- ONCE PER RESTING PLACE, NOT ONCE PER VISITOR
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "when in squads and a live player is near a player who transitions from
+    --    DBNO -> out ... the live player's performance goes to shit. nothing I
+    --    could do seemed to fix the framerate"           -- owner, 2026-09-07
+    --
+    -- THE ARM IS A FACT ABOUT OTHER PLAYERS AND THE WRITE IS A FACT ABOUT THE
+    -- BODY, and until this landed the two were tied together. server/combat.lua
+    -- fires the nudge on playerEnteredScope for any DBNO or OUT entry, floored
+    -- at one per second and never disarmed while the state is OUT -- so a corpse
+    -- with somebody standing near it took a contact-preserving
+    -- SetEntityCoordsNoOffset onto a settled RAGDOLL once a second for the rest
+    -- of the match, every write publishing the coordinates the last one had
+    -- already published.
+    --
+    -- WHAT IS PINNED IS THE PROPERTY, NOT A COUNT. A body that moves still gets
+    -- a write for each new resting place, because that is the whole of what #246
+    -- asked for. A body that has stopped gets one, and then nothing.
+    do
+        local peds = { [5001] = { x = 4.0, y = 5.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local writes = {}
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            writes[#writes + 1] = { x = x, y = y, z = z }
+        end
+        env.IsEntityDead = function() return true end
+        env.BR.State.me.state = env.BR.PlayerState.OUT
+
+        env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+        ok(#writes == 1, 'the first visitor to a corpse publishes its position',
+           ('%d writes'):format(#writes))
+
+        -- TEN MORE VISITORS, AND THE BODY HAS NOT MOVED. This is the reading the
+        -- owner's report is about: on a busy endgame every survivor walking past
+        -- a body was another physics solve on it.
+        for _ = 1, 10 do env.TriggerEvent(env.BR.Net.DBNO_RESYNC) end
+        ok(#writes == 1,
+           'and ten more visitors to a body that has not moved publish nothing '
+               .. '-- the network is already holding that position, and the '
+               .. 'write is a ragdoll solve that says the same thing again',
+           ('%d writes'):format(#writes))
+
+        -- ...BUT A BODY THAT MOVES STILL SPEAKS. A corpse settling out of its
+        -- death fall, or shoved by a car, has a new resting place to publish,
+        -- and #246 is exactly about a clone built from the old one.
+        peds[5001].x = 4.5
+        env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+        ok(#writes == 2 and math.abs(writes[2].x - 4.5) < 1e-9,
+           'while a body that has moved publishes its new resting place',
+           ('%d writes, last x %s'):format(#writes,
+               writes[2] and tostring(writes[2].x) or 'none'))
+
+        -- AND THE EPSILON IS BELOW ANYTHING A PLAYER COULD SEE. Ragdolls creep;
+        -- half a millimetre of float noise between two reads of a still body
+        -- must not re-open the tap this block exists to close.
+        peds[5001].x = 4.5005
+        env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+        ok(#writes == 2,
+           'and half a millimetre of ragdoll creep is not a move',
+           ('%d writes'):format(#writes))
+    end
+
     -- ...AND THE STATE IS CHECKED AS WELL AS THE PED, which is belt and braces
     -- on purpose. The two guards fail in opposite directions and only one of
     -- them is under this file's control: a state race can leave the roster

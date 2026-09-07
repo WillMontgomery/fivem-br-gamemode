@@ -409,6 +409,18 @@ local hold = nil      -- { x = number, y = number } or nil
 local loose    = false
 local settleAt = nil
 
+--- The resting place the last #246 corpse write published, or nil.
+---
+--- DECLARED UP HERE AND NOT BESIDE ITS COUNTERS, because leaveDowned() clears it
+--- and leaveDowned is above them. A Lua local is invisible before its
+--- declaration -- the assignment would compile as a GLOBAL and the clear would
+--- silently do nothing. tools/check_forward_locals.lua catches this for CALLS;
+--- an assignment is the same trap with no alarm on it, and this file already
+--- contains one (the resyncPhase/resyncArmed/hiddenFrom/posedAt line in
+--- leaveDowned writes four globals for exactly this reason -- left alone here
+--- because untangling it is a revive change, not a perf one).
+local corpseAt = nil
+
 --- Pin the ped to where it is standing RIGHT NOW.
 ---
 --- THE HOLD USED TO ARM ITSELF LATE, AND THAT IS THE WHOLE OF "THE PED DRIFTS
@@ -1197,6 +1209,12 @@ local function leaveDowned()
     -- indistinguishable from one who was never downed, which is the whole of
     -- the fourth report on this file.
     resyncPhase, resyncArmed, hiddenFrom, posedAt = 0, false, nil, nil
+    -- ...AND THE CORPSE'S PUBLISHED RESTING PLACE, for the same reason as every
+    -- other line in this block. A player who is revived and killed again later
+    -- would otherwise be compared against where their PREVIOUS body came to
+    -- rest, and a new corpse that happened to fall within a centimetre of the
+    -- old one would publish nothing at all.
+    corpseAt = nil
     -- ...and the settle edge, which is downed-shaped in exactly the same way: a
     -- player revived mid-ragdoll would otherwise carry `loose` into standing up
     -- and spend the first frame of their NEXT knock re-posing for a ragdoll
@@ -1501,6 +1519,7 @@ local resyncs     = 0     -- for /brdbno
 local scopeNudges  = 0
 local scopeArms    = 0
 local corpseWrites = 0
+local corpseSkips  = 0    -- nudges declined because the body had not moved
 local scopeAt      = nil  -- when the last one landed, ms
 
 --- A fresh crawl task exists, so a fresh mover exists on every clone of us.
@@ -2245,6 +2264,47 @@ AddEventHandler(BR.Net.DBNO_RESYNC, function()
     if not didHit(IsEntityDead(ped)) then return end
 
     local c = GetEntityCoords(ped)
+
+    -- ═══ ONCE PER RESTING PLACE, NOT ONCE PER VISITOR ═══
+    --
+    -- Read the block above for what this write is FOR: it dirties the position
+    -- node so a clone built afterwards is built from where the body came to
+    -- rest instead of from where it was falling. That is a fact about the BODY.
+    -- The arm, though, is a fact about OTHER PLAYERS -- server/combat.lua fires
+    -- it on playerEnteredScope, floored at one per second and never disarmed
+    -- while the state is OUT. So a corpse with somebody standing near it was
+    -- being written once a second for the rest of the match, every write
+    -- publishing the identical coordinates the last one did.
+    --
+    -- THAT IS NOT FREE, AND IT IS NOT LUA THAT PAYS. A dead ped is a RAGDOLL,
+    -- and SetEntityCoordsNoOffset with doWarp false is the contact-preserving
+    -- form -- the one this file's own crawl note calls "simulating continuous
+    -- movement". Aimed at a settled ragdoll once a second it is a physics solve
+    -- and a network re-send that together publish nothing new. The owner's
+    -- report is exactly the shape that produces: "when a live player is NEAR a
+    -- player who transitions from DBNO -> out ... the live player's performance
+    -- goes to shit ... nothing I could do seemed to fix the framerate"
+    -- (2026-09-07). Being near is the arm; there is no way to un-arm it.
+    --
+    -- THE PURPOSE SURVIVES INTACT because the purpose was never repetition. A
+    -- body still settling out of its death fall moves between nudges and gets a
+    -- write for each new resting place, which is the case the block above
+    -- describes. A body that has stopped has already published where it stopped,
+    -- and the network is holding that value -- a second identical write cannot
+    -- make a newcomer's clone any more correct than the first one did.
+    --
+    -- THE EPSILON IS SQUARED DISTANCE AND IS DELIBERATELY TINY. Ragdolls creep;
+    -- 1cm is below anything a player could see and above the float noise two
+    -- GetEntityCoords calls on a still body can differ by.
+    if corpseAt then
+        local dx, dy, dz = c.x - corpseAt.x, c.y - corpseAt.y, c.z - corpseAt.z
+        if (dx * dx + dy * dy + dz * dz) < 0.0001 then
+            corpseSkips = corpseSkips + 1
+            return
+        end
+    end
+
+    corpseAt = { x = c.x, y = c.y, z = c.z }
     SetEntityCoordsNoOffset(ped, c.x, c.y, c.z, true, true, false)
     corpseWrites = corpseWrites + 1
 end)
@@ -3204,11 +3264,20 @@ RegisterCommand('brdbno', function()
     -- where playerEnteredScope does not fire at all, or they never left your
     -- scope in the first place -- relevancy is 424m, so a test that starts with
     -- both players in the same field proves nothing.
-    print(('  scope      : %d nudges (%s), %d spent as arms, %d corpse writes')
+    print(('  scope      : %d nudges (%s), %d spent as arms, %d corpse writes, '
+           .. '%d declined')
         :format(scopeNudges,
                 scopeAt and ('last %dms ago'):format(GetGameTimer() - scopeAt)
                         or 'none yet -- see the note in dbno.lua',
-                scopeArms, corpseWrites))
+                scopeArms, corpseWrites, corpseSkips))
+    -- `declined` CLIMBING WHILE `corpse writes` SITS STILL IS THE HEALTHY STATE
+    -- and is what this reading is for. It means the body has settled and every
+    -- further visitor is being answered out of the position already published,
+    -- rather than with another physics solve on a ragdoll. Writes climbing in
+    -- step with nudges on a body nobody is shoving is the 2026-09-07 framerate
+    -- report coming back.
+    print('               declined climbing while writes hold = the corpse has')
+    print('               settled and visitors cost nothing.')
     print(('  last task  : %s   (a quiet knock settles on 2 tasks total; the '
            .. 'watchdog may not ask again for %dms)')
         :format(taskAt and ('%dms ago'):format(GetGameTimer() - taskAt)
