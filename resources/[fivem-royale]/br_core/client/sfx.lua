@@ -34,8 +34,23 @@ function BR.Sfx.play(cue)
     if not def then
         -- Once per cue, not once per call: a typo inside a frame loop would
         -- otherwise bury the console it is trying to warn in.
-        if lastPlayed['?' .. cue] == nil then
-            lastPlayed['?' .. cue] = 1
+        --
+        -- ═══ THE KEY IS BUILT WITH tostring AND THAT IS A FIX, NOT A TIDY-UP
+        --     (#24) ═══
+        --
+        -- This line was `lastPlayed['?' .. cue]`, and `..` on a boolean, a
+        -- table or nil RAISES in Lua -- so the one function whose docstring
+        -- promises it is "safe to call from anywhere" threw for three of the
+        -- shapes an unknown cue can arrive in. Nothing reaches it that way
+        -- today: BR.Net.SFX_CUE type-checks `d.c` before this is called, and
+        -- br_ui/client/nui.lua:335 sends `tostring(data.cue)`. That is exactly
+        -- what made it worth fixing rather than leaving -- the promise is what
+        -- callers are written against, and the two guards protecting it are in
+        -- other files and other resources, where nothing says they are
+        -- load-bearing. The next caller is the one that finds out.
+        local warned = '?' .. tostring(cue)
+        if lastPlayed[warned] == nil then
+            lastPlayed[warned] = 1
             print(('[br_core] sfx: unknown cue "%s"'):format(tostring(cue)))
         end
         return
@@ -104,9 +119,12 @@ function BR.Sfx.playFrom(cue, entity)
 
     local def = BR.Config.Audio.cues[cue]
     if not def then
-        -- Once per cue, exactly as BR.Sfx.play does and for the same reason.
-        if lastPlayed['?' .. cue] == nil then
-            lastPlayed['?' .. cue] = 1
+        -- Once per cue, exactly as BR.Sfx.play does and for the same reason --
+        -- including the tostring, which is there because `..` raises on a
+        -- boolean, a table or nil. See the long note in BR.Sfx.play.
+        local warned = '?' .. tostring(cue)
+        if lastPlayed[warned] == nil then
+            lastPlayed[warned] = 1
             print(('[br_core] sfx: unknown cue "%s"'):format(tostring(cue)))
         end
         return
