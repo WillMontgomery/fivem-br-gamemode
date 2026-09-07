@@ -721,7 +721,17 @@ RegisterCommand('brsfx', function(_, args)
     -- whose handler is forgotten -- and the failure it prevents is the quiet
     -- kind: `brsfx newverb HUD_AWARDS` would be read as the sound set
     -- `newverb`, play nothing, and report `[silent?]` about a subcommand.
-    elseif args[2] ~= nil and not VERBS[verb] then
+    -- ═══ AND args[2] HAS TO BE A REAL WORD, NOT MERELY PRESENT ═══
+    --
+    -- `~= nil` was the whole test, which makes `/brsfx storm.move` and
+    -- `/brsfx storm.move ` two different commands: a trailing space can hand
+    -- this an EMPTY second argument, and then the cue key gets read as a sound
+    -- SET with '' as the name. That plays nothing, reports [silent?], and blames
+    -- a cue the command never looked up -- the exact shape of the owner's
+    -- 2026-09-07 report that `brsfx storm.move` does not work while the raw pair
+    -- does. An empty word is not a sound name, so it falls through to the cue
+    -- table where it belongs.
+    elseif type(args[2]) == 'string' and args[2] ~= '' and not VERBS[verb] then
         set, name = args[1], args[2]
     end
 
