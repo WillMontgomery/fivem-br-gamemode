@@ -75,18 +75,19 @@ BR.Awards = {}
 --- half of anything and not a proportion of what a match pays, so the next
 --- retune of that curve has nothing to divide here: moving this costs its own
 --- decision, which is the property the paragraph above was always claiming.
--- ═══ 250, AND IT WAS 100 ═══
+-- ⚠ THE PROSE AROUND THIS FILE STILL SAYS 250 AND THE PROSE IS STALE.
 --
--- Owner, 2026-09-06, writing the tutorial card that tells a new player what
--- reporting is worth: "every correct report is awarded 250 Volts."
+-- #256 retuned this to 100 on 2026-09-02 and did not sweep the comments, so the
+-- paragraph over BR.Grants in br_core/server/grants.lua argues about "250 Volts"
+-- twice and this file's own note on the 2026-08-18 incident says "the 250 Volts
+-- were paid and logged". Those are HISTORY, not the current bounty.
 --
--- 250 IS WHAT THE REST OF THIS FEATURE ALREADY SAID. The paragraph over
--- BR.Grants in br_core/server/grants.lua argues about "250 Volts" twice, and
--- awards.lua's own note about the 2026-08-18 incident says "the 250 Volts were
--- paid and logged". The constant was the odd one out, so the card would have
--- promised two and a half times what the pipeline pays -- which is worse than
--- either number, because a player who checks their balance learns the game lies.
-local AWARD_VOLTS = 250
+-- It cost a round trip on 2026-09-06: the tutorial card that tells a new player
+-- what reporting is worth was written from the stale prose, this constant was
+-- raised to match it, and the owner corrected it -- "100 was right, put it back
+-- and fix the card". THE CONSTANT IS THE ANSWER. Anything that quotes a number
+-- at a player must be checked against this line and nothing else.
+local AWARD_VOLTS = 100
 
 --- How often to ask whether anything has been decided.
 ---

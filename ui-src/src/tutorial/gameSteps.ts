@@ -207,7 +207,7 @@ export const GAME_STEPS: Step[] = [
     target: 'players-report',
     screen: 'players',
     title: 'Reporting somebody',
-    body: 'If a player is **cheating**, or is abusive in voice or chat, press **Report player** and pick them from this list. An admin reads every one, and every correct report is awarded ~250 Volts~.',
+    body: 'If a player is **cheating**, or is abusive in voice or chat, press **Report player** and pick them from this list. An admin reads every one, and every correct report is awarded ~100 Volts~.',
     advance: 'next',
   },
   {

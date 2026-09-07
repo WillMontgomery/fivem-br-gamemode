@@ -650,21 +650,20 @@ do
     -- SEPARATELY. Both used to be the literal 250, which is two copies of one
     -- constant in one test: a retune of the bounty would have failed both lines
     -- and invited whoever moved it to edit the number in two places and call it
-    -- done. It has been retuned three times since -- 125 on 2026-08-20, 100 on
-    -- 2026-09-02 (#256), and back to 250 on 2026-09-06 -- and each time this was
-    -- the single line to change. The pin is the deliberate one, because a silent
-    -- retune must still fail here, and everything downstream reads what was
-    -- actually paid, so a payment and a sentence that disagree is its own
-    -- failure rather than a second pin.
+    -- done. It has been retuned twice since -- 125 on 2026-08-20, 100 on
+    -- 2026-09-02 (#256) -- and each time this was the single line to change.
+    -- The pin is the deliberate one, because a silent retune must still fail
+    -- here, and everything downstream reads what was actually paid, so a payment
+    -- and a sentence that disagree is its own failure rather than a second pin.
     --
-    -- ⚠ THE 2026-09-06 MOVE WAS MADE FROM A SENTENCE, NOT A RETUNE. The owner
-    -- wrote the tutorial card that tells a new player what reporting is worth --
-    -- "every correct report is awarded 250 Volts" -- and #256 had set the
-    -- constant to 100 four days earlier. Raising the payment was the only way to
-    -- keep the card honest without contradicting him, and it is one line to put
-    -- back if 100 was the number he meant.
+    -- ⚠ AND THE COMMENTS AROUND THE CONSTANT ARE STALE AT 250. #256 did not
+    -- sweep them, so grants.lua and awards.lua both still argue about "250
+    -- Volts". On 2026-09-06 a tutorial card was written from that stale prose and
+    -- the constant was briefly raised to match; the owner corrected it ("100 was
+    -- right, put it back and fix the card"). This pin is what catches the next
+    -- person who reads a comment instead of the constant.
     local AWARD = amounts[1]
-    ok(AWARD == 250 and amounts[2] == AWARD, 'each is worth 250 Volts',
+    ok(AWARD == 100 and amounts[2] == AWARD, 'each is worth 100 Volts',
         ('%s / %s'):format(tostring(amounts[1]), tostring(amounts[2])))
     ok(ids[ALICE] == INC and ids[BOB] == INC,
         'and each payment is keyed on the incident, which is what makes it idempotent')
