@@ -86,8 +86,17 @@ RESOURCE_GROUP="[fivem-royale]"
 # ADDING A VENDORED RESOURCE MEANS ADDING IT HERE. tools/verify.sh fails the
 # build if resources/ contains a VENDOR.json this list does not name, so the
 # source-only failure above cannot recur silently.
+#
+# THE TWO ScaleformUI ENTRIES ARE A PAIR AND NEITHER IS OPTIONAL. The library is
+# pure Lua that drives compiled Flash movies; the movies live in the assets
+# resource. Upstream says so outright -- "it will not work without them" -- so
+# deploying one without the other produces a resource that starts, reports no
+# error, and draws nothing. Listed assets-first to match the start order in
+# server.cfg.example, though rsync order does not itself matter.
 VENDORED_RESOURCES=(
     "[voice]/pma-voice"
+    "[scaleformui]/ScaleformUI_Assets"
+    "[scaleformui]/ScaleformUI_Lua"
 )
 
 DRY_RUN=0

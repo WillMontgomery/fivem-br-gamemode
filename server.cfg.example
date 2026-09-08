@@ -193,6 +193,30 @@ ensure hardcap           # enforces sv_maxclients
 # work for a living.
 ensure pma-voice
 
+# MENU LIBRARY. THIRD-PARTY, VENDORED IN THIS REPOSITORY, AND THESE TWO LINES
+# ARE A PAIR IN THIS ORDER.
+#
+# ScaleformUI 5.8.1 (CC BY-NC-SA 4.0, (c) manups4e) at
+# resources/[scaleformui]/, synced to the box by tools/deploy.sh like pma-voice.
+#
+# ASSETS FIRST, LIBRARY SECOND. ScaleformUI_Assets streams the compiled .gfx
+# movies and owns the minimap overlay handle; ScaleformUI_Lua requests those
+# movies by name from a thread that starts with the resource. Upstream's README
+# is blunt about it -- the library "will not work without them". Starting them
+# the other way round does not error: the library comes up, waits for movies
+# that are not registered yet, and draws nothing, which is a considerably worse
+# way to find out.
+#
+# NOTHING IN THE GAMEMODE CALLS THIS YET. It is started so it is loaded and
+# proven, and because a menu library that is ensured only when the first menu
+# lands is a library whose start-up faults are discovered by that menu. Both
+# resources are client-side only -- neither manifest declares a server script --
+# so they cost a client thread and nothing on the server. The one net-facing
+# surface is loader.lua's RegisterNetEvent('ScUI:AddMinimapOverlay'), which the
+# library triggers locally and which nothing on our server ever sends.
+ensure ScaleformUI_Assets
+ensure ScaleformUI_Lua
+
 # SCREENSHOTS ON AN INCIDENT (#34). THIRD-PARTY, NOT IN THIS REPOSITORY, AND
 # DELIBERATELY NOT VENDORED -- see docs/security.md for why this one is
 # installed rather than copied in, unlike pma-voice above.

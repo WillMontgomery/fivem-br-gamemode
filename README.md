@@ -14,7 +14,11 @@ those need no build step; the in-game NUI strings live in a committed bundle
 guarded by the drift gate, so they change together with a `ui-src` rebuild.
 
 Built with Lua on both client and server, and a React NUI for the interface.
-Everything uses stock GTA V assets — no custom models, maps, or streamed files.
+Everything uses stock GTA V assets — no custom models and no custom maps. There
+is now one exception, and it is the only one: `ScaleformUI_Assets` ships six
+compiled Flash movies (`.gfx`, about 1.3 MB), five of them streamed, for the
+ScaleformUI menu library vendored on 2026-09-08 after the owner tried it and
+wanted that look. Nothing else in the project streams a file.
 
 ---
 
@@ -163,7 +167,7 @@ with no database should play perfectly well, and `persist.lua` checks the
 resource state and says so once per match instead. Both degrade to "no live
 state" rather than to "not running".
 
-**One more resource is started, and it is not ours.**
+**Three more resources are started, and none of them are ours.**
 `resources/[voice]/pma-voice` is
 [pma-voice](https://github.com/AvarianKnight/pma-voice) v7.0.2-rc3 (MIT,
 © Dillon Skaggs), vendored whole rather than installed: every byte outside a
@@ -173,6 +177,17 @@ every patch marker in the tree is declared and every declared patch is in the
 tree, and that `tools/deploy.sh` actually syncs it. It owns the voice engine.
 `br_core/client/voice.lua` expresses our rules through it and calls exactly one
 Mumble native — a read, driving the talking indicator. Every setter is gone.
+
+`resources/[scaleformui]/ScaleformUI_Lua` and `ScaleformUI_Assets` are
+[ScaleformUI](https://github.com/manups4e/ScaleformUI) 5.8.1, vendored the same
+way and gated by the same checks. They are a pair: the first is the Lua library,
+the second streams the compiled `.gfx` movies it drives, and upstream is explicit
+that neither works alone. **The license is different and the difference matters.**
+ScaleformUI is CC BY-NC-SA 4.0, not MIT: attribution required, share alike, and
+**no commercial use**. The owner decided on 2026-09-08 that our use fits within
+those terms; that decision would need revisiting if this server ever sold
+anything. Nothing in the gamemode calls the library yet -- it is vendored and
+started, and the menus that use it are not written.
 
 The UI build project lives in `ui-src/`, **outside** `resources/`, because
 FXServer auto-builds any resource containing a `package.json` using bundled Node

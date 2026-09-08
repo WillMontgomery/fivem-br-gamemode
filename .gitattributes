@@ -39,6 +39,13 @@
 # single CRLF substitution inside an Ogg container is silent corruption that no
 # gate here would notice and only a playtest would.
 *.ogg   binary
+# Compiled Flash movies (magic bytes "GFX\b"), arrived with the vendored
+# ScaleformUI_Assets. Exactly the same argument as the .ogg above, with more at
+# stake: these are STREAMED game assets, so a CR substituted inside one is not a
+# sound that clicks -- it is a scaleform the game refuses to load, on every
+# client, with no error naming the file. Nothing in tools/verify.sh reads a
+# .gfx, so no gate here would catch it and only a playtest would.
+*.gfx   binary
 *.woff  binary
 *.woff2 binary
 *.ytd   binary

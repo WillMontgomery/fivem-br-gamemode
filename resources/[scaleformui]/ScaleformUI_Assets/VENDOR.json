@@ -1,0 +1,97 @@
+{
+  "_comment": [
+    "THIRD-PARTY VENDORED SOURCE. This directory is not ours. It is the published",
+    "ScaleformUI_Assets.zip from upstream release 5.8.1, extracted whole, with NO",
+    "local patches at all. Every byte here except LICENSE and this file came out of",
+    "that zip, whose sha256 is recorded below, so the next upstream bump is:",
+    "download the new ScaleformUI_Assets.zip and extract it over this directory.",
+    "",
+    "tools/verify.sh reads this file. The `vendored third-party` gate checks that",
+    "the LICENSE is present, that every BR-PATCH marker in the tree is declared",
+    "here and every patch declared here is present in the tree, and that",
+    "tools/deploy.sh actually syncs this resource to the box -- because shipping",
+    "a resource that never reaches the server is a failure mode this project has",
+    "already had twice. `patches` below is empty and must stay that way unless",
+    "somebody genuinely changes a file here.",
+    "",
+    "THIS IS THE HALF THAT MAKES THE OTHER HALF WORK. ScaleformUI_Lua requests",
+    "compiled Flash movies by name at start; this resource is what streams them."
+  ],
+
+  "resource": "ScaleformUI_Assets",
+  "upstream": "https://github.com/manups4e/ScaleformUI",
+  "version": "5.8.1",
+  "commit": "4d95ac8d2c1f86447c9a40a9b9f52c2bd13fa7b0",
+  "commit_date": "2025-08-12",
+  "release": "https://github.com/manups4e/ScaleformUI/releases/tag/5.8.1",
+  "release_date": "2025-08-12",
+  "license": "CC BY-NC-SA 4.0",
+  "license_file": "LICENSE",
+  "license_holder": "manups4e (Manuel Palmeri) and ScaleformUI contributors",
+  "vendored_on": "2026-09-08",
+  "deploy_path": "resources/[scaleformui]/ScaleformUI_Assets",
+
+  "license_note": [
+    "Same notice as the sibling ScaleformUI_Lua: Creative Commons",
+    "Attribution-NonCommercial-ShareAlike 4.0 International. Attribution required,",
+    "share alike, and NO COMMERCIAL USE. The owner decided on 2026-09-08 that our",
+    "use fits within those terms.",
+    "",
+    "LICENSE here is an ADDED file. Upstream keeps its notice at the repository",
+    "root as LICENSE.txt and this zip does not contain it, so the notice was copied",
+    "in verbatim and renamed to the name CC expects and verify.sh looks for. It and",
+    "VENDOR.json are the only two files here that did not come out of the zip."
+  ],
+
+  "why_this_resource_exists": [
+    "Upstream's README states it in as many words: 'This also requires an Assets",
+    "resource from the Github Repo Releases, it will not work without them.' The",
+    "library is pure Lua that drives compiled Flash movies; the movies are these",
+    "files and they ship only as a release artifact, never in the git tree.",
+    "",
+    "stream/ is a FiveM convention rather than a manifest entry -- everything in it",
+    "is registered as a streamed game asset automatically, which is why",
+    "fxmanifest.lua declares only files/MINIMAP_LOADER.gfx (loaded by handle, not",
+    "streamed) and loader.lua. Do not 'fix' the manifest by adding the stream files",
+    "to it.",
+    "",
+    "THIS IS THE FIRST STREAMED ASSET IN THE PROJECT. README.md's line about the",
+    "gamemode using stock GTA V assets with no streamed files was amended on",
+    "2026-09-08 to say so rather than deleted."
+  ],
+
+  "contents": {
+    "stream/ScaleformUI.gfx": "the main menu movie -- UIMenu and everything built on it",
+    "stream/ScaleformUIPause.gfx": "the pause-menu movie",
+    "stream/PauseMenuHeader.gfx": "the pause-menu header strip",
+    "stream/RadialMenu.gfx": "the radial menu movie",
+    "stream/RadioMenu.gfx": "the radio menu movie",
+    "files/MINIMAP_LOADER.gfx": "minimap overlay movie, added via AddMinimapOverlay by loader.lua rather than streamed",
+    "loader.lua": "12 lines: owns the single minimap overlay handle and hands it out on the ScUI:AddMinimapOverlay event"
+  },
+
+  "provenance_check": {
+    "claim": "Every file here except LICENSE and VENDOR.json is byte-identical to the corresponding member of the release asset ScaleformUI_Assets.zip, sha256 recorded below.",
+    "verified_on": "2026-09-08",
+    "how": [
+      "curl -sSL -o ScaleformUI_Assets.zip https://github.com/manups4e/ScaleformUI/releases/download/5.8.1/ScaleformUI_Assets.zip",
+      "sha256sum ScaleformUI_Assets.zip   # must equal release_assets below",
+      "unzip -o ScaleformUI_Assets.zip -d /tmp/sfa",
+      "diff -r /tmp/sfa/ScaleformUI_Assets 'resources/[scaleformui]/ScaleformUI_Assets' -x LICENSE -x VENDOR.json"
+    ],
+    "note": "The .gfx files are compiled Flash movies -- magic bytes 'GFX\\b' -- and are pinned `binary` in .gitattributes. That pin is not decoration. This repository sets `* text=auto eol=lf`, and while git's own heuristic would almost certainly classify a .gfx as binary, 'almost certainly' is not a property to hang a streamed asset on: one CRLF substitution inside one of these files is silent corruption that every gate here would pass and only a playtest would find. The same argument is already written out for *.ogg, which arrived with pma-voice."
+  },
+
+  "release_assets": {
+    "ScaleformUI_Assets.zip": {
+      "size_bytes": 355463,
+      "sha256": "9beb7c7dae422f70917c277ef4f1584a7f1a48f2f5aa0af6642ee65156a502e0"
+    }
+  },
+
+  "patches": [],
+
+  "untouched_on_purpose": [
+    "loader.lua -- 12 lines, two upstream faults, both deliberately left alone this round because vendoring is a transcription and fixing is a decision. (1) The event handler ends with an unconditional print(overlayID), so every client prints a bare number into F8 once at start; this is exactly the fault pma-voice's BR-PATCH 1 removed, so there is precedent for fixing it if the owner wants it gone. (2) The exports('AddMinimapOverlay') body calls cb(overlayID) where cb was never a parameter -- calling that export errors on a nil global. Nothing we ship calls it; ScaleformUI_Lua uses the event, not the export."
+  ]
+}

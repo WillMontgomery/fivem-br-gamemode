@@ -1,0 +1,130 @@
+{
+  "_comment": [
+    "THIRD-PARTY VENDORED SOURCE. This directory is not ours. It is the published",
+    "ScaleformUI_Lua.zip from upstream release 5.8.1, extracted whole, plus the one",
+    "local patch listed below and nothing else -- no reformatting, no restructuring,",
+    "no 'improvements'. Every byte outside the BR-PATCH block in fxmanifest.lua is",
+    "byte-identical to that release asset, whose sha256 is recorded in",
+    "`release_assets` below, so the next upstream bump is: download the new",
+    "ScaleformUI_Lua.zip, extract it over this directory, then re-apply the patch.",
+    "Keeping that true is the whole reason this file exists.",
+    "",
+    "tools/verify.sh reads this file. The `vendored third-party` gate checks that",
+    "the LICENSE is present, that every BR-PATCH marker in the tree is declared",
+    "here and every patch declared here is present in the tree, and that",
+    "tools/deploy.sh actually syncs this resource to the box -- because shipping",
+    "a resource that never reaches the server is a failure mode this project has",
+    "already had twice.",
+    "",
+    "THIS RESOURCE DOES NOT WORK ALONE. It needs ScaleformUI_Assets, its sibling in",
+    "this group, which streams the compiled .gfx movies it requests at start. See",
+    "`hard_dependency` below."
+  ],
+
+  "resource": "ScaleformUI_Lua",
+  "upstream": "https://github.com/manups4e/ScaleformUI",
+  "version": "5.8.1",
+  "commit": "4d95ac8d2c1f86447c9a40a9b9f52c2bd13fa7b0",
+  "commit_date": "2025-08-12",
+  "release": "https://github.com/manups4e/ScaleformUI/releases/tag/5.8.1",
+  "release_date": "2025-08-12",
+  "license": "CC BY-NC-SA 4.0",
+  "license_file": "LICENSE",
+  "license_holder": "manups4e (Manuel Palmeri) and ScaleformUI contributors",
+  "vendored_on": "2026-09-08",
+  "deploy_path": "resources/[scaleformui]/ScaleformUI_Lua",
+
+  "license_note": [
+    "Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International.",
+    "NOT MIT, unlike the other vendored resource in this repository, so the terms",
+    "are different in a way that matters: attribution is required, derivatives",
+    "must be shared alike, and COMMERCIAL USE IS NOT PERMITTED. Upstream's README",
+    "says the same thing in its own words -- use it in your resources freely, but",
+    "you cannot ship it inside a paid resource.",
+    "",
+    "The owner considered this and decided on 2026-09-08 that our use fits within",
+    "CC BY-NC-SA. That decision is his to make and is recorded here so the next",
+    "person does not have to re-litigate it; it is NOT a lawyer's opinion and it",
+    "would need revisiting if this server ever sells anything that includes this",
+    "library.",
+    "",
+    "The upstream repository keeps its notice at the REPOSITORY ROOT as",
+    "LICENSE.txt, and neither release zip contains it. So LICENSE here is an ADDED",
+    "file: a verbatim copy of that LICENSE.txt, renamed to LICENSE because CC",
+    "requires the notice to travel with the code and because verify.sh looks for",
+    "that exact name. It is the only file in this directory that did not come out",
+    "of the zip."
+  ],
+
+  "hard_dependency": {
+    "resource": "ScaleformUI_Assets",
+    "why": [
+      "Upstream's README states it outright: 'This also requires an Assets resource",
+      "from the Github Repo Releases, it will not work without them.' The assets",
+      "resource streams the compiled Flash movies (.gfx) that this library requests",
+      "by name at start -- ScaleformUI, ScaleformUIPause, PauseMenuHeader,",
+      "RadialMenu, RadioMenu -- and owns the minimap overlay loader that",
+      "MinimapOverlays:Load() calls through TriggerEvent('ScUI:AddMinimapOverlay').",
+      "Without it the library starts, sits waiting for movies that never load, and",
+      "draws nothing."
+    ],
+    "start_order": "ensure ScaleformUI_Assets BEFORE ScaleformUI_Lua, so the streamed .gfx are registered before this resource's start-up thread requests them."
+  },
+
+  "provenance_check": {
+    "claim": "This directory is the extracted ScaleformUI_Lua.zip of release 5.8.1, and that zip's ScaleformUI.lua is not an opaque build artifact -- it is the tag's own source, concatenated. All 125 .lua files under ScaleformUI_Lua/src/ at tag 5.8.1 appear in it verbatim, in case-insensitive path order, separated by a 73-character banner comment. Nothing is added and nothing is removed: the 9,124 characters by which the bundle exceeds the sum of its sources are exactly those 125 banners.",
+    "verified_on": "2026-09-08",
+    "how": [
+      "curl -sSL -o ScaleformUI_Lua.zip https://github.com/manups4e/ScaleformUI/releases/download/5.8.1/ScaleformUI_Lua.zip",
+      "sha256sum ScaleformUI_Lua.zip   # must equal release_assets below",
+      "git clone https://github.com/manups4e/ScaleformUI.git && git -C ScaleformUI archive 5.8.1 ScaleformUI_Lua | tar -x",
+      "# then, for each src/**/*.lua at the tag, assert its whitespace-normalised body",
+      "# occurs in the released ScaleformUI.lua, and that the order of first occurrence",
+      "# equals the case-insensitive sort of the source paths."
+    ],
+    "note": "Compare the ZIP by sha256, not the extracted worktree. This repository's .gitattributes normalises text to LF, so a checked-out ScaleformUI.lua on Windows may hold CRLF and will not hash like the zip member -- that is a property of your core.autocrlf setting, not of the code. The .gfx files in the sibling assets resource are pinned `binary` in .gitattributes for the same reason, where the stakes are higher: a substituted CR inside a compiled Flash movie is silent corruption no gate here would catch."
+  },
+
+  "release_assets": {
+    "ScaleformUI_Lua.zip": {
+      "size_bytes": 130225,
+      "sha256": "7c90326b8f5b5522757131ec084a25f0994d467dc41d357e6b821a2683a0b6f4"
+    }
+  },
+
+  "why_vendored": [
+    "The owner evaluated upstream's demo menu on 2026-09-08 and wanted this look:",
+    "'feels exactly like Rockstar's'. It is vendored rather than installed by hand",
+    "for the reason every third-party resource here is -- tools/deploy.sh syncs what",
+    "is in this repository and nothing else, so a hand-installed copy is a version",
+    "nobody can see from the commit history and nobody can reproduce on a new box.",
+    "",
+    "The CHOICE OF THE RELEASE ZIP over the repository's src/ tree was deliberate.",
+    "The alternative was vendoring ScaleformUI_Lua/src/ from tag 5.8.1 -- 125 files",
+    "loaded by the manifest's 'src/**/*.lua' glob, which is how upstream develops.",
+    "It lost on two counts. First, the .gfx assets only exist as a release artifact,",
+    "so pairing the library with the same release removes any chance of version",
+    "skew between the Lua and the movies it drives. Second, the glob form makes",
+    "load order a property of FiveM's glob expansion, and this library defines",
+    "classes by file-scope inheritance, where a wrong order is a nil __index at",
+    "start. The bundle has one fixed order. Nothing was given up by choosing it:",
+    "the check above proves the bundle IS those 125 files, in that order."
+  ],
+
+  "patches": [
+    {
+      "id": "BR-PATCH 1",
+      "file": "fxmanifest.lua",
+      "symbol": "client_scripts",
+      "what": "Commented out the 'example.lua' entry. The file itself is left in place, unmodified.",
+      "why": "example.lua is upstream's showcase demo and it is not inert: loaded, it draws a green world marker at the player's spawn, adds two timer bars, types 'this is a test' onto the minimap four seconds after start, and then runs a forever loop watching for demo hotkeys. This round vendors the library and proves it starts; it writes no menus and changes no gameplay, and a stranger's demo UI on every player's screen is the opposite of that. Kept rather than deleted so the demo the owner actually evaluated stays one uncomment away.",
+      "upstream_fixable": "not a bug -- the manifest line directly above it invites exactly this change: 'You can comment example.lua if you don't need it!'"
+    }
+  ],
+
+  "untouched_on_purpose": [
+    "ScaleformUI.lua -- the library itself. Not one byte changed. Two upstream faults were found while vendoring and both were left alone on purpose, because fixing them is a decision, not a transcription: (1) MinimapOverlays.minimapHandle is initialised to 0 and the code that would set it is commented out upstream, so isLoaded can never become true and the start-up thread calls MinimapOverlays:Load() every frame forever; (2) that same always-on thread runs at Wait(0) from resource start whether or not any menu exists. Both are reported to the owner rather than patched.",
+    "example.lua -- byte-identical to the release. Only its manifest entry is commented out.",
+    "COLORS. The owner asked for 'our colors for now'. Nothing was recolored here and that is not an omission: ScaleformUI takes its colors per menu at construction time (SColor.HUD_Yellow and friends, passed when a UIMenu is built), so there is no palette inside the library to change. Our colors get applied by the code that builds our menus, which this round deliberately does not write."
+  ]
+}
