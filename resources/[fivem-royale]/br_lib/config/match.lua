@@ -963,6 +963,21 @@ BR.Config.Match = {
     -- message and from nothing else. Change it here and the ring closes with
     -- the revive, on its own.
     dbnoReviveTime  = 2.8,
+
+    -- ═══ HOW CLOSE YOU HAVE TO BE TO OFFER A REVIVE -- ON THE CLIENT ONLY ═══
+    --
+    -- As of 2026-09-07 no server rule reads this. It is measured by
+    -- client/dbno.lua's nearestDowned and client/squadmates.lua's prompt, both
+    -- against the OBSERVER'S OWN COPY of the downed ped -- which is the right
+    -- witness for it, because that copy is the body the player can see and walk
+    -- to.
+    --
+    -- server/combat.lua used to measure it too, from its own samples and with
+    -- dbnoReviveSlack on top, and the owner removed that: the two machines
+    -- disagree about where a downed body is (#164, #246) and the server's copy
+    -- of the argument refused the honest player without telling them why. See
+    -- reviveAllowed. dbnoReviveSlack still exists and now means something else
+    -- entirely -- read its note before touching it.
     dbnoReviveDist  = 1.5,
     dbnoReviveHp    = 30,     -- displayed HP after a successful revive
 
@@ -995,11 +1010,34 @@ BR.Config.Match = {
     -- the server-observed death check a body to eliminate.
     dbnoHp          = 5,
 
-    -- Slack on the SERVER's revive distance check, in metres. Positions are
-    -- sampled at 250ms, so the server's idea of where two players are standing
-    -- is always slightly behind the client's -- the same skew the loot claim
-    -- check allows for, for the same reason.
-    dbnoReviveSlack = 1.0,
+    -- ═══ HOW FAR THE REVIVER MAY DRIFT FROM WHERE THEY STARTED, IN METRES ═══
+    --
+    -- THIS NUMBER CHANGED MEANING ON 2026-09-07 AND THE OLD MEANING IS GONE.
+    -- It used to be slack on a SERVER CHECK OF THE DISTANCE BETWEEN THE REVIVER
+    -- AND THE BODY, which is the check the owner removed:
+    --
+    --   "remove the restriction that forbids players from reviving a corpse in
+    --    the wrong location. Because there's no output for that today other
+    --    than 'it doesn't work' and that's not fair to players when they arrive
+    --    in the cell and positions aren't synced"
+    --
+    -- A reviver-to-body test is a test of a DISAGREEMENT: the observer's copy of
+    -- a downed body can sit metres from where the server has it (#164, #246 --
+    -- the clone crawls, and ragdoll positions are an open engine bug), so an
+    -- honest player standing exactly where they see the body was refused for a
+    -- gap they could neither see nor close.
+    --
+    -- WHAT REPLACED IT MEASURES ONE PLAYER AGAINST THEMSELVES. The reviver's
+    -- position when the hold began is stamped, and this is how far they may get
+    -- from it before the hold is cancelled. There is no second player in that
+    -- subtraction and therefore no desync in it -- the number can only ever
+    -- refuse somebody who actually walked away, which is the thing the eight
+    -- seconds in the open were always about.
+    --
+    -- 3m rather than the old 2.5m: this is a budget for shuffling around a body
+    -- while holding a key, not a reach. It has to comfortably contain circling
+    -- the body and being nudged by a car, and it has to be well short of "left".
+    dbnoReviveSlack = 3.0,
 
     -- How long the server keeps a revive alive without hearing from the client
     -- holding it. The client re-asserts every 250ms; three misses drops it.

@@ -2874,9 +2874,7 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- The reach test that produces `target` is the strictest thing in the whole
     -- interaction and it is measured off the WRONG BODY:
     --
-    --   * it uses dbnoReviveDist (1.5m) with NO SLACK, while the server allows
-    --     dbnoReviveDist + dbnoReviveSlack (2.5m) precisely because a position
-    --     is up to 250ms old;
+    --   * it uses dbnoReviveDist (1.5m) with NO SLACK;
     --   * it measures to `BR.Squadmates.pedOf(src)`, which is OUR MACHINE'S
     --     COPY of the mate's ped -- and #164 is the report that that copy
     --     CRAWLS AWAY. The downed player is pinned on their own machine and
@@ -2886,11 +2884,21 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     --     ring that was started once and is finishing on the browser's own
     --     clock -- sees nothing happen, forever.
     --
-    -- So the authority goes back where the comment always said it was. The
-    -- SERVER re-checks reach every 250ms from its own samples and cancels for
-    -- real if the reviver has genuinely walked off; this side now only ends a
-    -- hold for the two things it is the sole witness to: the key coming up, and
-    -- the player deliberately switching to a DIFFERENT mate.
+    -- So this side does not end a hold for range at all. It ends one for the two
+    -- things it is the sole witness to: the key coming up, and the player
+    -- deliberately switching to a DIFFERENT mate.
+    --
+    -- ═══ AND NEITHER DOES THE SERVER, AS OF 2026-09-07 ═══
+    --
+    -- This comment used to end "the SERVER re-checks reach every 250ms from its
+    -- own samples and cancels for real if the reviver has genuinely walked off",
+    -- and that check is gone. The owner removed it for the reason the paragraph
+    -- above states better than the removal did: a reviver stands where THEIR
+    -- copy of the body is, so a server-side reviver-to-body test refuses the
+    -- honest player for a disagreement between two machines and tells them
+    -- nothing. What the server cancels on now is the reviver's own drift from
+    -- where the hold began -- one player measured against themselves, with no
+    -- clone in the subtraction. See reviveAllowed in server/combat.lua.
     if holding and not BR.Keys.isHeld('interact') then
         TriggerServerEvent(BR.Net.REVIVE_STOP)
         holding = nil

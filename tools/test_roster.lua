@@ -14628,14 +14628,41 @@ do
     BR.Combat.defeat(1, 'gunshot', nil)
     ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'p1 is down')
 
-    -- OUT OF REACH IS OUT OF REACH, and it is judged from the SERVER's own
-    -- position samples -- never from anything the client said.
+    -- ═══ OUT OF REACH IS NO LONGER OUT OF REACH, AND THAT IS THE POINT ═══
+    --
+    --   "remove the restriction that forbids players from reviving a corpse in
+    --    the wrong location. Because there's no output for that today other
+    --    than 'it doesn't work' and that's not fair to players when they arrive
+    --    in the cell and positions aren't synced"     -- owner, 2026-09-07
+    --
+    -- THIS ASSERTION USED TO READ 'a revive from across the street is refused'
+    -- and it is INVERTED rather than deleted, because the deletion is the whole
+    -- change: a suite that simply stopped mentioning distance would let somebody
+    -- put the rule back in a year without ever meeting the argument against it.
+    --
+    -- The old rule measured the server's sample of the reviver against the
+    -- server's sample of the BODY, while the reviver was standing at THEIR COPY
+    -- of that body -- the copy #164 says crawls away and #246 says can be built
+    -- where the death happened rather than where it came to rest. So it refused
+    -- the honest player, and said why only in a server log they never read.
+    --
+    -- WHAT DEFENDS THE HOLD NOW IS THE ANCHOR, and it lives in dbno.hold.walkaway
+    -- rather than here: the reviver may not get far from where they were when
+    -- they started, which is one player measured against themselves.
     setPos(2, 50.0, 0.0, 30.0)
     BR.Roster.get(2).pos = { x = 50.0, y = 0.0, z = 30.0 }
     fire(BR.Net.REVIVE_START, 2, { target = 1 })
-    ok(BR.Roster.get(1).reviverSrc == nil,
-        'a revive from across the street is refused')
+    ok(BR.Roster.get(1).reviverSrc == 2,
+        'a hold is accepted however far the SERVER thinks the two are apart -- '
+            .. 'the client is the witness for proximity, because it is the one '
+            .. 'looking at the body the player is looking at')
 
+    -- AND THE ORDINARY CASE STILL WORKS. The hold above is released first, so
+    -- everything below is a FRESH hold rather than a heartbeat on the one that
+    -- started fifty metres away -- otherwise "first hand on wins" would make the
+    -- next REVIVE_START a no-op and the progress assertions would be measuring
+    -- the wrong clock.
+    fire(BR.Net.REVIVE_STOP, 2, {})
     setPos(2, 0.5, 0.0, 30.0)
     BR.Roster.get(2).pos = { x = 0.5, y = 0.0, z = 30.0 }
     sent = {}

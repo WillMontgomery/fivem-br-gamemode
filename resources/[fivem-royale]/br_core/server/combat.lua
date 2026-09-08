@@ -1039,21 +1039,43 @@ local function reviveAllowed(reviver, target)
         return false, 'different squads'
     end
 
-    -- MEASURED FROM THE SERVER'S OWN POSITION SAMPLES, never from anything a
-    -- client said -- the rule the loot claim already follows, with the same
-    -- slack for the same 250ms sampling skew.
-    local a, b = reviver.pos, target.pos
-    -- NAMED SEPARATELY, because "the server has never sampled this player"
-    -- looks nothing like "they walked away" and used to read as the same
-    -- refusal. It means OneSync or the position job, not the player.
-    if not a then return false, 'no position sampled for the reviver' end
-    if not b then return false, 'no position sampled for the target' end
-
-    local reach = (M.dbnoReviveDist or 1.5) + (M.dbnoReviveSlack or 1.0)
-    local d = BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z)
-    if d > reach then
-        return false, ('%.2fm apart, server reach is %.2fm'):format(d, reach)
-    end
+    -- ═══ THERE IS NO REVIVER-TO-BODY DISTANCE TEST HERE ANY MORE ═══
+    --
+    --   "remove the restriction that forbids players from reviving a corpse in
+    --    the wrong location. Because there's no output for that today other
+    --    than 'it doesn't work' and that's not fair to players when they arrive
+    --    in the cell and positions aren't synced"     -- owner, 2026-09-07
+    --
+    -- WHAT USED TO BE HERE was BR.Dist3(reviver.pos, target.pos) against
+    -- dbnoReviveDist + dbnoReviveSlack, 2.5m, off the server's own 250ms
+    -- samples. It read as the safe, authoritative choice and it was measuring a
+    -- DISAGREEMENT rather than a fact: a reviver stands where THEIR COPY of the
+    -- body is, and that copy is exactly the thing this project has two open
+    -- reports about. #164 -- the clone crawls away from where the downed player
+    -- is pinned. #246 -- a body streamed in late is built where the death
+    -- happened rather than where it came to rest, and the corpse half of that
+    -- fix now publishes a resting place ONCE (client/dbno.lua) rather than
+    -- continuously, so a stale clone stays stale for longer.
+    --
+    -- So the refusal fell on the honest player every time. They walked to the
+    -- body on their screen, held the key, watched the ring fill, and nothing
+    -- happened -- with the reason living in a server log they will never read.
+    -- A rule that cannot be complied with and cannot be explained is worse than
+    -- no rule.
+    --
+    -- WHAT DEFENDS THE EIGHT SECONDS INSTEAD IS AN ANCHOR, and it is in
+    -- stepDowned rather than here: the reviver's position is stamped when the
+    -- hold begins and they may not get more than dbnoReviveSlack from it. That
+    -- subtraction has ONE player in it, so there is no clone, no ragdoll and no
+    -- desync in it -- it can only ever refuse somebody who genuinely walked off,
+    -- which is the whole of what the old test was trying to say.
+    --
+    -- STARTING A HOLD STILL NEEDS PROXIMITY, and the client is the right witness
+    -- for it: client/dbno.lua's nearestDowned only offers a body within
+    -- dbnoReviveDist of the ped, measured against the same copy the player is
+    -- looking at. That is the geometry the player can actually see and act on.
+    -- A modified client can now start a hold at range; that is the price, and it
+    -- buys a revive that works when the engine's positions disagree.
     return true
 end
 
@@ -1077,6 +1099,10 @@ local function stopRevive(src, entry, reason)
 
     entry.reviverSrc, entry.reviveFrom = nil, nil
     entry.reviveBeat, entry.reviveTickAt = nil, nil
+    -- WITH THE REST OF THE HOLD. A stale anchor would measure the NEXT hold's
+    -- drift from where the LAST reviver was standing, which is a cancel nobody
+    -- could account for -- the same class of bug the old distance test was.
+    entry.reviveAnchor = nil
 
     TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc,
         { pct = 0.0, target = src, cancelled = true, reason = reason })
@@ -1184,6 +1210,44 @@ local function stepDowned(src, entry, now)
         local reviver = BR.Roster.get(reviverSrc)
 
         local allowed, why = reviveAllowed(reviver, entry)
+
+        -- ═══ THE REVIVER MAY NOT WALK OFF, MEASURED AGAINST THEMSELVES ═══
+        --
+        -- This replaces the reviver-to-BODY distance test the owner removed on
+        -- 2026-09-07; reviveAllowed carries the full note on why that one had to
+        -- go. What is kept is the part that was never in doubt: eight seconds
+        -- standing still in the open is the cost of picking somebody up, and a
+        -- hold you can start and then run away from is not that.
+        --
+        -- ONE PLAYER IN THE SUBTRACTION, WHICH IS THE WHOLE POINT. `anchor` is
+        -- a copy of where the SERVER saw this reviver when the hold began, and
+        -- `reviver.pos` is where the server sees them now. Both readings are of
+        -- the same player, off the same 250ms sampler, so there is no clone, no
+        -- ragdoll and no observer disagreement anywhere in it. It cannot refuse
+        -- an honest player standing still, however wrong their screen is about
+        -- where the body lies.
+        --
+        -- STAMPED LATE IF IT HAS TO BE. A hold can begin before the position job
+        -- has ever sampled the reviver, and "OneSync has not told us where you
+        -- are yet" is not something a player did. The first pass with a position
+        -- adopts it as the anchor rather than cancelling.
+        if allowed and reviver.pos then
+            local anchor = entry.reviveAnchor
+            if not anchor then
+                entry.reviveAnchor = { x = reviver.pos.x, y = reviver.pos.y,
+                                       z = reviver.pos.z }
+            else
+                local budget = M.dbnoReviveSlack or 3.0
+                local d = BR.Dist3(reviver.pos.x, reviver.pos.y, reviver.pos.z,
+                                   anchor.x, anchor.y, anchor.z)
+                if d > budget then
+                    allowed = false
+                    why = ('the reviver moved %.2fm from where they started '
+                           .. '(budget %.2fm)'):format(d, budget)
+                end
+            end
+        end
+
         if not allowed then
             stopRevive(src, entry, 'interrupted: ' .. tostring(why))
 
@@ -1556,6 +1620,33 @@ AddEventHandler(BR.Net.REVIVE_START, function(data)
     target.reviverSrc = src
     target.reviveFrom = GetGameTimer()
     target.reviveBeat = target.reviveFrom
+    -- WHERE THE REVIVER WAS STANDING WHEN THEY STARTED. stepDowned measures the
+    -- drift against this and cancels if they leave; see the note in
+    -- reviveAllowed for why the old reviver-to-BODY test could not stay.
+    --
+    -- ═══ WRITTEN UNCONDITIONALLY, WHICH IS WHAT MAKES A STALE ONE IMPOSSIBLE
+    --     ═══
+    --
+    -- Eight places in this project clear `reviverSrc` and `reviveFrom` when a
+    -- hold ends -- eliminate, knock, revive, the stop handler, resetPlayer,
+    -- revivekey's bringBack -- and only stopRevive clears this field. That is
+    -- safe, and it is safe for a reason worth stating rather than by luck: every
+    -- hold arrives HERE and this line runs on all of them, so the anchor a new
+    -- hold measures against is always its own. A left-over table can be read by
+    -- nothing, because stepDowned only looks while `reviverSrc` is set.
+    --
+    -- COPIED RATHER THAN REFERENCED. server/roster.lua's sampler currently
+    -- allocates a fresh table each pass, so a reference would happen to work
+    -- today -- and the day it is changed to write in place for the garbage it
+    -- would save, the anchor would silently follow the player and the drift
+    -- would be zero forever. A rule that is always satisfied is not a rule, and
+    -- it would fail silently.
+    --
+    -- nil IF THE SERVER HAS NEVER SAMPLED THEM, and stepDowned then stamps it on
+    -- its first pass. That is deliberately not a refusal: "OneSync has not told
+    -- us where you are yet" is not something a player did.
+    local rp = reviver.pos
+    target.reviveAnchor = rp and { x = rp.x, y = rp.y, z = rp.z } or nil
     -- THE PAUSE STARTS HERE, NOT ON THE FIRST TICK. stepDowned advances the
     -- deadline by `now - reviveTickAt`, and with nothing stamped that first
     -- pass measured zero -- so the quarter second between the hold registering

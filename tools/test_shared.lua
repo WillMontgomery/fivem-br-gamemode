@@ -6009,6 +6009,16 @@ local function newReviveRig(rtt)
     function H.press(down) CLI.press(down) end
     --- The reviver really walks: both the truth and their own view move.
     function H.moveTo(x) peds[5002].x, truth[5002].x = x, x end
+
+    --- Put the reviver's COPY of the body somewhere it is not.
+    ---
+    --- This is #164 and #246 stated directly rather than simulated with a drift
+    --- rate: the observer's clone is at `x`, the real body has not moved, and
+    --- nothing on the reviver's machine can tell the difference. Used by
+    --- dbno.hold.chase, which walks the reviver to the body they can SEE.
+    function H.ghostTo(x) peds[5001].x = x end
+    --- Where the reviver's own copy of the body is.
+    function H.ghostAt() return peds[5001].x end
     function H.up() return SRV.roster[1].state == PS.ALIVE end
 
     --- Pump up to `ms` waiting for player 1 to come back up.
@@ -6154,9 +6164,16 @@ end
 -- failing four times a second. A full ring and a working revive are the same
 -- pixels. The counters in the client's ledger are what tell them apart.
 --
--- THE SERVER WOULD HAVE ALLOWED IT ALL ALONG -- it measures 2.5m from its own
+-- THE SERVER WOULD HAVE ALLOWED IT ALL ALONG -- it measured 2.5m from its own
 -- samples of the real bodies, which never moved. The client was overruling the
 -- authority with a worse measurement of a ghost.
+--
+-- AND THAT 2.5m TEST IS ITSELF GONE NOW (owner, 2026-09-07). This block is the
+-- case where the reviver stands still and only the clone moves, which the server
+-- always allowed. dbno.hold.chase below is the case it did NOT: a reviver who
+-- walks to the body they can see, and is therefore genuinely far from the body
+-- the server has. That is the one the owner reported, and it is why the test
+-- went rather than being widened.
 
 describe('dbno.hold.ghost')
 do
@@ -6223,6 +6240,113 @@ do
         led and tostring(led.dones) or nil)
 end
 
+-- ==========================================================================
+-- WALKING TO THE BODY YOU CAN SEE
+-- ==========================================================================
+--
+--   "remove the restriction that forbids players from reviving a corpse in the
+--    wrong location. Because there's no output for that today other than 'it
+--    doesn't work' and that's not fair to players when they arrive in the cell
+--    and positions aren't synced"                       -- owner, 2026-09-07
+--
+-- THE CASE dbno.hold.ghost COULD NOT REACH. There the reviver stands still and
+-- only the clone drifts, so the SERVER's two samples -- of two bodies that never
+-- moved -- stay 0.8m apart and the old 2.5m test was happy. The owner's report is
+-- the other half: a player who ARRIVES IN THE CELL, sees the body somewhere, and
+-- walks to it. Now their real position is metres from the real body, the server
+-- measures the gap between two machines' opinions, and refuses -- silently, into
+-- a log the player will never read, while the ring on their screen fills to the
+-- top because it is a one-shot CSS animation nobody told to stop.
+--
+-- SO THE TEST IS: PUT THE CLONE SOMEWHERE ELSE AND WALK TO IT. Everything the
+-- reviver can perceive says they are standing on the body.
+describe('dbno.hold.chase')
+do
+    local H = newReviveRig(40)
+    H.knock()
+    H.pump(500)
+
+    -- The body is at x=0 and has not moved. The reviver's copy of it is at 12m
+    -- -- further than any drift rate would produce inside a hold, and stated
+    -- outright rather than simulated, because #246's corpse half now publishes a
+    -- resting place ONCE: a clone built from a stale position stays stale.
+    H.ghostTo(12.0)
+    H.moveTo(H.ghostAt() - 0.8)   -- standing over the body they can SEE
+
+    H.press(true)
+    local up = H.revived(6000)
+    H.press(false)
+
+    ok(up,
+       'a reviver who walks to the body their own machine is showing them can '
+           .. 'pick it up, however far that is from where the server has it -- '
+           .. 'the refusal was a disagreement between two machines and the '
+           .. 'player was the one paying for it',
+       up and 'revived' or ('stopped: %s')
+           :format(tostring(H.srv.roster[1].reviveStopWhy)))
+
+    -- AND IT WAS NEVER CANCELLED ON THE WAY, which is the assertion that would
+    -- catch the rule coming back as a mid-hold check rather than a start check.
+    -- A hold that is refused four times a second and re-armed by the client
+    -- LOOKS like a working hold right up until it does not land.
+    ok((H.srv.roster[1].reviveStops or 0) == 0,
+       'and the hold was never interrupted on the way there',
+       ('%d stops, last: %s'):format(H.srv.roster[1].reviveStops or 0,
+           tostring(H.srv.roster[1].reviveStopWhy)))
+end
+
+-- ==========================================================================
+-- THE ANCHOR IS THE RULE THAT REPLACED IT
+-- ==========================================================================
+--
+-- One player, measured against themselves. There is no second machine in the
+-- subtraction, so it cannot refuse somebody for a disagreement -- only for
+-- moving, which is the thing the eight seconds in the open were always about.
+describe('dbno.hold.anchor')
+do
+    local H = newReviveRig(40)
+    H.knock()
+    H.pump(500)
+    H.press(true)
+    H.pump(600)
+
+    local body = H.srv.roster[1]
+    ok(type(body.reviveAnchor) == 'table',
+       'the hold stamps where the reviver was standing when it began',
+       tostring(body.reviveAnchor))
+
+    -- IT IS A COPY, NOT A REFERENCE. reviver.pos is a live table the position
+    -- job overwrites in place, so an anchor holding that reference would follow
+    -- the player and the drift would be zero forever -- a rule that is always
+    -- satisfied is not a rule.
+    local ax = body.reviveAnchor and body.reviveAnchor.x
+    H.moveTo(2.0)
+    H.pump(600)
+    ok(H.srv.roster[1].reviveAnchor
+       and math.abs(H.srv.roster[1].reviveAnchor.x - ax) < 1e-9,
+       'and the anchor is a COPY -- it stays where it was stamped while the '
+           .. 'reviver moves around',
+       tostring(H.srv.roster[1].reviveAnchor
+                and H.srv.roster[1].reviveAnchor.x))
+
+    -- A METRE AND A HALF OF SHUFFLING IS NOT LEAVING. The budget has to contain
+    -- circling a body while holding a key, or the rule becomes the old one in a
+    -- different costume.
+    ok((H.srv.roster[1].reviveStops or 0) == 0,
+       'and moving inside the budget does not cancel',
+       ('%d stops'):format(H.srv.roster[1].reviveStops or 0))
+    H.press(false)
+
+    -- ...AND THE ANCHOR DOES NOT OUTLIVE THE HOLD. A stale one would measure the
+    -- NEXT hold's drift from where the LAST reviver stood, which is a cancel
+    -- nobody could account for -- the same class of bug as the rule it replaced.
+    H.pump(1500)
+    ok(H.srv.roster[1].reviveAnchor == nil,
+       'and it is cleared when the hold ends, so the next one starts from where '
+           .. 'the next reviver is standing',
+       tostring(H.srv.roster[1].reviveAnchor))
+end
+
 -- A LEGITIMATE WALK-OFF STILL CANCELS, and it has to: the point above is that
 -- the SERVER decides, not that nobody does.
 describe('dbno.hold.walkaway')
@@ -6236,9 +6360,27 @@ do
         'walking away from a body really does end the hold -- from the '
         .. 'server\'s own samples',
         up and 'they were revived from forty metres' or nil)
+    -- ═══ AND IT SAYS THEY MOVED, NOT THAT THEY WERE FAR FROM THE BODY ═══
+    --
+    -- The wording matters because the RULE changed on 2026-09-07. The old
+    -- cancel measured the reviver against the BODY -- a subtraction with two
+    -- players in it, and therefore with every clone and ragdoll disagreement in
+    -- the engine in it too, which is why the owner removed it ("that's not fair
+    -- to players when they arrive in the cell and positions aren't synced").
+    -- What cancels now is the reviver's drift from where THEY were standing
+    -- when the hold began: one player, one sampler, nothing to disagree with.
+    --
+    -- So the reason string must name the MOVE. A cancel that still said "apart"
+    -- would mean the old test had survived somewhere, which is exactly the
+    -- regression this file is here to catch.
     ok((H.srv.roster[1].reviveStops or 0) > 0
-       and tostring(H.srv.roster[1].reviveStopWhy):find('apart', 1, true),
-        'and the server says how far apart they were, not "notallowed"',
+       and tostring(H.srv.roster[1].reviveStopWhy):find('moved', 1, true),
+        'and the server says the reviver MOVED, naming the distance and the '
+            .. 'budget -- not "notallowed", and not a distance to the body',
+        tostring(H.srv.roster[1].reviveStopWhy))
+    ok(tostring(H.srv.roster[1].reviveStopWhy):find('apart', 1, true) == nil,
+        'and it does not talk about how far apart the two players were, '
+            .. 'because that is no longer a thing this server refuses for',
         tostring(H.srv.roster[1].reviveStopWhy))
 
     -- ...and walking back in picks it up again, with no re-press.
@@ -6762,13 +6904,37 @@ do
         return nil
     end
 
-    -- Out of reach: the client's own 1.5m test would normally stop this, but a
-    -- client is not something the server gets to rely on.
-    S.roster[2].pos = { x = 40.0, y = 0.0, z = 30.0 }
+    -- ═══ DRIVEN ON A DIFFERENT SQUAD, BECAUSE DISTANCE IS NO LONGER A REFUSAL
+    --     ═══
+    --
+    -- This case used to put the reviver forty metres away, and forty metres is
+    -- now allowed: the owner removed the reviver-to-body distance test on
+    -- 2026-09-07 because it measured a DISAGREEMENT between two machines and
+    -- refused the honest player for it. See the note in reviveAllowed.
+    --
+    -- What is under test here is not the rule, it is the ANSWER -- that a
+    -- refusal reaches the holder at all -- so it is driven on a refusal that
+    -- still exists and always will. A player from another squad has no business
+    -- picking this body up, and that is a fact about the two players rather than
+    -- about where the engine thinks their bodies are.
+    S.roster[2].squadId = 'sq9'
     local far = askAs(2, 1, 2)
     ok(far ~= nil and far.cancelled == true,
         'a refused hold answers the holder instead of leaving the ring running',
         far and tostring(far.reason) or 'nothing was sent at all')
+    S.roster[2].squadId = 'sq1'
+
+    -- AND DISTANCE REALLY IS NOT ONE. The assertion that replaces the old
+    -- refusal, stated positively so nobody can restore the rule without this
+    -- going red: the same forty metres, and the hold is accepted.
+    S.roster[2].pos = { x = 40.0, y = 0.0, z = 30.0 }
+    local farOk = askAs(2, 1, 2)
+    ok(farOk == nil and S.roster[1].reviverSrc == 2,
+        'while forty metres of DISTANCE is accepted -- the reviver stands where '
+            .. 'their own copy of the body is, and that copy is the thing #164 '
+            .. 'and #246 are about',
+        farOk and tostring(farOk.reason) or tostring(S.roster[1].reviverSrc))
+    S.fire(Net.REVIVE_STOP, 2, {})
 
     -- ...and an ALLOWED one still says nothing on the START itself: the progress
     -- ticks are what report it, and an extra cancel here would kill the hold it
@@ -6808,11 +6974,19 @@ do
         'and the last one is kept in words rather than as one flat token',
         tostring(S.roster[1].reviveRefuseWhy))
 
-    -- THE OUT-OF-REACH REFUSAL CARRIES THE NUMBER, which is the one refusal
-    -- that is a measurement rather than a state. "40.00m apart" ends an
-    -- argument that "notallowed" could only start.
-    ok(tostring(far.reason):find('m apart', 1, true) ~= nil,
-        'and being out of reach says HOW far, and what the reach was',
+    -- THE REFUSAL THAT CARRIES A NUMBER IS THE WALKAWAY NOW, and it is asserted
+    -- in dbno.hold.walkaway rather than here, because it is a CANCEL rather than
+    -- a refusal at the start -- the reviver moved off, and the reason names how
+    -- far and what the budget was.
+    --
+    -- WHAT USED TO BE HERE was "40.00m apart, server reach is 2.50m", and it is
+    -- gone with the rule that produced it. Deleted rather than reworded, because
+    -- there is no longer any refusal at REVIVE_START that is a measurement: the
+    -- ones that remain are states -- wrong squad, wrong match, not down, already
+    -- taken -- and every one of them says which in words.
+    ok(tostring(far.reason):find('apart', 1, true) == nil,
+        'and no refusal at the start is about how far apart the two players '
+            .. 'were, because the server no longer judges that',
         tostring(far.reason))
     ok(S.roster[1].reviverSrc == 2,
         'without disturbing the hold that was already running',
