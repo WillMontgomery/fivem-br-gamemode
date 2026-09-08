@@ -194,7 +194,10 @@ export default function InventoryBar({ inv, volts, currency }: {
           and the name comes from config rather than from here -- no wording is
           invented for this. */}
       {volts != null && (
-        <div className="panel px-2.5 py-1 flex items-baseline gap-1.5">
+        // data-tut: the in-game walkthrough's shop card points here (#261). This
+        // plate is only up while the player is AT the shop, which is exactly
+        // when that card has something to say.
+        <div data-tut="hud-volts" className="panel px-2.5 py-1 flex items-baseline gap-1.5">
           <span className="font-display text-2xl tabular-nums leading-none"
                 style={{ textShadow: 'var(--shadow-text)' }}>
             {volts.toLocaleString()}

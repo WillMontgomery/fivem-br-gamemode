@@ -408,6 +408,15 @@ for _, f in ipairs({
     -- same thing beside the same line.
     'br_lib/config/vehicles.lua',
     'br_lib/config/loot.lua',
+    -- THE PUMP'S NUMBERS, FOR THE REPAIR KIT (#228). server/inventory.lua's
+    -- use tick grants slices of BR.Config.Fuel.healthMax, and its completion
+    -- the whole of it, so that a kit and a full tank stop at the same ceiling
+    -- -- and asserting that against a hardcoded
+    -- 1000 here would be asserting the FALLBACK rather than the coupling --
+    -- the file would go on passing after the two had drifted apart. Nothing
+    -- else in this suite reads it: server/fuel.lua is not loaded here, and the
+    -- config is inert on its own.
+    'br_lib/config/fuel.lua',
     -- THE CUE TABLE. Loaded for ONE assertion in `match.storm.movecue` below --
     -- that the cue key server/storm.lua puts on the wire is a key this table
     -- actually holds. The server never reads it (it sends a key and the client
@@ -561,6 +570,19 @@ end
 local SHIPPED_MIN_TO_START = BR.Config.Match.minToStart
 
 local function reset()
+    -- WHOLE MILLISECONDS AGAIN. The storm blocks drive the clock off PRICED
+    -- durations -- `fakeTime = rec.tStart + rec.tWait + 10` -- and those are
+    -- floats that only come out integral when they clamp to a configured
+    -- floor or ceiling. One run where a phase prices somewhere in between
+    -- leaves every block after it with a fractional clock, and the next
+    -- `('endsAt %d'):format(mendsAt())` in a detail string DIES rather than
+    -- fails ("number has no integer representation") -- taking the rest of the
+    -- suite with it, on a difference of five hundredths of a millisecond.
+    --
+    -- A no-op against every value this suite currently produces, which is the
+    -- point: it costs nothing and removes the class.
+    fakeTime = math.floor(fakeTime)
+
     -- Suite default: matches need TWO queued players. Most blocks queue
     -- players one at a time and assert nothing starts early -- under the
     -- shipped dev minimum of 1 the match would start at the first queueUp
@@ -581,7 +603,6 @@ local function reset()
     -- instance is the whole between-blocks cleanup (storm, anchor, descent
     -- and start-squad bookkeeping all live ON the instances now).
     for k in pairs(BR.Server.matches) do BR.Server.matches[k] = nil end
-    BR.Server.partyHoldSince = nil
     for k in pairs(pedCoords) do pedCoords[k] = nil end
     -- AND WHO IS IN WHAT. A driver left behind by the previous block would be
     -- resolved as driving by the roadkill ledger for the whole of the next one,
@@ -1285,6 +1306,25 @@ do
 
     BR.Lobby.clear()
     ok(BR.Lobby.count() == 0, 'clear empties the queue')
+
+    -- A DRAIN REFUSES THE PRESS, AND NOW SAYS SO ON THE CONSOLE TOO.
+    --
+    -- The player already learns this twice over (a notice, and the lobby
+    -- screen's own blocker copy off BR.Match.startBlocker), so this line is not
+    -- for them -- it is for the operator reading the log of a server they have
+    -- just put into maintenance, who otherwise sees ready-ups arriving and
+    -- nothing happening.
+    fire('br:ringmaster:blockMatches', 1, true)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    ok(BR.Lobby.count() == 0, 'a drain refuses the queue')
+    local drained = printedSaying('readied up during a drain')
+    ok(drained ~= nil, 'and the refusal is on the record', drained)
+
+    -- LIFTED EXPLICITLY, because the flag is a file-local in server/lobby.lua
+    -- that reset() has no reach into -- leaving it set would silently refuse
+    -- every queue in every block below this one.
+    fire('br:ringmaster:blockMatches', 1, false)
+    ok(BR.Lobby.blocked() == false, 'and the hold lifts with the drain')
 end
 
 describe('lobby.mode')
@@ -1329,6 +1369,26 @@ do
 
     fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
     ok(BR.Lobby.count() == 0, 'an in-match player cannot queue')
+
+    -- ...AND THE REFUSAL SAYS SO, WITH THE STATE IT READ (owner, 2026-09-02).
+    --
+    -- This gate used to be a bare `return`, and that is what made "I readied up
+    -- and the lobby UI never went away" unreportable twice over. A client whose
+    -- roster mirror has fallen behind believes it is in the lobby, offers a live
+    -- READY UP button, and is refused HERE for as long as it keeps pressing --
+    -- silently, so nothing anywhere records that the press was even made.
+    --
+    -- WHICH STATE IT NAMES IS THE DIAGNOSIS, not decoration: this line reading
+    -- `warmup` under a player who is looking at the lobby menu is a stale
+    -- client mirror, and the same line under a player who really is mid-match
+    -- is a button that should not have been on screen. Nothing else separates
+    -- them.
+    local refused = printedSaying('readied up, but the server has them in')
+    ok(refused ~= nil,
+        'and the console records the refusal rather than swallowing it',
+        refused)
+    ok(refused ~= nil and refused:find(BR.PlayerState.ALIVE, 1, true) ~= nil,
+        'naming the state the server actually holds them in', refused)
 
     fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
     ok(BR.Lobby.count() == 1,
@@ -2636,6 +2696,19 @@ do
         'readying up during warmup joins the forming match directly')
     ok(BR.Server.queue[2] == nil, 'and does not sit in the queue')
 
+    -- ...WHICH IS EXACTLY WHY IT NEEDS ITS OWN CONSOLE LINE. The assertion
+    -- directly above is the reason: a late joiner never touches the queue, so
+    -- the "queued for X -- n/m" line at the bottom of BR.Lobby.join is never
+    -- reached for them, and until 2026-09-02 the busiest door into a match was
+    -- the only one that left no trace at all.
+    local admitted = printedSaying('readied into forming match')
+    ok(admitted ~= nil,
+        'and the console records the admission, which the queue line cannot',
+        admitted)
+    ok(admitted ~= nil and admitted:find('match ' .. tostring(BR.Server.matchId),
+                                          1, true) ~= nil,
+        'naming the instance they were put into', admitted)
+
     -- Both now count as starting teams: the solo-dev hold does not engage and
     -- the match ends like any other.
     forceState(BR.MatchState.PLAYING)
@@ -2671,22 +2744,43 @@ do
     -- emptier -- autofill is off here precisely so the two rules disagree:
     -- the party squad has two members, the solo's squad has one, and only
     -- the party preference sends player 3 to the fuller one.
+    --
+    -- PLAYER 3 JOINS THE PARTY AFTER THE MATCH HAS FORMED, and that reordering
+    -- is 2026-09-02's. The scenario used to be built by leaving 3 in the lobby
+    -- while their party started without them -- which is precisely what a
+    -- half-readied party is no longer allowed to do (see party.heldAtTheDoor),
+    -- so the match it needs would never have formed. Somebody invited into a
+    -- party that is already on the pad is the same arrangement reached by a
+    -- door that is still open: an incomplete party in the match, a late
+    -- arrival, and an emptier squad to go wrong towards.
+    -- THE CLOCK THIS BLOCK SPENDS IS UNCHANGED, DELIBERATELY, and it is held
+    -- by brwarmupfreeze rather than by the party gate now. The two steps below
+    -- land on the same two instants they always did -- see the banner at the
+    -- foot of this file: `match.busDescent` and `match.storm.hold` are aligned
+    -- to the suite clock, and a block that spends 45 fewer seconds than it used
+    -- to fails both of them from here.
+    --
+    -- THE 45 IS A LITERAL because it no longer names anything: it was
+    -- BR.Config.Match.partyGraceSeconds, which was deleted on 2026-09-03 for
+    -- having had no reader in resources/ since the room stopped waiting. The
+    -- elapsed time is what this block needs, not the setting, so the number
+    -- moved here rather than the block losing it.
     reset()
     BR.Server.devMode = true
     BR.Config.Match.autofill = false
+    runCommand('brwarmupfreeze', 'on')
     join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D')
-    BR.Party.invite(1, 2); BR.Party.respond(2, true)
-    BR.Party.invite(1, 3); BR.Party.respond(3, true)   -- trio 1,2,3
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)   -- pair 1,2
     for i = 1, 2 do fire(BR.Net.QUEUE_JOIN, i, { mode = BR.Mode.SQUAD.key }) end
     fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SQUAD.key })
-    -- Player 3's party is incomplete, so the party gate holds first (one
-    -- tick to engage its patience clock); the match forms once the patience
-    -- runs out. That is the door 3 will late-join through -- this scenario.
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
+    fakeTime = fakeTime + 45 * 1000 + 1500
     BR.Sched.step(fakeTime)
-    ok(mstate() == BR.MatchState.WARMUP, 'match forms without player 3')
+    ok(mstate() == BR.MatchState.WARMUP, 'the pair and the solo form a match')
+    BR.Party.invite(1, 3); BR.Party.respond(3, true)   -- trio 1,2,3
+    ok(BR.Roster.get(3).state == BR.PlayerState.LOBBY,
+        'and player 3 joins their party from the lobby, mid-warmup')
     ok(BR.Roster.get(4).squadId ~= BR.Roster.get(1).squadId,
         'the solo has a squad of one -- the emptier target')
 
@@ -2695,6 +2789,7 @@ do
         "a late partymate lands on their party's squad, not the emptier one",
         ('got %s, wanted %s'):format(tostring(BR.Roster.get(3).squadId),
                                      tostring(BR.Roster.get(1).squadId)))
+    runCommand('brwarmupfreeze', 'off')
     BR.Config.Match.autofill = true
 
     -- From BUS onward the door is shut: late arrivals queue for the NEXT match.
@@ -3112,6 +3207,70 @@ do
         ('state %s, squadsAlive %d'):format(mstate(), BR.Server.squadsAlive()))
 end
 
+describe('a death on the warmup pad')
+do
+    -- ═══ THE PAD IS ABOUT TO BE ABLE TO KILL PEOPLE ═══
+    --
+    -- Owner, 2026-09-06: explosives are going into the practice crates, "If
+    -- players do manage to die in warmup ... please resurrect them immediately.
+    -- Today we don't handle the death in warmup at all, because we weren't
+    -- expecting a case where such event would be possible."
+    --
+    -- WARMUP is absent from canDie, so the report used to be dropped -- and that
+    -- was not neutral. The corpse survived to the WARMUP -> BUS flip, where the
+    -- entry enters a state canDie accepts with a corpse's engineHp still
+    -- sampled, and became a real elimination there. So the properties worth
+    -- pinning are BOTH halves: they get up, and nothing is recorded.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    ok(BR.Roster.get(2).state == BR.PlayerState.WARMUP,
+        'p2 is on the pad', tostring(BR.Roster.get(2).state))
+
+    local before = #sent
+    BR.Roster.get(2).engineHp = 0.0
+    fire(BR.Net.PLAYER_DIED, 2, { cause = 'explosion' })
+
+    ok(BR.Roster.get(2).state == BR.PlayerState.WARMUP,
+        'a death on the pad leaves them in WARMUP -- not OUT, and not ALIVE',
+        tostring(BR.Roster.get(2).state))
+
+    -- THE RESURRECTION RUNS ON THE MACHINE THAT OWNS THE PED and nowhere else,
+    -- so the only server-side evidence is the message going out.
+    local revived = false
+    for i = before + 1, #sent do
+        if sent[i].event == BR.Net.REVIVED and sent[i].target == 2 then
+            revived = true
+        end
+    end
+    ok(revived, 'and they are told to stand up')
+
+    -- ═══ THE STALE CORPSE READING IS CLEARED ═══
+    --
+    -- This is the half that made ignoring it dangerous: the position sampler's
+    -- last reading is up to a second old, and a corpse's engineHp left in place
+    -- is an opinion from before the resurrection that the bus would act on.
+    ok(BR.Roster.get(2).engineHp == nil,
+        'and the corpse health sample is dropped, not left to be read later',
+        tostring(BR.Roster.get(2).engineHp))
+
+    ok(BR.Roster.get(2).diedAt == nil and BR.Roster.get(2).placement == nil,
+        'nothing is banked: no death stamp, no placement')
+
+    -- NOBODY IS TOLD. A pad death is not an elimination, so none of the things
+    -- an elimination raises may appear -- the handler returns before all of it.
+    local feed = 0
+    for i = before + 1, #sent do
+        if sent[i].event == BR.Net.KILLFEED then feed = feed + 1 end
+    end
+    ok(feed == 0, 'and no kill feed entry is broadcast', tostring(feed))
+end
+
 describe('match.lastLanding')
 do
     -- BUS -> PLAYING is driven by the LAST landing, not the route timer --
@@ -3421,9 +3580,30 @@ do
     ok(mstate() == BR.MatchState.WARMUP,
         'the second Ready releases it')
 
-    -- Patience: an AFK partymate cannot brick the queue. The hold expires
-    -- after partyGraceSeconds and the match forms without them (they can
-    -- still late-join during warmup).
+    -- ═══ NO CLOCK ADMITS A HALF-READIED PARTY (2026-09-02) ═══
+    --
+    -- The match forms out of the players who may actually be in it, and the
+    -- half-readied party is not among them. Here that is the whole queue, so
+    -- nothing forms at all and player 1 keeps their place for as long as it
+    -- takes.
+    --
+    -- THE STEP BELOW STILL SPENDS THE OLD PARTY GRACE, forty-five seconds,
+    -- written as a literal: it is what makes "no amount of patience" mean
+    -- something, and the suite clock after this block is aligned to the instants
+    -- it lands on (see the banner at the foot of this file). The number used to
+    -- be BR.Config.Match.partyGraceSeconds and this was its last reader, which
+    -- is exactly why the setting went on 2026-09-03 -- an operator could set the
+    -- convar, be told at boot that it took, and change nothing in the game. The
+    -- room itself no longer waits: the second report of the day was an unpartied
+    -- player paying that grace for somebody else's party (party.heldAtTheDoor).
+    --
+    -- IT USED TO FORM WITH THEM, and that is exactly the report: "after a
+    -- period of a few seconds, the player who is readied up is dropped into
+    -- warmup -- they should be infinitely waiting for their party who is not
+    -- yet ready." The seconds were this clock.
+    --
+    -- What happens when there ARE other players to form a match out of -- and
+    -- the escape from a wait with nothing left to wait for -- is party.heldAtTheDoor.
     forceState(BR.MatchState.ENDED)
     forceState(BR.MatchState.CLEANUP)
     forceState(BR.MatchState.WAITING)
@@ -3431,10 +3611,12 @@ do
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WAITING, 'held again next match')
-    fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
+    fakeTime = fakeTime + 45 * 1000 + 1500
     BR.Sched.step(fakeTime)
-    ok(mstate() == BR.MatchState.WARMUP,
-        'but patience runs out and the match forms without the idler')
+    ok(mstate() == BR.MatchState.WAITING,
+        'and no amount of patience admits them WITHOUT their party')
+    ok(BR.Server.queue[1] ~= nil,
+        'their ready-up keeps its place in the queue rather than being spent')
 end
 
 describe('match.busDescent')
@@ -3466,15 +3648,30 @@ do
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
 
     -- Past the ceiling with 2 visibly descending: BUS holds.
-    setPos(2, 0.0, 0.0, 400.0)
-    fakeTime = mendsAt() + 600
-    BR.Sched.step(fakeTime)
+    --
+    -- THE ALTITUDE IS PRICED FROM THE GAP, NOT WRITTEN DOWN, and that is a
+    -- 2026-09-02 repair to this block rather than a change of intent. What the
+    -- tick measures is a RATE (BR.ClassifyDescent, descendRate 0.7 m/s) and the
+    -- gap between this sample and the last one is whatever the route had left
+    -- -- seventy-odd seconds, drawn per match. A flat 50m drop across it came
+    -- out at 0.706 m/s: this block passed by nine parts in a thousand, on the
+    -- length of the flight the RNG happened to deal, and any change anywhere in
+    -- the suite that draws one more random number moved it under the bar. The
+    -- descent it means to describe is now stated as one.
+    local FALL_MPS = 3.0     -- comfortably clear of descendRate, at any gap
+    local z2 = 450.0
+    local function fallTo(deadline)
+        z2 = z2 - (deadline - fakeTime) * 0.001 * FALL_MPS
+        setPos(2, 0.0, 0.0, z2)
+        fakeTime = deadline
+        BR.Sched.step(fakeTime)
+    end
+
+    fallTo(mendsAt() + 600)
     ok(mstate() == BR.MatchState.BUS,
         'a live descender holds the BUS past the route timer')
 
-    setPos(2, 0.0, 0.0, 300.0)
-    fakeTime = mendsAt() + 600
-    BR.Sched.step(fakeTime)
+    fallTo(mendsAt() + 600)
     ok(mstate() == BR.MatchState.BUS, 'and keeps holding while falling')
 
     -- Altitude freezes (a hung client): the grace stops paying and the
@@ -3783,9 +3980,78 @@ do
     sent = {}
     fakeTime = rec4.tStart + rec4.tWait + rec4.tShrink + 10
     BR.Sched.step(fakeTime)
-    ok(#eventsOf(BR.Net.SFX_CUE) == 2,
+    -- BOTH CUES, AND THAT IS THE HONEST ACCOUNT. The wall departed and the
+    -- wall arrived; the scheduler simply saw neither happen. storm.move and
+    -- storm.stop carry separate latches for exactly this reading, so the stall
+    -- pays out the departure it owes and the arrival it owes rather than
+    -- collapsing a whole sweep into one sound.
+    local byCue = {}
+    for _, e in ipairs(eventsOf(BR.Net.SFX_CUE)) do
+        local c = e.args and e.args[1] and e.args[1].c or '?'
+        byCue[c] = (byCue[c] or 0) + 1
+    end
+    ok(byCue['storm.move'] == 2 and byCue['storm.stop'] == 2,
        'a stall that skips the entire sweep still cues it, late, rather than '
-           .. 'losing it', ('%d'):format(#eventsOf(BR.Net.SFX_CUE)))
+           .. 'losing it -- both ends of it, once each, to both players',
+       ('move %s / stop %s'):format(tostring(byCue['storm.move']),
+                                    tostring(byCue['storm.stop'])))
+end
+
+describe('match.storm.stopcue')
+do
+    -- ═══ THE WALL COMING TO REST IS ITS OWN EVENT ═══
+    --
+    --   "Circle finished moving (possible)" -- owner, 2026-09-08, handing over
+    --   a DLC pair for it alongside the ones for leaving and re-entering the
+    --   circle.
+    --
+    -- The mirror image of match.storm.movecue above, and it is worth its own
+    -- block for the reason the two latches are separate: this one must be
+    -- SILENT for the entire sweep and speak once at the end, which is the
+    -- opposite failure from the one that block guards.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+    local rec = mstorm()
+    ok(rec ~= nil, 'a match with a wall')
+
+    local function only(cue)
+        local n = 0
+        for _, e in ipairs(eventsOf(BR.Net.SFX_CUE)) do
+            if e.args and e.args[1] and e.args[1].c == cue then n = n + 1 end
+        end
+        return n
+    end
+
+    -- MID-SWEEP: the wall is moving, so the departure has been cued and the
+    -- arrival has not.
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + math.floor(rec.tShrink / 2)
+    BR.Sched.step(fakeTime)
+    ok(only('storm.move') == 2 and only('storm.stop') == 0,
+       'half way through the sweep the wall has departed and not arrived',
+       ('move %d / stop %d'):format(only('storm.move'), only('storm.stop')))
+
+    -- AND AT THE END, ONCE.
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + rec.tShrink + 10
+    BR.Sched.step(fakeTime)
+    ok(only('storm.stop') == 2,
+       'and the finish cues both players exactly once',
+       ('%d'):format(only('storm.stop')))
+
+    -- ...AND NOT AGAIN ON THE NEXT TICK. The advance into the following phase
+    -- re-arms the latch, so this is asserted against a FRESH record rather than
+    -- by ticking the same one twice: what must not happen is the SAME finish
+    -- being announced repeatedly while the state sits at FINISHED.
+    sent = {}
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(only('storm.stop') == 0,
+       'and a wall that is still finished does not keep announcing it',
+       ('%d'):format(only('storm.stop')))
 end
 
 describe('match.storm.cleanup')
@@ -6387,6 +6653,786 @@ do
     ok(refused, 'and says why')
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('inv.repairkit')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "Repair kit should spawn in loot crates, inventory item, maxCarry 1, can
+--    be used on the fly to repair any vehicle once."   -- owner, 2026-08-23
+--
+--   "instead of instantly burning the item it should have a progress bar ...
+--    As that bar progresses, the vehicle health should incrementally increase
+--    to finally reach full once the item has been spent."
+--                                                       -- owner, 2026-09-03
+--
+-- ═══ WHY THIS BLOCK IS HERE AND NOT IN tools/test_fuel.lua ═══
+--
+-- The repair itself is client-side -- every vehicle-health native is -- so
+-- there is nothing about a repaired car for any suite to observe. What CAN be
+-- proven is the half that decides whether one happens at all, and all of it is
+-- server code this suite already stands up whole: BR.Vehicles.drivenNetId
+-- (server/vehicles.lua), the INV_USE press and the `inv.use` tick loop
+-- (server/inventory.lua). test_fuel.lua covers the client half as source.
+--
+-- ═══ WHAT MOVED, AND IT MOVED TWICE ═══
+--
+-- The item shipped INSTANT: one press, one grant, no channel. The owner reversed
+-- that on 2026-09-03 and it became a 5s channel -- and the build that landed it
+-- also moved the DEBIT to the keypress, which he then corrected in turn:
+--
+--   "when using it the inventory item visually goes away immediately and the
+--    item function is applied immediately. BUT THEN the progress bar shows up.
+--    What we'd discussed earlier is not that. Any other consumable doesn't get
+--    removed until the progress bar is full, and that's why we have a progress
+--    bar - because it's in progress. For a repair kit, 'in progress' would be
+--    the car's health incrementally increasing throughout the timespan of the
+--    progress bar increasing."                  -- owner, 2026-09-03
+--
+-- So four properties carry the design this block now pins:
+--
+--   THE SLOT KEEPS THE KIT FOR THE WHOLE FIVE SECONDS. The completion is what
+--   spends it, exactly as it spends a med kit, so the bar draws over a plate
+--   that still has its icon, its label and its rarity band.
+--
+--   AN INTERRUPTED CHANNEL COSTS NOTHING and keeps the repair it earned. Both
+--   halves are the owner's ruling and neither is a bug to be fixed.
+--
+--   THE CAR IS AT FULL WHEN THE ITEM IS SPENT. "the vehicle health should
+--   incrementally increase to finally REACH FULL once the item has been spent"
+--   (owner, 2026-09-03) -- asserted as the OUTCOME on all three pools, on a car
+--   that took fire throughout as well as on one that did not, because for one
+--   day the completion sent a remainder and could not promise it.
+--
+--   THE DRIVING SEAT IS RE-RULED EVERY PASS, losing it cancels, and the cancel
+--   now SPEAKS the owner's sentence.
+do
+    lootMatch()
+
+    -- ═══ THE NETWORK ID IS NOT THE ENTITY HANDLE, AND THIS SUITE'S DEFAULT
+    --     STUB CANNOT TELL THEM APART ═══
+    --
+    -- The harness answers `NetworkGetNetworkIdFromEntity(e) = e` because for
+    -- PEDS that is all it ever needed. Left alone here it would pass a
+    -- BR.Vehicles.drivenNetId that returned the vehicle HANDLE -- which is
+    -- per-machine and means nothing at the far end -- so the two are made
+    -- different numbers for the length of this block. tools/test_fuel.lua's
+    -- harness header makes the same argument at length and for the same
+    -- registry-keying bug.
+    local realNetOf = NetworkGetNetworkIdFromEntity
+    NetworkGetNetworkIdFromEntity = function(e) return (tonumber(e) or 0) * 10 + 7 end
+
+    local VEH = 4242
+    local NID = VEH * 10 + 7
+
+    ok(BR.Roster.get(1).ped == 1001,
+        'precondition: the roster has sampled this player\'s ped')
+
+    -- ═══ WHAT "REACHED FULL" IS MEASURED AGAINST, AND WHY IT IS A MODEL ═══
+    --
+    --   "the vehicle health should incrementally increase to finally REACH FULL
+    --    once the item has been spent."          -- owner, 2026-09-03
+    --
+    -- THIS SUITE IS THE SERVER'S AND THERE IS NO CAR IN IT. Every vehicle-health
+    -- native is client-only, which is why the server sends GRANTS rather than
+    -- setting a value. So the grants this server actually put on the wire are
+    -- run through the one line of client/fuel.lua that consumes them, and what
+    -- gets asserted is the OUTCOME: three pools, at the cap, when the item is
+    -- spent. Magnitudes are how that is reached and are not the property.
+    --
+    -- ANCHORED ON THE REAL SOURCE RATHER THAN REMEMBERED, because a model that
+    -- had quietly drifted from applyRepair would re-encode the assumption under
+    -- test -- this suite's own named failure mode. The clamp is FOUND in the
+    -- file before it is imitated, and it is the whole of what matters here: `r`
+    -- is an OFFER, clamped per pool, so a grant larger than the damage cannot
+    -- over-repair the car and a grant smaller than it cannot reach full.
+    local ffh = io.open(ROOT .. 'br_core/client/fuel.lua')
+    local fuelsrc = ffh and ffh:read('a') or ''
+    if ffh then ffh:close() end
+    ok(fuelsrc:find('local want = math.min(cap, cur + points)', 1, true) ~= nil,
+        'precondition: client/fuel.lua clamps every pool it grants into, so a '
+            .. 'surplus on the wire is discarded rather than banked')
+
+    local VCAP = BR.Config.Fuel.healthMax
+
+    --- applyRepair's three pools, and nothing else about it. `at` is how much
+    --- health the car starts on, out of VCAP.
+    local function newCar(at) return { body = at, engine = at, tank = at } end
+    local function mend(car, points)
+        if (tonumber(points) or 0) <= 0.0 then return end
+        for k, cur in pairs(car) do
+            -- Engine health goes NEGATIVE on a wreck, which applyRepair floors
+            -- for the same reason this does.
+            if cur < 0.0 then cur = 0.0 end
+            car[k] = math.min(VCAP, cur + points)
+        end
+    end
+    local function shoot(car, points)
+        for k, cur in pairs(car) do car[k] = cur - points end
+    end
+    local function atFull(car)
+        return car.body >= VCAP and car.engine >= VCAP and car.tank >= VCAP
+    end
+    local function worst(car)
+        return math.min(car.body, car.engine, car.tank)
+    end
+
+    -- ── the ruling ────────────────────────────────────────────────────────
+    ok(BR.Vehicles.drivenNetId(1) == nil,
+        'a player on foot is driving nothing',
+        tostring(BR.Vehicles.drivenNetId(1)))
+
+    drive(1, VEH, 0)   -- seat 0 is the front passenger
+    ok(BR.Vehicles.drivenNetId(1) == nil,
+        'and neither is a PASSENGER -- the driving seat is the rule, exactly '
+            .. 'as it is at the pump',
+        tostring(BR.Vehicles.drivenNetId(1)))
+
+    drive(1, VEH)      -- seat -1
+    ok(BR.Vehicles.drivenNetId(1) == NID,
+        'the driver gets the vehicle\'s NETWORK ID, not its entity handle',
+        tostring(BR.Vehicles.drivenNetId(1)))
+
+    -- A VEHICLE THE PLATFORM DOES NOT NETWORK ANSWERS 0, and `0` IS TRUTHY IN
+    -- LUA -- so a bare `if nid then` would send a repair for a car the far end
+    -- has never heard of. The Battle Bus is exactly this case.
+    NetworkGetNetworkIdFromEntity = function() return 0 end
+    ok(BR.Vehicles.drivenNetId(1) == nil,
+        'and a vehicle with no network id is no target, rather than target 0')
+    NetworkGetNetworkIdFromEntity = function(e) return (tonumber(e) or 0) * 10 + 7 end
+
+    -- ── the use: a channel, and the COMPLETION is what pays for it ────────
+    --
+    --   "instead of instantly burning the item it should have a progress bar
+    --    akin to spawning a vehicle from inventory or using a consumable. As
+    --    that bar progresses, the vehicle health should incrementally increase
+    --    to finally reach full once the item has been spent."
+    --                                          -- owner, 2026-09-03
+    --
+    --   "Any other consumable doesn't get removed until the progress bar is
+    --    full, and that's why we have a progress bar - because it's in
+    --    progress."                            -- owner, 2026-09-03
+    --
+    -- This block used to assert the opposite of all of it -- "opens NO channel",
+    -- "exactly one repair", "the PRESS is what spends it" -- and that is why it
+    -- is worth saying what changed rather than only what is true now.
+    local kit = BR.Config.ConsumableById['repairkit']
+
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].item == 'repairkit',
+        'the kit takes an ordinary slot')
+
+    drive(1, VEH)
+    sent = {}
+    local t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+
+    ok(BR.Inv.of(1).using ~= nil,
+        'using it opens a channel -- a progress bar, not an instant burn')
+    ok(BR.Inv.of(1).using and BR.Inv.of(1).using.ms == kit.useMs,
+        'of the length the row declares, which is what the bar animates over',
+        BR.Inv.of(1).using and tostring(BR.Inv.of(1).using.ms))
+
+    -- ═══ THE PRESS SPENDS NOTHING, AND THE PLATE STAYS DRESSED ═══
+    --
+    -- THIS IS THE OWNER'S ACTUAL COMPLAINT, in the one form this suite can see
+    -- it. He watched the icon vanish the instant the bar appeared; `publicFor`
+    -- builds the bar's slot from `inv.slots[i]` and the fill from `inv.using`
+    -- as two independent props, so a populated slot here IS an icon, a count
+    -- and a rarity band under the fill.
+    local held = BR.Inv.of(1).slots[1]
+    ok(held and held.item == 'repairkit' and held.count == 1,
+        'the press spends NOTHING -- the kit is still in the slot, so the bar '
+            .. 'draws over a plate with its icon, its label and its rarity '
+            .. 'band on it',
+        tostring(held and held.count))
+    ok(#eventsOf(BR.Net.VEH_FIX) == 0,
+        'nothing is repaired on the press itself -- the grant rides the bar')
+
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    ok(BR.Inv.of(1).using ~= nil,
+        'and the channel runs on under the ordinary slot-identity guard, '
+            .. 'which is no longer waived for anything')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'the slot still holding the kit a quarter of a second in')
+
+    -- ═══ THE CAR MENDS AS THE BAR FILLS ═══
+    --
+    -- SLICES, NOT TARGETS, and that is the one place this diverges from the
+    -- health/armour partials beside it: client/fuel.lua's applyRepair ADDS what
+    -- it is given. So each message carries what has been earned since the last
+    -- one, and the server keeps the running total.
+    local firstFix = eventsOf(BR.Net.VEH_FIX)
+    ok(#firstFix == 1,
+        ('a repair slice goes out on the first pass (saw %d)'):format(#firstFix))
+    ok(firstFix[1] and firstFix[1].target == 1, 'to the player holding it')
+    ok(firstFix[1] and firstFix[1].args[1].n == NID,
+        'naming the vehicle THE SERVER resolved -- INV_USE carries a slot and '
+            .. 'no vehicle, so a client cannot pick the car',
+        firstFix[1] and tostring(firstFix[1].args[1].n))
+
+    -- A FIFTH OF A SECOND OF A FIVE-SECOND JOB IS A TWENTIETH OF THE REPAIR.
+    -- The magnitude matters, not only the count: a slice that carried the whole
+    -- cap every tick would repair the car twenty times over and look identical
+    -- to this test if it only counted messages.
+    local slice1 = firstFix[1] and firstFix[1].args[1].r or 0
+    ok(slice1 > 0.0 and slice1 < BR.Config.Fuel.healthMax,
+        'and it is a SLICE of the pump\'s healthMax rather than the whole job',
+        tostring(slice1))
+
+    local grants = { slice1 }
+
+    sent = {}
+    fakeTime = t0 + 2500
+    BR.Sched.step(fakeTime)
+    local midFix = eventsOf(BR.Net.VEH_FIX)
+    ok(#midFix == 1, ('another arrives on the next pass (saw %d)'):format(#midFix))
+    ok(midFix[1] and midFix[1].args[1].r > slice1,
+        'a bigger one, because more of the bar has filled since the last -- '
+            .. 'the in-channel ledger sends the DIFFERENCE, so the climb does '
+            .. 'not restart from zero on every tick that happens to fire',
+        midFix[1] and tostring(midFix[1].args[1].r))
+    grants[#grants + 1] = midFix[1] and midFix[1].args[1].r or 0.0
+    ok(BR.Inv.of(1).using ~= nil, 'and the channel is still running')
+
+    -- ═══ AND THE COMPLETION SENDS THE WHOLE CAP, WHICH IS WHAT BUYS "REACH
+    --     FULL" ═══
+    --
+    -- NOT A REMAINDER, AND THAT IS DELIBERATE. `r` is an OFFER: applyRepair
+    -- clamps it into each pool, so the surplus on an already-mended car is
+    -- discarded rather than banked, and the cap is what makes the car full on
+    -- the frame the item is spent even when it lost health during the channel.
+    -- A build of this sent `cap - granted` for a day, on a finding that counted
+    -- points offered instead of health delivered; the outcome assertions below
+    -- are the ones a return to it would fail.
+    sent = {}
+    fakeTime = t0 + kit.useMs
+    BR.Sched.step(fakeTime)
+    local doneFix = eventsOf(BR.Net.VEH_FIX)
+    ok(#doneFix >= 1, 'the completion sends one last grant')
+    local last = doneFix[#doneFix] and doneFix[#doneFix].args[1]
+    for _, s in ipairs(doneFix) do
+        grants[#grants + 1] = s.args[1].r or 0.0
+    end
+    ok(last and last.r == VCAP,
+        'and it carries the whole BR.Config.Fuel.healthMax, because the client '
+            .. 'clamps every pool and a surplus costs the car nothing',
+        last and tostring(last.r))
+    ok(last and last.n == NID, 'still aimed at the car the press ruled on')
+
+    -- ...AND NOTHING ON THE WIRE SAYS "THIS IS THE LAST ONE". A build carried an
+    -- `f` flag on the completion so the client would run its cosmetic pass on a
+    -- car the remainder had left below full. With the cap back, the client's own
+    -- rule -- the body reaching full -- fires on this message, and the flag is
+    -- scaffolding. Asserted as an absence for the reason this repo keeps
+    -- relearning: a field nothing sets gets read as live.
+    local flagged = 0
+    for _, m in ipairs({ firstFix[1], midFix[1], doneFix[#doneFix] }) do
+        if m and m.args[1].f ~= nil then flagged = flagged + 1 end
+    end
+    ok(flagged == 0,
+        'and no message carries a "last one" flag -- the client pops the dents '
+            .. 'off the health it was handed, not off a field',
+        tostring(flagged))
+
+    -- ═══ THE OUTCOME: A CAR THAT WAS NOT SHOT AT REACHES FULL ═══
+    --
+    -- Driven with the grants this server actually sent, in the order it sent
+    -- them, through client/fuel.lua's clamp. The starting damage is arbitrary
+    -- and deep: a car this far down is the case the item exists for.
+    local car = newCar(120.0)
+    for _, r in ipairs(grants) do mend(car, r) end
+    ok(atFull(car),
+        'the car is at FULL on the body, the engine AND the petrol tank once '
+            .. 'the kit is spent -- "the vehicle health should incrementally '
+            .. 'increase to finally reach full"',
+        ('%.1f of %.1f'):format(worst(car), VCAP))
+
+    -- ...AND IT WAS STILL CLIMBING ON THE WAY, which is the other half of his
+    -- sentence and the reason the slices exist at all.
+    local climbing = newCar(120.0)
+    mend(climbing, grants[1])
+    ok(climbing.body > 120.0 and climbing.body < VCAP,
+        'and it was part-way there a quarter of a second in, rather than '
+            .. 'jumping at the end -- the bar and the bodywork move together',
+        ('%.1f'):format(climbing.body))
+    ok(BR.Inv.of(1).using == nil, 'and the channel is over')
+    ok(BR.Inv.of(1).slots[1] == false,
+        'and THIS is what spends the kit -- the completion, exactly as it '
+            .. 'spends a med kit',
+        tostring(BR.Inv.of(1).slots[1]))
+    ok(#eventsOf(BR.Net.INV_EFFECT) == 0,
+        'no health or shield ever lands -- the kit moves nothing on the ped, '
+            .. 'and it does not stamp the health audit\'s amnesty window either')
+
+    sent = {}
+    fakeTime = fakeTime + 5000
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.VEH_FIX) == 0,
+        'and nothing arrives after it -- one kit, one channel, one car')
+
+    -- ── an interrupted channel costs nothing ──────────────────────────────
+    --
+    -- THE GENERAL CONTRACT, WHICH THIS ITEM REJOINED. A slot switch is the
+    -- commonest way any channel dies -- INV_SELECT clears `inv.using` outright
+    -- -- and for one day it cost a legendary item, because the press had already
+    -- paid. It costs nothing now, and the repair the slices already granted is
+    -- kept, exactly as a cancelled med kit keeps its partial heal. The owner has
+    -- ruled on this twice; a build that "fixed" it by refunding the health or by
+    -- withholding it until completion would be undoing "because it's in
+    -- progress".
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    drive(1, VEH)
+    sent = {}
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    local partway = #eventsOf(BR.Net.VEH_FIX)
+    ok(partway >= 1, 'precondition: a slice has already landed')
+
+    fire(BR.Net.INV_SELECT, 1, { slot = 2 })
+    ok(BR.Inv.of(1).using == nil, 'switching slots mid-channel cancels the use')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'and the kit is STILL THERE -- "any other consumable doesn\'t get '
+            .. 'removed until the progress bar is full"',
+        tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
+
+    sent = {}
+    fakeTime = t0 + kit.useMs + 250
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.VEH_FIX) == 0,
+        'no completion grant arrives for a channel that was cancelled, so the '
+            .. 'car keeps the part it earned and no more -- the repair already '
+            .. 'delivered is not taken back either, which is the same shape as '
+            .. 'a cancelled med kit\'s partial heal')
+
+    -- ── bullets do not stop it ────────────────────────────────────────────
+    --
+    --   "I couldn't find useCancelOnDamage as an available native. Let's not
+    --    use that to stop any type of bullet damage."
+    --                                          -- owner, 2026-09-03
+    --
+    -- Driven through the PED rather than by poking the roster entry: the roster
+    -- samples health off the engine four times a second, so anything written
+    -- straight onto the entry is overwritten before the tick reads it. This is
+    -- the same shape as the med kit's interruption test above.
+    ok(BR.Config.Loot.useCancelOnDamage == true,
+        'precondition: damage-cancel is ON for consumables generally -- the '
+            .. 'exemption below is a property of the ROW, not of the flag')
+
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    drive(1, VEH)
+    pedHealth[1001] = nil
+    BR.Roster.get(1).hp = 100.0
+    sent = {}
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    pedHealth[1001] = BR.ToEngineHp(40.0)
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    ok(BR.Inv.of(1).using ~= nil,
+        'being shot does not interrupt the repair -- the driver is not the '
+            .. 'thing being repaired')
+    -- EVERY PASS OF THE CHANNEL, not just its two ends: the slices telescope, so
+    -- a run that skips the middle of the bar leaves a remainder big enough to
+    -- hide the difference the assertion below is about.
+    for _, at in ipairs({ 1250, 2500, 3750 }) do
+        fakeTime = t0 + at
+        BR.Sched.step(fakeTime)
+    end
+    fakeTime = t0 + kit.useMs
+    BR.Sched.step(fakeTime)
+    local underFire = eventsOf(BR.Net.VEH_FIX)
+    ok(#underFire >= 3,
+        ('precondition: the whole channel ran -- slices and a completion '
+         .. '(saw %d grants)'):format(#underFire))
+
+    -- ═══ AND A CAR SHOT AT THROUGHOUT STILL REACHES FULL ═══
+    --
+    -- THE CASE THE WHOLE DESIGN TURNS ON, and the one a remainder cannot serve.
+    -- A car that is not being shot at hits its cap partway through and every
+    -- later grant is clamped away, so almost any completion looks right on it. A
+    -- car losing health BETWEEN the slices spends them as they land, and only a
+    -- completion carrying the whole cap can put it back at full on the frame the
+    -- item is spent -- which is what the owner asked for by name, and
+    -- `ignoresDamage` is the reason a kit is ever used in that situation at all.
+    --
+    -- THE NUMBERS ARE CHOSEN TO SEPARATE THE TWO DESIGNS rather than to model a
+    -- particular firefight: 200 points between grants is more damage than the
+    -- outstanding remainder could ever cover, so a build that went back to
+    -- `cap - granted` finishes this loop several hundred points short and fails
+    -- the line below instead of passing it by luck.
+    local wreck = newCar(300.0)
+    for i, s in ipairs(underFire) do
+        if i > 1 then shoot(wreck, 200.0) end
+        mend(wreck, s.args[1].r or 0.0)
+    end
+    ok(atFull(wreck),
+        'a car losing 200 points between every slice is still at FULL on all '
+            .. 'three pools when the kit is spent -- a completion that sent '
+            .. 'only the outstanding remainder would leave it short',
+        ('%.1f of %.1f'):format(worst(wreck), VCAP))
+    ok(underFire[#underFire] and underFire[#underFire].args[1].r == VCAP,
+        'because the last grant is the whole cap, which is also what pops the '
+            .. 'dents: applyRepair runs its cosmetic pass when the BODY reaches '
+            .. 'full, and no flag on the wire tells it to',
+        underFire[#underFire] and tostring(underFire[#underFire].args[1].r))
+    ok(BR.Inv.of(1).slots[1] == false,
+        'and the kit is spent by the completion, under fire or not',
+        tostring(BR.Inv.of(1).slots[1]))
+
+    -- ...AND THE MED KIT IS UNTOUCHED BY THE EXEMPTION, which is the half that
+    -- proves this is `ignoresDamage` on one row and not damage-cancel being
+    -- quietly switched off for everybody.
+    pedHealth[1001] = nil
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'medkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Config.ConsumableById['medkit'].rarity,
+                     count = 1 })
+    -- BELOW the med kit's healthCap, or the press is refused for doing
+    -- nothing before it can be interrupted by anything.
+    BR.Roster.get(1).hp = 90.0
+    sent = {}
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(BR.Inv.of(1).using ~= nil, 'precondition: the med kit is going in')
+    pedHealth[1001] = BR.ToEngineHp(40.0)
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    ok(BR.Inv.of(1).using == nil,
+        'and damage still cancels a MED KIT, exactly as it did before')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'which costs nothing -- the general contract is unchanged: the '
+            .. 'completion is what consumes, so an interrupted use is free')
+    pedHealth[1001] = nil
+
+    -- ── the driving seat, for the whole channel, and it SPEAKS ────────────
+    --
+    -- The shop car's guard exactly: the seat is a fact about the WHOLE use and
+    -- not about the frame it started on. Five seconds is long enough to be
+    -- blown out of the car, to slide over, or for it to despawn.
+    --
+    --   "if they switch seats before it is finished it should still apply, and
+    --    same if they leave the vehicle mid-use."  -- owner, 2026-09-04
+    --
+    -- "It" is the press-time sentence. This arm was silent until he wrote that.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    vehSeat[VEH] = {}
+    drive(1, VEH)
+    sent = {}
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    local before = #eventsOf(BR.Net.VEH_FIX)
+    ok(before >= 1, 'precondition: the repair was under way')
+
+    stepOut(VEH)
+    sent = {}
+    fakeTime = t0 + 500
+    BR.Sched.step(fakeTime)
+    ok(BR.Inv.of(1).using == nil,
+        'leaving the driving seat mid-channel cancels the use')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'and the kit COMES BACK -- it was never taken, because the completion '
+            .. 'is what spends it and this channel never reached one',
+        tostring(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count))
+    local leftSaid = nil
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do leftSaid = s.args[1].text end
+    ok(leftSaid == 'You can only use this item while driving.',
+        'and they are told why, in the owner\'s exact words -- the same '
+            .. 'sentence the press refuses with, because it is the same rule',
+        tostring(leftSaid))
+
+    sent = {}
+    fakeTime = t0 + kit.useMs + 250
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.VEH_FIX) == 0,
+        'and no completion grant ever arrives, so the car keeps the part it '
+            .. 'earned and no more')
+
+    -- ...AND A CANCEL COSTS ONE SLICE OF THE REPAIR AND NOTHING ELSE. Stated as
+    -- its own assertion because "the health climbs as the bar climbs" is the
+    -- owner's requirement -- "'in progress' would be the car's health
+    -- incrementally increasing throughout the timespan of the progress bar" --
+    -- and it would be silently lost by a build that only granted on completion.
+    ok(before >= 1 and #eventsOf(BR.Net.VEH_FIX) == 0,
+        'a cut-off use leaves the car partly mended rather than untouched, and '
+            .. 'the player still holding the kit')
+
+    -- ═══ SWITCHING SEATS SAYS IT TOO, AND STILL DRIVING DOES NOT ═══
+    --
+    -- The second of the two moments he named. It is a different situation from
+    -- the one above and reaches the same branch, so it is proved separately:
+    -- `ridingIn` answers a vehicle for a passenger, and only
+    -- BR.Vehicles.drivingHandle can tell that seat from a driver's.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    vehSeat[VEH] = {}
+    drive(1, VEH)
+    sent = {}
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(BR.Inv.of(1).using ~= nil, 'precondition: the channel is running')
+
+    vehSeat[VEH] = {}
+    drive(1, VEH, 0)          -- slid across into the front passenger seat
+    sent = {}
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    ok(BR.Inv.of(1).using == nil, 'sliding into a passenger seat cancels it')
+    local seatSaid = nil
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do seatSaid = s.args[1].text end
+    ok(seatSaid == 'You can only use this item while driving.',
+        'and says the same sentence -- they are in the car, and they are not '
+            .. 'driving it',
+        tostring(seatSaid))
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'and it costs them nothing')
+
+    -- ...AND THE SENTENCE IS NOT SAID TO SOMEBODY WHO IS DRIVING. Two of the
+    -- four situations that reach this branch are a player at a wheel: a car the
+    -- platform will not network, and a DIFFERENT car. "You can only use this
+    -- item while driving" is false to both, and no wording has been given for
+    -- either, so both cancel in silence. Driven here through the un-networked
+    -- case, which is the Battle Bus.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    vehSeat[VEH] = {}
+    drive(1, VEH)
+    sent = {}
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(BR.Inv.of(1).using ~= nil, 'precondition: the channel is running')
+
+    NetworkGetNetworkIdFromEntity = function() return 0 end
+    sent = {}
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    NetworkGetNetworkIdFromEntity = function(e) return (tonumber(e) or 0) * 10 + 7 end
+    ok(BR.Inv.of(1).using == nil,
+        'a car that stops being networked mid-channel still cancels the use')
+    ok(#eventsOf(BR.Net.NOTIFY) == 0,
+        'but says NOTHING, because that player is driving and the sentence '
+            .. 'would be a lie. No wording has been agreed for it')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'and it costs them nothing either')
+
+    -- ...AND A BUILD WITH NO `drivingHandle` STILL CANCELS. Absent copy must
+    -- never delete a rule -- the same shape as the `ridingIn` guard at the
+    -- press, and the reason the sentence is gated on the module.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = kit.rarity, count = 1 })
+    vehSeat[VEH] = {}
+    drive(1, VEH)
+    t0 = fakeTime
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    local realDriving = BR.Vehicles.drivingHandle
+    BR.Vehicles.drivingHandle = nil
+    stepOut(VEH)
+    sent = {}
+    fakeTime = t0 + 250
+    BR.Sched.step(fakeTime)
+    BR.Vehicles.drivingHandle = realDriving
+    ok(BR.Inv.of(1).using == nil,
+        'with no BR.Vehicles.drivingHandle to ask, the seat rule still cancels')
+    ok(#eventsOf(BR.Net.NOTIFY) == 0,
+        'and it stays silent rather than guessing -- an absent module is not '
+            .. 'an answer of "not driving", and the first spelling of this '
+            .. 'said the sentence to every driver on such a build')
+
+    -- ═══ AND THE SEAT GUARD SITS ABOVE THE LINE THAT SPENDS THE ITEM ═══
+    --
+    -- tools/test_shop.lua pins exactly this for the shop car and there was no
+    -- mirror of it for the repair arm. It matters more now than it did: with the
+    -- debit back at the completion, this ordering is the whole of the difference
+    -- between "cancelled at 4.9 seconds" and "kit eaten for a repair nobody
+    -- received". Asserted as SOURCE ORDER because the pass that would prove it
+    -- at runtime is the pass that must not happen.
+    local ifh = io.open(ROOT .. 'br_core/server/inventory.lua')
+    local invsrc = ifh and ifh:read('a') or ''
+    if ifh then ifh:close() end
+    ok(#invsrc > 0, 'server/inventory.lua is readable')
+    local seatGuard = invsrc:find('if nid == nil or nid ~= u%.veh then')
+    local consume = invsrc:find(
+        's%.count = s%.count %- 1\n%s*if s%.count <= 0 then inv%.slots%[u%.slot%] = false end')
+    ok(seatGuard ~= nil and consume ~= nil and seatGuard < consume,
+        'the driving-seat re-rule is above the completion debit, so no pass '
+            .. 'can spend a kit for a player who has just left the wheel')
+
+    -- ── refused, and nothing is spent ─────────────────────────────────────
+    --
+    -- Nothing is spent by a press at all any more, so what these prove is that
+    -- no CHANNEL opens and no repair goes out. The not-driving arm is the only
+    -- one with agreed wording.
+    local function armAndUse(src)
+        BR.Inv.reset(src)
+        BR.Inv.give(src, { item = 'repairkit', kind = BR.ItemKind.CONSUMABLE,
+                           rarity = kit.rarity, count = 1 })
+        sent = {}
+        fire(BR.Net.INV_USE, src, { slot = 1 })
+    end
+
+    pedVehicle[1001] = 0
+    vehSeat[VEH] = {}
+    armAndUse(1)
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'a player on foot spends nothing')
+    ok(#eventsOf(BR.Net.VEH_FIX) == 0, 'and no repair goes out')
+    ok(BR.Inv.of(1).using == nil, 'and no channel is opened either')
+
+    -- ═══ ...AND THIS ONE SPEAKS (#228, 2026-09-04) ═══
+    --
+    --   "the copy should be revised to 'You can only use this item while
+    --    driving.'"                            -- owner, 2026-09-04
+    --
+    -- ASSERTED VERBATIM, FULL STOP INCLUDED. It replaced "You cannot use this
+    -- item while on foot", which he had given the day before and which this line
+    -- pinned just as exactly -- down to the full stop that sentence was MISSING.
+    -- The wording is his both times; what changed is which fact it states. If he
+    -- revises it again, this line is what has to change, deliberately.
+    local said = nil
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do said = s.args[1].text end
+    ok(said == 'You can only use this item while driving.',
+        'and they are told why, in the owner\'s exact words',
+        tostring(said))
+
+    -- ═══ THE BOOLEAN REFUSES AND THE STRING ONLY SPEAKS ═══
+    --
+    -- server/shop.lua's standing convention, and the reason the refusal and the
+    -- sentence are two tests rather than one. `drivenNetId` answers nil for four
+    -- different situations and the press speaks for one of them.
+    --
+    -- ═══ AND THE PASSENGER IS TOLD, WHICH CLOSED THE ASYMMETRY ═══
+    --
+    -- This block used to pin the opposite, and the note on it said the missing
+    -- piece was a ruling rather than a reason: the mid-channel arm said the
+    -- sentence to a player who slid out of the driver's seat, and the press said
+    -- nothing to the same player in the same seat. Owner, 2026-09-04, asked
+    -- about exactly that: "Passengers should get the toast too if they try to
+    -- use it." So both arms now answer the question the sentence is about --
+    -- `drivingHandle`, not `ridingIn` -- and a passenger is told at either
+    -- moment.
+    armAndUse(1)
+    drive(1, VEH, 0)
+    sent = {}
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1
+       and #eventsOf(BR.Net.VEH_FIX) == 0
+       and BR.Inv.of(1).using == nil,
+        'and a passenger opens no channel')
+    local pnote = eventsOf(BR.Net.NOTIFY)
+    ok(#pnote == 1 and pnote[1].args[1]
+       and pnote[1].args[1].text == 'You can only use this item while driving.',
+        'and IS told at the press, in the same sentence the mid-channel arm '
+            .. 'says to the same player in the same seat',
+        pnote[1] and tostring(pnote[1].args[1] and pnote[1].args[1].text))
+
+    -- ...AND A DRIVER THE PLATFORM WILL NOT NETWORK IS STILL REFUSED IN
+    -- SILENCE. The fourth situation, and the only one the sentence is false of:
+    -- they ARE at a wheel. `drivenNetId` answers nil, `drivingHandle` answers a
+    -- handle, and no wording for this case has ever been agreed.
+    sent = {}
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    drive(1, VEH, -1)
+    local realNet = BR.Vehicles.drivenNetId
+    BR.Vehicles.drivenNetId = function() return nil end
+    sent = {}
+    armAndUse(1)
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1
+       and #eventsOf(BR.Net.VEH_FIX) == 0,
+        'a driver of an un-networked car is refused')
+    ok(#eventsOf(BR.Net.NOTIFY) == 0,
+        'and is told nothing -- they are driving, so the sentence would be a lie')
+    BR.Vehicles.drivenNetId = realNet
+
+    -- ...AND WITH NO `drivingHandle` TO ASK, THE RULE STILL REFUSES AND SAYS
+    -- NOTHING. Absent copy must never delete a rule -- the same shape as the
+    -- BR.Shop guards, and the reason the sentence is gated on the module rather
+    -- than assumed. THE GUARD IS TWO NESTED TESTS FOR THIS EXACT CASE: an absent
+    -- module read as "not driving" would say the sentence to every driver alive.
+    pedVehicle[1001] = 0
+    vehSeat[VEH] = {}
+    local realDriving = BR.Vehicles.drivingHandle
+    BR.Vehicles.drivingHandle = nil
+    armAndUse(1)
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1
+       and #eventsOf(BR.Net.VEH_FIX) == 0,
+        'a build with no BR.Vehicles.drivingHandle still refuses the on-foot use')
+    ok(#eventsOf(BR.Net.NOTIFY) == 0, 'it just cannot say so')
+    BR.Vehicles.drivingHandle = realDriving
+
+    -- ── the module guard ──────────────────────────────────────────────────
+    --
+    -- The same shape as the BR.Shop guards beside it: a build that cannot rule
+    -- this refuses it. Guarded on the MODULE and not on its answer, so a
+    -- missing server/vehicles.lua costs a keypress rather than a kit.
+    drive(1, VEH)
+    local realDriven = BR.Vehicles.drivenNetId
+    BR.Vehicles.drivenNetId = nil
+    armAndUse(1)
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1
+       and #eventsOf(BR.Net.VEH_FIX) == 0,
+        'with no BR.Vehicles.drivenNetId to ask, nothing is spent and nothing '
+            .. 'is sent')
+    BR.Vehicles.drivenNetId = realDriven
+
+    -- ── the ceiling ───────────────────────────────────────────────────────
+    --
+    -- THE FIRST ITEM IN THE GAME CAPPED AT ONE. Bandages and med kits are three
+    -- and every earlier cap equalled its own maxStack, so nothing had ever
+    -- exercised a cap of one that a player can actually walk into -- the CPR
+    -- kit's is only reachable from an airdrop.
+    BR.Inv.reset(1)
+    local gave1 = BR.Inv.give(1, { item = 'repairkit',
+        kind = BR.ItemKind.CONSUMABLE, rarity = kit.rarity, count = 1 })
+    local gave2, _, why2 = BR.Inv.give(1, { item = 'repairkit',
+        kind = BR.ItemKind.CONSUMABLE, rarity = kit.rarity, count = 1 })
+    ok(gave1 == true, 'one kit goes in')
+    ok(gave2 == false and why2 == 'carrymax',
+        'and the second is refused by the carry ceiling, not by a full bag',
+        tostring(why2))
+    ok(BR.Inv.of(1).slots[2] == false,
+        'so it does not quietly open a second slot',
+        tostring(BR.Inv.of(1).slots[2]))
+
+    -- ...AND A FULL BAG REFUSES IT LIKE ANY OTHER CONSUMABLE. Five slots, and
+    -- the kit is not exempt from them.
+    BR.Inv.reset(1)
+    for i = 1, 5 do
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+    end
+    local full = BR.Inv.of(1)
+    local occupied = 0
+    for i = 1, 5 do if full.slots[i] then occupied = occupied + 1 end end
+    ok(occupied == 5, 'precondition: five slots, all full',
+        tostring(occupied))
+    full.active = 1
+    local gaveFull, displaced = BR.Inv.give(1, { item = 'repairkit',
+        kind = BR.ItemKind.CONSUMABLE, rarity = kit.rarity, count = 1 })
+    ok(gaveFull == true and displaced and displaced.item == 'pistol',
+        'a full bag trades the ACTIVE slot for it, exactly as it would for a '
+            .. 'bandage -- the kit is an ordinary consumable in five ordinary '
+            .. 'slots')
+
+    NetworkGetNetworkIdFromEntity = realNetOf
+    pedVehicle[1001] = 0
+    vehSeat[VEH] = nil
+end
+
 describe('inv.serverammo')
 do
     -- M6: THE SERVER COUNTS THE ROUNDS. Every shot is a validated server
@@ -7118,6 +8164,219 @@ do
             tostring(snapOrigin))
     else
         ok(false, 'no chest with contents in the layout to test against')
+    end
+end
+
+describe('loot.vouch')
+do
+    -- ═══ "THE ITEM GOES ON THE GROUND ON THE UPPER STRUCTURE AND NOT ON THE
+    ---    GROUND AROUND THE PED" (owner, 2026-09-03) ═══
+    --
+    -- The client resolves every entry's height by probing DOWN FROM 1200m,
+    -- because only a client has a ground probe and because a lower start put
+    -- loot under the map on the Chiliad massif (2026-08-23). Under an overpass
+    -- the highest ground below 1200 in that column is the DECK, so the probe
+    -- succeeds with the freeway over your head.
+    --
+    -- `pz` is the one bit that breaks the tie: THE SERVER MEASURED A PED
+    -- STANDING ON THIS GROUND. What is tested here is the narrowness of it --
+    -- which entries get one, which must never get one, and the fact that unlike
+    -- an origin it is a PROPERTY and has to ride every announce.
+    --
+    -- The client half -- what the probe then does with it -- is in
+    -- test_client.lua, 'an item dropped under a bridge is grounded at the ped'.
+    local m = lootMatch()
+    BR.Inv.reset(1)
+    BR.Roster.get(1).pos = { x = 500.0, y = 500.0, z = 41.5 }
+
+    local cx, cy = BR.LootCellOf(500.0, 500.0)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    sent = {}
+    fire(BR.Net.INV_DROP, 1, { slot = 1 })
+    local dropped
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.item == 'pistol' then dropped = entry end
+        end
+    end
+
+    -- THE TIGHTEST CASE THERE IS: same x, same y, and a ped standing on that
+    -- exact spot at that exact moment. 41.5 is a nothing number chosen so it
+    -- cannot be confused with the layout's own heights.
+    ok(dropped and dropped.pz ~= nil and math.abs(dropped.pz - 41.5) < 0.01,
+        'a dropped item carries the ped root the server measured under it',
+        dropped and tostring(dropped.pz) or 'no drop announced')
+
+    -- AND THE GENERATED LAYOUT CARRIES NONE, which is the half that keeps the
+    -- hillside fix intact. Nobody is standing at a POI to say where its ground
+    -- is; its z was authored from map knowledge and for roadside filler it is
+    -- 0.0. Vouching for those would aim the probe below the surface, which is
+    -- the 2026-08-23 regression exactly.
+    local layoutVouched = 0
+    for _, e in pairs(m.loot.items) do
+        if not e.dropped and e.pz then layoutVouched = layoutVouched + 1 end
+    end
+    ok(layoutVouched == 0, 'while no generated entry carries one',
+        tostring(layoutVouched))
+
+    -- ═══ A VOUCH IS A PROPERTY, NOT A BIRTH EVENT, AND THAT IS THE ONE PLACE
+    ---    IT DIFFERS FROM fx/fy/fl ═══
+    --
+    -- An origin may only ride the birth message: replayed to a latecomer it
+    -- flies loot out of a hand that is not there any more. The ground under a
+    -- dropped gun is still that ground ten minutes later, so if the cell
+    -- subscription dropped this the latecomer would probe from the sky, find
+    -- the deck, and see the gun on the freeway while the dropper sees it at
+    -- their feet -- the reported bug, for everyone but one player.
+    BR.Roster.get(2).pos = { x = 500.0, y = 500.0, z = 41.5 }
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
+    local lateVouched, lateOrigin = 0, 0
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.item == 'pistol' then
+                if entry.pz then lateVouched = lateVouched + 1 end
+                if entry.fx or entry.fy or entry.fl then
+                    lateOrigin = lateOrigin + 1
+                end
+            end
+        end
+    end
+    ok(lateVouched > 0,
+        'and a player subscribing afterwards is told it too -- unlike an '
+        .. 'origin, this is a property of the entry',
+        tostring(lateVouched))
+    ok(lateOrigin == 0, 'though still no origin, which remains birth-only')
+
+    -- A DEATH SCATTER IS THE SAME FACT AT ARM'S LENGTH. The ring is 4.6m, close
+    -- enough that the corpse's root beats the sky, so a player killed under an
+    -- overpass has their kit land under it with them.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    BR.Roster.get(1).pos = { x = 300.0, y = 300.0, z = 27.25 }
+    local beforeDeath = m.loot.nextId
+    BR.Loot.deathBox(m, 1)
+    local scattered, scatterVouched = 0, 0
+    for id = beforeDeath + 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e then
+            scattered = scattered + 1
+            if e.pz and math.abs(e.pz - 27.25) < 0.01 then
+                scatterVouched = scatterVouched + 1
+            end
+        end
+    end
+    ok(scattered > 0 and scatterVouched == scattered,
+        'a death scatter vouches for every stack with the corpse\'s root',
+        ('%d of %d'):format(scatterVouched, scattered))
+
+    -- ═══ AND THE LANDING CRATES DO NOT, THOUGH THEY HAVE A PED ROOT TO HAND
+    ---    ═══
+    --
+    -- This is the trap in the whole mechanism and it is why `pz` means "a ped
+    -- stood at THIS x/y" rather than "this z came from a ped". landingCrates
+    -- scatters 55-130m away (config/loot.lua `landing`) -- a player touching
+    -- down in a valley would vouch for a crate on the hillside above them, the
+    -- probe would start inside the hill, and the crate would spawn under the
+    -- map or not at all. Exactly the bug PROBE_FROM_Z was raised to 1200 to
+    -- kill.
+    BR.Roster.get(1).pos = { x = 400.0, y = 400.0, z = 33.0 }
+    BR.Roster.get(1).landingLoot = nil
+    local beforeLanding = m.loot.nextId
+    BR.Loot.landingCrates(1)
+    local landed, landedVouched = 0, 0
+    for id = beforeLanding + 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e then
+            landed = landed + 1
+            if e.pz then landedVouched = landedVouched + 1 end
+        end
+    end
+    ok(landed > 0 and landedVouched == 0,
+        'a landing crate 55-130m away is NOT vouched for, though the player '
+        .. 'whose landing spawned it has a root the server measured',
+        ('%d of %d vouched'):format(landedVouched, landed))
+
+    -- ═══ AND A REPAIR TAKES IT AWAY ═══
+    --
+    -- `pz` says the SERVER measured this height. A repair moves the entry up to
+    -- 30m and writes a z that came straight off the wire, so carrying the vouch
+    -- across would relabel a client's claim as a server measurement -- the one
+    -- thing this mechanism must never do. Cleared, the entry probes from 1200m
+    -- again, which is what the repairing client used to work out the correction
+    -- in the first place.
+    local fixTarget
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.pz and not e.repaired and e.item == 'pistol' then
+            fixTarget = e break
+        end
+    end
+    if fixTarget then
+        local fcx, fcy = BR.LootCellOf(fixTarget.x, fixTarget.y)
+        BR.Roster.get(1).pos = { x = fixTarget.x, y = fixTarget.y,
+                                 z = fixTarget.z }
+        fire(BR.Net.LOOT_CELL, 1, { cx = fcx, cy = fcy })
+        sent = {}
+        fire(BR.Net.LOOT_FIX, 1,
+            { id = fixTarget.id, x = fixTarget.x + 6.0, y = fixTarget.y,
+              z = 999.0 })
+        ok(m.loot.items[fixTarget.id].pz == nil,
+            'a repaired entry loses its vouch -- its new z came from a client',
+            tostring(m.loot.items[fixTarget.id].pz))
+        local reannounced, stillVouched = 0, 0
+        for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+            for _, entry in ipairs(s.args[1]) do
+                if entry.id == fixTarget.id then
+                    reannounced = reannounced + 1
+                    if entry.pz then stillVouched = stillVouched + 1 end
+                end
+            end
+        end
+        ok(reannounced > 0 and stillVouched == 0,
+            'and the re-announce that moves it says so',
+            ('%d of %d still carried one'):format(stillVouched, reannounced))
+    else
+        ok(false, 'no vouched entry to repair')
+    end
+
+    -- ═══ AND AN NPC DROP NEVER HAD ONE ═══
+    --
+    -- There really is a ped root here, and the server never saw it: the corpse
+    -- is client-side, so all three floats arrived over the wire and the whole
+    -- handler is machinery for believing them only as far as is harmless. Its
+    -- bound is HORIZONTAL, so it cannot check a z at all. Vouching would let a
+    -- client choose where everyone else's ground probe starts.
+    --
+    -- The cost is honest: an NPC shot under an overpass still drops its pistol
+    -- on the deck. That is a known gap, not an oversight.
+    local npcWeapon
+    for _, w in pairs(BR.Config.WeaponById or {}) do
+        if w.ammo then npcWeapon = w break end
+    end
+    if npcWeapon then
+        BR.Roster.get(1).pos = { x = 700.0, y = 700.0, z = 35.0 }
+        local beforeNpc = m.loot.nextId
+        fire(BR.Net.NPC_DROP, 1, { item = npcWeapon.id, clip = 1,
+                                   x = 705.0, y = 700.0, z = 35.0 })
+        local npcMade, npcVouched = 0, 0
+        for id = beforeNpc + 1, m.loot.nextId do
+            local e = m.loot.items[id]
+            if e then
+                npcMade = npcMade + 1
+                if e.pz then npcVouched = npcVouched + 1 end
+            end
+        end
+        ok(npcMade > 0 and npcVouched == 0,
+            'an NPC drop is never vouched for -- its position is a client '
+            .. 'report, not a server measurement',
+            ('%d made, %d vouched'):format(npcMade, npcVouched))
+    else
+        ok(false, 'no firearm in the weapon table to drop from an NPC')
     end
 end
 
@@ -10753,9 +12012,9 @@ do
                              the next filing.
 
         AND THE #93 CASE THIS FILE SHIPPED WITHOUT. The offender exclusion is
-        resolved by comparing a live-read licence against the subject's. Both
+        resolved by comparing a live-read license against the subject's. Both
         skips used to be written `lic ~= nil and lic == ...`, so a player whose
-        licence did not resolve matched NEITHER and was told -- and when that
+        license did not resolve matched NEITHER and was told -- and when that
         player is the subject, that is the anticheat handing the offender the
         one notice it exists to withhold. It is asserted here rather than left
         to the playtest because it is invisible from the outside: the log line
@@ -10968,10 +12227,10 @@ do
         ('1=%s 3=%s'):format(tostring(warmTold[1]), tostring(warmTold[3])))
     ok(warmTold[2] == nil, 'and still withholds it from the offender')
 
-    -- ------------------------------- a licence that will not resolve (#93) ---
+    -- ------------------------------- a license that will not resolve (#93) ---
     --
     -- Captured BEFORE the identifiers stop answering: the incident carries the
-    -- licence read at filing time, and this notice is sent seconds later off a
+    -- license read at filing time, and this notice is sent seconds later off a
     -- fresh read. The gap is the bug -- up to thirty seconds of DynamoDB retry,
     -- during which the subject can be most of the way out of the server.
     local m4 = threeInAMatch(true)
@@ -10984,7 +12243,7 @@ do
     })
     local blindTold = toldSet()
     ok(blindTold[2] == nil,
-        'a subject whose licence no longer resolves is STILL not told -- the '
+        'a subject whose license no longer resolves is STILL not told -- the '
         .. 'offender learns nothing, #93',
         ('told: %s'):format(table.concat(hintTargets(), ',')))
     ok(blindTold[1] == true and blindTold[3] == true,
@@ -11006,7 +12265,7 @@ do
     })
     local blind2 = toldSet()
     ok(blind2[3] == nil,
-        'a bystander whose licence will not resolve is not told either -- the '
+        'a bystander whose license will not resolve is not told either -- the '
         .. 'nil case fails closed rather than generous')
     ok(blind2[1] == true,
         'while everybody the server can still name is told as normal')
@@ -11258,14 +12517,28 @@ do
     -- proves a solo dies, but it proves it in a suite where the kit did not
     -- exist. Re-proving it HERE, in the same fixture, is what makes the second
     -- assertion mean "the kit did this" rather than "something changed".
+    -- ═══ THREE PLAYERS, NOT TWO, AND THE THIRD IS LOAD-BEARING ═══
+    --
+    -- This fixture was two solos until 2026-09-07, when the owner reported the
+    -- consequence: "with only 2 players, while one was bleeding out, the other
+    -- hadn't won yet". BR.Combat.canBeDowned now refuses the LAST knock of a
+    -- match outright -- a knock is only worth having if somebody is left to
+    -- fight over it -- so a two-player fixture would have proved the new rule
+    -- rather than the kit, and reported it as the kit failing.
+    --
+    -- 'Bystander' therefore exists to be alive somewhere else. They are never
+    -- shot, never moved and never asserted on; their whole job is to be a third
+    -- standing squad so that knocking player 1 is an ordinary mid-match knock.
     local function soloMatch()
         reset()
         BR.Server.devMode = true
         queueUp(1, 'Kitted', BR.Mode.SOLO.key)
         queueUp(2, 'Shooter', BR.Mode.SOLO.key)
+        queueUp(3, 'Bystander', BR.Mode.SOLO.key)
         tick(300)
         BR.Roster.setState(1, BR.PlayerState.ALIVE)
         BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        BR.Roster.setState(3, BR.PlayerState.ALIVE)
     end
 
     soloMatch()
@@ -11337,6 +12610,110 @@ do
     local canCall = BR.Rescue.canCall(BR.Roster.get(1))
     ok(canCall == false,
         'and no squad player can call a medic, whatever they are carrying')
+end
+
+describe('dbno.lastKnockIsADeath')
+do
+    -- ═══ THE MATCH THAT WOULD NOT END ═══
+    --
+    --   "I just did a solos match and with only 2 players, while one was
+    --    bleeding out, the other hadn't won yet. Not sure why... bleeding out
+    --    shouldn't be a thing if there's only one standing player or squad
+    --    left."                                         -- owner, 2026-09-07
+    --
+    -- NOTHING WAS BROKEN, WHICH IS WHY IT SURVIVED THE TESTS. A downed player
+    -- is `BR.Server.isInMatch` -- squads need that, and the ambulance depends on
+    -- it -- so BR.Server.squadsAlive counted two, winConditionMet was false, and
+    -- the last thirty to ninety seconds of the match were a bleed clock with
+    -- nobody able to do anything about it. In solos nobody can revive at all, so
+    -- there was not even a rescue to hope for.
+    --
+    -- THE RULE IS IN canBeDowned, NOT IN THE WIN CONDITION, and the difference
+    -- matters enough to test from both ends: a knock is only worth having if
+    -- somebody is left to fight over it.
+    local function solos(n)
+        reset()
+        BR.Server.devMode = true
+        for i = 1, n do
+            queueUp(i, 'P' .. i, BR.Mode.SOLO.key)
+        end
+        tick(300)
+        for i = 1, n do BR.Roster.setState(i, BR.PlayerState.ALIVE) end
+        local m = BR.Server.matchOf(1)
+        if m then m.state, m.startSquads = BR.MatchState.PLAYING, n end
+        -- The kit is the only thing that can down a solo at all, so the player
+        -- under test always carries one -- otherwise this would prove the mode
+        -- default rather than the new rule.
+        BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = BR.Rarity.LEGENDARY, count = 1 })
+        return m
+    end
+
+    -- ═══ TWO LEFT: THE OWNER'S MATCH ═══
+    local m = solos(2)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.OUT,
+       'the last player standing outside one squad dies instead of bleeding '
+           .. 'out -- kit or no kit, there is nobody left to fight over them',
+       BR.Roster.get(1).state)
+
+    tick(4000)   -- past WIN_GRACE_MS
+    ok(m.state == BR.MatchState.ENDED,
+       'and the match ends there rather than running a bleed clock nobody can '
+           .. 'interrupt', m and m.state)
+
+    -- ═══ THREE LEFT: NOTHING CHANGES ═══
+    --
+    -- The control, and the assertion that stops this rule quietly becoming "the
+    -- CPR kit does not work". Same fixture, same kit, one more standing squad.
+    solos(3)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+       'while a knock with two other squads standing is an ordinary knock',
+       BR.Roster.get(1).state)
+
+    -- ═══ A DOWNED PLAYER IS NOT A STANDING ONE ═══
+    --
+    -- Three players, one already down: the count that decides this must read
+    -- STANDING squads, not `squadsAlive`. If it read squadsAlive, the player on
+    -- the floor would keep the match alive and this would be a second bleed
+    -- clock with nothing behind it -- the exact bug, one player later.
+    solos(3)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'P1 is down first')
+    BR.Inv.give(3, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    BR.Combat.defeat(3, 'gunshot', 2)
+    ok(BR.Roster.get(3).state == BR.PlayerState.OUT,
+       'and the next one dies, because the only squad left standing is the '
+           .. 'shooter -- a body on the floor is not somebody to fight',
+       BR.Roster.get(3).state)
+
+    -- ═══ AND THE LONE DEV IS EXEMPT, DELIBERATELY ═══
+    --
+    -- winConditionMet already carves out a dev match that STARTED with one
+    -- squad so a developer can sit in PLAYING and poke at the world. Without
+    -- the same carve-out here they could never be knocked -- zero other
+    -- standing squads by definition -- which would make the CPR kit and the
+    -- whole ambulance flow untestable by the one person who has to test them.
+    -- BUILT WITH fakeMatch RATHER THAN solos(1), because a single queued player
+    -- never forms a match through the queue in this harness -- matchOf is nil,
+    -- canBeDowned refuses on the missing match, and the suite would pass for the
+    -- wrong reason. This is the same construction squadMatch uses for the same
+    -- lone-developer hold.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Dev')
+    BR.Roster.setState(1, BR.PlayerState.WARMUP)
+    local solo = fakeMatch(BR.Mode.SOLO.key)
+    solo.state, solo.startSquads = BR.MatchState.PLAYING, 1
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = BR.Rarity.LEGENDARY, count = 1 })
+    BR.Combat.defeat(1, 'gunshot', nil)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+       'a lone developer in a one-squad dev match can still be knocked, so the '
+           .. 'kit and the ambulance stay testable', BR.Roster.get(1).state)
 end
 
 describe('dbno.deadPed')
@@ -13251,14 +14628,41 @@ do
     BR.Combat.defeat(1, 'gunshot', nil)
     ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'p1 is down')
 
-    -- OUT OF REACH IS OUT OF REACH, and it is judged from the SERVER's own
-    -- position samples -- never from anything the client said.
+    -- ═══ OUT OF REACH IS NO LONGER OUT OF REACH, AND THAT IS THE POINT ═══
+    --
+    --   "remove the restriction that forbids players from reviving a corpse in
+    --    the wrong location. Because there's no output for that today other
+    --    than 'it doesn't work' and that's not fair to players when they arrive
+    --    in the cell and positions aren't synced"     -- owner, 2026-09-07
+    --
+    -- THIS ASSERTION USED TO READ 'a revive from across the street is refused'
+    -- and it is INVERTED rather than deleted, because the deletion is the whole
+    -- change: a suite that simply stopped mentioning distance would let somebody
+    -- put the rule back in a year without ever meeting the argument against it.
+    --
+    -- The old rule measured the server's sample of the reviver against the
+    -- server's sample of the BODY, while the reviver was standing at THEIR COPY
+    -- of that body -- the copy #164 says crawls away and #246 says can be built
+    -- where the death happened rather than where it came to rest. So it refused
+    -- the honest player, and said why only in a server log they never read.
+    --
+    -- WHAT DEFENDS THE HOLD NOW IS THE ANCHOR, and it lives in dbno.hold.walkaway
+    -- rather than here: the reviver may not get far from where they were when
+    -- they started, which is one player measured against themselves.
     setPos(2, 50.0, 0.0, 30.0)
     BR.Roster.get(2).pos = { x = 50.0, y = 0.0, z = 30.0 }
     fire(BR.Net.REVIVE_START, 2, { target = 1 })
-    ok(BR.Roster.get(1).reviverSrc == nil,
-        'a revive from across the street is refused')
+    ok(BR.Roster.get(1).reviverSrc == 2,
+        'a hold is accepted however far the SERVER thinks the two are apart -- '
+            .. 'the client is the witness for proximity, because it is the one '
+            .. 'looking at the body the player is looking at')
 
+    -- AND THE ORDINARY CASE STILL WORKS. The hold above is released first, so
+    -- everything below is a FRESH hold rather than a heartbeat on the one that
+    -- started fifty metres away -- otherwise "first hand on wins" would make the
+    -- next REVIVE_START a no-op and the progress assertions would be measuring
+    -- the wrong clock.
+    fire(BR.Net.REVIVE_STOP, 2, {})
     setPos(2, 0.5, 0.0, 30.0)
     BR.Roster.get(2).pos = { x = 0.5, y = 0.0, z = 30.0 }
     sent = {}
@@ -13443,22 +14847,28 @@ do
     -- wire, because that is where the second verdict is actually produced. The
     -- UI half -- neither surface drawing once the match is decided -- is pinned
     -- statically in tools/check_death_verdict.lua.
+    -- THREE, FOR THE REASON dbno.cprkit's FIXTURE SPELLS OUT: canBeDowned
+    -- refuses the last knock of a match, so the rider has to be knocked while
+    -- somebody other than their killer is still standing. 'Spare' is that
+    -- somebody, and they die at the end alongside the chaser.
     reset()
     BR.Server.devMode = true
     queueUp(1, 'Rider', BR.Mode.SOLO.key)
     queueUp(2, 'Chaser', BR.Mode.SOLO.key)
+    queueUp(3, 'Spare', BR.Mode.SOLO.key)
     tick(300)
     BR.Roster.setState(1, BR.PlayerState.ALIVE)
     BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    BR.Roster.setState(3, BR.PlayerState.ALIVE)
     setPos(1, 0.0, 0.0, 30.0)
     setPos(2, 0.0, 0.0, 30.0)
     BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
     BR.Roster.get(2).pos = { x = 0.0, y = 0.0, z = 30.0 }
 
     local m = BR.Server.matchOf(1)
-    ok(m ~= nil, 'the two solos are in a match')
+    ok(m ~= nil, 'the three solos are in a match')
     m.state = BR.MatchState.PLAYING
-    m.startSquads = 2
+    m.startSquads = 3
 
     BR.Inv.give(1, { item = 'cprkit', kind = BR.ItemKind.CONSUMABLE,
                      rarity = BR.Rarity.LEGENDARY, count = 1 })
@@ -13487,7 +14897,10 @@ do
             .. 'them -- the ride suspends the clock, it does not clear it',
         BR.Roster.get(1).state)
 
-    -- ...AND NOW THE MATCH ENDS UNDERNEATH THE RIDE.
+    -- ...AND NOW THE MATCH ENDS UNDERNEATH THE RIDE. Both standing players go,
+    -- and they go by eliminate() rather than defeat() so the new last-knock rule
+    -- is not what is under test here -- this suite is about the clock.
+    BR.Combat.eliminate(3, 'test', 2)
     BR.Combat.eliminate(2, 'test', 1)
     tick(4000)   -- past WIN_GRACE_MS
     ok(m.state == BR.MatchState.ENDED,
@@ -16275,7 +17688,7 @@ end
 --
 -- br_lib's spectate_solve tests pin the ORDERING RULE against a hand-built view.
 -- These pin the half that a pure function cannot see: that the server records a
--- killer at all, records it as a LICENCE, hands the solver a live server id, and
+-- killer at all, records it as a LICENSE, hands the solver a live server id, and
 -- that a death with no killer travels all the way through as nil.
 
 --- A solo match: three players, no squadIds, everybody alive.
@@ -16328,7 +17741,7 @@ do
         'a solo killed by the storm still has somebody to watch',
         tostring(watching(1)))
 
-    -- NOBODY IS THEIR OWN KILLER. eliminate() writes the licence inside the
+    -- NOBODY IS THEIR OWN KILLER. eliminate() writes the license inside the
     -- `killerSrc ~= src` guard, so a self-credited death records nothing -- and
     -- the player is still never handed their own camera, which is the half that
     -- must survive the widening.
@@ -16379,7 +17792,7 @@ do
         'it lands on whoever is left', tostring(watching(1)))
 end
 
-describe('spectate.theKillerIsALicence')
+describe('spectate.theKillerIsALicense')
 do
     -- FIVEM RECYCLES SERVER IDS WITHIN THE MINUTE, and this record outlives the
     -- moment it is written by design -- the victim watches this person for the
@@ -16387,8 +17800,8 @@ do
     -- player's camera at whoever inherited the slot, which is a different human.
     --
     -- Reproduced the way spectate.recycledServerId reproduces it: the entry goes
-    -- and comes back under a new licence with no drop event at all, so nothing
-    -- but the licence comparison can catch it.
+    -- and comes back under a new license with no drop event at all, so nothing
+    -- but the license comparison can catch it.
     soloMatch()
     BR.Combat.eliminate(1, 'headshot', 2)
     sent = {}
@@ -16455,7 +17868,7 @@ end
 
 describe('spectate.theKillerRecordIsPerMatch')
 do
-    -- A LICENCE DOES NOT GO STALE ON ITS OWN, unlike lastHitBy, which the
+    -- A LICENSE DOES NOT GO STALE ON ITS OWN, unlike lastHitBy, which the
     -- assist window retires after ten seconds. So it has to be cleared, and
     -- BR.Match.resetPlayer is where the rest of the per-match record is.
     soloMatch()
@@ -16610,9 +18023,9 @@ do
     -- and it is a DIFFERENT HUMAN. Nothing about the session looks wrong; the
     -- admin is simply watching somebody nobody authorised them to watch.
     --
-    -- So the session remembers the licence and the feed re-checks the pair. This
+    -- So the session remembers the license and the feed re-checks the pair. This
     -- block reproduces the missed event exactly: the roster entry goes and comes
-    -- back under a new licence, WITHOUT playerDropped ever firing.
+    -- back under a new license, WITHOUT playerDropped ever firing.
     squadMatch()
     BR.Roster.setMatch(1, nil)
     BR.Roster.setState(1, BR.PlayerState.LOBBY)
@@ -16624,7 +18037,7 @@ do
     sent = {}
     fakeTime = fakeTime + BR.Config.Spectate.feedMs
     BR.Sched.step(fakeTime)
-    ok(watching(1) == 3, 'an unchanged licence keeps the session running')
+    ok(watching(1) == 3, 'an unchanged license keeps the session running')
 
     -- Now somebody else inherits the slot, with no drop event.
     BR.Roster.remove(3)
@@ -16640,9 +18053,9 @@ do
         tostring(stopReason(1)))
 end
 
-describe('spectate.licencelessTarget')
+describe('spectate.licenselessTarget')
 do
-    -- AND nil IS NOT A MATCH FOR nil. A connection with no licence has one
+    -- AND nil IS NOT A MATCH FOR nil. A connection with no license has one
     -- forever, so `stored == current` would be true for every recycled id in
     -- that state -- the hole the check exists to close, reopened by the one
     -- comparison that looks obviously correct.
@@ -16660,7 +18073,7 @@ do
     fakeTime = fakeTime + BR.Config.Spectate.feedMs
     BR.Sched.step(fakeTime)
     ok(stopped(1),
-        'but a target with no licence cannot be re-identified, so it stops')
+        'but a target with no license cannot be re-identified, so it stops')
 end
 
 describe('spectate.thePolicyRunsOnEveryPush')
@@ -17026,7 +18439,7 @@ do
     -- lands in that slot next -- and the displacement between two humans standing
     -- in two different places is a speed no car can reach, arriving at the exact
     -- moment a fresh player is least able to have earned a kill. The playerDropped
-    -- handler clears the row; the licence carried on it is what covers the case
+    -- handler clears the row; the license carried on it is what covers the case
     -- where that did not run, and it fails CLOSED.
     do
         roadMatch()
@@ -17065,7 +18478,7 @@ do
         WHY THEY LIVE IN THIS FILE AND NOT IN test_shared.lua. The creation
         detector is driven there against a sandboxed roster, which is right for
         an event handler. This one is a consumer of the roster's own 4 Hz sample
-        job -- real positions, real licences, real scheduler -- and the seat
+        job -- real positions, real licenses, real scheduler -- and the seat
         stubs it depends on are the ones the roadkill ledger above already
         proved. A sandbox would have to reproduce all of that and would then be
         asserting against the reproduction.
@@ -17165,7 +18578,7 @@ do
             'and the half of the rule it tripped, in the rule\'s own words',
             tostring(f[1] and f[1].why))
         ok(f[1] and f[1].license == 'license:test1',
-            'keyed to a LICENCE, never to a server id',
+            'keyed to a LICENSE, never to a server id',
             tostring(f[1] and f[1].license))
         ok(f[1] and f[1].model == BR.NormHash(GetHashKey('buzzard')),
             'and names the model as an unsigned hash',
@@ -17296,8 +18709,8 @@ do
     end
 
     -- ...AND NEITHER DOES THE SAME HUMAN AFTER A DISCONNECT. This is the case
-    -- the licence check CANNOT catch, and it is why `playerDropped` clears the
-    -- row as well: reconnect inside the minute and the licence matches, because
+    -- the license check CANNOT catch, and it is why `playerDropped` clears the
+    -- row as well: reconnect inside the minute and the license matches, because
     -- it is the same person. Without the clear, two-thirds of a dwell served
     -- before dropping is two-thirds already banked on the way back in -- and
     -- the case would be opened partly on time spent in a session that ended.
@@ -17306,7 +18719,7 @@ do
         run(2000)
         leave(1)
         run(500)
-        -- Back, same id, same licence, and into the same helicopter.
+        -- Back, same id, same license, and into the same helicopter.
         join(1, 'A')
         BR.Roster.setState(1, BR.PlayerState.ALIVE)
         BR.Roster.get(1).matchId = theMatch().id
@@ -18298,6 +19711,209 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+describe('combat.leaver')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- WALKING OUT IS AN ELIMINATION WITH NOBODY TO REVIVE (owner, 2026-09-02)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- "in squads, a player leaves the match and the others get 'x has bled out'
+    --  toasts."
+    --
+    -- BR.Match.leaveMatch routes a walk-out through BR.Combat.eliminate on
+    -- purpose -- "leaving while alive IS an elimination" -- so it reached
+    -- BR.ReviveKey.onEliminated too, minted a key and spoke `copy.bledOut` at
+    -- the squad. That sentence does not merely misdescribe the event: it SENDS
+    -- THE SQUAD SOMEWHERE, to fetch a key off a body that is not there.
+    --
+    -- ⚠ THE OBVIOUS ASSERTION IS GREEN ON THE BROKEN CODE, and it is the reason
+    -- this block calls eliminate() by hand before it calls leaveMatch(). Asking
+    -- `BR.Roster.get(2).reviveKey == nil` AFTER a leaveMatch passes either way:
+    -- BR.Match.resetPlayer nils that field a few lines later in the same call,
+    -- so the mint and its erasure both happen inside one function and the
+    -- observable end state is identical. Measured, not assumed -- reverting the
+    -- guard in server/combat.lua leaves a leaveMatch-only assertion green. What
+    -- separates the two versions is the state DURING the call and the toast that
+    -- escapes it, so both are pinned below.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    for _, s in ipairs({ 1, 2, 3 }) do
+        fire(BR.Net.QUEUE_JOIN, s, { mode = BR.Mode.SQUAD.key })
+    end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+
+    local m = theMatch()
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+    end
+    -- TWO SQUADS, so the audience assertion has somebody to EXCLUDE. A block
+    -- where everyone shares a squad cannot tell "told the squad" from "told the
+    -- server".
+    BR.Roster.get(1).squadId = 'sq_leave'
+    BR.Roster.get(2).squadId = 'sq_leave'
+    BR.Roster.get(3).squadId = 'sq_other'
+
+    ok(BR.ReviveKey ~= nil,
+        'server/revivekey.lua is loaded -- without it combat.lua\'s nil guard '
+            .. 'would make every assertion below pass for the wrong reason')
+
+    -- ═══ THE MINT IS REFUSED, AND THE DEATH BOX IS NOT ═══
+    --
+    -- The two lines sit one apart in eliminate() and share an `if m` guard, so
+    -- the risk in gating one of them is gating both. A leaver still spills what
+    -- they were carrying: walking out is not a way to take your kit home.
+    BR.Inv.reset(2)
+    BR.Inv.give(2, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    local before = m.loot.nextId
+    local notesBefore = #sent
+    BR.Combat.eliminate(2, 'left', nil)
+
+    ok(BR.Roster.get(2).reviveKey == nil,
+        'a player who walked out leaves NO revive key -- there is nobody left '
+            .. 'in the match for their squad to bring back')
+    ok(m.loot.nextId > before,
+        'but their inventory still spilled -- the death box is deliberately '
+            .. 'not gated with the mint',
+        ('nextId %d -> %d'):format(before, m.loot.nextId))
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
+        'and leaving is still an elimination in every other respect')
+    ok((BR.Roster.get(2).placement or 0) > 0,
+        'including the placement it records, which is what stops quitting '
+            .. 'being a cheaper exit than dying',
+        tostring(BR.Roster.get(2).placement))
+
+    -- ═══ AND THE SQUAD IS NOT SENT TO FETCH IT ═══
+    --
+    -- The owner's actual complaint. `copy.bledOut` is spoken from inside
+    -- onEliminated, so refusing the mint is what silences it -- asserted on the
+    -- WORDS rather than on the call, because a future edit that moved the
+    -- sentence somewhere else would still be the bug he reported.
+    local bled = 0
+    for i = notesBefore + 1, #sent do
+        local s = sent[i]
+        if s.event == BR.Net.NOTIFY and s.args[1]
+           and tostring(s.args[1].text or ''):find('bled out', 1, true) then
+            bled = bled + 1
+        end
+    end
+    ok(bled == 0,
+        'and NOBODY is told they bled out -- the squadmate quit, and that '
+            .. 'sentence would send them running for a key off a body that is '
+            .. 'not there',
+        ('%d such notices'):format(bled))
+
+    -- ═══ WHAT THE SQUAD IS TOLD INSTEAD, THROUGH THE REAL DOOR ═══
+    --
+    -- ⚠ THE WORDING IS THIS REPOSITORY'S GUESS AND THE OWNER HAS NOT SEEN IT.
+    -- It is asserted here so that it cannot change by accident, NOT because it
+    -- is settled -- see the ⚠ block above `tellSquadTheyLeft` in
+    -- server/match.lua. Both halves are already-shipped wording: server/party.lua
+    -- says '%s left the party.' and leaveMatch says 'You left the match.' to the
+    -- leaver.
+    --
+    -- DRIVEN THROUGH BR.Match.leaveMatch AND NOT BY CALLING THE HELPER, because
+    -- the thing that broke before was an ORDERING: the notice reads `squadId`
+    -- and `matchId`, and BR.Match.resetPlayer clears both a few lines further
+    -- down the same function. A direct call would prove the sentence composes
+    -- and nothing about whether it is composed while there is still a squad to
+    -- send it to.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    for _, s in ipairs({ 1, 2, 3 }) do
+        fire(BR.Net.QUEUE_JOIN, s, { mode = BR.Mode.SQUAD.key })
+    end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+    end
+    BR.Roster.get(1).squadId = 'sq_leave'
+    BR.Roster.get(2).squadId = 'sq_leave'
+    BR.Roster.get(3).squadId = 'sq_other'
+
+    --- Every NOTIFY text sent to `target` since index `from`.
+    local function textsTo(from, target)
+        local out = {}
+        for i = from + 1, #sent do
+            local s = sent[i]
+            if s.event == BR.Net.NOTIFY and s.target == target and s.args[1] then
+                out[#out + 1] = tostring(s.args[1].text or '')
+            end
+        end
+        return out
+    end
+
+    --- How many of those carry `needle`.
+    local function saying(list, needle)
+        local n = 0
+        for _, t in ipairs(list) do
+            if t:find(needle, 1, true) then n = n + 1 end
+        end
+        return n
+    end
+
+    local at = #sent
+    BR.Match.leaveMatch(2)
+
+    local toMate    = textsTo(at, 1)
+    local toLeaver  = textsTo(at, 2)
+    local toOutsider = textsTo(at, 3)
+
+    ok(saying(toMate, 'B left the match.') == 1,
+        'the squadmate is told, once, that B left the match',
+        table.concat(toMate, ' | '))
+    ok(saying(toMate, 'bled out') == 0,
+        'and is NOT told B bled out, which is the report this block is for',
+        table.concat(toMate, ' | '))
+    ok(saying(toLeaver, 'left the match.') == 1
+       and saying(toLeaver, 'B left the match.') == 0,
+        'the leaver hears only their own "You left the match." -- being told '
+            .. 'about yourself in the third person is the shape combat.lua\'s '
+            .. 'tellSquad excludes for the same reason',
+        table.concat(toLeaver, ' | '))
+    ok(saying(toOutsider, 'left the match.') == 0,
+        'and the other squad is told nothing -- this is squad traffic, not a '
+            .. 'match announcement',
+        table.concat(toOutsider, ' | '))
+
+    -- ═══ AND A SOLO'S DEPARTURE IS SILENT ═══
+    --
+    -- `squadId` is the gate, exactly as it is for the mint one screen up. A solo
+    -- has no squad, so there is no audience and nothing to say -- and a notice
+    -- that fell through to an empty list would be the same bug the mint had.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+    for _, s in ipairs({ 1, 2 }) do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).pos = { x = 400.0 + s, y = 400.0, z = 30.0 }
+        BR.Roster.get(s).squadId = nil
+    end
+
+    local atSolo = #sent
+    BR.Match.leaveMatch(2)
+    ok(saying(textsTo(atSolo, 1), 'left the match.') == 0,
+        'a solo walking out says nothing to anybody -- there is no squad to '
+            .. 'tell, and the gate is squadId rather than the mode',
+        table.concat(textsTo(atSolo, 1), ' | '))
+
+    if m then end
+end
+
+-- ---------------------------------------------------------------------------
 describe('combat.bleedout.spill')
 do
     -- ═══════════════════════════════════════════════════════════════════════
@@ -18506,6 +20122,901 @@ do
         'while the key is minted all the same: the mint follows the EDGE and '
             .. 'never the spill (server/revivekey.lua), so a key with no ring '
             .. 'around it is the design and not a fault')
+end
+
+describe('party.heldAtTheDoor')
+do
+    -- ═══ THE 2026-09-02 REPORT, DRIVEN THROUGH THE DOOR IT USED ═══
+    --
+    -- "in the lobby with squads selected, 2 players join a party. one readies
+    -- up and the other one gets the 'your squad is waiting for you' message.
+    -- BUT after a period of a few seconds, the player who is readied up is
+    -- dropped into warmup -- they should be infinitely waiting for their party
+    -- who is not yet ready. When this happens, if another non-full squad is in
+    -- warmup, matchmaking is still taking over and split the party to match the
+    -- warmup'd party player with a different squad." -- the owner.
+    --
+    -- ═══ WHY match.partyGate COULD NOT SEE IT ═══
+    --
+    -- That block has one match's worth of players and no warmup open, so every
+    -- ready-up it fires goes through the QUEUE -- the one door that was
+    -- guarded. The report is about the other one: BR.Lobby.join hands a
+    -- ready-up straight to BR.Party.lateJoin the moment any warmup of the mode
+    -- is open, and nothing on that path had ever asked about a party. So the
+    -- first scenario below opens a warmup around a stranger BEFORE the partied
+    -- player presses anything, which is the whole of the difference.
+    --
+    -- Nothing here calls lateJoin, formSquads or needsRebalance. The inputs are
+    -- QUEUE_JOIN events, a disconnect, a Leave party, and the clock -- because
+    -- a test that calls the admission function directly cannot catch a bug
+    -- about WHICH DOOR was used.
+    local capWas = BR.Config.Match.maxSquadSize
+
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    -- ── the report, one press at a time ──────────────────────────────────
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 2
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+
+    -- The stranger presses Ready first and a warmup opens around them. This is
+    -- the "another non-full squad is in warmup" of the report.
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    pump(500)
+    local m = theMatch()
+    ok(m ~= nil and m.state == BR.MatchState.WARMUP,
+        'a stranger opens a warmup with room in it')
+    ok(BR.Roster.get(3).squadId ~= nil, 'and is put in a squad of their own')
+
+    -- A readies up. B has not, and is standing in the lobby.
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(3000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'A PARTIED PLAYER IS NOT DROPPED INTO THE OPEN WARMUP WITHOUT THEIR '
+            .. 'PARTY -- the report, at the door it used',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).matchId == nil, 'and belongs to no match')
+    ok(BR.Roster.get(1).squadId == nil,
+        'so there is no stranger squad for matchmaking to have put them in',
+        tostring(BR.Roster.get(1).squadId))
+
+    -- AND THE MESSAGE THE OTHER ONE IS LOOKING AT KEEPS ITS TRIGGER. "Ready
+    -- up! Your party is waiting." is drawn client-side from the queued ids on
+    -- LOBBY_STATUS -- so it says what it always said, for as long as the wait
+    -- lasts, because the held player is IN the queue rather than in a match.
+    ok(BR.Server.queue[1] ~= nil,
+        'the ready-up keeps its place in the queue, which is what the '
+            .. 'partymate\'s "your party is waiting" line is drawn from')
+
+    -- The wait does not run out. Forty-five seconds was the ROOM's patience --
+    -- the party grace, deleted on 2026-09-03 -- and spending it never admitted
+    -- the person it was spent on. The literal keeps the elapsed time this
+    -- assertion is worth making over.
+    pump(45 * 1000 + 1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'and no amount of time admits them -- the wait is for the party, not '
+            .. 'for a clock',
+        BR.Roster.get(1).state)
+
+    -- ── B finally presses Ready ──────────────────────────────────────────
+    --
+    -- The warmup is long gone by now (the pump above outlasted it), so this
+    -- pair forms a match of their own -- which is the point: their place in
+    -- the queue was still theirs.
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(BR.Roster.get(1).squadId ~= nil and BR.Roster.get(2).squadId ~= nil,
+        'both partymates are placed once both have readied up')
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'AND THEY ARE IN ONE SQUAD -- the party enters together or not at all',
+        ('A=%s B=%s'):format(tostring(BR.Roster.get(1).squadId),
+                             tostring(BR.Roster.get(2).squadId)))
+    ok(BR.Roster.get(1).matchId == BR.Roster.get(2).matchId,
+        'in one match')
+
+    -- ── THE ROOM IS NOT SOMEBODY ELSE'S PARTY'S TO HOLD ──────────────────
+    --
+    -- ═══ THE SECOND 2026-09-02 REPORT ═══
+    --
+    -- "another squads issue in lobby - with 3 players, #1+#2 in a party and #3
+    -- is not. neither of the party occupants are ready, and #3 readies up but
+    -- they're told they have to wait for some reason. They should go straight
+    -- into warmup without waiting for the party." -- the owner.
+    --
+    -- #3 PASSES THE GATE ABOVE AND ALWAYS DID: it is a per-player predicate and
+    -- an unpartied player has nobody to be waiting on. What held them was the
+    -- ROOM's patience -- a queue containing a half-readied party formed no match
+    -- at all for the party grace, and the whole of that wait was paid by the
+    -- players who were already admissible. It bought the party nothing: the
+    -- expiry forms the match out of `ready`, which is the same list, the same
+    -- match and the same people forty-five seconds earlier.
+    --
+    -- SO BOTH ANSWERS ARE GIVEN IN ONE TICK, and one queue holds both questions:
+    -- the strangers go now, the half-readied party keeps its place. That is the
+    -- arrangement neither half of this suite had -- match.partyGate's queue is
+    -- nothing but the party, and the block above opens its warmup before the
+    -- partied player presses anything.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 2
+    join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SQUAD.key })
+
+    -- Asked one call earlier than the tick asks it, because this is also the
+    -- function the lobby screen phrases "you have to wait" from: a `party`
+    -- reason HERE is the report itself, before a single tick has run.
+    local gate = BR.Match.startBlocker(BR.Mode.SQUAD.key)
+    ok(gate == nil,
+        'a queue with enough admissible players in it is not blocked by the '
+            .. 'ones who are waiting on a party',
+        gate and ('%s %s/%s'):format(tostring(gate.reason), tostring(gate.have),
+                                     tostring(gate.need)) or 'nil')
+
+    pump(250)
+    local mAFK = theMatch()
+    ok(mAFK ~= nil and mAFK.state == BR.MatchState.WARMUP,
+        'ONE TICK, NOT A GRACE PERIOD -- the match forms out of the players who '
+            .. 'may be in it')
+    ok(mAFK ~= nil and BR.Roster.get(3).matchId == mAFK.id
+        and BR.Roster.get(4).matchId == mAFK.id,
+        'the two strangers are in it')
+    ok(BR.Roster.get(3).state == BR.PlayerState.WARMUP
+        and BR.Server.queue[3] == nil,
+        'AN UNPARTIED PLAYER GOES STRAIGHT INTO WARMUP -- the report',
+        BR.Roster.get(3).state)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY
+        and BR.Roster.get(1).matchId == nil,
+        'AND THE HALF-READIED PARTY DOES NOT -- both answers, one queue, one '
+            .. 'tick', BR.Roster.get(1).state)
+    ok(BR.Server.queue[1] ~= nil, 'and they are still queued, still waiting')
+
+    -- ── the last partymate readies into the OPEN warmup ──────────────────
+    --
+    -- Both of them walk through the late-join door in one sweep, lowest id
+    -- first, so the second finds the first's squad rather than being dealt
+    -- somewhere else and repaired afterwards.
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    ok(mAFK ~= nil and BR.Roster.get(1).matchId == mAFK.id
+        and BR.Roster.get(2).matchId == mAFK.id,
+        'the last Ready lets the WHOLE party into the warmup that was already open')
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'in one squad',
+        ('A=%s B=%s'):format(tostring(BR.Roster.get(1).squadId),
+                             tostring(BR.Roster.get(2).squadId)))
+    ok(BR.Roster.get(3).squadId ~= BR.Roster.get(1).squadId,
+        'with the strangers on the other team')
+    ok(mAFK ~= nil and BR.Party.needsRebalance(mAFK) == false,
+        'and the shape it lands in does not ask to be corrected again')
+
+    -- ── AND THE SECOND ROUND ANSWERS THE SAME WAY ────────────────────────
+    --
+    -- The old gate kept ONE timestamp for the whole server and nothing reset it
+    -- once a match had formed, so the first expiry of a server's uptime left it
+    -- spent for good and every party after that got no patience at all. There
+    -- is no timestamp left to leave behind -- the room does not wait, so it has
+    -- nothing to remember -- and this is the block that would notice a clock
+    -- coming back: same lobby, same party, same stranger, next round.
+    forceState(BR.MatchState.WAITING)
+    -- B IS NOT READY FOR THIS ROUND, SAID OUT LOUD. The arrangement has to be
+    -- "one stranger, one half-readied party" whatever the round before it left
+    -- behind -- otherwise a regression that keeps B queued would quietly turn
+    -- this into a complete party and the assertions below would pass on it.
+    fire(BR.Net.QUEUE_LEAVE, 2)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(250)
+    local m2 = theMatch()
+    ok(m2 ~= nil and BR.Roster.get(3).matchId == m2.id,
+        'the stranger opens the next round on the first tick as well')
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY
+        and BR.Server.queue[1] ~= nil,
+        'and the half-readied party is held through that round too',
+        BR.Roster.get(1).state)
+
+    -- ── THE ESCAPE HATCH: A DISCONNECT ───────────────────────────────────
+    --
+    -- An indefinite wait that cannot be escaped is worse than the bug. The
+    -- release is not a timer and nothing has to notice it: the party gate is
+    -- re-asked every tick, and a party that loses a member drops to one and
+    -- disbands (BR.Party.removePlayer), so the survivor is simply not partied
+    -- any more the next time the door is asked.
+    --
+    -- WITH A WARMUP ALREADY OPEN, which is the arrangement that needs the
+    -- SWEEP rather than the formation gate. The waiting player is not pressing
+    -- anything -- the event that frees them is somebody else's disconnect --
+    -- so if the tick did not re-ask, nobody would, and they would sit in the
+    -- queue watching a door they are now entitled to walk through.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    pump(500)
+    ok(BR.Server.formingMatch(BR.Mode.SQUAD.key) ~= nil, 'a warmup is open')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'A waits for B')
+
+    leave(2)
+    pump(1000)
+    ok(BR.Party.isGrouped(1) == false, 'B disconnecting disbands the party')
+    ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP,
+        'AND THE WAIT ENDS WITH IT -- the player is admitted rather than left '
+            .. 'queueing for somebody who is gone',
+        BR.Roster.get(1).state)
+    ok(BR.Server.queue[1] == nil, 'and their place in the queue is spent')
+
+    -- ── THE ESCAPE HATCH: LEAVING THE PARTY ──────────────────────────────
+    --
+    -- Same release, through the button a player actually has in front of them
+    -- while they wait, and again against an open warmup.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    pump(500)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'A waits for B again')
+
+    fire(BR.Net.SQUAD_LEAVE, 1)
+    pump(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP,
+        'and leaving the party while waiting admits them on the next tick',
+        BR.Roster.get(1).state)
+
+    -- ── SOLO IS NEVER HELD ───────────────────────────────────────────────
+    --
+    -- Queueing solo drops the party on the way past (BR.Lobby.join), so the
+    -- ordinary route never reaches the question. THIS ROUTE DOES: accepting an
+    -- invite AFTER queueing leaves a player partied and queued for solo at the
+    -- same time, and the party they are now in is one nothing will ever bring
+    -- into a solo match. Held, they would wait for a partymate who is waiting
+    -- for them from the other queue -- both of them, forever, with a Leave
+    -- party button as the only way out of a state neither of them asked for.
+    --
+    -- In solo every player is their own team, so there is no squad to be split
+    -- off from and nothing for the gate to protect.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 2   -- so a lone solo queuer stays in the queue
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    pump(500)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'a lone solo queuer waits for a second player')
+
+    BR.Party.invite(2, 1); BR.Party.respond(1, true)
+    ok(BR.Party.isGrouped(1),
+        'and is in a party while still queued for solo')
+
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SOLO.key })
+    pump(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP,
+        'SOLO IS NEVER HELD -- the solo round starts with them in it, party or '
+            .. 'no party',
+        BR.Roster.get(1).state)
+
+    BR.Config.Match.maxSquadSize = capWas
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THESE TWO BLOCKS ARE LAST, AND THAT POSITION IS DELIBERATE.
+--
+-- They are the only blocks in this suite that run the match state machine
+-- forward on its OWN clock rather than forcing it -- twenty-five seconds of
+-- ticks to take a finished match through ENDED, CLEANUP and destruction. That
+-- is the whole point of them (see the header of party.secondWarmup), and it is
+-- also why they cannot sit in the middle.
+--
+-- `match.busDescent` and `match.storm.hold` are coupled to the exact number of
+-- BR.Sched steps that have run before them. Inserting a single extra 250ms
+-- step ANYWHERE above them -- a bare `reset()` plus one tick is enough --
+-- fails both. The mechanism is the roughly thirty sites in this file that
+-- write `fakeTime = mendsAt() + 1`: mendsAt() returns 0 when there is no match
+-- or when the state carries no deadline, so the suite clock slams back to 1,
+-- every BR.Sched job's nextRun is then tens of seconds in the future, and the
+-- scheduler goes quiet for the rest of the run. Which of those sites lands on
+-- a zero depends on tick phase, so today's pass is an alignment rather than a
+-- property.
+--
+-- That is a real defect in this file and it is not this change's to fix --
+-- fixing it means making the suite clock monotonic at every one of those
+-- sites, which touches blocks that have nothing to do with parties. Putting
+-- these two at the end means the fragility keeps whatever coverage it has and
+-- nothing here perturbs it. ANYTHING ADDED AFTER THIS LINE INHERITS THE
+-- PROBLEM: add above, not below.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+describe('party.secondWarmup')
+do
+    -- ═══ THE 2026-09-01 REPORT, DRIVEN END TO END ═══
+    --
+    -- "We had 3 players (2 squads) in a party in a match, match ended, then
+    -- the 2 partied together did not stay in the same squad when they went to
+    -- warmup again, though they did appear still partied in the lobby UI.
+    -- Instead, when everyone readied up, matchmaking took over and the party
+    -- split." -- the owner.
+    --
+    -- ═══ WHY NEITHER EXISTING BLOCK COULD SEE IT ═══
+    --
+    -- `party.persistence` proves the PARTY survives a match and stops there --
+    -- it never forms squads again. `party.squadFormation` proves formation
+    -- keeps a party whole, and it calls BR.Party.formSquads(fakeMatch()) BY
+    -- HAND: a bare instance with every rostered player already attached and no
+    -- state machine within reach of it. `match.lateJoin` proves a late
+    -- partymate lands on their party's squad -- in the one arrangement where
+    -- that squad still has room.
+    --
+    -- All three passed for the whole month this bug was live, because the SEAM
+    -- between them had no coverage at all: a match ends, three people walk
+    -- back to the lobby, and they press Ready ONE AT A TIME -- so a warmup
+    -- opens around whoever was first and the rest arrive through the late-join
+    -- door. That is the same hole the bleed-out timer had: every test called
+    -- the underlying function directly, so the path the players actually walk
+    -- was never walked.
+    --
+    -- So nothing below calls formSquads, lateJoin, needsRebalance, or a
+    -- transition it can avoid. The inputs are QUEUE_JOIN events and the clock.
+    --
+    -- ═══ WHY THE CAP IS TWO ═══
+    --
+    -- "3 players (2 squads)" is not the shipped cap of four -- at four, three
+    -- players are ONE squad. It is `br_maxSquadSize 2`, which is the exact
+    -- lever BR.Party.formationReport tells an operator to pull to get two
+    -- teams out of three dev clients. Restored at the end: reset() does not own
+    -- this value, so leaving it moved would silently re-shape every squad every
+    -- later block forms.
+    local capWas = BR.Config.Match.maxSquadSize
+
+    --- Advance the clock the way a server does -- in tick-sized steps.
+    ---
+    --- ONE BIG JUMP IS NOT THE SAME THING. BR.Sched.step runs each due job ONCE
+    --- per call and the match state machine spends a tick per state, so a
+    --- single 30-second step moves ENDED to CLEANUP and stops -- leaving the
+    --- instance alive and every assertion after it aimed at the wrong match.
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    --- The match's squad sizes, sorted, as a string.
+    local function shapeOf(m)
+        local sizes = {}
+        BR.Roster.each(
+            function(e) return e.matchId == m.id and e.squadId end,
+            function(_, e) sizes[e.squadId] = (sizes[e.squadId] or 0) + 1 end)
+        local out = {}
+        for _, n in pairs(sizes) do out[#out + 1] = n end
+        table.sort(out)
+        return table.concat(out, '/')
+    end
+
+    --- Ready up ONE PLAYER AT A TIME, letting the tick run between each. That
+    --- gap is the whole scenario: pressing Ready in the same instant is not
+    --- what three people in a lobby do, and the gap is where a warmup opens
+    --- around the first of them.
+    local function readyInOrder(order)
+        for _, src in ipairs(order) do
+            fire(BR.Net.QUEUE_JOIN, src, { mode = BR.Mode.SQUAD.key })
+            pump(500)
+        end
+        pump(500)
+    end
+
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 2
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    local pid = BR.Party.of(1).id
+
+    -- ── round one ────────────────────────────────────────────────────────
+    readyInOrder({ 1, 2, 3 })
+    local m1 = theMatch()
+    ok(m1 ~= nil and m1.state == BR.MatchState.WARMUP, 'round one reaches warmup')
+    ok(m1 ~= nil and shapeOf(m1) == '1/2',
+        'three players make two squads at a cap of two', m1 and shapeOf(m1))
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'and the party is one of them')
+    ok(BR.Roster.get(3).squadId ~= BR.Roster.get(1).squadId,
+        'with the stranger on the other')
+
+    -- ── the match is played, and then ends on its own ────────────────────
+    BR.Match.transition(m1, BR.MatchState.BUS)
+    BR.Roster.each(function(e) return e.matchId == m1.id end,
+        function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+    BR.Match.transition(m1, BR.MatchState.PLAYING)
+    BR.Match.transition(m1, BR.MatchState.ENDED)
+
+    -- NOTHING IS FORCED FROM HERE. The tick sweeps everyone home, runs CLEANUP
+    -- and destroys the instance on its own clock, exactly as it does on a real
+    -- box -- which is the half of this path that had never run in a test with a
+    -- party in it. endedSeconds + cleanupSeconds, plus a tick of margin.
+    pump((BR.Config.Match.endedSeconds + BR.Config.Match.cleanupSeconds) * 1000 + 1000)
+
+    ok(theMatch() == nil, 'the match tears itself down without being forced')
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'and everyone is home')
+    ok(BR.Roster.get(1).squadId == nil and BR.Roster.get(2).squadId == nil,
+        'the in-match squad is cleared')
+
+    -- THE PARTY IS STILL THERE, AND SO IS WHAT THE LOBBY DRAWS FROM. This is
+    -- the half of the report that was never the bug: `inParty` on LOBBY_STATUS
+    -- is BR.Party.isGrouped and the panel is BR.Party.public -- both
+    -- server-derived, both correct here. There is no second source of truth and
+    -- no stale field; the interface was telling the truth the whole time, which
+    -- is exactly what made the split so hard to see coming.
+    ok(BR.Party.of(1) ~= nil and BR.Party.of(1).id == pid,
+        'the party survives the match end')
+    ok(BR.Party.isGrouped(1) and BR.Party.isGrouped(2),
+        'and the lobby still reports both of them as partied')
+    ok(#BR.Party.public(pid).members == 2,
+        'with both names on the panel the players are looking at')
+
+    -- ── round two, and THE STRANGER PRESSES READY FIRST ──────────────────
+    --
+    -- That single reordering is the entire trigger, and it is a coin flip
+    -- between three people staring at a lobby. The unpartied player is under no
+    -- party gate, so a warmup opens around them alone; the two friends then
+    -- arrive through the late-join door one at a time, and the first is
+    -- autofilled into the stranger's squad while their own partymate is still
+    -- in the lobby with no squad to aim at. That fills it, and the second
+    -- friend arrives to find their party's squad full.
+    readyInOrder({ 3, 1, 2 })
+    local m2 = theMatch()
+    ok(m2 ~= nil and m2.state == BR.MatchState.WARMUP, 'round two reaches warmup')
+    ok(m2 ~= nil and m1 ~= nil and m2.id ~= m1.id, 'and it is a new match')
+
+    ok(BR.Roster.get(1).squadId ~= nil and BR.Roster.get(2).squadId ~= nil,
+        'both partymates are placed')
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'A PARTY THAT SURVIVED THE MATCH SURVIVES THE NEXT WARMUP -- the two '
+            .. 'who were partied are in one squad again',
+        ('A=%s B=%s C=%s'):format(tostring(BR.Roster.get(1).squadId),
+            tostring(BR.Roster.get(2).squadId),
+            tostring(BR.Roster.get(3).squadId)))
+    ok(BR.Roster.get(3).squadId ~= BR.Roster.get(1).squadId,
+        'and the stranger is the opposition, not a squadmate')
+    ok(m2 ~= nil and shapeOf(m2) == '1/2',
+        'the shape is the one round one had', m2 and shapeOf(m2))
+
+    -- AND IT HAS SETTLED. The reshuffle that repairs the split must not leave
+    -- the match still asking to be reshuffled: a rebalance that is still true
+    -- on the way out is one that fires again on the next arrival, and the two
+    -- would trade players for as long as anybody kept joining.
+    ok(m2 ~= nil and BR.Party.needsRebalance(m2) == false,
+        'the corrected shape does not ask to be corrected again')
+
+    -- ── the same trap with no match in front of it ───────────────────────
+    --
+    -- The match end is NOT a precondition; it is only what re-shuffled the
+    -- order in which three people press Ready, which is why it read as a
+    -- consequence of one. Same three players, same order, no round one at all.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 2
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    readyInOrder({ 3, 1, 2 })
+
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'a party arriving one at a time is kept whole on a FIRST warmup too -- '
+            .. 'the match end was never the cause',
+        ('A=%s B=%s'):format(tostring(BR.Roster.get(1).squadId),
+                             tostring(BR.Roster.get(2).squadId)))
+
+    BR.Config.Match.maxSquadSize = capWas
+end
+
+describe('party.lateJoinAcrossMatches')
+do
+    -- A PARTYMATE AWAY IN ANOTHER LIVE MATCH USED TO THROW, and the arrival was
+    -- left stranded by it.
+    --
+    -- BR.Party.lateJoin's party scan bound its loop variable to `m`, shadowing
+    -- the MATCH argument for the whole of the loop body -- so it could not ask
+    -- the one question that matters, "is this mate even in the match I am
+    -- placing somebody into". It was not asked, and parallel matches are a
+    -- shipped feature (2026-08-04), so the answer is sometimes no: `counts`
+    -- holds THIS match's squads only, the mate's squad id is not a key in it,
+    -- and `counts[mate.squadId] < maxSize` raised "attempt to compare nil with
+    -- number".
+    --
+    -- THE THROW LANDS AFTER THE STATE FLIP. setMatch and setState run at the
+    -- top of lateJoin (membership before the flip, so the routing bucket has a
+    -- matchId to use), so the arrival was left standing in a match with no
+    -- squad, no colour and no beacon -- stranded by a crash halfway through
+    -- their own admission. This block pins the PLACEMENT and not merely the
+    -- absence of an error, because a guard that swallowed the comparison and
+    -- left `target` nil would also stop throwing.
+    local capWas = BR.Config.Match.maxSquadSize
+
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 4
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+
+    -- A and B ready together and take their match live.
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    local mA = theMatch()
+    ok(mA ~= nil and BR.Roster.get(1).squadId ~= nil,
+        'the party gets a squad in its own match')
+
+    BR.Match.transition(mA, BR.MatchState.BUS)
+    BR.Roster.each(function(e) return e.matchId == mA.id end,
+        function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+    BR.Match.transition(mA, BR.MatchState.PLAYING)
+
+    -- B WALKS OUT through the pause menu, which is the cheap way into the state
+    -- this block is about: B is back in the lobby, A is still in a LIVE match
+    -- wearing that match's squad id, and the two are still partied -- leaving a
+    -- match deliberately does not leave the party (BR.Match.leaveMatch ends by
+    -- re-asserting it).
+    BR.Match.leaveMatch(2)
+    ok(BR.Roster.get(2).state == BR.PlayerState.LOBBY, 'B is back in the lobby')
+    ok(BR.Roster.get(2).matchId == nil, 'and detached from the match')
+    ok(BR.Party.isGrouped(2), 'while still partied to A')
+    ok(mA ~= nil and BR.Roster.get(1).squadId ~= nil
+        and BR.Roster.get(1).matchId == mA.id,
+        "and A still holds that match's squad")
+
+    -- C opens a SECOND squad match, and B readies into it.
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    local mC = BR.Server.formingMatch(BR.Mode.SQUAD.key)
+    ok(mC ~= nil and mA ~= nil and mC.id ~= mA.id,
+        'C opens a second, separate squad match')
+
+    local placed = pcall(fire, BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    ok(placed,
+        'a partymate whose friend is in ANOTHER match readies up without throwing')
+    ok(mC ~= nil and BR.Roster.get(2).matchId == mC.id, "and lands in C's match")
+    ok(BR.Roster.get(2).squadId ~= nil,
+        'WITH A SQUAD -- the throw used to leave them in the match with none',
+        tostring(BR.Roster.get(2).squadId))
+    ok(BR.Roster.get(2).squadId ~= BR.Roster.get(1).squadId,
+        "and never wearing the other match's squad id")
+
+    BR.Config.Match.maxSquadSize = capWas
+end
+
+describe('tutorial.hold')
+do
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE GUIDED FIRST RUN'S SERVER HALF (#261)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- Owner, 2026-09-05: "if they're in the tutorial, they're not actively on
+    -- any warmup timer at all until the tutorial is complete. This means
+    -- matchmaking is not allowed to touch them and they cannot join a party
+    -- while the tutorial toggle is on because their party will get into the
+    -- match while they're still in warmup doing the tutorial."
+    --
+    -- Three rules, and every one is asserted here THROUGH THE REAL DOORS -- a
+    -- fired QUEUE_JOIN, a run of the match tick, the party verbs the net
+    -- handlers call -- rather than by asking the predicates directly. A gate
+    -- tested by calling the gate passes whether or not anything consults it,
+    -- and this project has already paid for that: on 2026-09-02 the queue's
+    -- half of the party check was correct for weeks while the late-join door
+    -- beside it had no check in front of it at all.
+    local capWas = BR.Config.Match.maxSquadSize
+
+    local function pump(ms)
+        for _ = 1, math.max(1, math.floor(ms / 250)) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    -- ── RULE 2, AND RULE 1 FALLS OUT OF IT: THE FORMATION TICK ───────────
+    --
+    -- There is no separate "warmup timer" to suppress. The countdown is a field
+    -- on a match INSTANCE (m.endsAt), so a player who is never in an instance is
+    -- a player no clock can be pointed at -- which is why the assertion for "no
+    -- timer running against them" is that they are still standing in the lobby
+    -- after one has run out.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    BR.Config.Match.maxSquadSize = 4
+    join(1, 'Learner')
+
+    ok(BR.Roster.setTutorial(1, true) == true,
+        'the hold is granted to a player standing in the lobby')
+    ok(BR.Roster.inTutorial(1) == true, 'and the server knows it is held')
+
+    -- SOLO, AND SOLO FIRST, BECAUSE IT IS THE TRAP. BR.Party.mayEnter's first
+    -- line used to be `if mode == SOLO then return true end` -- every rule after
+    -- it is about teams, and solo has none. A tutorial check written one line
+    -- lower would refuse a squad warmup and wave the same player into a solo
+    -- one, which is the default mode a brand new player is looking at.
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    pump(1000)
+    ok(theMatch() == nil,
+        'MATCHMAKING DOES NOT TOUCH THEM -- no match forms around a lone '
+            .. 'queuer in the tutorial, in SOLO, where every other rule in '
+            .. 'mayEnter is switched off')
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY
+        and BR.Roster.get(1).matchId == nil,
+        'and they are still in the lobby, attached to nothing',
+        BR.Roster.get(1).state)
+
+    -- And the same answer in squads, where the party rules DO apply and an
+    -- unpartied player passes all of them.
+    fire(BR.Net.QUEUE_LEAVE, 1)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    pump(1000)
+    ok(theMatch() == nil, 'nor in squads, where they are in nobody\'s party')
+
+    -- ── NO CLOCK RUNS AGAINST THEM, EVEN WHILE ONE RUNS BESIDE THEM ──────
+    --
+    -- A warmup opened by somebody else is the arrangement that matters: it has a
+    -- real countdown, it expires, and it flies. The tutorial player must watch
+    -- all of that happen from the lobby.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    join(1, 'Learner'); join(2, 'B')
+
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    pump(500)
+    local open = theMatch()
+    ok(open ~= nil and open.state == BR.MatchState.WARMUP,
+        'somebody else opens a warmup, with a real clock on it',
+        open and open.state)
+
+    ok(BR.Roster.setTutorial(1, true) == true, 'the learner starts the walkthrough')
+
+    -- THE LATE-JOIN DOOR, WHICH IS THE ONE THE PARTY GATE WAS MISSING. With a
+    -- warmup of the mode already open, BR.Lobby.join walks the presser straight
+    -- through BR.Lobby.admitWaiting rather than queueing them -- so a rule that
+    -- only guarded the formation tick would be bypassed by the busiest door in
+    -- the lobby the moment anybody else was already waiting.
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    ok(BR.Roster.get(1).matchId == nil
+        and BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'THE LATE-JOIN DOOR REFUSES THEM TOO -- both doors, one predicate',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).squadId == nil,
+        'so there is no stranger squad for the warmup to have autofilled them into')
+
+    -- The warmup runs out and leaves without them. `warmupSeconds` is 45; this
+    -- outlasts it comfortably, and the point of the literal is that a whole
+    -- countdown has demonstrably elapsed.
+    pump(60 * 1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'THE COUNTDOWN IS NOT THEIRS -- a warmup can open, expire and fly '
+            .. 'without the player in the tutorial ever being on its clock',
+        BR.Roster.get(1).state)
+
+    -- ── AND IT ENDS WHEN THEY SAY IT ENDS ────────────────────────────────
+    --
+    -- Believed on sight, and it has to be: giving the hold up hands the player
+    -- back to matchmaking, so a refusal here is how somebody gets stranded
+    -- outside the queue with no control anywhere that puts them back in.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+    join(1, 'Learner')
+    BR.Roster.setTutorial(1, true)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    pump(500)
+    ok(theMatch() == nil, 'held, as above')
+
+    ok(BR.Roster.setTutorial(1, false) == false, 'the walkthrough finishes')
+    ok(BR.Roster.inTutorial(1) == false, 'and the hold is gone')
+    pump(500)
+    ok(BR.Roster.get(1).matchId ~= nil,
+        'AND THE VERY NEXT TICK TAKES THEM -- the release needs no second press, '
+            .. 'because their place in the queue was never given up by the door',
+        BR.Roster.get(1).state)
+
+    -- ── B1: IT IS ONLY GRANTED FROM A STANDING START ─────────────────────
+    --
+    -- The exemption must never be an escape hatch. A player already in a match
+    -- who could claim it would have a dodge button, and that is the one shape of
+    -- this that takes something away from other people.
+    ok(BR.Roster.setTutorial(1, true) == false,
+        'THE HOLD IS REFUSED FROM INSIDE A MATCH -- it is not a way out of one')
+    ok(BR.Roster.inTutorial(1) == false, 'and nothing was written')
+    ok(printedSaying('asked for the tutorial hold') ~= nil,
+        'and the refusal is on the record rather than being a dead button')
+
+    -- LOBBY IS NOT ENOUGH ON ITS OWN. A player on the ENDED summary trip home is
+    -- in LOBBY with their matchId still attached -- that is what sweepHome
+    -- leaves behind -- and granting the hold there would pull somebody out of a
+    -- match that has not finished publishing their results.
+    local live = theMatch()
+    BR.Match.sweepHome(live)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY
+        and BR.Roster.get(1).matchId ~= nil,
+        'the summary trip home is LOBBY with a matchId still on it',
+        tostring(BR.Roster.get(1).matchId))
+    ok(BR.Roster.setTutorial(1, true) == false,
+        'AND THE HOLD IS REFUSED THERE TOO -- both halves of the standing '
+            .. 'start are load-bearing, and neither implies the other')
+
+    -- ── B2: THE GRANT COSTS THE QUEUE AND THE PARTY ──────────────────────
+    --
+    -- Held WHILE queued, the flag would make BR.Lobby.count lie to every lobby
+    -- screen in the room. Held while partied, it would hold that party at the
+    -- door indefinitely -- the exact hostage BR.Party.mayEnter's release
+    -- conditions were written to avoid.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Learner'); join(2, 'B')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    ok(BR.Server.queue[1] ~= nil and BR.Party.isGrouped(1),
+        'a queued, partied player')
+
+    BR.Roster.setTutorial(1, true)
+    ok(BR.Server.queue[1] == nil,
+        'THE GRANT DROPS THEM OUT OF THE QUEUE -- the flag is never held while '
+            .. 'queued, so no count anywhere is short of a player who is not coming')
+    ok(BR.Party.isGrouped(1) == false, 'AND OUT OF THEIR PARTY')
+    ok(BR.Party.isGrouped(2) == false,
+        'which takes the party of two down to one, and a party of one is not a party')
+
+    -- ── THE ROOM'S EXPLANATION OF ITS OWN WAIT STAYS HONEST ──────────────
+    --
+    -- BR.Match.startBlocker is both the gate and the sentence the lobby screen
+    -- phrases. A player in the walkthrough is refused by mayEnter and therefore
+    -- lands in `held` -- the same list a half-readied party lands in -- so
+    -- without partyHeld() the room would read the first refusal's party, find
+    -- none, and confidently tell everybody a party is holding the match.
+    --
+    -- The press below is a MODIFIED CLIENT, said out loud: an honest one has its
+    -- Ready button greyed, and the grant above has already taken their queue
+    -- slot away. This is what the server does when the courtesy is skipped.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 2
+    join(1, 'Learner'); join(2, 'B')
+    BR.Roster.setTutorial(1, true)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+
+    local blk = BR.Match.startBlocker(BR.Mode.SQUAD.key)
+    ok(blk ~= nil and blk.reason == 'players',
+        'a room short only of somebody in the tutorial is short of PLAYERS',
+        blk and blk.reason)
+    ok(blk ~= nil and blk.reason ~= 'party',
+        'AND IS NEVER BLAMED ON A PARTY THAT DOES NOT EXIST -- the lobby must '
+            .. 'not ask a player to do something that would not help')
+    ok(blk ~= nil and blk.have == 1 and blk.need == 2,
+        'and the tutorial player is not counted among the ready',
+        blk and ('%s/%s'):format(tostring(blk.have), tostring(blk.need)))
+
+    -- ── THE HOLD IS THIS PLAYER'S BUSINESS AND NOBODY ELSE'S ─────────────
+    ok(BR.Roster.public(BR.Roster.get(1)).tutorial == nil,
+        'the hold is not replicated to other clients')
+
+    -- ── NOBODY IN A MATCH CARRIES IT ─────────────────────────────────────
+    --
+    -- BR.Match.create is the one mint, and `brforce` is the caller that can hand
+    -- it somebody BR.Party.mayEnter would have refused: its `debugTarget`
+    -- fallback forms a match out of BR.Lobby.ids() -- the RAW queue, never put
+    -- through admissible. The command has to keep working (a dev verb that
+    -- silently left one player on the pad reads as the verb being broken), so
+    -- the flag gives way rather than the participant list -- and it must not
+    -- survive into the next lobby, where the walkthrough that would clear it is
+    -- long gone and no control on screen can.
+    --
+    -- Driven through the suite's own forceState, which reaches the same mint.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Learner')
+    BR.Roster.setTutorial(1, true)
+    forceState(BR.MatchState.WARMUP)
+    ok(BR.Roster.get(1).matchId ~= nil,
+        'brforce still starts a match out of whoever is standing there')
+    ok(BR.Roster.inTutorial(1) == false,
+        'AND THE MINT CLEARS THE HOLD -- a flag that outlived the match would '
+            .. 'hold this player out of every round after it, with nothing on '
+            .. 'screen that clears it')
+
+    -- ── RULE 3: THE PARTY DOORS ──────────────────────────────────────────
+    --
+    -- Four verbs, and each is a door the greyed control does not close. Every
+    -- refusal below carries NO SENTENCE: the owner writes player-visible copy
+    -- and has not written this one, so server/shop.lua's rule applies -- the
+    -- boolean is the ruling, the string is only what to say about it, and a
+    -- caller with no sentence still refuses.
+    reset()
+    BR.Config.Match.maxSquadSize = 4
+    join(1, 'Learner'); join(2, 'B'); join(3, 'C')
+    BR.Roster.setTutorial(1, true)
+
+    local invOk, invWhy = BR.Party.invite(1, 2)
+    ok(invOk == false, 'a player in the tutorial cannot invite')
+    ok(invWhy == nil, 'and the refusal invents no copy')
+    ok(BR.Party.of(1) == nil,
+        'AND NO PARTY WAS FORMED ON THE WAY TO THE REFUSAL -- BR.Party.ensure '
+            .. 'is the "form a party" verb, and a check below it would leave '
+            .. 'them sitting in one')
+
+    local toOk = BR.Party.invite(2, 1)
+    ok(toOk == false,
+        'AND THEY CANNOT BE INVITED EITHER -- the inviter is an ordinary player '
+            .. 'with nothing on their screen to say why')
+    ok(BR.Party.of(2) == nil,
+        'and that refusal mints no party around the inviter either')
+
+    local reqOk, reqWhy = BR.Party.requestJoin(1, 2)
+    ok(reqOk == false, 'and cannot ask to join one')
+    ok(reqWhy == nil, 'silently, like the rest')
+
+    -- ── THE TWO WINDOWS A PRESS-TIME CHECK CANNOT COVER ──────────────────
+    --
+    -- An invite and a join request both outlive the moment they were sent, so
+    -- each has a gap in which the walkthrough starts and a perfectly valid
+    -- answer is still in flight. The gate has to be asked again where the
+    -- membership is actually written.
+    reset()
+    join(1, 'Learner'); join(2, 'B')
+    ok(BR.Party.invite(2, 1) == true, 'an invite lands BEFORE the walkthrough starts')
+    BR.Roster.setTutorial(1, true)
+    local accOk = BR.Party.respond(1, true)
+    ok(accOk == false, 'and accepting it from inside the walkthrough is refused')
+    ok(BR.Party.isGrouped(1) == false, 'so no party was joined')
+
+    -- DECLINING STILL WORKS, and that is not a detail. A card that can be
+    -- neither accepted nor dismissed is worse than one that can only be
+    -- dismissed, and saying no is not joining a party.
+    reset()
+    join(1, 'Learner'); join(2, 'B')
+    BR.Party.invite(2, 1)
+    BR.Roster.setTutorial(1, true)
+    ok(BR.Party.respond(1, false) == true,
+        'DECLINING IS NOT JOINING -- an invite can still be turned down from '
+            .. 'inside the walkthrough')
+
+    reset()
+    BR.Config.Match.maxSquadSize = 4
+    join(1, 'Learner'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(2, 3); BR.Party.respond(3, true)
+    ok(BR.Party.requestJoin(1, 2) == true,
+        'a join request goes out before the walkthrough starts')
+    BR.Roster.setTutorial(1, true)
+    local ansOk = BR.Party.answerJoin(2, 1, true)
+    ok(ansOk == false,
+        'and the leader accepting it afterwards is refused -- the same window, '
+            .. 'from the other side')
+    ok(BR.Party.isGrouped(1) == false, 'so the requester is still unpartied')
+
+    BR.Config.Match.maxSquadSize = capWas
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

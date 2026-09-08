@@ -34,8 +34,23 @@ function BR.Sfx.play(cue)
     if not def then
         -- Once per cue, not once per call: a typo inside a frame loop would
         -- otherwise bury the console it is trying to warn in.
-        if lastPlayed['?' .. cue] == nil then
-            lastPlayed['?' .. cue] = 1
+        --
+        -- ═══ THE KEY IS BUILT WITH tostring AND THAT IS A FIX, NOT A TIDY-UP
+        --     (#24) ═══
+        --
+        -- This line was `lastPlayed['?' .. cue]`, and `..` on a boolean, a
+        -- table or nil RAISES in Lua -- so the one function whose docstring
+        -- promises it is "safe to call from anywhere" threw for three of the
+        -- shapes an unknown cue can arrive in. Nothing reaches it that way
+        -- today: BR.Net.SFX_CUE type-checks `d.c` before this is called, and
+        -- br_ui/client/nui.lua:335 sends `tostring(data.cue)`. That is exactly
+        -- what made it worth fixing rather than leaving -- the promise is what
+        -- callers are written against, and the two guards protecting it are in
+        -- other files and other resources, where nothing says they are
+        -- load-bearing. The next caller is the one that finds out.
+        local warned = '?' .. tostring(cue)
+        if lastPlayed[warned] == nil then
+            lastPlayed[warned] = 1
             print(('[br_core] sfx: unknown cue "%s"'):format(tostring(cue)))
         end
         return
@@ -104,9 +119,12 @@ function BR.Sfx.playFrom(cue, entity)
 
     local def = BR.Config.Audio.cues[cue]
     if not def then
-        -- Once per cue, exactly as BR.Sfx.play does and for the same reason.
-        if lastPlayed['?' .. cue] == nil then
-            lastPlayed['?' .. cue] = 1
+        -- Once per cue, exactly as BR.Sfx.play does and for the same reason --
+        -- including the tostring, which is there because `..` raises on a
+        -- boolean, a table or nil. See the long note in BR.Sfx.play.
+        local warned = '?' .. tostring(cue)
+        if lastPlayed[warned] == nil then
+            lastPlayed[warned] = 1
             print(('[br_core] sfx: unknown cue "%s"'):format(tostring(cue)))
         end
         return
@@ -703,7 +721,17 @@ RegisterCommand('brsfx', function(_, args)
     -- whose handler is forgotten -- and the failure it prevents is the quiet
     -- kind: `brsfx newverb HUD_AWARDS` would be read as the sound set
     -- `newverb`, play nothing, and report `[silent?]` about a subcommand.
-    elseif args[2] ~= nil and not VERBS[verb] then
+    -- ═══ AND args[2] HAS TO BE A REAL WORD, NOT MERELY PRESENT ═══
+    --
+    -- `~= nil` was the whole test, which makes `/brsfx storm.move` and
+    -- `/brsfx storm.move ` two different commands: a trailing space can hand
+    -- this an EMPTY second argument, and then the cue key gets read as a sound
+    -- SET with '' as the name. That plays nothing, reports [silent?], and blames
+    -- a cue the command never looked up -- the exact shape of the owner's
+    -- 2026-09-07 report that `brsfx storm.move` does not work while the raw pair
+    -- does. An empty word is not a sound name, so it falls through to the cue
+    -- table where it belongs.
+    elseif type(args[2]) == 'string' and args[2] ~= '' and not VERBS[verb] then
         set, name = args[1], args[2]
     end
 
@@ -745,8 +773,24 @@ RegisterCommand('brsfx', function(_, args)
     print(('--- %s: %s / %s ---'):format(verb, def.set, def.name))
     Citizen.CreateThread(function()
         local verdict = playProbed(def.set, def.name, 0)
-        if verdict ~= 'ok' then
-            print(('  %s'):format(mark(verdict):gsub('^%s+', '')))
+        -- ═══ SUCCESS SAYS SO, LIKE THE RAW-PAIR PATH ABOVE ═══
+        --
+        -- This arm used to print NOTHING when the sound started, while
+        -- `brsfx play SET NAME` printed "the engine started it" for the same
+        -- outcome. Two spellings of one question answering differently is how
+        -- the owner came to report `brsfx storm.move` as broken while the raw
+        -- pair "works" -- a header with no verdict under it reads as a command
+        -- that did nothing, and there is no way to tell it apart from one that
+        -- really did.
+        if verdict == 'ok' then
+            print('  the engine started it')
+        elseif verdict == 'silent' then
+            print('  [silent?] the engine reported this finished before it could be')
+            print('  heard. Nearly always a SET that is not loaded on this build --')
+            print('  check the set name before blaming the sound.')
+        else
+            print('  [unprobed] it played, but the engine gave no answer about')
+            print('  whether it started -- judge this one by ear alone')
         end
     end)
 end, false)

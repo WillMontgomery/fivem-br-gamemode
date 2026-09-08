@@ -601,7 +601,11 @@ do
     -- exists, carries both fields, and sounds like nothing else. That is one
     -- property over one table, and splitting it per subsystem is how the
     -- collision check below ends up comparing half the cues with the other half.
-    for _, name in ipairs({ 'fuel.start', 'fuel.done', 'storm.move' }) do
+    -- `fuel.done` was in this list until 2026-09-08. The owner removed the cue
+    -- ("also remove fuel.done") after two clips he disliked, so there is nothing
+    -- left to check the shape of -- see pump.cues.completion, which now pins its
+    -- ABSENCE and keeps the record of where it goes if he picks a third.
+    for _, name in ipairs({ 'fuel.start', 'storm.move' }) do
         local def = cues[name]
         ok(type(def) == 'table', ('the %s cue exists'):format(name))
         if type(def) == 'table' then
@@ -639,17 +643,33 @@ do
     --
     -- ASSERTED OVER THE WHOLE TABLE rather than per cue, because the next cue
     -- added is the one nobody will write a test for.
-    local catSets = {}
-    for _, entry in ipairs(BR.Config.Audio.catalogue or {}) do catSets[entry.set] = true end
-    local stray = nil
+    -- ═══ RELAXED ON 2026-09-08, DELIBERATELY ═══
+    --
+    -- This demanded that every cue's SET be one of the 84 base-game sets in the
+    -- catalogue, i.e. no DLC audio bank. That rule came from Pit_Stop_Complete,
+    -- rejected AT A DESK for living in a bank this gamemode never requests --
+    -- and the belief was never measured: nobody ever heard one be silent.
+    --
+    -- The owner auditioned a dozen DLC pairs on a running client and asked for
+    -- them: "land the DLC cues" (2026-09-08). A suite that overrules the only
+    -- person who has heard them is the original mistake pointed the other way.
+    --
+    -- WHAT SURVIVES IS THE HALF THAT IS STILL CHECKABLE FROM HERE: a cue must
+    -- name a set and a sound, and neither may be empty. A blank one plays
+    -- nothing and nothing on screen says so, which no amount of auditioning
+    -- would reveal -- there is nothing to hear either way.
+    local bad = nil
     for cue, def in pairs(cues) do
-        if type(def) == 'table' and def.set and not catSets[def.set] then
-            stray = ('%s uses %s, which is in no catalogue set'):format(cue, def.set)
+        if type(def) == 'table' then
+            if type(def.set) ~= 'string' or def.set == ''
+               or type(def.name) ~= 'string' or def.name == '' then
+                bad = ('%s has an empty set or name'):format(cue)
+            end
         end
     end
-    ok(stray == nil,
-       'every cue plays out of a set GTA\'s own scripts call -- no DLC audio '
-           .. 'bank, which would be silent rather than wrong', stray)
+    ok(bad == nil,
+       'every cue names a real set and a real sound -- a blank one plays '
+           .. 'nothing and nothing on screen says so', bad)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1483,25 +1503,22 @@ do
         return n
     end
 
-    ok(count(sfxTo(1), 'fuel.done') == 1,
-       'and reaching 100% plays the complete cue exactly once',
-       table.concat(sfxTo(1), ','))
-    ok(count(sfxTo(2), 'fuel.done') == 1,
-       'and the passenger hears that one too',
-       table.concat(sfxTo(2), ','))
-
-    -- ═══ AND HOLDING ON PAST FULL DOES NOT PLAY IT AGAIN ═══
+    -- ═══ AND REACHING FULL IS SILENT, 2026-09-08 ═══
     --
-    -- It is an EDGE. A player who keeps holding for the bodywork sends four
-    -- messages a second, and every one of them starts from a full tank.
-    clearSent()
-    for _ = 1, 6 do
-        fakeTime = fakeTime + BR.Config.Fuel.pumpSendMs
-        fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
-    end
+    -- This pair of assertions used to demand one `fuel.done` for the driver and
+    -- one for the passenger. The owner removed that cue after two clips he
+    -- disliked, so the edge fires and sends nothing. The check is inverted
+    -- rather than deleted: what would break the silence is somebody refilling
+    -- the empty branch in server/fuel.lua with a desk pick.
     ok(count(sfxTo(1), 'fuel.done') == 0,
-       'and holding on past full does not chime again',
+       'and reaching 100% is silent -- the owner rejected both completion clips',
        table.concat(sfxTo(1), ','))
+    ok(count(sfxTo(2), 'fuel.done') == 0,
+       'for the passenger too', table.concat(sfxTo(2), ','))
+
+    -- THE HOLD-PAST-FULL CASE IS COVERED BY THE SAME SILENCE and no longer
+    -- needs its own pass: it existed to prove the completion chime was an EDGE
+    -- rather than a state, and there is no chime to double.
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1927,40 +1944,36 @@ describe('pump.cues.completion')
 -- fields, and collide with nothing.
 do
     local cues = BR.Config.Audio and BR.Config.Audio.cues or {}
-    local done  = cues['fuel.done'] or {}
     local start = cues['fuel.start'] or {}
 
-    ok(done.name ~= 'CHALLENGE_UNLOCKED',
-       'the sound the owner heard as a warning is gone', tostring(done.name))
+    -- ═══ THERE IS NO COMPLETION CUE AT ALL AS OF 2026-09-08 ═══
+    --
+    -- "also remove fuel.done" -- owner. Two clips were tried and both were
+    -- wrong by ear: CHALLENGE_UNLOCKED read as a warning (his 2026-08-22 note
+    -- above), and the replacement he auditioned did not survive either. Rather
+    -- than leave a third desk pick in the table, the cue is gone and
+    -- server/fuel.lua's send with it.
+    --
+    -- WHAT THIS PINS IS THE ABSENCE, because the failure mode is a later reader
+    -- finding the once-per-fill edge in server/fuel.lua, seeing an empty
+    -- branch, and helpfully filling it back in with a sound nobody heard.
+    ok(cues['fuel.done'] == nil,
+       'there is no completion cue -- the owner rejected both clips, so this '
+           .. 'stays silent until he picks one by ear',
+       tostring(cues['fuel.done'] and cues['fuel.done'].name))
 
-    -- ═══ THIS ASSERTION USED TO READ `done.set == 'HUD_AWARDS'` AND WAS
-    --     DELIBERATELY LOOSENED, 2026-08-22 ═══
-    --
-    -- It was right while the fix was "change the NAME inside the one set the
-    -- owner had demonstrably heard". It became wrong the moment the owner was
-    -- handed /brsfx and told to go and choose: the third pick is theirs, it may
-    -- legitimately land in HUD_MINI_GAME_SOUNDSET or anywhere else, and a test
-    -- that reddened the build for the owner exercising the tool built for them
-    -- would simply be deleted by whoever landed their choice. A gate people
-    -- route around protects nothing.
-    --
-    -- WHAT REPLACES IT IS THE PROPERTY THAT ACTUALLY MATTERED ALL ALONG, and it
-    -- is stronger in the direction that has cost real rounds: the set must be
-    -- one of the 84 in BR.Config.Audio.catalogue. Those are the sets GTA's own
-    -- scripts call, with every DLC_*/dlc_* bank filtered out -- which is exactly
-    -- the check that would have rejected Pit_Stop_Complete (a real name, in a
-    -- real set, in a script audio bank this gamemode never requests, and
-    -- therefore silent). A wrong SET is the failure mode here; a name inside a
-    -- loaded set is at worst a sound somebody dislikes.
-    local inCatalogue = false
-    for _, entry in ipairs(BR.Config.Audio.catalogue or {}) do
-        if entry.set == done.set then inCatalogue = true end
+    local fh0 = io.open(ROOT .. 'br_core/server/fuel.lua', 'r')
+    if fh0 then
+        local fuel = fh0:read('a'); fh0:close()
+        ok(fuel:find("sfxToOccupants(netId, e.matchId, 'fuel.done')", 1, true) == nil,
+           'and the server does not send one -- a send naming a missing cue is '
+               .. 'not silence, it is an unknown-cue warning per refuel')
+
+        -- AND THE EDGE SURVIVES, which is the part worth keeping: finding the
+        -- once-per-fill moment again is the hard half of this feature.
+        ok(fuel:find('if before < tank and rec.left >= tank then', 1, true) ~= nil,
+           'while the once-per-fill edge is still there for the day he does')
     end
-    ok(inCatalogue,
-       'and whatever it is, its SET is one GTA\'s own scripts play -- so the '
-           .. 'third pick can be any sound the owner likes, but not a DLC bank '
-           .. 'that would be silent',
-       tostring(done.set))
 
     -- THE START SOUND IS OWNER-CONFIRMED AND IS NOT TO BE TOUCHED.
     ok(start.set == 'HUD_FRONTEND_DEFAULT_SOUNDSET' and start.name == 'SELECT',
@@ -1983,7 +1996,7 @@ do
         ok(sfx:find('local verb = args[1]', 1, true) ~= nil,
            '/brsfx still reads its first word from the command line')
         ok(sfx:find('BR.Config.Audio.cues[verb]', 1, true) ~= nil,
-           "/brsfx still resolves any cue by key, so `/brsfx fuel.done` "
+           "/brsfx still resolves any cue by key, so `/brsfx fuel.start` "
                .. 'auditions whatever this table says')
 
         -- ═══ AND THE OWNER CAN NOW CHANGE IT WITHOUT A CODE EDIT ═══
@@ -1995,6 +2008,118 @@ do
         ok(sfx:find("BR.Config.Audio.cues[cue] = { set = set, name = name }", 1, true) ~= nil,
            'and `brsfx bind <cue> <SET> <NAME>` re-points a cue live, so the '
                .. 'candidate can be judged where it actually fires')
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('repairkit.reuse')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "Repair kit should spawn in loot crates, inventory item, maxCarry 1, can
+--    be used on the fly to repair any vehicle once."   -- owner, 2026-08-23
+--
+-- ═══ THE PROPERTY IS "ONE IMPLEMENTATION, TWO CALLERS" ═══
+--
+-- The station already restores the three health pools in the order they have to
+-- go in -- ENGINE FIRST, because SetVehicleFixed is documented not to fix a
+-- broken one -- then pops the deformation and washes the decals. A repair kit
+-- that carried its own copy of that sequence would be a second place for the
+-- ordering to be got wrong, and the wrong one would be the one nobody had
+-- played. So the kit's handler must CALL applyRepair rather than reimplement it.
+--
+-- TEXT, for the reason the prompt.copy block above gives at length:
+-- client/fuel.lua registers frame-band loops and calls a dozen client natives
+-- this suite does not stub, and stubbing them to reach one call would be a
+-- harness bigger than the file. What a pass proves is that the second caller
+-- exists and goes through the shared function; it cannot prove a car looks
+-- repaired, which needs a game.
+do
+    local fh = io.open(ROOT .. 'br_core/client/fuel.lua', 'r')
+    ok(fh ~= nil, 'client/fuel.lua is readable')
+    if fh then
+        local src = fh:read('a'); fh:close()
+        local code = src:gsub('%-%-%[%[.-%]%]', ' '):gsub('%-%-[^\n]*', '')
+
+        ok(code:find('AddEventHandler(BR.Net.VEH_FIX', 1, true) ~= nil,
+           'the client listens for the repair grant')
+
+        -- ═══ THERE IS EXACTLY ONE applyRepair, AND TWO CALLS OF IT ═══
+        --
+        -- Counted rather than merely found, and this is the assertion that
+        -- actually carries the property: a second DEFINITION is how the
+        -- ordering rule gets forked, and a handler that repaired without
+        -- calling it would show up as one call rather than two.
+        local defs = 0
+        for _ in code:gmatch('local function applyRepair%(') do defs = defs + 1 end
+        ok(defs == 1, ('there is one repair implementation in the file (saw %d)')
+            :format(defs))
+
+        -- MINUS THE DEFINITION, WHICH IS ALSO A `applyRepair(veh,`. The first
+        -- spelling of this counted the name and reported three callers for two,
+        -- which is the same trap test_shop.lua's `BR.Shop.unpack` assertion fell
+        -- into: a mention is not a call.
+        local mentions = 0
+        for _ in code:gmatch('applyRepair%(veh,') do mentions = mentions + 1 end
+        ok(mentions - defs == 2,
+           ('and both callers go through it -- the pump grant and the repair '
+            .. 'kit (saw %d)'):format(mentions - defs))
+
+        -- ═══ AND THE KIT'S CALLER IS INSIDE THE VEH_FIX HANDLER ═══
+        --
+        -- Two calls somewhere in a 1300-line file is not the same statement as
+        -- "the handler repairs". Anchored on the handler's own opening so this
+        -- cannot pass on a build where the second call drifted into the tick.
+        local at = code:find('AddEventHandler(BR.Net.VEH_FIX', 1, true)
+        local body = at and code:sub(at, at + 700) or ''
+        ok(body:find('applyRepair(veh, points)', 1, true) ~= nil,
+           'the VEH_FIX handler hands its grant to the shared function')
+
+        -- ═══ ...AND IT DOES NOTHING ELSE TO THE CAR ═══
+        --
+        -- fixCosmetic's NAME IS A LIE ABOUT ITS FIRST LINE. It calls
+        -- SetVehicleFixed, which is a FULL repair native; only the deformation
+        -- and decal calls after it are cosmetic-only. That is harmless in the
+        -- one place it is called from -- inside applyRepair, on the frame
+        -- `body >= cap` has just been proven, where a full repair is a no-op --
+        -- and it is a free repair anywhere else. A build of the kit called it
+        -- unconditionally at completion, off a flag on the wire, which put a
+        -- damaged car back to full outside every rule that grants health.
+        --
+        -- COUNTED, MINUS THE DEFINITION, for the same reason the applyRepair
+        -- count above is: a mention is not a call, and `local function
+        -- fixCosmetic(veh)` matches the same pattern its callers do.
+        local cdefs = 0
+        for _ in code:gmatch('local function fixCosmetic%(') do
+            cdefs = cdefs + 1
+        end
+        local ccalls = 0
+        for _ in code:gmatch('fixCosmetic%(veh%)') do ccalls = ccalls + 1 end
+        ok(cdefs == 1 and ccalls - cdefs == 1,
+           ('and fixCosmetic has exactly ONE caller -- applyRepair, gated on '
+            .. 'the body reaching the cap (saw %d)'):format(ccalls - cdefs))
+
+        -- ═══ IT CHECKS THE CAR IT WAS SENT ═══
+        --
+        -- Between the server ruling and this arriving, a player can leave the
+        -- seat. Repairing whatever they are in NOW would spend a kit on a car
+        -- nobody aimed it at, so the network id on the wire is compared and a
+        -- mismatch does nothing.
+        ok(body:find('netOf(veh) ~= nid', 1, true) ~= nil,
+           'and refuses a vehicle that is not the one the server named')
+
+        -- 0 IS TRUTHY IN LUA. IsPedInAnyVehicle is declared BOOL; a bare read
+        -- here would repair for a player standing in a field.
+        ok(body:find('didHit(IsPedInAnyVehicle(ped, false))', 1, true) ~= nil,
+           'and reads the BOOL native through didHit rather than bare')
+
+        -- ═══ NO SECOND FUEL LEDGER ═══
+        --
+        -- The grant deliberately does NOT ride FUEL_SET: that message carries
+        -- the ledger's fraction and metres, and a client that receives one
+        -- writes them into `known`. A repair kit must not tell a client
+        -- anything about its tank.
+        ok(body:find('known[', 1, true) == nil,
+           'and it touches the fuel ledger not at all')
     end
 end
 

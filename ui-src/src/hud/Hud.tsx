@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
-  useUi, selHud, selStorm, selSquad, selFeed, selDbno, selMatch, selInv,
+  useUi, selHud, selStorm, selHudSquad, selFeed, selDbno, selMatch, selInv,
   selVehicle,
 } from '../store'
 import { useScreenMetrics } from './useScreenMetrics'
@@ -213,7 +213,7 @@ export default function Hud({ visible }: { visible: boolean }) {
   const scoped = useUi((s) => s.scoped)
   const hud   = useUi(selHud)
   const storm = useUi(selStorm)
-  const squad = useUi(selSquad)
+  const squad = useUi(selHudSquad)
   const talking = useUi((s) => s.talking)
   // TWO PRIMITIVES RATHER THAN THE ENVELOPE, on purpose. Selecting `s.voice`
   // would re-render this component -- the whole HUD -- on every push that
@@ -314,7 +314,26 @@ export default function Hud({ visible }: { visible: boolean }) {
             below: the two are the same edge at 16:9 and a quarter of the screen
             apart at 32:9, and this corner is part of the cluster the owner
             asked to keep with the map. */}
-        <div className="absolute" style={{ top: 'var(--hud-top)', right: 'var(--hud-right)' }}>
+        {/* ONE COLUMN, NOT TWO STACKED GUESSES. The kill feed used to be a
+            second absolute box at `--hud-top + 5rem`, and that 5rem was the
+            height of the counters as they stood in a SOLO match. In squads the
+            Alive plate grows a "3 squads" sub-line (see Counters.tsx), the
+            plate gets taller than the guess, and the first kill of the match
+            draws straight through it -- which is what the owner photographed on
+            2026-09-03.
+
+            A flex column removes the number rather than retuning it: the feed
+            starts wherever the counters actually end, at every mode, every
+            aspect ratio and every future plate. `items-end` keeps both hard
+            against --hud-right the way two separately-positioned boxes were. */}
+        <div
+          className="absolute flex flex-col items-end gap-2"
+          style={{ top: 'var(--hud-top)', right: 'var(--hud-right)' }}
+        >
+          {/* data-tut: the in-game walkthrough's second card (#261). On a
+              wrapper for the reason SquadPanel's is -- a component that does not
+              spread its props swallows the attribute silently. */}
+          <span data-tut="hud-counters" className="block">
           <Counters
             alive={hud.alive}
             squads={hud.squadsAlive}
@@ -328,13 +347,14 @@ export default function Hud({ visible }: { visible: boolean }) {
               ? squad.members.reduce((n, m) => n + (m.kills ?? 0), 0)
               : undefined}
           />
-        </div>
+          </span>
 
-        <div
-          className="absolute w-[16rem]"
-          style={{ top: 'calc(var(--hud-top) + 5rem)', right: 'var(--hud-right)' }}
-        >
-          <KillFeed entries={feed} />
+          {/* The feed keeps its own width so long names wrap inside it rather
+              than widening the column and dragging the counters left. */}
+          {/* data-tut: the in-game walkthrough stages four rows here (#261). */}
+          <div className="w-[16rem]" data-tut="hud-feed">
+            <KillFeed entries={feed} />
+          </div>
         </div>
 
         {/* Left column, top to bottom: squad, chat (rendered separately), radar.
@@ -368,12 +388,20 @@ export default function Hud({ visible }: { visible: boolean }) {
                --safe-x on 16:9. */
             style={{ top: 'var(--hud-top)', left: 'var(--hud-left)' }}
           >
+            {/* data-tut ON A WRAPPER, NOT ON THE COMPONENT. TypeScript does not
+                type-check hyphenated JSX attributes, so `data-tut` on
+                <SquadPanel> compiles clean and then vanishes -- the component
+                does not spread its props, so nothing reaches the DOM and the
+                walkthrough finds no anchor. The same trap Section fell into.
+                A wrapper has a box and cannot be ignored (#261). */}
+            <span data-tut="hud-squad" className="block">
             <SquadPanel
               squad={squad}
               talking={talking}
               voiceSilent={voiceSilent}
               voiceChosen={voiceChosen}
             />
+            </span>
           </div>
         )}
 
@@ -435,7 +463,10 @@ export default function Hud({ visible }: { visible: boolean }) {
             style={{ height: 'var(--vitals-drop)', visibility: 'hidden' }}
             aria-hidden
           />
-          <Vitals hp={hud.hp} armour={hud.armour} stamina={hud.stamina} />
+          {/* data-tut: the in-game walkthrough's first card (#261). */}
+          <span data-tut="hud-vitals" className="block">
+            <Vitals hp={hud.hp} armour={hud.armour} stamina={hud.stamina} />
+          </span>
         </div>
 
         {/* Bottom right, clear of the radar on the left and of the kill feed
@@ -473,7 +504,11 @@ export default function Hud({ visible }: { visible: boolean }) {
                 RENDERS null WHEN THERE IS NO VEHICLE, so the column is exactly
                 what it was before for a player on foot -- see VehicleBars. */}
             <VehicleBars vehicle={vehicle} />
-            <InventoryBar inv={inv} volts={shopVolts} currency={currency} />
+            {/* data-tut: the in-game walkthrough points at the slots and,
+                separately, at the ammo counter inside them (#261). */}
+            <span data-tut="hud-inventory" className="block">
+              <InventoryBar inv={inv} volts={shopVolts} currency={currency} />
+            </span>
           </div>
         )}
 
@@ -536,6 +571,31 @@ export default function Hud({ visible }: { visible: boolean }) {
             rem, so the outline could agree with itself while disagreeing with
             every surface it exists to check against. `fixed`, for the same
             reason the vitals strip is: --map-* are viewport-true. */}
+        {/* THE MINIMAP, AS SOMETHING THE WALKTHROUGH CAN POINT AT (#261).
+            The radar is drawn by the engine, so there is no element for it in a
+            shipped build and the card that says "press this to open the map"
+            was pointing at the Elims/Alive plates instead (owner, 2026-09-06).
+
+            AN EMPTY RECTANGLE OVER THE REAL ONE, reading the same --map-*
+            variables every other surface checks against, so it cannot drift
+            from what it is outlining. `fixed` for the same reason the vitals
+            strip is: those variables are viewport-true and .hud-safe carries no
+            transform.
+
+            NOT GATED ON THE RADAR BEING VISIBLE. A player who has hidden their
+            radar would otherwise take a card pointing at a missing anchor,
+            which ends the run -- a hidden radar is a preference, not a fault. */}
+        <div
+          data-tut="hud-minimap"
+          aria-hidden
+          className="fixed pointer-events-none"
+          style={{
+            left: 'var(--map-left)',
+            bottom: 'var(--map-bottom)',
+            width: 'var(--map-w)',
+            height: 'var(--map-h)',
+          }}
+        />
         {import.meta.env.DEV && (
           <div
             className="fixed border border-dashed border-white/20 rounded-md

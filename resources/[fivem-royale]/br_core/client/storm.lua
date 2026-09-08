@@ -274,6 +274,58 @@ end
 -- vignette (weather.blendSec): fxLevel walks toward its target each tick
 -- and drives the timecycle STRENGTH, so entering the storm darkens the
 -- world over five seconds instead of snapping (user call, 2026-08-04).
+--- How long before the wall sets off the countdown pips.
+---
+---   "I want timer.final to play every single time the 'storm closing in' timer
+---    gets to 5s"                                       -- owner, 2026-09-07
+---
+--- THE HOLDING COUNTDOWN, NOT THE SHRINKING ONE. Two numbers wear this placard:
+--- while the wall is HOLDING it counts down to the wall setting off ("Storm
+--- moving in"), and while it is SHRINKING it counts down to the wall stopping
+--- ("Storm closing now"). "Closing in 5s" is the first of those -- five seconds
+--- of warning before the map gets smaller is a thing a player can act on, and
+--- five seconds before the wall parks is not.
+---
+--- ═══ 4000 AND NOT 5000, BY EAR ═══
+---
+--- Owner, 2026-09-07: "the 5 second storm timer sound effect plays 1 second to
+--- early. please set that back just a bit." Judged against the placard he was
+--- looking at, which is the only comparison that matters here -- the HUD clock
+--- is a browser rAF loop reading `endsAt` against Date.now() plus the page's own
+--- offset, while this reads GetGameTimer() plus the client's, and the two are
+--- allowed to differ. Rather than chase that, the number moved to where his ear
+--- put it. The cue's NAME is Rockstar's `5s` and always was a generic countdown
+--- pip; it was never a claim about when we play it.
+local FINAL_WARN_MS = 4000
+
+--- The storm record we have already pipped for, identified by its START.
+---
+--- KEYED ON tStart RATHER THAN ON THE PHASE NUMBER, and the difference is real:
+--- `brphase` and `brstormfreeze off` both RE-ENTER the same phase number from
+--- wherever the wall is standing, and server/storm.lua's own move-cue latch
+--- carries a note about exactly that. Every route into a phase builds a fresh
+--- record with a fresh tStart, so this re-arms for all of them without needing
+--- to be told. A freeze rebuilds the record once with a 24-hour hold, which is
+--- silent by construction rather than by a special case.
+local pippedFor = nil
+
+--- Was this player caught in the wall last tick? nil = not established yet.
+---
+--- ═══ THE CUE RIDES `caught`, NOT `edge > 0`, AND THAT IS THE WHOLE DESIGN ═══
+---
+--- `caught` is the condition the screen grade and the sky already use: outside
+--- AND the storm is actually doing damage right now. Cueing off the raw
+--- distance instead would fire for every player at once the moment phase 1's
+--- free-loot hold begins -- everybody is outside a circle that is not hurting
+--- anybody yet -- which is a chorus of alarms about nothing. Riding the same
+--- boolean means the sound, the vignette and the thunder are one event.
+---
+--- nil RATHER THAN false IS LOAD-BEARING. A player who spawns already outside
+--- must not hear the entry cue for a boundary they never crossed, and neither
+--- must one whose first tick lands mid-storm after a rejoin. The first tick
+--- only ESTABLISHES the value; the second is the first that can be an edge.
+local caughtWas = nil
+
 local fxLevel, fxTarget = 0.0, 0.0
 local fxApplied, postOn  = false, false
 local lastFxAt = 0
@@ -421,6 +473,11 @@ local function teardown()
     -- The frame job reads `solved` and nothing else. Leaving it set would
     -- keep it computing distances to a circle that no longer exists.
     solved, lastEdgeShown = nil, nil
+    -- AND THE CUE LATCH GOES BACK TO "NOT ESTABLISHED". Left as `true`, the
+    -- first tick of the NEXT match would read as a crossing back inside and
+    -- play the all-clear over the bus.
+    caughtWas = nil
+    pippedFor = nil
     -- Between matches the grade SNAPS off -- there is nothing to fade
     -- against once the world resets around a teleport home.
     fxTarget, fxLevel = 0.0, 0.0
@@ -449,6 +506,24 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
 
     local now = BR.Clock.now()
     local cx, cy, r, st, msLeft, dps = solveNow(rec)
+
+    -- ═══ FIVE SECONDS BEFORE THE WALL SETS OFF ═══
+    --
+    -- Not gated on being alive, on being inside, or on spectating, and that is
+    -- deliberate: this is a fact about the MATCH, like the storm.move cue the
+    -- server broadcasts to everybody in it. A player watching from a corpse is
+    -- still watching a round whose map is about to shrink.
+    --
+    -- THE LATCH IS THE WHOLE MECHANISM. This job runs at 10 Hz, so without it
+    -- the last five seconds of every hold would be fifty pips. With it the cue
+    -- lands on the first tick at or below the threshold -- up to 100ms late,
+    -- which nobody can hear against a five-second warning.
+    if st == BR.StormPhase.HOLDING and msLeft <= FINAL_WARN_MS then
+        if pippedFor ~= rec.tStart then
+            pippedFor = rec.tStart
+            BR.Sfx.play('timer.final')
+        end
+    end
 
     -- THE LOUDEST OF #225'S THREE READS. Everything below this line -- the HUD
     -- envelope, the direction blip, the grade and the sky -- is measured from
@@ -512,6 +587,28 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local caught = edge > 0 and dps > 0 and affected
     fxSet(caught)
     fxStep()
+
+    -- ═══ CROSSING THE WALL SAYS SO ═══
+    --
+    --   "When they go out of the storm circle" / "Going back into the storm
+    --    circle" -- owner, 2026-09-08, naming a pair of DLC sounds for it.
+    --
+    -- A SPECTATOR HEARS NEITHER, which is where this parts company with the
+    -- grade and the sky above. Those follow the shot deliberately -- they are
+    -- world rendering, and what they paint is what somebody standing at the
+    -- camera would see. A cue is not world rendering: it is this interface
+    -- telling THIS player something about THEIR position, and firing it for a
+    -- boundary somebody else crossed is just a confusing noise. So the latch is
+    -- reset rather than updated while spectating, and the first tick back in a
+    -- body establishes a fresh baseline instead of reporting an edge.
+    if from == 'spectate' then
+        caughtWas = nil
+    else
+        if caughtWas ~= nil and caught ~= caughtWas then
+            BR.Sfx.play(caught and 'storm.out' or 'storm.in')
+        end
+        caughtWas = caught
+    end
 
     -- The sky agrees with the vignette: thunder when caught outside,
     -- clearing on the way back in. Same condition as the screen FX so the

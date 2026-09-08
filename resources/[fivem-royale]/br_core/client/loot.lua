@@ -962,6 +962,39 @@ end
 --- BR.Config.Airdrop.planeProbeFromZ.
 local PROBE_FROM_Z = 1200.0
 
+--- How far ABOVE A VOUCHED PED ROOT the probe starts instead, metres.
+---
+--- ═══ "THE ITEM GOES ON THE GROUND ON THE UPPER STRUCTURE AND NOT ON THE
+---     GROUND AROUND THE PED" (owner, 2026-09-03) ═══
+---
+--- 1200 is the right start for a point nobody has ever stood on, and it is the
+--- wrong start for one somebody is standing on right now. Under an overpass the
+--- highest ground below 1200 in that column is the DECK -- dry, solid, above
+--- sea level -- so the probe does not fail, it SUCCEEDS with the freeway over
+--- your head, and every client places the prop up there. It is not a server
+--- bug: the server's copy of the position is correct throughout.
+---
+--- So where the server has told us a ped was measured standing on this ground
+--- (`pz`, see wireEntry in server/loot.lua), the probe starts just above that
+--- instead and finds the underpass floor.
+---
+--- WHY 2.0 AND NOT MORE. Two ceilings, and this number lives between them:
+---
+---   * IT MUST CLEAR THE PED'S OWN FOOTING. `pz` is the ROOT -- the feet -- and
+---     starting a downward probe exactly at the surface risks landing under it.
+---     A kerb, a step, or 4.6m of slope across a death scatter is the slack
+---     this has to absorb.
+---   * AND IT MUST STAY UNDER THE STRUCTURE. Anything a car can drive under
+---     clears 2m comfortably; the moment this number reaches the deck it has
+---     reintroduced the exact bug it exists to fix, and silently, because a
+---     deck probe succeeds.
+---
+--- AND IT IS ONLY EVER A FIRST ATTEMPT. groundUnder falls back to PROBE_FROM_Z
+--- whenever the low probe finds nothing, so 2.0 being too small somewhere costs
+--- one wasted native call and today's behaviour -- never a missing prop. That
+--- fallback is what makes this safe to tune.
+local PED_PROBE_LIFT = 2.0
+
 --- Is a point dry land with something solid under it?
 ---
 --- DECLARED BEFORE groundZ ON PURPOSE. A `local function` referenced above its
@@ -1000,6 +1033,45 @@ local function solidGround(x, y, fromZ)
     local haveW = okW ~= nil and okW ~= false and okW ~= 0
     if haveW and wz and wz > gz + 0.3 then return false, gz end
     return true, gz
+end
+
+--- Ground under a point, probed from wherever THIS ENTRY should be probed from.
+---
+--- ═══ THE WHOLE OF THE BRIDGE FIX, AND IT IS A FALLBACK RATHER THAN A SWITCH
+---     ═══
+---
+--- The sky probe is right for the 1300 generated entries and wrong for the
+--- handful somebody dropped; `e.pz` is how the server says which is which (see
+--- wireEntry in server/loot.lua). But an entry that HAS a `pz` still gets the
+--- sky probe as its second attempt, and that ordering is deliberate:
+---
+---   * A LOW PROBE THAT SUCCEEDS IS ALWAYS THE BETTER ANSWER. It found dry,
+---     solid, above-sea-level ground below the ped's own feet. That is the
+---     floor the player is standing on, which is where they expect their gun to
+---     land, whatever is built over their head.
+---   * A LOW PROBE THAT FAILS COSTS NOTHING. Started under the surface -- the
+---     far side of a death scatter's ring on a bank -- it finds nothing, or
+---     finds a seabed that the sea-level rule above rejects. Either way we fall
+---     through to exactly the probe this file has always run, so the worst case
+---     of this whole change is the behaviour it replaced. Nothing here can
+---     produce a MISSING prop, which is this file's worst failure mode and the
+---     reason the 2026-08-23 hillside regression above hurt as much as it did.
+---
+--- x/y are passed separately rather than read off `e` because the reseat probes
+--- the pose it actually built at, and dryPointNear probes candidates metres away
+--- from the entry -- both want this entry's start height at somebody else's
+--- coordinates.
+--- @param e table
+--- @param x number
+--- @param y number
+--- @return boolean okay
+--- @return number groundZ
+local function groundUnder(e, x, y)
+    if e.pz then
+        local ok, gz = solidGround(x, y, e.pz + PED_PROBE_LIFT)
+        if ok then return ok, gz end
+    end
+    return solidGround(x, y, math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z))
 end
 
 --- Does this entry have to land somewhere a PED could be, and not merely
@@ -1045,14 +1117,19 @@ end
 --- @return number|nil y
 --- @return number|nil z
 local function dryPointNear(e)
-    local from   = math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z)
     local reach  = needsReachable(e)
     for i = 1, 12 do
         local ang = i * 2.39996323   -- golden angle in radians
         local r   = 4.0 + i * 2.0    -- 6m out to 28m, inside the server's bound
         local x   = e.x + math.cos(ang) * r
         local y   = e.y + math.sin(ang) * r
-        local ok, gz = solidGround(x, y, from)
+        -- SAME START HEIGHT AS THE PROBE THAT REJECTED THE ORIGINAL, which is
+        -- the only way the suggestion means anything: offering a point measured
+        -- off the deck to replace one that failed under the bridge would move
+        -- the entry AND spend its one repair doing it. Candidates walk out to
+        -- 28m, so a vouched start is a hint here and not an answer -- which is
+        -- exactly what groundUnder's fallback is for.
+        local ok, gz = groundUnder(e, x, y)
         -- A CANDIDATE HAS TO CLEAR THE SAME BAR THE ORIGINAL FAILED. Offering a
         -- rooftop the airdrop crate could move to instead of the rooftop it is
         -- already on would be a repair that repairs nothing, and it would burn
@@ -1092,8 +1169,12 @@ end
 local function groundZ(e)
     local now = GetGameTimer()
     if e.gz and now - (e.gzAt or 0) < 10000 then return e.gz end
-    local from = math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z)
-    local ok, gz = solidGround(e.x, e.y, from)
+    -- THE LINE THE OWNER'S BRIDGE REPORT LANDS ON. This used to probe from
+    -- 1200m unconditionally, which under an overpass answers with the deck --
+    -- see groundUnder and PED_PROBE_LIFT. Everything downstream inherits the
+    -- answer: the spawn height, PlaceObjectOnGroundProperly settling from it,
+    -- `restZ`, and the arrival arc's own ground read.
+    local ok, gz = groundUnder(e, e.x, e.y)
 
     e.reachOk = true
     if ok and needsReachable(e) then
@@ -1203,6 +1284,9 @@ local function forget(id)
     if target and target.id == id then target = nil end
     if outlinedId == id then outlinedId = nil end
 end
+
+--- When the last cell subscription request went out, for the recovery re-ask.
+local lastCellAsk = 0
 
 local function forgetAll()
     clearOutline(entries)
@@ -1393,8 +1477,15 @@ local function drain()
                                 if solid then
                                     awaitCollision(obj, sx, sy, sz)
                                     if not pose then
-                                        local ok2, gz2 = solidGround(sx, sy,
-                                            math.max((e.z or 0.0) + 50.0, PROBE_FROM_Z))
+                                        -- THROUGH groundUnder, LIKE THE FIRST
+                                        -- PROBE. A death box scattered at a
+                                        -- player's feet under an overpass is a
+                                        -- container, so it is the one entry
+                                        -- class that reaches this re-probe with
+                                        -- a vouched height -- and re-seating it
+                                        -- off the deck here would undo the fix
+                                        -- a few lines after making it.
+                                        local ok2, gz2 = groundUnder(e, sx, sy)
                                         if ok2 and math.abs(gz2 - gz) > 0.05 then
                                             local S = BR.Loot.settle
                                             S.reseated = S.reseated + 1
@@ -1620,8 +1711,17 @@ local function addEntries(list)
                 local moved = math.abs((have.x or 0) - (d.x or 0)) > 0.01
                     or math.abs((have.y or 0) - (d.y or 0)) > 0.01
                 local reskinned = have.kind ~= d.kind or have.prop ~= d.prop
+                -- A THIRD KIND OF CHANGE, AND IT MOVES THE PROP VERTICALLY
+                -- WITHOUT MOVING x OR y. The repair round-trip clears `pz`
+                -- server-side (see the LOOT_FIX handler), so an entry can be
+                -- re-announced at the same place with a different idea of where
+                -- its probe starts -- which is a different resting height. Left
+                -- out of this test the prop would keep the height it was built
+                -- at until it streamed out, and the two answers would disagree
+                -- for as long as the player stood there.
+                local revouched = have.pz ~= d.pz
 
-                if moved or reskinned then
+                if moved or reskinned or revouched then
                     -- THE SERVER ANSWERED, and this is the only place a client
                     -- can see that it did. A crate re-announced as its husk IS
                     -- the confirmation that a claim landed -- there is no reply
@@ -1636,17 +1736,43 @@ local function addEntries(list)
                     -- ACTUALLY opened, so it cannot play for a claim the
                     -- server refused; the claimedByMe check is what stops it
                     -- firing for everyone standing nearby (user, 2026-08-05).
-                    if reskinned and d.kind == 'husk' and L.openSound
-                       and claimedByMe[d.id] then
+                    if reskinned and d.kind == 'husk' and claimedByMe[d.id] then
                         claimedByMe[d.id] = nil
-                        PlaySoundFrontend(-1, L.openSound.name,
-                            L.openSound.set, true)
+                        if L.openSound then
+                            PlaySoundFrontend(-1, L.openSound.name,
+                                L.openSound.set, true)
+                        end
+                        -- ═══ AND ANYONE ELSE WHO WANTS TO KNOW (#261) ═══
+                        --
+                        -- The guided first run has a card that says "go and open
+                        -- one" and must not offer a way past it, so it needs the
+                        -- one fact this line already establishes: THIS player
+                        -- opened THAT crate, confirmed by the server.
+                        --
+                        -- A CLIENT-LOCAL EVENT, NOT A WIRE. Both ends are in
+                        -- br_core, so this is the same seam `br:keys:changed`
+                        -- and `br:shop:bought` already use -- no protocol entry,
+                        -- nothing serialised, and nothing the server has to know
+                        -- about a walkthrough.
+                        --
+                        -- CARRIES THE POSITION because the listener has to tell
+                        -- one of the four warmup anchors from the 1300 other
+                        -- crates on the map, and position is what distinguishes
+                        -- them. The id would not: it is a loot-registry id with
+                        -- nothing in it that says "warmup".
+                        TriggerEvent('br:loot:opened', d.id, d.x, d.y)
                     end
                     despawn(have)
                     have.x, have.y, have.z = d.x, d.y, d.z
                     have.kind, have.item, have.prop = d.kind, d.item, d.prop
                     have.rarity = d.rarity or have.rarity
-                    if moved then
+                    -- CARRIED ACROSS EVERY RE-ANNOUNCE, and the assignment is
+                    -- unconditional so a cleared `pz` clears here too. A sealed
+                    -- crate becoming its husk keeps the vouch it was born with;
+                    -- a repaired entry loses it, because the server dropped it
+                    -- the moment the position changed.
+                    have.pz = d.pz
+                    if moved or revouched then
                         have.gz, have.gzAt, have.gzOk = nil, 0, nil
                     end
                     queued[d.id] = nil
@@ -1669,6 +1795,13 @@ local function addEntries(list)
                     -- bursting open or a player's hand. Absent on the
                     -- generated layout, which was always just there.
                     fx = d.fx, fy = d.fy, fl = d.fl,
+                    -- GROUND A PED WAS MEASURED ON, when the server measured
+                    -- one. Unlike fx/fy/fl above this is NOT a birth event and
+                    -- it arrives on every announce -- the cell subscription
+                    -- included -- so a player who walks up to a dropped gun ten
+                    -- minutes later probes for it the same way the dropper did
+                    -- and sees it in the same place. See groundUnder.
+                    pz = d.pz,
                     bornAt = d.fx and GetGameTimer() or nil,
                     lift = 0.0,
                 }
@@ -1812,9 +1945,42 @@ BR.Loop.register(BR.Loop.TICK, 'loot.cells', function()
     local p = GetEntityCoords(PlayerPedId())
     local cx, cy = BR.LootCellOf(p.x, p.y)
     local key = BR.LootCellKey(cx, cy)
-    if key == myCell then return end
+
+    -- ═══ THE LATCH IS OPTIMISTIC, SO IT NEEDS A WAY BACK ═══
+    --
+    -- `myCell` is written before the request goes out and nothing on the wire
+    -- confirms it -- there is no ack, and the server declines silently in five
+    -- places. Combined with the edge test below, a single declined request used
+    -- to be PERMANENT for as long as the player stayed inside one 256m cell.
+    --
+    -- That is what the owner hit (2026-09-07): /brloot on the pad reading
+    -- `cell 17,-18  entries 0`, crates that never appeared until he walked out
+    -- of the cell and back, claims that got no answer, and "Someone beat you to
+    -- it." for a crate nobody had touched -- server/loot.lua nils an entry the
+    -- claimant is not subscribed to, before every other test, and says that.
+    -- One lost subscription, three symptoms.
+    --
+    -- SO AN EMPTY REGISTRY RE-ASKS, and only an empty one. Holding nothing while
+    -- standing somewhere loot is visible is not a state that occurs in ordinary
+    -- play: the very first subscription fills the block. It is the exact
+    -- signature of a request that was dropped, and the `resync` flag is what
+    -- tells the server this is a recovery rather than a duplicate -- its own
+    -- "nothing moved" dedupe would otherwise swallow the retry.
+    --
+    -- ONCE A SECOND, not every tick. This costs one event per second per player
+    -- and only while something is actually wrong.
+    if key == myCell then
+        if next(entries) ~= nil then return end
+        local now = GetGameTimer()
+        if now - lastCellAsk < 1000 then return end
+        lastCellAsk = now
+        TriggerServerEvent(BR.Net.LOOT_CELL,
+                           { cx = cx, cy = cy, resync = true })
+        return
+    end
 
     myCell = key
+    lastCellAsk = GetGameTimer()
     TriggerServerEvent(BR.Net.LOOT_CELL, { cx = cx, cy = cy })
 end)
 
@@ -3016,21 +3182,21 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
         -- before the timer means they know how this works.
         if gained or now - mercy.landedAt < (cfg.afterMs or 60000) then return end
         mercy.armedAt = now
+        -- ONCE PER MATCH, on the arm. The 1Hz pass below re-asserts the blips
+        -- every second and a cue there would be a siren.
+        BR.Sfx.play('blips.shown')
 
         -- THE NOTICE SAYS HOW LONG IT LASTS (user call, 2026-08-06). Help that
         -- vanishes without warning reads as a bug; help with a stated duration
         -- reads as a grace period, and the player knows to use it now. Derived
         -- from the config so retuning minShownMs cannot leave the text lying.
-        local mins = (cfg.minShownMs or 60000) / 60000.0
-        local howLong
-        if mins >= 2.0 then
-            howLong = ('%d minutes'):format(math.floor(mins + 0.5))
-        elseif mins >= 1.0 then
-            howLong = '1 minute'
-        else
-            howLong = ('%d seconds'):format(
-                math.floor((cfg.minShownMs or 60000) / 1000 + 0.5))
-        end
+        --
+        -- THE THREE BRANCHES THAT USED TO BE WRITTEN OUT HERE ARE BR.Clock.words
+        -- NOW, unchanged in behaviour and moved because a second line in this
+        -- game quotes a config duration out loud since 2026-09-02 (the revive
+        -- key's bled-out toast). Two copies of "under a minute is seconds, one
+        -- minute is singular" is how one of them ends up saying "180 seconds".
+        local howLong = BR.Clock.words(cfg.minShownMs or 60000)
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = ('No loot nearby? Crates are marked on your map for %s.')
                 :format(howLong),
@@ -3176,6 +3342,20 @@ RegisterCommand('brloot', function()
         print(('  nearest: #%d %s (%s) at %.1fm')
             :format(near.id, labelOf(near), near.kind,
                     BR.Dist(p.x, p.y, near.x, near.y)))
+        -- THE FOUR NUMBERS THAT MAKE THE BRIDGE BUG READABLE FROM A CHAIR.
+        --
+        -- The 2026-09-03 report -- an item dropped under an overpass appearing
+        -- on the deck -- took a full diagnosis pass to place, and it is one
+        -- subtraction: `gz` metres above where you are standing, with `pz`
+        -- empty, IS the bug, and `gz` at your feet with a `pz` beside it is the
+        -- fix working. Neither was printed anywhere. Distance was 2D, so an
+        -- item hanging six metres overhead read as 0.4m away and the readout
+        -- agreed with the player that it was right there.
+        print(('    z %.2f  ground %.2f  rest %s  vouched %s  you %.2f')
+            :format(near.z or 0.0, groundZ(near),
+                    near.restZ and ('%.2f'):format(near.restZ) or '-',
+                    near.pz and ('%.2f'):format(near.pz) or 'no',
+                    p.z))
     else
         print('  nothing within 50m')
     end

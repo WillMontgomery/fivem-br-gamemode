@@ -124,6 +124,236 @@ BR.Config.Consumables = {
         health = 100, healthCap = 100,
         chestOnly = true,
     },
+    {
+        -- ═══ THE REPAIR KIT (#228) ═══
+        --
+        --   "Repair kit should spawn in loot crates, inventory item, maxCarry
+        --    1, can be used on the fly to repair any vehicle once."
+        --                                          -- owner, 2026-08-23
+        --
+        -- ═══ IT IS A CHANNEL WITH A BAR, AND THAT REVERSES THE FIRST BUILD ═══
+        --
+        --   "instead of instantly burning the item it should have a progress
+        --    bar akin to spawning a vehicle from inventory or using a
+        --    consumable. As that bar progresses, the vehicle health should
+        --    incrementally increase to finally reach full once the item has
+        --    been spent."                       -- owner, 2026-09-03
+        --
+        -- The first build read "on the fly" as INSTANT and shipped `useMs = 0`,
+        -- with an argument in this comment about how a channel would open a
+        -- window for the rules to change under a spent kit. The owner has now
+        -- ruled the other way, and "on the fly" turns out to have meant WITHOUT
+        -- PARKING rather than WITHOUT WAITING -- the contrast he was drawing
+        -- with the petrol station is that you keep driving, not that it is
+        -- immediate. So it is an ordinary channelled consumable now, and the
+        -- window that argument worried about is closed by the two fields below
+        -- rather than by refusing to have one.
+        --
+        -- ═══ `useMs = 5000` -- HALF THE PUMP, AND NOT THE OWNER'S NUMBER ═══
+        --
+        -- He has never given a length, so this is derived rather than chosen:
+        --
+        --   THE PUMP GIVES THE IDENTICAL REPAIR IN TEN SECONDS. config/fuel.lua
+        --   `refuelSeconds = 10.0` and `repairFraction = 1.0` -- a full hold is
+        --   a full repair -- and it is paid for by standing still, in the open,
+        --   at a place every other player has on their map. 5000 makes the kit's
+        --   entire value one sentence: THE SAME REPAIR, IN HALF THE TIME,
+        --   WITHOUT STOPPING. That is what a LEGENDARY drop should buy.
+        --
+        --   AND IT SITS WITH THE SHIELD, the other five seconds in this file --
+        --   the thing you commit to while somebody is shooting at you. The Med
+        --   Kit's 8000 is deliberately not copied: that number means "a
+        --   commitment you can rarely afford", and this item is meant to be
+        --   affordable in a chase -- eight seconds of driving in a straight line
+        --   without touching the slot keys is not. The warmup shop's 3000 is no
+        --   guide either; nobody is being shot at in the warmup.
+        --
+        -- AUTHORED HERE, NOT DERIVED FROM `refuelSeconds` IN CODE. The
+        -- half-the-pump relationship is the ARGUMENT, not a formula: that value
+        -- is tuned by the fuel economy -- "~10 seconds to fill" is an owner
+        -- instruction about FUEL -- and coupling them would let a fuel retune
+        -- silently resize a legendary item.
+        --
+        -- ═══ `repairVeh` IS WHAT IT DOES, AND IT IS THE `shopCar` SHAPE ═══
+        --
+        -- A consumable whose effect is not a number on the ped names that effect
+        -- with a field, and server/inventory.lua branches on the field and knows
+        -- nothing else about it. `shopCar` established that for #224; this is the
+        -- second one. The value is `true` rather than a number because the kit
+        -- always does THE WHOLE JOB by the time it is spent -- see below.
+        --
+        -- ═══ THERE IS NO `spendOnPress`, AND THAT FIELD IS GONE RATHER THAN
+        --     FALSE (2026-09-03) ═══
+        --
+        -- One build of this row carried it, and the item was debited by the
+        -- keypress. The owner's correction:
+        --
+        --   "when using it the inventory item visually goes away immediately
+        --    and the item function is applied immediately. BUT THEN the progress
+        --    bar shows up. What we'd discussed earlier is not that. Any other
+        --    consumable doesn't get removed until the progress bar is full, and
+        --    that's why we have a progress bar - because it's in progress. For a
+        --    repair kit, 'in progress' would be the car's health incrementally
+        --    increasing throughout the timespan of the progress bar increasing."
+        --
+        -- His earlier sentence -- "the actuation is a momentary press like
+        -- anything else - then once it's spent, it's spent" -- was about the
+        -- INPUT being a tap rather than a held key, which is what this channel
+        -- already is, and about the kit not returning afterwards. It was read as
+        -- "debited at the press" and it was not that. THE KIT IS DEBITED BY ITS
+        -- COMPLETION, so this row declares nothing about who pays and is an
+        -- ordinary consumable in that respect. The field is deleted rather than
+        -- set false because a field with no true case is scaffolding, and this
+        -- repo's standing lesson is that scaffolding gets read as live.
+        --
+        -- WHICH MEANS AN INTERRUPTED USE COSTS NOTHING AGAIN -- the same as a
+        -- med kit -- and the repair the slices already delivered is kept, the
+        -- same way a cancelled med kit's partial heal is kept. Both halves are
+        -- deliberate. server/inventory.lua's INV_USE note carries the rest.
+        --
+        -- ═══ `ignoresDamage` -- BEING SHOT DOES NOT STOP THE REPAIR ═══
+        --
+        --   "I couldn't find useCancelOnDamage as an available native. Let's not
+        --    use that to stop any type of bullet damage."
+        --                                          -- owner, 2026-09-03
+        --
+        -- (`useCancelOnDamage` is this file's own flag, below, rather than a GTA
+        -- native -- he had searched the native reference for it. The ruling
+        -- stands either way.)
+        --
+        -- WHY THE VEHICLE CASE DIFFERS FROM THE PED CASE. Cancelling on damage
+        -- exists so that committing to an 8s med kit under fire loses you the
+        -- med kit rather than healing you through the fight -- it is a rule
+        -- about a player topping THEMSELVES up while being shot. A repair kit
+        -- moves nothing on the ped: the driver being shot is not the thing being
+        -- repaired, and a car that stops mending because its driver took a
+        -- bullet is the item failing in exactly the situation it exists for.
+        -- The same reading server/ambheal.lua already wrote down for the
+        -- ambulance heal ("IT DOES NOT CANCEL ON DAMAGE, WHICH IS A DECISION").
+        --
+        -- POSITIVE OPT-IN, NOT `damageCancels = false`, which is this file's
+        -- own stated preference for exactly this shape ("the honest statement is
+        -- the POSITIVE one"). It also means the med kit, bandage, shield and
+        -- shop car rows are not touched at all -- their behaviour is unchanged
+        -- by construction rather than by review.
+        --
+        -- ═══ THE FULL JOB BY THE TIME IT IS SPENT, PAID IN SLICES ═══
+        --
+        -- At a pump, letting go early buys part of the health back and keeps the
+        -- dents (client/fuel.lua: the cosmetic pass fires on the frame the body
+        -- reaches full). The kit climbs the same way: server/inventory.lua
+        -- grants an interpolated slice of BR.Config.Fuel.healthMax every 250ms,
+        -- so the bodywork climbs with the bar. THAT NUMBER IS NOT COPIED HERE:
+        -- server/inventory.lua reads it off the fuel config, so the kit and the
+        -- pump cannot drift apart.
+        --
+        -- ═══ THE COMPLETION OFFERS A WHOLE CAP, AND THE CLAMP IS WHY ═══
+        --
+        -- The last message is not the remainder of a budget. It is the FULL
+        -- healthMax, every time, and the surplus is thrown away by the engine
+        -- rather than by us: applyRepair's `bump` is
+        -- `math.min(cap, cur + points)` (client/fuel.lua:350), so every pool
+        -- lands on the cap and no pool can be pushed past it.
+        --
+        -- THAT IS THE ONLY THING THAT MAKES THE OWNER'S SENTENCE TRUE -- "the
+        -- vehicle health should incrementally increase to finally reach full
+        -- once the item has been spent" (2026-09-03) -- FOR A CAR THAT WAS
+        -- BEING SHOT ALL THE WAY THROUGH. A completion that paid only what the
+        -- slices had not yet paid leaves that car short by exactly the damage
+        -- it took while mending, and it was tried: the remainder shipped in
+        -- e764a1b, could not promise a full body, and needed a second mechanism
+        -- -- a flag on the wire and an unconditional SetVehicleFixed -- to put
+        -- back what it had taken away. SetVehicleFixed is a whole repair rather
+        -- than a cosmetic one, so that mechanism handed out more health than the
+        -- ledger it was defending. 44eb77d deleted both.
+        --
+        -- SO DO NOT "OPTIMISE" THIS INTO A REMAINDER. Offering more points than
+        -- the car can hold costs nothing; offering fewer breaks the guarantee.
+        --
+        -- THE DENTS RIDE THE SAME CLAMP. They cannot climb -- GTA has no partial
+        -- deformation -- so applyRepair pops them on the frame the body reaches
+        -- full, which the whole-cap grant is what guarantees. There is no flag
+        -- on the wire and nothing outside applyRepair calls the cosmetic pass;
+        -- tools/test_fuel.lua fails the build if a second caller appears.
+        --
+        -- WHAT THAT LOOKS LIKE ON A BARELY SCRATCHED CAR: the grant is a flat
+        -- fraction of `healthMax` because the SERVER CANNOT READ VEHICLE HEALTH
+        -- -- every vehicle-health native is client-only -- so a car that was
+        -- nearly full reaches full, and pops its dents, before the bar finishes.
+        -- That is the pump's existing behaviour rather than a defect of this
+        -- item, and the alternative is a client claim about a value the server
+        -- has no way to check.
+        --
+        -- ═══ RARITY IS LEGENDARY, AND IT IS A CHOICE THE OWNER HAS NOT MADE ═══
+        --
+        -- #228 has never named one. LEGENDARY is picked because it is the only
+        -- band that does not quietly undo a tuning decision already in this file:
+        --
+        --   RARE     the bucket walk goes DOWN, so RARE is empty ONLY so that a
+        --            RARE roll falls through to the Shield. Filling it takes the
+        --            Shield from 55% of consumable rolls back to ~27% -- exactly
+        --            the number the owner complained about on 2026-08-17.
+        --   UNCOMMON the same loss, from the other side.
+        --   EPIC     halves the Med Kit, whose share the KindWeights note above
+        --            was raised specifically to protect.
+        --   COMMON   a one-shot full vehicle repair as the most findable item in
+        --            the game, and a third off the Bandage.
+        --
+        -- WHAT LEGENDARY COSTS, STATED: the Med Kit loses the LEGENDARY
+        -- fall-through it collects today -- 1% of consumable rolls at tier 1 and
+        -- 5% at tier 3, so about a quarter of its share at a hot drop. That is
+        -- the smallest bill any band presents, and it is paid by the item best
+        -- able to afford it.
+        --
+        -- HOW OFTEN ONE IS FOUND, so the number is arguable rather than asserted:
+        -- consumables are 21% of crate items (KindWeights), LEGENDARY is 1/2/5%
+        -- of a roll by POI tier, and this is the only item in that bucket. So a
+        -- crate holds one about 0.6% of the time in the countryside and 3% of the
+        -- time in a named town -- roughly one player in four finds one in a match
+        -- they loot hard. A prize, not a staple, which is what a free full repair
+        -- should be.
+        id = 'repairkit', label = 'Repair Kit', plural = 'Repair Kits',
+        rarity = R.LEGENDARY,
+        -- ═══ THE PROP IS THE OWNER'S OWN PICK, AND IT IS THE FIRST ONE IN THIS
+        --     FILE THAT MIGHT NOT BE ON THE BUILD ═══
+        --
+        -- He named it on #228 with its hash: `m26_1_prop_m61_toolbox_01a`,
+        -- 3232514753 / 0xC0AC42C1. THE HASH IS RECORDED AND NOT STORED. Only
+        -- the string is a field, because client/loot.lua's `modelOf` runs
+        -- GetHashKey on it -- a hash column would be a second source of truth
+        -- for a number the engine derives, and no prop row in this file has one.
+        -- (Checked against the same joaat tools/check_weapons.lua uses: his
+        -- numbers are exactly what GetHashKey computes.)
+        --
+        -- THE REST OF THIS FILE'S PROPS ARE BASE GAME OR DOOMSDAY-ERA. The
+        -- `m26_1_` prefix follows the numbered-DLC convention GTA Online has
+        -- used since 2023 (`m23_1_` Drug Wars, `m24_1_` Chop Shop), which would
+        -- put this one in a 2026 pack -- and server.cfg.example pins
+        -- `sv_enforceGameBuild 3095`. If the enforced build on the box does not
+        -- carry it, client/loot.lua's `IsModelValid` guard prints one line
+        -- naming the model and the crate draws its ordinary rarity disc instead
+        -- of a prop. THAT CONSOLE LINE IS THE TEST; it cannot be answered from
+        -- the repo, and the owner's pick is honoured rather than second-guessed.
+        kind = BR.ItemKind.CONSUMABLE, prop = 'm26_1_prop_m61_toolbox_01a',
+        -- ...AND THIS NUMBER WAS DERIVED FOR A DIFFERENT MODEL. 0.6 was chosen
+        -- because `prop_toolchest_01` is a floor-standing garage chest that
+        -- reads as scenery at full size. A hand-carry toolbox is already
+        -- loot-sized, so the premise is gone -- but the right replacement needs
+        -- the model's bounding box, which needs the game, and this file has
+        -- already lost two rounds to guessing at rendered sizes. LEFT AT 0.6
+        -- DELIBERATELY, as a placeholder to retune on the spot:
+        -- `/brpropscale repairkit <k>` sets it live, despawns the matching props
+        -- so they rebuild, and prints the line to paste back here. (Bare
+        -- `/brpropscale` also prints each consumable's prop NAME, which is the
+        -- quickest confirmation that this model swap actually landed.)
+        propScale = 0.6,
+        useMs = 5000, maxStack = 1, carryMax = 1,
+        repairVeh = true,
+        ignoresDamage = true,
+        -- CRATE-ONLY, the flag the bandage and the med kit already carry. The
+        -- owner said "spawn in loot crates" and this is the field that means it.
+        chestOnly = true,
+    },
 }
 
 --- THE CPR KIT (#191). AN ORDINARY CONSUMABLE IN EVERY RESPECT BUT ONE: it is
@@ -740,8 +970,20 @@ BR.Config.Loot = {
     -- The GTA control that backs that glyph. 51 = INPUT_CONTEXT.
     promptControl   = 51,
 
-    -- Consumables are interruptible by design -- committing to an 8s med kit
-    -- while being shot should lose you the med kit, not heal you through it.
+    -- Consumables are interruptible by design: committing to an 8s med kit
+    -- while being shot should not heal you through the fight.
+    --
+    -- WHAT IT DOES NOT DO IS COST YOU THE ITEM, and this comment said it did
+    -- until 2026-09-03 -- pre-existing, and wrong since the line was written.
+    -- server/inventory.lua debits on COMPLETION, so a cancelled med kit is
+    -- still in the bag; what is lost is the eight seconds and the position you
+    -- stood still in. That is the interruption.
+    --
+    -- ONE ITEM OPTS OUT, and it opts out positively. A row carrying
+    -- `ignoresDamage` is not cancelled by damage -- today the repair kit, whose
+    -- effect is on a CAR rather than on the ped being shot; the argument is
+    -- written out on that row. Every other consumable is unaffected by the
+    -- existence of the field.
     useCancelOnDamage = true,
 
     -- Death drops. A player's kit lands scattered AROUND them rather than in a

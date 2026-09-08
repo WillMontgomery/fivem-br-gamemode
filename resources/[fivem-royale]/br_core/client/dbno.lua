@@ -409,6 +409,18 @@ local hold = nil      -- { x = number, y = number } or nil
 local loose    = false
 local settleAt = nil
 
+--- The resting place the last #246 corpse write published, or nil.
+---
+--- DECLARED UP HERE AND NOT BESIDE ITS COUNTERS, because leaveDowned() clears it
+--- and leaveDowned is above them. A Lua local is invisible before its
+--- declaration -- the assignment would compile as a GLOBAL and the clear would
+--- silently do nothing. tools/check_forward_locals.lua catches this for CALLS;
+--- an assignment is the same trap with no alarm on it, and this file already
+--- contains one (the resyncPhase/resyncArmed/hiddenFrom/posedAt line in
+--- leaveDowned writes four globals for exactly this reason -- left alone here
+--- because untangling it is a revive change, not a perf one).
+local corpseAt = nil
+
 --- Pin the ped to where it is standing RIGHT NOW.
 ---
 --- THE HOLD USED TO ARM ITSELF LATE, AND THAT IS THE WHOLE OF "THE PED DRIFTS
@@ -1197,6 +1209,12 @@ local function leaveDowned()
     -- indistinguishable from one who was never downed, which is the whole of
     -- the fourth report on this file.
     resyncPhase, resyncArmed, hiddenFrom, posedAt = 0, false, nil, nil
+    -- ...AND THE CORPSE'S PUBLISHED RESTING PLACE, for the same reason as every
+    -- other line in this block. A player who is revived and killed again later
+    -- would otherwise be compared against where their PREVIOUS body came to
+    -- rest, and a new corpse that happened to fall within a centimetre of the
+    -- old one would publish nothing at all.
+    corpseAt = nil
     -- ...and the settle edge, which is downed-shaped in exactly the same way: a
     -- player revived mid-ragdoll would otherwise carry `loose` into standing up
     -- and spend the first frame of their NEXT knock re-posing for a ragdoll
@@ -1501,6 +1519,7 @@ local resyncs     = 0     -- for /brdbno
 local scopeNudges  = 0
 local scopeArms    = 0
 local corpseWrites = 0
+local corpseSkips  = 0    -- nudges declined because the body had not moved
 local scopeAt      = nil  -- when the last one landed, ms
 
 --- A fresh crawl task exists, so a fresh mover exists on every clone of us.
@@ -2038,18 +2057,30 @@ end)
 
 -- WHICH CUE A SQUADMATE'S PHASE CHANGE PLAYS.
 --
--- Named here rather than at the call site so the two strings that have to match
--- something in ui-src/src/audio/cues.ts sit on two adjacent lines, where a
--- rename can see both. They are NOT the subject's own cues: `hit.crit` (below,
--- native, mixed against gunfire) is what the player who went down hears, and
--- these are what everybody else hears -- which is the whole of the owner's
--- "they have their own sounds for this phase".
+-- Named here rather than at the call site so the three strings sit on three
+-- adjacent lines, where a rename can see all of them. They are NOT the
+-- subject's own cues: these are what everybody ELSE hears, which is the whole
+-- of the owner's "they have their own sounds for this phase".
 --
--- THREE PHASES, THREE SOUNDS, and the third is the only good one (owner,
--- 2026-08-18: "when a player is revived all squad mates should hear a success
--- sound"). It rides the same envelope for the same reason the other two do --
--- the SERVER decides the audience, because it is the only party that knows the
--- squad and knows not to address the subject.
+-- THREE PHASES, THREE SOUNDS (owner, 2026-08-18: "when a player is revived all
+-- squad mates should hear a success sound"). They ride the same envelope for
+-- the same reason: the SERVER decides the audience, because it is the only
+-- party that knows the squad and knows not to address the subject.
+--
+-- ═══ TWO OF THEM ARE NATIVE NOW, AND THE THIRD IS WAITING ON A CLIP ═══
+--
+-- "If I gave you any new sounds for #24, please use all of them including
+-- MATE_CUE being rewired to PlaySoundFrontend" -- owner, 2026-09-08. He named a
+-- set/name pair for the revive (`squad.revived`), `squad.out` already had one,
+-- and `squad.down` has none: he has not picked a sound for a squadmate going
+-- down, so there is nothing to play natively.
+--
+-- SO THE TIER IS DECIDED BY THE CUE TABLE RATHER THAN WRITTEN DOWN HERE. A cue
+-- config/audio.lua knows about goes to PlaySoundFrontend; one it does not falls
+-- through to the browser, which is where all three used to live. That is not a
+-- hedge -- it is what makes `squad.down` promote itself the day he picks a pair
+-- for it, with no line of this file changing, and it is what stops the two
+-- tiers ever playing the same cue at once.
 local MATE_CUE = {
     down = 'squad.down',
     out  = 'squad.out',
@@ -2068,18 +2099,27 @@ AddEventHandler(BR.Net.DBNO_SET, function(d)
     -- and returned from before a single field of `mine` is touched: falling
     -- through would read `d.downed` as nil and quietly stand a downed player up.
     --
-    -- The interface plays it. This side does not reach for BR.Sfx, because
-    -- config/audio.lua is deliberately COMBAT ONLY -- native audio earns its
-    -- place by ducking against gunfire, and a squad status cue is interface
-    -- audio in the same sense the elimination banner's is.
+    -- ═══ NATIVE WHERE THERE IS A PAIR, THE BROWSER WHERE THERE IS NOT ═══
+    --
+    -- The rule used to be that this side never reached for BR.Sfx at all, on
+    -- the grounds that config/audio.lua is COMBAT ONLY -- native audio earns
+    -- its place by ducking against gunfire, and a squad status cue is interface
+    -- audio in the same sense the elimination banner's is. The owner overruled
+    -- that on 2026-09-08 by handing over auditioned GTA pairs for these events
+    -- and asking for MATE_CUE to be rewired, so the cue table decides now. See
+    -- the note on MATE_CUE.
     if type(d.mate) == 'table' then
         local cue = MATE_CUE[d.mate.phase]
         if cue then
-            TriggerEvent('br:ui:sendLocal', 'squadcue', {
-                cue  = cue,
-                src  = d.mate.src,
-                name = d.mate.name,
-            })
+            if BR.Config.Audio and BR.Config.Audio.cues[cue] then
+                BR.Sfx.play(cue)
+            else
+                TriggerEvent('br:ui:sendLocal', 'squadcue', {
+                    cue  = cue,
+                    src  = d.mate.src,
+                    name = d.mate.name,
+                })
+            end
         end
         return
     end
@@ -2092,7 +2132,15 @@ AddEventHandler(BR.Net.DBNO_SET, function(d)
 
     if mine.downed and not was then
         enterDowned()
-        BR.Sfx.play('hit.crit')
+        -- ═══ AND THE PLAYER GOING DOWN HEARS NOTHING NATIVE ═══
+        --
+        -- This was BR.Sfx.play('hit.crit'). The owner deleted that cue on
+        -- 2026-09-08 ("do not wire in any sound at all for hit or hit.crit --
+        -- those are wrong sound clips"), and a call naming a cue that is not in
+        -- the table is not silence: it is an unknown-cue warning on every knock.
+        -- The screen still tells them -- enterDowned() above is the whole downed
+        -- interface -- so this is one channel quiet, not the event unreported.
+        -- If he picks a clip for it, add the cue and play it on this line.
     elseif was and not mine.downed then
         leaveDowned()
         -- Picked up, or finished. The two look identical from here except for
@@ -2216,6 +2264,47 @@ AddEventHandler(BR.Net.DBNO_RESYNC, function()
     if not didHit(IsEntityDead(ped)) then return end
 
     local c = GetEntityCoords(ped)
+
+    -- ═══ ONCE PER RESTING PLACE, NOT ONCE PER VISITOR ═══
+    --
+    -- Read the block above for what this write is FOR: it dirties the position
+    -- node so a clone built afterwards is built from where the body came to
+    -- rest instead of from where it was falling. That is a fact about the BODY.
+    -- The arm, though, is a fact about OTHER PLAYERS -- server/combat.lua fires
+    -- it on playerEnteredScope, floored at one per second and never disarmed
+    -- while the state is OUT. So a corpse with somebody standing near it was
+    -- being written once a second for the rest of the match, every write
+    -- publishing the identical coordinates the last one did.
+    --
+    -- THAT IS NOT FREE, AND IT IS NOT LUA THAT PAYS. A dead ped is a RAGDOLL,
+    -- and SetEntityCoordsNoOffset with doWarp false is the contact-preserving
+    -- form -- the one this file's own crawl note calls "simulating continuous
+    -- movement". Aimed at a settled ragdoll once a second it is a physics solve
+    -- and a network re-send that together publish nothing new. The owner's
+    -- report is exactly the shape that produces: "when a live player is NEAR a
+    -- player who transitions from DBNO -> out ... the live player's performance
+    -- goes to shit ... nothing I could do seemed to fix the framerate"
+    -- (2026-09-07). Being near is the arm; there is no way to un-arm it.
+    --
+    -- THE PURPOSE SURVIVES INTACT because the purpose was never repetition. A
+    -- body still settling out of its death fall moves between nudges and gets a
+    -- write for each new resting place, which is the case the block above
+    -- describes. A body that has stopped has already published where it stopped,
+    -- and the network is holding that value -- a second identical write cannot
+    -- make a newcomer's clone any more correct than the first one did.
+    --
+    -- THE EPSILON IS SQUARED DISTANCE AND IS DELIBERATELY TINY. Ragdolls creep;
+    -- 1cm is below anything a player could see and above the float noise two
+    -- GetEntityCoords calls on a still body can differ by.
+    if corpseAt then
+        local dx, dy, dz = c.x - corpseAt.x, c.y - corpseAt.y, c.z - corpseAt.z
+        if (dx * dx + dy * dy + dz * dz) < 0.0001 then
+            corpseSkips = corpseSkips + 1
+            return
+        end
+    end
+
+    corpseAt = { x = c.x, y = c.y, z = c.z }
     SetEntityCoordsNoOffset(ped, c.x, c.y, c.z, true, true, false)
     corpseWrites = corpseWrites + 1
 end)
@@ -2785,9 +2874,7 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- The reach test that produces `target` is the strictest thing in the whole
     -- interaction and it is measured off the WRONG BODY:
     --
-    --   * it uses dbnoReviveDist (1.5m) with NO SLACK, while the server allows
-    --     dbnoReviveDist + dbnoReviveSlack (2.5m) precisely because a position
-    --     is up to 250ms old;
+    --   * it uses dbnoReviveDist (1.5m) with NO SLACK;
     --   * it measures to `BR.Squadmates.pedOf(src)`, which is OUR MACHINE'S
     --     COPY of the mate's ped -- and #164 is the report that that copy
     --     CRAWLS AWAY. The downed player is pinned on their own machine and
@@ -2797,11 +2884,21 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     --     ring that was started once and is finishing on the browser's own
     --     clock -- sees nothing happen, forever.
     --
-    -- So the authority goes back where the comment always said it was. The
-    -- SERVER re-checks reach every 250ms from its own samples and cancels for
-    -- real if the reviver has genuinely walked off; this side now only ends a
-    -- hold for the two things it is the sole witness to: the key coming up, and
-    -- the player deliberately switching to a DIFFERENT mate.
+    -- So this side does not end a hold for range at all. It ends one for the two
+    -- things it is the sole witness to: the key coming up, and the player
+    -- deliberately switching to a DIFFERENT mate.
+    --
+    -- ═══ AND NEITHER DOES THE SERVER, AS OF 2026-09-07 ═══
+    --
+    -- This comment used to end "the SERVER re-checks reach every 250ms from its
+    -- own samples and cancels for real if the reviver has genuinely walked off",
+    -- and that check is gone. The owner removed it for the reason the paragraph
+    -- above states better than the removal did: a reviver stands where THEIR
+    -- copy of the body is, so a server-side reviver-to-body test refuses the
+    -- honest player for a disagreement between two machines and tells them
+    -- nothing. What the server cancels on now is the reviver's own drift from
+    -- where the hold began -- one player measured against themselves, with no
+    -- clone in the subtraction. See reviveAllowed in server/combat.lua.
     if holding and not BR.Keys.isHeld('interact') then
         TriggerServerEvent(BR.Net.REVIVE_STOP)
         holding = nil
@@ -3175,11 +3272,20 @@ RegisterCommand('brdbno', function()
     -- where playerEnteredScope does not fire at all, or they never left your
     -- scope in the first place -- relevancy is 424m, so a test that starts with
     -- both players in the same field proves nothing.
-    print(('  scope      : %d nudges (%s), %d spent as arms, %d corpse writes')
+    print(('  scope      : %d nudges (%s), %d spent as arms, %d corpse writes, '
+           .. '%d declined')
         :format(scopeNudges,
                 scopeAt and ('last %dms ago'):format(GetGameTimer() - scopeAt)
                         or 'none yet -- see the note in dbno.lua',
-                scopeArms, corpseWrites))
+                scopeArms, corpseWrites, corpseSkips))
+    -- `declined` CLIMBING WHILE `corpse writes` SITS STILL IS THE HEALTHY STATE
+    -- and is what this reading is for. It means the body has settled and every
+    -- further visitor is being answered out of the position already published,
+    -- rather than with another physics solve on a ragdoll. Writes climbing in
+    -- step with nudges on a body nobody is shoving is the 2026-09-07 framerate
+    -- report coming back.
+    print('               declined climbing while writes hold = the corpse has')
+    print('               settled and visitors cost nothing.')
     print(('  last task  : %s   (a quiet knock settles on 2 tasks total; the '
            .. 'watchdog may not ask again for %dms)')
         :format(taskAt and ('%dms ago'):format(GetGameTimer() - taskAt)

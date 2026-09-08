@@ -62,6 +62,13 @@ end
 -- paying for exactness would mean putting this in a frame loop.
 local MOVE_CUE = 'storm.move'
 
+--- The other end of the same sweep.
+---
+---   "Circle finished moving (possible)" -- owner, 2026-09-08, naming a sound
+---   for it. The SHRINKING->HOLDING edge, the opposite of the one MOVE_CUE
+---   rides.
+local STOP_CUE = 'storm.stop'
+
 --- Tell a whole match the wall has begun to move -- at most once per phase.
 ---
 --- THE LATCH IS ON THE MATCH, NOT ON THE PHASE NUMBER, and that difference is
@@ -84,6 +91,28 @@ local function cueMovementOnce(m, st)
     -- lets the owner re-point it with /brsfx bind without a line of this file
     -- changing. See br_lib/shared/protocol.lua's SFX_CUE.
     BR.Broadcast.toMatch(m, BR.Net.SFX_CUE, { c = MOVE_CUE })
+end
+
+--- Tell a whole match the wall has come to rest -- at most once per phase.
+---
+--- ═══ THE SAME SHAPE AS cueMovementOnce, AND SEPARATE FOR ONE REASON ═══
+---
+--- FINISHED trips the MOVE latch too, deliberately: a scheduler stall long
+--- enough to skip every tick of a sweep steps straight from HOLDING to FINISHED,
+--- and a wall that has finished moving has moved. Folding both cues into one
+--- function would make that shared reading play them as a pair, back to back,
+--- for a sweep nobody saw. Two latches means the stall plays the departure it
+--- owes and this one, which is the honest account of what the wall did.
+---
+--- IT IS NOT THE PHASE ADVANCE, though the two land on the same tick in the
+--- ordinary case. The final phase stays FINISHED at radius 0 forever and never
+--- advances, and it is the one sweep where "the wall has stopped" matters most.
+--- @param m table
+local function cueStopOnce(m, st)
+    if m.stormStopCued then return end
+    if st ~= BR.StormPhase.FINISHED then return end
+    m.stormStopCued = true
+    BR.Broadcast.toMatch(m, BR.Net.SFX_CUE, { c = STOP_CUE })
 end
 
 --- Build and publish the record that shrinks toward phases[phase], starting
@@ -161,6 +190,7 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     -- one line is what makes "once per hold-to-shrink transition" true for all
     -- four of them rather than for the ordinary one only.
     m.stormMoveCued = false
+    m.stormStopCued = false
 
     print(('[br_core] storm: match %d phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs (furthest %.0fm), %.1f dps')
         :format(m.id, phase, r0, p.radius,
@@ -323,6 +353,7 @@ BR.Sched.every(1000, 'storm.phase', function()
         -- record that is HOLDING again, so a cue evaluated afterwards would be
         -- reading the NEXT phase's hold and would never fire at all.
         cueMovementOnce(m, st)
+        cueStopOnce(m, st)
 
         if st == BR.StormPhase.FINISHED and rec.phase < #cfg.phases then
             enterPhase(m, rec.phase + 1, rec.cx1, rec.cy1, rec.r1, GetGameTimer())

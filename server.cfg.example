@@ -41,7 +41,7 @@ sv_maxclients 48
 set sv_syncTickRate 60
 
 sv_scriptHookAllowed 0
-sv_enforceGameBuild 3095
+sv_enforceGameBuild 3889
 
 # ---------------------------------------------------------------------------
 # Entity lockdown -- WHO IS ALLOWED TO CREATE A NETWORKED ENTITY

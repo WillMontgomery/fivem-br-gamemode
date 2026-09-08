@@ -88,14 +88,6 @@ set br_warmupSeconds 15
 set br_endedSeconds 10
 
 # ---------------------------------------------------------------------------
-# WAIT FOR A PARTYMATE, in seconds. 0..300, default 45.
-#
-# How long the queue holds a match open for the rest of somebody's party before
-# starting without them. 0 means "never wait" and is a legitimate setting.
-# ---------------------------------------------------------------------------
-set br_partyGraceSeconds 10
-
-# ---------------------------------------------------------------------------
 # AUTOFILL. true or false, default true.
 #
 # true   partial squads are topped up with solo queuers.

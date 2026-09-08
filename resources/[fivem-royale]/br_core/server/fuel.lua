@@ -805,9 +805,21 @@ AddEventHandler(BR.Net.FUEL_PUMP, function(d)
     -- clamps through BR.FuelSolve.clamp, which RETURNS `tank` ITSELF when the
     -- sum passes it, so a full tank is bit-for-bit the configured number and not
     -- an accumulation of floats that lands near it.
+    -- ═══ AND IT IS SILENT AS OF 2026-09-08 ═══
+    --
+    -- "also remove fuel.done" -- owner. The clip we had was the second attempt
+    -- and still wrong (the first was the warning-shaped one his 2026-08-22 note
+    -- above is about), so the CUE is gone from config/audio.lua and this send
+    -- went with it: a send naming a cue that isn't in the table doesn't play
+    -- anything, it just prints an unknown-cue warning on every refuel.
+    --
+    -- THE EDGE ITSELF IS KEPT BECAUSE FINDING IT AGAIN IS THE HARD PART. When
+    -- he picks a clip he likes, add the cue and put the send back on this line
+    -- -- `before < tank and rec.left >= tank` is the once-per-fill edge, and
+    -- the block above explains why the exact comparison is safe.
     local tank = tonumber(F.tankMetres) or 0.0
     if before < tank and rec.left >= tank then
-        sfxToOccupants(netId, e.matchId, 'fuel.done')
+        -- no cue: see above
     end
 end)
 

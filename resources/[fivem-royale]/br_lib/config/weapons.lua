@@ -260,8 +260,8 @@ BR.Config.Melee = {
     { id = 'knife',     name = 'WEAPON_KNIFE',        hash = 0x99B507EA, label = 'Knife',                 rarity = R.RARE,      damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
     { id = 'switchblade',name= 'WEAPON_SWITCHBLADE',  hash = 0xDFE37640, label = 'Switchblade',           rarity = R.RARE,      damage = 54, melee = true, maxRange = 3.0, minInterval = 450 },
     { id = 'machete',   name = 'WEAPON_MACHETE',      hash = 0xDD5DF8D9, label = 'Machete',               rarity = R.RARE,      damage = 58, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.EPIC,      damage = 64, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.EPIC,      damage = 70, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.RARE,      damage = 64, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.RARE,      damage = 70, melee = true, maxRange = 3.0, minInterval = 450 },
 }
 
 --- FISTS, and they are a real weapon here for a reason that cost a playtest.

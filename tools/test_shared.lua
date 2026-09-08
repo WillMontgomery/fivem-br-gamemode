@@ -229,6 +229,61 @@ do
        'a nil command does not throw mid-sentence', tostring(out))
 end
 
+-- ------------------------------------------------------ a duration in words ---
+
+describe('BR.Clock.words')
+do
+    -- ═══ WHAT THIS IS FOR ═══
+    --
+    -- Owner, 2026-09-02, on the revive key's bled-out toast: "Perhaps the 'grab
+    -- their key!' toast should also mention that the key expires and after how
+    -- long."
+    --
+    -- The "how long" is BR.Config.ReviveKey.expiryMs, and a sentence that spells
+    -- it out is the same number in two places -- so the toast carries a `%s` and
+    -- server/revivekey.lua fills it from the config through this. It lives in
+    -- clock.lua because client/loot.lua has quoted a config duration since
+    -- 2026-08-06 and now reads the same function: two copies of "under a minute
+    -- is seconds" is how one of them starts saying "180 seconds".
+    --
+    -- IT IS PURE, WHICH IS WHY IT IS TESTED HERE rather than pinned as source in
+    -- a feature suite. Every branch is one call.
+    ok(BR.Clock.words(180000) == '3 minutes',
+        'the shipped pickup window reads as "3 minutes"', BR.Clock.words(180000))
+    ok(BR.Clock.words(120000) == '2 minutes',
+        'and two is where minutes start being plural', BR.Clock.words(120000))
+
+    -- ONE MINUTE IS SINGULAR, and that is the whole reason the middle branch
+    -- exists: "1 minutes" reads as a bug in the game rather than as a duration.
+    ok(BR.Clock.words(60000) == '1 minute',
+        'exactly a minute is singular', BR.Clock.words(60000))
+    ok(BR.Clock.words(119999) == '1 minute',
+        'and so is anything short of two -- rounding DOWN, which understates '
+            .. 'the time a player has and is the only safe direction for a '
+            .. 'deadline', BR.Clock.words(119999))
+
+    -- UNDER A MINUTE IS SECONDS. "0 minutes" is not an answer, and a config
+    -- tuned to 45 seconds must not tell a squad they have none.
+    ok(BR.Clock.words(45000) == '45 seconds',
+        'under a minute it changes unit rather than rounding to zero',
+        BR.Clock.words(45000))
+    ok(BR.Clock.words(59999) == '60 seconds',
+        'and the boundary rounds within the unit it is already in',
+        BR.Clock.words(59999))
+
+    -- ...AND IT NEVER THROWS ON RUBBISH. It is called at a mint, on the path
+    -- that tells a squad their mate is gone, so a missing config key must cost a
+    -- wrong-looking sentence rather than the whole notice.
+    ok(BR.Clock.words(nil) == '0 seconds', 'a missing duration is zero seconds',
+        BR.Clock.words(nil))
+    ok(BR.Clock.words(-5000) == '0 seconds', 'and a negative one is too',
+        BR.Clock.words(-5000))
+    ok(BR.Clock.words('180000') == '3 minutes',
+        'and a number that arrived as a string still answers, because config '
+            .. 'values in this project are read with tonumber everywhere else',
+        BR.Clock.words('180000'))
+end
+
 -- ------------------------------------------------------- notices with names ---
 
 describe('BR.Notice')
@@ -2674,13 +2729,192 @@ do
         if c.health and c.healthCap > 100 then
             badCaps[#badCaps + 1] = c.id .. '(healthCap)'
         end
-        if c.useMs <= 0 or c.maxStack <= 0 then
+        -- ═══ EVERY CONSUMABLE DECLARES HOW LONG USING IT TAKES, AND ZERO IS
+        --     NOT A LENGTH (#228) ═══
+        --
+        -- THE TYPE IS TESTED, and that half is unchanged and is the important
+        -- half: the original line compared a field it had not proved was a
+        -- number, so a consumable that lost its `useMs` altogether would have
+        -- KILLED this suite -- "attempt to compare nil with number" -- rather
+        -- than failed it. That is exactly how the CPR kit took the live server
+        -- down through the same expression in server/inventory.lua.
+        --
+        -- AND ZERO IS BANNED AGAIN. It was briefly allowed for an item naming
+        -- an instant effect, which is what the repair kit was before the owner
+        -- asked for a progress bar on it (2026-09-03). No shipped consumable
+        -- declares zero now, and server/inventory.lua refuses one at the press,
+        -- so a zeroed channel is a malformed row rather than a third behaviour
+        -- -- and this line is what says so before anybody has to find out in
+        -- game. The CPR kit's `nil` is caught by the type test, as it always
+        -- was, and the two absences are one value again.
+        if type(c.useMs) ~= 'number' or c.useMs <= 0 or c.maxStack <= 0 then
             badCaps[#badCaps + 1] = c.id .. '(useMs/stack)'
         end
     end
     ok(#badCaps == 0, 'consumable caps are coherent', table.concat(badCaps, ', '))
 
     ok(BR.Config.ConsumableById['medkit'] ~= nil, 'consumable lookup is built')
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- The repair kit (#228)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "Repair kit should spawn in loot crates, inventory item, maxCarry 1,
+    --    can be used on the fly to repair any vehicle once."
+    --                                          -- owner, 2026-08-23
+    --
+    -- Every clause of that sentence is a field, and this is the block that says
+    -- which field. What it cannot prove is that a repaired car looks repaired;
+    -- that is client/fuel.lua's natives and it needs a game.
+    do
+        local kit = BR.Config.ConsumableById['repairkit']
+        ok(kit ~= nil, 'the repair kit is a consumable like any other')
+
+        ok(kit and kit.carryMax == 1 and kit.maxStack == 1,
+           '"maxCarry 1" -- and the field is carryMax, and the stack agrees '
+               .. 'with it so one slot cannot hold two',
+           kit and ('carryMax %s maxStack %s')
+               :format(tostring(kit.carryMax), tostring(kit.maxStack)))
+
+        ok(kit and kit.chestOnly == true,
+           '"spawn in loot crates" is the flag the bandage and the med kit '
+               .. 'already carry, not a comment')
+
+        -- ...AND THE FLAG REALLY REACHES THE TABLE THAT IS ROLLED. chestOnly is
+        -- not consulted at roll time -- the floor buckets are PRECOMPUTED
+        -- without it -- so asserting the field alone would pass on a build
+        -- where the filter had been removed.
+        local onFloor = false
+        for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            for _, c in ipairs(BR.Config.ConsumablesByRarityFloor[r] or {}) do
+                if c.id == 'repairkit' then onFloor = true end
+            end
+        end
+        ok(not onFloor, 'so no loose ground roll can ever produce one')
+
+        -- ...and it IS in the crate table, in the band this file chose. Both
+        -- halves, because "never on the floor" is also satisfied by an item
+        -- that is nowhere at all -- which is the CPR kit, and is not this.
+        local band = nil
+        for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            for _, c in ipairs(BR.Config.ConsumablesByRarity[r] or {}) do
+                if c.id == 'repairkit' then band = r end
+            end
+        end
+        ok(band == BR.Rarity.LEGENDARY,
+           'and it is the LEGENDARY consumable -- the one band that does not '
+               .. 'take the RARE fall-through off the Shield or halve the Med '
+               .. 'Kit. NOT THE OWNER\'S NUMBER: he has never given one',
+           tostring(band))
+
+        -- ═══ AND THE BANDS BELOW IT ARE UNDISTURBED, WHICH IS THE REASON THE
+        --     BAND ABOVE WAS CHOSEN ═══
+        --
+        -- The bucket walk goes DOWN, so an item added at RARE or EPIC does not
+        -- merely join a bucket -- it INTERCEPTS every roll that used to fall
+        -- past it. The Shield's 2026-08-17 buff and the Med Kit's share are
+        -- both fall-through effects, and both are undone silently by a repair
+        -- kit in the wrong band. This is what would catch that.
+        ok(#(BR.Config.ConsumablesByRarity[BR.Rarity.RARE] or {}) == 0,
+           'the RARE bucket is still empty, so a RARE roll still falls through '
+               .. 'to the Shield -- the owner asked for that on 2026-08-17')
+        local epic = BR.Config.ConsumablesByRarity[BR.Rarity.EPIC] or {}
+        ok(#epic == 1 and epic[1].id == 'medkit',
+           'and the Med Kit still has EPIC to itself')
+
+        -- ═══ IT IS A CHANNEL WITH A BAR, WHICH REVERSED THE FIRST BUILD ═══
+        --
+        --   "instead of instantly burning the item it should have a progress
+        --    bar akin to spawning a vehicle from inventory or using a
+        --    consumable."                       -- owner, 2026-09-03
+        --
+        -- The value asserted is the SHIPPED one rather than a bound, because
+        -- the length is an argument this config makes (half the pump's ten
+        -- seconds, alongside the Shield) and not a number anybody gave: a
+        -- silent retune should have to come past this line and say so.
+        ok(kit and kit.useMs == 5000,
+           'the kit is a five-second channel -- half the ten seconds the pump '
+               .. 'charges for the identical repair, and the Shield\'s own '
+               .. 'number. NOT THE OWNER\'S: he has never given a length',
+           kit and tostring(kit.useMs))
+        ok(kit and kit.repairVeh == true,
+           'and names its effect on the row, the way the shop car names its '
+               .. 'catalogue id -- server/inventory.lua branches on this and '
+               .. 'knows nothing else about vehicles')
+
+        -- ═══ THE ONE FIELD THAT MAKES IT DIVERGE, AND IT IS AN OWNER RULING ═══
+        --
+        -- A FIELD RATHER THAN AN ID TEST, which is the property worth asserting:
+        -- server/inventory.lua's tick loop must never learn the string
+        -- 'repairkit'. If this is dropped from the row the item silently rejoins
+        -- the general rule -- it would start cancelling when the driver is shot
+        -- -- and nothing else in the suite would notice.
+        ok(kit and kit.ignoresDamage == true,
+           '"let\'s not use that to stop any type of bullet damage" '
+               .. '(owner, 2026-09-03): being shot does not interrupt it')
+
+        -- ═══ AND IT IS SPENT BY ITS COMPLETION LIKE EVERYTHING ELSE ═══
+        --
+        -- ASSERTED AS AN ABSENCE, DELIBERATELY. For one day this row carried
+        -- `spendOnPress = true` and the item was debited by the keypress, which
+        -- emptied the slot the instant the bar appeared. The owner: "Any other
+        -- consumable doesn't get removed until the progress bar is full, and
+        -- that's why we have a progress bar - because it's in progress."
+        -- (2026-09-03). The field was deleted rather than set false -- a field
+        -- with no true case is scaffolding -- so what this line guards is that
+        -- nobody puts it back on this row while reading the old comments.
+        ok(kit and kit.spendOnPress == nil,
+           'and it declares nothing about WHO PAYS: the completion spends it, '
+               .. 'exactly as it spends a med kit, so an interrupted channel '
+               .. 'costs nothing')
+
+        -- ...AND NOTHING ELSE OPTS OUT OF DAMAGE-CANCEL. The field exists for
+        -- this one row; a second item quietly acquiring it is a behaviour change
+        -- to an item nobody was looking at.
+        local divergent = {}
+        for _, c in ipairs(BR.Config.Consumables) do
+            if c.id ~= 'repairkit' and c.ignoresDamage then
+                divergent[#divergent + 1] = c.id
+            end
+        end
+        ok(#divergent == 0,
+           'and no other consumable carries it -- the med kit, the bandage, '
+               .. 'both shields and the shop car keep the general contract '
+               .. 'exactly',
+           table.concat(divergent, ', '))
+
+        -- ...AND NO ROW ANYWHERE STILL CARRIES THE RETIRED FIELD, including the
+        -- CPR kit and the shop car, which are consumables this loop does not
+        -- walk. A leftover here would be inert -- nothing reads it any more --
+        -- and inert scaffolding is exactly what this repo keeps learning gets
+        -- read as live.
+        local pressers = {}
+        for _, c in ipairs(BR.Config.Consumables) do
+            if c.spendOnPress ~= nil then pressers[#pressers + 1] = c.id end
+        end
+        if BR.Config.CprKit.spendOnPress ~= nil then
+            pressers[#pressers + 1] = 'cprkit'
+        end
+        ok(#pressers == 0,
+           'and `spendOnPress` is gone from the config entirely, not merely '
+               .. 'switched off',
+           table.concat(pressers, ', '))
+
+        -- IT IS NOT A POTION. `health`/`armour` are interpolated across the
+        -- channel by the use tick and land on the PED; this item's whole effect
+        -- is on a car, and either field here would heal the driver as a side
+        -- effect of mending their bumper.
+        ok(kit and kit.health == nil and kit.armour == nil,
+           'and it moves nothing on the ped -- no health, no armour, and no '
+               .. 'refuel either: the owner asked for a repair kit')
+
+        -- THE CPR KIT IS THE OTHER ABSENCE AND MUST STAY DISTINCT. It is nil,
+        -- not zero, and that is the difference between "not usable by hand"
+        -- and "usable instantly".
+        ok(BR.Config.CprKit.useMs == nil,
+           'the CPR kit still declares NO useMs at all -- nil and 0 are two '
+               .. 'different statements now, and it makes the first one')
+    end
 
     -- Budget sanity. This is the number that justifies the local-prop design;
     -- if it ever creeps toward the thousands as networked entities it would be
@@ -3182,12 +3416,35 @@ do
     end
     ok(nilPicks == 0, 'no rarity produces a nil pick from any bucket')
 
-    -- Legendary is authored on weapons only; a legendary consumable roll must
-    -- pay out the best consumable that exists, not nothing and not a common.
+    -- A legendary consumable roll must pay out the best consumable that exists,
+    -- not nothing and not a common.
+    --
+    -- ═══ IT USED TO WALK DOWN TO THE MED KIT, AND #228 FILLED THE BUCKET ═══
+    --
+    -- The repair kit is the LEGENDARY consumable now, so this roll lands on its
+    -- own tier rather than falling a step. The property under test is unchanged
+    -- -- the best consumable that exists -- and only the answer moved. The two
+    -- assertions below are what make that a statement rather than a shrug: one
+    -- names the item, so a future edit that empties the bucket again fails here
+    -- rather than silently handing legendary crates a med kit; the other proves
+    -- the walk-down itself is still working, on the band that still needs it.
     local best = BR.LootPickOfRarity(BR.Rng(1), BR.Config.ConsumablesByRarity,
         BR.Rarity.LEGENDARY)
-    ok(best ~= nil and best.rarity == BR.Rarity.EPIC,
-        'a legendary consumable roll walks down to the epic med kit')
+    ok(best ~= nil and best.rarity == BR.Rarity.LEGENDARY
+       and best.id == 'repairkit',
+        'a legendary consumable roll pays out the repair kit',
+        best and best.id)
+
+    -- AND THE WALK DOWN IS STILL LIVE, on the band the Shield's 2026-08-17 buff
+    -- is made of: RARE is empty on purpose, so a RARE consumable roll has to
+    -- fall through to the UNCOMMON Shield. That fall-through is 28 points of
+    -- the Shield's share and nothing else in this suite would notice it going.
+    local rareRoll = BR.LootPickOfRarity(BR.Rng(1), BR.Config.ConsumablesByRarity,
+        BR.Rarity.RARE)
+    ok(rareRoll ~= nil and rareRoll.id == 'shield',
+        'and a rare one still falls through to the Shield, which is the whole '
+            .. 'of what moving it to UNCOMMON bought',
+        rareRoll and rareRoll.id)
 
     -- The rarity buckets must agree with the flat tables they were built from.
     local counted = 0
@@ -3226,6 +3483,105 @@ do
         'LootLabel resolves consumables')
     ok(BR.LootLabel({ kind = BR.ItemKind.WEAPON, item = 'heavysniper' }) ~= 'Weapon',
         'LootLabel resolves weapons')
+
+    -- ---------------------------------------------------------------------
+    -- CRATE COMPOSITION (#254)
+    -- ---------------------------------------------------------------------
+    --
+    -- Owner, 2026-09-02: "when I get melee, it seems to be mostly melee in that
+    -- crate and melee isn't mixed in with other crates."
+    --
+    -- THE PRESENCE TEST ABOVE CANNOT FAIL ON THAT and neither could the
+    -- measurement that was run against it first: "does a crate contain melee"
+    -- is true just as often whether the slots are drawn independently or a
+    -- category is chosen once per crate and then fills the box. The two differ
+    -- only in COMPOSITION, so that is what is pinned here.
+
+    local hand = BR.LootComposition({
+        { kind = BR.ItemKind.WEAPON,     item = 'machete' },
+        { kind = BR.ItemKind.WEAPON,     item = 'heavysniper' },
+        { kind = BR.ItemKind.AMMO,       item = BR.AmmoType.HEAVY },
+        { kind = BR.ItemKind.CONSUMABLE, item = 'medkit' },
+        { kind = BR.ItemKind.THROWABLE,  item = 'grenade' },
+        { kind = 'volts',                item = 'volts' },
+    })
+    ok(hand.melee == 1 and hand.firearm == 1,
+        'LootComposition tells a machete from a rifle inside one WEAPON kind',
+        ('melee %d firearm %d'):format(hand.melee, hand.firearm))
+    ok(hand.ammo == 1 and hand.consumable == 1 and hand.throwable == 1
+        and hand.other == 1,
+        'LootComposition buckets the rest, and a volts pile is `other`')
+    ok(hand.items == hand.melee + hand.firearm + hand.ammo + hand.consumable
+        + hand.throwable + hand.other,
+        'LootComposition totals equal the sum of their parts')
+
+    local empty = BR.LootComposition(nil)
+    ok(empty.items == 0 and empty.melee == 0 and empty.firearm == 0,
+        'LootComposition of nothing is zeroes, not nil arithmetic')
+
+    -- The analytic prediction if -- and only if -- every slot is drawn
+    -- INDEPENDENTLY: melee is `meleeChance` of the WEAPON rolls, and a crate's
+    -- size comes off BR.Config.Loot.chestItems. Derived from the config rather
+    -- than written down as a number, so retuning either table moves the
+    -- expectation with it instead of failing this suite.
+    local pw, wsum = 0.0, 0.0
+    for _, k in ipairs(BR.Config.KindWeights) do wsum = wsum + k.weight end
+    for _, k in ipairs(BR.Config.KindWeights) do
+        if k.kind == BR.ItemKind.WEAPON then pw = k.weight / wsum end
+    end
+    local pMelee = pw * (BR.Config.Loot.meleeChance or 0.18)
+
+    local sizeW, ssum = {}, 0.0
+    for _, e in ipairs(BR.Config.Loot.chestItems.weights) do ssum = ssum + e.weight end
+    for _, e in ipairs(BR.Config.Loot.chestItems.weights) do
+        sizeW[#sizeW + 1] = { n = e.n, p = e.weight / ssum }
+    end
+
+    -- E[melee/n | at least one melee], mixed over the crate sizes.
+    local function choose(n, k)
+        local r = 1.0
+        for i = 1, k do r = r * (n - k + i) / i end
+        return r
+    end
+    local num, den = 0.0, 0.0
+    for _, sz in ipairs(sizeW) do
+        local e = 0.0
+        for k = 1, sz.n do
+            e = e + choose(sz.n, k) * pMelee ^ k
+                * (1.0 - pMelee) ^ (sz.n - k) * (k / sz.n)
+        end
+        num = num + sz.p * e
+        den = den + sz.p * (1.0 - (1.0 - pMelee) ^ sz.n)
+    end
+    local predicted = num / den
+
+    local cr = BR.Rng(254)
+    local N = 40000
+    local mCrates, mShareSum, mItems, allItems = 0, 0.0, 0, 0
+    for _ = 1, N do
+        local comp = BR.LootComposition(BR.LootChestContents(cr, 3))
+        allItems = allItems + comp.items
+        mItems = mItems + comp.melee
+        if comp.melee > 0 then
+            mCrates = mCrates + 1
+            mShareSum = mShareSum + comp.melee / comp.items
+        end
+    end
+    local observedRate  = mItems / allItems
+    local observedShare = mShareSum / mCrates
+
+    ok(math.abs(observedRate - pMelee) < pMelee * 0.06,
+        'melee is the share of crate ITEMS the config says it is',
+        ('%.4f observed vs %.4f authored'):format(observedRate, pMelee))
+
+    -- THE ONE THAT ANSWERS #254. Independent slots put this at about a third of
+    -- a crate; anything that picks a category once per crate drives it toward
+    -- 1.0, which is the shape the report describes. A 5% band is far tighter
+    -- than the gap between those two worlds.
+    ok(math.abs(observedShare - predicted) < 0.05,
+        'a crate that holds melee is about a THIRD melee, not mostly melee',
+        ('%.3f observed vs %.3f if slots are independent')
+            :format(observedShare, predicted))
 end
 
 -- ------------------------------------------------------------------ names ---
@@ -3575,7 +3931,7 @@ do
     -- Nil in, nil out, so `qualified(k, licenseOf(src))` needs no guard at the
     -- call site -- a player with no license must stay nil rather than becoming
     -- the string "license:nil", which would be a real key colliding every
-    -- licence-less player into one profile.
+    -- license-less player into one profile.
     ok(BR.Identity.qualified('license', nil) == nil,
         'a missing identifier stays missing rather than becoming "license:nil"')
 end
@@ -4061,6 +4417,22 @@ local function newServer()
         notify = function(_, msg) S.notices[#S.notices + 1] = msg end,
         notifyClear = function() end,
         squadsAlive = function() return 2 end,
+        -- ═══ A DOUBLE, AND IT HAS TO BE ONE ═══
+        --
+        -- combat.lua's standingSquadsBesides asks this, and server/main.lua --
+        -- where the real one lives -- is not in this harness's load list. The
+        -- list is copied rather than referenced, so it can drift; what stops
+        -- that mattering is that it is only ever asked about ALIVE and DBNO
+        -- here, and both of those would have to be wrong before any assertion
+        -- in this file changed.
+        isInMatch = function(st)
+            return st == env.BR.PlayerState.ALIVE
+                or st == env.BR.PlayerState.DBNO
+                or st == env.BR.PlayerState.WARMUP
+                or st == env.BR.PlayerState.BUS
+                or st == env.BR.PlayerState.FREEFALL
+                or st == env.BR.PlayerState.GLIDE
+        end,
     }
     env.BR.Broadcast = { delta = function() end, toMatch = function() end }
     env.BR.Evidence  = { noteKill = function() end }
@@ -4069,14 +4441,25 @@ local function newServer()
 
     loadInto(env, { 'br_core/server/combat.lua' })
 
+    -- ═══ THREE PLAYERS IN TWO SQUADS, AND THE SECOND SQUAD IS SCENERY ═══
+    --
+    -- 1 and 2 are the pair every assertion below is about. 3 exists only to be
+    -- a second standing squad: BR.Combat.canBeDowned refuses the LAST knock of
+    -- a match outright (owner, 2026-09-07 -- "bleeding out shouldn'''t be a thing
+    -- if there'''s only one standing player or squad left"), so a one-squad
+    -- fixture would turn every knock in this file into a death and report it as
+    -- the DBNO asymmetry being broken.
     env.BR.Server.matches[1] = { id = 1, state = env.BR.MatchState.PLAYING,
                                  mode = env.BR.Mode.SQUAD.key,
-                                 players = { 1, 2 }, startedAt = 0 }
+                                 players = { 1, 2, 3 }, startedAt = 0 }
     for _, src in ipairs({ 1, 2 }) do
         S.roster[src] = { src = src, name = 'P' .. src, matchId = 1, squadId = 'sq1',
                           state = env.BR.PlayerState.ALIVE, hp = 100.0, armour = 0.0,
                           kills = 0, ped = 9000 + src }
     end
+    S.roster[3] = { src = 3, name = 'P3', matchId = 1, squadId = 'sq2',
+                    state = env.BR.PlayerState.ALIVE, hp = 100.0, armour = 0.0,
+                    kills = 0, ped = 9003 }
 
     S.env = env
     --- A client's death report, delivered exactly as FiveM delivers one.
@@ -5452,7 +5835,12 @@ local function newReviver(mySrc, mateSrc, peds)
         [mySrc]   = { src = mySrc, name = 'P' .. mySrc, squadId = 'sq1',
                       state = env.BR.PlayerState.ALIVE },
     }
-    env.BR.Sfx = { play = function() end }
+    -- RECORDED RATHER THAN SWALLOWED. client/dbno.lua sends a squad cue down
+    -- one of two tiers -- native when config/audio.lua has the pair, the
+    -- browser when it does not -- so a suite that only watches the interface
+    -- envelopes cannot tell "nothing happened" from "it went native".
+    C.sfx = {}
+    env.BR.Sfx = { play = function(cue) C.sfx[#C.sfx + 1] = cue end }
     env.BR.Dui = { page = function(n) return { name = n } end, send = function() end,
                    drawWorld = function() end, drawScreen = function() end,
                    drawOnEntity = function() end, ready = function() return true end }
@@ -5621,6 +6009,16 @@ local function newReviveRig(rtt)
     function H.press(down) CLI.press(down) end
     --- The reviver really walks: both the truth and their own view move.
     function H.moveTo(x) peds[5002].x, truth[5002].x = x, x end
+
+    --- Put the reviver's COPY of the body somewhere it is not.
+    ---
+    --- This is #164 and #246 stated directly rather than simulated with a drift
+    --- rate: the observer's clone is at `x`, the real body has not moved, and
+    --- nothing on the reviver's machine can tell the difference. Used by
+    --- dbno.hold.chase, which walks the reviver to the body they can SEE.
+    function H.ghostTo(x) peds[5001].x = x end
+    --- Where the reviver's own copy of the body is.
+    function H.ghostAt() return peds[5001].x end
     function H.up() return SRV.roster[1].state == PS.ALIVE end
 
     --- Pump up to `ms` waiting for player 1 to come back up.
@@ -5766,9 +6164,16 @@ end
 -- failing four times a second. A full ring and a working revive are the same
 -- pixels. The counters in the client's ledger are what tell them apart.
 --
--- THE SERVER WOULD HAVE ALLOWED IT ALL ALONG -- it measures 2.5m from its own
+-- THE SERVER WOULD HAVE ALLOWED IT ALL ALONG -- it measured 2.5m from its own
 -- samples of the real bodies, which never moved. The client was overruling the
 -- authority with a worse measurement of a ghost.
+--
+-- AND THAT 2.5m TEST IS ITSELF GONE NOW (owner, 2026-09-07). This block is the
+-- case where the reviver stands still and only the clone moves, which the server
+-- always allowed. dbno.hold.chase below is the case it did NOT: a reviver who
+-- walks to the body they can see, and is therefore genuinely far from the body
+-- the server has. That is the one the owner reported, and it is why the test
+-- went rather than being widened.
 
 describe('dbno.hold.ghost')
 do
@@ -5835,6 +6240,167 @@ do
         led and tostring(led.dones) or nil)
 end
 
+-- ==========================================================================
+-- WALKING TO THE BODY YOU CAN SEE
+-- ==========================================================================
+--
+--   "remove the restriction that forbids players from reviving a corpse in the
+--    wrong location. Because there's no output for that today other than 'it
+--    doesn't work' and that's not fair to players when they arrive in the cell
+--    and positions aren't synced"                       -- owner, 2026-09-07
+--
+-- THE CASE dbno.hold.ghost COULD NOT REACH. There the reviver stands still and
+-- only the clone drifts, so the SERVER's two samples -- of two bodies that never
+-- moved -- stay 0.8m apart and the old 2.5m test was happy. The owner's report is
+-- the other half: a player who ARRIVES IN THE CELL, sees the body somewhere, and
+-- walks to it. Now their real position is metres from the real body, the server
+-- measures the gap between two machines' opinions, and refuses -- silently, into
+-- a log the player will never read, while the ring on their screen fills to the
+-- top because it is a one-shot CSS animation nobody told to stop.
+--
+-- SO THE TEST IS: PUT THE CLONE SOMEWHERE ELSE AND WALK TO IT. Everything the
+-- reviver can perceive says they are standing on the body.
+describe('dbno.hold.chase')
+do
+    local H = newReviveRig(40)
+    H.knock()
+    H.pump(500)
+
+    -- The body is at x=0 and has not moved. The reviver's copy of it is at 12m
+    -- -- further than any drift rate would produce inside a hold, and stated
+    -- outright rather than simulated, because #246's corpse half now publishes a
+    -- resting place ONCE: a clone built from a stale position stays stale.
+    H.ghostTo(12.0)
+    H.moveTo(H.ghostAt() - 0.8)   -- standing over the body they can SEE
+
+    H.press(true)
+    local up = H.revived(6000)
+    H.press(false)
+
+    ok(up,
+       'a reviver who walks to the body their own machine is showing them can '
+           .. 'pick it up, however far that is from where the server has it -- '
+           .. 'the refusal was a disagreement between two machines and the '
+           .. 'player was the one paying for it',
+       up and 'revived' or ('stopped: %s')
+           :format(tostring(H.srv.roster[1].reviveStopWhy)))
+
+    -- AND IT WAS NEVER CANCELLED ON THE WAY, which is the assertion that would
+    -- catch the rule coming back as a mid-hold check rather than a start check.
+    -- A hold that is refused four times a second and re-armed by the client
+    -- LOOKS like a working hold right up until it does not land.
+    ok((H.srv.roster[1].reviveStops or 0) == 0,
+       'and the hold was never interrupted on the way there',
+       ('%d stops, last: %s'):format(H.srv.roster[1].reviveStops or 0,
+           tostring(H.srv.roster[1].reviveStopWhy)))
+end
+
+-- ==========================================================================
+-- ONE PAIR OF HANDS, ONE BODY
+-- ==========================================================================
+--
+-- The hold lives on the TARGET -- reviverSrc, reviveFrom, reviveBeat and the
+-- anchor are all fields of the downed entry -- and stepDowned walks bodies, so
+-- one player holding several at once was a supported shape rather than a
+-- refused one. It used to be capped by geometry: every body had to be inside the
+-- same 2.5m circle as the reviver, so "all at once" meant a squad wiped in one
+-- spot. Removing the reviver-to-body test on 2026-09-07 took that cap with it,
+-- and a client sending one event per downed mate would have stood a whole squad
+-- up together.
+--
+-- THE HONEST CLIENT NEVER DID THIS. client/dbno.lua's `holding` is a single
+-- table and switching mates sends REVIVE_STOP first -- which is why the server
+-- RELEASES the old hold rather than refusing the new one: refusing would strand
+-- a player whose STOP was lost for the 750ms the beat takes to expire.
+describe('dbno.onebody')
+do
+    local S = newServer()
+    local Net = S.env.BR.Net
+    -- Player 3 is scenery in the base rig and is in another squad; this suite
+    -- needs three squadmates, so it is moved in and knocked.
+    S.roster[3].squadId = 'sq1'
+    for _, src in ipairs({ 1, 2, 3 }) do
+        S.roster[src].pos = { x = 0.0, y = 0.0, z = 30.0 }
+    end
+    S.env.BR.Combat.knock(1, 2)
+    S.env.BR.Combat.knock(3, 2)
+
+    S.fire(Net.REVIVE_START, 2, { target = 1 })
+    ok(S.roster[1].reviverSrc == 2, 'player 2 has the first body',
+       tostring(S.roster[1].reviverSrc))
+
+    S.fire(Net.REVIVE_START, 2, { target = 3 })
+    ok(S.roster[3].reviverSrc == 2, 'and takes the second one',
+       tostring(S.roster[3].reviverSrc))
+    ok(S.roster[1].reviverSrc == nil,
+       'and the FIRST is released -- one pair of hands cannot pick two people '
+           .. 'up at once, and with the distance test gone nothing else caps it',
+       tostring(S.roster[1].reviverSrc))
+    ok(S.roster[1].reviveAnchor == nil,
+       'and the released hold takes its anchor with it',
+       tostring(S.roster[1].reviveAnchor))
+
+    -- AND A HEARTBEAT ON THE ONE THEY STILL HOLD DOES NOT RELEASE IT. The sweep
+    -- excludes the target being asked for, or every 250ms re-assert would stop
+    -- the hold it is re-asserting.
+    S.fire(Net.REVIVE_START, 2, { target = 3 })
+    ok(S.roster[3].reviverSrc == 2,
+       'while re-asserting the hold they DO have leaves it alone',
+       tostring(S.roster[3].reviverSrc))
+end
+
+-- ==========================================================================
+-- THE ANCHOR IS THE RULE THAT REPLACED IT
+-- ==========================================================================
+--
+-- One player, measured against themselves. There is no second machine in the
+-- subtraction, so it cannot refuse somebody for a disagreement -- only for
+-- moving, which is the thing the eight seconds in the open were always about.
+describe('dbno.hold.anchor')
+do
+    local H = newReviveRig(40)
+    H.knock()
+    H.pump(500)
+    H.press(true)
+    H.pump(600)
+
+    local body = H.srv.roster[1]
+    ok(type(body.reviveAnchor) == 'table',
+       'the hold stamps where the reviver was standing when it began',
+       tostring(body.reviveAnchor))
+
+    -- IT IS A COPY, NOT A REFERENCE. reviver.pos is a live table the position
+    -- job overwrites in place, so an anchor holding that reference would follow
+    -- the player and the drift would be zero forever -- a rule that is always
+    -- satisfied is not a rule.
+    local ax = body.reviveAnchor and body.reviveAnchor.x
+    H.moveTo(2.0)
+    H.pump(600)
+    ok(H.srv.roster[1].reviveAnchor
+       and math.abs(H.srv.roster[1].reviveAnchor.x - ax) < 1e-9,
+       'and the anchor is a COPY -- it stays where it was stamped while the '
+           .. 'reviver moves around',
+       tostring(H.srv.roster[1].reviveAnchor
+                and H.srv.roster[1].reviveAnchor.x))
+
+    -- A METRE AND A HALF OF SHUFFLING IS NOT LEAVING. The budget has to contain
+    -- circling a body while holding a key, or the rule becomes the old one in a
+    -- different costume.
+    ok((H.srv.roster[1].reviveStops or 0) == 0,
+       'and moving inside the budget does not cancel',
+       ('%d stops'):format(H.srv.roster[1].reviveStops or 0))
+    H.press(false)
+
+    -- ...AND THE ANCHOR DOES NOT OUTLIVE THE HOLD. A stale one would measure the
+    -- NEXT hold's drift from where the LAST reviver stood, which is a cancel
+    -- nobody could account for -- the same class of bug as the rule it replaced.
+    H.pump(1500)
+    ok(H.srv.roster[1].reviveAnchor == nil,
+       'and it is cleared when the hold ends, so the next one starts from where '
+           .. 'the next reviver is standing',
+       tostring(H.srv.roster[1].reviveAnchor))
+end
+
 -- A LEGITIMATE WALK-OFF STILL CANCELS, and it has to: the point above is that
 -- the SERVER decides, not that nobody does.
 describe('dbno.hold.walkaway')
@@ -5848,9 +6414,27 @@ do
         'walking away from a body really does end the hold -- from the '
         .. 'server\'s own samples',
         up and 'they were revived from forty metres' or nil)
+    -- ═══ AND IT SAYS THEY MOVED, NOT THAT THEY WERE FAR FROM THE BODY ═══
+    --
+    -- The wording matters because the RULE changed on 2026-09-07. The old
+    -- cancel measured the reviver against the BODY -- a subtraction with two
+    -- players in it, and therefore with every clone and ragdoll disagreement in
+    -- the engine in it too, which is why the owner removed it ("that's not fair
+    -- to players when they arrive in the cell and positions aren't synced").
+    -- What cancels now is the reviver's drift from where THEY were standing
+    -- when the hold began: one player, one sampler, nothing to disagree with.
+    --
+    -- So the reason string must name the MOVE. A cancel that still said "apart"
+    -- would mean the old test had survived somewhere, which is exactly the
+    -- regression this file is here to catch.
     ok((H.srv.roster[1].reviveStops or 0) > 0
-       and tostring(H.srv.roster[1].reviveStopWhy):find('apart', 1, true),
-        'and the server says how far apart they were, not "notallowed"',
+       and tostring(H.srv.roster[1].reviveStopWhy):find('moved', 1, true),
+        'and the server says the reviver MOVED, naming the distance and the '
+            .. 'budget -- not "notallowed", and not a distance to the body',
+        tostring(H.srv.roster[1].reviveStopWhy))
+    ok(tostring(H.srv.roster[1].reviveStopWhy):find('apart', 1, true) == nil,
+        'and it does not talk about how far apart the two players were, '
+            .. 'because that is no longer a thing this server refuses for',
         tostring(H.srv.roster[1].reviveStopWhy))
 
     -- ...and walking back in picks it up again, with no re-press.
@@ -6374,13 +6958,37 @@ do
         return nil
     end
 
-    -- Out of reach: the client's own 1.5m test would normally stop this, but a
-    -- client is not something the server gets to rely on.
-    S.roster[2].pos = { x = 40.0, y = 0.0, z = 30.0 }
+    -- ═══ DRIVEN ON A DIFFERENT SQUAD, BECAUSE DISTANCE IS NO LONGER A REFUSAL
+    --     ═══
+    --
+    -- This case used to put the reviver forty metres away, and forty metres is
+    -- now allowed: the owner removed the reviver-to-body distance test on
+    -- 2026-09-07 because it measured a DISAGREEMENT between two machines and
+    -- refused the honest player for it. See the note in reviveAllowed.
+    --
+    -- What is under test here is not the rule, it is the ANSWER -- that a
+    -- refusal reaches the holder at all -- so it is driven on a refusal that
+    -- still exists and always will. A player from another squad has no business
+    -- picking this body up, and that is a fact about the two players rather than
+    -- about where the engine thinks their bodies are.
+    S.roster[2].squadId = 'sq9'
     local far = askAs(2, 1, 2)
     ok(far ~= nil and far.cancelled == true,
         'a refused hold answers the holder instead of leaving the ring running',
         far and tostring(far.reason) or 'nothing was sent at all')
+    S.roster[2].squadId = 'sq1'
+
+    -- AND DISTANCE REALLY IS NOT ONE. The assertion that replaces the old
+    -- refusal, stated positively so nobody can restore the rule without this
+    -- going red: the same forty metres, and the hold is accepted.
+    S.roster[2].pos = { x = 40.0, y = 0.0, z = 30.0 }
+    local farOk = askAs(2, 1, 2)
+    ok(farOk == nil and S.roster[1].reviverSrc == 2,
+        'while forty metres of DISTANCE is accepted -- the reviver stands where '
+            .. 'their own copy of the body is, and that copy is the thing #164 '
+            .. 'and #246 are about',
+        farOk and tostring(farOk.reason) or tostring(S.roster[1].reviverSrc))
+    S.fire(Net.REVIVE_STOP, 2, {})
 
     -- ...and an ALLOWED one still says nothing on the START itself: the progress
     -- ticks are what report it, and an extra cancel here would kill the hold it
@@ -6420,11 +7028,19 @@ do
         'and the last one is kept in words rather than as one flat token',
         tostring(S.roster[1].reviveRefuseWhy))
 
-    -- THE OUT-OF-REACH REFUSAL CARRIES THE NUMBER, which is the one refusal
-    -- that is a measurement rather than a state. "40.00m apart" ends an
-    -- argument that "notallowed" could only start.
-    ok(tostring(far.reason):find('m apart', 1, true) ~= nil,
-        'and being out of reach says HOW far, and what the reach was',
+    -- THE REFUSAL THAT CARRIES A NUMBER IS THE WALKAWAY NOW, and it is asserted
+    -- in dbno.hold.walkaway rather than here, because it is a CANCEL rather than
+    -- a refusal at the start -- the reviver moved off, and the reason names how
+    -- far and what the budget was.
+    --
+    -- WHAT USED TO BE HERE was "40.00m apart, server reach is 2.50m", and it is
+    -- gone with the rule that produced it. Deleted rather than reworded, because
+    -- there is no longer any refusal at REVIVE_START that is a measurement: the
+    -- ones that remain are states -- wrong squad, wrong match, not down, already
+    -- taken -- and every one of them says which in words.
+    ok(tostring(far.reason):find('apart', 1, true) == nil,
+        'and no refusal at the start is about how far apart the two players '
+            .. 'were, because the server no longer judges that',
         tostring(far.reason))
     ok(S.roster[1].reviverSrc == 2,
         'without disturbing the hold that was already running',
@@ -6993,6 +7609,73 @@ do
                  .. 'bare read moves a living admin\'s ped'):format(sh.name),
                 ('%d writes'):format(writes))
         end
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- ONCE PER RESTING PLACE, NOT ONCE PER VISITOR
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "when in squads and a live player is near a player who transitions from
+    --    DBNO -> out ... the live player's performance goes to shit. nothing I
+    --    could do seemed to fix the framerate"           -- owner, 2026-09-07
+    --
+    -- THE ARM IS A FACT ABOUT OTHER PLAYERS AND THE WRITE IS A FACT ABOUT THE
+    -- BODY, and until this landed the two were tied together. server/combat.lua
+    -- fires the nudge on playerEnteredScope for any DBNO or OUT entry, floored
+    -- at one per second and never disarmed while the state is OUT -- so a corpse
+    -- with somebody standing near it took a contact-preserving
+    -- SetEntityCoordsNoOffset onto a settled RAGDOLL once a second for the rest
+    -- of the match, every write publishing the coordinates the last one had
+    -- already published.
+    --
+    -- WHAT IS PINNED IS THE PROPERTY, NOT A COUNT. A body that moves still gets
+    -- a write for each new resting place, because that is the whole of what #246
+    -- asked for. A body that has stopped gets one, and then nothing.
+    do
+        local peds = { [5001] = { x = 4.0, y = 5.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local writes = {}
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            writes[#writes + 1] = { x = x, y = y, z = z }
+        end
+        env.IsEntityDead = function() return true end
+        env.BR.State.me.state = env.BR.PlayerState.OUT
+
+        env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+        ok(#writes == 1, 'the first visitor to a corpse publishes its position',
+           ('%d writes'):format(#writes))
+
+        -- TEN MORE VISITORS, AND THE BODY HAS NOT MOVED. This is the reading the
+        -- owner's report is about: on a busy endgame every survivor walking past
+        -- a body was another physics solve on it.
+        for _ = 1, 10 do env.TriggerEvent(env.BR.Net.DBNO_RESYNC) end
+        ok(#writes == 1,
+           'and ten more visitors to a body that has not moved publish nothing '
+               .. '-- the network is already holding that position, and the '
+               .. 'write is a ragdoll solve that says the same thing again',
+           ('%d writes'):format(#writes))
+
+        -- ...BUT A BODY THAT MOVES STILL SPEAKS. A corpse settling out of its
+        -- death fall, or shoved by a car, has a new resting place to publish,
+        -- and #246 is exactly about a clone built from the old one.
+        peds[5001].x = 4.5
+        env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+        ok(#writes == 2 and math.abs(writes[2].x - 4.5) < 1e-9,
+           'while a body that has moved publishes its new resting place',
+           ('%d writes, last x %s'):format(#writes,
+               writes[2] and tostring(writes[2].x) or 'none'))
+
+        -- AND THE EPSILON IS BELOW ANYTHING A PLAYER COULD SEE. Ragdolls creep;
+        -- half a millimetre of float noise between two reads of a still body
+        -- must not re-open the tap this block exists to close.
+        peds[5001].x = 4.5005
+        env.TriggerEvent(env.BR.Net.DBNO_RESYNC)
+        ok(#writes == 2,
+           'and half a millimetre of ragdoll creep is not a move',
+           ('%d writes'):format(#writes))
     end
 
     -- ...AND THE STATE IS CHECKED AS WELL AS THE PED, which is belt and braces
@@ -8548,24 +9231,43 @@ do
         'a mate going down reaches the interface as a cue',
         c and tostring(c.cue) or 'nothing was pushed')
 
+    -- ═══ AND THE OTHER TWO GO NATIVE, BECAUSE THE CUE TABLE HAS THEM ═══
+    --
+    -- The tier is not written down in client/dbno.lua; it is decided per cue by
+    -- whether config/audio.lua carries a set/name pair (owner, 2026-09-08 --
+    -- "MATE_CUE being rewired to PlaySoundFrontend"). `squad.down` has no pair
+    -- and stays on the browser; these two have one and do not. Both halves are
+    -- asserted, in both directions, because the failure that costs a round is a
+    -- cue that goes down BOTH tiers and plays twice.
     env.TriggerEvent(env.BR.Net.DBNO_SET,
         { mate = { src = 1, name = 'P1', phase = 'out' } })
-    c = lastUi('squadcue')
-    ok(c ~= nil and c.cue == 'squad.out',
+    ok(CLI.sfx[#CLI.sfx] == 'squad.out',
         'and going out is a DIFFERENT cue -- two events, two sounds',
-        c and tostring(c.cue) or 'nothing was pushed')
+        tostring(CLI.sfx[#CLI.sfx]))
+    ok(lastUi('squadcue').cue == 'squad.down',
+        'and it did NOT also go to the browser -- the last envelope there is '
+            .. 'still the down cue',
+        tostring(lastUi('squadcue').cue))
 
     -- THE CUE NAME IS THE DELIVERABLE HERE, and it is asserted rather than
-    -- described because it is a string that has to match one in
-    -- ui-src/src/audio/cues.ts. Nothing in Lua can check the far side, so the
-    -- least this side can do is fail loudly if the name it sends ever moves.
+    -- described because it is a string that has to match a key in
+    -- config/audio.lua. Nothing else checks that, so the least this side can do
+    -- is fail loudly if the name it plays ever moves.
     env.TriggerEvent(env.BR.Net.DBNO_SET,
         { mate = { src = 1, name = 'P1', phase = 'up' } })
-    c = lastUi('squadcue')
-    ok(c ~= nil and c.cue == 'squad.revived',
+    ok(CLI.sfx[#CLI.sfx] == 'squad.revived',
         'and being picked up is a THIRD cue -- squad.revived, the success '
-        .. 'sound the owner asked for',
-        c and tostring(c.cue) or 'nothing was pushed')
+        .. 'sound the owner asked for', tostring(CLI.sfx[#CLI.sfx]))
+    ok(env.BR.Config.Audio.cues['squad.out'] ~= nil
+       and env.BR.Config.Audio.cues['squad.revived'] ~= nil
+       and env.BR.Config.Audio.cues['squad.down'] == nil,
+        'which is exactly the split the cue table describes -- out and revived '
+            .. 'have pairs, down does not, and the code reads the table rather '
+            .. 'than repeating it')
+
+    -- THE BROWSER ENVELOPE STILL CARRIES WHO IT WAS, for the one cue that still
+    -- uses it. The interface says the name.
+    c = lastUi('squadcue')
     ok(c ~= nil and c.src == 1 and c.name == 'P1',
         'carrying who it was, so the interface can say the name',
         c and tostring(c.name) or nil)
@@ -8578,12 +9280,15 @@ do
         'and a cue about somebody else never writes our own downed state',
         'the DBNO envelope was rewritten by a message about a mate')
 
-    -- An unknown phase is dropped rather than guessed at.
+    -- An unknown phase is dropped rather than guessed at -- on BOTH tiers, or
+    -- the branch that chooses between them becomes a second place to get this
+    -- wrong.
+    local uiBefore, sfxBefore = #CLI.ui, #CLI.sfx
     env.TriggerEvent(env.BR.Net.DBNO_SET,
         { mate = { src = 1, name = 'P1', phase = 'sideways' } })
-    local n = 0
-    for _, e in ipairs(CLI.ui) do if e.kind == 'squadcue' then n = n + 1 end end
-    ok(n == 3, 'an unrecognised phase plays nothing', ('%d cues'):format(n))
+    ok(#CLI.ui == uiBefore and #CLI.sfx == sfxBefore,
+        'an unrecognised phase plays nothing',
+        ('%d ui / %d native'):format(#CLI.ui - uiBefore, #CLI.sfx - sfxBefore))
 end
 
 -- ==========================================================================
@@ -9731,7 +10436,7 @@ do
     ok(#t == 2 and t[1].src == 2,
         'a dead killer is not promoted, and the living rest remain', names(t))
 
-    -- 5. A KILLER WHO HAS LEFT. The server resolves a licence to a live id and
+    -- 5. A KILLER WHO HAS LEFT. The server resolves a license to a live id and
     --    gets nothing, so the solver is handed an id that is on no row.
     t, policy = S.playerTargets(solos(99, false))
     ok(#t == 3 and t[1].src == 2,
@@ -9797,7 +10502,7 @@ do
 
     -- 12. NEVER MYSELF, even if something upstream managed to name me. The
     --     server guards it twice already (attributedKiller refuses a self-hit
-    --     and eliminate writes the licence only when killerSrc ~= src); this is
+    --     and eliminate writes the license only when killerSrc ~= src); this is
     --     the third place it cannot happen.
     t = S.playerTargets({
         mySrc = 1, squadId = nil, free = false, killerSrc = 1,
@@ -11116,6 +11821,18 @@ do
         -- declares them. The storm's weather branches are claims made through
         -- BR.World.want now, and this is the file that turns a winning claim
         -- into the native call the assertions below read.
+        -- ═══ AND A RECORDING BR.Sfx, WHICH THIS HARNESS DID NOT HAVE ═══
+        --
+        -- client/storm.lua reaches for BR.Sfx.play three ways now: the wall
+        -- crossing cues (storm.out / storm.in) and the five-second pip before a
+        -- hold ends. With no stub those are `attempt to index a nil value`, and
+        -- BR.Loop.step pcalls every callback -- so the failure would arrive as a
+        -- line in C.prints that only C.errored() looks at, in cases that happen
+        -- not to cross an edge. Recorded rather than swallowed, because the
+        -- assertions below are about WHICH cue played and when.
+        C.sfx = {}
+        env.BR.Sfx = { play = function(cue) C.sfx[#C.sfx + 1] = cue end }
+
         loadInto(env, { 'br_core/client/world.lua', 'br_core/client/storm.lua' })
 
         env.BR.State.match.state = env.BR.MatchState.PLAYING
@@ -11411,6 +12128,175 @@ do
            .. 'arc above the corpse',
            ('north %d / east %d of %d'):format(north, east, #C.markers))
     end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE THREE CUES THIS FILE PLAYS
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    --   "help me find out why storm.move and storm.out don't play any sound"
+    --                                                    -- owner, 2026-09-07
+    --   "I want timer.final to play every single time the 'storm closing in'
+    --    timer gets to 5s"                                       -- same day
+    --
+    -- storm.out had no call site at all, which is the entire reason it was
+    -- silent, and timer.final still had none. Both are wired into this file's
+    -- 10 Hz job now, so both are tested here -- and the harness had no BR.Sfx
+    -- until this landed, which means a cue that threw would have arrived as a
+    -- pcall'd line in C.prints rather than as a red test.
+    local function played(C, cue)
+        local n = 0
+        for _, c in ipairs(C.sfx) do if c == cue then n = n + 1 end end
+        return n
+    end
+
+    -- ------------------------------------------------ crossing the wall ---
+    do
+        local C = newStormClient()
+        C.pedAt = pt(0.0, 0.0)            -- dead centre, r = 200
+        C.tick(2)
+        ok(C.errored() == nil, 'the cue path runs clean', C.errored())
+        ok(#C.sfx == 0,
+           'standing safe inside says nothing -- and neither does the FIRST '
+               .. 'tick, which only establishes where the player is',
+           table.concat(C.sfx, ','))
+
+        -- ═══ SPAWNING ALREADY OUTSIDE MUST NOT COUNT AS CROSSING ═══
+        --
+        -- The latch starts nil rather than false for exactly this: a player who
+        -- lands outside the circle, or whose first tick is a rejoin mid-storm,
+        -- has not crossed anything and must not be told they have.
+        local D = newStormClient()
+        D.pedAt = pt(900.0, 0.0)          -- well outside
+        D.tick(2)
+        ok(#D.sfx == 0,
+           'a player whose first tick is already outside hears nothing -- they '
+               .. 'crossed no boundary', table.concat(D.sfx, ','))
+
+        -- ...AND NOW A REAL CROSSING, IN BOTH DIRECTIONS.
+        C.pedAt = pt(900.0, 0.0)
+        C.tick(1)
+        ok(played(C, 'storm.out') == 1 and played(C, 'storm.in') == 0,
+           'walking out of the circle plays storm.out, once',
+           table.concat(C.sfx, ','))
+        C.tick(3)
+        ok(played(C, 'storm.out') == 1,
+           'and staying out does not keep playing it -- it is an EDGE, and the '
+               .. 'job runs at 10 Hz', table.concat(C.sfx, ','))
+
+        C.pedAt = pt(0.0, 0.0)
+        C.tick(1)
+        ok(played(C, 'storm.in') == 1,
+           'and walking back in plays storm.in', table.concat(C.sfx, ','))
+    end
+
+    -- ═══ A SPECTATOR HEARS NEITHER ═══
+    --
+    -- The colour grade and the sky deliberately follow the SHOT -- they are
+    -- world rendering, and what they paint is what somebody standing at the
+    -- camera would see. A cue is not world rendering: it is this interface
+    -- telling THIS player about THEIR position, and firing it for a boundary
+    -- somebody else crossed is a confusing noise.
+    do
+        local C = newStormClient()
+        C.pedAt = pt(0.0, 0.0)
+        C.spectate(pt(0.0, 0.0))
+        C.tick(2)
+        C.spectate(pt(900.0, 0.0))        -- the watched player runs out
+        C.tick(2)
+        ok(#C.sfx == 0,
+           'a spectator is told nothing when the player they are watching '
+               .. 'crosses the wall', table.concat(C.sfx, ','))
+    end
+
+    -- ------------------------------------- five seconds before it moves ---
+    do
+        local C = newStormClient()
+        C.pedAt = pt(0.0, 0.0)            -- inside, so no crossing cue muddies it
+        local rec = C.env.BR.State.storm
+
+        --- Advance the clock by an arbitrary amount and run one TICK pass.
+        ---
+        --- C.tick is fixed at 1500ms a step, which is the right shape for the
+        --- sky's hysteresis and the wrong one here: walking down a ten-minute
+        --- hold in 1500ms increments is four hundred passes. THE CLOCK MOVES AND
+        --- THE RECORD DOES NOT, which is the only faithful way to test this --
+        --- the latch is keyed on rec.tStart, so a test that nudged tStart to
+        --- change the countdown would re-arm the very latch it is checking.
+        local function step(ms)
+            C.now = C.now + (ms or 0)
+            C.env.BR.Loop.step(C.env.BR.Loop.TICK)
+        end
+
+        -- Twenty seconds left on the hold, and it stays that record all the way
+        -- down.
+        rec.tStart = C.now - (rec.tWait - 20000)
+
+        step(0)
+        ok(C.errored() == nil, 'the pip path runs clean', C.errored())
+        ok(played(C, 'timer.final') == 0,
+           'twenty seconds out, nothing', table.concat(C.sfx, ','))
+
+        -- ═══ FIVE SECONDS IS STILL SILENT. THE PIP IS AT FOUR ═══
+        --
+        -- Owner, 2026-09-07: "the 5 second storm timer sound effect plays 1
+        -- second to early. please set that back just a bit." Judged by ear
+        -- against the placard, which reads off a different clock from this job
+        -- (a browser rAF loop on Date.now() plus the page's offset, versus
+        -- GetGameTimer plus the client's). The threshold moved rather than the
+        -- clocks being chased, so the assertion moved with it -- and the 5s case
+        -- is kept as the NEGATIVE, because that is the reading he corrected.
+        step(14000)                       -- 6s left
+        ok(played(C, 'timer.final') == 0,
+           'six seconds out, nothing', table.concat(C.sfx, ','))
+
+        step(1000)                        -- 5s left, exactly
+        ok(played(C, 'timer.final') == 0,
+           'and five seconds is silent too -- the pip sat here until the owner '
+               .. 'heard it land a second early', table.concat(C.sfx, ','))
+
+        step(1000)                        -- 4s left, exactly
+        ok(played(C, 'timer.final') == 1,
+           'and at four seconds it pips, once', table.concat(C.sfx, ','))
+
+        -- THE LOAD-BEARING NEGATIVE. This job runs at 10 Hz, so without the
+        -- latch the last five seconds of every hold would be fifty pips.
+        step(1000) step(1000) step(1000) step(1000)
+        ok(played(C, 'timer.final') == 1,
+           'and every later tick of the same hold is silent',
+           ('%d'):format(played(C, 'timer.final')))
+
+        -- ═══ THE NEXT PHASE GETS ITS OWN, AND SO DOES A RE-ENTERED ONE ═══
+        --
+        -- The latch is keyed on the record's tStart rather than on its phase
+        -- number, because `brphase` and `brstormfreeze off` both RE-ENTER the
+        -- same phase from wherever the wall is standing. Every route in builds a
+        -- fresh record with a fresh tStart, so all of them re-arm -- which is
+        -- what this asserts, using the hardest case: the SAME phase number, a
+        -- new record.
+        rec.tStart = C.now - (rec.tWait - 4000)
+        step(0)
+        ok(played(C, 'timer.final') == 2,
+           'while a re-entered phase pips again -- the latch is on the record, '
+               .. 'not on the phase number', ('%d'):format(played(C, 'timer.final')))
+
+        -- ═══ AND A SHRINKING WALL NEVER PIPS ═══
+        --
+        -- Two numbers wear this placard. HOLDING counts down to the wall setting
+        -- off ("Storm moving in"); SHRINKING counts down to it stopping ("Storm
+        -- closing now"). Five seconds of warning before the map gets smaller is
+        -- something a player can act on; five seconds before the wall parks is
+        -- not, and a pip there would teach the sound to mean nothing.
+        local D = newStormClient()
+        D.pedAt = pt(0.0, 0.0)
+        local drec = D.env.BR.State.storm
+        -- Past the hold, four seconds from the end of the sweep.
+        drec.tStart = D.now - (drec.tWait + drec.tShrink - 4000)
+        D.env.BR.Loop.step(D.env.BR.Loop.TICK)
+        ok(played(D, 'timer.final') == 0,
+           'and the SHRINKING countdown does not pip at five seconds -- that '
+               .. 'clock ends with the wall stopping, which is not news',
+           table.concat(D.sfx, ','))
+    end
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -11464,23 +12350,60 @@ do
     ok(badShape == nil, 'every row is a set name and a non-empty list of names', badShape)
     ok(dupName == nil, 'and no set lists the same sound twice', dupName)
 
-    -- ═══ NO DLC BANKS, AND THIS IS THE ASSERTION WITH TEETH ═══
+    -- ═══ A DLC BANK IS OFFERED ONLY IF SOMEBODY HEARD IT ═══
     --
     -- Pit_Stop_Complete was the on-theme candidate for fuel.done and was
     -- rejected because it lives in DLC_H3_Circuit_Racing_Sounds -- a script
     -- audio bank this gamemode never requests, so it would have played nothing
     -- while looking perfectly correct in the config. Every DLC_*/dlc_* set was
-    -- filtered out of this catalogue for that reason. A catalogue that let one
-    -- back in would be a browsing tool that offers the owner sounds which
-    -- cannot play, which is worse than no tool: it manufactures exactly the
-    -- ambiguity the [silent?] marker exists to resolve.
-    local dlc = nil
-    for _, entry in ipairs(A.catalogue) do
-        if string.lower(entry.set):sub(1, 4) == 'dlc_' then dlc = entry.set end
+    -- filtered out of the catalogue for that reason, and this assertion used to
+    -- demand there were none at all.
+    --
+    -- THAT WAS A HEURISTIC AND IT HAS BEEN OVERTAKEN BY EVIDENCE. The owner
+    -- auditioned five DLC banks with /brsfx on a running client and came back
+    -- with what each should be used for (2026-09-08, "land the DLC cues"),
+    -- which is the same class of evidence as `heard from this codebase` and
+    -- strictly better than a filter written because nobody had listened.
+    --
+    -- SO THE RULE MOVED RATHER THAN GOING AWAY, and it still has teeth: a DLC
+    -- set may appear ONLY inside the leading heard block. One appearing out in
+    -- the alphabetical body came from a dump, nobody has played it, and it puts
+    -- the owner back in front of sounds that cannot play -- which is worse than
+    -- no tool, because it manufactures the exact ambiguity [silent?] exists to
+    -- resolve.
+    local HEARD = 8   -- 3 heard from this codebase + 5 the owner auditioned
+    local strayDlc = nil
+    for i = HEARD + 1, #A.catalogue do
+        if string.lower(A.catalogue[i].set):sub(1, 4) == 'dlc_' then
+            strayDlc = A.catalogue[i].set
+        end
     end
-    ok(dlc == nil,
-       'no DLC audio bank is offered for browsing -- those are silent unless '
-           .. 'something requests them, and nothing here does', dlc)
+    ok(strayDlc == nil,
+       'no DLC audio bank is offered for browsing outside the heard block -- '
+           .. 'an unheard one is silent, and silent is indistinguishable from '
+           .. 'wrong', strayDlc)
+
+    -- AND EVERY SET IN THAT BLOCK CARRIES ITS MARK IN THE SOURCE, so the
+    -- exemption cannot be taken by simply sorting a new row upward.
+    local unmarked = nil
+    do
+        local fh = io.open(ROOT .. 'br_lib/config/audio.lua', 'r')
+        if fh then
+            local src = fh:read('a'); fh:close()
+            for i = 1, HEARD do
+                local set = A.catalogue[i].set
+                local pat = string.char(10) .. "%s*{ set = '" .. set
+                                .. "',[^" .. string.char(10) .. "]*"
+                local line = src:match(pat)
+                if not line or not line:find('heard', 1, true) then
+                    unmarked = set
+                end
+            end
+        end
+    end
+    ok(unmarked == nil,
+       'and every set in the heard block says on its own line who heard it',
+       unmarked)
 
     -- ═══ THE ORDER IS FIXED IN THE SOURCE, NOT LEFT TO pairs() ═══
     --
@@ -11496,8 +12419,16 @@ do
        'the three sets this codebase has actually heard sort first, in order',
        A.catalogue[1].set .. ', ' .. A.catalogue[2].set .. ', ' .. A.catalogue[3].set)
 
+    -- THEN THE OWNER'S FIVE, which are heard on the same terms and for the same
+    -- reason sort with them rather than into the body: a silence in one of
+    -- these is a wrong NAME, not an absent bank.
+    ok(A.catalogue[4].set == 'DLC_AW_Frontend_Sounds'
+       and A.catalogue[8].set == 'dlc_vw_koth_Sounds',
+       'and the five DLC banks the owner auditioned follow them',
+       A.catalogue[4].set .. ' .. ' .. A.catalogue[8].set)
+
     local outOfOrder = nil
-    for i = 5, #A.catalogue do
+    for i = HEARD + 2, #A.catalogue do
         local prev, cur = A.catalogue[i - 1].set:lower(), A.catalogue[i].set:lower()
         if prev > cur then outOfOrder = prev .. ' before ' .. cur end
     end

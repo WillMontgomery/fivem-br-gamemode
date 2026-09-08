@@ -413,6 +413,41 @@ local function healthPct(veh)
     return (worst / cap) * 100.0
 end
 
+--- Is the car this player is DRIVING already at full health?
+---
+--- ═══ THIS QUESTION CAN ONLY BE ASKED HERE (#228) ═══
+---
+--- Every vehicle-health native is client-only, so the server cannot answer it
+--- and never will: server/inventory.lua rules the seat and spends the item, and
+--- it does that without any idea what condition the car is in. A repair kit
+--- pressed on an undamaged car is therefore a LEGENDARY item spent on nothing,
+--- and the only machine that can see it coming is this one.
+---
+--- IT IS A COURTESY, NOT A SECURITY BOUNDARY, and that is what makes a
+--- client-side rule the right shape rather than a compromise. The single thing
+--- a modified client achieves by lying here is spending its own one-of-a-kind
+--- item on a car that did not need it. There is nothing to gain, so there is
+--- nothing to defend.
+---
+--- THE WORST POOL, exactly as the bar reads it -- see healthPct above. A car
+--- with pristine bodywork and a dying engine is not "full", and a kit would do
+--- real work on it.
+---
+--- EPSILON RATHER THAN `>= 100.0`, because the pools are floats and a car that
+--- has never been touched can read a hair under its own cap. A twentieth of a
+--- percent is far below anything a repair would restore and far above float
+--- noise.
+--- @return boolean full, integer|nil veh
+function BR.Fuel.drivingAtFullHealth()
+    local ped = PlayerPedId()
+    local veh = GetVehiclePedIsIn(ped, false)
+    if not veh or veh == 0 then return false, nil end
+    -- THE DRIVER'S SEAT ONLY, the same rule the kit itself is refused by. A
+    -- passenger is told something else entirely and must not be answered here.
+    if GetPedInVehicleSeat(veh, -1) ~= ped then return false, nil end
+    return healthPct(veh) >= 99.95, veh
+end
+
 --- Tell the interface what to draw, on change only.
 ---
 --- ═══ TWO BARS, NO WORDS ═══
@@ -1150,6 +1185,72 @@ AddEventHandler(BR.Net.FUEL_SET, function(d)
             pcall(SetVehicleEngineOn, veh, true, false, false)
         end
     end
+end)
+
+--- The repair kit landed (#228).
+---
+--- ═══ THE SAME applyRepair THE PUMP GRANT USES, AND THAT IS THE WHOLE POINT ═══
+---
+--- The petrol station already restores the three health pools in the order they
+--- have to go in -- engine before SetVehicleFixed, which is documented not to
+--- fix a broken one -- pops the deformation out and washes the bullet decals
+--- off. A second implementation of that would be a second place for the ordering
+--- rule to be got wrong, and the one that got it wrong would be the one nobody
+--- had played. So this handler does no repairing of its own: it resolves the
+--- vehicle, checks it is the one the server ruled on, and hands the grant to the
+--- same function FUEL_SET hands its `r` to.
+---
+--- IT IS NOT EXPOSED ON BR.Fuel, deliberately. Both callers are in this file, so
+--- there is nothing to share across one; a public entry point would be a way for
+--- some future file to apply vehicle health without the ordering note above it.
+---
+--- ═══ WHY A KIT IS A FULL REPAIR AND THE PUMP'S HOLD IS NOT ═══
+---
+--- Nothing here decides that, and in particular nothing here decides WHEN the
+--- dents pop. The server sends one of these every 250ms for the length of the
+--- channel, so the car mends as the bar fills, and then a last one carrying the
+--- whole BR.Config.Fuel.healthMax -- which applyRepair below clamps into every
+--- pool, so it reads as "top the car up" rather than as a second kit. That last
+--- grant is what makes the body reach full on the frame the item is spent, on a
+--- car that was being shot at throughout as much as on one that was not, and
+--- reaching full is what runs the cosmetic pass. A driver who lets go of the
+--- pump early still gets their partial and keeps their dents, by exactly the
+--- same rule, because their grants were smaller and none of them was a cap.
+---
+--- ═══ THE THREE THINGS IT REFUSES, AND ALL THREE ARE THE SAME CASE ═══
+---
+--- A player who left the seat in the time this message took to arrive. Not in a
+--- vehicle, in a different vehicle, or in a vehicle whose network id is not the
+--- one the server named: nothing happens. What that costs has shrunk to one
+--- slice -- the server re-rules the seat every pass and cancels the channel when
+--- it changes -- and the item itself is not spent until the completion, so a
+--- player who steps out mid-repair keeps the kit. Repairing whatever car they
+--- are in NOW would still be the worse answer: it spends a kit on a car nobody
+--- aimed it at.
+---
+--- `didHit`, not a bare read. IsPedInAnyVehicle is declared BOOL and `0` is
+--- truthy in Lua; the FUEL_SET handler above reads it the same way.
+RegisterNetEvent(BR.Net.VEH_FIX)
+AddEventHandler(BR.Net.VEH_FIX, function(d)
+    if type(d) ~= 'table' then return end
+    local nid = math.tointeger(tonumber(d.n))
+    if nid == nil then return end
+
+    local points = tonumber(d.r) or 0.0
+    if points <= 0.0 then return end
+
+    local ped = PlayerPedId()
+    if not didHit(IsPedInAnyVehicle(ped, false)) then return end
+    local veh = GetVehiclePedIsIn(ped, false)
+    if netOf(veh) ~= nid then return end
+
+    -- THE ONLY THING THIS HANDLER DOES, AND THAT IS A PROPERTY WORTH KEEPING.
+    -- fixCosmetic is not called from here: applyRepair calls it, and only on the
+    -- frame the body actually reaches the cap. A version of this that ran it
+    -- unconditionally would be calling SetVehicleFixed -- a FULL repair native,
+    -- whatever its name here suggests -- on a car the grant had not finished
+    -- mending, which is a free repair outside every rule above it.
+    applyRepair(veh, points)
 end)
 
 --- The pump cues, played from the car so everybody in it hears them.

@@ -247,7 +247,7 @@ end
 --- READ BY client/revivekey.lua, WHICH IS OTHERWISE OFFERING TO SELL REVIVE KEYS
 --- AT THE SAME VAN. The two prompts are drawn on one shared browser and both
 --- handlers act on one 'interact' press, so a hurt player behind an ambulance
---- with a squadmate down would start a heal AND spend 25 Volts on a single tap.
+--- with a squadmate down would start a heal AND spend 500 Volts on a single tap.
 --- That file stands down while this returns true.
 ---
 --- ONE MORE ACCESSOR RATHER THAN AN ARBITER, deliberately. The header above

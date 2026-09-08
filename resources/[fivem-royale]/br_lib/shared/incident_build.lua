@@ -818,7 +818,7 @@ end
 -- === SERVER-AUTHORITATIVE, WITH ONE STATED EXCEPTION ===
 --
 -- Almost nothing on this timeline comes from a client. The kills are the
--- server's own attribution out of damage.lua, the licences are resolved from
+-- server's own attribution out of damage.lua, the licenses are resolved from
 -- identifiers server-side, and the two match timestamps come from the match
 -- registry. This is a moderation record on an anti-cheat surface; a
 -- client-supplied timestamp on it would be evidence a cheater writes about
@@ -946,9 +946,9 @@ local MAX_TIMELINE_CHAT = 60
 --- which way round to render it by comparing against the incident's own
 --- `subjectLicense`, which it already has; the game does not pre-judge it.
 ---
---- THE LICENCES ARE THE PROFILE LINKS #30 ASKS FOR. `victimName` travels beside
+--- THE LICENSES ARE THE PROFILE LINKS #30 ASKS FOR. `victimName` travels beside
 --- `victimLicense` so the console can render a row whose profile has not loaded,
---- and so a case stays readable if the licence is later merged or renamed.
+--- and so a case stays readable if the license is later merged or renamed.
 --- Everything this gamemode issues, indexed by every name it answers to.
 ---
 --- THREE IDENTIFIER FORMS REACH THIS FILE, AND THAT IS THE WHOLE REASON THIS

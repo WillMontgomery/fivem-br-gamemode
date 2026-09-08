@@ -29,6 +29,27 @@ local SLOTS = L.slots or 5
 -- Slot ZERO is fists: selectable, never fillable. See BR.Config.Loot.meleeSlot.
 local MELEE_SLOT = L.meleeSlot or 0
 
+-- ═══ THE ONE SENTENCE THE REPAIR KIT IS ALLOWED TO SAY (#228) ═══
+--
+--   "the copy should be revised to 'You can only use this item while driving.'
+--    - if they switch seats before it is finished it should still apply, and
+--    same if they leave the vehicle mid-use."   -- owner, 2026-09-04
+--
+-- A CONSTANT BECAUSE THERE ARE NOW TWO SPEAKERS. It started as one literal in
+-- the press-time refusal; the owner has since asked for the same sentence on
+-- the mid-channel cancels, and two copies of a string a player reads is how
+-- one of them drifts. (config/shop.lua keeps its equivalent, `onFootToast`, in
+-- config -- but that one is spoken by the CATALOGUE module, which has to hand
+-- the string back across a module boundary. This one has one file and two call
+-- sites twelve hundred lines apart, so one local is the whole of what it
+-- needs.)
+--
+-- IT REPLACED "You cannot use this item while on foot", which was the same
+-- refusal described from the wrong end: it was only ever true of the on-foot
+-- case, and the owner's new wording is true of every case that is allowed to
+-- say it. tools/test_roster.lua asserts it verbatim, full stop included.
+local USE_WHILE_DRIVING = 'You can only use this item while driving.'
+
 -- Which player states may touch an inventory at all. A rider on the bus has
 -- one and can look at it; only a player with their feet on the ground can
 -- change it.
@@ -173,8 +194,16 @@ function BR.Inv.publicFor(src)
         } or false
     end
 
-    -- `using` carries only what the progress ring needs; the cancellation
-    -- bookkeeping (the health it started at) stays server-side.
+    -- `using` carries only what the progress bar needs -- three scalars, and
+    -- deliberately no item id: the cancellation bookkeeping (the health it
+    -- started at, the car it was aimed at, what has already been granted for
+    -- it) stays server-side. THE BAR IS A SIBLING OF THE PLATE, not a child of
+    -- it (ui-src InventoryBar.tsx: `{slot && ...}` and `{using && ...}` are two
+    -- blocks), so the fill draws OVER a slot that still holds its icon, its
+    -- label, its rarity band and its count for the whole of the channel -- which
+    -- is what every consumable looks like while it is being used, the repair kit
+    -- included. A build that emptied the slot at the keypress drew the bar over
+    -- a blank plate, and the owner's word for that was "not that".
     local using = nil
     if inv.using then
         using = { slot = inv.using.slot, endsAt = inv.using.endsAt,
@@ -915,6 +944,26 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     -- SILENTLY. No notify, no print, no INV_SET. "Absolutely nothing while the
     -- player is alive" is the requirement, and a console line every time a
     -- player mashes their kit slot is not nothing.
+    --
+    -- ═══ AND ZERO IS AN ABSENCE AGAIN (#228, 2026-09-03) ═══
+    --
+    -- This test was widened from `<= 0` to `< 0` when the repair kit shipped
+    -- instant, so that `useMs = 0` could mean "using this takes no time". The
+    -- owner has since asked for a progress bar on the kit -- it is a 5000ms
+    -- channel now -- and NOTHING IN THE SHIPPED CONFIG DECLARES ZERO ANY MORE.
+    --
+    -- So the widening is reverted rather than left as a capability with no
+    -- user. A `useMs = 0` that reached this line today would open a channel
+    -- that completed on its first tick, which is a third behaviour nobody asked
+    -- for and nobody would find until they wrote it by accident; and this
+    -- repo's standing lesson is that scaffolding without callers gets read as
+    -- live. tools/test_shared.lua asserts the same thing from the config side:
+    -- a consumable whose channel was zeroed is malformed, not instant.
+    --
+    -- THE SENTENCE ABOVE IS TRUE WORD FOR WORD AGAIN: a consumable is usable
+    -- through the inventory exactly when it declares how long using it takes,
+    -- and zero is not a length any more than nil is. The CPR kit's nil is still
+    -- caught by the type test on the left, before any comparison happens.
     if type(c.useMs) ~= 'number' or c.useMs <= 0 then return end
 
     local e = BR.Roster.get(src)
@@ -970,6 +1019,130 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         end
     end
 
+    -- ═══ A VEHICLE REPAIR IS RULED ON THIS PRESS, AND RULED ON AGAIN EVERY
+    --     PASS AFTER IT (#228) ═══
+    --
+    --   "instead of instantly burning the item it should have a progress bar
+    --    ... As that bar progresses, the vehicle health should incrementally
+    --    increase to finally reach full once the item has been spent."
+    --                                          -- owner, 2026-09-03
+    --
+    -- The first build of this was INSTANT: one press, one grant, no channel.
+    -- The owner reversed that, so everything below this block is now the kit's
+    -- code path too and the only thing that happens here is the RULING. NOTHING
+    -- IS SPENT ON THIS PRESS -- see the note where the channel is opened.
+    --
+    -- ═══ THE SERVER NAMES THE CAR. THE CLIENT IS NOT ASKED WHICH ONE ═══
+    --
+    -- INV_USE carries a SLOT and nothing else -- there is no vehicle in the
+    -- message and there must not be, because "repair the car I say I am in" is
+    -- a client repairing any car on the map. BR.Vehicles.drivenNetId answers
+    -- from the server's own reads of its own ped, and it answers nil for a
+    -- player on foot, a passenger, and a vehicle the platform does not network.
+    --
+    -- THE ANSWER IS KEPT ON THE CHANNEL, not just used and dropped. The tick
+    -- loop compares against it every pass, so the kit is spent on the car it was
+    -- aimed at or on nothing -- five seconds is long enough to change cars.
+    --
+    -- NIL-GUARDED ON THE MODULE, not on the answer, in the same shape as the
+    -- BR.Shop guards above: a build without server/vehicles.lua cannot rule this
+    -- and therefore refuses it, rather than spending a kit into silence.
+    --
+    -- ═══ NOT DRIVING, IT SAYS SO. ANY OTHER NO IS STILL SILENT ═══
+    --
+    --   "the copy should be revised to 'You can only use this item while
+    --    driving.'"                            -- owner, 2026-09-04
+    --
+    -- (It replaced "You cannot use this item while on foot", which was the
+    -- previous day's wording for this same refusal.)
+    --
+    -- THE BOOLEAN REFUSES AND THE STRING ONLY SPEAKS -- server/shop.lua's
+    -- standing convention, and the reason these are two tests rather than one.
+    -- `drivenNetId` answers nil for FOUR different situations and the sentence
+    -- is true of three of them.
+    --
+    -- THE PASSENGER IS TOLD NOW, AND THAT WAS A RULING. The asymmetry this block
+    -- used to describe was real: the mid-channel arm said the sentence to a
+    -- player who slid out of the driver's seat, and this arm said nothing to the
+    -- same player in the same seat if that is where they pressed it. Asked about
+    -- it, the owner (2026-09-04): "Passengers should get the toast too if they
+    -- try to use it." So the test is no longer "is this ped in a vehicle at all"
+    -- but the question the sentence is actually about.
+    --
+    -- BR.Vehicles.drivingHandle IS THAT QUESTION, and it is the same one the
+    -- mid-channel arm asks -- `drivenVehicle` exported, seat -1 or nothing --
+    -- so "is this player driving" still has ONE answer on this server. On foot
+    -- and passenger both answer nil and both are told. A DRIVER OF A CAR THE
+    -- PLATFORM WILL NOT NETWORK (the Battle Bus) is the fourth situation and is
+    -- still refused in silence: they ARE at a wheel, so the sentence would be a
+    -- lie, and no wording for that has been agreed.
+    --
+    -- `ridingIn` IS NO LONGER READ HERE. It answered a narrower question than
+    -- the sentence asks, which is exactly why it produced the asymmetry.
+    --
+    -- ...AND A BUILD WITH NO `drivingHandle` STILL REFUSES, it just says
+    -- nothing. Absent copy must never delete a rule -- and the guard is written
+    -- as two nested tests rather than one `and` chain on purpose: an absent
+    -- module read as "not driving" would say the sentence to every driver in
+    -- the game, which is how the mid-channel arm was first written and what its
+    -- test now pins.
+    --
+    -- ═══ NOTHING IS SPENT BY A REFUSAL, AND NOTHING IS SPENT BY THE PRESS ═══
+    --
+    -- This block rules and returns; the item is debited by the COMPLETION, like
+    -- every other consumable in the file. So a mis-press costs a keypress.
+    local netId = nil
+    if c.repairVeh then
+        if not (BR.Vehicles and BR.Vehicles.drivenNetId) then return end
+
+        netId = BR.Vehicles.drivenNetId(src)
+        if netId == nil then
+            if BR.Vehicles.drivingHandle then
+                if BR.Vehicles.drivingHandle(src) == nil then
+                    BR.Server.notify(src, USE_WHILE_DRIVING, 'warn')
+                end
+            end
+            return
+        end
+    end
+
+    -- ═══ THE COMPLETION SPENDS IT, LIKE EVERYTHING ELSE IN THIS FILE (#228) ═══
+    --
+    --   "when using it the inventory item visually goes away immediately and
+    --    the item function is applied immediately. BUT THEN the progress bar
+    --    shows up. What we'd discussed earlier is not that. Any other
+    --    consumable doesn't get removed until the progress bar is full, and
+    --    that's why we have a progress bar - because it's in progress."
+    --                                          -- owner, 2026-09-03
+    --
+    -- A BUILD OF THIS DEBITED AT THE KEYPRESS AND IT WAS A MISREADING. What he
+    -- had said before was "the actuation is a momentary press like anything
+    -- else - then once it's spent, it's spent", which is a sentence about the
+    -- INPUT -- a tap rather than a held key, which is how this channel already
+    -- works -- and about the kit not coming back afterwards. It was read as
+    -- "debited at the press", and the sentence above is him correcting that.
+    -- SPENT HAPPENS AT COMPLETION. There is no `spendOnPress` any more; a field
+    -- with no true case is scaffolding, and this repo's standing lesson is that
+    -- scaffolding gets read as live.
+    --
+    -- WHAT THAT COSTS, STATED PLAINLY SO NOBODY "FIXES" IT: an interrupted
+    -- channel now costs NOTHING. A slot switch, a reload, dying, or leaving the
+    -- driving seat at 4.9 seconds leaves the player holding the kit AND holding
+    -- whatever repair the slices already put on the car -- because a granted
+    -- repair is health on a car on somebody else's machine and there is nothing
+    -- to take back. That is the med kit's contract exactly (its partial heal is
+    -- kept too), it is what "in progress" means, and it is the owner's ruling
+    -- twice over.
+    --
+    -- AND IT IS RE-PRESSABLE, WHICH IS THIS CHANNEL'S EXISTING CONTRACT RATHER
+    -- THAN ANYTHING THE KIT INTRODUCED (#271). Press, tap a slot, press again:
+    -- the effect is granted a second time and no item is ever spent. Every
+    -- channelled consumable in this file behaves that way, the med kit included
+    -- -- `hp0` is re-read from the roster each time a channel opens (see
+    -- `inv.using` below), so a partial heal that already landed becomes the next
+    -- channel's baseline, and INV_SELECT/INV_SWAP clear `inv.using` with no
+    -- cooldown at all. It is tracked as #271 and it is the owner's call; nothing
+    -- about it is specific to this item, so nothing here tries to close it.
     inv.using = {
         slot   = slot,
         item   = s.item,
@@ -979,6 +1152,11 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         -- what the per-tick partial effects interpolate FROM.
         hp0     = e.hp or 0,
         armour0 = e.armour or 0,
+        -- The car this use was aimed at, and the running total of health points
+        -- already granted for it -- see the tick loop for why a ledger is needed
+        -- rather than a per-tick delta.
+        veh        = netId,
+        vehGranted = 0.0,
     }
     BR.Inv.push(src)
 end)
@@ -1242,9 +1420,31 @@ function BR.Inv.cancelUse(src, why)
 end
 
 -- 250ms: fine enough that a cancelled use stops looking like it worked, and
--- coarse enough to be free. The COMPLETION is what consumes the item -- an
--- interrupted use costs nothing, which is why cancelling needs no refund
--- path at all.
+-- coarse enough to be free.
+--
+-- ═══ WHO PAYS, AND WHEN -- THE ONE CONTRACT THIS LOOP RESTS ON ═══
+--
+-- THE RULE, AND IT HAS NO EXCEPTIONS AGAIN: the COMPLETION is what consumes the
+-- item, so an interrupted use costs nothing and cancelling needs no refund path
+-- at all. That is true of the med kit, the bandage, both shields, the shop car
+-- AND THE REPAIR KIT, and it is what lets every guard below simply drop the
+-- channel and walk away.
+--
+-- ONE ITEM BRIEFLY DIVERGED AND THE OWNER REVERSED IT (#228, 2026-09-03): the
+-- repair kit was debited at the keypress, which meant the slot emptied the
+-- instant the bar appeared. "Any other consumable doesn't get removed until the
+-- progress bar is full, and that's why we have a progress bar - because it's in
+-- progress." The `spendOnPress` field and the `u.spent` waiver it needed are
+-- both gone rather than set false, and the two guards they waived -- the
+-- slot-identity test below and the completion debit -- are back to running
+-- unconditionally for every consumable there is.
+--
+-- WHAT AN INTERRUPTION LEAVES BEHIND IS NOT NOTHING, and that is deliberate: a
+-- cancelled med kit keeps the health its partials already applied, and a
+-- cancelled repair keeps the vehicle health its slices already granted. The item
+-- comes back; the effect that was already delivered does not. That is what makes
+-- a re-press worth something for every consumable in this file, which is #271
+-- and is the owner's call rather than this loop's; see the note at INV_USE.
 BR.Sched.every(250, 'inv.use', function()
     local now = GetGameTimer()
 
@@ -1261,7 +1461,17 @@ BR.Sched.every(250, 'inv.use', function()
                 return
             end
 
-            -- The slot must still hold the thing that was started.
+            -- HOISTED ABOVE THE GUARDS THAT NOW READ IT. This used to be
+            -- fetched below the damage branch, where the only thing that
+            -- wanted it was the interpolation; the damage exemption and the
+            -- vehicle guard both need it earlier.
+            local c = BR.Config.ConsumableById[u.item]
+
+            -- The slot must still hold the thing that was started. It was waived
+            -- for a `spendOnPress` item for one day, because a press-time debit
+            -- empties the slot and trips this on the very first pass; with the
+            -- debit back at the completion there is nothing to waive and this
+            -- guards every channel again.
             local s = inv.slots[u.slot]
             if not s or s.item ~= u.item then
                 inv.using = nil
@@ -1269,7 +1479,40 @@ BR.Sched.every(250, 'inv.use', function()
                 return
             end
 
-            if L.useCancelOnDamage and (e.hp or 0) < (u.hp0 or 0) then
+            -- ═══ ...AND ONE CLASS OF CONSUMABLE IS NOT INTERRUPTED BY BEING
+            --     SHOT (#228) ═══
+            --
+            --   "I couldn't find useCancelOnDamage as an available native.
+            --    Let's not use that to stop any type of bullet damage."
+            --                                          -- owner, 2026-09-03
+            --
+            -- POSITIVE OPT-IN ON THE ROW, so this reads as a property of the
+            -- item rather than as an id test in a loop that must never learn
+            -- one. The exemption is the repair kit's alone today and the
+            -- argument is on its row: cancelling on damage is a rule about a
+            -- player topping THEMSELVES up under fire, and the kit moves nothing
+            -- on the ped -- the driver being shot is not the thing being
+            -- repaired. server/ambheal.lua's heal is exempt for the same shape
+            -- of reason and says so at length.
+            --
+            -- NOTE WHAT THIS REMOVES, AND IT IS NOT NOTHING. Damage-cancel is
+            -- one brake on re-pressing a channel for its partial effect: it
+            -- costs a player who does it under fire the rest of their channel.
+            -- An `ignoresDamage` item has no such brake.
+            --
+            -- IT IS A BRAKE ON AN OPEN ROAD, THOUGH, AND THE ROAD IS #271. The
+            -- re-press loop -- press, tap a slot, press again, effect granted
+            -- again, item never spent -- is this channel's existing contract for
+            -- EVERY consumable here, not something this row opened: INV_SELECT
+            -- and INV_SWAP clear `inv.using` with no cooldown, and INV_USE
+            -- re-reads `hp0` from the roster on each open, so a med kit's
+            -- partial heal becomes the next press's baseline and is farmed the
+            -- same way. Taking `ignoresDamage` off this row would narrow one
+            -- entry to it and fix none of it, and the owner has ruled on the
+            -- flag itself. #271 is where the loop is tracked and whose call it
+            -- is.
+            if L.useCancelOnDamage and not (c and c.ignoresDamage)
+                and (e.hp or 0) < (u.hp0 or 0) then
                 BR.Inv.cancelUse(src, 'Interrupted.')
                 return
             end
@@ -1281,8 +1524,9 @@ BR.Sched.every(250, 'inv.use', function()
             --
             -- Targets, not deltas: the client only ever applies these upward,
             -- so a dropped tick self-corrects on the next one instead of
-            -- losing that increment for good.
-            local c = BR.Config.ConsumableById[u.item]
+            -- losing that increment for good. THAT DISCIPLINE DOES NOT REACH
+            -- THE VEHICLE GRANT BELOW -- client/fuel.lua's applyRepair is
+            -- additive -- which is why that one keeps a ledger instead.
 
             -- ...AND THE SECOND ASK, WHICH IS THE ONE THAT ACTUALLY GUARDS IT.
             --
@@ -1299,9 +1543,9 @@ BR.Sched.every(250, 'inv.use', function()
             -- be spent without this test having just answered no.
             --
             -- CANCELLED, NOT COMPLETED-AND-DROPPED. cancelUse clears the channel
-            -- and pushes the inventory back without touching the slot -- "an
-            -- interrupted use costs nothing, which is why cancelling needs no
-            -- refund path at all" -- so the car survives to be spawned on foot.
+            -- and pushes the inventory back without touching the slot, and every
+            -- consumable is debited by its COMPLETION -- the rule in the note
+            -- above the loop -- so the car survives to be spawned on foot.
             --
             -- THE SAME SENTENCE AS THE PRESS. config/shop.lua's note: the two
             -- arms refuse for one reason and telling the player so in two
@@ -1314,7 +1558,122 @@ BR.Sched.every(250, 'inv.use', function()
                 end
             end
 
-            if c and now < u.endsAt then
+            -- ═══ THE DRIVING SEAT IS A FACT ABOUT THE WHOLE CHANNEL, AND THE
+            --     REPAIR IS PAID IN SLICES (#228) ═══
+            --
+            --   "As that bar progresses, the vehicle health should
+            --    incrementally increase to finally reach full once the item has
+            --    been spent."                   -- owner, 2026-09-03
+            --
+            -- THE SHOP CAR'S SHAPE EXACTLY, one guard above: the press ruled on
+            -- the seat, and five seconds is long enough to be blown out of it,
+            -- to slide over into a passenger seat, or for the car to despawn. So
+            -- the same question is asked every pass INCLUDING the completion,
+            -- which is what makes it a guard rather than a courtesy.
+            --
+            -- COMPARED AGAINST `u.veh` RATHER THAN MERELY ANSWERED. One extra
+            -- comparison, and it makes "the car you aimed it at" exact -- the
+            -- same reasoning shared/protocol.lua gives for putting the netId on
+            -- the wire at all.
+            --
+            -- ═══ AND THIS ARM NOW SPEAKS, FOR THE TWO CASES HE NAMED ═══
+            --
+            --   "if they switch seats before it is finished it should still
+            --    apply, and same if they leave the vehicle mid-use."
+            --                                          -- owner, 2026-09-04
+            --
+            -- "It" is the press-time sentence, USE_WHILE_DRIVING. It was silent
+            -- here until he wrote that, and the cancel costs nothing either way
+            -- -- the kit is still in the bag, because the completion is what
+            -- spends it.
+            --
+            -- FOUR SITUATIONS REACH THIS BRANCH AND THE SENTENCE IS TRUE OF TWO.
+            -- Left the vehicle, and slid into a passenger seat: both are "not
+            -- driving", both are his. Still driving a car the platform will not
+            -- network (the Battle Bus: `drivenNetId` answers nil for it), and
+            -- driving a DIFFERENT car (`nid ~= u.veh`): in both of those the
+            -- player is at a wheel, so "you can only use this while driving"
+            -- would be a lie, and there is no agreed wording for either.
+            --
+            -- SO IT ASKS THE QUESTION THE SENTENCE IS ABOUT rather than reusing
+            -- the answer that cancelled the channel. BR.Vehicles.drivingHandle
+            -- is `drivenVehicle` exported -- seat -1 or nothing, the same read
+            -- `drivenNetId` is built on -- so "is this player driving" still has
+            -- ONE answer on this server, and it is the only one of the two that
+            -- can separate a passenger from an un-networked driver. Gated on the
+            -- module in the same shape as everything else here: a build without
+            -- it still cancels, it just says nothing.
+            --
+            -- ═══ WHY A LEDGER AND NOT A DELTA ═══
+            --
+            -- The health/armour partials above are TARGETS -- the client applies
+            -- them upward only, so a dropped one self-corrects. VEH_FIX is not
+            -- like that: client/fuel.lua's applyRepair ADDS the points it is
+            -- given (it is the pump's grant shape, and the pump's `r` means
+            -- "points earned since the last message"). So the wire has to carry
+            -- an INCREMENT, and the only way to make those increments add up to
+            -- exactly one kit's worth across a jittering 250ms cadence is to
+            -- keep the running total on the server and subtract it.
+            --
+            -- `u.vehGranted` IS THE CLIMB'S BOOKKEEPING AND NOTHING ELSE. It
+            -- exists so that two ticks 250ms apart do not each send the whole
+            -- fraction earned so far; it is NOT a budget, and the completion
+            -- below deliberately does not read it. See the note there for why.
+            --
+            -- WHAT THE INCREMENT IS A FRACTION OF: BR.Config.Fuel.healthMax, so
+            -- the kit and the petrol station cannot drift apart, and so that
+            -- this file holds no opinion about vehicle health -- it has none to
+            -- hold: every vehicle-health native is client-only, which is why
+            -- this is a GRANT the client applies rather than a value the server
+            -- sets. A lightly damaged car will therefore reach full, and pop its
+            -- dents, before the bar finishes; that is the pump's behaviour too.
+            if c and c.repairVeh then
+                local nid = (BR.Vehicles and BR.Vehicles.drivenNetId)
+                    and BR.Vehicles.drivenNetId(src) or nil
+                if nid == nil or nid ~= u.veh then
+                    -- THE MODULE'S ABSENCE IS NOT AN ANSWER OF "NOT DRIVING",
+                    -- and writing this as one expression got that wrong: a build
+                    -- with no `drivingHandle` would have told everybody the
+                    -- sentence, including the drivers it is a lie to. Both
+                    -- conditions have to be true for a word to be said.
+                    local why = nil
+                    if BR.Vehicles and BR.Vehicles.drivingHandle
+                        and BR.Vehicles.drivingHandle(src) == nil then
+                        why = USE_WHILE_DRIVING
+                    end
+                    BR.Inv.cancelUse(src, why)
+                    return
+                end
+
+                if now < u.endsAt then
+                    local cap = (BR.Config.Fuel
+                        and tonumber(BR.Config.Fuel.healthMax)) or 1000.0
+                    local total = math.max(1, u.ms or 1)
+                    local pct  = BR.Clamp((total - (u.endsAt - now)) / total,
+                                          0.0, 1.0)
+                    local want = cap * pct
+                    local give = want - (u.vehGranted or 0.0)
+                    if give > 0.0 then
+                        u.vehGranted = want
+                        TriggerClientEvent(BR.Net.VEH_FIX, src,
+                            { n = nid, r = give })
+                    end
+                end
+            end
+
+            -- ...AND ONLY FOR AN ITEM THAT MOVES SOMETHING ON THE PED.
+            --
+            -- PRE-EXISTING, FIXED IN PASSING (#228, 2026-09-03). The test was
+            -- `if c and now < u.endsAt`, so a consumable with neither `health`
+            -- nor `armour` -- the shop car, and now the repair kit -- sent an
+            -- EMPTY `{ item, partial = true }` four times a second and stamped
+            -- `healUntil` on every one of them. The client no-ops on the empty
+            -- payload so nothing visible happened, but the stamp is a rolling
+            -- amnesty window in server/roster.lua's health audit for a player
+            -- who is not healing at all. Three seconds of that already shipped
+            -- for the warmup shop; a 5s kit under fire would have extended it to
+            -- where the audit matters.
+            if c and (c.health or c.armour) and now < u.endsAt then
                 local total = math.max(1, u.ms or 1)
                 local pct = BR.Clamp((total - (u.endsAt - now)) / total, 0.0, 1.0)
                 local partial = { item = u.item, partial = true }
@@ -1342,12 +1701,21 @@ BR.Sched.every(250, 'inv.use', function()
 
             if now < u.endsAt then return end
 
-            -- Landed. Consume one, then tell the client to apply it.
+            -- ═══ LANDED. CONSUME ONE ═══
+            --
+            -- Unconditionally, for every consumable, which is the whole of the
+            -- contract stated above the loop. `s` is safe to dereference here
+            -- because the slot-identity guard at the top of the pass proved it
+            -- still holds what was started -- there is no arm that skips that
+            -- guard any more.
+            --
+            -- AND IT IS BELOW EVERY GUARD, WHICH IS THE PROPERTY WORTH KEEPING.
+            -- The seat re-rule and the shop-car re-rule both run on this same
+            -- pass and both return, so there is no pass on which an item can be
+            -- spent for a use the rules had just refused.
             s.count = s.count - 1
             if s.count <= 0 then inv.slots[u.slot] = false end
             inv.using = nil
-
-            local c = BR.Config.ConsumableById[u.item]
 
             -- ═══ A CAR IS A CONSUMABLE THAT DOES NOT HEAL ANYTHING (#224) ═══
             --
@@ -1379,6 +1747,63 @@ BR.Sched.every(250, 'inv.use', function()
                     print(('^1[br_core] inventory: %d used "%s" and there is no '
                            .. 'shop to build it^7'):format(src, tostring(u.item)))
                 end
+                BR.Inv.push(src)
+                return
+            end
+
+            -- ═══ AND THE REPAIR FINISHES THE JOB, WITH THE WHOLE CAP (#228) ═══
+            --
+            --   "...the vehicle health should incrementally increase to finally
+            --    REACH FULL once the item has been spent."
+            --                                          -- owner, 2026-09-03
+            --
+            -- ═══ THE FULL CAP IS DELIBERATE. DO NOT "OPTIMISE" IT INTO A
+            --     REMAINDER ═══
+            --
+            -- THE POINTS ON THIS WIRE ARE AN OFFER, NOT A DEBIT.
+            -- client/fuel.lua's applyRepair clamps every pool it touches --
+            --
+            --     local want = math.min(cap, cur + points)   -- fuel.lua:350
+            --
+            -- -- so offering more than the car needs cannot over-repair it. The
+            -- surplus is discarded by the clamp, on the body, the engine and the
+            -- petrol tank alike, every time. Sending the cap is therefore not a
+            -- payment of a cap; it is "top all three pools up".
+            --
+            -- AND THE CLAMP IS THE ONLY REASON THE OWNER'S SENTENCE IS TRUE. The
+            -- slices above telescope toward one cap's worth across the channel,
+            -- but a car that was being shot at while it mended has already spent
+            -- some of them -- and `ignoresDamage` exists precisely so that a kit
+            -- CAN be used under fire. A completion that sent only the difference
+            -- between the cap and what the slices granted would leave exactly
+            -- that car short of full at the moment the item was spent, which is
+            -- the one thing he asked for by name.
+            --
+            -- A BUILD OF THIS SHIPPED THAT REMAINDER FOR A DAY, on a finding that
+            -- the full cap "double paid" ~1950 points for one kit. That counted
+            -- POINTS OFFERED rather than HEALTH DELIVERED; the clamp above
+            -- discards the difference, so there was never an over-payment to fix
+            -- and the remainder bought nothing but a broken guarantee. A future
+            -- reader who tightens this back into a subtraction will silently
+            -- reintroduce it, and no assertion about magnitudes will catch it --
+            -- which is why tools/test_roster.lua now asserts the OUTCOME, that
+            -- the three pools finish at the cap on a car that took fire.
+            --
+            -- SO THE COSMETIC PASS NEEDS NOTHING ON THE WIRE. applyRepair pops
+            -- the dents on the frame the BODY reaches full, and this grant is
+            -- what makes that frame this one.
+            --
+            -- `u.veh` RATHER THAN A FRESH READ: the guard above ran on this same
+            -- pass and proved the player is still driving exactly that car.
+            -- GTA HAS NO PARTIAL DEFORMATION, which is why the bodywork snaps
+            -- straight on this message instead of un-denting with the bar; see
+            -- fixCosmetic in client/fuel.lua.
+            if c and c.repairVeh then
+                TriggerClientEvent(BR.Net.VEH_FIX, src, {
+                    n = u.veh,
+                    r = (BR.Config.Fuel
+                        and tonumber(BR.Config.Fuel.healthMax)) or 1000.0,
+                })
                 BR.Inv.push(src)
                 return
             end

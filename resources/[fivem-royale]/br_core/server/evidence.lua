@@ -137,22 +137,22 @@ function BR.Evidence.noteKill(feed)
         headshot = feed.headshot,
         at       = GetGameTimer(),
 
-        -- THE LICENCES ARE RESOLVED HERE AND ADDED TO THE BUFFERED ROW ONLY --
+        -- THE LICENSES ARE RESOLVED HERE AND ADDED TO THE BUFFERED ROW ONLY --
         -- DELIBERATELY NOT TO `feed` (#30).
         --
         -- `feed` IS BROADCAST TO CLIENTS. combat.lua hands the same table to
         -- BR.Broadcast.toMatch(m, BR.Net.KILL_FEED, feed) two lines after calling
-        -- this, so anything added to it is on every player's machine. A licence
+        -- this, so anything added to it is on every player's machine. A license
         -- is the console's profile key and the identifier every ban, grant and
         -- audit row is written against; putting one on the wire to clients would
         -- hand the whole lobby a stable cross-match identifier for everybody they
         -- kill. This row never leaves the server: it lives in RAM and, if an
         -- incident is ever filed, travels server -> DynamoDB -> console. That is
         -- a different path with a different audience and it is the reason the
-        -- licence is acceptable here and not there.
+        -- license is acceptable here and not there.
         --
         -- WHY THEY ARE NEEDED. #30 wants each kill on an incident timeline to
-        -- link to the victim's profile, and the console keys profiles by licence.
+        -- link to the victim's profile, and the console keys profiles by license.
         -- `victim` is a display NAME, which is not unique, is player-chosen and
         -- is not what the console can look up. `victimSrc` is worse than useless
         -- for the purpose: server ids are RECYCLED WITHIN THE MINUTE (see

@@ -191,6 +191,16 @@
   --color-royale-panel:   #1d1e2b;
   --color-royale-edge:    #33354a;
   --color-royale-accent:  #22d3ee;
+  /* VOLTS. The signature gold, held BELOW `--color-royale-accent2` (#facc15) on
+     purpose: owner, 2026-09-04, "our signature gold/yellow color that Volts
+     uses, but not super bright."
+
+     accent2 is reserved for VICTORY and nothing else (see the palette note
+     above). A currency that shouted in the same voice as winning the match
+     would spend the loudest colour in the game on a number that is on screen
+     constantly. This is that hue with the glare taken off, so Volts read as
+     gold without competing with the one thing gold is for. */
+  --color-volts:          #d9ae35;
   --color-royale-accent2: #facc15;
 
   --color-hp:      #4ade80;
@@ -282,10 +292,17 @@
      this, such as the font used in 'Display name' and our keybind rows like
      'Use selected item' -- the color there works better too").
 
-     0.70 IS THAT COLOUR, READ OFF THE ROWS HE NAMED. Both are `text-white/70`:
+     0.70 IS THAT COLOUR, READ OFF THE ROWS HE NAMED. Both were `text-white/70`:
      Settings' Display name field label and Keybinds' action labels. He was not
      picking a shade in the abstract, he was pointing at two rows on screen and
      saying those are right, so this is measured off them rather than chosen.
+
+     ONE OF THE TWO IS GONE, AND THE MEASUREMENT IS NOT. The Display name field
+     went with the whole Identity section (#262, 2026-09-04). Keybinds' action
+     labels are the surviving twin and still render at exactly this value, so
+     the number is still checkable against something on screen -- but the quote
+     above names a row that no longer exists, and a reader who goes looking for
+     it should find this note rather than conclude the token drifted.
 
      AND PROSE EARNS THE EXTRA CONTRAST. On the same pause-menu plate that
      --color-text-dim is measured against -- rgba(20,24,34,0.94) compositing to
@@ -509,6 +526,25 @@ html, body, #root {
      and is applied per-element (.font-display) rather than inherited -- it has
      no lowercase personality and is unreadable as body text. */
   font-family: 'Barlow', 'Segoe UI', system-ui, sans-serif;
+
+  /* THE TUTORIAL'S FACE, AND ONLY THE TUTORIAL'S (#261). A token rather than a
+     hardcoded stack so the one exception to the type spec is declared in the
+     same place as the rule it breaks -- and so that finding everything Nunito
+     touches is a search for one name. Nothing outside the guided first run may
+     use it; if a second surface wants a casual voice, that is a decision about
+     the type spec and not a copy-paste. */
+  --font-tutorial: 'Nunito Variable', 'Nunito', 'Barlow', 'Segoe UI', system-ui,
+    sans-serif;
+
+  /* HIS TWO WEIGHTS, NAMED (owner, 2026-09-04: "font weight 700 on the
+     titles/headers, and font weight 350 on the body"). Tokens rather than
+     numbers at the use site, because 350 is an unusual value that reads as a
+     typo -- and a future reader "correcting" it to 400 would quietly undo the
+     one thing that makes these cards sound different from the rest of the UI.
+     350 is a REAL weight here and not a synthesised one: the variable axis runs
+     200-1000 in steps of 1. */
+  --font-tutorial-body: 350;
+  --font-tutorial-head: 700;
   color: white;
 }
 
@@ -563,9 +599,12 @@ html, body, #root {
    SO IT IS COPIED OFF THOSE TWO ROWS RATHER THAN INVENTED -- BUT OFF WHAT THEY
    RENDER, NOT WHAT THEY SAY, AND #148 GOT THAT WRONG (#156).
 
-   Both rows are, to the character, `text-[0.82rem] text-white/70 tscale`:
+   Both rows WERE, to the character, `text-[0.82rem] text-white/70 tscale`:
    Settings' Display name field label (Settings.tsx) and Keybinds' action
-   labels (Keybinds.tsx). #148 read the 0.82rem off the source and copied it.
+   labels (Keybinds.tsx). The first went with the Identity section (#262,
+   2026-09-04); Keybinds is the one still on screen and the reasoning below is
+   unchanged, because it was always about how `.tscale` resolves rather than
+   about either row. #148 read the 0.82rem off the source and copied it.
    They do not render at 0.82rem. `.tscale` is declared after Tailwind's
    utilities at the same specificity, so it WINS over `text-[0.82rem]`, and it
    resolves to `calc(1em * var(--text-scale))` -- the PARENT's size. Measured in
@@ -685,8 +724,20 @@ html, body, #root {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 42%),
     rgba(8, 9, 14, 0.70);
-  border: 0;
-  border-radius: var(--r-panel);
+  /* SQUARE AND OUTLINED IN GREY, WHICH IS HALF AN ACCIDENT KEPT ON PURPOSE.
+     The square edge arrived here by mistake -- a restyle meant for the tutorial
+     card landed on `.panel`, the first rule in the file with that property, and
+     took every panel in the game with it including the ammo readout. The owner
+     saw it before I did and kept it: "I like the style, I just don't want that
+     HUD card to have the blue outline. Something grey would be better."
+
+     SO THE SHAPE STAYS AND THE COLOUR DOES NOT. Accent means "this concerns
+     you" everywhere else in the interface -- it is the kill feed's blade, the
+     tutorial's ring, the one loud button on a screen -- and an ammo count
+     wearing it says something is happening when nothing is. Grey is a panel
+     that has an edge, not a panel that is shouting. */
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 0;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 
@@ -1591,3 +1642,206 @@ html, body, #root {
 .xp-readout { display: grid; justify-items: end; }
 .xp-readout > * { grid-area: 1 / 1; transition: opacity 480ms ease; }
 .xp-readout__gone { opacity: 0; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE GUIDED FIRST RUN (#261)
+
+   THE ONE PLACE --font-tutorial IS USED. The owner asked for the flyouts to
+   read as "a deliberate exception to the rest of the UX", so the exception
+   lives here, beside the type spec it breaks, and nowhere else.
+
+   EVERY ANIMATION BELOW IS transform AND opacity ONLY. This page shares a
+   frame with the game and the lobby camera is flying while these are on
+   screen; anything that lays out or paints per frame is a stutter in the exact
+   moment a new player is deciding whether to stay.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.tut-card {
+  position: absolute;
+  /* ABOVE .page (50), which is what the settings half needs: those cards point
+     at controls on a sub-screen and would otherwise be painted under it. */
+  z-index: 55;
+  width: 19rem;
+  max-width: 34vw;
+  padding: 0.85rem 0.95rem 0.7rem;
+  /* THE ACCENT OUTLINE, WHICH BELONGS HERE AND ONLY HERE. `.panel` carries the
+     grey edge every surface gets; the tutorial card overrides it, because on
+     this one the colour is doing a job -- it is the same accent as the ring
+     around the control being described, so the card and its subject read as one
+     object. */
+  border: 1px solid var(--color-royale-accent);
+
+  /* `.panel`'S SURFACE, DARKENED. The class is on the element and gives the
+     card the same look as every other panel in the game -- the owner asked for
+     the tutorial to "follow the same visual and button structure as the
+     existing UI".
+
+     THE ONE DEPARTURE IS OPACITY, and he asked for that too: "The cards should
+     be more opaque. See screenshot where it can be a bit hard to read." A panel
+     normally sits over the HUD or a dimmed screen; this one sits over the LOBBY
+     CAMERA, which is a bright, moving, high-contrast image, and 0.70 was not
+     enough to read 350-weight prose against it. The gradient sheen is kept so
+     it is the same surface, just a more opaque one. */
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 42%),
+    rgba(8, 9, 14, 0.95);
+  box-shadow: 0 1.2rem 2.4rem rgba(0, 0, 0, 0.55);
+  font-family: var(--font-tutorial);
+  /* THROWN FROM ITS SUBJECT, overshooting and settling. --from-x/--from-y are
+     set per card by the layer to the direction the target lies in. */
+  animation: tutIn 340ms var(--ease-snap) both;
+  transform-origin: center;
+}
+
+.tut-card--leaving {
+  /* It leaves the way it came, back toward the thing it was about. */
+  animation: tutOut 180ms var(--ease-out) both;
+}
+
+@keyframes tutIn {
+  0%   { opacity: 0; transform: translate(var(--from-x), var(--from-y)) scale(0.86); }
+  100% { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+
+@keyframes tutOut {
+  0%   { opacity: 1; transform: translate(0, 0) scale(1); }
+  100% { opacity: 0; transform: translate(calc(var(--from-x) * 0.4),
+                                          calc(var(--from-y) * 0.4)) scale(0.9); }
+}
+
+/* THE BEAK DRAWS ITSELF AFTER THE CARD LANDS, so the connection reads as a
+   consequence of the arrival rather than part of it. scaleX from the card
+   outward, pointed by the layer's unit vector. */
+/* The beak -- a line from the card to its subject -- is gone. Positioned at the
+   card's own centre it drew straight through the text as a short blue dash
+   nobody could identify (owner, 2026-09-04). The ring around the subject
+   already says which control the card is about, and says it AT the control. */
+
+/* THE TITLE AND THE BODY ARRIVE SEPARATELY, sixty milliseconds apart. Cheap,
+   and it is the whole difference between a card appearing and a card being
+   delivered to somebody. */
+.tut-title,
+.tut-body {
+  opacity: 0;
+  transform: translateY(0.35rem);
+  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+}
+
+.tut-title.tut-in { opacity: 1; transform: none; }
+.tut-body.tut-in  { opacity: 1; transform: none; transition-delay: 60ms; }
+
+.tut-title {
+  font-weight: var(--font-tutorial-head);
+  font-size: 1.02rem;
+  line-height: 1.2;
+  color: #ffffff;
+  text-shadow: var(--shadow-text);
+}
+
+.tut-body {
+  margin: 0.35rem 0 0;
+  font-weight: var(--font-tutorial-body);
+  font-size: 0.9rem;
+  line-height: 1.42;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.tut-body b { font-weight: var(--font-tutorial-head); color: #ffffff; }
+.tut-body i { font-style: italic; }
+
+.tut-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.7rem;
+}
+
+.tut-count {
+  font-weight: var(--font-tutorial-body);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+.tut-acts { display: inline-flex; gap: 0.35rem; }
+
+/* The buttons are the project's own `Btn` (see AnnotationCard.tsx), so there
+   are no button rules here. There were, and deleting them is the point: a
+   second button vocabulary is exactly what made the first version read as a
+   web widget rather than as part of this game's interface. */
+
+/* ═══ THE ARROW HINTS ═══
+
+   The cap itself is NOT styled here. It is the project's own `KeyCap`, the same
+   glyph the notice stack and the settings page draw -- owner, 2026-09-06: "why
+   are all these {keys} not in our glyphs?" A hand-rolled box lived here for one
+   day and its arrows were too thin, which is the same complaint from the other
+   direction: KeyCap draws Anton on a filled plate and needed no persuading.
+
+   THIS RULE IS ONLY THE ROW: cap, gap, word. It must not look pressable -- no
+   hover, no active state, no focus ring, no pointer -- because in game there is
+   no cursor to press anything with, and something that looks like a button and
+   is not is worse than plain text. Same call hud/SpectateHint.tsx makes. */
+.tut-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-weight: var(--font-tutorial-body);
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.62);
+  white-space: nowrap;
+}
+
+/* THE CURRENCY, IN THE CURRENCY'S COLOUR. Owner, 2026-09-06, on the reporting
+   card: "the '250 Volts' text needs to be our signature volts color." Written
+   `~100 Volts~` in the card's prose; see AnnotationCard's `emphasise`. */
+.tut-volts {
+  color: var(--color-volts);
+  font-weight: var(--font-tutorial-head);
+}
+
+/* ═══ THE SPOTLIGHT ═══
+
+   A RING AROUND THE SUBJECT, NOT A DIMMED SCREEN. A full-screen scrim is the
+   obvious version and it is wrong here: the player has to CLICK the real
+   control, so anything covering it either has to be pierced with a hole that
+   tracks a moving rect, or it swallows the click. A ring costs neither and
+   still says "this one".
+
+   IT BREATHES on the same 800ms beat the squad panel already uses for a fact
+   that cannot wait. One pulse in the interface, not two. */
+.tut-ring {
+  position: absolute;
+  z-index: 54;
+  /* SQUARE, like the card and like every button it rings. */
+  border-radius: 0;
+  border: 2px solid var(--color-royale-accent);
+  box-shadow: 0 0 0 0.28rem rgba(56, 208, 246, 0.16);
+  pointer-events: none;
+  animation: tutRingIn 300ms var(--ease-snap) both, matePulse 1600ms 300ms infinite;
+}
+
+@keyframes tutRingIn {
+  0%   { opacity: 0; transform: scale(1.35); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* A ring on a step the player has to CLICK gets a second, slower halo, so
+   "press this" and "read this" are distinguishable at a glance. */
+.tut-ring--click::after {
+  content: '';
+  position: absolute;
+  inset: -0.35rem;
+  border-radius: inherit;
+  border: 1px solid var(--color-royale-accent);
+  opacity: 0;
+  animation: tutHalo 1800ms var(--ease-out) infinite;
+}
+
+@keyframes tutHalo {
+  0%   { opacity: 0.55; transform: scale(1); }
+  70%  { opacity: 0;    transform: scale(1.22); }
+  100% { opacity: 0;    transform: scale(1.22); }
+}

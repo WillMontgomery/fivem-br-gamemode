@@ -276,7 +276,40 @@ end
 function GetEntityForwardVector() return { x = 1.0, y = 0.0, z = 0.0 } end
 function GetEntityRotation() return { x = 0.0, y = 0.0, z = 0.0 } end
 function GetEntityVelocity() return { x = 0.0, y = 0.0, z = 0.0 } end
-function GetGroundZFor_3dCoord() return true, 30.0 end
+--- EVERY HORIZONTAL SURFACE IN THIS FAKE WORLD, as absolute heights.
+---
+--- One entry -- the terrain at 30 -- so every block written before this one
+--- probes from the sky and gets 30.0 back, exactly as the flat stub it replaces
+--- always answered. A second entry makes an OVERPASS: a deck and a road under
+--- it in the same column.
+---
+--- This exists because the harness could not express the 2026-09-03 bug at all.
+--- A stub that ignores `fromZ` and answers 30.0 has no deck and no underside,
+--- so the one thing that went wrong -- a probe from 1200m finding the structure
+--- over the player's head instead of the floor at their feet -- was invisible
+--- here and had to be found by reading the game.
+local ground = { levels = { 30.0 } }
+
+--- Rebuild the fake world's surfaces, lowest first or not, it does not matter.
+local function setGround(levels)
+    ground.levels = levels
+end
+
+--- THE HIGHEST GROUND BELOW THE PROBE START, which is what the real native
+--- does and the whole reason this bug exists. Started at 1200 over an overpass
+--- it answers with the DECK -- successfully, plausibly, and wrongly.
+---
+--- A probe started below every surface answers `false`, which is the real
+--- native's behaviour from inside a hillside and the case groundUnder's
+--- fallback to the sky probe is built for.
+function GetGroundZFor_3dCoord(_, _, fromZ)
+    local best
+    for _, z in ipairs(ground.levels) do
+        if (not fromZ or z <= fromZ) and (not best or z > best) then best = z end
+    end
+    if not best then return false, 0.0 end
+    return true, best
+end
 function GetWaterHeight() return false, 0.0 end
 function GetHashKey() return 1 end
 function GetWeapontypeModel() return 1 end
@@ -342,7 +375,24 @@ function GetAmmoInPedWeapon() return 0 end
 function GetAmmoInClip() return false, 0 end
 function GetPedArmour() return 0 end
 function HasPedGotWeapon() return false end
-function IsPauseMenuActive() return false end
+--- THE ENGINE'S FRONTEND, DRIVEABLE, AND IN EVERY BOOL SHAPE.
+---
+--- client/keybinds.lua refuses TAB and tilde while GTA's own frontend is on
+--- screen (the big map is the frontend -- br_ui raises it with
+--- ActivateFrontendMenu). That refusal reads two BOOL natives, so the stub has
+--- to be able to answer `1`/`0` as well as `true`/`false`: a `0` from
+--- IsPauseMenuActive is "no frontend", and 0 is TRUTHY in Lua, so an
+--- unnormalised read would swallow both keys on every frame of every session.
+---
+--- `nil` shape means "answer plain booleans", which is what every block written
+--- before this existed expects.
+local pauseMenu = { active = false, restarting = false, shape = nil }
+local function pauseBool(v)
+    if pauseMenu.shape == nil then return v end
+    return v and pauseMenu.shape.down or pauseMenu.shape.up
+end
+function IsPauseMenuActive() return pauseBool(pauseMenu.active) end
+function IsPauseMenuRestarting() return pauseBool(pauseMenu.restarting) end
 function IsPedReloading() return false end
 function IsPlayerFreeAiming() return false end
 function IsDisabledControlJustPressed() return false end
@@ -2060,6 +2110,156 @@ do
        ('fired %d before release, %d after'):format(held, n))
 end
 
+--- ═══ THE BIG MAP SWALLOWS TAB AND TILDE, AND NOTHING ELSE ═══
+---
+--- Owner, 2026-09-01: "Pressing tab or tilde while the big map is active should
+--- not open inventory or player map."
+---
+--- THE MAP IS THE ENGINE'S FRONTEND, so "is the map up" is IsPauseMenuActive --
+--- a question asked of the game on every press, not a flag br_core sets and
+--- hopes stays true. The tests below are written to fail if it ever becomes a
+--- flag: the gate is opened and closed underneath a held key, and the keys have
+--- to come back on the exact frame the engine says the menu has gone.
+describe('the big map swallows TAB and tilde -- ' .. shape.name)
+do
+    bootOn(true, true, shape)
+    -- THE PAUSE-MENU NATIVES ANSWER IN THIS BLOCK'S SHAPE TOO. `0` is truthy in
+    -- Lua and IS_PAUSE_MENU_ACTIVE is a BOOL native: an unnormalised read makes
+    -- a `0` mean "the map is up", which would swallow TAB and tilde on every
+    -- frame of every session and leave the player with no inventory at all.
+    pauseMenu.shape = shape
+
+    local inv, players, invRelease = 0, 0, 0
+    BR.Keys.on('inventory', function(pressed)
+        if pressed then inv = inv + 1 else invRelease = invRelease + 1 end
+    end)
+    BR.Keys.on('players',   function(pressed) if pressed then players = players + 1 end end)
+
+    local TILDE_VK = 0xC0
+    local function tilde(down)
+        if down then
+            if not keys[TILDE_VK] then keys[TILDE_VK], edge[TILDE_VK] = true, true end
+        else
+            keys[TILDE_VK] = nil
+        end
+        engineKey('F2', down)
+    end
+
+    -- ── with no frontend, both keys work. The control, and it matters: every
+    -- assertion below is also satisfied by a gate that is stuck closed.
+    pauseMenu.active, pauseMenu.restarting = false, false
+    tapKey(true);  frames(2); tapKey(false);  frames(2)
+    tilde(true);   frames(2); tilde(false);   frames(2)
+    ok(inv == 1 and players == 1,
+       'with no frontend on screen TAB opens the inventory and tilde the player '
+       .. 'list, exactly as they always did',
+       ('inventory %d, players %d'):format(inv, players))
+
+    -- ── with the map up, neither reaches its listener.
+    pauseMenu.active = true
+    local invBefore, playersBefore = inv, players
+    local releaseBefore = invRelease
+    tapKey(true);  frames(2); tapKey(false);  frames(2)
+    tilde(true);   frames(2); tilde(false);   frames(2)
+    ok(inv == invBefore,
+       'and while the big map is up TAB does not open the inventory over it',
+       ('fired %d more time(s)'):format(inv - invBefore))
+    ok(players == playersBefore,
+       'nor does tilde open the player list',
+       ('fired %d more time(s)'):format(players - playersBefore))
+
+    -- ...BUT THE RELEASE IS NOT SWALLOWED, AND THAT ASYMMETRY IS DELIBERATE.
+    -- A release means "stop" to every listener in this project. Stopping
+    -- something that never started is a no-op; swallowing a release could
+    -- strand a listener that WAS already running when the map came up, which is
+    -- the shape of bug that leaves a panel open forever. The gate therefore
+    -- tests `pressed`, and this is the assertion that says so -- without it,
+    -- widening the gate to the whole event is a silent, passing edit.
+    ok(invRelease > releaseBefore,
+       'the RELEASE half still reaches the listeners while the map is up -- '
+       .. 'only the press is refused',
+       ('%d release(s) delivered during the map, %d before it'):format(
+           invRelease - releaseBefore, releaseBefore))
+
+    -- ── AND THE SCALEFORM'S REBUILD IS COVERED. Committing the map page
+    -- RESTARTS the pause menu, and a restarting menu reads as NOT ACTIVE for a
+    -- frame or two -- so a press landing in that window would slip through a
+    -- gate that only asked IsPauseMenuActive.
+    pauseMenu.active, pauseMenu.restarting = false, true
+    invBefore, playersBefore = inv, players
+    tapKey(true);  frames(2); tapKey(false);  frames(2)
+    tilde(true);   frames(2); tilde(false);   frames(2)
+    ok(inv == invBefore and players == playersBefore,
+       'and a press landing while the scaleform is mid-restart is refused too '
+       .. '-- IsPauseMenuRestarting is read beside IsPauseMenuActive',
+       ('inventory +%d, players +%d'):format(inv - invBefore,
+                                             players - playersBefore))
+
+    -- ── THE GATE CANNOT STICK, WHICH IS THE FAILURE THAT WOULD BE WORSE THAN
+    -- THE BUG. A player who cannot open their inventory for the rest of the
+    -- match is a far louder problem than a panel over a map, so the keys must
+    -- come back the moment the ENGINE says the menu is gone -- with nothing
+    -- reset, nothing restarted and no event sent to say so.
+    pauseMenu.active, pauseMenu.restarting = false, false
+    invBefore, playersBefore = inv, players
+    tapKey(true);  frames(2); tapKey(false);  frames(2)
+    tilde(true);   frames(2); tilde(false);   frames(2)
+    ok(inv == invBefore + 1 and players == playersBefore + 1,
+       'and both keys work again the moment the engine says the frontend has '
+       .. 'gone -- the gate is a question asked of the game, not a flag we hold',
+       ('inventory +%d, players +%d'):format(inv - invBefore,
+                                             players - playersBefore))
+
+    -- ═══ AND THE KEYS THAT CLOSE THE MAP STILL REACH IT ═══
+    --
+    -- THIS IS THE ASSERTION THAT STOPS THE FIX BEING WORSE THAN THE BUG. The
+    -- lazy version of this gate refuses EVERY action while a frontend is up,
+    -- and the two keys that dismiss the map -- M, which toggles it, and Escape,
+    -- which br_ui also answers -- are actions. Swallow those and the map is a
+    -- trap: it is full-screen, it is opaque, and the only way out is a console
+    -- the player does not have. He asked for two keys to stop working, and the
+    -- gate names exactly those two.
+    local mapPress, pausePress = 0, 0
+    BR.Keys.on('map',   function(pressed) if pressed then mapPress = mapPress + 1 end end)
+    BR.Keys.on('pause', function(pressed) if pressed then pausePress = pausePress + 1 end end)
+
+    pauseMenu.active, pauseMenu.restarting = true, false
+    local MAP_VK, ESC_VK = 0x4D, 0x1B
+    local function press(vk, keyName)
+        keys[vk], edge[vk] = true, true
+        engineKey(keyName, true)
+        frames(2)
+        keys[vk] = nil
+        engineKey(keyName, false)
+        frames(2)
+    end
+    press(MAP_VK, 'M')
+    press(ESC_VK, 'F1')
+    ok(mapPress == 1,
+       'the MAP key still reaches its listener while the map is up -- it is '
+       .. 'what closes the thing, and a gate that ate it would leave the player '
+       .. 'trapped behind a full-screen scaleform',
+       ('fired %d time(s)'):format(mapPress))
+    ok(pausePress == 1,
+       'and so does the pause key -- the gate names two actions rather than '
+       .. 'refusing everything a frontend happens to be covering',
+       ('fired %d time(s)'):format(pausePress))
+
+    -- ── `held` IS NEVER LEFT STUCK. It is written before the gate on purpose:
+    -- a map that comes up between a press and its release must not strand the
+    -- keyboard's idea of what is down.
+    pauseMenu.active = true
+    tapKey(true); frames(2)
+    pauseMenu.active = false
+    tapKey(false); frames(2)
+    ok(BR.Keys.isHeld('inventory') == false,
+       'a swallowed press does not leave the key stuck "held" -- the held state '
+       .. 'is written above the gate, not below it')
+
+    pauseMenu.shape = nil
+    pauseMenu.active, pauseMenu.restarting = false, false
+end
+
 --- A HOLD EARNS EVERY FRAME OF ITS LIFE, AND THEN COMPLETES.
 ---
 --- Asserted on the ACCUMULATOR and the duty cycle rather than only on the
@@ -2428,6 +2628,124 @@ do
     } })
     ok(queuedNow() == 1, 'a container opened beyond prop range still does not',
         tostring(queuedNow()))
+end
+
+describe('an item dropped under a bridge is grounded at the ped, not on the deck')
+do
+    -- ═══ THE 2026-09-03 REPORT, IN THE ONE NUMBER IT IS ABOUT ═══
+    --
+    -- Owner: "any time an inventory item is dropped and the ped is under a
+    -- bridge or other structure, the item goes on the ground on the upper
+    -- structure and not on the ground around the ped".
+    --
+    -- The server's copy of the position was never wrong. groundZ() probed DOWN
+    -- FROM 1200m for every entry alike, and the highest ground below 1200 in
+    -- the column under an overpass is the DECK -- dry, solid, well above sea
+    -- level -- so the probe did not fail, it succeeded with the freeway. The
+    -- spawn height, PlaceObjectOnGroundProperly, `restZ` and the arrival arc
+    -- all inherit that one number.
+    --
+    -- WHAT IS ASSERTED IS THE PROBE, NOT THE PROP, and that is a real limit of
+    -- this harness rather than a choice: CreateObjectNoOffset is stubbed to 0,
+    -- so drain() takes the noProp branch and no prop height is ever computed
+    -- here. groundZ IS the input to every one of those heights, so pinning it
+    -- pins the bug; a prop that renders in the wrong place with a right `gz`
+    -- would be a different bug in a different function.
+    bootOn(true, true)
+    clearWorld()
+
+    local ITEM = BR.Config.Consumables[1].id
+
+    -- AN OVERPASS. The ped stands on the road at 30 -- pedPos.z, so the harness
+    -- already agrees -- with a deck 14m over their head.
+    setGround({ 30.0, 44.0 })
+
+    --- What /brloot says the ground under the nearest entry is.
+    local function groundNow()
+        local line = lootLine('ground%s+%-?%d')
+        return line and tonumber(line:match('ground%s+(%-?%d+%.%d+)'))
+    end
+
+    --- Announce one entry beside the player and read back its ground height.
+    --- @param id integer
+    --- @param pz number|nil  the vouched ped root, or nil for generated loot
+    --- @param z number       the entry's own z hint
+    local function groundOf(id, pz, z)
+        clearWorld()
+        fire(BR.Net.LOOT_ADD, { {
+            id = id, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+            x = 1.0, y = 0.0, z = z, rarity = BR.Rarity.COMMON, count = 1,
+            pz = pz,
+        } })
+        frames(2)
+        return groundNow()
+    end
+
+    -- THE BUG, PRESERVED. A generated entry has no ped vouching for it -- its z
+    -- was authored from map knowledge and for roadside filler it is 0.0 -- so
+    -- the sky probe is still the only honest answer, and under a bridge it
+    -- still finds the deck. That is not a regression to fix here: nobody is
+    -- standing at that point to say otherwise, and starting low would put loot
+    -- back under the map on the Chiliad massif (2026-08-23).
+    ok(groundOf(9101, nil, 0.0) == 44.0,
+        'a generated entry under a structure still grounds on the deck -- '
+        .. 'nothing vouches for the floor',
+        tostring(groundOf(9101, nil, 0.0)))
+
+    -- THE FIX. The server measured a ped standing on the road at 30 and said
+    -- so, so the probe starts just above THAT and finds the road.
+    ok(groundOf(9102, 30.0, 30.0) == 30.0,
+        'a dropped entry the server vouched for grounds at the ped\'s feet',
+        tostring(groundOf(9102, 30.0, 30.0)))
+
+    -- AND THE VOUCH IS WHAT DID IT, not the entry's z. The same z with no `pz`
+    -- beside it goes back on the deck -- which is the difference between "the
+    -- client trusts a height off the wire" (it does not, and must not) and "the
+    -- server told it this one height was measured".
+    ok(groundOf(9103, nil, 30.0) == 44.0,
+        'while the same z with no vouch is still probed from the sky')
+
+    -- THE FALLBACK, WHICH IS WHAT MAKES THE LIFT SAFE TO PICK. A death scatter
+    -- flings stacks up to 4.6m from the corpse, so on a bank the far side of
+    -- the ring can sit above the vouched root and the low probe finds nothing
+    -- at all. It must fall through to the sky probe, NOT lose the entry: a
+    -- failed probe means no prop, which is this file's worst failure.
+    --
+    -- 5.0 is below every surface in this world, so the low probe answers false.
+    -- A ground of 44 is the fallback having run; a ground of 7 -- the entry's
+    -- own z, which is what groundZ returns when the probe fails -- is the prop
+    -- being lost.
+    ok(groundOf(9104, 5.0, 7.0) == 44.0,
+        'a vouch with no ground under it falls back to the sky probe rather '
+        .. 'than losing the prop',
+        tostring(groundOf(9104, 5.0, 7.0)))
+
+    -- A REPAIR CLEARS THE VOUCH SERVER-SIDE, and the re-announce has to move
+    -- the entry back onto the sky probe here. It arrives at the same x/y -- the
+    -- only thing that changed is `pz` going away -- so the "did anything
+    -- change?" test in addEntries has to notice a height-only change or the
+    -- entry keeps a stale `gz` for as long as the player stands there.
+    clearWorld()
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9105, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 1.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+        pz = 30.0,
+    } })
+    frames(2)
+    ok(groundNow() == 30.0, 'a vouched entry starts at the floor',
+        tostring(groundNow()))
+    fire(BR.Net.LOOT_ADD, { {
+        id = 9105, kind = BR.ItemKind.CONSUMABLE, item = ITEM,
+        x = 1.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+    } })
+    frames(2)
+    ok(groundNow() == 44.0,
+        'and a re-announce that dropped the vouch re-probes from the sky',
+        tostring(groundNow()))
+
+    -- FLAT GROUND AGAIN for everything downstream of this block.
+    setGround({ 30.0 })
+    clearWorld()
 end
 
 -- ------------------------------------------------------------------- voice ---
@@ -8368,10 +8686,20 @@ do
         'A SQUADMATE CLONE IS NEVER MARKED UNDAMAGEABLE -- disproven, #115',
         ('SetEntityCanBeDamaged on the mate: %s'):format(tostring(shielded[MATE])))
 
-    -- 2. REVERT-DETECTING. The group is not what stops a bullet and must not be
-    --    described as though it is, but the AI and melee paths do read it.
-    ok(grouped[MATE] == BR.Native.ALLY_GROUP,
-        'and IS still put in the ally group the AI and melee paths read',
+    -- 2. REVERT-DETECTING, AND IT NOW PINS THE OPPOSITE (#267). This file used
+    --    to write BR_ALLY onto a squadmate's clone every tick. That write never
+    --    landed: a ped's relationship group is a SYNCED field authored by the
+    --    machine that owns the ped, so the mate's own next broadcast undid it.
+    --    Worse, it is what the three 2026-08-05 "relationship groups do not stop
+    --    bullets" measurements were measuring -- a clone write, with friendly
+    --    fire globally on -- and that invalid result is why the group mechanism
+    --    was abandoned for the team system that broke squads PvP.
+    --
+    --    NOTHING IN THIS FILE MAY WRITE A GROUP AGAIN. Squad membership is
+    --    announced by each player about their OWN ped in client/natives.lua.
+    ok(grouped[MATE] == nil,
+        'and a squadmate clone is NEVER put in a relationship group either -- '
+            .. 'the owner announces their own, and this write never landed',
         ('group: %s'):format(tostring(grouped[MATE])))
 
     -- 3. OVERREACH-DETECTING. Whatever this file does, it does to squadmates
@@ -8390,8 +8718,16 @@ do
     fire(BR.Net.SQUAD_POS, {})
     tickBand()
     tickBand()
-    ok(grouped[MATE] == PLAYER_HASH,
-        'AND AN EX-SQUADMATE IS HANDED BACK to the default relationship group',
+    -- ...AND THERE IS NOTHING TO HAND BACK ANY MORE (#267). `releaseAlly` used
+    -- to restore the stock PLAYER group here, to undo a write that had itself
+    -- never landed. Both halves are gone: leaving a squad changes what the
+    -- EX-MATE announces about their own ped, which is the only write that was
+    -- ever going to replicate. nil is the passing answer and it is
+    -- revert-detecting -- PLAYER_HASH here means somebody put the clone write
+    -- back on the release path.
+    ok(grouped[MATE] == nil,
+        'and an ex-squadmate is not written to either, because nothing was '
+            .. 'written to them on the way in',
         ('group on the ex-mate: %s'):format(tostring(grouped[MATE])))
 
     ok(shielded[MATE] == nil and shielded[ENEMY] == nil,
@@ -8763,15 +9099,32 @@ do
 
     describe('a screen that keeps input is untouched')
     do
-        -- THE ALLOWLIST IS READ, NOT RESTATED. `inventory` is the single entry
-        -- in BR.FocusKeepsInput and this asserts the real table rather than the
-        -- name: add a second screen there tomorrow and this test starts
-        -- describing that too.
+        -- THE ALLOWLIST IS READ, NOT RESTATED. This asserts the real
+        -- BR.FocusKeepsInput rather than a copy of its contents, so the
+        -- exercises below describe whatever is actually in it.
+        --
+        -- ═══ THE LIST IS PINNED BECAUSE GROWING IT IS THE HAZARD ═══
+        --
+        -- A screen that keeps input while holding the cursor turns every
+        -- keystroke into a movement key. That is not hypothetical here:
+        -- `playersReport` was removed from this table because typing a note in
+        -- its text field walked the player off a roof. So the test names the
+        -- members -- adding one has to be a deliberate edit HERE, with a reason.
+        --
+        --   inventory  a grid of slots. No text field.
+        --
+        -- `tutorial` WAS HERE AND WAS TAKEN BACK OUT (2026-09-06), which is the
+        -- second time this table has shrunk and the second time for the same
+        -- reason: keeping input keeps ALL of it. The walkthrough's cards held
+        -- the cursor so their Next and Last could be pressed, and every drag
+        -- toward a button swung the camera while the cursor made the faded
+        -- lobby's invisible buttons clickable. The cards are driven by the arrow
+        -- keys now, read in Lua, and take no focus at all.
         local keepers = {}
         for s in pairs(BR.FocusKeepsInput) do keepers[#keepers + 1] = s end
         table.sort(keepers)
         ok(#keepers == 1 and keepers[1] == 'inventory',
-           'exactly one screen keeps game input, and it is the inventory',
+           'exactly one screen keeps game input, and it has no text field',
            table.concat(keepers, ', '))
 
         bootOn(true, true)
@@ -9996,7 +10349,29 @@ do
 
     local function noop2() end
     SetCanAttackFriendly = noop2
-    SetPedRelationshipGroupHash = noop2
+    -- RECORDED, NOT DISCARDED (#267). The relationship group is now what decides
+    -- who may shoot whom, so the group this client announces about its own ped
+    -- and the one row of the matrix it writes are the whole feature -- and a
+    -- rule nothing can observe is a rule the next edit deletes for free.
+    -- `rel[a][b]` is the acquaintance from a toward b: 0 companion, 5 hate.
+    relGroupOf, rel = {}, {}
+    function SetPedRelationshipGroupHash(ped, g) relGroupOf[ped] = g end
+    function AddRelationshipGroup(_) end
+    function SetRelationshipBetweenGroups(n, a, b)
+        rel[a] = rel[a] or {}
+        rel[a][b] = n
+    end
+
+    -- DISTINCT HASHES, because the file-wide stub answers every GetHashKey with
+    -- 1 and sixty-four groups that are all the number 1 is one group -- which is
+    -- precisely the bug under test, and it would pass by construction. Any
+    -- injective function of the string will do; this is joaat's shape without
+    -- its exactness, which nothing here depends on.
+    function GetHashKey(s)
+        local h = 0
+        for i = 1, #tostring(s) do h = (h * 31 + tostring(s):byte(i)) % 2147483647 end
+        return h
+    end
     SetCreateRandomCops = countCops
     SetCreateRandomCopsNotOnScenarios = countCops
     SetCreateRandomCopsOnScenarios = countCops
@@ -10036,6 +10411,9 @@ do
     -- This is the last suite, so nothing downstream is measuring the stub.
     loadAll({ 'br_core/client/natives.lua' })
     local N = BR.Native
+    -- GROUPS is built here, once, and applyGroup's matrix depends on it. The
+    -- real client gets this from onResourceStart; the harness has to say so.
+    N.buildGroups()
 
     ok(type(N.teamFor) == 'function' and type(N.SOLO_TEAM) == 'number',
         'natives.lua exposes the team decision as something testable at all',
@@ -10426,6 +10804,16 @@ do
         copFlags, invincibleWrites = 0, 0
         dispatch.off, dispatch.kinds = {}, {}
         dispatch.writes, dispatch.sweeps = 0, 0
+        -- The group announcement and the one row of the matrix it writes. Both
+        -- are the feature under test now, so both are cleared between cases or
+        -- a case would be reading the previous case's squad.
+        --
+        -- ...AND THE BUILD-TIME ROWS ARE PUT BACK, because in the real client
+        -- they are written once at resource start and never again. Clearing
+        -- them and not replaying them would make the PLAYER-hate assertion below
+        -- test the harness rather than the code.
+        relGroupOf, rel = {}, {}
+        N.buildGroups()
         N.forgetTeam()
         -- The rule latch is a memo like the team's, and for the same reason;
         -- a suite that forgot one and not the other would be measuring a
@@ -10433,54 +10821,127 @@ do
         N.forgetRules()
     end
 
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE GROUP IS THE FEATURE NOW, AND THE TEAM IS GONE (#267)
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- This block used to pin SetPlayerTeam and a gate that opened for solos.
+    -- The owner's playtest of 2026-09-03 falsified the inference underneath
+    -- both: two opposing squads hold DIFFERENT teams by construction and still
+    -- could not shoot each other, so the engine's friendly-fire check has no
+    -- team term. What it consults is whether the pair are FRIENDLY, and that is
+    -- decided by the relationship groups.
+    --
+    -- SO THE ASSERTIONS INVERT. The gate is closed for everybody, always, and
+    -- the asymmetry moves into one line of the matrix: my own squad's group is
+    -- companion toward itself, and every other pair is hate. A solo sets no
+    -- companion at all, which is what keeps two solos able to fight with the
+    -- gate closed.
+    local function myGroup() return relGroupOf[PlayerPedId()] end
+    local function selfRel(g) return g and rel[g] and rel[g][g] end
+
     reset()
     rules(1, twoSquads)
-    ok(team.last == select(1, seat(1, twoSquads)) and team.last ~= nil,
-        'IN A SQUAD, THE FRAME LOOP WRITES THE SQUAD TEAM',
-        ('SetPlayerTeam(%s), expected %s')
-            :format(tostring(team.last), tostring(select(1, seat(1, twoSquads)))))
+    local squadG = myGroup()
+    ok(squadG ~= nil and selfRel(squadG) == 0,
+        'IN A SQUAD, THE PLAYER ANNOUNCES THEIR SQUAD GROUP AND IT IS '
+            .. 'COMPANION TOWARD ITSELF -- the one line that protects a mate',
+        ('group %s, self-relationship %s')
+            :format(tostring(squadG), tostring(selfRel(squadG))))
 
     ok(gate.last == false and gate.kind == 'boolean',
         'and CLOSES the gate, with a real boolean and not a 1',
         ('NetworkSetFriendlyFireOption(%s) :: %s')
             :format(tostring(gate.last), tostring(gate.kind)))
 
-    -- THE ASSERTION THAT FAILS ON A GLOBAL FLIP, and the reason round seven's
-    -- recommendation was refused twice. A solo lobby with the gate closed is a
-    -- pacifist lobby, and solo is the DEFAULT MODE.
+    -- ═══ AND A SOLO IS HOSTILE TO THEMSELVES, WHICH IS THE WHOLE TRICK ═══
+    --
+    -- The old design kept the gate OPEN for solos, because with one shared group
+    -- a closed gate was a pacifist lobby. It is closed for them now and solo PvP
+    -- survives, because the solo group is never made companion toward itself --
+    -- so no two players in it are friendly and the gate has nobody to protect.
+    -- THIS IS THE ASSERTION THAT FAILS IF SOMEBODY MAKES THE COMPANION LINE
+    -- UNCONDITIONAL, which would switch off PvP for the default mode.
     reset()
     rules(1, mixed)
-    ok(gate.last == true and gate.kind == 'boolean',
-        'A SOLO LEAVES THE GATE OPEN -- PvP IS NOT SWITCHED OFF FOR THEM',
+    local soloG = myGroup()
+    ok(soloG ~= nil and soloG ~= squadG and selfRel(soloG) == 5,
+        'A SOLO IS IN THE SOLO GROUP AND IT HATES ITSELF -- PvP IS NOT '
+            .. 'SWITCHED OFF FOR THEM, EVEN WITH THE GATE CLOSED',
+        ('group %s (squad group %s), self-relationship %s')
+            :format(tostring(soloG), tostring(squadG), tostring(selfRel(soloG))))
+
+    ok(gate.last == false and gate.kind == 'boolean',
+        'and the gate is closed for them too -- it is a constant now, because '
+            .. 'friendliness is the groups\' business rather than the gate\'s',
         ('NetworkSetFriendlyFireOption(%s) :: %s')
             :format(tostring(gate.last), tostring(gate.kind)))
 
-    ok(team.last == N.SOLO_TEAM,
-        'and is put on the reserved solo team rather than left wherever it was',
-        ('SetPlayerTeam(%s)'):format(tostring(team.last)))
-
-    -- The memo: the team is a synced node, so it is written on change and on a
-    -- slow refresh, not sixty times a second.
+    -- ═══ A SQUAD GROUP HATES EVERY OTHER GROUP, IN BOTH DIRECTIONS ═══
+    --
+    -- The row and the column, because a stale relationship from a previous
+    -- squad would be a peace treaty with the squad this player just left.
     reset()
     rules(1, twoSquads)
-    rules(1, twoSquads)
-    rules(1, twoSquads)
-    ok(#team.writes == 1,
-        'the team is written once, not once a frame -- it dirties a sync node',
-        ('%d write(s)'):format(#team.writes))
+    local g = myGroup()
+    local hatesAll, sawOther = true, 0
+    for a, row in pairs(rel) do
+        for b, n in pairs(row) do
+            if (a == g or b == g) and a ~= b then
+                sawOther = sawOther + 1
+                if n ~= 5 then hatesAll = false end
+            end
+        end
+    end
+    ok(hatesAll and sawOther > 100,
+        'and hates every other group in both directions -- no stale peace '
+            .. 'treaty with the squad this client just left',
+        ('%d cross pairs, all hate: %s'):format(sawOther, tostring(hatesAll)))
 
-    fakeTime = fakeTime + 5000
+    -- ═══ AND HATES THE STOCK `PLAYER` GROUP, WHICH IS NOT ABOUT PVP ═══
+    --
+    -- REGRESSION-DETECTING, and the regression already happened once. BR_ALLY
+    -- hated PLAYER; the per-squad groups did not, and the first playtest of
+    -- them put a red wanted-search blip on the minimap on every shot (owner,
+    -- 2026-09-04). Firing from a group that is not hostile to the ambient world
+    -- is a CRIME, the closed-loop wanted suppression clears the level on the
+    -- next frame, and the search area is drawn and animated out in between.
+    -- Nothing else in the suite would catch its removal.
+    local stock = GetHashKey('PLAYER')
+    ok(rel[g] and rel[g][stock] == 5 and rel[stock] and rel[stock][g] == 5,
+        'and hates the stock PLAYER group in both directions, so firing is not '
+            .. 'a crime and no wanted search area is ever drawn',
+        ('group->PLAYER %s, PLAYER->group %s')
+            :format(tostring(rel[g] and rel[g][stock]),
+                    tostring(rel[stock] and rel[stock][g])))
+
+    -- The memo: the matrix is ~127 natives, so it is written on change and not
+    -- sixty times a second. The GROUP announcement is idempotent and rides the
+    -- heartbeat, which is what a fresh ped handle needs.
+    reset()
     rules(1, twoSquads)
-    ok(#team.writes == 2,
-        'and is re-asserted on a slow refresh, because a memo is only a belief',
-        ('%d write(s)'):format(#team.writes))
+    local afterOne = 0
+    for _ in pairs(rel) do afterOne = afterOne + 1 end
+    rules(1, twoSquads)
+    rules(1, twoSquads)
+    local afterThree = 0
+    for _ in pairs(rel) do afterThree = afterThree + 1 end
+    ok(afterOne > 0 and afterThree == afterOne,
+        'the matrix is written once, not once a frame -- it is 127 natives',
+        ('%d group rows after one frame, %d after three')
+            :format(afterOne, afterThree))
 
     reset()
     rules(1, twoSquads)
+    local first = myGroup()
     rules(3, twoSquads)
-    ok(#team.writes == 2 and team.last == select(1, seat(3, twoSquads)),
-        'a change of squad is written immediately, not at the refresh',
-        ('%d write(s), last %s'):format(#team.writes, tostring(team.last)))
+    local second = myGroup()
+    ok(first ~= nil and second ~= nil and first ~= second
+       and selfRel(second) == 0,
+        'a change of squad moves the player to the other squad\'s group '
+            .. 'immediately, and that group is companion toward itself',
+        ('%s -> %s, self-relationship %s')
+            :format(tostring(first), tostring(second), tostring(selfRel(second))))
 
     -- WARMUP PEACE IS A SEPARATE LEVER AND STAYS ONE. It is invincibility on
     -- the player's OWN ped -- owner-authored, which is why it has always
@@ -10493,8 +10954,9 @@ do
 
     reset()
     rules(1, mixed, BR.PlayerState.WARMUP)
-    ok(invincible == true and gate.last == true,
-        'including for a solo, whose gate is open the whole time',
+    ok(invincible == true and gate.last == false,
+        'including for a solo, whose gate is closed like everybody else\'s -- '
+            .. 'warmup peace is invincibility, and has never been the gate',
         ('invincible %s, gate %s')
             :format(tostring(invincible), tostring(gate.last)))
 
@@ -10926,32 +11388,31 @@ do
         ('%d sweep(s)'):format(dispatch.sweeps - baseSweeps))
 
     -- ==================================================================== --
-    -- 8. THE ONE-LINE WAY BACK
+    -- 8. NO TEAM IS EVER WRITTEN, AND THAT IS THE POINT
     -- ==================================================================== --
     --
-    -- The load-bearing inference cannot be settled from a desk, so the config
-    -- switch is the difference between a wrong guess costing one line and a
-    -- wrong guess costing a round. Pinned, because a kill switch nothing tests
-    -- is a kill switch that has stopped working by the time it is needed.
-
-    local was = BR.Config.Match.engineTeams
-    BR.Config.Match.engineTeams = false
+    -- This section used to pin `engineTeams = false`, the one-line way back
+    -- from an inference that could not be settled from a desk. The playtest
+    -- settled it -- against -- so the switch and the team it switched are both
+    -- gone, and what is pinned here now is their ABSENCE.
+    --
+    -- A KILL SWITCH FOR A MECHANISM THAT NO LONGER EXISTS IS WORSE THAN NO
+    -- SWITCH: an operator would set it, see no change, and conclude the fix had
+    -- failed. `SetPlayerTeam` survives only in /brnativecheck's probe, which
+    -- reports what the engine offers rather than using it.
     reset()
     rules(1, twoSquads)
+    rules(1, mixed)
+    rules(3, twoSquads)
     ok(#team.writes == 0,
-        'engineTeams = false NEVER TOUCHES SET_PLAYER_TEAM',
+        'SET_PLAYER_TEAM IS NEVER CALLED, in a squad or out of one -- the team '
+            .. 'predicate was falsified and the write went with it',
         ('%d write(s)'):format(#team.writes))
-    ok(gate.last == true and gate.kind == 'boolean',
-        'and holds the gate open exactly as e1f9f98 left it',
-        ('NetworkSetFriendlyFireOption(%s)'):format(tostring(gate.last)))
-    BR.Config.Match.engineTeams = was
 
-    reset()
-    rules(1, twoSquads)
-    ok(gate.last == false and #team.writes == 1,
-        'and turning it back on restores the gate on the next frame',
-        ('gate %s, %d team write(s)')
-            :format(tostring(gate.last), #team.writes))
+    ok(BR.Config.Match.engineTeams == nil,
+        'and the engineTeams switch is gone from the config rather than left '
+            .. 'as a lever that moves nothing',
+        tostring(BR.Config.Match.engineTeams))
 end
 
 -- ---------------------------------------------------------------------------
@@ -12024,7 +12485,7 @@ do
     frame(16)
     ok(not anyOff(MELEE_ON_Q), 'and a machete is allowed to swing')
 
-    -- 5. AND THE SEAT IS NOT A LICENCE. An armed player who gets out is back
+    -- 5. AND THE SEAT IS NOT A LICENSE. An armed player who gets out is back
     --    under the suppression on the very next frame -- the block is per-frame
     --    by contract and a latch here would be the punch bug with extra steps.
     fire(BR.Net.INV_SET, {
@@ -14408,8 +14869,12 @@ do
     HasSoundFinished = function() return finished end
 
     -- ═══ A CUE BY KEY, WHICH IS WHAT MAKES THE CONFIG AUDITIONABLE ═══
-    local done = BR.Config.Audio.cues['fuel.done']
-    brsfx('fuel.done')
+    -- DRIVEN ON fuel.start BECAUSE fuel.done NO LONGER EXISTS -- the owner
+    -- removed the completion cue on 2026-09-08 after two clips he disliked.
+    -- Any live key would do here; what is under test is that /brsfx resolves a
+    -- key against the table at all.
+    local done = BR.Config.Audio.cues['fuel.start']
+    brsfx('fuel.start')
     ok(#plays == 1 and plays[1].name == done.name and plays[1].set == done.set,
        '/brsfx <cue> plays whatever the cue table currently says',
        plays[1] and (tostring(plays[1].set) .. '/' .. tostring(plays[1].name)) or 'nothing')
@@ -14596,25 +15061,30 @@ do
            .. 'set of sounds somebody disliked', out:sub(-260))
     finished = false
 
-    -- ═══ bind: THE THIRD FUEL SOUND IS THE OWNER'S, AND THIS IS HOW THEY TRY IT ═══
+    -- ═══ bind: A CUE IS TRIED WHERE IT FIRES, NOT IN A MENU ═══
+    --
+    -- Written for the third fuel sound, which the owner never landed -- he
+    -- removed fuel.done rather than pick a third clip. The command outlives its
+    -- occasion: any cue can be re-pointed for the session and then heard in
+    -- place, which is the only way an audio choice is ever actually made.
     local wasSet, wasName = done.set, done.name
-    brsfx('bind', 'fuel.done', 'HUD_MINI_GAME_SOUNDSET', 'MEDAL_UP')
-    ok(BR.Config.Audio.cues['fuel.done'].set == 'HUD_MINI_GAME_SOUNDSET'
-       and BR.Config.Audio.cues['fuel.done'].name == 'MEDAL_UP',
+    brsfx('bind', 'fuel.start', 'HUD_MINI_GAME_SOUNDSET', 'MEDAL_UP')
+    ok(BR.Config.Audio.cues['fuel.start'].set == 'HUD_MINI_GAME_SOUNDSET'
+       and BR.Config.Audio.cues['fuel.start'].name == 'MEDAL_UP',
        'brsfx bind re-points a cue in the live table')
-    brsfx('fuel.done')
+    brsfx('fuel.start')
     ok(plays[1] and plays[1].name == 'MEDAL_UP',
        'and the cue really plays the new pair afterwards -- which is what lets '
            .. 'a candidate be judged at a pump instead of in a menu')
 
     -- IT REFUSES A KEY THAT IS NOT A CUE, rather than inventing one. A typo
-    -- that silently created `fuel.donne` would leave the owner auditioning a
+    -- that silently created `fuel.starrt` would leave the owner auditioning a
     -- cue nothing fires.
-    brsfx('bind', 'fuel.donne', 'HUD_AWARDS', 'WIN')
-    ok(BR.Config.Audio.cues['fuel.donne'] == nil,
+    brsfx('bind', 'fuel.starrt', 'HUD_AWARDS', 'WIN')
+    ok(BR.Config.Audio.cues['fuel.starrt'] == nil,
        'and a misspelled cue key is refused rather than quietly created')
 
-    BR.Config.Audio.cues['fuel.done'] = { set = wasSet, name = wasName }
+    BR.Config.Audio.cues['fuel.start'] = { set = wasSet, name = wasName }
 
     -- ═══ THE MATCH-WIDE CUE ARRIVING FROM THE SERVER ═══
     --
@@ -15350,6 +15820,284 @@ do
     ok(#plays > 0, 'nor is an explicit false')
 
     PlaySoundFrontend = savedPlay
+end
+
+-- ======================================================================== --
+-- 30. A PLAYER WHO HAS NEVER OPENED THE LOCKER IS HANDED A RANDOM CHARACTER
+-- ======================================================================== --
+--
+-- THE REQUEST (owner, 2026-09-02): "please make the default ped a random one
+-- from our locker. If they've not chosen one, they'll get a random one. If
+-- they've already chosen one from a previous match we'll still respect it."
+--
+-- TWO HALVES, AND THE SECOND ONE IS THE ONE THAT BREAKS. The roll is three
+-- lines; what has to keep working is everything that reads the answer. The
+-- stored choice must still win, the roll must be the SAME id every time it is
+-- asked -- client/loading.lua holds the loading screen until this id's model is
+-- on the player and client/lobbyped.lua holds the entrance walk on the same
+-- comparison, so an id that changed per call is a gate nothing can satisfy --
+-- and the roll must end up in kvp, or "already chosen one from a previous
+-- match" would be false for every player who never opened the screen.
+--
+-- WHY THE FILE IS RELOADED PER SCENARIO. The roll is memoised in a local, which
+-- IS the feature: a second scenario run against the same chunk would be reading
+-- the first scenario's answer rather than making one. Every scenario below gets
+-- a client that has just started.
+--
+-- WHAT IS MEASURED IS THE CONSEQUENCE. No assertion asks whether some helper
+-- ran; they ask what BR.Locker.chosen() answered and what was left in kvp,
+-- because those two are what the rest of the game reads.
+do
+    describe('the default character is rolled once and then it is theirs')
+
+    local KVP = 'br:locker:ped'
+
+    local prev = {
+        Citizen         = Citizen,
+        GetHashKey      = GetHashKey,
+        register        = BR.Loop.register,
+        meState         = BR.State.me.state,
+        initHealthModel = BR.Native.initHealthModel,
+        addHandler      = AddEventHandler,
+        registerCommand = RegisterCommand,
+        random          = math.random,
+    }
+
+    do
+        local chunk, err = loadfile(ROOT .. 'br_lib/config/peds.lua')
+        if not chunk then
+            realPrint('\27[31mload error\27[0m peds.lua: ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    -- THREADS RUN INLINE. apply() does its whole swap -- and the kvp write that
+    -- makes a roll stick -- inside a Citizen thread, and this suite's default
+    -- no-op CreateThread would make every assertion about what was stored
+    -- vacuously true.
+    Citizen = { CreateThread = function(fn) fn() end,
+                Wait = function() end, SetTimeout = function() end }
+
+    -- A hash that is a function of the NAME. This suite's GetHashKey answers 1
+    -- for everything, which would make "this build does not have that model"
+    -- unstateable -- every model would be the same model, and the roster filter
+    -- the roll draws through could not be tested at all.
+    local function hashOf(s)
+        local h = 0
+        for i = 1, #tostring(s) do h = (h * 31 + tostring(s):byte(i)) % 2147483647 end
+        return h
+    end
+    GetHashKey = function(s) return hashOf(s) end
+
+    --- Models this simulated BUILD does not have, by hash.
+    local absent = {}
+    function IsModelInCdimage(h) return not absent[h] end
+    function IsModelAPed() return true end
+    function GetEntityHeading() return 0.0 end
+    function SetPedDefaultComponentVariation() end
+    function SetPedCanRagdoll() end
+
+    --- The model actually put on the player, or nil.
+    local swapped = nil
+    function SetPlayerModel(_p, hash) swapped = hash end
+
+    BR.Native.initHealthModel = function() end
+    BR.State.me.state = BR.PlayerState.LOBBY
+
+    -- locker.lua registers two loop callbacks BY NAME and BR.Loop.register
+    -- refuses a duplicate name outright, so the second reload below would throw.
+    -- Captured instead -- and `locker.initial` is the first-lobby tick, so
+    -- holding it is also how the "and then it is theirs" half gets driven.
+    local ticks = {}
+    BR.Loop.register = function(_band, name, fn) ticks[name] = fn; return {} end
+
+    -- The file's three handlers and its command are not what is under test, and
+    -- registering them once per reload would leave eighty copies behind for
+    -- anything added after this block.
+    AddEventHandler = function() end
+    RegisterCommand = function() end
+
+    --- What this client's generator answers, in order. Past the end it repeats
+    --- the last one, so a scenario states only as many as it cares about.
+    ---
+    --- IT STILL ANSWERS INSIDE THE RANGE IT WAS ASKED FOR, which is not
+    --- pedantry: the block below shrinks the roster to one entry, and a stub
+    --- that handed back "17" for math.random(1) would be testing a generator no
+    --- Lua has rather than the code that calls it.
+    local rolls, rollAt = { 1 }, 0
+    math.random = function(n)
+        rollAt = rollAt + 1
+        local v = rolls[rollAt] or rolls[#rolls] or 1
+        return ((v - 1) % (n or 1)) + 1
+    end
+
+    --- A client that has just started. Leaves kvp alone: a scenario says what a
+    --- previous session stored by writing it before calling this.
+    --- @param rollList table|nil
+    local function boot(rollList)
+        rolls, rollAt = rollList or { 1 }, 0
+        swapped = nil
+        ticks = {}
+        local chunk = assert(loadfile(ROOT .. 'br_core/client/locker.lua'))
+        chunk()
+    end
+
+    -- ---------------------------------------------------- the roll itself ---
+
+    describe('a fresh account is given a random character from the roster')
+    do
+        kvpStore[KVP] = nil
+        boot({ 3 })
+        ok(BR.Locker.chosen() == BR.Config.Peds[3].id,
+           'a player who has never picked one is handed the character the roll '
+               .. 'landed on', BR.Locker.chosen())
+
+        -- AND IT IS NOT THE OLD DEFAULT WEARING A NEW NAME. The roster's first
+        -- entry was the default until today; a change that kept returning it
+        -- would satisfy "an id from the list" and nothing the owner asked for.
+        kvpStore[KVP] = nil
+        boot({ 12 })
+        ok(BR.Locker.chosen() == BR.Config.Peds[12].id
+           and BR.Locker.chosen() ~= BR.Config.Peds[1].id,
+           'a different roll is a different character -- the first entry is no '
+               .. 'longer everybody', BR.Locker.chosen())
+    end
+
+    describe('every character in the locker can come up')
+    do
+        -- NOTHING IS QUIETLY HELD BACK. "A random one from our locker" is the
+        -- whole locker, and an exclusion list added later -- the costumes, say,
+        -- which the roster comment calls out as not what a default should look
+        -- like -- would be a decision he did not ask for. This is the assertion
+        -- that would notice one.
+        local seen, missing = {}, {}
+        for k = 1, #BR.Config.Peds do
+            kvpStore[KVP] = nil
+            boot({ k })
+            seen[BR.Locker.chosen()] = true
+        end
+        for _, p in ipairs(BR.Config.Peds) do
+            if not seen[p.id] then missing[#missing + 1] = p.id end
+        end
+        ok(#missing == 0,
+           'every one of the roster\'s characters is reachable by some roll',
+           #missing > 0 and table.concat(missing, ', ') or nil)
+    end
+
+    -- --------------------------------------------- the answer does not move ---
+
+    describe('the answer does not change between the reads that gate the lobby')
+    do
+        -- THE ASSERTION THE LOADING SCREEN DEPENDS ON. loading.lua and
+        -- lobbyped.lua both ask this question and compare the answer to the
+        -- model on the player; a roll made per call would be eight seconds of
+        -- black followed by a walk that starts on a ped nobody is waiting for.
+        kvpStore[KVP] = nil
+        boot({ 5, 9, 21, 2, 40 })
+        local first = BR.Locker.chosen()
+        local same = true
+        for _ = 1, 5 do
+            if BR.Locker.chosen() ~= first then same = false end
+        end
+        ok(same, 'asked six times, with the generator answering differently '
+                 .. 'every time, it is the same character', first)
+        ok(first == BR.Config.Peds[5].id,
+           'and it is the first roll, not the last', first)
+    end
+
+    -- ------------------------------------------------- the stored choice wins ---
+
+    describe('a character picked in a previous session is respected exactly')
+    do
+        -- THE ROLL IS SET TO SOMETHING ELSE ON PURPOSE. Pointing the generator
+        -- at the stored character would let a build that ignored kvp entirely
+        -- pass this by coincidence, which is exactly what it did the first time
+        -- it was written.
+        kvpStore[KVP] = 'clown'
+        boot({ 40 })
+        rollAt = 0
+        ok(BR.Locker.chosen() == 'clown'
+           and BR.Config.Peds[40].id ~= 'clown',
+           'a stored choice is what the player gets, not what the roll wanted',
+           BR.Locker.chosen())
+        -- AND THE GENERATOR IS NEVER CONSULTED, which is a stronger claim than
+        -- the one above and the one that survives a refactor: a build that
+        -- rolled first and then overwrote the answer with the stored id would
+        -- pass the assertion above and would have burned a roll to do it.
+        ok(rollAt == 0,
+           'and nothing was rolled at all -- the stored choice is read first',
+           rollAt)
+    end
+
+    -- ------------------------------------------------ and the roll is kept ---
+
+    describe('the first lobby stores the roll, so the next session is not somebody new')
+    do
+        kvpStore[KVP] = nil
+        boot({ 7 })
+        local handed = BR.Locker.chosen()
+
+        -- THE FIRST LOBBY TICK, WHICH IS WHERE THE CHARACTER IS ACTUALLY PUT ON.
+        ticks['locker.initial'](0)
+        ok(swapped == hashOf(BR.PedById(handed).model),
+           'the character the roll landed on is the one put on the player',
+           tostring(swapped))
+        ok(kvpStore[KVP] == handed,
+           'and it is stored, exactly as a pick in the locker would be',
+           tostring(kvpStore[KVP]))
+
+        -- ═══ THE NEXT SESSION ═══
+        --
+        -- A brand-new client, a generator that would answer something else, and
+        -- the kvp left exactly as the last one wrote it. This is the owner's
+        -- second sentence, and it is the half a re-roll-per-session build would
+        -- fail: 'respect it' has to hold for the character we handed out too.
+        boot({ 40 })
+        ok(BR.Locker.chosen() == handed,
+           'the next session is the same character, not another roll',
+           BR.Locker.chosen())
+    end
+
+    -- ---------------------------------- and only models this build actually has ---
+
+    describe('the roll cannot land on a model this build does not have')
+    do
+        -- EVERY MODEL NAME IN THE ROSTER IS HAND-TYPED and two already were
+        -- wrong (locker.lua, user 2026-08-09). A roll onto one of those spends
+        -- five seconds in RequestModel and leaves the player wearing GTA's own
+        -- ped through the whole of their first lobby -- a worse first
+        -- impression than the fixed default this replaces, and invisible from
+        -- the desk. So the draw is made through the verified roster.
+        local keep = BR.Config.Peds[#BR.Config.Peds]
+        absent = {}
+        for _, p in ipairs(BR.Config.Peds) do
+            if p.id ~= keep.id then absent[hashOf(p.model)] = true end
+        end
+
+        local wrong = {}
+        for _, k in ipairs({ 1, 2, 5, 17, 33, 60, #BR.Config.Peds }) do
+            kvpStore[KVP] = nil
+            boot({ k })
+            if BR.Locker.chosen() ~= keep.id then
+                wrong[#wrong + 1] = ('%d->%s'):format(k, BR.Locker.chosen())
+            end
+        end
+        ok(#wrong == 0,
+           'with one model left on the build, every roll lands on that one',
+           #wrong > 0 and table.concat(wrong, ' ') or nil)
+        absent = {}
+    end
+
+    Citizen                  = prev.Citizen
+    GetHashKey               = prev.GetHashKey
+    BR.Loop.register         = prev.register
+    BR.State.me.state        = prev.meState
+    BR.Native.initHealthModel = prev.initHealthModel
+    AddEventHandler          = prev.addHandler
+    RegisterCommand          = prev.registerCommand
+    math.random              = prev.random
+    kvpStore[KVP]            = nil
 end
 
 realPrint(('%s%d passed, %d failed\27[0m')

@@ -46,6 +46,15 @@ import VoiceMark from './VoiceMark'
  * answers "roughly how much?" at a glance and that is all it will ever answer;
  * "can I get there in time" and "is he one shot from down" are questions with
  * digits in them.
+ *
+ * ...AND THE ONE DEADLINE THAT IS A LENGTH AGAIN, WHICH IS NOT A REVERSAL. The
+ * key's pickup window drew as `142s` beside the key mark until 2026-09-02, when
+ * the owner replaced it with "a red line at the bottom of the player's card".
+ * The rule above still holds and this is the case it does not cover: the
+ * question a squad asks about a key is "is there still time", not "how many
+ * seconds" -- nobody paces a run across the map off a number -- and the digits
+ * were the half of it that needed a caption to say what they counted. See
+ * KeyDrain.
  */
 
 type Phase = 'alive' | 'down' | 'dying' | 'dead'
@@ -99,19 +108,24 @@ function useDeathSequence(m: SquadMember) {
  * this number, and the only player who could see it was the one who could do
  * nothing with it.
  *
- * ...AND HOW LONG THEIR KEY WILL LIE THERE. Owner, 2026-08-31: "If there is a
- * timer to pickup their key, display it in the squad panel." It was BleedClock
- * until that sentence, and generalising beat writing a second one: everything
- * below -- the interval, the offset, the direct write, the rounding, the
- * trailing `s` -- is a decision this panel has already made about what a
- * countdown IS, and a second component would be a second place for all of it to
- * be got subtly differently.
+ * IT COUNTED THE KEY'S PICKUP TOO, FROM 2026-08-31 UNTIL 2026-09-02, and the
+ * owner has replaced that half with a shape:
+ *
+ *   "the timer is not clear either. It should be more obvious what that timer
+ *    means."
+ *   "what if we put a red line at the bottom of the player's card to represent
+ *    the timer? The bar will become less filled (akin to the bleed out timer
+ *    card) as the time runs out"
+ *
+ * So the pickup is `KeyDrain` below and this is a bleed clock again. The `big`
+ * and `colour` props it grew to serve two callers are gone with the second
+ * caller: a prop nothing passes is a claim about flexibility that no longer has
+ * a case behind it, and the comment explaining it would have been the first
+ * thing to go stale.
  *
  * ONE FORMAT, INCLUDING PAST A MINUTE. `Math.ceil(left / 1000)` and an `s`,
- * whatever the number. The bleed clock already runs from 120s
- * (BR.Config.Match.dbnoBleedBase) so three-digit seconds are not new here, and
- * an `m:ss` for the three-minute pickup would have made the two clocks on one
- * row disagree about what a countdown looks like.
+ * whatever the number -- the bleed runs from 120s (BR.Config.Match.dbnoBleedBase)
+ * so three-digit seconds are normal here.
  *
  * THE SAME NUMBER THE DOWNED PLAYER IS WATCHING, by construction: same field,
  * same clock, same `Math.ceil(left / 1000)` and the same trailing `s` as
@@ -137,14 +151,7 @@ function useDeathSequence(m: SquadMember) {
  * text is only written when it actually differs, so a tick that changes nothing
  * touches no DOM at all.
  */
-function RowClock({ endsAt, big, colour = 'var(--color-danger)' }: {
-  endsAt: number
-  big?: boolean
-  /** The clock wears the state it belongs to. The bleed deadline is danger --
-   *  it always was. The pickup deadline is the shade of the key mark it sits
-   *  beside, so the pair reads as one object rather than as two facts. */
-  colour?: string
-}) {
+function RowClock({ endsAt }: { endsAt: number }) {
   const ref = useRef<HTMLSpanElement>(null)
   const offset = useUi((s) => s.clockOffset)
 
@@ -164,16 +171,148 @@ function RowClock({ endsAt, big, colour = 'var(--color-danger)' }: {
   return (
     <span
       ref={ref}
-      // `big` is the bars' slot, where this is the row's only number and
-      // should read as such. 0.72rem is the corner-stamp size it had when it
-      // shared a line with the state word.
-      className={`font-display leading-none tabular-nums shrink-0 ${
-        big ? 'text-[1.05rem]' : 'text-[0.72rem]'
-      }`}
-      style={{ color: colour, textShadow: 'var(--shadow-text)' }}
+      // The bars' slot, where this is the row's only number and should read as
+      // such. 1.05rem was `big`, and it is the only size this ever draws at now
+      // -- see the header for the caller that went away.
+      className="font-display leading-none tabular-nums shrink-0 text-[1.05rem]"
+      style={{ color: 'var(--color-danger)', textShadow: 'var(--shadow-text)' }}
     >
       --
     </span>
+  )
+}
+
+/**
+ * HOW MUCH OF THE PICKUP WINDOW IS LEFT, AS A LINE ALONG THE CARD'S FOOT.
+ *
+ * ═══ THE OWNER'S DESIGN, 2026-09-02, IN HIS WORDS ═══
+ *
+ *   "what if we put a red line at the bottom of the player's card to represent
+ *    the timer? The bar will become less filled (akin to the bleed out timer
+ *    card) as the time runs out"
+ *
+ * It replaces a `142s` that sat in the corner beside the key mark, which he had
+ * just reported: "the timer is not clear either. It should be more obvious what
+ * that timer means." A number needs a label to say what it counts; a bar
+ * emptying along the bottom of one mate's card is already the sentence.
+ *
+ * ═══ IT IS THE BLEED CARD'S BAR, NOT A SECOND ONE ═══
+ *
+ * "(akin to the bleed out timer card)" names the reference, so this is that
+ * markup: the same `bg-black/60` track, the same `.bar-fill` child scaled with
+ * `transform: scaleX()`, the same `h-[0.2rem]`, and the same
+ * `var(--color-danger)`. See DbnoOverlay's bar -- and its note on why the total
+ * is HELD IN A REF rather than recomputed, which this inherits along with
+ * everything else.
+ *
+ * ⚠ THE COLOUR IS THE TOKEN AND NOT A RED. `--color-danger` is one of the four
+ * this interface remaps for colourblind modes -- index.css, and DbnoOverlay's
+ * own note where it reaches for `--color-hp` "rather than a literal green". A
+ * hex here would be a bar that stops matching the card it was asked to look
+ * like the day somebody changes the setting.
+ *
+ * ═══ ON AN INTERVAL, WHICH IS WHERE IT PARTS FROM THAT CARD ═══
+ *
+ * DbnoOverlay drives its bar on rAF because a bleed is 120 seconds across a
+ * 14rem placard. This is 180 seconds across a 13rem card that is one of up to
+ * four: the fill moves about a pixel a second, and three rAF loops to do that
+ * would be ~180 wakeups a second for sub-pixel motion. `.bar-fill` already
+ * carries a 300ms linear transition built to blend 250ms-stepped writes into
+ * continuous motion (see index.css), so a 250ms interval through it looks
+ * identical and is this panel's existing clock discipline -- RowClock above
+ * makes the same trade for the same reason.
+ *
+ * THE DENOMINATOR IS THE FIRST READING, RE-SEEDED WHEN THE DEADLINE CHANGES.
+ * The panel is told when the pickup ends and never how long it was, so the bar
+ * is "of what is left from when I first saw it" -- full on the frame a mate goes
+ * out, which is when everybody is looking at it. A `totalRef` reset keyed to
+ * `endsAt` is what makes the next key start full instead of inheriting the last
+ * one's scale.
+ *
+ * ═══ AND THE RED BREATHES, WHICH IS THE SECOND HALF OF THE SAME REQUEST ═══
+ *
+ * Owner, 2026-09-02: "For the red line on the squad bar - please make the red
+ * pulse fade so it looks urgent."
+ *
+ * `.mate-pulse` -- THIS PANEL'S OWN PULSE, NOT A FOURTH ANIMATION. `matePulse`
+ * is opacity 1 -> 0.35 -> 1 over 800ms, and it is already what this row uses to
+ * say a state is live and cannot wait: the colour tag beside a DOWNED mate wears
+ * it. A key on the ground is the same kind of fact, so it gets the same beat
+ * rather than a private one, and the two pulse in step on a row that can carry
+ * both.
+ *
+ * THE OTHER TWO PULSES IN THIS INTERFACE WERE READ AND BOTH ARE WRONG HERE:
+ *
+ *   `hotEdge` (.panel-hot, the bleed card) animates BORDER-COLOUR, and it
+ *   animates it to `rgba(255,255,255,0.55)`. This bar has no border to breathe,
+ *   and the owner's rule for it is that the red stays `--color-danger` -- a
+ *   pulse that flips to white every 800ms is a second colour.
+ *
+ *   `talkPulse` (.mate-talk, the voice mark on this very row) animates opacity
+ *   AND `transform: scale()`. A transform keyframe on this element would WIN
+ *   over the inline `transform` the tick writes -- animations beat inline styles
+ *   in the cascade -- so the bar would pulse beautifully and stop draining
+ *   entirely. That is the failure this note exists to stop somebody making by
+ *   reaching for the nearest pulse.
+ *
+ * IT IS ON THE FILL, NOT ON THE TRACK. He asked for the RED to pulse; fading the
+ * track would blink the black groove and the empty part of the line with it,
+ * which reads as the card's edge flickering rather than as a countdown.
+ *
+ * OPACITY ONLY, WHICH KEEPS IT OFF THE LAYOUT THREAD -- and off the transform
+ * channel the drain owns. ui-src/scripts/check-ui.mjs R7 refuses a keyframe that
+ * animates width, height, top, left, margin, padding or box-shadow; #257 records
+ * that its list is seven properties long and would not have caught a transform
+ * here, so the guard against that one is the assertion in
+ * tools/check_squad_key.lua rather than R7.
+ *
+ * ⚠ IT DOES NOT TIGHTEN AS THE TIME RUNS OUT, and that is a decision. The bar's
+ * LENGTH is already the "how long" channel -- a 6% sliver and a full-width line
+ * do not look remotely alike -- so a pulse that also encoded time would be one
+ * object carrying two readings of one number, which is the trap KeyMark's header
+ * argues against next door. What the pulse is for is that the line is worth
+ * looking at AT ALL, and that is true at 180 seconds: the squad has to notice
+ * there is a key down and start running. He asked for urgent, not for a
+ * threshold; if he wants it to quicken at the end, that is one number.
+ */
+function KeyDrain({ endsAt }: { endsAt: number }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const offset = useUi((s) => s.clockOffset)
+  const totalRef = useRef(0)
+
+  useEffect(() => {
+    totalRef.current = 0
+    const tick = () => {
+      const left = Math.max(0, endsAt - (Date.now() + offset))
+      if (totalRef.current <= 0) totalRef.current = Math.max(1, left)
+      if (ref.current) {
+        ref.current.style.transform =
+          `scaleX(${Math.min(1, left / totalRef.current)})`
+      }
+    }
+    tick()
+    const id = window.setInterval(tick, 250)
+    return () => window.clearInterval(id)
+  }, [endsAt, offset])
+
+  return (
+    // ALONG THE FOOT OF THE PLATE, which is `position: relative` already (see
+    // index.css `.plate`) and clips its own bottom-left chamfer -- so the line
+    // ends where the card's corner is cut rather than overhanging it.
+    //
+    // `pointer-events-none` because the plate is a readout: nothing in this
+    // panel is clickable and a strip that could swallow a hover is a bug
+    // waiting for the day something is.
+    <div className="absolute inset-x-0 bottom-0 h-[0.2rem] overflow-hidden bg-black/60 pointer-events-none">
+      {/* `mate-pulse` FADES THE RED; `bar-fill` OWNS THE TRANSFORM. Two classes
+          on two different channels on purpose -- see the header. Do not move the
+          pulse onto a class that touches `transform`, or the drain stops. */}
+      <div
+        ref={ref}
+        className="bar-fill mate-pulse h-full"
+        style={{ width: '100%', background: 'var(--color-danger)' }}
+      />
+    </div>
   )
 }
 
@@ -340,13 +479,41 @@ const KEY_PATH =
   + 'M4.7 6.25a1.75 1.75 0 1 1 0 3.5a1.75 1.75 0 1 1 0-3.5Z'
   + 'M7.5 6.9H15.4V12.2H14.2V9.1H12.8V12.2H11.6V9.1H7.5Z'
 
+/**
+ * ═══ AND IT IS DRAWN AT NEARLY TWICE THE INK, IN THE SAME BOX HEIGHT ═══
+ *
+ * "The key inside the squad panel isn't very clear - should be larger."
+ *
+ * THE BOX WAS SQUARE AND THE KEY IS NOT. KEY_PATH occupies x 0.5..15.4 and
+ * y 3.8..12.2 of a 16x16 viewBox -- so a square box spent 47% of its height on
+ * empty space above and below the glyph, and `meet` scaled the drawing down to
+ * fit the wasted band: 0.89rem by 0.50rem of visible key inside a 0.95rem box.
+ * Cropping the viewBox to the path's own extent and giving the span that same
+ * aspect draws the SAME path at 1.69rem by 0.95rem -- 1.9x in both directions,
+ * about three and a half times the ink -- with no new geometry authored.
+ *
+ * ═══ 0.95rem STAYS, AND THAT IS THE HALF THAT PROTECTS THE PANEL ═══
+ *
+ * The header above records the arithmetic: this mark is the only `align-self:
+ * center` item in a baseline-aligned group, so it alone sets how far that group
+ * reaches below the row's baseline, and a taller one grows every dead and downed
+ * plate while live ones stay put -- 0.6px, invisible in review, which is the bug
+ * VoiceMark's note next door was written after. The obvious edit is to raise the
+ * square box and it is exactly that bug. HEIGHT IS UNCHANGED; only the aspect
+ * moved, so the group's cross-extent is the number it has always been.
+ */
+const KEY_VIEWBOX = '0.5 3.8 14.9 8.4'
+
 function KeyMark({ held }: { held: boolean }) {
   return (
     <span
       className="shrink-0"
       style={{
         display: 'block',
-        width: '0.95rem',
+        // See KEY_VIEWBOX: the aspect is the glyph's own now, and the HEIGHT is
+        // the one it has always had -- which is what keeps the plate's height
+        // arithmetic rather than luck.
+        width: '1.685rem',
         height: '0.95rem',
         // See the note above, and VoiceMark's: a flex row with no
         // baseline-aligned item takes its baseline from the bottom edge of its
@@ -360,7 +527,7 @@ function KeyMark({ held }: { held: boolean }) {
       aria-hidden
     >
       <svg
-        viewBox="0 0 16 16"
+        viewBox={KEY_VIEWBOX}
         style={{ display: 'block', width: '100%', height: '100%' }}
         aria-hidden
       >
@@ -489,7 +656,17 @@ function Row({ m, talking, silent }: {
                 and it is what lets the glyphs cross-fade instead of blinking.
                 See VoiceMark. */}
             <VoiceMark fs="0.72rem" talking={talking} silent={silent} />
-            <span className="text-[0.72rem] font-semibold truncate">{m.name}</span>
+            {/* data-tut: the in-game walkthrough outlines the NAME on its own
+                (#261) -- owner, 2026-09-04: "for smaller things we should draw a
+                box around them to show what part is being described."
+
+                EVERY PLATE CARRIES IT AND THE LAYER TAKES THE FIRST. The panel
+                is a list of identical rows, so a per-row id would be four
+                anchors describing one idea; querySelector returns the topmost
+                plate, which is the one a card pointing at "a squadmate" should
+                mean. */}
+            <span data-tut="squad-name"
+                  className="text-[0.72rem] font-semibold truncate">{m.name}</span>
             {/* NOTHING AT ALL WHEN THE SERVER HAS NOT SAID, which is the same
                 rule the bleed clock below follows. A missing level means the
                 mate's profile has not come back from the database yet -- so the
@@ -504,10 +681,7 @@ function Row({ m, talking, silent }: {
             )}
           </span>
           {(dead || downed) && (
-            // The stamp and the clock travel together on the right edge. The
-            // clock is deliberately NOT inside the stamp: .mate-stamp is a
-            // scale animation that replays on every state change, and a
-            // countdown living inside it would pop once a second.
+            // The mark and the stamp travel together on the right edge.
             <span className="flex items-baseline gap-1 shrink-0">
               {/* THE KEY COMES BEFORE THE STAMP, so DOWN and OUT keep the
                   right edge they have always had and the rows stay aligned
@@ -518,37 +692,17 @@ function Row({ m, talking, silent }: {
                   and because that group is the only part of the row a dead
                   plate still draws (the bars and the bleed clock both go).
 
+                  ITS DEADLINE IS NOT HERE ANY MORE. A `142s` sat beside it
+                  until 2026-09-02; the owner replaced it with a line along the
+                  foot of the card (see KeyDrain, rendered on the plate below).
+                  The MARK stays here because it outlives that line: the key is
+                  still 25 Volts at an ambulance after the pickup expires, which
+                  is the fact this glyph carries and the bar does not.
+
                   NOTHING AT ALL WHEN THERE IS NO KEY, which is this panel's
                   standing rule for an absent field: see the bleed clock below
                   and the level above. */}
               {(keyHeld || keyOut) && <KeyMark held={keyHeld} />}
-              {/* HOW LONG IS LEFT TO WALK TO THE BODY.
-
-                  Owner, 2026-08-31: "If there is a timer to pickup their key,
-                  display it in the squad panel."
-
-                  IT IS THE SAME CLOCK COMPONENT THE BLEED DEADLINE USES, which
-                  is the point: one clock discipline (an interval, not rAF; the
-                  server deadline against Date.now() + clockOffset; written
-                  straight to the node), one rounding, and one format. A second
-                  spelling of a countdown on one panel is two answers to "how
-                  many seconds is that" -- and the bleed clock already runs past
-                  a minute (dbnoBleedBase is 120s), so `m:ss` here would have
-                  been the odd one out rather than the tidy one.
-
-                  IT COMES WITH THE MARK, NOT WITH THE STAMP. The deadline is a
-                  fact about the KEY, so it sits next to the key in the key's own
-                  shade; OUT and DOWN keep the right edge every row shares.
-
-                  NOTHING AT ALL ONCE THE PICKUP HAS GONE, and that is why this
-                  is its own field rather than derived from `reviveKey === false`.
-                  The key outlives its pickup -- it is still 25 Volts at an
-                  ambulance for the rest of the match -- so the mark stays and
-                  only the clock goes. See SquadMember.reviveKeyEndsAt. */}
-              {!!m.reviveKeyEndsAt && (
-                <RowClock endsAt={m.reviveKeyEndsAt}
-                          colour="var(--color-text-dim)" />
-              )}
               <span
                 key={dead ? 'out' : 'down'}
                 className="mate-stamp font-display text-[0.62rem] tracking-[0.18em]"
@@ -582,10 +736,10 @@ function Row({ m, talking, silent }: {
             the instant a mate goes down and the whole stack jumps. */}
         {!dead && (downed ? (
           <div className="mt-1 flex h-[1.2rem] items-center justify-center">
-            {!!m.bleedEndsAt && <RowClock endsAt={m.bleedEndsAt} big />}
+            {!!m.bleedEndsAt && <RowClock endsAt={m.bleedEndsAt} />}
           </div>
         ) : (
-          <div className="mt-1 flex flex-col gap-[0.2rem]">
+          <div data-tut="squad-bars" className="mt-1 flex flex-col gap-[0.2rem]">
             <VitalBar value={hp} colour="var(--color-hp)" dying={dying} />
             {/* SHIELD SHOWS ITS ZERO. Vitals hides a zero because its numeral
                 sits INSIDE the bar, where a lone 0 floating in an empty track
@@ -597,6 +751,29 @@ function Row({ m, talking, silent }: {
           </div>
         ))}
       </div>
+
+      {/* HOW LONG IS LEFT TO WALK TO THE BODY -- as a line along this card's
+          own foot, which is the owner's design of 2026-09-02.
+
+          ON THE PLATE AND NOT IN THE COLUMN ABOVE, because "the bottom of the
+          player's card" is what he asked for and because it is the one place on
+          this row that costs no layout: it is absolutely positioned inside a
+          plate that is already `position: relative`, so no row changes height
+          and no column has to give up width for it. Every other readout here
+          had to be fitted into a 13rem line.
+
+          IT DIES WITH THE PICKUP AND THE MARK DOES NOT. `reviveKeyEndsAt`
+          arrives only while the pickup is live (client/state.lua gates it on
+          the beacon's `live`), so the line appears when a mate goes out and is
+          gone the moment there is nothing left on the ground -- while the key
+          mark above stays, because the key is still 25 Volts at an ambulance.
+          Absent means absent: no empty track, no zero-width bar, which is this
+          panel's rule for every optional field on the row.
+
+          IT IS OUTSIDE THE `min-w-0` COLUMN, deliberately: that div is the
+          flex child everything else lays out in, and a bar inside it would stop
+          at the column's edge rather than crossing the plate. */}
+      {!!m.reviveKeyEndsAt && <KeyDrain endsAt={m.reviveKeyEndsAt} />}
     </div>
   )
 }

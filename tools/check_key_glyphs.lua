@@ -170,10 +170,47 @@ do
 
         -- AN UNBOUND ACTION DRAWS A DASH. Not a blank plate, which reads as the
         -- interface having failed, and never a stale letter.
-        if not cap:find("{key || '%-%-'}") then
+        --
+        -- MATCHED AS AN EXPRESSION RATHER THAN AS A WHOLE JSX CHILD, because
+        -- since 2026-09-06 the cap can also render a LITERAL glyph -- the
+        -- guided first run's arrow hints, which are raw GTA controls read in Lua
+        -- and are not bindings at all. That reads `{label ?? (key || '--')}`.
+        -- The rule this line exists for is untouched: whenever the cap is
+        -- resolving a COMMAND, an unbound one still draws the dash.
+        if not cap:find("key || '%-%-'") then
             fail('KeyCap does not draw a dash for an unbound action',
                  'an empty plate reads as a broken interface; a dash says the '
                  .. 'key is gone, which is true and is fixable from Controls')
+        end
+
+        -- AND THE LITERAL ESCAPE HATCH STAYS SUBORDINATE TO THE LOOKUP.
+        --
+        -- `label` renders a glyph for a key that is NOT a binding -- the guided
+        -- first run's arrow hints are raw GTA controls read in Lua. The hazard
+        -- is it growing into the ordinary way to draw a key, because a literal
+        -- is a photograph of a binding and cannot follow a rebind (#209).
+        --
+        -- ASSERTED ON THE EXPRESSION, NOT ON A COMMENT: `readUi` strips comments
+        -- before this sees the file, so a doc-comment check here would pass on
+        -- an empty string and fail on prose. What is checkable is the SHAPE --
+        -- the literal must sit in front of the lookup as a fallback, never
+        -- instead of it, so a cap given a command still resolves one.
+        --
+        -- TWO HALVES, ASSERTED SEPARATELY, because the render grew a third
+        -- branch when the arrows became drawn paths rather than characters:
+        -- a literal may be a glyph name OR a plain string. What must not change
+        -- is that the literal branch is ENTERED ONLY when there is no label to
+        -- resolve, and that the other branch still resolves one.
+        if cap:find('label') and not cap:find('label ~= nil')
+           and not cap:find('label !== undefined') then
+            fail('KeyCap.label is no longer gated on being supplied',
+                 'a literal glyph cannot follow a rebind; it may stand in only '
+                 .. 'where there is no command to resolve')
+        end
+        if cap:find('label') and not cap:find("%(key || '%-%-'%)") then
+            fail('KeyCap no longer resolves the binding when given a command',
+                 'the lookup is what makes a cap follow a rebind, and the '
+                 .. 'literal must never replace it')
         end
 
         -- IT LOOKS LIKE A BUTTON AND IS NOT ONE. Inherited verbatim from the

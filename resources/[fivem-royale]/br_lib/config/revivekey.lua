@@ -46,7 +46,7 @@
 -- These are two different clocks and reading them as one would delete the
 -- purchase path. "The pickup expires on a timer" and "They can STILL purchase
 -- the revive keys" are the same message: after three minutes the thing on the
--- ground is gone, and the 25 Volts still buys the key it was.
+-- ground is gone, and the 500 Volts still buys the key it was.
 --
 -- So `expiryMs` retires the WORLD PICKUP and nothing else. A key that was never
 -- collected stays purchasable for the rest of the match, which is also what
@@ -105,7 +105,7 @@
 -- BR.Config.Match.dbnoReviveHp, the same 30 a squadmate's pick-up hands back,
 -- "because it is the same act". It is not the same act, and he has said so. A
 -- squad revive costs a mate a few exposed seconds beside a body; a key costs a
--- death, an inventory spilled on the ground, a fetch across the map or 25
+-- death, an inventory spilled on the ground, a fetch across the map or 500
 -- Volts, and a six-second hold at a van. config/rescue.lua's `deliverHp = 100`
 -- already made exactly this trade for exactly this reason.
 --
@@ -177,15 +177,19 @@ BR.Config.ReviveKey = {
 
     -- "purchase the revive keys at an ambulance for 25 volts".
     --
-    -- 25, NOT THE 150 IN #219's BODY. The issue was written on 2026-08-23 and
-    -- the owner priced it on 2026-08-30; the later number is the decision.
-    price = 25,
+    -- THE QUOTE ABOVE IS HISTORY, NOT THE PRICE. It is left verbatim because it
+    -- is what he asked for on 2026-08-30, and #219's body said 150 before that.
+    -- Neither is the number any more: the owner re-priced it on 2026-09-03,
+    -- "Let's make the ambulance key buy cost 500 Volts." The latest number is
+    -- always the decision, and the older ones stay written down so the reading
+    -- of his messages can still be checked against them.
+    price = 500,
 
     -- "one purchase buys all revive keys for the squad".
     --
     -- NOT A KNOB, A STATEMENT -- and it is here so the reading is on the record
     -- rather than inferred from a loop. The owner asked for one reading to be
-    -- confirmed and this is it: 25 Volts makes every currently-eliminated
+    -- confirmed and this is it: 500 Volts makes every currently-eliminated
     -- squadmate REVIVABLE. It does not resurrect anybody. Each one still needs
     -- its own hold at an ambulance, which is step 5 and does not exist yet.
     buysAll = true,
@@ -289,28 +293,57 @@ BR.Config.ReviveKey = {
     -- go on an ambulance", free to drift, and the symptom would be the plate
     -- jumping the instant a squad bought a key.
     --
-    -- ═══ AND SO DOES THE PLATE OVER A KEY ON THE GROUND, SINCE 2026-09-01 ═══
+    -- ═══ AND IT IS FOUR SETS NOW, ONE PER PANEL, BECAUSE HE MEASURED FOUR ═══
     --
-    -- Owner: "'take revive key' is still over the body. it should be the same
-    -- elevation as the 'press E to revive' DUI."
+    -- Owner, 2026-09-02, after walking round an ambulance with /brplate:
     --
-    -- `frac` AND `lift` NOW SET THE HEIGHT OF ALL THREE PLATES. He asked for two
-    -- of them to be level with each other, and the only way that survives the
-    -- next nudge is for one pair of numbers to place both -- so the loose key's
-    -- plate is drawn at the height these two put an ambulance plate at, measured
-    -- from the ground rather than from a van's origin. client/revivekey.lua's
-    -- `plateGroundHeight` is the arithmetic and says why the origin drops out.
-    -- Nudge `lift` and the pair moves together; they cannot come apart.
+    --   face left:   out = -0.090,  side =  1.620,  frac = 0.620,
+    --                lift = -0.340, width = 1.250
+    --   face nose:   out = -0.250,  side = -0.030,  frac = 0.620,
+    --                lift = -0.260, width = 1.250
+    --   face right:  out = -0.090,  side = -2.220,  frac = 0.620,
+    --                lift = -0.350, width = 1.250
+    --   face tail:   out = -0.290,  side = -0.000,  frac = 0.620,
+    --                lift = -0.110, width = 1.250
     --
-    -- `out`, `side` AND `width` STILL BELONG TO THE VAN ALONE -- there is no
-    -- panel to stand off, no face to slide along, and the ground plate is a
-    -- screen-space billboard rather than a quad in metres.
+    -- ⚠ THESE ARE HIS, TO THE THIRD DECIMAL, AND THEY ARE NOT TO BE TIDIED.
+    -- `left` and `right` are not mirror images -- 1.620 against -2.220 -- and
+    -- `tail` is spelled `-0.000`. Both look like something to fix and neither
+    -- is: an ambulance's model origin is not on its centreline, so the same
+    -- place on the bodywork IS a different `side` from either flank, and the
+    -- readout he pasted from prints a signed zero because that is what the
+    -- number in the table was. Averaging the pair, or rounding a sign away,
+    -- silently moves plates he has already approved.
     --
-    -- ⚠ NONE OF THE FIVE IS THE OWNER'S NUMBER YET. He offered to measure them
-    -- ("then fetch it I can give you the coords") and /brplate is the ruler:
-    -- stand at an ambulance, `brplate on`, nudge it with the arrow keys, and
-    -- paste the block it prints back over this table. These five are a starting
-    -- point chosen to be obviously readable rather than obviously right.
+    -- ═══ WHY ONE SET COULD NOT COVER FOUR PANELS ═══
+    --
+    -- `side` is metres along the panel from the MODEL'S OWN ORIGIN, and the
+    -- distance from that origin to the middle of a flank is nothing like the
+    -- distance to the middle of the tail. `out` and `lift` differ for the same
+    -- kind of reason -- a van's back doors, its bonnet and its flanks are not
+    -- one surface at one height. One set of five was one panel's numbers
+    -- applied to four, which is what he was correcting.
+    --
+    -- ═══ WHICH SET IS BR.NearestBoxFace'S ANSWER, NOT A GUESS HERE ═══
+    --
+    -- The keys are the four words /brplate already prints in its readout
+    -- ("face tail"), which are BR.Dui.nearFace's (ux, uy) said out loud: +Y is
+    -- the nose, -Y the tail, +X the right flank, -X the left. client's
+    -- `plateNumbers(face)` looks the set up by that word, so the plate a player
+    -- walks up to and the numbers it is drawn with come off ONE face pick.
+    --
+    -- ═══ WHAT NO LONGER READS THIS TABLE AT ALL ═══
+    --
+    -- THE PLATE OVER A KEY ON THE GROUND. It used to take `frac` and `lift` from
+    -- here, on 2026-09-01's instruction that it be level with the ambulance
+    -- plate. He reported it too high a FOURTH time on 2026-09-02 and said where
+    -- it goes instead: "It should be inside the 3dmarker". So it is anchored to
+    -- `marker` below and to nothing here -- which also means these four sets are
+    -- free to move per panel without dragging a plate in a field with them.
+    --
+    -- SO THE TWO PLATES AT A VAN SHARE THIS AND THE THIRD DOES NOT. The revive
+    -- and the purchase are one plate at one van drawn a moment apart and must
+    -- agree; the take is somewhere else entirely and must not.
     --
     -- TWO OF THE FIVE ARE MEASURED AGAINST THE MODEL RATHER THAN AGAINST
     -- NOTHING, which is what makes them survive a van this code has never seen.
@@ -319,60 +352,38 @@ BR.Config.ReviveKey = {
     -- (BR.ShopSolve.signHeight, the shop's derivation, borrowed rather than
     -- re-written) -- so a longer or taller ambulance moves its own plate and
     -- nothing here changes. config/shop.lua's `signBumperFrac` block is the full
-    -- argument for why that beats a constant. `side`, `lift` and `width` are
-    -- plain lengths, and are meant to be: two nudge every plate at once and the
-    -- third is the size of a sign, none of which is a fact about the bodywork.
+    -- argument for why that beats a constant.
+    --
+    -- THE FIVE, IN EVERY SET:
+    --
+    --   out    metres off the panel the player is nearest to. NEGATIVE IS
+    --          INSIDE THE BODYWORK and all four of his are -- a quad standing
+    --          proud of an ambulance's slab sides read as floating beside it,
+    --          and he brought every one of them back in.
+    --   side   metres ALONG that panel, positive to the reader's right. Its
+    --          direction is the FACE'S, not the van's: BR.NearestBoxFace says
+    --          which panel, and this is spent along the perpendicular of that
+    --          same answer, so "right" means the reader's right at the driver's
+    --          door AND at the back doors. See BR.Dui.drawNearFace and the note
+    --          in drawPlane beside the line that decides the same left for the
+    --          writing on it. (Owner, 2026-09-01: "I need to be able to move it
+    --          left/right as well.")
+    --   frac   where up the model's own height the plate's centre sits: 0 the
+    --          ground the tyres stand on, 1 the roof.
+    --   lift   metres added after that derivation, so a nudge moves the plate
+    --          without touching the shape. config/shop.lua's `signLift`.
+    --   width  metres across; the height follows the 512x256 page's own aspect
+    --          rather than being a second number to keep in step. The
+    --          interface-size preference still multiplies it.
     plate = {
-        -- Metres the plate stands off the panel it is drawn on. Far enough that
-        -- it cannot z-fight the bodywork or clip a wing mirror, close enough to
-        -- read as painted on the van rather than floating beside it.
-        out = 0.35,
-
-        -- Metres ALONG that panel, positive to the right of somebody standing
-        -- at it reading the plate.
-        --
-        -- ═══ THE AXIS HE ASKED FOR, 2026-09-01 ═══
-        --
-        -- "I need to be able to move it left/right as well. in/out and up/down
-        -- are great but can't do left/right right now."
-        --
-        -- ITS DIRECTION IS THE FACE'S, NOT THE VAN'S. BR.NearestBoxFace already
-        -- says which panel the plate is on; this is spent along the
-        -- perpendicular of that same answer, so "right" means the reader's right
-        -- at the driver's door AND at the back doors -- there is no face on
-        -- which a positive number moves the plate the other way. See
-        -- BR.Dui.drawNearFace, and the note in drawPlane beside the line that
-        -- decides the same left for the writing on it.
-        --
-        -- ZERO IS CENTRED ON THE PANEL, which is where the plate has always been
-        -- and is a real answer rather than an absent one: he did not say it was
-        -- off-centre, he said he could not move it.
-        side = 0.0,
-
-        -- Where up the model's own height the plate's centre sits: 0 is the
-        -- ground the tyres stand on, 1 the roof. 0.62 is above the shop's 0.35
-        -- deliberately -- that one is at the BUMPER, because he asked for it
-        -- there; this one is read by somebody standing at the van looking at it,
-        -- so it sits about window height on an ambulance.
-        frac = 0.62,
-
-        -- Metres added after the derivation, to move every plate at once
-        -- without touching the shape. config/shop.lua's `signLift`, same job.
-        --
-        -- "EVERY PLATE" NOW INCLUDES THE ONE OVER A KEY ON THE GROUND, which is
-        -- the whole of how the two he asked to be level stay level -- see the
-        -- header. This is the arrow keys' vertical axis in /brplate for the same
-        -- reason: it is the one height knob measured in metres, so a nudge here
-        -- is a nudge anybody can read back off the screen.
-        lift = 0.0,
-
-        -- How wide the plate is, in metres; its height follows the 512x256
-        -- page's own aspect rather than being a second number to keep in step.
-        -- 0.75 is config/shop.lua's `signWidthM` -- the size the owner approved
-        -- for the yard sign ("The overall DUI size is good", 2026-08-30) --
-        -- matched rather than re-derived, so the two world signs in this game
-        -- are one size. The interface-size preference still multiplies it.
-        width = 0.75,
+        left  = { out = -0.090, side =  1.620, frac = 0.620,
+                  lift = -0.340, width = 1.250 },
+        nose  = { out = -0.250, side = -0.030, frac = 0.620,
+                  lift = -0.260, width = 1.250 },
+        right = { out = -0.090, side = -2.220, frac = 0.620,
+                  lift = -0.350, width = 1.250 },
+        tail  = { out = -0.290, side = -0.000, frac = 0.620,
+                  lift = -0.110, width = 1.250 },
     },
 
     -- ------------------------------------------------------------------
@@ -412,15 +423,38 @@ BR.Config.ReviveKey = {
         -- that "the 3dmarker (type 24)" is greppable from his own words.
         kind = 24,
 
-        -- Metres across, and how tall. Type 24 draws in the ground plane, so
-        -- the third dimension is thickness rather than height -- kept small so
-        -- the chevron reads as painted on the ground rather than as a box.
+        -- ═══ WHICH OF THESE IS "TALLER", AND IT IS NOT THE OBVIOUS ONE ═══
+        --
+        -- Owner, 2026-09-02: "...inside the 3dmarker, which should also be made
+        -- about 25% taller btw."
+        --
+        -- DrawMarker's scale is (scaleX, scaleY, scaleZ) and this marker is
+        -- drawn `size, size, height` -- so `size` is METRES ACROSS, spent on BOTH
+        -- horizontal axes at once, and `height` is the vertical one on its own.
+        -- Making a marker taller by raising `size` makes it a quarter wider
+        -- instead, on a marker that is already the widest thing on that patch of
+        -- ground, and nothing about it would look taller.
+        --
+        -- THE NOTE THAT USED TO SIT HERE SAID THE OPPOSITE -- that type 24 draws
+        -- in the ground plane so "the third dimension is thickness rather than
+        -- height". It was wrong about the marker and it was contradicted by the
+        -- owner's own report, which asks for a plate to be drawn INSIDE this
+        -- thing: a marker with no vertical extent has no inside. `height` is the
+        -- axis, and it is the only one that moved.
+        --
+        -- 0.4 -> 0.5 IS HIS 25%, ARITHMETIC RATHER THAN ROUNDED, and `size` is
+        -- deliberately untouched: he asked for taller, not bigger.
         size = 0.8,
-        height = 0.4,
+        height = 0.5,
 
         -- Metres above the key's recorded z. The key's z is the ground the body
-        -- was lying on (see GROUND_LIFT in client/revivekey.lua for the survey
-        -- behind that), and a marker drawn exactly on it z-fights the terrain.
+        -- was lying on, and a marker drawn exactly on it z-fights the terrain.
+        --
+        -- ⚠ THE PLATE OVER THE KEY IS NOW HUNG OFF THIS AND OFF `height`. See
+        -- `markerBand` in client/revivekey.lua: the plate is drawn at the middle
+        -- of the band those two describe, so nudging either one moves the plate
+        -- with the marker and there is no second number to keep in step. That is
+        -- the whole of the owner's fourth report on that plate.
         lift = 0.06,
 
         -- THE PLATE'S OWN DANGER RED, NOT A NEW COLOUR. `#F87171` is what
@@ -547,13 +581,13 @@ BR.Config.ReviveKey = {
 ---
 --- ═══ `buy` CARRIES THE PRICE AS TEXT, AND THAT IS HIS SENTENCE ═══
 ---
---- "Buy revive keys — 25 Volts" is quoted verbatim, which means the 25 in the
---- string and the 25 in `price` above are two copies of one number. Left as
---- written rather than interpolated, because the words are his and the moment
---- this file starts assembling them out of parts is the moment his wording
---- stops being reproducible. If the price moves, both move -- and the console
---- line in /brkey prints `price` rather than this string, so the two can always
---- be compared.
+--- "Buy revive keys — 500 Volts" carries his wording with the current price in
+--- it, which means the number in the string and the one in `price` above are two
+--- copies of one value. Left as written rather than interpolated, because the
+--- words are his and the moment this file assembles them out of parts is the
+--- moment his wording stops being reproducible. If the price moves, BOTH MOVE --
+--- it moved from 25 to 500 on 2026-09-03 -- and the console line in /brkey prints
+--- `price` rather than this string, so the two can always be compared.
 BR.Config.ReviveKey.copy = {
     -- The world prompt over a key lying on the ground, and the press that takes
     -- it. See the note on `collectM`: this plate DOES carry a key glyph now,
@@ -569,7 +603,7 @@ BR.Config.ReviveKey.copy = {
     take      = 'Collect revive key',
 
     -- The world prompt at an ambulance, when this squad has something to buy.
-    buy       = 'Buy revive keys — 25 Volts',
+    buy       = 'Buy revive keys — 500 Volts',
 
     -- The world prompt AT AN AMBULANCE for a key the squad already owns: the
     -- hold that brings its owner back. It used to be drawn over the body; the
@@ -616,8 +650,32 @@ BR.Config.ReviveKey.copy = {
 
     -- To the squad, THE SUBJECT EXCLUDED, the moment somebody stops being in the
     -- match and their key is minted.
-    bledOut   = '%s has bled out! Get their revive key or purchase it at an '
-                .. 'ambulance!',
+    --
+    -- ═══ IT SAYS HOW LONG THE FETCH IS OPEN FOR, SINCE 2026-09-02 ═══
+    --
+    -- Owner: "Perhaps the 'grab their key!' toast should also mention that the
+    -- key expires and after how long."
+    --
+    -- THE SMALLEST EDIT THAT CARRIES THE FACT. His sentence is otherwise
+    -- untouched -- same two doors, same order, same exclamation marks -- and the
+    -- deadline is inserted where it belongs rather than appended as a second
+    -- sentence. ⚠ HE HAS NOT SEEN THIS WORDING. `within %s` is this file's
+    -- guess at his instruction and it is one string in one place for him to
+    -- overwrite.
+    --
+    -- IT ATTACHES TO THE FETCH AND NOT TO THE PURCHASE, which is the fact rather
+    -- than a nicety: `expiryMs` retires the WORLD PICKUP and nothing else (see
+    -- the block on it above), so the ambulance is still open afterwards and a
+    -- sentence that put the clock on the whole line would be wrong about half of
+    -- it.
+    --
+    -- ⚠ THE SECOND `%s` IS A DURATION, NOT A NAME. server/revivekey.lua fills it
+    -- from BR.Config.ReviveKey.expiryMs through BR.Clock.words, so the three
+    -- minutes are stated in exactly one place and re-tuning `expiryMs` cannot
+    -- leave this line lying. BR.Notice.line writes a non-`who()` value in as
+    -- prose, so it draws unbolded beside the bolded name.
+    bledOut   = '%s has bled out! Get their revive key within %s or purchase it '
+                .. 'at an ambulance!',
 
     -- To the player who pressed, and to nobody else.
     --

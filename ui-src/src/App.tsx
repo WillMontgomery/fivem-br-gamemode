@@ -19,6 +19,9 @@ import Market from './screens/Market'
 import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
+import TutorialLayer from './tutorial/TutorialLayer'
+import { GAME_STEPS } from './tutorial/gameSteps'
+import { DECLINE_STEPS } from './tutorial/steps'
 import Admin from './screens/Admin'
 import Page from './ui/Page'
 
@@ -98,7 +101,25 @@ export default function App() {
   // GTA'S OWN MENU IS ON SCREEN AND WE MUST NOT DRAW OVER IT (#122). Lua holds
   // this true for as long as the engine's frontend is up, because Lua is the
   // only thing that can see the frontend at all.
-  useNuiEvent('frontend', (d) => s.setFrontendUp(d.up === true))
+  useNuiEvent('frontend', (d) => {
+    s.setFrontendUp(d.up === true)
+    s.setFrontendReason(d.reason === 'map' ? 'map' : 'menu')
+  })
+  useNuiEvent('tutorial', (d) => {
+    s.setTutorialRun(d.run === true)
+    if (d.offer !== undefined) s.setTutorialOffer(d.offer === true)
+    if (d.offerable !== undefined) s.setTutorialOfferable(d.offerable === true)
+    if (d.game !== undefined) s.setTutorialGameRun(d.game === true)
+    if (d.crates !== undefined) s.setTutorialCrates(d.crates)
+    if (d.waypoints !== undefined) s.setTutorialWaypoints(d.waypoints)
+    if (d.slots !== undefined) s.setTutorialSlots(d.slots)
+  })
+  // THE ARROWS, READ IN LUA. These cards take no NUI focus, so CEF never sees a
+  // keypress -- see the `tutorialnav` envelope for why this is the one key in
+  // the interface that travels as data.
+  useNuiEvent('tutorialnav', (d) => {
+    if (typeof d?.seq === 'number') s.setTutorialNav({ dir: d.dir, seq: d.seq })
+  })
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
   // the player's interface would silently revert for the rest of the session.
@@ -212,6 +233,46 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  // ═══ THE WALKTHROUGH CROSSING FROM THE LOBBY INTO THE MATCH (#261) ═══
+  //
+  // Owner, 2026-09-05: "when in the lobby and the tutorial is complete, the
+  // 'continue' toggle is on but it doesn't start the game tutorial when I get
+  // into warmup." It did not, because `tutorialGameOn` was an offer nothing
+  // read -- this project's orphaned-subsystem pattern, for the third time in
+  // this one feature. This is the line that reads it.
+  //
+  // ON THE EDGE INTO WARMUP, NOT ON BEING IN IT. Warmup is a state the page
+  // sees on every payload for forty-five seconds; the transition happens once,
+  // which is how often a walkthrough should start.
+  //
+  // AND THE OFFER IS SPENT BY TAKING IT. Without that, walking out of a match
+  // and into the next one would start the walkthrough again for somebody who
+  // has already had it -- and the 500 Volts is paid once, so the second run
+  // would be twenty minutes for nothing.
+  //
+  // ASKS LUA RATHER THAN SETTING THE FLAG HERE. Lua owns whether either half is
+  // running (see br_core/client/tutorial.lua) and it has work to do on the way
+  // in that the page cannot: the cursor, and the markers over the crates.
+  useEffect(() => {
+    if (s.match.state !== 'warmup') return
+    // ARMED, NOT TICKED. This read `tutorialGameOn` -- the CHECKBOX -- which
+    // defaults to ticked, so every player who entered warmup on a freshly loaded
+    // page started the walkthrough whether or not they had ever seen the lobby
+    // half (owner, 2026-09-06: "the in-game tutorial shows up every time I hop
+    // in a match until I `brtutorial off`"). The checkbox says what the player
+    // WOULD like; `tutorialGameArmed` says they finished the lobby half with it
+    // ticked, and only that may start anything. See the store.
+    if (!s.tutorialGameArmed || s.tutorialGameRun) return
+    // A BYSTANDER IS NOT IN THIS MATCH. `participant === false` is a player
+    // sitting in the lobby while somebody else's round runs, and starting a HUD
+    // walkthrough over a lobby they are still looking at would point every card
+    // at nothing.
+    if (s.match.participant === false) return
+    s.setTutorialGameArmed(false)
+    void fetchNui(CB.TUTORIAL_SET, { game: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.match.state, s.match.participant, s.tutorialGameArmed, s.tutorialGameRun])
 
   // WARMUP is not a lobby. Players are standing in the world on the warmup pad,
   // so they get the HUD -- an earlier version hid it, which combined with the
@@ -346,6 +407,7 @@ export default function App() {
      * all the scaleform needs, and pointer-events off means a page that is
      * invisible cannot also be quietly swallowing clicks.
      */
+    <>
     <div
       style={{
         opacity: s.frontendUp ? 0 : 1,
@@ -481,6 +543,77 @@ export default function App() {
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
       <Page show={s.focus === 'help'}><Help /></Page>
+
+      {/* ═══ THE GUIDED FIRST RUN (#261) ═══
+
+          HERE AND NOT IN Lobby.tsx, and the reason is the settings half of the
+          walkthrough: those cards have to draw while SETTINGS is the screen on
+          top, not the lobby, so a mount inside the lobby would unmount the
+          sequencer the moment the player did what it asked. `screen` is
+          `s.focus`, which is the same name the steps are scoped by.
+
+          INSIDE THIS ROOT, WHICH IS THE WHOLE OF HOW IT HIDES. The wrapper
+          above already fades everything here on `frontendUp` -- opacity 0,
+          pointer-events off, aria-hidden -- so the big map and the GTA V pause
+          menu take the annotations with them and give them back, with no code
+          of its own (owner, 2026-09-04). It must never be portalled out.
+
+          LAST IN SOURCE ORDER so it paints over the screens it points at.
+
+          NOTHING BUT /brtutorial STARTS IT TODAY. The first-match checkbox and
+          the persisted one-time offer are still to come; they will raise this
+          same flag. */}
+      {/* BOTH ENDINGS RELEASE THE SERVER-SIDE HOLD, and both have to: a player
+          left flagged as in-tutorial is a player matchmaking will never touch
+          again for the life of the connection. `onAbandon` is the one that
+          matters -- it fires when a step's target has gone, which is a fault,
+          and a fault that ALSO stranded somebody outside the queue would be far
+          worse than the fault itself. */}
+      {/* The manual, from the lobby. The same component the pause menu
+          embeds, in its own frame. */}
+      <Page show={s.focus === 'help'}><Help /></Page>
+
+      {/* ═══ THE GUIDED FIRST RUN (#261) ═══
+
+          HERE AND NOT IN Lobby.tsx, and the reason is the settings half of the
+          walkthrough: those cards have to draw while SETTINGS is the screen on
+          top, not the lobby, so a mount inside the lobby would unmount the
+          sequencer the moment the player did what it asked. `screen` is
+          `s.focus`, which is the same name the steps are scoped by.
+
+          INSIDE THIS ROOT, WHICH IS THE WHOLE OF HOW IT HIDES. The wrapper
+          above already fades everything here on `frontendUp` -- opacity 0,
+          pointer-events off, aria-hidden -- so the big map and the GTA V pause
+          menu take the annotations with them and give them back, with no code
+          of its own (owner, 2026-09-04). It must never be portalled out.
+
+          LAST IN SOURCE ORDER so it paints over the screens it points at.
+
+          NOTHING BUT /brtutorial STARTS IT TODAY. The first-match checkbox and
+          the persisted one-time offer are still to come; they will raise this
+          same flag. */}
+      {/* BOTH ENDINGS RELEASE THE SERVER-SIDE HOLD, and both have to: a player
+          left flagged as in-tutorial is a player matchmaking will never touch
+          again for the life of the connection. `onAbandon` is the one that
+          matters -- it fires when a step's target has gone, which is a fault,
+          and a fault that ALSO stranded somebody outside the queue would be far
+          worse than the fault itself. */}
+      {/* ═══ THE IN-GAME HALF (#261) ═══
+
+          THE SAME LAYER, A DIFFERENT SCRIPT. It points at the HUD rather than
+          the lobby, so it carries no `subscreenUp`: the HUD is what is on screen
+          during warmup, and a sub-screen covering it is the player opening
+          something the walkthrough is about to ask them to open anyway.
+
+          THE LAST CARD IS WHAT ENDS IT, and ending it is what pays the 500
+          Volts -- see BR.Net.TUTORIAL_DONE. Only `onDone` pays; `onAbandon`
+          fires when an anchor has gone, which is a fault rather than a finish.
+
+          ⚠ THE WARMUP CLOCK IS STILL RUNNING UNDERNEATH IT. The hold the owner
+          asked for exists (BR.Roster.setTutorial) but is granted only from a
+          standing start -- LOBBY, no match -- and this half runs on the pad, in
+          a match. So a long reader can be put on the bus mid-card today. See
+          the ⚠ over BR.Net.TUTORIAL_SET for what closing it would take. */}
       {/* THE ADMIN CONSOLE (#23), IN THE FRAME `/help` GETS AND NOT THE PAUSE
           MENU'S TAB WELL -- which is the owner's call and the reason it is a
           screen at all: "the one in /help is much larger and would be most
@@ -495,5 +628,154 @@ export default function App() {
           screens draw and below only the curtain. */}
       <Page show={s.focus === 'pause'}><PauseMenu /></Page>
     </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════
+          THE GUIDED FIRST RUN, OUTSIDE THE FADE (#261)
+          ═══════════════════════════════════════════════════════════════════
+
+          IT USED TO LIVE INSIDE THE WRAPPER ABOVE, which fades everything on
+          `frontendUp` -- and that was right, and is still right for every
+          engine screen but one. The exception is the owner's, 2026-09-04: the
+          walkthrough has to explain WAYPOINTS, which means it has to be legible
+          while the big map is open. "This last point will break our current rule
+          of 'don't show any NUI on the map' so you may need to change some code
+          structure to allow ONLY this tutorial to shine through."
+
+          SO THE RULE IS RESTATED HERE RATHER THAN WEAKENED THERE. Everything
+          else in this page still disappears behind every frontend, unchanged;
+          this one subtree opts out for exactly one of them, and says so.
+
+          `reason` IS WHY THAT IS EXPRESSIBLE AT ALL. Lua now reports which
+          engine screen went up, because the page is the only side that knows
+          what a tutorial is -- br_ui/client/pause.lua holds no opinion about it.
+
+          AND ONLY THE IN-GAME HALF ESCAPES. The lobby walkthrough has nothing to
+          say over a map and hides like everything else; a card about the Locker
+          drawn over the world map would be the #122 overlay again wearing a
+          different hat. */}
+      <div
+        style={{
+          opacity: s.frontendUp && !(s.frontendReason === 'map' && s.tutorialGameRun) ? 0 : 1,
+          pointerEvents:
+            s.frontendUp && !(s.frontendReason === 'map' && s.tutorialGameRun)
+              ? 'none' : undefined,
+          transition: 'opacity 120ms linear',
+        }}
+        aria-hidden={
+          s.frontendUp && !(s.frontendReason === 'map' && s.tutorialGameRun)
+            ? true : undefined
+        }
+      >
+      {s.tutorialGameRun && (
+        <TutorialLayer
+          steps={GAME_STEPS}
+          screen={s.focus}
+          // ═══ ANY SCREEN THE STEP DID NOT ASK FOR TAKES THE CARDS DOWN ═══
+          //
+          // Owner, 2026-09-05: "if they press ESC through any of this to open
+          // the settings menu all other cards should be hidden until the
+          // settings page is dismissed."
+          //
+          // OUR pause menu is a React screen, not the engine's, so `frontendUp`
+          // is false while it is open and the fade above never fired -- the
+          // cards sat on top of it. This is the same rule the lobby half has
+          // always had, applied to the HUD's screens, and it costs nothing: a
+          // step that WANTS a screen names it in `screen`, and the layer
+          // compares that instead (see `waitingForScreen`).
+          //
+          // `none` IS THE BARE HUD. The walkthrough itself takes no focus, so
+          // anything else on the stack is genuinely something the player opened
+          // over the controls these cards point at.
+          subscreenUp={s.focus !== 'none'}
+          // AND THE CARDS ARE DRIVEN BY THE ARROW KEYS, not by a cursor there
+          // is no longer any way to produce. See `keyDriven`.
+          keyDriven
+          onStep={(id) => {
+            s.setTutorialGameStep(id)
+
+            // ═══ THE CAMERA FOLLOWS THE CARD ═══
+            //
+            // This line existed, and a later edit to this handler dropped it --
+            // which is the whole of "the scripted camera for step 19 didn't
+            // happen" (owner, 2026-09-08). Nothing else in the chain was broken;
+            // `Step.cam` was authored and read by nobody.
+            //
+            // `false` AND NOT `null` FOR THE COME-HOME CASE, and this is the
+            // load-bearing detail. br_ui's callback gates on `data.cam ~= nil`,
+            // and a JSON null decodes to Lua nil -- so a null would fail that
+            // guard and the camera would stay parked on the shop car for the
+            // rest of the walkthrough. `false` clears the guard, is not a table,
+            // and falls through to the come-home branch.
+            //
+            // SENT ON EVERY STEP, which costs nineteen no-op posts and buys the
+            // absence of a transition table. camTo's home branch early-returns
+            // when no camera is live.
+            const cam = (id && GAME_STEPS.find((st) => st.id === id)?.cam) || false
+            // `step` RIDES THE SAME POST. br_core turns the crate blip on for
+            // exactly one card and off for every other -- see br:tutorial:step.
+            // `false` for "no card", for the same Lua-nil reason `cam` uses.
+            void fetchNui(CB.TUTORIAL_SET, { cam, step: id ?? false })
+            // ═══ THE CLOCK STARTS ON THE LAST CARD, NOT AFTER IT ═══
+            //
+            // Owner, 2026-09-07: "THIS is when matchmaking should take place and
+            // the timer appears for the first time on their screen." That card
+            // is ABOUT the countdown, so the countdown has to be running while
+            // they read it -- pointing at a timer frozen a day out is pointing
+            // at nothing.
+            //
+            // `hold`, NOT `game`: dropping `game` would take the card off the
+            // screen at the exact moment it appeared. See BR.Tutorial.hold.
+            if (id === 'game-timer') void fetchNui(CB.TUTORIAL_SET, { hold: false })
+          }}
+          onDone={() => {
+            s.setTutorialGameRun(false)
+            s.setTutorialGameStep(null)
+            void fetchNui(CB.TUTORIAL_SET, { game: false, done: true })
+          }}
+          onAbandon={() => {
+            s.setTutorialGameRun(false)
+            s.setTutorialGameStep(null)
+            // NO `done`. This fires when a card's anchor has gone, which is a
+            // fault -- paying for it would pay a learner for the walkthrough
+            // breaking under them. The flag still drops, because a player left
+            // holding it keeps the cursor and the layer with nothing driving
+            // either.
+            void fetchNui(CB.TUTORIAL_SET, { game: false })
+          }}
+        />
+      )}
+
+      {/* THE DECLINE CARD, which is not a walkthrough and has no steps to run --
+          one card, dismissed, gone. It lives here rather than inside Lobby for
+          the reason every other card does: the layer is mounted at the root so a
+          screen change cannot unmount the thing explaining the screen. */}
+      {s.tutorialDeclineCard && (
+        <TutorialLayer
+          steps={DECLINE_STEPS}
+          screen={s.focus}
+          onDone={() => s.setTutorialDeclineCard(false)}
+          onAbandon={() => s.setTutorialDeclineCard(false)}
+        />
+      )}
+
+      {s.tutorialRun && (
+        <TutorialLayer
+          screen={s.focus}
+          subscreenUp={LOBBY_SUBSCREENS.has(s.focus)}
+          onDone={() => {
+            s.setTutorialRun(false)
+            void fetchNui(CB.TUTORIAL_SET, { run: false })
+            // FINISHING THE LOBBY HALF WITH THE BOX TICKED IS WHAT ARMS THE
+            // MATCH HALF. Not the box on its own, and not `onAbandon` below --
+            // a run that died on a missing anchor did not end with the player
+            // agreeing to anything.
+            if (s.tutorialGameOn) s.setTutorialGameArmed(true)
+          }}
+          onAbandon={() => { s.setTutorialRun(false); void fetchNui(CB.TUTORIAL_SET, { run: false }) }}
+          onStep={s.setTutorialStep}
+        />
+      )}
+      </div>
+    </>
   )
 }

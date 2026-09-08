@@ -3337,7 +3337,22 @@ end
 local lootBox, boxAsked = nil, 0
 BR.Loot = { airdropBox = function() boxAsked = boxAsked + 1 return lootBox end }
 
-loadAll({ 'br_core/client/flares.lua', 'br_core/client/airdrop.lua' })
+-- THE ONE NATIVE THE CUE PATH REACHES. Stubbed rather than left absent so a
+-- cue is a recorded fact this suite could assert on if it ever wants to,
+-- and so an unstubbed native cannot masquerade as a wiring bug.
+sfxPlayed = {}
+function PlaySoundFrontend(id, name, set)
+    sfxPlayed[#sfxPlayed + 1] = { name = name, set = set }
+end
+
+-- br_lib/config/audio.lua + client/sfx.lua FIRST: airdrop.lua plays a cue on
+-- the inbound announce, and BR.Sfx.play is a bare call rather than a
+-- nil-guarded one -- the same shape client/state.lua uses. A suite that does
+-- not load the module gets `attempt to index a nil value (field 'Sfx')`,
+-- which is the module being genuinely absent rather than the call being
+-- wrong.
+loadAll({ 'br_lib/config/audio.lua', 'br_core/client/sfx.lua',
+          'br_core/client/flares.lua', 'br_core/client/airdrop.lua' })
 
 local render = loops['airdrop.render']
 
@@ -4868,7 +4883,12 @@ do
         .. 'when it is opened')
     eq(A.chuteScale, 2.5, 'and the canopy keeps its 2.5, which the owner asked '
         .. 'for by name')
-    eq(A.voltsScale, 5.0, 'the Volts pile is five times')
+    -- FOUR, AND THE FOURTH IS ALSO A REVERSAL NOW. The pile was asked for at 5x
+    -- on 2026-08-22 and cut to 3x on 2026-09-01 -- "The volts prop is still
+    -- about 40% too big", and 5.0 x 0.6 = 3.0. It is pinned here for the same
+    -- reason the three above are: the number is the whole fix, and a silent
+    -- drift back is the failure this assertion exists to catch.
+    eq(A.voltsScale, 3.0, 'the Volts pile is three times, his 40% off the five')
 end
 
 describe('client: a sited drop is a blip and NOTHING ELSE')

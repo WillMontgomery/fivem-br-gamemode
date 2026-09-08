@@ -90,6 +90,31 @@ function BR.Match.create(mode, participants)
 
     for _, src in ipairs(participants or {}) do
         if BR.Roster.get(src) then
+            -- NOBODY IN A MATCH CARRIES THE TUTORIAL HOLD (#261). The hold means
+            -- "matchmaking may not touch this player"; once a match HAS them the
+            -- thing it was protecting them from has already happened, and a flag
+            -- left standing would follow them into the next lobby and hold them
+            -- out of every round after this one with no control on screen that
+            -- clears it -- the walkthrough they would have to finish is long
+            -- gone.
+            --
+            -- THE ORDINARY PATH NEVER REACHES THIS LINE, and that is the point
+            -- rather than an argument that it is dead. BR.Party.mayEnter has
+            -- already refused these players, so the formation tick below cannot
+            -- pass one in: it consumes BR.Lobby.admissible, which is the gate.
+            --
+            -- `brforce` CAN, AND IT IS THE CALLER THAT MAKES THIS REAL. Its
+            -- `debugTarget` fallback mints a match out of `BR.Lobby.ids()` --
+            -- the RAW queue, never filtered through admissible -- so a client
+            -- that pressed Ready anyway lands here with the flag still on. The
+            -- command has to keep working (a dev verb that silently left one
+            -- player standing on the pad would be reported as the verb being
+            -- broken), so the flag gives way rather than the participant list.
+            --
+            -- Asserting the invariant HERE, at the one mint every match passes
+            -- through, is what makes it true for that caller and for the next
+            -- one nobody has written yet.
+            BR.Roster.setTutorial(src, false)
             BR.Roster.setMatch(src, m.id)
         end
     end
@@ -463,6 +488,21 @@ function BR.Match.onEnter(m, state, from)
         -- a record to ask. Nothing is committed yet -- this only decides
         -- whether this match gets one and when it becomes due.
         if BR.Airdrop then BR.Airdrop.begin(m) end
+
+        -- ═══ THE ROUND IS ON, AND IT SAYS SO ═══
+        --
+        -- His pick for "match start" (2026-09-08). Sent from the transition
+        -- rather than from a tick, so it is an EDGE by construction: this arm
+        -- runs once, on the way into PLAYING, and BR.Match.transition no-ops on
+        -- `from == state`.
+        --
+        -- THE WHOLE MATCH, WHICH AT THIS INSTANT IS EXACTLY THE RIGHT AUDIENCE.
+        -- BR.Broadcast.toMatch walks BR.Server.audience(m), and at the moment of
+        -- the flip nobody in this match has been eliminated yet -- everyone
+        -- hearing it is somebody the round just started for. A player in the
+        -- lobby or in another instance is not in that audience and hears
+        -- nothing, which is the whole reason this is not a global send.
+        BR.Broadcast.toMatch(m, BR.Net.SFX_CUE, { c = 'match.start' })
 
     elseif state == BR.MatchState.ENDED then
         -- ONCE PER MATCH, AND THE SECOND TIME IS WORSE THAN A DUPLICATE.
@@ -841,7 +881,7 @@ function BR.Match.resetPlayer(src, e)
     -- here with the rest of the per-match record, and it has to be cleared
     -- somewhere: server/spectate.lua points a dead solo's camera at it, so a
     -- value carried into the next match would open a session on a player this
-    -- one has never fought -- and a licence, unlike downedBy, does not go stale
+    -- one has never fought -- and a license, unlike downedBy, does not go stale
     -- on its own. `downedBy` two lines up is the same field for the same reason.
     e.killedByLicense = nil
 
@@ -925,6 +965,87 @@ function BR.Match.shortenWarmupIfFull(m)
     BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'lobbyFull' })
 end
 
+--- Hold this warmup while anybody in it is still reading tutorial cards.
+---
+--- ═══ THE ROOM WAITS, AND THE OWNER CHOSE THAT ═══
+---
+--- 2026-09-07: "freeze the room for the warmup timer". A warmup countdown is
+--- match-wide -- `m.endsAt` is one number for one instance, and every client
+--- derives its own display by subtracting from it -- so there is no per-player
+--- clock to hold. Holding a learner therefore means holding everybody on the pad
+--- with them. That is the trade, it was made deliberately, and it is bounded by
+--- the walkthrough ending: BR.Tutorial.game(false) fires on the last card, on an
+--- abandoned run, and on leaving warmup at all.
+---
+--- THE SAME MECHANISM `brwarmupfreeze` USES, and deliberately so rather than a
+--- second one: push `endsAt` a day out while held, and on release re-enter a
+--- WHOLE warmup from now. The pad gets an ordinary countdown rather than
+--- whatever was left of one twenty minutes ago, and `shortened` is re-armed so a
+--- full lobby is still cut short by the rule that was suppressed during the
+--- hold. Every change of endsAt is rebroadcast, because clients derive their
+--- countdown from it.
+---
+--- IT DEFERS TO THE DEV FREEZE. If brwarmupfreeze is on, that is already holding
+--- this warmup and re-entering one on release would thaw a match the operator
+--- froze on purpose.
+--- @param m table
+function BR.Match.tutorialHold(m)
+    local learners = BR.Roster.tutorialGameIn and BR.Roster.tutorialGameIn(m.id) or 0
+
+    if learners > 0 then
+        m.tutorialHeld = true
+        if not BR.Match.warmupFrozen() then
+            m.endsAt = GetGameTimer() + WARMUP_HOLD_MS
+        end
+        return
+    end
+
+    if not m.tutorialHeld then return end
+    m.tutorialHeld = nil
+
+    -- RELEASED. This is the moment the owner's design calls for: "THIS is when
+    -- matchmaking should take place and the timer appears for the first time on
+    -- their screen" (2026-09-07). The countdown starts here and the page reveals
+    -- it on the same edge.
+    if BR.Match.warmupFrozen() then return end
+
+    m.endsAt = GetGameTimer() + M.warmupSeconds * 1000
+    m.shortened = false
+    print(('[br_core] match %d: the tutorial is over -- warmup starts now (%ds)')
+        :format(m.id, M.warmupSeconds))
+    BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'tutorialDone' })
+end
+
+--- Of everybody BR.Lobby.admissible refused, the ones it refused FOR A PARTY.
+---
+--- ═══ SOMEBODY IN THE TUTORIAL IS NOT SOMEBODY THE ROOM IS WAITING FOR ═══
+---
+--- BR.Party.mayEnter says no for two unrelated reasons since #261, so `held` no
+--- longer means one thing. Handing the mixed list to BR.Party.holdBlocker makes
+--- it read the FIRST refused player's party -- and a player in the walkthrough
+--- has none, by construction -- so the room would tell every lobby screen in it
+--- that a party has 0/0 readied up. That is a reason which is not the one
+--- holding the match, stated confidently, which is the precise failure the
+--- gate-and-explanation-in-one-function rule below exists to prevent.
+---
+--- AND IT IS NOT ONLY A WORDING BUG. `(queued + #held) >= need` is the test for
+--- "would the held players close the gap", and a player in the tutorial never
+--- closes it -- they are not coming, and nothing anybody else does brings them.
+--- Counting them makes a room blame a party for a shortfall whose honest answer
+--- is more players.
+---
+--- A NEW ARRAY RATHER THAN AN EDIT IN PLACE, because the list belongs to the
+--- caller's own BR.Lobby.admissible call rather than to this function.
+--- @param held integer[]  ids BR.Party.mayEnter refused, lowest first
+--- @return integer[]
+local function partyHeld(held)
+    local out = {}
+    for _, src in ipairs(held) do
+        if not BR.Roster.inTutorial(src) then out[#out + 1] = src end
+    end
+    return out
+end
+
 --- Why the next match OF A MODE cannot form yet, or nil if it can.
 ---
 --- THE GATE AND THE EXPLANATION ARE THE SAME FUNCTION, deliberately.
@@ -935,9 +1056,13 @@ end
 --- not the one actually holding the match, so the player does the thing it
 --- asked for and nothing happens. One function, two callers, no disagreement.
 ---
---- Note there is no "a warmup is open" reason here: while one of this mode
---- is open, ready-ups late-join it instead of queueing, so the queue this
---- function reads only ever holds players waiting for a NEW match.
+--- Note there is no "a warmup is open" reason here, and it is not needed: this
+--- function is only ever CONSULTED while no warmup of the mode is open (the
+--- tick sweeps the queue into an open one instead of asking). The queue it
+--- reads is not necessarily empty at those moments any more, though -- a player
+--- waiting on their party sits in it through an entire warmup they were not
+--- admitted to (2026-09-02) -- which is why every count below is taken from
+--- BR.Lobby.admissible rather than from the queue itself.
 ---
 --- @param mode string|nil  the mode whose queue is being judged; defaults to
 ---        the dominant mode (the lobby status display's approximation)
@@ -952,9 +1077,30 @@ function BR.Match.startBlocker(mode)
     end
 
     mode = mode or BR.Lobby.dominantMode()
-    local queued = #BR.Lobby.ids(mode)
+
+    -- THE MATCH IS JUDGED ON WHO MAY ACTUALLY BE IN IT. `ready` is the queue
+    -- minus the members of parties that are not all here yet (BR.Party.mayEnter
+    -- decides, BR.Lobby.admissible applies it), and it is the same list the
+    -- formation tick consumes -- so this function cannot clear a match into
+    -- existence out of players the tick will then refuse to put in it.
+    local ready, held = BR.Lobby.admissible(mode)
+    local queued = #ready
     local need   = BR.Lobby.needed()
     if queued < need then
+        -- WHOSE ABSENCE IS IT? A queue that is short only because somebody is
+        -- waiting on their party is a different sentence from a lobby that
+        -- needs more people, and the lobby screen phrases both from here. The
+        -- test is deliberately "would the held players close the gap": when
+        -- even the whole queue is too small, more players is the honest answer
+        -- and the party is not what is holding anything.
+        --
+        -- `partyHeld` and not `held`: since #261 the refused list also carries
+        -- players in the guided first run, and they are neither waiting nor
+        -- waited on. See the note over that function.
+        local waiting = partyHeld(held)
+        if #waiting > 0 and (queued + #waiting) >= need then
+            return BR.Party.holdBlocker(waiting, mode)
+        end
         return { reason = 'players', have = queued, need = need }
     end
 
@@ -962,47 +1108,37 @@ function BR.Match.startBlocker(mode)
     -- queued as one party form a single squad, and a single squad has already
     -- met the win condition before the match starts.
     if mode ~= BR.Mode.SOLO.key then
-        local squads    = BR.Party.prospectiveSquads(BR.Lobby.ids(mode), mode)
+        local squads    = BR.Party.prospectiveSquads(ready, mode)
         local minSquads = BR.Config.Match.MinSquads(BR.Server.devMode)
         if squads < minSquads then
             return { reason = 'squads', have = squads, need = minSquads }
         end
 
-        -- PARTIES ENTER TOGETHER -- with a patience limit. One member
-        -- readying up must not launch the match while the rest of their
-        -- party is still picking a mode (the first two-client squad test
-        -- started the instant the first Ready landed) -- but one AFK
-        -- partymate must not brick the queue for everyone either. So the
-        -- hold lasts partyGraceSeconds; after that the match forms without
-        -- the stragglers, and the warmup door they can still walk through
-        -- is the late-join path that already exists. The party panel marks
-        -- who the room is waiting on (check / ellipsis) the whole time.
-        local queuedSet = {}
-        for _, src in ipairs(BR.Lobby.ids(mode)) do queuedSet[src] = true end
-        local incomplete = nil
-        for src in pairs(queuedSet) do
-            local party = BR.Party.of(src)
-            if party then
-                local ready = 0
-                for _, mem in ipairs(party.members) do
-                    if queuedSet[mem] then ready = ready + 1 end
-                end
-                if ready < #party.members then
-                    incomplete = { reason = 'party', have = ready, need = #party.members }
-                    break
-                end
-            end
-        end
-        if incomplete then
-            BR.Server.partyHoldSince = BR.Server.partyHoldSince or GetGameTimer()
-            if GetGameTimer() - BR.Server.partyHoldSince
-               < (BR.Config.Match.partyGraceSeconds * 1000) then
-                return incomplete
-            end
-            -- Patience spent: start without them.
-        else
-            BR.Server.partyHoldSince = nil
-        end
+        -- AND NOBODY ELSE'S PARTY HOLDS THIS ROOM. There is deliberately no
+        -- clock here, and its absence is the whole of the second 2026-09-02
+        -- report:
+        --
+        --   "with 3 players, #1+#2 in a party and #3 is not. neither of the
+        --   party occupants are ready, and #3 readies up but they're told they
+        --   have to wait for some reason. They should go straight into warmup
+        --   without waiting for the party." -- the owner.
+        --
+        -- The room used to spend a party grace before it would form a match
+        -- out of a queue that contained a half-readied party. That patience made
+        -- sense while running out of it meant starting WITH the lone partymate:
+        -- the wait bought the rest of their party a chance to arrive first. It
+        -- stopped making sense the moment expiry began forming the match out of
+        -- `ready` instead, because `ready` is the same list before the wait and
+        -- after it -- the same match, with the same people in it, forty-five
+        -- seconds later. The party gained nothing (they walk into that warmup
+        -- through the late-join door the moment they are whole, and
+        -- BR.Party.lateJoin puts them in one squad when they do) and everybody
+        -- who was already admissible paid for it with an empty screen.
+        --
+        -- So the answer for a held player and the answer for everybody else are
+        -- given in the SAME TICK: BR.Party.mayEnter is a per-player predicate,
+        -- `held` is the players it refused, and nothing above this line consults
+        -- `held` except to explain a queue that is too small without them.
     end
 
     return nil
@@ -1080,6 +1216,40 @@ local function winConditionMet(m)
     return BR.Server.squadsAlive(m) <= 1
 end
 
+--- Announce the last two squads -- at most once per match.
+---
+--- His pick for "Down to 2 squads or players in match" (2026-09-08).
+---
+--- ═══ ARMED BY OBSERVATION, NOT BY m.startSquads ═══
+---
+--- The count has to be SEEN above two while PLAYING before a two can mean
+--- anything. minSquads is 2 (br_lib/config/match.lua), so an ordinary production
+--- match STARTS at two squads and was never "down to" anything -- a rule keyed
+--- on m.startSquads would announce the endgame at the moment the bus took off.
+--- Arming on a >2 reading also covers the case startSquads cannot: a third squad
+--- that disconnected during the flight leaves startSquads at 3 and the live count
+--- at 2 on the very first PLAYING tick, which is not an endgame either.
+---
+--- ═══ AND THE LATCH IS THE MATCH INSTANCE, WITH NOTHING CLEARING IT ═══
+---
+--- Unlike server/storm.lua's stormMoveCued, which enterPhase re-arms every
+--- phase, this is once per ROUND: the fields die with the instance when
+--- BR.Server.matches[m.id] is dropped. That is what makes a revive safe --
+--- server/revivekey.lua puts an OUT player back to ALIVE mid-match, so the count
+--- really can go 3 -> 2 -> 3 -> 2, and only the latch stops the second two being
+--- announced as if it were news.
+--- @param m table
+local function cueFinalTwoOnce(m)
+    if m.final2Cued then return end
+    if m.state ~= BR.MatchState.PLAYING then return end
+    local n = BR.Server.squadsAlive(m)
+    if n > 2 then m.final2Armed = true return end
+    if not m.final2Armed or n ~= 2 then return end
+    m.final2Cued = true
+    -- A CUE KEY, NEVER A SOUND NAME. See br_lib/shared/protocol.lua's SFX_CUE.
+    BR.Broadcast.toMatch(m, BR.Net.SFX_CUE, { c = 'match.final2' })
+end
+
 --- How many of this match's players died before it started and are waiting to
 --- be picked back up (#144).
 ---
@@ -1122,6 +1292,7 @@ local function matchTick(m, now)
     end
 
     if m.state == BR.MatchState.WARMUP then
+        BR.Match.tutorialHold(m)
         BR.Match.shortenWarmupIfFull(m)
     end
 
@@ -1321,6 +1492,12 @@ local function matchTick(m, now)
             end)
     end
 
+    -- BEFORE THE WIN CHECK, NOT AFTER. One squad left ends the match on this
+    -- very line, so a cue evaluated afterwards would never see a two on the tick
+    -- that mattered -- and on the tick that took the field from three to one it
+    -- would never see one at all.
+    cueFinalTwoOnce(m)
+
     if winConditionMet(m) then
         BR.Match.transition(m, BR.MatchState.ENDED)
         return
@@ -1374,9 +1551,18 @@ local function tick()
     -- up after every match of that mode is BUS-or-later or a full warmup.
     for _, modeDef in pairs(BR.Mode) do
         local mode = modeDef.key
-        if not BR.Server.formingMatch(mode) then
-            local parts = BR.Lobby.ids(mode)
-            if #parts > 0 then
+        if BR.Server.formingMatch(mode) then
+            -- A WARMUP OF THIS MODE IS OPEN AND THE QUEUE IS NOT NECESSARILY
+            -- EMPTY ANY MORE (2026-09-02). A player whose party had not all
+            -- readied up is held in the queue rather than admitted alone, and
+            -- nothing they do releases them -- the release is their PARTYMATE
+            -- readying up, leaving the party, or disconnecting. This is what
+            -- notices, 250ms later, and walks whoever is now clear through the
+            -- late-join door together.
+            BR.Lobby.admitWaiting(mode)
+        else
+            local queued = BR.Lobby.ids(mode)
+            if #queued > 0 then
                 -- Every reason to hold is checked BEFORE the queue is
                 -- consumed. The queue is spent on the way into WARMUP, so
                 -- refusing later would leave the players out of the queue
@@ -1385,8 +1571,15 @@ local function tick()
                 if blocker then
                     BR.Match.announceBlocker(blocker)
                 else
-                    BR.Lobby.consume(parts)
-                    BR.Match.create(mode, parts)
+                    -- ONLY THE ADMISSIBLE ONES, which is the same list
+                    -- startBlocker just judged. Anybody waiting on a party
+                    -- keeps their place in the queue and their claim on the
+                    -- next door that opens.
+                    local parts = BR.Lobby.admissible(mode)
+                    if #parts > 0 then
+                        BR.Lobby.consume(parts)
+                        BR.Match.create(mode, parts)
+                    end
                 end
             end
         end
@@ -1394,6 +1587,81 @@ local function tick()
 end
 
 BR.Sched.every(250, 'match.tick', tick)
+
+--- Tell a squad that one of them has walked out -- and never tell the leaver.
+---
+--- ═══ WHY THIS SENTENCE EXISTS AT ALL ═══
+---
+--- Owner, playtest 2026-09-02: "in squads, a player leaves the match and the
+--- others get 'x has bled out' toasts."
+---
+--- They did, because leaving is routed through BR.Combat.eliminate and that
+--- function used to mint a revive key for anybody it eliminated. The key is gone
+--- now (see the `cause ~= 'left'` guard in server/combat.lua and the reasoning
+--- above it), and with it `BR.Config.ReviveKey.copy.bledOut` -- which is the
+--- half that actually hurt, because it did not merely misdescribe the event, it
+--- SENT THE SQUAD SOMEWHERE. A mate's body with a key on it is a place to run
+--- to; a mate who has quit is not.
+---
+--- THE SQUAD STILL HAS TO BE TOLD SOMETHING. Deleting the toast and stopping
+--- there would take a real event off their screen: three players are now two,
+--- the panel row goes quiet, and nothing anywhere says why. The complaint was
+--- that the sentence was WRONG, not that there was one.
+---
+--- ⚠ THE OWNER HAS NOT SEEN THIS WORDING, and it is one string in one place for
+--- him to overwrite -- the same way `copy.bledOut`'s `within %s` was left for
+--- him on 2026-09-02. It is not invented from nothing: BOTH HALVES ARE ALREADY
+--- SHIPPED WORDING and this only puts them together. server/party.lua says
+--- '%s left the party.' in this exact shape and tone for the neighbouring event,
+--- and BR.Match.leaveMatch says 'You left the match.' to the leaver themselves
+--- twenty lines below. The third-person form of the second, in the grammar of
+--- the first, is the sentence with the fewest new decisions in it.
+---
+--- ═══ THE AUDIENCE IS THE SQUAD MINUS THE SUBJECT ═══
+---
+--- The same envelope `tellSquad` in server/combat.lua addresses, for the same
+--- reason it gives: "you left the match" is not news to the person who pressed
+--- the button, and they are already being told so directly.
+---
+--- ═══ AND IT IS CALLED WHERE IT IS FOR TWO REASONS ═══
+---
+--- AFTER eliminate(), so it cannot announce a departure that the elimination
+--- refused -- and eliminate() does refuse: a player whose death is held for the
+--- start of the match (#144) is not a leaver, and a `canDie` refusal is not
+--- either. Both return before anything is written down.
+---
+--- BEFORE BR.Match.resetPlayer, WHICH IS THE HALF THAT WOULD FAIL SILENTLY.
+--- That function clears `squadId` and `matchId` a few lines later, and both are
+--- the filter below -- so a call moved past it would find an empty squad, send
+--- nothing, and look exactly like a call that worked.
+---
+--- ONLY FROM THE `eliminate('left')` BRANCH. A WARMUP player stepping off the
+--- pad has not left a match that started, and an OUT player leaving is already
+--- gone from the fight and was announced when they died.
+--- @param src integer   the leaver
+--- @param entry table   their roster entry, still carrying squadId and matchId
+local function tellSquadTheyLeft(src, entry)
+    if not entry.squadId or not entry.matchId then return end
+
+    local mates = {}
+    BR.Roster.each(
+        function(e)
+            return e.squadId == entry.squadId
+               and e.matchId == entry.matchId
+               and e.src ~= src
+        end,
+        function(mate) mates[#mates + 1] = mate end)
+
+    if #mates == 0 then return end
+
+    -- THE NAME IS AN ARGUMENT AND NOT PART OF THE STRING, which is the owner's
+    -- rule of 2026-08-31 ("any time we mention a player by name in a toast their
+    -- name should be bold") and the property tools/check_notice_names.lua
+    -- enforces across every call site in four resources.
+    BR.Server.notify(mates,
+        BR.Notice.line('%s left the match.', BR.Notice.who(entry.name)),
+        'warn')
+end
 
 --- Leave the current match, on the player's own initiative.
 ---
@@ -1453,6 +1721,7 @@ function BR.Match.leaveMatch(src)
     elseif BR.Server.isInMatch(entry.state)
         or entry.state == BR.PlayerState.DBNO then
         BR.Combat.eliminate(src, 'left', nil)
+        tellSquadTheyLeft(src, entry)
     end
     -- OUT players fall through: already out of the fight, they only need the
     -- trip back to the lobby. A spectator is one of them.

@@ -3,7 +3,9 @@ import { verdictWord } from '../hud/verdictWord'
 import Progress from './Progress'
 import { useUi } from '../store'
 import { useEffect, useState } from 'react'
+import { CB } from '../bridge/types'
 import type { SummaryPayload } from '../bridge/types'
+import { fetchNui } from '../bridge/nui'
 import { useCoverReport } from '../bridge/cover'
 
 /**
@@ -337,6 +339,27 @@ function StagedAward() {
       // silence.
       const e = stageEarned()
       if (!e) return
+
+      // THE VOLTS SOUND LANDS WHEN THE NUMBER DOES, WHICH IS WHY IT IS HERE.
+      //
+      // The owner's pick for "Volts award at verdict" (2026-09-08). The obvious
+      // place was the Lua side, where the `earned` envelope arrives -- and that
+      // is several seconds too early: this screen mounts after the match ends
+      // and stages the award behind its own backdrop, so a sound fired on
+      // arrival would play over a black screen and be finished before the figure
+      // was ever shown. `stageEarned` is the one call that knows the number is
+      // about to be on screen, and it claims once.
+      //
+      // ONLY FOR A REAL AWARD. `if (!e) return` above is the no-stats case
+      // (br_ddb down), which correctly shows nothing -- so it correctly plays
+      // nothing too. Zero Volts is the same argument one level down: an award
+      // sound for an award of nothing is a lie in the one direction a player
+      // notices.
+      //
+      // CB.SFX RATHER THAN THIS PAGE'S OWN SYNTHESISED TIER. `volts.award` is a
+      // GTA pair the owner auditioned by ear; Lua owns that table and its
+      // throttle, and the page names the cue. See BR.NuiCb.SFX.
+      if (e.volts > 0) void fetchNui(CB.SFX, { cue: 'volts.award' })
 
       // EVERY NUMBER BELOW CAME OFF THE WIRE. Nothing here adds, subtracts or
       // clamps, and that is the fix for #91 and #130 rather than a style

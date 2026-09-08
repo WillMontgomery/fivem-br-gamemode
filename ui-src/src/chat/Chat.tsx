@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { useUi, selChat, selChatOpen, selScreen, selSquad } from '../store'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useUi, selChat, selChatOpen, selScreen, selSquad, selTutorialChat } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import type { ChatChannel, ChatMessage } from '../bridge/types'
@@ -94,9 +94,14 @@ function Line({ msg }: { msg: ChatMessage }) {
 
 export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) {
   const messages = useUi(selChat)
+  // THE WALKTHROUGH'S ONE FAKE LINE, merged HERE and never in a selector: a
+  // selector returning a fresh array re-renders forever under the zustand this
+  // project pins, and the effects below depend on the list identity.
+  const staged = useUi(selTutorialChat)
   const open = useUi(selChatOpen)
   const channel = useUi((s) => s.chatChannel)
   const closeChat = useUi((s) => s.closeChat)
+  const noteChatSent = useUi((s) => s.noteChatSent)
   const openChat = useUi((s) => s.openChat)
   const screen = useUi(selScreen)
 
@@ -107,7 +112,15 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   // Squad chat only exists when there is a squad (or party) to hear it --
   // solos get no toggle, no Tab switch, and never sit on the squad channel.
   const squad = useUi(selSquad)
-  const canSquadChat = squad.members.length > 1
+  // ...OR WHILE THE WALKTHROUGH IS SHOWING IT OFF. Owner, 2026-09-06: the squad
+  // channel "should be visible just for this moment" even in solos. It costs
+  // nothing: a solo player's squad message already goes only to their own screen
+  // (server/chat.lua answers `{ src }` when they have no squadId), so this
+  // unlocks a channel that was already private. The effect below is the safety
+  // net -- the instant the flag clears, a composer left on `squad` is forced
+  // back to `global`.
+  const tutorialSquadChat = useUi((s) => s.tutorialChatSquad)
+  const canSquadChat = squad.members.length > 1 || tutorialSquadChat
   useEffect(() => {
     if (open && channel === 'squad' && !canSquadChat) openChat('global')
   }, [open, channel, canSquadChat, openChat])
@@ -115,6 +128,19 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   /** The single exit path. Everything that closes chat goes through here. */
   const release = (send: boolean) => {
     const text = draft.trim()
+
+    // AN EMPTY ENTER IS NOT AN ANSWER, and while the walkthrough's card is up it
+    // must not be an exit either. Everything below closes chat unconditionally,
+    // so pressing Enter before typing used to close it without sending -- the
+    // same dead end an outside click led to, and the card literally says "press
+    // Enter to send it", so it is the move the card invites.
+    //
+    // BEFORE THE CLOSE, not after: `closeChat()` is the first thing that runs.
+    if (staged && send && text.length === 0) {
+      inputRef.current?.focus()
+      return
+    }
+
     setDraft('')
     closeChat()
 
@@ -122,6 +148,10 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
     // to reach Lua cannot leave the input stuck open on screen.
     if (send && text.length > 0) {
       void fetchNui(CB.CHAT_SEND, { channel, text: text.slice(0, MAX_LENGTH) })
+      // THE ONE PLACE THIS PLAYER'S OWN SEND IS VISIBLE, which is what the
+      // walkthrough's "say something" card waits on. No wire, no Lua: the page
+      // is already the thing that sends.
+      noteChatSent()
     }
     void fetchNui(CB.CHAT_FOCUS, { open: false })
   }
@@ -142,10 +172,22 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   }, [])
 
   // Keep the log pinned to the newest message.
+  // THE LIST THE LOG ACTUALLY DRAWS. `useMemo` is required rather than tidy:
+  // the fade timer below depends on this identity, so a fresh arrayper  render
+  // would reset it forever and the log would never fade.
+  //
+  // THE STAGED LINE GOES LAST, so it reads as the newest -- the log pins to the
+  // bottom. A real message arriving mid-demo therefore renders above it, which
+  // is the right trade: the staged line stays where the eye is.
+  const lines = useMemo(
+    () => (staged ? [...messages, staged] : messages),
+    [messages, staged],
+  )
+
   useEffect(() => {
     const el = logRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [messages])
+  }, [lines])
 
   // Fade the log out after a quiet spell, the way game chat is expected to
   // behave. Without this the last message sits on screen for the rest of the
@@ -156,12 +198,17 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   const [faded, setFaded] = useState(false)
   useEffect(() => {
     setFaded(false)
-    if (open) return                    // never fade while typing
+    // NEVER WHILE TYPING, AND NEVER WHILE THE WALKTHROUGH IS POINTING AT IT.
+    // Owner, 2026-09-08: "the chat fades away after a few seconds but the user
+    // may not have read it yet." The card before this one runs with chat CLOSED
+    // by design, so the twelve-second timer was running from the moment the demo
+    // line was staged and the ring ended up circling an empty box.
+    if (open || staged) return
     const t = window.setTimeout(() => setFaded(true), FADE_AFTER_MS)
     return () => window.clearTimeout(t)
-  }, [messages, open])
+  }, [lines, open])
 
-  const visible = messages.length > 0 || open
+  const visible = lines.length > 0 || open
   const logOpacity = !visible ? 0 : open ? 1 : faded ? 0 : RESTING_OPACITY
 
   // WHERE THE CHAT SITS -- the ladder, per design:
@@ -191,6 +238,10 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   return (
     <div
       id={CHAT_COLUMN_ID}
+      // The guided first run rings this column (#261). On the wrapper, which is
+      // a plain div with a real box -- the log inside it is empty for most of a
+      // match and would measure as nothing.
+      data-tut="hud-chat"
       className="fixed w-[28.75rem] max-w-[38vw]"
       style={{
         left: 'var(--map-left)',
@@ -211,7 +262,7 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
           textShadow: '0 1px 3px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6)',
         }}
       >
-        {messages.map((m, i) => (
+        {lines.map((m, i) => (
           <Line key={`${m.at}-${m.from}-${i}`} msg={m} />
         ))}
       </div>
@@ -264,6 +315,30 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
             onBlur={(e) => {
               const next = e.relatedTarget as Node | null
               if (next && e.currentTarget.parentElement?.contains(next)) return
+
+              // ═══ THE WALKTHROUGH'S CHAT CARD IS NOT A DISMISS BUTTON ═══
+              //
+              // Owner, 2026-09-08: "using the mouse to click anywhere outside of
+              // the chat closes it?" A click on empty space, the HUD, or the
+              // tutorial card itself has a null relatedTarget, so it falls
+              // through to the close below.
+              //
+              // THAT IS RIGHT EVERYWHERE ELSE and is why this is a refocus
+              // rather than a bare return: the handler exists so DOM focus and
+              // Lua focus cannot disagree -- "no path that closes the input
+              // without telling Lua" -- and simply not closing would leave the
+              // player holding NUI focus with no visible input, unable to move.
+              //
+              // AND IT IS A TRAP HERE SPECIFICALLY. The card is scoped to the
+              // chat screen, so closing chat hides it; the arrows are dead over
+              // one of our screens; and the step has no Back. Card gone, chat
+              // gone, keyboard dead -- with the only recovery being a key the
+              // card is no longer on screen to name.
+              if (staged) {
+                inputRef.current?.focus()
+                return
+              }
+
               if (open) release(false)
             }}
             placeholder={channel === 'squad' ? 'Message your squad…' : 'Message everyone…'}

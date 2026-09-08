@@ -720,6 +720,12 @@ end, RESTRICTED)
 --- not experience percentages, they experience opening a box and finding no gun
 --- in it.
 ---
+--- AND UNDER IT, THE COMPOSITION (#254), which is a different question from
+--- presence and had to be added because presence answered the wrong one. "Does a
+--- crate contain melee" and "how much of a crate that contains melee IS melee"
+--- come apart the moment anything picks a category once per crate instead of per
+--- slot, and only the second of them is the report the owner filed.
+---
 --- RESTRICTED rather than dev-mode-only, like brloot and brconfig above: it
 --- reads nothing about any player, changes nothing, and spawns nothing. The
 --- commands wearing devOnly are the ones that hand out gear.
@@ -757,45 +763,53 @@ RegisterCommand('brlootsim', function(_, args)
 
         local items, byLabel = 0, {}
         local withFirearm, withAnyWeapon = 0, 0
+        -- THE COMPOSITION HALF (#254). Every number above this line is a
+        -- PRESENCE number -- what share of items, what share of crates hold one
+        -- -- and presence cannot answer the report that a crate holding melee is
+        -- "mostly melee in that crate" (owner, 2026-09-02). A category picked
+        -- once per crate and a category drawn per slot produce the SAME presence
+        -- table and completely different crates, so the question has to be asked
+        -- of the composition or it is not being asked at all.
+        local withMelee, meleeShare, meleeOfWeapons, meleeNoGun = 0, 0.0, 0.0, 0
         -- Fixed print order. A distribution dump that reorders itself between
-        -- runs is one you cannot diff against the run before it.
+        -- runs is one you cannot diff against the run before it. These are also
+        -- BR.LootComposition's field names, which is what lets the walk below
+        -- be a lookup rather than a second copy of the bucketing rules.
         local order = { 'firearm', 'melee', 'ammo', 'consumable', 'throwable' }
 
         for _ = 1, crates do
             local contents = BR.LootChestContents(rng, tier)
-            local gun, weapon = false, false
+            local c = BR.LootComposition(contents)
+
+            items = items + c.items
+            for _, k in ipairs(order) do
+                byLabel[k] = (byLabel[k] or 0) + c[k]
+            end
+            -- Consumables are counted a second time by id: "medkits" is
+            -- half of what was reported, and a lump labelled "consumable"
+            -- cannot answer it.
             for _, s in ipairs(contents) do
-                items = items + 1
-
-                local bucket
-                if s.kind == BR.ItemKind.WEAPON then
-                    weapon = true
-                    local w = BR.Config.WeaponById[s.item]
-                    if w and w.melee then
-                        bucket = 'melee'
-                    else
-                        bucket = 'firearm'
-                        gun = true
-                    end
-                elseif s.kind == BR.ItemKind.AMMO then
-                    bucket = 'ammo'
-                elseif s.kind == BR.ItemKind.CONSUMABLE then
-                    bucket = 'consumable'
-                else
-                    bucket = 'throwable'
-                end
-
-                byLabel[bucket] = (byLabel[bucket] or 0) + 1
-                -- Consumables are counted a second time by id: "medkits" is
-                -- half of what was reported, and a lump labelled "consumable"
-                -- cannot answer it.
                 if s.kind == BR.ItemKind.CONSUMABLE then
                     local key = 'consumable:' .. s.item
                     byLabel[key] = (byLabel[key] or 0) + 1
                 end
             end
-            if gun then withFirearm = withFirearm + 1 end
-            if weapon then withAnyWeapon = withAnyWeapon + 1 end
+
+            if c.firearm > 0 then withFirearm = withFirearm + 1 end
+            if c.firearm > 0 or c.melee > 0 then
+                withAnyWeapon = withAnyWeapon + 1
+            end
+
+            if c.melee > 0 then
+                withMelee = withMelee + 1
+                meleeShare = meleeShare + c.melee / c.items
+                -- The same share counted the way a player counts it: ammo goes
+                -- into a reserve and a shield into a bar, so the weapon is the
+                -- thing you walk away from a crate holding.
+                meleeOfWeapons = meleeOfWeapons
+                    + c.melee / (c.melee + c.firearm)
+                if c.firearm == 0 then meleeNoGun = meleeNoGun + 1 end
+            end
         end
 
         line('-')
@@ -820,6 +834,16 @@ RegisterCommand('brlootsim', function(_, args)
             :format(guns > 0 and (support / guns) or 0.0))
         print(('    CRATES WITH A FIREARM: %.1f%%   with any weapon: %.1f%%')
             :format(withFirearm / crates * 100.0, withAnyWeapon / crates * 100.0))
+
+        local mc = math.max(1, withMelee)
+        print(('    crates holding melee:  %.1f%%   (1 in %.1f)')
+            :format(withMelee / crates * 100.0,
+                    withMelee > 0 and crates / withMelee or 0.0))
+        print(('      and in one of those, melee is %.0f%% of the crate,'
+            .. ' %.0f%% of its weapons; %.0f%% hold no firearm at all')
+            :format(meleeShare / mc * 100.0,
+                    meleeOfWeapons / mc * 100.0,
+                    meleeNoGun / mc * 100.0))
     end
 end, RESTRICTED)
 

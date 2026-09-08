@@ -23,6 +23,91 @@ import { CB } from '../bridge/types'
  * Mounted always, shown only when the match is WAITING, so the transition costs
  * no mount work.
  */
+/**
+ * The tutorial toggle (#261).
+ *
+ * ═══ A TOGGLE, NOT A CHECKBOX, AND NOT AN <input> ═══
+ *
+ * Owner, 2026-09-04: "Instead of a checkbox can we try a toggle for the
+ * tutorial?" A checkbox is a form field you agree to; a toggle is a thing that
+ * is ON, and this one arrives on.
+ *
+ * DRAWN RATHER THAN NATIVE, for the reason every control on this screen is
+ * drawn: a platform checkbox or a platform switch in CEF brings styling that
+ * matches nothing else in the game, and this sits directly above the loudest
+ * button on the screen.
+ *
+ * `plate` IS THE SURFACE, so it belongs to the lobby rather than to the
+ * tutorial -- the owner's rule that the whole feature follow "the same visual
+ * and button structure as the existing UI". The edge takes the accent when on,
+ * which is what accent means everywhere else: this concerns you.
+ *
+ * TRANSFORM ONLY on the knob, so it cannot cost layout while the lobby camera
+ * is flying behind it.
+ */
+function TutorialToggle({ on, onChange, label, tut }: {
+  on: boolean
+  onChange: (v: boolean) => void
+  /** A node rather than a string, so a label can colour part of itself. */
+  label: React.ReactNode
+  /**
+   * `data-tut` anchor for the guided first run, like every other control the
+   * walkthrough points at.
+   *
+   * ON THE BUTTON ITSELF RATHER THAN ON A WRAPPER. The pattern next to this one
+   * is `<span data-tut="ready" className="block">`, which exists because `Btn`
+   * does not forward unknown props. This component is the button, so the
+   * attribute goes where the ring should be drawn and no extra element enters
+   * the layout.
+   */
+  tut?: string
+}) {
+  return (
+    // `btn` IS NOT DECORATION AND check-ui ENFORCES IT (R3): a bare button has
+    // no press travel, no hover state and no sound, which is three ways this
+    // would have felt unlike every other control on the screen. The cues below
+    // are played by hand because a toggle is not a `Btn` -- it has two states
+    // rather than one action -- but the feel is shared.
+    //
+    // THE COMMENT IS OUT HERE FOR A REASON. check-ui reads the opening tag by
+    // scanning to the first `>` at brace-depth zero, so a comment INSIDE the tag
+    // containing a literal angle bracket truncates the tag before `className`
+    // and the rule fails on a button that satisfies it. Cost me a round.
+    <button
+      type="button"
+      role="switch"
+      data-tut={tut}
+      aria-checked={on}
+      className="btn interactive plate w-full flex items-center gap-3 px-4 py-2.5 mb-2.5 text-left"
+      style={{ ['--edgec' as string]: on
+        ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)' }}
+      onPointerEnter={() => play('ui.hover')}
+      onClick={() => { play('ui.select'); onChange(!on) }}
+    >
+      <span
+        aria-hidden
+        className="relative shrink-0"
+        style={{
+          width: '2.1rem', height: '1.05rem',
+          background: on ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.14)',
+          transition: 'background 140ms linear',
+        }}
+      >
+        <span
+          className="absolute top-[0.14rem] left-[0.14rem]"
+          style={{
+            width: '0.77rem', height: '0.77rem',
+            background: on ? '#04222a' : 'rgba(255,255,255,0.75)',
+            transform: on ? 'translateX(1.05rem)' : 'translateX(0)',
+            transition: 'transform 160ms var(--ease-snap), background 140ms linear',
+          }}
+        />
+      </span>
+      <span className="tscale text-[0.85rem] text-white/80">{label}</span>
+    </button>
+  )
+}
+
 export default function Lobby({
   visible, under = false,
 }: {
@@ -41,6 +126,105 @@ export default function Lobby({
   // while the opaque backdrop fades OUT to the world.
   const worldReady = useUi((s) => s.worldReady)
   const locker = useUi((s) => s.locker)
+
+  // ═══ THE GUIDED FIRST RUN'S OFFER (#261) ═══
+  //
+  // `tutorialOffer` is Lua's -- it decides whether this player is being offered
+  // the walkthrough at all. `tutorialChecked` is the page's, because it is a
+  // control the player is operating rather than a fact about the world, and it
+  // starts TRUE: "A checkbox, default on".
+  const tutorialOffer = useUi((s) => s.tutorialOffer)
+  const tutorialChecked = useUi((s) => s.tutorialChecked)
+  const tutorialRun = useUi((s) => s.tutorialRun)
+  const tutorialStep = useUi((s) => s.tutorialStep)
+  const tutorialGameOn = useUi((s) => s.tutorialGameOn)
+  const setTutorialGameArmed = useUi((s) => s.setTutorialGameArmed)
+  const setTutorialDeclineCard = useUi((s) => s.setTutorialDeclineCard)
+  /** Read as well as written: the toggle stays mounted while the card is up. */
+  const tutorialDeclineCard = useUi((s) => s.tutorialDeclineCard)
+  const tutorialOfferable = useUi((s) => s.tutorialOfferable)
+  // Which screen is on top -- the offer is retired while Settings covers the
+  // lobby, so the control does not vanish under the cursor that pressed it.
+  const focus = useUi((s) => s.focus)
+  const setTutorialGameOn = useUi((s) => s.setTutorialGameOn)
+  const setTutorialChecked = useUi((s) => s.setTutorialChecked)
+  const setTutorialRun = useUi((s) => s.setTutorialRun)
+  const setTutorialOffer = useUi((s) => s.setTutorialOffer)
+
+  // ONCE SHOWN, IT STAYS. The second toggle appears on the `ready` step and must
+  // not vanish when that step is dismissed -- it is an offer about the next
+  // thing, and the player has to be able to reach it afterwards.
+  // IN THE STORE, NOT HERE. See `tutorialGameOffered`: this component unmounts
+  // while a match runs, and a latch that cannot survive that cannot do its job.
+  const tutorialGameShown = useUi((s) => s.tutorialGameOffered)
+  const setTutorialGameShown = useUi((s) => s.setTutorialGameOffered)
+  useEffect(() => {
+    if (tutorialStep === 'ready') setTutorialGameShown(true)
+  }, [tutorialStep])
+
+  // ═══ THE OFFER IS RETIRED BEHIND ANOTHER SCREEN, NOT IN FRONT OF THEM ═══
+  //
+  // Owner, 2026-09-04: "Once the 'start tutorial' button is clicked the first
+  // time, the 'show me how to play' toggle should disappear when they're in the
+  // 'settings' page. This is for the same reason as earlier, to not draw their
+  // attention to the fact that it's gone."
+  //
+  // It used to vanish on the press itself, which is a control disappearing under
+  // the cursor that just used it -- the eye goes straight to the gap. Settings
+  // is the first screen the walkthrough sends them to, so the lobby is
+  // rearranged while it is not being looked at, and they come back to a screen
+  // that simply is that way. Same argument as the second toggle arriving on the
+  // `ready` step rather than after it.
+  useEffect(() => {
+    if (tutorialRun && focus === 'settings') setTutorialOffer(false)
+  }, [tutorialRun, focus, setTutorialOffer])
+
+  // ═══ AND SQUADS IS PUT BACK TO SOLO ON THE WAY OUT OF SETTINGS ═══
+  //
+  // Owner, 2026-09-04: "when they come back from the settings page, please
+  // automatically switch them back to solos."
+  //
+  // The walkthrough MADE them pick Squads, because the party controls only
+  // exist on this screen in that mode and a card explaining them over a solo
+  // lobby points at nothing. That is a demonstration, not a choice -- so
+  // leaving it set would queue a brand new player into squads because the
+  // tutorial needed the buttons on screen for one card.
+  //
+  // ON THE WAY BACK, not on the way in, so the switch happens behind the
+  // Settings screen -- the same reason the offer is retired there. The lobby is
+  // rearranged while nobody is looking at it.
+  const wasInSettings = useRef(false)
+  useEffect(() => {
+    if (focus === 'settings') { wasInSettings.current = true; return }
+    if (wasInSettings.current && tutorialRun) {
+      wasInSettings.current = false
+      pickMode('solo')
+    }
+  }, [focus, tutorialRun])
+
+  /** Ready up reads Start tutorial only while the box is both offered and ticked. */
+  const startTutorial = tutorialOffer && tutorialChecked
+
+  /**
+   * Begin the walkthrough instead of queueing.
+   *
+   * THE OFFER IS SPENT EITHER WAY, and that is the owner's rule: "Unchecking the
+   * box will burn the one-time offer... Then they proceed into the match and the
+   * box is gone." Taking it burns it too, so the checkbox comes down here as
+   * well -- it has done its job and a walkthrough with its own invitation still
+   * on screen behind it reads as unfinished.
+   *
+   * NOTHING IS PERSISTED YET. The flag that makes this a genuinely ONE-time
+   * offer across sessions is the next piece of work; today the offer is raised
+   * by /brtutorial and lives as long as the page does.
+   */
+  const beginTutorial = () => {
+    setTutorialRun(true)
+    // AND TELL LUA, WHICH TELLS THE SERVER. A player mid-walkthrough must not be
+    // matchmade, must be on no warmup clock and must not be in a party -- all
+    // three enforced server-side. Without this the whole hold is unreachable.
+    void fetchNui(CB.TUTORIAL_SET, { run: true })
+  }
   const [queued, setQueued] = useState(false)
   // WHY READY UP IS UNAVAILABLE, if it is. The party panel owns the answer --
   // it knows which way the player said they wanted a squad and whether they
@@ -172,6 +356,26 @@ export default function Lobby({
   }
 
   const queue = async () => {
+    // ═══ READYING UP WITH THE BOX TICKED IS ALSO AN ANSWER TO IT ═══
+    //
+    // Owner, 2026-09-07: "leaving the game tutorial early results in the toggle
+    // still being available in the lobby - great, keep it - but readying up at
+    // that point to go into tutorial again doesn't work. just sends straight to
+    // normal warmup."
+    //
+    // It did not work because the only thing that armed the match half was the
+    // LOBBY half finishing. That is right for a first-timer and wrong for
+    // everybody who comes back: the toggle deliberately outlives the run (it is
+    // an offer about the NEXT thing), so a player who abandoned the walkthrough
+    // and wants another go has a ticked box and no way to spend it.
+    //
+    // ARMED HERE RATHER THAN BY THE TOGGLE ITSELF, and that distinction is the
+    // whole reason the last one misfired. A ticked box is a preference and can
+    // sit ticked forever; readying up is a discrete act with a moment attached.
+    // Arming on the preference is what started the walkthrough for every player
+    // on every match (2026-09-06).
+    if (tutorialGameShown && tutorialGameOn) setTutorialGameArmed(true)
+
     // Optimistic, but the server is the authority -- the next state envelope
     // will correct this if the queue was refused.
     setQueued(true)
@@ -186,9 +390,36 @@ export default function Lobby({
 
   return (
     <div
-      className="fixed inset-0 transition-opacity duration-200"
+      // NO `transition-opacity` CLASS: the transition is written out below
+      // because it now carries a second property with a delay on it.
+      className="fixed inset-0"
       style={{
         opacity: visible ? 1 : 0,
+        // ═══ INVISIBLE AND STILL CLICKABLE, WHICH IS ITS OWN BUG ═══
+        //
+        // Owner, 2026-09-05, during warmup: "the lobby buttons aren't visible
+        // but still clickable somehow...."
+        //
+        // `opacity: 0` removes nothing from hit testing, and `pointer-events`
+        // on this root is NOT a guard: `.interactive` (index.css) and `.btn`
+        // both re-declare `pointer-events: auto` on descendants, so every
+        // button in the faded menu is its own hit target regardless of what
+        // their ancestor says. The lobby has been an invisible click surface
+        // for as long as anything has put a cursor on screen over it -- the
+        // player list and chat do it too. The walkthrough only made it routine.
+        //
+        // `visibility` is the property that cannot be undone from inside,
+        // because it INHERITS and nothing in this subtree overrides it, and a
+        // `visibility: hidden` element is not a hit target at all.
+        //
+        // THE DELAY IS WHAT KEEPS THE FADE. Switching visibility at the same
+        // instant as opacity would make the menu pop instead of dissolving, so
+        // it is held for the length of the fade on the way out and switched
+        // immediately on the way in.
+        visibility: visible ? 'visible' : 'hidden',
+        transition: visible
+          ? 'opacity 200ms linear'
+          : 'opacity 200ms linear, visibility 0s linear 200ms',
         pointerEvents: visible ? 'auto' : 'none',
         // A SCRIM WEIGHTED TO THE LEFT, not a centred vignette.
         //
@@ -238,6 +469,7 @@ export default function Lobby({
           so without this the base menu showed through both -- two screens
           stacked instead of one navigating (user, 2026-08-09). */}
       <div
+        data-tut="lobby-menu"
         className={`interactive absolute inset-y-0 left-0 w-[38rem] max-w-[62vw]
                    flex flex-col justify-center px-[3.5rem] py-[3rem]
                    transition-opacity duration-700${under ? ' page-under' : ''}`}
@@ -280,7 +512,7 @@ export default function Lobby({
             a pair of buttons in a row. The tile carries what the mode MEANS --
             "one life, 47 rivals" is the actual difference, and it was nowhere
             on the old screen. */}
-        <div className="mt-8">
+        <div className="mt-8" data-tut="mode-picker">
           <div className="micro-label">Mode</div>
           <div className="flex gap-2.5 mt-2">
             {([
@@ -290,6 +522,10 @@ export default function Lobby({
               <button
                 key={m.id}
                 type="button"
+                // data-tut per mode, so the walkthrough can require SQUADS
+                // specifically (#261) -- the party controls it goes on to
+                // explain only exist once Squads is picked.
+                data-tut={`mode-${m.id}`}
                 disabled={searching}
                 onPointerEnter={() => { if (!searching) play('ui.hover') }}
                 onClick={() => {
@@ -416,13 +652,142 @@ export default function Lobby({
                   {maintenanceBlock ?? readyBlock}
                 </p>
               )}
-              <Btn
-                variant="primary" size="xl" full cue="ui.ready"
-                disabled={(maintenanceBlock ?? readyBlock) != null}
-                onPress={queue}
-              >
-                Ready up
-              </Btn>
+              {/* ═══ THE ONE-TIME OFFER (#261) ═══
+
+                  A TOGGLE, DEFAULT ON, immediately above Ready up, shown only
+                  while Lua says this player is being offered the guided first
+                  run. Owner: "A checkbox, default on, near the Ready up
+                  button", then on 2026-09-04: "Instead of a checkbox can we try
+                  a toggle for the tutorial?"
+
+                  A TOGGLE SAYS SOMETHING A CHECKBOX DOES NOT, and it is why the
+                  swap is an improvement rather than a preference: a checkbox is
+                  a form field you agree to, a toggle is a thing that is ON. This
+                  one arrives already on, and the sentence beside it changes with
+                  it, so the state is readable without knowing which way round a
+                  tick means yes. */}
+              {tutorialOffer && (
+                <TutorialToggle
+                  on={tutorialChecked}
+                  onChange={setTutorialChecked}
+                  label={
+                    <>
+                      New player tutorial —{' '}
+                      <b style={{ color: 'var(--color-volts)', fontWeight: 700 }}>
+                        earn 500 Volts for completing!
+                      </b>
+                    </>
+                  }
+                />
+              )}
+
+              {/* ═══ THE SECOND OFFER, AND WHEN IT ARRIVES (#261) ═══
+
+                  Owner, 2026-09-04: "When the lobby tutorial is done, a new
+                  toggle should show (on by default) that offers them an in-game
+                  tutorial as well... This second toggle should show immediately
+                  after they come back from the Help page, which will be more
+                  seamless than appearing out of nowhere and drawing their
+                  attention away from the tutorial itself."
+
+                  SO IT IS KEYED TO A STEP, NOT TO THE END OF THE RUN. `ready`
+                  is the card that begins the moment Help closes, so the toggle
+                  is already sitting there when the last card appears rather
+                  than popping in beside it. That is the whole of what he asked
+                  for and it is why the layer publishes its step id at all.
+
+                  IT OUTLIVES THE RUN. Once shown it stays, because it is an
+                  offer about the NEXT thing and the player has to be able to
+                  reach it after dismissing the card that introduced it.
+
+                  PLACEHOLDER COPY -- the label is mine. */}
+              {/* SHOWN ONLY WHILE THE OFFER STANDS. `tutorialOffer` is the
+                  server's answer off the profile row -- it goes false the moment
+                  somebody declines or finishes, and stays false on every future
+                  connect. Owner, 2026-09-07: "after completing the tutorial and
+                  going back to the lobby, the toggle is still there btw."
+
+                  `tutorialOfferable` AND NOT `tutorialOffer`. The latter is the
+                  CHECKBOX beside Ready up, cleared the moment the walkthrough
+                  starts -- so gating this on it hid this toggle completely: the
+                  owner finished the lobby half, was never shown this, and the
+                  walkthrough carried on into his match anyway because readying
+                  up arms that separately (2026-09-07). */}
+              {/* ...AND IT SURVIVES ITS OWN DECLINE FOR AS LONG AS THE CARD IS UP.
+                  Owner, 2026-09-07: "the 'are you sure' card ... should be
+                  anchored closer to the thing it talks about." The card is
+                  anchored on this toggle now, and BR.Tutorial.decline lowers
+                  `offerable` the instant the box is unticked -- so without this
+                  the anchor would unmount in the same frame the card that points
+                  at it appeared, and the card would fall back to the middle of
+                  the screen with a visible jump.
+
+                  IT IS ALSO THE HONEST PICTURE. The card explains what unticking
+                  the box just cost; showing the box, unticked and ringed, while
+                  it says so is what "anchored closer to the thing it talks
+                  about" means. It goes when the card is dismissed. */}
+              {(tutorialOfferable || tutorialDeclineCard)
+               && (tutorialStep === 'ready' || tutorialGameShown) && (
+                <TutorialToggle
+                  tut="tutorial-continue"
+                  on={tutorialGameOn}
+                  onChange={(v) => {
+                    setTutorialGameOn(v)
+                    if (v) return
+
+                    // ═══ TURNING IT OFF IS A DECISION, AND IT IS FINAL ═══
+                    //
+                    // Owner, 2026-09-07: "if they've actively turned down the
+                    // offer we need to save that somewhere and never offer
+                    // again!" Only THIS closes the offer -- an abandoned run
+                    // deliberately does not, because he asked for the toggle to
+                    // survive that.
+                    //
+                    // AND THEY ARE TOLD WHAT IT COSTS BEFORE IT IS GONE, which
+                    // is the whole reason it is a card and not a silent write:
+                    // "show a card informing them that 500 Volts will only be
+                    // awarded if they enable that... Also inform them the offer
+                    // is only valid for their first match."
+                    // A CARD, NOT A TOAST. `Notices` is not mounted while the
+                    // lobby is up -- deliberately, 2026-08-03 -- so the toast
+                    // this used to push had nowhere to draw, and worse, it kept
+                    // its twelve-second timer: readying up inside that window
+                    // would have shown it over the bus ride. See DECLINE_STEPS.
+                    setTutorialDeclineCard(true)
+                    void fetchNui(CB.TUTORIAL_SET, { declined: true })
+                  }}
+                  label="Continue tutorial into the first match"
+                />
+              )}
+              {/* THE SAME BUTTON, TWO JOBS. Owner: "When ticked, the box should
+                  change the 'ready up' button to a 'start tutorial' button." It
+                  does not queue in that state -- the walkthrough holds them in
+                  the lobby, which is the whole point of it being an alternative
+                  to readying up rather than a step before it. */}
+              <span data-tut="ready" className="block">
+                <Btn
+                  variant="primary" size="xl" full cue="ui.ready"
+                  // ═══ HELD WHILE THE WALKTHROUGH IS RUNNING (#261) ═══
+                  //
+                  // Owner, 2026-09-04: "While the tutorial is actively in
+                  // progress, please grey out the 'Ready up' button and release
+                  // the button once the Tutorial is complete."
+                  //
+                  // It is the last card's Dismiss that releases it, because
+                  // `tutorialRun` is what the walkthrough sets and clears -- so
+                  // the button comes back at exactly the moment the run ends,
+                  // however it ended.
+                  //
+                  // NO EXPLANATION BESIDE IT. A disabled control with a
+                  // sentence apologising for itself is worse than a disabled
+                  // control, and the card on screen is already telling them
+                  // what to do.
+                  disabled={tutorialRun || (maintenanceBlock ?? readyBlock) != null}
+                  onPress={startTutorial ? beginTutorial : queue}
+                >
+                  {startTutorial ? 'Start tutorial' : 'Ready up'}
+                </Btn>
+              </span>
             </>
           )}
         </div>
@@ -451,16 +816,18 @@ export default function Lobby({
                   unavailable until it arrives (owner, 2026-08-29). No
                   explanation on purpose: this is the same disabled plate every
                   other unavailable control on this screen uses. */}
-              <Btn
-                variant="default" size="md" full cue="ui.select"
-                disabled={locker.locked === true}
-                onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
-              >
-                Locker
-              </Btn>
+              <span data-tut="locker" className="block">
+                <Btn
+                  variant="default" size="md" full cue="ui.select"
+                  disabled={locker.locked === true}
+                  onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
+                >
+                  Locker
+                </Btn>
+              </span>
             </div>
           )}
-          <div className="flex-1">
+          <div className="flex-1" data-tut="market">
             <Btn
               variant="default" size="md" full cue="ui.select"
               onPress={() => { void fetchNui(CB.MARKET_FOCUS, { open: true }) }}
@@ -472,7 +839,7 @@ export default function Lobby({
               where a new player stands before they have anything to pause,
               and it is the one moment they have time to read (user,
               2026-08-09). Same component, standalone frame. */}
-          <div className="flex-1">
+          <div className="flex-1" data-tut="help">
             <Btn
               variant="default" size="md" full cue="ui.select"
               onPress={() => { void fetchNui(CB.HELP_FOCUS, { open: true }) }}
@@ -480,7 +847,7 @@ export default function Lobby({
               Help
             </Btn>
           </div>
-          <div className="flex-1">
+          <div className="flex-1" data-tut="settings">
             <Btn
               variant="default" size="md" full cue="ui.select"
               onPress={() => { void fetchNui(CB.SETTINGS_FOCUS, { open: true }) }}

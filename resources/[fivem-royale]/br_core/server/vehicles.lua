@@ -196,7 +196,7 @@ local MIN_INTERVAL_MS = 900
 ---
 --- THREE SECONDS, AND THE NUMBER IS CHOSEN AGAINST THE FALSE POSITIVES RATHER
 --- THAN AGAINST THE OFFENCE. At the roster's 4 Hz that is twelve consecutive
---- samples, all naming the same vehicle handle for the same licence.
+--- samples, all naming the same vehicle handle for the same license.
 ---
 --- What it is sized to reject: a seat read taken during an ejection or a
 --- ragdoll (one or two samples), a player who gets in and straight back out,
@@ -766,10 +766,10 @@ end)
 ---
 --- [src] = { veh, since, license, why, filed }
 ---
---- CARRIES THE LICENCE FOR `track`'s REASON, and the stakes are the same: FiveM
+--- CARRIES THE LICENSE FOR `track`'s REASON, and the stakes are the same: FiveM
 --- recycles server ids within the minute, so a row left behind by a departing
 --- pilot would be read as the dwell of whoever lands in that slot next -- and
---- they would inherit a case for a seat they never sat in. A licence that does
+--- they would inherit a case for a seat they never sat in. A license that does
 --- not match restarts the dwell, which is the direction that files nothing
 --- rather than the direction that invents a finding.
 ---
@@ -801,7 +801,7 @@ local function occupancySample(src, e, veh, now)
     local rec = seat[src]
 
     -- A DIFFERENT VEHICLE, A DIFFERENT PERSON, OR NOTHING YET: start the clock.
-    -- The licence is compared as well as the handle because a recycled server
+    -- The license is compared as well as the handle because a recycled server
     -- id would otherwise walk into a dwell somebody else started -- and nil is
     -- treated as "cannot prove it is the same person", which restarts.
     if rec == nil or rec.veh ~= veh
@@ -938,14 +938,14 @@ local driving = {}
 ---
 --- [src] = { x, y, z, at, license, speed }
 ---
---- CARRIES THE LICENCE, AND THAT IS NOT DECORATION. FiveM recycles server ids
+--- CARRIES THE LICENSE, AND THAT IS NOT DECORATION. FiveM recycles server ids
 --- within the minute, so the row left behind by a disconnecting driver would be
 --- read as the previous position of whoever lands in that slot next -- and the
 --- displacement between two different humans standing in two different places is
 --- an enormous speed, arriving at the exact moment a fresh player is least able
 --- to have earned a kill. The `playerDropped` handler below already clears the
---- row; the licence is what covers the case where it did not run, and it fails
---- CLOSED -- an unrecognised licence means no speed this sample, so no credit.
+--- row; the license is what covers the case where it did not run, and it fails
+--- CLOSED -- an unrecognised license means no speed this sample, so no credit.
 local track = {}
 
 --- Read a native that answers an entity handle, defensively.
@@ -992,6 +992,74 @@ local function drivenVehicle(entry)
     return veh
 end
 
+--- The car this player is DRIVING, as an entity handle, or nil.
+---
+--- ═══ WHY THIS IS EXPORTED SEPARATELY FROM `drivenNetId` (#228, 2026-09-04) ═══
+---
+--- Because "is this player driving" and "what is the network id of the car this
+--- player is driving" stopped being the same question the moment a sentence hung
+--- on the answer. `drivenNetId` collapses FOUR nos into nil -- on foot, a
+--- passenger, an unresolvable ped, and a driver of a vehicle the platform does
+--- not network -- and the owner's copy ("You can only use this item while
+--- driving.") is TRUE of the first two and a LIE to the fourth. So the caller
+--- that has to choose between speaking and staying silent asks THIS one, which
+--- answers the seat and nothing about networkability.
+---
+--- IT IS THE SAME `drivenVehicle` BOTH OTHER READERS USE, exported rather than
+--- copied, so citizenfx/fivem#4006 goes on being handled in exactly one place
+--- and there is still one answer on this server to "is this player at a wheel".
+--- @param src integer
+--- @return integer|nil vehicle handle
+function BR.Vehicles.drivingHandle(src)
+    local e = BR.Roster.get and BR.Roster.get(src) or nil
+    if not e then return nil end
+    return drivenVehicle(e)
+end
+
+--- The car this player is DRIVING, as a network id, or nil.
+---
+--- ═══ WHAT IT IS FOR, AND WHY IT IS RULED HERE ═══
+---
+--- The repair kit (#228). server/inventory.lua spends the item and has to name
+--- a vehicle on the wire; it must not take the client's word for which one,
+--- because "repair the car I say I am in" is a client repairing any car on the
+--- map. So the whole question is answered from the server's own reads, and the
+--- caller is handed a network id it did not choose.
+---
+--- ═══ IT IS `drivenVehicle`, WHICH IS THE POINT ═══
+---
+--- The same function the roadkill ledger rules on, so "is this player driving"
+--- has ONE answer on this server and citizenfx/fivem#4006 is handled in one
+--- place rather than in every caller that wants to ask. THE DRIVING SEAT IS THE
+--- RULE, and it is the pump's rule too (owner, on refuelling: "only be possible
+--- while in the driver's seat") -- a passenger is refused. That is not only
+--- consistency: the repair is applied by natives on the recipient's machine, and
+--- the driver is the client that owns the entity, so it is the one seat from
+--- which the write is certain to stick rather than be overwritten by the owner's
+--- next sync.
+---
+--- ═══ NIL IS EVERY NO, AND THERE IS NO SECOND RETURN ═══
+---
+--- On foot, in the passenger seat, an unresolvable ped, a vehicle the platform
+--- does not network (the Battle Bus answers 0 here, and `0` IS TRUTHY IN LUA, so
+--- it is compared rather than tested): all of them are nil, and the caller
+--- refuses without spending anything. There is deliberately no sentence to go
+--- with it -- see the `refusesUse` header in server/shop.lua for why a rule and
+--- the words about it are separate things.
+--- @param src integer
+--- @return integer|nil netId
+function BR.Vehicles.drivenNetId(src)
+    local e = BR.Roster.get and BR.Roster.get(src) or nil
+    if not e then return nil end
+
+    local veh = drivenVehicle(e)
+    if veh == nil then return nil end
+
+    local nid = entityFrom(NetworkGetNetworkIdFromEntity, veh)
+    if nid == 0 then return nil end
+    return nid
+end
+
 --- How fast this player was moving at the last sample, in m/s, or nil.
 --- @param src integer
 --- @return number|nil
@@ -1018,7 +1086,7 @@ local function sampleSpeed(src, entry, now)
     local t = track[src]
 
     -- A DIFFERENT HUMAN IN THE SAME SLOT HAS NO HISTORY. nil is treated as
-    -- "cannot prove it is the same person" rather than as a licence that matches
+    -- "cannot prove it is the same person" rather than as a license that matches
     -- itself, which is the direction that refuses a kill rather than inventing
     -- one.
     if t and (license == nil or t.license ~= license) then t = nil end
@@ -1377,7 +1445,7 @@ AddEventHandler('playerDropped', function()
     driving[src] = nil
     -- AND THE DWELL, for the same reason and with a sharper edge: a row left
     -- here is a part-served dwell in a stolen helicopter, and the next player to
-    -- hold this id would finish it and take the case. The licence check inside
+    -- hold this id would finish it and take the case. The license check inside
     -- occupancySample already refuses that; this is the cheaper half of the
     -- same guard, and neither is enough on its own.
     seat[src]   = nil

@@ -116,12 +116,37 @@
 --   invariant is about the EDGE, not the outcome.
 --
 --   IT IS: the key is minted on exactly the code path that forfeits an
---   inventory, and on no other. Which makes the owner's table true by
---   construction rather than by two rules being kept in step:
+--   inventory AND leaves somebody in the match to be brought back to. Which
+--   makes the owner's table true by construction rather than by two rules being
+--   kept in step:
 --
 --     picked up in person during bleed-out -> never reaches eliminate() at all,
 --       so no deathBox and no key. Their kit is still on them.
 --     bleed-out expires -> eliminate() -> deathBox AND a key, together.
+--     walked out -> eliminate('left') -> deathBox, and NO key. See below.
+--
+-- ═══ AND 'left' IS THE ONE PLACE THE TWO LINES PART COMPANY (2026-09-02) ═══
+--
+-- Owner, playtest: "in squads, a player leaves the match and the others get 'x
+-- has bled out' toasts."
+--
+-- `BR.Match.leaveMatch` routes a walk-out through eliminate() on purpose --
+-- "leaving while alive IS an elimination" -- so it arrived here too, minted a
+-- key and spoke `copy.bledOut` at the squad. THE SECOND CLAUSE ABOVE IS WHAT IT
+-- FAILED: a leaver is detached from the match microseconds later and there is
+-- nobody left to revive. `BR.Match.resetPlayer` nils `reviveKey` in the same
+-- tick, and `forSquad` and `reviveAllowed` both filter on the `matchId` that
+-- call clears -- so the key could not be bought, found or spent, and the toast
+-- sent the squad running for something that had already ceased to exist.
+--
+-- THE GUARD IS IN server/combat.lua AND NOT IN THIS FILE, because `cause` is
+-- that function's own value and it already branches on `cause ~= 'left'` for the
+-- #144 hold. This module's contract is unchanged: it is still handed only the
+-- eliminations that are supposed to mint, and it still speaks for every one of
+-- them.
+--
+-- THE DEATH BOX IS DELIBERATELY NOT GATED WITH IT. A leaver still spills their
+-- kit -- walking out is not a way to take it home.
 --
 -- AND THE #144 HELD DEATH IS THE PROOF THAT THE PLACEMENT IS LOAD-BEARING. A
 -- player who dies before the match starts is routed through `holdForStart`,
@@ -272,7 +297,22 @@ end
 local function say(who, line, tone, ...)
     if type(line) ~= 'string' or line == '' then return end
     if not (BR.Server and BR.Server.notify) then return end
-    BR.Server.notify(who, BR.Notice.line(line, ...), tone or 'info', { ms = 4000 })
+    -- ═══ EVERY NOTICE THIS FILE SENDS IS SILENT, AND THAT IS ONE DECISION ═══
+    --
+    -- Owner, 2026-09-07: "so now when a squad mate goes DBNO we're playing an
+    -- NUI sound AND a frontend sound." Every sentence this feature speaks
+    -- accompanies an event that already has a cue of its own -- the bleed-out
+    -- rides squad.out, a key expiring rides revivekey.expired, a key being
+    -- collected rides revivekey.pickup, a purchase rides shop.buy -- so the
+    -- general warn sound br_ui/client/nui.lua gives a `warn` toast would be a
+    -- second noise for a single event, every time, on every line.
+    --
+    -- SAID ONCE HERE RATHER THAN AT EIGHT CALL SITES, because "this file's words
+    -- accompany this file's sounds" is a property of the feature and not of any
+    -- one sentence. A future notice that needs a sound of its own should say so
+    -- by calling BR.Server.notify directly, which is louder than editing this.
+    BR.Server.notify(who, BR.Notice.line(line, ...), tone or 'info',
+                     { ms = 4000, cue = false })
 end
 
 --- Did a native declared BOOL say yes?
@@ -298,7 +338,7 @@ end
 ---
 --- The goods here are a set of keys shared by a squad, and two presses from two
 --- DIFFERENT squadmates are two different sources with two different
---- reservations -- so the market would happily take 25 Volts from each of them
+--- reservations -- so the market would happily take 500 Volts from each of them
 --- for the same set of keys, and the second purchase would mark keys that were
 --- already held. One charge, one grant; a squad that is mid-purchase is refused.
 ---
@@ -391,6 +431,12 @@ end
 --- CALLED FROM server/combat.lua, BESIDE BR.Loot.deathBox, AND FROM NOWHERE
 --- ELSE. See this file's header for why that placement is the whole design.
 ---
+--- AND NOT FOR EVERY ELIMINATION THAT REACHES IT: that call site refuses
+--- `cause == 'left'`, because a player who walked out is detached from the match
+--- in the same tick and has nobody to be revived to. The refusal lives there and
+--- not here -- see the header -- so this function has no opinion about WHY
+--- somebody stopped being in the match, only that they did.
+---
 --- ═══ SOLOS GET NO KEY, AND THE GATE IS `squadId` RATHER THAN THE MODE ═══
 ---
 --- "owned by the squad" is not a thing a solo player has. Gating on the mode
@@ -464,8 +510,25 @@ function BR.ReviveKey.onEliminated(m, src)
     -- subject is excluded: "you have bled out" is not news to the person
     -- watching their own body, and combat.lua's tellSquad excludes them from the
     -- cue for the same reason one screen above this call.
+    --
+    -- ═══ AND HOW LONG THEY HAVE, WHICH IS THE SECOND HOLE ═══
+    --
+    -- Owner, 2026-09-02: "Perhaps the 'grab their key!' toast should also
+    -- mention that the key expires and after how long."
+    --
+    -- THE NUMBER COMES OFF `expiryMs` AND IS NOT WRITTEN IN THE SENTENCE. The
+    -- console line four lines below already derives its seconds from the same
+    -- key, and a "3 minutes" typed into config/revivekey.lua's copy table would
+    -- be the third copy of one number and the one nobody would think to change.
+    -- BR.Clock.words turns it into the unit a player reads.
+    --
+    -- IT TRAVELS AS A VALUE, NOT AS A FORMATTED STRING, which is this file's one
+    -- rule: `line` stays character for character a member of
+    -- BR.Config.ReviveKey.copy and BR.Notice.line does the splitting. A duration
+    -- is not a BR.Notice.who, so it lands as prose and draws unbolded beside the
+    -- name that does not.
     say(squadSrcsExcept(e.squadId, e.matchId, src), copy().bledOut, 'warn',
-        BR.Notice.who(e.name))
+        BR.Notice.who(e.name), BR.Clock.words(tonumber(K.expiryMs) or 180000))
 
     print(('[br_core] revivekey: minted for %s (%d), squad %s, pickup at '
         .. '(%.1f, %.1f) for %.0fs')
@@ -516,7 +579,7 @@ function BR.ReviveKey.forSquad(squadId, matchId)
     return out
 end
 
---- How many of this squad's keys are still unheld -- i.e. what 25 Volts buys.
+--- How many of this squad's keys are still unheld -- i.e. what 500 Volts buys.
 --- @param squadId any
 --- @param matchId any
 --- @return integer
@@ -607,6 +670,12 @@ BR.Sched.every(K and K.tickMs or 1000, 'revivekey.sweep', function()
                 -- this record for the rest of the match, because it is still
                 -- buyable.
                 say(squadSrcs(e.squadId, e.matchId), copy().expired, 'warn')
+                -- THE SAME AUDIENCE AS THE SENTENCE, and once per key: `lapsed`
+                -- above is the latch, and the sweep keeps walking this record
+                -- for the rest of the match because the key is still buyable.
+                for _, s in ipairs(squadSrcs(e.squadId, e.matchId)) do
+                    TriggerClientEvent(BR.Net.SFX_CUE, s, { c = 'revivekey.expired' })
+                end
                 print(('[br_core] revivekey: the pickup for %s (%d) expired -- '
                     .. 'still buyable')
                     :format(tostring(e.name), src))
@@ -714,6 +783,11 @@ function BR.ReviveKey.take(src, targetSrc)
     end
 
     grant(e, 'fetched')
+
+    -- TO THE COLLECTOR, ON THE SERVER'S CONFIRMATION. The client-side press is
+    -- not the pickup -- the server can refuse it silently -- so a cue there would
+    -- lie about a key they did not get.
+    TriggerClientEvent(BR.Net.SFX_CUE, src, { c = 'revivekey.pickup' })
 
     -- ═══ TWO SENTENCES, TWO AUDIENCES, BOTH HIS (2026-08-31) ═══
     --
@@ -858,7 +932,7 @@ function BR.ReviveKey.canBuy(src, entry, netId)
 
     -- ═══ IS THERE ANYTHING TO BUY ═══
     --
-    -- Refused rather than charged-for-nothing. 25 Volts is not refundable
+    -- Refused rather than charged-for-nothing. 500 Volts is not refundable
     -- (config/shop.lua: "Purchases cannot be refunded") and a squad with every
     -- key already held would be paying for a no-op.
     local n = BR.ReviveKey.outstanding(entry.squadId, entry.matchId)
@@ -927,6 +1001,19 @@ function BR.ReviveKey.buy(src, netId, done)
 
         if not paid then
             stat.refused = stat.refused + 1
+            -- ═══ NO CUE HERE, AND THAT IS DELIBERATE ═══
+            --
+            -- `shop.denied` belongs to the SENTENCE, not to this branch. Two of
+            -- the three ways `paid` comes back false are a shortfall, and both
+            -- go through BR.Market.tellShortfall, which now carries the cue on
+            -- the toast it sends -- so a refusal the player can act on already
+            -- speaks and already sounds. Adding a second send here would play it
+            -- twice on exactly that path.
+            --
+            -- The other reasons ("profile not loaded", "nothing to charge") say
+            -- nothing to the player by this feature's standing rule, and a sound
+            -- with no sentence would be worse than the silence: a noise the
+            -- player cannot account for.
             print(('[br_core] revivekey: %d was not charged -- %s')
                 :format(src, tostring(why2)))
             done(false, why2)
@@ -952,6 +1039,31 @@ function BR.ReviveKey.buy(src, netId, done)
         -- actually granted.
         if n > 0 then
             say(squadSrcs(squadId, matchId), copy().bought, 'success')
+            -- ═══ THE BUYER, NOT THE SQUAD, AND ONCE PER PURCHASE ═══
+            --
+            --   "I didn't hear any noise when I bought my squad mate's key at
+            --    the ambulance"                          -- owner, 2026-09-07
+            --
+            -- There was nothing to hear: this path has never sent a cue on any
+            -- branch, and the client's press (client/revivekey.lua's
+            -- REVIVEKEY_BUY) plays nothing either.
+            --
+            -- `shop.buy` RATHER THAN `revivekey.pickup`, WHICH IS HIS
+            -- DISTINCTION. config/audio.lua carries his own heading for the
+            -- other cue -- "Picked up (NOT BOUGHT) revive key" -- so walking
+            -- over a key and paying for one are deliberately different sounds.
+            -- The two paths cannot collide: revivekey.pickup is sent from
+            -- BR.ReviveKey.take and the shared `grant` helper sends nothing.
+            --
+            -- ADDRESSED TO `src` ALONE, even though the sentence above goes to
+            -- the whole squad. A purchase-complete chime to three people who did
+            -- not press is a shop sound for a shop they are not standing in --
+            -- and this file already splits the two audiences this way where the
+            -- pickup cue goes to the collector while the sentences go wider.
+            --
+            -- INSIDE `n > 0` AND OUTSIDE THE LOOP, so one press that buys three
+            -- keys is one sound, exactly like the toast above it.
+            TriggerClientEvent(BR.Net.SFX_CUE, src, { c = 'shop.buy' })
         end
         stat.bought = stat.bought + 1
 
@@ -1236,7 +1348,7 @@ local function bringBack(src, e, reviverSrc, at)
     e.engineHp = nil
     e.stormHp, e.lastStormAt = nil, nil
     -- THE CAMERA'S MEMORY OF WHO KILLED THEM. Written by eliminate() for the
-    -- spectate default and deliberately a licence rather than an id, so it
+    -- spectate default and deliberately a license rather than an id, so it
     -- outlives the moment on purpose. Cleared here because they are not
     -- spectating anybody any more, and because a LATER death with no killer --
     -- the storm, a fall -- would otherwise inherit this one and point their
@@ -1266,6 +1378,33 @@ local function bringBack(src, e, reviverSrc, at)
     BR.Roster.update(src, { hp = hp + 0.0, armour = 0.0 })
     BR.Roster.setState(src, BR.PlayerState.ALIVE)
     TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = hp, armour = 0 })
+
+    -- ═══ AND THE SQUAD HEARS IT, WHICH THIS PATH NEVER DID ═══
+    --
+    --   "I didn't hear any noise ... when I used the ambulance to revive them
+    --    either."                                        -- owner, 2026-09-07
+    --
+    -- THE CUE WAS NEVER MISSING; THIS ROUTE WAS. `squad.revived` reaches a
+    -- client through the `mate` payload on BR.Net.DBNO_SET, which is written by
+    -- `tellSquad` in server/combat.lua -- and tellSquad is called from
+    -- BR.Combat.revive. THIS function is not that function: an ambulance revive
+    -- writes the roster itself, four lines above, because the player is also
+    -- being placed 150m over a van and the ordering of ped-then-ledger is the
+    -- whole point of the block above. So a CPR revive announced itself and an
+    -- ambulance revive did not, and nothing said so.
+    --
+    -- SENT HERE RATHER THAN BY CALLING BR.Combat.revive. That function would
+    -- undo this one: it hands back dbnoReviveHp and pushes its own DBNO_SET,
+    -- against a player who is mid-air over an ambulance on a different health
+    -- number. What is shared is the SENTENCE, not the mechanism.
+    --
+    -- EXCEPT THE SUBJECT, matching tellSquad exactly -- the revived player is
+    -- being told by the screen, the sky and the ground rushing up at them, and
+    -- a squad status cue about themselves would be the one player on the list it
+    -- is not news to.
+    for _, s2 in ipairs(squadSrcsExcept(e.squadId, e.matchId, src)) do
+        TriggerClientEvent(BR.Net.SFX_CUE, s2, { c = 'squad.revived' })
+    end
 
     -- SPECTATING IS ALREADY OVER BY HERE. It was ended a whole fade ago, at the
     -- moment the promise went out, so that the camera cut happened while there

@@ -691,7 +691,7 @@ on('br:ddb:inventoryFetch', (req, license) => {
     emit('br:ddb:inventoryResult', req, inv, extra ?? {})
   }
 
-  const empty = { balance: 0, owned: [], equipped: {}, level: 1, xp: 0 }
+  const empty = { balance: 0, owned: [], equipped: {}, level: 1, xp: 0, tutorial: '' }
 
   if (typeof license !== 'string' || license === '') {
     answer(empty, { error: 'no license' })
@@ -721,6 +721,22 @@ on('br:ddb:inventoryFetch', (req, license) => {
         equipped,
         level: Number(row.level ?? 1),
         xp: Number(row.xp ?? 0),
+        // WHERE THIS ACCOUNT STANDS WITH THE GUIDED FIRST RUN (#261).
+        //
+        // '' -- never answered. The offer is made.
+        // 'declined' -- they turned the toggle off themselves. Never again.
+        // 'done' -- they finished it. Never again, and the reward is spent.
+        //
+        // AN EMPTY STRING RATHER THAN NULL, because nil does not survive the
+        // trip into Lua as a table field and the caller would have to
+        // distinguish "absent" from "not sent" without help. Empty is the
+        // never-answered state and every reader tests for it.
+        //
+        // ON THE PROFILE ROW because that is where a fact about the ACCOUNT
+        // belongs -- beside balance, level and the report rewards -- and
+        // because this read already happens once per connect and costs nothing
+        // more.
+        tutorial: typeof row.tutorial === 'string' ? row.tutorial : '',
       }, {})
     })
     .catch((e) => {
@@ -1583,7 +1599,7 @@ on('br:ddb:artifactPut', (req, incidentId, index, encoding, capturedAt) => {
 /**
  * ═══ THE REWARD LEDGER -- ALL OF IT ON THE GAME'S OWN TABLE ═══
  *
- * #168 pays 250 Volts to a reporter, and to every corroborator, when an
+ * #168 pays a fixed bounty to a reporter, and to every corroborator, when an
  * incident resolves with an action taken. The verdict arrives HOURS after the
  * report and often after a deploy, so "remember who to pay" cannot live in Lua
  * memory: a restart between the report and the admin's decision would lose the
@@ -1739,6 +1755,57 @@ on('br:ddb:awardQueue', (req) => {
  * not, and whoever revises that document should revise it knowingly rather than
  * discover this here.
  */
+/**
+ * Record where an account stands with the guided first run (#261).
+ *
+ * ═══ ONE ATTRIBUTE, TWO TERMINAL STATES, AND NO WAY BACK ═══
+ *
+ * 'declined' is the player turning the offer down; 'done' is them finishing it.
+ * Both mean the same thing to every reader -- do not offer this again -- and
+ * they are kept apart only so a human reading the row can tell why.
+ *
+ * THE ROW IS CREATED IF IT IS NOT THERE, the same call inventoryFetch's own
+ * default makes: somebody can decline the tutorial before they have finished a
+ * single match, and that decision has to survive.
+ *
+ * NOT CONDITIONAL, unlike awardPay. There is nothing to lose by writing the same
+ * state twice, and a conditional write would have to decide whether 'done'
+ * outranks 'declined' -- a precedence rule for two values that mean the same
+ * thing, which is a rule nobody needs and everybody would have to remember.
+ */
+on('br:ddb:tutorialSet', (req, license, state) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:tutorialSetResult', req, ok, extra ?? {})
+  }
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+  if (state !== 'declined' && state !== 'done') {
+    answer(false, { error: 'bad state' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: license, sk: 'profile' }),
+        UpdateExpression: 'SET #t = :s',
+        ExpressionAttributeNames: { '#t': 'tutorial' },
+        ExpressionAttributeValues: { ':s': { S: state } },
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, { state }))
+    .catch((e) => {
+      console.log(`[br_ddb] tutorial state write failed for ${license}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
 on('br:ddb:awardPay', (req, license, incidentId, amount) => {
   const answer = (ok, extra) => {
     emit('br:ddb:awardPayResult', req, ok, extra ?? {})

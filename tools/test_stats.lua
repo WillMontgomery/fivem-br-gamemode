@@ -25,6 +25,12 @@ function AddEventHandler(name, fn)
     table.insert(handlers[name], fn)
 end
 
+-- A NO-OP, AND THAT IS WHAT IT IS ON THE SERVER TOO. RegisterNetEvent only
+-- marks a name as reachable from a client; the handler is still AddEventHandler.
+-- So a test that fires the name directly exercises exactly the same function the
+-- network would reach, and stubbing this to nothing loses no coverage.
+function RegisterNetEvent(_) end
+
 --- Every br_ddb request this file made, in order. The test answers them by
 --- firing the matching result event, exactly as the JS half would.
 local asked = {}
@@ -528,7 +534,7 @@ do
 end
 
 -- ========================================================================
--- server/awards.lua -- 250 Volts for an accurate report (#168)
+-- server/awards.lua -- 100 Volts for an accurate report (#168, #256)
 -- ========================================================================
 
 local INC = 'incident-abc'
@@ -642,14 +648,22 @@ do
     end
     -- THE AMOUNT IS PINNED, AND THE SENTENCE IS TIED TO IT RATHER THAN PINNED
     -- SEPARATELY. Both used to be the literal 250, which is two copies of one
-    -- constant in one test: halving the bounty (2026-08-20, "cut all Volts
-    -- earnings by 50%") would have failed both lines and invited whoever
-    -- retuned it to edit the number in two places and call it done. The pin
-    -- below is the deliberate one -- a silent retune must still fail here --
-    -- and everything downstream reads what was actually paid, so a payment and
-    -- a sentence that disagree is its own failure rather than a second pin.
+    -- constant in one test: a retune of the bounty would have failed both lines
+    -- and invited whoever moved it to edit the number in two places and call it
+    -- done. It has been retuned twice since -- 125 on 2026-08-20, 100 on
+    -- 2026-09-02 (#256) -- and each time this was the single line to change.
+    -- The pin is the deliberate one, because a silent retune must still fail
+    -- here, and everything downstream reads what was actually paid, so a payment
+    -- and a sentence that disagree is its own failure rather than a second pin.
+    --
+    -- ⚠ AND THE COMMENTS AROUND THE CONSTANT ARE STALE AT 250. #256 did not
+    -- sweep them, so grants.lua and awards.lua both still argue about "250
+    -- Volts". On 2026-09-06 a tutorial card was written from that stale prose and
+    -- the constant was briefly raised to match; the owner corrected it ("100 was
+    -- right, put it back and fix the card"). This pin is what catches the next
+    -- person who reads a comment instead of the constant.
     local AWARD = amounts[1]
-    ok(AWARD == 125 and amounts[2] == AWARD, 'each is worth 125 Volts',
+    ok(AWARD == 100 and amounts[2] == AWARD, 'each is worth 100 Volts',
         ('%s / %s'):format(tostring(amounts[1]), tostring(amounts[2])))
     ok(ids[ALICE] == INC and ids[BOB] == INC,
         'and each payment is keyed on the incident, which is what makes it idempotent')
@@ -963,7 +977,7 @@ do
 
     -- ═══ brgive's ROSTER CHECK, AND IT HAS TO BE THE THING THAT REFUSES ═══
     --
-    -- 9 is CONNECTED and has a licence -- so the license lookup further down
+    -- 9 is CONNECTED and has a license -- so the license lookup further down
     -- would happily find a row to write to. Testing against a src with no
     -- identifiers either would pass with the roster check deleted, which is a
     -- test that asserts nothing.
@@ -1055,7 +1069,7 @@ do
     -- same route -- otherwise the granted Volts are spendable and invisible.
     ok(seen ~= nil, 'a successful write updates br_core\'s session cache')
     ok(seen and seen.lic == 'license:aaaaaaaa' and seen.volts == 5000,
-        'with the licence and the amount that were written',
+        'with the license and the amount that were written',
         seen and ('%s %s'):format(tostring(seen.lic), tostring(seen.volts)))
     ok(seen and seen.xp == 0,
         'and no XP -- this granted Volts, and inventing XP here would put a '
@@ -1071,6 +1085,128 @@ do
     local bad = brvolts('3', '5000')
     TriggerEvent('br:ddb:statsResult', bad.args[1], false, { error = 'throttled' })
     ok(seen == nil, 'a refused write leaves the cache alone')
+end
+
+-- ---------------------------------------------------------------------------
+describe('the tutorial reward (#261)')
+-- ---------------------------------------------------------------------------
+do
+    --- Fire BR.Net.TUTORIAL_DONE as player `src`.
+    ---
+    --- `source` IS A GLOBAL ON THE REAL SERVER -- FiveM sets it around a net
+    --- event handler and the handler reads it in its first line. Setting it here
+    --- is what makes this the same call the network makes.
+    local function finish(src)
+        local before = #asked
+        source = src
+        TriggerEvent(BR.Net.TUTORIAL_DONE)
+        source = nil
+        for i = before + 1, #asked do
+            if asked[i].name == 'br:ddb:awardPay' then return asked[i] end
+        end
+        return nil
+    end
+
+    online = { [7] = { 'license:cccccccc', 'steam:110000100000007' } }
+    sent = {}
+
+    local req = finish(7)
+
+    ok(req ~= nil, 'finishing the walkthrough asks br_ddb to pay')
+    ok(req and req.args[2] == 'license:cccccccc',
+        'for the license derived on the server, not one the client sent',
+        req and tostring(req.args[2]))
+    ok(req and req.args[3] == 'tutorial',
+        'under a fixed key, which is what makes it once per account forever',
+        req and tostring(req.args[3]))
+    ok(req and req.args[4] == BR.Config.Market.tutorialReward
+            and req.args[4] == 500,
+        'for the configured amount, which is 500',
+        req and tostring(req.args[4]))
+
+    -- ═══ THE REWARD IS NOT A SECOND CURRENCY ═══
+    local seen = nil
+    AddEventHandler('br:market:credited', function(lic, xp, volts)
+        seen = { lic = lic, xp = xp, volts = volts }
+    end)
+
+    TriggerEvent('br:ddb:awardPayResult', req.args[1], true,
+                 { paid = true, balance = 1500 })
+
+    ok(seen ~= nil and seen.volts == 500,
+        "a paid reward moves br_core's session cache",
+        seen and tostring(seen.volts))
+    ok(seen ~= nil and seen.xp == 0,
+        'and pays no XP -- XP is what matches are for')
+
+    local told = nil
+    for _, m in ipairs(sent) do
+        if m.name == BR.Net.NOTIFY and m.src == 7 then told = m end
+    end
+    ok(told ~= nil, 'and the player is told')
+    ok(told and told.payload and told.payload.text:find('500', 1, true) ~= nil,
+        'with the amount in the sentence',
+        told and told.payload and told.payload.text)
+
+    -- THE AMOUNT IS MARKED FOR THE CURRENCY'S COLOUR (owner, 2026-09-07: "the
+    -- volts text and quantity are in our signature color"). The page paints
+    -- anything between tildes; the marks travelling is what this pins.
+    ok(told and told.payload and told.payload.text:find('~500 ', 1, true) ~= nil,
+        'and wrapped so the page can colour it',
+        told and told.payload and told.payload.text)
+
+    -- AND FINISHING SPENDS THE OFFER, so the lobby stops showing the toggle.
+    local closed = false
+    for _, a in ipairs(asked) do
+        if a.name == 'br:market:tutorialDone' then closed = true end
+    end
+    ok(closed, 'a paid finish closes the offer on the profile row')
+
+    -- ═══ THE SECOND CLAIM IS REFUSED BY THE DATABASE, AND SAYS NOTHING ═══
+    --
+    -- The Help page can re-run the walkthrough, so a second claim is an ordinary
+    -- event rather than an attack. Paying nothing is right; TELLING them they
+    -- were gifted 500 Volts they did not receive is the bug this pins.
+    seen, sent = nil, {}
+    local again = finish(7)
+    ok(again ~= nil, 'a second finish still asks -- the lock is the database')
+    TriggerEvent('br:ddb:awardPayResult', again.args[1], true,
+                 { paid = false, alreadyPaid = true })
+    ok(seen == nil, 'an already-paid claim moves no cache')
+
+    -- ═══ IT SAYS SOMETHING, AND WHAT IT MUST NOT SAY IS THE POINT ═══
+    --
+    -- Owner, 2026-09-07: "after the in-game tutorial is done for a second time,
+    -- I'd like a toast that informs the player that volts were not awarded
+    -- because they'd already completed the tutorial before." Silence read as the
+    -- reward failing; the hazard in fixing it is a sentence that thanks them for
+    -- a payment the database refused.
+    local second
+    for _, m in ipairs(sent) do
+        if m.name == BR.Net.NOTIFY and m.src == 7 then second = m end
+    end
+    ok(second ~= nil, 'a second finish tells them why nothing arrived')
+    ok(second and second.payload
+        and second.payload.text:find('completed the tutorial before', 1, true) ~= nil,
+        'naming the reason',
+        second and second.payload and second.payload.text)
+    ok(second and second.payload
+        and second.payload.text:find('gifted', 1, true) == nil,
+        'and never claiming they were paid')
+
+    -- ═══ A FAILED WRITE PAYS NOBODY AND PROMISES NOBODY ═══
+    seen, sent = nil, {}
+    local bad = finish(7)
+    TriggerEvent('br:ddb:awardPayResult', bad.args[1], false, { error = 'throttled' })
+    ok(seen == nil and #sent == 0, 'a failed write credits nothing and says nothing')
+
+    -- ═══ NO LICENSE, NO PAYMENT ═══
+    --
+    -- Inventing a key here would credit the wrong human later, which is the same
+    -- reason BR.Roster.licenseOf leaves a licenseless connection nil.
+    online = { [9] = { 'steam:110000100000009' } }
+    sent = {}
+    ok(finish(9) == nil, 'a connection with no license is not paid')
 end
 
 print = realPrint

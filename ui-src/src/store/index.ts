@@ -100,7 +100,11 @@ export interface UiState {
    *  It mirrors the stack's own semantics rather than logging raw pushes: a
    *  keyed notice UPDATES its entry (one event changing state is one line, not
    *  thirty), and a coalesced repeat bumps its count. Otherwise a countdown
-   *  would fill the entire history by itself. */
+   *  would fill the entire history by itself.
+   *
+   *  BOTH OF THOSE ONLY REACH A LINE WHOSE TOAST IS STILL UP, which is what the
+   *  stack has always meant by them and what this list did not. See logNotice
+   *  and `goneAt`. */
   noticeLog: {
     id: number
     text: string
@@ -112,6 +116,11 @@ export interface UiState {
     /** Client clock, for "4m ago". Notices are read relatively, never as a
      *  wall-clock time nobody has a reference for. */
     at: number
+    /** When this line's toast LEFT THE SCREEN -- `at` plus the lifetime that
+     *  toast was actually given. A later notice folds into this line only
+     *  while `Date.now()` is still short of it; after that the same sentence
+     *  is a second event and gets a line of its own. */
+    goneAt: number
     count: number
   }[]
   focus: FocusPayload['screen']
@@ -218,6 +227,158 @@ export interface UiState {
    * takes the mouse away and leaves the lobby painted where it was.
    */
   frontendUp: boolean
+  /**
+   * WHICH engine screen is up: the big map, or a menu.
+   *
+   * The suppression rule -- nothing we draw may sit on top of the engine's own
+   * screen -- is right for every menu and has exactly one exception, the guided
+   * first run over the big map (#261). This is what lets the page tell them
+   * apart; Lua does not know what a tutorial is and should not.
+   */
+  frontendReason: 'map' | 'menu'
+  /** The guided first run is on screen (#261). Lua owns it; this mirrors it. */
+  tutorialRun: boolean
+  /** The lobby is OFFERING it -- the checkbox beside Ready up. Lua owns it. */
+  tutorialOffer: boolean
+  /**
+   * The checkbox itself. DEFAULT ON, which is the owner's word: "A checkbox,
+   * default on, near the Ready up button" (#261). The page owns this one --
+   * it is a control the player is operating, not a fact about the world.
+   */
+  tutorialChecked: boolean
+  /**
+   * The step currently on screen, by id, or null.
+   *
+   * THE LOBBY NEEDS THIS FOR ONE THING and it is worth naming: the second
+   * toggle -- the offer of the in-game tutorial -- must appear "immediately
+   * after they come back from the Help page, which will be more seamless than
+   * appearing out of nowhere and drawing their attention away from the tutorial
+   * itself" (owner, 2026-09-04). That moment is the `ready` step beginning, and
+   * the id is the only thing that names it.
+   */
+  tutorialStep: string | null
+  /** The in-game tutorial's own toggle. On by default, like the first. */
+  tutorialGameOn: boolean
+  /**
+   * Is this player actually OWED the in-game half?
+   *
+   * ═══ SEPARATE FROM THE CHECKBOX, AND CONFLATING THEM SHIPPED A BUG ═══
+   *
+   * `tutorialGameOn` is the checkbox's own state and defaults to TICKED, which
+   * is right for a checkbox and was catastrophic as a trigger: the warmup effect
+   * in App read it directly, so EVERY player entering warmup on a freshly loaded
+   * page started the in-game walkthrough, whether or not they had ever taken the
+   * lobby half. Owner, 2026-09-06: "the in-game tutorial shows up every time I
+   * hop in a match until I `brtutorial off`."
+   *
+   * "The box is ticked" and "this player finished the lobby half with the box
+   * ticked" are two different claims, and only the second may start anything.
+   * This is the second one. It is raised when the lobby run ENDS, and spent the
+   * moment it is taken.
+   *
+   * DEFAULT FALSE, which is the whole point: nothing starts by default.
+   */
+  tutorialGameArmed: boolean
+  /**
+   * Which IN-GAME card is on screen, by id, or null.
+   *
+   * The warmup countdown reads it: it is hidden for the whole walkthrough and
+   * revealed on the last card, which is the card ABOUT it. Owner, 2026-09-07:
+   * "don't display the timer card until they get to the last step (which tells
+   * them about the card)."
+   */
+  tutorialGameStep: string | null
+  /**
+   * The IN-GAME walkthrough is running.
+   *
+   * SEPARATE FROM `tutorialRun`, because they are two runs over two scripts in
+   * two places: one points at the lobby's buttons, the other at the HUD, and a
+   * single flag could not say which. `tutorialGameOn` is the OFFER of this one;
+   * this is the run.
+   */
+  tutorialGameRun: boolean
+  /**
+   * The squad the walkthrough is pretending this player has, or null.
+   *
+   * READ THROUGH `selHudSquad`, never directly. See `setTutorialSquad`.
+   */
+  tutorialSquad: SquadPayload | null
+  /**
+   * Warmup crates opened during the in-game walkthrough.
+   *
+   * MIRRORED FROM LUA, which counts them -- see the `tutorial` envelope. The
+   * page has no other way to know: opening a crate changes nothing this store
+   * can see.
+   */
+  tutorialCrates: number
+  /** Waypoints dropped during the in-game half. Mirrored from Lua. */
+  tutorialWaypoints: number
+  /** Inventory slot switches during the in-game half. Mirrored from Lua. */
+  tutorialSlots: number
+  /** Does this ACCOUNT still have the offer? See the `tutorial` envelope. */
+  tutorialOfferable: boolean
+  /**
+   * Has the second toggle been offered at all this session?
+   *
+   * ═══ IN THE STORE BECAUSE THE LOBBY UNMOUNTS ═══
+   *
+   * It was a `useState` inside Lobby, latched when the lobby run reached its last
+   * card. Lobby is not mounted while a match runs, so leaving warmup mid-tutorial
+   * reset the latch -- and it can never re-latch, because the thing that raises it
+   * is a lobby card that finished long ago. Owner, 2026-09-08: "leaving warmup
+   * mid-tutorial, I cannot see the 'continue tutorial' toggle in the lobby."
+   *
+   * IT DOES NOT REPLACE `tutorialOfferable`, it is ANDed with it. That one is the
+   * account's answer off the profile row and carries the decline veto; this one
+   * only says the offer has been made once. Dropping either would re-offer the
+   * walkthrough to somebody who turned it down.
+   */
+  tutorialGameOffered: boolean
+  /** Is the "you are giving up the reward" card on screen? See DECLINE_STEPS. */
+  tutorialDeclineCard: boolean
+  /**
+   * A chat line the WALKTHROUGH is staging, which the chat log shows alongside
+   * the real ones.
+   *
+   * AN OVERRIDE, NOT A PUSH, and the reason is the same one `tutorialSquad`
+   * gives: `pushChat` has no removal counterpart -- unlike `pushFeed`, which
+   * schedules its own -- so a demo line appended to `chat` would outlive the
+   * card and follow the player into their match. "A demo that outlives its card
+   * is a lie the player carries into the match."
+   *
+   * IT IS MERGED IN THE COMPONENT AND NEVER IN A SELECTOR. A selector returning
+   * a fresh array re-renders forever under the zustand this project pins.
+   */
+  tutorialChat: ChatMessage | null
+  /**
+   * Let the squad channel be used even in a solo match, for one card.
+   *
+   * Owner, 2026-09-06: "they may be in solos when this happens, where squads
+   * chat isn't available. It should be visible just for this moment." The two
+   * gates that refuse it are both page-side, so this is a page-side lie and
+   * nothing on the server has to know.
+   *
+   * IT COSTS NOTHING TO GET WRONG. A solo player's squad message already goes
+   * only to their own screen -- server/chat.lua answers `{ src }` when they have
+   * no squadId -- so this unlocks a channel that was already private.
+   */
+  tutorialChatSquad: boolean
+  /**
+   * How many chat messages this player has sent, ever, this session.
+   *
+   * A COUNTER RATHER THAN A BOOLEAN, so a card can baseline it and ask for one
+   * MORE -- the same shape the crate and waypoint counts use. Bumped by the page
+   * at the line that sends, so no wire and no Lua are involved at all.
+   */
+  chatSent: number
+  /**
+   * The last arrow press Lua reported while an in-game card was up.
+   *
+   * `seq` COUNTS PRESSES; `dir` says which. Held as a pair because the page
+   * reacts to the number changing -- two Nexts in a row are otherwise one
+   * indistinguishable value. See the `tutorialnav` envelope.
+   */
+  tutorialNav: { dir: 'next' | 'back' | 'action'; seq: number }
 
   /** True while the voluntary-leave interstitial covers the screen: black
    *  plus a quiet "Leaving the match" while the world swaps underneath. */
@@ -247,6 +408,28 @@ export interface UiState {
   setMatch: (m: MatchPayload) => void
   setHud: (h: HudPayload) => void
   setSquad: (s: SquadPayload) => void
+  /**
+   * A squad the WALKTHROUGH is staging, which the HUD prefers over the real one.
+   *
+   * SEPARATE FROM `squad` RATHER THAN WRITTEN OVER IT. br_core pushes a squad
+   * payload on a tick, so a demo written into `squad` is overwritten a fraction
+   * of a second later -- which is exactly what happened: the panel flashed and
+   * vanished, and the card pointing at a plate inside it ended the run when its
+   * anchor went with it (owner, 2026-09-05).
+   *
+   * NULL IS THE ORDINARY STATE and means "show what the server said".
+   */
+  setTutorialSquad: (s: SquadPayload | null) => void
+  setTutorialCrates: (n: number) => void
+  setTutorialWaypoints: (n: number) => void
+  setTutorialSlots: (n: number) => void
+  setTutorialOfferable: (v: boolean) => void
+  setTutorialGameOffered: (v: boolean) => void
+  setTutorialDeclineCard: (v: boolean) => void
+  setTutorialChat: (m: ChatMessage | null) => void
+  setTutorialChatSquad: (v: boolean) => void
+  noteChatSent: () => void
+  setTutorialNav: (n: { dir: 'next' | 'back' | 'action'; seq: number }) => void
   setParty: (p: SquadPayload) => void
   setTalking: (ids: number[], names?: string[]) => void
   setVoice: (v: VoicePayload) => void
@@ -259,6 +442,15 @@ export interface UiState {
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen'], tab?: string) => void
   setFrontendUp: (v: boolean) => void
+  setFrontendReason: (v: 'map' | 'menu') => void
+  setTutorialRun: (v: boolean) => void
+  setTutorialOffer: (v: boolean) => void
+  setTutorialChecked: (v: boolean) => void
+  setTutorialStep: (v: string | null) => void
+  setTutorialGameOn: (v: boolean) => void
+  setTutorialGameArmed: (v: boolean) => void
+  setTutorialGameStep: (id: string | null) => void
+  setTutorialGameRun: (v: boolean) => void
   setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
   setScreen: (s: ScreenPayload) => void
@@ -350,6 +542,36 @@ const COUNTDOWN_TAIL_MS = 900
 
 export const useUi = create<UiState>((set, get) => {
   /**
+   * HOW LONG THIS NOTICE WILL BE ON SCREEN.
+   *
+   * ONE FUNCTION, TWO CALLERS, AND THAT IS THE POINT. The stack arms its
+   * removal timer with this, and the history measures its coalescing window
+   * with it -- so "while the last one is still up" is the row's OWN lifetime
+   * and never a second number that agrees with it today. A `ms` on the payload,
+   * a countdown's deadline and a sticky's ceiling all mean different durations,
+   * and a window invented next to them would be wrong for two of the three.
+   *
+   * `endsAt` is a SERVER timestamp; clockOffset is what makes it comparable to
+   * Date.now(). Getting this wrong does not look like a clock bug, it looks
+   * like every countdown being wildly wrong or already expired.
+   *
+   * STICKY WINS OVER A DEADLINE, as it always has: a notice that outlives its
+   * own event is not a countdown even if one was sent with it.
+   */
+  const lifetimeOf = (t: ToastPayload): number => {
+    if (t.sticky) return STICKY_MAX_MS
+    // A COUNTDOWN'S DEADLINE IS ITS LIFETIME. Sending both `endsAt` and a
+    // shorter `ms` would leave the row showing a number that never reaches
+    // zero, which reads as a frozen interface rather than as a notice that
+    // left early. The deadline wins.
+    if (t.endsAt != null) {
+      return Math.max(0, t.endsAt - (Date.now() + get().clockOffset))
+        + COUNTDOWN_TAIL_MS
+    }
+    return t.ms ?? TOAST_MS
+  }
+
+  /**
    * The actual display push. Both the live path and the unpause flush land
    * here, so a queued notice gets the same lifetime and animation as one that
    * never waited.
@@ -375,6 +597,42 @@ export const useUi = create<UiState>((set, get) => {
    * its own line and a repeat bumps a count, exactly as on screen -- otherwise
    * one countdown, which is a single event ticking, would be the entire
    * history. An updated line returns to the top, because it is news again.
+   *
+   * ═══ AND IT ONLY MIRRORS A ROW THAT IS STILL THERE ═══
+   *
+   * Owner, 2026-09-02:
+   *
+   *   "the 'x2' and 'x3' and 'x4' toast flags should only appear if the same
+   *    notification arrives before the last one disappears - currently in the
+   *    pause menu when I look at previous notifications, if I have the same
+   *    content toast show up 20 minutes apart it shows 'x2' which is unintended
+   *    behavior."
+   *
+   * THE MULTIPLIER MEANS "AGAIN, WHILE YOU WERE STILL LOOKING AT IT". The live
+   * stack has always meant exactly that and could not mean anything else: it
+   * searches `notices`, which holds only the rows whose removal timer has not
+   * fired yet. This list held sixty entries reaching back to the start of the
+   * match, so it matched on the SENTENCE ALONE and folded two unrelated events
+   * twenty minutes apart into one line reading x2 -- an honest-looking record
+   * of something that never happened.
+   *
+   * SO THE MATCH IS (sentence, still on screen), and `goneAt` is the second
+   * half of it: the instant the toast this line records left the screen,
+   * written from the same lifetimeOf the stack armed its timer with. Past that
+   * instant the same sentence is a second event and takes a line of its own --
+   * with its own time, which is what the pause menu is read for.
+   *
+   * THE SENTENCE IS STILL THE IDENTITY, and it is a sharper one than it was:
+   * since notices carry names as structured parts the flat `text` a repeat is
+   * matched on already separates "Jim is down!" from "Bob is down!". What it
+   * could never separate is two of the same event, and only time can do that.
+   *
+   * A KEYED LINE IS WINDOWED TOO, on the same rule and for the same reason.
+   * Path 2 on the stack updates a keyed row only while that row is up; a key
+   * raised again after its own notice expired is a fresh row on screen, so it
+   * is a fresh line here rather than a rewrite of the one before it. A
+   * countdown is untouched by this -- its lifetime runs to its own deadline,
+   * and its updates arrive many times inside it.
    */
   const logNotice = (t: ToastPayload) => {
     // A withdrawal is not an event. Clearing a sticky notice means the state
@@ -383,13 +641,18 @@ export const useUi = create<UiState>((set, get) => {
 
     set((s) => {
       const log = s.noticeLog
+      const now = Date.now()
+      const ms = lifetimeOf(t)
       // The mode is derived from the LOG, not from the live stack, so it holds
       // for a notice that arrived while the pause menu was up and never
       // touched the stack at all.
       const i = t.key != null
         ? log.findIndex((e) => e.key === t.key)
         : log.findIndex((e) => e.key == null && e.text === t.text)
-      const prev = i >= 0 ? log[i] : undefined
+      // NEWEST FIRST, so `i` is the most recent line saying this -- and if THAT
+      // one's toast has already gone, every older one went before it. There is
+      // nothing further down the list to fold into.
+      const prev = i >= 0 && now < log[i]!.goneAt ? log[i] : undefined
 
       if (prev) {
         const next = [...log]
@@ -405,7 +668,11 @@ export const useUi = create<UiState>((set, get) => {
             // OLD name over the new sentence.
             parts: t.text != null ? t.parts : prev.parts,
             tone:  t.tone ?? prev.tone,
-            at:    Date.now(),
+            at:    now,
+            // THE WINDOW MOVES WITH THE LINE, because the row on screen was
+            // re-armed with the new notice's lifetime rather than serving out
+            // the old one's. A third arrival is measured against THIS toast.
+            goneAt: now + ms,
             // A keyed notice is ONE event changing state, so it does not
             // count up; an unkeyed repeat is the same thing happening again,
             // so it does.
@@ -414,6 +681,9 @@ export const useUi = create<UiState>((set, get) => {
         }
       }
 
+      // A LINE OF ITS OWN, and the older one is left exactly where it is with
+      // the time it landed. Nothing is spliced out here: two events are two
+      // rows in the history, which is the whole of the report.
       return {
         noticeLog: [{
           id: ++logId,
@@ -421,7 +691,8 @@ export const useUi = create<UiState>((set, get) => {
           parts: t.parts,
           tone: t.tone,
           key: t.key,
-          at: Date.now(),
+          at: now,
+          goneAt: now + ms,
           count: 1,
         }, ...log].slice(0, LOG_MAX),
       }
@@ -448,20 +719,11 @@ export const useUi = create<UiState>((set, get) => {
       return
     }
 
-    // A COUNTDOWN'S DEADLINE IS ITS LIFETIME. Sending both `endsAt` and a
-    // shorter `ms` would leave the row showing a number that never reaches
-    // zero, which reads as a frozen interface rather than as a notice that
-    // left early. The deadline wins.
-    //
-    // `endsAt` is a SERVER timestamp; clockOffset is what makes it comparable
-    // to Date.now(). Getting this wrong does not look like a clock bug, it
-    // looks like every countdown being wildly wrong or already expired.
-    const untilDeadline = t.endsAt != null
-      ? Math.max(0, t.endsAt - (Date.now() + get().clockOffset)) + COUNTDOWN_TAIL_MS
-      : null
-    const ms = t.sticky
-      ? STICKY_MAX_MS
-      : untilDeadline ?? t.ms ?? TOAST_MS
+    // THE SAME LIFETIME THE HISTORY MEASURES ITS WINDOW WITH -- see
+    // lifetimeOf, which is where the deadline-beats-ms and sticky-beats-both
+    // rules live now. Two copies of that arithmetic is how "still on screen"
+    // starts meaning one thing to the stack and another to the log.
+    const ms = lifetimeOf(t)
 
     const arm = (id: number) => window.setTimeout(() => {
       set((s) => (s.notices.some((n) => n.id === id)
@@ -568,6 +830,26 @@ export const useUi = create<UiState>((set, get) => {
   scoped: false,
   worldReady: import.meta.env.DEV,
   frontendUp: false,
+  frontendReason: 'menu',
+  tutorialRun: false,
+  tutorialOffer: false,
+  tutorialChecked: true,
+  tutorialStep: null,
+  tutorialGameOn: true,
+  tutorialGameArmed: false,
+  tutorialGameStep: null,
+  tutorialGameRun: false,
+  tutorialSquad: null,
+  tutorialCrates: 0,
+  tutorialWaypoints: 0,
+  tutorialSlots: 0,
+  tutorialOfferable: false,
+  tutorialGameOffered: false,
+  tutorialDeclineCard: false,
+  tutorialChat: null,
+  tutorialChatSquad: false,
+  chatSent: 0,
+  tutorialNav: { dir: 'next', seq: 0 },
   leaving: false,
   curtain: 'leaving',
   invite: null,
@@ -618,6 +900,17 @@ export const useUi = create<UiState>((set, get) => {
     set({ hud })
   },
   setSquad:    (squad) => set({ squad }),
+  setTutorialSquad: (tutorialSquad) => set({ tutorialSquad }),
+  setTutorialCrates: (tutorialCrates) => set({ tutorialCrates }),
+  setTutorialWaypoints: (tutorialWaypoints) => set({ tutorialWaypoints }),
+  setTutorialSlots: (tutorialSlots) => set({ tutorialSlots }),
+  setTutorialOfferable: (tutorialOfferable) => set({ tutorialOfferable }),
+  setTutorialGameOffered: (tutorialGameOffered) => set({ tutorialGameOffered }),
+  setTutorialDeclineCard: (tutorialDeclineCard) => set({ tutorialDeclineCard }),
+  setTutorialChat: (tutorialChat) => set({ tutorialChat }),
+  setTutorialChatSquad: (tutorialChatSquad) => set({ tutorialChatSquad }),
+  noteChatSent: () => set((s) => ({ chatSent: s.chatSent + 1 })),
+  setTutorialNav: (tutorialNav) => set({ tutorialNav }),
   setParty:    (party) => set({ party }),
   // Names default to empty rather than to the ids: a bar reading "Currently
   // Talking: 27" is worse than no bar, and an id is what is left when the
@@ -651,6 +944,15 @@ export const useUi = create<UiState>((set, get) => {
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus, focusTab) => set({ focus, focusTab }),
   setFrontendUp: (frontendUp) => set({ frontendUp }),
+  setFrontendReason: (frontendReason) => set({ frontendReason }),
+  setTutorialRun: (tutorialRun) => set({ tutorialRun }),
+  setTutorialOffer: (tutorialOffer) => set({ tutorialOffer }),
+  setTutorialChecked: (tutorialChecked) => set({ tutorialChecked }),
+  setTutorialStep: (tutorialStep) => set({ tutorialStep }),
+  setTutorialGameOn: (tutorialGameOn) => set({ tutorialGameOn }),
+  setTutorialGameArmed: (tutorialGameArmed) => set({ tutorialGameArmed }),
+  setTutorialGameStep: (tutorialGameStep) => set({ tutorialGameStep }),
+  setTutorialGameRun: (tutorialGameRun) => set({ tutorialGameRun }),
   setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),
   // THE SCOPE FLAG NEVER TOUCHES THE METRICS.
@@ -789,9 +1091,20 @@ export const selStorm    = (s: UiState) => s.storm
 export const selVehicle  = (s: UiState) => s.vehicle
 export const selMatch    = (s: UiState) => s.match
 export const selSquad    = (s: UiState) => s.squad
+/**
+ * The squad the HUD should draw: the walkthrough's staged one when it has one.
+ *
+ * DELIBERATELY NOT `selSquad` ITSELF. The lobby's party panel and the chat
+ * header read the real squad, and a demo leaking into either would tell a
+ * player they are in a party they are not in. Only the HUD -- which is the only
+ * surface the in-game walkthrough points at -- takes the override.
+ */
+export const selHudSquad = (s: UiState) => s.tutorialSquad ?? s.squad
 export const selInv      = (s: UiState) => s.inv
 export const selFeed     = (s: UiState) => s.feed
 export const selChat     = (s: UiState) => s.chat
+/** The walkthrough's staged chat line, or null. Merged in Chat, not here. */
+export const selTutorialChat = (s: UiState) => s.tutorialChat
 export const selDbno     = (s: UiState) => s.dbno
 export const selFocus    = (s: UiState) => s.focus
 export const selChatOpen = (s: UiState) => s.chatOpen

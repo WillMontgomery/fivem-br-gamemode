@@ -39,6 +39,60 @@ local function canDie(entry)
         or s == BR.PlayerState.GLIDE
 end
 
+--- Stand a player back up on the warmup pad, still in WARMUP.
+---
+--- ═══ WARMUP WAS NEVER MEANT TO BE SURVIVABLE OR FATAL ═══
+---
+--- Owner, 2026-09-06: "If players do manage to die in warmup (via explosives
+--- we're putting in these crates) please resurrect them immediately. Today we
+--- don't handle the death in warmup at all, because we weren't expecting a case
+--- where such event would be possible."
+---
+--- WARMUP is absent from canDie, so a death report from the pad was DROPPED: no
+--- elimination, no feed line, no stats -- and no resurrection either. The player
+--- simply lay there.
+---
+--- ⚠ AND IT DID NOT STAY HARMLESS. The drop is only a no-op for the rest of
+--- warmup: at the WARMUP -> BUS flip the entry enters a state canDie accepts, in
+--- a match state the death check accepts, with a corpse's engineHp still
+--- sampled -- so the body that had been ignored for a minute became a real
+--- elimination the moment the bus left. Leaving it unhandled was not a neutral
+--- choice.
+---
+--- A SIBLING OF reviveHeld, NOT A REUSE OF IT. Everything about the body is the
+--- same -- clear engineHp before the roster moves, resurrect on the machine that
+--- owns the ped, open the health-audit settle window, restore the numbers -- and
+--- exactly one thing differs: this player is NOT promoted to ALIVE. They are on
+--- the pad, the match has not started, and setting ALIVE here would deal them
+--- into a round that has not begun. A state is an argument, not a second
+--- function, but it is the argument that made this its own caller.
+---
+--- NOTHING IS TOLD. No feed entry, no elimination count, no stats row, no
+--- incident, no squad "mate down", no spectator camera: every one of those is
+--- raised further down the handler this returns before reaching.
+--- @param src integer
+--- @param entry table
+function BR.Combat.reviveWarmup(src, entry)
+    -- CLEARED BEFORE ANYTHING ELSE, for reviveHeld's reason: the sample is up to
+    -- a second old, and a stale corpse reading is an opinion from before the
+    -- resurrection. The pad's own death check reads it.
+    entry.engineHp = nil
+    entry.placement, entry.diedAt = nil, nil
+
+    TriggerClientEvent(BR.Net.REVIVED, src)
+
+    -- THE LEDGER LEADS AND THE PED FOLLOWS. For one round trip the entry says
+    -- 100 and the ped is still a corpse; the audit in server/roster.lua reads
+    -- this stamp so the crossover is not counted as a client inventing health.
+    entry.healthSettleUntil = GetGameTimer()
+        + ((BR.Config.Combat.healthAudit or {}).settleMs or 2000)
+
+    BR.Roster.update(src, { hp = 100.0, armour = 0.0 })
+
+    print(('[br_core] %s (%d) died in warmup -- stood back up, nothing recorded')
+        :format(entry.name, src))
+end
+
 --- Has this player left the bus into a match that has not started yet? (#144)
 ---
 --- THE WINDOW IS THE DESCENT AND WHAT FOLLOWS IT, NOT THE WARMUP PAD. Rescoped
@@ -320,7 +374,46 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- NOT GUARDED ON WHAT THE DEATH BOX RETURNED. It returns nil for a player
     -- who was carrying nothing, and an empty-handed player must still be
     -- recoverable -- the invariant is the EDGE, not the spill.
-    if m and BR.ReviveKey and BR.ReviveKey.onEliminated then
+    --
+    -- ═══ EXCEPT 'left', WHICH IS THE ONE ELIMINATION WITH NOBODY TO REVIVE ═══
+    --
+    -- Owner, playtest 2026-09-02: "in squads, a player leaves the match and the
+    -- others get 'x has bled out' toasts."
+    --
+    -- THE TOAST WAS THE SYMPTOM AND THE MINT WAS THE CAUSE. That sentence is
+    -- `BR.Config.ReviveKey.copy.bledOut` and it is spoken from inside
+    -- onEliminated, so the only way to stop a leaver's squad being sent to fetch
+    -- a key is to stop the leaver having one. Suppressing the line and keeping
+    -- the mint would leave a silent pickup on the ground that still cost 25
+    -- Volts to buy.
+    --
+    -- AND THE KEY WAS ALREADY UNSPENDABLE, WHICH IS WHY THIS IS A DELETION AND
+    -- NOT A POLICY. Every door out of a revive key is shut for a leaver before
+    -- the toast has finished drawing:
+    --
+    --   * `BR.Match.leaveMatch` calls this function and then, a few lines later,
+    --     runs `BR.Match.resetPlayer`, which sets `e.reviveKey = nil`. The record
+    --     this mint writes is destroyed in the same tick that wrote it.
+    --   * It then clears `matchId`, and both `BR.ReviveKey.forSquad` (what 25
+    --     Volts buys) and `reviveAllowed` filter on it -- so the purchase cannot
+    --     see the key and the revive cannot spend it.
+    --   * `reviveAllowed` also requires the subject to be OUT in a PLAYING
+    --     match, and a leaver is LOBBY in no match at all.
+    --
+    -- So the squad was told to run for a key that did not exist by the time they
+    -- read the sentence, could not be bought, and could not have been spent if
+    -- it had been. Nothing downstream loses a capability here; the roster entry
+    -- simply stops being written to for one instant before it is wiped.
+    --
+    -- THE DEATH BOX ABOVE IS DELIBERATELY NOT GATED WITH IT. A leaver still
+    -- spills what they were carrying -- walking out is not a way to take your
+    -- kit home, which is the same argument that routes leaving through this
+    -- function at all. So the two lines part company here, and
+    -- server/revivekey.lua's "minted on exactly the code path that forfeits an
+    -- inventory" is now the narrower claim its own header states: minted on
+    -- exactly the code path that forfeits an inventory AND leaves somebody in
+    -- the match to be brought back to.
+    if cause ~= 'left' and m and BR.ReviveKey and BR.ReviveKey.onEliminated then
         BR.ReviveKey.onEliminated(m, src)
     end
 
@@ -375,12 +468,12 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         -- the owner, 2026-08-22. server/spectate.lua reads this; nothing else
         -- does, and nothing on the client is ever told it.
         --
-        -- A LICENCE, NOT `killerSrc`. FiveM recycles server ids within the
+        -- A LICENSE, NOT `killerSrc`. FiveM recycles server ids within the
         -- minute and this outlives the moment it is written by design -- the
         -- victim watches this person for the rest of their round. Storing the id
         -- would eventually point a dead player's camera at whoever inherited it,
         -- which is the exact bug server/spectate.lua's own feed re-checks a
-        -- licence every 250ms to avoid. It is resolved back to a live id at the
+        -- license every 250ms to avoid. It is resolved back to a live id at the
         -- moment of use and never before.
         --
         -- WRITTEN INSIDE THE `killer and killerSrc ~= src` GUARD, so it inherits
@@ -580,6 +673,37 @@ local function hasStandingMate(entry)
     return found
 end
 
+--- How many squads would still have somebody ON THEIR FEET if this player went
+--- down right now?
+---
+--- STANDING IS "IN THE MATCH AND NOT DBNO", which is deliberately wider than
+--- hasStandingMate's ALIVE/FREEFALL/GLIDE. That function asks "can anybody come
+--- and revive them", so a mate still on the bus is no use to it. This one asks
+--- "is there anybody left to fight", and a player who has not jumped yet is very
+--- much still in the fight -- counting only the landed would end a match while
+--- half the field was in the air.
+---
+--- SOLOS ARE THEIR OWN SQUAD, spelled the same way BR.Server.squadsAlive spells
+--- it, because these two counts answer the same question at two moments and must
+--- not disagree about what a team is.
+--- @param entry table  the player about to be knocked, excluded from the count
+--- @return integer
+local function standingSquadsBesides(entry)
+    local seen, n = {}, 0
+    BR.Roster.each(
+        function(e)
+            return e.src ~= entry.src
+               and e.matchId == entry.matchId
+               and e.state ~= BR.PlayerState.DBNO
+               and BR.Server.isInMatch(e.state)
+        end,
+        function(src, e)
+            local key = e.squadId or ('solo:' .. tostring(src))
+            if not seen[key] then seen[key] = true; n = n + 1 end
+        end)
+    return n
+end
+
 --- Would running out of health knock this player down rather than kill them?
 ---
 --- Public because BR.Damage.applyHit has to ask BEFORE it writes any health:
@@ -592,6 +716,46 @@ function BR.Combat.canBeDowned(entry)
 
     local m = entry.matchId and BR.Server.matches[entry.matchId]
     if not m then return false end
+
+    -- ═══ THE LAST KNOCK OF A MATCH IS A DEATH, WHOEVER IT LANDS ON ═══
+    --
+    --   "I just did a solos match and with only 2 players, while one was
+    --    bleeding out, the other hadn't won yet. Not sure why... bleeding out
+    --    shouldn't be a thing if there's only one standing player or squad
+    --    left."                                         -- owner, 2026-09-07
+    --
+    -- THE MATCH WAS CORRECT AND THE KNOCK WAS WRONG. BR.Server.isInMatch counts
+    -- DBNO -- deliberately, and every other thing that reads it needs that -- so
+    -- a downed player keeps their squad in BR.Server.squadsAlive and
+    -- winConditionMet goes on seeing two squads. The winner then waits out a
+    -- 40-120s bleed clock (bleedMsFor) for an opponent who, in solos, nobody can
+    -- revive: the last stretch of the match is a countdown with no play in it.
+    --
+    -- SO THE FIX IS HERE RATHER THAN IN THE WIN CONDITION. Making squadsAlive
+    -- ignore DBNO would end the match over a squad that is momentarily all down
+    -- and about to be revived, which is a real and common state in squads; and
+    -- it would end it over the player in the back of an ambulance, whose whole
+    -- feature is that being down is survivable. What is actually true is
+    -- narrower: a knock is only worth having if somebody is left to fight over
+    -- it, and when this player is the last one standing outside a single squad,
+    -- nobody is.
+    --
+    -- IT APPLIES TO BOTH ARMS BELOW, which is why it sits above them. The squad
+    -- arm mostly gets there on its own -- hasStandingMate is false for the last
+    -- member of a wipe -- but not always: two squads left, one with a standing
+    -- mate, and this rule is what stops the final knock of the match starting a
+    -- timer instead of ending it.
+    --
+    -- ═══ EXCEPT FOR THE ONE-SQUAD DEV MATCH, AND FOR THE SAME REASON AS THE
+    --     CARVE-OUT IN winConditionMet ═══
+    --
+    -- A lone developer in PLAYING has zero other standing squads by definition,
+    -- so without this they could never be knocked at all -- which would make the
+    -- CPR kit and the whole ambulance flow untestable by exactly the person who
+    -- has to test them. That match does not auto-end either (see winConditionMet),
+    -- so nothing is being held up by the bleed.
+    local lone = BR.Server.devMode and m.startSquads == 1
+    if not lone and standingSquadsBesides(entry) <= 1 then return false end
 
     -- ═══ SQUADS BY MODE, SOLOS BY INVENTORY (#191) ═══
     --
@@ -774,9 +938,14 @@ function BR.Combat.knock(src, killerSrc)
                 -- name should be bold." BR.Notice.line is what carries that
                 -- without ever putting formatting inside the name -- see
                 -- br_lib/shared/notice.lua.
+                -- SILENT, BECAUSE tellSquad ALREADY PLAYED squad.down TO THIS
+                -- EXACT AUDIENCE two lines up. Owner, 2026-09-07: "so now when
+                -- a squad mate goes DBNO we're playing an NUI sound AND a
+                -- frontend sound." The words and the sound are one event and it
+                -- makes one noise. See BR.Server.notify's `cue`.
                 BR.Server.notify(mate,
                     BR.Notice.line('%s is down!', BR.Notice.who(entry.name)),
-                    'warn', { key = 'dbno.' .. src, ms = 6000 })
+                    'warn', { key = 'dbno.' .. src, ms = 6000, cue = false })
             end)
     end
 
@@ -875,21 +1044,43 @@ local function reviveAllowed(reviver, target)
         return false, 'different squads'
     end
 
-    -- MEASURED FROM THE SERVER'S OWN POSITION SAMPLES, never from anything a
-    -- client said -- the rule the loot claim already follows, with the same
-    -- slack for the same 250ms sampling skew.
-    local a, b = reviver.pos, target.pos
-    -- NAMED SEPARATELY, because "the server has never sampled this player"
-    -- looks nothing like "they walked away" and used to read as the same
-    -- refusal. It means OneSync or the position job, not the player.
-    if not a then return false, 'no position sampled for the reviver' end
-    if not b then return false, 'no position sampled for the target' end
-
-    local reach = (M.dbnoReviveDist or 1.5) + (M.dbnoReviveSlack or 1.0)
-    local d = BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z)
-    if d > reach then
-        return false, ('%.2fm apart, server reach is %.2fm'):format(d, reach)
-    end
+    -- ═══ THERE IS NO REVIVER-TO-BODY DISTANCE TEST HERE ANY MORE ═══
+    --
+    --   "remove the restriction that forbids players from reviving a corpse in
+    --    the wrong location. Because there's no output for that today other
+    --    than 'it doesn't work' and that's not fair to players when they arrive
+    --    in the cell and positions aren't synced"     -- owner, 2026-09-07
+    --
+    -- WHAT USED TO BE HERE was BR.Dist3(reviver.pos, target.pos) against
+    -- dbnoReviveDist + dbnoReviveSlack, 2.5m, off the server's own 250ms
+    -- samples. It read as the safe, authoritative choice and it was measuring a
+    -- DISAGREEMENT rather than a fact: a reviver stands where THEIR COPY of the
+    -- body is, and that copy is exactly the thing this project has two open
+    -- reports about. #164 -- the clone crawls away from where the downed player
+    -- is pinned. #246 -- a body streamed in late is built where the death
+    -- happened rather than where it came to rest, and the corpse half of that
+    -- fix now publishes a resting place ONCE (client/dbno.lua) rather than
+    -- continuously, so a stale clone stays stale for longer.
+    --
+    -- So the refusal fell on the honest player every time. They walked to the
+    -- body on their screen, held the key, watched the ring fill, and nothing
+    -- happened -- with the reason living in a server log they will never read.
+    -- A rule that cannot be complied with and cannot be explained is worse than
+    -- no rule.
+    --
+    -- WHAT DEFENDS THE EIGHT SECONDS INSTEAD IS AN ANCHOR, and it is in
+    -- stepDowned rather than here: the reviver's position is stamped when the
+    -- hold begins and they may not get more than dbnoReviveSlack from it. That
+    -- subtraction has ONE player in it, so there is no clone, no ragdoll and no
+    -- desync in it -- it can only ever refuse somebody who genuinely walked off,
+    -- which is the whole of what the old test was trying to say.
+    --
+    -- STARTING A HOLD STILL NEEDS PROXIMITY, and the client is the right witness
+    -- for it: client/dbno.lua's nearestDowned only offers a body within
+    -- dbnoReviveDist of the ped, measured against the same copy the player is
+    -- looking at. That is the geometry the player can actually see and act on.
+    -- A modified client can now start a hold at range; that is the price, and it
+    -- buys a revive that works when the engine's positions disagree.
     return true
 end
 
@@ -913,6 +1104,10 @@ local function stopRevive(src, entry, reason)
 
     entry.reviverSrc, entry.reviveFrom = nil, nil
     entry.reviveBeat, entry.reviveTickAt = nil, nil
+    -- WITH THE REST OF THE HOLD. A stale anchor would measure the NEXT hold's
+    -- drift from where the LAST reviver was standing, which is a cancel nobody
+    -- could account for -- the same class of bug the old distance test was.
+    entry.reviveAnchor = nil
 
     TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc,
         { pct = 0.0, target = src, cancelled = true, reason = reason })
@@ -1020,6 +1215,44 @@ local function stepDowned(src, entry, now)
         local reviver = BR.Roster.get(reviverSrc)
 
         local allowed, why = reviveAllowed(reviver, entry)
+
+        -- ═══ THE REVIVER MAY NOT WALK OFF, MEASURED AGAINST THEMSELVES ═══
+        --
+        -- This replaces the reviver-to-BODY distance test the owner removed on
+        -- 2026-09-07; reviveAllowed carries the full note on why that one had to
+        -- go. What is kept is the part that was never in doubt: eight seconds
+        -- standing still in the open is the cost of picking somebody up, and a
+        -- hold you can start and then run away from is not that.
+        --
+        -- ONE PLAYER IN THE SUBTRACTION, WHICH IS THE WHOLE POINT. `anchor` is
+        -- a copy of where the SERVER saw this reviver when the hold began, and
+        -- `reviver.pos` is where the server sees them now. Both readings are of
+        -- the same player, off the same 250ms sampler, so there is no clone, no
+        -- ragdoll and no observer disagreement anywhere in it. It cannot refuse
+        -- an honest player standing still, however wrong their screen is about
+        -- where the body lies.
+        --
+        -- STAMPED LATE IF IT HAS TO BE. A hold can begin before the position job
+        -- has ever sampled the reviver, and "OneSync has not told us where you
+        -- are yet" is not something a player did. The first pass with a position
+        -- adopts it as the anchor rather than cancelling.
+        if allowed and reviver.pos then
+            local anchor = entry.reviveAnchor
+            if not anchor then
+                entry.reviveAnchor = { x = reviver.pos.x, y = reviver.pos.y,
+                                       z = reviver.pos.z }
+            else
+                local budget = M.dbnoReviveSlack or 3.0
+                local d = BR.Dist3(reviver.pos.x, reviver.pos.y, reviver.pos.z,
+                                   anchor.x, anchor.y, anchor.z)
+                if d > budget then
+                    allowed = false
+                    why = ('the reviver moved %.2fm from where they started '
+                           .. '(budget %.2fm)'):format(d, budget)
+                end
+            end
+        end
+
         if not allowed then
             stopRevive(src, entry, 'interrupted: ' .. tostring(why))
 
@@ -1389,9 +1622,59 @@ AddEventHandler(BR.Net.REVIVE_START, function(data)
         return
     end
 
+    -- ═══ ONE PAIR OF HANDS, ONE BODY ═══
+    --
+    -- Nothing here used to ask whether `src` was ALREADY holding somebody else.
+    -- The hold lives on the TARGET -- reviverSrc, reviveFrom, reviveBeat and the
+    -- anchor are all fields of the body -- and stepDowned walks bodies, so N
+    -- concurrent holds by one player were a supported shape rather than a
+    -- refused one. REVIVE_STOP's sweep over every entry with `e.reviverSrc ==
+    -- src` shows it was contemplated.
+    --
+    -- IT USED TO BE CAPPED BY GEOMETRY AND IS NOT ANY MORE. Every body had to be
+    -- inside the same 2.5m circle as the reviver, so "all of them at once" meant
+    -- a squad that had been wiped in one spot. With the reviver-to-body test
+    -- gone (see reviveAllowed) that cap went with it, and a client sending one
+    -- event per downed mate would stand a whole squad up together.
+    --
+    -- RELEASED RATHER THAN REFUSED, which is the honest client's own intention:
+    -- client/dbno.lua's `holding` is a single table and switching mates sends
+    -- REVIVE_STOP first. Refusing here would strand a player whose STOP was lost
+    -- for the 750ms it takes the beat to expire; releasing does what they meant.
+    BR.Roster.each(
+        function(e) return e.reviverSrc == src and e.src ~= targetSrc end,
+        function(tsrc, other) stopRevive(tsrc, other, 'switched to another mate') end)
+
     target.reviverSrc = src
     target.reviveFrom = GetGameTimer()
     target.reviveBeat = target.reviveFrom
+    -- WHERE THE REVIVER WAS STANDING WHEN THEY STARTED. stepDowned measures the
+    -- drift against this and cancels if they leave; see the note in
+    -- reviveAllowed for why the old reviver-to-BODY test could not stay.
+    --
+    -- ═══ WRITTEN UNCONDITIONALLY, WHICH IS WHAT MAKES A STALE ONE IMPOSSIBLE
+    --     ═══
+    --
+    -- Eight places in this project clear `reviverSrc` and `reviveFrom` when a
+    -- hold ends -- eliminate, knock, revive, the stop handler, resetPlayer,
+    -- revivekey's bringBack -- and only stopRevive clears this field. That is
+    -- safe, and it is safe for a reason worth stating rather than by luck: every
+    -- hold arrives HERE and this line runs on all of them, so the anchor a new
+    -- hold measures against is always its own. A left-over table can be read by
+    -- nothing, because stepDowned only looks while `reviverSrc` is set.
+    --
+    -- COPIED RATHER THAN REFERENCED. server/roster.lua's sampler currently
+    -- allocates a fresh table each pass, so a reference would happen to work
+    -- today -- and the day it is changed to write in place for the garbage it
+    -- would save, the anchor would silently follow the player and the drift
+    -- would be zero forever. A rule that is always satisfied is not a rule, and
+    -- it would fail silently.
+    --
+    -- nil IF THE SERVER HAS NEVER SAMPLED THEM, and stepDowned then stamps it on
+    -- its first pass. That is deliberately not a refusal: "OneSync has not told
+    -- us where you are yet" is not something a player did.
+    local rp = reviver.pos
+    target.reviveAnchor = rp and { x = rp.x, y = rp.y, z = rp.z } or nil
     -- THE PAUSE STARTS HERE, NOT ON THE FIRST TICK. stepDowned advances the
     -- deadline by `now - reviveTickAt`, and with nothing stamped that first
     -- pass measured zero -- so the quarter second between the hold registering
@@ -1442,6 +1725,17 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
     if not entry then return end
 
     if not canDie(entry) then
+        -- ═══ A DEATH ON THE PAD IS UNDONE, NOT IGNORED ═══
+        --
+        -- Nothing on the warmup island was expected to be able to kill anybody
+        -- until explosives went into the crates. See BR.Combat.reviveWarmup for
+        -- why ignoring it was worse than it looked: the corpse survived to the
+        -- bus and became a real elimination there.
+        if entry.state == BR.PlayerState.WARMUP then
+            BR.Combat.reviveWarmup(src, entry)
+            return
+        end
+
         -- Not necessarily malicious: a report can arrive just after the server
         -- already eliminated them from its own health check.
         if BR.Server.devMode then

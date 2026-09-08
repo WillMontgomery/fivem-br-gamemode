@@ -1133,6 +1133,12 @@ export interface FocusPayload {
          *  incidents, and `/help` already establishes that a framed page gets
          *  the full-screen treatment. */
         | 'admin'
+        /* `tutorial` was briefly a member and is gone, alongside its entry in
+         * BR.FocusKeepsInput. The in-game walkthrough held the cursor so its
+         * Next and Last could be pressed; it is driven by the arrow keys now and
+         * takes no focus at all, so Lua can no longer send this. Deleted rather
+         * than left in the union for a value nothing produces -- the same rule
+         * `playersReport` above was removed under. */
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel
@@ -1265,7 +1271,63 @@ export type Envelope =
   /** GTA's own menu owns the screen; this page must not draw. Lua is the
    *  authority and holds it true for as long as the frontend is up -- see the
    *  note on BR.Nui.FRONTEND in br_lib/shared/protocol.lua. */
-  | { k: 'frontend'; d: { up: boolean } }
+  | { k: 'frontend'; d: { up: boolean; reason?: 'map' | 'menu' } }
+  /* The guided first run (#261). Lua owns whether it is running and the page
+     mirrors it, the same shape `frontend` above uses -- so a reload or a
+     re-focus cannot leave the walkthrough on with nothing driving it. */
+  | {
+      k: 'tutorial'
+      d: {
+        run: boolean
+        offer?: boolean
+        /**
+         * Has this ACCOUNT still got the offer to spend?
+         *
+         * NOT `offer`, which is the lobby CHECKBOX and is cleared the moment the
+         * walkthrough starts. The second toggle -- the one that carries them into
+         * the match -- appears after the lobby half is over, so gating it on the
+         * checkbox hid it completely (owner, 2026-09-07). This is the profile
+         * row's answer and it outlives the run.
+         */
+        offerable?: boolean
+        game?: boolean
+        /**
+         * How many of the four warmup crates this player has opened during the
+         * in-game half.
+         *
+         * COUNTED IN LUA BECAUSE THE PAGE CANNOT SEE IT. Opening a crate puts
+         * nothing in the inventory, br_core/client/loot.lua sends no NUI message
+         * at all, and the server sends nothing on the chest path -- the whole
+         * receipt is the crate being re-announced as its husk, which never
+         * leaves Lua. So this is the one fact in the walkthrough that genuinely
+         * had to be told rather than observed.
+         *
+         * ON THIS ENVELOPE AND NOT A NEW ONE: it is the walkthrough's own
+         * channel, Lua already owns every field on it, and its only reader is
+         * the walkthrough -- so this cannot become a field nothing reads.
+         */
+        crates?: number
+        /** Map waypoints dropped during the in-game half. Counted in Lua for
+         *  the same reason `crates` is: client/markers.lua consumes the
+         *  waypoint the tick it is placed, so nothing is left to observe. */
+        waypoints?: number
+        /** Inventory slot switches during the in-game half. Counted in Lua for
+         *  the same reason the others are -- one shape for all four facts. */
+        slots?: number
+      }
+    }
+  /**
+   * An arrow pressed while an in-game walkthrough card is up (#261).
+   *
+   * THE ONE THING THE PAGE IS TOLD ABOUT A KEY. Everywhere else in this
+   * interface Lua reads a key, changes state, and the page mirrors the state --
+   * but these cards take no focus (so CEF gets no keyboard events) and there is
+   * no state to mirror: which card you are on lives here, not in Lua.
+   *
+   * `seq` IS WHAT MAKES IT AN EVENT. Two presses of Next are two identical
+   * payloads, so the page acts on the sequence advancing rather than on `dir`.
+   */
+  | { k: 'tutorialnav'; d: { dir: 'next' | 'back' | 'action'; seq: number } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
   | { k: 'progress'; d: ProgressPayload }
@@ -1334,6 +1396,7 @@ export const CB = {
   KEYBINDS:       'br/settings/keybinds',
   LOCKER_PICK:    'br/locker/pick',
   LOCKER_SPIN:    'br/locker/spin',
+  TUTORIAL_SET:   'br/tutorial/set',
   LOCKER_FOCUS:   'br/locker/focus',
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',

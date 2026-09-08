@@ -219,10 +219,24 @@ const SFX_ALLOWED = new Set([
   'client/debug.lua',
   'client/loot.lua',       // crate open: a world event, and it must duck
 ])
+// COMMENTS ARE STRIPPED BEFORE THIS RULE LOOKS, AND THAT IS NOT A LOOSENING.
+//
+// The rule is about CALLS. It used to read the raw file, so it fired on
+// br_core/client/dbno.lua the moment a comment there quoted the owner asking
+// for MATE_CUE to be rewired to that native -- a file that names it only to
+// explain why it does not call it. In a codebase whose house style is long
+// explanatory comments, a rule that forbids naming a native in prose is a rule
+// people delete rather than obey.
+//
+// A REAL CALL IS CODE, so this cannot hide one: only the text after a `--`
+// goes, and a call sitting before a trailing comment on the same line survives.
+const stripLuaComments = (src) =>
+  src.replace(/--\[\[[\s\S]*?\]\]/g, ' ').replace(/--[^\n]*/g, ' ')
+
 for (const f of walk(CORE).filter((x) => x.endsWith('.lua'))) {
   const r = relative(CORE, f).replace(/\\/g, '/')
   if (SFX_ALLOWED.has(r)) continue
-  if (!read(f).includes('PlaySoundFrontend')) continue
+  if (!stripLuaComments(read(f)).includes('PlaySoundFrontend')) continue
   fail('R5 audio', `br_core/${r}`,
     'calls PlaySoundFrontend directly. Interface audio is synthesised in the'
     + ' browser (ui-src/src/audio/cues.ts); native is for combat cues only.')

@@ -185,6 +185,29 @@ function BR.Party.invite(src, targetSrc)
     local target = BR.Roster.get(targetSrc)
     if not target then return false, 'That player is not connected.' end
 
+    -- ═══ NEITHER END OF AN INVITE MAY BE IN THE TUTORIAL (#261) ═══
+    --
+    -- ABOVE BR.Party.ensure, WHICH IS THE HALF THAT WOULD FAIL SILENTLY. That
+    -- call is the "form a party" verb -- it mints one around the inviter -- so a
+    -- refusal written one line lower would leave a player in the walkthrough
+    -- sitting in a party of one. That is half of what the owner refused, and it
+    -- is the half nothing on screen would show.
+    --
+    -- BOTH ENDS, BECAUSE THEY ARE TWO DIFFERENT MISTAKES. An inviter in the
+    -- tutorial is a client that drew none of the grey. A TARGET in the tutorial
+    -- is an ordinary player inviting somebody whose lobby happens to be showing
+    -- cards, with nothing on their own screen to tell them so.
+    --
+    -- REFUSED IN SILENCE, AND THE SILENCE IS A STANDING RULE RATHER THAN AN
+    -- OVERSIGHT. The owner writes every player-visible sentence and has not
+    -- written this one. server/shop.lua's convention holds: the boolean is the
+    -- ruling and the string is only what to say about it, so a caller with no
+    -- sentence still refuses. `result()` below sends { ok = false } with no
+    -- reason and client/state.lua falls back to its own already-shipped
+    -- 'Failed.' -- nothing is invented here to fill the hole.
+    if BR.Roster.inTutorial(src) then return false, nil end
+    if BR.Roster.inTutorial(targetSrc) then return false, nil end
+
     local party = BR.Party.ensure(src)
     if not party then return false, 'You are not on the roster yet.' end
 
@@ -296,6 +319,23 @@ function BR.Party.respond(src, accept)
         end
         return true
     end
+
+    -- ═══ AN ACCEPTANCE FROM INSIDE THE TUTORIAL IS REFUSED (#261) ═══
+    --
+    -- THIS IS THE WINDOW THE INVITE GATE CANNOT COVER. Invites live for their
+    -- full TTL, so a player invited perfectly legitimately and THEN starting the
+    -- walkthrough is holding a valid acceptance that invite() already let
+    -- through. The gate has to be asked again where the party membership is
+    -- actually written.
+    --
+    -- BELOW THE DECLINE, DELIBERATELY. Saying no is not joining a party, and it
+    -- has to keep working -- a card that can be neither accepted nor dismissed
+    -- is worse than one that can only be dismissed. The invite is spent either
+    -- way (it was cleared at the top of this function), which is the right
+    -- outcome: it was an invitation into a party this player may not be in.
+    --
+    -- Silent, for the reason spelled out over BR.Party.invite.
+    if BR.Roster.inTutorial(src) then return false, nil end
 
     local party = parties[inv.partyId]
     if not party then return false, 'That party no longer exists.' end
@@ -429,6 +469,149 @@ function BR.Party.kick(src, targetSrc)
         BR.Notice.line('%s was removed from the party.',
                        BR.Notice.who(target.name)), 'warn')
     return true
+end
+
+-- ------------------------------------------------------------ the door ----
+
+--- May this player walk into a match right now, or is their party still coming?
+---
+--- ═══ THE 2026-09-02 REPORT ═══
+---
+--- "in the lobby with squads selected, 2 players join a party. one readies up
+--- and the other one gets the 'your squad is waiting for you' message. BUT
+--- after a period of a few seconds, the player who is readied up is dropped
+--- into warmup -- they should be infinitely waiting for their party who is not
+--- yet ready. When this happens, if another non-full squad is in warmup,
+--- matchmaking is still taking over and split the party to match the warmup'd
+--- party player with a different squad. Seems like matchmaking doesn't know
+--- they have a party." -- the owner.
+---
+--- Matchmaking knew perfectly well. THERE WERE TWO DOORS INTO A MATCH AND ONLY
+--- ONE OF THEM WAS WATCHED:
+---
+---   * the QUEUE, guarded by BR.Match.startBlocker's `party` reason -- which
+---     held the whole formation for a party grace and then started the
+---     match WITH the lone partymate in it. That is the "few seconds", and the
+---     hold was often already spent before it began: it was timed off one
+---     global timestamp that nothing reset once a match had formed, so the
+---     second party of a server's uptime got no patience at all. (BOTH THE
+---     TIMESTAMP AND THE WAIT IT MEASURED ARE GONE -- a room that gives up on a
+---     party forms the same match either way, so it no longer waits to do it.
+---     See BR.Match.startBlocker.)
+---
+---   * BR.Party.lateJoin, reached from BR.Lobby.join the moment ANY warmup of
+---     the mode is open -- and NOT BEHIND THE GATE AT ALL. Every ready-up after
+---     the first warmup opens took this door, so the gate above stopped applying
+---     the instant it mattered most. That is the second half of the report: the
+---     lone partymate walks into a stranger's warmup and is autofilled into a
+---     stranger's squad, because their own partymate is still in the lobby with
+---     no squad to aim at.
+---
+--- ONE PREDICATE, ASKED AT BOTH DOORS, is the whole fix. BR.Lobby.admissible
+--- filters the queue with it and BR.Lobby.admitWaiting filters the late-join
+--- sweep with it, so there is no third answer for the two paths to differ by.
+---
+--- ═══ WHAT COUNTS AS "STILL COMING" ═══
+---
+--- Only a partymate STANDING IN THE LOBBY who has not readied up holds the
+--- door. Every other answer is somebody who cannot arrive, and an unescapable
+--- wait is worse than the bug it prevents:
+---
+---   * a mate already in a match -- this one or another -- is not in LOBBY, so
+---     they hold nothing. A partymate away in a live round must not lock their
+---     friend out of the server for twenty minutes, and they are already
+---     somewhere this player cannot follow.
+---   * a mate who disconnects, leaves the party or is kicked takes the party
+---     below two members, which disbands it (BR.Party.leave and
+---     BR.Party.removePlayer both enforce "a party of one is not a party"), and
+---     an ungrouped player is admitted by the first line of this function.
+---   * a mate queued for the same mode is arriving in the same breath: they are
+---     admitted together, sorted by id, so the first one in is the squad the
+---     rest aim at.
+---
+--- Because both doors ask this EVERY TICK rather than once at the press, all of
+--- those are self-clearing: nothing has to notice the party changed, and there
+--- is no state to leave behind.
+---
+--- SOLO IS EXEMPT, and not only because BR.Lobby.join drops the party before it
+--- queues a solo player. In solo every player is their own team, so there is no
+--- squad to be split off from -- and a party half-queued across the two modes
+--- would otherwise hold BOTH of its members at their own doors forever, each
+--- waiting for a mate in a queue they will never be admitted from.
+---
+--- ═══════════════════════════════════════════════════════════════════════════
+--- AND SINCE #261, A SECOND REASON TO SAY NO, WHICH IS NOT ABOUT A PARTY
+--- ═══════════════════════════════════════════════════════════════════════════
+---
+--- A player inside the guided first run is refused here, and the placement is
+--- the point rather than a convenience. This function is the ONE predicate both
+--- doors are built on -- the same sentence twenty lines up -- so a rule written
+--- here is a rule at the formation tick AND at the late-join sweep, with no
+--- second answer for them to drift apart by. Every other place the tutorial
+--- hold could have been enforced is one of those two doors and not the other,
+--- which is precisely the failure the 2026-09-02 report was.
+---
+--- IT IS ABOVE THE SOLO LINE, AND THAT IS THE TRAP THIS COMMENT EXISTS FOR.
+--- Every rule in the rest of this function is about teams, so solo skipping them
+--- is right. The tutorial hold is not about teams at all: "matchmaking is not
+--- allowed to touch them" (the owner, 2026-09-05) is a sentence about every
+--- mode there is. Written one line lower, this would refuse a squad warmup and
+--- wave the same player straight into a solo one -- and solo is the default
+--- mode a brand new player is looking at while they read the cards.
+---
+--- THE FUNCTION IS STILL HONESTLY NAMED. `mayEnter` is the question; a party was
+--- only ever the first reason for the answer to be no.
+---
+--- AND THIS ONE IS NOT SELF-CLEARING THE WAY THE PARTY REASONS ARE. The three
+--- releases above all happen TO the held player -- a mate readies, leaves or
+--- drops -- and the tutorial hold ends only when the player themselves says so
+--- (BR.Roster.setTutorial, `on = false`) or when a match takes them anyway
+--- (BR.Match.create clears it). What keeps that from being an unescapable wait
+--- is that it is not a wait: nobody is holding them, they are not in the queue
+--- (the grant drops them from it), and the control that ends it is the one they
+--- are looking at.
+--- @param src integer
+--- @param mode string
+--- @return boolean
+function BR.Party.mayEnter(src, mode)
+    if BR.Roster.inTutorial(src) then return false end
+
+    if mode == BR.Mode.SOLO.key then return true end
+
+    local party = BR.Party.of(src)
+    -- isGrouped's rule, inline: an invite that was never answered leaves a
+    -- party of one behind, and a party of one is nobody to wait for.
+    if not party or #party.members < 2 then return true end
+
+    for _, mate in ipairs(party.members) do
+        if mate ~= src then
+            local e = BR.Roster.get(mate)
+            if e and e.state == BR.PlayerState.LOBBY
+               and BR.Lobby.queuedMode(mate) ~= mode then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+--- The blocker line for a queue that is only short of somebody's party.
+---
+--- Shaped exactly like the one BR.Match.startBlocker used to build inline, and
+--- read the same way: the lobby screen phrases the `party` reason from nothing
+--- but the reason itself, and the console line names the count.
+--- @param held integer[]  ids BR.Party.mayEnter refused, lowest first
+--- @param mode string
+--- @return table
+function BR.Party.holdBlocker(held, mode)
+    local party = BR.Party.of(held[1])
+    if not party then return { reason = 'party', have = 0, need = 0 } end
+
+    local ready = 0
+    for _, mem in ipairs(party.members) do
+        if BR.Lobby.queuedMode(mem) == mode then ready = ready + 1 end
+    end
+    return { reason = 'party', have = ready, need = #party.members }
 end
 
 -- ------------------------------------------------------- squad formation ---
@@ -826,8 +1009,31 @@ end
 --- Do the squads still make sense for the number of players in the match?
 ---
 --- True when the ideal squad COUNT has changed (a late joiner pushed the match
---- past a multiple of the cap) or when the teams have drifted more than one
---- player apart. Both are "the shape is wrong", not "somebody moved".
+--- past a multiple of the cap), when the teams have drifted more than one
+--- player apart, or WHEN A PARTY HAS ENDED UP ON TWO TEAMS. All three are "the
+--- shape is wrong", not "somebody moved".
+---
+--- THE THIRD ONE IS THE ONE THIS FUNCTION WAS MISSING, and it is the whole of
+--- the 2026-09-01 report: "the 2 partied together did not stay in the same
+--- squad when they went to warmup again, though they did appear still partied
+--- in the lobby UI."
+---
+--- The party was never the problem. It survived the match exactly as designed
+--- -- `partyId` is untouched by BR.Match.resetPlayer, the parties table still
+--- held both members, and the lobby UI was telling the truth the entire time.
+--- What happened is that an UNPARTIED player readied up first, opened the
+--- warmup alone, and BR.Party.lateJoin then dealt the two friends in one at a
+--- time: the first was autofilled into the stranger's squad (their own
+--- partymate was still in the lobby with no squad to aim at), which filled it,
+--- and the second arrived to find their party's squad full and was given a
+--- squad of their own. Two squads of the right count and within one player of
+--- each other -- so neither test below saw anything wrong, and the pair played
+--- the round against each other.
+---
+--- It needs no match to have ended. The match end is only what re-shuffled the
+--- order in which three people press Ready, which is why it looked like a
+--- consequence of one. It is also not dev-only: any cap, any player count,
+--- whenever a party arrives at a warmup one member at a time.
 --- @param m table
 --- @return boolean
 function BR.Party.needsRebalance(m)
@@ -852,7 +1058,18 @@ function BR.Party.needsRebalance(m)
     -- Units the match could be split into: parties count once, solos once
     -- each. Without this the target can exceed what is actually divisible and
     -- the rebalance would fire forever, never reaching the shape it wants.
+    --
+    -- AND THE SAME PASS ANSWERS "IS ANY PARTY ON TWO TEAMS", because it is
+    -- already the pass that knows which party every player is in. A second
+    -- sweep asking the same question off the same predicate is a second place
+    -- for that predicate to drift.
+    --
+    -- `e.squadId` GUARDED, because a player can legitimately be in this match
+    -- with no squad yet -- lateJoin flips the state before it assigns one -- and
+    -- "not placed yet" is not "placed somewhere else". Only two DIFFERENT ids
+    -- under one partyId are a split.
     local units, seenParty = 0, {}
+    local partySquad, partySplit = {}, false
     BR.Roster.each(
         function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
         function(_, e)
@@ -861,10 +1078,30 @@ function BR.Party.needsRebalance(m)
                     seenParty[e.partyId] = true
                     units = units + 1
                 end
+                if e.squadId then
+                    local first = partySquad[e.partyId]
+                    if first == nil then
+                        partySquad[e.partyId] = e.squadId
+                    elseif first ~= e.squadId then
+                        partySplit = true
+                    end
+                end
             else
                 units = units + 1
             end
         end)
+
+    -- ASKED BEFORE THE ARITHMETIC, because the arithmetic is what agrees with
+    -- the split. Two friends and a stranger at a cap of two make two squads of
+    -- the right count, within one player of each other -- the two tests below
+    -- both pass on the exact shape the players are complaining about.
+    --
+    -- THE RE-FORM IS GUARANTEED TO SETTLE THIS. BR.Party.formSquads places each
+    -- party whole before it deals anybody else (and does so regardless of the
+    -- cap), so a party can never be split by the thing this returns true to
+    -- summon -- there is no shape where the answer stays true and lateJoin's
+    -- one call comes back to the same place.
+    if partySplit then return true end
 
     if count ~= BR.Party.squadTarget(n, units) then return true end
     return count > 0 and (hi - lo) > 1
@@ -924,14 +1161,35 @@ function BR.Party.lateJoin(src, m)
 
     -- Their party's squad first: friends who queued in time must not end up
     -- on a different team because one of them was slow to click.
+    --
+    -- `mateSrc` RATHER THAN `m`, AND THAT RENAME IS THE BUG FIX. This loop used
+    -- to bind its member id to `m`, shadowing the MATCH for the whole of its
+    -- body -- so the one check that matters most here, "is this mate even in
+    -- the match I am placing somebody into", could not be written. It was not
+    -- written, and parallel matches are a shipped feature (2026-08-04).
+    --
+    -- WHAT THAT COST WAS NOT A WRONG SQUAD, IT WAS A THROW. `counts` is built
+    -- from this match's players only, so a partymate away in another live match
+    -- yields `counts[mate.squadId] == nil` and the comparison below raised
+    -- "attempt to compare nil with number". BR.Roster.setState has already run
+    -- by then (membership is applied before the state flip, see the top of this
+    -- function), so the arrival was left standing in the match with no squad,
+    -- no colour and no beacon -- a player stranded by a crash halfway through
+    -- their own admission.
+    --
+    -- The `or 0` is belt and braces behind the real guard: with the matchId
+    -- test in place a squad id from this match always has at least its own
+    -- member counted, so the fallback is unreachable and says what it would
+    -- mean if it were not.
     local target
     local party = entry.partyId and parties[entry.partyId]
     if party then
-        for _, m in ipairs(party.members) do
-            local mate = BR.Roster.get(m)
-            if m ~= src and mate and mate.squadId
+        for _, mateSrc in ipairs(party.members) do
+            local mate = BR.Roster.get(mateSrc)
+            if mateSrc ~= src and mate and mate.squadId
+               and mate.matchId == m.id
                and BR.Server.isInMatch(mate.state)
-               and counts[mate.squadId] < maxSize then
+               and (counts[mate.squadId] or 0) < maxSize then
                 target = mate.squadId
                 break
             end
@@ -1367,6 +1625,17 @@ function BR.Party.requestJoin(src, leaderSrc)
         return false, 'Leave your current party first.'
     end
 
+    -- The tutorial hold, at the third door (#261), silent as at the other two.
+    --
+    -- THE LEADER END NEEDS NO CHECK, and adding one would be a second rule for
+    -- the first to disagree with. A player in the walkthrough has no party to
+    -- lead: BR.Roster.setTutorial leaves whatever party they were in when the
+    -- hold was granted, and BR.Party.invite refuses to mint them a new one. So
+    -- `BR.Party.of(leaderSrc)` below finds nothing and the existing 'That player
+    -- is not leading a party.' already answers it -- in a sentence the owner has
+    -- already written, which is better than one he has not.
+    if BR.Roster.inTutorial(src) then return false, nil end
+
     local lp = BR.Party.of(leaderSrc)
     if not lp or lp.leader ~= leaderSrc then
         return false, 'That player is not leading a party.'
@@ -1410,6 +1679,12 @@ function BR.Party.answerJoin(leaderSrc, requesterSrc, accept)
         BR.Server.notify(requesterSrc, 'Your join request was declined.', 'warn')
         return true
     end
+
+    -- THE SAME WINDOW respond() HAS, FROM THE OTHER SIDE (#261). A join request
+    -- outlives the moment it was sent, so the requester may have started the
+    -- walkthrough while the leader was still deciding. Below the decline for the
+    -- same reason: turning somebody down is not putting them in a party.
+    if BR.Roster.inTutorial(requesterSrc) then return false, nil end
 
     local party = BR.Party.of(leaderSrc)
     if not party or party.leader ~= leaderSrc then

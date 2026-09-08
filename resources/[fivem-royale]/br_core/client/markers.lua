@@ -87,7 +87,12 @@ AddEventHandler(BR.Net.MARKER_SYNC, function(d)
     BR.Native.blipName(blip,
         who and who.name and (who.name .. "'s Marker") or 'Squad Marker')
     ownBlips[blip] = true
+    -- NEW MARKERS ONLY. Re-placing on top of an existing one is the same wire
+    -- message, and a cue for a mate adjusting their own ping is noise. The server
+    -- already excludes the sender, so this cannot fire for your own.
+    local isNew = markers[d.owner] == nil
     markers[d.owner] = { x = d.x, y = d.y, colour = hex, blip = blip }
+    if isNew then BR.Sfx.play('squad.waypoint') end
 end)
 
 -- The placement watcher: a fresh waypoint while in a match becomes a marker.
@@ -128,6 +133,19 @@ BR.Loop.register(BR.Loop.TICK, 'markers.place', function()
         TriggerServerEvent(BR.Net.MARKER_CLEAR)
     else
         TriggerServerEvent(BR.Net.MARKER_SET, { x = c.x, y = c.y })
+        -- ═══ AND ANYONE ELSE WHO WANTED TO KNOW (#261) ═══
+        --
+        -- The guided first run has a card that asks the player to drop a
+        -- waypoint and must not offer a way past it, so it needs the one fact
+        -- this line already establishes: THIS player just placed one. Client
+        -- local, both ends in br_core, the same seam `br:loot:opened` uses --
+        -- no protocol entry and nothing the server has to know about a
+        -- walkthrough.
+        --
+        -- ON THE SET BRANCH ONLY. Clearing a marker by placing on top of it is
+        -- the same gesture and the opposite intent, and a card asking somebody
+        -- to place one is not answered by removing one.
+        TriggerEvent('br:markers:placed', c.x, c.y)
     end
 end)
 

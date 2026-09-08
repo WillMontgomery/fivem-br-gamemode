@@ -55,6 +55,43 @@ local function send(kind, data)
         d = BR.NuiNormalise(data or {}),
         s = seq,
     })
+
+    -- ═══ ONE SOUND PER TOAST, AND THE TOAST MAY NAME ITS OWN ═══
+    --
+    -- Owner, 2026-09-08, picking a GTA pair for "Error toast notification
+    -- sound". Every toast in the project ends up here -- this function is the
+    -- only caller of SendNUIMessage -- so this is the one place the rule can be
+    -- stated once instead of at sixteen senders.
+    --
+    -- THE `cue` FIELD IS WHAT STOPS TWO SOUNDS FOR ONE EVENT. A shop refusal is
+    -- an error toast AND a shop refusal, and the owner named a DIFFERENT sound
+    -- for each ("Shop insufficient funds" -> shop.denied). Without an override a
+    -- shortfall would play both, which is precisely the collision
+    -- config/audio.lua's header exists to prevent -- two actions that sound
+    -- alike are worse than one that sounds wrong, and two sounds for ONE action
+    -- is worse still. So a sender that knows better says so, and everything else
+    -- falls through to the general tone.
+    --
+    -- THE THROTTLE IS THE CUE'S, NOT THIS FUNCTION'S. toast.warn carries a 400ms
+    -- floor in config/audio.lua's minInterval, applied inside BR.Sfx.play, which
+    -- is what makes a player leaning on a refused key one sound rather than four
+    -- a second.
+    if kind == BR.Nui.TOAST and type(data) == 'table' and data.clear ~= true then
+        if data.cue == false then
+            -- ═══ SILENT ON PURPOSE, BECAUSE THE EVENT ALREADY SPOKE ═══
+            --
+            -- Owner, 2026-09-07: "so now when a squad mate goes DBNO we're
+            -- playing an NUI sound AND a frontend sound." A squadmate going
+            -- down plays squad.down, and the toast that says so is the same
+            -- event -- so the general warn sound landed on top of it. Three
+            -- notices are in that shape: the knock, the bleed-out, and a revive
+            -- key expiring, and each of them names its silence at the send site.
+        elseif type(data.cue) == 'string' and data.cue ~= '' then
+            TriggerEvent('br:ui:sfx', data.cue)
+        elseif data.tone == 'warn' then
+            TriggerEvent('br:ui:sfx', 'toast.warn')
+        end
+    end
 end
 
 --- Public entry point for other resources (br_core) to reach the UI.
@@ -593,4 +630,68 @@ AddEventHandler('onClientResourceStart', function(res)
     print('[br_ui] bridge ready')
     -- Ask br_core for a full snapshot; it may have started first.
     TriggerEvent('br:ui:ready')
+end)
+
+-- ---------------------------------------------------------------------------
+-- The guided first run (#261)
+-- ---------------------------------------------------------------------------
+
+--- The page starting or ending the lobby walkthrough.
+---
+--- ═══ IT LIVES HERE BECAUSE ONLY br_ui CAN ANSWER IT ═══
+---
+--- The page is served by THIS resource, so `fetchNui` posts to `cfx-nui-br_ui`
+--- and a RegisterNUICallback anywhere else registers under a namespace nothing
+--- is asking. The first version of this sat in br_core/client/tutorial.lua and
+--- the page got a bare HTTP 404 -- owner, 2026-09-04: "clicking the 'Start
+--- tutorial' button just greys out the 'ready up' button and nothing else
+--- happens". Everything the walkthrough needs on the far side of it -- the
+--- server-side hold that keeps a learner off the warmup clock and out of
+--- matchmaking -- was unreachable behind that 404.
+---
+--- ═══ AND IT HANDS OVER RATHER THAN ACTING ═══
+---
+--- The flag itself belongs to br_core, which is the resource that talks to the
+--- server. Separate Lua states cannot share a function, so this forwards on a
+--- plain client event -- the same seam `br:ui:sendLocal` already uses to carry
+--- messages the other way. br_ui stays what it is: the page's doorway, holding
+--- no game state of its own.
+RegisterNUICallback(BR.NuiCb.TUTORIAL_SET, function(data, cb)
+    data = type(data) == 'table' and data or {}
+
+    -- TWO HALVES, ONE DOORWAY, AND THE KEYS ARE CHECKED FOR PRESENCE RATHER
+    -- THAN TRUTH. `data.run == true` alone cannot tell "the lobby half ended"
+    -- from "this message was about the in-game half and said nothing about the
+    -- lobby" -- both arrive as false -- and acting on the second would stop a
+    -- walkthrough nobody asked to stop.
+    if data.run ~= nil then
+        TriggerEvent('br:tutorial:set', data.run == true)
+    end
+    if data.game ~= nil then
+        TriggerEvent('br:tutorial:game', data.game == true, data.done == true)
+    end
+    -- WHICH CARD IS UP. Sent on every step; br_core decides what to do with it.
+    if data.step ~= nil then
+        TriggerEvent('br:tutorial:step',
+                     type(data.step) == 'string' and data.step or nil)
+    end
+    -- WHERE THE CARD WANTS THE CAMERA. A table goes there; anything else --
+    -- including the absence of one -- comes home. See BR.Tutorial's camTo.
+    if data.cam ~= nil then
+        TriggerEvent('br:tutorial:cam', data.cam)
+    end
+    -- THE OFFER, TURNED DOWN. Its own key because an abandoned RUN is not a
+    -- decline -- the toggle deliberately survives that -- so the two cannot
+    -- share a message. See BR.Net.TUTORIAL_DECLINE.
+    if data.declined == true then
+        TriggerEvent('br:tutorial:decline')
+    end
+    -- THE WARMUP HOLD, WHICH ENDS BEFORE THE CARDS DO. See BR.Tutorial.hold:
+    -- the last card is about the countdown, so the countdown has to be running
+    -- while the player reads it.
+    if data.hold ~= nil then
+        TriggerEvent('br:tutorial:hold', data.hold == true)
+    end
+
+    cb({ ok = true })
 end)

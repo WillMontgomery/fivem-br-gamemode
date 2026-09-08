@@ -492,6 +492,81 @@ function BR.Dui.drawFace(page, entity, oy, oz, widthM, alpha)
     drawPlane(page, p.x, p.y, p.z, fx, fy, oy, 0.0, oz, hw, hh, alpha)
 end
 
+--- Which face of a vehicle a point is nearest to, and everything the caller
+--- needs to spend that answer.
+---
+--- ═══ EXTRACTED BECAUSE THE FACE IS NOW A QUESTION AS WELL AS A STEP ═══
+---
+--- The owner tuned the revive plate FOUR TIMES, once per panel, and gave four
+--- different sets of numbers (br_lib/config/revivekey.lua). So the caller has to
+--- know which face it is on BEFORE it can say how far off the panel to stand --
+--- which is the answer this used to compute half way through drawing.
+---
+--- ONE DERIVATION, TWO ENTRY POINTS. BR.Dui.nearFace below and drawNearFace
+--- underneath it both come through here with the same arguments, so a caller
+--- that asks which face it is on and then draws on that face cannot be told two
+--- different things in one frame. A second copy of these six lines would be free
+--- to disagree with this one the day `levelBasis` changes, and the symptom would
+--- be a plate drawn on the tail wearing the nose's numbers.
+---
+--- NIL WHEN THE MODEL HAS NOT ANSWERED, which both callers propagate rather than
+--- guess through: BR.NearestBoxFace's own header explains what a box of zeroes
+--- does, and a `modelBox` that is still nil has not even got that far.
+--- @param entity integer
+--- @param px number
+--- @param py number
+--- @return number|nil ux, number uy, number reach  the face, and metres from the
+---                        entity's ORIGIN out to its plane
+--- @return number fx, number fy, number rx, number ry  the levelled basis
+--- @return table p        the entity's own coordinates
+local function faceOf(entity, px, py)
+    local fx, fy, rx, ry = levelBasis(entity)
+    if not fx then return nil end
+
+    local box = modelBox(GetEntityModel(entity))
+    if not box then return nil end
+
+    -- THE PLAYER, IN THE VEHICLE'S OWN LEVEL AXES. A dot product against each
+    -- basis vector and nothing else -- no world-to-local native, no matrix, and
+    -- no second flattening. `lx` is metres along the van's right, `ly` metres
+    -- along its nose, which is the frame the model's box is written in.
+    local p = GetEntityCoords(entity)
+    local dx, dy = px - p.x, py - p.y
+    local lx = dx * rx + dy * ry
+    local ly = dx * fx + dy * fy
+
+    local ux, uy, reach = BR.NearestBoxFace(lx, ly, box.minx, box.maxx,
+                                            box.miny, box.maxy)
+    return ux, uy, reach, fx, fy, rx, ry, p
+end
+
+--- WHICH FACE, WITHOUT DRAWING ANYTHING.
+---
+--- For a caller whose plate NUMBERS depend on the panel it is about to draw on
+--- -- client/revivekey.lua, which holds one set of five per face because the
+--- owner measured one set per face. It asks this, looks its numbers up, and
+--- hands them to drawNearFace; that call resolves the same face through `faceOf`
+--- from the same point in the same frame and therefore agrees by construction.
+---
+--- IT IS NOT A CACHED FIELD FOR THE SAME REASON. A "last face" left over from
+--- the previous frame is a plate that wears the wrong panel's numbers for one
+--- frame every time the player walks round a corner of the van -- which is
+--- exactly when they are looking at it.
+--- @param entity integer
+--- @param px number  the point the nearest face is nearest to
+--- @param py number
+--- @return number|nil ux, number uy  one of (0,1) (0,-1) (1,0) (-1,0), in the
+---                        vehicle's own axes. nil when the model has not
+---                        answered with a box.
+function BR.Dui.nearFace(entity, px, py)
+    if not entity or entity == 0 or not isTrue(DoesEntityExist(entity)) then
+        return nil
+    end
+    local ux, uy = faceOf(entity, px, py)
+    if not ux then return nil end
+    return ux, uy
+end
+
 --- Draw a page as a sign on WHICHEVER FACE OF A VEHICLE A POINT IS NEAREST TO.
 ---
 --- ═══ THE REQUEST ═══
@@ -560,23 +635,11 @@ function BR.Dui.drawNearFace(page, entity, px, py, out, oz, widthM, side, alpha)
     if hw <= 0.0 then return nil end
     local hh = hw * (page.h / page.w)
 
-    local fx, fy, rx, ry = levelBasis(entity)
-    if not fx then return nil end
-
-    local box = modelBox(GetEntityModel(entity))
-    if not box then return nil end
-
-    -- THE PLAYER, IN THE VEHICLE'S OWN LEVEL AXES. A dot product against each
-    -- basis vector and nothing else -- no world-to-local native, no matrix, and
-    -- no second flattening. `lx` is metres along the van's right, `ly` metres
-    -- along its nose, which is the frame the model's box is written in.
-    local p = GetEntityCoords(entity)
-    local dx, dy = px - p.x, py - p.y
-    local lx = dx * rx + dy * ry
-    local ly = dx * fx + dy * fy
-
-    local ux, uy, reach = BR.NearestBoxFace(lx, ly, box.minx, box.maxx,
-                                            box.miny, box.maxy)
+    -- THE FACE, AND THE BASIS IT WAS FOUND IN, out of the one derivation
+    -- BR.Dui.nearFace above shares -- see its header for why the caller may have
+    -- asked the same question a moment ago and must get the same answer.
+    local ux, uy, reach, fx, fy, rx, ry, p = faceOf(entity, px, py)
+    if not ux then return nil end
 
     -- ...and that face's outward normal, back in the world. (ux, uy) is one of
     -- the four unit axes, so this is a column of the basis and stays unit
@@ -584,7 +647,50 @@ function BR.Dui.drawNearFace(page, entity, px, py, out, oz, widthM, side, alpha)
     local ox = rx * ux + fx * uy
     local oy = ry * ux + fy * uy
 
-    drawPlane(page, p.x, p.y, p.z, ox, oy, reach + (tonumber(out) or 0.0),
+    -- ═══ AND HOW FAR THE PANEL HAS LEANED TOWARDS THE SIGN ═══
+    --
+    --   "feedback on the ambulance DUIs - they're not fixed to the rotation of
+    --    the ambulance entity - an ambulance on a slope has DUIs clipping
+    --    through when I try to use it"                   -- owner, 2026-09-07
+    --
+    -- EVERYTHING ABOVE IS LEVEL, DELIBERATELY, and drawPlane's header carries
+    -- the argument: `oz` is a height up the WORLD rather than up the entity,
+    -- because pushed through a rolled bike's matrix that height swings out
+    -- sideways and hangs the sign off beside the bike. That decision is not
+    -- being reversed here -- the sign stays upright and stays where it was.
+    --
+    -- WHAT IT MISSED IS THAT THE PANEL MOVES. `reach` is measured off the
+    -- model's box in the vehicle's LEVEL axes, so it answers "how far out is the
+    -- bodywork" for a vehicle standing flat. Tip the van nose-down on a hill and
+    -- the panel at height `oz` swings towards the sign, and a stand-off tuned on
+    -- the flat puts the plate inside the metal.
+    --
+    -- SO THE SHORTFALL IS MEASURED RATHER THAN GUESSED AT. The panel point in
+    -- the vehicle's own space is (ux*reach, uy*reach, oz); through
+    -- GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS -- the entity's full matrix, pitch
+    -- and roll included -- that is where the metal really is. How far it sits
+    -- along the LEVEL outward normal is the number the sign has to beat, and the
+    -- difference is added to the stand-off.
+    --
+    -- IT IS EXACTLY ZERO ON FLAT GROUND, which is what makes this safe: a van
+    -- with no pitch and no roll maps that point straight back to `reach`, the
+    -- term vanishes, and every plate the owner has already tuned by eye is
+    -- untouched. Only a leaning vehicle pays, and it pays precisely what it
+    -- leaned.
+    --
+    -- NOT APPLIED TO drawFace, which is the showroom's yard sign (#236). Its
+    -- distance is one tuned number rather than a reach plus an offset, so there
+    -- is nothing to add to without re-deriving its geometry -- and its cars
+    -- stand on an authored flat pad, where this term would be zero anyway.
+    local lean = 0.0
+    local q = GetOffsetFromEntityInWorldCoords(entity, ux * reach, uy * reach, oz)
+    if q then
+        local d = (q.x - p.x) * ox + (q.y - p.y) * oy
+        if d > reach then lean = d - reach end
+    end
+
+    drawPlane(page, p.x, p.y, p.z, ox, oy,
+              reach + lean + (tonumber(out) or 0.0),
               tonumber(side) or 0.0, oz, hw, hh, alpha)
     return ux, uy
 end

@@ -65,8 +65,11 @@ BR.Grants = {}
 --- easy test and it is the wrong one: a `view` account can read incidents and
 --- resolve nothing, a `spectate` account can watch a match, a `notify` account
 --- can send an announcement. None of them can pay themselves, so none of them
---- creates the exploit, and withholding their reward would be taking 250 Volts
---- off somebody who earned it. The half of the exploit that pays is the
+--- creates the exploit, and withholding their reward would be taking the report
+--- bounty off somebody who earned it. (NAMED RATHER THAN NUMBERED: the amount is
+--- AWARD_VOLTS in br_stats/server/awards.lua and has been retuned twice. Every
+--- figure written into prose around this feature is now stale at 250, which on
+--- 2026-09-06 got a number quoted to a player that the pipeline does not pay.) The half of the exploit that pays is the
 --- verdict, and `ban` is exactly who may write one.
 ---
 --- IF THE CONSOLE EVER SPLITS THIS OUT into a scope of its own -- `resolve`,

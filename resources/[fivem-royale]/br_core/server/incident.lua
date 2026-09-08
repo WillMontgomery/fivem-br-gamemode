@@ -272,11 +272,11 @@ local lastSaid = {}
 ---
 --- [matchKey] = { [license] = count }
 ---
---- KEYED BY LICENCE RATHER THAN BY `src`, unlike server/strip.lua's own counter.
+--- KEYED BY LICENSE RATHER THAN BY `src`, unlike server/strip.lua's own counter.
 --- A strip is reported by a client and the throttle that bounds it has to be
 --- keyed on the connection; this count is only ever read to fill in "N messages
 --- held back this match", and a player who disconnects and reconnects mid-round
---- should carry their total with them rather than starting again -- the licence
+--- should carry their total with them rather than starting again -- the license
 --- is what the case is keyed on either way.
 ---
 --- COUNTED HERE RATHER THAN IN server/chat.lua so that the detector stays a
@@ -919,14 +919,14 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
             -- THIS USED TO FALL THROUGH TO THE TriggerClientEvent BELOW, and it
             -- was the one failure the paragraph at the top of this function says
             -- it must not have. Both skips beneath were written as `lic ~= nil
-            -- and lic == ...`, so a player whose licence did not resolve matched
+            -- and lic == ...`, so a player whose license did not resolve matched
             -- NEITHER test and was therefore told. When that player is the
             -- SUBJECT, the offender has just been handed the notice #93 exists
             -- to withhold from them -- quietly, on the one path with no second
             -- check behind it.
             --
             -- THE TRIGGER IS NARROW AND IT IS NOT HYPOTHETICAL. This resolves
-            -- the licence LIVE, off GetPlayerIdentifiers, whose own header in
+            -- the license LIVE, off GetPlayerIdentifiers, whose own header in
             -- br_lib/shared/identity.lua says it "returns nil when FiveM did not
             -- report a license, which does happen". And the gap between the
             -- filing and this notice is a DynamoDB round trip that retries for

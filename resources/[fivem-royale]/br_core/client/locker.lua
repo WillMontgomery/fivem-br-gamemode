@@ -31,10 +31,100 @@ local KVP = 'br:locker:ped'
 local spin = 0.0
 local applying = false
 
+--- The roster, minus anything this game build does not actually have.
+---
+--- HIGH IN THE FILE BECAUSE THE DEFAULT IS NOW DRAWN FROM IT. It is the same
+--- list the page is sent (see push) and deliberately so: "a random one from our
+--- locker" has to mean the locker the player can see.
+---
+--- EVERY MODEL NAME IN THE CONFIG IS HAND-TYPED and some of them are wrong --
+--- two already were ("never streamed", user 2026-08-09). The old failure mode
+--- was a character in the list that could be picked and then silently did
+--- nothing for five seconds while the request timed out.
+---
+--- IS_MODEL_IN_CDIMAGE answers "does this exist" locally and instantly, with
+--- no streaming and no wait, so the list can simply not contain the ones that
+--- do not. Computed ONCE and cached: the answer cannot change while the game
+--- is running.
+local verified = nil
+local function roster()
+    if verified then return verified end
+    verified = {}
+    local dropped = {}
+    for _, p in ipairs(BR.Config.Peds) do
+        local hash = GetHashKey(p.model)
+        if IsModelInCdimage(hash) and IsModelValid(hash) then
+            verified[#verified + 1] = p
+        else
+            dropped[#dropped + 1] = ('%s (%s)'):format(p.id, p.model)
+        end
+    end
+    if #dropped > 0 then
+        print(('[br_core] locker: %d model(s) not on this build, dropped: %s')
+            :format(#dropped, table.concat(dropped, ', ')))
+    end
+    -- A roster of nothing would leave the locker empty and the default
+    -- unresolvable, which is worse than one bad entry.
+    if #verified == 0 then verified = BR.Config.Peds end
+    return verified
+end
+
+--- The character somebody who has never opened the locker is handed.
+---
+--- ═══ ROLLED ONCE, AND THEN IT IS THEIRS ═══
+---
+--- Owner, 2026-09-02: "please make the default ped a random one from our
+--- locker. If they've not chosen one, they'll get a random one. If they've
+--- already chosen one from a previous match we'll still respect it."
+---
+--- A ROLL IS STORED EXACTLY LIKE A PICK, which is the reading his second
+--- sentence asks for rather than a shortcut. apply() writes whatever it applied
+--- to the kvp the locker writes, so the first lobby turns the roll into a
+--- stored choice and every lobby after it -- next match, next session, next
+--- week -- is answered by the read above and never reaches this function again.
+--- Re-rolling per session was the alternative and it fails the same sentence:
+--- the one group of players who never chose anything would be somebody new
+--- every evening, which is the half he said he would notice.
+---
+--- MEMOISED, AND NOT AS AN OPTIMISATION. chosen() is not only the locker's:
+--- client/loading.lua holds the loading screen until this id's model is the one
+--- on the player, and client/lobbyped.lua holds the entrance walk on the same
+--- comparison. An answer that changed between calls would be a gate nothing can
+--- ever satisfy -- eight seconds of black and a walk that begins on a ped we
+--- are no longer waiting for -- rather than a cosmetic surprise. The memo
+--- covers the window between the first of those reads and apply() writing the
+--- kvp, which is the only stretch where the roll is not yet stored anywhere.
+--- (A roll whose model never streams is not written, and is rolled again next
+--- session; that is the same outcome the fixed default already had.)
+---
+--- DRAWN FROM THE VERIFIED ROSTER RATHER THAN FROM THE CONFIG: a roll that
+--- landed on one of the hand-typed names this build does not have would spend
+--- five seconds in apply() and leave the player wearing GTA's own ped, which is
+--- a worse first impression than the one this replaces.
+---
+--- NOTHING ELSE IS HELD BACK. There is no reserved, admin-only or placeholder
+--- entry in BR.Config.Peds -- nothing in the game gates a character, the market
+--- sells tints and trails and no ped -- so the roll draws on the whole curated
+--- list, novelty costumes included, because that is what he asked for.
+---
+--- math.random RATHER THAN BR.Rng, which is the call spawn.lua's landing
+--- scatter and lobbyped.lua's idle emote already make. BR.Rng exists so that a
+--- server and a client can derive the SAME answer from one shared seed; this
+--- wants the opposite -- a different answer on every machine -- and there is no
+--- per-client seed to give it that math.random is not already using.
+local assigned = nil
+local function assign()
+    if assigned then return assigned end
+    local list = roster()
+    assigned = list[math.random(#list)].id
+    return assigned
+end
+
 --- @return string
 function BR.Locker.chosen()
     local id = GetResourceKvpString(KVP)
-    return (id and #id > 0) and id or BR.Config.Peds[1].id
+    if id and #id > 0 then return id end
+    return assign()
 end
 
 --- Put the chosen model on the player.
@@ -170,40 +260,6 @@ end)
 
 --- Which id is mid-swap, so the screen can say so. Nil when nothing is.
 local loadingId = nil
-
---- The roster, minus anything this game build does not actually have.
----
---- EVERY MODEL NAME IN THE CONFIG IS HAND-TYPED and some of them are wrong --
---- two already were ("never streamed", user 2026-08-09). The old failure mode
---- was a character in the list that could be picked and then silently did
---- nothing for five seconds while the request timed out.
----
---- IS_MODEL_IN_CDIMAGE answers "does this exist" locally and instantly, with
---- no streaming and no wait, so the list can simply not contain the ones that
---- do not. Computed ONCE and cached: the answer cannot change while the game
---- is running.
-local verified = nil
-local function roster()
-    if verified then return verified end
-    verified = {}
-    local dropped = {}
-    for _, p in ipairs(BR.Config.Peds) do
-        local hash = GetHashKey(p.model)
-        if IsModelInCdimage(hash) and IsModelValid(hash) then
-            verified[#verified + 1] = p
-        else
-            dropped[#dropped + 1] = ('%s (%s)'):format(p.id, p.model)
-        end
-    end
-    if #dropped > 0 then
-        print(('[br_core] locker: %d model(s) not on this build, dropped: %s')
-            :format(#dropped, table.concat(dropped, ', ')))
-    end
-    -- A roster of nothing would leave the locker empty and the default
-    -- unresolvable, which is worse than one bad entry.
-    if #verified == 0 then verified = BR.Config.Peds end
-    return verified
-end
 
 --- Send the roster and the current choice to the interface.
 function BR.Locker.push()

@@ -96,6 +96,46 @@ local function wireEntry(e, born)
         -- resolved itself, so the arc starts at the crate's mouth or the
         -- player's hands wherever the terrain actually is.
         fl      = born and e.flift or nil,
+        -- ═══ THE ONE HEIGHT ON THIS WIRE THAT IS A MEASUREMENT ═══
+        --
+        -- Owner, 2026-09-03: "any time an inventory item is dropped and the ped
+        -- is under a bridge or other structure, the item goes on the ground on
+        -- the upper structure and not on the ground around the ped".
+        --
+        -- The client resolves every entry's height itself, by probing DOWN from
+        -- 1200m -- see PROBE_FROM_Z in client/loot.lua, and the hillside
+        -- regression written up above it that put that number there. Under an
+        -- overpass the highest ground below 1200 in that column is the DECK, so
+        -- the probe succeeds, plausibly, and answers with the freeway over your
+        -- head. Nothing downstream can tell that answer from a right one.
+        --
+        -- `z` cannot break the tie, because `z` means different things for
+        -- different entries: for the 1300 generated ones it is a hint authored
+        -- from map knowledge (0.0 for roadside filler, and config/map.lua's own
+        -- header says so), and for a dropped item it is a live ped's root that
+        -- the server sampled. The client has no way to know which it holds.
+        --
+        -- `pz` IS THAT BIT, AND IT IS ONLY EVER SET WHERE A PED WAS ACTUALLY
+        -- STANDING ON THE GROUND IN QUESTION. Present on a drop and a death
+        -- scatter, absent on all generated loot, all crate contents, the
+        -- airdrop and the landing crates. Where it is present the client starts
+        -- its probe just above it instead of in the sky, so the surface it
+        -- finds is the one under the bridge rather than the one over it.
+        --
+        -- NOT GATED ON `born`, UNLIKE fx/fy/fl ABOVE, AND THE DIFFERENCE IS THE
+        -- WHOLE POINT. An origin is a birth EVENT -- replaying it to a player
+        -- who arrives later would fly the item out of a hand that is not there
+        -- any more. This is a PROPERTY of the entry: the ground under a dropped
+        -- gun is still that ground when a stranger walks up ten minutes later,
+        -- and if the cell subscription omitted it that stranger would see the
+        -- gun on the freeway while the dropper sees it at their feet. It must
+        -- also survive the crate-to-husk re-announce for the same reason.
+        --
+        -- THIS DOES NOT WIDEN WHAT THE CLIENT MAY CLAIM. It travels the other
+        -- way: the server is TELLING the client that this one height was
+        -- measured rather than guessed. Nothing here reads a `pz` off the wire,
+        -- and the repair round-trip below clears it (see the LOOT_FIX handler).
+        pz      = e.pz,
     }
 end
 
@@ -171,7 +211,19 @@ end
 --- @param from table|nil  { x, y, lift } the item visibly travels FROM.
 --- `lift` is metres ABOVE THE GROUND, never an absolute z -- only the client
 --- can resolve ground height, so an absolute z from here is a guess.
-function BR.Loot.spawnStack(m, stack, x, y, z, from)
+--- @param standZ number|nil  THE ONE EXCEPTION TO THAT LAST SENTENCE, and it is
+--- narrow on purpose. Pass the z of ground A PED WAS MEASURED STANDING ON at
+--- this same x/y, and nothing else. It is the difference between a height the
+--- server guessed and one it observed, and the client uses it to probe from
+--- under a bridge instead of from above it (see `pz` in wireEntry).
+---
+--- DO NOT PASS A HEIGHT FROM A DIFFERENT PLACE THAN x/y. The temptation is
+--- landingCrates, which has a real ped z to hand -- but it scatters its crates
+--- 55-130m away (config/loot.lua `landing`), and a player who lands in a valley
+--- would vouch for a crate on the hillside above them. A probe started below
+--- the surface is the 2026-08-23 "loot spawned below the map" bug exactly, and
+--- PROBE_FROM_Z exists because of it.
+function BR.Loot.spawnStack(m, stack, x, y, z, from, standZ)
     if not m or not m.loot or not stack then return nil end
 
     m.loot.nextId = m.loot.nextId + 1
@@ -200,6 +252,11 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from)
         -- alone and a client has no use for it and no right to it.
         carried = stack.carried,
         x = x, y = y, z = z,
+        -- GROUND A PED WAS MEASURED ON, or nil. Unlike `dropped` below -- which
+        -- is on every entry born mid-match and means nothing about height --
+        -- this is set by four callers and read by the client's ground probe.
+        -- See wireEntry, which is the only thing that sends it.
+        pz     = standZ,
         prop   = stack.prop,
         heading = stack.heading,
         contents = stack.contents,
@@ -270,8 +327,16 @@ function BR.Loot.dropForPlayer(src, stack)
     -- FROM THE HAND, not from the floor. The dropped item arcs out of the
     -- player's grip and lands, which is the same movement the crate burst
     -- uses in reverse. e.pos is the ped's ROOT, so waist is an offset up.
+    --
+    -- AND THE ROOT IS ALSO THE VOUCH (owner, 2026-09-03: an item dropped under
+    -- a bridge "goes on the ground on the upper structure and not on the ground
+    -- around the ped"). This is the tightest case there is: same x, same y, and
+    -- a ped is standing on that exact spot at this exact moment. The last
+    -- argument is what stops the client probing the deck overhead -- see `pz`
+    -- in wireEntry.
     return BR.Loot.spawnStack(m, stack, e.pos.x, e.pos.y, e.pos.z,
-        { x = e.pos.x, y = e.pos.y, lift = L.waistHeight or 0.75 })
+        { x = e.pos.x, y = e.pos.y, lift = L.waistHeight or 0.75 },
+        e.pos.z)
 end
 
 -- --------------------------------------------------------------------------
@@ -443,6 +508,70 @@ zoneFor = function(src)
     return nil
 end
 
+-- ═══ THE THREE DOORS INTO THIS REGISTRY, AND WHO USES THEM ═══
+--
+-- br_core/server/warmupcrates.lua owns four containers on the island that reset
+-- themselves forever (owner, 2026-09-04). It is a separate file because none of
+-- its behaviour belongs to world loot -- but it has to put its crates in the
+-- SAME registry every other warmup crate lives in, or they could not be opened:
+-- the claim handler resolves a player's zone through zoneFor() above, and an
+-- entry outside that zone is an entry it will never find.
+--
+-- So these three are exports of things this file already does, and each one is
+-- here rather than reimplemented over there for a reason worth naming:
+--
+--   * warmupZone   The zone is a LOCAL built on first use. A second copy of the
+--                  "is this player on the pad" decision is the drift that
+--                  BR.Config.LootVisibleStates was created to end.
+--   * remove       Retiring an entry is three table writes and a message to
+--                  everyone subscribed to its cell. Two of those are private
+--                  bookkeeping (`cells`, `items`) and the third has to reach the
+--                  same set of players `announce` reaches.
+--   * reannounce   Re-sending a MUTATED entry -- which is what a husk becoming
+--                  a sealed crate again is -- has to go out in the wire shape
+--                  wireEntry() defines. That shape has grown three fields this
+--                  month (`fx`/`fy`/`fl`, then `pz`), and a second writer of it
+--                  would have been wrong twice already.
+--
+-- NOTHING NEW HAPPENS HERE. These add no capability the loot system did not
+-- have; they name three existing ones so exactly one implementation of each
+-- survives. `born` is deliberately not exposed: an origin is a birth event
+-- (see wireEntry), and a reset is the opposite of a birth.
+
+--- The shared warmup zone, built on first use.
+---
+--- CALLING THIS BUILDS THE ISLAND LAYOUT if nobody has yet. That is a change of
+--- TIMING and not of behaviour -- the 220 crates were always going to be built
+--- the moment the first player subscribed to a pad cell -- and it is why the
+--- warmup crates place themselves off a scheduler tick rather than at load: the
+--- tick runs after every server file has finished loading, so BR.Config and
+--- BR.Rng are certainly there when the layout is generated.
+--- @return table zone
+function BR.Loot.warmupZone()
+    return warmup()
+end
+
+--- Retire one entry from a zone and tell everyone looking at it.
+--- @param m table
+--- @param e table
+function BR.Loot.remove(m, e)
+    if not m or not m.loot or not e then return end
+    retire(m, e)
+end
+
+--- Re-send an entry whose fields have just changed in place.
+---
+--- The mutation is the caller's; this is only the wire. Same id, same position:
+--- the client mutates the entry it already holds -- see the note on toHusk, and
+--- the `reskinned` branch of addEntries in br_core/client/loot.lua, which is
+--- what makes the model swap instant in either direction.
+--- @param m table
+--- @param e table
+function BR.Loot.reannounce(m, e)
+    if not m or not m.loot or not e then return end
+    announce(m, e)
+end
+
 -- --------------------------------------------------------------------------
 -- Streaming
 -- --------------------------------------------------------------------------
@@ -471,6 +600,13 @@ function BR.Loot.viewFor(src)
     table.sort(out, function(a, b) return a.id < b.id end)
     return out
 end
+
+--- How often one player may ask for a full re-seed of their 3x3 block.
+---
+--- TWO SECONDS. A genuine recovery needs one; the client only asks when it is
+--- holding nothing at all, and the first answer fixes that. Anything faster is
+--- somebody hammering a rebuild-and-send, which is the only cost this path has.
+local RESYNC_MS = 2000
 
 RegisterNetEvent(BR.Net.LOOT_CELL)
 AddEventHandler(BR.Net.LOOT_CELL, function(d)
@@ -523,9 +659,79 @@ AddEventHandler(BR.Net.LOOT_CELL, function(d)
     -- No notify: an honest client cannot produce this, and a dishonest one is
     -- being told which of its requests were noticed.
     if not e.pos then return end
-    if not BR.LootCellReachable(cx, cy, e.pos.x, e.pos.y) then return end
 
+    -- ═══ JUDGED AGAINST WHERE THEY ARE, NOT WHERE WE LAST LOOKED ═══
+    --
+    -- `e.pos` is the roster's own sample, taken at posSampleHz (4/s) off the
+    -- replicated ped, so it lags a teleport by up to 250ms -- and a ready-up is
+    -- exactly a teleport. The client subscribes from the LOBBY first (that
+    -- request succeeds), the ped is moved to the pad, the client asks again from
+    -- the pad within 100ms, and this test still saw the lobby. Lobby to pad is
+    -- two cells and the drift tolerance is one, so the second request was
+    -- refused -- silently, permanently, because the client latches `myCell`
+    -- before it sends and only ever asks again on a cell EDGE.
+    --
+    -- That was the whole of the owner's report (2026-09-07): "the crates don't
+    -- spawn until I go outside their near proximity and back in", with /brloot
+    -- showing `cell 17,-18  entries 0` while standing on the pad. Walking out of
+    -- the cell and back is a new edge, by which time the sample had caught up.
+    --
+    -- THE LIVE READ IS STRICTER, NOT LOOSER. It is the same rule -- you may
+    -- subscribe only near where you are -- asked of the truth rather than of a
+    -- quarter-second-old copy. The cached sample stays the fallback for the
+    -- moments a ped is not resolvable.
+    -- EITHER READING MAY SATISFY IT, AND THAT IS DELIBERATELY A SUPERSET OF THE
+    -- OLD RULE. Narrowing on the live position would refuse requests the sample
+    -- accepts today -- a player who asked while moving away -- and this is a
+    -- bug fix, not a tightening. An attacker still has to be within one cell by
+    -- one of two readings of their OWN position, which is the property
+    -- BR.LootCellReachable exists to enforce.
+    local ok = BR.LootCellReachable(cx, cy, e.pos.x, e.pos.y)
+
+    if not ok then
+        local ped = GetPlayerPed(src)
+        -- `ped ~= 0` IS THE EXISTENCE TEST. DoesEntityExist answers 1/0 and 0 is
+        -- TRUTHY in Lua, so `if DoesEntityExist(ped) then` is true for a ped
+        -- that is not there -- the trap tools/verify.sh keeps a ratchet for.
+        if ped and ped ~= 0 then
+            local live = GetEntityCoords(ped)
+            if live and live.x then
+                ok = BR.LootCellReachable(cx, cy, live.x, live.y)
+            end
+        end
+    end
+
+    if not ok then return end
+
+    -- ═══ AND A CLIENT THAT HAS LOST EVERYTHING MAY SAY SO ═══
+    --
+    -- The dedupe below is doing a real job at 10Hz and stays. What it could not
+    -- tell apart was a duplicate request from a client that still holds the cell
+    -- and one from a client whose registry was dropped underneath it --
+    -- `forgetAll` runs whenever the player leaves a loot-visible state, which a
+    -- match dissolving under them does, and the server keeps the subscription it
+    -- already recorded. `resync` is the client saying "I have nothing".
+    --
+    -- RATE-LIMITED, because it is a request to rebuild and send a 3x3 block. Once
+    -- every RESYNC_MS per player is far more than a genuine recovery needs and
+    -- far less than a spammer would want.
     local centre = BR.LootCellKey(cx, cy)
+
+    if d.resync == true then
+        local now = GetGameTimer()
+        local last = m.loot.resyncAt and m.loot.resyncAt[src] or 0
+        if now - last >= RESYNC_MS then
+            m.loot.resyncAt = m.loot.resyncAt or {}
+            m.loot.resyncAt[src] = now
+            -- Forget what we think they have, so the "entering scope" walk below
+            -- treats every cell as new and sends the lot.
+            m.loot.subs[src] = nil
+            m.loot.at[src] = nil
+            print(('[br_core] loot: %s (%d) asked to re-seed %s')
+                :format(e.name, src, centre))
+        end
+    end
+
     if m.loot.at[src] == centre then return end   -- nothing moved
     m.loot.at[src] = centre
 
@@ -946,6 +1152,22 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     -- thing. Cells are 256m and the subscription is the 3x3 block around the
     -- player, so anything within pickup range is certainly inside it -- this
     -- cannot refuse a claim an honest client would make.
+    --
+    -- ⚠ THAT LAST SENTENCE WAS FALSE FOR AS LONG AS A SUBSCRIPTION COULD BE
+    -- LOST WITHOUT THE CLIENT KNOWING. It assumes the client's view and the
+    -- server's record of it agree, and until 2026-09-07 they could silently
+    -- diverge: the cell request was latched before it was sent, declined without
+    -- a reply, and never re-asked until the player crossed a cell boundary. A
+    -- player standing on the warmup pad with a sealed crate on screen, holding
+    -- E on it, got THIS sentence for a crate nobody had touched -- owner: "what
+    -- does 'someone beat you to it' even mean when trying to open these
+    -- crates..... wtf lol".
+    --
+    -- The recovery re-ask in client/loot.lua and the live-position test in the
+    -- LOOT_CELL handler are what make the sentence true again. The branch is
+    -- left exactly as it was on purpose: the ambiguity is anti-oracle design,
+    -- and the fix for an honest client reaching it is to stop it happening
+    -- rather than to explain it better.
     local subs = m.loot.subs[src]
     if item and not (subs and subs[item.cell]) then item = nil end
 
@@ -1155,10 +1377,21 @@ function BR.Loot.deathBox(m, src)
         -- Two rings once there are more than six items, so a full inventory
         -- does not draw one enormous circle.
         local r = radius * ((i % 2 == 0 and n > 6) and 0.55 or 1.0)
+        -- THE RING IS SMALL ENOUGH TO VOUCH FOR. `deathScatterRadius` is 4.6m,
+        -- so every stack lands within about fifteen feet of a ped that was
+        -- standing on that ground a moment ago -- close enough that its root is
+        -- a better starting point for the client's probe than the sky is. A
+        -- player killed under an overpass has their kit land under it with
+        -- them, instead of on the freeway where nobody can see it fall.
+        --
+        -- The 4.6m of slack is real and it is why the client treats this as a
+        -- hint rather than an answer: on a steep bank the ring's far side can
+        -- sit above the corpse, the low probe finds nothing there, and it falls
+        -- back to the 1200m probe. Worst case is today's behaviour.
         BR.Loot.spawnStack(m, stack,
             e.pos.x + math.cos(a) * r,
             e.pos.y + math.sin(a) * r,
-            e.pos.z)
+            e.pos.z, nil, e.pos.z)
     end
     return nil
 end
@@ -1292,6 +1525,21 @@ AddEventHandler(BR.Net.NPC_DROP, function(d)
     local clip = math.tointeger(tonumber(d.clip) or 0) or 0
     clip = math.max(0, math.min(clip, w.clip or 0))
 
+    -- AND NO `standZ`, DELIBERATELY, THOUGH THIS IS THE ONE SITE THAT LOOKS
+    -- LIKE IT DESERVES ONE. There really is a ped's root here -- but the server
+    -- never saw the ped, never saw it die, and never saw this z: all three
+    -- floats arrived in `d` from the reporting client, and everything above
+    -- this line is the machinery for believing them only as far as is harmless.
+    --
+    -- `pz` says "the SERVER measured this height". Setting it from a number a
+    -- client sent would make that sentence false and would let a client decide
+    -- where every other client's ground probe starts. The bound above is
+    -- horizontal only, so it would not catch a z at all.
+    --
+    -- The cost is honest and small: an NPC shot under an overpass still drops
+    -- its pistol onto the deck, exactly as it did before this change. Fixing
+    -- that means the server learning the corpse's height for itself, which it
+    -- cannot do -- or a z bound on the report, which is a separate decision.
     BR.Loot.spawnStack(m, {
         item   = w.id,
         kind   = BR.ItemKind.WEAPON,
@@ -1336,6 +1584,16 @@ AddEventHandler(BR.Net.LOOT_FIX, function(d)
     local oldCell = m.loot.cells[item.cell]
     if oldCell then oldCell[item.id] = nil end
     item.x, item.y, item.z = x, y, z
+    -- AND THE VOUCH DIES WITH THE OLD POSITION. `pz` means "a ped was measured
+    -- standing on the ground at THIS x/y"; a repair moves the entry up to 30m,
+    -- so whatever ped that was is no longer standing there and the server has
+    -- measured nothing about the new spot. Carrying it over would quietly turn
+    -- a server measurement into a client's claim -- the entry's new z came
+    -- straight off the wire two lines up -- which is the one thing this whole
+    -- mechanism must not do. Cleared, the entry probes from 1200m again, which
+    -- is what it did before any of this and what the repairing client itself
+    -- used to work out the correction it just sent.
+    item.pz = nil
     index(m.loot, item)
 
     -- Everyone looking at either cell hears about it; the id is unchanged, so
@@ -1528,7 +1786,13 @@ local function devSpawn(src, item, at)
     local stack, err = devStack(item, pos.x, pos.y, pos.z)
     if not stack then return err end
 
-    local spawned = BR.Loot.spawnStack(m, stack, pos.x, pos.y, pos.z)
+    -- AT SOMEBODY'S FEET, EITHER WAY. `at` is the caller's own ped position
+    -- reported by the client (dev mode only, see the LOOT_DEV handler); with no
+    -- `at` it is the roster's own sample of that ped. Both are a ped root at
+    -- this x/y, so both vouch -- and that matters here more than anywhere,
+    -- because `/brcrate <id>` is how the bridge case gets playtested at all.
+    local spawned = BR.Loot.spawnStack(m, stack, pos.x, pos.y, pos.z,
+        nil, pos.z)
     return ('spawned #%s (%s) at %s')
         :format(tostring(spawned and spawned.id), stack.kind, e.name)
 end

@@ -31,10 +31,66 @@ BR.Config.Audio = {
     -- fires once per bullet, and an unthrottled full-auto burst is thirty
     -- overlapping sounds. That has no visual symptom and will not be found by
     -- playing -- it just sounds broken and nobody can say why.
+    --
+    -- ═══ WHY THE HITMARKER FLOOR IS 60 AND NOT 120, WHICH IS THE NUMBER
+    --     SOMEBODY WILL EVENTUALLY TRY TO "FIX" IT TO ═══
+    --
+    -- The floor is deliberately BELOW the fastest weapon in the game, and the
+    -- number it is below is not a guess -- br_lib/config/weapons.lua carries a
+    -- `minInterval` per weapon and the smallest is 65 (machinepistol; microsmg
+    -- and minismg are 70, assaultsmg and combatpdw 75, every rifle 90-95). So
+    -- 60 CANNOT DROP A LEGITIMATE ROUND from any weapon this mode issues, and
+    -- that is the point rather than an oversight:
+    --
+    --   A DROPPED HITMARKER READS AS A MISS. It is the only confirmation a
+    --   shooter gets that the shot connected -- there is no damage number and
+    --   no ragdoll at range -- so a throttle that thins sustained fire is
+    --   telling the player they missed shots they hit. Raising this to 100
+    --   would halve the feedback on every rifle in the game (90-95ms cadence),
+    --   which is the common case, to tidy up a rare one.
+    --
+    -- WHAT IT DOES CATCH IS THE BURST THAT ARRIVES INSIDE ONE FRAME, and that
+    -- is a real thing rather than a hypothetical: server/damage.lua's
+    -- applyHit fires DAMAGE_FEED per damage EVENT, and a shotgun shell is one
+    -- trigger pull that lands as one event PER PELLET -- six to nine of them,
+    -- all within a frame or two. Unthrottled that is nine copies of the same
+    -- cue stacked on one shell. Any floor longer than a frame collapses it,
+    -- and 60 is comfortably longer than a frame at any playable rate.
+    --
+    -- SO THE RULE THIS NUMBER ENCODES IS "one cue per trigger pull, never
+    -- fewer" -- not "fewer cues per second". If it is ever retuned, the test
+    -- to keep is the weapons-table one: it must stay at or below the smallest
+    -- `minInterval` in br_lib/config/weapons.lua.
+    --
+    -- ═══ AND WHY THE OTHERS HAVE FLOORS AT ALL ═══
+    --
+    -- Every cue below is one that can be asked for MORE THAN ONCE FOR ONE
+    -- EVENT, which is a different failure from firing quickly: three
+    -- squadmates pinging the same building, a server refusing the same action
+    -- twice while the player is still holding the key, a blip pass that
+    -- announces a set of blips by announcing each blip. The floor makes the
+    -- burst sound like the single event it is. A cue with no line here has no
+    -- limit, which is the right default -- see the note under `cues` about
+    -- storm.move, where a doubled cue is a SERVER bug worth hearing.
     minInterval = {
-        ['hit']       = 60,
-        ['hit.crit']  = 60,
-        ['ui.hover']  = 40,
+        -- `hit` and `hit.crit` had floors here and no longer exist as cues
+        -- (2026-09-08: the clips were wrong). A floor for a cue that isn't
+        -- there is dead weight, so they went with them.
+        ['ui.hover']         = 40,
+        -- A refusal the player can re-trigger by leaning on a key, and the
+        -- server sends one toast per attempt. Longer than the cue, shorter
+        -- than a deliberate second press.
+        ['toast.warn']       = 400,
+        -- Squad pings. Three mates on the same building is three cues in
+        -- under a second, and they mean one thing.
+        ['squad.waypoint']   = 300,
+        -- A blip SET going up, not a blip. Whether the caller lands on the
+        -- arming edge or inside the per-blip loop is the wiring's business;
+        -- this makes both sound the same.
+        ['blips.shown']      = 1000,
+        -- Several keys can expire in the same sweep -- the expiry is a clock
+        -- the client checks in a pass, not an event per key.
+        ['revivekey.expired'] = 500,
     },
 
     cues = {
@@ -51,8 +107,21 @@ BR.Config.Audio = {
         -- where PlaySoundFrontend earns its place: the engine mixes it, so it
         -- ducks against gunfire. A hitmarker fired from CEF sits on top of a
         -- firefight at full volume forever.
-        ['hit']      = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'CHECKPOINT_NORMAL' },
-        ['hit.crit'] = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'CHECKPOINT_PERFECT' },
+        -- ═══ THERE IS NO HITMARKER SOUND, AND THAT IS THE OWNER'S CALL ═══
+        --
+        -- 2026-09-08: "do not wire in any sound at all for hit or hit.crit -
+        -- those are wrong sound clips."
+        --
+        -- Both keys are GONE rather than blanked. `BR.Sfx.play` treats an
+        -- unknown cue as a no-op and says so once in dev, which is exactly the
+        -- behaviour wanted here -- whereas an entry with an empty set would be a
+        -- cue that exists, resolves, and plays nothing, which is the failure
+        -- mode this file's own gate now checks for.
+        --
+        -- THE RATE LIMITS ABOVE ARE KEPT. They cost nothing while the cues are
+        -- absent and they carry the shotgun-pellet reasoning, which is about the
+        -- CALL SITE rather than about which sound it plays -- so whoever picks a
+        -- hitmarker sound later inherits the number and the argument for it.
 
         -- ═══ THE PUMP, AND WHY THESE TWO ARE NATIVE WHEN THE RULE ABOVE SAYS
         --     INTERFACE AUDIO IS NOT ═══
@@ -169,7 +238,13 @@ BR.Config.Audio = {
         -- PlaySoundFromEntity, so the cue is positioned on the car and mixed by
         -- the engine for every occupant.
         ['fuel.start'] = { set = 'HUD_FRONTEND_DEFAULT_SOUNDSET', name = 'SELECT' },
-        ['fuel.done']  = { set = 'HUD_AWARDS', name = 'PROPERTY_PURCHASE' },
+        -- `fuel.done` IS DELIBERATELY ABSENT (owner, 2026-09-08: "also remove
+        -- fuel.done"). Three sounds were tried for it -- CHALLENGE_UNLOCKED
+        -- ("more like a warning"), PROPERTY_PURCHASE, and his own
+        -- DLC_SECURITY_TAIL_AND_DESTROY_Sounds/Destroy -- and none survived. It
+        -- is better with nothing than with a fourth guess: the pump already
+        -- reports itself on screen, and `fuel.start` marks the event that
+        -- actually needs marking.
 
         -- ═══ THE WALL STARTS MOVING ═══
         --
@@ -216,6 +291,285 @@ BR.Config.Audio = {
         --
         -- and the line below is the one line to edit once the ear has decided.
         ['storm.move']  = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'GO_NON_RACE' },
+
+        -- ═══════════════════════════════════════════════════════════════════
+        -- THE OWNER'S PALETTE (#24, 2026-09-05)
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- Everything from here down is HIS, pair for pair. He sat with /brsfx
+        -- and wrote out roughly thirty `PlaySoundFrontend` lines against named
+        -- game events, which is the expensive half of #24 and the half no
+        -- amount of reading can substitute for. Nothing below was chosen at a
+        -- desk; the job here was to give his lines a key and a home.
+        --
+        -- ═══ THIS OVERTURNS THE "NATIVE IS COMBAT ONLY" RULE ABOVE, AND #175
+        --     IS WHERE THAT WAS DECIDED ═══
+        --
+        -- The header of this file and the block at the top of `cues` both say
+        -- native audio is combat only and everything interface-shaped belongs
+        -- in the browser. That was the rule until #175, which the owner closed
+        -- with "work to be tracked in #24" -- this issue. His reasoning there
+        -- was recognition rather than mix purity: a squadmate going down should
+        -- sound like what the player already knows, and a second synthesised
+        -- vocabulary means learning the same event twice.
+        --
+        -- SO THE OLD RULE IS NOT DELETED, IT IS SCOPED. Native is no longer
+        -- "combat only"; it is "anything the player must recognise mid-match".
+        -- Menus stay in the browser, because menus are the one tier a volume
+        -- slider can reach (br_ui/client/settings.lua:47 says so) and nobody
+        -- needs to recognise a button.
+        --
+        -- ═══ WHAT IS COMMENTED OUT DOWN HERE, AND WHY IT IS NOT AN OPINION
+        --     ABOUT THE SOUND ═══
+        --
+        -- Twelve of his picks name a DLC audio bank -- DLC_* or dlc_*. Every
+        -- one of them is commented rather than live, and NOT because anybody
+        -- disagreed with his ear. Two gates in this tree refuse them:
+        --
+        --   tools/test_shared.lua  the catalogue may contain no set whose name
+        --                          begins `dlc_` (case-blind)
+        --   tools/test_fuel.lua    every cue's set must BE one of the
+        --                          catalogue's sets
+        --
+        -- Together those two mean a DLC pair cannot become a cue without
+        -- editing both suites. The belief they encode is this file's own, from
+        -- the catalogue note below: a DLC script audio bank is not requested by
+        -- this gamemode, so a pair out of one plays NOTHING -- and silent is
+        -- indistinguishable from disliked, which is what cost two rounds on the
+        -- fuel cue.
+        --
+        -- THAT BELIEF HAS NEVER ACTUALLY BEEN TESTED, AND IT IS CHEAP TO TEST.
+        -- It rests on Pit_Stop_Complete, which was rejected at a DESK for
+        -- living in DLC_H3_Circuit_Racing_Sounds -- rejected by reasoning, not
+        -- by anybody hearing silence. If the owner heard these play, the belief
+        -- is simply wrong and the gates should move. The command that settles
+        -- it is written beside each commented line; /brsfx play takes any pair,
+        -- catalogue or not, and prints `[silent?]` when the engine says the
+        -- sound was over before it could be audible.
+        --
+        -- ═══ AND THE OWNER ANSWERED IT: LAND THEM (2026-09-08) ═══
+        --
+        -- "land the DLC cues and rewire MATE_CUE". So both gates moved and the
+        -- pairs below are live. The belief above was never measured and is now
+        -- simply not being acted on -- which is the right call either way, since
+        -- he is the one who auditioned them and the failure mode if he did not
+        -- is silence rather than a wrong sound.
+        --
+        -- ⚠ IF ONE OF THESE IS SILENT IN GAME, THIS PARAGRAPH IS WHY. The bank
+        -- may genuinely need requesting; `/brsfx play <SET> <NAME>` prints
+        -- `[silent?]` and settles it per pair without touching this file.
+
+        -- ───────────────────────────────────────────────── death and squad ---
+
+        -- His: "Self died".
+        ['death.self']      = { set = 'WastedSounds', name = 'ScreenFlash' },
+
+        -- His: "Squad mate died". This is MATE_CUE's `out` phase in
+        -- br_core/client/dbno.lua -- the squadmate finished, not the squadmate
+        -- going down.
+        ['squad.out']       = { set = 'GTAO_FM_Events_Soundset',
+                                name = 'Event_Message_Purple' },
+
+        -- NO `squad.down`, AND THAT IS AN ABSENCE RATHER THAN AN OVERSIGHT.
+        -- MATE_CUE has three phases -- down, out, up -- and his table names
+        -- only the second and third. #175 warned about exactly this: "moving
+        -- two of the three natively while leaving the third synthesised breaks
+        -- [the progression] on purpose or by accident." It is on purpose here
+        -- only in the sense that inventing a pair he did not pick is the one
+        -- thing #24 says not to do. `squad.down` stays on the browser tier
+        -- (ui-src/src/audio/cues.ts) until he picks one.
+
+        -- ─────────────────────────────────────────────────────── the clock ---
+
+        -- His: "Match timer start".
+        ['match.start']     = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'GO' },
+        -- His alternative, in his words "Alternative timer start (airhorn)":
+        --   DLC_AW_BB_Sounds / Period_Start
+        -- DLC bank -- see the block above. Hear it with:
+        --   /brsfx play DLC_AW_BB_Sounds Period_Start
+
+        -- His: "Timer down to 3s". The name really is `5s`; it is the generic
+        -- countdown pip in that set and the digit in the name is Rockstar's,
+        -- not a claim about when we play it.
+        ['timer.final']     = { set = 'MP_MISSION_COUNTDOWN_SOUNDSET',
+                                name = '5s' },
+
+        -- His: "Down to 2 squads or players in match".
+        ['match.final2']    = { set = 'MP_MISSION_COUNTDOWN_SOUNDSET',
+                                name = 'Oneshot_Final' },
+
+        -- ──────────────────────────────────────────────── things on the map ---
+
+        -- His: "Airdrop coming".
+        ['airdrop.inbound'] = { set = 'GTAO_FM_Events_Soundset',
+                                name = 'Checkpoint_Hit' },
+
+        -- His: "Courtesy blips or ambulance blips shown".
+        ['blips.shown']     = { set = 'GTAO_Magnate_Boss_Modes_Soundset',
+                                name = 'Crates_Blipped' },
+
+        -- His: "Squad mate set a waypoint".
+        ['squad.waypoint']  = { set = 'GTAO_Heists_HUD_Sounds',
+                                name = 'Scope_Spot_POI' },
+        -- His alternative, in his words "Alt for this":
+        --   DLC_Security_Investigation_The_Yacht_Sounds / GPS_Set
+        -- DLC bank. Hear it with:
+        --   /brsfx play DLC_Security_Investigation_The_Yacht_Sounds GPS_Set
+
+        -- ───────────────────────────────────────────────────── the revive key ---
+
+        -- His: "Picked up (not bought) revive key". The parenthesis is his and
+        -- it is a distinction the wiring has to respect: buying one is the shop
+        -- cue, walking over one is this.
+        ['revivekey.pickup']  = { set = 'In_And_Out_Attacker_Sounds',
+                                  name = 'Friend_Pick_Up' },
+        -- Two alternatives of his sit against this line. The first is a
+        -- pointer rather than a pair -- "RESPAWN_ONLINE_SOUNDSET, good
+        -- references here" -- so it is a set to browse, not a choice:
+        --   /brsfx sounds RESPAWN_ONLINE_SOUNDSET
+        -- The second is a pair, and it is NOT a DLC bank, so promoting it is a
+        -- one-line edit with no gate in the way -- "Another alt":
+        --   HUD_MINI_GAME_SOUNDSET / MEDAL_UP
+
+        -- His: "Revive key pickup expired".
+        ['revivekey.expired'] = { set = 'In_And_Out_Defender_Sounds',
+                                  name = 'Dropped' },
+
+        -- ─────────────────────────────────────────────── money and refusals ---
+
+        -- His: "Volts award at verdict".
+        ['volts.award']     = { set = 'HUD_AWARDS', name = 'GOLF_NEW_RECORD' },
+
+        -- His: "Error toast notification sound".
+        --
+        -- KEYED `toast.warn` AND NOT `ui.error`, FOR TWO REASONS THAT BOTH
+        -- MATTER. ui-src/src/audio/cues.ts already owns a cue called
+        -- `ui.error`, synthesised, on the other tier -- one name meaning two
+        -- different sounds in two different files is the sort of thing that
+        -- survives for a year. And this project's toasts have no `error` tone
+        -- at all: br_core/client/state.lua's TOAST payload carries `tone`, and
+        -- the only three values anything sends are `info`, `warn` and
+        -- `success`. `warn` IS the bad-news tone here, so the key says so.
+        ['toast.warn']      = { set = 'HUD_FRONTEND_DEFAULT_SOUNDSET',
+                                name = 'ERROR' },
+
+        -- ═══════════════════════════════════════════════════════════════════
+        -- HIS PICKS THAT A DLC BANK PUTS OUT OF REACH
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- Read the block at the top of this section before touching any of
+        -- these. Each is his pair, verbatim, with the command that would settle
+        -- whether the bank is really silent.
+
+        -- His: "Damage hit sound" -- his replacement for the `hit` cue above.
+        -- NOT LANDED, AND NOT COMMENTED-OUT-FOR-LATER EITHER. Owner, 2026-09-08:
+        -- "those are wrong sound clips. no clue where you got them from." They
+        -- came from his own list of 2026-08-18, which is worth recording only so
+        -- nobody re-derives them from that comment and lands them again.
+        --   /brsfx play DLC_H3_Drone_Tranq_Weapon_Sounds Remote_Perspective_Fire
+
+        -- His: "Damage killed sound".
+        --
+        -- AND `elim` IS CALLED TODAY AND RESOLVES TO NOTHING.
+        -- br_core/client/state.lua:1369 plays `elim` when you get a kill, and
+        -- there has never been an `elim` in this table -- so that call takes
+        -- the unknown-cue path in client/sfx.lua and prints one console line
+        -- per session. The player is not left silent: the browser synthesises
+        -- its own `elim` (ui-src/src/audio/cues.ts:290, played from
+        -- HitFeedback.tsx:54), which is what they actually hear. So this is a
+        -- dead call plus a warning, not a missing sound -- but it is the reason
+        -- this key cannot simply be left blank and forgotten.
+        ['elim'] = { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds',
+                     name = 'Pilot_Perspective_Fire' },
+        --   /brsfx play DLC_H3_Drone_Tranq_Weapon_Sounds Pilot_Perspective_Fire
+
+        -- His: "Squad mate revived" -- MATE_CUE's `up` phase.
+        ['squad.revived'] = { set = 'DLC_AW_Frontend_Sounds',
+                              name = 'Checkpoint_Finish' },
+        --   /brsfx play DLC_AW_Frontend_Sounds Checkpoint_Finish
+
+        -- His: "Fuel finished" -- and this one is THE THIRD FUEL PICK, the one
+        -- the whole /brsfx catalogue was built to let him make. Two were chosen
+        -- at a desk and rejected by ear (CHALLENGE_UNLOCKED "more like a
+        -- warning", then PROPERTY_PURCHASE). `fuel.done` above is still the
+        -- second of those, i.e. still a sound he has already rejected. Landing
+        -- this line is the single highest-value item in this block.
+        -- NOT LANDED. This was his third fuel pick and he has since removed the
+        -- cue entirely (2026-09-08); see `fuel.start` above for the three that
+        -- were tried.
+        --   /brsfx play DLC_SECURITY_TAIL_AND_DESTROY_Sounds Destroy
+
+        -- His: "Gas pump started (possible)".
+        --
+        -- ⚠ THE ONE LINE IN THIS BLOCK NOT LANDED WITH THE REST, and it is the
+        -- only one where landing it would REPLACE something rather than add it.
+        -- `fuel.start` above is the single cue in this file marked
+        -- owner-heard-and-kept, chosen by ear after two were rejected, and
+        -- pinned by tools/test_fuel.lua. His "(possible)" is a candidate, and
+        -- swapping a heard-and-kept cue for a maybe is the one move that can
+        -- only lose. Uncomment it when he says he has heard this one too.
+        --   ['fuel.start'] = { set = 'DLC_IO_Warehouse_Mod_Garage_Sounds',
+        --                      name = 'Remove_Tracker' },
+        --   /brsfx play DLC_IO_Warehouse_Mod_Garage_Sounds Remove_Tracker
+
+        -- His: "Circle finished moving (possible)". The SHRINKING->HOLDING
+        -- edge -- the opposite of the one `storm.move` rides.
+        ['storm.stop'] = { set = 'dlc_vw_koth_Sounds',
+                           name = 'Zone_Contested' },
+        --   /brsfx play dlc_vw_koth_Sounds Zone_Contested
+
+        -- His: "When they go out of the storm circle" / "Going back into the
+        -- storm circle". A pair, and they only work as a pair.
+        ['storm.out'] = { set = 'DLC_Lowrider_Relay_Race_Sounds',
+                          name = 'Out_Of_Area' },
+        ['storm.in']  = { set = 'DLC_Lowrider_Relay_Race_Sounds',
+                          name = 'Enter_Area' },
+        --   /brsfx play DLC_Lowrider_Relay_Race_Sounds Out_Of_Area
+        --   /brsfx play DLC_Lowrider_Relay_Race_Sounds Enter_Area
+
+        -- His: "Shop purchase complete" / "Shop insufficient funds".
+        --
+        -- `shop.buy` ALREADY EXISTS AND IS NOT WRITTEN IN THIS FILE.
+        -- br_lib/config/shop.lua installs it into this table at load time as
+        -- THE SAME TABLE as BR.Config.Loot.pickupSound, so a purchase and a
+        -- pickup deliberately sound identical ("a purchase IS a pickup").
+        -- Landing his pair means deleting that install as well as writing a
+        -- line here -- a static entry alone would be silently overwritten,
+        -- which is the worst of both.
+        ['shop.buy']    = { set = 'dlc_ch_heist_finale_security_alarms_sounds',
+                            name = 'Metal_Detector_Online' },
+        ['shop.denied'] = { set = 'dlc_ch_heist_finale_security_alarms_sounds',
+                            name = 'Metal_Detector_Offline' },
+        --   /brsfx play dlc_ch_heist_finale_security_alarms_sounds Metal_Detector_Online
+        --   /brsfx play dlc_ch_heist_finale_security_alarms_sounds Metal_Detector_Offline
+
+        -- ═══════════════════════════════════════════════════════════════════
+        -- HIS PICKS FOR A FEATURE THAT DOES NOT EXIST YET
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- Three of his lines are about a BOUNTY -- one on the map, one on
+        -- yourself, one captured. There is no bounty feature in this gamemode:
+        -- the only `bounty` in the tree is the moderation report bounty in
+        -- br_stats/server/awards.lua and br_core/server/players.lua, which is
+        -- money for filing a report and has nothing to do with a mark on the
+        -- map. So these have no call site to be wired to, which is a different
+        -- kind of blocked from the DLC ones above and is recorded separately so
+        -- nobody spends an afternoon looking for the handler.
+        --
+        --   ['bounty.posted'] = { set = 'DLC_BTL_TP_Remix_Juggernaut_Player_Sounds',
+        --                         name = 'Become_Attacker' },     -- "Bounty on the map"
+        --   ['bounty.self']   = { set = 'DLC_Exec_TP_SoundSet',
+        --                         name = 'Losing_Team_Shard' },    -- "Self bounty activated"
+        --
+        -- AND THE THIRD IS FLAGGED BY HIM AS NOT WORKING THIS WAY AT ALL.
+        -- His note, verbatim and directly under the line: "THIS NEEDS
+        -- SCALEFORMS ^^^". Carried here rather than dropped, because a pair he
+        -- has already found does not play through PlaySoundFrontend is worth
+        -- exactly as much as one that does -- it is the answer to somebody
+        -- later picking the same pair and wondering why it is silent.
+        --
+        --   ['bounty.captured'] = { set = 'HUD_FRONTEND_MP_COLLECTABLE_SOUNDS',
+        --                           name = 'Friend_Pick_Up' },   -- NEEDS SCALEFORMS
     },
 
     -- Per-cue rate limits are above; this one deliberately has none. The
@@ -247,7 +601,7 @@ BR.Config.Audio = {
 --
 -- THE OBVIOUS PLACE WAS DurtyFree/gta-v-data-dumps, which is what previous
 -- rounds used to check names, and IT CANNOT BE VENDORED. That repository
--- carries NO LICENCE AT ALL -- the GitHub API answers `"license": null` and
+-- carries NO LICENSE AT ALL -- the GitHub API answers `"license": null` and
 -- the /license endpoint 404s -- which means all rights reserved by default.
 -- tools/verify.sh's `vendored third-party` gate requires a LICENSE file to
 -- travel with any vendored directory, and there is no notice in existence to
@@ -293,8 +647,10 @@ BR.Config.Audio = {
 --
 -- `pairs()` order is unspecified in Lua and varies run to run. A browsing
 -- tool whose list reshuffles between two invocations is one the owner cannot
--- work down, so the order is fixed here in the source: the three heard sets
--- first, then the rest alphabetically, names sorted within each set.
+-- work down, so the order is fixed here in the source: the HEARD sets first --
+-- the three this codebase has played, then the five DLC banks the owner
+-- auditioned by hand -- and then the rest alphabetically, names sorted within
+-- each set.
 BR.Config.Audio.catalogue = {
         { set = 'HUD_FRONTEND_DEFAULT_SOUNDSET',   -- heard from this codebase
           names = { 'ATM_WINDOW', 'BACK', 'Back', 'CANCEL', 'CONTINUE',
@@ -318,6 +674,38 @@ BR.Config.Audio.catalogue = {
                     'CHECKPOINT_NORMAL', 'CHECKPOINT_PERFECT',
                     'CHECKPOINT_UNDER_THE_BRIDGE', 'FIRST_PLACE', 'GO',
                     'GO_NON_RACE', 'LOOSE_MATCH', 'MEDAL_UP', 'TIMER_STOP', } },
+        -- ═══════════════════════════════════════════════════════════════════
+        -- DLC SETS, ADDED BACK ONE PAIR AT A TIME, ON EVIDENCE
+        -- ═══════════════════════════════════════════════════════════════════
+        --
+        -- The header above says every DLC_*/dlc_* set was filtered out of the
+        -- gist, and gives the reason: a DLC script audio bank this gamemode
+        -- never requests is SILENT, and silent is indistinguishable from wrong.
+        -- That filter is a HEURISTIC standing in for evidence nobody had.
+        --
+        -- THESE PAIRS HAVE THE EVIDENCE. The owner auditioned them with /brsfx
+        -- on a running client and came back with a list of what each one should
+        -- be used for (2026-09-08, "land the DLC cues"). Hearing a sound on
+        -- this build is the strongest evidence this file recognises -- it is
+        -- what `heard from this codebase` means on the three sets at the top --
+        -- and it outranks a filter that exists precisely because nobody had
+        -- listened.
+        --
+        -- NOTHING ELSE FROM THESE BANKS IS LISTED, and that is the point: the
+        -- filter still stands for every DLC pair nobody has played. Each line
+        -- here is one sound one person heard. Do not widen a set to "the rest
+        -- of its names" from a dump -- that is how Pit_Stop_Complete happened.
+        { set = 'DLC_AW_Frontend_Sounds',           -- heard by the owner
+          names = { 'Checkpoint_Finish', } },
+        { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds', -- heard by the owner
+          names = { 'Pilot_Perspective_Fire', } },
+        { set = 'DLC_Lowrider_Relay_Race_Sounds',   -- heard by the owner
+          names = { 'Enter_Area', 'Out_Of_Area', } },
+        { set = 'dlc_ch_heist_finale_security_alarms_sounds', -- heard by the owner
+          names = { 'Metal_Detector_Offline', 'Metal_Detector_Online', } },
+        { set = 'dlc_vw_koth_Sounds',               -- heard by the owner
+          names = { 'Zone_Contested', } },
+
         { set = 'Arena_Vehicle_Mod_Shop_Sounds',
           names = { 'supermod_consumer', 'supermod_scifi',
                     'supermod_wasteland', } },
@@ -530,6 +918,7 @@ BR.Config.Audio.catalogue = {
                     'TextHit', } },
         { set = 'WEB_NAVIGATION_SOUNDS_PHONE',
           names = { 'CLICK_BACK', 'Click_Fail', 'Click_Special', } },
+
 }
 
 --- Lowercased plain-text containment. `find` with the fourth argument true, so

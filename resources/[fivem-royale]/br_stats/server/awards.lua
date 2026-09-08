@@ -1,7 +1,7 @@
 --[[
     Paying for accurate reports (#168).
 
-    THE PROMISE: 250 Volts to the reporter and to every corroborator, when an
+    THE PROMISE: 100 Volts to the reporter and to every corroborator, when an
     incident resolves and an action was taken. If they are in the server they
     are told; if they are not, the Volts land anyway, because the award is on
     the account and not on the session.
@@ -52,7 +52,7 @@
 BR = BR or {}
 BR.Awards = {}
 
---- What an accurate report is worth (#168, owner: "250 Volts").
+--- What an accurate report is worth (#168, settled by #256).
 ---
 --- HERE RATHER THAN IN config/market.lua, and the line is worth the argument.
 --- That file holds what a MATCH pays, next to what things cost, so that the two
@@ -61,14 +61,33 @@ BR.Awards = {}
 --- market is tuned against, and putting it in that table would invite somebody
 --- to retune it alongside numbers it has nothing to do with.
 ---
---- 125 SINCE 2026-08-20, AND THE SEPARATION ABOVE IS EXACTLY WHY THIS LINE
---- NEEDED WRITING. The owner asked to "cut all Volts earnings by 50%" -- said
---- about a playtest, which is the match payout -- and the paragraph above is an
---- argument that this bounty is NOT part of that curve. It is still a Volts
---- earning, it is still paid out of the same balance, and leaving it whole
---- would have doubled what a report is worth relative to a match without
---- anybody deciding to. "All" was taken at its word.
-local AWARD_VOLTS = 125
+--- 100 SINCE 2026-09-02, AND IT IS A CHOSEN NUMBER RATHER THAN AN ARITHMETIC
+--- ONE. #168 asked for 250 and it shipped at 250. It became 125 on 2026-08-20,
+--- swept along by "cut all Volts earnings by 50%" -- an instruction given after
+--- a playtest and so about the match payout -- on the grounds that "all" was
+--- said and this is still Volts out of the same balance. That was collateral
+--- rather than a decision, and it sat unexamined for two weeks until #256 put
+--- the question to the owner: did the cut mean this too, 250 or 125? He answered
+--- with neither. Owner, 2026-09-02: "Let's change the report bounty to 100
+--- volts please."
+---
+--- WHICH MAKES THE SEPARATION ABOVE LOAD-BEARING INSTEAD OF ARGUED. 100 is not
+--- half of anything and not a proportion of what a match pays, so the next
+--- retune of that curve has nothing to divide here: moving this costs its own
+--- decision, which is the property the paragraph above was always claiming.
+-- ⚠ THE PROSE AROUND THIS FILE STILL SAYS 250 AND THE PROSE IS STALE.
+--
+-- #256 retuned this to 100 on 2026-09-02 and did not sweep the comments, so the
+-- paragraph over BR.Grants in br_core/server/grants.lua argues about "250 Volts"
+-- twice and this file's own note on the 2026-08-18 incident says "the 250 Volts
+-- were paid and logged". Those are HISTORY, not the current bounty.
+--
+-- It cost a round trip on 2026-09-06: the tutorial card that tells a new player
+-- what reporting is worth was written from the stale prose, this constant was
+-- raised to match it, and the owner corrected it -- "100 was right, put it back
+-- and fix the card". THE CONSTANT IS THE ANSWER. Anything that quotes a number
+-- at a player must be checked against this line and nothing else.
+local AWARD_VOLTS = 100
 
 --- How often to ask whether anything has been decided.
 ---
@@ -344,7 +363,7 @@ local function considerCase(entry, now)
         -- ITS OWN state -- see verdict.js. A case an admin closed with no
         -- action, and a case that carries no verdict at all, both settle here
         -- paying nobody, and the log tells them apart because they are
-        -- different facts about the same 250 Volts.
+        -- different facts about the same withheld bounty.
         if not v.payable then
             print(('[br_stats] case %s resolved with %s -- nobody paid')
                 :format(entry.incidentId,
@@ -411,3 +430,137 @@ RegisterCommand('brawards', function()
     BR.Awards.sweep()
     print('  ...swept now.')
 end, true)
+
+-- ---------------------------------------------------------------------------
+-- The guided first run's reward (#261)
+-- ---------------------------------------------------------------------------
+
+--- The idempotence key the tutorial's payment is written under.
+---
+--- ═══ IT SHARES `reportRewards` WITH THE REPORT REWARDS, AND THAT IS ON PURPOSE
+---
+--- br_ddb's `awardPay` is one conditional UpdateItem: it adds to `balance` and
+--- adds this string to the `reportRewards` string set in the same write, under
+--- `NOT contains(#paid, :id)`. So "have I already paid this?" is evaluated by
+--- DynamoDB at write time and the second claim is refused -- there is no window
+--- between deciding to pay and recording it, because there is no second write.
+---
+--- THE ATTRIBUTE NAME IS NOW A SMALL LIE and it is cheaper than the truth. It
+--- has meant "ids this account has been paid for" since #168 and it still does;
+--- only its NAME says report. Renaming it is a migration over every player row
+--- to fix a word nobody outside these two files reads. Whoever does rename it
+--- should grep for this constant, which is the other half of the pair.
+---
+--- NO MATCH ID, NO SESSION, NO DATE IN IT. The key is the whole reason the
+--- reward is once-per-account-forever rather than once-per-anything-else, and a
+--- key that varied would silently make it farmable.
+local TUTORIAL_KEY = 'tutorial'
+
+--- The player finished the walkthrough.
+---
+--- ═══ THE CLIENT IS BELIEVED, AND THE DATABASE IS WHY THAT IS SAFE ═══
+---
+--- There is no server-side record of which cards somebody read -- deliberately,
+--- and BR.Net.TUTORIAL_SET says why at length: the server has exactly one
+--- question about the walkthrough and holding a step number would be a field
+--- nothing reads. So this event is a claim, not a proof.
+---
+--- What bounds it is the conditional write above. A modified client sending
+--- this on connect is paid 500 Volts once and never again, which is precisely
+--- what an honest player gets for twenty minutes of reading. There is nothing
+--- to farm and nothing to take from anybody else, so a cap here would cost the
+--- feature more than it costs the cheat -- the same argument, and the same
+--- shape of argument, as BR.Roster.setTutorial's.
+---
+--- ⚠ AND IT REVERSES IF THE REWARD EVER GROWS. The moment this pays anything
+--- repeatable -- per match, per season, a second tier -- the key stops being a
+--- lock and the claim needs evidence. Whoever adds that should read this
+--- paragraph as addressed to them.
+RegisterNetEvent(BR.Net.TUTORIAL_DONE)
+AddEventHandler(BR.Net.TUTORIAL_DONE, function()
+    local src = source
+    local amount = (BR.Config and BR.Config.Market
+                    and BR.Config.Market.tutorialReward) or 0
+    if amount <= 0 then return end
+
+    -- THE LICENSE IS DERIVED HERE, not taken from the client. This resource
+    -- cannot see br_core's roster (separate Lua states), so it asks BR.Identity
+    -- directly -- the same call BR.Roster.licenseOf makes on the other side.
+    local byKind = BR.Identity and BR.Identity.ofPlayer(src)
+    local license = byKind and BR.Identity.qualified('license', byKind.license)
+    if not license then
+        print(('^3[br_stats] tutorial reward: %d has no license -- not paid^7')
+            :format(src))
+        return
+    end
+
+    ask('br:ddb:awardPay', function(ok, info)
+        info = info or {}
+
+        if not ok then
+            -- NOT RETRIED, AND NOT QUEUED. The report pipeline leaves a failed
+            -- payment on its queue because a sweep is already coming; there is
+            -- no sweep here and inventing one would be a second reward system.
+            -- The player keeps the tutorial marked as done on their own client,
+            -- so the honest recovery is running it again from the Help page.
+            print(('^3[br_stats] tutorial reward not paid to %s: %s^7')
+                :format(license, tostring(info.error)))
+            return
+        end
+
+        if info.alreadyPaid then
+            -- ═══ THE SECOND RUN IS NOT AN ERROR, AND IT IS NOT SILENT EITHER ═══
+            --
+            -- Owner, 2026-09-07: "after the in-game tutorial is done for a
+            -- second time, I'd like a toast that informs the player that volts
+            -- were not awarded because they'd already completed the tutorial
+            -- before."
+            --
+            -- WHAT THEY MUST NOT BE TOLD is that they were paid, which is why
+            -- this is its own sentence rather than the other branch's. Nothing
+            -- was written; the database refused the second credit, which is the
+            -- outcome we wanted.
+            TriggerClientEvent(BR.Net.NOTIFY, src, {
+                text = ('No %s this time - you have completed the tutorial '
+                    .. 'before, and the reward is paid once.')
+                    :format(BR.Config.Market.currency or 'Volts'),
+                tone = 'info',
+                key  = 'tutorial.reward',
+                ms   = 10000,
+            })
+            print(('[br_stats] tutorial reward: %s has already been paid')
+                :format(license))
+            return
+        end
+
+        -- KEEP br_core's CACHE HONEST, exactly as settleCase does and for the
+        -- same reason: br_core read the balance once on connect and holds it
+        -- for the session. Zero XP -- the walkthrough pays Volts and nothing
+        -- else, because XP is what matches are for.
+        TriggerEvent('br:market:credited', license, 0, amount)
+
+        -- ═══ AND THE OFFER IS SPENT FOR GOOD ═══
+        --
+        -- Finishing it is one of the two answers that closes the offer (the
+        -- other is declining), so the profile row records it and the lobby stops
+        -- showing the toggle -- owner, 2026-09-07: "after completing the
+        -- tutorial and going back to the lobby, the toggle is still there btw."
+        --
+        -- A CLIENT-LOCAL EVENT ACROSS TWO RESOURCES' SERVER HALVES, which is the
+        -- seam `br:market:credited` above already uses in the other direction.
+        TriggerEvent('br:market:tutorialDone', license)
+
+        -- THE AMOUNT IS WRAPPED FOR THE CURRENCY'S COLOUR (owner, 2026-09-07).
+        -- The page paints anything inside `~...~`; see KeyText.
+        TriggerClientEvent(BR.Net.NOTIFY, src, {
+            text = ("You've been gifted ~%d %s~ for finishing the tutorial. Good luck out there!")
+                :format(amount, (BR.Config.Market.currency or 'Volts')),
+            tone = 'success',
+            key  = 'tutorial.reward',
+            ms   = 10000,
+        })
+
+        print(('[br_stats] tutorial reward: %d Volts to %s (%d)')
+            :format(amount, license, src))
+    end, license, TUTORIAL_KEY, amount)
+end)

@@ -267,7 +267,7 @@ if mark then
     if not mark:find('<svg', 1, true) then
         fail('VoiceMark draws no inline SVG',
              'the glyphs are ours, written in that file. An icon package or an '
-             .. 'image asset is a licence to check and a file to forget in '
+             .. 'image asset is a license to check and a file to forget in '
              .. 'fxmanifest')
     end
     if not mark:find('currentColor', 1, true) then
@@ -278,7 +278,7 @@ if mark then
     if mark:find('<img', 1, true) or mark:find('url(', 1, true) then
         fail('VoiceMark references an image',
              'the glyphs are inline SVG paths; an asset here is a file that '
-             .. 'has to reach the client and a licence that has to be recorded')
+             .. 'has to reach the client and a license that has to be recorded')
     end
 
     -- TWO STATES, AND THEY ARE THE SAME OBJECT. Waves mean sound is flowing;

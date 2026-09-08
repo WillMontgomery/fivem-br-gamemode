@@ -315,7 +315,33 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # queue down for the interval Discord named. Its clock is stepped by hand for
     # the reason test_lobbyseq.lua models Citizen -- a no-op SetTimeout would make
     # every one of those assertions vacuously true.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_bool_natives.lua; do
+    #
+    # test_sfx.lua is the cue palette (#24), and it is a separate suite from the
+    # three that already touch audio because its subject is different from all of
+    # them. test_client.lua drives the /brsfx COMMAND, test_shared.lua the
+    # CATALOGUE, test_fuel.lua the three cues the pump and the wall ask for. What
+    # none of them holds is the OWNER'S PALETTE -- roughly thirty set/name pairs
+    # he chose by ear -- or the throttle in front of it.
+    #
+    # IT PINS HIS PAIRS AS LITERALS, which is the same choice test_warmupcrates
+    # makes about his surveyed coordinates and for a stronger reason here: a
+    # wrong sound is SILENT, so a pair edited by somebody tidying up cannot be
+    # noticed by playing the game. Only a test that wrote the pair down
+    # separately can see it.
+    #
+    # AND IT READS config/audio.lua AS TEXT for the half of his palette that is
+    # commented out. Twelve of his picks name a DLC audio bank, which the
+    # catalogue gate in test_shared.lua and the cue-set gate in test_fuel.lua
+    # both refuse, so they are carried as comments -- unreachable from Lua, and
+    # therefore unprotected by anything else. That research cost an afternoon and
+    # is one tidy-up away from being lost.
+    #
+    # Its one behavioural claim that no playtest could reach is the throttle:
+    # #24's "an unthrottled full-auto burst is a hundred overlapping sounds,
+    # which has no visual symptom and will not be found by playing". It also
+    # holds the hitmarker floor against config/weapons.lua's fastest weapon,
+    # which is the only reason that number is defensible rather than arbitrary.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
@@ -500,6 +526,20 @@ fi
 echo "${DIM}== notice names ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_notice_names.lua $(find resources -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# A xN on a notice means "again, while you were still looking at it" (owner,
+# 2026-09-02). The live stack cannot get that wrong -- it coalesces against the
+# rows that are still up. The pause menu's history coalesced against the whole
+# match, so two unrelated events twenty minutes apart read as one that happened
+# twice. The window is now the previous notice's OWN lifetime, which is the part
+# that rots: a `4000` written beside the log agrees with the row on screen for
+# every notice that took the default and disagrees for every one that did not.
+echo "${DIM}== notice repeats ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_notice_repeat.lua || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
@@ -931,7 +971,7 @@ while IFS= read -r manifest; do
     # exists because client/screen.lua was written, committed and deployed by US
     # and never added to client_scripts, and nothing errored. Third-party
     # manifests are upstream's, they are not edited here, and a file undeclared
-    # in one is upstream's bug to have. What IS true of vendored code -- licence
+    # in one is upstream's bug to have. What IS true of vendored code -- license
     # present, version recorded, patch log matching the patches, and the thing
     # actually reaching the box -- is asserted in `vendored third-party` below.
     if [ -f "$resdir/VENDOR.json" ]; then
@@ -1048,7 +1088,7 @@ bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
 # Vendoring is cheap to do and expensive to keep, and it decays in four
 # specific ways. Each one is a check below.
 #
-#   1. THE LICENCE GOES MISSING. MIT requires the notice to travel with the
+#   1. THE LICENSE GOES MISSING. MIT requires the notice to travel with the
 #      code. This is the only item here that is a legal problem rather than an
 #      engineering one.
 #
@@ -1081,7 +1121,7 @@ while IFS= read -r vjson; do
     vrel="${vdir#resources/}"
     ven_n=$((ven_n+1))
 
-    # 1. the licence
+    # 1. the license
     if [ ! -f "$vdir/LICENSE" ]; then
         echo "${RED}FAIL${RST} $vrel is vendored but ships no LICENSE"
         echo "     MIT and everything like it requires the notice to travel with"
@@ -1161,7 +1201,7 @@ if [ "$ven" -eq 0 ]; then
     if [ "$ven_n" -eq 0 ]; then
         echo "${GRN}ok${RST}   no vendored third-party resources"
     else
-        echo "${GRN}ok${RST}   $ven_n vendored resource(s): licence kept, version recorded, patch log matches the source, deploy.sh syncs it"
+        echo "${GRN}ok${RST}   $ven_n vendored resource(s): license kept, version recorded, patch log matches the source, deploy.sh syncs it"
     fi
 else
     echo
@@ -1249,7 +1289,7 @@ if [ -f tools/dispatch.sh ]; then
     # THAN BEING WORKED AROUND. It is the lightest write verb here -- it removes
     # nobody, changes no state a player can feel, and takes no free text at all --
     # but it does something to a player who has not been told, which is precisely
-    # the boundary this list guards. It resolves two licences and hands them to
+    # the boundary this list guards. It resolves two licenses and hands them to
     # br_core; the session, the camera and the audit rows all live over there.
     #
     # THE GAMEMODE HALF IS NOT ON main YET. This file landed here on its own
@@ -1280,7 +1320,7 @@ if [ -f tools/dispatch.sh ]; then
     #
     # `configreport` renders in a browser and lands in an audit log, and the
     # allowlist in do_configreport is the only thing standing between that and
-    # server.cfg, which holds the real licence key. The allowlist itself is the
+    # server.cfg, which holds the real license key. The allowlist itself is the
     # control and this does not replace it -- this is the second pair of eyes on
     # the one line of that file where a mistake is expensive.
     #

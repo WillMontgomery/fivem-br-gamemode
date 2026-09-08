@@ -369,7 +369,7 @@ check(
 
 // ----------------------------------------------------------------- verdict ---
 //
-// THE RULE THAT DECIDES WHETHER 250 VOLTS ARE PAID TO A STRANGER, and the one
+// THE RULE THAT DECIDES WHETHER THE BOUNTY IS PAID TO A STRANGER, and the one
 // place in this repository that can be tested against the console's contract
 // without a table. The cases below are the contract's own edge list: absent is
 // not 'none', a pending row is not a decision, and a missing row is not a
@@ -1229,7 +1229,7 @@ const entryOf = (extra) =>
   const entries = p.ExpressionAttributeValues[':entries']
 
   // A KIND NOBODY CAN RENDER IS NOT STORED. Heterogeneous-by-`kind` is what
-  // makes #34's artifact entry free later; it is not a licence to store
+  // makes #34's artifact entry free later; it is not a license to store
   // anything a caller sends onto a moderation record.
   check('an unknown entry kind is dropped', entries.length, 2)
   check(
@@ -1239,9 +1239,9 @@ const entryOf = (extra) =>
   )
 
   // THE PROFILE LINK #30 ASKS FOR. A display name is neither unique nor stable;
-  // the console keys profiles by licence.
-  check('a kill carries the victim licence', entries[0].victimLicense, 'license:victim')
-  check('and the killer licence', entries[0].killerLicense, 'license:subject')
+  // the console keys profiles by license.
+  check('a kill carries the victim license', entries[0].victimLicense, 'license:victim')
+  check('and the killer license', entries[0].killerLicense, 'license:subject')
   check('and a name to render before the profile loads', entries[0].victimName, 'V')
 }
 
@@ -1279,7 +1279,7 @@ const entryOf = (extra) =>
   check('starting with the match start', item.matchTimeline[0].kind, 'match_start')
   check('then the kill', item.matchTimeline[1].kind, 'kill')
   check(
-    'with the licence the profile link needs',
+    'with the license the profile link needs',
     item.matchTimeline[1].victimLicense,
     'license:v1',
   )
@@ -1652,7 +1652,7 @@ console.log('\nstats: the handler, not just the expression it builds')
   // The GAME's table, not the console's. Defaulting the prefix is how the first
   // version of profileFetch read `ringmaster-players`.
   check('against the game table', cmd.input.TableName, 'br-players')
-  check('keyed on the profile row for that licence', cmd.input.Key, {
+  check('keyed on the profile row for that license', cmd.input.Key, {
     pk: { S: LIC },
     sk: { S: 'profile' },
   })
@@ -1711,7 +1711,7 @@ console.log('\nstats: a failed write answers and never throws into the match')
   check('the failure is reported rather than swallowed', res.ok, false)
   check('with the reason attached', res.extra.error, 'ProvisionedThroughputExceededException')
   check(
-    'and logged against the licence',
+    'and logged against the license',
     bridge.logs.some((l) => l.includes('stats write failed for ' + LIC)),
     true,
   )
@@ -1777,6 +1777,63 @@ console.log('\nspend: a refusal is not a failure')
   check('an overspend is refused, not errored', res.extra.refused, 'not enough currency')
   check('and no error is reported for it', res.extra.error, undefined)
   check('the real balance is read back for the message', res.extra.balance, 700)
+}
+
+console.log('\ntutorial: where an account stands with the guided first run')
+{
+  // ═══ THE READ, WHICH IS THE HALF EVERY CONNECT RUNS ═══
+  //
+  // Absent is the never-answered state and MUST come back as an empty string:
+  // nil does not survive the trip into Lua as a table field, so a reader could
+  // not tell "never offered" from "not sent" without help.
+  bridge.reset()
+  bridge.reply({ Item: marshall({ pk: LIC, sk: 'profile', balance: 1200 }) })
+  bridge.call('br:ddb:inventoryFetch', 60, LIC)
+  await bridge.settle()
+  check('a profile with no tutorial field reads as never answered',
+        lastEmit('br:ddb:inventoryResult').args[1].tutorial, '')
+
+  bridge.reset()
+  bridge.reply({ Item: marshall({ pk: LIC, sk: 'profile', tutorial: 'declined' }) })
+  bridge.call('br:ddb:inventoryFetch', 61, LIC)
+  await bridge.settle()
+  check('and a declined one comes back as it was written',
+        lastEmit('br:ddb:inventoryResult').args[1].tutorial, 'declined')
+
+  // A row that does not exist at all is somebody who has never finished a
+  // match, and they can still have declined -- so the default carries the
+  // field too.
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:inventoryFetch', 62, LIC)
+  await bridge.settle()
+  check('a missing row answers with the never-answered state as well',
+        lastEmit('br:ddb:inventoryResult').args[1].tutorial, '')
+
+  // ═══ THE WRITE, AND WHAT IT REFUSES ═══
+  bridge.reset()
+  bridge.reply({})
+  bridge.call('br:ddb:tutorialSet', 63, LIC, 'declined')
+  await bridge.settle()
+  check('a decline is recorded', answer('br:ddb:tutorialSetResult').ok, true)
+  check('and says which state it wrote',
+        answer('br:ddb:tutorialSetResult').extra.state, 'declined')
+
+  // ONLY THE TWO TERMINAL STATES. Anything else is a caller bug and is refused
+  // loudly rather than written to a row every connect reads -- the same call
+  // awardPay's amount bound makes.
+  bridge.reset()
+  bridge.call('br:ddb:tutorialSet', 64, LIC, 'maybe')
+  await bridge.settle()
+  check('an unknown state is refused', answer('br:ddb:tutorialSetResult').ok, false)
+  check('and named as such',
+        answer('br:ddb:tutorialSetResult').extra.error, 'bad state')
+
+  bridge.reset()
+  bridge.call('br:ddb:tutorialSet', 65, '', 'done')
+  await bridge.settle()
+  check('and so is a write with no license',
+        answer('br:ddb:tutorialSetResult').extra.error, 'no license')
 }
 
 // ------------------------------------------------------ the two-key gate ---
@@ -1986,7 +2043,8 @@ console.log('\nevery verb runs: no free variables anywhere in the bridge')
     'br:ddb:awardQueue': [17],
     'br:ddb:awardPay': [18, LIC, UUID, 500],
     'br:ddb:awardSettle': [19, UUID],
-    'br:ddb:selftest': [20],
+    'br:ddb:tutorialSet': [20, LIC, 'done'],
+    'br:ddb:selftest': [21],
   }
 
   check(

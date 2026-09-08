@@ -32,8 +32,9 @@ Everything uses stock GTA V assets — no custom models, maps, or streamed files
 | M6b | UI overhaul — lobby, HUD, inventory, end screen | **DONE** |
 | M7 | DBNO, revives, spectating, match summary, stats | **DONE** |
 | M7b | Persistence off the game host — DynamoDB / AWS serverless | **DONE** |
-| M8 | Vehicles: fuel and petrol stations, boost, aerial supply drops, ambulance rescue and heals, the warmup showroom | **DONE** |
-| M9 | Moderation: incidents, in-game reports, artifacts, admin ACEs, the in-game console | **WIP** |
+| M8 | Vehicles, aerial supply drops, fuel, rescue | **DONE** |
+| M9 | Moderation: incidents, in-game reports, artifacts, admin ACEs, the in-game console | **DONE** |
+| M10 | Finishing touches: feature requests gathered after M8, and a security audit of both repos | **WIP** |
 
 **Working now:** the loop, end to end. Players queue from a lobby above Cayo
 Perico, form persistent parties, and warm up on the island airstrip while the
@@ -86,7 +87,7 @@ settings screen like every other key.
 > longer hears the stranger they are fighting, and a `nearby` player gets no
 > special case for a squadmate across the island.
 
-**In flight (M9):** moderation, and the game's half of it now runs end to end.
+**Moderation (M9):** the game's half of it runs end to end.
 The anticheat and the in-game player list both file real rows in DynamoDB rather
 than logging and forgetting, and a case carries three things beyond the finding
 itself:
@@ -119,53 +120,25 @@ for anything and waits, licensed by the fact that failure there costs an iframe
 and nothing else.
 
 **Accurate reports are paid for.** When a case a player filed is resolved by an
-admin and an action follows, that player and every corroborator are credited 125
+admin and an action follows, that player and every corroborator are credited 100
 Volts — hours or days later, across any number of restarts, because the debt is
 queued in DynamoDB rather than in memory, and exactly once, because the credit
 and its receipt are the same conditional write. See
 [XP and Volts](docs/progression.md).
 
-> **This said 250 Volts, which is what the owner originally asked for and what
-> the bounty paid until 2026-08-20.** It is half that now. The instruction was
-> "cut all Volts earnings by 50%", said about a playtest and so about the match
-> payout — but this is still a Volts earning paid out of the same balance, and
-> exempting it would have doubled what a report is worth relative to a match
-> without anyone deciding to. Every match-payout number moved the same day, so
-> nothing else in this file quotes a Volts figure that predates it.
+> **The bounty has been three numbers and 100 is the only one anybody chose for
+> it.** It shipped at the 250 the owner first asked for, then halved to 125 on
+> 2026-08-20 along with every match-payout number, under an instruction — "cut
+> all Volts earnings by 50%" — that was given about a playtest and so about the
+> match payout. That made it collateral rather than a decision, which is what
+> #256 raised. The owner set 100 outright on 2026-09-02, so it is now a fixed
+> bounty on a moderation outcome and not a fraction of anything the market pays.
 
-**Vehicles are live (M8).** GTA's ambient traffic and parked-car network are
-still the supply on the ground; five systems sit on top of it.
-
-* **Fuel** is measured in metres driven rather than engine seconds, so idling
-  and using a car as cover cost nothing. A 7,500 m tank puts two stops in a
-  crossing of the map, at one of 29 authored petrol stations, where pumping also
-  repairs the car.
-* **Boost** is four seconds of push and six to get it back, ramped over the
-  first two, with the spend charged to the same tank.
-* **One aerial supply drop** a match, between 3m30 and 7m00 after it goes live.
-  There is no airdrop native, so the crate and its cargo canopy are ours: the
-  descent is a pure function of one published record plus the synced clock, not
-  networked physics, so every client's crate is in the same place at the same
-  millisecond.
-* **Ambulances** do three jobs. 23 stand at surveyed stations from the moment the
-  bus doors open, blipped for a squad the instant a mate is out, and are where a
-  revive key is spent. Separately, the back of *any* ambulance in the world is a
-  15-second heal for a hurt player who is still alive — on the stretcher, siren
-  on, rear doors open, one at a time, and mortal throughout. In solos a **CPR
-  kit** is the third use: it downs you instead of killing you and an NPC medic
-  drives you back into the match, in a van that is deliberately not invincible.
-* **The showroom** parks thirteen vehicles on the warmup pad at 250–1,500 Volts,
-  one per player per match, paid out of the saved balance and delivered as an
-  ordinary inventory item. No refunds, and leaving the match forfeits an unused
-  purchase. Twelve of the thirteen are repainted from a curated palette once per
-  match, so the colour on the pad is the colour you drive away in.
-
-`br_lib/config/vehicles.lua` refuses anything that flies or carries built-in
-weapons — the flight half asked of `GetVehicleType` rather than of a list, so it
-cannot rot — and a client that spawns a refused vehicle files an incident rather
-than being blocked. Everything past that is a catalogue decision: **"a bought car
-must be transport, not an advantage"** is enforced by which models are written
-down, not by any check that could be written.
+**In flight (M10):** finishing touches — the feature requests gathered after M8,
+and a security audit of both repos now that they are public. Landed so far: the
+warmup vehicle showroom, squad revive keys with a network of station ambulances,
+and a Discord card gated on real guild membership. Queued: a guided first run for
+new players, a repair kit, and in-game bug reports.
 
 ---
 
@@ -199,7 +172,7 @@ state" rather than to "not running".
 [pma-voice](https://github.com/AvarianKnight/pma-voice) v7.0.2-rc3 (MIT,
 © Dillon Skaggs), vendored whole rather than installed: every byte outside a
 declared `BR-PATCH` block is identical to the upstream tag, `VENDOR.json` records
-the provenance, and `tools/verify.sh` gates that the licence is present, that
+the provenance, and `tools/verify.sh` gates that the license is present, that
 every patch marker in the tree is declared and every declared patch is in the
 tree, and that `tools/deploy.sh` actually syncs it. It owns the voice engine.
 `br_core/client/voice.lua` expresses our rules through it and calls exactly one
@@ -265,6 +238,6 @@ on them without either being able to call the other:
 
 ---
 
-## Licence
+## License
 
 Not yet chosen. Until one is added, no permissions are granted beyond viewing.

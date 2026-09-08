@@ -300,6 +300,11 @@ AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     -- and the marker they are about to look for must not be separated by a
     -- clock estimate.
     addBlip(d)
+
+    -- THE ANNOUNCE, NOT THE ARM OR THE OPEN. This handler also fires when the
+    -- drop lands and when /brairdrop forces one; `tLand` is nil only on the
+    -- inbound message, which is the one worth a sound.
+    if d.tLand == nil then BR.Sfx.play('airdrop.inbound') end
 end)
 
 -- Between matches the world is a different place, and a crate still falling

@@ -98,6 +98,22 @@ function BR.Server.notify(target, text, tone, opts)
         ms     = opts.ms,
         endsAt = opts.endsAt,
         sticky = opts.sticky or nil,
+        -- ═══ WHAT THIS TOAST SOUNDS LIKE, WHEN THE TONE IS WRONG ABOUT IT ═══
+        --
+        -- br_ui/client/nui.lua gives every `warn` toast the toast.warn cue. Two
+        -- kinds of notice must not take it:
+        --
+        --   * one whose EVENT already has a sound of its own -- a squadmate
+        --     going down plays squad.down, and the toast that says so arriving
+        --     with a second sound is one event making two noises, which is the
+        --     thing config/audio.lua's header exists to prevent. Those pass
+        --     `cue = false`.
+        --   * one that wants a DIFFERENT sound -- the shop's shortfall passes
+        --     `cue = 'shop.denied'`.
+        --
+        -- `false` RATHER THAN A MISSING KEY, because absent already means
+        -- "the tone decides" and that is the default this is an exception to.
+        cue    = opts.cue,
     }
     if type(target) == 'table' then
         for _, src in ipairs(target) do

@@ -91,7 +91,7 @@ SRC_DIR="${BR_SRC_DIR:-$SERVER_ROOT/.gamemode-src}"
 # loaded" rather than "what the repo says", which is the whole point of asking
 # the box instead of reading GitHub.
 #
-# server.cfg is NOT in the repo and never will be -- it holds the real licence
+# server.cfg is NOT in the repo and never will be -- it holds the real license
 # key -- so there is nothing to compare it against and no version of this that
 # works without reading the file on the box.
 CFG_FILE="${BR_SERVER_CFG:-$SERVER_ROOT/server.cfg}"

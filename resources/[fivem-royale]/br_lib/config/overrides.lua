@@ -53,7 +53,6 @@
 --
 -- So, excluded on purpose:
 --
---   engineTeams      client-read (br_core/client/natives.lua decides the team).
 --   dbnoRevive*      client-read (br_core/client/squadmates.lua).
 --   storm phases     client-read; br_core/client/storm.lua renders from the
 --                    same table, and docs/match-math.md's arithmetic is built
@@ -155,19 +154,6 @@ Ov.SPEC = {
         note   = 'summary screen',
     },
     {
-        convar = 'br_partyGraceSeconds',
-        group  = 'Match',
-        key    = 'partyGraceSeconds',
-        kind   = 'int',
-        -- ZERO IS A REAL SETTING HERE, not a broken one: "start the moment the
-        -- ready-ups clear the gate, never wait for a straggler". It is also the
-        -- value Lua is least helpful about -- `if v then` is true for 0 -- which
-        -- is why nothing below tests a parsed number for truthiness.
-        min    = 0,
-        max    = 300,
-        note   = 'wait for a partymate',
-    },
-    {
         convar = 'br_autofill',
         group  = 'Match',
         key    = 'autofill',
@@ -208,7 +194,7 @@ Ov.SPEC = {
         kind   = 'url',
         -- THE ADMIN TAB IN THE PAUSE MENU (#23). Unset is the default and the
         -- default is OFF: no tab, no HTTP call, no mention anywhere except one
-        -- line in the boot banner. That is the whole licence for the feature --
+        -- line in the boot banner. That is the whole license for the feature --
         -- the game must never depend on Ringmaster, so a server with no console
         -- configured has to be a server that plays exactly as it did before.
         --
@@ -553,9 +539,12 @@ function Ov.parse(spec, raw)
 
     local v, why = parseInt(raw)
     -- `v == nil`, never `not v`. 0 is TRUTHY in Lua, so the two happen to agree
-    -- today -- but partyGraceSeconds already has 0 as a real setting, nil is
-    -- the only failure sentinel this file uses, and a `not v` written here is
-    -- how the next legitimate zero gets read as a parse failure.
+    -- while every int in the spec has a minimum above zero -- but nil is the
+    -- only failure sentinel this file uses, and a `not v` written here is how
+    -- the first tunable with a real zero gets read as a parse failure. That is
+    -- not left to a comment: tools/test_config.lua builds a spec entry with
+    -- min = 0 and drives this function, bounds() and apply() through it, so
+    -- the rule is checked on every run rather than remembered.
     if v == nil then return nil, why end
 
     local lo, hi, floorWhy = Ov.bounds(spec)

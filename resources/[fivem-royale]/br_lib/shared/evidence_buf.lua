@@ -90,7 +90,7 @@ function BR.EvidenceBuf.new(opts)
     o.stripMax = opts.stripMax or DEFAULTS.stripMax
     o.refusedMax = opts.refusedMax or DEFAULTS.refusedMax
 
-    -- Licences whose records are kept larger, because a case has been opened
+    -- Licenses whose records are kept larger, because a case has been opened
     -- about them. See `promote` -- this is what makes the promotion apply to
     -- records that do not exist yet.
     o.promoted = {}
@@ -195,7 +195,7 @@ function BR.EvidenceBuf:track(key, meta)
     return r
 end
 
---- Give one record the caps its licence has been promoted to, if any.
+--- Give one record the caps its license has been promoted to, if any.
 function BR.EvidenceBuf:applyPromotion(r)
     if r.license == nil then return end
     local caps = self.promoted[r.license]
@@ -302,12 +302,12 @@ end
 --- case is filed early -- the anticheat fires on a doubling, a report comes in
 --- mid-match -- so the promotion is in place for most of the round.
 ---
---- IT REGISTERS THE LICENCE, IT DOES NOT ONLY WALK THE RECORDS THAT EXIST NOW,
+--- IT REGISTERS THE LICENSE, IT DOES NOT ONLY WALK THE RECORDS THAT EXIST NOW,
 --- and that distinction is the difference between this working and this doing
 --- nothing at all. The realistic case is a case filed EARLY -- the anticheat
 --- trips on a player who has not killed anybody yet -- so at the moment of
 --- promotion there is frequently no record to promote, and every record created
---- afterwards would be born with the default cap. Registering the licence makes
+--- afterwards would be born with the default cap. Registering the license makes
 --- `track` apply the caps to records that appear later, including the one this
 --- player gets when they reconnect mid-match.
 ---
@@ -431,7 +431,7 @@ function BR.EvidenceBuf:clearMatch(matchId)
     -- case last round must not go on costing a 250-row buffer in every round
     -- afterwards -- the whole reason the caps are raised per incident rather
     -- than globally is that the cost stays tied to a case. Only dropped once the
-    -- licence has no records left at all, so clearing one match does not
+    -- license has no records left at all, so clearing one match does not
     -- un-promote a player who is somehow live in another.
     for license in pairs(touched) do
         if #self:forLicense(license) == 0 then

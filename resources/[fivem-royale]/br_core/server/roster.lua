@@ -150,6 +150,23 @@ local function newEntry(src)
         -- that anyone else can act on.
         revivePending = nil,
 
+        -- THE GUIDED FIRST RUN HAS THEM, AND MATCHMAKING MAY NOT (#261).
+        --
+        -- Written by BR.Roster.setTutorial and by nothing else; cleared by the
+        -- same verb, and by BR.Match.create for anybody a match takes anyway.
+        -- While it stands, this player is refused at the one door into a match
+        -- (BR.Party.mayEnter, which BR.Lobby.admissible splits on) and at every
+        -- door into a party -- so no warmup clock can start against somebody
+        -- who is still reading card three.
+        --
+        -- IN NEITHER ALLOWLIST, for revivePending's reason rather than diedAt's:
+        -- this is a promise the server has made to ONE player about what will
+        -- not happen to them. No other client can act on it -- the greying of
+        -- the party controls happens on that player's own page, driven by their
+        -- own Lua -- and the console cannot end somebody's tutorial, so it would
+        -- be a column over there that nothing can be done with.
+        tutorial   = nil,
+
         joinedAt   = GetGameTimer(),
         bucket     = 0,
     }
@@ -270,6 +287,243 @@ end
 RegisterNetEvent(BR.Net.SETTINGS_NAME)
 AddEventHandler(BR.Net.SETTINGS_NAME, function(data)
     BR.Roster.setName(source, data and data.name)
+end)
+
+--- Is this player inside the guided first run right now (#261)?
+---
+--- ONE QUESTION ASKED IN SIX PLACES, and it is a function rather than six
+--- `entry.tutorial` reads so that the day the answer needs a second term there
+--- is one place to put it. The callers are BR.Party.mayEnter -- the single door
+--- into a match -- the four party verbs that could otherwise put somebody in a
+--- squad they may not be in, and BR.Match.startBlocker, which has to keep the
+--- lobby's explanation of its own wait honest.
+--- @param src integer
+--- @return boolean
+function BR.Roster.inTutorial(src)
+    local entry = roster[src]
+    return (entry ~= nil and entry.tutorial) == true
+end
+
+--- Start or end the tutorial HOLD -- the server's half of #261.
+---
+--- ═══════════════════════════════════════════════════════════════════════════
+--- WHAT THE FLAG DOES
+--- ═══════════════════════════════════════════════════════════════════════════
+---
+--- Owner, 2026-09-05: "if they're in the tutorial, they're not actively on any
+--- warmup timer at all until the tutorial is complete. This means matchmaking
+--- is not allowed to touch them and they cannot join a party while the tutorial
+--- toggle is on because their party will get into the match while they're still
+--- in warmup doing the tutorial."
+---
+--- Three rules, and this flag is the input to all three:
+---
+---   * BR.Party.mayEnter refuses them. That is the ONE predicate
+---     BR.Lobby.admissible splits its queue on, and both doors into a match are
+---     built on that split -- the formation tick consumes `ready`, the late-join
+---     sweep admits `ready` -- so a player refused there is refused at both,
+---     without a second rule anywhere for the two to disagree by.
+---   * No warmup clock can therefore start against them, because they never
+---     reach BR.PlayerState.WARMUP to be given one. The countdown is a property
+---     of a match instance, not of a player, so being kept out of every instance
+---     IS being kept off every clock -- there is no separate timer to suppress.
+---   * The party verbs in server/party.lua refuse them, so nobody else's
+---     readiness can carry them in through a squad either.
+---
+--- The greyed party controls are the UI's courtesy; this is the rule. A client
+--- that never drew the grey is refused here just the same.
+---
+--- ═══════════════════════════════════════════════════════════════════════════
+--- A CLIENT THAT CAN SAY "DO NOT MATCHMAKE ME" CAN SAY IT FOREVER
+--- ═══════════════════════════════════════════════════════════════════════════
+---
+--- That is true, no amount of validation fixes it -- the server cannot see a
+--- page -- and what it actually BUYS is the question that decided the shape of
+--- this function.
+---
+--- IT BUYS NOTHING THAT ABSTENTION DOES NOT ALREADY BUY. A player who simply
+--- never presses Ready is already invisible to the formation tick, already on no
+--- clock, already in no squad, for as long as they like, with a stock client and
+--- no message to send. This exemption hands out no capability the lobby does not
+--- already give away free to anyone willing to keep their hands off one button.
+--- There is nothing on the far side of the exploit to reach.
+---
+--- ═══ SO THERE IS NO TIME CAP, AND THE ABSENCE IS THE DECISION ═══
+---
+--- A cap was the obvious answer and it is the wrong one, twice:
+---
+---   1. IT IS THE THING THE OWNER RULED OUT, WEARING ANOTHER NAME. "Not
+---      actively on any warmup timer at all until the tutorial is complete" is
+---      a sentence about a clock. A cap is a clock -- one that expires on
+---      somebody still mid-walkthrough and drops them into the exact match this
+---      feature exists to keep them out of. It would fail as the feature at
+---      precisely the moment it fired.
+---   2. IT BINDS ONLY THE HONEST READER. A slow first-timer meets the cap. A
+---      modified client meets it too and sends one more message. The cap costs
+---      the cheat a keystroke and costs the player the feature.
+---
+--- WHAT DOES BIND IS THE SHAPE OF THE GRANT, and it is three things:
+---
+---   B1. IT IS ONLY GRANTED FROM A STANDING START -- LOBBY, attached to no
+---       match. So it can never be an escape hatch: it cannot dodge a warmup, a
+---       flight, a fight or a results publish, and dodging is the only version
+---       of this that takes something away from somebody else.
+---   B2. IT IS NOT FREE. Raising it drops the player out of the queue and out of
+---       their party, below. A flag held WHILE queued would make BR.Lobby.count
+---       lie to every lobby screen in the room; a flag held while partied would
+---       hold that party at the door indefinitely, which is exactly the hostage
+---       BR.Party.mayEnter's own release conditions were written to avoid.
+---   B3. IT IS PER-CONNECTION AND WRITTEN NOWHERE. It lives on the roster entry,
+---       dies with it on disconnect, and never reaches KVP or DynamoDB -- so it
+---       cannot accumulate across sessions, cannot be replayed into a later one,
+---       and a player who abuses it into uselessness fixes it by reconnecting.
+---
+--- ═══ AND THE CONDITION THAT REVERSES ALL OF THAT ═══
+---
+--- "Buys nothing" is an argument about today's lobby, not a law. The moment
+--- anything ACCRUES to a player for standing in it -- an idle reward, a pass
+--- tick, a queue-position bonus, a placeholder that pays for being connected --
+--- the exemption starts buying something and a cap stops being optional.
+--- Whoever adds the first of those should read this paragraph as addressed to
+--- them, because nothing else in the tree will mention it.
+---
+--- @param src integer
+--- @param on boolean  true asks for the hold; false gives it up
+--- @return boolean  whether the hold stands after this call
+function BR.Roster.setTutorial(src, on)
+    local entry = roster[src]
+    if not entry then return false end
+
+    on = on == true
+
+    -- GIVING IT UP IS BELIEVED ON SIGHT, AND ONLY THIS DIRECTION IS. Ending the
+    -- hold hands the player back to matchmaking, which is the thing the hold was
+    -- protecting them from -- there is nobody to stop from doing that, and a
+    -- refusal here is how a player gets stranded outside the queue with no
+    -- control anywhere that puts them back in. Unconditional, so it also clears
+    -- a flag left on an entry by any path that ever stops agreeing with this
+    -- one.
+    if not on then
+        entry.tutorial = nil
+        return false
+    end
+
+    if entry.tutorial then return true end
+
+    -- B1: A STANDING START, AND BOTH HALVES ARE LOAD-BEARING. Neither implies
+    -- the other: a player on the ENDED summary trip home is in LOBBY with a
+    -- matchId still attached (applyBucket says so in as many words), and
+    -- granting the hold to them would pull a player out of a match that has not
+    -- finished publishing their results.
+    if entry.state ~= BR.PlayerState.LOBBY or entry.matchId ~= nil then
+        print(('[br_core] %s (%d) asked for the tutorial hold from %s -- refused')
+            :format(entry.name, src, tostring(entry.state)))
+        return false
+    end
+
+    entry.tutorial = true
+
+    -- B2: AND IT COSTS THEM THE QUEUE AND THE PARTY.
+    --
+    -- AFTER the flag is set, not before, so neither verb below can run against a
+    -- grant that has not happened yet -- BR.Party.leave broadcasts, and a
+    -- broadcast is somewhere a client can answer from.
+    --
+    -- THE PARTY IS LEFT OUT LOUD. `quiet` exists for switching parties, where
+    -- there is a second event on the way that explains the first; there is no
+    -- second event here. The mates have to hear it or their own hold at the door
+    -- (BR.Party.mayEnter) simply lifts one tick later with nothing anywhere
+    -- saying why. Both sentences are already-shipped wording for exactly the
+    -- thing that happened -- this player did leave the party.
+    --
+    -- Nil-guarded on the MODULE rather than the answer: this file loads ahead of
+    -- both (br_core/fxmanifest.lua), and a build without either is one where
+    -- there is no queue to leave and no party to be in. Same shape as the
+    -- cleanup calls in BR.Roster.remove.
+    if BR.Lobby and BR.Lobby.leave then BR.Lobby.leave(src) end
+    if BR.Party and BR.Party.leave then BR.Party.leave(src) end
+
+    print(('[br_core] %s (%d) is in the tutorial -- held out of matchmaking '
+        .. 'and out of parties until they finish'):format(entry.name, src))
+    return true
+end
+
+--- Is this player taking the IN-GAME half, on the pad, right now?
+---
+--- ═══ A SECOND FLAG, BECAUSE B1 CANNOT BE WIDENED ═══
+---
+--- BR.Roster.setTutorial's hold is granted only from a standing start -- LOBBY,
+--- no match -- and that restriction is what stops it being a dodge button for a
+--- fight or a results publish. The in-game walkthrough runs INSIDE a match, on
+--- the warmup pad, so it can never hold that flag and asking it to was the gap
+--- the owner hit: the warmup clock ran under every card.
+---
+--- SO THIS ONE IS THE OPPOSITE SHAPE. It is granted ONLY from WARMUP with a
+--- match attached, and it buys nothing except time on the pad: no matchmaking
+--- exemption, no party exemption, no state change. What it does is hold the
+--- warmup of the match the player is already in -- see BR.Match.tutorialHold.
+---
+--- ⚠ AND IT COSTS THE ROOM, WHICH IS THE OWNER'S CALL RATHER THAN A FREE WIN.
+--- 2026-09-07: "freeze the room for the warmup timer". A warmup is match-wide --
+--- there is no per-player countdown to hold -- so one learner reading cards
+--- holds everybody else on the pad with them. That is the trade, it is
+--- deliberate, and it is why the flag dies the moment the walkthrough does.
+---
+--- PER-CONNECTION AND WRITTEN NOWHERE, like its sibling: it lives on the roster
+--- entry, dies with it, and never reaches KVP or DynamoDB.
+--- @param src integer
+--- @param on boolean
+--- @return boolean  whether the hold stands after this call
+function BR.Roster.setTutorialGame(src, on)
+    local entry = roster[src]
+    if not entry then return false end
+
+    on = on == true
+
+    -- GIVING IT UP IS BELIEVED ON SIGHT, and only this direction is. Ending it
+    -- hands the room its clock back, which nobody needs stopping from doing.
+    if not on then
+        entry.tutorialGame = nil
+        return false
+    end
+
+    if entry.tutorialGame then return true end
+
+    -- THE MIRROR OF B1. Only from the pad, and only inside a match: anywhere
+    -- else there is no warmup to hold and the flag would be a way to stop a
+    -- clock that is not running.
+    if entry.state ~= BR.PlayerState.WARMUP or entry.matchId == nil then
+        print(('[br_core] %s (%d) asked for the warmup hold from %s -- refused')
+            :format(entry.name, src, tostring(entry.state)))
+        return false
+    end
+
+    entry.tutorialGame = true
+    print(('[br_core] %s (%d) is taking the in-game tutorial -- match %s holds '
+        .. 'its warmup until they are done'):format(entry.name, src,
+                                                    tostring(entry.matchId)))
+    return true
+end
+
+--- Is anybody in this match still reading tutorial cards?
+--- @param matchId integer
+--- @return integer  how many
+function BR.Roster.tutorialGameIn(matchId)
+    local n = 0
+    BR.Roster.each(function(e)
+        return e.tutorialGame == true and e.matchId == matchId
+    end, function() n = n + 1 end)
+    return n
+end
+
+RegisterNetEvent(BR.Net.TUTORIAL_SET)
+AddEventHandler(BR.Net.TUTORIAL_SET, function(data)
+    data = type(data) == 'table' and data or {}
+    BR.Roster.setTutorial(source, data.on)
+    -- TWO FLAGS ON ONE MESSAGE, and they are two different holds -- see
+    -- BR.Roster.setTutorialGame. `game` is absent from every sender that
+    -- predates the in-game half, which reads as false and is correct for them.
+    BR.Roster.setTutorialGame(source, data.game)
 end)
 
 -- LEAVING THE SERVER IS THE SERVER'S TO DO. The client's own `disconnect`

@@ -52,9 +52,95 @@ import { useUi } from '../store'
  * push. A glyph is therefore honest about knowing nothing rather than guessing,
  * and it fills itself in the moment the push lands.
  */
-export function KeyCap({ command, fs = '1.15rem' }: {
-  /** The RegisterCommand name, e.g. 'brptt'. Never a key label. */
-  command: string
+/**
+ * The four arrow keys, drawn rather than typed.
+ *
+ * ═══ ANTON HAS NO ARROWS, WHICH IS THE WHOLE PROBLEM ═══
+ *
+ * A cap's label is set in the display face, and that face carries letters,
+ * digits and punctuation. An arrow CHARACTER is not in it, so the browser
+ * silently substitutes some other installed font -- whatever it finds -- and
+ * what it finds is a thin, light, text-weight glyph sitting inside a heavy
+ * display cap. Owner, twice: "needs much more weight. It's far too thin. Perhaps
+ * 3x", then "the SVG arrow is still far too thin and now low contrast since you
+ * added a glyph around it."
+ *
+ * font-weight cannot fix it (the substituted face has one weight) and neither
+ * could stroking the glyph, which thickens an outline without giving the arrow
+ * any more body. So the arrow is a PATH, at a stroke width chosen against
+ * Anton's own stems rather than against a text font's.
+ *
+ * `currentColor` AND NOT A LITERAL, so it takes the cap's foreground -- white on
+ * the filled plate, dimmed with everything else when a cap is unbound. That is
+ * the contrast half of the same report: a thin grey arrow on a dark plate reads
+ * as low contrast because it is thin, not because it is grey.
+ *
+ * SIZED IN `em`, so it tracks the cap, which tracks the sentence, which tracks
+ * the player's text-size preference. Every other dimension in this file is `em`
+ * for the same reason (#159).
+ */
+const ARROWS: Record<string, string> = {
+  '←': 'M20 12 H6 M12 5 L5 12 L12 19',
+  '→': 'M4 12 H18 M12 5 L19 12 L12 19',
+  '↑': 'M12 20 V6 M5 12 L12 5 L19 12',
+  '↓': 'M12 4 V18 M5 12 L12 19 L19 12',
+}
+
+function Arrow({ d }: { d: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="1em"
+      height="1em"
+      fill="none"
+      // ═══ BRIGHTER THAN THE CAP, NOT THE SAME AS IT ═══
+      //
+      // Owner, 2026-09-07: "the arrows themselves should be a brighter white,
+      // akin to the font in our custom glyphs." `currentColor` inherits the
+      // cap's foreground, which is right for a LETTER -- the letter is the
+      // label -- and slightly wrong for a stroked path: an outline of a given
+      // colour reads darker than a filled letter of the same colour, because
+      // there is less of it per pixel. So it is stated rather than inherited.
+      stroke="#ffffff"
+      // FOUR, MEASURED AGAINST THE CAP'S OWN LETTERS. Anton at this size has
+      // stems around a sixth of the glyph box; 4/24 is the same sixth, so an
+      // arrow and a letter carry equal weight inside the same plate.
+      strokeWidth={4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      style={{ display: 'block' }}
+    >
+      <path d={d} />
+    </svg>
+  )
+}
+
+export function KeyCap({ command, label, fs = '1.15rem' }: {
+  /**
+   * The RegisterCommand name, e.g. 'brptt'. Never a key label.
+   *
+   * Omitted only when `label` is given -- see it for the one case that is.
+   */
+  command?: string
+  /**
+   * A literal glyph, for a key that is NOT a rebindable command.
+   *
+   * ═══ EXACTLY ONE CALLER AND IT IS NOT A LOOPHOLE ═══
+   *
+   * The guided first run's in-game cards are driven by the raw arrow keys, read
+   * as GTA controls in br_core/client/tutorial.lua rather than through
+   * BR.Keys -- they are not bindings, there is no command to name, and nothing
+   * in the rebinder will ever move them. So there is no lookup to do and the
+   * glyph is the whole truth.
+   *
+   * IT MUST NOT BECOME THE WAY TO DRAW A BINDING. Every real key in this
+   * interface goes through `command`, because #209 requires a cap on screen to
+   * follow a live rebind and a literal cannot: it is a photograph of the
+   * binding at the moment it was written. If a second caller ever wants this
+   * for something a player can rebind, the answer is `command`.
+   */
+  label?: string
   /**
    * The plate's own size, and THE ONLY DIMENSION A CALLER SETS. Everything
    * else about the cap -- its floor width, its padding -- is expressed in `em`
@@ -85,6 +171,9 @@ export function KeyCap({ command, fs = '1.15rem' }: {
   // A STRING OUT OF THE STORE, NOT THE ROW. Returning the matched object would
   // hand zustand a fresh reference on every push and re-render every glyph in
   // the interface whenever any binding anywhere changed.
+  // THE HOOK RUNS EVEN FOR A LITERAL CAP, because hooks cannot be conditional.
+  // An undefined `command` simply matches nothing and the lookup costs one scan
+  // of a short array; the alternative is two components sharing one style block.
   const key = useUi((s) => s.keybinds.find((k) => k.command === command)?.key) || ''
 
   return (
@@ -92,12 +181,22 @@ export function KeyCap({ command, fs = '1.15rem' }: {
       className="plate ts font-display text-center"
       style={{
         ['--fs' as string]: fs,
-        ['--edgec' as string]: key
+        ['--edgec' as string]: (label !== undefined || key)
           ? 'rgba(255,255,255,0.22)'
           : 'rgba(255,255,255,0.12)',
         ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
         ['--cut-max' as string]: '0.3rem',
-        color: key ? '#ffffff' : 'rgba(255,255,255,0.3)',
+        // ═══ A LITERAL IS NEVER UNBOUND, AND THAT IS WHY IT WAS GREY ═══
+        //
+        // The dim colour means "this action has no key" -- it goes with the `--`
+        // the render draws instead of a letter. A LABEL cap has no command to
+        // resolve, so `key` was empty and every literal took the unbound
+        // treatment: [[Tab]], [[Enter]] and [[Esc]] all drew grey on cards that
+        // were telling the player to press them (owner, 2026-09-08, twice).
+        //
+        // A literal is a key that exists and cannot be rebound. It is never the
+        // thing the dim colour is describing.
+        color: (label !== undefined || key) ? '#ffffff' : 'rgba(255,255,255,0.3)',
         // ═══ THE CAP IS SQUARE, AND IT IS SQUARE IN `em` ═══
         //
         // Owner, 2026-08-22: "the glyphs work, but they draw way too wide and
@@ -133,8 +232,20 @@ export function KeyCap({ command, fs = '1.15rem' }: {
         // smallest floor that still reads as a cap rather than a bar, measured
         // against `I`, `1` and `'`.
         minWidth: '1.75em',
-        padding: '0.1em 0.32em',
+        padding: '0.1em 0.4em',
         lineHeight: 1.4,
+        // ═══ TRACKING, BECAUSE ANTON IS CONDENSED ═══
+        //
+        // Owner, 2026-09-07: "the font inside the glyph looks great but can you
+        // increase the font spacing maybe 20%?" Anton sets tight by design,
+        // which is right for a headline and cramped for a two- or three-letter
+        // key label read at a glance. 0.06em is about a fifth of the natural
+        // side bearing at this size.
+        //
+        // THE TRAILING SPACE IS PAID BACK BY THE PADDING ABOVE. letter-spacing
+        // adds its gap AFTER the last glyph too, so a centred label drifts left
+        // by half of it; the extra horizontal padding restores the centre.
+        letterSpacing: '0.06em',
         // ═══ THE THREE PROPERTIES THAT MAKE IT WORK INSIDE A SENTENCE ═══
         //
         // inline-block, AND IT IS LOAD-BEARING RATHER THAN TIDINESS. On a bare
@@ -206,7 +317,9 @@ export function KeyCap({ command, fs = '1.15rem' }: {
         transition: 'none',
       }}
     >
-      {key || '--'}
+      {label !== undefined
+        ? (ARROWS[label] ? <Arrow d={ARROWS[label]} /> : label)
+        : (key || '--')}
     </span>
   )
 }
@@ -238,6 +351,25 @@ export function KeyCap({ command, fs = '1.15rem' }: {
 const KEY_TOKEN = /\{key:([A-Za-z0-9_]+)\}/g
 
 /**
+ * The currency, in the currency's own colour: `~500 Volts~`.
+ *
+ * ═══ SAME SCANNER, BECAUSE IT IS THE SAME KIND OF HOLE ═══
+ *
+ * Owner, 2026-09-07: "In the final toast please make sure the volts text and
+ * quantity are in our signature color. This should also be the case after
+ * purchasing an item in the shop." Those sentences are LUA's -- the amount is a
+ * number the server worked out -- so the page cannot compose them, and Lua
+ * cannot paint them. What crosses is the sentence with a hole in it, which is
+ * exactly the argument KEY_TOKEN above already makes for keys.
+ *
+ * DELIBERATELY UNLIKE ANYTHING A HUMAN WOULD TYPE, for the same reason: this
+ * stack also carries player-authored names, and a tilde pair around a short run
+ * with no tilde inside it is not a shape a handle can be. A string that does not
+ * match is passed through untouched.
+ */
+const VOLTS_TOKEN = /~([^~]+)~/g
+
+/**
  * A sentence with its keys drawn as keys.
  *
  * Renders `text` as-is except for `{key:command}` tokens, each of which becomes
@@ -249,12 +381,24 @@ export function KeyText({ text, fs }: { text: string; fs?: string }) {
   // A FRESH REGEX PER CALL. A /g literal carries `lastIndex` between calls, so
   // a shared one would start the second notice's scan wherever the first
   // finished and silently miss its token.
-  const re = new RegExp(KEY_TOKEN.source, 'g')
+  // ONE PASS OVER BOTH MARKS, so a sentence may carry a key and an amount and
+  // neither swallows the other. A fresh regex per call: a /g literal carries
+  // `lastIndex` between calls, so a shared one would start the second notice's
+  // scan wherever the first finished and silently miss its token.
+  const re = new RegExp(`${KEY_TOKEN.source}|${VOLTS_TOKEN.source}`, 'g')
   const parts: ReactNode[] = []
   let last = 0
   let m: RegExpExecArray | null
 
   while ((m = re.exec(text)) !== null) {
+    if (m[2] !== undefined) {
+      if (m.index > last) parts.push(text.slice(last, m.index))
+      parts.push(
+        <span key={`${m.index}:v`} className="tut-volts">{m[2]}</span>,
+      )
+      last = m.index + m[0].length
+      continue
+    }
     // The capture group is not optional in the pattern, so it is always a
     // string here; the local is what tells the compiler so under
     // noUncheckedIndexedAccess, and it keeps the JSX below readable.

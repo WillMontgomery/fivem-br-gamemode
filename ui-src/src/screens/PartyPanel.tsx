@@ -44,6 +44,62 @@ export default function PartyPanel({
 
   const inParty = squad.members.length > 1
 
+  /* RANDOM IS WHERE SQUADS STARTS, EVERY TIME -- NOT WHERE IT WAS LEFT.
+   *
+   * Owner, playtest 2026-09-02, twice:
+   *
+   *   "when that player goes back to lobby their UI defaults to squads/create -
+   *    it should default to squads/random as we always have that be the default
+   *    if they're no longer in a squad"
+   *
+   *   "every time they click squads in lobby we should go to random. create or
+   *    join are manual clicks. example if they were in a party, left the party,
+   *    select solos, then select squads, today it defaults back to the join tab
+   *    and not random."
+   *
+   * ONE RULE, AND THE TWO REPORTS ARE THE SAME BUG. `subMode` was initialised to
+   * 'random' and then never written again except by a press, and this component
+   * is NEVER UNMOUNTED -- App.tsx mounts the lobby once and toggles it by
+   * opacity, and Lobby.tsx renders this panel in solo mode too -- so the initial
+   * value is spent the first time anybody touches a tab and the state is sticky
+   * for the rest of the session. That is exactly how a player who built a squad
+   * through Create comes back from the match to Create, and a player who found
+   * one through Join comes back to Join.
+   *
+   * WHY IT IS WORTH MORE THAN A COSMETIC DEFAULT: the effect below reports
+   * Create and Join as READY-UP BLOCKERS when no party exists. So a player
+   * returning to an empty lobby on a stale Create tab finds the only button on
+   * the screen disabled, reading "Invite someone first, or switch to Random."
+   *
+   * THE DEPENDENCIES ARE THE RULE, and the body is deliberately unconditional:
+   * every change of mode and every change of party membership puts the tab back
+   * to Random, and NOTHING ELSE DOES -- so a press survives, which is his "create
+   * or join are manual clicks".
+   *
+   *   clicking Squads (from Solo)   -> `mode` changes  -> Random. His second
+   *                                    report, and it covers the auto-flip in
+   *                                    Lobby.tsx that selects Squads when a
+   *                                    party forms around you.
+   *   the party dissolves after a   -> `inParty` false -> Random. His first
+   *   match, or you leave it           report: "no longer in a squad".
+   *
+   * A PARTY MEMBER PRESSING SQUADS STILL LANDS ON RANDOM, and the code says that
+   * is right rather than merely tolerable: while `inParty` the three tabs are not
+   * rendered at all -- the branch below shows the party roster instead -- so the
+   * reset is invisible while it happens and is exactly what makes the party's
+   * eventual dissolution land on Random rather than on whatever was chosen
+   * before it formed. Taking `inParty` out of the dependencies would leave that
+   * case stale, which is the first report.
+   *
+   * SENDING AN INVITE IS NOT A CHANGE OF MEMBERSHIP. `inParty` is
+   * `members.length > 1`, and a party awaiting answers has one member -- so a
+   * player mid-way through building a squad on Create is not thrown off it when
+   * they invite somebody, or when that person declines.
+   */
+  useEffect(() => {
+    setSubMode('random')
+  }, [mode, inParty])
+
   // Whether *I* am the leader, which needs my own server id -- Lua sends it,
   // because the interface has no other way to know it. The previous check asked
   // whether the party HAS a leader, which is true for every member, so everyone

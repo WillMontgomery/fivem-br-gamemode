@@ -28,6 +28,90 @@ BR.Net = {
     -- party" boolean, and when that stopped leaving the party there was no
     -- server-side rule to fall back on (user, 2026-08-09).
     MODE_SET        = 'br:mode:set',
+    -- C->S { on = boolean }. "I have started the guided first run", and "I am
+    -- finished with it" (#261).
+    --
+    -- ═══ WHY THE SERVER HEARS ABOUT A WALKTHROUGH AT ALL ═══
+    --
+    -- It is a stack of cards pointing at lobby controls, and for as long as
+    -- that was all it was the server had no business knowing. It stopped being
+    -- all it was on 2026-09-05: "if they're in the tutorial, they're not
+    -- actively on any warmup timer at all until the tutorial is complete. This
+    -- means matchmaking is not allowed to touch them and they cannot join a
+    -- party while the tutorial toggle is on" -- the owner. Those are three
+    -- refusals, and not one of them is enforceable where the cards live: the
+    -- formation tick, the late-join door and the party verbs are all on this
+    -- side of the wire. The greyed control is the courtesy and the refusal is
+    -- the rule -- server/shop.lua's convention, applied to a lobby.
+    --
+    -- IT CARRIES NO DEADLINE, NO STEP AND NO PROGRESS, and the absence is the
+    -- design. The server has exactly one question about the walkthrough --
+    -- "may this player be dealt into a match" -- so the only thing on the wire
+    -- is the answer to it. A step number here would be a field the server holds
+    -- and nothing reads, which is this project's signature defect.
+    --
+    -- WHAT BOUNDS THE TRUST IS WRITTEN OVER BR.Roster.setTutorial in
+    -- server/roster.lua, and it should be read before this is sent from
+    -- anywhere new. In short: `on = true` is a REQUEST, refused from anywhere
+    -- but a standing start, and it costs the sender their place in the queue
+    -- and their party. `on = false` is believed on sight, because giving the
+    -- exemption up is not a thing anybody needs stopping from doing.
+    --
+    -- IT IS SENT NOW, from br_core/client/tutorial.lua's `tellServer` -- which
+    -- ORs the two halves, because the server has one question and both halves
+    -- answer it the same way. This paragraph used to say nothing sent it, which
+    -- was this project's orphaned-subsystem pattern said out loud: the
+    -- walkthrough shipped in 2294fe3 with nothing able to mount it.
+    --
+    -- ⚠ AND THE IN-GAME HALF STILL CANNOT HOLD, which is a live gap rather
+    -- than a design. BR.Roster.setTutorial grants only from a STANDING START --
+    -- LOBBY, no match (its B1) -- and the in-game half runs on the pad, in
+    -- WARMUP, inside a match. So `/brtutorial game` sends `on = true`, the
+    -- server prints a refusal and the learner is on the warmup clock like
+    -- everybody else. Whoever closes it should read B1 first: the restriction is
+    -- what stops the hold being a dodge button, so the fix is a per-match warmup
+    -- hold rather than a wider grant.
+    TUTORIAL_SET    = 'br:tutorial:set',
+    -- The walkthrough FINISHED, both halves, and the player has earned the
+    -- reward for it (#261). C->S, no payload.
+    --
+    -- A SEPARATE EVENT FROM TUTORIAL_SET, because they are different claims.
+    -- `TUTORIAL_SET on = false` means "stop holding me out of matchmaking" and
+    -- is believed on sight because giving up an exemption costs nobody
+    -- anything. This one asks for 500 Volts, and what bounds it is not trust:
+    -- br_ddb's `awardPay` is one conditional write keyed on the account, so the
+    -- second claim is refused by the database. A modified client sending this
+    -- on connect gets exactly what an honest player gets by finishing.
+    TUTORIAL_DONE   = 'br:tutorial:done',
+    -- The player turning the offer DOWN (#261). C->S, no payload.
+    --
+    -- ═══ THE ONE ANSWER THAT HAS TO OUTLIVE THE SESSION ═══
+    --
+    -- Owner, 2026-09-07: "if they've actively turned down the offer we need to
+    -- save that somewhere and never offer again!" An abandoned run does NOT
+    -- count -- he asked for the toggle to survive that on purpose -- so this is
+    -- sent only when somebody unticks the box themselves.
+    --
+    -- IT IS BELIEVED ON SIGHT, like every other giving-up in this feature. The
+    -- worst a forged one can do is take an offer away from the account that
+    -- sent it, which is a thing that account can do by clicking.
+    TUTORIAL_DECLINE = 'br:tutorial:decline',
+    -- Whether to make the offer at all. S->C, { offer = boolean }.
+    --
+    -- SENT ONCE THE PROFILE HAS LOADED, because the answer lives on it. Until
+    -- then the page shows nothing, which is correct: a lobby that offers a
+    -- tutorial and then withdraws it a second later is worse than one that takes
+    -- a second to offer.
+    TUTORIAL_OFFER  = 'br:tutorial:offer',
+    -- The four permanent warmup crates resealing (#261). S->C, an array of the
+    -- points whose loot is flying home.
+    --
+    -- HERE RATHER THAN IN config/warmupcrates.lua, where it was first written.
+    -- A config file is for numbers an operator may retune; an event NAME is a
+    -- contract between two Lua states, and the one place this project keeps
+    -- those is BR.Net. A second registry of wire names is how two halves come to
+    -- disagree about a string.
+    WARMUP_CRATE_RETURN = 'br:warmupcrate:return',
     -- Parties are persistent; squads are formed from them per match. The events
     -- are named "squad" for continuity with the UI, but they operate on parties.
     SQUAD_INVITE    = 'br:squad:invite',     -- C->S  { target }
@@ -573,6 +657,66 @@ BR.Net = {
     -- an arbitrary one. See br_core/client/sfx.lua's playFrom.
     FUEL_SFX        = 'br:fuel:sfx',
 
+    -- S->C  { n = netId, r = health points } -- "here is another slice of the
+    -- repair kit you are holding, for that car". #228.
+    --
+    -- ═══ N MESSAGES PER KIT, NOT ONE ═══
+    --
+    -- The first build sent exactly one of these, for the whole job, on the
+    -- keypress. The owner asked for a progress bar with the bodywork climbing
+    -- under it (2026-09-03), so server/inventory.lua now sends one every 250ms
+    -- for the length of the channel plus one at completion. NOTHING ABOUT THE
+    -- MESSAGE CHANGED -- only how many of them there are and how much each
+    -- carries -- and the paragraph below is why that was possible without
+    -- touching the handler: `r` was always POINTS EARNED rather than a target,
+    -- because that is what the pump's `r` is.
+    --
+    -- WHICH MEANS `r` IS A SLICE AND MUST BE ADDED, NOT ASSIGNED. The client
+    -- hands it to applyRepair, which adds and CLAMPS -- `math.min(cap, cur +
+    -- points)` on every pool, br_core/client/fuel.lua:350 -- and the server
+    -- keeps a running total across the channel so the in-flight slices
+    -- telescope instead of each re-sending the whole fraction earned so far.
+    --
+    -- ═══ THE MESSAGE SAYS NOTHING ABOUT ITSELF, AND DOES NOT NEED TO ═══
+    --
+    -- The last one of a kit carries the FULL BR.Config.Fuel.healthMax rather
+    -- than the difference, because the clamp above makes `r` an offer rather
+    -- than a debit: a surplus is discarded, and the cap is what guarantees the
+    -- car is at full on the frame the item is spent even if it was being shot at
+    -- the whole time. The cosmetic pass then falls out of the client's own rule
+    -- -- dents pop when the body reaches full -- so there is no "this is the
+    -- last one" flag on the wire and none is wanted. A build carried one for a
+    -- day, alongside a remainder that made it necessary; both are gone.
+    --
+    -- ═══ WHY THIS IS NOT FUEL_SET WITH AN `r` ON IT ═══
+    --
+    -- FUEL_SET carries the ledger's fraction and metres, and a client that
+    -- receives one writes them into its `known` table. Sending one to move a
+    -- repair would either have to carry a fuel reading the server did not
+    -- measure, or teach that handler to distinguish a real push from a
+    -- borrowed one. The repair grant is the only field this message has any
+    -- business carrying, so it is its own message and the fuel ledger is not
+    -- touched by a repair kit at all.
+    --
+    -- IT IS THE SAME GRANT SHAPE, DELIBERATELY: the server does not read
+    -- vehicle health -- every vehicle-health native is client-only -- so what
+    -- it sends is POINTS EARNED, exactly as FUEL_SET's `r` is, and the client
+    -- applies them through the one function that already knows the order the
+    -- three pools and the cosmetic pass have to go in.
+    --
+    -- WHY THE NETWORK ID IS ON THE WIRE when the recipient could just repair
+    -- whatever it is sitting in: between the server's ruling and this arriving
+    -- the player can leave that seat, and a kit that repaired the next car they
+    -- touched would be a kit spent on the wrong thing. The client checks it,
+    -- the same way the FUEL_SET handler does.
+    --
+    -- AND IT IS WORTH MORE NOW THAT THERE ARE MANY. The server holds the netId
+    -- it ruled on for the whole channel and refuses to grant against any other,
+    -- so the two ends agree on the car twice; and a mismatch now costs nothing
+    -- at all -- one 250ms slice goes astray, and the item is not spent until the
+    -- completion, which the server's own seat guard will have cancelled first.
+    VEH_FIX         = 'br:veh:fix',
+
     -- Vehicle boost. The CLIENT owns the meter, the push and its own flames --
     -- a twitch input cannot wait for a round trip -- so these two carry only
     -- what a client cannot do for itself.
@@ -884,6 +1028,34 @@ BR.Nui = {
     -- envelopes Lua emits while tearing its own stack down cleared that flag
     -- again a frame later.
     FRONTEND  = 'frontend',  -- { up } -- GTA's menu is on screen; draw nothing
+    -- The guided first run (#261). { run } -- start or stop the lobby
+    -- walkthrough.
+    --
+    -- LUA OWNS WHETHER IT IS RUNNING, exactly as it owns FRONTEND above, and
+    -- for the same reason: the page mirrors state rather than holding it, so a
+    -- reload or a re-focus cannot leave the walkthrough running with nothing
+    -- driving it.
+    --
+    -- TODAY THE ONLY SENDER IS A DEV COMMAND, /brtutorial, which exists so the
+    -- cards can be looked at before the checkbox and the one-time offer that
+    -- will really start them are built. When those land they send this same
+    -- message and nothing on the page changes.
+    TUTORIAL  = 'tutorial',
+    -- The player pressing an arrow while an in-game card is up (#261).
+    --
+    -- ═══ A KEY THE PAGE CANNOT READ FOR ITSELF ═══
+    --
+    -- Owner, 2026-09-05: "In-game we should actually get rid of the mouse
+    -- pointer for these cards altogether I think and use left/right arrow keys
+    -- instead." Without NUI focus CEF receives no keyboard events at all, so the
+    -- arrows have to be read in Lua as controls and sent across -- which is the
+    -- one thing in this walkthrough that genuinely could not be observed.
+    --
+    -- EDGE-SHAPED, WITH A SEQUENCE. A press is an event, and an envelope is a
+    -- state: `{ dir = 'next' }` arriving twice is indistinguishable from one
+    -- press re-sent unless something changes between them. `seq` is that
+    -- something, and the page acts on it changing rather than on `dir`.
+    TUTORIAL_NAV = 'tutorialnav',
     -- The player's own preferences, read back out of KVP on boot. Sent as a
     -- whole object rather than as deltas: there are a dozen of them, they
     -- change when a human drags a slider, and a merge protocol for that would
@@ -1024,6 +1196,17 @@ BR.NuiCb = {
     LOCKER_PICK  = 'br/locker/pick',
     LOCKER_SPIN  = 'br/locker/spin',
     LOCKER_FOCUS = 'br/locker/focus',
+    -- The guided first run (#261). { run = boolean } for the lobby half,
+    -- { game = boolean } for the in-game one, and `done = true` alongside
+    -- `game = false` when the last card was DISMISSED rather than abandoned --
+    -- which is what pays the reward.
+    --
+    -- THE PAGE STARTS IT, SO THE PAGE HAS TO SAY SO. Pressing "Start tutorial"
+    -- is a button in React, and Lua is the only side that can tell the SERVER --
+    -- which has to know, because a player mid-walkthrough must not be matchmade
+    -- (BR.Roster.setTutorial). Without this callback the whole server-side hold
+    -- is unreachable: it would be a rule nothing ever switches on.
+    TUTORIAL_SET = 'br/tutorial/set',
     MARKET_FOCUS = 'br/market/focus',
     MARKET_BUY   = 'br/market/buy',
     -- EQUIP IS A SEPARATE VERB FROM BUY, and not a flag on it. Buying is a
@@ -1126,6 +1309,25 @@ BR.NUI_ENVELOPE_VERSION = 1
 --- roof. With view mode out of the table too, both modes want the same focus
 --- and the second screen was machinery doing nothing. See br_ui/client/players.lua.
 BR.FocusKeepsInput = { inventory = true }
+
+-- ═══ `tutorial` WAS THE SECOND ENTRY AND IS GONE AGAIN (2026-09-06) ═══
+--
+-- It was added because the in-game cards carried Next and Last, which need a
+-- cursor to press -- and it kept input because two of those cards send the
+-- player walking to the crates. Both halves were true and the combination was
+-- the fault: keeping input keeps ALL of it, so every drag toward a button also
+-- swung the camera (owner, 2026-09-05: "the cursor isn't exclusively set to NUI
+-- -- it's still moving the game camera while in the game tutorial"), and the
+-- cursor made every invisible control on the faded lobby clickable.
+--
+-- THE CARDS TAKE NO FOCUS AT ALL NOW. They are driven by the arrow keys, read
+-- in Lua as controls and sent over BR.Nui.TUTORIAL_NAV -- the shape
+-- client/spectate.lua already uses, and for the same reason its own note gives:
+-- joining the focus stack "would silently kill the arrow keys that ARE the
+-- feature". A card that draws over one of OUR screens (the player list) still
+-- gets buttons, because that screen has taken the cursor on its own account.
+--
+-- SO THE LIST IS BACK TO ONE, and tools/test_client.lua pins it there.
 
 --- What the engine and the page should be told, for a given focus stack.
 ---

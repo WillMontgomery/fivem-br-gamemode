@@ -64,23 +64,25 @@ BR.Config.Match = {
     -- squads (2 + 1), which puts the enemy case on the screen.
     maxSquadSize    = 4,
 
-    -- THE ENGINE'S OWN FRIENDLY-FIRE GATE (#115), and the one-line way back.
+    -- THE ENGINE'S FRIENDLY-FIRE GATE IS NO LONGER A SETTING (#267).
     --
-    -- true  each squad gets a GTA team (SET_PLAYER_TEAM) and a player with a
-    --       live squadmate closes the engine's friendly-fire gate, so the
-    --       shooter's engine never computes a hit on a teammate and the false
-    --       corpse cannot be created. Solos keep team 0 and an OPEN gate, so
-    --       solo play behaves exactly as it did before this existed.
-    -- false no team is ever set and the gate is always open -- byte-for-byte
-    --       the pre-#115 behaviour from e1f9f98.
+    -- `engineTeams` lived here: true gave each squad a GTA team and closed the
+    -- gate for anyone with a live squadmate, false reverted to the pre-#115
+    -- behaviour. It existed because the design rested on an inference nobody
+    -- could source -- that GTA refuses a hit when shooter and victim share a
+    -- TEAM -- and the note said, in as many words, "if squad matches suddenly
+    -- have no combat at all, set this false."
     --
-    -- The load-bearing inference is that GTA's damage path refuses a hit when
-    -- shooter and victim share a team and the gate is closed. Everything in
-    -- the record supports it (see the note above BR.Native.teamFor in
-    -- br_core/client/natives.lua) and no source states it in words, so this
-    -- switch exists to make a wrong guess cost one line rather than a round.
-    -- If squad matches suddenly have no combat at all, set this false.
-    engineTeams     = true,
+    -- THEY DID, AND IT WAS. Owner playtest, 2026-09-03: opposing squads could
+    -- not shoot each other. Two squads hold different teams by construction, so
+    -- the engine's check has no team term at all; the switch is deleted rather
+    -- than flipped, because it now selects between two spellings of a mechanism
+    -- that was never the one operating.
+    --
+    -- WHAT REPLACED IT is one relationship group per squad, announced by each
+    -- player about their own ped, with the gate closed for everybody -- see
+    -- BR.Native.groupFor in br_core/client/natives.lua. There is no lever here
+    -- any more because there is nothing left to choose between.
 
     -- A squad match needs somebody to fight. One squad means the win condition
     -- is already satisfied at the starting gun, which reads as "the match ended
@@ -89,11 +91,22 @@ BR.Config.Match = {
     minSquads       = 2,
     minSquadsDev    = 1,
 
-    -- How long the queue waits for an incomplete party before starting the
-    -- match without its stragglers (who can still late-join during warmup).
-    -- Zero patience started matches on the first Ready; infinite patience
-    -- hands one AFK partymate the whole lobby.
-    partyGraceSeconds = 45,
+    -- THE QUEUE NO LONGER WAITS FOR AN INCOMPLETE PARTY, and there is no
+    -- setting for how long it waits because the answer is not a number.
+    --
+    -- `partyGraceSeconds` lived here until 2026-09-03. The wait was worth
+    -- having while running out of it meant starting the match WITH the lone
+    -- partymate in it. It stopped being worth having when the room began
+    -- forming the match out of the players who may actually be in it: that is
+    -- the same list before the wait and after it, so the party gained nothing
+    -- and everybody else paid three quarters of a minute for it
+    -- (BR.Match.startBlocker carries the report). The stragglers keep their
+    -- place in the queue and walk into that same warmup through the late-join
+    -- door the moment their party is whole.
+    --
+    -- The value outlived its last reader by a day, so an operator could set the
+    -- convar, watch the boot banner acknowledge it, and get no behaviour at
+    -- all. That is the orphan this project keeps producing, so it went.
 
     -- THE LOBBY IS A CHARACTER SHOT NOW, not a landscape.
     --
@@ -950,6 +963,21 @@ BR.Config.Match = {
     -- message and from nothing else. Change it here and the ring closes with
     -- the revive, on its own.
     dbnoReviveTime  = 2.8,
+
+    -- ═══ HOW CLOSE YOU HAVE TO BE TO OFFER A REVIVE -- ON THE CLIENT ONLY ═══
+    --
+    -- As of 2026-09-07 no server rule reads this. It is measured by
+    -- client/dbno.lua's nearestDowned and client/squadmates.lua's prompt, both
+    -- against the OBSERVER'S OWN COPY of the downed ped -- which is the right
+    -- witness for it, because that copy is the body the player can see and walk
+    -- to.
+    --
+    -- server/combat.lua used to measure it too, from its own samples and with
+    -- dbnoReviveSlack on top, and the owner removed that: the two machines
+    -- disagree about where a downed body is (#164, #246) and the server's copy
+    -- of the argument refused the honest player without telling them why. See
+    -- reviveAllowed. dbnoReviveSlack still exists and now means something else
+    -- entirely -- read its note before touching it.
     dbnoReviveDist  = 1.5,
     dbnoReviveHp    = 30,     -- displayed HP after a successful revive
 
@@ -982,11 +1010,34 @@ BR.Config.Match = {
     -- the server-observed death check a body to eliminate.
     dbnoHp          = 5,
 
-    -- Slack on the SERVER's revive distance check, in metres. Positions are
-    -- sampled at 250ms, so the server's idea of where two players are standing
-    -- is always slightly behind the client's -- the same skew the loot claim
-    -- check allows for, for the same reason.
-    dbnoReviveSlack = 1.0,
+    -- ═══ HOW FAR THE REVIVER MAY DRIFT FROM WHERE THEY STARTED, IN METRES ═══
+    --
+    -- THIS NUMBER CHANGED MEANING ON 2026-09-07 AND THE OLD MEANING IS GONE.
+    -- It used to be slack on a SERVER CHECK OF THE DISTANCE BETWEEN THE REVIVER
+    -- AND THE BODY, which is the check the owner removed:
+    --
+    --   "remove the restriction that forbids players from reviving a corpse in
+    --    the wrong location. Because there's no output for that today other
+    --    than 'it doesn't work' and that's not fair to players when they arrive
+    --    in the cell and positions aren't synced"
+    --
+    -- A reviver-to-body test is a test of a DISAGREEMENT: the observer's copy of
+    -- a downed body can sit metres from where the server has it (#164, #246 --
+    -- the clone crawls, and ragdoll positions are an open engine bug), so an
+    -- honest player standing exactly where they see the body was refused for a
+    -- gap they could neither see nor close.
+    --
+    -- WHAT REPLACED IT MEASURES ONE PLAYER AGAINST THEMSELVES. The reviver's
+    -- position when the hold began is stamped, and this is how far they may get
+    -- from it before the hold is cancelled. There is no second player in that
+    -- subtraction and therefore no desync in it -- the number can only ever
+    -- refuse somebody who actually walked away, which is the thing the eight
+    -- seconds in the open were always about.
+    --
+    -- 3m rather than the old 2.5m: this is a budget for shuffling around a body
+    -- while holding a key, not a reach. It has to comfortably contain circling
+    -- the body and being nudged by a car, and it has to be well short of "left".
+    dbnoReviveSlack = 3.0,
 
     -- How long the server keeps a revive alive without hearing from the client
     -- holding it. The client re-asserts every 250ms; three misses drops it.
