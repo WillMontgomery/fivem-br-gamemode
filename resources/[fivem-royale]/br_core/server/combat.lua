@@ -938,9 +938,14 @@ function BR.Combat.knock(src, killerSrc)
                 -- name should be bold." BR.Notice.line is what carries that
                 -- without ever putting formatting inside the name -- see
                 -- br_lib/shared/notice.lua.
+                -- SILENT, BECAUSE tellSquad ALREADY PLAYED squad.down TO THIS
+                -- EXACT AUDIENCE two lines up. Owner, 2026-09-07: "so now when
+                -- a squad mate goes DBNO we're playing an NUI sound AND a
+                -- frontend sound." The words and the sound are one event and it
+                -- makes one noise. See BR.Server.notify's `cue`.
                 BR.Server.notify(mate,
                     BR.Notice.line('%s is down!', BR.Notice.who(entry.name)),
-                    'warn', { key = 'dbno.' .. src, ms = 6000 })
+                    'warn', { key = 'dbno.' .. src, ms = 6000, cue = false })
             end)
     end
 

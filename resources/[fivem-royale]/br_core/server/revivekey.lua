@@ -297,7 +297,22 @@ end
 local function say(who, line, tone, ...)
     if type(line) ~= 'string' or line == '' then return end
     if not (BR.Server and BR.Server.notify) then return end
-    BR.Server.notify(who, BR.Notice.line(line, ...), tone or 'info', { ms = 4000 })
+    -- ═══ EVERY NOTICE THIS FILE SENDS IS SILENT, AND THAT IS ONE DECISION ═══
+    --
+    -- Owner, 2026-09-07: "so now when a squad mate goes DBNO we're playing an
+    -- NUI sound AND a frontend sound." Every sentence this feature speaks
+    -- accompanies an event that already has a cue of its own -- the bleed-out
+    -- rides squad.out, a key expiring rides revivekey.expired, a key being
+    -- collected rides revivekey.pickup, a purchase rides shop.buy -- so the
+    -- general warn sound br_ui/client/nui.lua gives a `warn` toast would be a
+    -- second noise for a single event, every time, on every line.
+    --
+    -- SAID ONCE HERE RATHER THAN AT EIGHT CALL SITES, because "this file's words
+    -- accompany this file's sounds" is a property of the feature and not of any
+    -- one sentence. A future notice that needs a sound of its own should say so
+    -- by calling BR.Server.notify directly, which is louder than editing this.
+    BR.Server.notify(who, BR.Notice.line(line, ...), tone or 'info',
+                     { ms = 4000, cue = false })
 end
 
 --- Did a native declared BOOL say yes?

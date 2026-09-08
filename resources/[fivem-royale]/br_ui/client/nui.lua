@@ -77,7 +77,16 @@ local function send(kind, data)
     -- is what makes a player leaning on a refused key one sound rather than four
     -- a second.
     if kind == BR.Nui.TOAST and type(data) == 'table' and data.clear ~= true then
-        if type(data.cue) == 'string' and data.cue ~= '' then
+        if data.cue == false then
+            -- ═══ SILENT ON PURPOSE, BECAUSE THE EVENT ALREADY SPOKE ═══
+            --
+            -- Owner, 2026-09-07: "so now when a squad mate goes DBNO we're
+            -- playing an NUI sound AND a frontend sound." A squadmate going
+            -- down plays squad.down, and the toast that says so is the same
+            -- event -- so the general warn sound landed on top of it. Three
+            -- notices are in that shape: the knock, the bleed-out, and a revive
+            -- key expiring, and each of them names its silence at the send site.
+        elseif type(data.cue) == 'string' and data.cue ~= '' then
             TriggerEvent('br:ui:sfx', data.cue)
         elseif data.tone == 'warn' then
             TriggerEvent('br:ui:sfx', 'toast.warn')

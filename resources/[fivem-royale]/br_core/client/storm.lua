@@ -285,7 +285,18 @@ end
 --- ("Storm closing now"). "Closing in 5s" is the first of those -- five seconds
 --- of warning before the map gets smaller is a thing a player can act on, and
 --- five seconds before the wall parks is not.
-local FINAL_WARN_MS = 5000
+---
+--- ═══ 4000 AND NOT 5000, BY EAR ═══
+---
+--- Owner, 2026-09-07: "the 5 second storm timer sound effect plays 1 second to
+--- early. please set that back just a bit." Judged against the placard he was
+--- looking at, which is the only comparison that matters here -- the HUD clock
+--- is a browser rAF loop reading `endsAt` against Date.now() plus the page's own
+--- offset, while this reads GetGameTimer() plus the client's, and the two are
+--- allowed to differ. Rather than chase that, the number moved to where his ear
+--- put it. The cue's NAME is Rockstar's `5s` and always was a generic countdown
+--- pip; it was never a claim about when we play it.
+local FINAL_WARN_MS = 4000
 
 --- The storm record we have already pipped for, identified by its START.
 ---

@@ -12236,14 +12236,27 @@ do
         ok(played(C, 'timer.final') == 0,
            'twenty seconds out, nothing', table.concat(C.sfx, ','))
 
-        step(13000)                       -- 7s left
+        -- ═══ FIVE SECONDS IS STILL SILENT. THE PIP IS AT FOUR ═══
+        --
+        -- Owner, 2026-09-07: "the 5 second storm timer sound effect plays 1
+        -- second to early. please set that back just a bit." Judged by ear
+        -- against the placard, which reads off a different clock from this job
+        -- (a browser rAF loop on Date.now() plus the page's offset, versus
+        -- GetGameTimer plus the client's). The threshold moved rather than the
+        -- clocks being chased, so the assertion moved with it -- and the 5s case
+        -- is kept as the NEGATIVE, because that is the reading he corrected.
+        step(14000)                       -- 6s left
         ok(played(C, 'timer.final') == 0,
-           'seven seconds out, still nothing -- the threshold is 5s and it is '
-               .. 'not approximate', table.concat(C.sfx, ','))
+           'six seconds out, nothing', table.concat(C.sfx, ','))
 
-        step(2000)                        -- 5s left, exactly
+        step(1000)                        -- 5s left, exactly
+        ok(played(C, 'timer.final') == 0,
+           'and five seconds is silent too -- the pip sat here until the owner '
+               .. 'heard it land a second early', table.concat(C.sfx, ','))
+
+        step(1000)                        -- 4s left, exactly
         ok(played(C, 'timer.final') == 1,
-           'and at five seconds it pips, once', table.concat(C.sfx, ','))
+           'and at four seconds it pips, once', table.concat(C.sfx, ','))
 
         -- THE LOAD-BEARING NEGATIVE. This job runs at 10 Hz, so without the
         -- latch the last five seconds of every hold would be fifty pips.
