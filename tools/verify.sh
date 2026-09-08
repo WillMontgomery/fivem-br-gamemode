@@ -341,7 +341,41 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # which has no visual symptom and will not be found by playing". It also
     # holds the hitmarker floor against config/weapons.lua's fastest weapon,
     # which is the only reason that number is defensible rather than arbitrary.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua; do
+    #
+    # test_gunshop.lua is the IN-MATCH Ammu-Nation counter (#274), and it is a
+    # different feature from test_shop.lua rather than a second file about the
+    # same one -- BR.Config.Gunshop and BR.GunshopSolve against BR.Config.Shop
+    # and BR.ShopSolve. Its subject is one sentence of the owner's, from
+    # 2026-09-08: "we're not planning to sell items which could not otherwise be
+    # found in the wild - just a convenience with a fee."
+    #
+    # THAT RULE IS UNOBSERVABLE IN A RUNNING GAME. A shop that breaks it looks
+    # exactly like a shop that keeps it -- nobody at a counter can see that the
+    # gun they just bought is one the map would never have given them, they can
+    # only see a gun. And the way it breaks is not an edit to the shop at all: a
+    # rarity moves in config/weapons.lua and a hand-written catalogue silently
+    # stops matching the world it was copied from. That is this repository's
+    # signature defect, two representations of one fact, and it has shipped here
+    # before.
+    #
+    # SO THE CATALOGUE IS DERIVED AND THE DERIVATION IS WHAT IS TESTED, from
+    # both directions against the shipped tables: every gun on sale is a
+    # BR.Config.Weapons row at RARE or above, AND every such row is on sale. A
+    # copied list passes the first of those forever and fails the second the day
+    # somebody retunes a rarity. It also holds the exclusions against the real
+    # tables rather than against retyped names -- nothing from
+    # BR.Config.AirdropWeapons (which would be selling the one thing the map
+    # cannot give you), nothing melee, nothing thrown.
+    #
+    # AND IT PINS THAT NO CLERK HEIGHT IS EVER AUTHORED. The eleven counter
+    # anchors come from tables that disagree by up to about a metre on whether
+    # the z is the floor or a standing figure's centre, so the client
+    # ground-probes and the config carries the anchor and two empty override
+    # slots. The instinct when a clerk stands wrong is to type a better number
+    # in, one store at a time; the warmup showroom paid three playtest rounds
+    # for exactly that instinct (`veto`). The suite fixes the key set of a store
+    # row so a height field fails the build.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
@@ -582,10 +616,25 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# VENDORED RESOURCES ARE EXCLUDED, the same way `bool natives` below excludes
+# them and for the same reason: upstream's code is not edited here, a forward
+# local in it is upstream's bug to have, and a gate that reddens the build over
+# somebody else's correct-enough code is a gate that grows an --exclude and then
+# gets ignored. This was a gap rather than a decision -- `bool natives` carried
+# the exclusion and this did not, which only showed when a second library was
+# vendored (2026-09-08).
 echo "${DIM}== forward locals ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
-    # shellcheck disable=SC2046
-    "$LUA" tools/check_forward_locals.lua $(find resources -name '*.lua' | sort) || rc=1
+    fwdfiles=$(find resources -name '*.lua' | while IFS= read -r f; do
+        d=$(dirname "$f"); keep=1
+        while [ "$d" != "." ] && [ "$d" != "/" ]; do
+            [ -f "$d/VENDOR.json" ] && { keep=0; break; }
+            d=$(dirname "$d")
+        done
+        [ "$keep" -eq 1 ] && echo "$f"
+    done | sort)
+    # shellcheck disable=SC2086
+    "$LUA" tools/check_forward_locals.lua $fwdfiles || rc=1
 else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi

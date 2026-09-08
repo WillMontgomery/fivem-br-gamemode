@@ -144,6 +144,27 @@ shared_scripts {
     -- registered before that line would be destroyed by it. Declared here, after
     -- the other feature configs, for a reader.
     '@br_lib/config/shop.lua',
+    -- The IN-MATCH Ammu-Nation gun shop (#274). A DIFFERENT FEATURE FROM THE
+    -- LINE ABOVE and deliberately a different namespace: config/shop.lua is the
+    -- warmup vehicle showroom (BR.Config.Shop, BR.ShopSolve), this is the
+    -- eleven weapon counters (BR.Config.Gunshop, BR.GunshopSolve). Declared
+    -- beside it because a reader who finds one will look for the other.
+    --
+    -- SHARED, for the reason every catalogue here is shared: the server
+    -- arbitrates the purchase from this table and the client has to draw the
+    -- same list of guns and prices, so a catalogue on one side only would put
+    -- the two ends one restart apart from disagreeing about what is on sale.
+    --
+    -- ITS ONLY LOAD-ORDER REQUIREMENT IS enums.lua, which is the universal one
+    -- (its ammo rows are keyed by BR.AmmoType, exactly as config/loot.lua's
+    -- are). In particular it does NOT need to follow config/weapons.lua, and
+    -- that is deliberate rather than lucky: the catalogue is DERIVED from
+    -- BR.Config.Weapons, `gunshop` sorts BEFORE `weapons` in br_lib's own glob,
+    -- and building it at this file's load would therefore produce an empty shop
+    -- with no error anywhere. It is built by BR.Config.Gunshop.build, which
+    -- br_core's own gunshop files call at resource start -- the same shape, and
+    -- the same class of hazard, as config/shop.lua's `register`.
+    '@br_lib/config/gunshop.lua',
     -- The catalogue. SHARED rather than server-only: the server decides what
     -- you own, and the client has to resolve an equipped id into the natives
     -- that actually put it on you. Both sides need the same definitions.
@@ -232,6 +253,16 @@ shared_scripts {
     -- which is also why BR.Rng being 180 lines above it is a readability
     -- choice rather than a dependency.
     '@br_lib/shared/shop_solve.lua',
+    -- The in-match gun shop's solver (#274). A SIBLING OF THE LINE ABOVE, not a
+    -- part of it: BR.GunshopSolve, and it shares no symbol with BR.ShopSolve.
+    --
+    -- LAST, with shop_solve, and for the same reason -- it reads nothing at load
+    -- and every config table it needs at call time, so its position here is a
+    -- readability choice rather than a dependency. The one thing it must be
+    -- AFTER is nothing at all: `minRarity` resolves BR.Rarity when it is called
+    -- rather than caching it, precisely so that this line's position cannot be
+    -- the thing that decides what the shop stocks.
+    '@br_lib/shared/gunshop_solve.lua',
 }
 
 -- main.lua must load first on both sides: it defines the loop registry (client)
