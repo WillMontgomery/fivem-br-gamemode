@@ -270,14 +270,18 @@ export type Step = {
   /**
    * A toast to leave behind as this card advances.
    *
-   * FOR SOMETHING THE PLAYER NEEDS AFTER THE WALKTHROUGH IS OVER, which a card
-   * cannot carry: the cards ARE the walkthrough, so one more of them would be the
-   * walkthrough not ending. Owner, 2026-09-08, on the last card: "we should give
-   * them a toast informing them that no crates will be marked when the match
-   * starts and they'll need to scavenge for loot on their own."
+   * NO CARD USES THIS TODAY, and that is worth saying rather than leaving the
+   * next reader to grep. It existed for one line -- the crate-marking correction
+   * on the last card -- on the reasoning that it was something the player needed
+   * AFTER the walkthrough and a card could not carry it. The owner moved that
+   * line onto game-crates instead (2026-09-07: "remove the tutorial end toast
+   * that talks about crates not being marked - move that to the card that tells
+   * them to go to the crates instead"), which left this with no callers.
    *
-   * IT RIDES THE NOTICE STACK, which is mounted in a match -- unlike in the
-   * lobby, where it is deliberately not.
+   * THE MECHANISM IS KEPT because it is four lines in TutorialLayer and the next
+   * thing a card needs to say on its way out has somewhere to go. IT RIDES THE
+   * NOTICE STACK, which is mounted in a match -- unlike in the lobby, where it is
+   * deliberately not.
    */
   leaveNotice?: { text: string; tone?: 'info' | 'warn' | 'success' | 'danger'; ms?: number }
   /**
@@ -538,11 +542,20 @@ export const LOBBY_STEPS: Step[] = [
 export const DECLINE_STEPS: Step[] = [
   {
     id: 'decline',
+    // ANCHORED ON THE TOGGLE THEY JUST TURNED OFF. Owner, 2026-09-07: "turning
+    // off the 'continue' toggle - the 'are you sure' card is in the center 1/3
+    // of the screen - it should be anchored closer to the thing it talks about."
+    //
+    // It drew unanchored, which puts it in the middle of the lobby with nothing
+    // connecting the sentence to the switch that caused it -- and this is the
+    // one card in the project whose subject is a control the player's hand is
+    // still on. The ring comes with the anchor and is right here: the thing the
+    // card is about is exactly the thing being outlined.
+    target: 'tutorial-continue',
     title: 'Are you sure?',
     body: 'The ~500 Volts~ is only paid for finishing the tutorial in your **first match**. Turning this off gives up the offer for good.',
     advance: 'dismiss',
     dismissLabel: 'Got it',
-    place: 'half',
     noBack: true,
   },
 ]

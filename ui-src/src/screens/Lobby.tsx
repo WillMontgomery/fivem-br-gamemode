@@ -45,11 +45,22 @@ import { CB } from '../bridge/types'
  * TRANSFORM ONLY on the knob, so it cannot cost layout while the lobby camera
  * is flying behind it.
  */
-function TutorialToggle({ on, onChange, label }: {
+function TutorialToggle({ on, onChange, label, tut }: {
   on: boolean
   onChange: (v: boolean) => void
   /** A node rather than a string, so a label can colour part of itself. */
   label: React.ReactNode
+  /**
+   * `data-tut` anchor for the guided first run, like every other control the
+   * walkthrough points at.
+   *
+   * ON THE BUTTON ITSELF RATHER THAN ON A WRAPPER. The pattern next to this one
+   * is `<span data-tut="ready" className="block">`, which exists because `Btn`
+   * does not forward unknown props. This component is the button, so the
+   * attribute goes where the ring should be drawn and no extra element enters
+   * the layout.
+   */
+  tut?: string
 }) {
   return (
     // `btn` IS NOT DECORATION AND check-ui ENFORCES IT (R3): a bare button has
@@ -65,6 +76,7 @@ function TutorialToggle({ on, onChange, label }: {
     <button
       type="button"
       role="switch"
+      data-tut={tut}
       aria-checked={on}
       className="btn interactive plate w-full flex items-center gap-3 px-4 py-2.5 mb-2.5 text-left"
       style={{ ['--edgec' as string]: on
@@ -128,6 +140,8 @@ export default function Lobby({
   const tutorialGameOn = useUi((s) => s.tutorialGameOn)
   const setTutorialGameArmed = useUi((s) => s.setTutorialGameArmed)
   const setTutorialDeclineCard = useUi((s) => s.setTutorialDeclineCard)
+  /** Read as well as written: the toggle stays mounted while the card is up. */
+  const tutorialDeclineCard = useUi((s) => s.tutorialDeclineCard)
   const tutorialOfferable = useUi((s) => s.tutorialOfferable)
   // Which screen is on top -- the offer is retired while Settings covers the
   // lobby, so the control does not vanish under the cursor that pressed it.
@@ -699,8 +713,23 @@ export default function Lobby({
                   owner finished the lobby half, was never shown this, and the
                   walkthrough carried on into his match anyway because readying
                   up arms that separately (2026-09-07). */}
-              {tutorialOfferable && (tutorialStep === 'ready' || tutorialGameShown) && (
+              {/* ...AND IT SURVIVES ITS OWN DECLINE FOR AS LONG AS THE CARD IS UP.
+                  Owner, 2026-09-07: "the 'are you sure' card ... should be
+                  anchored closer to the thing it talks about." The card is
+                  anchored on this toggle now, and BR.Tutorial.decline lowers
+                  `offerable` the instant the box is unticked -- so without this
+                  the anchor would unmount in the same frame the card that points
+                  at it appeared, and the card would fall back to the middle of
+                  the screen with a visible jump.
+
+                  IT IS ALSO THE HONEST PICTURE. The card explains what unticking
+                  the box just cost; showing the box, unticked and ringed, while
+                  it says so is what "anchored closer to the thing it talks
+                  about" means. It goes when the card is dismissed. */}
+              {(tutorialOfferable || tutorialDeclineCard)
+               && (tutorialStep === 'ready' || tutorialGameShown) && (
                 <TutorialToggle
+                  tut="tutorial-continue"
                   on={tutorialGameOn}
                   onChange={(v) => {
                     setTutorialGameOn(v)

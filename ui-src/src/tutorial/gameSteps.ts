@@ -285,7 +285,14 @@ export const GAME_STEPS: Step[] = [
     // element for a thing in the world, so it draws centred with no ring, and
     // the four rarity cones over the crates are what points at the subject.
     title: 'Crates',
-    body: "There are four practice crates on the pad - look for the marker on your map. These are special crates which refill automatically when you walk away. The **colored beam** over each one shows the rarity of what's inside. **Go and open one.**",
+    // THE MARKING CORRECTION LIVES HERE, NOT AT THE END. Owner, 2026-09-07:
+    // "remove the tutorial end toast that talks about crates not being marked -
+    // move that to the card that tells them to go to the crates instead." The
+    // two sentences are his, unchanged, from where they used to be
+    // (`leaveNotice` on game-timer), and they sit against the marker sentence
+    // they qualify rather than at the end of the card, so "Go and open one."
+    // stays the last thing they read.
+    body: "There are four practice crates on the pad - look for the marker on your map. Crates are only marked on the practice pad. In the match you will have to find loot yourself. These are special crates which refill automatically when you walk away. The **colored beam** over each one shows the rarity of what's inside. **Go and open one.**",
     // NO NEXT BUTTON: the card sends them somewhere, so the only way past it is
     // going (owner, 2026-09-05). The escape hatch after 45s is in TutorialLayer
     // and exists so a miscount cannot trap anybody -- see `stuck`.
@@ -428,20 +435,14 @@ export const GAME_STEPS: Step[] = [
     // after 10 seconds." Nothing is left to ask for and the countdown behind it
     // is already running.
     autoDismissMs: 10000,
-    // THE LAST THING THEY ARE TOLD, and it is a correction rather than a
-    // farewell. Owner, 2026-09-08: "at the end of the tutorial we should give
-    // them a toast informing them that no crates will be marked when the match
-    // starts and they'll need to scavenge for loot on their own."
-    //
-    // A TOAST AND NOT A CARD because the walkthrough is over -- the cards are the
-    // walkthrough, and one more of them would be the walkthrough not ending. It
-    // rides the notice stack, which IS mounted in a match.
-    leaveNotice: {
-      text: 'Crates are only marked on the practice pad. In the match you will '
-          + 'have to find loot yourself.',
-      tone: 'info',
-      ms: 12000,
-    },
+    // NOTHING IS LEFT BEHIND. There was a `leaveNotice` here carrying the
+    // crate-marking correction, on the reasoning that it was something the
+    // player needed AFTER the walkthrough and a card could not carry it. The
+    // owner moved it (2026-09-07): "remove the tutorial end toast that talks
+    // about crates not being marked - move that to the card that tells them to
+    // go to the crates instead." It is now two sentences in game-crates' body,
+    // against the marker sentence it qualifies, which is where the player is
+    // actually looking at a marked crate.
     dismissLabel: "I'm ready",
     // NO BACK BUTTON PAST THE END. Stepping backwards out of the final card is
     // the one move that would let a player re-dismiss it, and the reward is
