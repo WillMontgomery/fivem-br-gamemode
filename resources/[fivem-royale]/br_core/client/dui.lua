@@ -647,7 +647,50 @@ function BR.Dui.drawNearFace(page, entity, px, py, out, oz, widthM, side, alpha)
     local ox = rx * ux + fx * uy
     local oy = ry * ux + fy * uy
 
-    drawPlane(page, p.x, p.y, p.z, ox, oy, reach + (tonumber(out) or 0.0),
+    -- ═══ AND HOW FAR THE PANEL HAS LEANED TOWARDS THE SIGN ═══
+    --
+    --   "feedback on the ambulance DUIs - they're not fixed to the rotation of
+    --    the ambulance entity - an ambulance on a slope has DUIs clipping
+    --    through when I try to use it"                   -- owner, 2026-09-07
+    --
+    -- EVERYTHING ABOVE IS LEVEL, DELIBERATELY, and drawPlane's header carries
+    -- the argument: `oz` is a height up the WORLD rather than up the entity,
+    -- because pushed through a rolled bike's matrix that height swings out
+    -- sideways and hangs the sign off beside the bike. That decision is not
+    -- being reversed here -- the sign stays upright and stays where it was.
+    --
+    -- WHAT IT MISSED IS THAT THE PANEL MOVES. `reach` is measured off the
+    -- model's box in the vehicle's LEVEL axes, so it answers "how far out is the
+    -- bodywork" for a vehicle standing flat. Tip the van nose-down on a hill and
+    -- the panel at height `oz` swings towards the sign, and a stand-off tuned on
+    -- the flat puts the plate inside the metal.
+    --
+    -- SO THE SHORTFALL IS MEASURED RATHER THAN GUESSED AT. The panel point in
+    -- the vehicle's own space is (ux*reach, uy*reach, oz); through
+    -- GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS -- the entity's full matrix, pitch
+    -- and roll included -- that is where the metal really is. How far it sits
+    -- along the LEVEL outward normal is the number the sign has to beat, and the
+    -- difference is added to the stand-off.
+    --
+    -- IT IS EXACTLY ZERO ON FLAT GROUND, which is what makes this safe: a van
+    -- with no pitch and no roll maps that point straight back to `reach`, the
+    -- term vanishes, and every plate the owner has already tuned by eye is
+    -- untouched. Only a leaning vehicle pays, and it pays precisely what it
+    -- leaned.
+    --
+    -- NOT APPLIED TO drawFace, which is the showroom's yard sign (#236). Its
+    -- distance is one tuned number rather than a reach plus an offset, so there
+    -- is nothing to add to without re-deriving its geometry -- and its cars
+    -- stand on an authored flat pad, where this term would be zero anyway.
+    local lean = 0.0
+    local q = GetOffsetFromEntityInWorldCoords(entity, ux * reach, uy * reach, oz)
+    if q then
+        local d = (q.x - p.x) * ox + (q.y - p.y) * oy
+        if d > reach then lean = d - reach end
+    end
+
+    drawPlane(page, p.x, p.y, p.z, ox, oy,
+              reach + lean + (tonumber(out) or 0.0),
               tonumber(side) or 0.0, oz, hw, hh, alpha)
     return ux, uy
 end

@@ -4055,6 +4055,60 @@ do
             'while the yard sign is still centred exactly where it was -- the '
                 .. 'shared quad grew a parameter, not an offset',
             ('%.3f %.3f %.3f'):format(ux2, uy2, uz2))
+
+        -- ═══ 7c. A VEHICLE ON A SLOPE, WHICH IS WHERE THE PLATE WENT INSIDE
+        --     THE METAL ═══
+        --
+        --   "feedback on the ambulance DUIs - they're not fixed to the rotation
+        --    of the ambulance entity - an ambulance on a slope has DUIs clipping
+        --    through when I try to use it"               -- owner, 2026-09-07
+        --
+        -- THE SIGN IS STILL LEVEL AND IS NOT BEING WELDED TO THE MATRIX. Section
+        -- 7's pins above say why, and they still hold: a rolled bike must not
+        -- wear a rolled sign, and `oz` must not be pushed through the matrix or
+        -- a leaning vehicle hangs its plate off to one side. What changed is
+        -- narrower -- `reach` is measured off the model's box in the vehicle's
+        -- LEVEL axes, so it answers "how far out is the bodywork" for a vehicle
+        -- standing flat, and a van tipped nose-down brings the panel to meet a
+        -- stand-off tuned on the flat.
+        --
+        -- WHAT IS PINNED IS THE PROPERTY, NOT A NUMBER, and deliberately: the
+        -- exact shortfall is trigonometry against this fixture's own axes, so
+        -- asserting a figure would be asserting the fixture. The claim is that
+        -- the plate is never nearer the origin than the panel actually is.
+        local function panelOutAlongY()
+            local q = GetOffsetFromEntityInWorldCoords(VEH, 0.0, 3.0, OZ2)
+            return q.y - CAR.y
+        end
+
+        -- FLAT FIRST, AS THE CONTROL. The term has to be exactly zero here or
+        -- every plate the owner has already tuned by eye has moved.
+        CAR.pitch, CAR.roll = 0.0, 0.0
+        drawNear(CAR.x, CAR.y + 10.0, 0.0)
+        local px0, py0 = mid()
+        ok(near(py0, CAR.y + 3.0 + OUT, 0.001) and near(px0, CAR.x, 0.001),
+           'on flat ground the slope term is exactly zero, so a tuned plate has '
+               .. 'not moved by a millimetre',
+           ('%.4f vs %.4f'):format(py0, CAR.y + 3.0 + OUT))
+
+        -- ...AND NOSE-DOWN, WHERE THE PANEL SWINGS TOWARDS THE READER.
+        for _, deg in ipairs({ 12.0, -12.0, 22.0 }) do
+            CAR.pitch = deg
+            drawNear(CAR.x, CAR.y + 10.0, 0.0)
+            local _, py1 = mid()
+            local panel = panelOutAlongY()
+            ok(py1 >= CAR.y + panel + OUT - 0.001,
+               ('at %.0f degrees of pitch the plate still stands clear of the '
+                .. 'panel -- which is where it actually is, not where a level '
+                .. 'box says it is'):format(deg),
+               ('plate %.3f, panel %.3f, out %.2f')
+                   :format(py1 - CAR.y, panel, OUT))
+            ok(py1 >= CAR.y + 3.0 + OUT - 0.001,
+               ('...and never nearer than the flat-ground stand-off (%.0f deg)')
+                   :format(deg),
+               ('%.3f'):format(py1 - CAR.y))
+        end
+        CAR.pitch, CAR.roll = 0.0, 0.0
     end
 
     -- ═══ 8. THE CONFIG KNOB IS A LENGTH, AND THE SCREEN FRACTION IS GONE ═══
