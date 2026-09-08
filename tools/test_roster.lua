@@ -8498,6 +8498,142 @@ do
         'but doing it over and over is refused and counted')
 end
 
+describe('damage.targets')
+do
+    -- ONE ROUND IS ONE HIT PER PLAYER (audit finding 5, 2026-09-08).
+    --
+    -- The handler spent the round and computed the firing interval ONCE per
+    -- event, then applied damage once per entry in `hitGlobalIds` -- a list the
+    -- shooter's own machine composes. So a pistol event naming one victim three
+    -- times was three applications of damage for one round, every one of them
+    -- measured against the same accepted interval. The auditor drove exactly
+    -- this and watched applyHit run three times.
+    --
+    -- The expectations below are that finding with its sign flipped: the same
+    -- payload now costs the victim ONE pistol hit and the shooter ONE round.
+    local PISTOL = 0x1B06D571
+
+    --- A shooter with a loaded pistol and N victims, all alive, all in
+    --- different squads, all standing 5m away. Squads matter: without them
+    --- SAME_SQUAD refuses everything before the interesting part.
+    local function withVictims(n)
+        reset()
+        queueUp(1, 'Shooter', BR.Mode.SOLO.key)
+        for s = 2, 1 + n do queueUp(s, 'V' .. s, BR.Mode.SOLO.key) end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 1 + n do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+            BR.Roster.get(s).squadId = 10 + s
+        end
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        BR.Inv.of(1).active = 1
+        -- Written straight onto the entries, AFTER the step that would have
+        -- overwritten them. Nothing steps again in this block.
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        for s = 2, 1 + n do
+            local e = BR.Roster.get(s)
+            e.pos = { x = 5.0, y = 0.0, z = 30.0 }
+            e.hp, e.armour = 100.0, 0.0
+        end
+    end
+
+    withVictims(1)
+    local one = BR.ShotDamage(PISTOL, 1, 5.0, 3, BR.Config.Combat)
+    local clip0 = BR.Inv.of(1).slots[1].clip
+    local dupes0 = BR.Damage.dupeTargets or 0
+    local refusals0 = BR.Damage.refusals or 0
+
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002, 1002, 1002 },
+    })
+
+    local lost = 100.0 - BR.Roster.get(2).hp
+    ok(math.abs(lost - one) < 0.01,
+        'the same victim named three times in one event costs one pistol hit',
+        ('%.2f off, one hit is %.2f'):format(lost, one))
+    ok(BR.Inv.of(1).slots[1].clip == clip0 - 1,
+        'and one round, exactly as it always did', tostring(BR.Inv.of(1).slots[1].clip))
+    ok((BR.Damage.dupeTargets or 0) == dupes0 + 2,
+        'and the two copies are counted as duplicates',
+        ('%d -> %d'):format(dupes0, BR.Damage.dupeTargets or 0))
+    ok((BR.Damage.refusals or 0) == refusals0,
+        'and never as a refusal -- an engine that double-reports must not file '
+        .. 'a case against the player who fired',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- A DUPLICATE CAN BE SPELT SEVERAL WAYS. `1002` and `1002.0` are the same
+    -- ped and different table keys, so a set keyed by the raw value would
+    -- deduplicate neither of them.
+    withVictims(1)
+    dupes0 = BR.Damage.dupeTargets or 0
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002, 1002.0, '1002' },
+    })
+    ok(math.abs((100.0 - BR.Roster.get(2).hp) - one) < 0.01,
+        'and the same victim spelt three ways is still one hit',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.dupeTargets or 0) == dupes0 + 2,
+        'because the ids are normalised before they are compared')
+
+    -- DISTINCT VICTIMS ARE NOT A FABRICATION A SET CAN CATCH, so the count is
+    -- bounded too. Fists cap at two: a swing can clip a second body that walked
+    -- into an arc already travelling, and a third is not a swing.
+    withVictims(3)
+    -- Fists are the EMPTY active slot, not an item -- so the pistol the fixture
+    -- issued has to go, or the punch is refused as NOT_HELD before the ceiling
+    -- is ever reached.
+    BR.Inv.reset(1)
+    local UNARMED = 2725352035
+    local capped0 = BR.Damage.cappedTargets or 0
+    for s = 2, 4 do BR.Roster.get(s).hp = 100.0 end
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = UNARMED, hitComponent = 8,
+        weaponDamage = 25, hitGlobalIds = { 1002, 1003, 1004 },
+    })
+    local hurt = 0
+    for s = 2, 4 do
+        if BR.Roster.get(s).hp < 100.0 then hurt = hurt + 1 end
+    end
+    ok(hurt == BR.ShotMaxTargets(BR.Config.Fists, BR.Config.Combat),
+        'one punch cannot hurt more people than a punch reaches',
+        ('%d hurt, ceiling %d'):format(hurt,
+            BR.ShotMaxTargets(BR.Config.Fists, BR.Config.Combat)))
+    ok((BR.Damage.cappedTargets or 0) > capped0,
+        'and the ones past the ceiling are counted rather than refused',
+        ('%d -> %d'):format(capped0, BR.Damage.cappedTargets or 0))
+
+    -- ...AND A LEGITIMATE MULTI-VICTIM EVENT IS UNTOUCHED. The ceiling has to
+    -- be a ceiling rather than a rule that a round hits one person: a shotgun
+    -- raises one event for a whole pellet spread, and a grenade in a squad
+    -- fight genuinely catches everybody stood together.
+    withVictims(3)
+    for s = 2, 4 do BR.Roster.get(s).hp = 100.0 end
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002, 1003, 1004 },
+    })
+    hurt = 0
+    for s = 2, 4 do
+        if BR.Roster.get(s).hp < 100.0 then hurt = hurt + 1 end
+    end
+    ok(hurt == 3, 'while a round that clips three different players hits three',
+        tostring(hurt))
+    ok(BR.Inv.of(1).slots[1].clip == 12 - 1,
+        'for one round, which is what put spendRound outside the loop',
+        tostring(BR.Inv.of(1).slots[1].clip))
+end
+
 describe('damage.brshots')
 do
     -- #93 CANNOT CLOSE ON brrefuse ALONE, and this block is the difference.
