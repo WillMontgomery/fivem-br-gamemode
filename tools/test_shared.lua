@@ -6296,6 +6296,60 @@ do
 end
 
 -- ==========================================================================
+-- ONE PAIR OF HANDS, ONE BODY
+-- ==========================================================================
+--
+-- The hold lives on the TARGET -- reviverSrc, reviveFrom, reviveBeat and the
+-- anchor are all fields of the downed entry -- and stepDowned walks bodies, so
+-- one player holding several at once was a supported shape rather than a
+-- refused one. It used to be capped by geometry: every body had to be inside the
+-- same 2.5m circle as the reviver, so "all at once" meant a squad wiped in one
+-- spot. Removing the reviver-to-body test on 2026-09-07 took that cap with it,
+-- and a client sending one event per downed mate would have stood a whole squad
+-- up together.
+--
+-- THE HONEST CLIENT NEVER DID THIS. client/dbno.lua's `holding` is a single
+-- table and switching mates sends REVIVE_STOP first -- which is why the server
+-- RELEASES the old hold rather than refusing the new one: refusing would strand
+-- a player whose STOP was lost for the 750ms the beat takes to expire.
+describe('dbno.onebody')
+do
+    local S = newServer()
+    local Net = S.env.BR.Net
+    -- Player 3 is scenery in the base rig and is in another squad; this suite
+    -- needs three squadmates, so it is moved in and knocked.
+    S.roster[3].squadId = 'sq1'
+    for _, src in ipairs({ 1, 2, 3 }) do
+        S.roster[src].pos = { x = 0.0, y = 0.0, z = 30.0 }
+    end
+    S.env.BR.Combat.knock(1, 2)
+    S.env.BR.Combat.knock(3, 2)
+
+    S.fire(Net.REVIVE_START, 2, { target = 1 })
+    ok(S.roster[1].reviverSrc == 2, 'player 2 has the first body',
+       tostring(S.roster[1].reviverSrc))
+
+    S.fire(Net.REVIVE_START, 2, { target = 3 })
+    ok(S.roster[3].reviverSrc == 2, 'and takes the second one',
+       tostring(S.roster[3].reviverSrc))
+    ok(S.roster[1].reviverSrc == nil,
+       'and the FIRST is released -- one pair of hands cannot pick two people '
+           .. 'up at once, and with the distance test gone nothing else caps it',
+       tostring(S.roster[1].reviverSrc))
+    ok(S.roster[1].reviveAnchor == nil,
+       'and the released hold takes its anchor with it',
+       tostring(S.roster[1].reviveAnchor))
+
+    -- AND A HEARTBEAT ON THE ONE THEY STILL HOLD DOES NOT RELEASE IT. The sweep
+    -- excludes the target being asked for, or every 250ms re-assert would stop
+    -- the hold it is re-asserting.
+    S.fire(Net.REVIVE_START, 2, { target = 3 })
+    ok(S.roster[3].reviverSrc == 2,
+       'while re-asserting the hold they DO have leaves it alone',
+       tostring(S.roster[3].reviverSrc))
+end
+
+-- ==========================================================================
 -- THE ANCHOR IS THE RULE THAT REPLACED IT
 -- ==========================================================================
 --

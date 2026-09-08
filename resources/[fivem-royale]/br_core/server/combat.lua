@@ -1617,6 +1617,29 @@ AddEventHandler(BR.Net.REVIVE_START, function(data)
         return
     end
 
+    -- ═══ ONE PAIR OF HANDS, ONE BODY ═══
+    --
+    -- Nothing here used to ask whether `src` was ALREADY holding somebody else.
+    -- The hold lives on the TARGET -- reviverSrc, reviveFrom, reviveBeat and the
+    -- anchor are all fields of the body -- and stepDowned walks bodies, so N
+    -- concurrent holds by one player were a supported shape rather than a
+    -- refused one. REVIVE_STOP's sweep over every entry with `e.reviverSrc ==
+    -- src` shows it was contemplated.
+    --
+    -- IT USED TO BE CAPPED BY GEOMETRY AND IS NOT ANY MORE. Every body had to be
+    -- inside the same 2.5m circle as the reviver, so "all of them at once" meant
+    -- a squad that had been wiped in one spot. With the reviver-to-body test
+    -- gone (see reviveAllowed) that cap went with it, and a client sending one
+    -- event per downed mate would stand a whole squad up together.
+    --
+    -- RELEASED RATHER THAN REFUSED, which is the honest client's own intention:
+    -- client/dbno.lua's `holding` is a single table and switching mates sends
+    -- REVIVE_STOP first. Refusing here would strand a player whose STOP was lost
+    -- for the 750ms it takes the beat to expire; releasing does what they meant.
+    BR.Roster.each(
+        function(e) return e.reviverSrc == src and e.src ~= targetSrc end,
+        function(tsrc, other) stopRevive(tsrc, other, 'switched to another mate') end)
+
     target.reviverSrc = src
     target.reviveFrom = GetGameTimer()
     target.reviveBeat = target.reviveFrom
