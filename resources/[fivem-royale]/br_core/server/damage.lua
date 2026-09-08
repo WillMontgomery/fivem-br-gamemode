@@ -804,6 +804,72 @@ local function noteAdjudication(shooter, victim, w, ctx, dist, since, why)
     r.forced       = forced and forced.mode or nil
 end
 
+-- How far down a client-supplied target list we are willing to READ.
+--
+-- Separate from the per-weapon ceiling below and doing a different job: the
+-- ceiling bounds how many victims may be HURT, this bounds how much work an
+-- event may cost us before we stop looking. A payload carrying fifty thousand
+-- ids would otherwise be fifty thousand tonumber calls on the hottest path in
+-- the resource, per event, for free -- which is a denial of service that needs
+-- no exploit at all, just a big table.
+local SCAN_MAX = 64
+
+--- The victims an event actually claims, normalised, deduplicated and bounded.
+---
+--- THE LIST IS A CLAIM, NOT A MEASUREMENT. `hitGlobalIds` is composed on the
+--- shooter's machine, and the handler used to walk it with `ipairs` and apply
+--- damage once per entry. Three copies of one victim in one pistol event were
+--- three hits for one round, all measured against the same accepted interval,
+--- because the interval and the round are computed once per EVENT and the
+--- damage was applied once per ENTRY (audit finding 5, 2026-09-08).
+---
+--- NORMALISED FIRST, BECAUSE A DUPLICATE CAN BE SPELT SEVERAL WAYS. `1002` and
+--- `1002.0` are the same ped and different table keys, so a set keyed by the
+--- raw value would deduplicate neither. Anything that is not a whole number is
+--- not a network id and is dropped rather than passed to
+--- NetworkGetEntityFromNetworkId to find out.
+---
+--- DROPPED, NOT REFUSED, and that is the melee precedent rather than a soft
+--- touch. A duplicate arrives with no gap in front of it, so validating it
+--- would refuse it as TOO_FAST -- a countable, means-class refusal -- and if
+--- the engine ever double-reports an honest event that would file anticheat
+--- cases against players for shooting. The second copy is simply not a hit.
+--- THE PER-WEAPON CEILING IS NOT APPLIED HERE, and that is deliberate rather
+--- than an omission. `hitGlobalIds` names ENTITIES, most of which are not
+--- players: a shotgun blast into a car park lists bodywork. Trimming the list
+--- to six entries before anybody has been resolved would let six parked cars
+--- push the one actual victim off the end, so the shot would silently hurt
+--- nobody. The ceiling is counted against RESOLVED PLAYERS in the loop below,
+--- where it means what it says.
+--- @param data table    the event payload
+--- @return table|nil ids  distinct, whole-number net ids, or nil for none
+local function targetsOf(data)
+    local raw = data.hitGlobalIds
+    if type(raw) ~= 'table' then
+        -- hitGlobalIds is the documented-by-usage field; hitGlobalId is the
+        -- singular form some builds send. Read both rather than betting on one.
+        raw = data.hitGlobalId and { data.hitGlobalId } or nil
+    end
+    if not raw then return nil end
+
+    local out, seen = {}, {}
+    for i, v in ipairs(raw) do
+        if i > SCAN_MAX then break end
+        local id = math.tointeger(tonumber(v))
+        if id and id ~= 0 then
+            if seen[id] then
+                BR.Damage.dupeTargets = (BR.Damage.dupeTargets or 0) + 1
+            else
+                seen[id] = true
+                out[#out + 1] = id
+            end
+        end
+    end
+
+    if #out == 0 then return nil end
+    return out
+end
+
 AddEventHandler('weaponDamageEvent', function(sender, data)
     if recording > 0 then record(sender, data) end
     if type(data) ~= 'table' then return end
@@ -861,12 +927,7 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
         BR.Damage.spendRound(shooter, data.weaponType)
     end
 
-    -- hitGlobalIds is the documented-by-usage field; hitGlobalId is the
-    -- singular form some builds send. Read both rather than betting on one.
-    local ids = data.hitGlobalIds
-    if type(ids) ~= 'table' then
-        ids = data.hitGlobalId and { data.hitGlobalId } or nil
-    end
+    local ids = targetsOf(data)
     if not ids then return end
 
     -- CADENCE IS PER EVENT, NOT PER VICTIM, and this used to be inside the
@@ -884,9 +945,38 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- from the moment your own grenade went off.
     if not (fired and fired.explosive) then lastShot[shooter] = now end
 
+    -- ONE EVENT, ONE HIT PER PLAYER, decided on the RESOLVED PLAYER rather than
+    -- on the id that named them.
+    --
+    -- targetsOf has already thrown away repeated ids, which closes the case the
+    -- audit reproduced. This closes the same case one level down: two DIFFERENT
+    -- network ids that both resolve to one src are still one player being hurt
+    -- twice for one round. It costs a table lookup per victim and it means the
+    -- invariant holds however the ids were spelt -- rather than holding because
+    -- the only spelling anybody thought of was caught upstream.
+    --
+    -- ...AND A CEILING ON HOW MANY OF THEM THERE CAN BE. Distinct victims are
+    -- not a fabrication a set can catch, so the count is bounded by what the
+    -- weapon physically reaches (BR.ShotMaxTargets). Counted here rather than
+    -- while reading the list, because most entries in that list are scenery.
+    local hitAlready = {}
+    local hits, maxHits = 0, BR.ShotMaxTargets(fired, liveCfg())
+
     for _, netId in ipairs(ids) do
         local victim = playerFromNetId(netId)
+        if victim and hitAlready[victim] then
+            BR.Damage.dupeTargets = (BR.Damage.dupeTargets or 0) + 1
+            victim = nil
+        elseif victim and hits >= maxHits then
+            -- Dropped rather than refused, for the melee-duplicate reason: an
+            -- honest event that over-reports must not file a case against the
+            -- player who fired it.
+            BR.Damage.cappedTargets = (BR.Damage.cappedTargets or 0) + 1
+            victim = nil
+        end
         if victim then
+            hitAlready[victim] = true
+            hits = hits + 1
             local ctx = contextFor(shooter, victim, data.weaponType)
             if ctx then
                 local dist = 0.0

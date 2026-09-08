@@ -1244,6 +1244,50 @@ do
         table.concat(surprises, ', '))
 end
 
+describe('combat.targets')
+do
+    -- HOW MANY PEOPLE ONE SHOT MAY HURT (audit finding 5, 2026-09-08).
+    --
+    -- `hitGlobalIds` is composed on the shooter's machine, so its LENGTH is a
+    -- claim like everything else in the payload. Deduplication alone does not
+    -- bound it -- a hundred distinct victims in one event is the same
+    -- fabrication wearing a different hat, and against a full lobby it is a
+    -- wipe -- so the count is bounded by what the weapon physically reaches.
+    local cfg = BR.Config.Combat
+    local rifle = BR.Config.WeaponById['carbinerifle']
+    local machete = BR.Config.WeaponById['machete']
+    local grenade = BR.Config.WeaponById['grenade']
+
+    ok(BR.ShotMaxTargets(machete, cfg) < BR.ShotMaxTargets(rifle, cfg),
+        'a swing reaches fewer people than a round does',
+        ('%d vs %d'):format(BR.ShotMaxTargets(machete, cfg),
+                            BR.ShotMaxTargets(rifle, cfg)))
+    ok(BR.ShotMaxTargets(grenade, cfg) > BR.ShotMaxTargets(rifle, cfg),
+        'and a blast reaches more of them than either',
+        ('%d'):format(BR.ShotMaxTargets(grenade, cfg)))
+
+    -- EVERY CEILING IS ABOVE ONE, and that is the assertion worth having
+    -- rather than the exact numbers. The failure direction is not symmetric:
+    -- dropping a real victim is a hit that silently did nothing and reads as
+    -- the game being broken, while one impossible extra victim is a rounding
+    -- error nobody can build an exploit on. A ceiling of 1 on a shotgun would
+    -- quietly delete the second half of every pellet spread.
+    for _, w in ipairs({ machete, rifle, grenade }) do
+        ok(BR.ShotMaxTargets(w, cfg) > 1,
+            ('%s can still catch more than one player'):format(w.id),
+            tostring(BR.ShotMaxTargets(w, cfg)))
+    end
+
+    -- A HASH WE DO NOT ISSUE STILL GETS A CEILING. It is refused as NO_WEAPON
+    -- per victim anyway, but the ceiling is what stops a fabricated list being
+    -- WALKED -- and a nil weapon row must not read as "no limit".
+    ok(BR.ShotMaxTargets(nil, cfg) > 0,
+        'an unissued weapon has a ceiling too, not an absent one',
+        tostring(BR.ShotMaxTargets(nil, cfg)))
+    ok(BR.ShotMaxTargets(nil, nil) > 0,
+        'and so does one adjudicated with no config at all')
+end
+
 describe('combat.refusal.classes')
 do
     -- WHAT CAN BECOME AN INCIDENT, PINNED.

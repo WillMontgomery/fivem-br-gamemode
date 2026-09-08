@@ -202,6 +202,42 @@ function BR.ShotIntervalFloor(w, cfg)
     return w.minInterval * ((cfg or {}).intervalSlack or 0.6)
 end
 
+--- How many DISTINCT players one event may hurt, given what fired it.
+---
+--- ONE EVENT IS ONE SHOT, AND A SHOT REACHES A BOUNDED NUMBER OF PEOPLE.
+--- `hitGlobalIds` is a list the CLIENT composes, so its length is a claim and
+--- not a measurement -- and the handler used to apply damage once per entry
+--- with no ceiling at all. Three copies of one victim in a pistol event were
+--- three hits for one round (audit, 2026-09-08).
+---
+--- Deduplication alone would not close it: a hundred DISTINCT victims in one
+--- event is the same fabrication wearing a different hat, and against a full
+--- lobby it is a wipe. So the count is bounded as well, by what the weapon can
+--- physically reach.
+---
+--- THE NUMBERS ARE DELIBERATELY GENEROUS, because the failure direction is not
+--- symmetric. Dropping a legitimate victim from a real grenade is a hit that
+--- silently did nothing -- the shooter sees a blast and no marker -- and that
+--- reads as the game being broken. Accepting one impossible extra victim is a
+--- rounding error nobody can build an exploit on. Same reasoning as the range
+--- and cadence slack above.
+---
+---   melee      A swing is one contact. Two is a body that walked into the arc
+---              of a machete already travelling; three is not a swing.
+---   explosive  A grenade in a squad fight genuinely catches everybody stood
+---              together, and the blast radii here run to 12m.
+---   firearm    A shotgun raises ONE event for a whole pellet spread, and a
+---              round can pass through a body into the one behind it.
+--- @param w table|nil  a BR.Config.Weapon* row, nil for a hash we do not issue
+--- @param cfg table|nil BR.Config.Combat
+--- @return integer
+function BR.ShotMaxTargets(w, cfg)
+    cfg = cfg or {}
+    if w and w.explosive then return cfg.maxBlastTargets or 12 end
+    if w and w.melee     then return cfg.maxMeleeTargets or 2  end
+    return cfg.maxShotTargets or 6
+end
+
 --- Is this shot physically possible, given what the SERVER believes?
 ---
 --- Everything here is checked against the server's own model -- the roster's
