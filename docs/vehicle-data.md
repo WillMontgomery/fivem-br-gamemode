@@ -250,7 +250,7 @@ vehicle and `armed` in every other is a bespoke weapon group.
 
 Take nothing from a paid, escrowed or unlicensed resource — a `.meta` inside an
 `escrow_ignore` block is escrowed even though the file itself is readable. If an
-add-on is vendored, its licence goes in `VENDOR.json` alongside it and
+add-on is vendored, its license goes in `VENDOR.json` alongside it and
 `verify.sh`'s vendored-third-party gate checks that both directions agree.
 
 ---

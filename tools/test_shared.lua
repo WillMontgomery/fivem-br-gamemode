@@ -3931,7 +3931,7 @@ do
     -- Nil in, nil out, so `qualified(k, licenseOf(src))` needs no guard at the
     -- call site -- a player with no license must stay nil rather than becoming
     -- the string "license:nil", which would be a real key colliding every
-    -- licence-less player into one profile.
+    -- license-less player into one profile.
     ok(BR.Identity.qualified('license', nil) == nil,
         'a missing identifier stays missing rather than becoming "license:nil"')
 end
@@ -10436,7 +10436,7 @@ do
     ok(#t == 2 and t[1].src == 2,
         'a dead killer is not promoted, and the living rest remain', names(t))
 
-    -- 5. A KILLER WHO HAS LEFT. The server resolves a licence to a live id and
+    -- 5. A KILLER WHO HAS LEFT. The server resolves a license to a live id and
     --    gets nothing, so the solver is handed an id that is on no row.
     t, policy = S.playerTargets(solos(99, false))
     ok(#t == 3 and t[1].src == 2,
@@ -10502,7 +10502,7 @@ do
 
     -- 12. NEVER MYSELF, even if something upstream managed to name me. The
     --     server guards it twice already (attributedKiller refuses a self-hit
-    --     and eliminate writes the licence only when killerSrc ~= src); this is
+    --     and eliminate writes the license only when killerSrc ~= src); this is
     --     the third place it cannot happen.
     t = S.playerTargets({
         mySrc = 1, squadId = nil, free = false, killerSrc = 1,

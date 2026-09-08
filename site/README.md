@@ -118,7 +118,7 @@ subscriber in `br_core/client/spectate.lua` and cycle a dead player's camera
 through their squad. Nothing about the bindings moved — same actions, same
 defaults — so anyone who had rebound a key they had no way to know was dead keeps
 the key they chose. `Z` is gone entirely and `M` is still bound with no listener.
-**The manual does not name the arrows and this note is not a licence to add
+**The manual does not name the arrows and this note is not a license to add
 them**: the row goes in when the owner decides on the wording, and until then the
 site is silent about a key that works, which is the harmless direction of the two.
 

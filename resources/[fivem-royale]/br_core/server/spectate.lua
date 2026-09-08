@@ -26,7 +26,7 @@
 -- id -- which this project has already been bitten by (br_ringmaster's
 -- findByLicense carries the other half of that scar). So a session remembers the
 -- target's LICENSE as well as their id, and the feed re-checks the pair on every
--- push. A disconnect handler is the fast path; the licence check is what makes
+-- push. A disconnect handler is the fast path; the license check is what makes
 -- the fast path optional rather than load-bearing.
 
 BR = BR or {}
@@ -195,7 +195,7 @@ local function push(src, s)
     -- moment the session ends the pushes stop.
     --
     -- IT IS NOT SENT AT ALL FOR A TARGET WHOSE POSITION WE WOULD NOT SEND
-    -- EITHER -- the licence re-check in the feed runs before this is reached,
+    -- EITHER -- the license re-check in the feed runs before this is reached,
     -- so a recycled server id stops the session rather than handing the new
     -- occupant's loadout to a stranger.
     local inv = BR.Inv and BR.Inv.publicFor and BR.Inv.publicFor(s.target) or nil
@@ -262,9 +262,9 @@ local function playerView(src, entry)
     -- server/vehicles.lua), and server/combat.lua notes that M6 cancels the
     -- engine's damage anyway, so the client honestly has nothing to report.
     --
-    -- THE LOOKUP IS THE POINT OF STORING A LICENCE. The id is resolved HERE,
+    -- THE LOOKUP IS THE POINT OF STORING A LICENSE. The id is resolved HERE,
     -- from the roster as it stands this instant, so a recycled server id cannot
-    -- be inherited: the licence either still names somebody in this match or it
+    -- be inherited: the license either still names somebody in this match or it
     -- names nobody and the killer is simply gone. Done in the walk that is
     -- already happening rather than in a second pass over the same table.
     local wantLicense = nil
@@ -551,7 +551,7 @@ end)
 --- A camera pointed at a departed player is not merely blank -- FiveM hands that
 --- id to the next person to connect, within the minute, so it becomes a camera
 --- pointed at somebody the watcher was never entitled to see. This handler is
---- the fast path. The feed's licence check below is the one that has to be
+--- the fast path. The feed's license check below is the one that has to be
 --- right, because this event can be missed (a resource restart mid-session) and
 --- that one cannot.
 AddEventHandler('playerDropped', function()
@@ -603,13 +603,13 @@ end)
 BR.Sched.every(BR.Config.Spectate.feedMs, 'spectate.feed', function()
     for src, s in pairs(sessions) do
         -- IS THIS STILL THE SAME PERSON? The id survives a disconnect; the
-        -- licence does not. Comparing them is what makes a recycled id a stop
+        -- license does not. Comparing them is what makes a recycled id a stop
         -- rather than a silent change of subject.
         --
-        -- A NIL LICENCE ON BOTH SIDES IS NOT A MATCH AND MUST NOT READ AS ONE:
-        -- a licenceless connection has nil forever, so `nil == nil` would let
+        -- A NIL LICENSE ON BOTH SIDES IS NOT A MATCH AND MUST NOT READ AS ONE:
+        -- a licenseless connection has nil forever, so `nil == nil` would let
         -- any recycled id inherit the session. The session is only kept when the
-        -- stored licence is a real string and still resolves to the same one.
+        -- stored license is a real string and still resolves to the same one.
         local now = BR.Roster.licenseOf(s.target)
         if s.targetLicense == nil or now == nil or now ~= s.targetLicense then
             BR.Spectate.stop(src, 'target-left')

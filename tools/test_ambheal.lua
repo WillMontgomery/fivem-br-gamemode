@@ -204,7 +204,7 @@ do
         'and not at -x')
 
     -- DISTANCE STILL BOUNDS IT. Directly astern but out of reach is out of
-    -- reach; the arc is not a licence to heal from across the road.
+    -- reach; the arc is not a license to heal from across the road.
     ok(select(1, at(0, 0, 0.0, 0, -12.0, 3.5, -0.35)) == false,
         'the rear arc does not extend to the far side of the street')
 

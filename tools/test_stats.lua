@@ -977,7 +977,7 @@ do
 
     -- ═══ brgive's ROSTER CHECK, AND IT HAS TO BE THE THING THAT REFUSES ═══
     --
-    -- 9 is CONNECTED and has a licence -- so the license lookup further down
+    -- 9 is CONNECTED and has a license -- so the license lookup further down
     -- would happily find a row to write to. Testing against a src with no
     -- identifiers either would pass with the roster check deleted, which is a
     -- test that asserts nothing.
@@ -1069,7 +1069,7 @@ do
     -- same route -- otherwise the granted Volts are spendable and invisible.
     ok(seen ~= nil, 'a successful write updates br_core\'s session cache')
     ok(seen and seen.lic == 'license:aaaaaaaa' and seen.volts == 5000,
-        'with the licence and the amount that were written',
+        'with the license and the amount that were written',
         seen and ('%s %s'):format(tostring(seen.lic), tostring(seen.volts)))
     ok(seen and seen.xp == 0,
         'and no XP -- this granted Volts, and inventing XP here would put a '

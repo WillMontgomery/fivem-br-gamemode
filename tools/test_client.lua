@@ -12485,7 +12485,7 @@ do
     frame(16)
     ok(not anyOff(MELEE_ON_Q), 'and a machete is allowed to swing')
 
-    -- 5. AND THE SEAT IS NOT A LICENCE. An armed player who gets out is back
+    -- 5. AND THE SEAT IS NOT A LICENSE. An armed player who gets out is back
     --    under the suppression on the very next frame -- the block is per-frame
     --    by contract and a latch here would be the punch bug with extra steps.
     fire(BR.Net.INV_SET, {

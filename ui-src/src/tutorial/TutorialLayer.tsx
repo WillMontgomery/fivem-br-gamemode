@@ -478,7 +478,7 @@ export default function TutorialLayer(p: TutorialLayerProps) {
    * (2026-09-05, on the crate card: "should not have a 'next' button as we're
    * waiting for their action as we've directed them").
    *
-   * That rule is right and it is not a licence to trap anybody. The owner sat on
+   * That rule is right and it is not a license to trap anybody. The owner sat on
    * `game-pickup` with the requirement already met by a counter that was asking
    * the wrong question, and there was no way out of the walkthrough at all. So
    * after STUCK_MS the button appears -- late enough that nobody who is getting

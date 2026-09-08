@@ -971,7 +971,7 @@ while IFS= read -r manifest; do
     # exists because client/screen.lua was written, committed and deployed by US
     # and never added to client_scripts, and nothing errored. Third-party
     # manifests are upstream's, they are not edited here, and a file undeclared
-    # in one is upstream's bug to have. What IS true of vendored code -- licence
+    # in one is upstream's bug to have. What IS true of vendored code -- license
     # present, version recorded, patch log matching the patches, and the thing
     # actually reaching the box -- is asserted in `vendored third-party` below.
     if [ -f "$resdir/VENDOR.json" ]; then
@@ -1088,7 +1088,7 @@ bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
 # Vendoring is cheap to do and expensive to keep, and it decays in four
 # specific ways. Each one is a check below.
 #
-#   1. THE LICENCE GOES MISSING. MIT requires the notice to travel with the
+#   1. THE LICENSE GOES MISSING. MIT requires the notice to travel with the
 #      code. This is the only item here that is a legal problem rather than an
 #      engineering one.
 #
@@ -1121,7 +1121,7 @@ while IFS= read -r vjson; do
     vrel="${vdir#resources/}"
     ven_n=$((ven_n+1))
 
-    # 1. the licence
+    # 1. the license
     if [ ! -f "$vdir/LICENSE" ]; then
         echo "${RED}FAIL${RST} $vrel is vendored but ships no LICENSE"
         echo "     MIT and everything like it requires the notice to travel with"
@@ -1201,7 +1201,7 @@ if [ "$ven" -eq 0 ]; then
     if [ "$ven_n" -eq 0 ]; then
         echo "${GRN}ok${RST}   no vendored third-party resources"
     else
-        echo "${GRN}ok${RST}   $ven_n vendored resource(s): licence kept, version recorded, patch log matches the source, deploy.sh syncs it"
+        echo "${GRN}ok${RST}   $ven_n vendored resource(s): license kept, version recorded, patch log matches the source, deploy.sh syncs it"
     fi
 else
     echo
@@ -1289,7 +1289,7 @@ if [ -f tools/dispatch.sh ]; then
     # THAN BEING WORKED AROUND. It is the lightest write verb here -- it removes
     # nobody, changes no state a player can feel, and takes no free text at all --
     # but it does something to a player who has not been told, which is precisely
-    # the boundary this list guards. It resolves two licences and hands them to
+    # the boundary this list guards. It resolves two licenses and hands them to
     # br_core; the session, the camera and the audit rows all live over there.
     #
     # THE GAMEMODE HALF IS NOT ON main YET. This file landed here on its own
@@ -1320,7 +1320,7 @@ if [ -f tools/dispatch.sh ]; then
     #
     # `configreport` renders in a browser and lands in an audit log, and the
     # allowlist in do_configreport is the only thing standing between that and
-    # server.cfg, which holds the real licence key. The allowlist itself is the
+    # server.cfg, which holds the real license key. The allowlist itself is the
     # control and this does not replace it -- this is the second pair of eyes on
     # the one line of that file where a mistake is expensive.
     #

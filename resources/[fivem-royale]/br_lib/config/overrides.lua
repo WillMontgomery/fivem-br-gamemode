@@ -194,7 +194,7 @@ Ov.SPEC = {
         kind   = 'url',
         -- THE ADMIN TAB IN THE PAUSE MENU (#23). Unset is the default and the
         -- default is OFF: no tab, no HTTP call, no mention anywhere except one
-        -- line in the boot banner. That is the whole licence for the feature --
+        -- line in the boot banner. That is the whole license for the feature --
         -- the game must never depend on Ringmaster, so a server with no console
         -- configured has to be a server that plays exactly as it did before.
         --

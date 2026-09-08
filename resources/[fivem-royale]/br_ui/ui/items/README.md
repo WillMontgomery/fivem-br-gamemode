@@ -79,9 +79,9 @@ Molotov Cocktail, Tear Gas, Knuckledusters, Fist). **Watch the near-misses** —
 `Heavy Weapons/` also holds a *Compact* Grenade Launcher, a Homing Launcher and
 a Widowmaker, none of which is the weapon we issue.
 
-## The licence, which does not exist
+## The license, which does not exist
 
-**That repository has no licence.** There is no `LICENSE` file in its tree and
+**That repository has no license.** There is no `LICENSE` file in its tree and
 the GitHub API reports `"license": null` — verified 2026-08-22, not assumed.
 So this art is **not** licensed to us, and nothing here should be read as
 claiming it is.
@@ -98,7 +98,7 @@ a GTA V mod that runs only for people who own the game, and it already depends
 on Rockstar's assets everywhere else.
 
 This is a **judgement call by the owner, recorded so it is not re-litigated and
-not quietly mistaken for a licence.** Two things follow:
+not quietly mistaken for a license.** Two things follow:
 
 * Do not add a `LICENSE` file or a `license` field for this art. There is
   nothing to put in one, and inventing a field is worse than the honest gap.
@@ -108,7 +108,7 @@ not quietly mistaken for a licence.** Two things follow:
   prose, next to the files: a `VENDOR.json` here would look enforced and would
   not be. See `resources/[voice]/pma-voice/VENDOR.json` for the shape this is
   imitating.
-* If the position ever changes, the fix is not a licence — it is replacing the
+* If the position ever changes, the fix is not a license — it is replacing the
   art. Every file is a plain PNG keyed by item id, so the set can be swapped
   wholesale without touching a line of code.
 

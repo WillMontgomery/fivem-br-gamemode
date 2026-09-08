@@ -201,7 +201,7 @@ non-zero on any failure:
 | `manifest coverage` | every `.lua` is declared in an fxmanifest |
 | `shared coverage` | everything dropped in `br_lib` is actually loaded |
 | `deploy payload` | the deploy's own payload check still works |
-| `vendored third-party` | licence kept, version recorded, patch log matches the source, `deploy.sh` syncs it |
+| `vendored third-party` | license kept, version recorded, patch log matches the source, `deploy.sh` syncs it |
 | `console capability boundary` | `dispatch.sh`'s SSH verb set, exactly — plus `brcar`, `brshots`, `brtestfire` and `brtime`/`brweather` staying console-only |
 | `dev gate on console commands` | every console command goes through the one wrap, exempting only the three; the ungated door is player input only |
 | `branch-switch invariant` | no path to a hard reset that skips the dispatch blob check |

@@ -196,7 +196,7 @@ local MIN_INTERVAL_MS = 900
 ---
 --- THREE SECONDS, AND THE NUMBER IS CHOSEN AGAINST THE FALSE POSITIVES RATHER
 --- THAN AGAINST THE OFFENCE. At the roster's 4 Hz that is twelve consecutive
---- samples, all naming the same vehicle handle for the same licence.
+--- samples, all naming the same vehicle handle for the same license.
 ---
 --- What it is sized to reject: a seat read taken during an ejection or a
 --- ragdoll (one or two samples), a player who gets in and straight back out,
@@ -766,10 +766,10 @@ end)
 ---
 --- [src] = { veh, since, license, why, filed }
 ---
---- CARRIES THE LICENCE FOR `track`'s REASON, and the stakes are the same: FiveM
+--- CARRIES THE LICENSE FOR `track`'s REASON, and the stakes are the same: FiveM
 --- recycles server ids within the minute, so a row left behind by a departing
 --- pilot would be read as the dwell of whoever lands in that slot next -- and
---- they would inherit a case for a seat they never sat in. A licence that does
+--- they would inherit a case for a seat they never sat in. A license that does
 --- not match restarts the dwell, which is the direction that files nothing
 --- rather than the direction that invents a finding.
 ---
@@ -801,7 +801,7 @@ local function occupancySample(src, e, veh, now)
     local rec = seat[src]
 
     -- A DIFFERENT VEHICLE, A DIFFERENT PERSON, OR NOTHING YET: start the clock.
-    -- The licence is compared as well as the handle because a recycled server
+    -- The license is compared as well as the handle because a recycled server
     -- id would otherwise walk into a dwell somebody else started -- and nil is
     -- treated as "cannot prove it is the same person", which restarts.
     if rec == nil or rec.veh ~= veh
@@ -938,14 +938,14 @@ local driving = {}
 ---
 --- [src] = { x, y, z, at, license, speed }
 ---
---- CARRIES THE LICENCE, AND THAT IS NOT DECORATION. FiveM recycles server ids
+--- CARRIES THE LICENSE, AND THAT IS NOT DECORATION. FiveM recycles server ids
 --- within the minute, so the row left behind by a disconnecting driver would be
 --- read as the previous position of whoever lands in that slot next -- and the
 --- displacement between two different humans standing in two different places is
 --- an enormous speed, arriving at the exact moment a fresh player is least able
 --- to have earned a kill. The `playerDropped` handler below already clears the
---- row; the licence is what covers the case where it did not run, and it fails
---- CLOSED -- an unrecognised licence means no speed this sample, so no credit.
+--- row; the license is what covers the case where it did not run, and it fails
+--- CLOSED -- an unrecognised license means no speed this sample, so no credit.
 local track = {}
 
 --- Read a native that answers an entity handle, defensively.
@@ -1086,7 +1086,7 @@ local function sampleSpeed(src, entry, now)
     local t = track[src]
 
     -- A DIFFERENT HUMAN IN THE SAME SLOT HAS NO HISTORY. nil is treated as
-    -- "cannot prove it is the same person" rather than as a licence that matches
+    -- "cannot prove it is the same person" rather than as a license that matches
     -- itself, which is the direction that refuses a kill rather than inventing
     -- one.
     if t and (license == nil or t.license ~= license) then t = nil end
@@ -1445,7 +1445,7 @@ AddEventHandler('playerDropped', function()
     driving[src] = nil
     -- AND THE DWELL, for the same reason and with a sharper edge: a row left
     -- here is a part-served dwell in a stolen helicopter, and the next player to
-    -- hold this id would finish it and take the case. The licence check inside
+    -- hold this id would finish it and take the case. The license check inside
     -- occupancySample already refuses that; this is the cheaper half of the
     -- same guard, and neither is enough on its own.
     seat[src]   = nil

@@ -168,7 +168,7 @@ state" rather than to "not running".
 [pma-voice](https://github.com/AvarianKnight/pma-voice) v7.0.2-rc3 (MIT,
 © Dillon Skaggs), vendored whole rather than installed: every byte outside a
 declared `BR-PATCH` block is identical to the upstream tag, `VENDOR.json` records
-the provenance, and `tools/verify.sh` gates that the licence is present, that
+the provenance, and `tools/verify.sh` gates that the license is present, that
 every patch marker in the tree is declared and every declared patch is in the
 tree, and that `tools/deploy.sh` actually syncs it. It owns the voice engine.
 `br_core/client/voice.lua` expresses our rules through it and calls exactly one
@@ -234,6 +234,6 @@ on them without either being able to call the other:
 
 ---
 
-## Licence
+## License
 
 Not yet chosen. Until one is added, no permissions are granted beyond viewing.

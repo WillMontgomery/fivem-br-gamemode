@@ -159,7 +159,7 @@ export function timelineEntry(e) {
    * because that is the only place the two languages can be made to agree
    * mechanically.
    *
-   * NO LICENCES, NO NAMES. Unlike a kill there is no second party -- a strip is
+   * NO LICENSES, NO NAMES. Unlike a kill there is no second party -- a strip is
    * a fact about the subject's own ped, and the row already carries
    * `subjectLicense`.
    *
@@ -194,7 +194,7 @@ export function timelineEntry(e) {
    * ═══ THIS IS THE FIRST PLAYER-AUTHORED PROSE ON A MATCH TIMELINE ═══
    *
    * Everything else on this list is a fact the server measured: a timestamp, a
-   * weapon hash, a licence it resolved itself. `text` is what somebody typed,
+   * weapon hash, a license it resolved itself. `text` is what somebody typed,
    * and it is here because the owner asked for it by name (2026-08-29):
    * "specifically save the chat content to the DDB entry and display on the
    * timeline in the incident".
@@ -230,8 +230,8 @@ export function timelineEntry(e) {
       at,
       kind,
       /**
-       * THE LICENCES ARE THE PROFILE LINKS. The console keys player profiles by
-       * licence, and a display name is neither unique nor stable. Both sides of
+       * THE LICENSES ARE THE PROFILE LINKS. The console keys player profiles by
+       * license, and a display name is neither unique nor stable. Both sides of
        * the kill travel because the buffer records a kill against the killer AND
        * the victim -- a subject's own deaths are context a reviewer needs -- and
        * the console decides which way to render it by comparing against the

@@ -324,7 +324,7 @@ BR.Config.Airdrop = {
     -- NOTHING WAS TAKEN FROM kq_airdrop, the paid resource in the owner's
     -- project folder. Its plane and drop logic is Cfx.re escrow-ENCRYPTED (FXAP
     -- header), so there is no source to read; it is a commercial product with no
-    -- licence permitting reuse; and its one readable spawn call is
+    -- license permitting reuse; and its one readable spawn call is
     -- `CreateObject(model, coords, 1, 0, 0)` -- isNetwork = true, which
     -- `sv_entityLockdown relaxed` refuses outright. There was nothing to take
     -- and it would not have worked.

@@ -12012,9 +12012,9 @@ do
                              the next filing.
 
         AND THE #93 CASE THIS FILE SHIPPED WITHOUT. The offender exclusion is
-        resolved by comparing a live-read licence against the subject's. Both
+        resolved by comparing a live-read license against the subject's. Both
         skips used to be written `lic ~= nil and lic == ...`, so a player whose
-        licence did not resolve matched NEITHER and was told -- and when that
+        license did not resolve matched NEITHER and was told -- and when that
         player is the subject, that is the anticheat handing the offender the
         one notice it exists to withhold. It is asserted here rather than left
         to the playtest because it is invisible from the outside: the log line
@@ -12227,10 +12227,10 @@ do
         ('1=%s 3=%s'):format(tostring(warmTold[1]), tostring(warmTold[3])))
     ok(warmTold[2] == nil, 'and still withholds it from the offender')
 
-    -- ------------------------------- a licence that will not resolve (#93) ---
+    -- ------------------------------- a license that will not resolve (#93) ---
     --
     -- Captured BEFORE the identifiers stop answering: the incident carries the
-    -- licence read at filing time, and this notice is sent seconds later off a
+    -- license read at filing time, and this notice is sent seconds later off a
     -- fresh read. The gap is the bug -- up to thirty seconds of DynamoDB retry,
     -- during which the subject can be most of the way out of the server.
     local m4 = threeInAMatch(true)
@@ -12243,7 +12243,7 @@ do
     })
     local blindTold = toldSet()
     ok(blindTold[2] == nil,
-        'a subject whose licence no longer resolves is STILL not told -- the '
+        'a subject whose license no longer resolves is STILL not told -- the '
         .. 'offender learns nothing, #93',
         ('told: %s'):format(table.concat(hintTargets(), ',')))
     ok(blindTold[1] == true and blindTold[3] == true,
@@ -12265,7 +12265,7 @@ do
     })
     local blind2 = toldSet()
     ok(blind2[3] == nil,
-        'a bystander whose licence will not resolve is not told either -- the '
+        'a bystander whose license will not resolve is not told either -- the '
         .. 'nil case fails closed rather than generous')
     ok(blind2[1] == true,
         'while everybody the server can still name is told as normal')
@@ -17688,7 +17688,7 @@ end
 --
 -- br_lib's spectate_solve tests pin the ORDERING RULE against a hand-built view.
 -- These pin the half that a pure function cannot see: that the server records a
--- killer at all, records it as a LICENCE, hands the solver a live server id, and
+-- killer at all, records it as a LICENSE, hands the solver a live server id, and
 -- that a death with no killer travels all the way through as nil.
 
 --- A solo match: three players, no squadIds, everybody alive.
@@ -17741,7 +17741,7 @@ do
         'a solo killed by the storm still has somebody to watch',
         tostring(watching(1)))
 
-    -- NOBODY IS THEIR OWN KILLER. eliminate() writes the licence inside the
+    -- NOBODY IS THEIR OWN KILLER. eliminate() writes the license inside the
     -- `killerSrc ~= src` guard, so a self-credited death records nothing -- and
     -- the player is still never handed their own camera, which is the half that
     -- must survive the widening.
@@ -17792,7 +17792,7 @@ do
         'it lands on whoever is left', tostring(watching(1)))
 end
 
-describe('spectate.theKillerIsALicence')
+describe('spectate.theKillerIsALicense')
 do
     -- FIVEM RECYCLES SERVER IDS WITHIN THE MINUTE, and this record outlives the
     -- moment it is written by design -- the victim watches this person for the
@@ -17800,8 +17800,8 @@ do
     -- player's camera at whoever inherited the slot, which is a different human.
     --
     -- Reproduced the way spectate.recycledServerId reproduces it: the entry goes
-    -- and comes back under a new licence with no drop event at all, so nothing
-    -- but the licence comparison can catch it.
+    -- and comes back under a new license with no drop event at all, so nothing
+    -- but the license comparison can catch it.
     soloMatch()
     BR.Combat.eliminate(1, 'headshot', 2)
     sent = {}
@@ -17868,7 +17868,7 @@ end
 
 describe('spectate.theKillerRecordIsPerMatch')
 do
-    -- A LICENCE DOES NOT GO STALE ON ITS OWN, unlike lastHitBy, which the
+    -- A LICENSE DOES NOT GO STALE ON ITS OWN, unlike lastHitBy, which the
     -- assist window retires after ten seconds. So it has to be cleared, and
     -- BR.Match.resetPlayer is where the rest of the per-match record is.
     soloMatch()
@@ -18023,9 +18023,9 @@ do
     -- and it is a DIFFERENT HUMAN. Nothing about the session looks wrong; the
     -- admin is simply watching somebody nobody authorised them to watch.
     --
-    -- So the session remembers the licence and the feed re-checks the pair. This
+    -- So the session remembers the license and the feed re-checks the pair. This
     -- block reproduces the missed event exactly: the roster entry goes and comes
-    -- back under a new licence, WITHOUT playerDropped ever firing.
+    -- back under a new license, WITHOUT playerDropped ever firing.
     squadMatch()
     BR.Roster.setMatch(1, nil)
     BR.Roster.setState(1, BR.PlayerState.LOBBY)
@@ -18037,7 +18037,7 @@ do
     sent = {}
     fakeTime = fakeTime + BR.Config.Spectate.feedMs
     BR.Sched.step(fakeTime)
-    ok(watching(1) == 3, 'an unchanged licence keeps the session running')
+    ok(watching(1) == 3, 'an unchanged license keeps the session running')
 
     -- Now somebody else inherits the slot, with no drop event.
     BR.Roster.remove(3)
@@ -18053,9 +18053,9 @@ do
         tostring(stopReason(1)))
 end
 
-describe('spectate.licencelessTarget')
+describe('spectate.licenselessTarget')
 do
-    -- AND nil IS NOT A MATCH FOR nil. A connection with no licence has one
+    -- AND nil IS NOT A MATCH FOR nil. A connection with no license has one
     -- forever, so `stored == current` would be true for every recycled id in
     -- that state -- the hole the check exists to close, reopened by the one
     -- comparison that looks obviously correct.
@@ -18073,7 +18073,7 @@ do
     fakeTime = fakeTime + BR.Config.Spectate.feedMs
     BR.Sched.step(fakeTime)
     ok(stopped(1),
-        'but a target with no licence cannot be re-identified, so it stops')
+        'but a target with no license cannot be re-identified, so it stops')
 end
 
 describe('spectate.thePolicyRunsOnEveryPush')
@@ -18439,7 +18439,7 @@ do
     -- lands in that slot next -- and the displacement between two humans standing
     -- in two different places is a speed no car can reach, arriving at the exact
     -- moment a fresh player is least able to have earned a kill. The playerDropped
-    -- handler clears the row; the licence carried on it is what covers the case
+    -- handler clears the row; the license carried on it is what covers the case
     -- where that did not run, and it fails CLOSED.
     do
         roadMatch()
@@ -18478,7 +18478,7 @@ do
         WHY THEY LIVE IN THIS FILE AND NOT IN test_shared.lua. The creation
         detector is driven there against a sandboxed roster, which is right for
         an event handler. This one is a consumer of the roster's own 4 Hz sample
-        job -- real positions, real licences, real scheduler -- and the seat
+        job -- real positions, real licenses, real scheduler -- and the seat
         stubs it depends on are the ones the roadkill ledger above already
         proved. A sandbox would have to reproduce all of that and would then be
         asserting against the reproduction.
@@ -18578,7 +18578,7 @@ do
             'and the half of the rule it tripped, in the rule\'s own words',
             tostring(f[1] and f[1].why))
         ok(f[1] and f[1].license == 'license:test1',
-            'keyed to a LICENCE, never to a server id',
+            'keyed to a LICENSE, never to a server id',
             tostring(f[1] and f[1].license))
         ok(f[1] and f[1].model == BR.NormHash(GetHashKey('buzzard')),
             'and names the model as an unsigned hash',
@@ -18709,8 +18709,8 @@ do
     end
 
     -- ...AND NEITHER DOES THE SAME HUMAN AFTER A DISCONNECT. This is the case
-    -- the licence check CANNOT catch, and it is why `playerDropped` clears the
-    -- row as well: reconnect inside the minute and the licence matches, because
+    -- the license check CANNOT catch, and it is why `playerDropped` clears the
+    -- row as well: reconnect inside the minute and the license matches, because
     -- it is the same person. Without the clear, two-thirds of a dwell served
     -- before dropping is two-thirds already banked on the way back in -- and
     -- the case would be opened partly on time spent in a session that ended.
@@ -18719,7 +18719,7 @@ do
         run(2000)
         leave(1)
         run(500)
-        -- Back, same id, same licence, and into the same helicopter.
+        -- Back, same id, same license, and into the same helicopter.
         join(1, 'A')
         BR.Roster.setState(1, BR.PlayerState.ALIVE)
         BR.Roster.get(1).matchId = theMatch().id

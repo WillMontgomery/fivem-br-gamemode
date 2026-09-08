@@ -20,7 +20,7 @@
 --
 -- This is the one place in the project where the game asks the console for
 -- something and waits. It is allowed for exactly one reason, and the reason is
--- the boundary of the licence: the ask only ever happens because an admin
+-- the boundary of the license: the ask only ever happens because an admin
 -- clicked a button, and if the console does not answer, the iframe does not open
 -- and NOTHING ELSE CHANGES. No connect gate, no match, no player, no tick. Every
 -- failure path below ends in an answer being sent -- never in a caller left

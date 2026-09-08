@@ -601,7 +601,7 @@ BR.Config.Audio = {
 --
 -- THE OBVIOUS PLACE WAS DurtyFree/gta-v-data-dumps, which is what previous
 -- rounds used to check names, and IT CANNOT BE VENDORED. That repository
--- carries NO LICENCE AT ALL -- the GitHub API answers `"license": null` and
+-- carries NO LICENSE AT ALL -- the GitHub API answers `"license": null` and
 -- the /license endpoint 404s -- which means all rights reserved by default.
 -- tools/verify.sh's `vendored third-party` gate requires a LICENSE file to
 -- travel with any vendored directory, and there is no notice in existence to

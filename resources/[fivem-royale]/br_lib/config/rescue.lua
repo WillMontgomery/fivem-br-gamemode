@@ -552,7 +552,7 @@ BR.Config.Rescue = {
     --
     -- HE FOUND THE RIGHT BIT. 524415 is the previous value MINUS 262144,
     -- UseShortCutLinks -- which is precisely the permission to leave the road
-    -- network for a shorter path. Every avoidance bit is kept; only the licence
+    -- network for a shorter path. Every avoidance bit is kept; only the license
     -- to take a dirt track is withdrawn.
     --
     -- ═══════════════════════════════════════════════════════════════════

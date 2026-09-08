@@ -881,7 +881,7 @@ function BR.Match.resetPlayer(src, e)
     -- here with the rest of the per-match record, and it has to be cleared
     -- somewhere: server/spectate.lua points a dead solo's camera at it, so a
     -- value carried into the next match would open a session on a player this
-    -- one has never fought -- and a licence, unlike downedBy, does not go stale
+    -- one has never fought -- and a license, unlike downedBy, does not go stale
     -- on its own. `downedBy` two lines up is the same field for the same reason.
     e.killedByLicense = nil
 

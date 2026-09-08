@@ -2312,7 +2312,7 @@ function BR.PushHud(force)
     --
     -- A TARGET WITH NO ROSTER ROW LEAVES THE VIEWER'S OWN NUMBERS ALONE rather
     -- than zeroing. A missing row means a delta in flight or a player already
-    -- gone, and the session is about to end on the server's own licence check.
+    -- gone, and the session is about to end on the server's own license check.
     -- Painting 0/0 for that frame would flash an empty bar on the way out,
     -- which is the reported symptom.
     local watching = BR.Spectate and BR.Spectate.targetSrc

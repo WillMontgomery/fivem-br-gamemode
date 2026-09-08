@@ -376,7 +376,7 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- THE TAG STILL READS [DEAD], and that is deliberate rather than a
         -- missed rename: the word on screen is the owner's, and #219 Q1 asks
         -- him whether he wants a different one. A state renamed in the enum is
-        -- not a licence to rewrite what a player reads.
+        -- not a license to rewrite what a player reads.
         local e = BR.State.roster[src]
         local st = e and e.state
         local jumped = st == BR.PlayerState.FREEFALL

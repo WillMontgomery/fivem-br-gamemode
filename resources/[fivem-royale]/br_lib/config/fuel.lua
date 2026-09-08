@@ -273,7 +273,7 @@ BR.Config.Fuel = {
     --- With a modified client: refuelling anywhere within 20m of an authored
     --- station centre instead of within 3m of a pump. That is DOWN from 30m and
     --- it is not zero, and it cannot be made zero without pump coordinates the
-    --- server has no licence-clean way to obtain (config's `stations` block
+    --- server has no license-clean way to obtain (config's `stations` block
     --- records the one dataset that has them and why it is not used). What it
     --- buys them is refuelling from slightly further away while still standing
     --- still on a forecourt in the open -- the cost the whole feature is built
@@ -569,14 +569,14 @@ BR.Config.Fuel = {
     ---
     --- PROVENANCE IS RECORDED BECAUSE THE DATA IS NOT OURS. tools/verify.sh's
     --- `vendored third-party` gate asserts four things of a vendored RESOURCE --
-    --- licence kept, version recorded, patch log matching the source, and the
+    --- license kept, version recorded, patch log matching the source, and the
     --- thing actually reaching the box. This is a coordinate table rather than a
     --- resource, so that gate does not reach it and there is no VENDOR.json to
     --- write; what the gate is FOR still applies, and the two items that
     --- survive the translation are recorded here in prose:
     ---
     ---   SOURCE   see the block immediately below.
-    ---   LICENCE  see the same block.
+    ---   LICENSE  see the same block.
     ---
     --- The owner named the source: "Use `frfuel` as an inspiration resource,
     --- which also includes coords for all the gas stations." It is INSPIRATION
@@ -587,7 +587,7 @@ BR.Config.Fuel = {
     ---   SOURCE   thers/FRFuel, dist/GasStations.json (29 station centres).
     ---            https://github.com/thers/FRFuel
     ---            https://raw.githubusercontent.com/thers/FRFuel/master/dist/GasStations.json
-    ---   LICENCE  MIT. The notice it requires, reproduced in full:
+    ---   LICENSE  MIT. The notice it requires, reproduced in full:
     ---
     ---     Copyright 2017 Alexander Kukhta
     ---
@@ -621,7 +621,7 @@ BR.Config.Fuel = {
     ---   DurtyFree/gta-v-data-dumps  the BEST dataset by a distance -- 131 real
     ---                          pump props with rotations, extracted from the
     ---                          game files rather than walked in-game -- and it
-    ---                          has NO LICENCE FILE AT ALL. The best data and
+    ---                          has NO LICENSE FILE AT ALL. The best data and
     ---                          the weakest position, so it is not used.
     ---
     --- ═══ WHAT THESE COORDINATES ARE, AND WHAT WAS CHECKED ═══

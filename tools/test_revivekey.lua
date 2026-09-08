@@ -1798,7 +1798,7 @@ end
 describe('buy.refused-by-the-row')
 do
     -- THE CACHE THOUGHT THEY COULD AFFORD IT AND THE ROW DISAGREED. Reachable
-    -- whenever the cache is stale -- a console grant, or this licence connected
+    -- whenever the cache is stale -- a console grant, or this license connected
     -- somewhere else. Nothing may be granted.
     wipe()
     fakeTime = 600000

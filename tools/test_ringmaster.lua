@@ -2532,9 +2532,9 @@ do
 
     -- THE PROFILE LINK. A display name is not what the console can look up.
     ok(kills[1] and kills[1].victimLicense == 'license:v1',
-        'a kill names the victim by licence', kills[1] and tostring(kills[1].victimLicense))
+        'a kill names the victim by license', kills[1] and tostring(kills[1].victimLicense))
     ok(kills[1] and kills[1].killerLicense == 'license:cheat',
-        'and the killer by licence')
+        'and the killer by license')
 
     -- NOT ENDED YET, and the row says so by carrying a deadline instead.
     ok(p and p.matchEndsByMs ~= nil, 'the case carries when the match should be over by')

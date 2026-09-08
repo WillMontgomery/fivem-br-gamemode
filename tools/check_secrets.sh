@@ -36,7 +36,7 @@ RED=$'\033[31m'; GRN=$'\033[32m'; RST=$'\033[0m'
 # --- what to scan ------------------------------------------------------------
 #
 # ASKING GIT RATHER THAN WALKING THE DISK IS THE POINT, and it is the same call
-# check-secrets.mjs makes. server.cfg holds the real licence key and the real
+# check-secrets.mjs makes. server.cfg holds the real license key and the real
 # database password, and it is gitignored -- so it can never reach the public
 # repo, and flagging it would be a false positive on a file git will never see.
 # False positives are how a gate ends up bypassed. The threat model is "a secret
@@ -64,7 +64,7 @@ fi
 
 # --- the placeholder escape --------------------------------------------------
 #
-# server.cfg.example is SUPPOSED to contain a licence-key line; docs are
+# server.cfg.example is SUPPOSED to contain a license-key line; docs are
 # supposed to show an account id. A line that announces itself as a template is
 # a template. Note the fix when this fires on something genuinely fake: make it
 # LOOK like a placeholder, rather than weakening the rule that caught it.
@@ -159,9 +159,9 @@ rule 'ingest shared secret' '' \
 # --- FXServer ----------------------------------------------------------------
 # server.cfg is gitignored for exactly these two. The gate exists for the day
 # somebody pastes one into server.cfg.example, a doc, or a shell snippet.
-rule 'FiveM licence key' '-i' \
+rule 'FiveM license key' '-i' \
     'sv_licenseKey[[:space:]]+.?[A-Za-z0-9]{15,}' \
-    'The server licence key. server.cfg only, and server.cfg is gitignored.'
+    'The server license key. server.cfg only, and server.cfg is gitignored.'
 
 rule 'database connection string' '-i' \
     'mysql://[^:]+:[^@]{6,}@' \

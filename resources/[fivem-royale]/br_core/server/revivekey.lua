@@ -1348,7 +1348,7 @@ local function bringBack(src, e, reviverSrc, at)
     e.engineHp = nil
     e.stormHp, e.lastStormAt = nil, nil
     -- THE CAMERA'S MEMORY OF WHO KILLED THEM. Written by eliminate() for the
-    -- spectate default and deliberately a licence rather than an id, so it
+    -- spectate default and deliberately a license rather than an id, so it
     -- outlives the moment on purpose. Cleared here because they are not
     -- spectating anybody any more, and because a LATER death with no killer --
     -- the storm, a fall -- would otherwise inherit this one and point their
