@@ -1424,7 +1424,65 @@ local FIX_RADIUS = 30.0
 --- would otherwise send one of these per frame for as long as it rolls.
 local FIX_COOLDOWN_MS = 1500
 
---- May this player move this entry to (x, y) right now?
+--- The world, vertically. A height outside this pair is not a ground probe.
+---
+--- ═══ WHY THERE IS A VERTICAL BOUND AT ALL NOW (#232, audit 2026-09-08) ═══
+---
+--- The audit's observation was that this path "validates horizontal displacement
+--- but accepts a client-provided height". It did, and the hole was wider than a
+--- missing range check: `tonumber` is happy with a msgpack NaN or infinity, and
+--- EVERY COMPARISON AGAINST A NaN IS FALSE -- so `BR.Dist(x, y, ...) > FIX_RADIUS`
+--- answered "no, not too far" for a NaN x, and the 30m bound that this whole
+--- mechanism rests on was not a bound at all. The finite() test below is the
+--- part that closes that; the heights here are the part the audit asked for.
+---
+--- ABSOLUTE WORLD HEIGHTS, NOT A DELTA, AND THE DELTA IS THE ALTERNATIVE THAT
+--- LOST. A bound like "within Nm of where the entry already is" reads better and
+--- cannot be written: an entry's z before repair is its POI's NOMINAL height,
+--- which the inReach note above calls out as tens of metres out on any slope and
+--- a flat 0.0 for roadside filler. A legitimate correction from an authored 0.0
+--- to real ground on Mount Chiliad is ~780m, so any delta small enough to be
+--- worth having would refuse the exact repairs this feature exists for.
+---
+--- "Within Nm of the REPORTER" lost for the same reason and a second one: the
+--- report is sent from the client's STREAMING worker (br_core/client/loot.lua's
+--- drain), not from arm's reach, so the reporter is routinely a whole hillside
+--- and several hundred metres away from the entry they are correcting -- and a
+--- refused repair is never retried, because the client latches `reported[id]`.
+--- Breaking the honest path to tighten a bound the client still owns either way
+--- is a bad trade, and the pad has already cost the owner one playtest round to
+--- a loot-streaming refusal (2026-09-07).
+---
+--- SO THIS IS THE HONEST BOUND: nothing a ground probe can legitimately return
+--- lies outside it. -300 is below the deepest sea floor on the map; 1000 is
+--- above Chiliad's summit, which is the highest ground there is. What it buys is
+--- that a client can no longer write 1e9, a NaN or an infinity into an entry's z
+--- -- values that poison every other client's ground probe, make inReach's
+--- height test on a repaired entry unsatisfiable for everyone, and travel to
+--- every subscriber in the announce that follows.
+---
+--- WHAT IT DOES NOT BUY, STATED PLAINLY: inside the bound the height is still
+--- the client's number. A reporter can still put a repaired entry at a legal but
+--- wrong height and make it awkward to claim. Fixing THAT means the server
+--- learning ground heights for itself, which it cannot do -- the probe natives
+--- are client-side, which is the reason this round-trip exists at all.
+local FIX_Z_FLOOR   = -300.0
+local FIX_Z_CEILING = 1000.0
+
+--- Is this a real, finite number?
+---
+--- `v ~= v` IS THE NaN TEST AND IT IS THE ONLY ONE LUA HAS -- the same idiom
+--- shared/fuel_solve.lua and shared/boost_solve.lua already use, and for the
+--- same reason: these numbers arrive off the wire, where a client may send a
+--- double the language has no literal for.
+--- @param v any
+--- @return boolean
+local function finite(v)
+    return type(v) == 'number' and v == v
+        and v > -math.huge and v < math.huge
+end
+
+--- May this player move this entry to (x, y, z) right now?
 ---
 --- EVERY RULE THE LOOT_FIX HANDLER ENFORCES, IN ONE PLACE THE DIAGNOSTIC CAN
 --- ALSO CALL. BR.Loot.inspect reports whether a repair would be accepted, and
@@ -1437,12 +1495,23 @@ local FIX_COOLDOWN_MS = 1500
 --- (see the oracle note above the claim handler).
 --- @param m table zone
 --- @param src integer
+--- @param e table roster entry -- for the live proximity test
 --- @param item table
 --- @param x number
 --- @param y number
+--- @param z number
 --- @return boolean ok
 --- @return string|nil why
-local function fixOk(m, src, item, x, y)
+local function fixOk(m, src, e, item, x, y, z)
+    -- FINITE FIRST, BEFORE ANY COMPARISON USES THESE. Every test below is an
+    -- inequality, and an inequality against a NaN is false -- which is the
+    -- direction that ACCEPTS, so a single NaN would walk through the rest of
+    -- this function untouched.
+    if not finite(x) or not finite(y) or not finite(z) then
+        return false, 'not a number'
+    end
+    if z < FIX_Z_FLOOR or z > FIX_Z_CEILING then return false, 'z off the map' end
+
     -- ONCE PER ENTRY -- EXCEPT FOR CONTAINERS, which are physical and can be
     -- pushed around by a vehicle for as long as anyone cares to. A crate whose
     -- registry position stopped following its prop is a crate you can see and
@@ -1458,30 +1527,216 @@ local function fixOk(m, src, item, x, y)
     -- Must be a place this player is actually looking at, and a small move.
     local subs = m.loot.subs[src]
     if not subs or not subs[item.cell] then return false, 'unsubscribed' end
+
+    -- ═══ AND WHERE THEY ARE NOW, NOT ONLY WHERE THEY SUBSCRIBED FROM ═══
+    --
+    -- The subscription table above is a RECORD of a decision, and the decision
+    -- is only revisited when the player crosses a cell edge -- `m.loot.at[src]`
+    -- short-circuits the LOOT_CELL handler otherwise. So a player who subscribes
+    -- to a block and is then moved elsewhere by anything that does not go
+    -- through a cell edge keeps a stale subscription, and every entry in it
+    -- stayed repairable from wherever they now are.
+    --
+    -- THE SAME QUESTION THE SUBSCRIPTION ITSELF WAS GRANTED ON, asked of the
+    -- live sample instead of the table.
+    --
+    -- THE TOLERANCE IS THE BLOCK PLUS THE DRIFT, AND IT HAS TO BE, or this
+    -- refuses honest repairs. A subscription is a `subscribeRadius` block around
+    -- the centre cell the client named, and the client is allowed to be
+    -- BR.LOOT_CELL_DRIFT cells from that centre -- so the furthest an entry the
+    -- server itself sent can legitimately be from the player who is streaming it
+    -- is the sum. Anything tighter starts refusing repairs for entries the
+    -- server announced, which the client never retries (it latches
+    -- `reported[id]`), and the pad has already cost the owner one playtest round
+    -- to a loot-streaming refusal (2026-09-07).
+    --
+    -- WHAT IT CATCHES is the case the table cannot: a subscription is a RECORD of
+    -- a decision, revisited only when the client crosses a cell edge and sends
+    -- another LOOT_CELL (`m.loot.at[src]` short-circuits it otherwise). A player
+    -- moved somewhere else by anything that is not a cell edge keeps the whole
+    -- stale block, and every entry in it stayed repairable from wherever they
+    -- now are.
+    if not e or not e.pos then return false, 'no position' end
+    local icx, icy = BR.LootCellOf(item.x, item.y)
+    local reach = (L.subscribeRadius or 1) + (BR.LOOT_CELL_DRIFT or 1)
+    if not BR.LootCellReachable(icx, icy, e.pos.x, e.pos.y, reach) then
+        return false, 'not near that cell'
+    end
+
     if BR.Dist(x, y, item.x, item.y) > FIX_RADIUS then return false, 'too far' end
     return true, nil
 end
 
 -- NPC WEAPON DROPS.
 --
--- Ambient peds are client-side: the server has never heard of them, cannot see
--- them die, and cannot verify a kill. So this is a REPORT, and it is treated
--- like every other client report on this project -- believed only within
--- limits that make lying pointless rather than impossible.
+-- This is a REPORT, and it is treated like every other client report on this
+-- project -- believed only within limits that make lying pointless rather than
+-- impossible.
 --
---   * the reporter must be alive in a match;
---   * the drop lands at the CORPSE, and the corpse must be within
---     `npcDrop.range` of the player the server last sampled -- so a report
---     cannot place loot across the map;
---   * the item must be a real firearm from our own table;
---   * and there is a rate limit AND a per-match ceiling, which is what
---     actually bounds the exploit. Farming ambient NPCs is slower than
---     opening crates by design, so the honest path stays the fast one.
+-- ═══ "THE SERVER HAS NEVER HEARD OF AMBIENT PEDS" WAS WRONG ═══
 --
--- The drop is the weapon with an EMPTY magazine plus nothing else: an NPC
--- pistol is a lifeline for someone who landed badly, not a substitute for
--- finding a crate.
-local npcDrops = {}   -- [src] = { at = <ms>, count = <int> }
+-- That sentence stood here until #232 and it is worth correcting rather than
+-- deleting, because the true version is more useful and leads to the same place
+-- by a better road. FXServer DOES know about ambient population peds: they are
+-- client-cloned entities, `entityCreating`/`entityCreated` fire for them, and
+-- GetAllPeds, GetEntityHealth, GetEntityCoords, GetEntityType,
+-- GetPedSourceOfDeath and even GetSelectedPedWeapon all exist server-side.
+--
+-- IT STILL CANNOT AUTHENTICATE ONE, FOR THREE REASONS THAT ARE NOT ABOUT US:
+--
+--   1. EVERY ONE OF THOSE READS IS THE OWNING CLIENT'S OWN PACKET. ServerGameState
+--      parses health, cause of death, population type and current weapon straight
+--      out of the clone-sync tree the ped's owner transmits. Spoofing the
+--      population type is a known, exploited technique (citizenfx/fivem#2051 --
+--      SetPedAsNoLongerNeeded right after CreatePed makes a script ped report as
+--      ambient). Reading the ped instead of the event raises the forgery bar from
+--      "call TriggerServerEvent" to "emit a well-formed sync tree". It does not
+--      make the answer true.
+--   2. THERE IS NO SERVER-SIDE PED DEATH EVENT AT ALL. `playerDeathEvent` is
+--      players only; `weaponDamageEvent` fires only for damage to a REMOTELY
+--      owned entity, and a pedestrian standing next to the player who shoots it
+--      is usually owned by that player -- so the common case sends nothing.
+--      Server-side detection means polling the ped pool, and GetEntityHealth
+--      reads 0 for an entity nobody has in scope, which is indistinguishable
+--      from dead (citizenfx/fivem#2794).
+--   3. THERE IS NO STABLE IDENTITY TO SPEND. A ped's network id is
+--      `handle & 0xFFFF` out of a recycled 16-bit pool, reissued lowest-free-first
+--      within seconds on a busy server -- see the note on `paidNear` below.
+--
+-- So the honest summary is not "the server cannot see them"; it is "everything
+-- the server can see about them was written by a client", which lands in exactly
+-- the same place: this is a report.
+--
+-- ═══ WHAT THE AUDIT DID, AND WHY THE LIMITS WERE NOT THE ONES ABOVE ═══
+--
+-- #232's security audit (2026-09-08, finding 2, HIGH) sent this event from a
+-- player who had killed nothing, with `item = 'minigun'` and `clip = 150`, and
+-- the server put a LEGENDARY MINIGUN WITH A FULL BELT on the ground. LOOT_CLAIM
+-- then moved it into the inventory, where every later possession check saw a
+-- weapon the server itself had issued.
+--
+-- The rate limit and the ceiling were doing their job. The problem was that the
+-- thing being limited was worth having. THREE separate failures, and only one of
+-- them is "the death is unproven":
+--
+--   1. THE CLIENT NAMED THE WEAPON, and it was looked up in
+--      BR.Config.WeaponById -- which is the resolver for EVERY weapon in the
+--      game. config/weapons.lua registers the airdrop shelf into it BY HAND so
+--      the damage validator can price an RPG hit, and that made this handler a
+--      second, unguarded door onto the ultra-rare shelf. The owner ruled on
+--      2026-08-21 that those four are AIRDROP-ONLY; this laundered them into an
+--      ordinary inventory, from a pedestrian, twelve times a match.
+--   2. THE CLIENT NAMED THE MAGAZINE, clamped only to the weapon's own capacity
+--      -- which for a minigun is 150. The comment that used to sit here claimed
+--      the drop was "the weapon with an EMPTY magazine". That sentence had never
+--      been true; making it true was cheaper than correcting it.
+--   3. THE SAME CORPSE COULD PAY REPEATEDLY, because nothing recorded that a
+--      corpse had paid. Standing still and re-sending the event every four
+--      seconds was the whole of the reproduction.
+--
+-- ═══ WHAT IS TRUE NOW ═══
+--
+--   * the reporter must be alive in a match, and the corpse within
+--     `npcDrop.range` of the position the SERVER last sampled for them -- so a
+--     report still cannot place loot across the map;
+--   * every float is finite and the height is on the map (see finite() and
+--     FIX_Z_FLOOR above) -- a NaN used to walk straight through the range test,
+--     because every comparison against a NaN is false;
+--   * THE SERVER CHOOSES THE WEAPON. `d.item` is not read at all. The drop comes
+--     from `npcPool` below, which is built from BR.Config.Weapons alone;
+--   * THE MAGAZINE IS EMPTY. `d.clip` is not read at all;
+--   * ONE CORPSE PAYS ONCE (see `paidNear` below);
+--   * and the rate limit and the per-match ceiling are unchanged.
+--
+-- WHAT A HOSTILE CLIENT CAN STILL DO, STATED PLAINLY BECAUSE IT IS NOT NOTHING:
+-- fabricate up to `maxPerMatch` empty common sidearms, one every
+-- `minIntervalMs`, at places it has actually walked to and at least
+-- NPC_SAME_CORPSE metres apart. That is the reward for killing twelve
+-- pedestrians, obtained without killing them -- an honest-looking player's own
+-- entitlement, taken early. It is not a rare weapon, it is not loaded, and it is
+-- worth less than one crate. The death itself is still unproven, and cannot be
+-- proven from here; see the config note in br_lib/config/loot.lua for what
+-- proving it would take.
+local npcDrops = {}   -- [src] = { at = <ms>, count = <int>, paid = { {x,y}, ... } }
+
+--- How far apart two reported corpses must be to count as two corpses.
+---
+--- A CORPSE DOES NOT MOVE, so "this position has already paid" is the closest
+--- thing to "this death has already paid" that a server with no peds can say.
+--- Six metres is about two body-lengths: wide enough that re-sending the same
+--- report is refused however the client jitters the floats, narrow enough that
+--- two pedestrians genuinely shot on the same pavement usually still pay twice.
+---
+--- THE HONEST COST, NAMED: two peds killed within six metres of each other pay
+--- once, not twice. That is a false refusal and it is the safe direction --
+--- the alternative that lost was quantising to a grid, which is cheaper to
+--- store and has a boundary two points 10cm apart can fall either side of,
+--- i.e. it fails in the direction that PAYS.
+---
+--- THE OTHER ALTERNATIVE THAT LOST WAS THE OBVIOUS ONE: have the client send the
+--- ped's NETWORK ID and keep a set of ids already paid. It reads like the correct
+--- answer and it is a bug. A network id on FXServer is `entity->handle & 0xFFFF`
+--- -- a bare 16-bit object id out of a recycled pool that FinalizeClone frees on
+--- teardown and GetFreeObjectIds re-issues lowest-first. With ambient population
+--- churning as players move, ids come back round in SECONDS. A permanent set
+--- would start refusing honest kills within minutes of a match starting; an
+--- expiring one would start paying twice. The engine does disambiguate
+--- generations internally (a random 16-bit `uniqifier`, and a `creationToken`
+--- timestamp) and exposes neither to script. A position cannot be recycled.
+local NPC_SAME_CORPSE = 6.0
+
+--- The weapons an NPC may be carrying, resolved once at load.
+---
+--- FROM BR.Config.Weapons AND FROM NOTHING ELSE, which is the same construction
+--- -- and the same argument -- as the rarity buckets in config/weapons.lua:
+--- "the rarity buckets are built from BR.Config.Weapons and from nothing else.
+--- That is not incidental to this working; it is the mechanism. Adding a loop
+--- over this table there would put an RPG in every legendary crate on the map."
+---
+--- THAT IS THE WHOLE OF THE AIRDROP GUARANTEE, AND IT IS STRUCTURAL RATHER THAN
+--- A BLOCKLIST. BR.Config.AirdropWeapons is a separate table that
+--- config/weapons.lua registers into BR.Config.WeaponById by hand; it is in no
+--- rarity bucket and it is not in BR.Config.Weapons. So an id resolved through
+--- this list cannot reach the RPG, the grenade launcher, the railgun or the
+--- minigun WHATEVER the config says -- including a future config written by
+--- somebody who has never read this comment. A blocklist of the four names would
+--- have been shorter and would need editing by hand on the day a fifth
+--- ultra-rare weapon is added, which is the day nobody remembers this file.
+local npcPool = {}
+do
+    local ordinary = {}
+    for _, w in ipairs(BR.Config.Weapons or {}) do ordinary[w.id] = w end
+    for _, id in ipairs((L.npcDrop and L.npcDrop.pool) or {}) do
+        local w = ordinary[id]
+        -- `w.ammo` because a drop has to be a firearm: the pool is authored, but
+        -- an authored id that names a melee weapon would put a knife on the
+        -- ground with an ammo pool it has no use for.
+        if w and w.ammo then npcPool[#npcPool + 1] = w end
+    end
+    if #npcPool == 0 and (L.npcDrop or {}).enabled ~= false then
+        print('^3[br_core] loot: npcDrop.pool resolves to no weapon -- NPC drops '
+            .. 'are inert. Pool ids must name rows of BR.Config.Weapons; the '
+            .. 'airdrop shelf is deliberately unreachable from here^7')
+    end
+end
+
+--- Has a corpse at (x, y) already paid this player this match?
+---
+--- Linear over at most `maxPerMatch` entries -- twelve by default -- so it is
+--- cheaper than the table lookup a set would need, and it is a RADIUS test
+--- rather than a key, which is the point (see NPC_SAME_CORPSE).
+--- @param rec table
+--- @param x number
+--- @param y number
+--- @return boolean
+local function paidNear(rec, x, y)
+    for _, p in ipairs(rec.paid) do
+        if BR.Dist2(x, y, p[1], p[2]) <= NPC_SAME_CORPSE * NPC_SAME_CORPSE then
+            return true
+        end
+    end
+    return false
+end
 
 RegisterNetEvent(BR.Net.NPC_DROP)
 AddEventHandler(BR.Net.NPC_DROP, function(d)
@@ -1489,7 +1744,13 @@ AddEventHandler(BR.Net.NPC_DROP, function(d)
     if type(d) ~= 'table' then return end
 
     local cfg = BR.Config.Loot.npcDrop or {}
-    if cfg.enabled == false then return end
+    -- OFF UNLESS SWITCHED ON, WHICH IS A REVERSAL (#232). This used to read
+    -- `cfg.enabled == false`, i.e. anything but an explicit false enabled the
+    -- feature -- so a deployment with a truncated or older loot config got the
+    -- fabrication path by default. The reason for the default itself is in
+    -- br_lib/config/loot.lua beside the flag, where the owner will find it.
+    if cfg.enabled ~= true then return end
+    if #npcPool == 0 then return end
 
     local e = BR.Roster.get(src)
     if not e or not e.pos then return end
@@ -1500,11 +1761,14 @@ AddEventHandler(BR.Net.NPC_DROP, function(d)
     local m = zoneFor(src)
     if not m then return end
 
+    -- FINITE BEFORE ANY COMPARISON, exactly as fixOk does it and for the same
+    -- reason: `tonumber` is happy with a NaN off the wire, every inequality
+    -- against a NaN is false, and false is the answer that ACCEPTS here -- so a
+    -- NaN x walked straight through the range test below and the corpse could be
+    -- nowhere at all.
     local x, y, z = tonumber(d.x), tonumber(d.y), tonumber(d.z)
-    if not x or not y or not z then return end
-
-    local w = BR.Config.WeaponById[tostring(d.item)]
-    if not w or not w.ammo then return end
+    if not finite(x) or not finite(y) or not finite(z) then return end
+    if z < FIX_Z_FLOOR or z > FIX_Z_CEILING then return end
 
     -- Range: the same slack the pickup check uses, because roster positions
     -- are sampled at 4Hz and a sprinting player's honest report is stale.
@@ -1513,17 +1777,42 @@ AddEventHandler(BR.Net.NPC_DROP, function(d)
 
     local now = GetGameTimer()
     local rec = npcDrops[src]
-    if not rec then rec = { at = 0, count = 0 } npcDrops[src] = rec end
+    if not rec then rec = { at = 0, count = 0, paid = {} } npcDrops[src] = rec end
+    rec.paid = rec.paid or {}
     if now - rec.at < (cfg.minIntervalMs or 4000) then return end
     if rec.count >= (cfg.maxPerMatch or 12) then return end
-    rec.at, rec.count = now, rec.count + 1
 
-    -- WHAT THE NPC WAS CARRYING, clamped by the server to what the weapon can
-    -- physically hold. Not a rolled loot stack: an NPC drops their inventory,
-    -- the same as a player does, and inventing rarity or bonus ammo on top of
-    -- a pedestrian would make clearing traffic better than opening a crate.
-    local clip = math.tointeger(tonumber(d.clip) or 0) or 0
-    clip = math.max(0, math.min(clip, w.clip or 0))
+    -- ═══ ONE CORPSE, ONE PAYOUT ═══
+    --
+    -- Checked BEFORE the budget is spent, so a refused duplicate costs the
+    -- reporter nothing -- the honest client never sends one (it keeps its own
+    -- `looted` set of ped handles), and a hostile one learns nothing from the
+    -- silence either way.
+    if paidNear(rec, x, y) then return end
+
+    rec.at, rec.count = now, rec.count + 1
+    rec.paid[#rec.paid + 1] = { x, y }
+
+    -- ═══ THE SERVER PICKS THE GUN, AND IT PICKS IT EMPTY ═══
+    --
+    -- `d.item` and `d.clip` are not read anywhere in this handler. That is the
+    -- fix for finding 2 and it costs something real, which is worth writing down
+    -- rather than discovering later: the drop is NO LONGER THE WEAPON THE PED
+    -- WAS ACTUALLY HOLDING. The owner's rule was "I only want them to drop their
+    -- inventory the same as a player would" (2026-08-06) and this no longer
+    -- honours the letter of it -- because honouring it requires knowing what was
+    -- in the ped's hands, the server cannot know that, and a client's word for it
+    -- is precisely the exploit. A pistol from an authored pool keeps the SPIRIT
+    -- (killing an NPC pays, in our currency, at our rarity) at the price of the
+    -- detail.
+    --
+    -- MATH.RANDOM RATHER THAN THE MATCH RNG, DELIBERATELY. BR.Rng exists so the
+    -- loot LAYOUT replays identically from a seed; an NPC drop is not part of
+    -- the layout, is not derivable from the seed by anybody, and drawing from
+    -- the seeded stream here would make the map's contents depend on how many
+    -- pedestrians happened to die -- which is the one property the seeded
+    -- generator exists to prevent.
+    local w = npcPool[math.random(#npcPool)]
 
     -- AND NO `standZ`, DELIBERATELY, THOUGH THIS IS THE ONE SITE THAT LOOKS
     -- LIKE IT DESERVES ONE. There really is a ped's root here -- but the server
@@ -1533,24 +1822,36 @@ AddEventHandler(BR.Net.NPC_DROP, function(d)
     --
     -- `pz` says "the SERVER measured this height". Setting it from a number a
     -- client sent would make that sentence false and would let a client decide
-    -- where every other client's ground probe starts. The bound above is
-    -- horizontal only, so it would not catch a z at all.
+    -- where every other client's ground probe starts. The bound above is a
+    -- world-height sanity check, not a measurement.
     --
     -- The cost is honest and small: an NPC shot under an overpass still drops
     -- its pistol onto the deck, exactly as it did before this change. Fixing
     -- that means the server learning the corpse's height for itself, which it
-    -- cannot do -- or a z bound on the report, which is a separate decision.
+    -- cannot do.
     BR.Loot.spawnStack(m, {
         item   = w.id,
         kind   = BR.ItemKind.WEAPON,
         rarity = w.rarity or BR.Rarity.COMMON,
         count  = 1,
-        clip   = clip,
+        -- EMPTY, AND THAT WORD NEEDS A FOOTNOTE. This is the ENTRY's magazine
+        -- and it is genuinely zero. What the picker-up then gets is not zero:
+        -- BR.Inv.give grants `w.clip * L.weaponReserveClips` of reserve ammo to
+        -- EVERY weapon pickup in the game (server/inventory.lua), because "a
+        -- found gun has to be usable, or the first weapon on the ground is a
+        -- decoration". So an NPC pistol arrives with one reserve clip and an
+        -- empty chamber, the same as any pistol found anywhere -- it costs a
+        -- reload to bring up, and it is not a free loaded weapon.
+        clip   = 0,
     }, x, y, z)
 end)
 
 --- Forget a player's NPC-drop budget. Called when they leave a match, so the
 --- ceiling is per match rather than per session.
+---
+--- AND THE PAID-CORPSE LIST WITH IT, which is the same rule: the register exists
+--- to stop one corpse paying twice inside one match, and a corpse cannot outlive
+--- the match it died in.
 --- @param src integer
 function BR.Loot.clearNpcDrops(src)
     npcDrops[src] = nil
@@ -1573,7 +1874,7 @@ AddEventHandler(BR.Net.LOOT_FIX, function(d)
     local item = m.loot.items[id]
     if not item then return end
 
-    if not fixOk(m, src, item, x, y) then return end
+    if not fixOk(m, src, e, item, x, y, z) then return end
 
     item.repaired = true
     item.fixedAt = GetGameTimer()
@@ -1657,7 +1958,13 @@ function BR.Loot.inspect(src, radius)
     for _, item in pairs(m.loot.items) do
         local d = BR.Dist(e.pos.x, e.pos.y, item.x, item.y)
         if d <= radius then
-            local fix, fixWhy = fixOk(m, src, item, e.pos.x, e.pos.y)
+            -- THE PLAYER'S OWN POSITION AS THE PROPOSED ONE, ALL THREE AXES.
+            -- The z is now part of what fixOk judges, so a reader that passed
+            -- only x and y would be asking a different question from the one the
+            -- handler asks -- which is the exact failure the note above this
+            -- function exists to prevent.
+            local fix, fixWhy = fixOk(m, src, e, item,
+                e.pos.x, e.pos.y, e.pos.z or item.z or 0.0)
             rows[#rows + 1] = {
                 id       = item.id,
                 kind     = item.kind,

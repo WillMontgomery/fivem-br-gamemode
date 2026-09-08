@@ -8346,38 +8346,40 @@ do
 
     -- ═══ AND AN NPC DROP NEVER HAD ONE ═══
     --
-    -- There really is a ped root here, and the server never saw it: the corpse
-    -- is client-side, so all three floats arrived over the wire and the whole
-    -- handler is machinery for believing them only as far as is harmless. Its
-    -- bound is HORIZONTAL, so it cannot check a z at all. Vouching would let a
+    -- There really is a ped root here, and the server never measured it: all
+    -- three floats arrived over the wire and the whole handler is machinery for
+    -- believing them only as far as is harmless. Its bound on the z is a
+    -- world-height sanity check, not a measurement, so vouching would let a
     -- client choose where everyone else's ground probe starts.
     --
     -- The cost is honest: an NPC shot under an overpass still drops its pistol
     -- on the deck. That is a known gap, not an oversight.
-    local npcWeapon
-    for _, w in pairs(BR.Config.WeaponById or {}) do
-        if w.ammo then npcWeapon = w break end
-    end
-    if npcWeapon then
-        BR.Roster.get(1).pos = { x = 700.0, y = 700.0, z = 35.0 }
-        local beforeNpc = m.loot.nextId
-        fire(BR.Net.NPC_DROP, 1, { item = npcWeapon.id, clip = 1,
-                                   x = 705.0, y = 700.0, z = 35.0 })
-        local npcMade, npcVouched = 0, 0
-        for id = beforeNpc + 1, m.loot.nextId do
-            local e = m.loot.items[id]
-            if e then
-                npcMade = npcMade + 1
-                if e.pz then npcVouched = npcVouched + 1 end
-            end
+    --
+    -- SWITCHED ON FOR THE LENGTH OF THIS ASSERTION AND OFF AGAIN. The feature
+    -- ships disabled since #232 (see the note beside the flag in
+    -- config/loot.lua); this block is about the VOUCH, and a vouch it cannot
+    -- produce a drop to test is not a passing assertion, it is a silent one.
+    local npcCfg = BR.Config.Loot.npcDrop
+    local wasEnabled = npcCfg.enabled
+    npcCfg.enabled = true
+    BR.Loot.clearNpcDrops(1)
+    BR.Roster.get(1).pos = { x = 700.0, y = 700.0, z = 35.0 }
+    local beforeNpc = m.loot.nextId
+    fire(BR.Net.NPC_DROP, 1, { x = 705.0, y = 700.0, z = 35.0 })
+    local npcMade, npcVouched = 0, 0
+    for id = beforeNpc + 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e then
+            npcMade = npcMade + 1
+            if e.pz then npcVouched = npcVouched + 1 end
         end
-        ok(npcMade > 0 and npcVouched == 0,
-            'an NPC drop is never vouched for -- its position is a client '
-            .. 'report, not a server measurement',
-            ('%d made, %d vouched'):format(npcMade, npcVouched))
-    else
-        ok(false, 'no firearm in the weapon table to drop from an NPC')
     end
+    ok(npcMade > 0 and npcVouched == 0,
+        'an NPC drop is never vouched for -- its position is a client '
+        .. 'report, not a server measurement',
+        ('%d made, %d vouched'):format(npcMade, npcVouched))
+    npcCfg.enabled = wasEnabled
+    BR.Loot.clearNpcDrops(1)
 end
 
 describe('combat.paths')
@@ -15645,6 +15647,307 @@ do
     else
         ok(false, 'no dropped item to repair')
     end
+end
+
+describe('loot.repair.bounds')
+do
+    -- ═══ #232, "OTHER OBSERVATIONS": THE HEIGHT NOBODY WAS CHECKING ═══
+    --
+    -- The audit's line was that repair "validates horizontal displacement but
+    -- accepts a client-provided height". The hole was wider than the missing
+    -- range check, and the first assertion here is the wider half: `tonumber`
+    -- accepts a NaN off the wire, EVERY COMPARISON AGAINST A NaN IS FALSE, and
+    -- the 30m bound is spelled `> FIX_RADIUS` -- so a NaN answered "no, not too
+    -- far" and walked through the one bound this whole mechanism rests on.
+    --
+    -- These are not three flavours of the same assertion. NaN defeats the
+    -- comparison, infinity defeats the arithmetic, and 1e9 defeats neither --
+    -- it is simply a legal float in an illegal place, and only the world-height
+    -- pair refuses it.
+    local m = lootMatch()
+    local target
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == BR.ItemKind.WEAPON and not e.repaired then
+            target = e break
+        end
+    end
+    local cx, cy = BR.LootCellOf(target.x, target.y)
+    standOn(1, target)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+
+    local ox, oy, oz = target.x, target.y, target.z
+    local function unmoved(why)
+        local now = m.loot.items[target.id]
+        ok(now ~= nil
+            and math.abs(now.x - ox) < 0.01
+            and math.abs(now.y - oy) < 0.01
+            and math.abs((now.z or 0.0) - (oz or 0.0)) < 0.01
+            and not now.repaired,
+            why,
+            now and ('%.2f %.2f %.2f'):format(now.x, now.y, now.z or 0.0))
+    end
+
+    local NAN = 0.0 / 0.0
+    ok(NAN ~= NAN, 'the harness really did build a NaN')
+
+    fire(BR.Net.LOOT_FIX, 1, { id = target.id, x = NAN, y = oy, z = 44.0 })
+    unmoved('a NaN x is refused -- it used to satisfy the 30m bound, because '
+        .. 'every comparison against a NaN is false')
+
+    fire(BR.Net.LOOT_FIX, 1, { id = target.id, x = ox + 5.0, y = oy, z = NAN })
+    unmoved('and a NaN z is refused')
+
+    fire(BR.Net.LOOT_FIX, 1,
+        { id = target.id, x = ox + 5.0, y = oy, z = math.huge })
+    unmoved('an infinite height is refused')
+
+    fire(BR.Net.LOOT_FIX, 1,
+        { id = target.id, x = ox + 5.0, y = oy, z = 1e9 })
+    unmoved('and so is a finite height that is nowhere on the map')
+
+    fire(BR.Net.LOOT_FIX, 1,
+        { id = target.id, x = ox + 5.0, y = oy, z = -5000.0 })
+    unmoved('in both directions')
+
+    -- AND THE HONEST REPAIR STILL LANDS. Every refusal above is worthless if
+    -- the rule that produced them also refuses the thing the feature exists for
+    -- -- an item in the surf being moved onto the sand.
+    fire(BR.Net.LOOT_FIX, 1, { id = target.id, x = ox + 5.0, y = oy, z = 44.0 })
+    ok(math.abs(m.loot.items[target.id].z - 44.0) < 0.01,
+        'a real ground height inside the world is still accepted')
+
+    -- ═══ AND WHERE THEY ARE NOW, NOT WHERE THEY SUBSCRIBED FROM ═══
+    --
+    -- A subscription is a record of a decision that is only revisited on a cell
+    -- edge, so it survives being moved anywhere that does not cross one. The
+    -- player keeps the subscription here and is simply put somewhere else; the
+    -- repair has to be refused on the live position alone.
+    local subs = m.loot.subs[1] or {}
+    local other
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == BR.ItemKind.WEAPON and subs[e.cell]
+           and not e.repaired and e.id ~= target.id then
+            other = e break
+        end
+    end
+    if other then
+        ok(subs[other.cell] and true or false,
+            'the subscription that says this cell is still on the books')
+        local px = other.x
+        BR.Roster.get(1).pos = { x = other.x + 4000.0, y = other.y, z = 30.0 }
+        fire(BR.Net.LOOT_FIX, 1,
+            { id = other.id, x = px + 5.0, y = other.y, z = 44.0 })
+        ok(math.abs(m.loot.items[other.id].x - px) < 0.01,
+            'a repair from four kilometres away is refused on the live '
+            .. 'position, whatever the subscription table still says')
+    else
+        ok(false, 'no second entry in the cell to test live proximity with')
+    end
+end
+
+describe('loot.npcdrop')
+do
+    -- ═══ #232 FINDING 2 (HIGH), WITH ITS EXPECTATION INVERTED ═══
+    --
+    -- The audit fired NPC_DROP from a player who had killed nothing, naming a
+    -- minigun and a 150-round belt, and the server put exactly that on the
+    -- ground -- after which LOOT_CLAIM moved it into the inventory and every
+    -- later possession check saw a weapon the server itself had issued.
+    --
+    -- Every assertion below is one of the audit's own steps with "and it
+    -- worked" replaced by "and it is refused". The reproduction is the test:
+    -- the whole point of writing it this way round is that the exploit cannot
+    -- come back silently, only loudly.
+    local m = lootMatch()
+    local cfg = BR.Config.Loot.npcDrop
+
+    -- READ, NOT SET. The first assertion is about the SHIPPED default, and a
+    -- test that assigned it first would be asserting its own setup.
+    ok(cfg.enabled ~= true,
+        'NPC drops ship disabled -- the server cannot authenticate an ambient '
+        .. 'ped death (#232 finding 2)', tostring(cfg.enabled))
+
+    local function madeBy(fn)
+        local before = m.loot.nextId
+        fn()
+        local out = {}
+        for id = before + 1, m.loot.nextId do
+            local e = m.loot.items[id]
+            if e then out[#out + 1] = e end
+        end
+        return out
+    end
+
+    BR.Loot.clearNpcDrops(1)
+    BR.Roster.get(1).pos = { x = 700.0, y = 700.0, z = 35.0 }
+
+    local made = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { item = 'minigun', clip = 150,
+                                   x = 702.0, y = 700.0, z = 35.0 })
+    end)
+    ok(#made == 0, 'the audit\'s exact event makes nothing at all while the '
+        .. 'feature is off', ('%d entries'):format(#made))
+
+    -- ═══ AND NOW WITH IT SWITCHED ON, WHICH IS THE PART THAT MATTERS ═══
+    --
+    -- Off-by-default is a decision the owner can reverse in one word, so every
+    -- rule below has to hold in the world where he has reversed it. Testing
+    -- only the disabled path would be testing the config file.
+    local wasEnabled = cfg.enabled
+    cfg.enabled = true
+
+    -- 1. THE CLIENT CANNOT CHOOSE THE WEAPON.
+    local pool = {}
+    for _, id in ipairs(cfg.pool or {}) do pool[id] = true end
+    ok(next(pool) ~= nil, 'there is an authored NPC drop pool to check against')
+
+    local airdrop = {}
+    for _, w in ipairs(BR.Config.AirdropWeapons) do airdrop[w.id] = true end
+    ok(airdrop['minigun'], 'the minigun really is on the airdrop-only shelf')
+
+    BR.Loot.clearNpcDrops(1)
+    fakeTime = fakeTime + 5000
+    made = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { item = 'minigun', clip = 150,
+                                   x = 702.0, y = 700.0, z = 35.0 })
+    end)
+    ok(#made == 1, 'an enabled drop makes exactly one entry',
+        ('%d entries'):format(#made))
+    if made[1] then
+        ok(made[1].item ~= 'minigun',
+            'and it is NOT the weapon the client named',
+            tostring(made[1].item))
+        ok(pool[made[1].item] == true,
+            'it comes from the authored pool the server owns',
+            tostring(made[1].item))
+        -- 2. THE CLIENT CANNOT CHOOSE THE MAGAZINE.
+        ok((made[1].clip or 0) == 0,
+            'and its magazine is empty, whatever the client asked for',
+            tostring(made[1].clip))
+        ok(made[1].rarity == BR.Rarity.COMMON,
+            'a pedestrian is not a legendary crate', tostring(made[1].rarity))
+    end
+
+    -- 3. THE AIRDROP SHELF IS UNREACHABLE FROM HERE, BY CONSTRUCTION.
+    --
+    -- Owner, 2026-08-21: the RPG, grenade launcher, railgun and minigun are
+    -- AIRDROP-ONLY. Naming each of them in turn, from four different corpses,
+    -- must never produce one -- and the mechanism is that npcPool resolves ids
+    -- against BR.Config.Weapons, which the airdrop shelf is deliberately not in.
+    BR.Loot.clearNpcDrops(1)
+    local laundered, total = 0, 0
+    for i, w in ipairs(BR.Config.AirdropWeapons) do
+        fakeTime = fakeTime + 5000
+        local got = madeBy(function()
+            fire(BR.Net.NPC_DROP, 1, { item = w.id, clip = w.clip or 1,
+                                       x = 700.0 + i * 9.0, y = 700.0, z = 35.0 })
+        end)
+        for _, e in ipairs(got) do
+            total = total + 1
+            if airdrop[e.item] then laundered = laundered + 1 end
+        end
+    end
+    ok(total > 0 and laundered == 0,
+        'naming an airdrop-only weapon never produces one',
+        ('%d of %d drops were airdrop weapons'):format(laundered, total))
+
+    -- 4. ONE CORPSE PAYS ONCE.
+    --
+    -- The audit's "repeat the process": stand still and re-send. The interval
+    -- is stepped past deliberately, so this is the corpse register refusing it
+    -- and not the rate limit.
+    BR.Loot.clearNpcDrops(1)
+    BR.Roster.get(1).pos = { x = 1500.0, y = 1500.0, z = 35.0 }
+    fakeTime = fakeTime + 5000
+    local first = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1502.0, y = 1500.0, z = 35.0 })
+    end)
+    fakeTime = fakeTime + 5000
+    local again = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1502.0, y = 1500.0, z = 35.0 })
+    end)
+    ok(#first == 1 and #again == 0,
+        'the same corpse pays once, however long you wait between reports',
+        ('%d then %d'):format(#first, #again))
+
+    fakeTime = fakeTime + 5000
+    local jittered = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1503.0, y = 1501.0, z = 35.0 })
+    end)
+    ok(#jittered == 0,
+        'and nudging the floats a metre does not make it a second corpse',
+        ('%d entries'):format(#jittered))
+
+    fakeTime = fakeTime + 5000
+    local moved = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1522.0, y = 1500.0, z = 35.0 })
+    end)
+    ok(#moved == 1, 'a corpse twenty metres away is a different corpse',
+        ('%d entries'):format(#moved))
+
+    -- 5. FINITE FLOATS AND A HEIGHT ON THE MAP.
+    --
+    -- The same NaN hole the repair path had, in the same shape: the range test
+    -- is `BR.Dist(...) > range`, which is FALSE for a NaN, so a corpse could be
+    -- nowhere at all and still be "in range".
+    BR.Loot.clearNpcDrops(1)
+    local NAN = 0.0 / 0.0
+    fakeTime = fakeTime + 5000
+    local nanDrop = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = NAN, y = 1500.0, z = 35.0 })
+    end)
+    ok(#nanDrop == 0, 'a NaN corpse position is refused, not treated as in range',
+        ('%d entries'):format(#nanDrop))
+
+    fakeTime = fakeTime + 5000
+    local infDrop = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1502.0, y = 1500.0, z = math.huge })
+    end)
+    ok(#infDrop == 0, 'and so is an infinite height',
+        ('%d entries'):format(#infDrop))
+
+    fakeTime = fakeTime + 5000
+    local skyDrop = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = 1502.0, y = 1500.0, z = 1e9 })
+    end)
+    ok(#skyDrop == 0, 'and a height that is nowhere on the map',
+        ('%d entries'):format(#skyDrop))
+
+    -- 6. THE CEILING STILL BINDS, and it is the last line rather than the only
+    -- one. Corpses are walked round a 20m circle so that each is a genuinely
+    -- new one and it is the budget being tested, not the register.
+    BR.Loot.clearNpcDrops(1)
+    BR.Roster.get(1).pos = { x = 3000.0, y = 3000.0, z = 35.0 }
+    local paid = 0
+    for i = 1, (cfg.maxPerMatch or 12) + 4 do
+        fakeTime = fakeTime + 5000
+        local ang = (i / 16) * 2.0 * math.pi
+        local got = madeBy(function()
+            fire(BR.Net.NPC_DROP, 1, {
+                x = 3000.0 + math.cos(ang) * 20.0,
+                y = 3000.0 + math.sin(ang) * 20.0, z = 35.0 })
+        end)
+        paid = paid + #got
+    end
+    ok(paid == (cfg.maxPerMatch or 12),
+        'and no more than the per-match ceiling is ever paid',
+        ('%d of %d attempts'):format(paid, (cfg.maxPerMatch or 12) + 4))
+
+    -- 7. A REPORT FROM ACROSS THE MAP IS STILL A REPORT FROM ACROSS THE MAP.
+    BR.Loot.clearNpcDrops(1)
+    fakeTime = fakeTime + 5000
+    local farDrop = madeBy(function()
+        fire(BR.Net.NPC_DROP, 1, { x = -2000.0, y = 400.0, z = 35.0 })
+    end)
+    ok(#farDrop == 0, 'a corpse beyond npcDrop.range is refused',
+        ('%d entries'):format(#farDrop))
+
+    cfg.enabled = wasEnabled
+    BR.Loot.clearNpcDrops(1)
+    ok(BR.Config.Loot.npcDrop.enabled ~= true,
+        'and the suite leaves the shipped default where it found it')
 end
 
 describe('loot.teardown')

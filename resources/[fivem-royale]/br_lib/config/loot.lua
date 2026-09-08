@@ -1020,17 +1020,68 @@ BR.Config.Loot = {
     -- rarity and no route into the inventory -- the answer was never "no
     -- drop", it was "our drop".
     --
-    -- The server cannot see ambient peds die, so this is a client report, and
-    -- the limits below are what make lying pointless rather than impossible:
-    -- one drop every few seconds with a hard per-match ceiling is strictly
-    -- slower than opening crates, so the honest path stays the fast one.
-    -- The gun arrives EMPTY -- it is a lifeline after a bad landing, not a
-    -- substitute for finding a crate.
+    -- ═══ OFF BY DEFAULT SINCE 2026-09-08, AND HOW TO TURN IT BACK ON ═══
+    --
+    -- `enabled = true` is the whole of the change. Nothing else here or in
+    -- br_core/server/loot.lua needs touching, and the feature comes back
+    -- hardened rather than as it was. This is a decision, not a deletion, and it
+    -- is recorded here so it can be reversed by whoever disagrees with it.
+    --
+    -- WHY IT IS OFF. The #232 security audit (2026-09-08, finding 2, HIGH) sent
+    -- the NPC_DROP event from a player who had killed nothing and got a
+    -- LEGENDARY MINIGUN WITH 150 ROUNDS on the ground, then picked it up -- after
+    -- which every possession check saw a weapon the server had issued. Two of the
+    -- three causes were ours and are now fixed outright: the client no longer
+    -- chooses the weapon (the server draws from `pool` below, which cannot reach
+    -- BR.Config.AirdropWeapons by construction) and no longer chooses the
+    -- magazine (it is empty). The third cause cannot be fixed from here:
+    --
+    --   THE SERVER CANNOT PROVE THE NPC EVER DIED. Not "has never heard of it" --
+    --   FXServer does know about ambient peds and can read their health, their
+    --   killer and their weapon -- but every one of those reads is parsed out of
+    --   the sync packets sent by the CLIENT THAT OWNS THE PED, there is no
+    --   server-side ped-death event to hang the check on, and the population type
+    --   that would say "this really was a pedestrian" is itself a known, exploited
+    --   spoof. Everything the handler does is bounding a claim, not checking a
+    --   fact. It now also refuses a second payout for a corpse in the same place,
+    --   which is as close to "one death, one reward" as this can get -- close, and
+    --   not the same thing.
+    --
+    -- SO THE RESIDUAL, STATED PLAINLY, IS WHAT THE FLAG IS WEIGHED AGAINST: with
+    -- this on, a modified client can fabricate up to `maxPerMatch` EMPTY COMMON
+    -- SIDEARMS a match, one per `minIntervalMs`, at places it has actually walked
+    -- to and at least six metres apart. That is an honest player's own reward for
+    -- killing twelve pedestrians, taken without killing them. It is worth less
+    -- than one crate -- and it is still a client minting server-issued items,
+    -- which is a sentence worth being deliberate about the week before launch
+    -- (owner on #232: keep it open "until launch to ensure strong posture going
+    -- into a highly-visible time period").
+    --
+    -- WHAT WOULD EARN IT A `true` WITHOUT THE ASTERISK, AND WHY IT IS NOT IN THIS
+    -- CHANGE. The shape is: track peds from `entityCreating`, poll only those for
+    -- GetEntityHealth <= 0, read the corpse's position and weapon off the entity
+    -- (GetEntityCoords, GetSelectedPedWeapon -- both server natives), and mark the
+    -- corpse itself with an entity state bag so the payout dies with the ped
+    -- rather than with a recyclable id. That is a polling subsystem, not a check,
+    -- and it buys less than it looks like it does: the data it polls is still the
+    -- owning client's own packets. It belongs in an issue of its own with a
+    -- private-server test attached, not as a rider on a security fix.
     npcDrop = {
-        enabled       = true,
+        enabled       = false,
         range         = 60.0,   -- corpse must be this close to the reporter
         minIntervalMs = 4000,   -- one drop per reporter per this long
         maxPerMatch   = 12,     -- and no more than this many all match
+
+        -- WHAT AN NPC MAY BE CARRYING. Ids here are resolved against
+        -- BR.Config.Weapons ONLY -- see the note on `npcPool` in
+        -- br_core/server/loot.lua -- so an id naming an airdrop weapon resolves
+        -- to nothing and drops nothing, whatever is written here.
+        --
+        -- COMMON SIDEARMS AND NOTHING ELSE, because the point of the drop is a
+        -- lifeline after a bad landing and not a reason to skip crates. These are
+        -- also the guns GTA's own ambient population actually carries, so the
+        -- fiction survives the server choosing for itself.
+        pool          = { 'pistol', 'snspistol', 'microsmg', 'machinepistol' },
     },
 
     -- Starting kit. Deliberately nothing but the drop itself -- landing unarmed
