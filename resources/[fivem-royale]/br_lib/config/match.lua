@@ -1473,30 +1473,41 @@ BR.Config.Combat = {
     logSamples    = 15,
 
     --[[
-        IS ANYBODY REFUSING TO TAKE DAMAGE. (The health audit.)
+        WHO OWNS A PLAYER'S HEALTH. (The health ledger, and the audit on it.)
 
-        server/roster.lua samples every ped's health four times a second and
-        writes it into the same `entry.hp` that BR.Damage.applyHit subtracts
-        from. The ped's health belongs to the OWNING CLIENT, so that write hands
-        back the one number the whole damage model depends on: a client that
-        pins its ped at full has its ledger restored 250ms after every hit, and
-        the server-observed death check in server/combat.lua reads the same
-        client-owned value, so the backstop misses it too.
+        server/roster.lua samples every ped's health four times a second. The
+        ped's health belongs to the OWNING CLIENT, so what comes back is a CLAIM
+        and not a reading -- and the sampler used to write that claim straight
+        into the same `entry.hp` that BR.Damage.applyHit subtracts from. That
+        handed back the one number the whole damage model depends on: the server
+        subtracted 25, told the client to apply it, a modified client ignored the
+        instruction, and 250ms later the sampler copied the untouched 100 back
+        over the server's 75. A security audit reproduced exactly that on
+        2026-09-08 (finding 1) and noted the second half of the problem: the
+        ledger was overwritten, so no LATER sample had any discrepancy left to
+        count and the detector below scored zero throughout.
 
-        THIS BLOCK CHANGES NOTHING ABOUT WHAT HAPPENS TO ANY PLAYER. It counts.
-        The fix is a gameplay change with a real blast radius -- the legitimate
-        upward paths are med kits, shields, revives and respawns, and a ledger
-        that refuses the engine outright would also refuse falls, fire and
-        drowning -- so it goes behind a playtest, and this goes in first. It is
-        the same order the damage validator shipped in (see `enforce` above and
-        docs/security.md): measure, prove the log is empty during honest play,
-        then act.
+        SO THE SAMPLER IS NOW ASYMMETRIC, and shared/health_solve.lua's header
+        carries the full argument. In one line: a sample BELOW the ledger is
+        believed, because that is a fall, a fire, drowning or a car and the
+        engine still owns every one of them; a sample ABOVE the ledger is
+        refused unless the SERVER authorized the rise, and an authorized rise is
+        capped at what was authorized.
 
-        THE NUMBERS ARE CHOSEN TO NEVER FIRE ON HONEST PLAY, in that direction
-        deliberately. Every ambiguous sample is excused, because the exploit is
-        not one sample -- it is the same lie four times a second for a whole
-        match -- so a detector that misses its first two seconds still catches
-        it, while one that fires on a bad ping gets switched off.
+        THE DETECTOR STAYED, AND IT GOT BETTER RATHER THAN REDUNDANT. It runs one
+        line before the ledger is touched, it is the only thing that produces an
+        operator line, and now that the ledger is no longer overwritten a
+        divergent client keeps scoring on every sample instead of on the first
+        one. `enabled` and `enforce` are separate flags on purpose: one silences
+        the console, the other surrenders the ledger, and they are not the same
+        decision.
+
+        THE NUMBERS ARE STILL CHOSEN TO NEVER ACCUSE HONEST PLAY, in that
+        direction deliberately. What changed is that a window no longer COMMITS
+        anything -- a grace period that committed an unverified increase is the
+        finding itself -- it only decides whether a disagreement is worth a name.
+        Refusing an honest high-ping player's rise costs them nothing: their ped
+        is already on its way down to the number the ledger holds.
     ]]
     healthAudit = {
         -- OFF IS NOT A DEFAULT ANYONE HAS TO REMEMBER: this is a counter and a
@@ -1504,6 +1515,40 @@ BR.Config.Combat = {
         -- learn what honest play looks like. It is here so a playtest that
         -- turns up noise can be quietened without a redeploy.
         enabled = true,
+
+        -- DOES THE LEDGER WIN. Off surrenders `entry.hp` and `entry.armour` back
+        -- to the owning client, which is the shape the audit's finding 1 was
+        -- written against -- so this is a lever for a playtest that turns up a
+        -- false refusal, not a setting anybody should be running on.
+        --
+        -- SEPARATE FROM `enabled`, and never folded into it: quietening a noisy
+        -- console is a five-second decision and handing every client authority
+        -- over its own health is not. A build that needs one almost never needs
+        -- the other.
+        --
+        -- COMPARED AGAINST false RATHER THAN TESTED, at every reader, for the
+        -- reason `enabled` is: a convar override can leave a string here and
+        -- `if cfg.enforce then` is true for the string "false".
+        enforce = true,
+
+        -- HOW OFTEN A DIVERGENT CLIENT IS TOLD THE REAL NUMBER.
+        --
+        -- Refusing the rise fixes the SERVER's arithmetic and leaves the player
+        -- walking around on their own screen with health the server does not
+        -- believe in -- which is a bad game even for a cheat, because their
+        -- squad's panel, the shooter's hitmarkers and their own HUD would all
+        -- disagree with what kills them. So the ledger is pushed back at them on
+        -- HEALTH_SYNC, the same verb a revive already uses.
+        --
+        -- THROTTLED, AND ONLY ON THE UNEXPLAINED CASE. An honest client never
+        -- reaches it: damage still in flight, a heal, a rescue and a revive are
+        -- each refused under their own name and none of them resynchronises
+        -- anything. A cheat reaches it on every sample, and four corrections a
+        -- second is a fight with the engine rather than a correction -- one a
+        -- second lands, is visible to an operator, and leaves the sampler's hot
+        -- loop cheap. Zero or below turns the correction off and leaves the
+        -- refusal in place.
+        resyncMs = 1000,
 
         -- Rounding, not evidence. Our display value and the engine's come
         -- through different float pipelines and both get floored.
@@ -1519,6 +1564,16 @@ BR.Config.Combat = {
         -- sample interval (250ms) plus the round trip, and a player on a bad
         -- connection is not a cheat -- so 1500ms covers a 1.2s round trip,
         -- which is worse than anybody actually plays on.
+        --
+        -- WHAT IT NO LONGER DOES, and this is the whole of the audit's finding:
+        -- it does not COMMIT the rise. It used to -- the sampler excused the
+        -- sample and then wrote it into the ledger anyway, which is a grace
+        -- period that restores health rather than one that withholds judgement.
+        -- The rise is refused inside the window exactly as it is outside it;
+        -- this only decides whether the disagreement gets counted and whether
+        -- the client is corrected. That costs the honest player NOTHING, because
+        -- the number their ped is heading for is the number the ledger already
+        -- holds -- see the honest-client section of shared/health_solve.lua.
         hurtGraceMs = 1500,
 
         -- HOW LONG A CONSUMABLE OR A REVIVE IS ALLOWED TO KEEP CLIMBING.
@@ -1528,6 +1583,14 @@ BR.Config.Combat = {
         -- the one honest upward path the ledger does not already own. The window
         -- starts when the server issues the effect, so it covers the animation
         -- and the round trip after it.
+        --
+        -- THE WINDOW IS HALF OF THE AUTHORIZATION AND THE TARGET IS THE OTHER
+        -- HALF. Whoever issues the effect echoes that target onto the entry
+        -- (`grantHpTo` / `grantArmourTo`) and the ledger will not follow the ped
+        -- one point past it. A window on its own would be an amnesty: two
+        -- seconds per issue in which any claim at all is believed, re-stamped
+        -- every 250ms for the length of a channel and openable on demand by the
+        -- re-press loop in #271. So a bandage buys the bandage.
         healSettleMs = 2000,
 
         -- A revive or a respawn is the LEDGER leading and the ped following, so

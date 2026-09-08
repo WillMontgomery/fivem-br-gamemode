@@ -865,6 +865,16 @@ function BR.Match.resetPlayer(src, e)
     e.healthAudit, e.armourAudit = nil, nil
     e.healUntil, e.healthSettleUntil = nil, nil
 
+    -- AND SO ARE THE LEDGER RULE'S TWO. `grantHpTo` / `grantArmourTo` are the
+    -- ceilings a heal authorized (server/inventory.lua, server/ambheal.lua) and
+    -- they are inert without the window above -- but they are cleared beside it
+    -- anyway, so that "what did the server authorize this player" has one
+    -- answer at the start of a match rather than one plus a leftover. The
+    -- resync counter goes with the tally it is printed next to: /brhealth reads
+    -- "counted N hp, resyncs M" as one sentence about one round.
+    e.grantHpTo, e.grantArmourTo = nil, nil
+    e.healthResyncs, e.healthResyncAt = nil, nil
+
     -- Per-match, like the counters above. A stale diedAt would date a
     -- player's next match to their last one's clock and pay them
     -- survival XP for a match they had not started.

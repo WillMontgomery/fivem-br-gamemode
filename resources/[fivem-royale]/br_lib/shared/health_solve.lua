@@ -1,50 +1,121 @@
--- Does the client's ped agree with the server's health ledger?
+-- Does the client's ped agree with the server's health ledger -- and which of
+-- the two wins when it does not?
 --
--- WHAT THIS IS FOR, AND WHY IT IS ONLY A DETECTOR.
+-- WHAT THIS IS FOR.
 --
--- server/roster.lua samples every player's ped health four times a second and
--- writes the result into `entry.hp` -- the same field BR.Damage.applyHit does
--- its arithmetic on. Under FiveM's ownership model the ped's health is a value
--- the OWNING CLIENT controls, so that write hands the authority on "how much
--- health does this player have" back to the player. A client that pins its own
--- ped at full health has its ledger restored 250ms after every hit, and the
--- independent backstop that should notice (the server-observed death check in
--- server/combat.lua) reads the SAME client-owned number, so it never fires
--- either.
+-- server/roster.lua samples every player's ped health four times a second.
+-- Under FiveM's ownership model the ped's health is a value the OWNING CLIENT
+-- controls, so what comes back is a CLAIM, not a reading. This file holds the
+-- two questions the server asks about that claim, and they are deliberately
+-- separate functions:
 --
--- Closing that is a gameplay change and it is not this file. This file answers
--- the cheaper question first: IS ANYBODY DOING IT. The server already holds
--- both numbers -- its own ledger and the client's claim -- so the disagreement
--- between them is observable without inventing any new data, without changing
--- what happens to any player, and without a redeploy being able to break a
--- gunfight. See docs/security.md: the damage validator shipped in log-only mode
--- for a full playtest before it was allowed to enforce, on the rule that every
--- refusal printed during honest play is a false positive. Same rule, same
--- order.
+--   BR.HealthUnexplainedGain  -- IS ANYBODY LYING?  (the detector; counts)
+--   BR.HealthCommit           -- WHAT DOES THE LEDGER SAY NOW?  (the rule; acts)
 --
--- THE SIGNAL IS THE *UNEXPLAINED UPWARD* MOVE, AND EVERY WORD OF THAT IS DOING
--- WORK.
+-- The detector shipped first, alone, on the project's standing order: measure,
+-- prove the log is empty during honest play, then act (docs/security.md, and
+-- the way the damage validator shipped). The rule is the "then act" half.
 --
---   * UPWARD only. A sample BELOW the ledger is the world hurting somebody --
---     a fall, a fire, drowning, a car -- and those are damage paths the engine
---     still owns and the server does not model at all. Counting them would
---     mean counting ordinary play. They are also not the exploit: a player who
---     lowers their own health has cheated themselves.
+-- ═══ WHY THE LEDGER USED TO LOSE, AND WHAT THAT COST ═══
 --
---   * UNEXPLAINED. There are exactly four honest ways a ped can read HIGHER
---     than the ledger, and each one is excused by name below rather than being
---     absorbed into a fudge factor -- because a tolerance wide enough to hide
---     a revive is wide enough to hide a cheat, and the reason a sample was
---     excused is the first thing anyone debugging a false positive wants.
+-- The sampler used to write the sample straight into `entry.hp` -- the same
+-- field BR.Damage.applyHit subtracts from. That handed the authority on "how
+-- much health does this player have" back to the player: the server subtracted
+-- 25, told the client to apply it, the client ignored the instruction, and 250ms
+-- later the sampler copied the client's untouched 100 back over the server's 75.
+-- A security audit reproduced exactly that (2026-09-08, finding 1: 100 -> 75 ->
+-- restored to 100 in 300ms, with zero unexplained recovery counted, because the
+-- ledger was overwritten before the next sample had anything left to measure).
 --
--- A DETECTOR THAT FIRES ON HONEST PLAY IS WORSE THAN NO DETECTOR, because it
--- gets switched off, and the day it gets switched off is the day it was needed.
--- So the arithmetic here is deliberately conservative in one direction only:
--- every ambiguous sample is excused. Missing the first two seconds of a cheat
--- costs nothing -- the counter is cumulative and the exploit is not a single
--- sample, it is the same lie four times a second for a whole match.
+-- ═══ THE SHAPE: MONOTONIC DOWNWARD, EXCEPT WHERE THE SERVER SAID OTHERWISE ═══
+--
+-- The obvious fix -- stop reading the ped -- is wrong, and it is worth writing
+-- down why, because it is what the next person will reach for. The sampler
+-- exists BECAUSE the engine owns damage the server never took over: falls,
+-- fire, drowning, cars, the world. Nothing on the server models any of them. A
+-- ledger that refused the engine outright would mean a player could step off a
+-- skyscraper and the server would never notice.
+--
+-- So the sampler is ASYMMETRIC, and every clause of that is load-bearing:
+--
+--   * A DECREASE IS BELIEVED, always. That is the fall, the fire, the car. It
+--     is also not the exploit -- a player who lowers their own health has
+--     cheated themselves.
+--
+--   * AN INCREASE IS REFUSED unless the SERVER authorized it. There is no
+--     tolerance band that leaks upward and no grace period that commits: a
+--     window wide enough to hide a revive is wide enough to hide a cheat, and
+--     a +2 amnesty repeated four times a second is eight points of free health
+--     per second, which is a ratchet rather than a rounding error.
+--
+--   * AN AUTHORIZED INCREASE IS CAPPED AT WHAT WAS AUTHORIZED. A bandage buys
+--     the bandage's target and not a point more. The alternative -- "any rise
+--     inside the heal window" -- was rejected outright: every consumable in the
+--     game would then be a two-second amnesty a modified client could pin its
+--     health inside, and the re-press loop (#271) makes that window rollable.
+--
+-- ═══ THE HONEST CLIENT IS THE CASE THAT DECIDES THE DESIGN ═══
+--
+-- A real player's acknowledgement is DELAYED by their ping. Between the server
+-- subtracting 25 and the client applying it, that player's ped legitimately
+-- reads 25 HIGHER than the ledger -- which is the cheat's exact shape. A rule
+-- that punished it would accuse everybody on a bad connection, and the day this
+-- gets switched off is the day it was needed.
+--
+-- It does not have to be punished, because it does not have to be resolved:
+-- REFUSING the rise is already the right answer for both of them. The honest
+-- client's ped is about to come down to the ledger on its own, so holding the
+-- ledger costs that player nothing at all -- their number was already correct.
+-- The difference between the two is not what the ledger does, it is what
+-- happens next: the honest ped converges within the round trip and is never
+-- counted, resynchronised or reported, while the modified one goes on
+-- disagreeing forever and the detector below adds up every point of it.
+--
+-- That is why `hurtGraceMs` still exists and why its meaning has narrowed. It
+-- no longer decides whether the increase COMMITS -- nothing commits an
+-- unverified increase any more. It decides whether the disagreement is worth
+-- naming: inside the window it is a round trip, outside it is a claim.
 
 BR = BR or {}
+
+--- Is a server-written stamp still inside its window?
+---
+--- HOISTED TO FILE SCOPE so the detector and the rule cannot drift apart. Both
+--- ask the same question -- "did the server do something recently enough that
+--- the ped and the ledger are ALLOWED to disagree" -- and the day those two
+--- answer differently is the day a player is counted for a rise that was also
+--- committed, or excused for one that was refused.
+---
+--- DECLARED ABOVE BOTH CALLERS, and that is not style: a Lua `local function`
+--- is invisible above its own declaration, where the name resolves as a nil
+--- global instead. Every stamp it reads is one the SERVER wrote; nothing a
+--- client sends ever reaches here.
+--- @param now number
+--- @param stamp number|nil  a GetGameTimer() reading, or nil for "never"
+--- @param ms number|nil     window length; a non-positive window never opens
+--- @return boolean
+local function within(now, stamp, ms)
+    stamp = tonumber(stamp)
+    if stamp == nil then return false end
+    local w = tonumber(ms) or 0.0
+    if w <= 0.0 then return false end
+    return (now - stamp) < w
+end
+
+--- Is a deadline the server set still in the future?
+---
+--- `healUntil` and `healthSettleUntil` are DEADLINES rather than events, because
+--- both cover a stretch the server already knows the length of: a consumable has
+--- an `endsAt` and a revive has a round trip. Comparing `now` against a deadline
+--- the writer chose keeps the duration next to the thing that knows it, rather
+--- than forcing every writer to agree on one window in here.
+--- @param now number
+--- @param deadline number|nil
+--- @return boolean
+local function before(now, deadline)
+    deadline = tonumber(deadline)
+    return deadline ~= nil and now < deadline
+end
 
 --- Why a sample that read high was NOT counted.
 ---
@@ -99,8 +170,11 @@ BR.HealthExcuse = {
 ---    sends INV_EFFECT with a TARGET (server/inventory.lua); the client raises
 ---    its own ped and the sampler reads the rise on the way up. So during a use,
 ---    and for a settle window after it, the ped is SUPPOSED to be climbing past
----    the ledger. This is the excuse that matters most for the eventual fix: it
----    is the one legitimate upward path that the ledger does not already own.
+---    the ledger. It is the one legitimate upward path the ledger does not
+---    already own, which is why BR.HealthCommit needs a CEILING here and an
+---    excuse is not enough on its own: this window is the only one a player can
+---    open on demand, and a window that committed whatever it found inside it
+---    would be a two-second amnesty per bandage.
 ---
 --- 5. SETTLING -- a revive, a respawn or a match reset. Here the LEDGER leads and
 ---    the ped follows, so the usual direction is reversed and the sample reads
@@ -158,37 +232,205 @@ function BR.HealthUnexplainedGain(ledger, sampled, ctx, cfg)
 
     local now = tonumber(ctx.now) or 0.0
 
-    -- The three windows. Each is "did this happen recently enough that the ped
-    -- and the ledger are ALLOWED to disagree", and each compares against a
-    -- stamp the SERVER wrote -- never against anything a client sent.
-    local function within(stamp, ms)
-        stamp = tonumber(stamp)
-        if stamp == nil then return false end
-        local w = tonumber(ms) or 0.0
-        if w <= 0.0 then return false end
-        return (now - stamp) < w
-    end
-
-    if within(ctx.lastHitAt, cfg.hurtGraceMs or 1500) then
+    -- The three windows, all read through the file-scope helpers above so that
+    -- BR.HealthCommit below is asking exactly the same questions of exactly the
+    -- same stamps. Each is "did this happen recently enough that the ped and the
+    -- ledger are ALLOWED to disagree", and each compares against a stamp the
+    -- SERVER wrote -- never against anything a client sent.
+    if within(now, ctx.lastHitAt, cfg.hurtGraceMs or 1500) then
         return 0.0, BR.HealthExcuse.HURT
     end
 
-    -- `healUntil` and `settleUntil` are DEADLINES rather than events, because
-    -- both cover a stretch the server already knows the length of: a consumable
-    -- has an `endsAt` and a revive has a round trip. Comparing `now` against a
-    -- deadline the writer chose keeps the duration next to the thing that knows
-    -- it, rather than forcing every writer to agree on one window here.
-    local healUntil = tonumber(ctx.healUntil)
-    if healUntil ~= nil and now < healUntil then
+    if before(now, ctx.healUntil) then
         return 0.0, BR.HealthExcuse.HEALING
     end
 
-    local settleUntil = tonumber(ctx.settleUntil)
-    if settleUntil ~= nil and now < settleUntil then
+    if before(now, ctx.settleUntil) then
         return 0.0, BR.HealthExcuse.SETTLING
     end
 
     return gain, BR.HealthExcuse.COUNTED
+end
+
+--- What the sampler did with one claim, and why.
+---
+--- A STRING FOR THE SAME REASON BR.HealthExcuse IS ONE: the first question
+--- anybody asks of a rule that can refuse a player something is "when does it
+--- refuse", and the only useful answer is a name per outcome rather than a
+--- boolean nobody can debug. Every one of these is greppable in a test, and the
+--- test suite names them rather than asserting on numbers alone.
+---
+--- THE ONE DISTINCTION THAT DOES REAL WORK IS `HOLD` vs `REFUSED`, and it is
+--- the honest-client rule in a single field. Both refuse the increase and
+--- neither commits anything; only REFUSED means "nothing explains this", and
+--- only REFUSED lets the caller resynchronise the ped. A high-ping player whose
+--- acknowledgement is still in flight scores HOLD, so nothing is ever yanked out
+--- from under them for having a bad connection.
+BR.HealthVerdict = {
+    OPEN    = 'open',     -- outside the boundary; the claim is simply believed
+    SAMPLE  = 'sample',   -- believed, and it went DOWN: the world hurt them
+    FROZEN  = 'frozen',   -- neither direction; the server has just written this
+    GRANT   = 'grant',    -- a rise the server authorized, in full
+    CAPPED  = 'capped',   -- a rise the server authorized, clamped to what it issued
+    HOLD    = 'hold',     -- a rise refused, with an honest explanation for it
+    REFUSED = 'refused',  -- a rise refused with nothing whatever to explain it
+}
+
+--- What the ledger holds after this sample.
+---
+--- PURE, AND cfg IS A PARAMETER, for BR.HealthUnexplainedGain's reason: it makes
+--- every threshold reachable from a test with values no shipped config would
+--- hold, which is the only way a rule gets shown to still refuse.
+---
+--- USED FOR BOTH HEALTH AND ARMOUR, one call each. `entry.armour` is what
+--- BR.Damage.applyHit soaks a hit with BEFORE health is touched and it is
+--- sampled off GetPedArmour on the same line, so a client pinning its armour at
+--- 100 regenerates the soak four times a second -- the same exploit, costing the
+--- shooter more. The two are separate calls rather than one because they have
+--- separate ceilings and separate tolerances, not because the rule differs.
+---
+--- ═══ THE ORDER OF THE CLAUSES IS THE DESIGN. READ IT DOWNWARD ═══
+---
+--- 1. NOT A NUMBER. An unreadable sample is not evidence of anything, so the
+---    ledger stands. A missing LEDGER is the opposite: there is no opinion to
+---    contradict yet, so the sample is adopted. `nan ~= nan` is checked rather
+---    than assumed, because every comparison against a NaN is false -- so one
+---    sliding through would silently read as "no rise" and disable the rule for
+---    that player, which is the one failure mode an anticheat must not have.
+---
+--- 2. `enforce == false`. COMPARED, NOT TESTED FOR TRUTHINESS, like every other
+---    flag in this codebase: a convar override can leave a string here, and
+---    `if cfg.enforce then` is true for the string "false".
+---
+--- 3. NOT ALIVE IN A MATCH -> the claim is believed, exactly as it was before
+---    this rule existed. Deliberately the SAME boundary the detector uses, and
+---    for the same argument: only an ALIVE player can be shot, so only an ALIVE
+---    player's ledger is worth defending. Everything outside it would be a fight
+---    with the game rather than with a cheat -- a DEAD player's ped is
+---    resurrected for the spectator camera, a LOBBY ped is whatever the lobby
+---    left it on, the locker hands out a fresh ped on full health, and a
+---    returning player's respawn is a rise nobody authorized in any ledger.
+---    DBNO never reaches here at all: the sampler skips it, because a downed
+---    player's health is a bleed countdown rather than a ped reading.
+---
+--- 4. A SETTLE WINDOW IS OPEN -> NEITHER DIRECTION COMMITS.
+---
+---    This is a revive, a respawn or a match reset, where the LEDGER LEADS and
+---    the ped follows -- the reverse of every other case here. For one round
+---    trip the entry says 100 and the ped is still a corpse, so believing the
+---    DOWNWARD sample would drag a just-revived player straight back to the
+---    number they were revived from, which is the fix undoing the feature.
+---
+---    Freezing both directions was chosen over the alternative -- "raise the
+---    ledger back to whatever the server wrote" -- because the server does not
+---    record what it wrote anywhere, and adding somewhere would mean a new
+---    writer in four files (server/combat.lua twice, revivekey.lua, match.lua)
+---    to express a fact that is already true: during the window the ledger is
+---    correct by construction and the sample is stale. The cost is that world
+---    damage in the first `settleMs` after a revive lands on the NEXT sample
+---    instead of this one. Nothing is lost -- the ped is still burning, and the
+---    sample after the window reads the lower number and commits it.
+---
+--- 5. THE SAMPLE IS AT OR BELOW THE LEDGER -> BELIEVED. The fall, the fire, the
+---    drowning, the car. This clause is why the sampler still exists.
+---
+--- 6. RESCUE (#191) -> refused, and explained. A downed player rides an
+---    ambulance and BR.Combat.revive hands their health back ON ARRIVAL, through
+---    the ledger, with a settle window. Nothing about the ride itself authorizes
+---    a rise, so the ledger holds -- but it holds as HOLD rather than REFUSED,
+---    because yanking a player's ped mid-rescue over a state the server wrote
+---    itself would be the detector's cried-wolf failure with teeth on it.
+---
+--- 7. A HEAL THE SERVER ISSUED -> committed, UP TO THE CEILING IT ISSUED.
+---
+---    The one legitimate upward path the ledger does not already own. A med kit,
+---    a bandage, a shield plate or the ambulance heal (#241) sends INV_EFFECT
+---    carrying a TARGET and the CLIENT walks its own ped up to it, so the rise
+---    genuinely happens on the client and the sampler reads it on the way past.
+---
+---    `ctx.grantTo` IS THAT TARGET, echoed onto the entry by whoever issued the
+---    effect. Without it the window alone would be an amnesty: two seconds per
+---    issue in which any claim at all is committed, re-stamped every 250ms for
+---    the length of a channel, and openable on demand by the re-press loop in
+---    #271. With it, a bandage buys the bandage.
+---
+---    A MISSING CEILING FAILS CLOSED, and softly. The rise is refused, but as
+---    HOLD -- so the ledger sits low, no incident is raised and no ped is
+---    resynchronised. A future heal path that forgets to stamp its ceiling
+---    therefore under-heals the ledger until the next authorized write, which is
+---    a bug in the player's disfavour; the fail-OPEN alternative is the audit
+---    finding back again.
+---
+--- 8. DAMAGE STILL IN FLIGHT -> refused, and explained. See the header: this is
+---    the honest high-ping player, and refusing their rise costs them nothing
+---    because their ped is on its way down to this exact number. The window no
+---    longer decides whether anything commits; it decides whether the
+---    disagreement gets a name.
+---
+--- 9. WITHIN TOLERANCE -> refused, and explained. Two float pipelines, both
+---    floored, so a point of disagreement is arithmetic rather than evidence --
+---    but it is still not COMMITTED, because a +2 accepted four times a second
+---    is eight free points per second and the ledger would ratchet to full
+---    between fights. Held, not counted, not resynchronised.
+---
+--- 10. EVERYTHING ELSE -> refused, and named. This is the audit's case: a ped
+---    that reads higher than the ledger with no server action of any kind behind
+---    it. The ledger stands, the detector counts it, and the caller pushes the
+---    real number back at the client.
+---
+--- @param ledger number|nil  the server's display value BEFORE this sample
+--- @param sampled number     the display value read off the ped this sample
+--- @param ctx table  { now, state, rescue, lastHitAt, healUntil, settleUntil, grantTo }
+--- @param cfg table|nil      BR.Config.Combat.healthAudit
+--- @return number|nil committed  what the ledger holds after this sample
+--- @return string verdict        BR.HealthVerdict.*
+function BR.HealthCommit(ledger, sampled, ctx, cfg)
+    cfg = cfg or {}
+    ctx = ctx or {}
+
+    local s = tonumber(sampled)
+    local l = tonumber(ledger)
+
+    if s == nil or s ~= s then return l, BR.HealthVerdict.HOLD end
+    if l == nil or l ~= l then return s, BR.HealthVerdict.OPEN end
+
+    if cfg.enforce == false then return s, BR.HealthVerdict.OPEN end
+
+    if ctx.state ~= BR.PlayerState.ALIVE then return s, BR.HealthVerdict.OPEN end
+
+    local now = tonumber(ctx.now) or 0.0
+
+    if before(now, ctx.settleUntil) then return l, BR.HealthVerdict.FROZEN end
+
+    if s <= l then return s, BR.HealthVerdict.SAMPLE end
+
+    -- 0 IS TRUTHY IN LUA, so `rescue` is compared against nil rather than
+    -- tested -- the day somebody stores a rescue id of 0 in it is the day a
+    -- truthiness test would silently invert this clause.
+    if ctx.rescue ~= nil then return l, BR.HealthVerdict.HOLD end
+
+    if before(now, ctx.healUntil) then
+        local ceiling = tonumber(ctx.grantTo)
+        if ceiling == nil or ceiling ~= ceiling then
+            return l, BR.HealthVerdict.HOLD
+        end
+        -- A ceiling at or below the ledger authorizes nothing. It is an
+        -- authority to RAISE and never a license to lower: the downward path is
+        -- clause 5's and belongs to the world, not to a consumable.
+        if ceiling <= l then return l, BR.HealthVerdict.HOLD end
+        if s <= ceiling then return s, BR.HealthVerdict.GRANT end
+        return ceiling, BR.HealthVerdict.CAPPED
+    end
+
+    if within(now, ctx.lastHitAt, cfg.hurtGraceMs or 1500) then
+        return l, BR.HealthVerdict.HOLD
+    end
+
+    if (s - l) <= (tonumber(cfg.toleranceHp) or 2.0) then
+        return l, BR.HealthVerdict.HOLD
+    end
+
+    return l, BR.HealthVerdict.REFUSED
 end
 
 --- Fold one sample's verdict into a player's running tally.

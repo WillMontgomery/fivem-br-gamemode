@@ -879,9 +879,36 @@ function BR.Roster.clearDeparted(matchId)
     departed = kept
 end
 
+--- The stamps the server -- and only the server -- has written about this
+--- player's health, in the shape both health_solve.lua entry points read.
+---
+--- ONE BUILDER FOR THE DETECTOR AND THE RULE, which is the property worth
+--- having: `auditHealth` decides whether to COUNT a disagreement and
+--- `commitSample` decides whether to BELIEVE it, and two hand-built context
+--- tables would eventually let a sample be excused by one and refused by the
+--- other. Every field is server-written; nothing a client sent reaches here.
+---   lastHitAt    every server-applied damage path writes it
+---   healUntil    server/inventory.lua and server/ambheal.lua, on ISSUING an
+---                INV_EFFECT -- paired with the ceiling the caller adds below
+---   settleUntil  a revive, a respawn or a match reset the server wrote
+---   rescue       #191, the ambulance ride; server/rescue.lua writes it
+--- @param entry table
+--- @param now number
+--- @return table
+local function healthCtx(entry, now)
+    return {
+        now         = now,
+        state       = entry.state,
+        rescue      = entry.rescue,
+        lastHitAt   = entry.lastHitAt,
+        healUntil   = entry.healUntil,
+        settleUntil = entry.healthSettleUntil,
+    }
+end
+
 --- Does this player's ped agree with the ledger the server keeps for them?
 ---
---- CALLED FROM THE SAMPLER, ONE LINE BEFORE THE LEDGER IS OVERWRITTEN, and that
+--- CALLED FROM THE SAMPLER, ONE LINE BEFORE THE LEDGER IS DECIDED, and that
 --- position is the whole design: the sampler is the only place both numbers
 --- exist at once. The arithmetic and every excuse live in
 --- br_lib/shared/health_solve.lua so they are testable without a server; this
@@ -891,7 +918,16 @@ end
 --- on the entry (`healthAudit`, and the report stamp inside it) and prints at
 --- most one line per player per match. It must never refuse a sample, adjust a
 --- number or change a state -- the moment it does, a false positive stops being
---- a noisy log line and starts being a player who cannot be healed.
+--- a noisy log line and starts being a player who cannot be healed. Refusing is
+--- `commitSample`'s job, one call later and under its own flag.
+---
+--- IT GOT SHARPER WHEN THE LEDGER STOPPED BEING OVERWRITTEN, without a line
+--- changing here. The 2026-09-08 audit's second complaint about this detector
+--- was that a working exploit scored ZERO: the first sample after the grace
+--- window counted, the ledger was then overwritten to match the client, and
+--- every later sample had no discrepancy left to measure. Now the ledger holds,
+--- so a divergent client keeps scoring on every pass and crosses `reportHp`
+--- within a second instead of never.
 ---
 --- NO INCIDENT IS FILED, DELIBERATELY (docs/security.md, and the `refusalBar`
 --- note in config/match.lua). Only means-class refusals open an ANTICHEAT case,
@@ -912,18 +948,8 @@ local function auditHealth(src, entry, hp, armour, now)
     if BR.HealthUnexplainedGain == nil then return end
 
     -- THE STAMPS ARE ALL SERVER-WRITTEN, and that is the property that makes
-    -- this an anticheat rather than a second thing to lie to.
-    --   lastHitAt    every server-applied damage path writes it
-    --   healUntil    server/inventory.lua, when it ISSUES an INV_EFFECT
-    --   settleUntil  a revive or respawn the server wrote to the ledger
-    local ctx = {
-        now         = now,
-        state       = entry.state,
-        rescue      = entry.rescue,
-        lastHitAt   = entry.lastHitAt,
-        healUntil   = entry.healUntil,
-        settleUntil = entry.healthSettleUntil,
-    }
+    -- this an anticheat rather than a second thing to lie to. See healthCtx.
+    local ctx = healthCtx(entry, now)
 
     local gain, excuse = BR.HealthUnexplainedGain(entry.hp, hp, ctx, cfg)
     entry.healthAudit = BR.HealthTally(entry.healthAudit, gain, excuse)
@@ -954,6 +980,170 @@ local function auditHealth(src, entry, hp, armour, now)
                 entry.healthAudit.hp or 0.0, entry.armourAudit.hp or 0.0,
                 entry.healthAudit.peak or 0.0, entry.healthAudit.samples or 0))
     end
+end
+
+--- Tell one client what its health actually is, because its ped disagrees.
+---
+--- REFUSING THE RISE FIXES THE SERVER AND LEAVES THE PLAYER WRONG. The ledger is
+--- what kills them, what their squad's panel shows, what a shooter's hitmarker
+--- is computed against and what the results row is built from -- so a client
+--- whose ped has drifted above it is walking around inside a different game.
+--- Correcting them is not a punishment and it is not optional: it is the second
+--- half of "the server decides", and the audit's fix note names it
+--- ("resynchronize divergent clients").
+---
+--- HEALTH_SYNC IS THE EXISTING VERB and no new one was invented. It is what a
+--- revive, a knock and #144's held death already send, in display units, applied
+--- absolutely by client/dbno.lua -- "the server says what the number IS and we
+--- apply it". A correction is the same sentence said to a client that had
+--- stopped listening.
+---
+--- ONLY ON `REFUSED`, WHICH IS THE WHOLE SAFETY STORY. Every honest way for a
+--- ped to read high -- damage still in flight, a heal the server issued, an
+--- ambulance rescue, a revive still settling -- comes back from
+--- BR.HealthCommit as HOLD or FROZEN, and neither of those reaches this
+--- function. A high-ping player is never yanked; a modified one is corrected
+--- once a second.
+---
+--- THROTTLED, because the sampler runs at 4Hz and four corrections a second is
+--- a fight with the engine rather than a correction. `resyncMs` of zero or less
+--- turns the correction off and leaves the refusal standing, which is the
+--- setting for a playtest that wants the ledger enforced silently.
+--- @param src integer
+--- @param entry table
+--- @param cfg table
+--- @param now number
+local function resyncHealth(src, entry, cfg, now)
+    -- Guarded for the unit suites, which load this file without the Cfx
+    -- runtime -- the same guard applyBucket carries and for the same reason.
+    if not TriggerClientEvent then return end
+
+    local every = tonumber(cfg.resyncMs) or 1000
+    if every <= 0 then return end
+    if entry.healthResyncAt and (now - entry.healthResyncAt) < every then return end
+
+    entry.healthResyncAt = now
+    -- COUNTED PER MATCH, and printed by /brhealth beside the tally. An operator
+    -- reading "counted 240 hp" wants to know whether the server has been
+    -- shouting the real number back at that player for four minutes, and this is
+    -- the only place that fact exists.
+    entry.healthResyncs = (entry.healthResyncs or 0) + 1
+
+    TriggerClientEvent(BR.Net.HEALTH_SYNC, src, {
+        hp     = math.floor((entry.hp or 0.0) + 0.5),
+        armour = math.floor((entry.armour or 0.0) + 0.5),
+    })
+end
+
+--- Decide what the ledger holds after this sample, and write it.
+---
+--- ═══ THIS IS WHY THE SAMPLER IS ASYMMETRIC. READ THIS BEFORE CHANGING IT ═══
+---
+--- This function used to be one line -- `BR.Roster.update(src, { hp = hp,
+--- armour = armour })` -- and that line was the highest-impact finding of the
+--- 2026-09-08 security audit. `entry.hp` is what BR.Damage.applyHit subtracts
+--- from and `hp` is a number the OWNING CLIENT chose, so the assignment handed
+--- the authority on "how much health does this player have" back to the player:
+--- the server took 25 off, told the client to apply it, a modified client
+--- ignored the instruction, and 250ms later this line copied the untouched 100
+--- back over the server's 75. Reproduced end to end, with no forged identity and
+--- no administrator rights.
+---
+--- THE FIX THAT LOSES, AND IT IS THE ONE EVERYBODY REACHES FOR FIRST: stop
+--- reading the ped. It cannot be done. The sampler exists BECAUSE the engine
+--- owns damage the server never took over -- falls, fire, drowning, cars, the
+--- world -- and the server models none of them. A ledger that refused the engine
+--- outright would mean a player could step off a skyscraper and the server would
+--- never find out. So the read stays and the WRITE became conditional.
+---
+--- THE SECOND FIX THAT LOSES: keep the excuse windows as they were and simply
+--- stop counting inside them. That is what shipped in the detector, and the
+--- audit's point was precisely that a grace period which COMMITS an unverified
+--- increase is not a grace period -- it is the exploit with a comment on it.
+---
+--- WHAT IT IS NOW: the ledger is authoritative and monotonic downward, except
+--- where the SERVER itself authorized a rise. Every clause lives in
+--- br_lib/shared/health_solve.lua's BR.HealthCommit, next to the detector that
+--- shares its stamps, so it is testable without a server; this function is the
+--- plumbing that carries the ceilings in and the correction out.
+---
+--- THE LEGITIMATE UPWARD PATHS, ALL OF THEM, AND HOW EACH IS AUTHORIZED. Every
+--- one was found by grepping for writes to `entry.hp` and `entry.armour`:
+---
+---   * A RESPAWN, A MATCH RESET AND THE WARMUP PAD write the ledger directly
+---     (BR.Match.resetPlayer, BR.Combat.reviveWarmup). The pad is not ALIVE, so
+---     the rule does not apply there at all -- and where it does, the write is
+---     the server's own and the ped follows it.
+---   * A CPR REVIVE and #144's HELD REVIVE (BR.Combat.revive, reviveHeld) write
+---     the ledger and stamp `healthSettleUntil` first.
+---   * THE AMBULANCE REVIVE (server/revivekey.lua) does the same, on its own
+---     code path, which is why both are named here rather than "a revive".
+---   * A KNOCK writes the DBNO floor -- and a downed player is skipped by the
+---     caller anyway, because their health is a bleed countdown.
+---   * MED KITS, BANDAGES AND ARMOUR PLATES (server/inventory.lua) and THE
+---     AMBULANCE HEAL (server/ambheal.lua) are the only paths that do NOT write
+---     the ledger: they send the client a TARGET and let it walk its own ped up.
+---     Those two echo the target onto the entry as `grantHpTo` / `grantArmourTo`
+---     beside the `healUntil` they already stamped, and this is where it is
+---     spent. The window says a heal is happening; the ceiling says how much.
+---
+--- ARMOUR IS A SECOND CALL, NOT A SECOND RULE. It has its own ceiling and its
+--- own tolerance -- the honest upward path is a different item with a different
+--- cap -- but the shape is identical, and `entry.armour` matters just as much:
+--- it is what applyHit soaks a hit with BEFORE health is touched, so a client
+--- pinning its armour at 100 regenerates the soak four times a second.
+---
+--- FAIL-OPEN IF THE SOLVER IS MISSING, deliberately. br_lib is a separate
+--- resource; if it has not loaded, the old behaviour is the one that keeps a
+--- match playable, and `auditHealth` above makes the same call for the same
+--- reason. The manifest gate in tools/verify.sh is what stops that being a
+--- silent live configuration.
+--- @param src integer
+--- @param entry table
+--- @param hp number      display hp sampled from the ped THIS pass
+--- @param armour number  armour sampled from the ped THIS pass
+--- @param now number
+local function commitSample(src, entry, hp, armour, now)
+    local cfg = (BR.Config.Combat or {}).healthAudit or {}
+
+    local nextHp, nextArmour = hp, armour
+
+    -- A BOOLEAN RATHER THAN THE VERDICT STRINGS THEMSELVES, and it is not
+    -- tidiness: `BR.HealthVerdict` lives in the same file as BR.HealthCommit, so
+    -- on the fail-open path where that file has not loaded, testing a verdict
+    -- out here would index a nil table and take the whole sampler down for every
+    -- player -- turning a graceful degradation into an outage.
+    local refused = false
+
+    if BR.HealthCommit ~= nil then
+        local ctx = healthCtx(entry, now)
+        local hpWhy, armourWhy
+
+        ctx.grantTo = entry.grantHpTo
+        nextHp, hpWhy = BR.HealthCommit(entry.hp, hp, ctx, cfg)
+
+        -- THE ARMOUR CONFIG IS BUILT RATHER THAN PASSED WHOLE, so that
+        -- `toleranceArmour` reaches the solver as the tolerance it is. Reusing
+        -- `cfg` would silently measure armour against the HEALTH tolerance,
+        -- which is the same trap the detector's armour call sidesteps three
+        -- functions up -- and `enforce` has to be carried across explicitly or
+        -- the kill switch would turn off health and leave armour enforced.
+        ctx.grantTo = entry.grantArmourTo
+        nextArmour, armourWhy = BR.HealthCommit(entry.armour, armour, ctx, {
+            enforce      = cfg.enforce,
+            toleranceHp  = cfg.toleranceArmour,
+            hurtGraceMs  = cfg.hurtGraceMs,
+        })
+
+        refused = hpWhy == BR.HealthVerdict.REFUSED
+               or armourWhy == BR.HealthVerdict.REFUSED
+    end
+
+    if nextHp ~= entry.hp or nextArmour ~= entry.armour then
+        BR.Roster.update(src, { hp = nextHp, armour = nextArmour })
+    end
+
+    if refused then resyncHealth(src, entry, cfg, now) end
 end
 
 --- Server-side position sampling.
@@ -995,26 +1185,17 @@ local function samplePositions()
             local hp = math.floor(BR.ToDisplayHp(entry.engineHp) + 0.5)
             local armour = math.floor((entry.engineArmour or 0) + 0.5)
 
-            -- ...AND BEFORE THE LEDGER IS OVERWRITTEN, ASK WHETHER IT AGREED.
+            -- ...AND BEFORE THE LEDGER IS DECIDED, ASK WHETHER IT AGREED.
             --
-            -- THE LINE BELOW IS THE ONE THIS AUDIT IS ABOUT. `entry.hp` is what
-            -- BR.Damage.applyHit subtracts from, and `hp` is a number the owning
-            -- client chose -- so the assignment hands the authority on "how much
-            -- health does this player have" back to the player. A client that
-            -- pins its ped at full has its ledger restored 250ms after every
-            -- hit, and the server-observed death check in server/combat.lua
-            -- reads `engineHp`, which is the same client-owned value, so the
-            -- backstop that should catch it misses it for the same reason.
+            -- THE DISAGREEMENT IS ONLY VISIBLE HERE, between the read and the
+            -- write, which is why the call sits in the sampler rather than in a
+            -- sweep of its own: on any pass where the two numbers end up equal
+            -- there is nothing left to measure afterwards.
             --
-            -- THE DISAGREEMENT IS ONLY VISIBLE HERE, one line before it is
-            -- destroyed, which is why the call sits in the sampler rather than
-            -- in a sweep of its own: after the write the two numbers are equal
-            -- by construction and there is nothing left to measure.
-            --
-            -- IT COUNTS AND DOES NOT ACT. Nothing below changes `hp`, `armour`
-            -- or anybody's state -- see the healthAudit block in
-            -- config/match.lua for why the fix is a separate, playtested change
-            -- and this went in first.
+            -- IT COUNTS AND DOES NOT ACT. Nothing in it changes `hp`, `armour`
+            -- or anybody's state; the ledger rule is the NEXT call, under its
+            -- own flag, so a noisy detector and a wrong refusal stay two
+            -- separate incidents with two separate switches.
             auditHealth(src, entry, hp, armour, now)
 
             -- A DOWNED PLAYER'S HEALTH IS THE LEDGER'S, NOT THE PED'S.
@@ -1026,13 +1207,18 @@ local function samplePositions()
             -- ignoring it -- drag the entry back to full and show the squad
             -- panel a downed teammate on 100hp.
             --
+            -- KEPT AS ITS OWN GUARD even though BR.HealthCommit would refuse
+            -- the rise anyway: that refusal would also RESYNCHRONISE a downed
+            -- player's ped four times a second, against a floor client/dbno.lua
+            -- is already holding for its own reasons. DBNO simply is not the
+            -- ledger's business.
+            --
             -- Written as a condition rather than an early return ON PURPOSE:
             -- this is the body of a loop over the WHOLE roster, and a `return`
             -- here would stop sampling everybody who sorted after the first
             -- downed player -- positions included.
-            if entry.state ~= BR.PlayerState.DBNO
-               and (hp ~= entry.hp or armour ~= entry.armour) then
-                BR.Roster.update(src, { hp = hp, armour = armour })
+            if entry.state ~= BR.PlayerState.DBNO then
+                commitSample(src, entry, hp, armour, now)
             end
         end
     end
@@ -1158,6 +1344,13 @@ RegisterCommand('brhealth', function()
     print(('  heal settle %sms   revive settle %sms   report at %s hp / %s armour')
         :format(tostring(cfg.healSettleMs), tostring(cfg.settleMs),
             tostring(cfg.reportHp), tostring(cfg.reportArmour)))
+    -- THE LEDGER RULE'S OWN LINE, and it goes first among the per-player rows
+    -- for the reason the whole verb exists: "counted 240 hp" means something
+    -- different depending on whether the ledger was being surrendered back to
+    -- the client the whole time. An operator reading this report must be able to
+    -- see which of the two builds they are looking at without reading the config.
+    print(('  ledger enforced %s   resync every %sms')
+        :format(tostring(cfg.enforce ~= false), tostring(cfg.resyncMs)))
 
     local any = false
     for src, entry in pairs(roster) do
@@ -1170,10 +1363,11 @@ RegisterCommand('brhealth', function()
                 parts[#parts + 1] = ('%s %d'):format(excuse, n)
             end
             table.sort(parts)
-            print(('  %s (%d): counted %.0f hp / %.0f armour  peak %.0f  samples %d%s')
+            print(('  %s (%d): counted %.0f hp / %.0f armour  peak %.0f  samples %d  resyncs %d%s')
                 :format(entry.name, src,
                     (h or {}).hp or 0.0, (a or {}).hp or 0.0,
                     (h or {}).peak or 0.0, (h or {}).samples or 0,
+                    entry.healthResyncs or 0,
                     (h or {}).reportedAt and '  [REPORTED]' or ''))
             if #parts > 0 then
                 print(('      excused: %s'):format(table.concat(parts, '  ')))

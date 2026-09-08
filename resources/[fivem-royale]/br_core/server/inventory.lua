@@ -1694,7 +1694,29 @@ BR.Sched.every(250, 'inv.use', function()
                 -- what the client actually climbs toward, and a window anchored
                 -- anywhere else would either open before there was anything to
                 -- excuse or close while the ped was still on its way up.
+                --
+                -- ...AND HOW HEALTHY, WHICH IS THE HALF THE WINDOW CANNOT SAY.
+                --
+                -- server/roster.lua's ledger rule refuses every rise it did not
+                -- authorize, and this pair is the authorization: BR.HealthCommit
+                -- lets the ledger follow the ped upward while `healUntil` stands
+                -- and NOT ONE POINT past the ceiling here. The window alone
+                -- would be a two-second amnesty per issue -- re-stamped every
+                -- tick for the length of a channel, and openable on demand by
+                -- the re-press loop in #271 -- in which a modified client could
+                -- pin its health at full and have the server believe it.
+                --
+                -- THE SAME NUMBER THAT IS ON THE WIRE, and it must stay that
+                -- way: the client applies these targets UPWARD ONLY, so the
+                -- ceiling and the ped's destination are the same fact and the
+                -- ledger lands exactly where an honest ped does.
+                --
+                -- BOTH WRITTEN, INCLUDING TO nil. An item that moves only armour
+                -- must not leave a previous med kit's health ceiling standing
+                -- for its own window to spend -- a shield authorizes armour and
+                -- nothing else.
                 e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
+                e.grantHpTo, e.grantArmourTo = partial.health, partial.armour
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, partial)
                 return
             end
@@ -1833,10 +1855,13 @@ BR.Sched.every(250, 'inv.use', function()
                         (u.hp0 or 0) + c.health)
                     payload.healthCap = c.healthCap
                 end
-                -- The same stamp as the partials above, and the landing one
-                -- matters most: this is the payload that carries the FULL
-                -- target, so it is the largest single rise the ped will make.
+                -- The same stamp and the same ceiling as the partials above --
+                -- see the long note there for what each half is for -- and the
+                -- landing one matters most: this is the payload that carries the
+                -- FULL target, so it is the largest single rise the ped will
+                -- make and the highest the ledger is ever allowed to follow it.
                 e.healUntil = now + ((BR.Config.Combat.healthAudit or {}).healSettleMs or 2000)
+                e.grantHpTo, e.grantArmourTo = payload.health, payload.armour
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, payload)
             end
 

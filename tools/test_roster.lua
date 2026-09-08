@@ -18457,6 +18457,24 @@ local function roadMatch()
     queueUp(1, 'Driver', BR.Mode.SOLO.key)
     queueUp(2, 'Walker', BR.Mode.SOLO.key)
     queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+
+    -- ═══ FULL HEALTH BEFORE THE PROMOTION, NOT AFTER IT ═══
+    --
+    -- `pedHealth` is a suite-wide table and the block before this one leaves a
+    -- wounded ped in it, so a fixture that does not put it back is starting the
+    -- next match on the last one's injuries.
+    --
+    -- THE ORDER MATTERS NOW AND IT DID NOT USED TO. These three lines sat below
+    -- the ALIVE promotion, which meant the ledger was sampled from the STALE ped
+    -- while everyone was still in the lobby and then had to be dragged back up
+    -- by a sample taken after they were already ALIVE. That is a ped rising with
+    -- no server action behind it -- which is the exploit's exact shape, and
+    -- server/roster.lua's ledger rule now refuses it. In the running game the
+    -- situation cannot arise: LOBBY, WARMUP, BUS and FREEFALL are all outside
+    -- the rule, so the sampler tracks the ped freely right up to the moment of
+    -- promotion and the two numbers agree when it happens.
+    for s = 1, 3 do pedHealth[1000 + s] = 200 end
+
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
     for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
@@ -18468,7 +18486,6 @@ local function roadMatch()
     setPos(1, 0.0, 0.0, 30.0)
     setPos(2, 10.0, 0.0, 30.0)
     setPos(3, 500.0, 500.0, 30.0)
-    for s = 1, 3 do pedHealth[1000 + s] = 200 end
 
     fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
     fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
@@ -19596,11 +19613,19 @@ do
     local A = BR.Config.Combat.healthAudit
 
     --- An ALIVE player in a PLAYING match, with the sampler already settled.
+    ---
+    --- THE PEDS ARE PUT BACK ON FULL BEFORE THE PROMOTION, and roadMatch's note
+    --- has the argument at length: `pedHealth` is suite-wide, the block before
+    --- leaves a wounded ped in it, and healing that ped after the player is
+    --- already ALIVE is a rise with no server action behind it -- the exploit's
+    --- exact shape, which the ledger rule now refuses. LOBBY is outside the rule,
+    --- so doing it one line earlier is both faithful and enough.
     local function audited()
         reset()
         queueUp(1, 'Cheat', BR.Mode.SOLO.key)
         queueUp(2, 'Honest', BR.Mode.SOLO.key)
         queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+        for s = 1, 3 do pedHealth[1000 + s] = BR.Config.Match.maxHealth end
         fakeTime = fakeTime + 300
         BR.Sched.step(fakeTime)
         for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
@@ -19608,7 +19633,6 @@ do
         setPos(1, 0.0, 0.0, 30.0)
         setPos(2, 50.0, 0.0, 30.0)
         setPos(3, 500.0, 500.0, 30.0)
-        for s = 1, 3 do pedHealth[1000 + s] = BR.Config.Match.maxHealth end
         fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
         sent = {}
         return BR.Roster.get(1), BR.Roster.get(2)
@@ -19677,13 +19701,31 @@ do
                 .. 'which is what /brhealth prints to prove the window is right',
             tostring(cheat.healthAudit.excused[BR.HealthExcuse.HURT]))
 
-        -- AND THE LEDGER IS STILL BEING OVERWRITTEN, because this change is a
-        -- detector and nothing else. If this assertion ever flips, somebody has
-        -- landed prevention -- which is a good day, and this block is one of the
-        -- places that has to be updated on purpose.
-        ok(cheat.hp == 100, 'the exploit still WORKS -- detection changed no '
-            .. 'gameplay, which is the whole safety story of this change',
+        -- ═══ AND THIS IS THE DAY THE ASSERTION FLIPPED ═══
+        --
+        -- It used to read `cheat.hp == 100` -- "the exploit still WORKS,
+        -- detection changed no gameplay" -- with a note saying that if it ever
+        -- inverted, somebody had landed prevention and this was one of the
+        -- places to update on purpose. That is what happened: the 2026-09-08
+        -- security audit's finding 1, fixed in server/roster.lua's commitSample.
+        -- Left here rather than moved into the ledger block below, because the
+        -- most valuable thing this line can say is what it used to say.
+        ok(cheat.hp == 60.0, 'and the ledger is NOT handed back -- the exploit '
+            .. 'that this detector was built to measure no longer works',
             tostring(cheat.hp))
+
+        -- ...AND THE DETECTOR GOT SHARPER FOR FREE. The audit's second
+        -- complaint about it was that a working exploit scored almost nothing:
+        -- the first sample past the grace counted, the ledger was overwritten to
+        -- match the client, and every later sample had no discrepancy left to
+        -- measure. Now the ledger holds, so the disagreement is still there on
+        -- the next pass and the tally climbs until it crosses the bar.
+        local before = cheat.healthAudit.hp
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(cheat.healthAudit.hp > before,
+            'a client that goes on lying goes on being counted, sample after '
+                .. 'sample, because the number it is lying about survives',
+            ('%s -> %s'):format(tostring(before), tostring(cheat.healthAudit.hp)))
     end
 
     -- ═══ A MED KIT IS NOT A CHEAT ═══
@@ -19762,6 +19804,594 @@ do
     end
 
     pedHealth[1001], pedHealth[1002] = nil, nil
+end
+
+describe('health.ledger')
+do
+    -- ═══ WHO OWNS A PLAYER'S HEALTH, DRIVEN THROUGH THE REAL SAMPLER ═══
+    --
+    -- The block above measures the disagreement between the ped and the ledger.
+    -- This one is about what the server DOES with it, which until 2026-09-08 was
+    -- "believes the ped" -- the highest-impact finding of that day's security
+    -- audit, reproduced there in one sentence: a 25-point hit took a player from
+    -- 100 to 75, and 300ms later the sampler put it back to 100.
+    --
+    -- EVERY ASSERTION HERE IS DRIVEN THROUGH `roster.positions`, not through
+    -- BR.HealthCommit. The solver's own arithmetic can be exercised with a table
+    -- literal and would pass with the sampler wired to the wrong field, calling
+    -- it with the health tolerance for armour, or not calling it at all. What is
+    -- worth pinning is that a hit lands, a fall lands, a med kit lands, a revive
+    -- survives and a modified client gets nothing -- and all six of those are
+    -- properties of the loop, so the loop is what runs.
+    --
+    -- THE HONEST CASES COME FIRST AND THERE ARE MORE OF THEM THAN CHEATS, which
+    -- is deliberate and is the same order shared/health_solve.lua argues for. A
+    -- rule that refuses honest play is worse than the hole it closed, because
+    -- the hole costs a match and a player who cannot be healed costs the mode.
+    local A = BR.Config.Combat.healthAudit
+    local MAXHP = BR.Config.Match.maxHealth
+
+    --- Two ALIVE players in a PLAYING match, peds and ledgers already agreed.
+    ---
+    --- THE PEDS ARE SET BEFORE THE PROMOTION, exactly as roadMatch and audited()
+    --- do, and the note on the first of those says why: healing a ped after its
+    --- player is already ALIVE is a rise with no server action behind it, which
+    --- is the shape this whole block exists to refuse.
+    local function ledgerMatch()
+        reset()
+        queueUp(1, 'Subject', BR.Mode.SOLO.key)
+        queueUp(2, 'Shooter', BR.Mode.SOLO.key)
+        queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+        for s = 1, 3 do
+            pedHealth[1000 + s] = MAXHP
+            pedArmour[1000 + s] = 0
+        end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+        theMatch().state = BR.MatchState.PLAYING
+        setPos(1, 0.0, 0.0, 30.0)
+        setPos(2, 20.0, 0.0, 30.0)
+        setPos(3, 500.0, 500.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        sent = {}
+        return BR.Roster.get(1)
+    end
+
+    --- One sampler pass.
+    local function sample()
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+    end
+
+    --- Sampler passes covering at least `ms` of clock.
+    local function samplePast(ms)
+        for _ = 1, math.ceil(ms / 300) do sample() end
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE HONEST PLAYER
+    -- ═══════════════════════════════════════════════════════════════════════
+
+    -- ─── A DELAYED BUT REAL ACKNOWLEDGEMENT ───
+    --
+    -- THE CASE THAT DECIDES THE WHOLE DESIGN, and the reason the fix is not
+    -- "refuse the rise and punish it". Between the server subtracting 25 and the
+    -- client applying it, an honest player's ped legitimately reads 25 HIGHER
+    -- than the ledger -- which is the cheat's exact shape, and on a 300ms
+    -- connection it lasts longer than a sample interval.
+    --
+    -- Refusing the rise is already right for them: their ped is on its way down
+    -- to the number the ledger holds, so holding it costs them nothing. What
+    -- they must NOT get is a correction pushed at them or a point counted
+    -- against them, and those are the two assertions that matter here.
+    do
+        local honest = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        ok(honest.hp == 75.0, 'the server takes 25 off the ledger', tostring(honest.hp))
+
+        -- Their ped is still on 100. The acknowledgement is in flight.
+        sample()
+        ok(honest.hp == 75.0,
+            'and the sampler does not hand it back while the client catches up',
+            tostring(honest.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'a player on a bad connection is not corrected -- nothing is pushed '
+                .. 'at them for having a ping',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+        ok(((honest.healthAudit or {}).hp or 0.0) == 0.0,
+            'nor counted against them, which is what `hurtGraceMs` still buys',
+            tostring((honest.healthAudit or {}).hp))
+        ok((honest.healthAudit or {}).excused[BR.HealthExcuse.HURT] ~= nil,
+            'and the reason is named in the breakdown rather than inferred')
+
+        -- ...AND IT ARRIVES. Their ped lands on the number the server already
+        -- held, and there was never anything to resolve.
+        pedHealth[1001] = BR.ToEngineHp(75.0)
+        sample()
+        ok(honest.hp == 75.0,
+            'and when the acknowledgement finally lands, the two numbers simply '
+                .. 'agree -- the honest client never notices this rule exists',
+            tostring(honest.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'with no correction ever sent', #eventsOf(BR.Net.HEALTH_SYNC))
+        ok(((honest.healthAudit or {}).hp or 0.0) == 0.0,
+            'and nothing counted, start to finish',
+            tostring((honest.healthAudit or {}).hp))
+    end
+
+    -- ─── A FALL, A FIRE, A DROWNING OR A CAR ───
+    --
+    -- THE REASON THE SAMPLER CANNOT SIMPLY BE DELETED, which is the fix
+    -- everybody reaches for first. The engine owns these and the server models
+    -- none of them, so a ledger that refused the engine outright would mean a
+    -- player could step off a skyscraper and the server would never find out.
+    do
+        local subject = ledgerMatch()
+        pedHealth[1001] = BR.ToEngineHp(20.0)
+        sample()
+        ok(subject.hp == 20,
+            'the world still hurts people -- a sample BELOW the ledger is '
+                .. 'believed, every time',
+            tostring(subject.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and nobody is corrected for taking fall damage',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+
+        -- ...AND INSIDE THE HURT GRACE TOO. The rule is ASYMMETRIC, not paused:
+        -- a window that suspended the downward path as well would lose a second
+        -- and a half of fire damage after every bullet.
+        BR.Damage.applyHit(2, 1, 5.0, { weapon = 'test' })
+        ok(subject.hp == 15.0, 'shot on top of the fall', tostring(subject.hp))
+        pedHealth[1001] = BR.ToEngineHp(3.0)
+        sample()
+        ok(subject.hp == 3,
+            'and the fire that follows the bullet still lands, inside the same '
+                .. 'grace window that refuses a rise',
+            tostring(subject.hp))
+    end
+
+    -- ─── A MED KIT, A BANDAGE OR A SHIELD PLATE ───
+    --
+    -- The one legitimate upward path the ledger does not already own: the server
+    -- issues INV_EFFECT with a TARGET and the CLIENT walks its own ped up to it.
+    -- server/inventory.lua stamps the window and the ceiling together, and this
+    -- is that pair driven by hand.
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 60.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(40.0)
+        samplePast(A.hurtGraceMs + 500)
+        ok(subject.hp == 40, 'wounded, acknowledged, agreed', tostring(subject.hp))
+
+        -- The server issues a bandage worth 35: a deadline AND a destination.
+        subject.healUntil = fakeTime + A.healSettleMs
+        subject.grantHpTo = 75.0
+        pedHealth[1001] = BR.ToEngineHp(75.0)
+        sample()
+        ok(subject.hp == 75,
+            'health the server ISSUED reaches the ledger -- this is the case a '
+                .. 'naive "refuse every rise" fix would break',
+            tostring(subject.hp))
+
+        -- ...AND NOT ONE POINT FURTHER. Without the ceiling the window alone
+        -- would be a two-second amnesty per issue, re-stamped every tick for the
+        -- length of a channel and openable on demand by the re-press loop
+        -- (#271), inside which a modified client could pin its health at full.
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(subject.hp == 75,
+            'and a client that keeps climbing past the target it was given is '
+                .. 'capped at the target -- a bandage buys the bandage',
+            tostring(subject.hp))
+
+        -- ...AND THE WINDOW CLOSES. A ceiling with no deadline behind it would
+        -- authorize the same rise for the rest of the match.
+        subject.healUntil = fakeTime
+        sample()
+        ok(subject.hp == 75,
+            'once the heal window closes the ceiling authorizes nothing at all',
+            tostring(subject.hp))
+    end
+
+    -- ─── ...AND A HEAL WITH NO CEILING FAILS CLOSED, SOFTLY ───
+    --
+    -- A future heal path that opens a window and forgets to name a target must
+    -- not become the hole again. It refuses -- but as an EXPLAINED refusal, so
+    -- the player is not yanked and no case is built against them. The cost is a
+    -- ledger that under-heals until the next authorized write, which is a bug in
+    -- the player's disfavour; the fail-open alternative is the audit finding
+    -- back verbatim.
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 60.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(40.0)
+        samplePast(A.hurtGraceMs + 500)
+
+        subject.healUntil = fakeTime + A.healSettleMs
+        subject.grantHpTo = nil
+        pedHealth[1001] = MAXHP
+        subject.healthResyncAt, subject.healthResyncs = nil, nil
+        sent = {}
+        sample()
+        ok(subject.hp == 40,
+            'a heal window with no ceiling authorizes nothing -- it fails CLOSED',
+            tostring(subject.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and softly: nobody is yanked over a stamp the server forgot to write',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+        ok((subject.healthAudit or {}).excused[BR.HealthExcuse.HEALING] ~= nil,
+            'the detector still reads it as a heal, so no case is built either')
+    end
+
+    -- ─── A REVIVE: THE ONE CASE WHERE THE LEDGER LEADS ───
+    --
+    -- Everywhere else the ped moves first and the ledger follows. A revive is
+    -- the reverse: the server writes 30 and the client's ped is STILL A CORPSE
+    -- until HEALTH_SYNC lands. Believing that downward sample would drag a
+    -- just-revived player back to the number they were revived from, which is
+    -- the fix undoing the feature -- so `healthSettleUntil` freezes BOTH
+    -- directions rather than only the upward one.
+    do
+        reset()
+        BR.Server.devMode = true
+        BR.Config.Match.autofill = true
+        join(1, 'Downed'); join(2, 'Mate')
+        BR.Party.invite(1, 2); BR.Party.respond(2, true)
+        BR.Roster.each(nil, function(s) BR.Roster.setState(s, BR.PlayerState.WARMUP) end)
+        local m = fakeMatch(BR.Mode.SQUAD.key)
+        BR.Party.formSquads(m)
+        m.state = BR.MatchState.PLAYING
+        m.startSquads = 1
+        for i = 1, 2 do
+            pedHealth[1000 + i] = MAXHP
+            pedArmour[1000 + i] = 0
+            setPos(i, 0.0, 0.0, 30.0)
+        end
+        sample()
+        for i = 1, 2 do BR.Roster.setState(i, BR.PlayerState.ALIVE) end
+        sample()
+        sent = {}
+
+        local downed = BR.Roster.get(1)
+        BR.Combat.defeat(1, 'gunshot', 2)
+        ok(downed.state == BR.PlayerState.DBNO, 'knocked', tostring(downed.state))
+
+        -- A DOWNED PLAYER IS NOT THE LEDGER'S BUSINESS AT ALL. Their ped is
+        -- parked at the DBNO floor and their real health is a bleed countdown,
+        -- so the sampler skips them -- and this asserts it still does, because
+        -- the alternative under the new rule would be fighting client/dbno.lua
+        -- for the floor four times a second.
+        pedHealth[1001] = MAXHP
+        sent = {}
+        sample()
+        ok(downed.hp == (BR.Config.Match.dbnoHp or 5) + 0.0,
+            'a downed player\'s ledger is neither sampled nor defended',
+            tostring(downed.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and nothing is pushed at a ped their own client is already holding',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+
+        -- THE REVIVE. The ledger goes to 30 and the client's ped is still down
+        -- where the knock left it.
+        --
+        -- ONE POINT RATHER THAN ZERO, AND THAT IS NOT A FUDGE. A ped on the
+        -- health FLOOR is a dead ped, and the server-observed death check in
+        -- server/combat.lua reads `engineHp` off this very sample -- so a zero
+        -- here would knock them straight back down and this block would be
+        -- testing that subsystem instead of this one. One point expresses the
+        -- same fact this block is about: the ped is far BELOW the number the
+        -- server just wrote, and the sampler must not believe it yet.
+        pedHealth[1001] = BR.ToEngineHp(1.0)
+        BR.Combat.revive(1, 2)
+        ok(downed.state == BR.PlayerState.ALIVE and downed.hp == 30.0,
+            'a revive writes the ledger and stands them up',
+            ('%s / %s'):format(tostring(downed.state), tostring(downed.hp)))
+
+        sample()
+        ok(downed.hp == 30.0,
+            'and the corpse still on the client\'s screen does NOT drag it back '
+                .. 'down -- the settle window freezes both directions, which is '
+                .. 'the whole reason it is a freeze and not a ceiling',
+            tostring(downed.hp))
+
+        -- ...and the client applies HEALTH_SYNC, and everything agrees.
+        pedHealth[1001] = BR.ToEngineHp(30.0)
+        sample()
+        ok(downed.hp == 30.0, 'the ped catches up to the number it was given',
+            tostring(downed.hp))
+
+        -- ...AND THE WINDOW IS A WINDOW. A settle that never closed would be a
+        -- free two seconds after every revive in the match.
+        downed.healthSettleUntil = fakeTime
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(downed.hp == 30.0,
+            'once it closes, a rise is refused again like any other',
+            tostring(downed.hp))
+        pedHealth[1001] = BR.ToEngineHp(30.0)
+    end
+
+    -- ─── A RESPAWN, AND THE BOUNDARY THAT MAKES IT WORK ───
+    --
+    -- The rule stops at ALIVE, deliberately and for the detector's own reason:
+    -- only a player who can be SHOT has a ledger worth defending. Everything
+    -- outside it is a fight with the game rather than with a cheat -- the road
+    -- home hands out a fresh ped on full health (client/spawn.lua), the locker
+    -- re-applies the health model on every model swap, and the warmup pad heals
+    -- and hurts people who are not in a round yet.
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 60.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(40.0)
+        samplePast(A.hurtGraceMs + 500)
+        ok(subject.hp == 40, 'wounded at the end of a match', tostring(subject.hp))
+
+        BR.Roster.setState(1, BR.PlayerState.LOBBY)
+        BR.Match.resetPlayer(1, subject)
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(subject.hp == 100,
+            'a respawn outside the match is believed in full -- the ledger is '
+                .. 'defended for players who can be shot and for nobody else',
+            tostring(subject.hp))
+
+        -- The warmup pad, in both directions, which is what lets a player be
+        -- hurt on the pad and stood back up by BR.Combat.reviveWarmup.
+        BR.Roster.setState(1, BR.PlayerState.WARMUP)
+        pedHealth[1001] = BR.ToEngineHp(50.0)
+        sample()
+        ok(subject.hp == 50, 'the pad hurts freely', tostring(subject.hp))
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(subject.hp == 100, 'and heals freely', tostring(subject.hp))
+    end
+
+    -- ─── AN AMBULANCE RIDE (#191) ───
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 40.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(60.0)
+        samplePast(A.hurtGraceMs + 500)
+
+        subject.rescue = { id = 1 }
+        pedHealth[1001] = MAXHP
+        subject.healthResyncAt, subject.healthResyncs = nil, nil
+        sent = {}
+        sample()
+        ok(subject.hp == 60,
+            'the ride itself authorizes nothing -- BR.Combat.revive writes the '
+                .. 'ledger on ARRIVAL, and that write has its own settle window',
+            tostring(subject.hp))
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and a player strapped to a stretcher is not yanked mid-ride',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+        subject.rescue = nil
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE CHEAT
+    -- ═══════════════════════════════════════════════════════════════════════
+
+    -- ─── THE AUDIT'S OWN REPRODUCTION, WITH THE EXPECTATION INVERTED ───
+    --
+    -- Verbatim from the 2026-09-08 report: "a 25-point hit reduced health from
+    -- 100 to 75; after 300 ms the sampler restored it to 100, with zero
+    -- unexplained recovery counted." Every number below is that sentence.
+    do
+        local cheat = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        ok(cheat.hp == 75.0, 'a 25-point hit reduces health from 100 to 75',
+            tostring(cheat.hp))
+
+        -- THE CHEAT: the client ignores HIT_DAMAGE and keeps its ped healthy.
+        -- `pedHealth` is the owning client's number, which is the whole problem.
+        pedHealth[1001] = MAXHP
+        sample()
+        ok(cheat.hp == 75.0,
+            'after 300ms the sampler does NOT restore it -- which is finding 1 '
+                .. 'of the security audit, with the expectation inverted',
+            tostring(cheat.hp))
+
+        samplePast(A.hurtGraceMs + 1000)
+        ok(cheat.hp == 75.0,
+            'and no later sample restores it either: the refusal is the rule, '
+                .. 'not a window that closes',
+            tostring(cheat.hp))
+
+        -- ...AND THE DAMAGE ACCUMULATES, which is the part that makes them
+        -- killable. Repeated nonlethal damage was the audit's exact claim, and
+        -- three more hits now take them out through the ledger.
+        for _ = 1, 3 do
+            BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+            samplePast(600)
+        end
+        ok(cheat.hp <= 0.0 or cheat.state ~= BR.PlayerState.ALIVE,
+            'four 25-point hits kill a client that never applied any of them',
+            ('%s / %s'):format(tostring(cheat.hp), tostring(cheat.state)))
+    end
+
+    -- ─── ARMOUR IS THE SAME EXPLOIT AND IT COSTS THE SHOOTER MORE ───
+    --
+    -- `entry.armour` is what BR.Damage.applyHit soaks a hit with BEFORE health
+    -- is touched, and it is sampled off GetPedArmour on the same line -- so a
+    -- client pinning its armour at 100 regenerates the soak four times a second.
+    -- It has its own ceiling and its own tolerance, and a `commitSample` that
+    -- passed the HEALTH tolerance to the armour call would still pass every
+    -- assertion above.
+    do
+        local subject = ledgerMatch()
+
+        -- A plate the server issued: window plus ceiling, armour only.
+        subject.healUntil = fakeTime + A.healSettleMs
+        subject.grantArmourTo = 50.0
+        pedArmour[1001] = 50
+        sample()
+        ok(subject.armour == 50,
+            'an armour plate the server issued reaches the ledger',
+            tostring(subject.armour))
+
+        -- ...and not the whole bar.
+        pedArmour[1001] = BR.Config.Match.maxArmour
+        sample()
+        ok(subject.armour == 50,
+            'and a client that climbs past the plate it was given is capped at '
+                .. 'the plate',
+            tostring(subject.armour))
+
+        -- The soak comes off the ledger, and pinning the ped does not put it
+        -- back.
+        subject.healUntil = fakeTime
+        BR.Damage.applyHit(2, 1, 30.0, { weapon = 'test' })
+        ok(subject.armour == 20.0 and subject.hp == 100.0,
+            'a 30-point hit is soaked by armour and health is untouched',
+            ('%s / %s'):format(tostring(subject.armour), tostring(subject.hp)))
+        samplePast(A.hurtGraceMs + 1000)
+        ok(subject.armour == 20.0,
+            'and a client pinning its armour at 100 does NOT regenerate the '
+                .. 'soak -- the same exploit, refused the same way',
+            tostring(subject.armour))
+    end
+
+    -- ─── THE TOLERANCE IS AN EXCUSE, NOT A RATCHET ───
+    --
+    -- Two float pipelines, both floored, so a point of disagreement is
+    -- arithmetic rather than evidence -- and it is still not COMMITTED. A client
+    -- that claims exactly `ledger + tolerance` on every pass would otherwise
+    -- gain eight points a second and be back at full between fights, having
+    -- never once crossed the bar the detector measures.
+    do
+        local subject = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        pedHealth[1001] = BR.ToEngineHp(75.0)
+        samplePast(A.hurtGraceMs + 1000)
+        ok(subject.hp == 75, 'wounded, acknowledged, agreed', tostring(subject.hp))
+
+        for _ = 1, 12 do
+            pedHealth[1001] = BR.ToEngineHp(
+                math.min(100.0, (subject.hp or 0.0) + A.toleranceHp))
+            sample()
+        end
+        ok(subject.hp == 75,
+            'a rise inside the tolerance is refused every time -- twelve passes '
+                .. 'of "just two more" move the ledger nowhere',
+            tostring(subject.hp))
+        ok(((subject.healthAudit or {}).hp or 0.0) == 0.0,
+            'and it is still not ACCUSED of anything: refused and counted are '
+                .. 'two different verdicts',
+            tostring((subject.healthAudit or {}).hp))
+    end
+
+    -- ─── THE DIVERGENT CLIENT IS TOLD THE REAL NUMBER ───
+    --
+    -- Refusing the rise fixes the server and leaves the player walking around
+    -- inside a different game -- so the ledger is pushed back at them on
+    -- HEALTH_SYNC, the verb a revive already uses. Throttled, because four
+    -- corrections a second is a fight with the engine rather than a correction.
+    do
+        local cheat = ledgerMatch()
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        samplePast(A.hurtGraceMs + 500)
+
+        -- Fast-forward the throttle so this block watches exactly one
+        -- correction rather than counting the ones the steps above produced.
+        cheat.healthResyncAt, cheat.healthResyncs = nil, nil
+        sent = {}
+        sample()
+
+        local syncs = eventsOf(BR.Net.HEALTH_SYNC)
+        ok(#syncs == 1, 'a client that refuses the instruction is told the real '
+            .. 'number', #syncs)
+        ok(#syncs == 1 and syncs[1].target == 1,
+            'to that player and nobody else',
+            #syncs == 1 and tostring(syncs[1].target) or 'no sync')
+        ok(#syncs == 1 and syncs[1].args[1].hp == 75,
+            'carrying the LEDGER\'s value in display units -- the same contract '
+                .. 'a revive already uses',
+            #syncs == 1 and tostring(syncs[1].args[1].hp) or 'no sync')
+
+        sent = {}
+        sample()
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 0,
+            'and not again on the very next pass -- resyncMs, not the sample rate',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+
+        sent = {}
+        fakeTime = fakeTime + (A.resyncMs + 100); BR.Sched.step(fakeTime)
+        ok(#eventsOf(BR.Net.HEALTH_SYNC) == 1,
+            'and again once the throttle expires, for as long as they keep lying',
+            #eventsOf(BR.Net.HEALTH_SYNC))
+        ok((cheat.healthResyncs or 0) == 2,
+            'counted on the entry, which is what /brhealth prints beside the '
+                .. 'tally so an operator can tell a quiet server from a fought one',
+            tostring(cheat.healthResyncs))
+    end
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    -- THE LEVERS
+    -- ═══════════════════════════════════════════════════════════════════════
+
+    -- ─── `enforce` PUTS IT BACK, AND A STRING DOES NOT ───
+    --
+    -- The flag exists for a playtest that turns up a false refusal, and the
+    -- comparison is against the BOOLEAN for the reason `enabled` is: a convar
+    -- override can leave a string here, and every non-nil string is truthy in
+    -- Lua -- so `"false"` must fail SAFE rather than surrender the ledger.
+    do
+        local was = A.enforce
+        local subject = ledgerMatch()
+
+        A.enforce = 'false'
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        pedHealth[1001] = MAXHP
+        samplePast(A.hurtGraceMs + 500)
+        ok(subject.hp == 75.0,
+            'a convar that left the STRING "false" here does not switch the '
+                .. 'ledger off -- the comparison is against the boolean',
+            tostring(subject.hp))
+
+        A.enforce = false
+        sample()
+        ok(subject.hp == 100,
+            'and the real boolean does: the pre-2026-09-08 behaviour is exactly '
+                .. 'back, which is what makes this a lever rather than a rewrite',
+            tostring(subject.hp))
+
+        A.enforce = was
+        ok(A.enforce == true, 'and the shipped default is on', tostring(A.enforce))
+    end
+
+    -- ─── THE DETECTOR AND THE RULE ARE TWO SWITCHES ───
+    --
+    -- Quietening a noisy console is a five-second decision; handing every client
+    -- authority over its own health is not. A build that folded them into one
+    -- flag would silently do the second whenever somebody wanted the first.
+    do
+        local wasEnabled = A.enabled
+
+        -- SWITCHED OFF BEFORE THE FIXTURE RUNS, not after it. The sampler builds
+        -- a tally on the first pass it audits, so a block that promoted three
+        -- players and then reached for the flag would be asserting against a
+        -- table the setup had already made -- which is the assertion passing for
+        -- the wrong reason rather than failing.
+        A.enabled = false
+        local subject = ledgerMatch()
+
+        BR.Damage.applyHit(2, 1, 25.0, { weapon = 'test' })
+        pedHealth[1001] = MAXHP
+        samplePast(A.hurtGraceMs + 500)
+        ok(subject.hp == 75.0,
+            'the ledger still holds with the DETECTOR switched off',
+            tostring(subject.hp))
+        ok(subject.healthAudit == nil,
+            'and nothing was counted, because that is the half that was off',
+            tostring(subject.healthAudit))
+
+        A.enabled = wasEnabled
+    end
+
+    pedHealth[1001], pedHealth[1002], pedHealth[1003] = nil, nil, nil
+    pedArmour[1001], pedArmour[1002], pedArmour[1003] = nil, nil, nil
 end
 
 
