@@ -147,51 +147,39 @@ const DEMO_FEED = [
   { killer: 'You',     victim: 'Marlowe', weapon: 'sniperrifle',  headshot: true,  mine: true,  died: false },
 ]
 
-/** Windows VK for the backtick/tilde key. */
-const VK_TILDE = 0xc0
-
-/**
- * Put the player's ACTUAL keys into a card's prose.
+/*
+ * ═══ A CARD'S BODY IS NO LONGER REWRITTEN ON ITS WAY TO THE RENDERER ═══
  *
- * ═══ THE BINDING, NEVER THE DEFAULT ═══
+ * There was a `withKeys(body, binds)` here, and a `VK_TILDE = 0xc0` above it.
+ * Both of the substitutions it performed are gone, in this order:
  *
- * `{key:brplayers}` becomes whatever that command is bound to on THIS machine.
- * A walkthrough that prints the default tells a player who rebound it to press
- * a key that does nothing, and this one is the walkthrough they are taking
- * BECAUSE they do not know the game yet.
+ * `{key:…}` STOPPED BEING SUBSTITUTED FIRST. It used to become the bound letter,
+ * which made the key a word in a sentence. It is drawn as the project's own
+ * KeyCap now -- see AnnotationCard's `emphasise` -- so the COMMAND has to
+ * survive all the way to the renderer. That is not only cosmetic: KeyCap
+ * subscribes to the binding, so a cap on screen follows a rebind (#209), where a
+ * substituted letter is a photograph of the binding at the moment the
+ * substitution ran. The card that says "press this to open the map" is up for as
+ * long as the player wants it to be. (The old substitution also could not match
+ * `brslot1`..`brslot5`: its pattern took letters only, so the two commands with
+ * digits in their names printed as raw tokens on the card that explains
+ * switching weapons.)
  *
- * `{tilde:brplayers}` adds "(above TAB on your keyboard)" and ONLY when that
- * command is still on tilde -- owner, 2026-09-04. Tilde is the one default here
- * a player may genuinely be unable to find: on a good many non-US layouts it is
- * moved, dead, or somewhere else entirely. So the suffix is a LOCATION rather
- * than a name, and it disappears the moment the key is not that key.
+ * `{tilde:…}` WENT ON 2026-09-08, AND TOOK THE FUNCTION WITH IT. It appended
+ * "(above TAB on your keyboard)" to the player list card, and only while
+ * `brplayers` was still on tilde -- owner, 2026-09-04, because tilde is the one
+ * default here a player may genuinely be unable to find: on a good many non-US
+ * layouts it is moved, dead, or somewhere else entirely. So the suffix taught a
+ * LOCATION rather than a name. He removed it once the card drew the real glyph,
+ * which already answers "which key" better than a parenthetical does; the whole
+ * of that decision is recorded at `game-players` in gameSteps.ts.
  *
- * UNBOUND READS AS "unbound" rather than as an empty gap, because a sentence
- * that says "press  to open" is a sentence that looks broken. The card's own
- * action button is what actually gets that player through.
+ * WITH THE LAST TOKEN GONE THE FUNCTION WAS THE IDENTITY on its first argument,
+ * and a reason for this layer to subscribe to `keybinds` for nothing. Keeping an
+ * empty rewriting hook "in case another token turns up" would be scaffolding
+ * ahead of a caller, so the body is passed straight through instead and a future
+ * token can reintroduce the hook along with the need for one.
  */
-function withKeys(body: string, binds: Array<{ command: string; key?: string; vk?: number }>): string {
-  return body
-    // ═══ IT NO LONGER TOUCHES {key:...} AND THAT IS THE POINT ═══
-    //
-    // This used to replace the token with the bound letter, which made the key a
-    // word in a sentence. It is drawn as the project's own KeyCap now -- see
-    // AnnotationCard's `emphasise` -- so the COMMAND has to survive all the way
-    // to the renderer.
-    //
-    // THAT IS NOT ONLY COSMETIC. KeyCap subscribes to the binding, so a cap on
-    // screen follows a rebind (#209); a substituted letter is a photograph of
-    // the binding at the moment the substitution ran. The card that says "press
-    // this to open the map" is up for as long as the player wants it to be.
-    //
-    // (The old substitution also could not match `brslot1`..`brslot5`: its
-    // pattern took letters only, so the two commands with digits in their names
-    // printed as raw tokens on the card that explains switching weapons.)
-    .replace(/\{tilde:([a-z0-9]+)\}/gu, (_m, cmd: string) =>
-      binds.find((b) => b.command === cmd)?.vk === VK_TILDE
-        ? ' (above TAB on your keyboard)'
-        : '')
-}
 
 type Rect = { x: number; y: number; w: number; h: number }
 
@@ -774,7 +762,6 @@ export default function TutorialLayer(p: TutorialLayerProps) {
   // arriving 700ms apart is a firefight happening somewhere, which is what the
   // card is describing. It is also how they really arrive.
   const pushFeed = useUi((st) => st.pushFeed)
-  const keybinds = useUi((st) => st.keybinds)
   useEffect(() => {
     if (!step || step.stage !== 'killfeed') return
     const timers: number[] = []
@@ -1320,7 +1307,10 @@ export default function TutorialLayer(p: TutorialLayerProps) {
       <AnnotationCard
         key={step.id}
         title={step.title}
-        body={withKeys(step.body, keybinds)}
+        // VERBATIM. The script's prose goes to the card exactly as written --
+        // `{key:…}`, `[[Esc]]` and `~Volts~` are the renderer's to resolve, not
+        // this layer's. See the note where `withKeys` used to be.
+        body={step.body}
         index={i + 1}
         total={steps.length}
         left={left}

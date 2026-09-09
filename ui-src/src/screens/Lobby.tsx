@@ -374,7 +374,32 @@ export default function Lobby({
     // sit ticked forever; readying up is a discrete act with a moment attached.
     // Arming on the preference is what started the walkthrough for every player
     // on every match (2026-09-06).
-    if (tutorialGameShown && tutorialGameOn) setTutorialGameArmed(true)
+    //
+    // ═══ AND ONLY WHILE THE ACCOUNT STILL HAS THE OFFER TO SPEND ═══
+    //
+    // Owner, 2026-09-08: a player finished the in-game half in solos, was paid,
+    // then queued for squads and got the whole walkthrough a second time.
+    //
+    // BOTH of the flags to the left are SESSION LATCHES WITH NO COMPLETION
+    // WRITER, which is exactly what makes them right for the abandoned-run case
+    // above and wrong on their own. `tutorialGameOffered` is raised when the
+    // last lobby card is reached and nothing in the tree ever lowers it;
+    // `tutorialGameOn` is the checkbox, defaults ticked, and only the player
+    // unticking it moves it. Finishing touches neither -- so for a player who
+    // completed it with the box left ticked, which is the normal path, this line
+    // re-armed the walkthrough on every ready-up for the rest of the session.
+    //
+    // `tutorialOfferable` IS THE ACCOUNT-LEVEL FACT and it is the only one of
+    // the three that a completion moves. It mirrors Lua's `offerable`, off the
+    // profile row -- and note that adding this read ALONE would not have fixed
+    // the report: that mirror was stale-true after a completion because
+    // BR.Tutorial.finish did not lower it the way BR.Tutorial.decline does.
+    // That is fixed in the same commit, and this line is why it had to be.
+    //
+    // AN ABANDONED RUN IS STILL NOT A COMPLETION. It never reaches finish(), so
+    // `offerable` stays true, all three flags are true, and the second go the
+    // owner asked for on 2026-09-07 is untouched.
+    if (tutorialOfferable && tutorialGameShown && tutorialGameOn) setTutorialGameArmed(true)
 
     // Optimistic, but the server is the authority -- the next state envelope
     // will correct this if the queue was refused.
