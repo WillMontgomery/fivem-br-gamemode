@@ -608,6 +608,90 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R14  Every inbound window message goes through the NUI guard.
+//
+// #281. An external audit found the bridge's `message` listener dispatching
+// anything envelope-shaped from anywhere, and this interface embeds two
+// script-capable iframes -- the player manual and the Ringmaster console, the
+// second of which is deliberately unsandboxed. A page in either could raise a
+// toast, rewrite match state, or send a sequence number so far ahead of Lua's
+// counter that every genuine envelope afterwards was discarded as stale, which
+// froze the whole interface for the session.
+//
+// The fix is bridge/envelope.ts. This rule is here because the fix is one line
+// at a call site: `dispatch(ev.data)` is the shape of the bug and it is also
+// the shape of the obvious thing to write. Deleting the guard would leave every
+// test in scripts/test-envelope.mjs passing over code nothing calls -- which is
+// the failure this project has a name for, and the reason a static gate sits
+// beside a unit test rather than instead of one.
+//
+// THIS RULE AND THAT SUITE ARE A PAIR. The suite MODELS this listener, because
+// there is no DOM to run it in; the model is only honest while the ordering
+// below holds. Change one and change the other.
+//
+// IT CAN FAIL. Put `dispatch(ev.data as WireEnvelope)` back in the listener.
+// ---------------------------------------------------------------------------
+{
+  const NUI = join(SRC, 'bridge', 'nui.ts')
+  const GUARD = join(SRC, 'bridge', 'envelope.ts')
+
+  if (!existsSync(NUI) || !existsSync(GUARD)) {
+    fail('R14 nui-guard', 'src/bridge',
+      'nui.ts or envelope.ts is missing. The window message listener and the'
+      + ' guard in front of it are what this rule is about; if they moved,'
+      + ' point it at the new place rather than letting it pass over nothing.')
+  } else {
+    const body = read(NUI)
+
+    // The listener body, from the addEventListener to the end of the file. The
+    // guard has to be INSIDE it -- importing admit and never calling it there
+    // would satisfy a naive search of the whole file.
+    const at = body.indexOf("addEventListener('message'")
+    if (at === -1) {
+      fail('R14 nui-guard', 'src/bridge/nui.ts',
+        "no window 'message' listener found. This is the NUI receive path; if"
+        + ' it moved, move this rule with it.')
+    } else {
+      const listener = body.slice(at)
+
+      if (!/\badmit\s*\(\s*window\s*,\s*ev\.source\s*,\s*ev\.data\s*\)/.test(listener)) {
+        fail('R14 nui-guard', 'src/bridge/nui.ts',
+          'the message listener does not call admit(window, ev.source, ev.data).'
+          + ' Every inbound message must be judged by bridge/envelope.ts before'
+          + ' a field of it is read -- see #281, and Admin.tsx\'s own listener,'
+          + ' which states the same rule about its origin check.')
+      }
+
+      if (/\bdispatch\s*\(\s*ev\.data\b/.test(listener)) {
+        fail('R14 nui-guard', 'src/bridge/nui.ts',
+          'the message listener dispatches ev.data directly. That is the #281'
+          + ' bug exactly: an embedded page can post that. Dispatch the envelope'
+          + ' admit() returned instead.')
+      }
+    }
+
+    // The sequence gate is the other half, and the half that fixes the denial of
+    // service. A `let lastSeq` back in nui.ts would compile, pass every other
+    // check, and quietly restore the freeze.
+    if (/\blet\s+lastSeq\b/.test(body)) {
+      fail('R14 nui-guard', 'src/bridge/nui.ts',
+        'lastSeq is a local again. It belongs to createSeqGate() in'
+        + ' bridge/envelope.ts, which re-seeds itself after a run of stale'
+        + ' envelopes -- a plain counter cannot, and a forged sequence number'
+        + ' freezes the session permanently (#281).')
+    }
+    for (const call of ['reseed', 'fresh', 'commit']) {
+      if (!body.includes(`seq.${call}(`)) {
+        fail('R14 nui-guard', 'src/bridge/nui.ts',
+          `the dispatcher never calls seq.${call}(). All three are load-bearing:`
+          + ' reseed is the snapshot path, fresh is the stale test, commit is'
+          + ' what keeps an unheard kind from eating a sequence number.')
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {
