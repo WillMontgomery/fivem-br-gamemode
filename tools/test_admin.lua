@@ -1185,6 +1185,83 @@ do
     SetTimeout = realSetTimeout
 end
 
+-- ------------------------------------------------- dev tools over the wire ---
+
+-- BR.Admin.devTrusted IS THE ONLY PART OF THIS FILE THAT IS NOT ABOUT A TAB,
+-- and it is here because it is the same question -- "is this person staff" --
+-- asked by the same three lines of grants plumbing the harness above already
+-- stands up.
+--
+-- WHAT IT IS FOR (#232, audited 2026-09-08). `br:loot:dev` shipped with
+-- `if not BR.Server.devMode then return end` as its whole authorization. That
+-- is a build flag: every connected client passes it, and the handler behind it
+-- spawns anything in BR.Config.WeaponById -- the airdrop RPG, the grenade
+-- launcher, the railgun, the minigun. The unit under test is the sentence that
+-- replaced it.
+--
+-- THE CASE THAT MATTERS MOST IS `grant-unknown`, and it is the one no playtest
+-- would ever produce: br_ddb absent, DynamoDB unreachable, or the first seconds
+-- after a restart. server/players.lua deliberately fails OPEN on that same nil
+-- for the report bounty; this must fail CLOSED, and the two rules living in one
+-- codebase is exactly how a later edit "makes them consistent".
+describe('devTrusted: dev mode is not a permission')
+do
+    local realServer = BR.Server
+    BR.Server = { devMode = true }
+
+    reset()
+    join(40, { license = 'dtAdmin', discord = '111111111111111111' })
+    ddbScopes['license:dtAdmin'] = { 'view' }
+    fire('playerJoining', 40)
+    local ok40, why40 = BR.Admin.devTrusted(40)
+    ok(ok40 == true and why40 == nil,
+        'an admin on a dev box may spawn',
+        ('%s / %s'):format(tostring(ok40), tostring(why40)))
+
+    reset()
+    join(41, { license = 'dtPlayer', discord = '222222222222222222' })
+    ddbScopes['license:dtPlayer'] = {}
+    fire('playerJoining', 41)
+    local ok41, why41 = BR.Admin.devTrusted(41)
+    ok(ok41 == false and why41 == 'not-admin',
+        'AN ORDINARY PLAYER ON A DEV BOX MAY NOT -- this is the finding',
+        ('%s / %s'):format(tostring(ok41), tostring(why41)))
+
+    -- Never primed and never read: holds() answers nil and starts the read as a
+    -- side effect, which is the shape of a box with no DynamoDB behind it.
+    reset()
+    join(42, { license = 'dtUnread', discord = '333333333333333333' })
+    local ok42, why42 = BR.Admin.devTrusted(42)
+    ok(ok42 == false and why42 == 'grant-unknown',
+        'an unread grant refuses -- the opposite of the report bounty, on purpose',
+        ('%s / %s'):format(tostring(ok42), tostring(why42)))
+
+    -- A source nobody knows: no identifiers, so no license to ask about.
+    local ok43, why43 = BR.Admin.devTrusted(43)
+    ok(ok43 == false and why43 == 'no-license',
+        'a source with no license refuses before it asks DynamoDB anything',
+        ('%s / %s'):format(tostring(ok43), tostring(why43)))
+
+    -- AND THE DEV-MODE HALF IS STILL THERE. These tools bend match state, so an
+    -- admin on the PUBLIC box is refused exactly like everybody else -- the
+    -- owner's rule about console commands, applied to the door that is not one.
+    BR.Server.devMode = false
+    local ok44, why44 = BR.Admin.devTrusted(40)
+    ok(ok44 == false and why44 == 'dev-mode-off',
+        'an admin on the public box is still refused',
+        ('%s / %s'):format(tostring(ok44), tostring(why44)))
+
+    -- FAIL CLOSED WHEN THERE IS NO BR.Server AT ALL, rather than raising. A
+    -- traceback would also stop the spawn; it would stop it in a way that reads
+    -- like a bug in the loot system instead of like a gate.
+    BR.Server = nil
+    local ok45, why45 = BR.Admin.devTrusted(40)
+    ok(ok45 == false and why45 == 'dev-mode-off',
+        'no BR.Server is a refusal, not an error')
+
+    BR.Server = realServer
+end
+
 -- ------------------------------------------------------------------ done ---
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

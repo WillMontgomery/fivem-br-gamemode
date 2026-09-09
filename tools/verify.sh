@@ -2006,6 +2006,48 @@ else
     rc=1
 fi
 
+# --- 4d-ter. no net event treats dev mode as a permission ---------------------
+#
+# THE SECTION ABOVE IS ENTIRELY ABOUT RegisterCommand, AND THAT IS THE HOLE THIS
+# CLOSES. A console command can only be typed by whoever owns the box. A NET
+# EVENT is a door a client knocks on, and nothing here checked those at all --
+# which is why `br:loot:dev` shipped with `if not BR.Server.devMode then return
+# end` as its whole authorization and no gate said a word (#232, audited
+# 2026-09-08). Dev mode is a fact about how the process was started; every
+# connected client passes it, and the handler behind that one spawns any weapon
+# in BR.Config.WeaponById -- airdrop RPGs, grenade launchers, railguns and the
+# minigun included.
+#
+# THE CHECK ITSELF IS LUA, in tools/check_net_gates.lua, and that is not a
+# preference. This one has to know where a handler BEGINS AND ENDS -- a
+# dev-mode read three functions down the file is somebody else's business, and
+# a `print` under `if BR.Server.devMode` is a diagnostic rather than a gate.
+# Both of those are block questions, and a `grep -q` cannot ask one. The first
+# draft here WAS a grep, and it reddened on broadcast.lua's snapshot log.
+#
+# THE SELF-TEST RUNS FIRST AND ITS FAILURE IS A BUILD FAILURE. A static gate
+# that silently stops matching is worse than no gate, because the build stays
+# green over the thing it was written to catch -- the exact failure recorded
+# above, where a sed pattern read `[fivem-royale]` as a character class and half
+# the dev gate did nothing for weeks while printing ok.
+echo "${DIM}== dev gate on net events ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    if "$LUA" tools/check_net_gates.lua --selftest; then
+        # shellcheck disable=SC2046
+        "$LUA" tools/check_net_gates.lua \
+            $(find "resources/[fivem-royale]" -path '*/server/*.lua' | sort) || rc=1
+    else
+        echo "${RED}FAIL${RST} tools/check_net_gates.lua's own fixtures no longer hold"
+        echo "     The gate is not asserted to fire any more, so a green run"
+        echo "     below this line means nothing. Fix the checker first."
+        rc=1
+    fi
+else
+    # NOT SILENT. Without Lua this whole section is absent rather than passing,
+    # and the operator has to know which of the two they are looking at.
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # --- 4e. the branch-switch invariant ------------------------------------------
 #
 # THE ONE RULE BRANCH SWITCHING HANGS OFF, made mechanical.

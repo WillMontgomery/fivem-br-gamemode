@@ -2094,10 +2094,11 @@ local function devSpawn(src, item, at)
     if not stack then return err end
 
     -- AT SOMEBODY'S FEET, EITHER WAY. `at` is the caller's own ped position
-    -- reported by the client (dev mode only, see the LOOT_DEV handler); with no
-    -- `at` it is the roster's own sample of that ped. Both are a ped root at
-    -- this x/y, so both vouch -- and that matters here more than anywhere,
-    -- because `/brcrate <id>` is how the bridge case gets playtested at all.
+    -- reported by the client (an admin on a dev box, see the LOOT_DEV handler);
+    -- with no `at` it is the roster's own sample of that ped. Both are a ped
+    -- root at this x/y, so both vouch -- and that matters here more than
+    -- anywhere, because `/brcrate <id>` is how the bridge case gets playtested
+    -- at all.
     local spawned = BR.Loot.spawnStack(m, stack, pos.x, pos.y, pos.z,
         nil, pos.z)
     return ('spawned #%s (%s) at %s')
@@ -2116,19 +2117,64 @@ RegisterCommand('brcrate', function(_, args)
 end, true)
 
 -- The client-side twin, so a crate can be spawned from F8 in front of the ped
--- rather than from the server console where you cannot see it land. DEV MODE
--- ONLY -- without that gate this is "any player spawns any weapon".
+-- rather than from the server console where you cannot see it land.
 --
--- The position is the CLIENT's, which is fine here and only here: it is a
--- convenience for a developer who could type the coordinates anyway, and the
--- gate is what makes that acceptable.
+-- ═══ THIS WAS "ANY PLAYER SPAWNS ANY WEAPON" AND IT SHIPPED (#232) ═══
+--
+-- The gate above this line used to be `if not BR.Server.devMode then return
+-- end`, which is not an authorization check: dev mode is a fact about how the
+-- process was started, and EVERY connected client passes it. `devStack` below
+-- resolves an item id through BR.Config.WeaponById, and that table contains
+-- BR.Config.AirdropWeapons -- so four keystrokes in a modified client's F8
+-- console produced an RPG, a grenade launcher, a railgun or a minigun, and
+-- LOOT_CLAIM then legitimized it into the server's own inventory.
+--
+-- The reasoning behind the replacement, and why it fails CLOSED where the
+-- report bounty in server/players.lua deliberately fails open, is at
+-- BR.Admin.devTrusted in server/admin.lua. The short version is that the
+-- developer this event exists for still has `brcrate <serverId> [itemId]` on
+-- the server console, which is the same code path.
+--
+-- ═══ WHY ONE REFUSAL SPEAKS AND THE OTHER DOES NOT ═══
+--
+-- 'dev-mode-off' keeps the notify it always had. It leaks nothing: server/
+-- main.lua REPLICATES the resolved answer to every client as `br_devMode`, so
+-- any client can already read it off a convar without asking us.
+--
+-- EVERY OTHER REFUSAL IS SILENT ON THE WIRE, and that is the leak rule
+-- server/players.lua states for reports: a different answer for an admin is a
+-- probe, and whether a license holds a console grant is not otherwise
+-- knowable. The reason goes to the SERVER CONSOLE instead, where the person
+-- entitled to debug this is already standing -- the same place devgate.lua
+-- prints for the same reason. The alternative that lost was a second notify
+-- naming the reason, which would have been new player-facing copy nobody asked
+-- for as well as a probe.
+--
+-- The position is still the CLIENT's, which is fine now for the reason it was
+-- always claimed to be fine: it is a convenience for somebody who could type
+-- the coordinates anyway. That claim just needed a caller it was true of.
 RegisterNetEvent(BR.Net.LOOT_DEV)
 AddEventHandler(BR.Net.LOOT_DEV, function(d)
     local src = source
-    if not BR.Server.devMode then
-        BR.Server.notify(src, 'Dev mode is off.', 'warn')
+
+    -- NIL-GUARDED, so a br_core loaded without admin.lua refuses instead of
+    -- raising. An error here would also stop the spawn, but it would stop it
+    -- with a stack trace that reads like a bug in the loot system rather than
+    -- like a gate doing its job.
+    local ok, why = false, 'no-admin-module'
+    if BR.Admin and BR.Admin.devTrusted then
+        ok, why = BR.Admin.devTrusted(src)
+    end
+    if ok ~= true then
+        if why == 'dev-mode-off' then
+            BR.Server.notify(src, 'Dev mode is off.', 'warn')
+        else
+            print(('^3[br_core] brcrate (client, %s) refused: %s^7')
+                :format(tostring(src), tostring(why)))
+        end
         return
     end
+
     if type(d) ~= 'table' then return end
 
     local at = nil

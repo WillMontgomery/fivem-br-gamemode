@@ -790,14 +790,34 @@ setr sv_showBusySpinnerOnLoadingScreen false
 # Development
 #
 # sv_devMode enables client dev tools and lowers the minimum players to start,
-# so a match can be tested with two people instead of sixteen.
+# so a match can be tested with two people instead of sixteen. br_devMode is the
+# same switch under the other name -- either one turns it on, and server/main.lua
+# replicates the resolved answer to clients as br_devMode.
 #
-# TURN THIS OFF FOR PRODUCTION.
+# OFF HERE, AND IT USED TO SHIP ON (#232, audited 2026-09-08). The line under
+# this block used to read "TURN THIS OFF FOR PRODUCTION", which is an
+# instruction rather than a default -- and an example config is copied by
+# somebody who does not yet know what any of it does. A flag that is dangerous
+# in production must not be the thing they have to remember to remove; it has to
+# be the thing they have to decide to add. DEPLOY.md says to delete these two
+# lines from a production config and that stays true, but it is now a belt on
+# top of braces instead of the only control.
+#
+# WHAT IT COSTS THE DEV BOX, so nobody is surprised: with these false, every
+# command in the list below refuses on the console, the client's F8 dev commands
+# refuse too, and a match needs a full lobby to start. Flip BOTH to true here
+# and restart the server.
+#
+# AND FLIP BOTH BACK. br_devMode is the replicated one, so a box where only
+# sv_devMode was set to false and br_core restarted reads the br_devMode it
+# wrote last boot and stays in dev mode -- the boot banner prints which answer
+# it took. server/main.lua has the note.
 # ---------------------------------------------------------------------------
-set sv_devMode true
-set br_devMode true
+set sv_devMode false
+set br_devMode false
 
-# Useful console commands once running:
+# Useful console commands once running (ALL OF THEM NEED DEV MODE, above --
+# except brkick, brspectate and brring, which work on the public box):
 #   brhelp        list every server command
 #   brstate       match state, counts, timers
 #   brroster      every player the server knows about
