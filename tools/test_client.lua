@@ -10141,35 +10141,69 @@ do
         frames(20)
     end
 
-    -- ------------------------------------------------------- #180, verbatim ---
+    -- ------------------------------------------------- #180, with a glyph ---
     --
-    -- ONE LITERAL, COPIED WHOLE OUT OF THE ISSUE, and deliberately not built by
-    -- concatenation the way the source builds it. A test that assembled the
-    -- sentence the same way the code does would agree with the code about where
-    -- the spaces go, which is exactly the class of miss this compares against --
-    -- the punctuation here is unusual on purpose (the full stop lives INSIDE the
-    -- closing parenthesis) and is the owner's, not a typo to be tidied.
-    local WANT = 'See something suspicious? You can report players by pressing tilde (above TAB on your keyboard.) As a bonus, all accurate reports are rewarded with Volts.'
+    -- ONE LITERAL, STILL COMPARED WHOLE, and deliberately not built by
+    -- concatenation the way the source builds it -- nor by calling BR.KeyToken,
+    -- which is the same mistake one level down. A test that assembled the
+    -- sentence the way the code does would agree with the code about where the
+    -- spaces go, and one that built the hole the way the code does would agree
+    -- with it about the token's shape, which is exactly the class of miss this
+    -- exists to catch.
+    --
+    -- ═══ THE STRING CHANGED ON 2026-09-08, ON THE OWNER'S INSTRUCTION ═══
+    --
+    -- He was looking at this toast: "the 'tab' text predates our existence of
+    -- custom keycaps/glyphs, can you update that?" -- and, asked what else was
+    -- to go, "also 'tilde'". So the word and the parenthetical both came out and
+    -- the sentence names the key with a `{key:}` hole that the page draws as a
+    -- cap.
+    --
+    -- IT IS NOT #180 BEING REVERSED, which is why this assertion moved rather
+    -- than being deleted. #180 replaced a resolved LABEL with a location because
+    -- a label is a name and cannot teach anybody where a key is; a cap resolved
+    -- on the page is both, and it follows a rebind, so the trade #180 named
+    -- stopped existing. The prose either side of the hole is his and is
+    -- unchanged. The full stop that lived INSIDE the closing parenthesis was
+    -- his too and was never a typo -- it went with the parenthesis, because
+    -- there is no longer a bracket for it to sit inside.
+    --
+    -- THE OTHER SENTENCE IN THAT HANDLER STILL SAYS TAB, and must (#177): it is
+    -- an action on the kill prompt, not the player list under another name, so
+    -- there is no command to name and no cap to draw. See below.
+    local WANT = 'See something suspicious? You can report players by pressing {key:brplayers}. As a bonus, all accurate reports are rewarded with Volts.'
 
     events = {}
     fire(BR.Net.REPORT_HINT, { kind = 'exists' })
     local t = toast('report.exists')
     ok(t ~= nil, 'the courtesy notice is raised as a toast')
     ok(t ~= nil and t.text == WANT,
-        'and its text is byte-for-byte what #180 specifies',
+        'and its text is byte-for-byte the sentence the owner approved',
         t and ('got: ' .. tostring(t.text)) or 'no toast')
 
-    -- IT NAMES TILDE WHATEVER THE PLAYER HAS BOUND, which is #180 overriding
-    -- #168 on the owner's call -- the sentence teaches WHERE the key is, which a
-    -- resolved label cannot do. Rebinding the panel and re-pushing the keybind
-    -- table must not move this sentence.
+    -- AND NO LETTER GOT SUBSTITUTED ON THE WAY OUT, which is the mutation that
+    -- keeps every assertion above green and puts #129's bug back: Lua resolving
+    -- `brplayers` off the keybinds envelope and formatting the LABEL into the
+    -- sentence. A composed label is a photograph of the binding at the instant
+    -- the string was built, and this toast is up for twelve seconds.
+    ok(t ~= nil and not t.text:find('tilde') and not t.text:find('F7'),
+        'and it spells no key into the prose, only the command',
+        t and ('got: ' .. tostring(t.text)) or 'no toast')
+
+    -- THE SENTENCE DOES NOT MOVE WHEN THE PLAYER REBINDS, AND THE REASON IS THE
+    -- OPPOSITE OF WHAT IT USED TO BE. It used to be constant because it named
+    -- tilde outright (#180 overriding #168 on the owner's call, to teach WHERE
+    -- the key is). It is constant now because it names the COMMAND: what the
+    -- player sees does follow the rebind, but it follows it on the page, where
+    -- KeyCap re-resolves `brplayers` against the live keybinds list and redraws
+    -- the plate. Lua has nothing left to go stale.
     events = {}
     fire('br:ui:sendLocal', BR.Nui.KEYBINDS, {
         actions = { { command = 'brplayers', key = 'F7', vk = 0x76 } },
     })
     fire(BR.Net.REPORT_HINT, { kind = 'exists' })
     ok((toast('report.exists') or {}).text == WANT,
-        'and it does not follow a rebind of the player-list key')
+        'and a rebind of the player-list key does not rewrite it in Lua')
 
     -- ------------------------------------------ #177 part 2: it says TAB ---
     events = {}

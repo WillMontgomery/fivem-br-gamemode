@@ -383,15 +383,18 @@ end)
     -- that is a world-anchored interaction ring for a key being HELD, and this
     is a piece of news.
 
-    ═══ ONE SAYS TILDE, THE OTHER SAYS TAB, AND THAT IS NOT A BUG ═══
+    ═══ ONE DRAWS THE PLAYER-LIST KEY, THE OTHER SAYS TAB, AND THAT IS NOT A
+        BUG ═══
 
     Read the two sentences below together and they look like a contradiction that
     somebody forgot to reconcile. They are not. They are DIFFERENT ACTIONS that
     happen to be offered by the same feature, and the owner specified both keys
     explicitly, in #180 and #177 respectively:
 
-      tilde  opens the PLAYER LIST, so a new report can be filed against anybody
-             in the match. It is the panel's own latch (`brplayers`).
+      the panel's own key  opens the PLAYER LIST, so a new report can be filed
+             against anybody in the match. It is the panel's own latch
+             (`brplayers`) -- tilde by default and rebindable, which is why the
+             sentence draws it rather than spelling it.
       TAB    on the kill prompt, CORROBORATES the case that already exists
              against the player who just killed you, in one press, with no panel
              involved at all (BR.Net.REPORT_CORROBORATE).
@@ -399,7 +402,7 @@ end)
     Reconciling them would mean deleting one of the two actions. If a future
     issue reads this as an inconsistency, it is reading two verbs as one.
 
-    ═══ AND NEITHER KEY IS RESOLVED FROM THE BINDING ANY MORE ═══
+    ═══ THE FIRST ONE NAMES ITS KEY AGAIN, AS A GLYPH; THE SECOND NEVER CAN ═══
 
     #168 argued -- correctly, for what it was solving -- that a prompt must name
     the key the player actually has bound, because this project shipped a prompt
@@ -407,20 +410,50 @@ end)
     the `brplayers` row off the keybinds envelope and fell back to naming the
     panel when the binding was empty.
 
-    #180 OVERRIDES THAT FOR THE FIRST SENTENCE, ON THE OWNER'S CALL, and the
-    reason is in the sentence itself: it now teaches players WHERE the key is
-    ("above TAB on your keyboard"), which a resolved label cannot do -- a label
-    is a name, not a location. The trade is stated rather than hidden: a player
-    who rebinds the player list off tilde is told about a key they no longer
-    have. That is a worse sentence for a rare player and a better one for
+    #180 OVERRODE THAT FOR THE FIRST SENTENCE, ON THE OWNER'S CALL, and the
+    reason was in the sentence itself: it taught players WHERE the key is
+    ("tilde (above TAB on your keyboard.)"), which a resolved LABEL cannot do --
+    a label is a name, not a location. The trade was stated rather than hidden:
+    a player who rebound the player list off tilde was told about a key they no
+    longer had. That was a worse sentence for a rare player and a better one for
     everybody landing in their first match, which is who the notice is for.
 
-    #177 OVERRIDES IT FOR THE SECOND, for a different and stronger reason: TAB
-    here is not the player list under another name, it is a separate action that
-    lives on the kill prompt and nowhere else. There is no binding to resolve.
+    THAT REASONING HELD FOR EXACTLY AS LONG AS A LABEL WAS THE OTHER OPTION, and
+    #209 ended that. Owner, 2026-09-08, looking at this toast: "the 'tab' text
+    predates our existence of custom keycaps/glyphs, can you update that?" --
+    and, asked what else was to go: "also 'tilde'". So both the word and the
+    parenthetical come out and the sentence names the key with a hole.
 
-    So `pressPhrase()` and the `myKey` mirror that fed it are both gone. Do not
-    reintroduce them for these two lines without reading #180 first.
+    A KEY CAP IS NOT A LABEL, WHICH IS WHY THE TRADE DISSOLVES RATHER THAN
+    BEING RE-DECIDED AGAINST HIM. `{key:brplayers}` crosses to the page as a
+    COMMAND NAME, and ui-src/src/ui/KeyCap.tsx resolves it against the live
+    keybinds list: the toast draws the key THIS player has, redraws it if they
+    rebind while it is still up, and draws `--` if they have cleared it. A plate
+    with a border and a bevel is a picture of a piece of hardware sitting in the
+    sentence -- it is a name AND a location at once, which is the one thing #180
+    was right that a label could never be. Nothing he wrote is being reversed;
+    the option he did not have has arrived.
+
+    AND THE FULL STOP INSIDE THE CLOSING PARENTHESIS GOES WITH THE PARENTHESIS.
+    It was his and it was not a typo -- #180 says so and tools/test_client.lua
+    repeats it -- but there is no longer a bracket for it to sit inside. The
+    sentence keeps its own full stop, after the glyph. Not one other word of
+    either sentence moved.
+
+    #177 OVERRIDES #168 FOR THE SECOND SENTENCE, for a different and stronger
+    reason, AND NONE OF THE ABOVE TOUCHES IT: TAB here is not the player list
+    under another name, it is a separate action that lives on the kill prompt
+    and nowhere else. There is no binding to resolve, so there is no command for
+    a token to name and no cap for the page to draw -- a `{key:...}` hole there
+    would name a command that does not exist, and KeyCap would draw the unbound
+    dash over an action that works perfectly. It stays the word TAB.
+
+    So `pressPhrase()` and the `myKey` mirror that fed it are still gone and must
+    stay gone. The first sentence has no use for them -- resolving the command on
+    the page is strictly better than resolving a label in Lua, because the page
+    can redraw and a composed string cannot -- and the second has nothing for
+    them to resolve. Read #180 before touching the first line and #177 before
+    touching the second.
 ]]
 
 RegisterNetEvent(BR.Net.REPORT_HINT)
@@ -428,13 +461,25 @@ AddEventHandler(BR.Net.REPORT_HINT, function(d)
     if type(d) ~= 'table' then return end
 
     if d.kind == 'exists' then
-        -- VERBATIM, AS #180 SPECIFIES IT. Punctuation included -- the full stop
-        -- inside the closing parenthesis is the owner's and is not a typo to be
-        -- tidied. tools/test_client.lua compares this against the issue's own
-        -- string, so a well-meant edit fails the build rather than the playtest.
+        -- #180's SENTENCE, WITH ITS KEY DRAWN AS A KEY (owner, 2026-09-08).
+        -- His wording is untouched; "tilde (above TAB on your keyboard.)"
+        -- became the hole, and the full stop that lived inside that parenthesis
+        -- left with it. The block above is where the argument is, including why
+        -- this is not a reversal of #180.
+        --
+        -- BR.KeyToken RATHER THAN THE LITERAL, like every other sentence in the
+        -- game that names a key. It is the one place the token's shape is
+        -- declared, and tools/check_key_glyphs.lua reads that shape back out of
+        -- it to compare against the page's own parser -- two spellings of one
+        -- wire format is this project's signature bug and it fails silently,
+        -- with the raw token sitting in the middle of the owner's sentence.
+        --
+        -- tools/test_client.lua compares the ASSEMBLED string against a literal
+        -- copy of the whole sentence, so an edit to the prose or to the hole
+        -- fails the build rather than the playtest.
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = 'See something suspicious? You can report players by pressing '
-                .. 'tilde (above TAB on your keyboard.) As a bonus, all accurate '
+                .. BR.KeyToken('brplayers') .. '. As a bonus, all accurate '
                 .. 'reports are rewarded with Volts.',
             tone = 'info', key = 'report.exists', ms = 12000,
         })
