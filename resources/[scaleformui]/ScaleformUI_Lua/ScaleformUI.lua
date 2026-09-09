@@ -16568,7 +16568,35 @@ Citizen.CreateThread(function()
                 end
             end
         else
-            ScaleformUI.Scaleforms.MinimapOverlays:Load()
+            -- BR-PATCH 2: this was a bare ScaleformUI.Scaleforms.MinimapOverlays:Load()
+            -- and it ran EVERY FRAME, FOR THE WHOLE SESSION. isLoaded is set at the
+            -- end of Load() to HasMinimapOverlayLoaded(overlay) and
+            -- HasScaleformMovieLoaded(minimapHandle) -- and minimapHandle is 0,
+            -- because the block that would set it is commented out upstream at the
+            -- top of Load(). So isLoaded can never turn true, this branch never
+            -- stopped, and on every frame it fired a cross-resource
+            -- TriggerEvent("ScUI:AddMinimapOverlay") into ScaleformUI_Assets and
+            -- re-ran SetMinimapOverlayDisplay, whether or not anything on this
+            -- server had ever asked for a minimap overlay.
+            --
+            -- The retry is kept, because retrying is what this branch is for: if
+            -- ScaleformUI_Assets has not registered its handler yet, the first
+            -- Load() reaches nobody and the overlay handle stays 0. It now stops as
+            -- soon as that handle arrives, and idles at 2 Hz rather than per frame.
+            -- Nothing else moves: initializeScaleforms() still calls Load() once at
+            -- start and the Add*OverlayToMap functions still call it on demand, so a
+            -- caller that wants an overlay gets one exactly as before.
+            --
+            -- isLoaded is deliberately NOT "fixed" here. Dropping the minimapHandle
+            -- term from it would send this thread down the branch above instead,
+            -- calling GetScaleformMovieCursorSelection(0) every frame -- the same
+            -- fault in a different shape. If an upstream release ever sets
+            -- minimapHandle, isLoaded turns true by itself and cursor polling
+            -- resumes within 500ms with nothing further to change here.
+            if ScaleformUI.Scaleforms.MinimapOverlays.overlay == 0 then
+                ScaleformUI.Scaleforms.MinimapOverlays:Load()
+            end
+            Wait(500)
         end
     end
 end)

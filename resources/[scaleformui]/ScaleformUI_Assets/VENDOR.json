@@ -1,18 +1,21 @@
 {
   "_comment": [
     "THIRD-PARTY VENDORED SOURCE. This directory is not ours. It is the published",
-    "ScaleformUI_Assets.zip from upstream release 5.8.1, extracted whole, with NO",
-    "local patches at all. Every byte here except LICENSE and this file came out of",
-    "that zip, whose sha256 is recorded below, so the next upstream bump is:",
-    "download the new ScaleformUI_Assets.zip and extract it over this directory.",
+    "ScaleformUI_Assets.zip from upstream release 5.8.1, extracted whole, plus the",
+    "two local patches listed below -- both in loader.lua -- and nothing else. Every",
+    "other byte here except LICENSE and this file came out of that zip, whose sha256",
+    "is recorded below, so the next upstream bump is: download the new",
+    "ScaleformUI_Assets.zip, extract it over this directory, then re-apply those two",
+    "patches to loader.lua.",
     "",
     "tools/verify.sh reads this file. The `vendored third-party` gate checks that",
     "the LICENSE is present, that every BR-PATCH marker in the tree is declared",
     "here and every patch declared here is present in the tree, and that",
     "tools/deploy.sh actually syncs this resource to the box -- because shipping",
     "a resource that never reaches the server is a failure mode this project has",
-    "already had twice. `patches` below is empty and must stay that way unless",
-    "somebody genuinely changes a file here.",
+    "already had twice. `patches` below must keep naming every BR-PATCH marker in",
+    "this directory, and nothing else here may be edited without an entry joining",
+    "them.",
     "",
     "THIS IS THE HALF THAT MAKES THE OTHER HALF WORK. ScaleformUI_Lua requests",
     "compiled Flash movies by name at start; this resource is what streams them."
@@ -71,13 +74,13 @@
   },
 
   "provenance_check": {
-    "claim": "Every file here except LICENSE and VENDOR.json is byte-identical to the corresponding member of the release asset ScaleformUI_Assets.zip, sha256 recorded below.",
+    "claim": "Every file here except LICENSE, VENDOR.json and loader.lua is byte-identical to the corresponding member of the release asset ScaleformUI_Assets.zip, sha256 recorded below. loader.lua differs by the two BR-PATCH blocks listed under `patches` and by nothing else -- a removed print, an added parameter name, and their comments.",
     "verified_on": "2026-09-08",
     "how": [
       "curl -sSL -o ScaleformUI_Assets.zip https://github.com/manups4e/ScaleformUI/releases/download/5.8.1/ScaleformUI_Assets.zip",
       "sha256sum ScaleformUI_Assets.zip   # must equal release_assets below",
       "unzip -o ScaleformUI_Assets.zip -d /tmp/sfa",
-      "diff -r /tmp/sfa/ScaleformUI_Assets 'resources/[scaleformui]/ScaleformUI_Assets' -x LICENSE -x VENDOR.json"
+      "diff -r /tmp/sfa/ScaleformUI_Assets 'resources/[scaleformui]/ScaleformUI_Assets' -x LICENSE -x VENDOR.json   # loader.lua is expected to differ, by BR-PATCH 1 and BR-PATCH 2 and nothing else"
     ],
     "note": "The .gfx files are compiled Flash movies -- magic bytes 'GFX\\b' -- and are pinned `binary` in .gitattributes. That pin is not decoration. This repository sets `* text=auto eol=lf`, and while git's own heuristic would almost certainly classify a .gfx as binary, 'almost certainly' is not a property to hang a streamed asset on: one CRLF substitution inside one of these files is silent corruption that every gate here would pass and only a playtest would find. The same argument is already written out for *.ogg, which arrived with pma-voice."
   },
@@ -89,9 +92,27 @@
     }
   },
 
-  "patches": [],
+  "patches": [
+    {
+      "id": "BR-PATCH 1",
+      "file": "loader.lua",
+      "symbol": "ScUI:AddMinimapOverlay handler",
+      "what": "Removed a bare, unconditional print(overlayID) from the event handler. Nothing replaced it -- the handle is already returned to the caller through cb.",
+      "why": "It printed a raw number with no label into every client's F8 console at start, with no way to turn it off. That is the same player-facing fault, in the same shape, that pma-voice's BR-PATCH 1 removed; unlike pma-voice this resource has no logger to route it through, and the value is of no interest to anybody who is not debugging this file, so the line is simply gone.",
+      "upstream_fixable": "yes -- leftover debug output, would be accepted upstream as a bug fix"
+    },
+    {
+      "id": "BR-PATCH 2",
+      "file": "loader.lua",
+      "symbol": "exports('AddMinimapOverlay')",
+      "what": "Added the missing `cb` parameter: exports('AddMinimapOverlay', function() ... end) is now function(cb). One word. The body is unchanged.",
+      "why": "The export body is a copy of the event handler above it, which takes a callback, but the export was declared with no parameters at all -- so its cb(overlayID) call reached for a global named cb that has never existed, and calling this export died with 'attempt to call a nil value'. NOTHING WE SHIP CALLS IT -- ScaleformUI_Lua uses the event, not the export -- so this repairs a fault we do not currently hit. It was fixed rather than recorded-and-left because the fix is one word and restores the contract the body was already written for. Note what it does not do: a caller must still pass a callback, because that is what the body expects; the export does not return the handle.",
+      "upstream_fixable": "yes -- would be accepted upstream as a bug fix. Upstream might instead prefer `return overlayID`, which is the idiomatic shape for an export; that would change the calling convention rather than restore it, so it is upstream's call to make and not ours."
+    }
+  ],
 
   "untouched_on_purpose": [
-    "loader.lua -- 12 lines, two upstream faults, both deliberately left alone this round because vendoring is a transcription and fixing is a decision. (1) The event handler ends with an unconditional print(overlayID), so every client prints a bare number into F8 once at start; this is exactly the fault pma-voice's BR-PATCH 1 removed, so there is precedent for fixing it if the owner wants it gone. (2) The exports('AddMinimapOverlay') body calls cb(overlayID) where cb was never a parameter -- calling that export errors on a nil global. Nothing we ship calls it; ScaleformUI_Lua uses the event, not the export."
+    "loader.lua -- everything outside the two BR-PATCH blocks. Both faults reported at vendoring time were fixed on the owner's instruction the same day; see `patches`. What is deliberately NOT touched is the design around them: one overlay handle for the whole client, created on first request and handed to every caller afterwards, and the guard being `overlayID == -1` rather than a check on the native's return. That is upstream's, it works, and changing it would be a rewrite of the only file here that is not a compiled movie.",
+    "fxmanifest.lua -- as shipped. It declares only files/MINIMAP_LOADER.gfx and loader.lua; the stream/ directory is registered by FiveM convention, not by the manifest, so adding those files to it is not a fix."
   ]
 }

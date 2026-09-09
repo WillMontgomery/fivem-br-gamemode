@@ -1,13 +1,14 @@
 {
   "_comment": [
     "THIRD-PARTY VENDORED SOURCE. This directory is not ours. It is the published",
-    "ScaleformUI_Lua.zip from upstream release 5.8.1, extracted whole, plus the one",
-    "local patch listed below and nothing else -- no reformatting, no restructuring,",
-    "no 'improvements'. Every byte outside the BR-PATCH block in fxmanifest.lua is",
-    "byte-identical to that release asset, whose sha256 is recorded in",
-    "`release_assets` below, so the next upstream bump is: download the new",
-    "ScaleformUI_Lua.zip, extract it over this directory, then re-apply the patch.",
-    "Keeping that true is the whole reason this file exists.",
+    "ScaleformUI_Lua.zip from upstream release 5.8.1, extracted whole, plus the two",
+    "local patches listed below and nothing else -- no reformatting, no",
+    "restructuring, no 'improvements'. Every byte outside the two BR-PATCH blocks --",
+    "one in fxmanifest.lua, one in ScaleformUI.lua -- is byte-identical to that",
+    "release asset, whose sha256 is recorded in `release_assets` below, so the next",
+    "upstream bump is: download the new ScaleformUI_Lua.zip, extract it over this",
+    "directory, then re-apply the patches. Keeping that true is the whole reason",
+    "this file exists.",
     "",
     "tools/verify.sh reads this file. The `vendored third-party` gate checks that",
     "the LICENSE is present, that every BR-PATCH marker in the tree is declared",
@@ -73,6 +74,7 @@
 
   "provenance_check": {
     "claim": "This directory is the extracted ScaleformUI_Lua.zip of release 5.8.1, and that zip's ScaleformUI.lua is not an opaque build artifact -- it is the tag's own source, concatenated. All 125 .lua files under ScaleformUI_Lua/src/ at tag 5.8.1 appear in it verbatim, in case-insensitive path order, separated by a 73-character banner comment. Nothing is added and nothing is removed: the 9,124 characters by which the bundle exceeds the sum of its sources are exactly those 125 banners.",
+    "claim_is_as_vendored": "That claim describes this directory as it was vendored, at commit 731c5d0. BR-PATCH 2 has since edited ScaleformUI.lua -- one comment block and three lines of code inside the MinimapOverlays thread, and nothing else in the file. Re-running the check today means allowing for that one block; every other byte of the bundle is still the release asset.",
     "verified_on": "2026-09-08",
     "how": [
       "curl -sSL -o ScaleformUI_Lua.zip https://github.com/manups4e/ScaleformUI/releases/download/5.8.1/ScaleformUI_Lua.zip",
@@ -119,11 +121,22 @@
       "what": "Commented out the 'example.lua' entry. The file itself is left in place, unmodified.",
       "why": "example.lua is upstream's showcase demo and it is not inert: loaded, it draws a green world marker at the player's spawn, adds two timer bars, types 'this is a test' onto the minimap four seconds after start, and then runs a forever loop watching for demo hotkeys. This round vendors the library and proves it starts; it writes no menus and changes no gameplay, and a stranger's demo UI on every player's screen is the opposite of that. Kept rather than deleted so the demo the owner actually evaluated stays one uncomment away.",
       "upstream_fixable": "not a bug -- the manifest line directly above it invites exactly this change: 'You can comment example.lua if you don't need it!'"
+    },
+    {
+      "id": "BR-PATCH 2",
+      "file": "ScaleformUI.lua",
+      "symbol": "the Citizen.CreateThread immediately below MinimapOverlays:Load()",
+      "what": "That thread's else branch was a bare MinimapOverlays:Load() and it ran on EVERY FRAME. It now calls Load() only while MinimapOverlays.overlay is still 0, and the branch waits 500ms per pass, so the thread stops working as soon as the overlay handle arrives. Three lines of code. Load() itself, isLoaded, the cursor-selection branch above it and everything else in this 20,000-line file are untouched.",
+      "why": "isLoaded is assigned, at the end of Load(), as HasMinimapOverlayLoaded(overlay) and HasScaleformMovieLoaded(minimapHandle). minimapHandle is initialized to 0 and the block that would set it is COMMENTED OUT UPSTREAM at the top of Load(), so HasScaleformMovieLoaded(0) is false, isLoaded can never become true, and the else branch never stopped: one cross-resource TriggerEvent('ScUI:AddMinimapOverlay') into ScaleformUI_Assets plus a SetMinimapOverlayDisplay, every frame, for the whole session, whether or not any menu or overlay existed. That is precisely the shape the framerate investigation immediately before this vendoring landed on -- cheap Lua dispatching engine and event work, which the resource profiler bills to nobody -- so importing it was not acceptable. NOTHING IS LOST BY STOPPING: initializeScaleforms() already calls Load() once at start, and every Add*OverlayToMap calls it when overlay == 0, so a caller that legitimately wants an overlay still gets one. The retry itself is kept because that is what the branch is for -- if ScaleformUI_Assets has not registered its handler yet, the first Load() reaches nobody and the handle stays 0 -- it just stops once it has succeeded.",
+      "what_was_deliberately_not_done": "isLoaded was not 'repaired'. Dropping the minimapHandle term from it would send the thread down the branch above instead, calling GetScaleformMovieCursorSelection(0) every frame -- the same fault wearing a different hat. Uncommenting upstream's handle acquisition was the other option and it is worse: it requests a second 'minimap' scaleform and toggles SetBigmapActive on and then off at start, on every client, for a mouse-event feature no menu of ours uses.",
+      "upstream_fixable": "yes -- an unconditional per-frame Load() in a retry branch would be accepted upstream as a bug fix. The deeper fix is upstream's alone: restore minimapHandle (the commented block at the top of Load()), without which the cursor-selection half of this thread is dead code.",
+      "recheck_at_next_bump": "Look at the else branch of that thread. If upstream has made isLoaded reachable -- i.e. minimapHandle is set again -- this patch is no longer load-bearing, though it stays harmless: the branch is then simply not taken. If the branch is still an unconditional Load(), re-apply. The cursor polling resumes on its own within 500ms of isLoaded turning true, so keeping the patch does not block an upstream fix."
     }
   ],
 
   "untouched_on_purpose": [
-    "ScaleformUI.lua -- the library itself. Not one byte changed. Two upstream faults were found while vendoring and both were left alone on purpose, because fixing them is a decision, not a transcription: (1) MinimapOverlays.minimapHandle is initialised to 0 and the code that would set it is commented out upstream, so isLoaded can never become true and the start-up thread calls MinimapOverlays:Load() every frame forever; (2) that same always-on thread runs at Wait(0) from resource start whether or not any menu exists. Both are reported to the owner rather than patched.",
+    "ScaleformUI.lua -- the library itself, one patch (BR-PATCH 2) and nothing else. Of the two upstream faults reported at vendoring time, the first -- MinimapOverlays:Load() called every frame forever, because minimapHandle stays 0 and isLoaded therefore never turns true -- is the one the owner asked to have fixed, and BR-PATCH 2 is that fix.",
+    "The second fault stands, on purpose. THIS LIBRARY RUNS ALWAYS-ON THREADS FROM RESOURCE START, whether or not any menu exists: the main one, below initializeScaleforms(), loops at Citizen.Wait(0) calling Warning:Update(), InstructionalButtons:Update(), BigMessageInstance:Update() and five more on every frame, and a third ticks GlobalGameTimer every 100ms. BR-PATCH 2 idles the minimap thread and that is as far as it goes without restructuring upstream's start-up, which is a rewrite rather than a patch. If ScaleformUI ever shows up in a framerate investigation, that main thread is where to look first.",
     "example.lua -- byte-identical to the release. Only its manifest entry is commented out.",
     "COLORS. The owner asked for 'our colors for now'. Nothing was recolored here and that is not an omission: ScaleformUI takes its colors per menu at construction time (SColor.HUD_Yellow and friends, passed when a UIMenu is built), so there is no palette inside the library to change. Our colors get applied by the code that builds our menus, which this round deliberately does not write."
   ]
