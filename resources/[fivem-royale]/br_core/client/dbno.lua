@@ -2808,7 +2808,7 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- occasionally.
     --
     -- IT IS DRIVEN FROM THIS ONE CALL SITE RATHER THAN FROM A SECOND CALLER, and
-    -- that is the point of the extra clause. BR.Loot.suppress is a plain boolean
+    -- that is the point of the extra clauses. BR.Loot.suppress is a plain boolean
     -- with no refcount: two files calling it would each write their own answer,
     -- and the one whose answer was `false` on a given frame would clear the
     -- other's yield. One caller, one OR, no possible disagreement -- and turning
@@ -2818,10 +2818,20 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- NIL-GUARDED AT CALL TIME, so the load order between the two files is a
     -- reader's convenience and not a requirement -- the same shape in which four
     -- files ask BR.Rescue.riding() from above the file that answers.
+    --
+    -- THE GUN SHOP COUNTER IS THE THIRD CLAUSE, AND IT IS THE ONE MOST LIKELY TO
+    -- MATTER. client/ambheal.lua records the shared-prompt hazard as tolerable
+    -- because the places it can happen are rare. An Ammu-Nation is not: it is a
+    -- named building on the map, players fight over it, and the floor around a
+    -- counter collects the loot of whoever lost. Without this clause one press
+    -- of the interact key at a counter both opens the shop and claims the crate
+    -- underfoot, which is the shape #274 asked not to ship.
     local busy = target ~= nil or holding ~= nil
     BR.Loot.suppress(busy
         or (BR.ReviveKey ~= nil and BR.ReviveKey.prompting ~= nil
-            and BR.ReviveKey.prompting()))
+            and BR.ReviveKey.prompting())
+        or (BR.Gunshop ~= nil and BR.Gunshop.busy ~= nil
+            and BR.Gunshop.busy()))
 
     -- ...AND THE REVIVE KEY YIELDS BACK. A mate who is DOWNED can still be
     -- picked up outright -- they keep their inventory and it costs the squad
