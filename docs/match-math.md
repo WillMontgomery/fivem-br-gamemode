@@ -305,12 +305,19 @@ water.
 
 ### How much, and where
 
-For each of the **120** POIs — 77 tier 1, 29 tier 2, 14 tier 3 — by tier:
+For each of the **120** POIs — 75 tier 1, 28 tier 2, 13 tier 3, 4 tier 4 — by tier:
 
 ```
-crates(tier)      = 20 | 20 | 24
-floor items(tier) =  5 |  8 | 14
+crates(tier)      = 20 | 20 | 24 | 35
+floor items(tier) =  5 |  8 | 14 | 14
 ```
+
+Tier 4 is the four **golden** POIs (#227): Humane Labs, Kortz Center, Great
+Chaparral and Raton Canyon. Floor loot is flat against tier 3 on purpose — the
+premium is paid in crates and in the rarity mix, because crates carry the loot
+and floor items garnish it. 35 against tier 1's 20 is 1.75×, which puts these
+four back near the 2.4× spread the tier-3 sites had before the 2026-08-05
+flattening; that is the point of them, and there are four rather than fourteen.
 
 Plus 420 roadside filler items along the authored corridors, offset 8–22 m
 perpendicular to the centreline, on one side or the other, never on it.
@@ -358,15 +365,38 @@ rarity ~ weighted(RarityWeights[tier])
 item   ~ uniform(bucket[rarity]), walking DOWN if that bucket is empty
 ```
 
-| Tier | Common | Uncommon | Rare | Epic | Legendary |
-|---|---|---|---|---|---|
-| 1 | 55 | 28 | 13 | 3 | 1 |
-| 2 | 40 | 30 | 20 | 8 | 2 |
-| 3 | 25 | 28 | 27 | 15 | 5 |
+| Tier | Common | Uncommon | Rare | Epic | Legendary | Rare+ |
+|---|---|---|---|---|---|---|
+| 1 | 55 | 28 | 13 | 3 | 1 | 17 |
+| 2 | 40 | 30 | 20 | 8 | 2 | 30 |
+| 3 | 25 | 28 | 27 | 15 | 5 | 47 |
+| 4 | 14 | 23 | 30 | 23 | 10 | 63 |
 
 Crate contents roll at `min(tier + 1, 3)` — one tier hotter than the ground
 around them, which is what makes crossing open ground for one worth the
-exposure.
+exposure. **Tier 4 is the exception: it reads row 4 directly and is not
+bumped.** The clamp is why. It stops at 3, so `tier + 1` at a tier-4 POI lands
+back on row 3 and a golden crate rolls what a tier-2 crate already rolls;
+raising the clamp to 4 instead would hand row 4 to every tier-3 POI as well.
+
+The row 4 numbers are the owner's, 2026-09-08, and the ladder is the point of
+them: rare-or-better runs 17 → 30 → 47 → 63 and legendary 1 → 2 → 5 → 10.
+**Legendary doubling from tier 3 is deliberate, not a typo.**
+
+Measured through the generator, 300k crates per tier — well under the raw
+weights, because ammo is always common, melee stops at uncommon, consumables
+have no rare band and throwables have no legendary one:
+
+| Tier | Item rare+ | Item legendary | Crate glows rare+ | Crate holds a legendary |
+|---|---|---|---|---|
+| 1 | 18.4% | 1.39% | 45.1% | 4.1% |
+| 2 | 29.8% | 3.48% | 64.2% | 10.1% |
+| 3 | 29.8% | 3.48% | 64.2% | 10.1% |
+| 4 | 41.2% | 6.95% | 78.1% | 19.3% |
+
+Tiers 2 and 3 are identical because both clamp to row 3: what separates them is
+the crate count, not the mix. Map-wide the change costs 2456 → 2512 crates and
+813 → 837 floor items.
 
 ---
 

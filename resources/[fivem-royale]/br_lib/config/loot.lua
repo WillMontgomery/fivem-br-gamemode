@@ -461,11 +461,47 @@ BR.Config.AmmoOrder = {
 --- Rarity weighting per POI tier. Higher tiers are contested by design, so they
 --- pay out better -- that is the whole reason players fight over them.
 ---
---- Weights are relative within a row and do not need to sum to anything.
+--- Weights are relative within a row and do not need to sum to anything. They
+--- are written to sum to 100 anyway, so a row reads as a percentage.
+---
+--- TIER 4, THE GOLDEN POIs (#227, owner 2026-09-08). Four sites -- Humane Labs,
+--- Kortz Center, Great Chaparral and Raton Canyon -- pay out noticeably better
+--- than anything else on the map.
+---
+--- A REAL FOURTH TIER, NOT A FLAG ON TOP OF AN EXISTING ONE. The issue argued
+--- for the flag, on the grounds that a fourth tier means a fourth row in every
+--- tier-keyed table -- this one, budgetPerTier, chestsPerTier, the POI
+--- validator, the /brpois blip colors, the config report and every test that
+--- walks them. The owner overruled it: "yes make them a real tier 4". So the
+--- maintenance cost is real and it was paid on purpose, and the thing to check
+--- when adding any new tier-keyed table is that it has four rows and not three.
+---
+--- THE LADDER, WHICH IS THE POINT AND IS INVISIBLE FROM ONE ROW. His numbers
+--- are a deliberate continuation of the three rows above them:
+---
+---     rare-or-better   17%  ->  30%  ->  47%  ->  63%
+---     legendary         1%  ->   2%  ->   5%  ->  10%
+---     common           55%  ->  40%  ->  25%  ->  14%
+---
+--- LEGENDARY DOUBLES, 5% to 10%, and that is his decision rather than an
+--- accident of the split. Do not read it as a typo and halve it.
+---
+--- The row is his, exactly as he gave it, and is not ours to adjust. He said
+--- "55% chance" a minute before writing the split out, and the split is 63%
+--- rare-or-better; the split is the specific thing and it wins.
+---
+--- WHAT A PLAYER ACTUALLY SEES IS LESS THAN THE ROW SAYS, in both directions,
+--- because three of the five kinds cannot pay out at the top: ammo is always
+--- COMMON, melee stops at UNCOMMON, consumables have no RARE, throwables have
+--- no LEGENDARY. Arithmetic done straight off this table overstates the payout
+--- by roughly a third. `brlootsim` on the server console rolls the real
+--- generator and prints what comes out, tier 4 included -- use it rather than
+--- this table when the question is what a crate contains.
 BR.Config.RarityWeights = {
-    [1] = { [R.COMMON] = 55, [R.UNCOMMON] = 28, [R.RARE] = 13, [R.EPIC] =  3, [R.LEGENDARY] = 1 },
-    [2] = { [R.COMMON] = 40, [R.UNCOMMON] = 30, [R.RARE] = 20, [R.EPIC] =  8, [R.LEGENDARY] = 2 },
-    [3] = { [R.COMMON] = 25, [R.UNCOMMON] = 28, [R.RARE] = 27, [R.EPIC] = 15, [R.LEGENDARY] = 5 },
+    [1] = { [R.COMMON] = 55, [R.UNCOMMON] = 28, [R.RARE] = 13, [R.EPIC] =  3, [R.LEGENDARY] =  1 },
+    [2] = { [R.COMMON] = 40, [R.UNCOMMON] = 30, [R.RARE] = 20, [R.EPIC] =  8, [R.LEGENDARY] =  2 },
+    [3] = { [R.COMMON] = 25, [R.UNCOMMON] = 28, [R.RARE] = 27, [R.EPIC] = 15, [R.LEGENDARY] =  5 },
+    [4] = { [R.COMMON] = 14, [R.UNCOMMON] = 23, [R.RARE] = 30, [R.EPIC] = 23, [R.LEGENDARY] = 10 },
 }
 
 --- What kind of thing a roll INSIDE A CRATE produces.
@@ -553,7 +589,14 @@ BR.Config.Loot = {
     -- CUT AGAIN, 2026-08-06: loose loot should be "rare except for ammo", so
     -- there is less of it and what remains is mostly ammo (see
     -- BR.Config.FloorKindWeights). Roughly halved a second time.
-    budgetPerTier = { [1] = 5, [2] = 8, [3] = 14 },
+    -- TIER 4 IS FLAT AGAINST TIER 3, ON PURPOSE (owner, 2026-09-08: "floor
+    -- items can stay at 14"). A table reading 5 / 8 / 14 / 14 looks like
+    -- somebody forgot to fill the last cell in, so: this field is LOOSE FLOOR
+    -- ITEMS and not crates, and the rule since 2026-08-05 two comments up is
+    -- that crates carry the loot and floor items garnish it. A golden POI pays
+    -- its whole premium in crates -- 35 of them against tier 3's 24 -- and in
+    -- the rarity mix. The garnish stays where tier 3 has it.
+    budgetPerTier = { [1] = 5, [2] = 8, [3] = 14, [4] = 14 },
 
     -- HOW FAR OUT THE ROLLS REACH, as a fraction of the POI radius.
     --
@@ -579,7 +622,19 @@ BR.Config.Loot = {
     -- transit corridor. It is now closer to 1.5x: a hot drop is still better,
     -- but a rural POI can gear you up (user, 2026-08-05 -- "even it out a bit
     -- between POIs and rural areas").
-    chestsPerTier = { [1] = 20, [2] = 20, [3] = 24 },
+    --
+    -- AND TIER 4 RE-WIDENS THE SPREAD THAT PARAGRAPH DELIBERATELY FLATTENED,
+    -- which has to be said out loud right here because the comment above it
+    -- argues the other way. 35 against tier 1's 20 is 1.75x, so a golden POI
+    -- sits back up near the 2.4x the tier-3 sites used to pay before the
+    -- 2026-08-05 flattening. That is the owner's call (2026-09-08: "let's make
+    -- tier 4 have 35 crates then", revising the 25 he had said a minute
+    -- earlier) and it is what makes these four destination drops rather than
+    -- merely good ones. What keeps it from repeating the mistake is that there
+    -- are FOUR of them against fourteen tier 3s, and that they are not the
+    -- places a player would guess -- see the note on the tier-4 rows in
+    -- br_lib/config/map.lua.
+    chestsPerTier = { [1] = 20, [2] = 20, [3] = 24, [4] = 35 },
     -- HOW MANY THINGS ARE IN A CRATE. Never zero -- opening one is a
     -- commitment in the open and it has to pay. 3-5 was too generous (user,
     -- 2026-08-06); this peaks at three with two and four equally likely either

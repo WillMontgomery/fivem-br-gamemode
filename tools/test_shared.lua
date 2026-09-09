@@ -3642,6 +3642,247 @@ do
         ('%d of them'):format(floor))
 end
 
+-- ------------------------------------------------------------- loot.golden ---
+--
+-- TIER 4, THE GOLDEN POIs (#227, owner 2026-09-08).
+--
+-- Four named sites -- Humane Labs, Kortz Center, Great Chaparral and Raton
+-- Canyon -- were promoted to a real fourth tier with 35 crates and their own
+-- rarity row. Three things can go wrong with that and only one of them is loud:
+--
+--   1. THE WRONG ROWS ARE FLAGGED. Every one of the four has a similarly named
+--      neighbor in the same table (raton_n, chaparral_n, chaparral_w, kortz_s),
+--      all tier 1, all one line away in a search. The symptom is 35 crates of
+--      the map's best loot appearing somewhere nobody chose, and nothing else
+--      in this suite would notice.
+--   2. THE FOURTH ROW IS MISSING FROM A TIER-KEYED TABLE. The tables fall back
+--      rather than erroring -- RollRarity does `RarityWeights[tier] or
+--      RarityWeights[2]` and the budgets do `or 0` -- so a missing row is a
+--      SILENT downgrade to tier 2 loot or to no loot at all.
+--   3. THE MIX DOES NOT ACTUALLY SHIFT. This is the quiet one and it is the
+--      reason the feature could not be built as `tier + 1`: crate contents roll
+--      one tier hotter and that bump used to clamp at 3, so a tier-4 POI whose
+--      crates still clamp to row 3 rolls exactly what a Humane Labs crate
+--      already rolled and the whole thing is 35 crates of nothing new.
+
+describe('loot.golden')
+do
+    -- The owner's four, by id. Written out here rather than derived from the
+    -- POI table, because deriving it from the thing under test would assert
+    -- nothing at all.
+    local GOLDEN = { 'humane', 'kortz', 'raton', 'chaparral' }
+    local isGolden = {}
+    for _, id in ipairs(GOLDEN) do isGolden[id] = true end
+
+    local atTier4, strays = {}, {}
+    for _, poi in ipairs(BR.Config.Map.POIs) do
+        if poi.tier == 4 then
+            atTier4[#atTier4 + 1] = poi.id
+            if not isGolden[poi.id] then strays[#strays + 1] = poi.id end
+        end
+    end
+    ok(#atTier4 == 4 and #strays == 0,
+        'exactly four POIs are tier 4, and they are the four he named',
+        ('tier 4: %s | not on the list: %s'):format(
+            table.concat(atTier4, ', '),
+            #strays > 0 and table.concat(strays, ', ') or 'none'))
+
+    local notFour = {}
+    for _, id in ipairs(GOLDEN) do
+        local poi = BR.Config.Map.GetPOI(id)
+        if not poi then
+            notFour[#notFour + 1] = id .. ' (not in the POI table)'
+        elseif poi.tier ~= 4 then
+            notFour[#notFour + 1] = ('%s (tier %s)'):format(id, tostring(poi.tier))
+        end
+    end
+    ok(#notFour == 0, 'every golden POI is present and at tier 4',
+        table.concat(notFour, ', '))
+
+    -- THE NEIGHBORS, WHICH ARE THE LIVE MISTAKE. All four were tier 1 before
+    -- this change and all four must still be: he named the main sites.
+    local wrong = {}
+    for _, id in ipairs({ 'raton_n', 'chaparral_n', 'chaparral_w', 'kortz_s' }) do
+        local poi = BR.Config.Map.GetPOI(id)
+        if not poi then
+            wrong[#wrong + 1] = id .. ' (gone)'
+        elseif poi.tier ~= 1 then
+            wrong[#wrong + 1] = ('%s (tier %s)'):format(id, tostring(poi.tier))
+        end
+    end
+    ok(#wrong == 0,
+        'the similarly named neighbors are untouched and still tier 1',
+        table.concat(wrong, ', '))
+
+    -- And the two sites the issue was FILED about are deliberately not golden
+    -- (owner: "let's not include zancudo or the prison"). Zancudo stays a tier
+    -- 3 hot drop; the penitentiary is not a POI at all.
+    local zancudo = BR.Config.Map.GetPOI('zancudo')
+    ok(zancudo ~= nil and zancudo.tier == 3,
+        'Fort Zancudo is deliberately NOT golden and is still tier 3',
+        zancudo and ('tier ' .. tostring(zancudo.tier)) or 'missing')
+
+    -- ---------------------------------------------------------------------
+    -- Every tier-keyed table grew a fourth row. A missing one falls back
+    -- silently rather than erroring, which is why this is asserted rather
+    -- than left to the first crate that rolls wrong.
+    ok(BR.Config.RarityWeights[4] ~= nil, 'RarityWeights has a tier 4 row')
+    ok(BR.Config.Loot.budgetPerTier[4] ~= nil, 'budgetPerTier has a tier 4 row')
+    ok(BR.Config.Loot.chestsPerTier[4] ~= nil, 'chestsPerTier has a tier 4 row')
+
+    ok(BR.Config.Loot.chestsPerTier[4] == 35,
+        'a golden POI spawns 35 crates -- the owner\'s number',
+        tostring(BR.Config.Loot.chestsPerTier[4]))
+    -- FLAT AGAINST TIER 3, ON PURPOSE (owner: "floor items can stay at 14").
+    -- A table reading 5 / 8 / 14 / 14 looks like an unfilled cell, so the
+    -- flatness is pinned here as a decision rather than left to look like one.
+    ok(BR.Config.Loot.budgetPerTier[4] == BR.Config.Loot.budgetPerTier[3],
+        'tier 4 floor loot is deliberately FLAT against tier 3',
+        ('%s vs %s'):format(tostring(BR.Config.Loot.budgetPerTier[4]),
+                            tostring(BR.Config.Loot.budgetPerTier[3])))
+
+    -- The owner's exact split, which is not ours to adjust. He said "55%" a
+    -- minute before writing it out; the split is 63% rare-or-better and the
+    -- split is the specific thing.
+    local R4 = BR.Config.RarityWeights[4]
+    local wantedRow = {
+        [BR.Rarity.COMMON] = 14, [BR.Rarity.UNCOMMON] = 23, [BR.Rarity.RARE] = 30,
+        [BR.Rarity.EPIC] = 23, [BR.Rarity.LEGENDARY] = 10,
+    }
+    local rowOk, rowDetail = true, {}
+    for rarity, weight in pairs(wantedRow) do
+        if R4[rarity] ~= weight then
+            rowOk = false
+            rowDetail[#rowDetail + 1] = ('%s: %s not %d'):format(
+                BR.RarityInfo[rarity].label, tostring(R4[rarity]), weight)
+        end
+    end
+    ok(rowOk, 'the tier 4 rarity row is the owner\'s numbers, exactly',
+        table.concat(rowDetail, ', '))
+
+    -- LEGENDARY DOUBLES, 5% to 10%, and it is a decision rather than an
+    -- accident of the split. Asserted on its own so that halving it "back" to
+    -- something that looks less generous fails here with the reason attached.
+    ok(R4[BR.Rarity.LEGENDARY] == 2 * BR.Config.RarityWeights[3][BR.Rarity.LEGENDARY],
+        'legendary weight DOUBLES from tier 3 to tier 4, deliberately',
+        ('%s vs %s'):format(tostring(R4[BR.Rarity.LEGENDARY]),
+                            tostring(BR.Config.RarityWeights[3][BR.Rarity.LEGENDARY])))
+
+    -- The ladder, which is what makes his numbers a continuation rather than a
+    -- new species of crate: rare-or-better 17 -> 30 -> 47 -> 63, common
+    -- 55 -> 40 -> 25 -> 14. Monotone in both directions, all four rows.
+    local rareUp, commonDown, ladder = true, true, {}
+    local prevRare, prevCommon
+    for tier = 1, 4 do
+        local row = BR.Config.RarityWeights[tier]
+        local total = 0
+        for _, w in pairs(row) do total = total + w end
+        local rareOrBetter = row[BR.Rarity.RARE] + row[BR.Rarity.EPIC]
+            + row[BR.Rarity.LEGENDARY]
+        ladder[#ladder + 1] = ('t%d %d/%d'):format(tier, rareOrBetter, total)
+        if total ~= 100 then rareUp = false end
+        if prevRare and rareOrBetter <= prevRare then rareUp = false end
+        if prevCommon and row[BR.Rarity.COMMON] >= prevCommon then commonDown = false end
+        prevRare, prevCommon = rareOrBetter, row[BR.Rarity.COMMON]
+    end
+    ok(rareUp, 'every rarity row sums to 100 and rare-or-better climbs every tier',
+        table.concat(ladder, '  '))
+    ok(commonDown, 'and common falls every tier')
+
+    -- ---------------------------------------------------------------------
+    -- NOTHING BELOW TIER 4 MOVED. The literal rows, because "I only added a
+    -- row" is exactly the claim that is easy to make and easy to get wrong
+    -- while retyping a table.
+    local before = {
+        [1] = { 55, 28, 13,  3, 1 },
+        [2] = { 40, 30, 20,  8, 2 },
+        [3] = { 25, 28, 27, 15, 5 },
+    }
+    local moved = {}
+    for tier, row in pairs(before) do
+        for rarity = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            if BR.Config.RarityWeights[tier][rarity] ~= row[rarity] then
+                moved[#moved + 1] = ('t%d %s'):format(tier, BR.RarityInfo[rarity].label)
+            end
+        end
+    end
+    ok(#moved == 0, 'tiers 1 to 3 kept their rarity rows to the number',
+        table.concat(moved, ', '))
+    ok(BR.Config.Loot.budgetPerTier[1] == 5 and BR.Config.Loot.budgetPerTier[2] == 8
+        and BR.Config.Loot.budgetPerTier[3] == 14,
+        'tiers 1 to 3 kept their floor budgets')
+    ok(BR.Config.Loot.chestsPerTier[1] == 20 and BR.Config.Loot.chestsPerTier[2] == 20
+        and BR.Config.Loot.chestsPerTier[3] == 24,
+        'tiers 1 to 3 kept their crate counts')
+
+    -- ---------------------------------------------------------------------
+    -- WHICH ROW A CRATE ACTUALLY ROLLS, asserted exactly rather than
+    -- statistically. BR.Config.RollRarity spends exactly ONE rng draw whatever
+    -- row it reads, so two crate streams from the same seed diverge if and only
+    -- if they are reading different rows. That turns the whole `hot` mapping
+    -- into an equality test:
+    --
+    --   tier 2 -> row 3 and tier 3 -> row 3 (the bump clamps), so those two
+    --     streams must be IDENTICAL, item for item;
+    --   tier 1 -> row 2, so it must differ from tier 2;
+    --   tier 4 -> row 4 and NOT the clamp, so it must differ from tier 3.
+    --
+    -- The last of those is the one that would have caught `math.min(tier+1, 3)`
+    -- being left alone, which is the failure that makes golden a no-op.
+    local function crateStream(tier, n)
+        local rng, out = BR.Rng(9271), {}
+        for _ = 1, n do
+            for _, s in ipairs(BR.LootChestContents(rng, tier)) do
+                out[#out + 1] = tostring(s.item) .. ':' .. tostring(s.rarity)
+            end
+        end
+        return table.concat(out, '|')
+    end
+    local s1, s2, s3, s4 =
+        crateStream(1, 400), crateStream(2, 400), crateStream(3, 400), crateStream(4, 400)
+
+    ok(s2 == s3,
+        'tier 2 and tier 3 crates still roll the SAME row -- the bump clamps at 3')
+    ok(s1 ~= s2, 'tier 1 crates roll a colder row than tier 2 crates')
+    ok(s4 ~= s3,
+        'a tier 4 crate does NOT clamp back to row 3 -- golden is not a no-op')
+
+    -- ---------------------------------------------------------------------
+    -- AND THE MIX ACTUALLY SHIFTED, measured through the real generator rather
+    -- than off the weights table. It has to be measured because three of the
+    -- five kinds cannot pay out at the top -- ammo is always common, melee
+    -- stops at uncommon, consumables have no rare -- so the share of crate
+    -- items that come out rare-or-better is well below the row's 63%.
+    local function share(tier, crates)
+        local rng, items, good, legendary = BR.Rng(42424), 0, 0, 0
+        for _ = 1, crates do
+            for _, s in ipairs(BR.LootChestContents(rng, tier)) do
+                items = items + 1
+                if s.rarity >= BR.Rarity.RARE then good = good + 1 end
+                if s.rarity >= BR.Rarity.LEGENDARY then legendary = legendary + 1 end
+            end
+        end
+        return good / items, legendary / items
+    end
+    local g3, l3 = share(3, 20000)
+    local g4, l4 = share(4, 20000)
+
+    -- Generous margins on purpose: this asserts the DIRECTION and rough size of
+    -- the shift, not a distribution. A tight bound here would be a test that
+    -- fails every time somebody legitimately retunes a weight.
+    ok(g4 > g3 * 1.25,
+        'a golden crate item is markedly more likely to be rare or better',
+        ('tier 3 %.1f%% -> tier 4 %.1f%%'):format(g3 * 100.0, g4 * 100.0))
+    ok(l4 > l3 * 1.4,
+        'and markedly more likely to be legendary',
+        ('tier 3 %.2f%% -> tier 4 %.2f%%'):format(l3 * 100.0, l4 * 100.0))
+    -- The other half of the same claim: it is a shift, not a jackpot. If a
+    -- golden crate item were rare-or-better more often than not, the four sites
+    -- would stop being destinations and start being the only destinations.
+    ok(g4 < 0.60, 'but a golden crate is still mostly ordinary loot',
+        ('%.1f%%'):format(g4 * 100.0))
+end
+
 -- ------------------------------------------------------------- loot.warmup ---
 
 describe('loot.warmup')

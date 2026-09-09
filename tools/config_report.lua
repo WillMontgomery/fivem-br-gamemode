@@ -352,12 +352,44 @@ try('Loot', LOOT, 'map-wide budget', function()
 end)
 try('Loot', LOOT, 'budgetPerTier', function()
     local b = BR.Config.Loot.budgetPerTier
-    return ('tier 1 %s, tier 2 %s, tier 3 %s'):format(num(b[1]), num(b[2]), num(b[3]))
+    return ('tier 1 %s, tier 2 %s, tier 3 %s, tier 4 %s')
+        :format(num(b[1]), num(b[2]), num(b[3]), num(b[4]))
 end)
 try('Loot', LOOT, 'chestsPerTier', function()
     local c = BR.Config.Loot.chestsPerTier
-    return ('tier 1 %s, tier 2 %s, tier 3 %s'):format(num(c[1]), num(c[2]), num(c[3]))
+    return ('tier 1 %s, tier 2 %s, tier 3 %s, tier 4 %s')
+        :format(num(c[1]), num(c[2]), num(c[3]), num(c[4]))
 end)
+-- THE RARITY LADDER, WHICH THE PAGE COULD NOT SEE UNTIL #227 MADE IT MATTER.
+--
+-- Two per-tier tables were already reported above and the one that decides what
+-- is actually IN a crate was not, which was survivable while the three rows had
+-- not moved since August. Tier 4 is a fourth row that four named POIs roll and
+-- nothing else does, so "why is Raton Canyon paying out like that" is now a
+-- question the Live config page should be able to answer on its own.
+--
+-- HAND-WRITTEN PER ROW rather than a walk over BR.Config.RarityWeights, because
+-- the allowlist at the top of this file is CLOSED: a loop here would publish
+-- whatever a fifth row turns out to be, and the point of enumerating by hand is
+-- that a human writes the line. A fifth tier is therefore invisible here until
+-- somebody adds it, which is the intended failure mode -- and verify.sh gate 3f
+-- turns a row naming a table that has moved into a build failure.
+for _, tier in ipairs({ 1, 2, 3, 4 }) do
+    try('Rarity weights', LOOT, 'tier ' .. tier, function()
+        local w = BR.Config.RarityWeights[tier]
+        local total = 0
+        for _, weight in pairs(w) do total = total + weight end
+        -- Fixed order, and NOT pairs(): a report that reorders itself between
+        -- runs is one nobody can diff against the run before it.
+        local parts = {}
+        for _, r in ipairs({ BR.Rarity.COMMON, BR.Rarity.UNCOMMON, BR.Rarity.RARE,
+                             BR.Rarity.EPIC, BR.Rarity.LEGENDARY }) do
+            local info = BR.RarityInfo[r]
+            parts[#parts + 1] = ('%s %s'):format(info.label, num(w[r]))
+        end
+        return ('%s   (of %s)'):format(table.concat(parts, ', '), num(total))
+    end)
+end
 try('Loot', LOOT, 'filler', function()
     local f = BR.Config.Loot.filler
     return ('%s roadside items on the tier %s table, %sm off the tarmac')

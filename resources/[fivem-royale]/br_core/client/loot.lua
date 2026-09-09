@@ -3270,8 +3270,27 @@ RegisterCommand('brpois', function()
     end
 
     -- Colour by tier, so the density question ("why is there so much loot
-    -- here") is answerable at a glance: 3 = hot drop, 1 = rural filler.
-    local byTier = { [1] = 2, [2] = 5, [3] = 1 }   -- green, yellow, red
+    -- here") is answerable at a glance: 4 = golden, 3 = hot drop, 1 = rural
+    -- filler.
+    --
+    -- TIER 4 IS BLUE, WHICH IS NOT A COLOR ANYBODY WOULD PICK FOR "GOLDEN",
+    -- and the reason is that the alternatives are all spoken for. Red, yellow
+    -- and green are the three tiers below it. Purple belongs to the storm
+    -- alone (user call, 2026-08-04) and this overlay gets read on top of the
+    -- storm ring. 0 is the fallback two lines down, so a tier 4 drawn white
+    -- would be indistinguishable from a tier this table has never heard of --
+    -- which is the exact failure the fallback exists to make visible. Blue is
+    -- the only index left that is PROVEN to render on this build (survey.lua
+    -- draws point 1 with it); guessing at a gold index to get a prettier
+    -- overlay is how you land on purple by accident.
+    --
+    -- AND THIS IS THE ONLY PLACE A GOLDEN POI LOOKS DIFFERENT ANYWHERE. That
+    -- is deliberate and it is the whole feature (#227, owner 2026-09-08: "I
+    -- want players to discover these on their own and not just suspect
+    -- high-profile places to always be the ones"). /brpois is dev-gated and no
+    -- POI has a player-facing blip at all -- see the note above
+    -- BR.Config.Map.POIs before adding one.
+    local byTier = { [1] = 2, [2] = 5, [3] = 1, [4] = 3 }   -- green, yellow, red, blue
     for _, poi in ipairs(BR.Config.Map.POIs) do
         local b = AddBlipForCoord(poi.x, poi.y, poi.z)
         SetBlipSprite(b, 1)
@@ -3294,7 +3313,8 @@ RegisterCommand('brpois', function()
 
     print(('[br_core] POI blips ON -- %d points of interest')
         :format(#BR.Config.Map.POIs))
-    print('  red = tier 3 (hot drop), yellow = tier 2, green = tier 1 (rural)')
+    print('  blue = tier 4 (golden), red = tier 3 (hot drop), '
+        .. 'yellow = tier 2, green = tier 1 (rural)')
     print('  the shaded circle is the radius the crate budget spreads across')
 end, false)
 
