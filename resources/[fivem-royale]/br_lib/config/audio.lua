@@ -499,15 +499,15 @@ BR.Config.Audio = {
         -- kill. That is precisely the shape the owner rejected on 2026-09-07
         -- ("so now when a squad mate goes DBNO we're playing an NUI sound AND a
         -- frontend sound"), and the fix that answered him then -- one event, one
-        -- noise -- has not been applied here.
+        -- noise -- was applied here on 2026-09-08.
         --
-        -- IT IS NOT FIXED ON THIS LINE BECAUSE THE FIX IS NOT IN THIS FILE. Both
-        -- tiers are wired and correct; what is wrong is that both are wired at
-        -- once. Silencing the browser side (the direction his "use all of the
-        -- sounds I gave you, including MATE_CUE being rewired to
-        -- PlaySoundFrontend" points, and the direction MATE_CUE itself took) is a
-        -- one-line change in HitFeedback.tsx plus a ui-src rebuild, and it wants
-        -- to land in a commit that owns the built bundle.
+        -- THE FIX WAS NOT ON THIS LINE, BECAUSE IT WAS NOT IN THIS FILE. Both
+        -- tiers were wired and correct; what was wrong is that both were wired
+        -- at once. The browser side is the one that went, which is the direction
+        -- his "use all of the sounds I gave you, including MATE_CUE being
+        -- rewired to PlaySoundFrontend" points and the direction MATE_CUE itself
+        -- took. HitFeedback.tsx still draws the banner and now makes no sound;
+        -- the note at the top of that file records why.
         ['elim'] = { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds',
                      name = 'Pilot_Perspective_Fire' },
         --   /brsfx play DLC_H3_Drone_Tranq_Weapon_Sounds Pilot_Perspective_Fire

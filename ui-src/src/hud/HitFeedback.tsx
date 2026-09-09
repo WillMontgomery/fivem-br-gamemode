@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNuiEvent } from '../bridge/useNuiEvent'
-import { play } from '../audio/cues'
 
 
 /**
@@ -19,10 +18,17 @@ import { play } from '../audio/cues'
  * reads; putting them in zustand would re-render every subscriber on every
  * bullet. The component owns them and the HUD never knows.
  *
- * SPLIT AUDIO, deliberately. The per-bullet MARKER is a native cue fired from
- * Lua (BR.Sfx, throttled at 60ms) because it fires during shooting and has to
- * duck. The elimination is ours, synthesised here: it fires once per kill and
- * being bespoke matters more than being mixed.
+ * NO AUDIO AT ALL, AND IT USED TO OWN HALF OF IT. Both sounds are native cues
+ * fired from Lua: the per-bullet MARKER because it fires during shooting and
+ * has to duck, and now the ELIMINATION too.
+ *
+ * The elimination was synthesised here for as long as `elim` resolved to
+ * nothing in config/audio.lua, which made this the only sound a kill made. The
+ * owner's own DLC pairs landed on 2026-09-08 and gave that key a real one, so
+ * state.lua's `BR.Sfx.play('elim')` and this component's `play('elim')` both
+ * fired on every kill you got. Owner, 2026-09-07, on exactly this shape: "so
+ * now when a squad mate goes DBNO we're playing an NUI sound AND a frontend
+ * sound". One event, one noise, and the surviving one is the pair he chose.
  */
 
 /** How long a marker lives. Short: it fires hundreds of times a match. */
@@ -49,9 +55,9 @@ export default function HitFeedback() {
     // The KILL_FEED sender carries a name and only a name -- that is the
     // banner. The DAMAGE_FEED sender carries the numbers and drives the marker.
     if (d.name) {
-      // Ours, not the engine's: this is a reward moment, and
-      // CHALLENGE_UNLOCKED is unmistakably a GTA Online sound.
-      play('elim')
+      // NO SOUND HERE. The sender plays `elim` natively in the same block that
+      // sends this envelope, so playing one here too is two noises per kill.
+      // See the note at the top of this file.
       setBanner({ id, name: d.name })
       window.clearTimeout(bannerTimer.current)
       bannerTimer.current = window.setTimeout(() => setBanner(null), BANNER_MS)
