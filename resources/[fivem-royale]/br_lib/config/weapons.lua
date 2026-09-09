@@ -247,21 +247,43 @@ BR.Config.Throwables = {
 --- them on every commit -- so a typo here fails the build instead of shipping a
 --- machete nobody can pick up.
 ---
---- Damage is banded by rarity rather than by GTA's own numbers: a Stone Hatchet
---- that two-shots is a legendary find, a Broken Bottle is what you swing when
---- the drop went badly.
+--- Damage is banded by rarity rather than by GTA's own numbers: a Broken Bottle
+--- is what you swing when the drop went badly, and the band climbs from there.
+---
+--- ═══ AND THE BAND STOPS AT UNCOMMON ═══
+---
+--- Owner, 2026-09-08, in two passes. First: "why are any melee epic? please fix
+--- that." Then, when the answer only capped them at RARE: "melee are not
+--- special. They should be more common."
+---
+--- SO NOTHING HERE IS RARE OR BETTER. Half the list is COMMON and the rest is
+--- UNCOMMON, which means a melee weapon can never occupy a rare, epic or
+--- legendary slot, and every one of those slots is a firearm. Opening a good
+--- crate and finding an axe was the thing he objected to, and a RARE ceiling
+--- still allowed it.
+---
+--- THE DAMAGE NUMBERS DID NOT MOVE, deliberately. They are his balance and he
+--- asked about rarity both times. The consequence is that the two bands are
+--- wide -- COMMON runs 32 to 46 and UNCOMMON 52 to 70 -- and a Battle Axe hits
+--- harder than most of the firearms that outrank it. That is the point rather
+--- than a side effect: melee is a thing you find early and often, and the
+--- reward for finding one is that it hurts, not that it was hard to get.
+---
+--- AND IT KEEPS MELEE OUT OF THE GUNSHOP FOR FREE (#274), which sells RARE and
+--- above. A second reason not to raise this ceiling later without reading
+--- br_lib/config/gunshop.lua first.
 BR.Config.Melee = {
     { id = 'knuckle',   name = 'WEAPON_KNUCKLE',      hash = 0xD8DF3C3C, label = 'Brass Knuckles',        rarity = R.COMMON,    damage = 32, melee = true, maxRange = 3.0, minInterval = 450 },
     { id = 'bottle',    name = 'WEAPON_BOTTLE',       hash = 0xF9E6AA4B, label = 'Broken Bottle',         rarity = R.COMMON,    damage = 32, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'crowbar',   name = 'WEAPON_CROWBAR',      hash = 0x84BD7BFD, label = 'Crowbar',               rarity = R.UNCOMMON,  damage = 40, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'bat',       name = 'WEAPON_BAT',          hash = 0x958A4A8F, label = 'Baseball Bat',          rarity = R.UNCOMMON,  damage = 44, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'wrench',    name = 'WEAPON_WRENCH',       hash = 0x19044EE0, label = 'Pipe Wrench',           rarity = R.UNCOMMON,  damage = 46, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'dagger',    name = 'WEAPON_DAGGER',       hash = 0x92A27487, label = 'Antique Cavalry Dagger',rarity = R.RARE,      damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'knife',     name = 'WEAPON_KNIFE',        hash = 0x99B507EA, label = 'Knife',                 rarity = R.RARE,      damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'switchblade',name= 'WEAPON_SWITCHBLADE',  hash = 0xDFE37640, label = 'Switchblade',           rarity = R.RARE,      damage = 54, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'machete',   name = 'WEAPON_MACHETE',      hash = 0xDD5DF8D9, label = 'Machete',               rarity = R.RARE,      damage = 58, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.RARE,      damage = 64, melee = true, maxRange = 3.0, minInterval = 450 },
-    { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.RARE,      damage = 70, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'crowbar',   name = 'WEAPON_CROWBAR',      hash = 0x84BD7BFD, label = 'Crowbar',               rarity = R.COMMON,    damage = 40, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'bat',       name = 'WEAPON_BAT',          hash = 0x958A4A8F, label = 'Baseball Bat',          rarity = R.COMMON,    damage = 44, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'wrench',    name = 'WEAPON_WRENCH',       hash = 0x19044EE0, label = 'Pipe Wrench',           rarity = R.COMMON,    damage = 46, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'dagger',    name = 'WEAPON_DAGGER',       hash = 0x92A27487, label = 'Antique Cavalry Dagger',rarity = R.UNCOMMON,  damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'knife',     name = 'WEAPON_KNIFE',        hash = 0x99B507EA, label = 'Knife',                 rarity = R.UNCOMMON,  damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'switchblade',name= 'WEAPON_SWITCHBLADE',  hash = 0xDFE37640, label = 'Switchblade',           rarity = R.UNCOMMON,  damage = 54, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'machete',   name = 'WEAPON_MACHETE',      hash = 0xDD5DF8D9, label = 'Machete',               rarity = R.UNCOMMON,  damage = 58, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.UNCOMMON,  damage = 64, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.UNCOMMON,  damage = 70, melee = true, maxRange = 3.0, minInterval = 450 },
 }
 
 --- FISTS, and they are a real weapon here for a reason that cost a playtest.
