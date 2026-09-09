@@ -511,3 +511,207 @@ function BR.ShotDamage(weapon, rarity, dist, component, cfg)
     local mult = BR.Config.BodyMultFor(component, dist)
     return base * mult, mult
 end
+
+-- ---------------------------------------------------------------------------
+-- The world's own damage, which is not ours and is still not unconditional
+-- ---------------------------------------------------------------------------
+--
+-- A HASH IS A CLAIM ABOUT THE CAUSE, NOT PROOF THAT THE CAUSE HAPPENED, and
+-- until 2026-09-08 the handler read it as proof. `weaponType` landing in
+-- BR.Config.Environmental returned before every check in this file -- inventory,
+-- state, squad, range, rate, damage value -- and did not cancel the event, so a
+-- client-composed payload labelled WEAPON_EXPLOSION with a large damage figure
+-- and somebody else's ped in `hitGlobalIds` reached the exit unopposed (audit
+-- finding 4).
+--
+-- WHAT MAKES THIS THE DANGEROUS ONE TO FIX. Falls, fire, drowning and cars are
+-- damage this project DELIBERATELY leaves to the engine: it kills the ped
+-- outright on the victim's own machine and the server finds out by sampling
+-- health (server/combat.lua's server-observed death check, and the note in
+-- BR.Combat.defeat about a knock arriving after a corpse). Making environmental
+-- damage strict does not make those safe -- it makes a player who falls off a
+-- building not die, which is a worse bug than the one being fixed.
+--
+-- SO THE SHAPE IS A BOUND, NOT A DENIAL, and it rests on what Cfx documents
+-- about the event: weaponDamageEvent fires when a client wants to damage a
+-- REMOTELY-OWNED entity. Your own fall, your own drowning, your own burning are
+-- applied to a ped you own; they are not this event, and where a build raises
+-- them anyway they arrive with the sender as their own victim. That case is
+-- never refused here, on any hash, for any reason.
+--
+-- What is left is the genuinely remote kind -- somebody's car exploding next to
+-- you, somebody running you over, somebody's fire -- and every one of those
+-- requires the two of them to be in the same match and near each other. That is
+-- a fact the server holds from its own 2Hz sampling and the client does not
+-- control, which is what makes it a boundary rather than a second claim.
+
+--- Why an environmental claim was refused. Deliberately NOT members of
+--- BR.ShotRefusal.
+---
+--- THE INCIDENT SURFACE IS PINNED BY A GATE AND BY AN EXHAUSTIVE TEST, and both
+--- of them are right to be: a reason quietly added to BR.ShotSuspicious starts
+--- opening cases somebody has to review. These are a different question -- was
+--- this event the world's -- reached by a different path, and they cancel
+--- without accusing anybody. Wiring them into the anticheat feed is a decision
+--- worth taking on its own evidence rather than as a side effect of closing a
+--- hole; until then a refused environmental claim is counted and printed to the
+--- server console, which no player reads.
+BR.EnvRefusal = {
+    NO_SENDER   = 'the sender is not in a match',
+    OTHER_MATCH = 'the world does not reach into another match',
+    NOT_LIVE    = 'the victim is not alive in this match',
+    TOO_FAR     = 'too far apart for the world to have done it',
+    TOO_BIG     = 'more damage than the world deals',
+    TOO_OFTEN   = 'more of these than the world produces',
+    BAD_POS     = 'an explosion nowhere',
+    NOT_OURS    = 'an explosive the server never issued',
+}
+
+--- How far a cause of each kind can honestly reach across two SAMPLED
+--- positions.
+---
+---   own      A fall, drowning, exhaustion, bleeding. These are computed on the
+---            ped they happen to, so a REMOTE one is already odd -- the honest
+---            residue is a passenger drowning in somebody else's car, which is
+---            a distance of nearly zero. Bounded tightly rather than refused,
+---            because "already odd" is not the same as impossible and this file
+---            has been wrong about that before.
+---   contact  A car, an animal, rotors, a fence. The two entities have to have
+---            touched.
+---   area     An explosion, a fire, a flare. The blast has a radius and neither
+---            end of it is a position the server can see, so this one is
+---            generous on purpose.
+---
+--- ANYTHING NOT LISTED IS `contact`, which is the strictest of the three that
+--- can still happen between two players. A hash added by a future game build
+--- lands there and is bounded rather than exempt -- the opposite of the default
+--- that produced this finding.
+BR.EnvClass = {
+    fall       = 'own',
+    drown      = 'own',
+    drownveh   = 'own',
+    exhaustion = 'own',
+    bleeding   = 'own',
+    explosion  = 'area',
+    fire       = 'area',
+    flare      = 'area',
+}
+
+--- @param env table|nil  a BR.Config.Environmental row
+--- @param cfg table|nil  BR.Config.Combat
+--- @return number
+function BR.EnvReach(env, cfg)
+    cfg = cfg or {}
+    local class = env and BR.EnvClass[env.id] or 'contact'
+    if class == 'area' then return cfg.envAreaM or 60.0 end
+    if class == 'own'  then return cfg.envOwnM  or 12.0 end
+    return cfg.envContactM or 25.0
+end
+
+--- May this remote environmental claim stand?
+---
+--- ORDERED SO THE ANSWER NAMES THE STRONGEST THING WRONG WITH IT. A claim
+--- against somebody in another match is a fabrication whatever its distance, and
+--- reporting it as TOO_FAR would file the mildest true statement about it.
+---
+--- @param env table|nil  the BR.Config.Environmental row the hash resolved to
+--- @param ctx table  { sameSrc, onRoster, sameMatch, victimLive, dist, amount,
+---                     burst }
+--- @param cfg table|nil BR.Config.Combat
+--- @return boolean ok, string|nil why
+function BR.EnvDamageAllowed(env, ctx, cfg)
+    cfg = cfg or {}
+
+    -- THE WORLD HURTING YOU IS NEVER REFUSED, AND THIS IS THE WHOLE SAFETY
+    -- ARGUMENT. Every path the owner cares about -- the fall off a building, the
+    -- fire, the drowning, the storm -- ends on the victim's own ped. Refusing
+    -- one of those to close a hole about OTHER people's peds would trade a
+    -- theoretical exploit for a player who steps off a roof and walks away.
+    if ctx.sameSrc then return true, nil end
+
+    -- A sender the roster has never heard of, or one outside a match: there is
+    -- no world here for anything to happen in.
+    if not ctx.onRoster then return false, BR.EnvRefusal.NO_SENDER end
+    if not ctx.sameMatch then return false, BR.EnvRefusal.OTHER_MATCH end
+    if not ctx.victimLive then return false, BR.EnvRefusal.NOT_LIVE end
+
+    -- Nil distance means the server has not sampled one of them yet, which is a
+    -- gap in OUR knowledge and never evidence against the player. Fail open.
+    if ctx.dist and ctx.dist > BR.EnvReach(env, cfg) then
+        return false, BR.EnvRefusal.TOO_FAR
+    end
+
+    -- THE ONE NUMBER WE CANNOT REWRITE, ONLY REFUSE. Environmental damage stays
+    -- the engine's -- there is no ledger of ours behind it -- so the figure in
+    -- the payload is the client's and it is applied. The cap is therefore set
+    -- well above anything lethal rather than anywhere near a plausible value: a
+    -- long fall or a car at speed is allowed to kill outright, and only a number
+    -- with no physical meaning is cut.
+    if (ctx.amount or 0) > (cfg.envMaxDamage or 400) then
+        return false, BR.EnvRefusal.TOO_BIG
+    end
+
+    if ctx.burst then return false, BR.EnvRefusal.TOO_OFTEN end
+
+    return true, nil
+end
+
+--- May this explosion happen at all?
+---
+--- THE SECOND ROUTE AROUND THE ADJUDICATOR. `explosionEvent` fires server-side,
+--- is cancellable, and this file's handler only ever read attribution out of it
+--- -- so an explosion nobody was issued, anywhere on the map, at any rate, was
+--- never anybody's business. Cfx's own OneSync cookbook is about cancelling
+--- exactly this event.
+---
+--- CANCELLING AN EXPLOSION IS VISIBLE, WHICH IS WHY THE BOUNDS ARE WIDE. Every
+--- one of them is a fact the sender does not control -- their own sampled
+--- position, their own inventory, how often they have done this -- and the
+--- ambient blasts the owner asked to keep working (a car going off a cliff, a
+--- petrol pump) pass all of them: they are not one of the three types this
+--- gamemode issues, so provenance never applies to them.
+---
+--- @param ctx table  { onRoster, posOk, dist, scale, burst, item, owns }
+--- @param cfg table|nil BR.Config.Combat
+--- @return boolean ok, string|nil why
+function BR.ExplosionAllowed(ctx, cfg)
+    cfg = cfg or {}
+
+    if not ctx.onRoster then return false, BR.EnvRefusal.NO_SENDER end
+    if not ctx.posOk then return false, BR.EnvRefusal.BAD_POS end
+
+    -- REACH, NOT PROXIMITY. A rocket travels 300m before it goes off and a
+    -- sticky can be driven somewhere and detonated, so this is deliberately the
+    -- longest reach in the arsenal plus room -- it is here to refuse an
+    -- explosion on the far side of an eight-kilometre map, not to decide
+    -- whether somebody could have thrown that far.
+    if ctx.dist and ctx.dist > (cfg.blastMaxDistM or 400.0) then
+        return false, BR.EnvRefusal.TOO_FAR
+    end
+
+    -- `damageScale` is the client's multiplier on the blast and reads 1.0 for
+    -- everything the game does by itself.
+    if ctx.scale and ctx.scale > (cfg.blastMaxScale or 2.0) then
+        return false, BR.EnvRefusal.TOO_BIG
+    end
+
+    if ctx.burst then return false, BR.EnvRefusal.TOO_OFTEN end
+
+    -- PROVENANCE, AND ONLY FOR THE THREE WE ISSUE. `item` is non-nil exactly
+    -- when the explosion type is one of ours (BR.Config.Combat.explosionTypes),
+    -- so a car fire or a gas pump never reaches this line. To have thrown a
+    -- grenade you must have been given one, and the server is the only party
+    -- that can give you one.
+    --
+    -- DELIBERATELY NOT THE CONSUMABLE CREDIT the damage path spends. The
+    -- explosion and its damage are two events with no guaranteed order, so a
+    -- consuming test here could refuse the visible blast of a grenade whose
+    -- damage had already been paid for -- and the failure would be an
+    -- explosion that never appeared, which is the kind of thing a player
+    -- reports as the game being broken.
+    if ctx.item and not ctx.owns then
+        return false, BR.EnvRefusal.NOT_OURS
+    end
+
+    return true, nil
+end

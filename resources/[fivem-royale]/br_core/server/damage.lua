@@ -43,6 +43,17 @@ local lastShot = {}
 -- stickies are three credits and a fourth blast is refused.
 local thrown = {}
 
+-- The last time each throwable left a player's hand, per shooter, and NOT
+-- consumed by anything.
+--
+-- THE SAME FACT AS `thrown` ABOVE, KEPT FOR A QUESTION THAT MUST NOT SPEND IT.
+-- explosionEvent has to ask "was this player ever issued one of these", and the
+-- credit queue answers a stricter question -- "is there an unspent one" -- whose
+-- answer changes when the damage path spends one. The two events have no
+-- guaranteed order, so asking the strict question there would sometimes cancel
+-- the VISIBLE blast of a grenade whose damage had already been accepted.
+local lastThrow = {}
+
 -- The projectile a blast belongs to, per shooter:
 --   blast[src] = { weapon = <item id>, at = <ms>, victims = { [src] = true },
 --                  n = <count> }
@@ -216,6 +227,10 @@ function BR.Damage.noteThrow(src, item, n)
         q[#q + 1] = now
     end
 
+    local lt = lastThrow[src]
+    if not lt then lt = {}; lastThrow[src] = lt end
+    lt[item] = now
+
     -- BOUNDED, because an unbounded queue is a way to bank authorizations. It
     -- cannot overflow from honest play -- a grenade stack is three -- so the cap
     -- is only ever reached by something the inventory should already have
@@ -293,6 +308,76 @@ local function consumeThrow(src, item)
     if not q or #q == 0 then return false end
     table.remove(q, 1)
     return true
+end
+
+--- Did the server ever watch this player throw one of these, recently?
+---
+--- The old BR.Damage.threwRecently, kept under a name that says it does not
+--- spend anything. Read only by the explosion gate -- see `lastThrow`.
+--- @param src integer
+--- @param item string
+--- @return boolean
+local function threwAtAll(src, item)
+    local t = lastThrow[src]
+    local at = t and t[item]
+    if not at then return false end
+    return (GetGameTimer() - at) <= (liveCfg().explosiveGraceMs or 30000)
+end
+
+--- Is this player carrying one of these anywhere in their inventory?
+---
+--- ANY SLOT, NOT THE ACTIVE ONE. The question the explosion gate asks is
+--- whether the server ever put this explosive in their hands, and a player who
+--- has switched to a rifle since throwing is the ordinary case rather than the
+--- suspicious one. Empty slots are stored as `false`, so the type test is
+--- load-bearing.
+--- @param src integer
+--- @param item string
+--- @return boolean
+local function holdsItem(src, item)
+    local inv = BR.Inv and BR.Inv.of(src)
+    if not inv or not inv.slots then return false end
+    for _, s in ipairs(inv.slots) do
+        if type(s) == 'table' and s.item == item then return true end
+    end
+    return false
+end
+
+--- Count one event against a per-player window, and say whether it is one too
+--- many.
+---
+--- A COUNTER RATHER THAN AN INTERVAL, because none of the things it bounds
+--- arrives at a steady rate: a car explosion is one event, engine fire ticks in
+--- a burst, and a refusal on the second tick of an honest fire would be worse
+--- than the claim it was guarding against. A ceiling over a window lets a real
+--- burst through and still stops a stream.
+--- @param tbl table    the per-player record table
+--- @param src integer
+--- @param windowMs number
+--- @param limit number
+--- @return boolean  true when this one is past the ceiling
+local function overRate(tbl, src, windowMs, limit)
+    local now = GetGameTimer()
+    local r = tbl[src]
+    if not r or (now - r.since) > windowMs then
+        r = { since = now, count = 0 }
+        tbl[src] = r
+    end
+    r.count = r.count + 1
+    return r.count > limit
+end
+
+-- Remote environmental claims and explosions, per player, for those ceilings.
+local envRate, blastRate = {}, {}
+
+--- A number the arithmetic below can survive. Rejects nil, NaN and infinity in
+--- one place, because a position that is any of the three sails through a
+--- distance comparison as false rather than failing.
+--- @param n any
+--- @return boolean
+local function finite(n)
+    n = tonumber(n)
+    return n ~= nil and n == n and n > -math.huge and n < math.huge
 end
 
 --- Everything the validator needs about a shooter/victim pair, from the
@@ -998,6 +1083,101 @@ local function targetsOf(data)
     return out
 end
 
+--- The world hurt somebody, or a client says it did.
+---
+--- A HASH IS A CLAIM ABOUT THE CAUSE. This used to be an unconditional exit:
+--- anything in BR.Config.Environmental was counted and returned, uncancelled,
+--- before inventory, state, squad, range, rate or damage value. So a payload
+--- labelled WEAPON_EXPLOSION carrying somebody else's ped and a large damage
+--- figure left through the one door with nothing behind it (audit finding 4).
+---
+--- WHAT IS NOT DONE HERE, AND WHY THAT IS THE POINT. The damage stays the
+--- engine's. There is no ledger of ours behind a fall, so there is no number to
+--- recompute and nothing to apply -- the only lever is CancelEvent, and using it
+--- on a real death means a player who steps off a building walks away. That is a
+--- worse bug than the one being closed, so the rules are bounds on what could
+--- physically have happened and nothing here is strict.
+---
+--- CANCELLATION IS PER EVENT, BECAUSE CancelEvent IS. One implausible victim
+--- refuses the whole payload rather than its own entry -- otherwise a fabricated
+--- target bundled beside a real one would ride in on it.
+--- @param shooter integer
+--- @param env table     the BR.Config.Environmental row the hash resolved to
+--- @param data table    the event payload
+local function handleEnvironmental(shooter, env, data)
+    local ecfg = liveCfg()
+    local ids  = targetsOf(data)
+
+    -- Nothing named, or nothing that resolved to a player: an NPC, a car, a
+    -- lamp post. Never our business, and counted as it always was.
+    if not ids then
+        BR.Damage.envHits = (BR.Damage.envHits or 0) + 1
+        return
+    end
+
+    local a = BR.Roster.get(shooter)
+    local remote, burst = false, false
+    local refused, why = nil, nil
+    local seen = {}
+
+    for _, netId in ipairs(ids) do
+        local victim = playerFromNetId(netId)
+        if victim and not seen[victim] then
+            seen[victim] = true
+
+            -- The rate ceiling is counted once per EVENT and only once a remote
+            -- victim has actually been found, so an ambient blast into scenery
+            -- costs a player nothing at all.
+            if victim ~= shooter and not remote then
+                remote = true
+                burst  = overRate(envRate, shooter, ecfg.envWindowMs or 5000,
+                                  ecfg.envMaxPerWindow or 20)
+            end
+
+            local b = BR.Roster.get(victim)
+            local dist = nil
+            if a and b and a.pos and b.pos then
+                dist = BR.Dist3(a.pos.x, a.pos.y, a.pos.z,
+                                b.pos.x, b.pos.y, b.pos.z)
+            end
+
+            local ok
+            ok, why = BR.EnvDamageAllowed(env, {
+                sameSrc    = victim == shooter,
+                onRoster   = a ~= nil and a.matchId ~= nil,
+                sameMatch  = a ~= nil and b ~= nil and a.matchId ~= nil
+                             and a.matchId == b.matchId,
+                victimLive = b ~= nil and (b.state == BR.PlayerState.ALIVE
+                                        or b.state == BR.PlayerState.DBNO),
+                dist       = dist,
+                amount     = tonumber(data.weaponDamage) or 0,
+                burst      = burst,
+            }, ecfg)
+
+            if not ok then refused = why end
+        end
+    end
+
+    if not refused then
+        BR.Damage.envHits = (BR.Damage.envHits or 0) + 1
+        return
+    end
+
+    BR.Damage.envRefused = (BR.Damage.envRefused or 0) + 1
+
+    -- BEHIND cfg.enforce WITH EVERY OTHER CANCEL IN THIS FILE, so `/brdamage
+    -- off` still backs the whole takeover out in one command without a
+    -- redeploy. A boundary that could not be switched off live would be the one
+    -- thing in here the owner could not undo from the console.
+    if cfg.enforce then CancelEvent() end
+
+    -- The server console, which no player reads. Nothing is shown to the sender
+    -- and no incident is filed -- see BR.EnvRefusal for why these are not
+    -- BR.ShotRefusal values.
+    print(('[br_core] environmental claim refused: %d, %s (%s)')
+        :format(shooter, tostring(env.id), tostring(refused)))
+end
+
 AddEventHandler('weaponDamageEvent', function(sender, data)
     if recording > 0 then record(sender, data) end
     if type(data) ~= 'table' then return end
@@ -1030,12 +1210,19 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     if not fired then
         local env = BR.Config.EnvironmentalFor(data.weaponType)
         if env then
-            -- The world hurt somebody. Not our business, and never a refusal:
-            -- storm, falls and fire have always been the engine's, and an
-            -- exploding car is the same kind of thing (user question,
-            -- 2026-08-08: would NOT_THROWN block ambient explosions? It
-            -- cannot -- those never reach the validator at all).
-            BR.Damage.envHits = (BR.Damage.envHits or 0) + 1
+            -- The world hurt somebody, and the damage stays the engine's:
+            -- storm, falls and fire have always been, and an exploding car is
+            -- the same kind of thing (user question, 2026-08-08: would
+            -- NOT_THROWN block ambient explosions? It cannot -- those never
+            -- reach the validator at all).
+            --
+            -- WHAT IS NEW IS THAT THE LABEL IS NO LONGER PROOF. A hash says
+            -- what the client claims caused the damage; whether the world could
+            -- have done that to that player is a question about positions and
+            -- match state, which the server holds. See handleEnvironmental --
+            -- and note that a hit on the sender's OWN ped is still never
+            -- refused, whatever the hash says.
+            handleEnvironmental(shooter, env, data)
             return
         end
         -- Falls through to the loop below, where it is refused as NO_WEAPON
@@ -1424,10 +1611,73 @@ local function noteExplosion(owner, ev)
     BR.Damage.explosions = (BR.Damage.explosions or 0) + 1
 end
 
+--- Is this explosion one that could have happened?
+---
+--- THE SECOND ROUTE AROUND THE ADJUDICATOR, and until now the handler below only
+--- read attribution out of it: an explosion nobody was issued, anywhere on the
+--- map, at any rate, was never refused (audit finding 4). Cfx's own OneSync
+--- cookbook is about cancelling exactly this event, and the fields are the ones
+--- it names.
+---
+--- THE BOUNDS ARE WIDE ON PURPOSE. Cancelling an explosion is VISIBLE -- a
+--- grenade that lands and does nothing reads as the game being broken -- so
+--- every rule here is a fact the sender does not control and none of them is
+--- near a plausible value. The ambient blasts the owner asked to keep working
+--- pass all of them: a car going off a cliff is not one of the three types this
+--- gamemode issues, so provenance never applies to it.
+--- @param owner integer
+--- @param ev table
+--- @return boolean ok, string|nil why
+local function explosionAllowed(owner, ev)
+    local ecfg = liveCfg()
+    local e = BR.Roster.get(owner)
+
+    local item = (cfg.explosionTypes or {})[math.tointeger(ev.explosionType) or -1]
+
+    local posOk = finite(ev.posX) and finite(ev.posY) and finite(ev.posZ)
+    local dist  = nil
+    if posOk and e and e.pos then
+        dist = BR.Dist3(e.pos.x, e.pos.y, e.pos.z,
+                        tonumber(ev.posX), tonumber(ev.posY), tonumber(ev.posZ))
+    end
+
+    return BR.ExplosionAllowed({
+        -- LEFT is the one state that means "there is nobody here". A player who
+        -- has just been eliminated may still have something in the air, and
+        -- cancelling that would be a grenade that visibly failed to go off.
+        onRoster = e ~= nil and e.state ~= BR.PlayerState.LEFT,
+        posOk    = posOk,
+        dist     = dist,
+        scale    = tonumber(ev.damageScale),
+        burst    = overRate(blastRate, owner, ecfg.blastWindowRateMs or 5000,
+                            ecfg.blastMaxPerWindow or 12),
+        item     = item,
+        -- Non-consuming, deliberately: see BR.ExplosionAllowed and `lastThrow`.
+        owns     = item ~= nil
+                   and (holdsItem(owner, item) or threwAtAll(owner, item)),
+    }, ecfg)
+end
+
 AddEventHandler('explosionEvent', function(sender, ev)
     if type(ev) ~= 'table' then return end
     local owner = tonumber(sender)
-    if owner then noteExplosion(owner, ev) end
+
+    -- NO SENDER IS NOT A REFUSAL. Source 0 is the server itself and an
+    -- unattributed blast is exactly what BR.Config.Combat.explosionTypes already
+    -- declines to claim -- cancelling those would be this file deciding the
+    -- world may not have weather.
+    if not owner or owner == 0 then return end
+
+    local ok, why = explosionAllowed(owner, ev)
+    if not ok then
+        BR.Damage.blastsRefused = (BR.Damage.blastsRefused or 0) + 1
+        if cfg.enforce then CancelEvent() end
+        print(('[br_core] explosion refused: %d, type %s (%s)')
+            :format(owner, tostring(ev.explosionType), tostring(why)))
+        return
+    end
+
+    noteExplosion(owner, ev)
 end)
 
 --- Credit health lost inside somebody's fire to whoever lit it.
@@ -1541,9 +1791,15 @@ end, true)
 --- have their first shot refused as too fast.
 --- @param src integer
 function BR.Damage.forget(src)
-    lastShot[src] = nil
-    thrown[src]   = nil
-    selfHits[src] = nil
+    lastShot[src]  = nil
+    thrown[src]    = nil
+    lastThrow[src] = nil
+    selfHits[src]  = nil
+    -- The two rate ledgers, for the same reason everything else here is
+    -- cleared: a recycled server id must not inherit a ceiling somebody else
+    -- filled, or its next holder's first fall is refused as TOO_OFTEN.
+    envRate[src]   = nil
+    blastRate[src] = nil
     -- ...and the projectile they had in the air. A recycled server id must not
     -- inherit an open launch authorization: it would hand its next holder one
     -- free blast, bounded only by the window it was opened in.

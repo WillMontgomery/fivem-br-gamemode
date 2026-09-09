@@ -1395,6 +1395,162 @@ do
         'and so does one adjudicated with no config at all')
 end
 
+describe('combat.environmental')
+do
+    -- A HASH IS A CLAIM ABOUT THE CAUSE, NOT PROOF THAT THE CAUSE HAPPENED.
+    --
+    --   "a remote-target event labelled WEAPON_EXPLOSION, with a large
+    --    client-supplied damage figure, reached the early return without
+    --    cancellation."
+    --                              -- security audit, finding 4, 2026-09-08
+    --
+    -- THE FIX THAT WOULD HAVE BEEN WORSE THAN THE BUG is the one this block
+    -- spends most of its assertions ruling out. Falls, fire, drowning and cars
+    -- are damage this project deliberately leaves to the engine; making them
+    -- strict means a player steps off a building and walks away. So the first
+    -- assertion here is the one that matters most, and everything after it is
+    -- the bound.
+    local cfg = BR.Config.Combat
+    local FALL = BR.Config.EnvironmentalFor(BR.Config.Environmental[1].hash)
+    local BOOM = BR.Config.EnvironmentalFor(0x2024F4E8)   -- WEAPON_EXPLOSION
+    local CAR  = BR.Config.EnvironmentalFor(0xA36D413E)   -- RUN_OVER_BY_CAR
+    ok(FALL and FALL.id == 'fall', 'the fall hash resolves to a fall')
+    ok(BOOM and BOOM.id == 'explosion' and CAR and CAR.id == 'runover',
+        'and the explosion and roadkill hashes resolve too')
+
+    -- ═══ THE WORLD HURTING YOU IS NEVER REFUSED ═══
+    --
+    -- Deliberately with every other term set to its worst value: no match, a
+    -- dead victim, half the map away, an absurd damage figure and mid-burst.
+    -- None of them may matter, because the sender IS the victim and that is a
+    -- player being hurt by the world on their own machine.
+    for _, env in ipairs({ FALL, BOOM, CAR }) do
+        ok(BR.EnvDamageAllowed(env, {
+            sameSrc = true, onRoster = false, sameMatch = false,
+            victimLive = false, dist = 9000.0, amount = 99999, burst = true,
+        }, cfg), ('a player hurt by %s on their own ped is never refused')
+            :format(env.id))
+    end
+
+    -- ═══ AND A REMOTE CLAIM IS BOUNDED ═══
+    local function remote(over)
+        local c = { sameSrc = false, onRoster = true, sameMatch = true,
+                    victimLive = true, dist = 4.0, amount = 60, burst = false }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    ok(BR.EnvDamageAllowed(CAR, remote(), cfg),
+        'somebody running somebody else over four metres away still happens')
+
+    local _, whyMatch = BR.EnvDamageAllowed(BOOM, remote({ sameMatch = false }),
+                                            cfg)
+    ok(whyMatch == BR.EnvRefusal.OTHER_MATCH,
+        'the world does not reach into another match', tostring(whyMatch))
+
+    local _, whyRoster = BR.EnvDamageAllowed(BOOM, remote({ onRoster = false }),
+                                             cfg)
+    ok(whyRoster == BR.EnvRefusal.NO_SENDER,
+        'and a sender in no match at all has no world to do it in',
+        tostring(whyRoster))
+
+    local _, whyFar = BR.EnvDamageAllowed(BOOM, remote({ dist = 900.0 }), cfg)
+    ok(whyFar == BR.EnvRefusal.TOO_FAR,
+        'an explosion nine hundred metres away did not catch them',
+        tostring(whyFar))
+
+    -- THE ONE NUMBER THAT CANNOT BE REWRITTEN, ONLY REFUSED. There is no
+    -- ledger of ours behind environmental damage, so the figure in the payload
+    -- is the client's and it lands. The cap sits well above anything lethal.
+    local _, whyBig = BR.EnvDamageAllowed(BOOM, remote({ amount = 99999 }), cfg)
+    ok(whyBig == BR.EnvRefusal.TOO_BIG,
+        'and a five-figure damage number is not a thing the world does',
+        tostring(whyBig))
+    ok(BR.EnvDamageAllowed(BOOM, remote({ amount = 200 }), cfg),
+        'while a number that merely kills outright is allowed to')
+
+    local _, whyOften = BR.EnvDamageAllowed(BOOM, remote({ burst = true }), cfg)
+    ok(whyOften == BR.EnvRefusal.TOO_OFTEN,
+        'and a stream of them is refused by rate rather than by plausibility',
+        tostring(whyOften))
+
+    -- A MISSING SAMPLE IS A GAP IN OUR KNOWLEDGE, NEVER EVIDENCE. Positions
+    -- arrive at 2Hz and a player who has just spawned has none.
+    ok(BR.EnvDamageAllowed(CAR, remote({ dist = nil }), cfg),
+        'a hit the server cannot measure the distance of is not refused for it')
+
+    -- ═══ REACH IS PER CAUSE ═══
+    ok(BR.EnvReach(FALL, cfg) < BR.EnvReach(CAR, cfg),
+        'a fall reaches less far between two players than a car does',
+        ('%.0f vs %.0f'):format(BR.EnvReach(FALL, cfg), BR.EnvReach(CAR, cfg)))
+    ok(BR.EnvReach(BOOM, cfg) > BR.EnvReach(CAR, cfg),
+        'and a blast reaches further than either',
+        ('%.0f'):format(BR.EnvReach(BOOM, cfg)))
+    -- A HASH FROM A FUTURE GAME BUILD LANDS ON `contact` RATHER THAN EXEMPT,
+    -- which is the opposite of the default that produced this finding.
+    ok(BR.EnvReach({ id = 'somethingnew' }, cfg) == BR.EnvReach(CAR, cfg),
+        'an unclassified cause is bounded like contact, not left unbounded')
+    ok(BR.EnvReach(nil, cfg) > 0.0, 'and so is one with no row at all')
+
+    -- ═══ EXPLOSIONS, THE SECOND ROUTE ═══
+    local function blast(over)
+        local c = { onRoster = true, posOk = true, dist = 20.0, scale = 1.0,
+                    burst = false, item = 'grenade', owns = true }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    ok(BR.ExplosionAllowed(blast(), cfg),
+        'a grenade from somebody who was issued one goes off')
+
+    local _, whyNoOne = BR.ExplosionAllowed(blast({ onRoster = false }), cfg)
+    ok(whyNoOne == BR.EnvRefusal.NO_SENDER,
+        'an explosion from nobody does not', tostring(whyNoOne))
+
+    local _, whyPos = BR.ExplosionAllowed(blast({ posOk = false }), cfg)
+    ok(whyPos == BR.EnvRefusal.BAD_POS,
+        'and neither does one at coordinates that are not numbers',
+        tostring(whyPos))
+
+    local _, whyAcross = BR.ExplosionAllowed(blast({ dist = 4000.0 }), cfg)
+    ok(whyAcross == BR.EnvRefusal.TOO_FAR,
+        'or one on the far side of the map from the player who caused it',
+        tostring(whyAcross))
+    -- REACH, NOT PROXIMITY: a rocket travels 300m before it goes off and a
+    -- sticky can be driven somewhere first. The bound is there to refuse an
+    -- eight-kilometre map, not to decide how far somebody can throw.
+    ok(BR.ExplosionAllowed(blast({ dist = 300.0 }), cfg),
+        'while a rocket that flew three hundred metres still explodes')
+
+    local _, whyScale = BR.ExplosionAllowed(blast({ scale = 50.0 }), cfg)
+    ok(whyScale == BR.EnvRefusal.TOO_BIG,
+        'a fifty-times damage scale is the client editing the blast',
+        tostring(whyScale))
+
+    local _, whyBurst = BR.ExplosionAllowed(blast({ burst = true }), cfg)
+    ok(whyBurst == BR.EnvRefusal.TOO_OFTEN,
+        'and a stream of explosions is refused by rate', tostring(whyBurst))
+
+    local _, whyNotOurs = BR.ExplosionAllowed(blast({ owns = false }), cfg)
+    ok(whyNotOurs == BR.EnvRefusal.NOT_OURS,
+        'a grenade from somebody the server never gave one to is a fabrication',
+        tostring(whyNotOurs))
+
+    -- ...AND AN AMBIENT BLAST IS NOT ASKED FOR PROVENANCE AT ALL. "It's by
+    -- design that vehicles in the game can explode under normal circumstances,
+    -- without a killer necessarily" (owner, 2026-08-21). `item` is nil for
+    -- every type outside BR.Config.Combat.explosionTypes, so a petrol pump
+    -- never reaches that line.
+    --
+    -- Built by hand rather than through `blast`, because an override table
+    -- cannot carry a nil: `{ item = nil }` stores nothing, pairs() never sees
+    -- it, and the assertion would quietly test a grenade again.
+    ok(BR.ExplosionAllowed({ onRoster = true, posOk = true, dist = 20.0,
+                             scale = 1.0, burst = false,
+                             item = nil, owns = false }, cfg),
+        'a car going off a cliff still explodes, owned by nobody')
+end
+
 describe('combat.refusal.classes')
 do
     -- WHAT CAN BECOME AN INCIDENT, PINNED.

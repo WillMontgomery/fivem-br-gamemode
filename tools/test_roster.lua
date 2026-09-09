@@ -7990,6 +7990,15 @@ do
     b.lastHitBy, b.lastHitWeapon = nil, nil
 
     -- Player 1 lands a molotov next to player 2.
+    --
+    -- THE THROW IS PART OF THE FIXTURE NOW, and it was always part of reality:
+    -- to land a molotov you have to have been given one and thrown it, and
+    -- server/inventory.lua tells BR.Damage about that the moment the count
+    -- falls. The explosion gate asks for exactly that (audit finding 4) -- an
+    -- explosion of a type this gamemode issues, from somebody the server never
+    -- issued one to, is the fabrication it exists to refuse. Without this line
+    -- the block would be asserting that an explosion from nowhere lights a fire.
+    BR.Damage.noteThrow(1, 'molotov')
     fire('explosionEvent', 1, 1,
         { explosionType = 3, posX = 3.0, posY = 0.0, posZ = 30.0 })
 
@@ -8039,6 +8048,7 @@ do
 
     -- THE FIRE GOES OUT. Credit must not outlive the flames, or a storm death
     -- half a minute later belongs to whoever last threw something.
+    BR.Damage.noteThrow(1, 'molotov')
     fire('explosionEvent', 1, 1,
         { explosionType = 3, posX = 3.0, posY = 0.0, posZ = 30.0 })
     fakeTime = fakeTime + (BR.Config.Combat.fireLifeMs or 20000) + 2000
@@ -9441,6 +9451,232 @@ do
     ok(BR.Roster.get(2).hp == 100.0,
         'a fourth blast from three throws is refused',
         tostring(BR.Roster.get(2).hp))
+end
+
+describe('damage.environmental')
+do
+    -- A HASH IS A CLAIM ABOUT THE CAUSE (audit finding 4, 2026-09-08).
+    --
+    --   "a remote-target event labelled WEAPON_EXPLOSION, with a large
+    --    client-supplied damage figure, reached the early return without
+    --    cancellation."
+    --
+    -- HALF OF THIS BLOCK IS ABOUT THE FIX BEING WORSE THAN THE BUG, and that is
+    -- the right proportion. Falls, fire, drowning and cars are damage this
+    -- project deliberately leaves to the engine -- it kills the ped outright on
+    -- the victim's own machine and the server finds out by sampling health.
+    -- Making environmental damage strict means a player steps off a building
+    -- and walks away, which is worse than the thing being closed. So the
+    -- assertions here come in pairs: the fabrication is refused, and the real
+    -- death still happens.
+    local EXPLOSION = GetHashKey('WEAPON_EXPLOSION')
+    local FALL      = GetHashKey('WEAPON_FALL')
+    local RUNOVER   = GetHashKey('WEAPON_RUN_OVER_BY_CAR')
+
+    -- CancelEvent is the only lever this path has -- there is no ledger of ours
+    -- behind a fall to recompute -- so whether it was pulled IS the assertion.
+    local realCancel = CancelEvent
+    local cancels = 0
+    CancelEvent = function() cancels = cancels + 1 end
+
+    --- Two players stood together and a third half a kilometre away.
+    ---
+    --- POSITIONS FLOW PED -> SAMPLER -> ROSTER, so they are set on the ped and
+    --- stepped in. Writing entry.pos here would be overwritten before the
+    --- validator read it, and the block would be asserting against zeroes.
+    local function envMatch()
+        reset()
+        queueUp(1, 'Near', BR.Mode.SOLO.key)
+        queueUp(2, 'Victim', BR.Mode.SOLO.key)
+        queueUp(3, 'Far', BR.Mode.SOLO.key)
+        for s = 1, 3 do pedHealth[1000 + s] = 200 end
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+        theMatch().state = BR.MatchState.PLAYING
+        setPos(1, 0.0, 0.0, 30.0)
+        setPos(2, 6.0, 0.0, 30.0)
+        setPos(3, 500.0, 500.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        for s = 1, 3 do BR.Damage.forget(s); BR.Damage.forgetRefusals(s) end
+        cancels = 0
+        sent = {}
+    end
+
+    -- ═══ THE AUDIT'S CASE ═══
+    envMatch()
+    local hits0 = BR.Damage.envHits or 0
+    local ref0  = BR.Damage.envRefused or 0
+    fire('weaponDamageEvent', 3, 3, {
+        damageType = 3, weaponType = EXPLOSION, hitComponent = 0,
+        weaponDamage = 5000, hitGlobalIds = { 1002 },
+    })
+    ok(cancels > 0,
+        'an explosion claimed against somebody half a kilometre away is cancelled',
+        tostring(cancels))
+    ok((BR.Damage.envRefused or 0) == ref0 + 1, 'and counted as refused',
+        ('%d -> %d'):format(ref0, BR.Damage.envRefused or 0))
+    ok((BR.Damage.envHits or 0) == hits0,
+        'rather than counted as the world hurting somebody',
+        ('%d -> %d'):format(hits0, BR.Damage.envHits or 0))
+
+    -- ...AND THE DAMAGE FIGURE ON ITS OWN. The number in the payload is the
+    -- client's and there is no ledger of ours to replace it with, so an absurd
+    -- one is refused even from somebody stood right there.
+    envMatch()
+    ref0 = BR.Damage.envRefused or 0
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = EXPLOSION, hitComponent = 0,
+        weaponDamage = 5000, hitGlobalIds = { 1002 },
+    })
+    ok(cancels > 0 and (BR.Damage.envRefused or 0) == ref0 + 1,
+        'and so is a five-figure damage number from six metres away',
+        tostring(cancels))
+
+    -- ═══ AND EVERY LEGITIMATE PATH IT MUST NOT COST ═══
+    --
+    -- A FALL, WHICH IS THE ONE THE OWNER WOULD NOTICE. Deliberately with an
+    -- absurd damage figure attached: the sender IS the victim, so nothing else
+    -- about the claim is allowed to matter. The worst a liar achieves on this
+    -- path is hurting themselves.
+    envMatch()
+    hits0 = BR.Damage.envHits or 0
+    ref0  = BR.Damage.envRefused or 0
+    fire('weaponDamageEvent', 2, 2, {
+        damageType = 3, weaponType = FALL, hitComponent = 0,
+        weaponDamage = 5000, hitGlobalIds = { 1002 },
+    })
+    ok(cancels == 0, 'a fall onto the sender\'s own ped is never cancelled',
+        tostring(cancels))
+    ok((BR.Damage.envHits or 0) == hits0 + 1,
+        'and is still counted as the world hurting somebody')
+    ok((BR.Damage.envRefused or 0) == ref0, 'and never as a refusal')
+
+    -- ...AND THE DEATH AT THE END OF IT STILL LANDS, which is the assertion the
+    -- whole finding hangs on. The engine killed the ped on the victim's own
+    -- machine; the server learns about it by sampling health, and nothing here
+    -- may stand between those two facts.
+    pedHealth[1002] = 0
+    for _ = 1, 8 do
+        setPos(2, 6.0, 0.0, 30.0)
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+    end
+    ok(BR.Roster.get(2).state == BR.PlayerState.OUT,
+        'a player who falls off a building still dies',
+        tostring(BR.Roster.get(2).state))
+    pedHealth[1002] = nil
+
+    -- A CAR, six metres away, which is a whole roadkill ledger downstream of
+    -- this event surviving or not (server/vehicles.lua reads the health drop).
+    envMatch()
+    ref0 = BR.Damage.envRefused or 0
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = RUNOVER, hitComponent = 0,
+        weaponDamage = 120, hitGlobalIds = { 1002 },
+    })
+    ok(cancels == 0 and (BR.Damage.envRefused or 0) == ref0,
+        'somebody running somebody else over from six metres still lands',
+        tostring(cancels))
+
+    -- A FIRE DEATH, END TO END. The molotov's damage never reaches the server
+    -- at all -- measured 2026-08-08, not one payload printed -- so the whole
+    -- feature is the explosionEvent ledger, and cancelling that blast would
+    -- take the kill's owner with it.
+    envMatch()
+    BR.Damage.noteThrow(1, 'molotov')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 3, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels == 0, 'a molotov from somebody who threw one goes off',
+        tostring(cancels))
+
+    -- ONE PASS TO TAKE THE BASELINE, THEN THE BURN. `damage.fires` returns
+    -- before touching `burnHp` while there are no fires, so the first pass
+    -- after one is lit only establishes what the victim had -- and a test that
+    -- skipped it would be asserting against a nil.
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    pedHealth[1002] = 164
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(2).lastHitBy == 1,
+        'and health lost inside it is still credited to whoever lit it',
+        tostring(BR.Roster.get(2).lastHitBy))
+    ok(BR.Combat.attributedKiller(BR.Roster.get(2)) == 1,
+        'so a molotov kill still has a killer',
+        tostring(BR.Combat.attributedKiller(BR.Roster.get(2))))
+    pedHealth[1002] = nil
+
+    -- AN AMBIENT BLAST, which the owner asked for by name: "It's by design that
+    -- vehicles in the game can explode under normal circumstances, without a
+    -- killer necessarily" (2026-08-21). Type 7 is not one of the three this
+    -- gamemode issues, so it is never asked where it came from.
+    envMatch()
+    fire('explosionEvent', 1, 1,
+        { explosionType = 7, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels == 0, 'a car going off a cliff still explodes, owned by nobody',
+        tostring(cancels))
+
+    -- ═══ THE SECOND ROUTE, CLOSED ═══
+    --
+    -- explosionEvent only ever read attribution out of the payload, so an
+    -- explosion nobody was issued, anywhere on the map, at any rate, was never
+    -- refused.
+    envMatch()
+    local blasts0 = BR.Damage.blastsRefused or 0
+    fire('explosionEvent', 1, 1,
+        { explosionType = 0, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels > 0, 'a grenade from somebody who was never given one is cancelled',
+        tostring(cancels))
+    ok((BR.Damage.blastsRefused or 0) == blasts0 + 1, 'and counted',
+        ('%d -> %d'):format(blasts0, BR.Damage.blastsRefused or 0))
+
+    envMatch()
+    blasts0 = BR.Damage.blastsRefused or 0
+    BR.Damage.noteThrow(1, 'grenade')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 0, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels == 0 and (BR.Damage.blastsRefused or 0) == blasts0,
+        'while one from somebody the server watched throw one is not',
+        tostring(cancels))
+
+    -- THE THROW CREDIT IS NOT SPENT BY THE EXPLOSION, and it must not be: the
+    -- blast and its damage are two events with no guaranteed order, so a
+    -- consuming test here would sometimes cancel the visible explosion of a
+    -- grenade whose damage had already been paid for.
+    ok(BR.Damage.threwRecently(1, 'grenade'),
+        'and the credit the damage path needs is still there afterwards')
+
+    envMatch()
+    BR.Damage.noteThrow(1, 'grenade')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 0, posX = 4000.0, posY = 4000.0, posZ = 30.0 })
+    ok(cancels > 0,
+        'an explosion four kilometres from the player who caused it is cancelled',
+        tostring(cancels))
+
+    -- A POSITION THAT IS NOT A POSITION. NaN sails through every comparison as
+    -- false, so a distance check on its own would pass it.
+    envMatch()
+    BR.Damage.noteThrow(1, 'grenade')
+    fire('explosionEvent', 1, 1,
+        { explosionType = 0, posX = 0.0 / 0.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels > 0, 'and so is one at coordinates that are not numbers',
+        tostring(cancels))
+
+    -- SOURCE 0 IS THE SERVER, AND IS NOT A REFUSAL. An unattributed blast is
+    -- exactly what explosionTypes already declines to claim; cancelling those
+    -- would be this file deciding the world may not have weather.
+    envMatch()
+    blasts0 = BR.Damage.blastsRefused or 0
+    fire('explosionEvent', 0, 0,
+        { explosionType = 7, posX = 6.0, posY = 0.0, posZ = 30.0 })
+    ok(cancels == 0 and (BR.Damage.blastsRefused or 0) == blasts0,
+        'an explosion with no sender is left entirely alone',
+        tostring(cancels))
+
+    CancelEvent = realCancel
 end
 
 describe('damage.notThrownIsReachable')
