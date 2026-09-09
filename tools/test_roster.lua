@@ -22657,6 +22657,171 @@ do
     BR.Config.Match.maxSquadSize = capWas
 end
 
+-- ---------------------------------------------------------------------------
+-- B2: THE WARMUP HOLD IS ONCE PER ACCOUNT, NOT ONCE PER MATCH
+-- ---------------------------------------------------------------------------
+
+describe('tutorial.holdOncePerAccount')
+do
+    -- ═══ WHAT THIS IS FOR ═══
+    --
+    -- Owner, 2026-09-08: a player completed the in-game walkthrough in solos,
+    -- was paid, left warmup, queued for squads, "then were given deferred
+    -- matchmaking and shown the in-game tutorial a second time."
+    --
+    -- The deferred matchmaking is THIS function saying yes twice. Its only test
+    -- was a STATE test -- are you in WARMUP with a matchId -- and a player who
+    -- finished in match 1 satisfies that in match 2 exactly as a first-timer
+    -- does. The answer that separates them was on this side the whole time:
+    -- the profile row has said 'done' since they were paid, and
+    -- BR.Market.tutorialOf was written to hand it over and had NO CALLERS
+    -- anywhere in the tree.
+    --
+    -- ═══ WHY BR.Market IS STUBBED RATHER THAN LOADED ═══
+    --
+    -- server/market.lua is not in this suite's module list and does not belong
+    -- in it: it would drag in the whole inventory fetch, the DynamoDB `ask`
+    -- seam and the Volts ledger to assert one string. What roster.lua consumes
+    -- is one function returning one of three values, so that is what the
+    -- fixture provides -- and providing it as a global is also faithful, since
+    -- market.lua loads AFTER roster.lua (fxmanifest 542 vs 639) and this can
+    -- only ever be a call-time read.
+    local marketWas = BR.Market
+    local devWas = BR.Dev
+    local answer = ''
+    BR.Market = { tutorialOf = function() return answer end }
+
+    --- Put src on the pad, mid-warmup, with a matchId.
+    ---
+    --- THE HOLD IS ONLY GRANTABLE FROM THERE (the B1 mirror above), so every
+    --- assertion in this block has to start from a genuine warmup rather than
+    --- from a hand-set entry -- a fixture that wrote `state` and `matchId`
+    --- directly would pass whatever the real doors do.
+    local function onThePad(src)
+        BR.Config.Match.minToStart = 1
+        join(src, 'Learner')
+        fire(BR.Net.QUEUE_JOIN, src, { mode = BR.Mode.SOLO.key })
+        for _ = 1, 4 do fakeTime = fakeTime + 250; BR.Sched.step(fakeTime) end
+        return BR.Roster.get(src)
+    end
+
+    -- ── A GENUINE FIRST-TIMER IS STILL HELD ─────────────────────────────
+    --
+    -- FIRST, because it is the assertion that stops the fix being a deletion.
+    -- '' is "never answered", which is what every account reads back until it
+    -- finishes or declines.
+    reset()
+    BR.Server.devMode = true
+    answer = ''
+    local e = onThePad(1)
+    ok(e ~= nil and e.state == BR.PlayerState.WARMUP and e.matchId ~= nil,
+        'the learner is on the pad, mid-warmup', e and e.state)
+    ok(BR.Roster.setTutorialGame(1, true) == true,
+        'A BRAND NEW ACCOUNT IS HELD -- the row says \'\' and the walkthrough '
+            .. 'gets its warmup')
+    ok(BR.Roster.tutorialGameIn(BR.Roster.get(1).matchId) == 1,
+        'and the match counts them, which is what freezes its clock')
+
+    -- ── AN ABANDONED RUN IS STILL NOT A COMPLETION ──────────────────────
+    --
+    -- The row is only written by declining or by being PAID, and an abandoned
+    -- run is neither -- so it still reads '' and the second go the owner asked
+    -- for on 2026-09-07 is still granted. This is the negative that catches a
+    -- fix that went too far and started refusing on "has ever started one".
+    reset()
+    BR.Server.devMode = true
+    answer = ''
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == true, 'they take the walkthrough')
+    ok(BR.Roster.setTutorialGame(1, false) == false,
+        'and abandon it -- giving the hold up is believed on sight')
+    ok(BR.Roster.setTutorialGame(1, true) == true,
+        'AND THEY MAY HAVE ANOTHER GO -- an abandoned run wrote nothing to the '
+            .. 'profile row, so the account is still unanswered')
+
+    -- ── THE OWNER'S SEQUENCE: THE SECOND MATCH IS REFUSED ───────────────
+    --
+    -- The player finished in solos, so the row says 'done'. They queue for
+    -- squads, get matched, and the page asks for the hold again. This is the
+    -- line that now says no, and the deferred matchmaking is what it prevents.
+    reset()
+    BR.Server.devMode = true
+    answer = 'done'
+    local e2 = onThePad(1)
+    ok(e2 ~= nil and e2.state == BR.PlayerState.WARMUP and e2.matchId ~= nil,
+        'the SAME player is on the pad in their next match, state test passing',
+        e2 and e2.state)
+    ok(BR.Roster.setTutorialGame(1, true) == false,
+        'BUT THE HOLD IS REFUSED -- the account already finished it, and that '
+            .. 'is the fact the state test above could never see')
+    ok(BR.Roster.get(1).tutorialGame ~= true, 'and nothing was written')
+    ok(BR.Roster.tutorialGameIn(BR.Roster.get(1).matchId) == 0,
+        'SO THE MATCH IS NOT HELD -- this is the deferred matchmaking the owner '
+            .. 'watched happen to a player who had already finished')
+    ok(printedSaying('already answered the tutorial') ~= nil,
+        'and the refusal is on the record rather than being a dead button')
+
+    -- DECLINING IS THE OTHER TERMINAL ANSWER and reads the same way here. They
+    -- are kept apart only so a human reading the row can tell why.
+    reset()
+    BR.Server.devMode = true
+    answer = 'declined'
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == false,
+        'an account that DECLINED is refused too -- both terminal states mean '
+            .. '"do not offer this again"')
+
+    -- ── AND /brtutorial STILL WORKS ON A DEV BOX ────────────────────────
+    --
+    -- Owner, 2026-09-08: "i should be able to again since I'm using
+    -- `brtutorial`." BR.Tutorial.offerable grants that on the client; without
+    -- this exemption the SERVER would still refuse the hold, and the owner would
+    -- get cards over a warmup that was never frozen -- which is the shape this
+    -- fix would be reported back as a regression in.
+    --
+    -- READ OFF THE CONVAR PAIR devgate.lua READS, not off a field on the wire.
+    -- A client-asserted dev flag would be a 24-hour freeze of a stranger's
+    -- warmup for anyone who sent it.
+    reset()
+    BR.Server.devMode = true
+    answer = 'done'
+    BR.Dev = { on = function() return true end }
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == true,
+        'ON A DEV BOX THE ROW IS OUTRANKED -- /brtutorial can walk a finished '
+            .. 'account through the whole thing again, hold and all')
+
+    -- AND THE EXEMPTION IS THE BOX, NOT THE PLAYER. The same account, the same
+    -- request, on a public box, is refused -- which is what stops this being a
+    -- hole rather than a hatch.
+    reset()
+    BR.Server.devMode = true
+    answer = 'done'
+    BR.Dev = { on = function() return false end }
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == false,
+        'and on a public box the very same request is refused')
+
+    -- ── THE PERMISSIVE DIRECTION, WHICH IS DELIBERATE ───────────────────
+    --
+    -- The row is read once per connect inside the inventory fetch. A read that
+    -- failed, or one that has not landed yet, leaves the account at '' -- and
+    -- market.lua chose that direction on purpose for the offer itself ("costs a
+    -- player one toggle they can untick"). The same trade here costs a warmup
+    -- its clock rather than costing a genuine first-timer their walkthrough.
+    reset()
+    BR.Server.devMode = true
+    BR.Dev = nil
+    BR.Market = nil
+    onThePad(1)
+    ok(BR.Roster.setTutorialGame(1, true) == true,
+        'WITH NO ANSWER AVAILABLE AT ALL THE HOLD IS GRANTED -- an inventory '
+            .. 'read that has not landed must not cost a first-timer their run')
+
+    BR.Market = marketWas
+    BR.Dev = devWas
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))

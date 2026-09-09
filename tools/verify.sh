@@ -375,7 +375,31 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # in, one store at a time; the warmup showroom paid three playtest rounds
     # for exactly that instinct (`veto`). The suite fixes the key set of a store
     # row so a height field fails the build.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua; do
+    #
+    # test_tutorial.lua is the seventh suite to load a CLIENT file, and it loads
+    # the only one no suite had ever stood up: br_core/client/tutorial.lua. Its
+    # subject is the account-level fact underneath the guided first run, and the
+    # report that made it worth a suite is the owner's, 2026-09-08 -- a player
+    # who finished the walkthrough in solos was shown the whole thing again in
+    # squads, and had their matchmaking deferred a second time for it.
+    #
+    # WHAT MADE THAT POSSIBLE IS TWO COMPLETION RECORDS AND ONE READER. The
+    # payment lock (`reportRewards`, a conditional write) is asked at the moment
+    # of paying and correctly refused the second credit. The OFFER record (the
+    # profile row's `tutorial` string) is read exactly once per connection to
+    # send one TUTORIAL_OFFER and was never re-pushed after it changed -- so
+    # finishing wrote 'done' and changed nothing anybody consulted. Both arming
+    # paths, the page's and the server's, went on saying yes.
+    #
+    # THE SUITE ASSERTS THE FLAG, NOT THE CARDS. What the page's re-arm consumes
+    # is one published boolean, so that is what is pinned: true for a first-timer,
+    # true after an ABANDONED run, false after a completion. The middle one is the
+    # assertion that stops the fix going too far -- an abandoned run is
+    # deliberately not a decline and not a completion (owner, 2026-09-07), and a
+    # build that lowered the flag there would close the offer on the one player
+    # it must stay open for. The server half of the same fix lives in
+    # test_roster.lua ('tutorial.holdOncePerAccount'), beside the hold it guards.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_lobbyseq.lua tools/test_landtime.lua tools/test_config.lua tools/test_admin.lua tools/test_community.lua tools/test_guild.lua tools/test_fuel.lua tools/test_sfx.lua tools/test_boost.lua tools/test_vehdamage.lua tools/test_icons.lua tools/test_vehrefuse.lua tools/test_rescue.lua tools/test_ambheal.lua tools/test_revivekey.lua tools/test_ambulances.lua tools/test_shop.lua tools/test_gunshop.lua tools/test_warmupcrates.lua tools/test_bool_natives.lua tools/test_tutorial.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

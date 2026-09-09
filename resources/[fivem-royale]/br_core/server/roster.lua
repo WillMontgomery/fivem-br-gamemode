@@ -498,6 +498,55 @@ function BR.Roster.setTutorialGame(src, on)
         return false
     end
 
+    -- ═══ B2: AND ONLY ONCE PER ACCOUNT, WHICH IS A FACT THIS SIDE ALREADY HAD ═══
+    --
+    -- Owner, 2026-09-08: a player finished the in-game half in solos, was paid,
+    -- queued for squads and "were given deferred matchmaking and shown the
+    -- in-game tutorial a second time."
+    --
+    -- The state test above passed both times, because it is a STATE test: a
+    -- player who finished in match 1 is in WARMUP with a matchId in match 2
+    -- exactly as a first-timer is. Nothing here asked the only question that
+    -- separates them, and the server was the side that could answer it -- the
+    -- profile row has said 'done' since the moment they were paid, and
+    -- BR.Market.tutorialOf was written to hand it over and had NO CALLERS
+    -- ANYWHERE IN THE TREE. This project's orphaned-subsystem pattern, sitting
+    -- on the one line that would have refused the second hold.
+    --
+    -- A CLIENT-ONLY FIX WOULD NOT HAVE BEEN ONE. The page re-arming is what
+    -- asked for this hold, and that is fixed on the page too -- but the hold is
+    -- the server's to grant, it freezes the WHOLE pad's clock for a day
+    -- (WARMUP_HOLD_MS), and a grant that rests on the asker being well behaved
+    -- is not a rule. Both sides re-armed; both sides are fixed.
+    --
+    -- '' IS THE PERMISSIVE ANSWER AND THAT IS DELIBERATE, twice over. The row is
+    -- read once per connect inside the inventory fetch, so a read that failed --
+    -- or one that has not landed yet -- leaves the account at '' and the hold is
+    -- GRANTED. market.lua chose that direction for the offer itself ("costs a
+    -- player one toggle they can untick"); the same trade here costs a warmup
+    -- its clock rather than costing a genuine first-timer their walkthrough.
+    -- BR.Market is nil-guarded for the same reason it is reached through a
+    -- global: server/market.lua loads AFTER this file (fxmanifest 542 vs 639),
+    -- so this may only ever be a call-time read.
+    --
+    -- AND /brtutorial HAS TO OUTRANK THE ROW, or this refusal lands on the
+    -- owner's own testing path. Owner, 2026-09-08: "i should be able to again
+    -- since I'm using `brtutorial`." BR.Tutorial.offerable already grants that
+    -- locally; the server's half of it is the DEV BOX, read off the same convar
+    -- pair devgate.lua reads. Carrying an exemption on the WIRE was the
+    -- alternative and it lost badly: a client-asserted `dev` flag is a
+    -- 24-hour freeze of a stranger's warmup for anyone who sends it.
+    if not (BR.Dev and BR.Dev.on and BR.Dev.on()) then
+        local done = BR.Market and BR.Market.tutorialOf
+            and BR.Market.tutorialOf(BR.Roster.licenseOf(src)) or ''
+        if done ~= '' then
+            print(('[br_core] %s (%d) asked for the warmup hold, but this '
+                .. 'account already answered the tutorial (%s) -- refused')
+                :format(entry.name, src, done))
+            return false
+        end
+    end
+
     entry.tutorialGame = true
     print(('[br_core] %s (%d) is taking the in-game tutorial -- match %s holds '
         .. 'its warmup until they are done'):format(entry.name, src,

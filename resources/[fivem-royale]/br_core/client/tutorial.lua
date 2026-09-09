@@ -617,7 +617,45 @@ end)
 ---
 --- WHAT STOPS IT BEING FARMED IS THE DATABASE, NOT THIS FUNCTION. See
 --- BR.Net.TUTORIAL_DONE.
+---
+--- ═══ AND FINISHING SPENDS THE ACCOUNT-LEVEL OFFER, EXACTLY AS DECLINING DOES ═══
+---
+--- Owner, 2026-09-08: a player completed the in-game half in solos, was paid,
+--- left warmup, queued for squads, and "were given deferred matchmaking and
+--- shown the in-game tutorial a second time. the payout properly caught they'd
+--- already done the tutorial once, but regardless, not the affect we want."
+---
+--- The payout caught it because the payment lock is a DynamoDB conditional
+--- write on `reportRewards`, asked at the moment of paying. NOTHING asked the
+--- OTHER record. The profile row's `tutorial` string is the offer record, and
+--- it is read exactly once per connection -- inside the inventory fetch, to
+--- send one TUTORIAL_OFFER -- and never re-pushed after it changes. So finishing
+--- wrote 'done' and changed nothing anybody consulted.
+---
+--- This line is the client half of closing that. `offerable` is the account's
+--- standing (see its note) and BOTH terminal answers must lower it: decline
+--- already did, at BR.Tutorial.decline, and finish did not -- so a finished
+--- player's mirror stayed true for the rest of the session, `publish()` kept
+--- re-asserting it to the page, and the page's re-arm in Lobby.tsx's `queue()`
+--- read a stale yes on every subsequent ready-up.
+---
+--- LOWERED HERE RATHER THAN WAITING FOR THE SERVER TO SAY SO, which is the
+--- shape decline already uses: the page owns the gesture and the server owns the
+--- memory. A re-push from BR.Market.setTutorial was the alternative and it lost
+--- on being a second mechanism for a fact this side already knows first-hand --
+--- the client that just finished does not need to be told it finished, and a
+--- round trip would leave a window where readying up re-arms.
+---
+--- THE ROW IS UNTOUCHED BY THIS LINE. The write happens on the far side of
+--- TUTORIAL_DONE (br_stats pays, then br_core's market writes 'done'), so a
+--- payout that fails leaves the account offerable on its next connect, which is
+--- the permissive direction and the right one.
+---
+--- `/brtutorial` STILL OUTRANKS IT -- BR.Tutorial.offerable(true) raises this
+--- again locally, which is what every branch of the dev command already does.
 function BR.Tutorial.finish()
+    offerable = false
+    publish()
     TriggerServerEvent(BR.Net.TUTORIAL_DONE)
 end
 
