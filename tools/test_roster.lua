@@ -11094,6 +11094,34 @@ do
         -- neither envelope says so.
         ok(corr.seq ~= nil, 'and a sequence number, so a gap is detectable',
             tostring(corr.seq))
+
+        -- AND A GRADED SEVERITY, WHICH IS THE HALF OF THIS INVARIANT THAT IS
+        -- SUPPOSED TO BE PRESENT.
+        --
+        -- ASSERTED SO THE TWO ABSENCES ARE WORTH SOMETHING. 'report.rules' and
+        -- 'report.killerPrompt' below both pin `corr.severity == nil` on a
+        -- corroboration a PERSON made, and an absence assertion that would pass
+        -- just as happily against a payload carrying nothing at all proves
+        -- nothing. This is the case that says the field is real, that this
+        -- system sets it, and therefore that the two nils are a decision.
+        --
+        -- READ FROM THE EVENT RATHER THAN RESTATED, so a corroboration cannot
+        -- grade a finding differently from the case it attaches to. All three
+        -- anticheat corroborations in server/incident.lua carry one: this path
+        -- forwards `ev.severity`, and the strip and the vehicle handlers both
+        -- read BR.ShotTier.
+        --
+        -- WHAT THE CONSOLE DOES WITH IT. Ringmaster stores this row's sentence
+        -- ending in a `worst: <severity>` clause, and src/lib/corroborationText
+        -- folds a RUN of such rows into one line reading "happened 20 times in
+        -- 10 minutes". Its `foldable` requires that clause, so the anticheat's
+        -- rows are the ones eligible to be folded and a human's are not. That is
+        -- the whole arrangement, and it holds only while this field is present
+        -- here and absent on both of the human paths.
+        ok(corr.severity ~= nil and corr.severity == second.severity,
+            'and the severity the refusal was graded at, which is the one field '
+            .. 'a human corroboration must never carry',
+            tostring(corr.severity) .. ' vs ' .. tostring(second and second.severity))
     end
 
     -- A REFUSAL WITH NO LICENSE FILES NOTHING. Server ids recycle within the
@@ -11369,6 +11397,43 @@ do
         ok(corr.reporterLicense ~= corr.license,
             'which is not the license of the player being corroborated about',
             tostring(corr.reporterLicense))
+
+        -- AND NO SEVERITY, WHICH IS AN ABSENCE THE CONSOLE DEPENDS ON.
+        --
+        -- server/players.lua gives one reason for omitting it and it is about
+        -- honesty: a human's category is not a measurement, and grading it here
+        -- would invent confidence that does not exist. That reason is why the
+        -- field is missing. It is not why the absence is PINNED, and the second
+        -- reason is the one that costs a player something.
+        --
+        -- RINGMASTER FOLDS A RUN OF CORROBORATIONS INTO ONE ROW, on the owner's
+        -- instruction: twenty identical anticheat rows thirty seconds apart
+        -- become one line reading "happened 20 times in 10 minutes". Right for a
+        -- machine repeating itself, and evidence destruction for people -- two
+        -- players naming the same offender would become one line and one of them
+        -- would be gone from the page. `foldable` in its
+        -- src/lib/corroborationText.ts holds TWO locks against that, and this
+        -- field is the second: `gradesSeverity` folds a row only when its stored
+        -- sentence ends in a `worst: <severity>` clause, and that clause exists
+        -- only when the corroboration carried a severity.
+        --
+        -- IT IS THE ONLY LOCK THAT REACHES THE ROWS ALREADY IN DYNAMODB. The
+        -- other one is `reporterLicense`, three assertions above. Every row
+        -- stored before that field existed arrived at the console as
+        -- `byLicense: null, byName: 'System'` -- a person's byte for byte the
+        -- same as the anticheat's -- the owner does not hand-edit DynamoDB, and
+        -- no deploy reaches backwards to credit them. A severity added to this
+        -- literal would make every one of those rows foldable at once.
+        --
+        -- SO THIS ASSERTION IS THE WHOLE OF THE PROTECTION ON THIS SIDE. Nothing
+        -- in either repository stops somebody adding `severity` here, and adding
+        -- it breaks nothing that anybody would notice for months. The positive
+        -- half is in 'incident.wiring' above, where an anticheat corroboration
+        -- is asserted to carry one.
+        ok(corr.severity == nil,
+            'and no severity, because a graded row is one the console may fold '
+            .. 'a person out of',
+            tostring(corr.severity))
     end
 
     -- AND THE SECOND REPORTER LEARNS NOTHING FROM IT. "Your report was added to
@@ -11919,6 +11984,32 @@ do
         ok(corr.reporterLicense ~= corr.license,
             'which is not the killer they are corroborating about',
             tostring(corr.reporterLicense))
+
+        -- AND NO SEVERITY, WHICH MATTERS MORE HERE THAN ANYWHERE ELSE.
+        --
+        -- `reason` on this path is one constant for every press, so two players
+        -- answering the prompt about the same offender store two sentences that
+        -- are identical character for character -- and that sentence, with its
+        -- count clause stripped, is exactly the fingerprint Ringmaster's fold
+        -- groups a run by. The panel path at least varies by category. This one
+        -- varies by nothing at all.
+        --
+        -- WHAT KEEPS THOSE TWO ROWS APART IS TWO TESTS AND NOTHING ELSE.
+        -- `foldable` in the console's src/lib/corroborationText.ts requires an
+        -- absent author AND a `worst: <severity>` clause on the sentence. The
+        -- author test covers rows written since `reporterLicense` landed on this
+        -- literal; `gradesSeverity` covers every row already sitting in the
+        -- owner's DynamoDB, which he will not hand-edit and which no deploy
+        -- reaches backwards to credit. Put a severity on this payload and both
+        -- presses fold into one row, and one player's report is deleted from the
+        -- case rather than merely uncredited.
+        --
+        -- THE POSITIVE HALF IS IN 'incident.wiring': the anticheat's
+        -- corroboration does carry a severity, which is what makes this nil a
+        -- decision rather than an empty table.
+        ok(corr.severity == nil,
+            'and no severity, so two presses can never be folded into one row',
+            tostring(corr.severity))
     end
 
     -- PAID, like any other corroborator (#168). The id is in hand, so the claim

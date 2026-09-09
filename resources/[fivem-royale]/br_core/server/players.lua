@@ -972,6 +972,27 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
                 -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport
                 -- gives: a human's category is not a measurement, and grading
                 -- it here would invent confidence that does not exist.
+                --
+                -- AND ADDING ONE WOULD DELETE SOMEBODY'S REPORT, which is a
+                -- second reason and a much more expensive one. The console
+                -- stores this row's sentence ending in a `worst: <severity>`
+                -- clause when a severity travels, and it FOLDS a run of
+                -- corroborations into one line reading "happened 20 times in 10
+                -- minutes". `foldable` in Ringmaster's
+                -- src/lib/corroborationText.ts refuses a person's row on two
+                -- tests: an absent reporter, and `gradesSeverity`, which is a
+                -- test for that clause. The second is the only one that reaches
+                -- the rows ALREADY in the owner's table -- every corroboration
+                -- stored before `reporterLicense` existed arrived as
+                -- `byLicense: null, byName: 'System'`, a person's identical to
+                -- the anticheat's, and nobody is going to hand-edit DynamoDB. A
+                -- severity on this literal makes all of them foldable at once.
+                --
+                -- SO THE ABSENCE IS PINNED RATHER THAN TRUSTED.
+                -- tools/test_roster.lua asserts it on both human paths and
+                -- asserts that an anticheat corroboration DOES carry one, so
+                -- adding a severity here is a red suite today instead of a
+                -- deleted report months from now.
             })
 
             -- CORROBORATORS ARE PAID TOO, AND THAT IS THE WHOLE POINT (#168).
@@ -1469,7 +1490,15 @@ AddEventHandler(BR.Net.REPORT_CORROBORATE, function()
         -- is a qualified license and `c.me` is a live roster entry.
         reporterLicense = c.myLicense,
         reporterName    = c.me.name,
-        -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport gives.
+        -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport gives, and
+        -- for the console reason spelled out at the panel's corroboration
+        -- above, which bites harder here than it does there. `reason` on this
+        -- path is one constant, so two presses about the same offender store
+        -- two sentences identical character for character, and that sentence is
+        -- what the console's fold groups a run by. A severity on this literal is
+        -- the difference between two rows and one, and the row that disappears
+        -- is a player's report. Pinned in tools/test_roster.lua, on both human
+        -- paths.
     })
 
     -- PAID LIKE ANY OTHER CORROBORATOR (#168). The id is already in hand, so

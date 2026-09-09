@@ -4613,6 +4613,24 @@ do
             'about the player it was always about',
             p and tostring(p.subjectLicense))
 
+        -- AND NOTHING GRADED IT, BECAUSE NOBODY DID. br_core's two human
+        -- corroborations send no `severity` at all -- server/players.lua, both
+        -- literals, pinned in tools/test_roster.lua -- and this handler FORWARDS
+        -- the field rather than defaulting it, so a human's row reaches DynamoDB
+        -- with no `worst: <severity>` clause on its sentence.
+        --
+        -- THAT CLAUSE IS WHAT THE CONSOLE FOLDS ON. `foldable` in Ringmaster's
+        -- src/lib/corroborationText.ts collapses a run of corroborations into
+        -- one row reading "happened 20 times in 10 minutes", and it refuses any
+        -- row whose sentence does not grade a severity. An `or 'normal'` added
+        -- to the literal above would put that clause on every human row in the
+        -- table and make one player's report absorbable into another's run --
+        -- which is the same failure an empty-string reporter would be, arriving
+        -- through a different field.
+        ok(p and p.severity == nil,
+            'and carrying no severity, which is what keeps a person out of a fold',
+            p and tostring(p.severity))
+
         -- THE ANTICHEAT'S, THROUGH THE SAME DOOR AND THE SAME LITERAL. Neither
         -- field is invented and neither is blanked. An empty string is NOT an
         -- absent field: the console tests for a non-empty string and writes
@@ -4635,6 +4653,15 @@ do
         ok(q and q.reporterLicense == nil and q.reporterName == nil,
             'naming nobody, and given no empty string in place of nobody',
             q and (tostring(q.reporterLicense) .. ' / ' .. tostring(q.reporterName)))
+
+        -- AND KEEPING THE GRADE IT ARRIVED WITH, which is the same forwarding
+        -- read in the other direction. Together with the human row above, these
+        -- two say the handler neither invents a severity nor drops one -- and
+        -- the console's fold reads exactly that difference to tell a machine's
+        -- run from a person's report.
+        ok(q and q.severity == 'high',
+            'while the anticheat one keeps the severity it was graded at',
+            q and tostring(q.severity))
 
         ob.emit = nil
     end
