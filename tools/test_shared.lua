@@ -944,10 +944,21 @@ do
     ok(why == BR.ShotRefusal.NOT_THROWN,
         'a blast from one you never threw does not', tostring(why))
 
-    -- Still holding them (more than one in the stack) is the other honest case.
-    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
-        ctx({ heldItem = 'grenade', threwRecently = false }), cfg),
-        'and holding the stack is enough on its own')
+    -- HOLDING THE STACK USED TO BE ENOUGH ON ITS OWN, and this assertion said
+    -- so until the audit (finding 3, 2026-09-08).
+    --
+    -- The rule was `heldItem == w.id or threwRecently`, read as "either honest
+    -- case". The held half is true for as long as ANY grenade remains in the
+    -- slot, so it authorized every blast a client cared to claim while it held
+    -- one -- a statement about the STACK, never about the particular grenade
+    -- that went off. The credit is the statement about the grenade: one per
+    -- throw the server watched leave the hand, and spent when a blast is
+    -- authorized against it.
+    local _, whyHeld = BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
+        ctx({ heldItem = 'grenade', threwRecently = false }), cfg)
+    ok(whyHeld == BR.ShotRefusal.NOT_THROWN,
+        'holding the stack is not, on its own, a grenade having been thrown',
+        tostring(whyHeld))
 
     -- RANGE IS THROW PLUS BLAST. A victim can be a whole blast radius further
     -- from the thrower than the grenade ever travelled.
@@ -963,6 +974,102 @@ do
     ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0, sinceLastMs = 0 },
         ctx(), cfg),
         'two detonations in the same millisecond are both legitimate')
+
+    -- ═══ THE LAUNCH, WHICH NOTHING USED TO CHECK ═══
+    --
+    -- "A detonation is not a trigger pull" is true of the IMPACT and was read
+    -- as an exemption for the whole weapon. An RPG, a grenade launcher and a
+    -- railgun are all `explosive`, so all three returned success after the held
+    -- and range checks -- before ammunition, before cadence. Holding an empty
+    -- launcher with an empty reserve authorized damage, at any rate, forever:
+    -- the audit's harness hurt a victim twice on the same millisecond with one
+    -- and neither attempt was refused (finding 3, 2026-09-08).
+    local rpg = BR.Config.WeaponById['rpg']
+    ok(rpg and rpg.explosive and rpg.clip,
+        'the RPG is explosive and carries a magazine -- both halves matter here',
+        tostring(rpg and rpg.clip))
+
+    local function launch(over)
+        local c = { sameSrc = false, sameMatch = true, shooterLive = true,
+                    victimLive = true, sameSquad = false,
+                    heldItem = 'rpg', threwRecently = false,
+                    blastShared = false, launchAmmo = true }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    ok(BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 }, launch(), cfg),
+        'a loaded RPG in the shooter\'s own hands still fires')
+
+    local _, whyDry = BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 },
+        launch({ launchAmmo = false }), cfg)
+    ok(whyDry == BR.ShotRefusal.NO_AMMO,
+        'an empty one with an empty reserve does not', tostring(whyDry))
+    ok(BR.ShotSuspicious[BR.ShotRefusal.NO_AMMO],
+        'and that refusal is means-class, so it counts')
+
+    -- THE MAGAZINE IS READ AS IT WAS BEFORE THE SHOT, which is the reason the
+    -- check could not simply be un-skipped. `launchAmmo` unset means "not
+    -- applicable" -- a thrown grenade has no magazine to be empty of -- and
+    -- must never read as empty.
+    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
+        ctx({ launchAmmo = nil }), cfg),
+        'a thrown grenade is not refused for having no rounds in it')
+
+    -- CADENCE ON THE LAUNCH, NOT ON THE BLAST. A launcher has an action and it
+    -- cycles; what it does not have is a rule that the four people one rocket
+    -- caught arrived too close together.
+    local floor = BR.ShotLaunchFloor(rpg, cfg)
+    ok(floor and floor > 0.0,
+        'an RPG has a launch cadence floor', tostring(floor))
+    ok(BR.ShotIntervalFloor(rpg, cfg) == nil,
+        'while its IMPACT cadence is still nil, which is the older rule intact')
+
+    local _, whyFast = BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 },
+        launch({ sinceLaunchMs = 5 }), cfg)
+    ok(whyFast == BR.ShotRefusal.TOO_FAST,
+        'two rockets five milliseconds apart is not an action cycling',
+        tostring(whyFast))
+
+    ok(BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 },
+        launch({ sinceLaunchMs = floor + 1.0 }), cfg),
+        'and one fired a full cycle later is simply a second rocket')
+
+    -- ONE PROJECTILE, MANY VICTIMS. This is the property the three exemptions
+    -- were protecting all along, and it survives: an impact the server has
+    -- already authorized a launch for pays nothing further, so a rocket that
+    -- catches four people is not three refusals and a hit.
+    ok(BR.ValidateShot({ weapon = rpg.hash, dist = 40.0 },
+        launch({ blastShared = true, launchAmmo = false, sinceLaunchMs = 0 }),
+        cfg),
+        'a second victim of a rocket already paid for is not charged again')
+    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
+        ctx({ heldItem = 'fists', threwRecently = false, blastShared = true }),
+        cfg),
+        'and neither is the fourth person one grenade caught')
+
+    -- ...but a shared authorization is not a range exemption. The victim has
+    -- to be somewhere the blast could reach, or "one grenade caught four
+    -- people" would cover four people anywhere on the map.
+    local _, whySharedFar = BR.ValidateShot(
+        { weapon = CAPTURED_GRENADE, dist = 250.0 },
+        ctx({ blastShared = true }), cfg)
+    ok(whySharedFar == BR.ShotRefusal.TOO_FAR,
+        'while a victim two hundred metres away was not caught by it',
+        tostring(whySharedFar))
+
+    -- THE WINDOW CLOSES BEFORE THE WEAPON CAN FIRE AGAIN. A flat window longer
+    -- than the action would let the SECOND honest round of a pair be absorbed
+    -- into the first one's authorization -- no round spent, no cadence
+    -- measured, which is the hole reopened from the other side.
+    ok(BR.ShotBlastWindow(rpg, cfg) <= BR.ShotLaunchFloor(rpg, cfg),
+        'a launcher\'s blast window closes no later than its action cycles',
+        ('%.0fms window, %.0fms floor'):format(BR.ShotBlastWindow(rpg, cfg),
+                                               BR.ShotLaunchFloor(rpg, cfg)))
+    ok(BR.ShotBlastWindow(nade, cfg) > 0.0
+        and BR.ShotLaunchFloor(nade, cfg) == nil,
+        'while a throwable has a window and no action to cycle at all',
+        tostring(BR.ShotBlastWindow(nade, cfg)))
 
     -- FLAT DAMAGE, and this is the check that would catch falloff creeping
     -- back in. The only distance the server knows is thrower-to-victim, and a

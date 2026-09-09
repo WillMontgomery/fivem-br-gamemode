@@ -202,6 +202,53 @@ function BR.ShotIntervalFloor(w, cfg)
     return w.minInterval * ((cfg or {}).intervalSlack or 0.6)
 end
 
+--- The shortest gap between two LAUNCHES of this explosive.
+---
+--- THE OPPOSITE HALF OF THE FUNCTION ABOVE, AND THE REASON THAT ONE RETURNS
+--- NIL. "A detonation is not a trigger pull" is true and it was read as "an
+--- explosive has no cadence at all", which is a different claim and a false
+--- one. A grenade launcher has an action; it cycles in 600ms; nothing honest
+--- fires two rounds from it in the same millisecond. What the impact cadence
+--- could not be applied to is the BLAST -- one rocket catching four people is
+--- four legitimate events with no gap between them -- and applying the rule to
+--- the launch instead costs that nothing (audit finding 3, 2026-09-08).
+---
+--- NIL FOR A THROWABLE, because none of them authors a minInterval and the
+--- bound on throwing is not time: it is that the server watched a grenade leave
+--- your hand and has one credit to spend for it. An arm has no action to cycle.
+--- @param w table|nil
+--- @param cfg table|nil
+--- @return number|nil  nil when nothing about launch cadence can be refused
+function BR.ShotLaunchFloor(w, cfg)
+    if not w or not w.explosive or not w.minInterval then return nil end
+    return w.minInterval * ((cfg or {}).intervalSlack or 0.6)
+end
+
+--- How long ONE projectile's impacts may go on arriving.
+---
+--- The window a launch authorization stays open for. Everything inside it is
+--- the same blast catching more people and is free; the first impact outside it
+--- is a new projectile and has to pay for itself again.
+---
+--- CAPPED BY THE LAUNCH CADENCE WHERE THERE IS ONE, and that is not a detail. A
+--- grenade launcher cycles in 600ms, so a flat 1200ms window would let the
+--- SECOND honest round of a pair be absorbed into the first one's authorization
+--- -- no round spent, no cadence measured. The window has to close before the
+--- weapon can fire again or it swallows the shot it was meant to charge for.
+--- @param w table|nil
+--- @param cfg table|nil
+--- @return number
+function BR.ShotBlastWindow(w, cfg)
+    cfg = cfg or {}
+    -- Defaults to the attribution window, which is the same physical fact
+    -- measured for a different purpose: "the bang either caught you or it did
+    -- not" (BR.Config.Combat.blastAttributeMs).
+    local win = cfg.blastWindowMs or cfg.blastAttributeMs or 1200
+    local floor = BR.ShotLaunchFloor(w, cfg)
+    if floor and floor < win then return floor end
+    return win
+end
+
 --- How many DISTINCT players one event may hurt, given what fired it.
 ---
 --- ONE EVENT IS ONE SHOT, AND A SHOT REACHES A BOUNDED NUMBER OF PEOPLE.
@@ -318,13 +365,73 @@ function BR.ValidateShot(shot, ctx, cfg)
     --   RATE.  There is no action to cycle. A cluster of stickies detonates
     --          together, and every one of those is a legitimate event in the
     --          same millisecond -- TOO_FAST would refuse all but the first.
+    --
+    -- WHAT THAT ARGUMENT LEFT UNGUARDED, AND FOR TWENTY-ONE DAYS NOBODY SAW IT:
+    -- all three of those exemptions are about the IMPACT, and skipping them left
+    -- nothing at all checking the LAUNCH. Holding an empty grenade launcher --
+    -- empty magazine, empty reserve -- authorized damage, repeatedly, at any
+    -- rate, for as long as you kept hold of it. The audit's harness hit a victim
+    -- twice on the same millisecond with one and neither attempt was refused
+    -- (finding 3, 2026-09-08).
+    --
+    -- So the projectile is authorized rather than the impact, and the two
+    -- questions are asked separately:
+    --
+    --   ctx.blastShared   this impact belongs to a launch the server already
+    --                     authorized and is still counting victims for. Four
+    --                     people caught by one rocket share one authorization,
+    --                     which is exactly the property the three exemptions
+    --                     above exist to protect.
+    --   otherwise         a NEW projectile, which has to pay for itself: it
+    --                     came out of a magazine the server filled, or it was a
+    --                     throw the server watched happen and has a credit for.
     if w.explosive then
-        if ctx.heldItem ~= w.id and not ctx.threwRecently then
-            return false, BR.ShotRefusal.NOT_THROWN
+        if not ctx.blastShared then
+            if w.clip then
+                -- A LAUNCHER IS IN YOUR HANDS WHEN IT FIRES, unlike a grenade,
+                -- so the ordinary held check is the right one and always was.
+                if ctx.heldItem ~= w.id then
+                    return false, BR.ShotRefusal.NOT_THROWN
+                end
+            elseif not ctx.threwRecently then
+                -- A THROWABLE IS NOT AUTHORIZED BY BEING HELD, and it used to
+                -- be: `heldItem == w.id or threwRecently`. Holding grenades
+                -- therefore authorized unlimited blasts, because the held half
+                -- of that test is true for as long as any remain in the slot and
+                -- says nothing whatever about a particular one having been
+                -- thrown. The credit does say that, and there is one of them per
+                -- grenade the server watched leave the hand.
+                return false, BR.ShotRefusal.NOT_THROWN
+            end
         end
+
         if (shot.dist or 0.0) > BR.ShotRangeLimit(w, cfg) then
             return false, BR.ShotRefusal.TOO_FAR
         end
+
+        -- Another victim of a projectile already paid for. Nothing further is
+        -- owed: charging again here is precisely the mistake that would refuse
+        -- the second, third and fourth person a grenade caught.
+        if ctx.blastShared then return true, nil end
+
+        -- A MAGAZINE THE SERVER NEVER FILLED. Read as the magazine stood BEFORE
+        -- this event spent from it -- the last rocket in the tube is a rocket,
+        -- and the check that fired on the post-spend number would refuse it.
+        -- Explicitly `== false` so an unset field means "not applicable" rather
+        -- than "empty": a thrown grenade has no magazine to be empty of.
+        if ctx.launchAmmo == false then
+            return false, BR.ShotRefusal.NO_AMMO
+        end
+
+        -- ...and the action still cannot cycle faster than it cycles. Measured
+        -- between LAUNCHES, which is why BR.ShotIntervalFloor still says nil for
+        -- an explosive and BR.ShotLaunchFloor is a different function.
+        local launchFloor = BR.ShotLaunchFloor(w, cfg)
+        if launchFloor and ctx.sinceLaunchMs
+           and ctx.sinceLaunchMs < launchFloor then
+            return false, BR.ShotRefusal.TOO_FAST
+        end
+
         return true, nil
     end
 

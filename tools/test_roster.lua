@@ -8998,6 +8998,12 @@ do
     runCommand('brtestfire', 'thrown')
     ok(BR.Config.Combat.explosiveGraceMs == shippedGrace,
         'arming thrown does not edit the shipped grace window')
+    -- A FRESH CREDIT, SO THE LEVER IS THE ONLY THING LEFT TO REFUSE IT. Throw
+    -- credits are consumed by the blast they authorize now, so the first shot
+    -- above spent the one the fixture pushed -- and without this line the
+    -- refusal below would be an empty queue rather than the bent window, and
+    -- the block would pass while proving nothing about the lever.
+    BR.Damage.noteThrow(1, 'grenade')
     fakeTime = fakeTime + 1500
     shoot(GRENADE)
     printed = {}
@@ -9108,6 +9114,333 @@ do
         'off with nothing armed is a statement, not a silent success')
 
     BR.Server.devMode = devWas
+end
+
+describe('damage.lastround')
+do
+    -- THE LAST ROUND IN THE MAGAZINE IS A ROUND, and until 2026-09-08 it was a
+    -- high-severity anticheat case against the player who fired it.
+    --
+    -- FOUND WHILE FIXING THE EXPLOSIVE HOLE BELOW, and it is the same defect
+    -- with the sign reversed. spendRound charges the magazine once per event,
+    -- BEFORE any victim is resolved, and contextFor then reads that same slot --
+    -- so on the last round of the last magazine `ctx.clip` came back 0 and
+    -- `ctx.clip <= 0` refused the round that had just been legitimately fired.
+    -- NO_AMMO is means-class with a bar of one, so an honest player running dry
+    -- at the end of a fight opened a case on themselves, every time.
+    --
+    -- THE EMPTY RESERVE IS WHAT MAKES IT REACHABLE. spendRound reloads from the
+    -- pool the instant the magazine empties, so the ledger only sits at zero
+    -- when there is nothing left to reload from -- which is exactly the moment
+    -- this fired.
+    local PISTOL = BR.Config.WeaponById['pistol']
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 2 do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).squadId = 10 + s
+    end
+    BR.Damage.forget(1); BR.Damage.forgetRefusals(1)
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 1 })
+    BR.Inv.of(1).active = 1
+    BR.Inv.of(1).ammo[PISTOL.ammo] = 0
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).pos = { x = 5.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).hp, BR.Roster.get(2).armour = 100.0, 0.0
+    local r0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL.hash, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002 },
+    })
+    ok(BR.Roster.get(2).hp < 100.0, 'the last round in the magazine still lands',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == r0,
+        'and is not refused for the magazine it just emptied',
+        ('%d -> %d'):format(r0, BR.Damage.refusals or 0))
+    ok(BR.Inv.of(1).slots[1].clip == 0,
+        'the server\'s own magazine really is empty afterwards',
+        tostring(BR.Inv.of(1).slots[1].clip))
+
+    -- ...AND THE SHOT AFTER IT IS STILL REFUSED, which is what makes the two
+    -- assertions above a boundary rather than the check having been switched
+    -- off. NO_AMMO has to stay reachable from a real shot -- it is the reason
+    -- the check exists at all.
+    local hp1 = BR.Roster.get(2).hp
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = PISTOL.hash, hitComponent = 3,
+        weaponDamage = 26, hitGlobalIds = { 1002 },
+    })
+    ok(BR.Roster.get(2).hp == hp1,
+        'while the shot after it has nothing left to fire',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == r0 + 1,
+        'and is refused, once', ('%d -> %d'):format(r0, BR.Damage.refusals or 0))
+end
+
+describe('damage.launch')
+do
+    -- THE PROJECTILE IS AUTHORIZED NOW, NOT THE IMPACT (audit finding 3).
+    --
+    --   "an empty grenade launcher with no reserve ammunition damaged a victim
+    --    twice at the same timestamp. Both attempts incremented the dry-shot
+    --    counter, yet neither was refused."
+    --
+    -- Three exemptions kept an explosive out of the ammunition, held and
+    -- cadence checks, and every one of them is correct about the IMPACT: a
+    -- grenade is not in your hand when it lands, its reach is the throw plus
+    -- the blast, and one rocket catching four people is four legitimate events
+    -- in the same millisecond. What none of them was ever about is the LAUNCH,
+    -- and skipping the checks left nothing looking at it.
+    local GL = BR.Config.WeaponById['grenadelauncher']
+    local GRENADE = BR.Config.WeaponById['grenade']
+
+    --- A shooter holding a grenade launcher with `n` in the tube and `pool`
+    --- in reserve, and a victim five metres away.
+    local function withLauncher(n, pool)
+        reset()
+        queueUp(1, 'Gunner', BR.Mode.SOLO.key)
+        queueUp(2, 'Target', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 2 do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+            BR.Roster.get(s).squadId = 10 + s
+        end
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = GL.id, kind = BR.ItemKind.WEAPON,
+                         rarity = GL.rarity, count = 1, clip = n })
+        BR.Inv.of(1).active = 1
+        -- THE RESERVE IS LOAD-BEARING. spendRound reloads from the pool the
+        -- instant the magazine reaches zero, so a test that emptied only the
+        -- tube would refill it on the very next shot and never refuse.
+        BR.Inv.of(1).ammo[GL.ammo] = pool
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 5.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).hp, BR.Roster.get(2).armour = 100.0, 0.0
+    end
+
+    local function launch(ids)
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = GL.hash, hitComponent = 0,
+            weaponDamage = 200, hitGlobalIds = ids or { 1002 },
+        })
+    end
+
+    --- Put the victim back on their feet between blasts.
+    ---
+    --- A legendary launcher takes more than a full bar off, so the victim is
+    --- ELIMINATED by the first one -- and every shot after that is refused as
+    --- NOT_LIVE, which is a rules refusal that looks from the outside exactly
+    --- like the means refusal this block exists to assert. Restoring the health
+    --- and not the STATE is the version of this that passes while proving
+    --- nothing.
+    local function standUp()
+        local e = BR.Roster.get(2)
+        e.hp, e.armour = 100.0, 0.0
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    end
+
+    -- ═══ THE AUDIT'S CASE, WITH THE EXPECTATION INVERTED ═══
+    withLauncher(0, 0)
+    local refusals0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    launch()
+    launch()                                  -- the same millisecond, twice
+    ok(BR.Roster.get(2).hp == 100.0,
+        'an empty launcher with an empty reserve hurts nobody, twice over',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusals0 + 2,
+        'and both attempts are refused rather than counted and allowed',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- ═══ AND THE HONEST CASES IT MUST NOT COST ═══
+    withLauncher(3, 0)
+    fakeTime = fakeTime + 5000
+    launch()
+    ok(BR.Roster.get(2).hp < 100.0, 'a loaded launcher still fires',
+        tostring(BR.Roster.get(2).hp))
+    ok(BR.Inv.of(1).slots[1].clip == 2, 'and still costs one round',
+        tostring(BR.Inv.of(1).slots[1].clip))
+
+    -- THE LAST ROCKET IN THE TUBE IS A ROCKET. The round is spent once per
+    -- event, before any victim is resolved, so `ctx.clip` reads ZERO on the
+    -- shot that just took the last one -- and an ammunition check on that
+    -- number would refuse it, as a means-class refusal, against a player who
+    -- did nothing but fire. weapons.lua names this failure by hand; it is the
+    -- reason the check was skipped and not a reason the check was wrong.
+    withLauncher(1, 0)
+    refusals0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    launch()
+    ok(BR.Roster.get(2).hp < 100.0,
+        'the last rocket in the tube still lands',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusals0,
+        'and is not refused for the magazine it just emptied',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- ...and the NEXT one is refused, which is what makes the assertion above
+    -- a boundary rather than the check being off.
+    standUp()
+    fakeTime = fakeTime + 5000
+    launch()
+    ok(BR.Roster.get(2).hp == 100.0,
+        'while the shot after it has nothing left to fire',
+        tostring(BR.Roster.get(2).hp))
+
+    -- ONE ROCKET, MANY VICTIMS, ONE ROUND. The property the exemptions were
+    -- protecting, and the one a per-impact cadence rule would destroy.
+    reset()
+    queueUp(1, 'Gunner', BR.Mode.SOLO.key)
+    for s = 2, 4 do queueUp(s, 'T' .. s, BR.Mode.SOLO.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 4 do
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        BR.Roster.get(s).squadId = 10 + s
+    end
+    BR.Damage.forget(1)
+    BR.Damage.forgetRefusals(1)
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = GL.id, kind = BR.ItemKind.WEAPON,
+                     rarity = GL.rarity, count = 1, clip = 5 })
+    BR.Inv.of(1).active = 1
+    BR.Inv.of(1).ammo[GL.ammo] = 0
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    for s = 2, 4 do
+        BR.Roster.get(s).pos = { x = 5.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(s).hp, BR.Roster.get(s).armour = 100.0, 0.0
+    end
+    refusals0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 5000
+    launch({ 1002, 1003, 1004 })
+    local caught = 0
+    for s = 2, 4 do
+        if BR.Roster.get(s).hp < 100.0 then caught = caught + 1 end
+    end
+    ok(caught == 3, 'one rocket catches everybody stood together',
+        ('%d of 3'):format(caught))
+    ok(BR.Inv.of(1).slots[1].clip == 4, 'for one round',
+        tostring(BR.Inv.of(1).slots[1].clip))
+    ok((BR.Damage.refusals or 0) == refusals0,
+        'and the second and third of them are not refused as too fast',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- ...WHILE THE ACTION STILL CANNOT CYCLE IN A MILLISECOND. The cadence is
+    -- measured between LAUNCHES, so it costs the blast above nothing.
+    withLauncher(5, 0)
+    fakeTime = fakeTime + 5000
+    launch()
+    refusals0 = BR.Damage.refusals or 0
+    standUp()
+    fakeTime = fakeTime + 50
+    launch()
+    ok(BR.Roster.get(2).hp == 100.0,
+        'two rockets fifty milliseconds apart is not an action cycling',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusals0 + 1,
+        'and the second is refused', ('%d -> %d'):format(refusals0,
+                                                         BR.Damage.refusals or 0))
+
+    standUp()
+    fakeTime = fakeTime + 700
+    launch()
+    ok(BR.Roster.get(2).hp < 100.0,
+        'while one fired a full cycle later is simply a second rocket',
+        tostring(BR.Roster.get(2).hp))
+
+    -- ═══ THROW CREDITS ARE SPENT, NOT MERELY OBSERVED ═══
+    --
+    -- The grace record held the time of the LAST throw, so one grenade
+    -- authenticated the weapon TYPE for thirty seconds -- every blast a client
+    -- cared to claim in that window, from one throw. There is one credit per
+    -- grenade the server watched leave the hand now, and a blast spends one.
+    local function withGrenades()
+        reset()
+        queueUp(1, 'Thrower', BR.Mode.SOLO.key)
+        queueUp(2, 'Target', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for s = 1, 2 do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+            BR.Roster.get(s).squadId = 10 + s
+        end
+        BR.Damage.forget(1)
+        BR.Damage.forgetRefusals(1)
+        BR.Inv.reset(1)
+        -- Still holding a stack, which is the whole point: holding one is not
+        -- the same fact as having thrown one.
+        BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                         rarity = 3, count = 3 })
+        BR.Inv.of(1).active = 1
+        BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).pos = { x = 5.0, y = 0.0, z = 30.0 }
+        BR.Roster.get(2).hp, BR.Roster.get(2).armour = 100.0, 0.0
+    end
+
+    local function blast()
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = GRENADE.hash, hitComponent = 0,
+            weaponDamage = 500, hitGlobalIds = { 1002 },
+        })
+    end
+
+    withGrenades()
+    BR.Damage.noteThrow(1, 'grenade')
+    fakeTime = fakeTime + 2000
+    blast()
+    ok(BR.Roster.get(2).hp < 100.0, 'a grenade the server watched leave lands',
+        tostring(BR.Roster.get(2).hp))
+
+    standUp()
+    refusals0 = BR.Damage.refusals or 0
+    fakeTime = fakeTime + 100
+    blast()
+    ok(BR.Roster.get(2).hp == 100.0,
+        'a second blast from that one throw does not -- the credit is spent',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusals0 + 1,
+        'and is refused rather than dropped', ('%d -> %d')
+            :format(refusals0, BR.Damage.refusals or 0))
+    ok(BR.Inv.of(1).slots[1].count == 3,
+        'while the stack in hand is untouched, and never was the authority',
+        tostring(BR.Inv.of(1).slots[1].count))
+
+    -- THREE STICKIES ARE THREE CREDITS AND SHOULD BE THREE HITS. A cluster
+    -- detonated together is the one case a per-projectile ledger could get
+    -- wrong in the other direction: the victim is already in the first
+    -- authorization's ledger, so the second and third have to open their own.
+    withGrenades()
+    for _ = 1, 3 do BR.Damage.noteThrow(1, 'grenade') end
+    fakeTime = fakeTime + 2000
+    refusals0 = BR.Damage.refusals or 0
+    local landed = 0
+    for _ = 1, 3 do
+        standUp()
+        blast()
+        if BR.Roster.get(2).hp < 100.0 then landed = landed + 1 end
+    end
+    ok(landed == 3, 'three grenades thrown are three grenades that go off',
+        ('%d of 3'):format(landed))
+    ok((BR.Damage.refusals or 0) == refusals0,
+        'with nothing refused in between',
+        ('%d -> %d'):format(refusals0, BR.Damage.refusals or 0))
+
+    -- ...and a fourth, from three throws, is not.
+    standUp()
+    blast()
+    ok(BR.Roster.get(2).hp == 100.0,
+        'a fourth blast from three throws is refused',
+        tostring(BR.Roster.get(2).hp))
 end
 
 describe('damage.notThrownIsReachable')

@@ -30,9 +30,31 @@ local cfg = BR.Config.Combat or {}
 -- Last shot time per shooter, for the rate-of-fire check. Keyed by src.
 local lastShot = {}
 
--- Explosives in flight, per shooter: thrown[src][item] = timestamp of the last
--- one spent. See BR.Damage.noteThrow for why a timestamp and not a count.
+-- Explosives in flight, per shooter: thrown[src][item] = { <ms>, <ms>, ... },
+-- oldest first. ONE ENTRY PER PROJECTILE the server watched leave the hand, and
+-- an entry is spent when a blast is authorized against it.
+--
+-- A QUEUE RATHER THAN A TIMESTAMP (audit finding 3, 2026-09-08). It held the
+-- time of the LAST throw and BR.Damage.threwRecently answered "was there one in
+-- the window" -- which authenticates a weapon TYPE for thirty seconds rather
+-- than a particular grenade, so one throw covered every explosion the client
+-- cared to claim until the window lapsed. The entries expire exactly as the
+-- timestamp did; what changed is that they are also consumable, so three
+-- stickies are three credits and a fourth blast is refused.
 local thrown = {}
+
+-- The projectile a blast belongs to, per shooter:
+--   blast[src] = { weapon = <item id>, at = <ms>, victims = { [src] = true },
+--                  n = <count> }
+--
+-- WHY THIS IS ONE RECORD AND NOT A LIST. A player has at most one projectile
+-- landing at a time in any sense that matters here -- the window is a second or
+-- less -- and a list would need pruning on a path that runs once per round of
+-- automatic fire. The one case a list would serve is a cluster of stickies
+-- detonated together, and that is served better anyway: each one is a separate
+-- credit, so the second sticky to catch a victim the first already caught opens
+-- a NEW authorization and pays for it.
+local blast = {}
 
 -- Last applied melee hit, keyed shooter:victim:weapon -> timestamp.
 --
@@ -163,13 +185,63 @@ end
 --- is not the security boundary -- the inventory is. A player can only be here
 --- at all if the server issued them that explosive and watched them spend one;
 --- the window merely stops that credit lasting the whole match.
+---
+--- ...AND IT IS A CREDIT PER PROJECTILE NOW, NOT A STAMP PER WEAPON TYPE. The
+--- expiry argument above is unchanged and still the reason there is no
+--- decrement on detonation: a grenade thrown into the sea produces nothing to
+--- decrement against. What the window could not express is HOW MANY, so one
+--- throw authenticated every blast a client cared to claim for thirty seconds.
+--- Each throw now pushes one entry and each authorized blast spends one.
+---
+--- `n` EXISTS FOR A CALLER THAT DOES NOT YET PASS IT. server/inventory.lua
+--- knows the exact size of the decrease it just accepted (`have - total`) and
+--- calls this once per report; a report that carried two grenades at once would
+--- under-credit by one, and the shape of that failure is an honest blast refused
+--- as NOT_THROWN, which files an incident. It is not reachable today -- the
+--- client's throwable branch reports at 10Hz the moment the count falls and a
+--- GTA throw animation is well over a second -- so the parameter is here to be
+--- passed rather than the file being edited under another change in flight.
 --- @param src integer
 --- @param item string
-function BR.Damage.noteThrow(src, item)
+--- @param n integer|nil  how many left the hand; 1 when the caller does not say
+function BR.Damage.noteThrow(src, item, n)
     if not item then return end
     local t = thrown[src]
     if not t then t = {}; thrown[src] = t end
-    t[item] = GetGameTimer()
+    local q = t[item]
+    if not q then q = {}; t[item] = q end
+
+    local now = GetGameTimer()
+    for _ = 1, math.max(1, math.tointeger(tonumber(n) or 1) or 1) do
+        q[#q + 1] = now
+    end
+
+    -- BOUNDED, because an unbounded queue is a way to bank authorizations. It
+    -- cannot overflow from honest play -- a grenade stack is three -- so the cap
+    -- is only ever reached by something the inventory should already have
+    -- refused, and dropping the OLDEST keeps the credits that are about to be
+    -- needed rather than the ones about to expire.
+    local cap = cfg.throwCreditMax or 8
+    while #q > cap do table.remove(q, 1) end
+end
+
+--- Drop the credits that have expired, and hand back what is left.
+---
+--- Pruning on READ rather than on a timer: the queue is at most a few entries
+--- and only two functions look at it, so a scheduler job to age something
+--- nobody is asking about would be work done for its own sake.
+--- @param src integer
+--- @param item string
+--- @return table|nil  the live queue, nil when this player never threw one
+local function liveThrows(src, item)
+    local t = thrown[src]
+    local q = t and t[item]
+    if not q then return nil end
+
+    local grace = liveCfg().explosiveGraceMs or 30000
+    local now = GetGameTimer()
+    while #q > 0 and (now - q[1]) > grace do table.remove(q, 1) end
+    return q
 end
 
 -- Self-inflicted hits, per player: { since, count }.
@@ -204,10 +276,23 @@ end
 --- ctx.threwRecently -- so a grace window bent by /brtestfire has to be
 --- honoured here or `thrown` mode would be the one lever that did nothing.
 function BR.Damage.threwRecently(src, item)
-    local t = thrown[src]
-    local at = t and t[item]
-    if not at then return false end
-    return (GetGameTimer() - at) <= (liveCfg().explosiveGraceMs or 30000)
+    local q = liveThrows(src, item)
+    return q ~= nil and #q > 0
+end
+
+--- Spend one throw credit, and say whether there was one to spend.
+---
+--- THE CONSUMING HALF, and the one the security story now rests on. Called
+--- exactly once per projectile the validator authorizes -- never per victim, or
+--- a grenade that caught four people would want four grenades.
+--- @param src integer
+--- @param item string
+--- @return boolean  true when a credit was actually spent
+local function consumeThrow(src, item)
+    local q = liveThrows(src, item)
+    if not q or #q == 0 then return false end
+    table.remove(q, 1)
+    return true
 end
 
 --- Everything the validator needs about a shooter/victim pair, from the
@@ -527,6 +612,41 @@ end
 --- as a server event the server has already validated, so the server can
 --- simply count them.
 ---
+--- The magazine the server believes is behind this weapon, right now.
+---
+--- READ BEFORE spendRound RUNS, AND THAT IS THE WHOLE REASON IT EXISTS. The
+--- round is spent once per event, before any victim is resolved, so by the time
+--- BR.ValidateShot reads `ctx.clip` the magazine has ALREADY been charged for
+--- the shot being adjudicated. On the last round of the last magazine that
+--- reads zero -- and an ammunition check on that number refuses the very round
+--- it just took, as a high-severity means-class refusal, against a player who
+--- did nothing but fire their last rocket. weapons.lua names that failure in
+--- its own comment ("NO_AMMO would refuse the last rocket in the tube") and it
+--- is the reason the explosive branch skipped the check entirely rather than
+--- the reason the check was wrong.
+---
+--- nil FOR "NOT APPLICABLE", never 0. An empty active slot is fists, a
+--- throwable has no magazine, and a weapon that is not the one being fired is
+--- somebody else's problem -- none of those are an empty magazine, and
+--- collapsing them onto 0 is what would refuse a thrown grenade for having no
+--- rounds in it.
+--- @param src integer
+--- @param weapon integer  weapon hash from the event
+--- @return integer|nil
+local function heldClipFor(src, weapon)
+    local inv = BR.Inv and BR.Inv.of(src)
+    if not inv then return nil end
+
+    local slot = inv.slots[inv.active]
+    if not slot or slot.kind ~= BR.ItemKind.WEAPON then return nil end
+
+    local w = BR.Config.WeaponById[slot.item]
+    if not w or w.melee or not w.clip then return nil end
+    if BR.NormHash(w.hash) ~= BR.NormHash(weapon) then return nil end
+
+    return slot.clip or 0
+end
+
 --- Called on EVERY validated shot, hit or miss. A miss still costs a round,
 --- which is the entire difference between counting shots and counting hits.
 --- @param src integer
@@ -793,8 +913,16 @@ local function noteAdjudication(shooter, victim, w, ctx, dist, since, why)
     r.reason       = why
     r.dist         = dist
     r.limit        = BR.ShotRangeLimit(w, ecfg)
-    r.since        = since
-    r.floor        = BR.ShotIntervalFloor(w, ecfg)
+    -- ...and the gap that was measured against it. For a new projectile that is
+    -- the gap since the last LAUNCH, which is a different clock from the one
+    -- rifles are timed on -- explosives deliberately do not stamp that one.
+    r.since        = ctx.sinceLaunchMs or since
+    -- THE BOUND THAT ACTUALLY APPLIED TO THIS ROW. An explosive has no impact
+    -- cadence and BR.ShotIntervalFloor still says so; what it has is a LAUNCH
+    -- cadence, and printing a dash for a row that was refused as TOO_FAST would
+    -- make the readout hide the number that decided it -- the exact failure the
+    -- note at the top of this function exists to prevent.
+    r.floor        = BR.ShotIntervalFloor(w, ecfg) or BR.ShotLaunchFloor(w, ecfg)
     r.clip         = ctx.clip
     r.held         = ctx.heldItem
     r.threw        = isTrue(ctx.threwRecently)
@@ -923,6 +1051,11 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- three shots. It is also outside the "did we hit a player" test, because
     -- a MISS costs a round too -- that is the whole difference between
     -- counting shots and counting hits.
+    --
+    -- READ FIRST, SPEND SECOND. `heldClipFor` is the magazine as it stood
+    -- BEFORE this event charged for itself, which is the only number an
+    -- ammunition check can honestly be made against -- see its own note.
+    local clipBefore = heldClipFor(shooter, data.weaponType)
     if cfg.serverAmmo then
         BR.Damage.spendRound(shooter, data.weaponType)
     end
@@ -943,7 +1076,27 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- Explosives do not stamp it. A detonation is not a trigger pull, and
     -- letting one set the clock means the next honest rifle round is measured
     -- from the moment your own grenade went off.
-    if not (fired and fired.explosive) then lastShot[shooter] = now end
+    --
+    -- ...WHICH LEFT THEIR CADENCE MEASURED BY NOTHING AT ALL, and that half was
+    -- never intended. `blast[shooter]` is the other clock: it times LAUNCHES
+    -- rather than impacts, so a grenade launcher still cannot cycle in a
+    -- millisecond while one rocket catching four people still costs one shot.
+    local explosive = fired ~= nil and isTrue(fired.explosive)
+    if not explosive then lastShot[shooter] = now end
+
+    -- THE PROJECTILE THIS EVENT MIGHT BELONG TO, resolved once for the event.
+    --
+    -- `sinceLaunch` is nil when the shooter has never launched this weapon --
+    -- which must not read as "0ms ago and therefore too fast", so the first
+    -- rocket of a match has no cadence to fail.
+    local rec, launchOpen, sinceLaunch = nil, false, nil
+    if explosive then
+        rec = blast[shooter]
+        if rec and rec.weapon == fired.id then
+            sinceLaunch = now - rec.at
+            launchOpen  = sinceLaunch <= BR.ShotBlastWindow(fired, liveCfg())
+        end
+    end
 
     -- ONE EVENT, ONE HIT PER PLAYER, decided on the RESOLVED PLAYER rather than
     -- on the id that named them.
@@ -979,6 +1132,23 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
             hits = hits + 1
             local ctx = contextFor(shooter, victim, data.weaponType)
             if ctx then
+                -- THE MAGAZINE AS IT STOOD BEFORE THIS EVENT SPENT FROM IT, and
+                -- this fixes a live false positive rather than a hole.
+                --
+                -- contextFor reads the slot, and spendRound has already charged
+                -- that slot for the shot being adjudicated. On the LAST round of
+                -- the last magazine -- clip 1, reserve empty -- the read comes
+                -- back 0, so `ctx.clip <= 0` refused the round that had just
+                -- been legitimately fired. NO_AMMO is means-class with a bar of
+                -- one, so an honest player running dry at the end of a fight
+                -- opened an anticheat case on themselves, every time.
+                --
+                -- Reproduced in tools/test_roster.lua before it was fixed. Left
+                -- to contextFor when heldClipFor has no opinion: nil there means
+                -- the active slot is not the weapon that fired, and NOT_HELD is
+                -- the refusal that belongs to that, not NO_AMMO.
+                if clipBefore ~= nil then ctx.clip = clipBefore end
+
                 local dist = 0.0
                 if ctx.posA and ctx.posB then
                     dist = BR.Dist3(ctx.posA.x, ctx.posA.y, ctx.posA.z,
@@ -1004,6 +1174,37 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                         BR.Damage.meleeDupes = (BR.Damage.meleeDupes or 0) + 1
                     else
                         meleeHit[key] = now
+                    end
+                end
+
+                -- WHICH PROJECTILE THIS IMPACT BELONGS TO.
+                --
+                -- Shared: the shooter has a launch still open, it was this
+                -- weapon, it has not already hurt this victim, and it has not
+                -- run out of victims. That is one rocket catching four people,
+                -- and it costs one rocket.
+                --
+                -- Not shared: a NEW projectile, which has to pay -- a round out
+                -- of a magazine the server filled, or a throw credit. The
+                -- SECOND sticky of a cluster to catch a victim the first
+                -- already caught lands here rather than being dropped, which is
+                -- why the victim test is part of "shared" at all: three
+                -- stickies are three credits and should be three hits.
+                local newLaunch = false
+                if explosive then
+                    local shared = launchOpen and rec ~= nil
+                                   and rec.victims[victim] == nil
+                                   and rec.n < maxHits
+                    ctx.blastShared = shared
+                    newLaunch = not shared
+                    if newLaunch then
+                        ctx.sinceLaunchMs = sinceLaunch
+                        -- Only a launcher has a magazine to be empty of. Left
+                        -- unset for a throwable, where nil means "no opinion"
+                        -- and the throw credit is the bound instead.
+                        if fired.clip then
+                            ctx.launchAmmo = clipBefore ~= nil and clipBefore > 0
+                        end
                     end
                 end
 
@@ -1088,6 +1289,34 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                         BR.Damage.resync(shooter, victim)
                     end
                 else
+                    -- THE LAUNCH IS PAID FOR HERE, AND NOWHERE ELSE.
+                    --
+                    -- AFTER the verdict, deliberately: a refused blast must not
+                    -- consume a grenade the player still has, or a squadmate
+                    -- walking through your own explosion would eat the credit
+                    -- for it and the next honest one would be refused as
+                    -- NOT_THROWN. The magazine is the exception and is charged
+                    -- upstream by spendRound, because a launcher can MISS and a
+                    -- miss has to cost a round -- the same reason spendRound
+                    -- sits outside this loop at all.
+                    --
+                    -- ONCE PER PROJECTILE, NEVER PER VICTIM. `rec` is replaced
+                    -- rather than reused so the victim ledger starts empty: this
+                    -- is a different grenade.
+                    if newLaunch then
+                        if not fired.clip then
+                            consumeThrow(shooter, fired.id)
+                        end
+                        rec = { weapon = fired.id, at = now, victims = {}, n = 0 }
+                        blast[shooter] = rec
+                        launchOpen, sinceLaunch = true, 0
+                        BR.Damage.launches = (BR.Damage.launches or 0) + 1
+                    end
+                    if explosive and rec then
+                        rec.victims[victim] = true
+                        rec.n = rec.n + 1
+                    end
+
                     -- WHAT THE SERVER THINKS THE HIT WAS WORTH.
                     --
                     -- Recomputed from our own tables and NEVER read off the
@@ -1315,6 +1544,10 @@ function BR.Damage.forget(src)
     lastShot[src] = nil
     thrown[src]   = nil
     selfHits[src] = nil
+    -- ...and the projectile they had in the air. A recycled server id must not
+    -- inherit an open launch authorization: it would hand its next holder one
+    -- free blast, bounded only by the window it was opened in.
+    blast[src]    = nil
     if BR.Damage.forgetFires then BR.Damage.forgetFires(src) end
     for k in pairs(meleeHit) do
         if k:find('^' .. src .. ':') or k:find(':' .. src .. ':') then
