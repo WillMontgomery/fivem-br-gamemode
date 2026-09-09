@@ -1,0 +1,35 @@
+# Run tools/royale.logrotate more often than the distribution's daily pass.
+#
+# Ubuntu's own logrotate.timer fires once a day. That is the right cadence for a
+# service whose log grows at a rate the service controls; console.log grows at a
+# rate a CLIENT can influence (#287), so a daily check leaves a twenty-four hour
+# window in which `maxsize` means nothing at all.
+#
+# NAMED CONFIGURATION, NOT THE SYSTEM ONE. Handing logrotate
+# /etc/logrotate.d/royale means exactly one log is considered here; running the
+# whole system config hourly would rotate everything on the box on a cadence
+# nobody asked for. The cost is that /etc/logrotate.conf's global defaults do NOT
+# apply to a run like this, which is why royale.logrotate spells every setting
+# out for itself.
+#
+# The state file is the shared /var/lib/logrotate/status, so this run and the
+# daily system run agree with each other about when the last rotation happened.
+# logrotate takes its own lock, so the two overlapping is a non-event.
+
+[Unit]
+Description=Rotate FiveM Royale's console.log if it has grown
+# Nothing to do on a box where the config was never installed. Without this the
+# unit fails once an hour and puts a red line in the journal about a machine that
+# is working exactly as intended.
+ConditionPathExists=/etc/logrotate.d/royale
+
+[Service]
+Type=oneshot
+# Root, deliberately: the state file under /var/lib is root's. The file
+# operations themselves drop to the server user through `su ubuntu ubuntu` in
+# royale.logrotate, which is where that decision belongs -- beside the path it
+# applies to.
+ExecStart=/usr/sbin/logrotate /etc/logrotate.d/royale
+
+# Deliberately NO [Install] section. royale-logrotate.timer is what gets enabled;
+# this unit is the verb it calls.

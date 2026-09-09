@@ -39,11 +39,20 @@ nobody relearns it.
 ```bash
 sudo apt install -y tmux
 sudo cp tools/royale.service tools/royale-watchdog.service tools/royale-watchdog.timer /etc/systemd/system/
+sudo cp tools/royale-logrotate.service tools/royale-logrotate.timer /etc/systemd/system/
+sudo cp tools/royale.logrotate /etc/logrotate.d/royale
 sudo nano /etc/systemd/system/royale.service           # set User= and the paths
 sudo nano /etc/systemd/system/royale-watchdog.service  # same user in runuser -u
+sudo nano /etc/logrotate.d/royale                      # same user in su, same path
 sudo systemctl daemon-reload
-sudo systemctl enable --now royale royale-watchdog.timer
+sudo systemctl enable --now royale royale-watchdog.timer royale-logrotate.timer
 ```
+
+**The user appears in four files and they must agree**: `User=`/`Group=` in
+`royale.service`, `runuser -u` in `royale-watchdog.service`, `runuser -u` in
+`royale-deploy.service`, and `su` in `/etc/logrotate.d/royale`. That is the same
+ownership invariant the crash note below is about, spread across the units that
+each have to honor it.
 
 Day to day:
 
@@ -84,7 +93,51 @@ console, and Ctrl-C shuts the server down.
 > **The costs, each paid:** systemd cannot see a crash inside the session, so
 > `royale-watchdog.timer` checks every 30s — a crash costs under a minute,
 > unattended. The journal gets nothing, so `pipe-pane` mirrors the console to
-> `console.log` (rotation is M9 9e's job).
+> `console.log`, which `royale-logrotate.timer` now rotates.
+
+### The console log, and why it needs rotating
+
+`console.log` is the only record of what the server said, because the journal
+cannot see inside tmux. It used to grow forever and that was written down as an
+accepted cost. An external audit (#287) pointed out the part that makes it more
+than an annoyance: a hostile client can manufacture refusable events as fast as
+it can send packets, and several of those printed a console line each, so the
+growth rate was the attacker's to choose.
+
+Two halves fix it, and they are independent:
+
+* **In the gamemode.** `br_core/server/damage.lua` now prints the first few
+  refusals of each kind per minute and then reports the count of the rest ("412
+  more refusal lines in the last 60s went unprinted"). The lines are still there
+  for diagnosing a bad round -- honest play never approaches the ceiling -- and a
+  flood becomes a bounded number of lines that say how big it is.
+* **On the box.** `tools/royale.logrotate` plus `royale-logrotate.timer` rotate
+  the file daily, or sooner if it passes 64MB, keeping seven compressed
+  generations. Worst case on disk is roughly 100-150MB.
+
+```bash
+sudo logrotate -d /etc/logrotate.d/royale   # dry run: says what it would do
+systemctl list-timers royale-logrotate.timer
+```
+
+The rotation uses `copytruncate`, which is not a style preference: the writer is
+the `cat >>` that `pipe-pane` forked, nothing can tell it to reopen its file, and
+a rename-and-create rotation would leave it writing into the renamed inode with
+`console.log` stuck at zero bytes. The trade is that a few milliseconds of output
+is lost at each rotation.
+
+**64MB is a bound, not a measurement.** Nobody has load-tested any of this
+against a live FXServer at population, and #287 says the same about its own
+numbers. To settle it: `wc -c` the file before and after a full round, multiply
+out, and set `maxsize` to a couple of days of that.
+
+`royale.service` also carries a hardening block now (`NoNewPrivileges`,
+`ProtectSystem=full`, the `Protect*` family, and the accounting switches). Read
+the comment in that file before adding to it: it records which of the audit's
+suggestions were rejected and why, including `MemoryMax` (no measured figure
+exists, and guessing low means an OOM kill mid-round), `PrivateTmp` (it would
+break `tmux attach`), and a dedicated service account (it would mean re-chowning
+the tree whose ownership caused the crash saga above).
 
 ### Deploying
 

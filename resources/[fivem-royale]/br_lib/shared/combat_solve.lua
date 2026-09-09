@@ -715,3 +715,213 @@ function BR.ExplosionAllowed(ctx, cfg)
 
     return true, nil
 end
+
+--- Is there room in the fire ledger for one more record?
+---
+--- WHAT THE RATE CEILING ABOVE DOES NOT COVER (external audit, #287). `burst`
+--- bounds how OFTEN one player may set off an explosion; it says nothing about
+--- how many records the accepted ones leave lying around. A molotov is
+--- remembered for BR.Config.Combat.fireLifeMs -- twenty seconds -- so at the
+--- shipped ceiling of twelve blasts per five seconds a single player can hold
+--- forty-eight live records, and forty-eight players holding forty-eight each is
+--- a table server/damage.lua walks twice a second against every living player.
+---
+--- THE PER-OWNER CAP IS THE LOAD-BEARING ONE, and `total` is a backstop rather
+--- than the rule. The property worth protecting is that a flooder cannot push
+--- anybody ELSE's fire out of the ledger and steal or void their attribution --
+--- which a global cap alone does not give, whichever end it evicts from. So the
+--- owner's own share is what runs out first, and 48 players each holding their
+--- full share still fits inside `firesMax` with room to spare: the global number
+--- can only be reached by a roster far larger than this gamemode runs, which is
+--- exactly what a backstop should look like.
+---
+--- REFUSE THE NEW RECORD, NEVER EVICT AN OLD ONE, for the same reason. Evicting
+--- oldest-first would let somebody at the ceiling roll the table over
+--- continuously, and the records they destroyed would be the ones that had been
+--- there long enough to matter -- a molotov still burning on somebody else's
+--- kill. Dropping the newest costs the flooder their own attribution, which is
+--- the correct party to charge.
+---
+--- TWENTY-FOUR IS HALF OF WHAT THE RATE CEILING ALONE WOULD ALLOW TO PILE UP,
+--- and it is a bound rather than a measurement -- see the note in
+--- tools/royale.logrotate about what has and has not been load-tested. Holding
+--- twenty-four live molotov records means better than one molotov per second
+--- sustained for twenty seconds, from an inventory the server issued.
+--- @param total number   how many records the ledger holds now
+--- @param mine number    how many of them belong to this owner
+--- @param cfg table|nil  BR.Config.Combat
+--- @return string|nil    'OWNER' or 'GLOBAL' when it is full, nil when it is not
+function BR.FireLedgerFull(total, mine, cfg)
+    cfg = cfg or {}
+    if (tonumber(mine) or 0) >= (cfg.firesPerOwner or 24) then return 'OWNER' end
+    if (tonumber(total) or 0) >= (cfg.firesMax or 2048) then return 'GLOBAL' end
+    return nil
+end
+
+-- --------------------------------------------------------------------------
+-- How loud a refusal is allowed to be
+-- --------------------------------------------------------------------------
+
+--- A ceiling on how many console lines one kind of event may produce, with the
+--- surplus COUNTED AND REPORTED rather than dropped.
+---
+--- WHY THIS EXISTS (external audit, #287). Several refusal paths in
+--- br_core/server/damage.lua print one line per refused EVENT, and a refused
+--- event is the cheapest thing a hostile client can manufacture. The explosion
+--- listener is the clearest case: BR.ExplosionAllowed refuses a flood as
+--- TOO_OFTEN after twelve in five seconds, but the handler printed a line for
+--- every one of them -- so the rate ceiling bounded the WORK and not the LOG.
+--- royale.service mirrors the console into console.log with `tmux pipe-pane`,
+--- which makes that a file on the game box growing at whatever rate somebody
+--- chooses to send packets at.
+---
+--- SILENCE IS NOT THE FIX, AND THAT IS THE WHOLE DESIGN CONSTRAINT. Those lines
+--- are how an operator diagnoses a bad round, and damage.lua says so in four
+--- separate places -- the comment above the shot-refusal print is explicit that
+--- "a silent refusal teaches nothing". Trading a disk-space bug for a blindness
+--- bug is the worse of the two, because under an attack the flood IS the signal.
+---
+--- SO: PRINT THE FIRST FEW, COUNT THE REST, AND SAY HOW MANY WERE NOT PRINTED.
+--- Two alternatives lost to that. A fixed cooldown per key ("one line every ten
+--- seconds") keeps the console readable and throws away the magnitude, so an
+--- operator cannot tell ten refusals from ten thousand -- which is the single
+--- fact they most need. Sampling one line in N has the same defect and adds a
+--- second one: N has to be guessed before anybody knows the rate.
+---
+--- TWO CEILINGS, BECAUSE ONE IS NOT ENOUGH EITHER WAY ROUND. `perKey` alone lets
+--- 48 players times seven refusal reasons through as separate keys, which is the
+--- flood again wearing a hat. `perWindow` alone lets whichever key arrives first
+--- spend the whole allowance, so the loudest attacker silences everybody else's
+--- diagnostics. Together the first few of each KIND get through and the total is
+--- still bounded.
+---
+--- `now` IS ALWAYS A PARAMETER and nothing here calls a native, so the whole
+--- thing is exercised in tools/test_shared.lua rather than by watching a
+--- console. Same split as the solvers above.
+BR.LogBudget = {}
+BR.LogBudget.__index = BR.LogBudget
+
+--- Where every key past `maxKeys` is counted instead.
+---
+--- The key space callers use is server-derived (a player id and a refusal
+--- reason), so it is already bounded -- but a table keyed by anything an
+--- attacker influences is the exact shape of the finding this file is answering,
+--- and a budget that could itself be made to grow without bound would be a
+--- joke. Surplus kinds collapse into one bucket: the count survives, the
+--- breakdown does not, and the breakdown is what nobody can read at that volume
+--- anyway.
+local OVERFLOW = '(other)'
+
+local BUDGET_DEFAULTS = {
+    windowMs  = 60000,
+    perKey    = 3,
+    perWindow = 20,
+    maxKeys   = 64,
+}
+
+--- Start a fresh window. Also the constructor's initializer, so there is one
+--- definition of what an empty budget looks like.
+local function budgetClear(self, now)
+    self.since     = now
+    self.printed   = 0
+    self.held      = 0
+    self.kinds     = 0
+    self.worst     = nil
+    self.worstHeld = 0
+    self.keys      = { [OVERFLOW] = { printed = 0, held = 0 } }
+    self.keyCount  = 1
+end
+
+--- Close the current window and hand back what it held back, if anything.
+local function budgetRoll(self, now)
+    local s = nil
+    if self.held > 0 then
+        s = { held = self.held, kinds = self.kinds, worst = self.worst,
+              worstHeld = self.worstHeld, windowMs = self.windowMs }
+    end
+    budgetClear(self, now)
+    return s
+end
+
+--- @param opts table|nil { windowMs, perKey, perWindow, maxKeys, now }
+--- @return table
+function BR.LogBudget.new(opts)
+    opts = opts or {}
+    local self = setmetatable({}, BR.LogBudget)
+    for k, v in pairs(BUDGET_DEFAULTS) do
+        local given = tonumber(opts[k])
+        self[k] = (given and given > 0) and given or v
+    end
+    budgetClear(self, tonumber(opts.now) or 0)
+    return self
+end
+
+--- Ask whether this line may be printed.
+---
+--- RETURNS TWO THINGS, AND THE SECOND IS THE HALF THAT IS EASY TO DROP. When
+--- this call is the one that rolls a window over, the closing window's summary
+--- comes back with it and the caller must print it -- otherwise a flood that
+--- keeps going never reports how much it held back, which is the whole feature.
+--- @param key any      what makes this line the same as another one
+--- @param now number   GetGameTimer()
+--- @return boolean printIt, table|nil summary
+function BR.LogBudget:admit(key, now)
+    now = tonumber(now) or 0
+    local summary = nil
+    if (now - self.since) >= self.windowMs then summary = budgetRoll(self, now) end
+
+    key = tostring(key)
+    local r = self.keys[key]
+    if not r then
+        if self.keyCount >= self.maxKeys then
+            key, r = OVERFLOW, self.keys[OVERFLOW]
+        else
+            r = { printed = 0, held = 0 }
+            self.keys[key] = r
+            self.keyCount = self.keyCount + 1
+        end
+    end
+
+    if r.printed < self.perKey and self.printed < self.perWindow then
+        r.printed = r.printed + 1
+        self.printed = self.printed + 1
+        return true, summary
+    end
+
+    r.held = r.held + 1
+    self.held = self.held + 1
+    if r.held == 1 then self.kinds = self.kinds + 1 end
+    if r.held > self.worstHeld then self.worst, self.worstHeld = key, r.held end
+    return false, summary
+end
+
+--- Close a window that has expired with nothing arriving to close it.
+---
+--- WITHOUT A TICK CALLING THIS, A FLOOD THAT STOPS IS NEVER REPORTED: `admit`
+--- only rolls when something asks to be printed, so the last window of an attack
+--- would sit unreported until the next refusal -- which may be the next match.
+--- The caller ticks this; nothing here can tick itself.
+--- @param now number
+--- @return table|nil summary
+function BR.LogBudget:sweep(now)
+    now = tonumber(now) or 0
+    if (now - self.since) < self.windowMs then return nil end
+    return budgetRoll(self, now)
+end
+
+--- The sentence a summary becomes. Here rather than at the call site so the two
+--- consoles that print it cannot word it differently, and so it is asserted by
+--- the suite rather than read off a screen.
+--- @param s table|nil    what admit or sweep returned
+--- @param noun string|nil what the suppressed lines were about
+--- @return string|nil
+function BR.LogBudget.line(s, noun)
+    if not s then return nil end
+    local plural = (s.held == 1) and '' or 's'
+    local kplural = (s.kinds == 1) and '' or 's'
+    return ('[br_core] %d more %s line%s in the last %ds went unprinted -- '
+            .. '%d kind%s, worst %s x%d')
+        :format(s.held, noun or 'refusal', plural,
+                math.floor((s.windowMs / 1000) + 0.5),
+                s.kinds, kplural, tostring(s.worst), s.worstHeld)
+end

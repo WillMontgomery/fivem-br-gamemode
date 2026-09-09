@@ -1551,6 +1551,194 @@ do
         'a car going off a cliff still explodes, owned by nobody')
 end
 
+describe('combat.fireledger')
+do
+    -- WHAT THE RATE CEILING ABOVE DOES NOT COVER (external audit, #287).
+    -- `burst` bounds how often somebody may set an explosion off. The records
+    -- the accepted ones leave behind live for BR.Config.Combat.fireLifeMs -- and
+    -- server/damage.lua walks the whole ledger twice a second against every
+    -- living player, so an unbounded ledger is unbounded work.
+    local cfg = BR.Config.Combat
+
+    ok(BR.FireLedgerFull(0, 0, cfg) == nil,
+        'an empty ledger has room')
+    ok(BR.FireLedgerFull(10, 2, cfg) == nil,
+        'and so does one with a normal round in it')
+
+    local per = cfg.firesPerOwner or 24
+    local cap = cfg.firesMax or 2048
+
+    ok(BR.FireLedgerFull(per, per, cfg) == 'OWNER',
+        'a player at their own share is refused the next record',
+        tostring(BR.FireLedgerFull(per, per, cfg)))
+    ok(BR.FireLedgerFull(cap, 0, cfg) == 'GLOBAL',
+        'and a full ledger is refused even for somebody holding none of it',
+        tostring(BR.FireLedgerFull(cap, 0, cfg)))
+
+    -- THE ORDER OF THE TWO TESTS IS THE DIAGNOSIS. When both are full the
+    -- interesting fact is that this player is the one filling it, so that is
+    -- what the console line has to say.
+    ok(BR.FireLedgerFull(cap, per, cfg) == 'OWNER',
+        'and when both are full the owner cap is what gets reported')
+
+    -- THE DESIGN PROPERTY, ASSERTED RATHER THAN ASSUMED: the per-owner share is
+    -- what runs out first. A full 48-player roster ALL holding their maximum
+    -- still fits under the global backstop, so the global cap can never be the
+    -- thing that refuses an honest player because of what somebody else did --
+    -- which is the whole reason there is a per-owner cap at all.
+    ok(48 * per < cap,
+        'a full roster at maximum share still fits under the global backstop',
+        ('48 x %d = %d vs %d'):format(per, 48 * per, cap))
+
+    -- Both numbers are BR.Config.Combat's if it carries them, so a playtest can
+    -- widen either without a redeploy.
+    ok(BR.FireLedgerFull(5, 5, { firesPerOwner = 4 }) == 'OWNER',
+        'the per-owner share is configurable')
+    ok(BR.FireLedgerFull(5, 0, { firesMax = 4 }) == 'GLOBAL',
+        'and so is the backstop')
+
+    -- A LEDGER READ AS NONSENSE IS NOT A FULL LEDGER. `#fires` cannot be nil in
+    -- practice, but a cap that refuses everything on a nil would silently stop
+    -- attributing every molotov in the match, which is a worse failure than the
+    -- one it is guarding against.
+    ok(BR.FireLedgerFull(nil, nil, cfg) == nil,
+        'and a ledger it cannot measure is treated as having room')
+end
+
+describe('combat.logbudget')
+do
+    -- HOW LOUD A REFUSAL IS ALLOWED TO BE (external audit, #287).
+    --
+    -- server/damage.lua prints a line per refused EVENT on three paths, and a
+    -- refused event is the cheapest thing a hostile client can manufacture.
+    -- royale.service mirrors the console into console.log, so those lines are a
+    -- file on the game box growing at whatever rate somebody sends packets.
+    --
+    -- THE PROPERTY UNDER TEST IS NOT "IT GOES QUIET". It is that the console
+    -- stays bounded AND still says how much it did not print -- a rate limit
+    -- that silently drops the surplus would trade a disk bug for a blindness
+    -- bug, and under an attack the volume is the signal.
+    local function budget(over)
+        local o = { windowMs = 1000, perKey = 2, perWindow = 5, maxKeys = 3,
+                    now = 0 }
+        for k, v in pairs(over or {}) do o[k] = v end
+        return BR.LogBudget.new(o)
+    end
+
+    do
+        local b = budget()
+        ok(b:admit('a', 0) and b:admit('a', 10),
+            'the first lines of a kind are printed')
+        ok(not b:admit('a', 20), 'and the ones past its allowance are not')
+        -- A SEPARATE KIND IS NOT SILENCED BY THE LOUD ONE. Without this, an
+        -- attacker flooding one path buys silence on all of them, which is the
+        -- more useful outcome for them than the log growth ever was.
+        ok(b:admit('b', 30), 'a different kind still has its own allowance')
+    end
+
+    do
+        -- ...AND THE TOTAL IS STILL BOUNDED, which is the other half. Per-key
+        -- alone lets 48 players times seven reasons through as separate keys.
+        local b = budget({ perKey = 10, perWindow = 3 })
+        local printed = 0
+        for i = 1, 40 do
+            if b:admit('k' .. (i % 2), i) then printed = printed + 1 end
+        end
+        ok(printed == 3, 'the window total holds even when no single kind does',
+            tostring(printed))
+    end
+
+    do
+        -- NOTHING IS LOST, ONLY DEFERRED. Every line the budget refused is in
+        -- the count it hands back, which is the sentence an operator reads.
+        local b = budget()
+        local refused = 0
+        for i = 1, 100 do
+            if not b:admit('a', i) then refused = refused + 1 end
+        end
+        local s = b:sweep(5000)
+        ok(s and s.held == refused,
+            'every line held back is counted in the summary',
+            s and ('%d vs %d'):format(s.held, refused) or 'no summary')
+        ok(s and s.worst == 'a' and s.worstHeld == refused,
+            'and the summary names the kind that produced most of them')
+    end
+
+    do
+        -- THE WINDOW REOPENS, AND THE CALL THAT REOPENS IT CARRIES THE OLD
+        -- WINDOW'S REPORT OUT. Dropping that second return value is the easy
+        -- mistake: a flood that never stops would then never report anything,
+        -- because sweep is only reached when the console goes quiet.
+        local b = budget()
+        b:admit('a', 0); b:admit('a', 0)
+        ok(not b:admit('a', 0), 'a kind is spent for the rest of its window')
+
+        local printIt, summary = b:admit('a', 2000)
+        ok(printIt, 'and printable again once the window rolls')
+        ok(summary and summary.held == 1,
+            'with the closing window reported by the call that rolled it',
+            summary and tostring(summary.held) or 'no summary')
+    end
+
+    do
+        -- A FLOOD THAT STOPS IS THE CASE SWEEP EXISTS FOR: admit only rolls when
+        -- something asks to be printed, so without a tick the last window of an
+        -- attack would sit unreported until the next refusal -- possibly next
+        -- match. An operator reading the console afterwards is exactly the
+        -- person who needs that number.
+        local b = budget()
+        for i = 1, 9 do b:admit('a', 0) end
+        ok(b:sweep(500) == nil, 'a window that has not closed reports nothing')
+        local s = b:sweep(1000)
+        ok(s and s.held == 7, 'a closed one reports what it held back',
+            s and tostring(s.held) or 'no summary')
+        ok(b:sweep(2000) == nil, 'and reports it exactly once')
+    end
+
+    do
+        -- THE BUDGET'S OWN TABLE IS BOUNDED, which is not a formality in a file
+        -- answering a finding about unbounded growth. Callers key on a player id
+        -- and a refusal reason -- server-derived and already bounded -- but a
+        -- rate limiter that could itself be made to allocate without bound would
+        -- be the finding wearing a hat.
+        local b = budget({ perKey = 1, perWindow = 100, maxKeys = 3 })
+        local printed = 0
+        for i = 1, 50 do
+            if b:admit('key' .. i, 0) then printed = printed + 1 end
+        end
+        ok(printed <= 3, 'a key space wider than the cap cannot buy more lines',
+            tostring(printed))
+        local s = b:sweep(2000)
+        ok(s and s.held == 50 - printed,
+            'and the ones that collapsed into the overflow bucket still count',
+            s and tostring(s.held) or 'no summary')
+    end
+
+    do
+        -- THE SENTENCE ITSELF, because it is the whole user-visible output of
+        -- this module and a formatter that throws takes the server's console
+        -- handler with it.
+        ok(BR.LogBudget.line(nil) == nil, 'no summary is no line')
+
+        local line = BR.LogBudget.line(
+            { held = 412, kinds = 7, worst = 'blast:3:TOO_OFTEN',
+              worstHeld = 380, windowMs = 60000 }, 'refusal')
+        ok(line:find('412', 1, true) ~= nil, 'the line carries the count', line)
+        ok(line:find('blast:3:TOO_OFTEN', 1, true) ~= nil,
+            'and names the worst offender so it is actionable', line)
+        ok(line:find('60s', 1, true) ~= nil,
+            'and says how long it is talking about', line)
+        ok(line:find('\u{2014}', 1, true) == nil,
+            'and carries no em dash, the way nothing else here does', line)
+
+        local one = BR.LogBudget.line(
+            { held = 1, kinds = 1, worst = 'a', worstHeld = 1,
+              windowMs = 60000 })
+        ok(one:find('1 more refusal line in', 1, true) ~= nil,
+            'a single held line reads as one line rather than one lines', one)
+    end
+end
+
 describe('combat.refusal.classes')
 do
     -- WHAT CAN BECOME AN INCIDENT, PINNED.

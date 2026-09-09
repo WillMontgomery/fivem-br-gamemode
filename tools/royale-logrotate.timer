@@ -1,0 +1,24 @@
+# Fires royale-logrotate.service every hour.
+#
+#   sudo systemctl enable --now royale-logrotate.timer
+#
+# HOURLY IS THE COARSEST CADENCE THAT MAKES `maxsize 64M` MEAN ANYTHING. The
+# rotation is a copy and a truncate of a file that is usually well under the
+# ceiling, so the check itself costs a stat; running it more often would buy a
+# tighter bound on disk growth and nothing else. An hour puts the worst case at
+# 64M plus one hour of writing, which is the bound the audit asked for.
+#
+# The boot delay is the watchdog timer's, for the watchdog timer's reason: keep
+# it quiet while the box is still coming up, and never race the game server's own
+# start for the file it is about to open.
+
+[Unit]
+Description=Hourly size check on FiveM Royale's console.log
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Unit=royale-logrotate.service
+
+[Install]
+WantedBy=timers.target

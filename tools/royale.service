@@ -3,9 +3,11 @@
 #   sudo apt install -y tmux
 #   sudo cp tools/royale.service /etc/systemd/system/royale.service
 #   sudo cp tools/royale-watchdog.service tools/royale-watchdog.timer /etc/systemd/system/
+#   sudo cp tools/royale-logrotate.service tools/royale-logrotate.timer /etc/systemd/system/
+#   sudo cp tools/royale.logrotate /etc/logrotate.d/royale
 #   sudo nano /etc/systemd/system/royale.service     # set User= and the paths
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now royale royale-watchdog.timer
+#   sudo systemctl enable --now royale royale-watchdog.timer royale-logrotate.timer
 #
 # THE CRASH HISTORY, WITH THE CORRECTED DIAGNOSIS (2026-08-11). Three failure
 # modes were chased across two days, and the writeups blamed the wrong things
@@ -40,8 +42,12 @@
 #     rest: every 30s it checks the session exists and restarts this unit if
 #     not.
 #   - The journal gets nothing. pipe-pane below mirrors the console to
-#     console.log next to the server. No rotation yet -- that is M9 9e's job;
-#     until then it grows, which is a known cost and not a surprise.
+#     console.log next to the server. That file used to grow forever, which was
+#     recorded here as a known cost; an external audit (#287) pointed out that a
+#     hostile client chooses the rate, which makes it a way to fill the disk
+#     rather than an annoyance. tools/royale.logrotate and
+#     royale-logrotate.timer now bound it -- see that file for why copytruncate
+#     is the only rotation style a `tmux pipe-pane` writer survives.
 
 [Unit]
 Description=FiveM Royale (FXServer, in a tmux session)
@@ -98,6 +104,104 @@ LimitNOFILE=65536
 # behind failed starts, which then blocked every subsequent start. FXServer
 # treats SIGTERM as a clean quit, so the sweep is safe.
 TimeoutStopSec=30
+
+# --------------------------------------------------------------------------
+# HARDENING, AND WHAT WAS DELIBERATELY LEFT OFF (external audit, #287)
+# --------------------------------------------------------------------------
+#
+# The audit asked for MemoryMax, CPU controls, NoNewPrivileges, filesystem
+# protections and a dedicated service account. Four of those are applied below.
+# The other three are NOT, and the reasons are written down here rather than
+# left as an omission somebody re-litigates in six months, because on this unit
+# every one of them trades an attack that has never happened against a failure
+# mode that has.
+#
+# APPLIED. None of these can affect a process whose whole job is to open a
+# socket, read a directory it owns, and burn CPU:
+#
+#   NoNewPrivileges  nothing in the chain (tmux -> run.sh -> FXServer) is setuid
+#                    and nothing needs to become anything.
+#   RestrictSUIDSGID same rule from the other end.
+#   ProtectSystem=full  /usr, /boot and /etc read-only. The server writes to
+#                    /opt/fivem-server-classic and /tmp only, and BOTH stay
+#                    writable under `full` -- see the rejection of `strict`
+#                    below, which is a different setting with a different blast
+#                    radius.
+#   Protect*         kernel tunables, modules, cgroups and the system clock. A
+#                    game server has no business with any of them.
+#   *Accounting      free, and the ONLY honest route to the numbers MemoryMax
+#                    would need. `systemctl status royale` now shows memory,
+#                    CPU and task counts for a real round.
+#
+# REJECTED, with the reason each time:
+#
+#   MemoryMax=    A number nobody has measured. This repo records no RAM figure
+#                 for the box and #287 says plainly that its own thresholds are
+#                 not load-tested, so any value here would be invented. The
+#                 failure mode of guessing low is the cgroup OOM killer taking
+#                 FXServer down mid-round at peak population -- exactly when it
+#                 matters most, and indistinguishable at the time from a crash.
+#                 The memory growth the audit was worried about now has an
+#                 in-process bound anyway (BR.FireLedgerFull and the rate
+#                 ceilings in br_core/server/damage.lua), which is the layer that
+#                 can tell an attack from a full server. MemoryAccounting=yes is
+#                 on: watch `systemctl status royale` across a few full rounds,
+#                 take the peak, and set MemoryMax to roughly twice it.
+#
+#   CPUQuota=     Worse than the disease. FXServer is a fixed-tick loop, so a
+#                 quota does not isolate a CPU spike -- it converts one into tick
+#                 overruns for all 48 players. CPUAccounting=yes is on for the
+#                 same "measure it first" reason.
+#
+#   PrivateTmp=   Would break the console. tmux sessions live on a socket under
+#                 /tmp/tmux-<uid>, and a private /tmp means the session systemd
+#                 starts is invisible to `tmux attach -t royale` from the
+#                 operator's own shell -- the single most load-bearing operator
+#                 workflow on this box, and the reason tmux is here at all. It
+#                 would also blind royale-watchdog.service, which finds the
+#                 session the same way.
+#
+#   ProtectSystem=strict
+#                 Read-only everywhere, with an explicit ReadWritePaths list.
+#                 The one recorded catastrophe on this unit -- two days chasing a
+#                 SIGABRT that turned out to be a root-owned db/ -- was a
+#                 filesystem-access surprise, and this setting is a machine for
+#                 producing those. It also cannot be verified from a checkout:
+#                 what FXServer touches outside the server root (the artifact
+#                 tree, caches under $HOME) is a property of the box's layout.
+#                 `full` gets most of the value with none of that risk.
+#                 ProtectHome is left off for the same reason: DEPLOY.md's own
+#                 install steps put the downloaded artifacts under ~/fxserver.
+#
+#   User=royale   A dedicated service account, and the most tempting of the five.
+#                 It is rejected because the ownership invariant at the top of
+#                 this file is not decoration: EVERYTHING under
+#                 /opt/fivem-server-classic must be owned by this user, and
+#                 introducing a new one means re-chowning that tree -- including
+#                 db/, whose ownership is the exact thing that cost two days.
+#                 royale-deploy.service and royale-watchdog.service both name the
+#                 user too, so it is a three-file change that fails silently in
+#                 two of them. And `ubuntu` is already an unprivileged account
+#                 that owns nothing else on this box, so the isolation a
+#                 dedicated user buys here is close to zero, while
+#                 `tmux attach -t royale` stops working from the operator's shell
+#                 and becomes `sudo -u royale tmux attach`. Worth doing on a box
+#                 that hosts anything else. This one does not.
+#
+# NOT LOAD-TESTED, LIKE EVERYTHING ELSE IN #287. Nothing here has run against a
+# live FXServer. What would verify it: `systemd-analyze verify` for the syntax,
+# then a full round at population with `systemctl status royale` watched for the
+# accounting numbers and `tmux attach` confirmed still working.
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+MemoryAccounting=yes
+CPUAccounting=yes
+TasksAccounting=yes
 
 [Install]
 WantedBy=multi-user.target

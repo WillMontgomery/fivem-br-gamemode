@@ -1,0 +1,77 @@
+# Rotation for /opt/fivem-server-classic/console.log.
+#
+#   sudo cp tools/royale.logrotate /etc/logrotate.d/royale
+#   sudo cp tools/royale-logrotate.service tools/royale-logrotate.timer /etc/systemd/system/
+#   sudo nano /etc/logrotate.d/royale       # set the user, if it is not `ubuntu`
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now royale-logrotate.timer
+#   sudo logrotate -d /etc/logrotate.d/royale    # dry run: prints what it WOULD do
+#
+# WHY THERE IS A FILE TO ROTATE AT ALL. royale.service runs FXServer inside a
+# tmux session, so systemd cannot see the process and the journal gets nothing
+# from it. `tmux pipe-pane` mirrors the console into console.log instead, and
+# until now that file only ever grew -- royale.service said so in its own
+# comments ("No rotation yet"). An external audit (#287) made the point that a
+# hostile client gets to choose how fast it grows, which turns a slow operational
+# annoyance into something that can fill the disk on purpose.
+#
+# COPYTRUNCATE, AND IT IS NOT A PREFERENCE. The writer is the `cat >>` that
+# pipe-pane forked. Nothing can signal it to reopen its file, and there is no
+# postrotate hook that would make it -- restarting the game server to rotate a
+# log would be worse than the log. logrotate's DEFAULT (rename the file, create a
+# fresh one) would leave that cat writing into the renamed inode forever:
+# console.log would sit at zero bytes, console.log.1 would keep growing, and
+# nobody would find out until the next time somebody needed the log. copytruncate
+# copies the contents and truncates in place, which an O_APPEND writer survives.
+#
+# Its known cost, accepted: anything written between the copy and the truncate is
+# lost. That is a few milliseconds of a console mirror, once per rotation.
+#
+# SELF-CONTAINED ON PURPOSE. royale-logrotate.service runs logrotate against THIS
+# FILE rather than the system configuration, and logrotate reads
+# /etc/logrotate.conf only when it is handed it -- so none of the distribution's
+# global defaults (weekly, rotate 4, su root adm) are in force here. Every
+# setting this needs is written out below rather than inherited. Dropping the
+# file into /etc/logrotate.d also puts it in the daily system run, which is
+# harmless duplication: logrotate takes its own lock and the state file is shared.
+
+/opt/fivem-server-classic/console.log {
+    # THE OWNERSHIP INVARIANT, WHICH THIS TREE HAS ALREADY BEEN BURNED BY.
+    # royale.service records it in capitals: everything under
+    # /opt/fivem-server-classic is owned by that unit's User=, because a
+    # root-owned db/ directory once aborted every boot with a KVP assertion and
+    # cost two days to diagnose. logrotate runs as root; without this line the
+    # compressed generations it writes into that directory would be root-owned
+    # too. Change this and royale.service's User= together, always.
+    su ubuntu ubuntu
+
+    copytruncate
+    missingok
+    notifempty
+    daily
+
+    # ...OR SOONER, WHICH IS THE ENTIRE REASON royale-logrotate.timer EXISTS.
+    # `daily` on its own leaves a twenty-four hour window in which the file grows
+    # by whatever somebody chooses to make it grow by -- which is the unbounded
+    # thing the audit is about, merely reset once a day. `maxsize` only means
+    # anything if logrotate RUNS more often than daily, and Ubuntu's own
+    # logrotate.timer is daily, so the timer beside this file runs it hourly.
+    maxsize 64M
+
+    rotate 7
+    compress
+
+    # THESE NUMBERS ARE A BOUND, NOT A MEASUREMENT, and the difference matters.
+    # Nobody has load-tested this against a live FXServer at population -- #287
+    # says as much about its own thresholds -- so 64M is picked to be far larger
+    # than a quiet day's console and far smaller than a disk, not because a busy
+    # round was measured at anything.
+    #
+    # Worst case on disk is 64M live plus seven compressed generations; console
+    # output gzips to roughly a tenth, so call the total 100-150MB.
+    #
+    # WHAT WOULD SETTLE IT: run a full round at 48 players with `wc -c` on
+    # console.log before and after, multiply by rounds per day, and set `maxsize`
+    # to a couple of days of that. Until somebody does, this is a guess that is
+    # deliberately wrong in the safe direction.
+}

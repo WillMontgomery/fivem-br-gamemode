@@ -370,6 +370,51 @@ end
 -- Remote environmental claims and explosions, per player, for those ceilings.
 local envRate, blastRate = {}, {}
 
+-- HOW MUCH OF THE CONSOLE A REFUSAL STREAM MAY HAVE (external audit, #287).
+--
+-- Every ceiling above bounds the WORK a refused event costs. None of them
+-- bounded the LINE it printed, and the line is the expensive half: royale.service
+-- mirrors this console into console.log with `tmux pipe-pane`, so a client
+-- sending explosionEvent as fast as it can was writing to a file on the game box
+-- as fast as it could. The explosion path is the clearest case -- it refuses a
+-- flood as TOO_OFTEN after twelve in five seconds and then printed a line about
+-- every single one.
+--
+-- ONE BUDGET FOR ALL THREE REFUSAL PRINTS, NOT ONE EACH, and that is deliberate:
+-- three separate budgets means three separate allowances, which is three times
+-- the flood for an attacker willing to send three kinds of garbage. The KEY
+-- carries which path and which player, so the first few of each kind still get
+-- through and the overall line rate is bounded once.
+--
+-- The numbers live in BR.LogBudget beside the reasoning that chose them, and are
+-- overridable from BR.Config.Combat if a playtest ever wants a louder console --
+-- the same `cfg.key or default` shape blastMaxPerWindow and envMaxPerWindow
+-- already use, and for the same reason: an unset key reads as the shipped bound
+-- rather than as zero.
+local logBudget = BR.LogBudget.new({
+    windowMs  = cfg.logWindowMs,
+    perKey    = cfg.logPerKey,
+    perWindow = cfg.logPerWindow,
+})
+
+--- Print a refusal line, unless too many like it have already been printed.
+---
+--- FORMATTED LAZILY -- the format string and its arguments are passed through
+--- rather than a finished line -- because under the flood this exists to bound,
+--- the overwhelming majority of calls will not print anything, and building a
+--- string to throw away is the cost we are here to remove.
+--- @param key string    what makes this line the same as another one
+--- @param now number
+--- @param fmt string
+local function sayRefused(key, now, fmt, ...)
+    local printIt, summary = logBudget:admit(key, now)
+    if printIt then print(fmt:format(...)) end
+    -- THE SUMMARY IS NOT OPTIONAL. It is the thing that keeps this a rate limit
+    -- rather than a mute button: "412 more went unprinted" is what tells an
+    -- operator that the quiet console is quiet because it is being attacked.
+    if summary then print(BR.LogBudget.line(summary)) end
+end
+
 --- A number the arithmetic below can survive. Rejects nil, NaN and infinity in
 --- one place, because a position that is any of the three sails through a
 --- distance comparison as false rather than failing.
@@ -1174,8 +1219,14 @@ local function handleEnvironmental(shooter, env, data)
     -- The server console, which no player reads. Nothing is shown to the sender
     -- and no incident is filed -- see BR.EnvRefusal for why these are not
     -- BR.ShotRefusal values.
-    print(('[br_core] environmental claim refused: %d, %s (%s)')
-        :format(shooter, tostring(env.id), tostring(refused)))
+    --
+    -- KEYED ON SHOOTER AND REASON, NOT ON THE CAUSE `env.id`. The cause is the
+    -- weapon hash the sender chose, so keying on it would let one client claim
+    -- eight different environmental causes and buy eight separate allowances --
+    -- exactly the trick the budget is here to refuse.
+    sayRefused(('env:%d:%s'):format(shooter, tostring(refused)), GetGameTimer(),
+        '[br_core] environmental claim refused: %d, %s (%s)',
+        shooter, tostring(env.id), tostring(refused))
 end
 
 AddEventHandler('weaponDamageEvent', function(sender, data)
@@ -1427,11 +1478,23 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- Warmup fistfights would otherwise fill the console with
                     -- lines that mean "the game said no", drowning the ones
                     -- that mean "somebody has a weapon we did not issue".
+                    --
+                    -- ...AND LOUD IS NOT UNBOUNDED (#287). A hostile client can
+                    -- manufacture refusals as fast as it can send packets, and
+                    -- this console is mirrored to a file on the game box. The
+                    -- budget prints the first few of each shooter-and-reason
+                    -- pair per minute and reports the count of the rest, so the
+                    -- false-positive hunt this phase exists for still works --
+                    -- honest play produces a handful of lines, far under the
+                    -- ceiling -- while an attack produces a bounded number of
+                    -- lines that SAY how big it is.
                     if BR.ShotSuspicious[why] or cfg.logHits then
-                        print(('[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)%s')
-                            :format(shooter, victim, tostring(why), dist, since,
-                                    forced and ('   [FORCED ' .. forced.mode
-                                                .. ' -- not filed]') or ''))
+                        sayRefused(('shot:%d:%s'):format(shooter, tostring(why)),
+                            now,
+                            '[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)%s',
+                            shooter, victim, tostring(why), dist, since,
+                            forced and ('   [FORCED ' .. forced.mode
+                                        .. ' -- not filed]') or '')
                     end
 
                     -- A MANUFACTURED REFUSAL IS NOT EVIDENCE OF ANYTHING.
@@ -1598,6 +1661,33 @@ local function noteExplosion(owner, ev)
     if not e or not e.matchId then return end
 
     local now = GetGameTimer()
+
+    -- A CEILING ON THE LEDGER ITSELF (external audit, #287). The rate ceiling in
+    -- explosionAllowed bounds how often a player may set one of these off; it
+    -- says nothing about how many records the accepted ones leave behind, and a
+    -- molotov record lives for twenty seconds. See BR.FireLedgerFull for why the
+    -- per-owner share is the load-bearing half and why a full ledger drops the
+    -- NEW record instead of evicting an old one.
+    --
+    -- COUNTED BY WALKING THE TABLE rather than kept in a second per-owner
+    -- counter beside it. `fires` is bounded by the very cap this feeds, the tick
+    -- below already rebuilds the whole table twice a second, and a counter that
+    -- has to be decremented in three places -- the prune, forgetFires, and match
+    -- teardown -- is a counter that goes wrong the first time somebody adds a
+    -- fourth.
+    local mine = 0
+    for _, f in ipairs(fires) do
+        if f.owner == owner then mine = mine + 1 end
+    end
+    local full = BR.FireLedgerFull(#fires, mine, cfg)
+    if full then
+        BR.Damage.firesDropped = (BR.Damage.firesDropped or 0) + 1
+        sayRefused(('fires:%d:%s'):format(owner, full), now,
+            '[br_core] fire ledger full (%s): %d\'s %s is not attributed '
+            .. '(%d held, %d theirs)', full, owner, item, #fires, mine)
+        return
+    end
+
     -- A blast is instantaneous; a molotov keeps burning. Both are the same
     -- record with a different lifetime.
     local life = (item == 'molotov') and (cfg.fireLifeMs or 20000)
@@ -1672,8 +1762,14 @@ AddEventHandler('explosionEvent', function(sender, ev)
     if not ok then
         BR.Damage.blastsRefused = (BR.Damage.blastsRefused or 0) + 1
         if cfg.enforce then CancelEvent() end
-        print(('[br_core] explosion refused: %d, type %s (%s)')
-            :format(owner, tostring(ev.explosionType), tostring(why)))
+        -- THE ONE THAT MADE #287 A FINDING. A client can raise this event as
+        -- fast as it can send packets; the rate ceiling refuses everything past
+        -- twelve in five seconds and this line used to be printed about every
+        -- single one of them, straight into console.log. Keyed on owner and
+        -- reason, so the first few of each still name the player who is doing it.
+        sayRefused(('blast:%d:%s'):format(owner, tostring(why)), GetGameTimer(),
+            '[br_core] explosion refused: %d, type %s (%s)',
+            owner, tostring(ev.explosionType), tostring(why))
         return
     end
 
@@ -1748,6 +1844,24 @@ BR.Sched.every(500, 'damage.fires', function()
                 end
             end
         end)
+end)
+
+--- Report what the console budget held back, once a window has closed.
+---
+--- THE FLOOD THAT STOPS IS THE CASE THIS EXISTS FOR. `logBudget:admit` reports a
+--- closing window on the next line that asks to be printed, which covers an
+--- attack still in progress and nothing else: a client that sends fifty thousand
+--- refusable events and then goes quiet would leave the count sitting in the
+--- budget until the next refusal, which might be next match or never. An
+--- operator reading the console after the fact is exactly the person who needs
+--- that number.
+---
+--- A SECOND ENTRY RATHER THAN A LINE INSIDE damage.fires, because that one
+--- returns early when the fire ledger is empty -- which it is during precisely
+--- the attack shapes that have nothing to do with explosions.
+BR.Sched.every(1000, 'damage.logbudget', function()
+    local s = logBudget:sweep(GetGameTimer())
+    if s then print(BR.LogBudget.line(s)) end
 end)
 
 --- Forget a player's fires. Called on disconnect and at match teardown, so a
