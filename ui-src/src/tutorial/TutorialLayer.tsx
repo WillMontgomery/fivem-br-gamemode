@@ -464,7 +464,8 @@ export default function TutorialLayer(p: TutorialLayerProps) {
    *
    * SO THE BASELINE IS TAKEN ONCE PER STEP PER RUN. A step they have already
    * satisfied keeps its old baseline, so re-entering it is instantly satisfied
-   * again and Last behaves like a reader turning a page rather than like undo.
+   * again and Previous behaves like a reader turning a page rather than like
+   * undo.
    */
   const doneOnce = useRef(new Set<string>())
   /**

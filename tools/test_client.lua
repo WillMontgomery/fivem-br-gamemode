@@ -9116,7 +9116,7 @@ do
         -- `tutorial` WAS HERE AND WAS TAKEN BACK OUT (2026-09-06), which is the
         -- second time this table has shrunk and the second time for the same
         -- reason: keeping input keeps ALL of it. The walkthrough's cards held
-        -- the cursor so their Next and Last could be pressed, and every drag
+        -- the cursor so their Next and Previous could be pressed, and every drag
         -- toward a button swung the camera while the cursor made the faded
         -- lobby's invisible buttons clickable. The cards are driven by the arrow
         -- keys now, read in Lua, and take no focus at all.

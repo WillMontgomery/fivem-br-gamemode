@@ -52,7 +52,7 @@ import Btn from '../ui/Btn'
 import { KeyCap } from '../ui/KeyCap'
 
 /**
- * One "← Last" hint: the key, then what it does.
+ * One "← Previous" hint: the key, then what it does.
  *
  * NOT A BUTTON AND NOT PRETENDING TO BE ONE. It carries no press handler, no
  * hover and no focus ring -- the same call hud/SpectateHint.tsx makes, whose own
@@ -291,7 +291,7 @@ export default function AnnotationCard(p: CardProps) {
             these read and sound like the rest of the interface instead of
             like a web widget that wandered in.
 
-            `ghost` for Skip and `default` for Last, because Next is the one
+            `ghost` for Skip and `default` for Previous, because Next is the one
             loud object on the card and `primary` is reserved for exactly one
             per screen -- the same rule the lobby's Ready up follows. */}
         {/* NO SKIP. Owner, 2026-09-04: "let's remove the skip button." The way
@@ -313,10 +313,10 @@ export default function AnnotationCard(p: CardProps) {
           ) : null}
           {p.onBack ? (
             p.keys ? (
-              <KeyHint cap="←">Last</KeyHint>
+              <KeyHint cap="←">Previous</KeyHint>
             ) : (
               <Btn variant="default" size="sm" cue="ui.select" onPress={p.onBack}>
-                Last
+                Previous
               </Btn>
             )
           ) : null}

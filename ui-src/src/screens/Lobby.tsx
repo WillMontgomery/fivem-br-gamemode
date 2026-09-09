@@ -726,14 +726,34 @@ export default function Lobby({
                   the box just cost; showing the box, unticked and ringed, while
                   it says so is what "anchored closer to the thing it talks
                   about" means. It goes when the card is dismissed. */}
-              {(tutorialOfferable || tutorialDeclineCard)
+              {/* ...AND WHILE THE PLAYER HAS IT TICKED, which is what stops the
+                  control vanishing under their own finger. `offerable` is
+                  already false by the time they take a decline back -- the
+                  server lowered it the instant they unticked -- so without
+                  `tutorialGameOn` here, turning the box back on would dismiss
+                  the card and unmount the box in the same frame. */}
+              {(tutorialOfferable || tutorialDeclineCard || tutorialGameOn)
                && (tutorialStep === 'ready' || tutorialGameShown) && (
                 <TutorialToggle
                   tut="tutorial-continue"
                   on={tutorialGameOn}
                   onChange={(v) => {
                     setTutorialGameOn(v)
-                    if (v) return
+                    if (v) {
+                      // ═══ TAKING IT BACK TAKES THE CARD WITH IT ═══
+                      //
+                      // Owner, 2026-09-08: "can you make the 'are you sure?'
+                      // card go away when turning the 'continue' toggle back
+                      // on?" It used to return here and leave the card standing
+                      // over a box that now said the opposite of what the card
+                      // was warning about.
+                      //
+                      // HARMLESS WHEN THE CARD IS NOT UP, which is the ordinary
+                      // case -- the store setter is idempotent and this branch
+                      // is reached every time anybody ticks the box.
+                      setTutorialDeclineCard(false)
+                      return
+                    }
 
                     // ═══ TURNING IT OFF IS A DECISION, AND IT IS FINAL ═══
                     //

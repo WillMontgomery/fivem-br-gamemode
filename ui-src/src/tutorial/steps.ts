@@ -314,11 +314,11 @@ export type Step = {
    */
   action?: { label: string; cb: CallbackName }
   /**
-   * Hide Last, even where the automatic rule would show it.
+   * Hide Previous, even where the automatic rule would show it.
    *
    * FOR THE FIRST CARD ON A PAGE THE `screen` RULE CANNOT SEE. Settings' tabs
    * are all one `screen`, so the first card on the Controls tab looks like a
-   * sibling of the card that opened it -- and Last there returns to "open
+   * sibling of the card that opened it -- and Previous there returns to "open
    * Controls", pointing at a tab that is already open, which does nothing when
    * pressed (owner, 2026-09-04: "For the first instruction on each page like
    * step 10, no 'last' button should be available. Currently, pressing it does
