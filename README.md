@@ -46,17 +46,21 @@ match's flight route is drawn on the map. Several matches run at once in separat
 routing buckets, sharing the warmup pad and watching each other's flights take
 off. The Battle Bus flies an authored tour over Los Santos and everyone skydives
 out wherever they choose. On the ground there is loot: weapons, ammo, shields,
-throwables and chests scattered across 107 points of interest and along the
+throwables and chests scattered across 120 points of interest and along the
 highways between them, streamed to each client cell by cell as they move. When
 the last player lands, the match goes live and the storm starts — a shrinking
 circle homed on a point of interest near the flight path, with a rendered wall,
 map circles, screen effects and server-authoritative damage. Squad members who
 run out of health go down rather than dying outright: they crawl, a bleed clock
 runs, and a squadmate can pick them up on a held key — more than once in a match,
-though each knock is shorter than the last. Once eliminated they spectate the
-rest of the match. Deaths (storm included) leave a lootable box, placements are
-assigned, and a match ends with a victory/elimination sequence, a summary screen,
-and XP and Volts written to DynamoDB.
+though each knock is shorter than the last. Running the clock out puts them
+into spectate but is no longer the end of their match: their kit spills where
+they fell and a **revive key** is minted with it, and a squadmate who collects it
+— or buys one for 25 Volts at an ambulance — holds six seconds at that ambulance
+to drop them back in from 150 m up, on full health. Deaths (storm included) leave
+a lootable box, placements are assigned, and a match ends with a
+victory/elimination sequence, a summary screen, and XP and Volts written to
+DynamoDB.
 
 **Damage is server-authoritative.** The server refuses impossible shots and
 computes the damage itself from our own weapon table, including per-body-part
@@ -68,9 +72,9 @@ weapon the gamemode never issued is taken out of the ped's hand *and recorded*,
 and nobody is exempt from that, admins included. See
 [Cheat resistance](docs/security.md).
 
-**Progression is live.** Matches pay XP and Volts, Volts buy cosmetics from a
-market, and the whole economy is config rather than code. See
-[XP and Volts](docs/progression.md).
+**Progression is live.** Matches pay XP and Volts; Volts buy cosmetics from a
+market and, during warmup, one vehicle from a showroom. The whole economy is
+config rather than code. See [XP and Volts](docs/progression.md).
 
 **Proximity voice** runs on pma-voice, vendored whole under `resources/[voice]/`.
 The three modes are **exclusive, not layered**: `nearby` is proximity and only
@@ -209,7 +213,7 @@ into one of three loops (per-frame, 10 Hz, 1 Hz) rather than spawning its own
 thread. Because gameplay is one resource, `resmon` can't attribute cost per
 subsystem — so the registry measures each callback itself.
 
-**Loot is client-rendered and server-owned.** ~3,370 items as networked entities
+**Loot is client-rendered and server-owned.** ~3,690 entries as networked entities
 would not survive contact with a real server. The server generates the layout
 from a seeded RNG and holds it as plain data; clients are streamed the entries
 near them, render local non-networked props (`CreateObjectNoOffset` with
@@ -232,7 +236,7 @@ Each of these stands on its own:
 | **[The arithmetic of a match](docs/match-math.md)** | Every number a match is built from and why it is that number — seeds, the flight chord, storm phases and pacing, breakout geometry, loot budgets and rarity, and the full damage formula. |
 | **[Cheat resistance](docs/security.md)** | Why the client is never the authority on anything that decides a match. The three layers, a table of concrete attacks and why each fails, and an explicit statement of what this is *not*. |
 | **[XP and Volts](docs/progression.md)** | The two currencies, what pays them, and the level curve. Both are computed at the end of a match and applied in a single atomic write. Tuning, not architecture — every number is a config edit. |
-| **[Running and developing](docs/running.md)** | Server setup, the UI build, `tools/verify.sh`, and the in-game diagnostic commands. |
+| **[Running and developing](docs/running.md)** | Server setup, the UI build, `tools/verify.sh`, and the in-game diagnostic commands — every one of which is behind a dev-mode switch, by construction, since 2026-08-31. |
 | **[Deploying](DEPLOY.md)** | Standing the server up on Ubuntu against standard FXServer Linux artifacts. |
 | **[Testing](docs/testing.md)** | The suites and gates, when to run them, the rules that keep them honest, and the real bugs each one has caught. |
 | **[Platform constraints](docs/platform.md)** | FiveM and CEF behaviours discovered the hard way — the ones that cost days — and what each one taught. |
