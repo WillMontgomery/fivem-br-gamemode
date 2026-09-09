@@ -1014,6 +1014,803 @@ do
     ok(#a == 30, 'and a second call does not double it', #a)
 end
 
+-- ---------------------------------------------------------------------------
+describe('a counter with nobody behind it is not a counter')
+-- ---------------------------------------------------------------------------
+--
+-- The fifth parameter of `nearest`. A clerk is a CLIENT-LOCAL ped, so whether
+-- one is standing is a fact about one machine -- and offering a price at a
+-- counter where the model never streamed is a price for something the player
+-- cannot see. BR.ShopSolve.nearest grew the identical parameter for the
+-- identical reason.
+do
+    local pillbox
+    for _, s in ipairs(stores) do if s.id == 'pillbox' then pillbox = s end end
+
+    local fixture = {
+        { id = 'a', x = 0.0, y = 0.0, z = 0.0, heading = 0.0 },
+        { id = 'b', x = 3.0, y = 0.0, z = 0.0, heading = 0.0 },
+    }
+
+    local at = S.nearest(fixture, 2.0, 0.0, 5.0, nil)
+    ok(at ~= nil and at.id == 'b',
+        'no filter accepts every counter -- which is what the SERVER passes, '
+            .. 'because it has no clerk and never had one')
+
+    at = S.nearest(fixture, 2.0, 0.0, 5.0, function(s) return s.id ~= 'b' end)
+    ok(at ~= nil and at.id == 'a',
+        'the nearer counter having no clerk offers the next one rather than '
+            .. 'offering nothing')
+
+    at = S.nearest(fixture, 2.0, 0.0, 5.0, function() return false end)
+    ok(at == nil, 'and no clerk anywhere in reach is no counter at all')
+
+    -- 0 IS TRUTHY IN LUA, so the filter's answer is compared rather than
+    -- tested. A predicate that handed back a raw FiveM BOOL would otherwise
+    -- make every counter present, including the ones with nobody at them.
+    at = S.nearest(fixture, 2.0, 0.0, 5.0, function() return 1 end)
+    ok(at == nil, 'a raw 1 is not `true`, and is not read as one')
+
+    at = S.nearest(fixture, 2.0, 0.0, 5.0, 'not a function')
+    ok(at == nil, 'a filter that is not callable answers nil rather than '
+        .. 'throwing inside a 10 Hz loop')
+
+    -- THE FILTER IS ASKED ONLY ABOUT WHAT IS IN REACH. It runs on the TICK band
+    -- and the client's version of it asks the engine whether an entity exists,
+    -- so asking it about all eleven counters ten times a second would be eleven
+    -- native calls to answer a question about one.
+    local asked = {}
+    S.nearest(stores, pillbox.x, pillbox.y, G.reachM, function(s)
+        asked[#asked + 1] = s.id
+        return true
+    end)
+    ok(#asked == 1 and asked[1] == 'pillbox',
+        'the filter is asked only about counters already inside the reach',
+        table.concat(asked, ', '))
+end
+
+-- ---------------------------------------------------------------------------
+describe('the clerk is built and taken down on DISTANCE, with a band')
+-- ---------------------------------------------------------------------------
+--
+-- Eleven buildings over 51 km^2, ten of which a given player never enters. The
+-- warmup showroom has no distance term because it is one pad everybody walks
+-- through; this cannot copy that, and the failure a single radius produces is a
+-- ped built and deleted once a second for as long as somebody stands on it.
+do
+    local st = { id = 'h', x = 0.0, y = 0.0, z = 0.0, heading = 0.0 }
+
+    ok(S.wantsClerk(st, 50.0, 0.0, 60.0, 90.0, false) == true,
+        'inside the build radius with nobody there, build one')
+    ok(S.wantsClerk(st, 70.0, 0.0, 60.0, 90.0, false) == false,
+        'inside the BAND with nobody there, do not')
+    ok(S.wantsClerk(st, 70.0, 0.0, 60.0, 90.0, true) == true,
+        '...but a clerk already standing in the band stays')
+    ok(S.wantsClerk(st, 95.0, 0.0, 60.0, 90.0, true) == false,
+        'and past the keep radius he goes')
+
+    -- THE FLICKER THIS EXISTS TO PREVENT, ASSERTED DIRECTLY: standing on the
+    -- build radius, both answers are the same, so nothing changes on any pass.
+    ok(S.wantsClerk(st, 60.0, 0.0, 60.0, 90.0, false) == true
+       and S.wantsClerk(st, 60.0, 0.0, 60.0, 90.0, true) == true,
+        'standing exactly on the build radius does not build and delete a ped '
+            .. 'once a second')
+
+    ok(S.wantsClerk(st, 10.0, 0.0, nil, nil, false) == false,
+        'no radius is no clerk, rather than a clerk everywhere')
+    ok(S.wantsClerk(nil, 0.0, 0.0, 60.0, 90.0, false) == false
+       and S.wantsClerk(st, nil, 0.0, 60.0, 90.0, false) == false,
+        'and a missing anything answers false rather than throwing')
+
+    -- THE SHIPPED PAIR IS A BAND. A config where keep <= build is the flicker
+    -- back again, and the solver deliberately does not clamp it -- so this is
+    -- the only place that would notice.
+    ok((tonumber(G.clerkKeepM) or 0) > (tonumber(G.clerkBuildM) or 0),
+        'the shipped radii are a band and not a line',
+        ('build %s keep %s'):format(tostring(G.clerkBuildM),
+                                    tostring(G.clerkKeepM)))
+    ok((tonumber(G.clerkBuildM) or 0) > (tonumber(G.reachM) or 0),
+        'and a clerk is standing there well before a player is close enough '
+            .. 'to be offered the counter')
+end
+
+-- ---------------------------------------------------------------------------
+describe('the clerk height is PROBED and the table never wins by default')
+-- ---------------------------------------------------------------------------
+--
+-- This is the rule config/gunshop.lua's longest block is about, and it is the
+-- one thing about the clerk that a test can hold: the sources disagree by up to
+-- about 1.1m on whether the tabulated z is the interior floor or a standing
+-- ped's center, so the engine is asked and the table is only a starting point.
+do
+    local pillbox
+    for _, s in ipairs(stores) do if s.id == 'pillbox' then pillbox = s end end
+
+    -- ═══ WHERE THE PROBE STARTS ═══
+    ok(S.probeStart(G, pillbox) == pillbox.z + G.probeLiftM,
+        'the probe starts ABOVE the anchor -- the native answers with the '
+            .. 'highest ground BELOW the point it is handed')
+    ok(G.probeLiftM > 1.1,
+        'and the lift clears the worst case the two source tables can '
+            .. 'disagree by', G.probeLiftM)
+    ok(G.probeLiftM < 3.0,
+        '...while staying under an interior ceiling, because a probe started '
+            .. 'over the roof answers with the roof', G.probeLiftM)
+
+    local over = { id = 'x', x = 0.0, y = 0.0, z = 10.0, heading = 0.0,
+                   probeFromM = 4.0 }
+    ok(S.probeStart(G, over) == 14.0,
+        "a store's own probeFromM beats the global lift")
+    ok(S.probeStart(G, nil) == nil
+       and S.probeStart(G, { id = 'y', x = 0.0, y = 0.0, heading = 0.0 }) == nil,
+        'and a store with no z has no probe to start')
+
+    -- ═══ THE THREE ANSWERS, IN ORDER ═══
+    local z, src = S.clerkZ(G, pillbox, true, 28.5)
+    ok(z == 28.5 and src == 'probe',
+        'when the engine answers, the engine wins')
+
+    z, src = S.clerkZ(G, pillbox, false, nil)
+    ok(z == pillbox.z and src == 'anchor',
+        'when it does not, the raw anchor is used AND the ledger says so -- a '
+            .. 'clerk who may be a metre out beats a counter with nobody at it')
+
+    local pinned = { id = 'o', x = 0.0, y = 0.0, z = 10.0, heading = 0.0,
+                     zOverride = 99.0 }
+    z, src = S.clerkZ(G, pinned, true, 5.0)
+    ok(z == 99.0 and src == 'override',
+        'the escape hatch beats the probe, which is what an escape hatch is')
+
+    -- 0 IS TRUTHY IN LUA AND GET_GROUND_Z_FOR_3D_COORD IS DECLARED BOOL. The
+    -- caller must put the first return through isTrue; handed a raw 1 this
+    -- falls back to the anchor rather than trusting a value it cannot vouch
+    -- for, and handed a raw 0 it cannot possibly read a refusal as an answer.
+    z, src = S.clerkZ(G, pillbox, 1, 28.5)
+    ok(z == pillbox.z and src == 'anchor',
+        'a raw 1 is not `true` -- the caller isTrue()s it or gets the anchor')
+    z, src = S.clerkZ(G, pillbox, 0, 28.5)
+    ok(src == 'anchor', 'and a raw 0 can never be read as an answer')
+
+    z, src = S.clerkZ(G, pillbox, true, nil)
+    ok(z == pillbox.z and src == 'anchor',
+        'a probe that said yes and handed back nothing is not an answer either')
+
+    -- ═══ NOTHING IN THE SHIPPED CONFIG PINS A HEIGHT ═══
+    local pinnedIds = {}
+    for _, s in ipairs(G.stores) do
+        if s.zOverride ~= nil then pinnedIds[#pinnedIds + 1] = s.id end
+    end
+    ok(#pinnedIds == 0,
+        'no store ships with an authored clerk height -- the slot exists for '
+            .. 'the one interior a playtest proves the probe wrong at',
+        table.concat(pinnedIds, ', '))
+end
+
+-- ---------------------------------------------------------------------------
+describe('where the clerk stands, relative to the counter')
+-- ---------------------------------------------------------------------------
+do
+    local st = { id = 'n', x = 0.0, y = 0.0, z = 0.0, heading = 0.0 }
+
+    local x, y, z, h = S.clerkAt(G, st, 5.0)
+    ok(math.abs(x) < 1e-9 and math.abs(y) < 1e-9 and z == 5.0 and h == 0.0,
+        'the shipped offset is zero, so he stands on the anchor facing the '
+            .. "counter's own heading -- which is where the two source "
+            .. 'resources this survey came from put their shop peds')
+
+    -- GTA HEADINGS ARE DEGREES CLOCKWISE FROM NORTH and forward is
+    -- (-sin h, cos h). Asserted rather than assumed, because a sign error here
+    -- would put every clerk on the wrong side of every counter and would look
+    -- exactly like a bad survey.
+    local cfg = { clerkOffsetM = 2.0, clerkFaceDeg = 180.0 }
+    x, y = S.clerkAt(cfg, st, 0.0)
+    ok(math.abs(x) < 1e-9 and math.abs(y - 2.0) < 1e-9,
+        'at heading 0 the offset is spent along +Y', ('%.4f, %.4f'):format(x, y))
+
+    -- HEADING 90 IN GTA FACES WEST, not east. Forward is (-sin h, cos h), so a
+    -- quarter turn is -X -- and getting that sign backwards would put every
+    -- clerk on the far side of every counter while looking, in a diff, exactly
+    -- like the correct arithmetic. client/dui.lua's `levelBasis` records the
+    -- same convention for the entity form of it.
+    st.heading = 90.0
+    x, y = S.clerkAt(cfg, st, 0.0)
+    ok(math.abs(x + 2.0) < 1e-6 and math.abs(y) < 1e-6,
+        'and at heading 90 along -X, which is west', ('%.4f, %.4f'):format(x, y))
+
+    local _, _, _, hh = S.clerkAt(cfg, st, 0.0)
+    ok(hh == 270.0, 'the facing offset is added to the counter heading', hh)
+
+    st.heading = 270.0
+    _, _, _, hh = S.clerkAt(cfg, st, 0.0)
+    ok(hh == 90.0, '...and wraps rather than running past 360', hh)
+
+    ok(select(1, S.clerkAt(G, nil, 1.0)) == nil
+       and select(1, S.clerkAt(G, { id = 'z' }, 1.0)) == nil,
+        'a store with no coordinates places nobody')
+end
+
+-- ---------------------------------------------------------------------------
+describe('how a row is named on the shelf, and the one mark that is not his')
+-- ---------------------------------------------------------------------------
+do
+    local shelf = select(1, G.build())
+    local byId = {}
+    for _, r in ipairs(shelf) do byId[r.id] = r end
+
+    ok(S.menuLabel(byId.carbinerifle) == 'Carbine Rifle',
+        "a weapon is named by config/weapons.lua's own label and nothing is "
+            .. 'added to it', S.menuLabel(byId.carbinerifle))
+    ok(S.menuLabel(byId.heavysniper) == 'Heavy Sniper',
+        'including the legendary end of the shelf',
+        S.menuLabel(byId.heavysniper))
+
+    -- THE QUANTITY IS THE ONE THING THE LABEL CANNOT SAY BY ITSELF. 50 Volts is
+    -- dear for twelve rounds and cheap for sixty, and config/gunshop.lua's own
+    -- marked block asks the owner to judge exactly that -- which he cannot do
+    -- from a shelf that does not say which it is.
+    ok(S.menuLabel(byId.ammo_smg) == 'SMG Ammo x60',
+        'an ammo row says how many rounds one purchase hands over',
+        S.menuLabel(byId.ammo_smg))
+    ok(S.menuLabel(byId.ammo_heavy) == 'Heavy Ammo x12',
+        'and the count is the ROW\'S OWN stack, so it tracks the bundle rule '
+            .. 'rather than a number typed here', S.menuLabel(byId.ammo_heavy))
+
+    -- THE COUNT COMES FROM THE STACK AND NOWHERE ELSE, so pinning a bundle in
+    -- config moves the shelf with it and cannot leave the label behind.
+    for _, r in ipairs(shelf) do
+        if r.kind == BR.ItemKind.AMMO then
+            local shown = S.menuLabel(r):match('x(%d+)$')
+            ok(shown ~= nil and tonumber(shown) == r.stack.count,
+                ('the %s shelf label quotes its own stack count'):format(r.id),
+                S.menuLabel(r))
+        end
+    end
+
+    ok(S.menuLabel(nil) == '' and S.menuLabel('nope') == '',
+        'and anything that is not a row is named nothing rather than throwing')
+end
+
+-- ---------------------------------------------------------------------------
+describe('the wiring that had no caller until br_core grew two files')
+-- ---------------------------------------------------------------------------
+--
+-- BR.Config.Gunshop.build() shipped with NO call sites, deliberately -- the data
+-- layer landed alone. It is a function rather than a loop at the bottom of the
+-- config because br_lib's fxmanifest expands `config/*.lua` as a glob and
+-- `gunshop` sorts before `weapons`, so a catalogue derived at that file's own
+-- load is an empty shop with no error anywhere.
+--
+-- THIS IS THE GATE THAT KEEPS IT CALLED. A refactor that dropped either call
+-- site would leave a shop that is silently empty on one side.
+do
+    --- COMMENT LINES ARE STRIPPED FIRST, AND THAT IS NOT TIDINESS.
+    ---
+    --- tools/verify.sh's own gates do exactly this and say why: this project's
+    --- prose QUOTES the identifiers being searched for, because the whole point
+    --- of those paragraphs is to explain a rule about them. client/gunshop.lua's
+    --- header explains that a ScaleformUI menu holds input with
+    --- DisableAllControlActions rather than SetNuiFocus, and server/gunshop.lua's
+    --- explains why the roster's sampled position is read rather than a fresh
+    --- GetPlayerPed. A check that counted prose would fail on the paragraph
+    --- explaining why the rule exists -- which is the fastest possible route to
+    --- the paragraph being deleted.
+    ---
+    --- CRUDE ON PURPOSE, line by line, which can also blank a `--` inside a
+    --- string literal. Every assertion below is a presence check on an
+    --- identifier, so that costs nothing.
+    --- @param src string
+    --- @return string
+    local function code(src)
+        local out = {}
+        for line in (src .. '\n'):gmatch('([^\n]*)\n') do
+            out[#out + 1] = line:gsub('%-%-.*$', '')
+        end
+        return table.concat(out, '\n')
+    end
+
+    local cli = code(readFile(ROOT .. 'br_core/client/gunshop.lua'))
+    local srv = code(readFile(ROOT .. 'br_core/server/gunshop.lua'))
+
+    ok(cli ~= '' and srv ~= '', 'both halves of the counter exist')
+
+    ok(cli:find('BR.Config.Gunshop.build()', 1, true) ~= nil,
+        'the client builds the catalogue at its own resource start')
+    ok(srv:find('BR.Config.Gunshop.build()', 1, true) ~= nil,
+        'and so does the server')
+    ok(cli:find("AddEventHandler('onClientResourceStart'", 1, true) ~= nil,
+        '...at resource start, not at config load')
+    ok(srv:find("AddEventHandler('onResourceStart'", 1, true) ~= nil,
+        'on the server too')
+
+    -- ═══ THE CLIENT AUTHORS NO HEIGHT ═══
+    ok(cli:find('GetGroundZFor_3dCoord', 1, true) ~= nil,
+        'the client asks the engine where the floor is')
+    ok(cli:find('BR.GunshopSolve.clerkZ', 1, true) ~= nil,
+        '...and spends the answer through the solver, where a test can reach '
+            .. 'the rule')
+    ok(cli:find('placed%[store%.id%]') ~= nil,
+        'and writes a per-store ledger of what happened')
+    ok(cli:find("RegisterCommand('brgunshop'", 1, true) ~= nil,
+        'which a dev command prints, so one playtest round turns eleven '
+            .. 'guesses into eleven numbers')
+
+    -- ═══ THE RULES tools/verify.sh CANNOT SEE FROM ITS OWN GATES ═══
+    --
+    -- br_ui/client/nui.lua is the only file allowed to touch NUI focus, and
+    -- client/sfx.lua is the only file allowed to name a GTA set/name pair. A
+    -- ScaleformUI menu holds input with DisableAllControlActions instead, which
+    -- is a different mechanism entirely and must stay one.
+    ok(cli:find('SetNuiFocus', 1, true) == nil
+       and cli:find('SendNUIMessage', 1, true) == nil,
+        'the menu never touches the NUI focus stack')
+    ok(cli:find('PlaySoundFrontend', 1, true) == nil,
+        'and plays its cue by KEY through BR.Sfx rather than naming a sound')
+    ok(cli:find('BR.Sfx.play(G.cue)', 1, true) ~= nil,
+        'the cue key comes out of config, so /brsfx can still audition it')
+
+    -- ═══ THE SERVER SPEAKS EXACTLY ONE SENTENCE, AND IT IS NOT ITS OWN ═══
+    --
+    -- The owner has written no player-facing copy for this feature. `afford` is
+    -- the one refusal with an existing sentence and it is the market's, spoken
+    -- at the one funnel every shortfall in the game reaches.
+    ok(srv:find('BR.Market.tellShortfall', 1, true) ~= nil,
+        'the server refuses a shortfall in the market\'s own words')
+    ok(srv:find('BR.Server.notify', 1, true) == nil,
+        '...and says nothing else to anybody -- no toast was ever written for '
+            .. 'this counter')
+    ok(srv:find('BR.Roster.get', 1, true) ~= nil
+       and srv:find('GetPlayerPed', 1, true) == nil,
+        "the position is the roster's sampled one, never a fresh GetPlayerPed "
+            .. '-- which returns 0 for every player when handed a numeric src')
+
+    -- ═══ THE COLORS ARE OURS, AND EIGHT DIGITS DEEP ═══
+    --
+    -- ScaleformUI's hex parser reads characters 2-3 as ALPHA. A six-digit code
+    -- is not rejected: it is misread, and then throws several calls later
+    -- inside ToArgb with a message about nil arithmetic, nowhere near the line
+    -- that caused it.
+    local menu = readFile(ROOT .. 'br_core/client/menu.lua')
+    local css  = readFile('ui-src/src/index.css')
+    ok(menu ~= '', 'the theme helper exists')
+
+    local accent = menu:match("ACCENT_HEX%s*=%s*'#(%x+)'")
+    local goldc  = menu:match("GOLD_HEX%s*=%s*'#(%x+)'")
+    ok(accent ~= nil and #accent == 8,
+        'the accent is eight digits, alpha first', tostring(accent))
+    ok(goldc ~= nil and #goldc == 8,
+        'and so is the gold', tostring(goldc))
+
+    -- AND THEY ARE STILL index.css's. ui-src is where a color in this game is
+    -- authored; a scaleform cannot read a cascade, so these two are the one Lua
+    -- copy and this is what stops them drifting from it.
+    -- THE HYPHENS ARE ESCAPED. `-` is Lua's lazy quantifier, so a raw
+    -- `--color-volts` is not the string it looks like -- it is a pattern that
+    -- matches almost nothing, and this assertion would have passed for the
+    -- wrong reason on the day the color drifted.
+    ok(accent ~= nil and css:lower():find('%-%-color%-royale%-accent:%s*#'
+        .. accent:sub(3):lower()) ~= nil,
+        'the accent still equals --color-royale-accent in index.css',
+        tostring(accent))
+    ok(goldc ~= nil and css:lower():find('%-%-color%-volts:%s*#'
+        .. goldc:sub(3):lower()) ~= nil,
+        'and the gold still equals --color-volts', tostring(goldc))
+
+    ok(cli:find('#%x%x%x%x%x%x') == nil,
+        'and the shop file itself names no color at all -- the palette is '
+            .. 'applied in one place')
+end
+
+-- ---------------------------------------------------------------------------
+-- The server half, stood up for real
+-- ---------------------------------------------------------------------------
+--
+-- ═══ WHY A FIXTURE HERE RATHER THAN A SOURCE GREP ═══
+--
+-- Everything above this line is arithmetic. The three claims that fund this
+-- feature's security are not: a player cannot buy what they cannot afford,
+-- cannot buy from across the map, and cannot buy anything that is not in the
+-- catalogue. Each of those is a PATH through br_core/server/gunshop.lua -- an
+-- ordering of a resolve, a predicate, a charge and a callback -- and a grep can
+-- only see that the words are present, not that they run in that order.
+--
+-- tools/test_shop.lua stands the warmup showroom's server file up the same way
+-- and for the same reason. This is that pattern, applied to the counter.
+do
+    local handlers = {}
+    local sent, charged, notices, given, dropped = {}, {}, {}, {}, {}
+    local roster, matches = {}, {}
+
+    function AddEventHandler(name, fn) handlers[name] = fn end
+    function RegisterNetEvent() end
+    function GetCurrentResourceName() return 'br_core' end
+    function TriggerClientEvent(name, src, payload)
+        sent[#sent + 1] = { name = name, src = src, payload = payload }
+    end
+
+    BR.Server = {
+        matchOf = function(src)
+            local e = roster[src]
+            return e and matches[e.matchId] or nil
+        end,
+    }
+    BR.Roster = { get = function(src) return roster[src] end }
+
+    --- THE CHARGE IS A DYNAMODB ROUND TRIP AND THE STUB CAN HOLD IT OPEN.
+    ---
+    --- `hold` is what makes the post-charge gate reachable: the whole point of
+    --- re-reading the match inside the callback is that up to six seconds pass,
+    --- and a stub that answered synchronously could never produce those seconds.
+    BR.Market = {
+        balances = {},
+        hold = false,
+        held = {},
+        balanceOf = function(src) return BR.Market.balances[src] or 0 end,
+        tellShortfall = function(src, price)
+            notices[#notices + 1] = { src = src, price = price }
+        end,
+        charge = function(src, amount, reason, done)
+            done = done or function() end
+            local function settle()
+                if (BR.Market.balances[src] or 0) < amount then
+                    BR.Market.tellShortfall(src, amount)
+                    done(false, 'poor')
+                    return
+                end
+                BR.Market.balances[src] = BR.Market.balances[src] - amount
+                charged[#charged + 1] =
+                    { src = src, amount = amount, reason = reason }
+                done(true, nil, BR.Market.balances[src])
+            end
+            if BR.Market.hold then
+                BR.Market.held[#BR.Market.held + 1] = settle
+            else
+                settle()
+            end
+        end,
+    }
+
+    local function settleCharges()
+        local due = BR.Market.held
+        BR.Market.held = {}
+        for _, fn in ipairs(due) do fn() end
+    end
+
+    local bagFull = false
+    BR.Inv = {
+        give = function(src, stack, opts)
+            given[#given + 1] = { src = src, stack = stack, opts = opts }
+            if bagFull then return false, nil, 'carrymax' end
+            return true, nil, nil
+        end,
+    }
+    BR.Loot = {
+        dropForPlayer = function(src, stack)
+            dropped[#dropped + 1] = { src = src, stack = stack }
+        end,
+    }
+
+    -- BR.Net, which the handler registers itself under.
+    do
+        local chunk = loadfile(ROOT .. 'br_lib/shared/protocol.lua')
+        if not chunk then
+            print('\27[31mload error\27[0m protocol.lua')
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    --- Run something with the console turned off. `resolve()` prints a boot
+    --- line and every refusal prints one; a suite that let them through would
+    --- bury its own failures.
+    local realPrint = print
+    local function quiet(fn, ...)
+        _G.print = function() end
+        local okc, err = pcall(fn, ...)
+        _G.print = realPrint
+        if not okc then error(err, 0) end
+    end
+
+    do
+        local chunk = loadfile(ROOT .. 'br_core/server/gunshop.lua')
+        if not chunk then
+            print('\27[31mload error\27[0m server/gunshop.lua')
+            os.exit(1)
+        end
+        chunk()
+    end
+    quiet(handlers['onResourceStart'], 'br_core')
+
+    local pillbox
+    for _, s in ipairs(stores) do if s.id == 'pillbox' then pillbox = s end end
+
+    local function reset()
+        sent, charged, notices, given, dropped = {}, {}, {}, {}, {}
+        roster, matches = {}, {}
+        BR.Market.balances = {}
+        BR.Market.hold, BR.Market.held = false, {}
+        bagFull = false
+    end
+
+    --- One player, standing at the Pillbox Hill counter, in a live match.
+    local function player(src, opts)
+        opts = opts or {}
+        matches[1] = { id = 1, state = opts.matchState or BR.MatchState.PLAYING }
+        roster[src] = {
+            matchId = 1,
+            state = opts.state or BR.PlayerState.ALIVE,
+            -- THE SAMPLED POSITION, WHICH IS A REAL FIELD. server/roster.lua
+            -- writes it on every position pass and every server-side rule in
+            -- this project reads it rather than taking a fresh GetPlayerPed --
+            -- which returns 0 for every player when handed a numeric src.
+            pos = opts.pos
+                or { x = pillbox.x, y = pillbox.y, z = pillbox.z },
+        }
+        BR.Market.balances[src] = opts.balance or 5000
+    end
+
+    local function buy(src, id, extra)
+        local payload = { id = id }
+        if extra then for k, v in pairs(extra) do payload[k] = v end end
+        _G.source = src
+        quiet(handlers[BR.Net.GUNSHOP_BUY], payload)
+    end
+
+    local function boughtFor(src)
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.GUNSHOP_BOUGHT and s.src == src then
+                return s.payload
+            end
+        end
+        return nil
+    end
+
+    -- -----------------------------------------------------------------------
+    describe('buying at the counter, for real')
+    -- -----------------------------------------------------------------------
+    reset()
+    player(10)
+    buy(10, 'carbinerifle')
+
+    ok(#charged == 1 and charged[1].amount == 115,
+        'the price comes off the ROW, never off anything the client sent',
+        charged[1] and charged[1].amount)
+    ok(#charged == 1 and charged[1].reason == 'gunshop:carbinerifle',
+        'and the debit is labelled with the row, so a ledger line can be '
+            .. 'traced back to a counter', charged[1] and charged[1].reason)
+    ok(#given == 1 and given[1].stack.item == 'carbinerifle'
+       and given[1].stack.kind == BR.ItemKind.WEAPON
+       and given[1].stack.count == 1,
+        "the goods are the ROW'S OWN stack -- the same table BR.RollLootStack "
+            .. 'hands back for the same gun off the floor')
+    -- ...BUT NOT THE CATALOGUE'S OWN TABLE. The catalogue is built once and
+    -- memoised, so `row.stack` is one table shared by every purchase of that row
+    -- for the life of the process. If the inventory or the loot system ever kept
+    -- a reference, a magazine count written into one player's slot would be
+    -- written into the shelf and handed to every subsequent buyer.
+    do
+        local shelfRow
+        for _, r in ipairs(BR.Config.Gunshop.rows) do
+            if r.id == 'carbinerifle' then shelfRow = r end
+        end
+        ok(#given == 1 and given[1].stack ~= shelfRow.stack,
+            'and it is a COPY of that stack, not the shelf\'s own table')
+    end
+
+    ok(#given == 1 and given[1].opts and given[1].opts.quiet == true,
+        'handed over QUIETLY: the purchase cue is about to play and two sounds '
+            .. 'a frame apart for one event is the fault config/audio.lua is '
+            .. 'about')
+    ok(boughtFor(10) ~= nil and boughtFor(10).row == 'carbinerifle',
+        'the client is told which row landed, so it plays the cue for what '
+            .. 'arrived rather than for what it last asked about')
+    ok(#notices == 0, 'and nothing at all is said to the player')
+    ok(BR.Market.balances[10] == 5000 - 115,
+        'the balance moves once', BR.Market.balances[10])
+
+    -- -----------------------------------------------------------------------
+    describe('a player cannot buy from across the map')
+    -- -----------------------------------------------------------------------
+    reset()
+    player(11, { pos = { x = 0.0, y = 0.0, z = 70.0 } })
+    buy(11, 'carbinerifle')
+    ok(#charged == 0 and #given == 0,
+        'standing a kilometre from the nearest counter buys nothing')
+
+    -- THE CLIENT'S WORD IS NEVER ASKED FOR. A client that could assert "I am at
+    -- a counter" could shop from the top of Mount Chiliad, so the payload is
+    -- given every field it might hope to lie with.
+    reset()
+    player(12, { pos = { x = 0.0, y = 0.0, z = 70.0 } })
+    buy(12, 'carbinerifle', {
+        atCounter = true, store = 'pillbox',
+        x = pillbox.x, y = pillbox.y, z = pillbox.z, price = 1,
+    })
+    ok(#charged == 0 and #given == 0,
+        'and a payload that claims to be at a counter, names one, carries its '
+            .. 'coordinates and quotes a price buys exactly as much: nothing')
+
+    -- ...WHILE THE SERVER'S OWN RADIUS IS DELIBERATELY LOOSER THAN THE
+    -- CLIENT'S. Positions are sampled at 4 Hz, so the newest reading can be
+    -- 250ms old -- about 1.8m of sprint -- and refusing somebody standing at
+    -- the till because their last sample was taken walking in is a refusal with
+    -- no symptom.
+    reset()
+    player(13, { pos = { x = pillbox.x + 4.0, y = pillbox.y, z = pillbox.z } })
+    buy(13, 'carbinerifle')
+    ok(#charged == 1,
+        'four metres out -- past the client reach, inside the server one -- is '
+            .. 'still at the counter')
+
+    reset()
+    player(14, { pos = { x = pillbox.x + 40.0, y = pillbox.y, z = pillbox.z } })
+    buy(14, 'carbinerifle')
+    ok(#charged == 0, 'and forty metres out is not')
+
+    -- -----------------------------------------------------------------------
+    describe('a player cannot buy what is not on the shelf')
+    -- -----------------------------------------------------------------------
+    reset()
+    player(15)
+    for _, id in ipairs({ 'rpg', 'grenadelauncher', 'railgun', 'minigun',
+                          'machete', 'grenade', 'pistol', 'microsmg', '',
+                          'ammo_nonsense', 'car_runner' }) do
+        buy(15, id)
+    end
+    ok(#charged == 0 and #given == 0,
+        'the airdrop shelf, the melee list, the throwables, the common guns '
+            .. 'and pure nonsense all buy nothing')
+
+    -- THE AIRDROP FOUR ARE THE ONES THAT MATTER, and the reason is the rule at
+    -- the top of config/gunshop.lua: they are in no rarity bucket, so no world
+    -- roll can produce them, so the only way to hold one is to reach a supply
+    -- drop. Selling one would be selling exactly the thing that cannot
+    -- otherwise be found.
+    reset()
+    player(16)
+    buy(16, 'rpg')
+    ok(#charged == 0 and #notices == 0,
+        'and an unknown row is refused in SILENCE -- no copy was ever written '
+            .. 'for this counter, and inventing a refusal is the slop the '
+            .. "owner's standing rule refuses")
+
+    -- A PAYLOAD THAT IS NOT WHAT THE HANDLER EXPECTS RESOLVES TO "NO SUCH ROW"
+    -- rather than reaching rowById as a type it refuses.
+    reset()
+    player(17)
+    _G.source = 17
+    quiet(handlers[BR.Net.GUNSHOP_BUY], nil)
+    quiet(handlers[BR.Net.GUNSHOP_BUY], 'carbinerifle')
+    quiet(handlers[BR.Net.GUNSHOP_BUY], { id = 12345 })
+    quiet(handlers[BR.Net.GUNSHOP_BUY], { id = { 'carbinerifle' } })
+    ok(#charged == 0 and #given == 0,
+        'a nil, a string, a number and a table for an id all buy nothing and '
+            .. 'none of them throws')
+
+    -- -----------------------------------------------------------------------
+    describe('a player cannot buy what they cannot afford')
+    -- -----------------------------------------------------------------------
+    reset()
+    player(20, { balance = 114 })
+    buy(20, 'carbinerifle')
+    ok(#charged == 0 and #given == 0, 'one Volt short buys nothing')
+    ok(#notices == 1 and notices[1].src == 20 and notices[1].price == 115,
+        "...and it is the ONE refusal that speaks, in the market's own words, "
+            .. 'through the one funnel that carries the shop.denied cue')
+
+    reset()
+    player(21, { balance = 115 })
+    buy(21, 'carbinerifle')
+    ok(#charged == 1 and #given == 1,
+        'spending your last Volt at the counter is a purchase, not an '
+            .. 'overdraft')
+    ok(#notices == 0, 'and says nothing')
+
+    -- -----------------------------------------------------------------------
+    describe('the counter is open in a live match, to a living player')
+    -- -----------------------------------------------------------------------
+    for _, st in ipairs({ BR.MatchState.WARMUP, BR.MatchState.BUS,
+                          BR.MatchState.ENDED }) do
+        reset()
+        player(30, { matchState = st })
+        buy(30, 'carbinerifle')
+        ok(#charged == 0,
+            ('a match in %s sells nothing'):format(tostring(st)))
+    end
+    for _, st in ipairs({ BR.PlayerState.DBNO, BR.PlayerState.OUT,
+                          BR.PlayerState.WARMUP }) do
+        reset()
+        player(31, { state = st })
+        buy(31, 'carbinerifle')
+        ok(#charged == 0,
+            ('a player in %s buys nothing'):format(tostring(st)))
+    end
+
+    reset()
+    buy(32, 'carbinerifle')
+    ok(#charged == 0,
+        'and somebody with no roster entry at all is refused rather than '
+            .. 'throwing')
+
+    -- -----------------------------------------------------------------------
+    describe('ammo is bought by the pool, in one ground pickup')
+    -- -----------------------------------------------------------------------
+    reset()
+    player(40)
+    buy(40, 'ammo_smg')
+    ok(#charged == 1 and charged[1].amount == 20,
+        'the ammo price is the pool\'s', charged[1] and charged[1].amount)
+    ok(#given == 1 and given[1].stack.kind == BR.ItemKind.AMMO
+       and given[1].stack.item == BR.AmmoType.SMG
+       and given[1].stack.count == 60,
+        'and one purchase hands over exactly what one piece of ammo on the '
+            .. 'floor is worth -- "a convenience with a fee", literally')
+
+    -- NO PURCHASE LIMIT, which is the difference from the warmup showroom
+    -- rather than an omission. A shop that sells one magazine per match is not
+    -- a convenience.
+    reset()
+    player(41)
+    buy(41, 'ammo_smg')
+    buy(41, 'ammo_smg')
+    buy(41, 'carbinerifle')
+    ok(#charged == 3 and #given == 3,
+        'three purchases at one counter is three purchases')
+
+    -- -----------------------------------------------------------------------
+    describe('a full bag drops rather than evaporating')
+    -- -----------------------------------------------------------------------
+    reset()
+    player(50)
+    bagFull = true
+    buy(50, 'heavysniper')
+    ok(#charged == 1 and #dropped == 1
+       and dropped[1].stack.item == 'heavysniper',
+        'what will not fit lands at their feet rather than being taken along '
+            .. 'with the money')
+
+    -- -----------------------------------------------------------------------
+    describe('dying inside the DynamoDB round trip')
+    -- -----------------------------------------------------------------------
+    --
+    -- A charge is up to six seconds and a player can be shot inside it. The
+    -- item must not land in the bag of somebody who is no longer alive to hold
+    -- it -- BR.Inv would wipe it at the next state change while the Volts
+    -- stayed spent, which is the same loss with an extra step.
+    reset()
+    player(60)
+    BR.Market.hold = true
+    buy(60, 'heavysniper')
+    ok(#charged == 0 and #given == 0,
+        'nothing has happened while the write is in flight')
+    roster[60].state = BR.PlayerState.OUT
+    quiet(settleCharges)
+    ok(#charged == 1, 'the debit still lands -- there is no refund path')
+    ok(#given == 0 and boughtFor(60) == nil,
+        '...and nothing is handed to a player who died inside it. It is loud '
+            .. 'on the console, because it is the harshest thing this feature '
+            .. 'does and it is invisible from inside the game')
+
+    reset()
+    player(61)
+    BR.Market.hold = true
+    buy(61, 'heavysniper')
+    matches[1].state = BR.MatchState.ENDED
+    quiet(settleCharges)
+    ok(#given == 0, 'and the same if the MATCH ended inside the round trip')
+
+    -- WALKING AWAY FROM THE TILL INSIDE THE ROUND TRIP IS NOT A REASON TO LOSE
+    -- IT. The position is the one term here that is sampled rather than
+    -- authoritative, and it was already checked before the money moved.
+    reset()
+    player(62)
+    BR.Market.hold = true
+    buy(62, 'heavysniper')
+    roster[62].pos = { x = 0.0, y = 0.0, z = 70.0 }
+    quiet(settleCharges)
+    ok(#given == 1 and boughtFor(62) ~= nil,
+        'a player who paid and then walked out of the shop still gets the gun')
+end
+
 print(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     print(('\27[31m%d failed\27[0m'):format(fail))

@@ -207,13 +207,31 @@ ensure pma-voice
 # that are not registered yet, and draws nothing, which is a considerably worse
 # way to find out.
 #
-# NOTHING IN THE GAMEMODE CALLS THIS YET. It is started so it is loaded and
-# proven, and because a menu library that is ensured only when the first menu
-# lands is a library whose start-up faults are discovered by that menu. Both
-# resources are client-side only -- neither manifest declares a server script --
-# so they cost a client thread and nothing on the server. The one net-facing
-# surface is loader.lua's RegisterNetEvent('ScUI:AddMinimapOverlay'), which the
-# library triggers locally and which nothing on our server ever sends.
+# THE GAMEMODE NOW USES IT: the in-match Ammu-Nation counter (#274) is the first
+# menu on this library. Both resources are client-side only -- neither manifest
+# declares a server script -- so they cost a client thread and nothing on the
+# server. The one net-facing surface is loader.lua's
+# RegisterNetEvent('ScUI:AddMinimapOverlay'), which the library triggers locally
+# and which nothing on our server ever sends.
+#
+# ─────────────────────────────────────────────────────────────────────────
+#  OPEN: `ensure ScaleformUI_Lua` MAY NOW BE REDUNDANT, AND IT IS NOT FREE.
+# ─────────────────────────────────────────────────────────────────────────
+#
+# A FiveM resource cannot see another resource's globals and this library
+# exports nothing, so br_core pulls the file into its own Lua state with
+# '@ScaleformUI_Lua/ScaleformUI.lua' -- upstream's own integration route. That
+# means the library's always-on threads (VENDOR.json's `untouched_on_purpose`
+# block: a Citizen.Wait(0) loop calling eight Update() methods every frame) now
+# run in br_core's state AND, because of this line, in ScaleformUI_Lua's own
+# state, where nothing uses them.
+#
+# Dropping this line would halve that, and it turns on one fact nobody has
+# checked on this box: whether an '@resource/file.lua' include resolves for a
+# resource that is present but NOT STARTED. If it does, delete this line --
+# ScaleformUI_Assets must stay either way, since it streams the .gfx movies and
+# owns the minimap overlay handler. If it does not, br_core will not start, which
+# is why it has not been tried blind.
 ensure ScaleformUI_Assets
 ensure ScaleformUI_Lua
 

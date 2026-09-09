@@ -415,6 +415,64 @@ client_scripts {
     -- that needs no order at all: FiveM fans an event to every handler, and
     -- neither file reads the other's cache.
     'client/revivekey.lua',
+    -- ═══ THE VENDORED MENU LIBRARY, PULLED INTO THIS RESOURCE'S LUA STATE ═══
+    --
+    -- A FiveM resource cannot see another resource's globals and ScaleformUI
+    -- exports nothing, so `@ScaleformUI_Lua/ScaleformUI.lua` is upstream's own
+    -- integration route and the only one there is: the library is a single
+    -- bundled file precisely so it can be included this way.
+    --
+    -- IT IS DECLARED HERE RATHER THAN AT THE TOP OF THE LIST because nothing
+    -- above it uses a menu, and because a reader looking for "why is a 20,000
+    -- line third-party file in br_core" should find it beside the one feature
+    -- that needs it. client/menu.lua and client/gunshop.lua reach its globals at
+    -- CALL time and nil-guard (BR.Menu.available), so this position is a
+    -- reader's convenience rather than a load order.
+    --
+    -- ─────────────────────────────────────────────────────────────────────
+    --  KNOWN COST, FLAGGED RATHER THAN HIDDEN: THE LIBRARY'S ALWAYS-ON
+    --  THREADS NOW RUN TWICE.
+    -- ─────────────────────────────────────────────────────────────────────
+    --
+    -- resources/[scaleformui]/ScaleformUI_Lua/VENDOR.json records under
+    -- `untouched_on_purpose` that this library runs threads from resource start
+    -- whether or not any menu exists -- the main one loops at Citizen.Wait(0)
+    -- calling Warning:Update(), InstructionalButtons:Update() and five more
+    -- every frame. server.cfg.example still `ensure`s ScaleformUI_Lua as its own
+    -- resource, so with this line those threads run in ITS state (where nothing
+    -- uses them, example.lua being commented out by BR-PATCH 1) AND in this one.
+    --
+    -- THE FIX IS ONE LINE AND IT IS NOT TAKEN HERE, because it rests on a claim
+    -- nobody has checked on this box: whether an `@resource/file.lua` include
+    -- resolves for a resource that is present but not STARTED. If it does,
+    -- dropping `ensure ScaleformUI_Lua` from server.cfg.example halves the cost
+    -- and loses nothing -- ScaleformUI_Assets must stay ensured either way,
+    -- since it streams the .gfx movies and owns the minimap overlay handler.
+    -- Guessing wrong means br_core does not start, which is why it is written
+    -- down instead of tried blind.
+    '@ScaleformUI_Lua/ScaleformUI.lua',
+    -- OUR COLORS ON THAT LIBRARY, and the pattern for every menu after this one.
+    -- Tiny by design: two hexes, one HUD index, three constructors. AFTER the
+    -- line above for a reader; it resolves SColor and UIMenu at call time.
+    'client/menu.lua',
+    -- The in-match Ammu-Nation counter (#274): the local clerk, the plate on the
+    -- counter, and the menu behind it.
+    --
+    -- THE SEVENTH CONSUMER OF THE ONE PROMPT BROWSER, declared beside the sixth
+    -- for the reason the lines above give: crate, pump, revive, heal station,
+    -- showroom, revive key, counter.
+    --
+    -- A DIFFERENT FEATURE FROM client/shop.lua AND A DIFFERENT NAMESPACE.
+    -- BR.Gunshop and BR.Config.Gunshop; it shares no symbol with BR.Shop. It
+    -- does deliberately call ACROSS to BR.ShopSolve.priceLine, which is the only
+    -- "N Volts" formatter in the tree, rather than growing a second one.
+    --
+    -- It needs client/main.lua for the loop registry, client/keybinds.lua for
+    -- BR.Keys.on('interact') and BR.Keys.uiScreen, client/dui.lua for the shared
+    -- prompt page and client/natives.lua for BR.Native.keyLabelForCommand -- the
+    -- same four names client/ambheal.lua, client/shop.lua and
+    -- client/revivekey.lua list, all of which are above.
+    'client/gunshop.lua',
     -- The guided first run (#261). AFTER client/main.lua, which is the only
     -- order it needs: it registers a FRAME pass that takes the camera and the
     -- trigger away from a player reading a card, and BR.Loop has to exist for
@@ -654,6 +712,22 @@ server_scripts {
     -- and nil-guarded, exactly as the rescue's own back-references are: a
     -- server without a shop must start a bus flight rather than throw.
     'server/shop.lua',
+    -- The in-match Ammu-Nation counter (#274). AFTER market.lua for the reason
+    -- the block above gives -- it charges through BR.Market.charge and reads
+    -- BR.Market.balanceOf, so the market owns the ledger and this file owns no
+    -- copy of it -- and after server/shop.lua for a reader rather than the
+    -- loader: they are siblings and the showroom is the one that has shipped.
+    --
+    -- IT CREATES NO ENTITY AT ALL, which is the difference from the line above:
+    -- the clerk is a client-local ped (there is no ped server setter, and RPC
+    -- creation is incompatible with routing buckets), and the goods are an
+    -- ordinary BR.Inv.give. So the vehicle-creation rule tools/verify.sh
+    -- enforces on server/shop.lua has nothing to say about this file.
+    --
+    -- AT CALL it reaches BR.Roster.get for the sampled position the `atCounter`
+    -- check rules on, and BR.Inv / BR.Loot to hand the goods over. All
+    -- call-time, so the declaration order is the order of the question.
+    'server/gunshop.lua',
     -- Admin scopes, read from the same DynamoDB grants table the console
     -- authorises against, through br_ddb -- never from br_ringmaster, which the
     -- game must not depend on. players.lua and incident.lua both read it, and

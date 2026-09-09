@@ -225,18 +225,39 @@ end
 --- TIES GO TO THE EARLIER ROW. `<` rather than `<=`, so the answer is stable
 --- while a player stands still.
 ---
---- @param stores table       the resolved counters
---- @param px number          the player, x
---- @param py number          the player, y
---- @param reachM number|nil  how far "at the counter" reaches; nil is no reach
+--- ═══ AND A COUNTER WITH NOBODY BEHIND IT IS NOT A COUNTER (`present`) ═══
+---
+--- BR.ShopSolve.nearest grew the identical parameter for the identical reason
+--- and its header carries the full argument: a row whose model never streamed
+--- has no entity, and offering a price for something the player cannot see is
+--- worse than offering nothing.
+---
+--- IT IS HANDED TO THE SELECTION RATHER THAN CHECKED AFTER THE FACT. Picking the
+--- nearest store and then discovering its clerk never built would stand a player
+--- in front of a working counter and refuse them -- which cannot happen here
+--- today, because no two counters are within four reaches of each other, and is
+--- still the wrong shape to write. The filter belongs where the choice is made.
+---
+--- THE FILTER IS THE CLIENT'S BUSINESS AND ONLY THE CLIENT'S. The server passes
+--- nothing: it has no clerk, it has never had one, and refusing a purchase
+--- because a PED failed to stream on somebody's machine would be the server
+--- deciding a question it cannot see. Absent, every store is present -- which is
+--- what makes the parameter free for the server to ignore.
+---
+--- @param stores table         the resolved counters
+--- @param px number            the player, x
+--- @param py number            the player, y
+--- @param reachM number|nil    how far "at the counter" reaches; nil is no reach
+--- @param present function|nil store -> boolean; nil accepts every store
 --- @return table|nil store
 --- @return number|nil dist
-function BR.GunshopSolve.nearest(stores, px, py, reachM)
+function BR.GunshopSolve.nearest(stores, px, py, reachM, present)
     if type(stores) ~= 'table' then return nil, nil end
     px, py = tonumber(px), tonumber(py)
     if not px or not py then return nil, nil end
     local reach = tonumber(reachM)
     if not reach or reach <= 0.0 then return nil, nil end
+    if present ~= nil and type(present) ~= 'function' then return nil, nil end
 
     local best, bestD = nil, nil
     for i = 1, #stores do
@@ -244,12 +265,165 @@ function BR.GunshopSolve.nearest(stores, px, py, reachM)
         if type(s) == 'table'
            and type(s.x) == 'number' and type(s.y) == 'number' then
             local d = BR.Dist(px, py, s.x, s.y)
-            if d <= reach and (bestD == nil or d < bestD) then
+            -- THE DISTANCE IS TESTED BEFORE THE FILTER IS CALLED, so a predicate
+            -- that asks the engine about an entity is asked about the two or
+            -- three stores in reach rather than about all eleven, on every pass
+            -- of a 10 Hz loop.
+            if d <= reach and (bestD == nil or d < bestD)
+               and (present == nil or present(s) == true) then
                 best, bestD = s, d
             end
         end
     end
     return best, bestD
+end
+
+-- ---------------------------------------------------------------------------
+-- Where the clerk goes, and when
+-- ---------------------------------------------------------------------------
+
+--- IS THIS STORE'S CLERK WANTED RIGHT NOW? TWO RADII, AND WHICH ONE APPLIES
+--- DEPENDS ON WHETHER HE IS ALREADY THERE.
+---
+--- ═══ HYSTERESIS, BECAUSE ONE RADIUS IS A FLICKER ═══
+---
+--- With a single distance, a player standing on it builds a ped and deletes it
+--- once a second for as long as they stand there: a model request, a ground
+--- probe and a DeleteEntity, forever, out of a reconciler that believes it is
+--- idle. Two radii make that unreachable -- he appears at `buildM` and does not
+--- go until `keepM`, so the band between them is a place where nothing changes.
+---
+--- `has` IS "IS HE STANDING", NOT "WAS HE WANTED". The caller passes what it
+--- actually has, so a build that failed (a model that never streamed) is asked
+--- the BUILD question again on the next pass rather than being remembered as
+--- present and never retried.
+---
+--- DEGENERATE CONFIGURATION IS THE CALLER'S PROBLEM, NOT A SILENT CORRECTION. If
+--- `keepM` is below `buildM` the flicker is back and this function will not
+--- pretend otherwise -- clamping here would hide a config the owner should see
+--- in the dev command instead.
+--- @param store table|nil
+--- @param px number
+--- @param py number
+--- @param buildM number|nil
+--- @param keepM number|nil
+--- @param has boolean   is this store's clerk standing right now
+--- @return boolean
+function BR.GunshopSolve.wantsClerk(store, px, py, buildM, keepM, has)
+    if type(store) ~= 'table' then return false end
+    if type(store.x) ~= 'number' or type(store.y) ~= 'number' then return false end
+    px, py = tonumber(px), tonumber(py)
+    if not px or not py then return false end
+
+    local build = tonumber(buildM) or 0.0
+    local keep  = tonumber(keepM) or build
+    local limit = (has == true) and keep or build
+    if limit <= 0.0 then return false end
+
+    return BR.Dist(px, py, store.x, store.y) <= limit
+end
+
+--- WHERE A DOWNWARD GROUND PROBE FOR THIS STORE STARTS.
+---
+--- THE ANCHOR PLUS A LIFT, and the lift is per-store first and global second --
+--- `probeFromM` is the escape hatch config/gunshop.lua ships nil everywhere, for
+--- the store that turns out to need a different one. See the long note beside
+--- `probeLiftM` for why the number is squeezed between a floor and a ceiling.
+---
+--- A FUNCTION RATHER THAN AN ADDITION AT THE CALL SITE, so the override is
+--- honored in one place and tools/test_gunshop.lua can drive it without a
+--- client.
+--- @param cfg table|nil
+--- @param store table|nil
+--- @return number|nil
+function BR.GunshopSolve.probeStart(cfg, store)
+    if type(store) ~= 'table' then return nil end
+    local z = tonumber(store.z)
+    if not z then return nil end
+    local lift = tonumber(store.probeFromM)
+    if not lift then
+        lift = tonumber(type(cfg) == 'table' and cfg.probeLiftM or nil) or 0.0
+    end
+    return z + lift
+end
+
+--- ═══ THE CLERK'S HEIGHT, AND THE ORDER THE THREE ANSWERS ARE ASKED IN ═══
+---
+--- config/gunshop.lua's header is unambiguous that no clerk z is authored and
+--- that the client ground-probes. This is where that rule is spent, and it is
+--- here rather than in the client so that a test can hold it: "the probe wins
+--- over the table" is the whole feature and a client file is the one place no
+--- suite can execute.
+---
+---   1. `zOverride` -- the escape hatch, and it is FIRST because that is what an
+---      escape hatch is for. Authoring one is a decision to trust a typed number
+---      over the engine, for the one interior where the probe is eventually
+---      found to be wrong. Nil everywhere as shipped.
+---   2. THE PROBE -- the engine's own answer, and the answer this feature is
+---      built around. Only when the native said yes: `hit` is a BOOL and every
+---      caller must have put it through its own isTrue() before it gets here,
+---      because 0 is truthy in Lua and reading a refusal as an answer would put
+---      a clerk at whatever `gz` happened to hold.
+---   3. THE RAW ANCHOR -- what the table says, used as it is. This is the
+---      "today's behavior" fallback the showroom's collision wait also takes:
+---      a clerk who may be a metre out beats a counter with nobody behind it,
+---      and the second return says which happened so /brgunshop can print it.
+---
+--- THE SECOND RETURN IS FOR THE LEDGER AND NOTHING ELSE. It is a source key, not
+--- a sentence: no string here is written to be read by a player.
+--- @param cfg table|nil
+--- @param store table|nil
+--- @param hit boolean|nil  did the ground probe answer -- already through isTrue
+--- @param gz number|nil    what it answered
+--- @return number|nil z
+--- @return string source   'override' | 'probe' | 'anchor'
+function BR.GunshopSolve.clerkZ(cfg, store, hit, gz)
+    if type(store) ~= 'table' then return nil, 'anchor' end
+
+    local over = tonumber(store.zOverride)
+    if over then return over, 'override' end
+
+    if hit == true then
+        local z = tonumber(gz)
+        if z then return z, 'probe' end
+    end
+
+    return tonumber(store.z), 'anchor'
+end
+
+--- WHERE THE CLERK IS CREATED, ONCE HIS FLOOR IS KNOWN.
+---
+--- THE OFFSET IS SPENT ALONG THE COUNTER'S OWN HEADING, which is the one thing
+--- the store table does say about which way this building faces. GTA headings
+--- are degrees clockwise from north, so forward is (-sin h, cos h) -- the same
+--- convention client/dui.lua's `levelBasis` records for the entity form of the
+--- same arithmetic.
+---
+--- ZERO OFFSET IS THE SHIPPED CASE AND IT IS NOT A NO-OP WORTH SKIPPING: the
+--- multiplication is what makes the owner's one number in config mean something
+--- without anybody editing Lua.
+--- @param cfg table|nil
+--- @param store table|nil
+--- @param z number|nil    the resolved floor height
+--- @return number|nil x
+--- @return number|nil y
+--- @return number|nil z
+--- @return number|nil heading
+function BR.GunshopSolve.clerkAt(cfg, store, z)
+    if type(store) ~= 'table' then return nil, nil, nil, nil end
+    local sx, sy = tonumber(store.x), tonumber(store.y)
+    local h = tonumber(store.heading)
+    if not sx or not sy or not h then return nil, nil, nil, nil end
+
+    local c = type(cfg) == 'table' and cfg or {}
+    local out  = tonumber(c.clerkOffsetM) or 0.0
+    local face = tonumber(c.clerkFaceDeg) or 0.0
+
+    local rad = math.rad(h)
+    return sx - math.sin(rad) * out,
+           sy + math.cos(rad) * out,
+           tonumber(z),
+           (h + face) % 360.0
 end
 
 --- Which ped model stands behind this counter.
@@ -555,6 +729,42 @@ function BR.GunshopSolve.ofKind(rows, kind)
         end
     end
     return out
+end
+
+--- HOW ONE ROW IS NAMED ON A SHELF.
+---
+--- ═══ NOTHING HERE IS COPY, AND THE ONE MARK THAT IS NOT A LABEL IS DECLARED
+---     ═══
+---
+--- The words are the catalogue's: `label` is config/weapons.lua's own display
+--- name for a gun and config/loot.lua's own for an ammo pool. This function
+--- writes none of them and invents none of them -- the owner has written no
+--- player-facing text for this feature and the standing rule is that unrequested
+--- copy reads as slop.
+---
+--- THE QUANTITY IS THE ONE THING THE LABEL CANNOT SAY BY ITSELF. "Heavy Ammo,
+--- 50 Volts" is not a price anybody can judge: 50 is dear for twelve rounds and
+--- cheap for sixty, and config/gunshop.lua's own marked block asks the owner to
+--- judge exactly that. So an ammo row carries how much it hands over, in the
+--- shortest form there is -- `x` and the number, which is a quantity mark rather
+--- than a word, and which is the only character in this feature that is neither
+--- his nor derived from a table he owns. It is flagged here so that replacing it
+--- is a one-line edit somebody can find.
+---
+--- WEAPONS GET NO COUNT because every weapon row is a count of one
+--- (`stack.count = 1` in `catalogue` above), and "Carbine Rifle x1" says nothing
+--- the row did not already say.
+--- @param row table|nil
+--- @return string
+function BR.GunshopSolve.menuLabel(row)
+    if type(row) ~= 'table' then return '' end
+    local label = type(row.label) == 'string' and row.label ~= '' and row.label
+        or tostring(row.id or '')
+    if row.kind ~= BR.ItemKind.AMMO then return label end
+
+    local n = tonumber(type(row.stack) == 'table' and row.stack.count or nil)
+    if not n or n <= 0 then return label end
+    return ('%s x%d'):format(label, math.floor(n))
 end
 
 -- ---------------------------------------------------------------------------

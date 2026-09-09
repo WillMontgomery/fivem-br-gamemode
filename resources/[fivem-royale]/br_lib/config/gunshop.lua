@@ -216,6 +216,213 @@ BR.Config.Gunshop = {
     --- counter and not walking past the door".
     reachM = 2.5,
 
+    --- ...AND HOW FAR THE SERVER LETS THAT REACH, WHICH IS FURTHER ON PURPOSE.
+    ---
+    --- ═══ THE SERVER IS NOT MEASURING THE SAME THING THE CLIENT IS ═══
+    ---
+    --- `reachM` above answers "should this player be offered a counter", asked on
+    --- their own machine against their own ped, this frame. The server answers
+    --- "was this player at a counter when they pressed", and it has no ped to ask:
+    --- it has BR.Roster's SAMPLED position, taken by server/roster.lua at
+    --- BR.Config.Match.posSampleHz -- 4 Hz -- so the newest reading it can hold is
+    --- up to 250ms old.
+    ---
+    --- 250ms OF A SPRINT IS ABOUT 1.8 METRES. Measuring a 2.5m reach against a
+    --- position that stale would refuse a player who is standing at the counter
+    --- and whose last sample was taken as they walked up to it -- a purchase that
+    --- fails for a reason nobody can see, which is the worst refusal there is.
+    ---
+    --- BEING GENEROUS COSTS NOTHING HERE, AND THAT IS WHY IT IS THE ANSWER. The
+    --- security property this check exists for is "a client cannot shop from the
+    --- top of Mount Chiliad", not "a client cannot shop from four metres away";
+    --- the nearest two counters are districts apart (tools/test_gunshop.lua
+    --- asserts it), so a radius four times the client's still names exactly one
+    --- store and still puts the player inside the building.
+    serverReachM = 6.0,
+
+    -- ------------------------------------------------------------------
+    -- THE CLERK
+    -- ------------------------------------------------------------------
+    --
+    -- NONE OF THESE WERE IN THE FIRST CUT OF THIS FILE, and the header above the
+    -- store table says why: "what stands where relative to [the heading] is the
+    -- client's decision and is deliberately not made here". Building the client
+    -- turned that from a decision not yet made into a decision made, and a number
+    -- the client invented would be a number the owner cannot move without opening
+    -- a client file. So they are here, together, with the same "first cut, his to
+    -- move" standing that `reachM` has.
+    --
+    -- EVERY ONE OF THESE IS UNSEEN IN GAME. Nothing in this repository has ever
+    -- put a ped in an Ammu-Nation. They are starting values chosen to be safe
+    -- rather than measured values, and the dev command `/brgunshop` exists to
+    -- turn one playtest round into eleven real numbers.
+
+    --- HOW CLOSE A PLAYER COMES BEFORE A CLERK IS BUILT, AND HOW FAR THEY GO
+    --- BEFORE HE IS TAKEN DOWN. Metres, flat, same as every other reach here.
+    ---
+    --- ═══ TWO NUMBERS RATHER THAN ONE, BECAUSE ONE IS A FLICKER ═══
+    ---
+    --- A single radius means a player standing on it builds and destroys a ped
+    --- once a second for as long as they stand there -- a model request, a
+    --- ground probe and a delete, every second, from a reconciler that thinks it
+    --- is idle. The gap between these two is the hysteresis that makes that
+    --- unreachable.
+    ---
+    --- 60m IS INSIDE THE BUILDING AND 90m IS OUTSIDE IT. An Ammu-Nation shop
+    --- floor is a few metres across, so 60m means "on this block, probably
+    --- through the door" -- close enough that the interior has streamed and the
+    --- ground probe has something to hit, far enough that the clerk is standing
+    --- there before the player is looking at him.
+    ---
+    --- WHY THIS FEATURE HAS A DISTANCE TERM AND THE WARMUP SHOWROOM DOES NOT.
+    --- The showroom is ONE pad, built at the flip to warmup and torn down at
+    --- wheels-up, and every player in the match is going to walk through it.
+    --- These are ELEVEN buildings scattered over 51 km^2, ten of which any given
+    --- player will never enter, and a framerate investigation on 2026-09-07
+    --- found that invisible-but-simulated peds and per-frame entity work are
+    --- what actually cost frames on this server. Eleven permanent peds would be
+    --- ten of them simulated for nobody.
+    clerkBuildM = 60.0,
+    clerkKeepM  = 90.0,
+
+    --- WHERE HE STANDS RELATIVE TO THE ANCHOR, AND WHICH WAY HE FACES.
+    ---
+    --- BOTH DEFAULT TO ZERO, WHICH IS "ON THE ANCHOR, FACING THE COUNTER'S OWN
+    --- HEADING", and that is a reading of where these coordinates came from
+    --- rather than a shrug. The anchors were cross-checked against ox_inventory's
+    --- shop locations and qb-shops' `ammunation` config (see the store table
+    --- above), and in BOTH of those resources the row is where the SHOP PED is
+    --- created and the heading is the heading it is created with. So zero and
+    --- zero is those two resources' own answer, adopted rather than invented.
+    ---
+    --- WHAT WOULD MAKE THEM NON-ZERO is the owner looking at a clerk standing in
+    --- the customer's spot, or facing a wall. `clerkOffsetM` slides him along the
+    --- counter's heading (positive is forward, the way the counter faces);
+    --- `clerkFaceDeg` is added to that heading. Two numbers, one playtest.
+    clerkOffsetM = 0.0,
+    clerkFaceDeg = 0.0,
+
+    --- HOW LONG A CLERK MODEL MAY TAKE TO STREAM BEFORE THE COUNTER GIVES UP.
+    ---
+    --- client/rescue.lua's paramedic uses 5000 for the same question and the same
+    --- kind of ped. A request that has not landed in five seconds is a request
+    --- that is not going to; the console says which model and which store, and
+    --- the store stands down rather than erroring -- which is what the note above
+    --- `clerkModels` asks for in as many words.
+    modelWaitMs = 5000,
+
+    --- HOW FAR ABOVE THE ANCHOR THE GROUND PROBE STARTS, WHEN A STORE HAS NO
+    --- `probeFromM` OF ITS OWN.
+    ---
+    --- ═══ THE NUMBER IS SQUEEZED BETWEEN TWO FAILURES AND BOTH ARE SILENT ═══
+    ---
+    --- GET_GROUND_Z_FOR_3D_COORD answers with the highest ground BELOW the point
+    --- it is handed -- client/loot.lua carries the write-up and the playtest that
+    --- produced it ("hillside loot just spawned below the map instead"). So:
+    ---
+    ---   TOO LOW and the probe starts UNDER the shop floor, where the highest
+    ---   ground below it is the storey beneath or nothing at all. The header
+    ---   above the store table says the tabulated z may be the floor OR a
+    ---   standing ped's center, up to about 1.1m apart, so starting AT the
+    ---   anchor is starting under the floor at every store where it is the
+    ---   floor and float noise goes the wrong way.
+    ---
+    ---   TOO HIGH and the probe starts above the CEILING, and the highest ground
+    ---   below it is the roof of the building. A clerk on the roof of Ammu-Nation
+    ---   is the same class of bug as loot under the map and reads as a wrong
+    ---   number rather than as a wrong native.
+    ---
+    --- 1.5 CLEARS THE WORST CASE OF THE FIRST BY 0.4m AND SITS WELL UNDER THE
+    --- SECOND: these are shop interiors with something like a three-metre ceiling
+    --- over a counter, so a probe from a metre and a half over the anchor is
+    --- inside the room whichever of the two meanings the anchor has.
+    ---
+    --- PER-STORE `probeFromM` OVERRIDES IT and is nil everywhere, exactly as
+    --- shipped. The two shooting-range stores (`range = true`) are the ones to
+    --- suspect first if a clerk comes out somewhere strange.
+    probeLiftM = 1.5,
+
+    --- HOW LONG THE PROBE MAY KEEP ASKING BEFORE THE ANCHOR z IS USED AS IT IS.
+    ---
+    --- The native is documented as answering false when the coordinates are
+    --- outside the client's render distance (citizenfx/natives,
+    --- MISC/GetGroundZFor_3dCoord.md), and a clerk is built at `clerkBuildM` --
+    --- sixty metres out, through a wall, quite possibly before the interior has
+    --- streamed. So the first probe legitimately answers nothing, and the answer
+    --- is to ask again rather than to place on a refusal.
+    ---
+    --- THE SAME BUDGET AS THE SHOWROOM'S COLLISION WAIT (BR.Config.Shop
+    --- .collisionWaitMs, 1500) and the same shape: request, poll, give up, carry
+    --- on with today's behavior. A clerk placed at the raw anchor is a clerk who
+    --- may be a metre out; a clerk who never appears because one streaming
+    --- request never completed is a counter that does not work at all.
+    probeWaitMs = 1500,
+
+    --- THE PLATE ABOVE THE COUNTER: how far in front of the clerk it stands, how
+    --- far above his feet, and how wide it is. Metres.
+    ---
+    --- A PED'S ORIGIN IS AT HIS FEET, which is the difference from
+    --- BR.Config.Shop's sign numbers -- those are offsets from a vehicle's
+    --- origin, which is somewhere around its axle line, and BR.ShopSolve
+    --- .signHeight derives them from the model's own bounding box. A ped's box is
+    --- about 0.35m deep and "bumper fraction" means nothing on it, so these are
+    --- authored: 1.05m up is chest height on a standing ped, 0.55m forward puts
+    --- the plate over the counter rather than inside the clerk.
+    ---
+    --- "FORWARD" IS THE CLERK'S OWN FACING, so `clerkFaceDeg` above turns the
+    --- clerk and his sign together and one number fixes both. If a playtest finds
+    --- the plate behind him, that is the number to move rather than this one --
+    --- and it will not have vanished in the meantime: BR.Dui's quad is drawn
+    --- from whichever side the camera is on, so a sign facing away reads
+    --- backwards rather than not at all.
+    signForwardM = 0.55,
+    signUpM      = 1.05,
+    signWidthM   = 0.55,
+
+    --- THE CUE KEY THE PURCHASE PLAYS. A KEY, NOT A SOUND.
+    ---
+    --- `shop.buy` is already in BR.Config.Audio.cues -- the owner picked it on
+    --- 2026-09-08 for "Shop purchase complete" -- so this is the existing cue
+    --- named by the existing key, and br_core/client/sfx.lua stays the only file
+    --- in the project that knows what set and name it resolves to.
+    ---
+    --- THE REFUSAL CUE IS NOT HERE and that is not an omission: `shop.denied`
+    --- rides on BR.Market.tellShortfall's toast, at the one funnel every shortfall
+    --- in the game reaches, so this feature inherits it without naming it.
+    cue = 'shop.buy',
+
+    -- ═══════════════════════════════════════════════════════════════════════
+    --  THE ONLY WORD IN THIS FEATURE THAT IS NOT HIS. HE SHOULD REPLACE IT.
+    -- ═══════════════════════════════════════════════════════════════════════
+    --
+    -- ─────────────────────────────────────────────────────────────────────
+    --  NEEDS HIS WORDING: WHAT THE COUNTER IS CALLED ON SCREEN.
+    -- ─────────────────────────────────────────────────────────────────────
+    --
+    -- The note beside the store table says a display name is COPY, that the
+    -- owner has not written any for this feature, and that whoever builds the UI
+    -- should ask him for the words rather than reading a guess out of this file.
+    -- That was right, and the UI is now built, and TWO SURFACES STRUCTURALLY
+    -- REQUIRE A SUBJECT:
+    --
+    --   the WORLD PLATE at the counter, which is a title and a key cap, and a
+    --   key cap with nothing over it is a prompt to do an unnamed thing;
+    --   the MENU BANNER, which is the colored bar at the top of every
+    --   ScaleformUI menu and cannot be empty without looking broken.
+    --
+    -- SO IT IS ONE WORD, THE SHORTEST NEUTRAL ONE, USED IN BOTH PLACES. Not
+    -- "Ammu-Nation" (Rockstar's brand, and the store ids are districts rather
+    -- than a chain), not "Gun Shop", not "Weapons" (it sells ammo too), and
+    -- nothing with a verb in it. One word, one line, one edit.
+    --
+    -- EVERY OTHER STRING A PLAYER SEES AT THIS COUNTER IS DERIVED: item names
+    -- come from config/weapons.lua's and config/loot.lua's own `label` fields,
+    -- prices from `prices` and `ammo` above through BR.ShopSolve.priceLine, the
+    -- key cap from the player's own binding, the refusal sentence from
+    -- BR.Market.tellShortfall, and the menu's Select/Back captions from GTA's
+    -- own label table. There is nothing else here to replace.
+    menuTitle = 'Shop',
+
     -- ------------------------------------------------------------------
     -- WHAT IT COSTS
     -- ------------------------------------------------------------------

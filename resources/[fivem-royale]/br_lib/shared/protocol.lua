@@ -835,6 +835,38 @@ BR.Net = {
     MARKET_BUY      = 'br:market:buy',       -- C->S  { id }
     MARKET_EQUIP    = 'br:market:equip',     -- C->S  { id }
 
+    -- The in-match Ammu-Nation counter (#274).
+    --
+    -- ═══ TWO NAMES FOR THE TWO DIRECTIONS ═══
+    --
+    -- `buy` in, `bought` out -- server/shop.lua's convention for the warmup
+    -- showroom, and its argument applies unchanged: one name for both would work
+    -- in the game (client and server handlers are separate registries) and would
+    -- be indistinguishable in a log, in a grep, and in any harness that stands
+    -- both halves up in one Lua state, which tools/test_gunshop.lua now does.
+    --
+    -- THE CLIENT SENDS A CATALOGUE ID AND NOTHING ELSE. No price, no balance, no
+    -- claim about where it is standing or what state it is in -- every one of
+    -- those is resolved server-side against config and the roster, which is
+    -- BR.GunshopSolve.canBuy's stated rule and server/market.lua's rule for the
+    -- storefront before it. A client that could assert "I am at a counter" could
+    -- shop from the top of Mount Chiliad.
+    --
+    -- THE ANSWER CARRIES THE ROW BACK so the client can play the cue for the
+    -- thing that actually landed rather than for the thing it last asked about;
+    -- a purchase is a DynamoDB round trip and the two can differ if a player is
+    -- quick. It carries NO BALANCE: br_ui already holds that figure and a second
+    -- copy on this wire would be free to disagree with the Store screen.
+    --
+    -- WHY THESE ARE HERE AND THE SHOWROOM'S FOUR ARE NOT. This file's own header
+    -- says every event name in the project lives here; `br:shop:buy` and its
+    -- three siblings are literals in br_core/server/shop.lua and predate that
+    -- being enforced anywhere. Moving them is a change to a shipped feature with
+    -- its own suite and is not this round's business -- but a NEW feature
+    -- inheriting the exception would make the exception the rule.
+    GUNSHOP_BUY     = 'br:gunshop:buy',      -- C->S  { id }
+    GUNSHOP_BOUGHT  = 'br:gunshop:bought',   -- S->C  { row }
+
     -- Chat
     CHAT_SEND       = 'br:chat:send',        -- C->S  { channel, text }
     CHAT_MSG        = 'br:chat:msg',         -- S->C  { channel, from, name, text, at }
