@@ -76,7 +76,20 @@ BR.Config.Audio = {
         -- `hit` and `hit.crit` had floors here and no longer exist as cues
         -- (2026-09-08: the clips were wrong). A floor for a cue that isn't
         -- there is dead weight, so they went with them.
-        ['ui.hover']         = 40,
+        --
+        -- AND `ui.hover` WENT WITH THEM, ONE ROUND LATE, FOR THE SAME REASON IT
+        -- SAYS TWO LINES UP. It sat directly under that sentence at 40ms while
+        -- being a cue this table has never held: ui.hover is synthesised in the
+        -- BROWSER (ui-src/src/audio/cues.ts), which carries its own 45ms floor
+        -- for it in that file's MIN_GAP. BR.Sfx.play('ui.hover') would take the
+        -- unknown-cue path, so this line could never throttle anything.
+        --
+        -- IT IS WORTH A NOTE RATHER THAN A SILENT DELETION because the harm was
+        -- not the wasted table entry. This table is the closest thing the
+        -- project has to a list of which cues are NATIVE, and an entry here for
+        -- a browser cue makes it lie about that -- which is the same reading
+        -- error that puts a browser cue key into a BR.Sfx call site.
+
         -- A refusal the player can re-trigger by leaning on a key, and the
         -- server sends one toast per attempt. Longer than the cue, shorter
         -- than a deliberate second press.
@@ -470,15 +483,31 @@ BR.Config.Audio = {
 
         -- His: "Damage killed sound".
         --
-        -- AND `elim` IS CALLED TODAY AND RESOLVES TO NOTHING.
-        -- br_core/client/state.lua:1369 plays `elim` when you get a kill, and
-        -- there has never been an `elim` in this table -- so that call takes
-        -- the unknown-cue path in client/sfx.lua and prints one console line
-        -- per session. The player is not left silent: the browser synthesises
-        -- its own `elim` (ui-src/src/audio/cues.ts:290, played from
-        -- HitFeedback.tsx:54), which is what they actually hear. So this is a
-        -- dead call plus a warning, not a missing sound -- but it is the reason
-        -- this key cannot simply be left blank and forgotten.
+        -- ═══ THIS NOTE USED TO SAY `elim` RESOLVED TO NOTHING. IT RESOLVES
+        --     NOW, AND THE CONSEQUENCE IS A DOUBLE ═══
+        --
+        -- The old note said "there has never been an `elim` in this table", so
+        -- the call in br_core/client/state.lua took the unknown-cue path and the
+        -- player heard only the browser's synthesised version. Landing the pair
+        -- below (2026-09-08, "land the DLC cues") made that note false while it
+        -- was still sitting two lines above the entry contradicting it.
+        --
+        -- AND IT LEFT ONE EVENT MAKING TWO NOISES. state.lua plays this cue when
+        -- you get a kill, and the same block sends BR.Nui.HIT carrying the
+        -- victim's name -- which ui-src/src/hud/HitFeedback.tsx answers by
+        -- playing its OWN `elim` (ui-src/src/audio/cues.ts). Both fire, on every
+        -- kill. That is precisely the shape the owner rejected on 2026-09-07
+        -- ("so now when a squad mate goes DBNO we're playing an NUI sound AND a
+        -- frontend sound"), and the fix that answered him then -- one event, one
+        -- noise -- has not been applied here.
+        --
+        -- IT IS NOT FIXED ON THIS LINE BECAUSE THE FIX IS NOT IN THIS FILE. Both
+        -- tiers are wired and correct; what is wrong is that both are wired at
+        -- once. Silencing the browser side (the direction his "use all of the
+        -- sounds I gave you, including MATE_CUE being rewired to
+        -- PlaySoundFrontend" points, and the direction MATE_CUE itself took) is a
+        -- one-line change in HitFeedback.tsx plus a ui-src rebuild, and it wants
+        -- to land in a commit that owns the built bundle.
         ['elim'] = { set = 'DLC_H3_Drone_Tranq_Weapon_Sounds',
                      name = 'Pilot_Perspective_Fire' },
         --   /brsfx play DLC_H3_Drone_Tranq_Weapon_Sounds Pilot_Perspective_Fire

@@ -417,6 +417,93 @@ do
     eq(#plays, 2, 'a throttled cue does not close the window on a different one')
 end
 
+describe('delivery: every configured cue survives the trip to the native')
+do
+    -- ═══ LAST IN PART B, NOT FIRST IN PART A, AND THAT IS THE CLOCK'S DOING ═══
+    --
+    -- This belongs beside the palette by subject, and it cannot go there. The
+    -- block below plays EVERY cue, which writes `lastPlayed[cue]` for each of
+    -- the five that carry a floor, and it has to walk the clock forward to do it
+    -- without testing the throttle by accident. Run before PART B, that leaves
+    -- the throttle's cues stamped in the FUTURE relative to the `gameMs = 500000`
+    -- those tests set -- so every one of them fails on its first call with
+    -- `got 0, want 1`, which reads as a broken rate limiter rather than as a
+    -- neighbour that moved the clock. That is precisely what happened when this
+    -- was written, and the note is here so the next person to reorder this file
+    -- by subject finds out from a comment rather than from six red lines.
+    --
+    -- ═══ THE SEAM NOTHING ELSE IN THE PROJECT CROSSES ═══
+    --
+    -- Owner, 2026-09-08: "the 5s storm sound is broke somehow ... perhaps you
+    -- could fix the other sounds that are broken." The suites were green while
+    -- he said it, AND they were green about the cues he named, which is the part
+    -- worth fixing.
+    --
+    -- The reason is that every OTHER test of audio in this repo stubs BR.Sfx and
+    -- asserts the string a call site passed. tools/test_shared.lua's storm
+    -- sandbox is explicit about it -- `env.BR.Sfx = { play = function(cue)
+    -- C.sfx[#C.sfx + 1] = cue end }` -- so `played(C, 'timer.final') == 1` proves
+    -- storm.lua ASKED and proves nothing whatever about whether the ask arrives
+    -- anywhere. Between the ask and the engine sit a mute flag, a master switch,
+    -- a table lookup and a throttle, and four of those five exits are silent.
+    --
+    -- So this walks the whole table through the REAL BR.Sfx.play -- the one
+    -- loaded from br_core/client/sfx.lua at the top of this file -- and requires
+    -- the pair to come out the other side at PlaySoundFrontend. It is the only
+    -- assertion in the repo that the cue table and the player agree.
+    --
+    -- WHAT IT STILL CANNOT TELL YOU, and the file header says this too: whether
+    -- the engine makes a NOISE. A wrong set name reaches PlaySoundFrontend
+    -- exactly like a right one and plays nothing, which is why /brsfx has a
+    -- probe and why `brsfx cues` exists. This proves the cue is DELIVERED; only
+    -- a running client can prove it is AUDIBLE.
+    local undelivered, wrongPair = nil, nil
+    for cue, def in pairs(A.cues) do
+        plays = {}
+        -- A FRESH CLOCK PER CUE, far past any floor. Several cues carry a
+        -- minInterval and this loop would otherwise be testing the throttle --
+        -- and would do it in `pairs` order, so which cue got dropped would
+        -- change between runs.
+        gameMs = gameMs + 100000
+        BR.Sfx.play(cue)
+        if #plays ~= 1 then
+            undelivered = tostring(cue)
+        elseif plays[1].name ~= def.name or plays[1].set ~= def.set then
+            wrongPair = ('%s -> %s / %s'):format(tostring(cue),
+                tostring(plays[1].set), tostring(plays[1].name))
+        end
+    end
+    ok(undelivered == nil,
+       'every cue in the table reaches PlaySoundFrontend when it is played',
+       undelivered)
+    ok(wrongPair == nil,
+       'and arrives carrying the set and sound the table gave it', wrongPair)
+
+    -- ═══ THE ARGUMENT ORDER, PINNED ═══
+    --
+    -- PLAY_SOUND_FRONTEND is (soundId, audioName, audioRef, isNetwork) -- the
+    -- NAME first and the SET second, which is the reverse of how every table in
+    -- config/audio.lua, every /brsfx verb and every sentence anybody writes
+    -- about these puts them. Swapping them is a one-word edit that compiles,
+    -- runs, warns about nothing and silences the entire palette at once. It is
+    -- the single most expensive typo available in this file's blast radius, so
+    -- it is asserted against a pair written out by hand rather than read back
+    -- out of the table.
+    plays = {}
+    gameMs = gameMs + 100000
+    BR.Sfx.play('timer.final')
+    eq(#plays, 1, 'the storm pip is delivered')
+    if #plays == 1 then
+        eq(plays[1].name, '5s',
+           'and the SOUND goes in the second slot, which is audioName')
+        eq(plays[1].set, 'MP_MISSION_COUNTDOWN_SOUNDSET',
+           'and the SET goes in the third, which is audioRef')
+        eq(plays[1].id, -1, 'with no sound id -- these are never stopped')
+        eq(plays[1].net, false,
+           'and never networked: every cue here is for THIS client only')
+    end
+end
+
 -- =========================================================================
 -- PART C -- failing safely
 -- =========================================================================

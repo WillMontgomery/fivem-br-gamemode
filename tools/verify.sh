@@ -588,6 +588,31 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# Every cue key a call site NAMES is a key config/audio.lua HOLDS.
+#
+# THE SUITES CANNOT SEE THIS AND THE GAME BARELY CAN. Every test of a cue call
+# site stubs BR.Sfx and records the string -- test_shared.lua's storm sandbox
+# writes `env.BR.Sfx = { play = function(cue) ... end }` and then asserts
+# `played(C, 'timer.final') == 1`, which is true for any string at all. In game a
+# key that is not in the table prints ONE console line per resource lifetime and
+# is silent forever after, so a dead call site survives both the suite and the
+# playtest. This gate was written after the owner reported sounds broken on a
+# green tree (2026-09-08) and immediately found two: client/state.lua was still
+# firing `hit` and `hit.crit` on every damage event, hours after both keys were
+# deleted for being the wrong clips and after the twin call in client/dbno.lua
+# had already been removed for that reason.
+#
+# THE REVERSE IS PRINTED AND NEVER GATED, and it is not a list of unwired cues --
+# a key can be held in a local, passed to a helper, or asked for by the browser
+# through the SFX callback, and this scan sees none of those. Wiring a sound is
+# the owner's decision rather than a gate's.
+echo "${DIM}== cue call sites ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_cue_sites.lua $(find resources -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # A xN on a notice means "again, while you were still looking at it" (owner,
 # 2026-09-02). The live stack cannot get that wrong -- it coalesces against the
 # rows that are still up. The pause menu's history coalesced against the whole

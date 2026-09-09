@@ -1926,7 +1926,29 @@ RegisterNetEvent(BR.Net.DAMAGE_FEED)
 AddEventHandler(BR.Net.DAMAGE_FEED, function(d)
     if not d then return end
 
-    BR.Sfx.play(d.headshot and 'hit.crit' or 'hit')
+    -- ═══ THE HIT IS SILENT, AND THAT IS THE OWNER'S CALL ═══
+    --
+    -- This line was `BR.Sfx.play(d.headshot and 'hit.crit' or 'hit')`. Owner,
+    -- 2026-09-08: "do not wire in any sound at all for hit or hit.crit -- those
+    -- are wrong sound clips." Both keys were deleted from config/audio.lua that
+    -- day, and a call naming a key that is not in the table is not silence: it
+    -- takes the unknown-cue path in client/sfx.lua and prints
+    -- `[br_core] sfx: unknown cue "hit"` once per session, plus a second line
+    -- for "hit.crit" the first time somebody lands a headshot. This is the
+    -- knock's twin at client/dbno.lua, which had the same call removed for the
+    -- same reason on the same day -- this site was simply missed.
+    --
+    -- THE FEEDBACK IS THE MARKER, AND IT ALWAYS WAS. The envelope below drives
+    -- the hitmarker in ui-src/src/hud/HitFeedback.tsx -- four strokes, red on a
+    -- kill, accent on a headshot, white otherwise. That component plays NO
+    -- browser cue for a plain hit, so there is no second tier quietly covering
+    -- for this: the hit is visual and nothing else, which is the state the owner
+    -- asked for rather than an omission.
+    --
+    -- DELETED RATHER THAN BLANKED, and not replaced with a placeholder key. A
+    -- cue key that exists to be filled in later is a call site that resolves to
+    -- nothing and warns forever; if he picks a clip for the hitmarker, add the
+    -- cue to config/audio.lua and play it on this line.
 
     -- The banner for a kill rides KILL_FEED (it has the name); this is the
     -- marker only. `killed` still travels so the marker can punctuate.
