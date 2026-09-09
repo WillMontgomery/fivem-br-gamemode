@@ -11346,6 +11346,29 @@ do
             tostring(corr.count))
         ok(corr.reason == 'exploiting',
             'carrying the category the second reporter picked', tostring(corr.reason))
+
+        -- AND WHO SAID IT. Owner: "when I personally corroborate something it
+        -- doesn't credit me." A corroboration a person made carries that person,
+        -- because the console has no other way to tell one from the anticheat --
+        -- it reads an absent reporter as the system, exactly as the case header
+        -- reads an absent filer.
+        --
+        -- THE LICENSE IS THE QUALIFIED ONE, the same shape `reporterLicense` on
+        -- the filing carries and the same shape the console links a profile by.
+        -- A bare license or a trimmed one would render a dead link rather than
+        -- fail anything here, so it is pinned.
+        ok(corr.reporterLicense
+               == BR.Identity.qualified('license', BR.Identity.licenseOf(3)),
+            'and the license of the player who filed it, qualified',
+            tostring(corr.reporterLicense))
+        ok(corr.reporterName == 'Cass',
+            'and their name, so the console can credit them',
+            tostring(corr.reporterName))
+        -- NOT THE ACCUSED'S. `license` and `name` on this payload are Bex; a
+        -- copy-paste of the wrong pair reads perfectly and credits the cheater.
+        ok(corr.reporterLicense ~= corr.license,
+            'which is not the license of the player being corroborated about',
+            tostring(corr.reporterLicense))
     end
 
     -- AND THE SECOND REPORTER LEARNS NOTHING FROM IT. "Your report was added to
@@ -11880,6 +11903,22 @@ do
         ok(corr.reason == BR.Config.defaultReportCategory(),
             'under the category the prompt actually asked about',
             tostring(corr.reason))
+
+        -- AND WHO PRESSED THE KEY, which this path needs more than the panel
+        -- does: `reason` here is one constant for every press, so two players
+        -- answering the prompt about the same offender send rows that differ in
+        -- nothing else. Without these the console cannot tell them apart from
+        -- each other, and folding them together is the evidence destruction
+        -- server/incident.lua refuses to do.
+        ok(corr.reporterLicense == vLic,
+            'and the license of the player who pressed it, qualified',
+            tostring(corr.reporterLicense))
+        ok(corr.reporterName == 'Vic',
+            'and their name, so the console can credit them',
+            tostring(corr.reporterName))
+        ok(corr.reporterLicense ~= corr.license,
+            'which is not the killer they are corroborating about',
+            tostring(corr.reporterLicense))
     end
 
     -- PAID, like any other corroborator (#168). The id is in hand, so the claim

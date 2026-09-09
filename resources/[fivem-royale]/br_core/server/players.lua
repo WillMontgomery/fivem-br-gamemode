@@ -942,11 +942,33 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
                 count      = s.reports,
                 -- The category, matching the `category` field on the incident
                 -- this is being appended to, so the two read in the same
-                -- vocabulary. No reporter name rides along: the corroboration
-                -- envelope br_ringmaster forwards has a fixed field set, and
-                -- widening the outbox contract for a channel that is allowed to
-                -- drop messages is not worth it.
+                -- vocabulary.
                 reason     = t.category,
+                -- WHO SAID IT, AND THE ONLY REASON THESE TWO FIELDS EXIST.
+                -- Owner, reading his own corroboration on a case: "when I
+                -- personally corroborate something it doesn't credit me". It
+                -- never could -- the name was not stored, not dropped in
+                -- transit, and never put on the wire at all.
+                --
+                -- THE ANTICHEAT MUST KEEP SENDING NEITHER, and that is what
+                -- makes their absence mean something. The three corroborations
+                -- server/incident.lua raises each build their own literal and
+                -- none of them carries a reporter, so the console can read "no
+                -- reporter" as "the system did this" rather than as "we did not
+                -- look" -- the same test IncidentDetail already makes about a
+                -- case's filer. Adding a fallback here would destroy that.
+                --
+                -- NEITHER CAN BE MISSING ON THIS PATH. `reporter` is
+                -- BR.Identity.qualified, which is never the empty string, and a
+                -- submission with no license was refused far above this line
+                -- before a single target was resolved. `me.name` is the roster's
+                -- own field, which is `GetPlayerName(src) or 'Unknown'`.
+                --
+                -- THE FIELD NAMES ARE THE FILING ENVELOPE'S, not new vocabulary:
+                -- BR.IncidentBuild.fromReport is handed `reporterLicense` and
+                -- `reporterName` a few lines below this branch.
+                reporterLicense = reporter,
+                reporterName    = me.name,
                 -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport
                 -- gives: a human's category is not a measurement, and grading
                 -- it here would invent confidence that does not exist.
@@ -1432,6 +1454,21 @@ AddEventHandler(BR.Net.REPORT_CORROBORATE, function()
         -- THE PROMPT ASKED "SUSPECT CHEATING?", so the category is the answer to
         -- that question and not a menu the player never saw.
         reason     = BR.Config.defaultReportCategory(),
+        -- WHO PRESSED THE KEY. Same two fields, same reasoning and the same
+        -- absence on the anticheat path as the panel's corroboration above.
+        --
+        -- IT MATTERS MOST HERE. `reason` on this path is one constant for every
+        -- press, so two players answering the prompt about the same offender
+        -- produce two rows that differ in nothing else at all. Without these
+        -- fields the console cannot tell them apart from each other or from the
+        -- system, which is the state server/incident.lua calls destroying
+        -- evidence rather than tidying it.
+        --
+        -- NEITHER CAN BE MISSING. `corroborationFor` returns nil outright when
+        -- the presser has no license, so reaching this line means `c.myLicense`
+        -- is a qualified license and `c.me` is a live roster entry.
+        reporterLicense = c.myLicense,
+        reporterName    = c.me.name,
         -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport gives.
     })
 

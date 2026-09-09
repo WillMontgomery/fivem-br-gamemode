@@ -352,6 +352,19 @@ AddEventHandler('br:ringmaster:corroborate', function(ev)
         count          = ev.count,
         reason         = ev.reason,
         severity       = ev.severity,
+        -- WHO CORROBORATED, WHEN IT WAS A PERSON. br_core's two human paths put
+        -- these on the event; its three anticheat paths do not, and both are
+        -- nil here on every one of those. Forwarded rather than defaulted: an
+        -- empty string is not the same fact as an absent field, and the console
+        -- treats a blank license as no license and writes the row as `System`.
+        --
+        -- THIS DOES NOT MAKE THE CHANNEL ANY LESS LOSSY, and it stays on the
+        -- outbox for the reason the block above gives. Two more fields on an
+        -- event that already goes out is not a new dependency on the console:
+        -- with Ringmaster down these queue and are eventually dropped exactly as
+        -- the other six are, and the game does not wait on any of it.
+        reporterLicense = ev.reporterLicense,
+        reporterName    = ev.reporterName,
     }, GetGameTimer())
 end)
 

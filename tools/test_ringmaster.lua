@@ -2929,6 +2929,19 @@ do
     ok(W.S.corroborations[1].incidentId == 'inc-1',
         'against the case that already exists')
 
+    -- AND IT NAMES NOBODY, WHICH IS A CONTRACT AND NOT AN OVERSIGHT. A person's
+    -- corroboration carries `reporterLicense` and `reporterName`
+    -- (server/players.lua, both paths, asserted in tools/test_roster.lua); the
+    -- anticheat's carries neither, and that absence is the ONLY thing telling the
+    -- console "the system did this" rather than "we did not look". A default
+    -- added anywhere on this path -- even an empty string -- credits a machine
+    -- with a human's report and folds two people's rows into one.
+    ok(W.S.corroborations[1].reporterLicense == nil
+       and W.S.corroborations[1].reporterName == nil,
+        'and names no reporter, which is what makes an absent one mean the system',
+        tostring(W.S.corroborations[1].reporterLicense) .. ' / ' ..
+        tostring(W.S.corroborations[1].reporterName))
+
     W.at(9000)
     W.endMatch(7)
 
@@ -4544,6 +4557,87 @@ do
         #W.S.corroborations)
     ok(W.S.corroborations[1].incidentId == 'inc-mixed',
         'onto the case that already exists')
+end
+
+-- ======================================================================== --
+-- THE REPORTER SURVIVES THE OUTBOX  (owner: "it doesn't credit me")
+-- ======================================================================== --
+--
+-- br_core puts `reporterLicense` and `reporterName` on a corroboration a PERSON
+-- made, and br_ringmaster/server/incident.lua is the only thing between that
+-- event and the wire. Its payload was a fixed six-field literal, so both fields
+-- were dropped one function call after they were set and the console could never
+-- credit anybody -- which is the owner's report, read from the other end.
+--
+-- LAST IN THE FILE ON PURPOSE. This raises `br:ringmaster:corroborate` in the
+-- shared global state, which moves the outbox queue and br_ring's own counters,
+-- and nothing above may be made to depend on that.
+
+describe('corroboration.the-outbox-carries-the-reporter')
+do
+    -- CAPTURED AT `emit`, not off a flushed request, so the assertion is about
+    -- what this file BUILDS rather than about whether a batch happened to go.
+    local seen = {}
+    local ob = BR.Ring.outbox
+    ok(ob ~= nil, 'the outbox exists to emit onto')
+
+    if ob then
+        local real = ob.emit
+        ob.emit = function(self, kind, payload, now)
+            if kind == 'incident_corroborated' then seen[#seen + 1] = payload end
+            return real(self, kind, payload, now)
+        end
+
+        TriggerEvent('br:ringmaster:corroborate', {
+            incidentId      = 'inc-human',
+            license         = 'license:cheat',
+            name            = 'Cheater',
+            seq             = 2,
+            count           = 2,
+            reason          = 'cheating',
+            reporterLicense = 'license:owner',
+            reporterName    = 'Owner',
+        })
+
+        local p = seen[#seen]
+        ok(p ~= nil, 'a human corroboration reaches the outbox')
+        ok(p and p.reporterLicense == 'license:owner',
+            'carrying the license of the person who made it',
+            p and tostring(p.reporterLicense))
+        ok(p and p.reporterName == 'Owner',
+            'and their name, which is the whole of what the console credits',
+            p and tostring(p.reporterName))
+        -- THE SUBJECT IS UNDISTURBED, because the two pairs are easy to swap and
+        -- a swap reads perfectly while crediting the accused with the report.
+        ok(p and p.subjectLicense == 'license:cheat',
+            'about the player it was always about',
+            p and tostring(p.subjectLicense))
+
+        -- THE ANTICHEAT'S, THROUGH THE SAME DOOR AND THE SAME LITERAL. Neither
+        -- field is invented and neither is blanked. An empty string is NOT an
+        -- absent field: the console tests for a non-empty string and writes
+        -- `System` otherwise, so a blank would still read right on the page --
+        -- and the fold that groups a run of these would then be unable to tell a
+        -- person's row from a machine's, which is where a report gets deleted.
+        TriggerEvent('br:ringmaster:corroborate', {
+            incidentId = 'inc-system',
+            license    = 'license:cheat',
+            name       = 'Cheater',
+            seq        = 2,
+            count      = 16,
+            reason     = 'weapon is not one this gamemode issues',
+            severity   = 'high',
+        })
+
+        local q = seen[#seen]
+        ok(q ~= nil and q.incidentId == 'inc-system',
+            'and so does the anticheat one, off the same handler')
+        ok(q and q.reporterLicense == nil and q.reporterName == nil,
+            'naming nobody, and given no empty string in place of nobody',
+            q and (tostring(q.reporterLicense) .. ' / ' .. tostring(q.reporterName)))
+
+        ob.emit = nil
+    end
 end
 
 -- ----------------------------------------------------------------- result ---
